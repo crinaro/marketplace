@@ -74,7 +74,7 @@ def _has_python():
 
 def _has_keychain():
     """The OS credential store (Keychain / PasswordVault / secret-service) holds an IMAP
-    credential — the same cross-platform store gmail_mcp_server.py actually reads.
+    credential — the same cross-platform store mail_client.py actually reads.
 
     ⭐ THE TOKEN NAME STAYS "keychain" DELIBERATELY, even though the probe is no longer
     macOS-only: the token is written into data/pending_actions.jsonl `requires`, and renaming

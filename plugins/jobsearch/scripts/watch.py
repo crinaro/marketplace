@@ -56,7 +56,7 @@ _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 
 try:
-    from gmail_mcp_server import (
+    from mail_client import (
         Mailbox, configured_accounts, decode_header_value, CredentialError,
     )
 except ImportError as exc:  # pragma: no cover

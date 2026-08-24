@@ -585,6 +585,42 @@ def _quote_original(msg):
     return "\n\nOn %s, %s wrote:\n%s" % (when, who, quoted)
 
 
+def _unfold_header(v):
+    """Message-ID and References arrive FOLDED across lines. EmailMessage
+    rejects any header containing a linefeed, so unfold to single spaces before
+    use. (Found by testing, 2026-07-21 — the first real APPEND raised
+    "Header values may not contain linefeed".)"""
+    return " ".join((v or "").split())
+
+
+def _reply_context(mb, uid, acct, subject, body, html_body):
+    """Fetch the original `uid` and derive reply threading + quoted body.
+
+    Shared by `tool_create_draft` (reply drafts) and `tool_reply` (sent replies)
+    so the two can never disagree about how a reply is threaded. Returns
+    (in_reply_to, references, subject, body, html_body). Raises ValueError when
+    the uid does not resolve — an unfetchable original must never produce an
+    unthreaded reply that LOOKS threaded to the caller.
+    """
+    mb.select_all_mail()
+    original = mb.fetch_full(str(uid).encode())
+    if original is None:
+        raise ValueError("No message with uid=%s in %s" % (uid, acct))
+    in_reply_to = _unfold_header(original.get("Message-ID")) or None
+    prior = _unfold_header(original.get("References"))
+    references = ((prior + " " + in_reply_to).strip()
+                  if in_reply_to else prior) or None
+    if not subject:
+        osub = decode_header_value(original.get("Subject"))
+        subject = osub if osub.lower().startswith("re:") else "Re: " + osub
+    quote = _quote_original(original)
+    body = body + quote
+    if html_body:
+        html_body = (html_body + "<br><br><blockquote>"
+                     + quote.replace("\n", "<br>") + "</blockquote>")
+    return in_reply_to, references, subject, body, html_body
+
+
 def tool_create_draft(args):
     """APPEND a draft to [Gmail]/Drafts. Structurally cannot send."""
     accounts = resolve_accounts(args.get("account"))
@@ -612,29 +648,8 @@ def tool_create_draft(args):
     in_reply_to = references = None
     with Mailbox(acct) as mb:
         if reply_uid:
-            mb.select_all_mail()
-            original = mb.fetch_full(reply_uid.encode())
-            if original is None:
-                raise ValueError("No message with uid=%s in %s (reply_to_uid)"
-                                 % (reply_uid, acct))
-            # Message-ID and References arrive FOLDED across lines. EmailMessage
-            # rejects any header containing a linefeed, so unfold to single
-            # spaces before use. (Found by testing, 2026-07-21 — the first real
-            # APPEND raised "Header values may not contain linefeed".)
-            def _unfold(v):
-                return " ".join((v or "").split())
-            in_reply_to = _unfold(original.get("Message-ID")) or None
-            prior = _unfold(original.get("References"))
-            references = ((prior + " " + in_reply_to).strip()
-                          if in_reply_to else prior) or None
-            if not subject:
-                osub = decode_header_value(original.get("Subject"))
-                subject = osub if osub.lower().startswith("re:") else "Re: " + osub
-            quote = _quote_original(original)
-            body = body + quote
-            if html_body:
-                html_body = (html_body + "<br><br><blockquote>"
-                             + quote.replace("\n", "<br>") + "</blockquote>")
+            in_reply_to, references, subject, body, html_body = _reply_context(
+                mb, reply_uid, acct, subject, body, html_body)
 
         msg = email.message.EmailMessage()
         msg["From"] = acct
@@ -672,6 +687,190 @@ def tool_create_draft(args):
     out.append("NOTE: this tool cannot delete. Get it right in one pass — a "
                "corrected copy leaves the stale one behind.")
     return "\n".join(out)
+
+
+# --------------------------------------------------------------------------
+# Sending — SMTP, same app password as IMAP (marketplace #213)
+# --------------------------------------------------------------------------
+#
+# ⭐ CAPABILITY BELONGS TO THE CONNECTOR; POLICY BELONGS TO THE CONSUMER.
+# This server sends like any general-purpose mail connector (owner decision,
+# marketplace #213). A consumer that must not send — jobsearch is draft-only by
+# its owner's explicit review policy — enforces that on ITS side with a
+# PreToolUse deny (jobsearch's guard_mail_send.py), measured to intercept this
+# plugin's tools cross-plugin. Do not weaken these tools to encode a consumer's
+# policy, and do not assume every consumer wants them unguarded.
+
+SMTP_HOST = "smtp.gmail.com"
+SMTP_PORT = 465  # implicit TLS; the same app password covers IMAP and SMTP
+
+
+def _as_list(v):
+    if not v:
+        return []
+    return [v] if isinstance(v, str) else list(v)
+
+
+def _smtp_send(acct, msg):
+    """Send `msg` from `acct` over SMTP_SSL. Gmail saves the sent copy to
+    [Gmail]/Sent Mail itself — no IMAP APPEND needed, and doing one anyway
+    would double-file every message. send_message() strips Bcc headers and
+    delivers to them; recipients come from the message's own To/Cc/Bcc."""
+    import smtplib
+    pw = get_app_password(acct)
+    try:
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=60) as smtp:
+            smtp.login(acct, pw)
+            refused = smtp.send_message(msg)
+    except smtplib.SMTPAuthenticationError as exc:
+        raise CredentialError(
+            "SMTP login failed for %s: %s — the app password looks wrong or "
+            "revoked. Regenerate at https://myaccount.google.com/apppasswords "
+            "and update the credential store entry (the same one IMAP uses)."
+            % (acct, exc))
+    finally:
+        del pw
+    if refused:
+        # Partial delivery is LOUD, never a silent success (house rule: a
+        # missing thing must never read as an empty thing).
+        raise RuntimeError(
+            "SMTP refused these recipients for %s: %s — the OTHERS WERE SENT; "
+            "do not simply resend the whole message." % (acct, ", ".join(refused)))
+
+
+def _compose(acct, to, cc, bcc, subject, body, html_body=None,
+             in_reply_to=None, references=None):
+    if not to:
+        raise ValueError("`to` is required (list of email addresses).")
+    if not body or not body.strip():
+        raise ValueError("`body` is required.")
+    msg = email.message.EmailMessage()
+    msg["From"] = acct
+    msg["To"] = ", ".join(to)
+    if cc:
+        msg["Cc"] = ", ".join(cc)
+    if bcc:
+        msg["Bcc"] = ", ".join(bcc)
+    msg["Subject"] = subject or ""
+    msg["Date"] = email.utils.formatdate(localtime=True)
+    msg["Message-ID"] = email.utils.make_msgid()
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+    if references:
+        msg["References"] = references
+    msg.set_content(body)
+    if html_body:
+        msg.add_alternative(html_body, subtype="html")
+    return msg
+
+
+def _one_account(args):
+    accounts = resolve_accounts(args.get("account"))
+    if len(accounts) != 1:
+        raise ValueError(
+            "`account` must name exactly ONE mailbox — mail is sent from "
+            "somewhere specific. Configured: %s" % ", ".join(configured_accounts()))
+    return accounts[0]
+
+
+def _sent_report(verb, acct, msg, extra=None):
+    out = ["%s from %s via SMTP." % (verb, acct),
+           "  To:      %s" % msg["To"]]
+    if msg.get("Cc"):
+        out.append("  Cc:      %s" % msg["Cc"])
+    out.append("  Subject: %s" % msg["Subject"])
+    if extra:
+        out.extend(extra)
+    out.append("")
+    out.append("Gmail files its own copy under [Gmail]/Sent Mail. "
+               "Sending cannot be undone by this server.")
+    return "\n".join(out)
+
+
+def tool_send_message(args):
+    """Compose and SEND a new message immediately. The reviewable path is
+    tool_create_draft; this one is the point of no return."""
+    acct = _one_account(args)
+    msg = _compose(acct, _as_list(args.get("to")), _as_list(args.get("cc")),
+                   _as_list(args.get("bcc")), args.get("subject") or "",
+                   args.get("body") or "", args.get("html_body"))
+    _smtp_send(acct, msg)
+    return _sent_report("SENT", acct, msg)
+
+
+def tool_reply(args):
+    """Fetch the original by uid, thread the reply (In-Reply-To + References),
+    quote it Gmail-style, and SEND immediately."""
+    acct = _one_account(args)
+    uid = str(args.get("uid") or "").strip()
+    if not uid:
+        raise ValueError("`uid` is required — find it with gmail_search.")
+    body = args.get("body") or ""
+    if not body.strip():
+        raise ValueError("`body` is required.")
+    html_body = args.get("html_body")
+    with Mailbox(acct) as mb:
+        in_reply_to, references, subject, body, html_body = _reply_context(
+            mb, uid, acct, args.get("subject") or "", body, html_body)
+        mb.select_all_mail()
+        original = mb.fetch_full(uid.encode())
+    to = _as_list(args.get("to"))
+    cc = _as_list(args.get("cc"))
+    if not to:
+        sender = email.utils.parseaddr(
+            decode_header_value(original.get("Reply-To"))
+            or decode_header_value(original.get("From")))[1]
+        if not sender:
+            raise ValueError("Could not derive a recipient from the original "
+                             "message; pass `to` explicitly.")
+        to = [sender]
+        if args.get("reply_all"):
+            seen = {sender.lower(), acct.lower()}
+            for hdr in ("To", "Cc"):
+                for _, addr in email.utils.getaddresses(
+                        [decode_header_value(original.get(hdr))]):
+                    if addr and addr.lower() not in seen:
+                        cc.append(addr)
+                        seen.add(addr.lower())
+    msg = _compose(acct, to, cc, _as_list(args.get("bcc")), subject, body,
+                   html_body, in_reply_to=in_reply_to, references=references)
+    _smtp_send(acct, msg)
+    return _sent_report("REPLY SENT", acct, msg,
+                        ["  Threaded as a reply (In-Reply-To + References set)."])
+
+
+def tool_forward(args):
+    """Fetch the original by uid and SEND it onward immediately: your note,
+    the quoted text, and the intact original attached as message/rfc822."""
+    acct = _one_account(args)
+    uid = str(args.get("uid") or "").strip()
+    if not uid:
+        raise ValueError("`uid` is required — find it with gmail_search.")
+    to = _as_list(args.get("to"))
+    if not to:
+        raise ValueError("`to` is required (list of email addresses).")
+    with Mailbox(acct) as mb:
+        mb.select_all_mail()
+        original = mb.fetch_full(uid.encode())
+        if original is None:
+            raise ValueError("No message with uid=%s in %s" % (uid, acct))
+    osub = decode_header_value(original.get("Subject"))
+    subject = args.get("subject") or (
+        osub if osub.lower().startswith("fwd:") else "Fwd: " + osub)
+    note = args.get("body") or ""
+    quoted = ("---------- Forwarded message ----------\n"
+              "From: %s\nDate: %s\nSubject: %s\nTo: %s\n\n%s"
+              % (decode_header_value(original.get("From")),
+                 decode_header_value(original.get("Date")), osub,
+                 decode_header_value(original.get("To")),
+                 body_text(original, limit=8000)))
+    msg = _compose(acct, to, _as_list(args.get("cc")), _as_list(args.get("bcc")),
+                   subject, (note + "\n\n" if note.strip() else "") + quoted)
+    msg.add_attachment(original.as_bytes(), maintype="message", subtype="rfc822",
+                       filename="forwarded.eml")
+    _smtp_send(acct, msg)
+    return _sent_report("FORWARDED", acct, msg,
+                        ["  Original attached intact as message/rfc822."])
 
 
 TOOLS = [
@@ -779,6 +978,94 @@ TOOLS = [
             "required": ["account", "to", "body"],
         },
         "handler": tool_create_draft,
+    },
+    {
+        "name": "gmail_send_message",
+        "description": (
+            "SEND a new email immediately from ONE configured account over SMTP "
+            "(same app password as IMAP; Gmail files the sent copy itself). "
+            "This is the point of no return — sending cannot be undone. For a "
+            "reviewable draft the user sends themselves, use gmail_create_draft "
+            "instead. Consumers with a draft-only policy (e.g. the jobsearch "
+            "plugin) deny this tool with a PreToolUse guard."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account": {"type": "string",
+                            "description": "Mailbox to send from. Required — 'all' is invalid here."},
+                "to": {"type": "array", "items": {"type": "string"},
+                       "description": "Recipient addresses."},
+                "cc": {"type": "array", "items": {"type": "string"},
+                       "description": "Optional Cc addresses."},
+                "bcc": {"type": "array", "items": {"type": "string"},
+                        "description": "Optional Bcc addresses (header stripped on send)."},
+                "subject": {"type": "string", "description": "Subject line."},
+                "body": {"type": "string", "description": "Plain-text body."},
+                "html_body": {"type": "string",
+                              "description": "Optional HTML alternative."},
+            },
+            "required": ["account", "to", "body"],
+        },
+        "handler": tool_send_message,
+    },
+    {
+        "name": "gmail_reply",
+        "description": (
+            "Reply to an existing message by uid and SEND immediately: threads "
+            "with In-Reply-To + References, quotes the original Gmail-style, "
+            "derives the recipient from Reply-To/From when `to` is omitted, and "
+            "reply_all=true carries the original To/Cc into Cc. Sending cannot "
+            "be undone — for a reviewable reply draft use gmail_create_draft "
+            "with reply_to_uid instead."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account": {"type": "string",
+                            "description": "Mailbox holding the original; the reply is sent from it."},
+                "uid": {"type": "string",
+                        "description": "uid of the message being replied to (from gmail_search)."},
+                "body": {"type": "string", "description": "Plain-text reply body (original is quoted below it)."},
+                "html_body": {"type": "string", "description": "Optional HTML alternative."},
+                "to": {"type": "array", "items": {"type": "string"},
+                       "description": "Override recipients; defaults to the original's Reply-To/From."},
+                "cc": {"type": "array", "items": {"type": "string"},
+                       "description": "Extra Cc addresses."},
+                "bcc": {"type": "array", "items": {"type": "string"},
+                        "description": "Optional Bcc addresses."},
+                "subject": {"type": "string",
+                            "description": "Override subject; defaults to 'Re: ' + the original's."},
+                "reply_all": {"type": "boolean",
+                              "description": "Carry the original's To/Cc into Cc (deduplicated)."},
+            },
+            "required": ["account", "uid", "body"],
+        },
+        "handler": tool_reply,
+    },
+    {
+        "name": "gmail_forward",
+        "description": (
+            "Forward an existing message by uid and SEND immediately: your "
+            "optional note, the quoted original, and the intact original "
+            "attached as message/rfc822 (attachments included). Subject "
+            "defaults to 'Fwd: ' + the original's. Sending cannot be undone."),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account": {"type": "string",
+                            "description": "Mailbox holding the original; the forward is sent from it."},
+                "uid": {"type": "string",
+                        "description": "uid of the message to forward (from gmail_search)."},
+                "to": {"type": "array", "items": {"type": "string"},
+                       "description": "Recipient addresses."},
+                "cc": {"type": "array", "items": {"type": "string"}},
+                "bcc": {"type": "array", "items": {"type": "string"}},
+                "subject": {"type": "string",
+                            "description": "Override subject; defaults to 'Fwd: ' + the original's."},
+                "body": {"type": "string", "description": "Optional intro note above the quoted original."},
+            },
+            "required": ["account", "uid", "to"],
+        },
+        "handler": tool_forward,
     },
 ]
 

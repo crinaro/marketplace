@@ -62,13 +62,13 @@ from _root import profile_root as _profile_root
 import profile as _profile
 
 try:
-    from gmail_mcp_server import (
+    from mail_client import (
         Mailbox, configured_accounts, decode_header_value, CredentialError,
         body_text,
     )
 except ImportError as exc:  # pragma: no cover - defensive
     sys.stderr.write(
-        "Could not import gmail_mcp_server from the scripts/ dir: %s\n"
+        "Could not import mail_client from the scripts/ dir: %s\n"
         "Run this as `python3 scripts/meeting_check.py` from the repo root.\n" % exc)
     sys.exit(2)
 

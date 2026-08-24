@@ -82,7 +82,7 @@ from _root import profile_root as _profile_root
 from _atomic import write_jsonl, write_json
 
 try:
-    from gmail_mcp_server import (
+    from mail_client import (
         Mailbox, configured_accounts, decode_header_value, CredentialError, body_text,
     )
 except ImportError as exc:  # pragma: no cover

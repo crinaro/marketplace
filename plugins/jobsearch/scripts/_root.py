@@ -24,7 +24,7 @@ Resolution order:
 
 ⭐⭐ WHY (3) EXISTS — AN MCP SERVER HAS NEITHER OF THE FIRST TWO (2026-08-05).
 A long-lived MCP server is spawned by the Claude runtime, not from a shell: it inherits no
-`CLAUDESEARCH_ROOT` and no guarantee about its working directory. `gmail_mcp_server.py` therefore
+`CLAUDESEARCH_ROOT` and no guarantee about its working directory. `mail_client.py` therefore
 resolved a non-profile directory, found no `user.json`, and served ZERO mailboxes for the life of
 the process — and a mailbox-blind search returns the same empty result as a genuinely empty
 mailbox. It reported "no new mail" while the deterministic per-call sweeps, which DO start from a

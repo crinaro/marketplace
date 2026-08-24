@@ -201,7 +201,7 @@ still `false`. Ask before any comp conversation leans on that tier.
   ⭐ Gmail: the configured set in `user.json` is the COMPLETE set** — read it with
   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/profile.py"`, never retype an address, and never add one that shows up in a
   recruiting database (at least one such address is bad data and must not be re-raised as a
-  coverage gap). Gmail search (`scripts/gmail_mcp_server.py` for sweeps, `gmail-multi`'s tools
+  coverage gap). Gmail search (`scripts/mail_client.py` for sweeps, `gmail-multi`'s tools
   interactively) covers **all** accounts by default and raises a loud coverage error —
   **never pass a single `account` unless you mean to narrow it, and never read
   that error as a zero.** Correspondence also spans LinkedIn and phone, so any one mailbox is a
@@ -364,7 +364,7 @@ broken one reads downstream as "no matching proof points" — same as having non
 **Deterministic sweeps** (a daily, predictable artifact is a query, not a model summary):
 - `alert_sweep.py` — board/aggregator digests, every configured mailbox.
 - `meeting_check.py` — calendar artifacts diffed against `data/commitments.jsonl`.
-- `gmail_mcp_server.py` — **library only, no `mcpServers` entry**: sweeps import it, reading
+- `mail_client.py` — **library only, no `mcpServers` entry**: sweeps import it, reading
   `user.json`. Interactive `gmail_*` tools: `gmail-multi`'s own server, reading
   `~/.claude/gmail-multi/accounts.json`, kept pointed here via `include` (`m_0_29_0`). **⭐
   `account` defaults to `all` on both; an unreachable one raises `!! INCOMPLETE COVERAGE`

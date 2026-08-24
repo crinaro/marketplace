@@ -131,6 +131,45 @@ def config_key_resolves(dotted):
     return True
 
 
+def pointer_resolves(target, ptr, homes):
+    """Does one archive back-pointer TARGET (parsed from raw pointer text PTR) resolve
+    against HOMES? Factored out of main()'s entry loop so the resolution rule itself is
+    directly unit-testable, not only exercisable through a full profile + CLAUDE.md anchor
+    set via subprocess.
+
+    Three ways to resolve, tried in order:
+      1. `target` IS a home's label (e.g. "CLAUDE.md", "docs/architecture.md") — and if the
+         pointer text quotes rule text in double quotes, that quoted text must actually
+         appear in the home.
+      2. `target` is a `config.json.a.b` dotted key that exists.
+      3. `target` is a bare filename mentioned in some OTHER home's text.
+
+    ⭐ dev 2026-08-23 — plugin-architect audit of its own m_0_31_0_mail_client_rename work:
+    (3) used to search EVERY home, including `scripts/test_checks.py`, whose own
+    TestMigrateMailClientRename fixtures assert the migrated string "scripts/mail_client.py"
+    as literal TEST DATA — and that alone satisfied a real archive back-pointer naming the
+    same file, with no genuine home (CLAUDE.md / an agent / a skill / a doc) ever saying
+    anything about where the file lives. Confirmed against the owner's actual, unmigrated
+    profile: its "scripts/gmail_mcp_server.py" back-pointer resolved, before this fix, only
+    through this identical accidental path.
+
+    test_checks.py counts as a home for an ASSERTION that ENFORCES a rule (see
+    audit_load_bearing's `_only_in_docstring`, which already treats a test docstring
+    describing a rule as not a home). A string appearing anywhere in its source — including
+    inside another test's fixture data — is not an assertion and is not prose that can
+    attest what a bare filename means, so (3) excludes it. A bare-filename pointer needs a
+    genuine NARRATIVE home.
+    """
+    if target in homes:
+        quoted = re.findall(r'"([^"]{12,})"', ptr)
+        return all(q in homes[target] for q in quoted) if quoted else True
+    if config_key_resolves(target):
+        return True
+    test_suite_label = _label(os.path.join(ENGINE_SCRIPTS, "test_checks.py"))
+    narrative_homes = {k: v for k, v in homes.items() if k != test_suite_label}
+    return any(target in txt for txt in narrative_homes.values())
+
+
 # ---- The load-bearing rules. EVERY ONE must resolve somewhere, always. ----------
 #
 # WHY THIS LIST EXISTS, and it is not theoretical: on 2026-08-02 the CLAUDE.md trim
@@ -388,16 +427,7 @@ def main():
                     targets.append(part)
         for ptr in targets:
             target = ptr.split("§")[0].strip().strip("`")
-            ok = False
-            if target in homes:
-                # optionally check the quoted rule text actually appears there
-                quoted = re.findall(r'"([^"]{12,})"', ptr)
-                ok = all(q in homes[target] for q in quoted) if quoted else True
-            elif config_key_resolves(target):
-                ok = True
-            else:
-                # bare filename mentioned anywhere in a valid home
-                ok = any(target in txt for txt in homes.values())
+            ok = pointer_resolves(target, ptr, homes)
             if not ok:
                 problems.append("archive entry %r points at %r, which does not resolve to a "
                                 "rule in CLAUDE.md / an agent / a task prompt / a config key."

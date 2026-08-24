@@ -10,7 +10,7 @@ Two halves, deliberately separate:
 
 ⭐⭐ WHY THE LIST MATTERS AS MUCH AS THE SECRETS: a search that covers one mailbox can never prove
 a message does not exist, and the failure is silent — a mailbox nobody configured returns exactly
-what an empty mailbox returns. `gmail_mcp_server.py` therefore searches ALL configured accounts by
+what an empty mailbox returns. `mail_client.py` therefore searches ALL configured accounts by
 default and raises a loud INCOMPLETE COVERAGE banner for any it cannot reach. Adding an address
 here is what makes it searchable; storing its password is what makes it reachable. **Both, or the
 account is invisible.**

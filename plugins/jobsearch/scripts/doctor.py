@@ -195,7 +195,7 @@ def check_credentials():
         boxes = []
     if not boxes:
         return [(WARN, "mailboxes", "none in user.json — no mailbox sweeps, so YOU are the only sensor")]
-    # Probe through credentials.py — the same cross-platform store gmail_mcp_server.py reads.
+    # Probe through credentials.py — the same cross-platform store mail_client.py reads.
     # An earlier version shelled straight to macOS `security`, so on Windows/Linux this section
     # died with an uncaught FileNotFoundError after six clean sections — the doctor itself
     # failing on exactly the class of host assumption it exists to report.

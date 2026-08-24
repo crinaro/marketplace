@@ -8,7 +8,7 @@ pinned to any one vertical.
 | plugin | what it does | status |
 |---|---|---|
 | **jobsearch** | Sweeps your mailbox and LinkedIn for replies and interview invitations, screens roles against your own compensation floors and geography, tracks every application and conversation, and drafts outreach in your voice. It never sends anything itself. | available |
-| **gmail-multi** | Searches, reads, and drafts across several Gmail accounts at once, tagging every result with its mailbox. Standalone — works without jobsearch. | available |
+| **gmail-multi** | Searches, reads, drafts, sends, replies, and forwards across several Gmail accounts at once, tagging every result with its mailbox. The managed Gmail connector binds to one account; this covers them all in a single query. | available |
 
 More are planned. Each plugin lives under `plugins/<name>/` and installs independently — you take
 the ones you want.

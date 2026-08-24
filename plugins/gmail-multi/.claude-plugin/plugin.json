@@ -1,7 +1,7 @@
 {
   "name": "gmail-multi",
-  "description": "Search, read, and draft across SEVERAL Gmail accounts at once — the managed Gmail connector binds to one account; this one covers them all in a single query, tags every result with its mailbox, fetches attachments, and creates drafts it structurally cannot send. Standalone: configure accounts with its own /gmail-multi:accounts command; app passwords stay in the OS credential store and are never seen by Claude. Use it whenever mail spans more than one Google account.",
-  "version": "0.1.1",
+  "description": "Search, read, draft, and send across SEVERAL Gmail accounts at once — the managed Gmail connector binds to one account; this one covers them all in a single query, tags every result with its mailbox, fetches attachments, creates reviewable drafts, and can send, reply, and forward from whichever account you name (consumers with a draft-only policy, like jobsearch, deny the send tools with their own guard). Standalone: configure accounts with its own /gmail-multi:accounts command; app passwords stay in the OS credential store and are never seen by Claude. Use it whenever mail spans more than one Google account.",
+  "version": "0.2.0",
   "author": {
     "name": "Crinaro",
     "email": "john@crinaro.ai"
@@ -18,7 +18,7 @@
   ],
   "metadata": {
     "versioningPolicy": "Explicit releases; minor per behaviour change, patch per fix. Bump before any sync or push — an unbumped change ships nothing and looks like a broken install.",
-    "provides": "MCP server gmail-multi (5 gmail_* tools). Contracts: adr-004-gmail-connector-extraction.md"
+    "provides": "MCP server gmail-multi (8 gmail_* tools: 5 read/draft + send/reply/forward). Contracts: adr-004-gmail-connector-extraction.md"
   },
   "mcpServers": {
     "gmail-multi": {

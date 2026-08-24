@@ -1,5 +1,5 @@
 {
-  "description": "Blocks a profile session from writing into the engine or the installed plugin cache (scripts/guard_engine_writes.py, docs/adr-010-engine-write-guard.md), DENYs a ref-based click that resolves to an outbound-terminal control such as Send/Connect/Invite/Apply (scripts/guard_outbound_click.py, docs/deployment.md's 'outbound-click guard' section), and self-installs the connector plugins declared in plugin.json metadata.connectors at session start (scripts/ensure_connectors.py — loud on failure, exit 0 on every path).",
+  "description": "Blocks a profile session from writing into the engine or the installed plugin cache (scripts/guard_engine_writes.py, docs/adr-010-engine-write-guard.md), DENYs a ref-based click that resolves to an outbound-terminal control such as Send/Connect/Invite/Apply (scripts/guard_outbound_click.py, docs/deployment.md's 'outbound-click guard' section), DENYs the gmail-multi connector's send/reply/forward tools so jobsearch stays draft-only now that the connector can send (scripts/guard_mail_send.py, marketplace #213), and self-installs the connector plugins declared in plugin.json metadata.connectors at session start (scripts/ensure_connectors.py — loud on failure, exit 0 on every path).",
   "hooks": {
     "SessionStart": [
       {
@@ -12,6 +12,11 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/guard_outbound_click.py --selftest",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/guard_mail_send.py --selftest",
             "timeout": 10
           },
           {
@@ -50,6 +55,16 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/guard_outbound_click.py",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__plugin_gmail-multi_gmail-multi__gmail_send_message|mcp__plugin_gmail-multi_gmail-multi__gmail_reply|mcp__plugin_gmail-multi_gmail-multi__gmail_forward|mcp__gmail-multi__gmail_send_message|mcp__gmail-multi__gmail_reply|mcp__gmail-multi__gmail_forward",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/guard_mail_send.py",
             "timeout": 10
           }
         ]

@@ -19,8 +19,8 @@ It does NOT judge fit — it surfaces the alert artifacts and their roles so the
 run reads them itself. inbox-scan stays useful for human/recruiter mail and
 meeting artifacts; this replaces it ONLY for the predictable alert digests.
 
-Reuses the Gmail server's Keychain + IMAP plumbing (import-safe: that module
-guards its stdio loop under __main__). Same coverage guarantee: EVERY configured
+Reuses mail_client.py's Keychain + IMAP plumbing (a pure library — the MCP
+server lives in the gmail-multi connector plugin). Same coverage guarantee: EVERY configured
 account by default, and an unreachable account is a LOUD banner, never a silent zero —
 so this can never conclude "no alerts" from a one-mailbox view.
 
@@ -61,18 +61,18 @@ import os
 import sys
 
 # scripts/ is on sys.path[0] when run as `python3 scripts/alert_sweep.py`, so sibling modules
-# import cleanly. gmail_mcp_server's main() is __main__-guarded, so importing it starts no
-# stdio loop.
+# import cleanly. mail_client is a pure library (the MCP server lives in the gmail-multi
+# connector plugin), so importing it starts nothing.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 
 try:
-    from gmail_mcp_server import (
+    from mail_client import (
         Mailbox, configured_accounts, decode_header_value, CredentialError,
     )
 except ImportError as exc:  # pragma: no cover - defensive
     sys.stderr.write(
-        "Could not import gmail_mcp_server from the scripts/ dir: %s\n"
+        "Could not import mail_client from the scripts/ dir: %s\n"
         "Run this as `python3 scripts/alert_sweep.py` from the repo root.\n" % exc)
     sys.exit(2)
 

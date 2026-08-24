@@ -164,11 +164,37 @@ def _tracked_engine_files():
 # The alternative — quietly excluding a path — is how a gate acquires permanent blind spots.
 # Each entry is reported on every run, and an entry that no longer matches anything FAILS the
 # gate, so an exception cannot outlive the defect it documents.
-# Empty, and that is the desired steady state. The first entry — a fixture KEY naming the
-# owner (#46) — was removed the moment its migration shipped and the fixture was regenerated,
-# because the staleness check FAILED the gate until it was. That is the mechanism working:
-# a suppression cannot quietly outlive the defect it documents.
-KNOWN_EXCEPTIONS = ()
+# The steady state is empty. The first entry — a fixture KEY naming the owner (#46) — was
+# removed the moment its migration shipped and the fixture was regenerated, because the
+# staleness check FAILED the gate until it was. That is the mechanism working: a suppression
+# cannot quietly outlive the defect it documents.
+#
+# #222 — `scripts/mailboxes.py` carries a small IMAP provider table (PROVIDER_HELP), one row
+# per mail host this plugin walks a user through app-password setup for. One row's provider
+# name is a generic mail-provider entry, not personal data — it only trips this gate because
+# this owner's own profile separately lists the same company among employers encountered, so a
+# legitimate provider-table string collides with a profile-derived search term.
+#
+# Scoped to the exact table-entry LINE via its distinctive URL fragment, deliberately NOT the
+# provider's own display name and NOT the file:
+#   - matching here is `term in line`, so naming only the provider (or the file) would also
+#     suppress any OTHER line that named the same company for an unrelated, real reason — not
+#     narrow enough.
+#   - repeating the provider's display name verbatim in this comment, or in the exception's own
+#     term string, puts that name back into THIS file's text — and this gate scans its own
+#     source too, so the very next `--require-profile` run would flag the exception line itself
+#     as a fresh leak. The identifier-matcher fix (see `scan()` above) hit the same trap over an
+#     owner's name and solved it the same way: describe the collision without repeating the
+#     colliding word. The term below is drawn from the row's URL, never its name.
+KNOWN_EXCEPTIONS = (
+    ("scripts/generate_dashboard.py", "which the JSONL-backed ", 225,
+     "an ordinary English word in a code comment about JSONL-backed helpers; collides only "
+     "because this owner's profile now names a company whose name is that common noun"),
+    ("scripts/mailboxes.py", ', "https://login.', 222,
+     "one row of the IMAP provider table (PROVIDER_HELP) — a generic mail-provider entry, not "
+     "personal data; collides only because this owner's profile separately names the same "
+     "company as an employer encountered"),
+)
 
 # Every tracked engine file. The families above remain a taxonomy and an emptiness guard; this
 # is what actually gets read.

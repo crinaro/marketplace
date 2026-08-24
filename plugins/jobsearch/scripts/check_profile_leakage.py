@@ -219,14 +219,14 @@ def criteria_check():
                             "configuration must be person-agnostic." % label)
 
     # (3): the engine must READ the layers, not embed them. The mailbox list is the
-    # canonical test — it was hardcoded in gmail_mcp_server.py until 2026-08-02.
+    # canonical test — it was hardcoded in the mail library (then gmail_mcp_server.py) until 2026-08-02.
     try:
-        g = importlib.import_module("gmail_mcp_server")
+        g = importlib.import_module("mail_client")
         if sorted(g._accounts_from_user_json()) != sorted(prof.mailboxes()):
-            problems.append("CRITERION 3: gmail_mcp_server is not resolving mailboxes "
+            problems.append("CRITERION 3: mail_client is not resolving mailboxes "
                             "from user.json.")
     except Exception as exc:
-        problems.append("CRITERION 3: could not verify gmail_mcp_server reads user.json (%s)" % exc)
+        problems.append("CRITERION 3: could not verify mail_client reads user.json (%s)" % exc)
     try:
         if prof.email_signature()[0] != u["identity"]["full_name"]:
             problems.append("CRITERION 3: the signature template is not rendering from user.json.")
