@@ -54,7 +54,8 @@ startup is identical every time, rather than depending on what anyone remembers.
 
 That single command: reports the write-lock state (**it does NOT take it**) · runs the
 **staleness check** and re-marks the watermark · summarises the **inbox** of findings background
-runs queued · lists **what is blocked on the candidate**, act-by date first · runs the four gates.
+runs queued · lists **what is blocked on the candidate**, act-by date first · runs the five gates
+(data integrity, rule homes, config leakage, resume-variant containment, published dashboard).
 
 **⭐ THIS SESSION DOES NOT HOLD THE LOCK ALL DAY — corrected 2026-08-03.** the candidate: *"Why can't it
 run concurrently with the coordinator session? That was the main purpose."* Holding it from
@@ -225,8 +226,8 @@ August 3) was written in PROSE inside the question, where nothing could sort it.
 the sorting. **This step fixes the other half: surfacing a due item is not the same as proposing
 what to do about it.**
 
-**Never send it.** Draft into `drafts.md`, then republish the dashboard so the candidate can read
-the full text there.
+**Never send it.** Draft into `outreach/drafts.md`, then republish the outreach page (and the dashboard)
+so the candidate can read the full text there — the state view carries only the index (dev #233).
 
 ## 4. DECIDE — tell the candidate where things stand
 
@@ -279,8 +280,11 @@ history is permanent. Full protocol: `marketplace-dev/docs/intake.md`.
 ~/.claude/jobsearch/run check_dashboard_fresh.py --fix
 ```
 
-Then publish with the **Artifact** tool, passing `dashboard_artifact_url.txt` as `url`, and
-**grep the OUTPUT** for a distinctive phrase from whatever you just added.
+Then publish with the **Artifact** tool — the generator's summary names the publish set (the
+router, the dashboard, and the phase pages over the volume threshold), each redeployed with its
+own url file (`views/dashboard_artifact_url.txt`; `views/<page>_url.txt`) — and **grep the OUTPUT**
+(bodies live on `views/phase-outreach_artifact.html`) for a distinctive phrase from whatever you
+just added.
 
 **⭐ Two rules that keep the published view honest (dev #133 / public #22).** If the publish
 reports a **version conflict**, a scheduled run published since you generated: re-run
@@ -302,7 +306,7 @@ the dashboard? It pushed items to drafts, but not the dashboard, why?"* Because
 **zero times in this file** — the one session the candidate actually works in. CLAUDE.md's own rule
 is that **the candidate reads the full text of drafts and letters off the DASHBOARD, not the
 transcript**, so the session producing that text was the session that never published it. That
-morning `drafts.md` was rewritten at 10:58, 11:02, 11:08, 11:13 and 11:14 while the dashboard sat
+morning `outreach/drafts.md` was rewritten at 10:58, 11:02, 11:08, 11:13 and 11:14 while the dashboard sat
 at 10:51: five rounds of outreach the candidate could not see.
 
 **Run it after ANY write — a draft, a decision, a status change — not only at the end of the day.**
@@ -322,7 +326,7 @@ A session can go quiet without warning, and unpublished work is invisible work.
 - **Before any write, if the session has been idle a while:** `~/.claude/jobsearch/run changed.py`. A
   background run may have written underneath you. **Acting on a stale read is a correctness bug**
   — it is how a session confidently re-drafts an outreach note for a reply that already arrived.
-- **Never send anything.** Drafts go to `drafts.md` / `cover_letters.md` for the candidate's approval; the
+- **Never send anything.** Drafts go to `outreach/drafts.md` / `applying/cover_letters.md` for the candidate's approval; the
   candidate sends every message directly. **Writing the draft is only half the job — REPUBLISH THE DASHBOARD,
   or they never see it.**
 - **⚠️ Do not reschedule a task from inside a run of that task.** Changing a cron re-arms it and

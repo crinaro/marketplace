@@ -35,6 +35,7 @@ import sys
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
+import _tree
 
 ROOT = _profile_root()
 HEADING = re.compile(r"^(#{1,6})\s+(.*)$")
@@ -57,7 +58,9 @@ def main():
     ap.add_argument("--list", action="store_true", help="List all headings and exit.")
     args = ap.parse_args()
 
-    path = args.file if os.path.isabs(args.file) else os.path.join(ROOT, args.file)
+    # A profile-relative name resolves through the layout, so `section.py strategy.md ...`
+    # (the pre-#28 spelling every agent learned) still finds configure/strategy.md.
+    path = args.file if os.path.isabs(args.file) else _tree.resolve_rel(ROOT, args.file)
     if not os.path.exists(path):
         sys.stderr.write("No such file: %s\n" % path)
         return 2

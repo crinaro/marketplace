@@ -276,13 +276,36 @@ def main():
 
     # ---- 4. is the machinery healthy? -----------------------------------------
     rule("4. GATES — is the machinery sound?")
-    for name, label in (("validate_data.py", "data integrity"),
-                        ("check_rule_homes.py", "no rule lost / CLAUDE.md budget"),
-                        ("check_profile_leakage.py", "config is single-source")):
+    # resume_variants.py's own default (no args) always exits 0 — it takes --check to actually
+    # enforce containment, same shape as validate_data.py's plain exit code (public #26).
+    # gate-keeper dispatch — trigger.py --check was wired into application-session (the
+    # human-attended session that reads and acts on it directly) but into nothing scheduled
+    # or coordinator-visible, so a candidate who never opens application-session had no way
+    # to learn a trigger or sequence link had gone unreadable. It belongs HERE and not in
+    # daily-run/weekly-review's `&&`-chained step sequences: --check is deliberately NOT
+    # advisory (it exits 1 on purpose — the loudness IS the point, see trigger.py's own
+    # docstring), so chaining it into an unattended run would wedge that run on exactly the
+    # kind of legacy-data finding a human needs to see, not a script to die on. This loop's
+    # subprocess call is advisory BY THIS LOOP'S OWN CONSTRUCTION (main() always returns 0
+    # regardless — see TestAdvisoryGatesExitZero's sibling contract), so it is safe here even
+    # on a profile where it is red today.
+    # gate-keeper dispatch (gate/tree-audit-wiring) — `_tree.py --audit` existed since public
+    # #28 shipped but nothing ran it. Its own exit code already tells the two findings apart
+    # (unmigrated is advisory even at the CLI level — self-healing, migrate.py's SessionStart
+    # hook already had its chance this session; an UNKNOWN root entry, the `nonexistent/`
+    # class, is the one thing that returns non-zero), so it slots into this loop exactly like
+    # every other check here, needing no special case.
+    for name, extra_args, label in (
+            ("validate_data.py", [], "data integrity"),
+            ("check_rule_homes.py", [], "no rule lost / CLAUDE.md budget"),
+            ("check_profile_leakage.py", [], "config is single-source"),
+            ("resume_variants.py", ["--check"], "resume variants trace to the union"),
+            ("trigger.py", ["--check"], "trigger/sequence links"),
+            ("_tree.py", ["--audit"], "tree structure (six-phase layout, public #28)")):
         # ⚠️ test_checks.py is NOT here. It is the maintainer regression suite and does not
         # ship, so on an installed plugin this checklist reported it FAILING every run with
         # no way to clear it (#1). A gate a user cannot satisfy is not a gate.
-        rc = subprocess.run([sys.executable, os.path.join(ENGINE_SCRIPTS, name)],
+        rc = subprocess.run([sys.executable, os.path.join(ENGINE_SCRIPTS, name)] + extra_args,
                             capture_output=True, text=True).returncode
         print("  %-26s %s" % (label, "OK" if rc == 0 else "❌ FAILING — fix before writing"))
     # dev #133 / public #22 — the published dashboard is a deliverable with its own drift: a
@@ -297,6 +320,16 @@ def main():
                           "OK" if rc == 0 else
                           "❌ BEHIND the repo — republish (check_dashboard_fresh.py --fix, "
                           "Artifact tool, then --stamp-published)"))
+    # gate-keeper dispatch — D5 says a generated view is declared AND gated; views/applying.md
+    # was only ever declared. 'never generated' is informational (rc 0, see the script's own
+    # docstring) so a profile that has not yet run application-session is not nagged forever —
+    # only an EXISTING view that has since fallen behind its records is reported here.
+    rc = subprocess.run([sys.executable,
+                         os.path.join(ENGINE_SCRIPTS, "check_applying_fresh.py")],
+                        capture_output=True, text=True).returncode
+    print("  %-26s %s" % ("applying view",
+                          "OK" if rc == 0 else
+                          "❌ STALE — regenerate (check_applying_fresh.py --fix)"))
 
     rule("HOW UPDATES REACH YOU")
     print("  PUSH  notifyOnCompletion — a scheduled run notifies THE SUBSCRIBING SESSION when it")

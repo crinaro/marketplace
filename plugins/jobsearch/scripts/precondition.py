@@ -64,6 +64,29 @@ The way out of `unresolved` is a human (or the drafting agent) replacing it with
 default direction is deliberate: the cheap error is a draft waiting for a look, the expensive
 one is a blocked draft presented as actionable.
 
+## ⭐ A TERMINAL STATUS ENDS AN ENTRY — IT MUST NOT NEED A SECOND STEP (public #29)
+
+The panel derivation used to answer one question only — *is this blocked on someone else?* — and
+never asked whether the entry was **already over**. A draft's `**Status:**` line already carries
+that fact (`SENT 2026-08-20 — remove at next weekly pass`, `MOOT / DO-NOT-SEND — role closed`),
+written by the send-recording flow or by whoever decided the role was dead — but nothing here
+read it, so a sent or moot entry kept reporting `state: sendable, "no precondition"` and rendered
+under Ready to send forever, exactly like a genuinely pending message. The **removal** side of
+the bug was the same shape as issue #6's "needs a second, separate step" failure: retiring the
+markdown entry was left to a later weekly pass, and a moot outcome had no removal path AT ALL.
+
+The fix does not add a removal step — it removes the NEED for one. `TERMINAL_RE` recognises the
+Status line's own terminal words and reports `state: "sent"` / `"moot"` directly, so a consumer
+that excludes `TERMINAL` from what it renders is derived, not maintained: the entry disappears
+from the queue the moment its own Status line says it is done, with no second write required.
+The physical markdown entry may still be cleaned up later (or never) — it no longer matters,
+because nothing that reads `precondition.report()` is fooled by its presence.
+
+⚠️ **Deliberately conservative on SENT.** `SENT_RE` only matches a Status line that STARTS with
+`sent` — never one that merely CONTAINS it. "PART A SENT · part B pending" is a legitimate,
+still-actionable mid-sequence state (`check_sent_drafts.py`'s own docstring names it), and must
+keep rendering; only a status that OPENS with "sent" is asserting the whole entry is done.
+
 ## ⭐ COVER LETTERS ARE COVERED TOO — THE PAIR IS A PAIR EVERYWHERE (dev #169)
 
 This module originally parsed `drafts.md` alone, while `check_sent_drafts.py` and the dashboard
@@ -91,12 +114,20 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
+import _tree
 
 FIELD_RE = re.compile(r"^\*\*Blocked until:\*\*\s*(.+?)\s*$", re.M | re.I)
 TOKEN_RE = re.compile(r"(contact|outcome)\s*:\s*([A-Za-z0-9_|-]+)")
 
 # The literal the migration writes when it finds a prose hold it cannot structure itself.
 UNRESOLVED_RE = re.compile(r"^unresolved\b", re.I)
+
+# public #29 — the entry's OWN `**Status:**` line, read for a TERMINAL outcome. Conservative on
+# purpose (see the module docstring): SENT_RE anchors to the START of the status text so a
+# mid-sequence "PART A SENT · part B pending" note is never swept up with a truly-done entry.
+STATUS_RE = re.compile(r"^\*\*Status:\*\*\s*(.+?)\s*$", re.M | re.I)
+SENT_RE = re.compile(r"^\s*sent\b", re.I)
+MOOT_RE = re.compile(r"\bmoot\b|\bdo[\s-]*not[\s-]*send\b", re.I)
 
 # The legacy prose forms actually observed in the field (issue #13: "held until she accepts",
 # "held until each accepts", "still pending her acceptance") plus their near neighbours.
@@ -115,17 +146,27 @@ HOLD_RE = re.compile(
 # States that must NEVER render as "needs you". Owned here so consumers (generate_dashboard.py)
 # group by membership instead of re-deriving the set — `state != "blocked"` was how `unreadable`
 # drafts ended up under "awaiting your approval to send".
-NOT_SENDABLE = frozenset({"blocked", "unreadable", "unresolved"})
+NOT_SENDABLE = frozenset({"blocked", "unreadable", "unresolved", "sent", "moot"})
 
-# Sentinels used by drafts_with_preconditions for the two non-parse states (see its docstring).
+# public #29 — states that are OVER, not merely un-sendable: a "blocked" entry still needs a
+# human's eyes when its precondition clears, but a "sent"/"moot" one needs nothing further from
+# anyone. A consumer that renders "awaiting your approval" work excludes TERMINAL entirely
+# (never lumps them under "blocked", which reads as "blocked on someone else" and would mislead).
+TERMINAL = frozenset({"sent", "moot"})
+
+# Sentinels used by drafts_with_preconditions for the non-parse states (see its docstring).
 PROSE_HOLD = "prose-hold"
 UNRESOLVED = "unresolved"
+SENT = "sent"
+MOOT = "moot"
 
 # ⭐ The staged-message pair, owned HERE (dev #169). check_sent_drafts.py already treats these
 # two as siblings; this module and the dashboard did not, which is exactly how a held cover
 # letter rendered as ready. Anything that consumes preconditions iterates THIS tuple rather
-# than assuming drafts.md.
-FILES = ("drafts.md", "cover_letters.md")
+# than assuming drafts.md. Since the 0.32.0 tree migration (public #28) the pair lives under
+# its phases; `_tree.resolve_rel` falls back to the legacy root location on an unmigrated
+# profile, and the `file` label on every row carries THESE canonical names on both shapes.
+FILES = (_tree.rel("drafts"), _tree.rel("cover_letters"))
 
 # The outreach outcome enum, mirrored from validate_data. Kept as a literal so a precondition
 # naming a value that does not exist is caught here rather than resolving to "never satisfied".
@@ -191,7 +232,7 @@ def resolve(pre, touches):
                                                  "|".join(sorted(pre["outcomes"])))
 
 
-def drafts_with_preconditions(root, filename="drafts.md"):
+def drafts_with_preconditions(root, filename=None):
     """[(title, raw_or_None, parsed)] for every '## ' entry, where parsed is one of:
 
         None               no field, no hold phrase — genuinely sendable
@@ -199,10 +240,15 @@ def drafts_with_preconditions(root, filename="drafts.md"):
                            form of issue #13; a migration gap, never sendable
         UNRESOLVED         a `**Blocked until:** unresolved …` marker (what the migration
                            writes) — known blocked, join not yet structured
+        SENT               the entry's own `**Status:**` line OPENS with "sent" — done,
+                           terminal (public #29)
+        MOOT               the entry's own `**Status:**` line names it moot / do-not-send —
+                           done, terminal (public #29)
         PreconditionError  a field nobody can read — loud, never guessed over
         dict               a parsed precondition, ready for resolve()
     """
-    path = os.path.join(root, filename)
+    filename = filename or FILES[0]
+    path = _tree.resolve_rel(root, filename)
     try:
         with open(path, encoding="utf-8") as fh:
             md = fh.read()
@@ -211,6 +257,17 @@ def drafts_with_preconditions(root, filename="drafts.md"):
     out = []
     for m in re.finditer(r"^##\s+(.+?)$(.*?)(?=^##\s|\Z)", md, re.M | re.S):
         title, body = m.group(1).strip(), m.group(2)
+        # public #29 — a TERMINAL Status wins outright, before any Blocked-until join is even
+        # considered: a sent or moot entry is over regardless of what it was once waiting on.
+        sm = STATUS_RE.search(body)
+        if sm:
+            status_text = sm.group(1)
+            if SENT_RE.match(status_text):
+                out.append((title, status_text, SENT))
+                continue
+            if MOOT_RE.search(status_text):
+                out.append((title, status_text, MOOT))
+                continue
         fm = FIELD_RE.search(body)
         if not fm:
             if HOLD_RE.search(title) or HOLD_RE.search(body):
@@ -248,6 +305,14 @@ def report(root, filenames=FILES):
                 rows.append({"file": filename, "title": title, "state": "unresolved",
                              "why": "known blocked, precondition not yet structured (%s) — replace "
                                     "with `contact:<id> outcome:<...>`" % raw})
+            elif parsed is SENT:
+                rows.append({"file": filename, "title": title, "state": "sent",
+                             "why": "Status line reports it sent (%s) — terminal, no longer "
+                                    "queued" % raw})
+            elif parsed is MOOT:
+                rows.append({"file": filename, "title": title, "state": "moot",
+                             "why": "Status line reports it moot / do-not-send (%s) — terminal, "
+                                    "no longer queued" % raw})
             elif isinstance(parsed, PreconditionError):
                 rows.append({"file": filename, "title": title, "state": "unreadable",
                              "why": str(parsed)})
@@ -278,15 +343,18 @@ def main():
             print("  %s" % filename)
             for r in file_rows:
                 mark = {"sendable": "✅", "blocked": "⏳", "unreadable": "⛔",
-                        "unresolved": "🚧"}[r["state"]]
+                        "unresolved": "🚧", "sent": "🏁", "moot": "🏁"}[r["state"]]
                 print("    %s %-10s %s" % (mark, r["state"], r["title"][:70]))
                 print("          %s" % r["why"])
         n_send = sum(1 for r in rows if r["state"] == "sendable")
         n_block = sum(1 for r in rows if r["state"] == "blocked")
         n_unres = sum(1 for r in rows if r["state"] == "unresolved")
+        n_term = sum(1 for r in rows if r["state"] in TERMINAL)
         line = "\n  %d sendable · %d blocked on someone else" % (n_send, n_block)
         if n_unres:
             line += " · %d unresolved (precondition in prose, not yet structured)" % n_unres
+        if n_term:
+            line += " · %d sent/moot (terminal — public #29)" % n_term
         print(line)
         if n_block:
             print("  ⭐ Blocked drafts must NOT render as 'needs you'. A line there has to be a")

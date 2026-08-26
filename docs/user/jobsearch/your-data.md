@@ -34,22 +34,34 @@ shows up as a one-line diff rather than a reformatted file.
 
 ### The documents
 
+**Starting with 0.32.0, these live inside six phase directories** — `presence/`, `configure/`,
+`pipeline/`, `applying/`, `conversations/`, `outreach/` — rather than loose at the profile root.
+This happens automatically, the first time you open a session after upgrading; you do nothing to
+trigger it, and the paths below are what you will have once it has. `config.json`, `user.json`,
+`data/`, `docs/` and the `dashboard.html` tombstone are not part of the move and stay exactly
+where they are.
+
 | file | holds |
 |---|---|
-| `resume.md` | your resume, plus an *Additional Detail* section for things a resume never says |
-| `projects.md` | projects and their scale, each with a note about when it is worth surfacing |
-| `focus.md` | retired — a frozen stub. See *"focus.md is retired"* below |
+| `presence/claims.md` (was `resume.md`) | every background claim, printed or not — the printed resume pages are separate files it feeds — plus an *Additional Detail* section for things a resume never says |
+| `presence/projects.md` | projects and their scale, each with a note about when it is worth surfacing |
+| `archive/retired-trackers/focus.md` | retired — a frozen stub. See *"focus.md is retired"* below |
 | `handoff.md` | a short letter one session leaves for the next, so nothing gets lost between runs |
-| `drafts.md` | staged messages awaiting your review |
-| `cover_letters.md` | letters, one anchor per role |
-| `kb/<company>.md` | what you have learned about a specific company (older profiles used flat `kb_<company>.md` files; a migration moved them into the `kb/` directory) |
-| `call_preps/call_prep_<date>.md` | prep notes for a scheduled call, dated rather than named by company; durable content gets promoted into `kb/<company>.md` |
-| `dashboard.html` | the generated dashboard — pipeline state, what needs you, drafts and letters in full |
-| `dashboard_artifact.html` | the same dashboard, in the variant published as a claude.ai Artifact |
+| `outreach/drafts.md` | staged messages awaiting your review |
+| `applying/cover_letters.md` | letters, one anchor per role |
+| `pipeline/kb/<company>.md` | what you have learned about a specific company (older profiles used flat `kb_<company>.md` files at the root; migrations moved them first into a `kb/` directory and then, at 0.32.0, into `pipeline/kb/`) |
+| `conversations/call_prep_<date>.md` | prep notes for a scheduled call, dated rather than named by company; durable content gets promoted into `pipeline/kb/<company>.md` |
+| `dashboard.html` | a generated **tombstone stub** — carries no state, just a pointer to where the dashboard actually lives now. Stays at the profile root, unlike the rest of this table |
+| `views/dashboard_artifact.html` | the generated state view — pipeline overview, what needs you; drafts, letters and knowledge files show as title + status + location, not in full |
+| `views/router_artifact.html` | generated — one row per phase, naming the next action and a count |
+| `views/phase-<name>_artifact.html` | generated — the detail for one phase, including full message text on the outreach phase page. Published only when that phase's own item count is worth a page |
+| `views/applying.md` | generated, **read-only**, regenerated in session (not by the scheduled runs) — the working queue: roles to apply to and the follow-up work a submission created |
 
-`dashboard.html` and `dashboard_artifact.html` are **generated** — every run regenerates them
-from the data above, so hand edits are lost at the next run. If something on the dashboard is
-wrong, the fix is in the underlying record, not the HTML.
+Every generated file above (the tombstone and everything under `views/`) is overwritten **every
+run** (or, for `views/applying.md`, every application session), so hand edits to those are lost at
+the next regeneration. If something on a generated view is wrong, the fix is in the underlying
+record, never the HTML or markdown itself. See [Reading what the search
+produces](reading-your-files.md) for what each one looks like and how to open it.
 
 ---
 
@@ -190,10 +202,29 @@ One record per touch. The fields exist to make "which approach actually works?" 
 | `delivery` | `delivered` · `bounced` · `unknown`. **Bounces are excluded from every denominator** — a bounce that looks like a non-reply poisons the metric |
 | `outcome` | `awaiting` · `replied` · `accepted` · `no-response` · `declined` · `meeting-booked` |
 | `message_ref` | points at the full text in `messages.jsonl`, and must resolve |
+| `trigger_kind`, `trigger_ref` | what CAUSED this touch — `application`, `reply`, `elapsed` or `manual`, plus the specific application/message/date it points at. See *Triggers and sequences* below |
+| `sequence_id`, `sequence_step` | groups this touch into a multi-step play with other outreach and staged drafts under the same `sequence_id`, ordered by `sequence_step` |
 
 `accepted` — an accepted connection request that drew no reply — is reported on its own line and
 never merged into `replied`, because it is a real positive signal that unlocks a better second
 touch.
+
+### Triggers and sequences — what caused a touch, and multi-step plays
+
+Submitting an application creates work: ask a retained recruiter whether they know the employer,
+chase after a week of silence. `trigger_kind`/`trigger_ref` on an outreach row (or an ask) name
+what caused it, so a draft never sits unlinked to the application or reply that generated it:
+
+- `application` → resolves against **this same role's own** applications
+- `reply` → resolves against a message you received
+- `elapsed` → the date a waiting clock started
+- `manual` → you decided this with no recorded cause — carries no ref
+
+A multi-step play — send part A, hold part B until the connection is accepted — used to live only
+as prose in a heading. `sequence_id`/`sequence_step` make "which sequences can move today" a real
+question, answered by `python3 scripts/trigger.py --sequences`; the hold on a staged step still
+lives in the draft's own `**Blocked until:**` line, unchanged — a sequence only groups the steps,
+it never adds a second way to spell a hold.
 
 ### Applications — places you applied
 
@@ -201,12 +232,21 @@ Deliberately **separate** from outreach, because they are different funnels with
 success measures. An application asks *did anyone respond at all*; outreach asks *did this
 person reply*. Collapsing them makes both unmeasurable.
 
-`{date, method, url, status, cover_letter, cover_letter_attached, notes}`
+`{date, method, url, status, cover_letter, cover_letter_attached, notes, app_id, form_answers}`
 
 `cover_letter` says a letter **exists** for the role. `cover_letter_attached` says one was
 actually **submitted**. They are separate because only you know the second, and an assumed
 `true` would corrupt the only comparison that makes your letters measurable. Leave it `null`
 rather than guessing.
+
+`app_id` is a stable handle a trigger can point at (mint it as `<opp_id>-a1`, `-a2`, ...) — it is
+optional today; older rows resolve a trigger by date instead until a future migration backfills
+it everywhere. `form_answers` records what you actually answered on the application's own form
+(salary expectations, reason for leaving, and the like) as
+`{question_key, question, answer, answered_on}`. `question_key` is a shared slug, so the next
+form asking the same question surfaces what you answered last time instead of you re-deriving it
+— and if a later answer to the same question disagrees with an earlier one, that is flagged
+rather than silently overwritten.
 
 ### Fit — how you match the role
 
@@ -242,6 +282,7 @@ data rather than kept up to date by hand.
 | `title`, `ask` | what it is, and what is actually being asked |
 | `opp_id` | the role it concerns, if any |
 | `resolved_on`, `resolution` | set together, once, when it is answered |
+| `trigger_kind`, `trigger_ref` | what CAUSED this ask, same as an outreach touch above — `trigger_kind: application` additionally requires `opp_id`, since resolving it means reading that role's own applications |
 
 **An ask disappears from every view the moment it is resolved** — resolving it is what removes
 it, not editing its text into a "done" line in place. The row itself stays as history.
@@ -282,6 +323,11 @@ the first time you used it after the update:
 Nothing in this file was silently dropped — every line either has a new home or is sitting in
 `process_archive.md`, and the migration will not touch `focus.md` at all if anything about the
 move could not be verified, so you never end up with content missing from both places.
+
+**Starting with 0.32.0**, the stub itself and `process_archive.md` move again, along with
+everything else in [the documents table above](#the-documents): `focus.md` →
+`archive/retired-trackers/focus.md`, `process_archive.md` → `archive/process_archive.md`. Same
+automatic, no-action-needed move as the rest of the tree.
 
 ---
 

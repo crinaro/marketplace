@@ -5,6 +5,13 @@ This repo is the single source of truth for the candidate's executive job search
 
 ## Files — the index. **Each file's own header carries the detail; read it when you edit that file.**
 
+**⭐ THE TREE IS THE SIX PHASES the router renders (public #28):** `configure/` · `presence/` ·
+`pipeline/kb/` · `applying/` · `conversations/` · `outreach/` — plus `data/`, `views/`
+(GENERATED), `archive/`, `docs/`. **Root holds only** this rulebook, `README.md`, `config.json`,
+`user.json`, `handoff.md`, `log.md`, `dashboard.html` (tombstone).
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/_tree.py" --audit` flags anything else.
+**Retirement is a MOVE to `archive/retired-trackers/`, never a note.**
+
 **DATA (JSON — queried, counted, validated).** Engine `docs/schema.md`; rationale ADR-004.
 - **`data/opportunities.jsonl` · `companies.jsonl` · `channels.jsonl` — THE PIPELINE.** Edit
   these, then run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/validate_data.py"`. **⭐ An APPLICATION goes in
@@ -22,18 +29,24 @@ This repo is the single source of truth for the candidate's executive job search
   value from prose — read it with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/profile.py"`.
 
 **HUMAN-EDITED NARRATIVE (markdown by design — the candidate edits these directly).**
-- **`resume.md`** — verbatim canonical resume; **the source of truth for any background claim,
-  including its one-line role descriptions.** ⭐ **Copy its own sentences; do not paraphrase from
-  memory** — a paraphrase of one employer once dropped the clause naming its marquee customers,
-  so the sentence survived and the credential in it did not. Its **"Additional Detail (elicited beyond the
-  resume)" addenda hold facts the candidate chose not to print — absence from the printed resume is NOT
-  evidence a fact can't be used.**
-- **`projects.md`** — proof points with a `Surface when:` trigger per entry. **⭐ GREP IT for the
+- **`presence/claims.md`** (was `resume.md`) — ⭐ **THE CLAIM UNION, not a printed artifact** (public #26): the source of
+  truth for any background claim, including its one-line role descriptions. **The printed
+  resumes are the declared VARIANTS** (`data/resume_variants.jsonl`;
+  `"${CLAUDE_PLUGIN_ROOT}/scripts/resume_variants.py"` — `--check` at run start, `--stamp <id>`
+  after a reconcile; none declared means this file IS the printed resume). An opportunity's
+  `resume_variant` names the page to SEND; an `applications[]` row's records the page sent.
+  **A claim lands HERE first, then flows into a variant** — `--check` is red until it does.
+  ⭐ **Copy its own sentences; do not paraphrase from memory** — one paraphrase dropped the
+  clause naming an employer's marquee customers: the sentence survived, the credential did not.
+  Its **"Additional Detail (elicited beyond the resume)" addenda hold facts deliberately
+  unprinted — absence from any printed variant is NOT evidence a fact can't be used.**
+- **`presence/projects.md`** — proof points with a `Surface when:` trigger per entry. **⭐ GREP IT for the
   JD's own terms whenever reading a JD or drafting; never read it whole, never dump projects into
-  a message.** Add to it whenever the candidate mentions a project in passing.
-- **`strategy.md`** — fit logic and the outreach playbook. **Read one section via
-  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/section.py" strategy.md "<heading>"`, not the whole 16,700 words.**
-- **`network.md`** — warm-intro targets and alumni.
+  a message.** Add to it whenever the candidate mentions a project in passing. **A proof point
+  reaches a printed variant only VIA `presence/claims.md` — the variant gate turns direct promotion red.**
+- **`configure/strategy.md`** — fit logic and the outreach playbook. **Read one section via
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/section.py" configure/strategy.md "<heading>"`, not the whole 16,700 words.**
+- **`outreach/network.md`** — warm-intro targets and alumni.
 
 **STATE AND OUTPUT.**
 - **`data/asks.jsonl`** (cross-cutting asks, kind `role`|`system`) · **`data/commitments.jsonl`**
@@ -42,20 +55,21 @@ This repo is the single source of truth for the candidate's executive job search
   `resolved_on`+`resolution`; `check_sections.py` enforces the invariants.
 - **`handoff.md`** — the session-handoff letter.
 - **`log.md`** — append-only. Never edit past entries.
-- **`drafts.md`** (pending outreach) · **`cover_letters.md`** (pending letters). **⭐ BODIES MUST
+- **`outreach/drafts.md`** (pending outreach) · **`applying/cover_letters.md`** (pending letters). **⭐ BODIES MUST
   BE `> `-BLOCKQUOTED OR THEY PUBLISH EMPTY** — that shipped once, and only the candidate noticed. Entry
   format: each file's header.
-- **`kb/<company_id>.md`** (durable knowledge, keyed by `company_id`) ·
-  **`call_preps/call_prep_<date>.md`** (**stamp `Companies:`; promote durable content to
-  kb/ BEFORE archiving, recording `Promoted:`** — `archive/README.md`; `scripts/knowledge.py`
+- **`pipeline/kb/<company_id>.md`** (durable knowledge, keyed by `company_id`) ·
+  **`conversations/call_prep_<date>.md`** (**stamp `Companies:`; promote durable content to
+  pipeline/kb/ BEFORE archiving, recording `Promoted:`** — `archive/README.md`; `scripts/knowledge.py`
   audits). **⭐ EVERY KB LINE IS TAGGED BY SOURCE** — `[CANDIDATE]` `[JD]`
   `[RESEARCH]` `[CLAUDE]` `[OPEN]`. Never blur a company's self-description, or my
   inference, with what someone said.
-- **`dashboard.html` / `dashboard_artifact.html`** — GENERATED. Never hand-edit; the daily-run
-  prompt carries the generate/publish steps. **⭐ Then grep the OUTPUT for what you just added.**
-- **`process_archive.md`** (retired process items) · **[docs/incident_archive.md](docs/incident_archive.md)**
+- **`views/dashboard_artifact.html` + `views/*_artifact.html`** — GENERATED. Never hand-edit
+  (`dashboard.html`: stub); daily-run carries the steps. **⭐ Then grep the OUTPUT for what you added.**
+- **`archive/process_archive.md`** (retired process items) · **[docs/incident_archive.md](docs/incident_archive.md)**
   (the stories behind these rules — reference only, read on demand by `search-strategist` alone).
-- **`opportunities.md` — RETIRED 2026-07-20, frozen. Do not read it, do not edit it.**
+- **`opportunities.md` — RETIRED 2026-07-20, frozen. Do not read it, do not edit it.** The
+  0.32.0 migration moves it (and the `focus.md` stub) into `archive/retired-trackers/`.
 
 **ENGINE.** `skills/` (run prompts) · `agents/` (each carries its own CONTEXT BUDGET) ·
 `scripts/` · `docs/`.
@@ -91,7 +105,7 @@ second place to look and the one that goes stale.
 ## ⭐ PROFILE vs ENGINE — `config.json` / `user.json` HOLD THE VALUES
 
 **PROFILE (this person's data):** `user.json` (who the candidate is) · `config.json` (how the search
-behaves) · `resume.md` · `projects.md` · `strategy.md` · `data/`.
+behaves) · `presence/claims.md` · `presence/projects.md` · `configure/strategy.md` · `data/`.
 **ENGINE (reusable machinery):** this file · `scripts/` · `.claude/agents/` · `docs/`.
 
 **`config.json`/`user.json` hold the VALUES; this file holds the REASONING. Never retype a number
@@ -123,8 +137,8 @@ before they were centralized — a value stated twice is a value that disagrees 
 | per-medium limits, default sequence, the two-jobs rule | `config.communications` |
 | ATS sender domains, receipt phrases, query order | `config.ats` |
 | identity, mailboxes, narrative source files | `user.json` |
-| background, verbatim | `resume.md` + its addenda · `projects.md` |
-| fit logic and the outreach playbook | `strategy.md` (read ONE section via `scripts/section.py`) |
+| background, verbatim | `presence/claims.md` + its addenda · `presence/projects.md` |
+| fit logic and the outreach playbook | `configure/strategy.md` (read ONE section via `scripts/section.py`) |
 
 **⭐ THE THREE READING RULES THAT ARE NOT EXPRESSIBLE AS A VALUE — internalize these:**
 
@@ -156,7 +170,7 @@ still `false`. Ask before any comp conversation leans on that tier.
   via different `method`s — that is not a duplicate.
   _Incident history: [docs/incident_archive.md](docs/incident_archive.md#application-dates-and-ats-receipts) — four employers, and the time this exact list was retyped wrong on the very next search._
 
-- **Some background facts live OFF the resume by design.** `resume.md`'s **"Additional Detail
+- **Some background facts live OFF the resume by design.** `presence/claims.md`'s **"Additional Detail
   (elicited beyond the resume)" addenda** hold facts the candidate confirmed but chose not to print — <a former employer>
   marquee customer names that were deliberately left off the printed page, for one. **Absence from the printed
   resume is NOT evidence a fact can't be used.** Check the addenda before concluding something
@@ -222,8 +236,8 @@ still `false`. Ask before any comp conversation leans on that tier.
   the folder BEFORE creating, not after: the connector CANNOT MOVE A FILE**, so a document created
   without a parent lands in My Drive root and the only fix is a second copy for the candidate to
   delete. Do not "fix" anything already sitting in root unasked.
-- **⭐ NEVER TAKE A ROLE'S `location` FROM A LINKEDIN-SOURCED FETCH — CONFIRM IT ON THE EMPLOYER'S OWN POSTING.** A WebFetch of a LinkedIn job page **invents a location, and it invents THE CANDIDATE'S OWN COMMUTE ANCHOR** — the single worst wrong answer, because it is the one city that looks plausible. On 2026-07-27 it reported the candidate's own commute anchor as the JD location for **three separate postings** (a confidential Chief Transformation Officer, <an employer> GCC, <an employer> SVP); all three actually say "United States" or "various locations." Cause looks benign — LinkedIn renders a distance-from-your-profile personalization line and the summarizer reads it as a JD fact — but the consequence is not: **an invented city can be the one location that flips a role into the **local-onsite** comp tier instead of **remote** or **relocation** (the floors differ materially — `config.json` is authoritative), so a hallucinated home-city silently mis-tiers the comp screen and can make a failing role look like it passes.** Caught only because the researcher cross-checked all three; it leaves no trace otherwise.
-- **⭐ AFTER GENERATING THE DASHBOARD, GREP THE *OUTPUT* FOR A DISTINCTIVE PHRASE FROM WHATEVER YOU JUST ADDED. Verifying the source file is not verifying the deliverable.** On 2026-07-27 a cover letter published with its heading and metadata but **no letter text at all**, and only the candidate noticed. `parse_drafts`/`parse_cover_letters` build the body from **only `>`-prefixed lines**, and the body had been written as plain text. **The dangerous part is that the source file reads perfectly** — every constraint check (word count, em-dashes, US English) passed, because they all ran against the file rather than against what published. An empty body is indistinguishable from "not drafted yet." Both parsers now print a loud `!! WARNING` for an entry with no quoted body (verified by inducing the failure), and `cover_letters.md`'s own header carries the blockquote requirement — but the standing habit is the real guard.
+- **⭐ NEVER TAKE A ROLE'S `location` FROM A LINKEDIN-SOURCED FETCH — CONFIRM IT ON THE EMPLOYER'S OWN POSTING.** A WebFetch of a LinkedIn job page **invents a location — specifically THE CANDIDATE'S OWN COMMUTE ANCHOR** (LinkedIn renders a distance-from-your-profile line and the summarizer reads it as a JD fact): the one wrong city that looks plausible, and the one that **flips a role into the local-onsite comp tier instead of remote or relocation, so the comp screen silently mis-tiers** (`config.json` is authoritative). On 2026-07-27 it did this to three separate postings that actually say "United States"; caught only by hand cross-check, it leaves no trace otherwise.
+- **⭐ AFTER GENERATING THE DASHBOARD, GREP THE *OUTPUT* FOR A DISTINCTIVE PHRASE FROM WHATEVER YOU JUST ADDED. Verifying the source file is not verifying the deliverable.** On 2026-07-27 a cover letter published with its heading and metadata but **no letter text at all**, and only the candidate noticed. `parse_drafts`/`parse_cover_letters` build the body from **only `>`-prefixed lines**, and the body had been written as plain text. **The dangerous part is that the source file reads perfectly** — every constraint check (word count, em-dashes, US English) passed, because they all ran against the file rather than against what published. An empty body is indistinguishable from "not drafted yet." Both parsers now print a loud `!! WARNING` for an entry with no quoted body (verified by inducing the failure), and `applying/cover_letters.md`'s own header carries the blockquote requirement — but the standing habit is the real guard.
 
 - **⭐⭐ NEVER CONCLUDE A JOB POSTING IS DEAD FROM A WebFetch. RENDER IT IN A BROWSER FIRST.** Modern ATS platforms are
   JS-heavy single-page apps, and a plain fetch returns a shell whose fallback text is often **actively misleading** —
@@ -238,7 +252,7 @@ still `false`. Ask before any comp conversation leans on that tier.
 - **⭐ CANONICAL COVER-LETTER HEADER — the template is DATA, in `config.writing.cover_letter_header`.**
   Render it with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/profile.py"`; never retype a name, city, phone or address into a
   letter. The candidate corrected this header directly (2026-07-22), and it deliberately uses a
-  **precise city** where `resume.md`'s header uses a broader metro phrasing. **That difference is
+  **precise city** where `presence/claims.md`'s header uses a broader metro phrasing. **That difference is
   their own choice and is NOT to be "corrected" in either direction unasked** — a letter to a
   specific city benefits from precision; the resume is a different artifact making a different
   call.
@@ -273,7 +287,7 @@ still `false`. Ask before any comp conversation leans on that tier.
 - NEVER assert a specific fact about a document (e.g., "the JD doesn't mention X") unless
   someone actually checked for it. A task scoped to one question doesn't answer a different one
   just because it didn't come up — flag it as an assumption, or go check.
-- When a role's JD calls for something `resume.md` only covers thinly, **DON'T paper over the gap
+- When a role's JD calls for something `presence/claims.md` only covers thinly, **DON'T paper over the gap
   with vague language and don't invent specifics.** Ask the candidate a targeted question instead — that is
   what the `fit` block's `question_for_candidate` is for. Only ask when the missing specific would
   materially change how compelling the pitch is.
@@ -356,7 +370,7 @@ history is permanent. It is also the better bug report: the engine is made of ru
 **Run-start hygiene** (both task prompts inline these):
 `check_stale_claims.py` · `check_followups.py` · `check_sections.py` · `channels_due.py` —
 advisory, always exit 0 so they cannot wedge an unattended run.
-`check_narrative.py` — are the `projects.md` triggers and resume addenda still greppable? A
+`check_narrative.py` — are the `presence/projects.md` triggers and resume addenda still greppable? A
 broken one reads downstream as "no matching proof points" — same as having none.
 `validate_data.py` — **the real gate**; exits 1 on a schema/enum/reference problem.
 `check_rule_homes.py` — no archived lesson lost its rule; CLAUDE.md within its word ratchet.
@@ -447,6 +461,6 @@ how a wrong fact gets laundered into a confident report.
 **The task prompts carry the ordered steps** — the `jobsearch:daily-run` skill and
 the `jobsearch:weekly-review` skill. In short: update state → regenerate the dashboard → **grep the
 OUTPUT for what you just added** → publish via the Artifact tool (passing
-`dashboard_artifact_url.txt` as `url`) → commit → **push with `scripts/push.sh`** → **release the
-run lock**. Save any pending draft in FULL to `drafts.md` and any pending letter to
-`cover_letters.md` — the candidate reads the full text off the dashboard, not the transcript.
+`views/dashboard_artifact_url.txt` as `url`) → commit → **push with `scripts/push.sh`** → **release the
+run lock**. Save any pending draft in FULL to `outreach/drafts.md` and any pending letter to
+`applying/cover_letters.md` — the candidate reads full text off the published outreach page, not the transcript.

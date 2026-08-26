@@ -15,15 +15,32 @@ This page says which file opens where, and walks through every realistic way to 
 All paths are inside **your profile directory** (the private folder you created at setup — see
 [Your data](your-data.md)).
 
+**Starting with 0.32.0, these files sit inside six phase directories** — `presence/`,
+`configure/`, `pipeline/`, `applying/`, `conversations/`, `outreach/` — instead of loose at the
+profile root. This happens automatically, the first time you open a session after upgrading; you
+do nothing to trigger it. The table below gives the path you'll have once that has happened. If
+you open your profile folder and still see the old flat names — `kb/`, `call_preps/`,
+`drafts.md`, `cover_letters.md` — your next session hasn't run yet; open one and it moves them for
+you before you notice.
+
 | file | what it is | format |
 |---|---|---|
-| `dashboard.html` | the generated dashboard: pipeline state, what needs you, drafts and letters in full | HTML |
-| `dashboard_artifact.html` | the same dashboard, in the variant that gets published as a claude.ai Artifact | HTML |
-| `dashboard_artifact_url.txt` | the URL of the published Artifact — a link, not a page | plain text |
-| `kb/<company>.md` | durable knowledge about one company, e.g. `kb/acme-health.md` | markdown |
-| `call_preps/call_prep_<date>.md` | prep notes for a scheduled call, e.g. `call_prep_2026-01-15.md` | markdown |
-| `drafts.md` | staged outreach messages awaiting your review | markdown |
-| `cover_letters.md` | letters, one per role — a letter carrying an unresolved send-hold shows a `**Blocked until:**` marker and is not ready to submit; see below | markdown |
+| `dashboard.html` | a **tombstone stub** — a note saying the dashboard moved, nothing else. Kept only so double-clicking the old filename tells you where things went | HTML |
+| `views/dashboard_artifact.html` | the state view: pipeline overview, what needs you, drafts and letters shown as title + status + location (not in full — see below) | HTML |
+| `views/router_artifact.html` | one row per phase (configure, presence, pipeline, applying, conversations, outreach) naming the next action and a count — the page to open first, especially on a phone | HTML |
+| `views/phase-<name>_artifact.html` | the detail for one phase, published only when that phase has enough open items to be worth its own page — e.g. `phase-outreach_artifact.html` is where a pending message's **full text** lives | HTML |
+| `views/applying.md` | the working queue: roles to apply to, and the follow-up work a submission created. Generated and read-only — never published, regenerated fresh every time you open an application session | markdown |
+| `*_url.txt` (`views/dashboard_artifact_url.txt`, `views/router_artifact_url.txt`, `views/phase-<name>_artifact_url.txt`) | the URL of that page's published Artifact — a link, not a page. Only pages that cleared the publish threshold get one | plain text |
+| `pipeline/kb/<company>.md` | durable knowledge about one company, e.g. `pipeline/kb/acme-health.md` | markdown |
+| `conversations/call_prep_<date>.md` | prep notes for a scheduled call, e.g. `conversations/call_prep_2026-01-15.md` | markdown |
+| `outreach/drafts.md` | staged outreach messages awaiting your review | markdown |
+| `applying/cover_letters.md` | letters, one per role — a letter carrying an unresolved send-hold shows a `**Blocked until:**` marker and is not ready to submit; see below | markdown |
+
+**The published surface is a small set, not one page.** Earlier versions had one `dashboard.html`
+that inlined every draft, letter and kb file in full — it grew to hundreds of KB and kept a local
+copy that could silently drift from what was actually published. Now every draft, letter or
+knowledge file renders as **title + status + location** on the state view, and its full body
+lives once, on its own phase page. `dashboard.html` itself carries no state at all any more.
 
 The datasets (`data/*.jsonl`) are deliberately not in this table — they are for querying, not
 reading, and [Your data](your-data.md) covers them. Neither is `.jobsearch/`, a folder you will
@@ -32,7 +49,7 @@ also see in your profile: it holds engine diagnostics, not anything about your s
 
 ---
 
-## A marker you may see in `cover_letters.md`
+## A marker you may see in `applying/cover_letters.md`
 
 Upgrading to 0.27.0 may add a line under a letter's heading that was not there before:
 
@@ -65,9 +82,9 @@ This is the part nothing else tells you, so here it is as a table:
 
 | you want to read | open it in | in the wrong tool you get |
 |---|---|---|
-| the dashboard | a **web browser** — double-click `dashboard.html`, or open the published Artifact link | a text editor shows thousands of lines of raw HTML |
-| a call prep, kb file, `drafts.md`, `cover_letters.md` | a **markdown-rendering viewer** — the desktop app, or an editor with markdown preview | a browser or plain editor shows the unrendered source: readable, but the structure that makes a call prep scannable is gone |
-| the Artifact URL | it is just a link — open the file, copy the URL into any browser on any device | — |
+| the state view, the router, or a phase page | a **web browser** — double-click the local `.html` file, or open its published Artifact link | a text editor shows thousands of lines of raw HTML |
+| the working queue (`views/applying.md`), a call prep, kb file, `outreach/drafts.md`, `applying/cover_letters.md` | a **markdown-rendering viewer** — the desktop app, or an editor with markdown preview | a browser or plain editor shows the unrendered source: readable, but the structure that makes it scannable is gone |
+| an Artifact URL | it is just a link — open the file, copy the URL into any browser on any device | — |
 
 Rule of thumb: **`.html` means browser, `.md` means markdown viewer.**
 
@@ -83,18 +100,23 @@ want: *"show me the call prep for tomorrow"*, *"what is in the kb file for Acme 
 can answer questions about it — which no file manager can. This is the cleanest route because
 it is the same place the search already runs, and it needs no extra tooling.
 
-For the dashboard, ask the session to open `dashboard.html` in your browser, or use route 2.
+For the dashboard, ask the session to open `views/dashboard_artifact.html` (or `views/router_artifact.html`)
+in your browser, or use route 2.
 
-### 2. The published dashboard Artifact — best on a phone
+### 2. The published Artifacts — best on a phone
 
-Every daily run republishes the dashboard as a claude.ai Artifact at a **stable URL**, kept in
-`dashboard_artifact_url.txt` in your profile. Open that URL in any browser, on any device —
-it is the one route that needs neither the desktop app nor the local folder, which makes it
-the practical way to check state from a phone. Drafts and cover letters appear there in full,
-and since the fix for issue #20, so do your kb files and call preps, rendered as content.
+Every daily run republishes the state view and router as claude.ai Artifacts at **stable URLs**
+(`views/dashboard_artifact_url.txt`, `views/router_artifact_url.txt`), plus a URL for each phase page
+that has enough open items to earn its own publish. Open the router URL first — it names the
+next action and a count per phase, and links on to whichever phase page you need. This is the one
+route that needs neither the desktop app nor the local folder, which makes it the practical way to
+check state from a phone. **A pending message's full text lives on the outreach phase page, not
+the dashboard** — drafts and cover letters show as title + status + location everywhere else, and
+since the fix for issue #20, kb files and call preps render as content on their own phase pages too.
 
-The Artifact is **default-private** to your claude.ai account. It shows what the last run
-published; for state newer than the last run, use routes 1 or 3.
+Every one of these Artifacts is **default-private** to your claude.ai account. Each shows what the
+last run published; for state newer than the last run, use routes 1 or 3. `views/applying.md` —
+the working queue — is never published this way; see route 1 or 3 for it.
 
 ### 3. The local folder, with a markdown-capable editor
 
@@ -106,10 +128,13 @@ the raw source — every fact is there, the scannability is not.
 
 ### 4. The browser, for the HTML only
 
-Double-click `dashboard.html` and it opens in your default browser, fully rendered, no server
-needed. This is the freshest view after a run finishes locally. Do **not** open the `.md` files
-this way — a browser does not render markdown, so a call prep becomes a single run-on wall of
-text.
+Double-click `views/dashboard_artifact.html`, `views/router_artifact.html`, or any
+`views/phase-<name>_artifact.html` and it opens in your default browser, fully rendered, no server
+needed — this is the freshest view after a run finishes locally, since these local files are
+generated in the same step as the published copy. Do **not** double-click `dashboard.html` for
+this — it is a tombstone stub, kept only to tell you the dashboard moved. Do **not** open the
+`.md` files this way either — a browser does not render markdown, so a call prep (or
+`views/applying.md`) becomes a single run-on wall of text.
 
 ### 5. Your profile's private git remote, if you have one
 
@@ -125,7 +150,7 @@ push was. This route is only as private as that repository; keep it private.
 A call prep exists precisely because something is scheduled soon, so the fast paths matter:
 
 - **At a computer:** route 1 — ask the session for the prep by date or company.
-- **On a phone:** route 2 — the published dashboard renders call preps as content.
+- **On a phone:** route 2 — the relevant phase page renders call preps as content.
 - **No Claude available at all:** route 3 or 5 — the file itself, in anything that shows
   markdown.
 

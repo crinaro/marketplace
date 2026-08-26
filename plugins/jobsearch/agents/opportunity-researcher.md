@@ -59,7 +59,7 @@ back to searching the filesystem, which can find the wrong engine (dev #159).
   judge comp from memory or from a floor quoted in prose.**
 - `docs/schema.md` — the record shape you are filling.
 
-**DOES NOT READ:** `resume.md` · `drafts.md` · `cover_letters.md` · `strategy.md` §Positioning ·
+**DOES NOT READ:** `presence/claims.md` · `outreach/drafts.md` · `applying/cover_letters.md` · `configure/strategy.md` §Positioning ·
 `log.md`. You research the EMPLOYER; you do not write the candidate's pitch.
 
 
@@ -75,7 +75,7 @@ report findings for the caller to fold into `data/opportunities.jsonl`.
 A list of roles to research, each with whatever was already captured (company, title,
 comp if known, location, source, link if any). Read `data/opportunities.jsonl` first (or `~/.claude/jobsearch/run pipeline_index.py` for a compact
 view) for the
-existing exclusion list and any prior notes on the same company, and `strategy.md` for
+existing exclusion list and any prior notes on the same company, and `configure/strategy.md` for
 comp floor, positioning proof points, and the large-company title-ladder/JD-mismatch
 guidance — apply the same discipline here that the outreach playbook applies later.
 
@@ -119,7 +119,7 @@ guidance — apply the same discipline here that the outreach playbook applies l
    UltiPro and most enterprise careers portals are all this style — assume SPA unless proven
    otherwise, and use the Browser pane for any live/closed claim. Quote exact visible text
    (the actual button/label/status line), don't paraphrase or infer from boilerplate.
-3. **Verify, don't assume.** Per strategy.md's large-company guidance: confirm the JD body
+3. **Verify, don't assume.** Per configure/strategy.md's large-company guidance: confirm the JD body
    actually matches the title (some ATS feeds are mistitled); if the posting came through
    a staffing agency (Ledgent, Robert Half, etc.), identify the actual hiring company
    before treating it as a lead — a staffing-agency wrapper is not itself the employer.
@@ -140,7 +140,7 @@ guidance — apply the same discipline here that the outreach playbook applies l
    which comp floor applies. Record `location.type: "unresolved"` with the posting's **verbatim**
    work-setting text in `location.declared`; the screen returns `UNRESOLVED-SETTING` and the
    question goes to the employer. Then: is there a genuine positioning angle (AI/agentic,
-   healthcare, EA/cloud/microservices per strategy.md's proof points) worth flagging for
+   healthcare, EA/cloud/microservices per configure/strategy.md's proof points) worth flagging for
    whoever drafts outreach later.
 6. **Capture any PUBLISHED direct-contact data from the company's OWN website** (added
    2026-07-30, per the candidate: *"many have this data on their websites… figured out when we have
@@ -155,7 +155,7 @@ guidance — apply the same discipline here that the outreach playbook applies l
    `careers@` catch-all, but note the catch-all if that's all there is; (c) if nothing
    usable is published, say so — don't pad. This is a light pass while you're already there,
    not a research project. What you find goes to whoever drafts outreach as a possible
-   email second-touch or recruiter path, per strategy.md's channel-choice rules.
+   email second-touch or recruiter path, per configure/strategy.md's channel-choice rules.
 
 ## Output
 For each role, a compact structured block:
@@ -207,7 +207,7 @@ Emit a `fit` object for the opportunity record (shape in `docs/schema.md`). One 
 material JD requirement:
 
 - **`verdict`**: `aligned` · `partial` · `not-aligned` · `unknown`
-- **`evidence`** — REQUIRED for `aligned`/`partial`. Cite `resume.md`, `projects.md`, a resume
+- **`evidence`** — REQUIRED for `aligned`/`partial`. Cite `presence/claims.md`, `presence/projects.md`, a resume
   addendum, or `kb_<company>.md`. **An alignment claim with no citation is a gap wearing a
   disguise, and the validator rejects it.**
 - **`pitch_line`** — how to PRESENT the match. This is the marketing alignment: the drafters
@@ -222,7 +222,7 @@ material JD requirement:
   not a "partial" written in vague language.
 - **Keep `not-aligned` items.** They tell the candidate where they are stretching and are the honest input
   to a pursue/pass call. A fit analysis listing only matches is marketing, not analysis.
-- **Do not create a new knowledge store.** Answers land in the three that exist: `projects.md`
-  (a project + its scale, with a `Surface when:` line), `resume.md`'s "Additional Detail
+- **Do not create a new knowledge store.** Answers land in the three that exist: `presence/projects.md`
+  (a project + its scale, with a `Surface when:` line), `presence/claims.md`'s "Additional Detail
   (elicited beyond the resume)" addenda, or `kb_<company>.md`. Record WHERE in `landed_in`.
   Those files stay markdown by design (ADR-004) — the candidate edits them directly.

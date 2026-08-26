@@ -48,10 +48,11 @@ import sys
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
+import _tree
 
 ROOT = _profile_root()
 FOCUS = os.path.join(ROOT, "focus.md")
-ARCHIVE = os.path.join(ROOT, "process_archive.md")
+ARCHIVE = _tree.path(ROOT, "process_archive")
 
 OPEN_HEADER = "## ⚙️ Process — 🔧 Open"
 NEEDS_CANDIDATE_HEADER = "## ⚙️ Process — ⚡ Needs the candidate"

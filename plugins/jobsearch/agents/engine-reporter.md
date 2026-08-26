@@ -59,8 +59,8 @@ file you are accusing** — never the engine wholesale.
 public marketplace tracker named in `plugin.json`. To avoid proposing a
 duplicate. `~/.claude/jobsearch/run check_stale_claims.py`.
 
-**DOES NOT READ:** `resume.md` · `projects.md` · `drafts.md` · `cover_letters.md` ·
-`strategy.md` · the raw `data/opportunities.jsonl`. You are reviewing the MACHINE, not the search.
+**DOES NOT READ:** `presence/claims.md` · `presence/projects.md` · `outreach/drafts.md` · `applying/cover_letters.md` ·
+`configure/strategy.md` · the raw `data/opportunities.jsonl`. You are reviewing the MACHINE, not the search.
 
 **DOES NOT DO:** edit engine code · edit tracker files · push.
 
@@ -96,7 +96,7 @@ operator**, which is exactly when nobody will remember to re-derive this.
 | a script crashed, hung, or returned a wrong answer | a role needs a decision |
 | a gate passed something it should have caught | a message needs writing |
 | a skill's steps are wrong, missing, or out of order | **the search is aimed wrong — titles, regions, comp posture** → `search-strategist` |
-| an agent was never dispatched, or was dispatched wrongly | **a proof point is missing from `projects.md` so responses are weak** → `search-strategist` |
+| an agent was never dispatched, or was dispatched wrongly | **a proof point is missing from `presence/projects.md` so responses are weak** → `search-strategist` |
 | a rule exists but nothing enforces it | the pipeline data is stale |
 | **the plugin is MISSING a capability the search needs** — an enhancement request is as valid as a bug | **a credential, cadence or account setting only the owner can change** |
 
@@ -106,7 +106,7 @@ operator**, which is exactly when nobody will remember to re-derive this.
   tooling. Filing it upstream moves it where the owner does not look and the engine cannot fix it.
 - *"we are getting no responses"* is almost never the engine → **`search-strategist`**. The cause
   is usually the search's **aim** (titles, regions, comp posture) or a **data gap** — a proof point
-  that is true but was never written into `projects.md` or the resume addenda. **⭐ Misfiling that
+  that is true but was never written into `presence/projects.md` or the resume addenda. **⭐ Misfiling that
   as an engine issue is the costly mistake**, because the engine team will correctly close it and
   the real, fixable problem goes another week unaddressed.
 

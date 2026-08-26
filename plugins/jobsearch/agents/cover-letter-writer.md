@@ -55,13 +55,16 @@ back to searching the filesystem, which can find the wrong engine (dev #159).
 - `~/.claude/jobsearch/run fit_report.py --pitch <opp_id>` — **start here.** The requirement-by-requirement
   match with a `pitch_line` for each, plus a **DO NOT CLAIM** list of genuine non-matches. Build the
   letter from the stated fit case; do not re-derive positioning from scratch.
-- `resume.md` **and its "Additional Detail (elicited beyond the resume)" addenda** — facts the candidate
-  chose not to print are still usable and often the most persuasive thing available.
-- `projects.md` — **grep it for the JD's own terms.** Never read it whole, never dump projects.
+- `presence/claims.md` — **the claim union, not a printed artifact.** It is the source of truth for every
+  background claim in send-ready wording; printed resumes are the declared *variants*
+  (`data/resume_variants.jsonl`), each a selection FROM the union. Read its **"Additional Detail
+  (elicited beyond the resume)" addenda** too — facts the candidate chose not to print on any
+  variant are still usable and often the most persuasive thing available.
+- `presence/projects.md` — **grep it for the JD's own terms.** Never read it whole, never dump projects.
 - `~/.claude/jobsearch/run profile.py` — the canonical header, word target, page limit, banned characters.
-- `cover_letters.md`'s header — the entry format you must produce.
+- `applying/cover_letters.md`'s header — the entry format you must produce.
 
-**DOES NOT READ:** `drafts.md`'s rules · LinkedIn character caps · `log.md` · the pipeline JSONL
+**DOES NOT READ:** `outreach/drafts.md`'s rules · LinkedIn character caps · `log.md` · the pipeline JSONL
 beyond this one role.
 
 ## WHY THIS AGENT IS SEPARATE FROM `outreach-drafter`
@@ -75,15 +78,19 @@ empty body on 2026-07-27.**
 
 ## HARD RULES
 
-1. **⭐ THE BODY MUST BE `> `-BLOCKQUOTED IN `cover_letters.md`, EVERY LINE.** The dashboard builds
+1. **⭐ THE BODY MUST BE `> `-BLOCKQUOTED IN `applying/cover_letters.md`, EVERY LINE.** The dashboard builds
    the body from `>`-prefixed lines ONLY. Plain prose reads perfectly in the source file and
    **publishes completely empty**, indistinguishable from a letter never written. That shipped once
    and only the candidate noticed. **After the dashboard is regenerated, grep the OUTPUT
-   (`dashboard_artifact.html`) for a distinctive phrase from what you wrote** — verifying the source
-   file is not verifying the deliverable.
-2. **Every claim traces to `resume.md` or its addenda.** Where the JD names a requirement nothing
+   (`views/phase-outreach_artifact.html` — full letter bodies render THERE since dev #233; the
+   state view carries only an index) for a distinctive phrase from what you wrote** — verifying
+   the source file is not verifying the deliverable.
+2. **Every claim traces to `presence/claims.md` (the union) or its addenda.** For a printed variant this is
+   now mechanically enforced — `resume_variants.py --check` fails a bullet absent from the union —
+   but a cover letter is prose, not a variant file, and carries no such gate; hold the same
+   discipline by hand. Where the JD names a requirement nothing
    corroborates, **do NOT pad it with vague language** — leave it out and add the targeted question
-   under `cover_letters.md`'s `⚠️ Questions that would sharpen this` section. Better: it is probably
+   under `applying/cover_letters.md`'s `⚠️ Questions that would sharpen this` section. Better: it is probably
    already an `unknown` in the fit analysis with a question attached.
 3. **ONE PAGE.** Target the word count in `config.json.writing`; verify the page count in Docs
    ("1 of 1"), and **measure only AFTER accepting tracked suggestions** — suggesting mode keeps both
@@ -107,6 +114,6 @@ second job.*
 
 ## OUTPUT
 
-The full letter into `cover_letters.md` in its entry format, plus any sharpening questions under
+The full letter into `applying/cover_letters.md` in its entry format, plus any sharpening questions under
 that file's Questions section. Then say plainly what you left out and why — a gap named is worth
 more than a gap papered over.

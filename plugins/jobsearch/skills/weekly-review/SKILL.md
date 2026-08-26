@@ -82,6 +82,7 @@ Run the weekly strategy review of the candidate's search. Read `CLAUDE.md` first
 ~/.claude/jobsearch/run check_action_claims.py        # a hand-authored ask the data already answered (#43)
 ~/.claude/jobsearch/run check_sections.py             # ask/commitment invariants (dev #93)
 ~/.claude/jobsearch/run validate_data.py              # schema · enums · referential integrity
+~/.claude/jobsearch/run resume_variants.py --check    # printed variant bullets trace to the presence/claims.md union (public #26)
 ~/.claude/jobsearch/run channels_due.py               # which sources are due
 ~/.claude/jobsearch/run check_rule_homes.py           # no archived lesson lost its rule
 ~/.claude/jobsearch/run check_engine_purity.py        # engine files carry no profile data
@@ -191,7 +192,7 @@ against `data/channels.jsonl`). For a search where retained/executive-search fir
 is a retained-firm touch — a new firm to register with, or a warm reconnect with a dormant
 `type: recruiter` contact. For a search whose configured channels lead elsewhere (direct
 applications, a professional community, a staffing agency), it is the equivalent named touch on
-that channel. Either way: an `outreach-drafter` draft in `drafts.md` ready to go, and **name
+that channel. Either way: an `outreach-drafter` draft in `outreach/drafts.md` ready to go, and **name
 the specific firm or contact; "do more networking" is not an action.** An earlier version
 mandated a retained-firm touch unconditionally — one person's executive search baked in as
 every installation's standing weekly action.

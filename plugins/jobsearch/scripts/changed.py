@@ -58,6 +58,7 @@ import sys
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
+import _tree
 
 ROOT = _profile_root()
 # ⭐⭐ ONE WATERMARK PER READER — fixed 2026-08-03. It used to be a SINGLE shared file, which
@@ -83,14 +84,14 @@ WATCHED = [
     # dev #93 — the asks and commitments stores replaced focus.md; handoff.md is the
     # surviving hand-written narrative a session reasons from.
     "data/asks.jsonl", "data/commitments.jsonl",
-    "handoff.md", "drafts.md", "cover_letters.md", "log.md",
+    "handoff.md", "outreach/drafts.md", "applying/cover_letters.md", "log.md",
 ]
 
 
 def fingerprint():
     fp = {}
     for rel in WATCHED:
-        p = os.path.join(ROOT, rel)
+        p = _tree.resolve_rel(ROOT, rel)
         if os.path.exists(p):
             st = os.stat(p)
             fp[rel] = {"size": st.st_size, "mtime": int(st.st_mtime)}

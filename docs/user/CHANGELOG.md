@@ -2,6 +2,10 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.31.0
+- gmail-multi should support send/reply/forward; jobsearch must enforce draft-only as policy rather than rely on the capability being absent *(tracked internally as crinaro/marketplace-dev#213)*
+- jobsearch vendors an entire MCP server to use five library functions from it *(tracked internally as crinaro/marketplace-dev#211)*
+
 ## jobsearch 0.30.0
 - Marketplace identifier: careers-plugins -> crinaro-marketplace, with a launcher self-heal *(tracked internally as crinaro/marketplace-dev#216)*
 
@@ -34,6 +38,9 @@ Generated from fixes confirmed shipped — public reports and internal fixes ali
 - [#14](https://github.com/crinaro/careers-plugins/issues/14) — A validation gate can never pass on a clean install: shipped design docs point at scripts present in no released version
 - [#13](https://github.com/crinaro/careers-plugins/issues/13) — The weekly reconcile audit again mis-attributes replies and platform events to the wrong sibling outreach row for the same recipient
 - [#12](https://github.com/crinaro/careers-plugins/issues/12) — The outbound-click guard's startup selftest fails to open its own transcript path, so every click is classified unresolvable and allowed through instead of blocked
+
+## gmail-multi 0.2.0
+- gmail-multi should support send/reply/forward; jobsearch must enforce draft-only as policy rather than rely on the capability being absent *(tracked internally as crinaro/marketplace-dev#213)*
 
 ## gmail-multi 0.1.1
 - Marketplace identifier: careers-plugins -> crinaro-marketplace, with a launcher self-heal *(tracked internally as crinaro/marketplace-dev#216)*

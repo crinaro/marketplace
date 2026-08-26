@@ -37,6 +37,7 @@ from datetime import date, datetime
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
+import _tree
 
 ROOT = _profile_root()
 
@@ -87,7 +88,7 @@ NEXT_ACTION_HINTS = (
 
 
 def read(name):
-    path = os.path.join(ROOT, name)
+    path = _tree.resolve_rel(ROOT, name)
     if not os.path.exists(path):
         return ""
     fh = open(path, "r", errors="replace")
@@ -184,7 +185,7 @@ def check_silent_jsonl(today, days):
 def check_silent(today, days):
     """Silent threads still tracked as markdown prose (network.md only)."""
     findings = []
-    for fname in ("network.md",):
+    for fname in (_tree.rel("network"),):
         md = read(fname)
         for headers, cells in table_rows(md):
             status = status_of(headers, cells).lower()

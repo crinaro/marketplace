@@ -89,6 +89,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
+import _tree
 
 KB_FIELD_RE = re.compile(r"^\*\*Company:\*\*\s*(.+?)\s*$", re.M | re.I)
 PREP_FIELD_RE = re.compile(r"^\*\*Companies:\*\*\s*(.+?)\s*$", re.M | re.I)
@@ -175,11 +176,12 @@ def parse_tokens(raw, allowed, cids, chids):
 def kb_rows(root, cids):
     """One row per kb/*.md: joined / unresolved / unreadable. Also returns the joined ids."""
     rows, joined = [], set()
-    kb_dir = os.path.join(root, "kb")
+    kb_dir = _tree.path(root, "kb")
+    kb_rel = os.path.relpath(kb_dir, root)
     for name in sorted(os.listdir(kb_dir)) if os.path.isdir(kb_dir) else []:
         if not name.endswith(".md") or name.lower() in KB_EXEMPT:
             continue
-        rel = os.path.join("kb", name)
+        rel = os.path.join(kb_rel, name)
         try:
             md = _read(os.path.join(kb_dir, name))
         except OSError as e:
@@ -238,10 +240,11 @@ def _prep_row(kind, rel, md, cids, chids):
 
 def prep_rows(root, cids, chids):
     rows = []
-    d = os.path.join(root, "call_preps")
+    d = _tree.path(root, "call_preps")
+    d_rel = os.path.relpath(d, root)
     for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:
         if name.endswith(".md"):
-            rows.append(_prep_row("prep", os.path.join("call_preps", name),
+            rows.append(_prep_row("prep", os.path.join(d_rel, name),
                                   _read(os.path.join(d, name)), cids, chids))
     return rows
 
@@ -282,7 +285,7 @@ def archived_prep_rows(root, cids, chids):
                 continue
             bad = []
             for cid in ids:
-                target = os.path.join(root, "kb", cid + ".md")
+                target = os.path.join(_tree.path(root, "kb"), cid + ".md")
                 try:
                     ok = bool(_read(target).strip())
                 except OSError:
@@ -331,16 +334,16 @@ def prep_exists_for(root, company_id):
     existing prep found anywhere; a guard treats that, and only that, as "still owed").
     """
     hits = []
-    kb_path = os.path.join(root, "kb", company_id + ".md")
+    kb_path = os.path.join(_tree.path(root, "kb"), company_id + ".md")
     if os.path.isfile(kb_path):
         try:
             if _read(kb_path).strip():
-                hits.append(os.path.join("kb", company_id + ".md"))
+                hits.append(os.path.relpath(kb_path, root))
         except OSError:
             pass
 
     needle = re.compile(r"\bcompany\s*:\s*" + re.escape(company_id) + r"\b", re.I)
-    prep_dirs = [os.path.join(root, "call_preps")] + [os.path.join(root, d) for d in ARCHIVE_DIRS]
+    prep_dirs = [_tree.path(root, "call_preps")] + [os.path.join(root, d) for d in ARCHIVE_DIRS]
     for d in prep_dirs:
         rel_dir = os.path.relpath(d, root)
         for name in sorted(os.listdir(d)) if os.path.isdir(d) else []:

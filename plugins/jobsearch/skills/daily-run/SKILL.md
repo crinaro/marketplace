@@ -121,13 +121,16 @@ hours, costing that morning's run outright.
 ~/.claude/jobsearch/run check_dashboard_fresh.py    # dashboard behind its sources, or PUBLISHED view behind the repo (dev #133)
 ~/.claude/jobsearch/run check_engine_purity.py      # engine files carry no profile data
 ~/.claude/jobsearch/run check_pointers.py           # every pointer resolves to real data
-~/.claude/jobsearch/run knowledge.py                # kb/prep joins resolve; promotion debt; kb files due
+~/.claude/jobsearch/run knowledge.py                # pipeline/kb/prep joins resolve; promotion debt; kb files due
+~/.claude/jobsearch/run resume_variants.py --check  # printed variant bullets trace to the presence/claims.md union (public #26)
 ```
 
 **Dispose of what they report BEFORE starting.** Verify every **system-state** claim against the
 machine — read the plist, tail the log, run the script — and correct the tracker line in the same
-pass. **`validate_data.py` is the only one that gates**; the rest are advisory and exit 0 so they
-cannot wedge an unattended run.
+pass. **`validate_data.py` and `resume_variants.py --check` are the only ones that gate**; the
+rest are advisory and exit 0 so they cannot wedge an unattended run. `resume_variants.py --check`
+is a no-op (exit 0) on a profile that has declared no variants — `presence/claims.md` doubles as the single
+printed resume and owes this check nothing.
 
 ## 2. DRAIN THE QUEUE
 
@@ -260,19 +263,19 @@ alone cannot support a fit judgement or a draft.
 requirement → aligned/partial/not-aligned/unknown, each with cited evidence and a `pitch_line`.
 **Every `unknown` carries a targeted question, and a dated one carries `act_by`.** Run
 `~/.claude/jobsearch/run fit_report.py --gaps` and put the open questions on Your Move — the answers file
-into `projects.md`, `resume.md`'s addenda, or `kb_<company>.md`, so the NEXT role's analysis starts
+into `presence/projects.md`, `presence/claims.md`'s addenda, or `kb_<company>.md`, so the NEXT role's analysis starts
 fuller. **The resume is deliberately incomplete; this is the loop that closes that gap while a live
 role makes it concrete.**
 
 ## 6. NETWORK CADENCE
 
-From `network.md`: check warm-intro deadlines. If fewer than 2 network actions in the last 7 days
+From `outreach/network.md`: check warm-intro deadlines. If fewer than 2 network actions in the last 7 days
 (per `log.md`), propose the next 1–2 with drafts.
 
-**Any draft must be saved IN FULL to `drafts.md`** (its header carries the entry format — **the
+**Any draft must be saved IN FULL to `outreach/drafts.md`** (its header carries the entry format — **the
 body MUST be `> `-blockquoted or it publishes EMPTY**). A one-line summary elsewhere is not enough;
-**the candidate reads the full text off the dashboard, not the transcript.** Cover letters go to
-`cover_letters.md` via **`cover-letter-writer`** — a different artifact with different length,
+**the candidate reads the full text off the published outreach page, not the transcript.** Cover letters go to
+`applying/cover_letters.md` via **`cover-letter-writer`** — a different artifact with different length,
 constraints and failure mode.
 
 **⭐ WARM-PATH ON EVERY APPLICATION.** An ATS application is NOT done until an inside-human touch
@@ -318,7 +321,7 @@ destroy every record in the file), and validates. **A full cycle is ~0.2s.** Ad-
 describes the change without touching anything.** (Outside a lock-holding run — an interactive
 one-off — drop the flag and record.py takes and releases the lock itself, in milliseconds.)
 
-Then: remaining edits to `network.md`; record any new cross-cutting ask in `data/asks.jsonl`
+Then: remaining edits to `outreach/network.md`; record any new cross-cutting ask in `data/asks.jsonl`
 (kind: role|system — an ask leaves by setting `resolved_on`+`resolution`, never by rewriting
 its text). **⭐ A decision ask requesting a specific action on a linked role — "approve
 applying?", "approve this outreach?" — carries `resolves_when` (`application`|`outreach`) plus
@@ -343,7 +346,7 @@ For every INBOUND reply this run discovers (Gmail or LinkedIn), after the increm
 1. **Queue an URGENT `reply` finding** with the sender, the role, and a ONE-LINE proposed response
    angle — this reaches the candidate's device via the completion notification.
 2. **If the reply plainly calls for an answer** (a question, an objection, proposed times, a
-   referral pointer), **spawn `outreach-drafter` to draft the response into `drafts.md`**, marked
+   referral pointer), **spawn `outreach-drafter` to draft the response into `outreach/drafts.md`**, marked
    `**AUTO-DRAFT from a background run — review extra carefully before sending.**` A draft is
    inert by design; the send is always the candidate's. Skip drafting only when the reply closes the
    thread (a rejection, a "not my search" with no pointer) — then the queue line says so instead.
@@ -364,15 +367,15 @@ highest `SEQUENCE` wins. Anything it surfaces goes into `data/commitments.jsonl`
 behind the This Week tab) before the dashboard.
 
 **⭐ BEFORE PROMISING A CALL-PREP NOTE, ASK WHETHER ONE ALREADY EXISTS — AND NOT ONLY IN
-`call_preps/`.** Prep material for one company can be sitting in any of THREE durable stores:
-a live dated note (`call_preps/call_prep_<date>.md`), an already-archived one
-(`archive/call-preps/`), or the promoted durable knowledge file (`kb/<company_id>.md` — the
+`conversations/`.** Prep material for one company can be sitting in any of THREE durable stores:
+a live dated note (`conversations/call_prep_<date>.md`), an already-archived one
+(`archive/call-preps/`), or the promoted durable knowledge file (`pipeline/kb/<company_id>.md` — the
 PROMOTION step below moves durable content OUT of the dated note and INTO the kb file, so a
-company with an active `kb/` file can already carry what a repeat prep would say). For any
+company with an active `pipeline/kb/` file can already carry what a repeat prep would say). For any
 upcoming call, run `~/.claude/jobsearch/run knowledge.py --prep-exists <company_id>` before
 writing "prep note to follow" anywhere — This Week, the summary, or the handoff. If it reports
 a hit, **link to that file, never re-promise it.** Added 2026-08-04, corrected 2026-08-19 (dev
-#153) after checking `call_preps/` alone missed prep already promoted to `kb/<company_id>.md`
+#153) after checking `conversations/` alone missed prep already promoted to `pipeline/kb/<company_id>.md`
 and re-promised it as owed across multiple runs — the guard now asks the same three stores
 `knowledge.py` already resolves joins against, rather than re-implementing a narrower version
 of that check by hand. A promise from a stateless background run to do future work is the
@@ -384,7 +387,7 @@ stores looked populated and answered nothing). Every prep note carries a `**Comp
 line of `company:<id>` token(s) (`channel:<id>` for a call with a recruiting firm; the literal
 `none` if genuinely untracked) — the note is date-keyed on purpose, so this line is the ONLY
 path from a pursuit to its conversation history. Before a prep is archived, promote durable
-content to `kb/<company_id>.md` and record `**Promoted:** kb:<id> on <date>` (or
+content to `pipeline/kb/<company_id>.md` and record `**Promoted:** kb:<id> on <date>` (or
 `nothing-durable`). `knowledge.py` in HYGIENE reports every unjoined file, unrecorded
 promotion, and conversation-stage pursuit with no kb file — **dispose of those in this run:
 structuring a join or creating a named kb file is run work, never a note for the candidate.**
@@ -399,7 +402,7 @@ direction stops being an instrument and becomes something a run talks itself out
 
 Set `stage` (`sourced`→`contacted`→`screening`→`interviewing`→`offer`→`closed`) in the same edit
 that changes it. **It is the only field that can answer "what actually converts," and nothing
-infers it.** A move into `screening` creates `kb/<company_id>.md` in the same pass if it is
+infers it.** A move into `screening` creates `pipeline/kb/<company_id>.md` in the same pass if it is
 missing — accumulation is the run's job, and `knowledge.py` names every gap.
 
 **When the candidate reports sending something, WRITE THE OUTREACH ROW** with its `date` — a log entry once
@@ -409,7 +412,7 @@ MISSING row is schema-valid.
 **Every new outreach row carries** `medium` · `touch_type` · `recipient_role` · `delivery` (plus
 `address_status` for email, `campaign_id` for a multi-touch push). **`outreach-drafter` emits these
 with the draft — copy them verbatim**, because the drafter is the only actor that knows which
-medium applies. Then **MOVE the `drafts.md` entry into `data/messages.jsonl`** and set
+medium applies. Then **MOVE the `outreach/drafts.md` entry into `data/messages.jsonl`** and set
 `message_ref`. The old rule deleted the text, which is why the historical rows can be analyzed for
 channel but never for content.
 
@@ -424,11 +427,14 @@ to zero.**
 ~/.claude/jobsearch/run check_dashboard_fresh.py --fix
 ```
 
-Then **grep the OUTPUT** (`dashboard_artifact.html`) for a distinctive phrase from what you added.
+Then **grep the OUTPUT** (`views/phase-outreach_artifact.html` — message and letter bodies render
+there since dev #233) for a distinctive phrase from what you added.
 **Verifying the source file is not verifying the deliverable** — a body that fails to render is
-indistinguishable from one never written. Publish with the Artifact tool on
-`dashboard_artifact.html`, passing `dashboard_artifact_url.txt` as `url` so it redeploys to the
-same artifact; create it if absent. Skip gracefully (and note it) if the tool is unavailable.
+indistinguishable from one never written. Publish with the Artifact tool: the generator's summary
+names the publish set (always `views/router_artifact.html` and `views/dashboard_artifact.html`, plus the
+phase pages whose volume clears the computed threshold). Pass each page's own url file as `url`
+(`views/dashboard_artifact_url.txt`; `views/<page>_url.txt` for the others) so it redeploys to the same
+artifact; create the file if absent. Skip gracefully (and note it) if the tool is unavailable.
 
 **⭐ If the publish reports a VERSION CONFLICT, another session published since you generated
 (dev #133 / public #22). Never pass `force`, and never drop the publish silently:** re-run
@@ -475,7 +481,7 @@ Then commit, genuinely last, and let the sync resolver decide the push half:
 # ⚠️ EXPLICIT PATHS, never `git add -A`. Subagents have written into this same tree during the
 # run, and `-A` bundles whatever they left mid-edit into this commit -- the exact failure the
 # rulebook records for 2026-07-25. Name what this run changed.
-git add data/ handoff.md log.md drafts.md cover_letters.md dashboard.html 2>/dev/null
+git add data/ handoff.md log.md outreach/drafts.md applying/cover_letters.md dashboard.html 2>/dev/null
 git commit -m "Daily run $(date +%F): <one-line summary>"
 ~/.claude/jobsearch/run sync.py --end-of-run
 ```

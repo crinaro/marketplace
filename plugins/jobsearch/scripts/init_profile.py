@@ -46,7 +46,10 @@ DATA = os.path.join(ROOT, "data")
 STORES = ("opportunities.jsonl", "companies.jsonl", "channels.jsonl", "messages.jsonl",
           "inbox.jsonl", "pending_actions.jsonl", "asks.jsonl", "commitments.jsonl")
 
-DIRS = ("data", "kb", "call_preps", "drafts_assets")
+# A fresh profile is BORN in the six-phase tree (public #28) — the same shape the 0.32.0
+# migration produces, so a new user never runs (or needs) the migration at all.
+DIRS = ("data", "views", "configure", "presence", "pipeline/kb", "applying",
+        "conversations", "outreach/drafts_assets")
 
 USER_SKELETON = {
     "_comment": "WHO YOU ARE. The onboarding skill fills this from your resume and a short "
@@ -65,8 +68,8 @@ USER_SKELETON = {
         "availability": "",
     },
     "mailboxes": [],
-    "narrative_sources": {"resume": "resume.md", "projects": "projects.md",
-                          "strategy": "strategy.md", "network": "network.md"},
+    "narrative_sources": {"resume": "presence/claims.md", "projects": "presence/projects.md",
+                          "strategy": "configure/strategy.md", "network": "outreach/network.md"},
 }
 
 CONFIG_SKELETON = {
@@ -236,7 +239,8 @@ def report():
         (present if os.path.isdir(os.path.join(ROOT, d)) else missing).append(d + "/")
     for s in STORES:
         (present if exists(os.path.join("data", s)) else missing).append("data/" + s)
-    for f in ("user.json", "config.json", "resume.md", "projects.md", "CREDENTIALS.md"):
+    for f in ("user.json", "config.json", "presence/claims.md", "presence/projects.md",
+              "CREDENTIALS.md"):
         (present if exists(f) else missing).append(f)
     return present, missing
 

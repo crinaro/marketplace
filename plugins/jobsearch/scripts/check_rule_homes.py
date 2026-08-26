@@ -63,7 +63,13 @@ ARCHIVE = os.path.join(ROOT, "docs", "incident_archive.md")
 # when the load-bearing audit found the trim had DELETED FIVE HARD RULES and they were
 # restored — an increase that puts genuine content back is legitimate; an increase that
 # accommodates new narrative is not. CLAUDE.md was 9,468 words before the split.
-MAX_CLAUDE_WORDS = 5664
+# 2026-08-25 (public #26): +73, set to the exact measured count. New RULES, zero narrative —
+# the resume-variant model (claim union, declared variant set, send/sent fields, the
+# projects.md promotion boundary) had to be declared in the file every run loads; its
+# narrative lives in resume_variants.py's docstring, and the pre-existing incident text in
+# the resume.md bullet was SHORTENED to part-pay for it. Still exact-tight: the next word
+# of creep fails.
+MAX_CLAUDE_WORDS = 5737
 
 # Where a rule is allowed to live. Deliberately broader than focus.md's original list, which
 # named only CLAUDE.md and agent definitions — that is precisely why data-shaped lessons (the
@@ -380,7 +386,7 @@ def main():
                 print("     %-44s %s%s" % (name, where, flag))
             print()
         print("  Enhancements from an individual's interactions do NOT go here — they land in")
-        print("  config.json, user.json, resume.md's addenda, projects.md or kb_<company>.md.")
+        print("  config.json, user.json, claims.md's addenda, projects.md or kb_<company>.md.")
         return 1 if missing else 0
 
     if not os.path.exists(ARCHIVE):

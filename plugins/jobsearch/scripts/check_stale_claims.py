@@ -42,6 +42,7 @@ from datetime import datetime
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _root import profile_or_fixture as _pof
+import _tree
 import profile as _profile
 
 
@@ -72,10 +73,19 @@ REPO = _pof()
 # have been re-reported every run forever. Role-level decay is now caught by
 # check_followups.py against data/opportunities.jsonl, which IS live.
 # `handoff.md` added with dev #93: it is the surviving hand-written narrative (the session
-# handoff letter) and exactly the place a decayed "awaiting X" claim now lives. focus.md is
-# kept for profiles not yet migrated; after the 0.25.0 migration it is a static stub, which
-# costs nothing to scan and can never flag.
-FILES = ["handoff.md", "focus.md", "network.md", "drafts.md"]
+# handoff letter) and exactly the place a decayed "awaiting X" claim now lives.
+#
+# ⚠️ `focus.md` was DROPPED from this list 2026-08-25 (gate-keeper triage, no tracked issue —
+# found while diagnosing a pre-existing `test_repo_is_the_profile_not_the_engine` failure). It
+# used to be kept post-migration as a frozen stub — "costs nothing to scan and can never flag" — on
+# the assumption the stub itself would persist. It does not: a real profile's own root-cleanup
+# pass (verified against the installed plugin, which confirmed nothing reads or writes the
+# file — exactly what ADR-017 says) archived the stub out of the profile root entirely. `scan()`
+# already treats a missing FILES entry as advisory ("not found, so not scanned"), so keeping
+# `focus.md` here bought nothing once the stub itself became optional, and it broke
+# TestStaleClaimsScansTheProfileNotTheEngine's real-profile assertion for a file the engine
+# genuinely no longer needs present.
+FILES = ["handoff.md", _tree.rel("network"), _tree.rel("drafts")]
 
 # Claims that decay with time - someone is blocked, or something is unresolved.
 _REF = _candidate_ref()
@@ -143,7 +153,7 @@ def scan(path, today, threshold):
     all — the caller must treat that as UNCHECKED, never as "scanned, nothing to flag"."""
     aging, system = [], []
     try:
-        with open(os.path.join(REPO, path), "r", errors="replace") as fh:
+        with open(_tree.resolve_rel(REPO, path), "r", errors="replace") as fh:
             lines = fh.readlines()
     except IOError:
         return aging, system, False

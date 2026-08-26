@@ -60,11 +60,11 @@ back to searching the filesystem, which can find the wrong engine (dev #159).
 ## CONTEXT BUDGET
 
 **READS:** `~/.claude/jobsearch/run pipeline_index.py --contacts` (who is tracked and contacted;
-`--excluded` for the exclusion list) · `~/.claude/jobsearch/run section.py strategy.md "Location strategy"`
+`--excluded` for the exclusion list) · `~/.claude/jobsearch/run section.py configure/strategy.md "Location strategy"`
 and `"TITLE SET"` — **those two sections only, never the whole file** · `~/.claude/jobsearch/run profile.py`
 for titles, geography and comp tiers.
 
-**DOES NOT READ:** `resume.md` · `projects.md` · `cover_letters.md` · `log.md` in full · comp
+**DOES NOT READ:** `presence/claims.md` · `presence/projects.md` · `applying/cover_letters.md` · `log.md` in full · comp
 reasoning prose anywhere.
 
 > 🛑 **HARD STOP — THIS OVERRIDES ANY "run the checklist" INSTINCT.** You GATHER and REPORT.
@@ -248,7 +248,7 @@ reached.
    - **the primary commute anchor with its stated radius** (`config.geography.commute_anchors` —
      `~/.claude/jobsearch/run profile.py`), on-site + hybrid (`f_WT=1,3`), last 24h, same titles. **The
      anchor is home base and a first-class priority, not a remote-search afterthought.** Also
-     include the tier-3 local-only titles from `strategy.md`'s TITLE SET here.
+     include the tier-3 local-only titles from `configure/strategy.md`'s TITLE SET here.
 
    **Skip noise:** gig "AI Trainer" listings, volunteer roles, posts open 5+ months, anything
    already tracked or excluded.

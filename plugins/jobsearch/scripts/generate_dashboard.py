@@ -1,16 +1,55 @@
 #!/usr/bin/env python3
-"""Generate dashboard.html from the operating store.
+"""Generate the published state views from the operating store.
 
 Deterministic, zero-token rendering: the model maintains data/*.jsonl (and the few
 human-facing .md artifacts — drafts, cover letters, network); this script assembles the
-dashboard HTML. Since dev #93 focus.md is not read at all: Your Move and This Week are
+HTML. Since dev #93 focus.md is not read at all: Your Move and This Week are
 views of data/asks.jsonl, data/commitments.jsonl, opportunities.jsonl and channels.jsonl —
 plus, since dev #154, the staged-message pair (drafts.md / cover_letters.md via
 precondition.report) for the ready-no-ask group; the Sourcing tab (dev #148) is a view of
 channels.jsonl + opportunities.jsonl sightings through channels_due.py's derivations.
 
+⭐⭐ THE PUBLISHING MODEL — dev #233 (with public #27), 2026-08-25.
+MEASURED on a live profile: the old single dashboard was 639 KB for 63 table rows,
+because drafts, cover letters and knowledge artifacts rendered IN FULL into what is
+otherwise a state view (knowledge 328 KB, staged messages 129 KB, CSS 18 KB). A page
+that size is not a phone surface, and a second local copy (dashboard.html, 159 bytes
+apart from the artifact) was a staleness window nothing kept closed (public #22).
+
+The split is by PURPOSE: an artifact is a snapshot — right for "what is true now",
+structurally wrong for "work through this". So:
+
+  dashboard_artifact.html            the six-tab STATE view. Documents render as
+                                     title + status + location, NEVER in full.
+  views/router_artifact.html         one bounded row per phase (configure · presence ·
+                                     pipeline · applying · conversations · outreach)
+                                     with the next action and a count — the page that
+                                     opens on a phone (D2).
+  views/phase-pipeline_artifact.html the opportunity list in detail + company knowledge.
+  views/phase-conversations_...html  the week + call preps in full (public #20's need:
+                                     a call prep readable the night before, anywhere).
+  views/phase-outreach_...html       every PENDING message in full — the reading
+                                     surface for approval ("the candidate reads the
+                                     full text off the published page, not the
+                                     transcript"). Sent messages have no entry left,
+                                     so this page is bounded by pending volume.
+  dashboard.html                     a constant TOMBSTONE STUB. The local full copy is
+                                     retired; a stub carries no state, so the old
+                                     two-copies staleness window is gone BY
+                                     CONSTRUCTION, not by a check.
+
+⭐ EVERY output above is written on EVERY run — nothing is conditional on volume, so a
+page can never linger stale because this profile's shape shifted. What the volume
+threshold selects is the PUBLISH SET: a phase page is worth its own published artifact
+when its item count strictly exceeds its equal share of all phase items (total across
+the six phases / 6) — a function of this profile's own distribution, never a constant
+wearing a formula. The summary line names the selection; the session publishes those.
+
+The working surface for applying is NOT here and not an artifact at all — it is
+views/applying.md (applying.py), regenerated in session, because working means writing
+and a snapshot cannot be written to.
+
 Usage: python3 scripts/generate_dashboard.py   (run from the profile folder root)
-Output: dashboard.html in the folder root.
 """
 import datetime
 import html
@@ -21,6 +60,7 @@ from pathlib import Path
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
+import _tree
 import profile as _profile
 import your_move as _ym
 # The one definition of the play sequence — validate_data.py owns the enum; consumers
@@ -83,7 +123,7 @@ def _dashboard_title():
     return title.strip("— ").strip() or "Job Search"
 
 def read(name: str) -> str:
-    p = ROOT / name
+    p = Path(_tree.resolve_rel(str(ROOT), name))   # canonical name; legacy root falls back
     return p.read_text(encoding="utf-8") if p.exists() else ""
 
 
@@ -717,8 +757,9 @@ def knowledge_docs():
     the stem is the company id / date key, which is exactly what a reader scans for."""
     import knowledge as _kn
 
-    def _docs(sub, newest_first):
-        d = ROOT / sub
+    def _docs(key, newest_first):
+        d = Path(_tree.path(str(ROOT), key))
+        sub = os.path.relpath(str(d), str(ROOT))
         if not d.is_dir():
             return []
         out = []
@@ -741,7 +782,7 @@ def knowledge_docs():
             title = m.group(1) if m else name[:-3]
             out.append((title, rel, body))
         return out
-    return _docs("call_preps", True), _docs("kb", False)
+    return _docs("call_preps", True), _docs("kb", False)   # _tree keys, not literal dirs
 
 
 def render_md_doc(md: str) -> str:
@@ -789,7 +830,8 @@ def render_md_doc(md: str) -> str:
 
 def render_knowledge_docs(docs, empty_msg):
     """Each file collapsed behind its title (the reporter's own suggested shape). The body
-    is the rendered CONTENT — never just the filename."""
+    is the rendered CONTENT — never just the filename. Since dev #233 this renders on the
+    PHASE pages, never on the state view — render_knowledge_index is the state view's."""
     if not docs:
         return '<div class="sub">%s</div>' % empty_msg
     out = []
@@ -801,6 +843,194 @@ def render_knowledge_docs(docs, empty_msg):
                    '<div class="kdoc-body">%s</div></details>'
                    % (md_inline(title), esc(rel), inner))
     return "".join(out)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INDEX RENDERERS — dev #233. The state view lists documents as title + status +
+# location, NEVER in full. The full text has exactly one published home (the phase
+# page named on each index row) and one authored home (the file in the tree).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _draft_meta_summary(blocks):
+    """The '**Label:** value' lines of the entry's FIRST meta block, flattened to one
+    ' · '-joined line — enough to recognise the message without carrying its body."""
+    for kind, val in blocks:
+        if kind == "meta":
+            parts = [re.sub(r"\*\*(.+?):\*\*\s*", r"\1: ", l).strip() for l in val]
+            return " · ".join(p for p in parts if p)[:220]
+    return ""
+
+
+def render_draft_index(entries, states, filename, empty_msg, full_home):
+    """One row per staged entry: title, precondition state chip, meta summary, and WHERE
+    the full text lives (the authored file, and the published phase page). Never the body
+    (dev #233): a state view that inlines every document stops being a state view."""
+    if not entries:
+        return '<div class="sub">%s</div>' % empty_msg
+    chip = {"sendable": ("scheduled", "ready"), "blocked": ("waiting", "held"),
+            "unresolved": ("action", "unresolved"), "unreadable": ("action", "unreadable")}
+    out = []
+    for title, blocks in entries:
+        st = (states.get((filename, title)) or {}).get("state") or "sendable"
+        cls, label = chip.get(st, ("waiting", st))
+        meta = _draft_meta_summary(blocks)
+        out.append(
+            '<div class="draft"><div class="draft-title">%s '
+            '<span class="chip %s">%s</span></div>'
+            '%s'
+            '<div class="sub">full text: <code class="fileref">%s › %s</code> · published '
+            'on the <strong>%s</strong> page</div></div>'
+            % (md_inline(title), cls, label,
+               ('<div class="draft-meta">%s</div>' % esc(meta)) if meta else "",
+               esc(filename), esc(title[:60]), esc(full_home)))
+    return "".join(out)
+
+
+def render_knowledge_index(docs, empty_msg, full_home):
+    """One row per knowledge file: title, location, size — the content itself lives on
+    the phase page (dev #233; supersedes public #20's inline rendering, whose need —
+    readable away from a checkout — the phase page still meets)."""
+    if not docs:
+        return '<div class="sub">%s</div>' % empty_msg
+    out = []
+    for title, rel, body in docs:
+        words = len(body.split())
+        flag = "" if body.strip() else (' <span class="chip action">empty — nothing '
+                                        'written yet</span>')
+        out.append('<div class="draft"><div class="draft-title">%s%s</div>'
+                   '<div class="sub"><code class="fileref">%s</code> · %d words · read in '
+                   'full on the <strong>%s</strong> page</div></div>'
+                   % (md_inline(title), flag, esc(rel), words, esc(full_home)))
+    return "".join(out)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE ROUTER — D2 (dev #233 with public #27). One BOUNDED row per phase: the next
+# action and a count. Bounded by phase count, never by item count — this is the page
+# that opens on a phone. Every number comes from the module that already owns it
+# (your_move, precondition, trigger, applying, channels_due, the stores); nothing is
+# re-derived here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+PHASES = ("configure", "presence", "pipeline", "applying", "conversations", "outreach")
+_PHASE_ICON = {"configure": "⚙️", "presence": "🪞", "pipeline": "🎯",
+               "applying": "📝", "conversations": "📅", "outreach": "✉️"}
+
+
+def _variant_staleness():
+    """(n_active, n_stale) for the presence row: active resume variants whose union_sha
+    no longer matches the claim union (presence/claims.md). Same 12-hex stamp resume_variants.py --stamp writes."""
+    import hashlib as _h
+    variants = [v for v in load_jsonl("resume_variants.jsonl") if v.get("status") == "active"]
+    try:
+        cur = _h.sha256(Path(_tree.path(str(ROOT), "claims")).read_bytes()).hexdigest()[:12]
+    except OSError:
+        cur = None
+    stale = [v for v in variants if cur and v.get("union_sha") != cur]
+    return len(variants), len(stale), stale
+
+
+def phase_rows(counts_ctx):
+    """[(phase, count, next_action_text)] — the six D2 rows. `counts_ctx` carries the
+    already-computed pieces from main() so nothing is derived twice in one run."""
+    c = counts_ctx
+    rows = []
+
+    n = len(c["system_asks"])
+    rows.append(("configure", n,
+                 c["system_asks"][0][0] if n else "Nothing needs a settings decision."))
+
+    n_var, n_stale, stale = _variant_staleness()
+    if n_var == 0:
+        rows.append(("presence", 0, "No resume variants declared yet."))
+    elif n_stale:
+        rows.append(("presence", n_stale,
+                     "Reconcile %s against presence/claims.md — the claim union moved."
+                     % ", ".join(v.get("id", "?") for v in stale[:3])))
+    else:
+        rows.append(("presence", 0,
+                     "%d variant%s reconciled — steady." % (n_var, "" if n_var == 1 else "s")))
+
+    n = len(c["role_now"]) + len(c["decide_rows"])
+    nxt = (c["role_now"] + c["decide_rows"])
+    rows.append(("pipeline", n, nxt[0][0] if nxt else "No decision is owed on a role."))
+
+    n = len(c["apply_queue"])
+    rows.append(("applying", n,
+                 ("%s — work the queue in session (views/applying.md)."
+                  % c["apply_queue"][0]) if n else "Nothing queued to apply."))
+
+    n = len(c["week"])
+    rows.append(("conversations", n,
+                 c["week"][0] if n else "Nothing scheduled."))
+
+    n = c["n_sendable_msgs"] + c["n_unblocked_seqs"] + c["n_untriggered"]
+    bits = []
+    if c["n_sendable_msgs"]:
+        bits.append("%d message%s await approval" % (c["n_sendable_msgs"],
+                                                     "" if c["n_sendable_msgs"] == 1 else "s"))
+    if c["n_unblocked_seqs"]:
+        bits.append("%d sequence%s unblocked" % (c["n_unblocked_seqs"],
+                                                 "" if c["n_unblocked_seqs"] == 1 else "s"))
+    if c["n_untriggered"]:
+        bits.append("%d application%s with no follow-up linked" %
+                    (c["n_untriggered"], "" if c["n_untriggered"] == 1 else "s"))
+    rows.append(("outreach", n, "; ".join(bits) + "." if bits else "Nothing staged or owed."))
+    return rows
+
+
+def publish_selection(rows):
+    """Which phase pages earn their own published artifact: count strictly above the
+    equal share (total/len(PHASES)) of this profile's own distribution — computed, never
+    a constant (dev #233). The router and the state view always publish."""
+    total = sum(n for _p, n, _t in rows)
+    share = total / float(len(PHASES)) if total else 0.0
+    heavy = {p for p, n, _t in rows if total and n > share}
+    # Only phases that HAVE a detail page can be selected.
+    return sorted(heavy & {"pipeline", "conversations", "outreach"}), share
+
+
+def render_router(rows, title, today):
+    """The router page: its own ~1 KB of CSS, no tabs, no documents — six rows."""
+    css = ("*{box-sizing:border-box;margin:0}"
+           "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
+           "background:var(--bg,#f7f7f5);color:var(--fg,#1a1a1a);padding:18px;font-size:15px}"
+           ":root{--bg:#f7f7f5;--fg:#1a1a1a;--mut:#666;--line:#e4e2dd;--n:#2f5fd0}"
+           "@media (prefers-color-scheme:dark){:root:not([data-theme=\"light\"])"
+           "{--bg:#17181a;--fg:#ececeb;--mut:#a8a8a5;--line:#34322f;--n:#7aa2f7}}"
+           ":root[data-theme=\"dark\"]{--bg:#17181a;--fg:#ececeb;--mut:#a8a8a5;"
+           "--line:#34322f;--n:#7aa2f7}"
+           "h1{font-size:18px;margin-bottom:2px}.u{color:var(--mut);font-size:12px;"
+           "margin-bottom:14px}.r{display:flex;gap:12px;align-items:baseline;"
+           "padding:12px 2px;border-bottom:1px solid var(--line)}"
+           ".r:last-child{border-bottom:none}.ph{font-weight:700;min-width:9.5em}"
+           ".ct{font-weight:700;color:var(--n);min-width:2em;text-align:right}"
+           ".nx{color:var(--mut);font-size:13.5px}")
+    body = ['<h1>%s — where things stand</h1>' % esc(title),
+            '<div class="u">%s · one row per phase; the count is what is open, the line '
+            'is the next action. Detail lives on the phase pages; working happens in '
+            'session.</div>' % esc(today)]
+    for p, n, nxt in rows:
+        body.append('<div class="r"><span class="ct">%d</span>'
+                    '<span class="ph">%s %s</span>'
+                    '<span class="nx">%s</span></div>'
+                    % (n, _PHASE_ICON[p], esc(p), md_inline(nxt)))
+    return ('<title>%s — router</title>\n<style>%s</style>\n%s'
+            % (esc(title), css, "".join(body)))
+
+
+# The tombstone written where dashboard.html used to be — CONSTANT, carrying no state,
+# so the local-copy staleness window (public #22 / dev #233) is closed by construction.
+DASHBOARD_TOMBSTONE = """<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><title>Dashboard has moved</title></head>
+<body style="font-family:sans-serif;max-width:34em;margin:3em auto;line-height:1.5">
+<h1>This local copy is retired</h1>
+<p>The dashboard is the <strong>published artifact</strong> now — one rendering, no
+local twin to go stale (dev #233). Its URL is in <code>views/dashboard_artifact_url.txt</code>.
+The generated pages live in <code>views/</code> (public #28); regenerate with
+<code>generate_dashboard.py</code>.</p>
+</body></html>
+"""
 
 
 def load_jsonl(name):
@@ -1308,12 +1538,12 @@ def main():
     # pipeline has been read from data/opportunities.jsonl since the 2026-07-20 cutover, and the
     # local variable was never used again. It kept a retired 166 KB file looking load-bearing,
     # which is exactly why three agents were still being pointed at it. Removed with the file.
-    net = read("network.md")
-    drafts = parse_drafts(read("drafts.md"))
+    net = read(_tree.rel("network"))
+    drafts = parse_drafts(read(_tree.rel("drafts")))
     # Cover letters are a distinct artifact from outreach drafts (added 2026-07-21,
     # per the candidate: the "why is this job a great fit" message was missing entirely).
     # Same file shape, so parse_drafts handles it; rendered in its own panel.
-    covers = [c for c in parse_cover_letters(read("cover_letters.md"))]
+    covers = [c for c in parse_cover_letters(read(_tree.rel("cover_letters")))]
 
     # ⭐⭐ focus.md IS RETIRED AS A SOURCE OF STATE — dev #93 (public #21), the owner's call:
     # "Keep the tabs and remove the use of focus.md, use the data in the json files."
@@ -1439,13 +1669,15 @@ def main():
     # ⭐ dev #169 — rows are keyed by (file, title), because precondition.py now covers the whole
     # staged-message pair (drafts.md AND cover_letters.md, its FILES tuple). Keying by title
     # alone would let a draft's state answer for a same-titled cover letter.
+    _DRAFTS_REL, _COVERS_REL = _tree.rel("drafts"), _tree.rel("cover_letters")
     try:
         import precondition as _pre
         _pre_rows = _pre.report(str(ROOT))
-        _states = {(r.get("file", "drafts.md"), r["title"]): r for r in _pre_rows}
+        _states = {(r.get("file", _DRAFTS_REL), r["title"]): r for r in _pre_rows}
         _not_sendable = _pre.NOT_SENDABLE
+        _terminal = _pre.TERMINAL
     except Exception:
-        _pre_rows, _states, _not_sendable = [], {}, frozenset()
+        _pre_rows, _states, _not_sendable, _terminal = [], {}, frozenset(), frozenset()
 
     # ⭐ dev #154 — a READY staged message no open ask covers gets a DERIVED queue line, so
     # it can never again read as "nothing is waiting". Membership is your_move.py's
@@ -1461,7 +1693,7 @@ def main():
         _ready_rows = []
     _ready_items = [("✉️ %s" % r["title"],
                      "Approve and send — staged in %s and cleared to go; no open ask "
-                     "points at it. The full text is in the panel below." % r["file"], None)
+                     "points at it. Read the full text on the outreach page." % r["file"], None)
                     for r in _ready_rows]
     your_move_ready_html = ""
     if _ready_items:
@@ -1479,12 +1711,22 @@ def main():
     def _pre_state(filename, title):
         return _states.get((filename, title), {}).get("state")
 
-    _sendable = [d for d in drafts if _pre_state("drafts.md", d[0]) not in _not_sendable]
-    _blocked = [d for d in drafts if _pre_state("drafts.md", d[0]) in _not_sendable]
-    drafts_html = render_draft_entries(_sendable, "No pending drafts.")
-    blocked_html = render_draft_entries(_blocked, "")
+    # public #29 — a TERMINAL entry (sent / moot) is excluded before the sendable/blocked split
+    # even runs. It must land in NEITHER list: "blocked" reads as "blocked on someone else",
+    # which a sent or moot entry is not, and "sendable" is exactly the bug being fixed.
+    _drafts_active = [d for d in drafts if _pre_state(_DRAFTS_REL, d[0]) not in _terminal]
+    _sendable = [d for d in _drafts_active if _pre_state(_DRAFTS_REL, d[0]) not in _not_sendable]
+    _blocked = [d for d in _drafts_active if _pre_state(_DRAFTS_REL, d[0]) in _not_sendable]
+    # ⭐ dev #233 — the STATE VIEW gets the index (title + status + location); the FULL
+    # text renders once, on the outreach phase page, which is the reading surface for
+    # approval. Inlining every body here is what made one page 639 KB.
+    drafts_html = render_draft_index(_sendable, _states, _DRAFTS_REL,
+                                     "No pending drafts.", "outreach")
+    blocked_html = render_draft_index(_blocked, _states, _DRAFTS_REL, "", "outreach")
+    drafts_full_html = render_draft_entries(_sendable, "No pending drafts.")
+    blocked_full_html = render_draft_entries(_blocked, "")
     n_blocked = len(_blocked)
-    _blocked_why = {t: _states.get(("drafts.md", t), {}).get("why", "") for t, _ in _blocked}
+    _blocked_why = {t: _states.get((_DRAFTS_REL, t), {}).get("why", "") for t, _ in _blocked}
 
     # ⭐ ONE LIST, NOT FIVE. See render_opportunity_list for why.
     _opp_rows = load_jsonl("opportunities.jsonl")
@@ -1495,10 +1737,15 @@ def main():
     # Before this, a cover letter carrying a send-hold rendered as READY on the outward-facing
     # artifact: the sendable/blocked split was applied to drafts alone. Same grouping rule:
     # membership in precondition.NOT_SENDABLE, never a literal state comparison (issue #13).
-    _covers_ready = [c for c in covers if _pre_state("cover_letters.md", c[0]) not in _not_sendable]
-    _covers_held = [c for c in covers if _pre_state("cover_letters.md", c[0]) in _not_sendable]
-    covers_html = render_draft_entries(_covers_ready, "No cover letters pending.")
-    covers_held_html = render_draft_entries(_covers_held, "")
+    _covers_active = [c for c in covers if _pre_state(_COVERS_REL, c[0]) not in _terminal]
+    _covers_ready = [c for c in _covers_active if _pre_state(_COVERS_REL, c[0]) not in _not_sendable]
+    _covers_held = [c for c in _covers_active if _pre_state(_COVERS_REL, c[0]) in _not_sendable]
+    covers_html = render_draft_index(_covers_ready, _states, _COVERS_REL,
+                                     "No cover letters pending.", "outreach")
+    covers_held_html = render_draft_index(_covers_held, _states, _COVERS_REL, "",
+                                          "outreach")
+    covers_full_html = render_draft_entries(_covers_ready, "No cover letters pending.")
+    covers_held_full_html = render_draft_entries(_covers_held, "")
     n_covers_held = len(_covers_held)
 
     # dev #148 — the sourcing strategy surface, derived from channels.jsonl +
@@ -1507,10 +1754,15 @@ def main():
     sourcing_active_html, sourcing_retired_html = render_sourcing_tables(_src_active,
                                                                           _src_retired)
 
-    # GitHub #94 — the durable knowledge artifacts, rendered as CONTENT, not filename chips.
+    # GitHub #94 gave these files a readable published rendering; dev #233 moves that
+    # rendering to the PHASE pages (call preps → conversations, company kb → pipeline) and
+    # leaves the state view an index — #94's need (readable away from a checkout) still
+    # holds, on a page whose weight is carried only when you open it.
     _preps, _kbs = knowledge_docs()
-    preps_html = render_knowledge_docs(_preps, "No call preps on file.")
-    kbs_html = render_knowledge_docs(_kbs, "No company knowledge files yet.")
+    preps_html = render_knowledge_index(_preps, "No call preps on file.", "conversations")
+    kbs_html = render_knowledge_index(_kbs, "No company knowledge files yet.", "pipeline")
+    preps_full_html = render_knowledge_docs(_preps, "No call preps on file.")
+    kbs_full_html = render_knowledge_docs(_kbs, "No company knowledge files yet.")
     n_knowledge = len(_preps) + len(_kbs)
 
     # %-d is a glibc/BSD strftime extension; on Windows it raises ValueError and kills the
@@ -1842,11 +2094,11 @@ def main():
   <div class="sub" style="margin:-6px 0 10px">Decisions about the tracker, scripts, credentials, or tooling that only you can make. Same rule: each stays until it is done.</div>
   <div class="ym-card"><div class="ym-head">Needs your input</div>{needs_html or '<div class="sub" style="padding:8px 0">Nothing here needs you right now.</div>'}</div>
   <h2>✉️ Pending drafts — awaiting your approval to send</h2>
-  <div class="sub" style="margin:-6px 0 10px">Nothing is ever sent without your explicit approval.</div>
+  <div class="sub" style="margin:-6px 0 10px">Nothing is ever sent without your explicit approval. Each row names its state and where the full text lives — read it on the <strong>outreach</strong> page before approving.</div>
   <div class="card">{drafts_html}</div>
   {'<h2 style="font-size:16px;margin-top:22px">⏳ Waiting on someone else <span class="tcount">' + str(n_blocked) + '</span></h2><div class="sub" style="margin:-6px 0 10px">Written and ready, but blocked until the other person acts. <strong>Not yours to do</strong> — shown so you know it exists, and it moves to the list above by itself once the precondition is met.</div><div class="card">' + blocked_html + '</div>' if n_blocked else ''}
   <h2>📄 Cover letters — for applications you submit yourself</h2>
-  <div class="sub" style="margin:-6px 0 10px">The “why this role is a fit” message that goes with an ATS application. Every claim traces to resume.md. You paste and submit these yourself — nothing is applied on your behalf.</div>
+  <div class="sub" style="margin:-6px 0 10px">The “why this role is a fit” message that goes with an ATS application. Every claim traces to the claim union (presence/claims.md). You paste and submit these yourself — nothing is applied on your behalf. Full text on the <strong>outreach</strong> page.</div>
   <div class="card">{covers_html}</div>
   {'<h2 style="font-size:16px;margin-top:22px">⏳ Cover letters held — do not submit yet <span class="tcount">' + str(n_covers_held) + '</span></h2><div class="sub" style="margin:-6px 0 10px">Written, but carrying a send-precondition that is not met (or not yet structured). <strong>Not ready to submit</strong> — each moves to the list above by itself once its precondition resolves.</div><div class="card">' + covers_held_html + '</div>' if n_covers_held else ''}
 </div>
@@ -1902,10 +2154,11 @@ def main():
 
 <div class="tabpanel panel-know">
   <h2>📚 Knowledge — call preps &amp; company files</h2>
-  <div class="sub" style="margin:-6px 0 10px"><strong>What lives here:</strong> the durable
-  knowledge artifacts, readable in full from this page — the dated call-prep notes and the
-  per-company knowledge base. Each is collapsed behind its title; click to read. Durable
-  content from a prep is promoted to the company file before the prep is archived.</div>
+  <div class="sub" style="margin:-6px 0 10px"><strong>What lives here:</strong> the index of
+  durable knowledge artifacts — the dated call-prep notes and the per-company knowledge base.
+  Read each in full on its phase page (call preps → <strong>conversations</strong>, company
+  files → <strong>pipeline</strong>). Durable content from a prep is promoted to the company
+  file before the prep is archived.</div>
   <h2 style="font-size:16px;margin-top:18px">📞 Call preps <span class="tcount">{len(_preps)}</span></h2>
   <div class="card">{preps_html}</div>
   <h2 style="font-size:16px;margin-top:18px">🏢 Company knowledge base <span class="tcount">{len(_kbs)}</span></h2>
@@ -1925,23 +2178,104 @@ def main():
 
 </div>"""
 
-    doc = f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>{html.escape(_dashboard_title())}</title><style>{css}</style></head><body>
-{body_inner}
-</body></html>"""
-    (ROOT / "dashboard.html").write_text(doc, encoding="utf-8")
+    _title = _dashboard_title()
 
-    # Body-only variant for publishing via the Artifact tool, which supplies
-    # its own <!doctype>/<html>/<head>/<body> wrapper.
-    artifact_doc = f"""<title>{html.escape(_dashboard_title())}</title>
+    # ── THE ROUTER'S NUMBERS (D2 / dev #233) — every one from its owning module. ──
+    import trigger as _trig
+    try:
+        _trep = _trig.report(str(ROOT))
+        _n_unblocked = sum(1 for s in _trep["sequences"].values()
+                           if s["state"] == "unblocked")
+        _n_untrig = len(_trep["untriggered"])
+    except Exception as _e:
+        # ⚠️ A failed scan must NEVER read as "nothing owed" — that is the missing-reads-
+        # as-empty trap. Zero counts with a loud next-action line, and a loud console line.
+        print("  !! WARNING: trigger scan failed (%s) — the outreach router row cannot "
+              "count sequences or unlinked applications; run trigger.py --check" % _e)
+        _n_unblocked, _n_untrig, _trep = 0, 0, None
+    import applying as _applying
+    _apply_q = _applying.queue(_opp_rows)
+    _apply_titles = ["%s — %s" % (_opp_comps.get(o.get("company_id"), {}).get(
+        "name", o.get("company_id", "")), o.get("title", "")) for o in _apply_q]
+    _ctx = {
+        "system_asks": [(t, a) for t, a, _o in system_asks],
+        "role_now": role_decisions, "decide_rows": decide_rows,
+        "apply_queue": _apply_titles,
+        "week": [e[1] for e in thisweek_focus if e[0] == "i"],
+        "n_sendable_msgs": len(_sendable) + len(_covers_ready),
+        "n_unblocked_seqs": _n_unblocked, "n_untriggered": _n_untrig,
+    }
+    _rows = phase_rows(_ctx)
+    if _trep is None:
+        _rows = [(p, n, ("⛔ trigger scan failed — sequence/follow-up counts are UNKNOWN, "
+                         "not zero; run trigger.py --check") if p == "outreach" else t)
+                 for p, n, t in _rows]
+    _selected, _share = publish_selection(_rows)
+
+    # ── The outputs. EVERY one is written EVERY run (see the module docstring). ──
+    (ROOT / "views").mkdir(exist_ok=True)
+
+    artifact_doc = f"""<title>{html.escape(_title)}</title>
 <style>{css}</style>
 {body_inner}"""
-    (ROOT / "dashboard_artifact.html").write_text(artifact_doc, encoding="utf-8")
+    # views/ since the 0.32.0 tree migration (public #28): generated output lives apart
+    # from authored sources; only the constant tombstone stays at the root habit path.
+    (ROOT / "views" / "dashboard_artifact.html").write_text(artifact_doc, encoding="utf-8")
 
-    print(f"Wrote dashboard.html ({len(doc)} bytes) and dashboard_artifact.html ({len(artifact_doc)} bytes), "
-          f"{n_move} Your Move items ({n_needs} system asks, {len(_ready_items)} ready staged), "
+    router_doc = render_router(_rows, _title, today)
+    (ROOT / "views" / "router_artifact.html").write_text(router_doc, encoding="utf-8")
+
+    def _phase_doc(phase, blurb, inner):
+        return (f'<title>{html.escape(_title)} — {phase}</title>\n<style>{css}</style>\n'
+                f'<h1>{html.escape(_title)} — {phase}</h1>'
+                f'<div class="updated">{today} · {blurb} · generated by '
+                f'generate_dashboard.py</div>\n{inner}')
+
+    # ⭐ Python 3.9 — CI's floor — forbids a backslash inside an f-string
+    # expression; 3.12+ allows it. The literal is hoisted so this file parses
+    # on the version that actually ships.
+    _EMPTY_WEEK = '<div class="sub">Nothing scheduled.</div>'
+    _phase_docs = {
+        "pipeline": _phase_doc(
+            "pipeline", "every live role in detail, plus the company knowledge base",
+            f'{stats_html}<div class="card opp-list">{opp_list_html}</div>'
+            f'<h2>🏢 Company knowledge base <span class="tcount">{len(_kbs)}</span></h2>'
+            f'<div class="card">{kbs_full_html}</div>'),
+        "conversations": _phase_doc(
+            "conversations", "this week&rsquo;s commitments, and every call prep in full",
+            f'<h2>📅 This week</h2><div class="card">'
+            f'{thisweek_html or _EMPTY_WEEK}</div>'
+            f'<h2>📞 Call preps <span class="tcount">{len(_preps)}</span></h2>'
+            f'<div class="card">{preps_full_html}</div>'),
+        "outreach": _phase_doc(
+            "outreach", "every pending message in full — the reading surface for approval",
+            f'<h2>✉️ Pending drafts — awaiting your approval</h2>'
+            f'<div class="card">{drafts_full_html}</div>'
+            + (f'<h2>⏳ Waiting on someone else <span class="tcount">{n_blocked}</span></h2>'
+               f'<div class="card">{blocked_full_html}</div>' if n_blocked else "")
+            + f'<h2>📄 Cover letters</h2><div class="card">{covers_full_html}</div>'
+            + (f'<h2>⏳ Cover letters held <span class="tcount">{n_covers_held}</span></h2>'
+               f'<div class="card">{covers_held_full_html}</div>' if n_covers_held else "")),
+    }
+    _sizes = {}
+    for _phase, _doc in _phase_docs.items():
+        _p = ROOT / "views" / ("phase-%s_artifact.html" % _phase)
+        _p.write_text(_doc, encoding="utf-8")
+        _sizes[_phase] = len(_doc.encode("utf-8"))
+
+    # The local full copy is RETIRED (public #22 / dev #233): a constant stub carries no
+    # state, so the two-copies staleness window is gone by construction.
+    (ROOT / "dashboard.html").write_text(DASHBOARD_TOMBSTONE, encoding="utf-8")
+
+    _pub = ["router", "dashboard"] + ["phase-%s" % p for p in _selected]
+    print(f"Wrote views/dashboard_artifact.html ({len(artifact_doc.encode('utf-8'))} bytes), "
+          f"views/router_artifact.html ({len(router_doc.encode('utf-8'))} bytes), "
+          + ", ".join("views/phase-%s_artifact.html (%d bytes)" % (p, _sizes[p])
+                      for p in sorted(_sizes))
+          + f", and the dashboard.html tombstone ({len(DASHBOARD_TOMBSTONE)} bytes)")
+    print(f"  publish set (count > equal share {_share:.1f}): {', '.join(_pub)} "
+          f"— phase pages below the threshold are still generated, just not published")
+    print(f"  {n_move} Your Move items ({n_needs} system asks, {len(_ready_items)} ready staged), "
           f"{n_week} This Week commitments, "
           f"{len(srows2)} sourced ({len(live_rows)} active / {len(closed_rows)} closed), "
           f"{len(_src_active)} sourcing channels ({n_sourcing_due} due, {len(_src_retired)} retired), "

@@ -62,14 +62,14 @@ different numbers for the same question in one review. **If the caller did not h
 funnel output, ask for it rather than re-deriving it.**
 
 **READS:** `log.md` since the last review · `git log --stat` · `handoff.md` ·
-`data/asks.jsonl` · `network.md` · the run skills · `data/opportunities.jsonl`.
+`data/asks.jsonl` · `outreach/network.md` · the run skills · `data/opportunities.jsonl`.
 
 **ON DEMAND ONLY — `docs/incident_archive.md`:** before proposing a change, check whether it
 was already tried and why it failed or was reverted. The 2026-07-19 review re-proposed a
 `wake_chrome` fix that had already shipped; a searchable incident record is what prevents
 that. **Do not read it as a standing input** — look up the specific thing you are proposing.
 
-**DOES NOT READ:** `resume.md` · `cover_letters.md` · `drafts.md` · `projects.md`.
+**DOES NOT READ:** `presence/claims.md` · `applying/cover_letters.md` · `outreach/drafts.md` · `presence/projects.md`.
 
 ⭐ **AND THAT INCLUDES WHEN YOU ARE LOOKING FOR WHAT IS MISSING FROM THEM.** Review item 4 asks
 which proof points do not exist yet, which reads like a reason to open both files — it is not.
@@ -83,7 +83,7 @@ You are the strategy layer for the candidate's executive search — the expensiv
 for judgment, not execution. You audit the process and propose improvements.
 
 Inputs: `log.md` (run history), `git log --stat` (change history), `data/opportunities.jsonl`,
-`data/asks.jsonl`, `network.md`, `handoff.md`, and the run skills.
+`data/asks.jsonl`, `outreach/network.md`, `handoff.md`, and the run skills.
 
 Each review:
 1. YIELD — per channel (retained firms, warm intros, LinkedIn outbound, inbound, boards): touches → replies → calls → advancing conversations. **RUN `~/.claude/jobsearch/run funnel_report.py` — do NOT compute this by hand from `git log --stat`.** The script exists for exactly this job, refuses to print a rate below n=5, and states plainly what the data still cannot answer; deriving it by hand is how a confidently-wrong number gets into a review. Use git history only for changes the funnel report does not cover.
@@ -97,7 +97,7 @@ Each review:
 4. **⭐⭐ DATA GAPS — what is missing that would improve the RESPONSES?** This is the one nobody
    asks and it is often the answer. When a JD keeps calling for something the material only covers
    thinly, the gap is usually not the candidate's experience — it is that the experience **was
-   never written down.** `projects.md` and `resume.md`'s "Additional Detail" addenda exist exactly
+   never written down.** `presence/projects.md` and `presence/claims.md`'s "Additional Detail" addenda exist exactly
    for facts that are true and unprinted, and **absence from the printed resume is not evidence a
    fact cannot be used.** Name the specific proof point to elicit and the roles it would unlock.
    `fit_report.py --gaps` is the register; a recurring gap there is a data gap, not a fit problem.

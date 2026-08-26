@@ -3,14 +3,14 @@
 
 ⭐ WHY THIS EXISTS
 ------------------
-`resume.md` and `projects.md` are human-edited by design — they are the candidate's own prose and
+`presence/claims.md` (the claim union, formerly resume.md) and `presence/projects.md` are human-edited by design — they are the candidate's own prose and
 must stay that way. But two conventions inside them are load-bearing for the ENGINE, and until
 now nothing checked either one:
 
     projects.md   every proof point carries a `**Surface when:**` trigger. Eight agents and
                   skills GREP for it. That grep is how a project reaches a draft at all.
 
-    resume.md     an `Additional Detail` addenda section holds facts confirmed but deliberately
+    claims.md     an `Additional Detail` addenda section holds facts confirmed but deliberately
                   not printed. Agents check it before concluding a fact is unavailable.
 
 **Neither is validated by `validate_data.py`** — that gates the four JSONL files and only mentions
@@ -35,7 +35,7 @@ malformed trigger, which came from misreading a legitimate parenthetical variant
 `**` runs on, the trigger text is swallowed into the bold run, and what a reader sees is a
 formatting smudge rather than a missing hook.
 
-**FAIL** — `resume.md` with no `Additional Detail` heading at all. Agents check the addenda
+**FAIL** — `claims.md` with no `Additional Detail` heading at all. Agents check the addenda
 before concluding a fact is unavailable; without the heading that check silently finds nothing.
 
 **NOTE** — an entry with no trigger. Some sections legitimately are not proof points (a list of
@@ -63,6 +63,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
+import _tree
 
 # ⭐ ONLY LINE-INITIAL TRIGGERS COUNT — and getting this wrong makes the gate useless.
 #
@@ -119,11 +120,11 @@ def check_projects(path, verbose=False):
 def check_resume(path):
     fails = []
     if not os.path.exists(path):
-        return [("resume.md", 0, "file is missing entirely")]
+        return [("claims.md", 0, "file is missing entirely")]
     with open(path, encoding="utf-8") as fh:
         text = fh.read()
     if not ADDENDA.search(text):
-        fails.append(("resume.md", 0,
+        fails.append(("claims.md", 0,
                       "no `Additional Detail` heading. Agents check the addenda before "
                       "concluding a fact is unavailable; without this heading that check "
                       "silently finds nothing and real, confirmed facts go unused."))
@@ -136,8 +137,8 @@ def main():
     args = ap.parse_args()
     root = profile_root()
 
-    projects = os.path.join(root, "projects.md")
-    resume = os.path.join(root, "resume.md")
+    projects = _tree.path(root, "projects")
+    resume = _tree.path(root, "claims")
 
     print("NARRATIVE CONVENTIONS — can the engine still find what is in these files?")
     print("=" * 78)
@@ -146,7 +147,7 @@ def main():
     if not os.path.exists(projects) and not os.path.exists(resume):
         # No profile on this host (CI, a fresh clone). Say NOT CHECKED rather than clean —
         # the same rule the purity gate learned the hard way.
-        print("\n  !! NOT CHECKED: neither projects.md nor resume.md is present here.")
+        print("\n  !! NOT CHECKED: neither projects.md nor claims.md is present here.")
         print("     Expected in CI. This is NOT a clean result and must not be read as one.")
         return 0
 

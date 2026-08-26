@@ -1,6 +1,6 @@
 ---
 name: onboarding
-description: Set up a NEW user's job search from scratch — read their resume, fill user.json and config.json, build resume.md and projects.md, and elicit the facts a resume never contains (comp floors, relocation, hard boundaries). Use when someone is installing this for the first time, says "set up my job search", "onboard me", or has run init_profile.py and needs the conversational half.
+description: Set up a NEW user's job search from scratch — read their resume, fill user.json and config.json, build presence/claims.md and presence/projects.md, and elicit the facts a resume never contains (comp floors, relocation, hard boundaries). Use when someone is installing this for the first time, says "set up my job search", "onboard me", or has run init_profile.py and needs the conversational half.
 ---
 
 # Onboarding — the conversational half
@@ -43,20 +43,26 @@ Missing files → `--scaffold`. **Never hand-create these**; the script guarante
 
 Ask for it in any form (paste, file, PDF). Then:
 
-- **`resume.md` gets the resume VERBATIM.** Its own sentences, its own numbers, its own bullets.
-  This file becomes the source of truth for every background claim the system ever makes, and
-  **paraphrasing at this step poisons everything downstream** — a summarized bullet once dropped
-  the clause naming an employer's marquee customers, and the sentence survived while the credential
-  in it did not. Copy. Do not improve.
+- **`presence/claims.md` gets the resume VERBATIM.** Its own sentences, its own numbers, its own bullets.
+  **`presence/claims.md` is the CLAIM UNION, not a printed artifact** — the source of truth for every
+  background claim the system ever makes, in send-ready wording. A new profile has no declared
+  variants, so `presence/claims.md` also doubles as the one printed resume: that is the normal, degenerate
+  case, not a different mechanism. If the candidate later needs more than one printed page (e.g.
+  an executive-facing page and a technical-facing page), each becomes its own variant file,
+  declared in `data/resume_variants.jsonl` — see `docs/schema.md`'s `resume_variants.jsonl`
+  section. **Paraphrasing at this step
+  poisons everything downstream** — a summarized bullet once dropped the clause naming an
+  employer's marquee customers, and the sentence survived while the credential in it did not.
+  Copy. Do not improve.
 - **`user.json`** gets name, city/metro, contact details, LinkedIn URL, mailboxes.
-- **`projects.md`** gets one entry per substantial thing they built, each with a
+- **`presence/projects.md`** gets one entry per substantial thing they built, each with a
   **`Surface when:`** trigger naming the kind of JD it answers. This is what later drafts grep.
 
 ## 2. Elicit what the resume does NOT say — the actual value of this step
 
 A resume is a public document, written to be safe. The facts that win roles are usually absent from
 it. **Ask these, and record the answers in a `## Additional Detail (elicited beyond the resume)`
-section of `resume.md`:**
+section of `presence/claims.md`:**
 
 1. **Customers, scale and numbers that were left off.** "Your resume says you built X — who used
    it? How many? What did it save?" Marquee customer names are routinely omitted and are routinely

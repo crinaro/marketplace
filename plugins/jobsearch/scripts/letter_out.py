@@ -33,6 +33,7 @@ import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
+import _tree
 import profile as prof
 
 MODES = ("drive", "local_docx")
@@ -88,7 +89,7 @@ def set_mode(mode):
 # ---------------------------------------------------------------- reading the draft
 
 def _letters_path():
-    return os.path.join(profile_root(), "cover_letters.md")
+    return _tree.path(profile_root(), "cover_letters")
 
 
 def find_entry(needle):
@@ -279,7 +280,7 @@ def _send_hold(heading):
     human may legitimately prepare the file ahead), but never silent."""
     try:
         import precondition as _pre
-        for r in _pre.report(profile_root(), filenames=("cover_letters.md",)):
+        for r in _pre.report(profile_root(), filenames=(_tree.rel("cover_letters"),)):
             if r["title"] == heading and r["state"] in _pre.NOT_SENDABLE:
                 return r
     except Exception:

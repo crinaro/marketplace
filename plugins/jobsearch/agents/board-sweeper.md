@@ -57,8 +57,8 @@ back to searching the filesystem, which can find the wrong engine (dev #159).
 `~/.claude/jobsearch/run pipeline_index.py --excluded` (so a declined role is never re-sourced) ·
 `~/.claude/jobsearch/run profile.py` (titles and geography to search for).
 
-**DOES NOT READ** `resume.md` · `projects.md` · `strategy.md` in full · `drafts.md` ·
-`cover_letters.md` · `data/messages.jsonl` · `log.md`. You are finding roles, not assessing a
+**DOES NOT READ** `presence/claims.md` · `presence/projects.md` · `configure/strategy.md` in full · `outreach/drafts.md` ·
+`applying/cover_letters.md` · `data/messages.jsonl` · `log.md`. You are finding roles, not assessing a
 person against them.
 
 **DOES NOT** write `data/*.jsonl`, draft anything, contact anyone, submit a form, or click apply.

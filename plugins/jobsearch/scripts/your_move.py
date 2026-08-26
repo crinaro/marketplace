@@ -198,7 +198,7 @@ def ready_staged_without_ask(root, asks=None, pre_rows=None):
             continue
         if any(ask_covers_staged_message(a, r["title"]) for a in open_):
             continue
-        out.append({"file": r.get("file", "drafts.md"), "title": r["title"],
+        out.append({"file": r.get("file", _pre.FILES[0]), "title": r["title"],
                     "why": "staged and cleared to send; no open ask points at it"})
     return out
 

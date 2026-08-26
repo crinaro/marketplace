@@ -35,10 +35,11 @@ import sys
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
+import _tree
 
 ROOT = _profile_root()
 OPPS = os.path.join(ROOT, "data", "opportunities.jsonl")
-FILES = ("drafts.md", "cover_letters.md")
+FILES = (_tree.rel("drafts"), _tree.rel("cover_letters"))
 
 
 def load_opps():
@@ -73,7 +74,7 @@ def sent_markers(opps):
 
 def pending_headings(path):
     """-> [(lineno, heading)] for '## ' entries. A '_..._' status note is NOT pending."""
-    p = os.path.join(ROOT, path)
+    p = _tree.resolve_rel(ROOT, path)
     if not os.path.exists(p):
         return []
     out = []

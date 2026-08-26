@@ -20,7 +20,8 @@ Two outputs, and the second is the durable one:
    draft.
 2. **Gap harvesting** — every requirement nothing on file corroborates becomes a targeted
    question. Their answer is filed into a store that already exists (`projects.md`,
-   `resume.md`'s "Additional Detail" addenda, or `kb_<company>.md`), so the NEXT role starts
+   the claim union's "Additional Detail" addenda (presence/claims.md; store label `resume.md`
+   for continuity with existing fit blocks), or `kb_<company>.md`), so the NEXT role starts
    from a fuller picture. Their resume is deliberately incomplete; this is how the missing
    context gets captured while a live role makes it concrete.
 
@@ -178,7 +179,7 @@ def main():
         print("  None open. Every gap surfaced so far has been answered and filed.")
     else:
         print("  %d question(s). Each answer is filed into an EXISTING store —" % len(gaps))
-        print("  projects.md · resume.md's 'Additional Detail' addenda · kb_<company>.md —")
+        print("  projects.md · the claim union's addenda (presence/claims.md; label 'resume.md') · kb_<company>.md —")
         print("  so the next role's analysis starts from a fuller picture.\n")
         for o, q in gaps:
             print("  ❓ %s" % q["question_for_candidate"])

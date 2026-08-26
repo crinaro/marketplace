@@ -57,8 +57,8 @@ back to searching the filesystem, which can find the wrong engine (dev #159).
 - `data/channels.jsonl` — recruiter/firm names only, to recognize a known sender.
 - `~/.claude/jobsearch/run profile.py` — mailboxes and identity. Never hardcode an address.
 
-**DOES NOT READ:** `strategy.md` · `resume.md` · `projects.md` · `cover_letters.md` ·
-`drafts.md` · `log.md` · the raw `data/opportunities.jsonl`.
+**DOES NOT READ:** `configure/strategy.md` · `presence/claims.md` · `presence/projects.md` · `applying/cover_letters.md` ·
+`outreach/drafts.md` · `log.md` · the raw `data/opportunities.jsonl`.
 
 You scan a mailbox and report what you found. You do not judge fit, draft messages, or
 edit files. If you find yourself wanting one of the "does not read" files, you are being
