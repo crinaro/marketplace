@@ -168,15 +168,32 @@ def _install_identity():
     return (name or "crinaro-marketplace"), plugin
 
 
+def _rendered_template(marketplace, plugin):
+    """The exact bytes `install()` writes for this (marketplace, plugin) identity.
+
+    ⭐ SINGLE SOURCE OF TRUTH, shared with `heal_if_stale()`. The two used to compute this
+    independently — `install()` inline, `heal_if_stale()` as a name-only substring test — and
+    the second one drifted from the first the moment TEMPLATE grew a behavioural fix (the
+    cache-freeze rejection block, dev #199-adjacent) that touched no marketplace or plugin name.
+    A launcher generated before that fix still contains the current name in full, so the old
+    substring test read it as `healthy` and never regenerated it — the exact shape of dev #199's
+    own lesson (classify by what a thing DOES, not by what it is called), recurring one level
+    down. Rendering here and comparing full bytes in `heal_if_stale()` catches ANY drift from
+    today's TEMPLATE, not just a renamed identity.
+    """
+    body = TEMPLATE
+    if (marketplace, plugin) != ("crinaro-marketplace", "jobsearch"):
+        body = body.replace("crinaro-marketplace/jobsearch", "%s/%s" % (marketplace, plugin))
+    return body
+
+
 def install():
     os.makedirs(HOME_DIR, exist_ok=True)
     # TEMPLATE carries the default identity so it stays testable as-is; a non-default
     # marketplace or plugin name is substituted at install time (it appears in the CACHE
     # variable and in the no-engine error message — both must move together).
     marketplace, plugin = _install_identity()
-    body = TEMPLATE
-    if (marketplace, plugin) != ("crinaro-marketplace", "jobsearch"):
-        body = body.replace("crinaro-marketplace/jobsearch", "%s/%s" % (marketplace, plugin))
+    body = _rendered_template(marketplace, plugin)
     with open(LAUNCHER, "w", encoding="utf-8") as fh:
         fh.write(body)
     os.chmod(LAUNCHER, os.stat(LAUNCHER).st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -188,8 +205,9 @@ def install():
 
 
 def heal_if_stale(apply_it=True):
-    """Regenerate `~/.claude/jobsearch/run` when it already exists but bakes in a stale
-    marketplace identity (marketplace issue: identifier rename).
+    """Regenerate `~/.claude/jobsearch/run` when it already exists but its BODY has drifted
+    from what `install()` would write today — a stale marketplace identity (the original case:
+    identifier rename) or any other change to TEMPLATE the launcher predates.
 
     ⭐ SAME SHAPE AS `heal_install.py` (adr-014): install-machinery self-heal, not a profile
     migration — it runs from `migrate.py`'s own SessionStart hook regardless of whether a
@@ -207,6 +225,18 @@ def heal_if_stale(apply_it=True):
     run fails with "No usable engine", even though a perfectly good install exists one path
     segment over. Regenerating the launcher whenever it exists and disagrees with the
     CURRENTLY-DERIVED identity closes that gap.
+
+    ⚠️ THE PREDICATE COMPARES THE FULL RENDERED BODY, NOT A NAME SUBSTRING. It used to test only
+    `"cache/%s/%s" % (marketplace, plugin) in body` — which stays true forever once the name is
+    right, even when TEMPLATE has since changed underneath it for an unrelated reason. That is
+    exactly what happened to the version-freeze fix (the `"$CACHE"/*` rejection block that makes
+    a pointer inside the install cache advisory rather than authoritative, so an old install
+    doesn't silently freeze the engine at whatever version the pointer happened to name): a
+    launcher generated before that fix, but AFTER any marketplace rename, already contains the
+    current name in full — the old substring test read it as `healthy` and never regenerated it,
+    leaving that launcher permanently unable to resolve past a stale in-cache pointer. Comparing
+    against `_rendered_template()` byte-for-byte catches that drift and any future one, because
+    it asks "would `install()` write something different?" rather than "does the name look ok?".
 
     ⭐ ONLY ACTS ON AN EXISTING LAUNCHER. A user who never ran `install_launcher.py` (or
     onboarding) gets nothing created here — creating one from nothing stays onboarding's job,
@@ -227,22 +257,25 @@ def heal_if_stale(apply_it=True):
     except Exception as e:                      # noqa: BLE001 — fails open, deliberately
         return "error", ["  ⚠️ could not derive the current install identity (%s: %s) — "
                          "launcher left unchanged." % (type(e).__name__, e)]
-    want = "cache/%s/%s" % (marketplace, plugin)
+    expected = _rendered_template(marketplace, plugin)
     try:
         with open(LAUNCHER, encoding="utf-8") as fh:
             body = fh.read()
     except OSError as e:
         return "error", ["  ⚠️ could not read %s (%s) — launcher left unchanged." % (LAUNCHER, e)]
-    if want in body:
+    if body == expected:
         return "healthy", []
+    want = "cache/%s/%s" % (marketplace, plugin)
+    reason = ("a cache path (not %s) that no longer matches this install, likely left over "
+              "from a marketplace rename" % want) if want not in body else (
+              "the current install identity, but its generated body has drifted from what "
+              "this engine version writes today")
     if not apply_it:
         return "would-heal", [
-            "  would regenerate %s — it names a cache path (not %s) that no longer matches "
-            "this install, likely left over from a marketplace rename." % (LAUNCHER, want)]
+            "  would regenerate %s — it names %s." % (LAUNCHER, reason)]
     install()
     return "healed", [
-        "  ✅ %s regenerated for the current install (%s) — it was naming a stale cache path, "
-        "left over from a marketplace rename." % (LAUNCHER, want)]
+        "  ✅ %s regenerated for the current install — it was naming %s." % (LAUNCHER, reason)]
 
 
 if __name__ == "__main__":

@@ -2,6 +2,13 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.32.0
+- [#29](https://github.com/crinaro/marketplace/issues/29) — Ready-to-send panel does not exclude drafts already marked SENT or MOOT/DO-NOT-SEND
+- [#28](https://github.com/crinaro/marketplace/issues/28) — The profile directory tree is a primary interface and is not designed as one: 23 files at root, no home for application work, retired files still present, and engine directories vestigially mixed into a profile repo
+- [#27](https://github.com/crinaro/marketplace/issues/27) — The dashboard is a state view, but applying is a process: there is no working surface for an application session, and follow-up work is not linked to what triggers it
+- [#26](https://github.com/crinaro/marketplace/issues/26) — Resume variants are not a first-class concept: one canonical file cannot serve two buyer archetypes, and nothing detects when it falls behind what is actually sent
+- The dashboard inlines whole documents into a state view: 613KB in one page, a duplicate local copy, and artifacts reportedly not rendering on mobile *(tracked internally as crinaro/marketplace-dev#233)*
+
 ## jobsearch 0.31.0
 - gmail-multi should support send/reply/forward; jobsearch must enforce draft-only as policy rather than rely on the capability being absent *(tracked internally as crinaro/marketplace-dev#213)*
 - jobsearch vendors an entire MCP server to use five library functions from it *(tracked internally as crinaro/marketplace-dev#211)*
