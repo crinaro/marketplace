@@ -194,6 +194,38 @@ KNOWN_EXCEPTIONS = (
      "one row of the IMAP provider table (PROVIDER_HELP) — a generic mail-provider entry, not "
      "personal data; collides only because this owner's profile separately names the same "
      "company as an employer encountered"),
+    # ⭐ dev/audit 2026-08-29 (item 3) — three more hits of #225's class, all from the SAME
+    # hardcoded, generic six-entry job-board list (aggregator senders alert_sweep.py watches
+    # for) that has shipped in this plugin since its first import (commit `0ea6c62`,
+    # 2026-08-05) — present in EVERY installation, derived from nothing profile-specific. The
+    # collision fires only because this owner's own profile separately names one of those six
+    # ordinary board names as an employer encountered, and encountered()'s term extraction
+    # pulled that word out, then matched it against these unrelated hardcoded strings.
+    # ⚠️ Per the block above: none of the four terms below, nor this comment, repeat the
+    # colliding board name itself — each is drawn from text immediately AROUND it in the real
+    # source line, the same "describe without repeating" move #222 used, because this gate
+    # scans its own source and a spelled-out term here would be tomorrow's fresh hit.
+    ("scripts/watch.py", "OR from:linkedin OR from:", 225,
+     "one board in the hardcoded alert-digest search query's generic job-board list; collides "
+     "only because this owner's profile separately names the same word as an employer "
+     "encountered"),
+    ("scripts/alert_sweep.py", "Dice, CareerBuilder, ", 225,
+     "a board name in the module docstring's list of the same generic hardcoded aggregators "
+     "watch.py/migrate.py also carry; collides only because this owner's profile separately "
+     "names the same word as an employer encountered"),
+    ("scripts/migrate.py", '": "from:', 225,
+     "one row of LEGACY_ALERT_SENDERS — the same hardcoded generic job-board list kept here "
+     "only as the 0.27.0 backfill's source of truth; collides only because this owner's "
+     "profile separately names the same word as an employer encountered. ⚠️ This term is the "
+     "template text shared by all six rows (`\"<key>\": \"from:<key>\",`), so it is narrower "
+     "than the file alone but not narrower than the row — a future profile term that happens "
+     "to also match one of the other five board names in this SAME dict would be suppressed "
+     "here too; no substring of only the colliding row avoids spelling the row's own key, so "
+     "this is the least-broad term available without doing that (see the block above)."),
+    ("scripts/migrate.py", "dice / careerbuilder / ", 225,
+     "a comment enumerating the same six hardcoded board-name keywords, not personal data; "
+     "collides only because this owner's profile separately names the same word as an "
+     "employer encountered"),
 )
 
 # Every tracked engine file. The families above remain a taxonomy and an emptiness guard; this

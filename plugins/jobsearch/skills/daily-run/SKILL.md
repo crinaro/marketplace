@@ -274,7 +274,7 @@ From `outreach/network.md`: check warm-intro deadlines. If fewer than 2 network 
 
 **Any draft must be saved IN FULL to `outreach/drafts.md`** (its header carries the entry format — **the
 body MUST be `> `-blockquoted or it publishes EMPTY**). A one-line summary elsewhere is not enough;
-**the candidate reads the full text off the published outreach page, not the transcript.** Cover letters go to
+**the candidate reads the full text off the published dashboard, not the transcript.** Cover letters go to
 `applying/cover_letters.md` via **`cover-letter-writer`** — a different artifact with different length,
 constraints and failure mode.
 
@@ -366,21 +366,32 @@ UNKNOWN, never a pass**, and two artifacts sharing an iCalendar UID are ONE meet
 highest `SEQUENCE` wins. Anything it surfaces goes into `data/commitments.jsonl` (the store
 behind the This Week tab) before the dashboard.
 
-**⭐ BEFORE PROMISING A CALL-PREP NOTE, ASK WHETHER ONE ALREADY EXISTS — AND NOT ONLY IN
-`conversations/`.** Prep material for one company can be sitting in any of THREE durable stores:
-a live dated note (`conversations/call_prep_<date>.md`), an already-archived one
-(`archive/call-preps/`), or the promoted durable knowledge file (`pipeline/kb/<company_id>.md` — the
-PROMOTION step below moves durable content OUT of the dated note and INTO the kb file, so a
-company with an active `pipeline/kb/` file can already carry what a repeat prep would say). For any
-upcoming call, run `~/.claude/jobsearch/run knowledge.py --prep-exists <company_id>` before
-writing "prep note to follow" anywhere — This Week, the summary, or the handoff. If it reports
-a hit, **link to that file, never re-promise it.** Added 2026-08-04, corrected 2026-08-19 (dev
-#153) after checking `conversations/` alone missed prep already promoted to `pipeline/kb/<company_id>.md`
-and re-promised it as owed across multiple runs — the guard now asks the same three stores
-`knowledge.py` already resolves joins against, rather than re-implementing a narrower version
-of that check by hand. A promise from a stateless background run to do future work is the
-failure mode this whole design avoids — the artifact already on disk is the source of truth;
-verify it before asserting work is outstanding.
+**⭐ THEN ASK WHAT EACH UPCOMING CALL STILL NEEDS — AND DRAIN EVERY `PREP OWED` ROW THIS
+RUN.** After anything new is recorded into `data/commitments.jsonl`:
+
+```bash
+~/.claude/jobsearch/run conversations.py
+```
+
+It regenerates `views/conversations.md` and prints one row per commitment in the horizon
+(default 7 days), each resolved against the three durable prep stores through
+`knowledge.prep_hits` — the single existence predicate (dev #153: checking `conversations/`
+alone once missed prep already promoted to `pipeline/kb/<company_id>.md` and re-promised it
+as owed across multiple runs; this script asks the same resolver `knowledge.py` uses, never
+a narrower re-implementation). The old rule — *ask whether one already exists before
+promising* — is now a property of the script, not something a run must remember.
+
+**For every row it prints as `⛔ PREP OWED` (`owed` or `owed-partial`): invoke the
+`call-prep` skill NOW, in this run's write phase** — the same way `trigger.py`'s
+sendable-now rows are worked when they surface, the fact makes the firing inevitable. On a
+`prepped` row, **link to the file(s) it names, never re-promise a note that exists.** A
+`unlinked`/`unreadable`/unplaceable-date row is a data fix this run makes before anything
+else. If the note cannot be finished here (research unavailable), `call-prep` writes the
+records-only note marked `**Prep status:** incomplete — <reason>` and the row stays
+`owed-partial` — **report it as still owed in the summary; never report a drained row that
+was not drained.** A promise from a stateless background run to do future work is the
+failure mode this whole design avoids — the artifact on disk is the source of truth, and a
+row that keeps standing is the self-healing form of loudness.
 
 **⭐ A PREP NOTE JOINS THE PIPELINE; ITS ARCHIVE RECORDS THE PROMOTION** (issue #12 — both
 stores looked populated and answered nothing). Every prep note carries a `**Companies:**`
@@ -427,14 +438,17 @@ to zero.**
 ~/.claude/jobsearch/run check_dashboard_fresh.py --fix
 ```
 
-Then **grep the OUTPUT** (`views/phase-outreach_artifact.html` — message and letter bodies render
-there since dev #233) for a distinctive phrase from what you added.
+Then **grep the OUTPUT** (`views/dashboard_artifact.html` — sendable message and letter bodies
+render on the ONE page since the 2026-08-29 collapse) for a distinctive phrase from what you added.
 **Verifying the source file is not verifying the deliverable** — a body that fails to render is
-indistinguishable from one never written. Publish with the Artifact tool: the generator's summary
-names the publish set (always `views/router_artifact.html` and `views/dashboard_artifact.html`, plus the
-phase pages whose volume clears the computed threshold). Pass each page's own url file as `url`
-(`views/dashboard_artifact_url.txt`; `views/<page>_url.txt` for the others) so it redeploys to the same
-artifact; create the file if absent. Skip gracefully (and note it) if the tool is unavailable.
+indistinguishable from one never written. Publish with the Artifact tool: **ONE artifact, every
+round** — `views/dashboard_artifact.html`, to the URL in `views/dashboard_artifact_url.txt` (the
+router and phase pages are retired). Create the artifact and write that url file in the same step
+if it is absent — a fresh install has neither, and that is the defined `never-published` state, not
+an error. Skip gracefully (and note it) if the tool is unavailable. If
+`~/.claude/jobsearch/run pending_stubs.py --check` reports retired-URL rows, drain them while you
+hold the tool (stub-publish first, `--published` only after it is confirmed — that order is what
+keeps a retired URL stubbable at all).
 
 **⭐ If the publish reports a VERSION CONFLICT, another session published since you generated
 (dev #133 / public #22). Never pass `force`, and never drop the publish silently:** re-run

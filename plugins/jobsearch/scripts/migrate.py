@@ -1611,6 +1611,111 @@ def m_0_32_0_tree(profile, apply_it):
     return True, prefix + "; ".join(moved + lines)
 
 
+def m_0_34_0_dashboard_collapse(profile, apply_it):
+    """0.34.0 — the published dashboard SET collapses to ONE artifact (owner-approved
+    2026-08-26; ADR-019's threshold clause reversed). This migration handles the RETIRED
+    per-page URLs, and it can only ever RECORD: it runs from a SessionStart hook as a
+    deterministic script, and the Artifact tool is model-invoked only — no script can
+    publish the "moved" stub the old URLs need. So the retirement is two-phase
+    (scripts/pending_stubs.py owns the ledger and the drain protocol):
+
+      1. HERE: every `views/*_url.txt` other than the surviving
+         `dashboard_artifact_url.txt` becomes a pending-stub row (page, url_file, the URL
+         itself, state=pending). **The url file is NOT deleted** — retiring it before its
+         stub publish is confirmed would make that URL permanently unstubbable, which is
+         exactly the dangling-live-URL outcome the collapse exists to remove.
+      2. A tool-holding session drains the ledger: publish the constant moved-stub to
+         each URL, and only then `pending_stubs.py --published <page>` retires the file.
+
+    ⭐ AN ABSENT url file is BENIGN — "that page never published", never an error. Two
+    phases on the reference profile are in exactly that state. A url file whose content
+    does not parse as a URL is recorded LOUDLY as state `unresolved` (an unreadable value
+    must never read as handled) and the file is kept.
+
+    The retired GENERATED pages (views/router_artifact.html, views/phase-*_artifact.html)
+    are deleted: they are re-derivable by construction (the 0.32.0 tree migration's own
+    rule for generated files), and a generated file nothing regenerates is the
+    linger-stale defect this collapse removes. Authored files are untouched.
+
+    Idempotent: pending_stubs.record() is keyed by page, and a second run finds the
+    generated pages already gone.
+
+    ⚠️ RE-KEYED FROM 0.33.0 TO 0.34.0 (release-manager, preparing 0.34.0). This function was
+    written and originally registered under "0.33.0" while 0.33.0 was still unpublished — but
+    0.33.0 then shipped (tag jobsearch--v0.33.0, MIGRATIONS ending at 0.32.0, no entry for
+    this migration at all) before this work was added. `pending_for()` compares with strict
+    `<`: a profile that installed the real 0.33.0 has a stamp of exactly "0.33.0", and
+    `ver("0.33.0") < ver("0.33.0")` is False — so a migration keyed "0.33.0" would silently
+    never fire for that profile on any later upgrade. Verified empirically (not just reasoned
+    about): `pending_for(stamp="0.33.0", engine="0.34.0")` returned `[]` before this rename.
+    Keying it to 0.34.0 — the version it actually ships in — is what makes `stamp < "0.34.0"`
+    true for that exact profile.
+    """
+    import pending_stubs as _stubs
+
+    views = os.path.join(profile, "views")
+    lines, recorded, unresolved = [], [], []
+
+    candidates = []
+    for d in (views, profile):          # profile root: pre-0.32.0 stragglers
+        if not os.path.isdir(d):
+            continue
+        for name in sorted(os.listdir(d)):
+            if not name.endswith("_url.txt") or name in _stubs.SURVIVING_URL_FILES:
+                continue
+            candidates.append((name, os.path.join(d, name)))
+
+    for name, path in candidates:
+        page = name[:-len("_url.txt")]
+        try:
+            content = open(path, encoding="utf-8").read().strip()
+        except OSError as e:
+            content = ""
+            lines.append("url file %s unreadable (%s)" % (name, e))
+        ok_url = content.startswith(("http://", "https://"))
+        state = "pending" if ok_url else "unresolved"
+        if apply_it:
+            if _stubs.record(profile, page, os.path.relpath(path, profile),
+                             content if ok_url else "", state=state):
+                (recorded if ok_url else unresolved).append(page)
+        else:
+            (recorded if ok_url else unresolved).append(page)
+
+    removed = []
+    if os.path.isdir(views):
+        for name in sorted(os.listdir(views)):
+            if name == "router_artifact.html" or (name.startswith("phase-")
+                                                  and name.endswith("_artifact.html")):
+                if apply_it:
+                    os.unlink(os.path.join(views, name))
+                removed.append(name)
+
+    if not (candidates or removed):
+        return True, ("  dashboard collapse (0.34.0): nothing to record — no retired "
+                      "url files or generated phase pages found (a phase that never "
+                      "published has nothing to stub; that is the benign case)")
+    if apply_it and not (recorded or unresolved or removed or lines):
+        return True, ("  dashboard collapse (0.34.0): every retired url already "
+                      "recorded — idempotent no-op (drain state lives in "
+                      "data/pending_stubs.jsonl)")
+    bits = []
+    if recorded:
+        bits.append("%d retired URL(s) recorded as pending stubs (%s) — a tool-holding "
+                    "session drains them via scripts/pending_stubs.py; url files kept "
+                    "until each stub publish is CONFIRMED" % (len(recorded),
+                                                              ", ".join(recorded)))
+    if unresolved:
+        bits.append("%d url file(s) did not parse as a URL and were recorded LOUDLY as "
+                    "unresolved (%s)" % (len(unresolved), ", ".join(unresolved)))
+    if removed:
+        bits.append("removed %d re-derivable generated page(s): %s"
+                    % (len(removed), ", ".join(removed)))
+    bits.extend(lines)
+    prefix = "  ✅ dashboard collapse (0.34.0): " if apply_it \
+        else "  would collapse the published set (0.34.0): "
+    return True, prefix + "; ".join(bits)
+
+
 MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               ("0.17.0", m_0_17_0), ("0.18.0", m_0_18_0), ("0.19.0", m_0_19_0),
               ("0.20.0", m_0_20_0), ("0.24.0", m_0_24_0_blocked_until),
@@ -1620,10 +1725,20 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               ("0.27.0", m_0_27_0_alert_sender_backfill),
               ("0.29.0", m_0_29_0_gmail_connector_config),
               ("0.31.0", m_0_31_0_mail_client_rename),
-              # ⭐ the tree migration stays LAST in its version: earlier migrations in the
-              # same pending batch (a stamp several minors behind) write the OLD paths and
-              # are correct at the moment they run, because this one has not moved them yet.
-              ("0.32.0", m_0_32_0_tree))
+              # ⭐ the tree migration stays LAST among pre-0.33 migrations: earlier
+              # migrations in the same pending batch (a stamp several minors behind) write
+              # the OLD paths and are correct at the moment they run, because this one has
+              # not moved them yet. The dashboard-collapse migration comes AFTER it for the
+              # same ordering reason in reverse — it reads the post-move views/ layout.
+              #
+              # ⚠️ KEYED "0.34.0", NOT "0.33.0" — see m_0_34_0_dashboard_collapse's docstring.
+              # It was written while 0.33.0 was unpublished, but 0.33.0 shipped without it
+              # (jobsearch--v0.33.0's MIGRATIONS ends at 0.32.0), so a profile that installed
+              # that real release has a stamp of exactly "0.33.0". pending_for()'s strict "<"
+              # means a migration keyed "0.33.0" would never fire for that profile on any
+              # later upgrade. It must be keyed to the version it actually ships in.
+              ("0.32.0", m_0_32_0_tree),
+              ("0.34.0", m_0_34_0_dashboard_collapse))
 
 
 def pending_for(profile, engine=None):
@@ -1649,12 +1764,110 @@ def pending_for(profile, engine=None):
     return [v for v, _fn in MIGRATIONS if ver(stamp) < ver(v) <= ver(engine)]
 
 
+_TRAMPOLINE_ENV = "CLAUDESEARCH_MIGRATE_TRAMPOLINED"
+_SEMVER_RE_STR = r"^\d+\.\d+\.\d+$"
+
+
+def _find_newest_complete_installed(marketplace, plugin):
+    """(version, path) of the newest INSTALLED copy of this (marketplace, plugin) identity that
+    is COMPLETE — has both `scripts/` and `.claude-plugin/plugin.json` — or None.
+
+    Same "complete" test as the generated launcher's own newest-wins walk (install_launcher.py's
+    TEMPLATE): a version directory can exist mid-sync, and a directory caught mid-install must
+    never be preferred over an older but genuinely complete one just because its name sorts
+    higher. Numeric comparison only (`ver()`), never lexicographic."""
+    import re
+    import _root
+    base = os.path.join(_root.CACHE_ROOT, marketplace, plugin)
+    if not os.path.isdir(base):
+        return None
+    best = None
+    try:
+        names = os.listdir(base)
+    except OSError:
+        return None
+    for name in names:
+        if not re.match(_SEMVER_RE_STR, name):
+            continue
+        cand = os.path.join(base, name)
+        if not os.path.isdir(os.path.join(cand, "scripts")):
+            continue
+        if not os.path.isfile(os.path.join(cand, ".claude-plugin", "plugin.json")):
+            continue
+        tup = ver(name)
+        if best is None or tup > best[0]:
+            best = (tup, name, cand)
+    return (best[1], best[2]) if best else None
+
+
+def _maybe_trampoline_to_newest(argv):
+    """⭐⭐ THE GOVERNING INVARIANT FOR THIS WHOLE HOOK: no code shipped here may run inside a
+    session that resolves an OLD installed copy, because everything this function's caller is
+    about to do — `heal_install`, the launcher heal, the rulebook refresh, every profile
+    migration — executes as code belonging to THAT copy. An older copy cannot apply a newer
+    fix; it can only ever apply yesterday's version of itself, however faithfully.
+
+    So: before any of that runs, check whether THIS copy of `migrate.py` is older than the
+    newest COMPLETE installed copy of the same (marketplace, plugin) identity. If it is, re-exec
+    that copy's `migrate.py` with the same argv and exit with its return code — nothing below
+    this function ever runs from the stale copy at all.
+
+    Loop-guarded via `CLAUDESEARCH_MIGRATE_TRAMPOLINED`: a second hop always proceeds locally
+    rather than re-trampolining, so a resolution race (two copies each briefly believing the
+    other is newest) cannot recurse. Silent no-op — never raises, never re-execs — when: this
+    process is already a hop (the env flag is set); the running copy is a CHECKOUT rather than
+    an installed one (`is_installed_engine`) — a deliberate dev tree is not something this ever
+    second-guesses, matching `_remember_engine`'s own "installed outranks checkout, but a
+    checkout is still honored on its own"; this copy's own version cannot be read or does not
+    look like semver; or nothing newer and complete is installed. FAILS OPEN, ALWAYS, same rule
+    as everything else in this module — a trampoline that cannot resolve cleanly must never block
+    the session; it just lets this (possibly stale) copy continue, exactly as before this existed.
+    """
+    if os.environ.get(_TRAMPOLINE_ENV):
+        return False
+    try:
+        import _root
+        my_root = _root.engine_root()
+        if not _root.is_installed_engine(my_root):
+            return False                              # a checkout — never second-guessed
+        import re
+        import install_launcher
+        marketplace, plugin = install_launcher._install_identity()
+        my_version = engine_version()
+        if not re.match(_SEMVER_RE_STR, my_version):
+            return False
+        newest = _find_newest_complete_installed(marketplace, plugin)
+        if not newest:
+            return False
+        newest_version, newest_path = newest
+        if ver(newest_version) <= ver(my_version):
+            return False                              # this copy already IS the newest complete
+        target = os.path.join(newest_path, "scripts", "migrate.py")
+        if not os.path.isfile(target):
+            return False
+        diag("migrate", verdict="trampolined", frm=my_version, to=newest_version)
+        env = dict(os.environ)
+        env[_TRAMPOLINE_ENV] = "1"
+        r = subprocess.run([sys.executable, target] + list(argv), env=env)
+        sys.exit(r.returncode)
+    except SystemExit:
+        raise
+    except Exception as e:                            # noqa: BLE001 — fails open, deliberately
+        diag("migrate", verdict="trampoline-error", reason=type(e).__name__)
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true", help="report only; write nothing")
     ap.add_argument("--hook", action="store_true", help="silent when there is nothing to say")
     args = ap.parse_args()
+
+    # ── trampoline to the newest COMPLETE installed copy, before anything else runs ──────────
+    # Must be first: every import below belongs to THIS copy, so any of it running before the
+    # trampoline check defeats the whole point (see _maybe_trampoline_to_newest's own docstring).
+    _maybe_trampoline_to_newest(sys.argv[1:])
 
     # ── install self-heal, BEFORE the profile half (marketplace issue #11, adr-014) ─────────
     # One mechanism keeps both halves current with the running version: this hook migrates the

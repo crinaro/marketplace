@@ -117,6 +117,17 @@ KB_EXEMPT = frozenset({"readme.md"})
 # the underscore form. Scanning a directory that does not exist is a no-op, not an error.
 ARCHIVE_DIRS = (os.path.join("archive", "call-preps"), os.path.join("archive", "call_preps"))
 
+# ⭐ The degraded-prep marker (deployment.md, "call-prep on the unattended run"). A prep note
+# written without its research half — browser broken, counterparty unresolvable — carries
+#     **Prep status:** incomplete — <reason>
+# so a partial prep cannot silently impersonate a full one. ABSENT field = complete: every
+# note written before this marker existed is a full prep, and an ordinary complete note owes
+# no ceremony. A field that opens with neither word is UNREADABLE — loud, never guessed over
+# (the precondition.py rule: a marker nobody can read looks handled and is not).
+PREP_STATUS_RE = re.compile(r"^\*\*Prep status:\*\*\s*(.+?)\s*$", re.M | re.I)
+PREP_INCOMPLETE_RE = re.compile(r"^incomplete\b", re.I)
+PREP_COMPLETE_RE = re.compile(r"^complete\b", re.I)
+
 
 class KnowledgeError(ValueError):
     """Unparseable. Deliberately loud — see the module docstring."""
@@ -332,17 +343,43 @@ def prep_exists_for(root, company_id):
 
     Returns the list of relative paths that already carry this company's prep (empty = no
     existing prep found anywhere; a guard treats that, and only that, as "still owed").
+
+    The scan itself lives in `prep_hits()` below — this stays the compatibility face of the
+    same single predicate (paths only, company kind), so nothing that consumes it re-derives
+    the store list.
+    """
+    return [p for p, _status in prep_hits(root, company_id, "company")]
+
+
+def prep_hits(root, counterparty_id, kind="company"):
+    """The same single existence predicate as `prep_exists_for`, with two additions the
+    unattended call-prep drain needs (deployment.md) — still THE one place, so a future
+    fourth store or third status only ever changes here:
+
+      * each hit carries its **status**: `complete` | `incomplete` (the degraded
+        records-only note, `PREP_STATUS_RE`) | `unreadable` (a status field nobody can
+        parse — loud, and a consumer must treat it as NOT satisfying the prep). A kb hit
+        is always `complete`: promotion is the definition of durable, finished content.
+      * `kind="channel"` resolves a call with a recruiting firm — a `channel:<id>` token
+        on the note's `**Companies:**` line (the form daily-run's join rule already
+        names). kb/ is per COMPANY, so the channel kind consults the dated notes only.
+
+    Returns [(relpath, status)]. Empty means no prep anywhere — still owed. Hits that are
+    all `incomplete` mean a partial prep exists and the work is STILL OWED (owed-partial):
+    a partial prep must never satisfy the predicate.
     """
     hits = []
-    kb_path = os.path.join(_tree.path(root, "kb"), company_id + ".md")
-    if os.path.isfile(kb_path):
-        try:
-            if _read(kb_path).strip():
-                hits.append(os.path.relpath(kb_path, root))
-        except OSError:
-            pass
+    if kind == "company":
+        kb_path = os.path.join(_tree.path(root, "kb"), counterparty_id + ".md")
+        if os.path.isfile(kb_path):
+            try:
+                if _read(kb_path).strip():
+                    hits.append((os.path.relpath(kb_path, root), "complete"))
+            except OSError:
+                pass
 
-    needle = re.compile(r"\bcompany\s*:\s*" + re.escape(company_id) + r"\b", re.I)
+    needle = re.compile(r"\b" + re.escape(kind) + r"\s*:\s*"
+                        + re.escape(counterparty_id) + r"\b", re.I)
     prep_dirs = [_tree.path(root, "call_preps")] + [os.path.join(root, d) for d in ARCHIVE_DIRS]
     for d in prep_dirs:
         rel_dir = os.path.relpath(d, root)
@@ -355,8 +392,22 @@ def prep_exists_for(root, company_id):
                 continue
             m = PREP_FIELD_RE.search(md)
             if m and needle.search(m.group(1)):
-                hits.append(os.path.join(rel_dir, name))
+                hits.append((os.path.join(rel_dir, name), prep_status(md)))
     return hits
+
+
+def prep_status(md):
+    """complete | incomplete | unreadable, from the note's own `**Prep status:**` line.
+    Absent = complete (see PREP_STATUS_RE's comment); unparseable = loud, never guessed."""
+    m = PREP_STATUS_RE.search(md)
+    if not m:
+        return "complete"
+    raw = m.group(1)
+    if PREP_INCOMPLETE_RE.match(raw):
+        return "incomplete"
+    if PREP_COMPLETE_RE.match(raw):
+        return "complete"
+    return "unreadable"
 
 
 def pursuit_rows(root, joined):
@@ -402,12 +453,21 @@ def main():
 
     if args.prep_exists:
         root = profile_root()
-        hits = prep_exists_for(root, args.prep_exists)
-        if hits:
+        hits = prep_hits(root, args.prep_exists, "company")
+        if hits and any(s == "complete" for _p, s in hits):
             print("Prep already exists for %s:" % args.prep_exists)
-            for h in hits:
-                print("  ✅ %s" % h)
+            for h, s in hits:
+                print("  %s %s%s" % ("✅" if s == "complete" else "🚧", h,
+                                     "" if s == "complete" else " (%s)" % s))
             print("\nLink to the file(s) above — do not promise a new prep note.")
+        elif hits:
+            # A partial prep must not satisfy the predicate (deployment.md): every hit is
+            # incomplete or unreadable, so the prep is STILL OWED — finish it in place.
+            print("Only PARTIAL/unreadable prep exists for %s — still owed:" % args.prep_exists)
+            for h, s in hits:
+                print("  🚧 %s (%s)" % (h, s))
+            print("\nFinish the note(s) above in place (call-prep) — do not start a second "
+                  "file, and do not report this prep as written.")
         else:
             print("No existing prep found for %s in kb/, call_preps/, or "
                   "archive/call-preps/." % args.prep_exists)

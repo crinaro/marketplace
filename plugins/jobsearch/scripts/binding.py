@@ -96,6 +96,69 @@ def _diag_event(verdict):
         pass                       # evidence is best-effort; the verdict never depends on it
 
 
+def _epoch(iso_ts):
+    """`_diag.py`'s own timestamp shape (`%Y-%m-%dT%H:%M:%SZ`, UTC) -> epoch seconds, or None."""
+    import calendar
+    import time
+    try:
+        return calendar.timegm(time.strptime(iso_ts, "%Y-%m-%dT%H:%M:%SZ"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _pointer_advisory():
+    """One advisory line to stderr — never touches the exit code or the stdout contract — when
+    the MACHINE diagnostics log shows repeated engine-pointer repairs or a stale-copy-session
+    refusal recorded SINCE this engine's version last changed. `doctor.py`'s pointer section
+    reads the same two event classes for the same reason (its own docstring: frequency is the
+    signal, one repair is housekeeping, many is a live poisoner) — this is the same observable
+    surfaced at the one place every agent already passes through first (`--assert`), so a
+    poisoner does not require someone to think to run `doctor.py` before it is noticed.
+
+    ⚠️ "since this engine's version last changed" is APPROXIMATED by this install's own
+    `.claude-plugin/plugin.json` mtime — no exact "version changed at" timestamp exists anywhere
+    on disk, and a file's own write time is the closest honest proxy available without inventing
+    a new stamp. Good enough to separate "before this release" from "under it," not exact to the
+    second — said here rather than implied, per this file's own rule about honest limits.
+
+    Best-effort and silent on any failure: an advisory that cannot be computed must never affect
+    binding's actual verdict or block a caller that only wants that verdict."""
+    try:
+        from _root import engine_root
+        import _diag
+        pj = os.path.join(engine_root(), ".claude-plugin", "plugin.json")
+        since = os.path.getmtime(pj)
+    except Exception:                                    # noqa: BLE001
+        return
+    try:
+        lines = _diag.tail(_diag.MAX_LINES, path=_diag.MACHINE_LOG)
+    except Exception:                                     # noqa: BLE001
+        return
+    repairs = stale = 0
+    for l in lines:
+        try:
+            rec = json.loads(l)
+        except ValueError:
+            continue
+        when = _epoch(rec.get("at"))
+        if when is not None and when < since:
+            continue                                      # from before this version — stale news
+        ev = rec.get("event")
+        if ev == "pointer-repair":
+            repairs += 1
+        elif ev == "stale-copy-session":
+            stale += 1
+    if stale:
+        print("NOTE: %d stale-copy-session refusal(s) recorded since this engine version was "
+              "installed — a session somewhere ran an OLDER copy than what is now installed and "
+              "refused to regenerate the launcher backward. See doctor.py." % stale,
+              file=sys.stderr)
+    elif repairs >= 3:
+        print("NOTE: %d engine-pointer repair(s) recorded since this engine version was "
+              "installed — this may be a live poisoner rewriting the pointer backward, not "
+              "one-off housekeeping. See doctor.py." % repairs, file=sys.stderr)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Is this session bound to a job-search profile, and by what evidence?")
@@ -105,6 +168,8 @@ def main():
     args = ap.parse_args()
 
     b = binding()
+    if args.assert_:
+        _pointer_advisory()
     if args.json:
         print(json.dumps(b, sort_keys=True))
         return EXIT_BOUND if b["bound"] else (

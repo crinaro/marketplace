@@ -56,6 +56,7 @@ a subdirectory, the way git does.
 """
 
 import os
+import re
 
 MARKERS = ("config.json", "data")
 
@@ -312,6 +313,33 @@ def is_installed_engine(path):
     return len(rest) >= 2 and rest[1] == _INSTALLED_PLUGIN_NAME
 
 
+_SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+def _installed_identity(path):
+    """(marketplace, plugin, version) for an installed cache path, or None.
+
+    Structural, matching `is_installed_engine()`'s own reasoning: the marketplace segment is
+    read, never matched against a literal, and `version` is accepted only when it is strictly
+    `\\d+.\\d+.\\d+` — a partially-synced or hand-named directory (a checkout copied in by hand,
+    a version directory mid-write) must never be treated as a comparable release."""
+    p = os.path.realpath(path or "")
+    if not p:
+        return None
+    root = os.path.realpath(CACHE_ROOT)
+    if not (p == root or p.startswith(root + os.sep)):
+        return None
+    rest = p[len(root):].lstrip(os.sep).split(os.sep)
+    if len(rest) < 3 or rest[1] != _INSTALLED_PLUGIN_NAME or not _SEMVER.match(rest[2]):
+        return None
+    return rest[0], rest[1], rest[2]
+
+
+def _version_tuple(v):
+    """Numeric, never lexicographic — '1.10.0' must sort after '1.9.0', not before it."""
+    return tuple(int(x) for x in v.split("."))
+
+
 def _remember_engine(path):
     try:
         if is_ephemeral_engine(path):
@@ -338,6 +366,25 @@ def _remember_engine(path):
             # what makes it a deliberate act rather than a side effect of running anything.
             if (current and os.path.isdir(current)
                     and is_installed_engine(current) and not is_installed_engine(path)):
+                return
+            # ⭐⭐ BETWEEN TWO INSTALLED COPIES OF THE SAME IDENTITY, NEVER REPLACE NEWER WITH
+            # OLDER. The guard above only stops a CHECKOUT from hijacking a pointer that names an
+            # install; it does not fire when BOTH sides are installed copies of the same
+            # (marketplace, plugin) — which is exactly the every-session shape once a machine has
+            # two cache directories (the install cache keeps every version ever installed, by
+            # design — see install_launcher.py's TEMPLATE docstring). Without this, whichever
+            # copy happens to import LAST wins the pointer regardless of version: a scheduled run
+            # still resolving an old copy (a session that started before the newest release
+            # landed, an agent invoked from a stale working directory) would silently drag the
+            # durable pointer backward on every import, and the newest install — the one that
+            # `~/.claude/jobsearch/run` itself already treats as authoritative — would keep
+            # getting immediately overwritten by the record of the very tool that would
+            # transparently replace it. Compared numerically, never lexicographically
+            # (`_version_tuple`): `1.9.0` must not read as newer than `1.10.0`.
+            cur_id = _installed_identity(current) if current else None
+            new_id = _installed_identity(path)
+            if (cur_id and new_id and cur_id[0] == new_id[0] and cur_id[1] == new_id[1]
+                    and _version_tuple(new_id[2]) < _version_tuple(cur_id[2])):
                 return
             if current and not is_ephemeral_engine(current) and os.path.isdir(current):
                 if os.path.realpath(current) == os.path.realpath(path):

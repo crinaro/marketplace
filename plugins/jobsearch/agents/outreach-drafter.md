@@ -168,9 +168,9 @@ clearly labeled — **never send anything.**
 builds each message card from `>`-prefixed lines ONLY. A plain-prose body reads perfectly in the
 source file and publishes **completely empty** — indistinguishable from a draft that was never
 written. That shipped on 2026-07-27 and only the candidate noticed. After the dashboard is
-regenerated, **grep the OUTPUT (`views/phase-outreach_artifact.html` — full message bodies render
-THERE since dev #233; the state view carries only an index) for a distinctive phrase from what you
-wrote** — verifying the source file is not verifying the deliverable.
+regenerated, **grep the OUTPUT (`views/dashboard_artifact.html` — a SENDABLE message's full body renders on
+the one page since the 2026-08-29 collapse; held ones stay index rows) for a distinctive phrase
+from what you wrote** — verifying the source file is not verifying the deliverable.
 
 **Structure a multi-recipient campaign with `### Recipient N of M` and `#### A. / B.` headings.**
 The renderer preserves them and gives each quoted body its own card, so the pieces stay

@@ -9,41 +9,38 @@ plus, since dev #154, the staged-message pair (drafts.md / cover_letters.md via
 precondition.report) for the ready-no-ask group; the Sourcing tab (dev #148) is a view of
 channels.jsonl + opportunities.jsonl sightings through channels_due.py's derivations.
 
-⭐⭐ THE PUBLISHING MODEL — dev #233 (with public #27), 2026-08-25.
-MEASURED on a live profile: the old single dashboard was 639 KB for 63 table rows,
-because drafts, cover letters and knowledge artifacts rendered IN FULL into what is
-otherwise a state view (knowledge 328 KB, staged messages 129 KB, CSS 18 KB). A page
-that size is not a phone surface, and a second local copy (dashboard.html, 159 bytes
-apart from the artifact) was a staleness window nothing kept closed (public #22).
+⭐⭐ THE PUBLISHING MODEL — ONE ARTIFACT (2026-08-29, owner-approved 2026-08-26;
+supersedes dev #233's publish set, which supersedes the 639 KB single page before it).
 
-The split is by PURPOSE: an artifact is a snapshot — right for "what is true now",
-structurally wrong for "work through this". So:
+dev #233 split the published view into a data-dependent SET: router + state view
+always, plus each phase page whose item count cleared a computed threshold. The
+threshold made URL EXISTENCE a function of the DATA, and the failure was MEASURED on
+a live profile, not theorised: a phase page that published once and later fell under
+the line stopped republishing while its URL kept serving the old snapshot (a phase
+url file with no entry in the current publish stamp), and two phases carried
+generated pages with no url file at all. A stale page that looks current is worse
+than an absent one. The sharding was solving a page-size problem the de-inlining had
+already solved (639 KB → 224 KB measured), so the set collapses to:
 
-  dashboard_artifact.html            the six-tab STATE view. Documents render as
-                                     title + status + location, NEVER in full.
-  views/router_artifact.html         one bounded row per phase (configure · presence ·
-                                     pipeline · applying · conversations · outreach)
-                                     with the next action and a count — the page that
-                                     opens on a phone (D2).
-  views/phase-pipeline_artifact.html the opportunity list in detail + company knowledge.
-  views/phase-conversations_...html  the week + call preps in full (public #20's need:
-                                     a call prep readable the night before, anywhere).
-  views/phase-outreach_...html       every PENDING message in full — the reading
-                                     surface for approval ("the candidate reads the
-                                     full text off the published page, not the
-                                     transcript"). Sent messages have no entry left,
-                                     so this page is bounded by pending volume.
-  dashboard.html                     a constant TOMBSTONE STUB. The local full copy is
-                                     retired; a stub carries no state, so the old
-                                     two-copies staleness window is gone BY
-                                     CONSTRUCTION, not by a check.
+  views/dashboard_artifact.html      THE one published page. The router is its top
+                                     section — one bounded row per phase with two
+                                     counts (needs-you headline, in-flight muted) —
+                                     and each phase is an in-page anchor
+                                     (#phase-<name>). Working sets are capped tables
+                                     (WORKING_SET_CAP below); documents render as
+                                     title + status + location, never in full —
+                                     EXCEPT a body awaiting the owner's decision
+                                     (a sendable message), which is the one kind of
+                                     document the page exists to let them read.
+  dashboard.html                     the constant TOMBSTONE STUB (unchanged; the
+                                     two-copies staleness window stays closed by
+                                     construction).
 
-⭐ EVERY output above is written on EVERY run — nothing is conditional on volume, so a
-page can never linger stale because this profile's shape shifted. What the volume
-threshold selects is the PUBLISH SET: a phase page is worth its own published artifact
-when its item count strictly exceeds its equal share of all phase items (total across
-the six phases / 6) — a function of this profile's own distribution, never a constant
-wearing a formula. The summary line names the selection; the session publishes those.
+One Artifact call per run, always to the URL in views/dashboard_artifact_url.txt —
+the oldest bookmark wins. The retired per-page URLs get a constant "moved" stub via
+scripts/pending_stubs.py (recorded by migrate.m_0_34_0_dashboard_collapse, drained
+by a tool-holding session — the Artifact tool is model-invoked only; no script can
+publish).
 
 The working surface for applying is NOT here and not an artifact at all — it is
 views/applying.md (applying.py), regenerated in session, because working means writing
@@ -80,8 +77,6 @@ OWNER_TOKEN = _profile.owner_token()
 # relabelling another currency as dollars is a right number under a wrong unit.
 CURRENCY = _profile.currency_symbol()
 
-
-FOCUS_CLAMP = 240  # chars of focus "why" prose shown before collapsing behind a toggle
 
 # ⭐ `next_action` IS NOT A SHORT IMPERATIVE — measured, not assumed. On the live pipeline all 35
 # live roles carrying one are over 120 chars: median 419, max 1052. They are recommendation
@@ -154,85 +149,15 @@ def md_inline(s: str) -> str:
     return s
 
 
-def section_text(md: str, header: str) -> str:
-    """Return the text of a '## header' section (until next ## or EOF)."""
-    m = re.search(rf"^##\s+{re.escape(header)}.*?$(.*?)(?=^##\s|\Z)",
-                  md, re.M | re.S)
-    return m.group(1) if m else ""
+# (`section_text` / `parse_table` removed 2026-08-29 with the Network tab — see the
+# tombstone comment above `best_link` for the full list and the reason.)
 
 
-def parse_table(text: str):
-    """Parse the first markdown pipe table in text -> (headers, rows)."""
-    lines = [l for l in text.splitlines() if l.strip().startswith("|")]
-    if len(lines) < 2:
-        return [], []
-    def cells(line):
-        return [c.strip() for c in line.strip().strip("|").split("|")]
-    headers = cells(lines[0])
-    rows = [cells(l) for l in lines[2:]]  # skip separator row
-    return headers, [r for r in rows if any(c and not c.startswith("_(") for c in r)]
-
-
-def is_closed_status(status: str) -> bool:
-    s = status.lower()
-    return any(k in s for k in ("closed", "removed", "ruled out", "not pursued", "dropped",
-                                 "declined", "no contact", "passed", "filled", "excluded"))
-
-
-def status_chip(status: str) -> str:
-    s = status.lower()
-    if is_closed_status(status):
-        cls = "closed"
-    elif any(k in s for k in ("your move", "%s replies" % OWNER_TOKEN, "%s sends" % OWNER_TOKEN,
-                               "%s:" % OWNER_TOKEN, "next:", "reply owed", "book ")):
-        cls = "action"
-    elif any(k in s for k in ("scheduled", "booked", "call held", "held")):
-        cls = "scheduled"
-    else:
-        cls = "waiting"
-    return f'<span class="chip {cls}">{md_inline(status)}</span>'
-
-
-def first_url(text: str) -> str:
-    """Pull the first http(s) URL out of a free-text cell (e.g. a Notes column's
-    'Posting: https://...' convention), trimming trailing prose punctuation."""
-    m = re.search(r"https?://\S+", text)
-    if not m:
-        return ""
-    return m.group(0).rstrip(").,;”’'\"")
-
-
-def comp_dot(comp: str) -> str:
-    """A small colored dot signaling whether comp text reads as clearing or missing the floor."""
-    c = comp.lower()
-    if any(k in c for k in ("clears", "clear the", "comfortably clear", "exceeds")):
-        return '<span class="dot dot-clear" title="Clears comp floor"></span>'
-    if any(k in c for k in ("below", "not disclosed", "unconfirmed", "unverified")):
-        return '<span class="dot dot-below" title="Below floor / unconfirmed"></span>'
-    return '<span class="dot dot-unknown" title="Comp unclear"></span>'
-
-
-def render_table(headers, rows, status_cols=(), comp_col=None, link_col=None) -> str:
-    if not rows:
-        return '<div class="sub">Nothing here right now.</div>'
-    out = ["<table><tr>"]
-    out += [f"<th>{esc(h)}</th>" for h in headers]
-    out.append("</tr>")
-    for r in rows:
-        out.append("<tr>")
-        for i, c in enumerate(r[:len(headers)]):
-            if i == link_col:
-                cell = f'<a href="{esc(c)}" target="_blank" rel="noopener">JD ↗</a>' if c else '<span class="sub">—</span>'
-            elif i in status_cols:
-                cell = status_chip(c)
-            elif i == comp_col:
-                cell = comp_dot(c) + md_inline(c)
-            else:
-                cell = md_inline(c)
-            out.append(f"<td>{cell}</td>")
-        out.append("</tr>")
-    out.append("</table>")
-    return "".join(out)
+# `is_closed_status`, `status_chip`, `first_url`, `comp_dot` and `render_table` lived here
+# until 2026-08-29 and served the markdown-table Network tab alone. The one-artifact collapse
+# retired that tab (D4: the network is queried, not queued — it never contributes a count),
+# so they went with it rather than lingering never-called (the render_fit()/GitHub #5 trap).
+# `parse_table` and `section_text` below went the same way, same date, same reason.
 
 
 # `parse_your_move`, `strip_your_move` and the `## ⚡ Your Move` regex lived here until
@@ -409,8 +334,11 @@ def _touch_detail(o):
 _EMPTY_OPP_COUNTS = {"all": 0, "you": 0, "applied": 0, "person": 0, "nothing": 0}
 
 
-def render_opportunity_list(opps, companies):
-    """One row per LIVE role. Closed roles are not here — they are not opportunities.
+def render_opportunity_list(opps, companies, cap=None):
+    """One row per LIVE role, waiting-on-you first, CAPPED (the collapse's volume rule:
+    rows are ordered so the cap trims the quiet tail — a role waiting on the candidate can
+    never be the row that gets cut). The counts are always over the FULL set. Closed roles
+    are not here — they are not opportunities.
 
     ⭐ dev #80 — the counts dict has a FIXED shape (all/you/applied/person/nothing) because
     main() indexes every key unconditionally to build the filter bar. The empty-live case used
@@ -512,11 +440,31 @@ def render_opportunity_list(opps, companies):
             f'  <div class="opp-meta">{meta}</div>'
             f'  {nxt}{body}'
             f'</div>')
-    return "".join(rows), counts
+    cap = cap if cap is not None else WORKING_SET_CAP
+    shown, rest = rows[:cap], rows[cap:]
+    more = ""
+    if rest:
+        more = ('<div class="sub ws-more">+%d more live roles — the counts above cover '
+                'every one; the full list lives in <code class="fileref">'
+                'data/opportunities.jsonl</code> (pipeline_index.py renders it in '
+                'session).</div>' % len(rest))
+    return "".join(shown) + more, counts
 
-def render_your_move(items, links=None) -> str:
+def render_your_move(items, links=None, cap=None, more_at=None) -> str:
+    """The numbered ask list (callout groups, Decide, Ready-to-send). Since the one-artifact
+    collapse it takes the same cap every working set takes: items are already ordered
+    soonest-first before they arrive here, so the cap trims only the tail, and the remainder is
+    counted and located rather than silently absent."""
     if not items:
         return '<div class="sub">Nothing is waiting on you right now.</div>'
+    cap = cap if cap is not None else WORKING_SET_CAP
+    shown, rest = items[:cap], items[cap:]
+    more = ""
+    if rest:
+        more = ('<div class="sub ws-more">+%d more — every one is still counted in the '
+                'heading; the full set lives in %s.</div>'
+                % (len(rest), md_inline(more_at or "the operating store (`data/`)")))
+    items = shown
     links = links or {}
     parts = []
     for n, item in enumerate(items, 1):
@@ -529,49 +477,15 @@ def render_your_move(items, links=None) -> str:
             f'<div class="ym-item"><div class="ym-num">{n}</div><div>'
             f'<div class="ym-title">{md_inline(t)}{jd_html}</div>'
             f'<div class="ym-ask">{md_inline(w)}</div></div></div>')
-    return "".join(parts)
+    return "".join(parts) + more
 
 
-# `parse_focus` is gone with focus.md (dev #93). render_focus stays: it renders the same
-# ('h', heading) / ('i', title, why) entry tuples, which the JSONL-backed builders below now
-# construct directly instead of parsing them out of hand-written markdown.
-def render_focus(entries, show_headers: bool = True) -> str:
-    """Render parsed focus entries to HTML. Buffers '## ' headers and only emits one
-    once a real numbered item follows it, so a header with nothing under it (e.g.
-    Backlog/Passed, deliberately left as non-numbered prose) doesn't render as an
-    empty section."""
-    parts = []
-    i = 0
-    pending_header = None
-    for entry in entries:
-        if entry[0] == "h":
-            # Process groups pass show_headers=False: the panel already labels the
-            # group ("Needs your input"), so repeating the markdown header inside
-            # the card is pure duplication.
-            pending_header = entry[1] if show_headers else None
-        else:
-            if pending_header is not None:
-                parts.append(f'<div class="focus-section">{md_inline(pending_header)}</div>')
-                pending_header = None
-            i += 1
-            _, t, w = entry
-            # Long entries get collapsed behind a one-line teaser so the list stays
-            # scannable — the detail is still there, one click away.
-            if len(w) > FOCUS_CLAMP:
-                # Flatten markdown before clamping: strip **bold**, and reduce
-                # [text](target) to just text so the teaser doesn't show raw
-                # link syntax (fixed 2026-07-20).
-                flat = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", w)
-                flat = re.sub(r"[*`]+", "", flat)
-                teaser = flat[:FOCUS_CLAMP].rsplit(" ", 1)[0].rstrip(" ,;—-")
-                why = (f'<details class="focus-more"><summary>{esc(teaser)}…</summary>'
-                       f'<div class="focus-why focus-full">{md_inline(w)}</div></details>')
-            else:
-                why = f'<div class="focus-why">{md_inline(w)}</div>'
-            parts.append(
-                f'<div class="focus-item"><div class="focus-num">{i}</div><div>'
-                f'<div class="focus-title">{md_inline(t)}</div>{why}</div></div>')
-    return "".join(parts)
+# `parse_focus` is gone with focus.md (dev #93), and `render_focus` followed on 2026-08-29
+# with the one-artifact collapse: it rendered ('h', heading) / ('i', title, why) entry
+# tuples, which the JSONL-backed builders now feed straight into working-set TABLES
+# (render_ws below) — the owner rejected sentence-shaped rows twice, and a numbered prose
+# list was that shape one level down. Removed rather than left never-called (the
+# render_fit()/GitHub #5 trap).
 
 
 def parse_cover_letters(md: str):
@@ -861,60 +775,205 @@ def _draft_meta_summary(blocks):
     return ""
 
 
-def render_draft_index(entries, states, filename, empty_msg, full_home):
+def render_draft_index(entries, states, filename, empty_msg, where, cap=None,
+                       loud=False):
     """One row per staged entry: title, precondition state chip, meta summary, and WHERE
-    the full text lives (the authored file, and the published phase page). Never the body
-    (dev #233): a state view that inlines every document stops being a state view."""
+    the full text lives. Never the body (dev #233): a state view that inlines every held
+    or sent document stops being a state view. `where` names the reading surface — since
+    the one-artifact collapse the phase pages are gone, so it is either the full-body
+    block on this same page (sendable entries) or the authored file itself (held ones).
+    Capped like every working set (the collapse's volume rule)."""
     if not entries:
         return '<div class="sub">%s</div>' % empty_msg
+    cap = cap if cap is not None else WORKING_SET_CAP
+    shown, rest = entries[:cap], entries[cap:]
     chip = {"sendable": ("scheduled", "ready"), "blocked": ("waiting", "held"),
             "unresolved": ("action", "unresolved"), "unreadable": ("action", "unreadable")}
     out = []
-    for title, blocks in entries:
+    for title, blocks in shown:
         st = (states.get((filename, title)) or {}).get("state") or "sendable"
         cls, label = chip.get(st, ("waiting", st))
         meta = _draft_meta_summary(blocks)
         out.append(
-            '<div class="draft"><div class="draft-title">%s '
+            '<div class="draft%s"><div class="draft-title">%s '
             '<span class="chip %s">%s</span></div>'
             '%s'
-            '<div class="sub">full text: <code class="fileref">%s › %s</code> · published '
-            'on the <strong>%s</strong> page</div></div>'
-            % (md_inline(title), cls, label,
+            '<div class="sub">full text: <code class="fileref">%s › %s</code> · %s</div></div>'
+            % (" ws-loud" if loud else "", md_inline(title), cls, label,
                ('<div class="draft-meta">%s</div>' % esc(meta)) if meta else "",
-               esc(filename), esc(title[:60]), esc(full_home)))
+               esc(filename), esc(title[:60]), esc(where)))
+    if rest:
+        out.append('<div class="sub ws-more">+%d more — still counted in the heading; the '
+                   'full set lives in <code class="fileref">%s</code>.</div>'
+                   % (len(rest), esc(filename)))
     return "".join(out)
 
 
-def render_knowledge_index(docs, empty_msg, full_home):
-    """One row per knowledge file: title, location, size — the content itself lives on
-    the phase page (dev #233; supersedes public #20's inline rendering, whose need —
-    readable away from a checkout — the phase page still meets)."""
+def render_draft_bodies(entries, empty_msg, filename, cap=None):
+    """⭐ The approval reading surface, ON the one page. The collapse keeps exactly one
+    kind of document body published: a SENDABLE message awaiting the owner's approval —
+    the body IS the decision being asked for, and the standing rule is that the candidate
+    reads the full text off the published page, never the transcript. Everything else
+    (held, sent, moot, knowledge not awaiting a decision) stays an index row or a count.
+    Bodies are collapsed behind their titles and capped like every working set; the
+    remainder is counted and named, and every capped-out body is still fully readable in
+    the authored file."""
+    if not entries:
+        return '<div class="sub">%s</div>' % empty_msg
+    cap = cap if cap is not None else WORKING_SET_CAP
+    shown, rest = entries[:cap], entries[cap:]
+    out = []
+    for title, blocks in shown:
+        inner = render_draft_entries([(title, blocks)], "")
+        out.append('<details class="kdoc"><summary><strong>%s</strong></summary>'
+                   '<div class="kdoc-body">%s</div></details>'
+                   % (md_inline(title), inner))
+    if rest:
+        out.append('<div class="sub ws-more">+%d more pending — read them in '
+                   '<code class="fileref">%s</code>.</div>' % (len(rest), esc(filename)))
+    return "".join(out)
+
+
+def render_knowledge_index(docs, empty_msg, where, cap=None):
+    """One row per knowledge file: title, location, size — the content itself is NOT on
+    the published page (the collapse: a knowledge body is not awaiting a decision), except
+    call preps, whose full text renders in the conversations section (public #20's need —
+    a prep readable the night before, anywhere — outranks the general rule and is bounded
+    by upcoming-call volume). Capped: at hundreds of company files the index itself would
+    be the 639 KB defect wearing rows."""
     if not docs:
         return '<div class="sub">%s</div>' % empty_msg
+    cap = cap if cap is not None else WORKING_SET_CAP
+    shown, rest = docs[:cap], docs[cap:]
     out = []
-    for title, rel, body in docs:
+    for title, rel, body in shown:
         words = len(body.split())
         flag = "" if body.strip() else (' <span class="chip action">empty — nothing '
                                         'written yet</span>')
         out.append('<div class="draft"><div class="draft-title">%s%s</div>'
-                   '<div class="sub"><code class="fileref">%s</code> · %d words · read in '
-                   'full on the <strong>%s</strong> page</div></div>'
-                   % (md_inline(title), flag, esc(rel), words, esc(full_home)))
+                   '<div class="sub"><code class="fileref">%s</code> · %d words · %s'
+                   '</div></div>'
+                   % (md_inline(title), flag, esc(rel), words, esc(where)))
+    if rest:
+        out.append('<div class="sub ws-more">+%d more files — the count above is complete; '
+                   'browse the directory in the file tree.</div>' % len(rest))
     return "".join(out)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# THE ROUTER — D2 (dev #233 with public #27). One BOUNDED row per phase: the next
-# action and a count. Bounded by phase count, never by item count — this is the page
-# that opens on a phone. Every number comes from the module that already owns it
-# (your_move, precondition, trigger, applying, channels_due, the stores); nothing is
-# re-derived here.
+# THE ROUTER — D2, merged into the ONE page by the 2026-08-29 collapse. One BOUNDED
+# row per phase at the top of the page: TWO counts and one clause. Bounded by phase
+# count, never by item count — this is what opens on a phone. Every number comes from
+# the module that already owns it (your_move, precondition, trigger, applying,
+# channels_due, the stores); nothing is re-derived here, and every count is a query,
+# never model output.
+#
+# ⭐ TWO COUNTS PER ROW — the requirement that matters most. The headline is NEEDS-YOU:
+# approvals owed, decisions owed, replies owed — the number that means "open a
+# session". IN-FLIGHT (waiting on a trigger, blocked-until, scheduled) is secondary
+# and muted. A single merged count buried the seven items that needed the owner under
+# the thirty-four that did not, which is how the one number that must be read stopped
+# meaning anything.
 # ─────────────────────────────────────────────────────────────────────────────
 
 PHASES = ("configure", "presence", "pipeline", "applying", "conversations", "outreach")
 _PHASE_ICON = {"configure": "⚙️", "presence": "🪞", "pipeline": "🎯",
                "applying": "📝", "conversations": "📅", "outreach": "✉️"}
+
+# ⭐ THE WORKING-SET CAP — a named RENDER bound, never a publish selector. ADR-019
+# rejected constants tuned to the author's data ("a constant wearing a formula: right for
+# the profile it was tuned on, silently wrong for any other"). This one is legitimate as a
+# constant because it is volume-independent by construction: every working set is sorted
+# soonest-due-first BEFORE the cap, so at any volume the cap trims only the latest-due
+# tail — it can never hide the next action — and the remainder is still counted and
+# located ("+K more, in <file>"), never silently absent. The value is chosen from the
+# READING surface, not from any profile's distribution: ~20 table rows is a few phone
+# screens, and the page as a whole stays bounded (phases × sets × cap) even at hundreds of
+# items in one phase, which is the future this design is built for.
+WORKING_SET_CAP = 20
+
+_CLAUSE_CLAMP = 110  # same bound OPP_ACTION_CLAMP uses, for the same measured reason
+
+
+def _clause(text):
+    """ONE clause of prose, maximum — the single next action. `next_action` fields are
+    measured to be memos (median 419 chars); a router row carries the verdict and the
+    stores carry the memo. Sentence-shaped rows are the defect the owner rejected twice."""
+    flat = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", str(text or ""))
+    flat = re.sub(r"[*`]+", "", flat).strip()
+    for sep in (". ", "; ", " — "):
+        i = flat.find(sep)
+        if 0 < i < _CLAUSE_CLAMP:
+            return flat[:i].rstrip(" ,;:")
+    if len(flat) > _CLAUSE_CLAMP:
+        return flat[:_CLAUSE_CLAMP].rsplit(" ", 1)[0].rstrip(" ,;:—-") + "…"
+    return flat
+
+
+def _age_days(iso, today=None):
+    """'Nd' for a past ISO date, '' for anything unreadable — an unknown age must render
+    as absent, never invented."""
+    try:
+        d = datetime.date(*map(int, str(iso).split("-")))
+        n = ((today or datetime.date.today()) - d).days
+        return "%dd" % n if n >= 0 else ""
+    except Exception:
+        return ""
+
+
+def ws_row(item_html, who="", age="", due="", loud=False):
+    """One working-set row. `item_html` is pre-rendered (it may carry a JD link); the
+    other cells are plain text, escaped at render time."""
+    return {"item": item_html, "who": who, "age": age, "due": due, "loud": loud}
+
+
+def render_ws(rows, more_at, empty_msg, cap=None):
+    """One working set → a TABLE (item · who · age · due), soonest-due first (no due
+    sorts last), capped at WORKING_SET_CAP with a '+K more' line naming where the
+    remainder lives. Structured rows, never sentences."""
+    if not rows:
+        return '<div class="sub">%s</div>' % empty_msg
+    cap = cap if cap is not None else WORKING_SET_CAP
+    rows = sorted(rows, key=lambda r: (str(r.get("due") or "~"), ))
+    shown, rest = rows[:cap], rows[cap:]
+    out = ["<table><tr><th>Item</th><th>Who</th><th>Age</th><th>Due</th></tr>"]
+    for r in shown:
+        out.append('<tr%s><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>'
+                   % (' class="ws-loud"' if r.get("loud") else "", r["item"],
+                      esc(str(r.get("who") or "—")), esc(str(r.get("age") or "—")),
+                      esc(str(r.get("due") or "—"))))
+    out.append("</table>")
+    if rest:
+        out.append('<div class="sub ws-more">+%d more — every one is still counted in the '
+                   'heading; the full set lives in %s.</div>'
+                   % (len(rest), md_inline(more_at)))
+    return "".join(out)
+
+
+def render_router_rows(phase_summaries):
+    """The top of the one page: six rows, bounded by PHASE count. Each summary is
+    (phase, n_needs, n_flight, clause, has_section). Needs-you is the headline; in-flight
+    is muted. ⭐ ZERO COLLAPSES: a phase with nothing at all is a muted one-liner with no
+    anchor and NO section below it — four empty phases must never consume the page while
+    one phase holds all the work."""
+    out = ['<div class="router">']
+    for phase, n_needs, n_flight, clause, has_section in phase_summaries:
+        label = "%s %s" % (_PHASE_ICON[phase], phase)
+        name = ('<a class="ph" href="#phase-%s">%s</a>' % (phase, label)) if has_section \
+            else ('<span class="ph">%s</span>' % label)
+        if n_needs == 0 and n_flight == 0 and not has_section:
+            out.append('<div class="rrow zero"><span class="ct">0</span>'
+                       '<span class="ct2"></span>%s'
+                       '<span class="nx">%s</span></div>' % (name, md_inline(clause)))
+            continue
+        flight = ('<span class="ct2">%d in flight</span>' % n_flight) if n_flight \
+            else '<span class="ct2"></span>'
+        out.append('<div class="rrow%s"><span class="ct">%d</span>%s%s'
+                   '<span class="nx">%s</span></div>'
+                   % (" quiet" if n_needs == 0 else "", n_needs, flight, name,
+                      md_inline(clause)))
+    out.append("</div>")
+    return "".join(out)
 
 
 def _variant_staleness():
@@ -930,93 +989,10 @@ def _variant_staleness():
     return len(variants), len(stale), stale
 
 
-def phase_rows(counts_ctx):
-    """[(phase, count, next_action_text)] — the six D2 rows. `counts_ctx` carries the
-    already-computed pieces from main() so nothing is derived twice in one run."""
-    c = counts_ctx
-    rows = []
-
-    n = len(c["system_asks"])
-    rows.append(("configure", n,
-                 c["system_asks"][0][0] if n else "Nothing needs a settings decision."))
-
-    n_var, n_stale, stale = _variant_staleness()
-    if n_var == 0:
-        rows.append(("presence", 0, "No resume variants declared yet."))
-    elif n_stale:
-        rows.append(("presence", n_stale,
-                     "Reconcile %s against presence/claims.md — the claim union moved."
-                     % ", ".join(v.get("id", "?") for v in stale[:3])))
-    else:
-        rows.append(("presence", 0,
-                     "%d variant%s reconciled — steady." % (n_var, "" if n_var == 1 else "s")))
-
-    n = len(c["role_now"]) + len(c["decide_rows"])
-    nxt = (c["role_now"] + c["decide_rows"])
-    rows.append(("pipeline", n, nxt[0][0] if nxt else "No decision is owed on a role."))
-
-    n = len(c["apply_queue"])
-    rows.append(("applying", n,
-                 ("%s — work the queue in session (views/applying.md)."
-                  % c["apply_queue"][0]) if n else "Nothing queued to apply."))
-
-    n = len(c["week"])
-    rows.append(("conversations", n,
-                 c["week"][0] if n else "Nothing scheduled."))
-
-    n = c["n_sendable_msgs"] + c["n_unblocked_seqs"] + c["n_untriggered"]
-    bits = []
-    if c["n_sendable_msgs"]:
-        bits.append("%d message%s await approval" % (c["n_sendable_msgs"],
-                                                     "" if c["n_sendable_msgs"] == 1 else "s"))
-    if c["n_unblocked_seqs"]:
-        bits.append("%d sequence%s unblocked" % (c["n_unblocked_seqs"],
-                                                 "" if c["n_unblocked_seqs"] == 1 else "s"))
-    if c["n_untriggered"]:
-        bits.append("%d application%s with no follow-up linked" %
-                    (c["n_untriggered"], "" if c["n_untriggered"] == 1 else "s"))
-    rows.append(("outreach", n, "; ".join(bits) + "." if bits else "Nothing staged or owed."))
-    return rows
-
-
-def publish_selection(rows):
-    """Which phase pages earn their own published artifact: count strictly above the
-    equal share (total/len(PHASES)) of this profile's own distribution — computed, never
-    a constant (dev #233). The router and the state view always publish."""
-    total = sum(n for _p, n, _t in rows)
-    share = total / float(len(PHASES)) if total else 0.0
-    heavy = {p for p, n, _t in rows if total and n > share}
-    # Only phases that HAVE a detail page can be selected.
-    return sorted(heavy & {"pipeline", "conversations", "outreach"}), share
-
-
-def render_router(rows, title, today):
-    """The router page: its own ~1 KB of CSS, no tabs, no documents — six rows."""
-    css = ("*{box-sizing:border-box;margin:0}"
-           "body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;"
-           "background:var(--bg,#f7f7f5);color:var(--fg,#1a1a1a);padding:18px;font-size:15px}"
-           ":root{--bg:#f7f7f5;--fg:#1a1a1a;--mut:#666;--line:#e4e2dd;--n:#2f5fd0}"
-           "@media (prefers-color-scheme:dark){:root:not([data-theme=\"light\"])"
-           "{--bg:#17181a;--fg:#ececeb;--mut:#a8a8a5;--line:#34322f;--n:#7aa2f7}}"
-           ":root[data-theme=\"dark\"]{--bg:#17181a;--fg:#ececeb;--mut:#a8a8a5;"
-           "--line:#34322f;--n:#7aa2f7}"
-           "h1{font-size:18px;margin-bottom:2px}.u{color:var(--mut);font-size:12px;"
-           "margin-bottom:14px}.r{display:flex;gap:12px;align-items:baseline;"
-           "padding:12px 2px;border-bottom:1px solid var(--line)}"
-           ".r:last-child{border-bottom:none}.ph{font-weight:700;min-width:9.5em}"
-           ".ct{font-weight:700;color:var(--n);min-width:2em;text-align:right}"
-           ".nx{color:var(--mut);font-size:13.5px}")
-    body = ['<h1>%s — where things stand</h1>' % esc(title),
-            '<div class="u">%s · one row per phase; the count is what is open, the line '
-            'is the next action. Detail lives on the phase pages; working happens in '
-            'session.</div>' % esc(today)]
-    for p, n, nxt in rows:
-        body.append('<div class="r"><span class="ct">%d</span>'
-                    '<span class="ph">%s %s</span>'
-                    '<span class="nx">%s</span></div>'
-                    % (n, _PHASE_ICON[p], esc(p), md_inline(nxt)))
-    return ('<title>%s — router</title>\n<style>%s</style>\n%s'
-            % (esc(title), css, "".join(body)))
+# `phase_rows`, `publish_selection` and `render_router` lived here until 2026-08-29.
+# The collapse deleted them: the router is now the top section of the one page
+# (render_router_rows above, fed per-phase in main()), and there is no publish
+# SELECTION left to compute — the publish set is the one artifact, every run.
 
 
 # The tombstone written where dashboard.html used to be — CONSTANT, carrying no state,
@@ -1126,8 +1102,10 @@ def firms_from_channels():
 def sourcing_view(today=None):
     """(active_rows, retired_rows, n_due) for the Sourcing tab.
 
-    active_rows: (label, scope, route, cadence, last_reviewed, due_html, yield_text, is_due)
-    retired_rows: (label, scope, yield_text)."""
+    active_rows: (label, scope, route, cadence, last_reviewed, due_html, yield_text, state)
+    retired_rows: (label, scope, yield_text). `state` is channels_due.review_rows' own
+    word (due / current / on-inbound / unscheduled) — carried so the pipeline working set
+    can list due reviews without re-deriving membership (the single-owner rule)."""
     import channels_due as _cd
     chans = load_jsonl("channels.jsonl")
     yields = _cd.channel_yield(load_jsonl("opportunities.jsonl"))
@@ -1163,7 +1141,7 @@ def sourcing_view(today=None):
         else:  # unscheduled — a misconfiguration, loud on the page as in the CLI
             due_html = ('<span class="chip action">⚠️ unscheduled</span> '
                         '<span class="sub">%s</span>' % esc(detail["why"]))
-        active.append((label, scope, route, cadence, lr, due_html, ytxt))
+        active.append((label, scope, route, cadence, lr, due_html, ytxt, state))
     return active, retired, n_due
 
 
@@ -1175,7 +1153,7 @@ def render_sourcing_tables(active, retired):
         for h in ("Channel", "Route", "Cadence", "Last reviewed", "Next review", "Yield"):
             out.append("<th>%s</th>" % h)
         out.append("</tr>")
-        for label, scope, route, cadence, lr, due_html, ytxt in active:
+        for label, scope, route, cadence, lr, due_html, ytxt, _state in active:
             name = "<strong>%s</strong>" % esc(label)
             if scope:
                 name += '<div class="sub">%s</div>' % esc(scope)
@@ -1188,9 +1166,13 @@ def render_sourcing_tables(active, retired):
     else:
         active_html = '<div class="sub">No sourcing channels on file yet.</div>'
 
+    # Retired channels stay NAMED (issue #148: silently dropping one reads as coverage,
+    # and retirement is a two-effect decision — review queue AND alert sweep). Capped like
+    # every list since the collapse; the records stay queryable in data/channels.jsonl.
     if retired:
+        shown, rest = retired[:WORKING_SET_CAP], retired[WORKING_SET_CAP:]
         rows = []
-        for label, scope, ytxt in retired:
+        for label, scope, ytxt in shown:
             rows.append('<tr><td><strong>%s</strong>%s</td>'
                         '<td><span class="chip closed">retired</span></td><td>%s</td></tr>'
                         % (esc(label),
@@ -1198,6 +1180,13 @@ def render_sourcing_tables(active, retired):
                            esc(ytxt)))
         retired_html = ("<table><tr><th>Channel</th><th>Status</th><th>Lifetime yield</th>"
                         "</tr>%s</table>" % "".join(rows))
+        if rest:
+            retired_html += ('<div class="sub ws-more">+%d more retired — all still in '
+                             '<code class="fileref">data/channels.jsonl</code>.</div>'
+                             % len(rest))
+        retired_html += ('<div class="sub">Retiring a channel also stops the alert sweep '
+                         'reading its digests — both effects follow '
+                         '<code>relationship_status</code> in the record.</div>')
     else:
         retired_html = '<div class="sub">No retired channels.</div>'
     return active_html, retired_html
@@ -1271,52 +1260,15 @@ def application_tables(today=None):
 # (GitHub #5). Removed with the focus.md cutover (dev #93).
 
 
-def asks_from_jsonl(kind):
-    """The hand-authored asks, read from data/asks.jsonl — dev #93 (public #21).
-
-    ⭐ THE LAST HAND-AUTHORED SURFACE IS NOW A STORE. Role decisions and channel follow-ups
-    were already filters over records; the cross-cutting tail was still typed into focus.md,
-    which is exactly where a hand-written copy of a record went stale beside its auto-rendered
-    row (the reporter's verified failure). An ask is a ROW now: it appears while
-    `resolved_on` is unset and leaves every view the moment it is set — expulsion is
-    structural, not an editing habit. Membership is `your_move.open_asks`'s, never re-derived
-    here (the #79 rule).
-
-    kind="role" returns render_your_move's (title, ask, opp_id) tuples for the Your Move
-    queue; kind="system" the same shape for the System & tooling group."""
-    items = []
-    for a in _ym.open_asks(load_jsonl("asks.jsonl"), kind=kind):
-        ask = a.get("ask") or ""
-        if a.get("act_by"):
-            ask = ("%s (act by %s)" % (ask, a["act_by"])).strip()
-        items.append((a.get("title") or a.get("id") or "?", ask, a.get("opp_id")))
-    return items
+# `asks_from_jsonl` lived here until 2026-08-29: main() now reads your_move.open_asks
+# directly, because the working-set tables need act_by and created as their own cells
+# rather than folded into an ask sentence. Membership is still your_move.open_asks's.
 
 
-def this_week_from_jsonl(today=None):
-    """The This Week tab, read from data/commitments.jsonl — dev #93.
-
-    Renders every commitment dated today or later, soonest first, plus — LOUDLY — any row
-    whose date is the literal `unresolved` (the migration marker for a commitment whose date
-    could not be parsed; an unreadable date is an unknown, never a pass). Past rows stay in
-    the store as history and simply age out of this view; nothing expels them by hand.
-
-    Returns render_focus's ('i', title, why) entries."""
-    today = today or datetime.date.today().isoformat()
-    rows = load_jsonl("commitments.jsonl")
-    entries = []
-    for c in sorted((r for r in rows if str(r.get("date")) >= today
-                     and str(r.get("date")) != "unresolved"),
-                    key=lambda r: (str(r.get("date")), str(r.get("time") or ""))):
-        bits = [b for b in (c.get("date"), c.get("time"), c.get("who"), c.get("note")) if b]
-        entries.append(("i", c.get("title") or c.get("id") or "?",
-                        " · ".join(str(b) for b in bits)))
-    for c in rows:
-        if str(c.get("date")) == "unresolved":
-            entries.append(("i", "⚠️ %s" % (c.get("title") or c.get("id") or "?"),
-                            "Date is the migration marker `unresolved` — verify the real "
-                            "date (invite `.ics`, never recall) and set it on the record."))
-    return entries
+# `this_week_from_jsonl` lived here until 2026-08-29: the This Week card is a working-set
+# TABLE now, built in main() straight from data/commitments.jsonl with the same
+# membership (dated today or later, soonest first, plus the loud `unresolved` marker
+# rows — an unreadable date is an unknown, never a pass).
 
 
 def _role_title(o, companies, mark="🎯"):
@@ -1533,243 +1485,38 @@ def render_your_move_callouts(unresolved, waiting, fulfilled, play_unresolved, l
     return "".join(parts)
 
 
-def main():
-    # `opps = read("opportunities.md")` lived here until 2026-08-02 and was DEAD — the sourced
-    # pipeline has been read from data/opportunities.jsonl since the 2026-07-20 cutover, and the
-    # local variable was never used again. It kept a retired 166 KB file looking load-bearing,
-    # which is exactly why three agents were still being pointed at it. Removed with the file.
-    net = read(_tree.rel("network"))
-    drafts = parse_drafts(read(_tree.rel("drafts")))
-    # Cover letters are a distinct artifact from outreach drafts (added 2026-07-21,
-    # per the candidate: the "why is this job a great fit" message was missing entirely).
-    # Same file shape, so parse_drafts handles it; rendered in its own panel.
-    covers = [c for c in parse_cover_letters(read(_tree.rel("cover_letters")))]
+# ── The stylesheet. Tokens define the complete light palette on bare :root, redefine
+# under prefers-color-scheme:dark (guarded against an explicit light choice), and again
+# under [data-theme] so the viewer's toggle wins in both directions. Hoisted out of
+# main() with the 2026-08-29 collapse so the one page's CSS has one home.
+_CSS_ROUTER = """
+  /* ── The merged router + phase sections (the one-artifact collapse, 2026-08-29) ── */
+  .router { background: var(--card-bg); border: 1px solid var(--card-border);
+            border-radius: 10px; padding: 4px 14px; margin: 4px 0 10px; }
+  .rrow { display: flex; gap: 12px; align-items: baseline; padding: 10px 2px;
+          border-bottom: 1px solid var(--divider); flex-wrap: wrap; }
+  .rrow:last-child { border-bottom: none; }
+  .rrow .ct { font-weight: 700; font-size: 16px; color: var(--chip-action-fg);
+              min-width: 1.6em; text-align: right; }
+  .rrow.quiet .ct, .rrow.zero .ct { color: var(--muted); font-weight: 600; }
+  .rrow .ct2 { color: var(--muted); font-size: 11.5px; min-width: 6.5em; }
+  .rrow .ph { font-weight: 700; min-width: 9.5em; text-decoration: none;
+              color: var(--fg); }
+  .rrow a.ph:hover { color: var(--rail-now); }
+  .rrow .nx { color: var(--muted2); font-size: 12.5px; }
+  .rrow.zero { opacity: .55; }
+  section.phase { scroll-margin-top: 12px; }
+  .phase-h { font-size: 17px; margin: 30px 0 2px; padding-top: 14px;
+             border-top: 2px solid var(--card-border); }
+  .phase-h .ct2f { font-weight: 500; font-size: 12px; color: var(--muted); margin-left: 6px; }
+  .subcounts { color: var(--muted2); font-size: 12px; margin: 2px 0 10px; }
+  .subcounts a { color: var(--rail-now); text-decoration: none; }
+  tr.ws-loud td, div.ws-loud .draft-title { color: var(--chip-action-fg); }
+  .ws-more { margin-top: 6px; }
+  .inflight { opacity: .82; }
+"""
 
-    # ⭐⭐ focus.md IS RETIRED AS A SOURCE OF STATE — dev #93 (public #21), the owner's call:
-    # "Keep the tabs and remove the use of focus.md, use the data in the json files."
-    #
-    # Both tabs stay; what changed is where their content lives. The verified failure behind
-    # this: a record was hand-copied into the action-needed list as a numbered focus.md item,
-    # duplicating its auto-rendered row, and the hand-written copy went stale — still claiming
-    # action was needed after it was not. Two DERIVED views of one record cannot disagree, so
-    # every surface below now reads a store:
-    #   Your Move hand tail            -> data/asks.jsonl  kind=role   (asks_from_jsonl)
-    #   System & tooling ("Needs …")   -> data/asks.jsonl  kind=system
-    #   This Week                      -> data/commitments.jsonl       (this_week_from_jsonl)
-    #   the session-handoff letter     -> handoff.md — narrative for the next session, not
-    #                                     pipeline state, and never rendered here.
-    your_move = asks_from_jsonl("role")
-    system_asks = asks_from_jsonl("system")
-    thisweek_focus = this_week_from_jsonl()
-
-    # SOURCED PIPELINE — now read from data/*.jsonl (cutover 2026-07-20). The old
-    # markdown-table parse is retired; opportunities.md's main table is superseded.
-    sh2, live_rows, closed_rows, status_idx2, comp_idx2, jd_col_idx = opps_from_jsonl()
-    srows2 = live_rows + closed_rows
-
-    # Firms now come from channels.jsonl (recruiter/referral). Inbound recruiter roles
-    # are ordinary opportunities in the main table now, so the separate inbound mini-table
-    # is retired. Alumni + register-with pills still read network.md (relationship doc).
-    fh, frows = firms_from_channels()
-    ah, arows = parse_table(section_text(net, "Alumni network reactivation"))
-    firms = re.findall(r"^- \[( |x)\]\s+(.+)$", section_text(net, "Retained firms"), re.M)
-
-    def clears_comp(comp_text):
-        c = comp_text.lower()
-        return any(k in c for k in ("clears", "clear the", "comfortably clear", "exceeds"))
-
-    clearing_count = sum(1 for r in live_rows
-                          if comp_idx2 is not None and comp_idx2 < len(r) and clears_comp(r[comp_idx2]))
-    stats_html = (
-        '<div class="stats-row">'
-        f'<div class="stat"><strong>{len(live_rows)}</strong> active</div>'
-        f'<div class="stat"><strong>{clearing_count}</strong> clear comp floor</div>'
-        f'<div class="stat"><strong>{len(closed_rows)}</strong> passed / closed</div>'
-        f'<div class="stat"><strong>{len(srows2)}</strong> total sourced</div>'
-        '</div>'
-    )
-
-    ym_links = {o["id"]: best_link(o) for o in load_jsonl("opportunities.jsonl")}
-    # Your Move, in order: role decisions derived from opportunities.jsonl, then relationship
-    # follow-ups derived from channels.jsonl (GitHub #44), then the cross-cutting asks from
-    # data/asks.jsonl (dev #93 — the tail that used to be hand-typed prose in focus.md).
-    #
-    # The first two groups are filters over records and cannot go stale. The asks are rows
-    # now, so they leave the moment `resolved_on` is set — but their TEXT is still authored
-    # by hand and can still claim what the store contradicts, which is why
-    # check_action_claims.py (#43) reads the same store as its backstop.
-    role_decisions = your_move_roles_from_jsonl()
-    channel_touches = your_move_channels_from_jsonl()
-    your_move = role_decisions + channel_touches + your_move
-    your_move_html = render_your_move(your_move, ym_links)
-    # dev #142 (public #24) — pursue/pass decisions owed on sourced/backlog roles. A "needs
-    # you" group in its own labelled section (never inside the primary card: the act-by date
-    # may be in the future, and #79 established that the primary list means "you, NOW").
-    decide_rows = your_move_decides_from_jsonl()
-    your_move_decide_html = ""
-    if decide_rows:
-        your_move_decide_html = (
-            '<h2 style="font-size:16px;margin-top:22px">🔎 Decide — pursue or pass '
-            '<span class="tcount">%d</span></h2>'
-            '<div class="sub" style="margin:-6px 0 10px">Sourced roles whose verdict is '
-            'still <code>undecided</code>. A decision owed to you is listed from the moment '
-            'the record exists — the act-by date is a deadline, not a reveal date. Deciding '
-            'moves the record (<code>verdict: pursue</code> or <code>pass</code>/'
-            '<code>parked</code>) and the row leaves by itself.</div>'
-            '<div class="card">%s</div>'
-            % (len(decide_rows), render_your_move(decide_rows, ym_links)))
-    # GitHub #79 — group membership is your_move.py's alone; these states must never
-    # land inside your_move_html above, but must not vanish silently either.
-    _unresolved_rows, _waiting_rows, _fulfilled_rows, _play_rows = your_move_callouts()
-    your_move_callouts_html = render_your_move_callouts(_unresolved_rows, _waiting_rows,
-                                                         _fulfilled_rows, _play_rows,
-                                                         ym_links)
-    thisweek_html = render_focus(thisweek_focus)
-
-    # ⭐ THE PROCESS TAB WAS REMOVED 2026-08-06 — engine work is not a local to-do list.
-    #
-    # It showed "🔧 Open — mine to fix": engine and tooling items the search had noticed. Those
-    # belong to the plugin that owns the engine, and are filed as GitHub issues via
-    # `marketplace-dev/scripts/intake.py`. A capability's defects belong on that capability's
-    # tracker, not duplicated in every profile that uses it.
-    #
-    # Only the "Needs the candidate" group survives, rendered on Your Move as the "System &
-    # tooling" group: a DECISION the owner has to make about their own setup — a credential, a
-    # cadence — which no issue on the engine repo can resolve for them. Since dev #93 those
-    # items are `data/asks.jsonl` rows with kind=system, not a focus.md section.
-    needs_html = render_focus([("i", t, a) for t, a, _oid in system_asks],
-                              show_headers=False)
-    n_needs = len(system_asks)
-
-    pills = "".join(
-        f'<span class="pill{" done" if x == "x" else ""}">{md_inline(name)}</span>'
-        for x, name in firms)
-
-    def multiline(s: str) -> str:
-        return "<br>".join(md_inline(l) for l in s.splitlines())
-
-    # ⭐ GitHub issue #6 — SPLIT SENDABLE FROM BLOCKED, and count only the sendable as "needs you".
-    #
-    # Every staged draft used to render under "awaiting your approval to send", including part-B
-    # messages that cannot go until the recipient accepts. One observed state showed seven items
-    # as needing the candidate, of which ONE was actionable. That inverts the surface: a Your Move line has
-    # to be a question or an imperative aimed at them, and a draft they cannot send is neither — so
-    # padding the list is how the one list that must be unskippable stops being read.
-    #
-    # The precondition is now DATA (`**Blocked until:** contact:<id> outcome:a|b`), resolved
-    # against the outreach `outcome` that already existed. Falls back to treating everything as
-    # sendable if the resolver cannot run: a dashboard that renders is worth more than one that
-    # is right about grouping, and the old behaviour is the safe direction to fail in.
-    # ⭐ GitHub issue #13 — group by precondition.NOT_SENDABLE, never by a literal comparison.
-    # `state != "blocked"` treated `unreadable` (and would have treated `unresolved`, the
-    # legacy-prose state) as sendable, so a draft the resolver could NOT vouch for rendered
-    # under "awaiting your approval to send". The set of states that must never read as "needs
-    # you" is precondition.py's to own; this only consumes it. A draft the resolver did not
-    # report at all still defaults to sendable — that is the render-over-grouping fallback above.
-    # ⭐ dev #169 — rows are keyed by (file, title), because precondition.py now covers the whole
-    # staged-message pair (drafts.md AND cover_letters.md, its FILES tuple). Keying by title
-    # alone would let a draft's state answer for a same-titled cover letter.
-    _DRAFTS_REL, _COVERS_REL = _tree.rel("drafts"), _tree.rel("cover_letters")
-    try:
-        import precondition as _pre
-        _pre_rows = _pre.report(str(ROOT))
-        _states = {(r.get("file", _DRAFTS_REL), r["title"]): r for r in _pre_rows}
-        _not_sendable = _pre.NOT_SENDABLE
-        _terminal = _pre.TERMINAL
-    except Exception:
-        _pre_rows, _states, _not_sendable, _terminal = [], {}, frozenset(), frozenset()
-
-    # ⭐ dev #154 — a READY staged message no open ask covers gets a DERIVED queue line, so
-    # it can never again read as "nothing is waiting". Membership is your_move.py's
-    # (ready_staged_without_ask over precondition.report): only state `sendable` qualifies —
-    # a held message belongs to the held sections (dev #169), a sent one has no `## ` entry
-    # left (the sent-and-logged rule), and a draft an open ask already covers renders via
-    # the ask instead (one item, one section — the duplication dev #142's reporter hit).
-    # ⛔ Never auto-creates an ask: the line is a view of the drafts store, and it leaves by
-    # itself when the store changes. Same fallback direction as _states above.
-    try:
-        _ready_rows = _ym.ready_staged_without_ask(str(ROOT), pre_rows=_pre_rows)
-    except Exception:
-        _ready_rows = []
-    _ready_items = [("✉️ %s" % r["title"],
-                     "Approve and send — staged in %s and cleared to go; no open ask "
-                     "points at it. Read the full text on the outreach page." % r["file"], None)
-                    for r in _ready_rows]
-    your_move_ready_html = ""
-    if _ready_items:
-        your_move_ready_html = (
-            '<h2 style="font-size:16px;margin-top:22px">✉️ Ready to send — staged, no ask '
-            'on file <span class="tcount">%d</span></h2>'
-            '<div class="sub" style="margin:-6px 0 10px">Fully written, every send-'
-            'precondition met, and no open ask points at it — derived straight from the '
-            'staged files, so a ready reply can never sit invisible again. Sending it (and '
-            'logging the send), or recording the ask that owns it, removes the line by '
-            'itself.</div>'
-            '<div class="card">%s</div>'
-            % (len(_ready_items), render_your_move(_ready_items)))
-
-    def _pre_state(filename, title):
-        return _states.get((filename, title), {}).get("state")
-
-    # public #29 — a TERMINAL entry (sent / moot) is excluded before the sendable/blocked split
-    # even runs. It must land in NEITHER list: "blocked" reads as "blocked on someone else",
-    # which a sent or moot entry is not, and "sendable" is exactly the bug being fixed.
-    _drafts_active = [d for d in drafts if _pre_state(_DRAFTS_REL, d[0]) not in _terminal]
-    _sendable = [d for d in _drafts_active if _pre_state(_DRAFTS_REL, d[0]) not in _not_sendable]
-    _blocked = [d for d in _drafts_active if _pre_state(_DRAFTS_REL, d[0]) in _not_sendable]
-    # ⭐ dev #233 — the STATE VIEW gets the index (title + status + location); the FULL
-    # text renders once, on the outreach phase page, which is the reading surface for
-    # approval. Inlining every body here is what made one page 639 KB.
-    drafts_html = render_draft_index(_sendable, _states, _DRAFTS_REL,
-                                     "No pending drafts.", "outreach")
-    blocked_html = render_draft_index(_blocked, _states, _DRAFTS_REL, "", "outreach")
-    drafts_full_html = render_draft_entries(_sendable, "No pending drafts.")
-    blocked_full_html = render_draft_entries(_blocked, "")
-    n_blocked = len(_blocked)
-    _blocked_why = {t: _states.get((_DRAFTS_REL, t), {}).get("why", "") for t, _ in _blocked}
-
-    # ⭐ ONE LIST, NOT FIVE. See render_opportunity_list for why.
-    _opp_rows = load_jsonl("opportunities.jsonl")
-    _opp_comps = {c["id"]: c for c in load_jsonl("companies.jsonl")}
-    opp_list_html, opp_counts = render_opportunity_list(_opp_rows, _opp_comps)
-
-    # ⭐ dev #169 — the covers panel consults preconditions exactly as the drafts panel does.
-    # Before this, a cover letter carrying a send-hold rendered as READY on the outward-facing
-    # artifact: the sendable/blocked split was applied to drafts alone. Same grouping rule:
-    # membership in precondition.NOT_SENDABLE, never a literal state comparison (issue #13).
-    _covers_active = [c for c in covers if _pre_state(_COVERS_REL, c[0]) not in _terminal]
-    _covers_ready = [c for c in _covers_active if _pre_state(_COVERS_REL, c[0]) not in _not_sendable]
-    _covers_held = [c for c in _covers_active if _pre_state(_COVERS_REL, c[0]) in _not_sendable]
-    covers_html = render_draft_index(_covers_ready, _states, _COVERS_REL,
-                                     "No cover letters pending.", "outreach")
-    covers_held_html = render_draft_index(_covers_held, _states, _COVERS_REL, "",
-                                          "outreach")
-    covers_full_html = render_draft_entries(_covers_ready, "No cover letters pending.")
-    covers_held_full_html = render_draft_entries(_covers_held, "")
-    n_covers_held = len(_covers_held)
-
-    # dev #148 — the sourcing strategy surface, derived from channels.jsonl +
-    # opportunities.jsonl sightings via channels_due.py's one definition.
-    _src_active, _src_retired, n_sourcing_due = sourcing_view()
-    sourcing_active_html, sourcing_retired_html = render_sourcing_tables(_src_active,
-                                                                          _src_retired)
-
-    # GitHub #94 gave these files a readable published rendering; dev #233 moves that
-    # rendering to the PHASE pages (call preps → conversations, company kb → pipeline) and
-    # leaves the state view an index — #94's need (readable away from a checkout) still
-    # holds, on a page whose weight is carried only when you open it.
-    _preps, _kbs = knowledge_docs()
-    preps_html = render_knowledge_index(_preps, "No call preps on file.", "conversations")
-    kbs_html = render_knowledge_index(_kbs, "No company knowledge files yet.", "pipeline")
-    preps_full_html = render_knowledge_docs(_preps, "No call preps on file.")
-    kbs_full_html = render_knowledge_docs(_kbs, "No company knowledge files yet.")
-    n_knowledge = len(_preps) + len(_kbs)
-
-    # %-d is a glibc/BSD strftime extension; on Windows it raises ValueError and kills the
-    # dashboard at the last step. Build the day number by hand (same fix as parse_ics.py).
-    _t = datetime.date.today()
-    today = "%s %d, %d" % (_t.strftime("%B"), _t.day, _t.year)
-    css = """
+CSS = """
   :root {
     color-scheme: light dark;
     --bg: #f7f7f5; --fg: #1a1a1a; --muted: #777; --muted2: #666; --th: #888;
@@ -1827,20 +1574,6 @@ def main():
   .mega-header { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted2); background: var(--divider); border-radius: 8px; padding: 8px 14px; margin: 28px 0 4px; }
   .mega-header:first-of-type { margin-top: 8px; }
   .card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px; padding: 14px 16px; margin-bottom: 10px; overflow-x: auto; }
-  .focus-section { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted2); padding: 16px 0 6px; }
-  .focus-section:first-child { padding-top: 0; }
-  .focus-item { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-bottom: 1px solid var(--divider); }
-  .focus-item:last-child { border-bottom: none; }
-  .focus-num { background: var(--focus-num-bg); color: var(--focus-num-fg); border-radius: 50%; width: 22px; height: 22px; min-width: 22px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; margin-top: 1px; }
-  .focus-title { font-weight: 600; }
-  .focus-why { color: var(--muted2); font-size: 12.5px; margin-top: 2px; }
-  .focus-more { margin-top: 2px; }
-  .focus-more > summary { color: var(--muted2); font-size: 12.5px; cursor: pointer; list-style: none; }
-  .focus-more > summary::-webkit-details-marker { display: none; }
-  .focus-more > summary::after { content: " ▸ more"; font-size: 11px; opacity: 0.75; font-weight: 600; }
-  .focus-more[open] > summary::after { content: " ▾ less"; }
-  .focus-more[open] > summary { margin-bottom: 4px; }
-  .focus-full { margin-top: 0; }
   /* Your-move panel — the priority-decision surface, deliberately loud */
   .ym-card { background: var(--card-bg); border: 2px solid #d97706; border-radius: 12px;
              padding: 14px 16px; margin: 18px 0 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.07); }
@@ -1906,38 +1639,6 @@ def main():
   .draft-meta > div { margin: 1px 0; }
   code.fileref { font-size: 12px; opacity: .85; }
 
-  /* --- Tabs (added 2026-07-20, per the candidate: the dashboard was overloading job-search
-     content with process/meta content). CSS-only via hidden radios + :checked ~ sibling
-     selectors -- deliberately NO JavaScript, so nothing can be blocked by the artifact's
-     CSP or fail to hydrate. Panels are plain siblings after the inputs. */
-  .tabwrap { margin-top: 18px; }
-  .tabwrap > input[type="radio"] { position: absolute; opacity: 0; pointer-events: none; }
-  .tabbar { display: flex; flex-wrap: wrap; gap: 6px; border-bottom: 2px solid var(--divider);
-            margin-bottom: 16px; position: sticky; top: 0; background: var(--bg); z-index: 5;
-            padding-top: 4px; }
-  .tabbar label { cursor: pointer; padding: 9px 14px; font-size: 13.5px; font-weight: 600;
-                  color: var(--muted2); border-bottom: 2px solid transparent; margin-bottom: -2px;
-                  border-radius: 6px 6px 0 0; white-space: nowrap; user-select: none; }
-  .tabbar label:hover { color: var(--fg); background: var(--divider); }
-  .tabbar label .tcount { font-weight: 500; opacity: .65; font-size: 12px; margin-left: 4px; }
-  .tabpanel { display: none; }
-  #tab-week:checked    ~ .tabbar label[for="tab-week"],
-  #tab-actions:checked ~ .tabbar label[for="tab-actions"],
-  #tab-jobs:checked    ~ .tabbar label[for="tab-jobs"],
-  #tab-sourcing:checked ~ .tabbar label[for="tab-sourcing"],
-  #tab-know:checked    ~ .tabbar label[for="tab-know"],
-  #tab-network:checked ~ .tabbar label[for="tab-network"] {
-      color: var(--fg); border-bottom-color: var(--accent, #c96442); background: transparent; }
-  #tab-week:checked    ~ .panel-week,
-  #tab-actions:checked ~ .panel-actions,
-  #tab-jobs:checked    ~ .panel-jobs,
-  #tab-sourcing:checked ~ .panel-sourcing,
-  #tab-know:checked    ~ .panel-know,
-  #tab-network:checked ~ .panel-network { display: block; }
-  .tabpanel > h2:first-child { margin-top: 0; }
-  .tabpanel { scroll-margin-top: 64px; }
-  .tabbar { box-shadow: 0 6px 10px -8px rgba(0,0,0,.35); }
-  @media print { .tabpanel { display: block !important; } .tabbar { display: none; } }
 
   /* ── Opportunity rows ──────────────────────────────────────────────────────
      One role, one place. The rail is the only new structural device, and the
@@ -2038,248 +1739,688 @@ def main():
   .kd-l { font-size: 13px; margin: 4px 0 4px 18px; padding: 0; }
   .kd-q { border-left: 3px solid var(--card-border); background: var(--divider);
           border-radius: 4px; padding: 4px 10px; margin: 4px 0; font-size: 13px; }
-"""
-    n_drafts = len(_sendable)
-    # dev #169 — only READY covers count as "needs you"; a held one is not the candidate's move.
-    n_covers = len(_covers_ready)
-    _sub, _hum, _noth = application_tables()
-    n_submitted, n_human, n_nothing = len(_sub), len(_hum), len(_noth)
-    # dev #142 — an owed pursue/pass decision counts on the tab badge like any other item
-    # waiting on the owner, even though it renders in its own section below the primary card.
-    n_move = len(your_move) + len(decide_rows)
-    n_week = sum(1 for e in thisweek_focus if e[0] == 'i')
+""" + _CSS_ROUTER
 
-    body_inner = f"""<h1>{html.escape(_dashboard_title())}</h1>
-<div class="updated">Tracker snapshot: <strong>{today}</strong> · generated by scripts/generate_dashboard.py · source: the tracker repo (git)</div>
 
-<div class="tabwrap">
-<input type="radio" name="dtab" id="tab-week" checked>
-<input type="radio" name="dtab" id="tab-actions">
-<input type="radio" name="dtab" id="tab-jobs">
-<input type="radio" name="dtab" id="tab-sourcing">
-<input type="radio" name="dtab" id="tab-know">
-<input type="radio" name="dtab" id="tab-network">
-<div class="tabbar">
-  <label for="tab-week">📅 This Week<span class="tcount">{n_week}</span></label>
-  <label for="tab-actions">⚡ Your Move<span class="tcount">{n_move + n_needs + n_drafts + n_covers}</span></label>
-  <label for="tab-jobs">🎯 Opportunities<span class="tcount">{len(live_rows)}</span></label>
-  <label for="tab-sourcing">🧭 Sourcing<span class="tcount">{n_sourcing_due}</span></label>
-  <label for="tab-know">📚 Knowledge<span class="tcount">{n_knowledge}</span></label>
-  <label for="tab-network">🤝 Network</label>
-</div>
+def main():
+    # `net = read(...network...)` left with the Network tab (2026-08-29): the network is
+    # queried, not queued (D4) — it never contributed a count, and its firm/alumni tables
+    # were the page's only remaining markdown-table parse. Its location is named in the
+    # page footer; the data stays fully queryable in session.
+    drafts = parse_drafts(read(_tree.rel("drafts")))
+    # Cover letters are a distinct artifact from outreach drafts (added 2026-07-21,
+    # per the candidate: the "why is this job a great fit" message was missing entirely).
+    covers = [c for c in parse_cover_letters(read(_tree.rel("cover_letters")))]
 
-<div class="tabpanel panel-week">
-  <h2>📅 This week — calls &amp; deadlines</h2>
-  <div class="sub" style="margin:-6px 0 10px"><strong>What lives here:</strong> commitments already scheduled. Nothing here needs a decision — if it needs one, it\u2019s on Your Move instead.</div>
-  <div class="card">{thisweek_html or '<div class="sub">Nothing scheduled this week.</div>'}</div>
-  <div class="note"><strong>Meeting times are verified from the invite\u2019s <code>.ics</code>, not from recall.</strong>
-  Download it through Chrome (Gmail renders an event card, and the attachment has a Download link),
-  then run <code>python3 scripts/parse_ics.py &lt;file&gt;</code>. A calendar receipt only proves what was
-  booked when it was sent — confirm anything that may have been rescheduled.</div>
-</div>
+    # ⭐⭐ focus.md IS RETIRED AS A SOURCE OF STATE — dev #93 (public #21). Every surface
+    # below reads a store; the hand tail lives in data/asks.jsonl, commitments in
+    # data/commitments.jsonl. (See the dev #93 narrative in this file's history.)
+    _all_asks = load_jsonl("asks.jsonl")
+    role_asks = _ym.open_asks(_all_asks, kind="role")
+    system_asks = _ym.open_asks(_all_asks, kind="system")
 
-<div class="tabpanel panel-actions">
-  <div class="sub" style="margin:0 0 12px;font-size:1.02em"><strong>Everything that needs you, in one place &mdash; {n_move + n_needs + n_drafts + n_covers} open.</strong>
-  {n_move} job-search {"action" if n_move == 1 else "actions"} &middot; {n_needs} system {"item" if n_needs == 1 else "items"} &middot;
-  {n_drafts} {"draft" if n_drafts == 1 else "drafts"} to approve &middot;
-  {n_covers} cover {"letter" if n_covers == 1 else "letters"}.
-  Each stays here until the work is actually <em>done</em> (sent, applied, accepted, or answered), not merely decided.</div>
-  <h2>⚡ Decisions &amp; actions waiting on you</h2>
-  <div class="sub" style="margin:-6px 0 10px"><strong>What lives here:</strong> job-search actions blocked on you — each line is a question or an ask. Once it\u2019s answered it leaves this list entirely, rather than becoming a \u201cdone\u201d note. System and tooling items now sit in their own group just below, not on a separate tab.</div>
-  <div class="ym-card"><div class="ym-head">Nothing here moves without you</div>{your_move_html}</div>
-  {your_move_ready_html}
-  {your_move_decide_html}
-  {your_move_callouts_html}
-  <h2 style="font-size:16px;margin-top:22px">⚙️ System &amp; tooling — needs you <span class="tcount">{n_needs}</span></h2>
-  <div class="sub" style="margin:-6px 0 10px">Decisions about the tracker, scripts, credentials, or tooling that only you can make. Same rule: each stays until it is done.</div>
-  <div class="ym-card"><div class="ym-head">Needs your input</div>{needs_html or '<div class="sub" style="padding:8px 0">Nothing here needs you right now.</div>'}</div>
-  <h2>✉️ Pending drafts — awaiting your approval to send</h2>
-  <div class="sub" style="margin:-6px 0 10px">Nothing is ever sent without your explicit approval. Each row names its state and where the full text lives — read it on the <strong>outreach</strong> page before approving.</div>
-  <div class="card">{drafts_html}</div>
-  {'<h2 style="font-size:16px;margin-top:22px">⏳ Waiting on someone else <span class="tcount">' + str(n_blocked) + '</span></h2><div class="sub" style="margin:-6px 0 10px">Written and ready, but blocked until the other person acts. <strong>Not yours to do</strong> — shown so you know it exists, and it moves to the list above by itself once the precondition is met.</div><div class="card">' + blocked_html + '</div>' if n_blocked else ''}
-  <h2>📄 Cover letters — for applications you submit yourself</h2>
-  <div class="sub" style="margin:-6px 0 10px">The “why this role is a fit” message that goes with an ATS application. Every claim traces to the claim union (presence/claims.md). You paste and submit these yourself — nothing is applied on your behalf. Full text on the <strong>outreach</strong> page.</div>
-  <div class="card">{covers_html}</div>
-  {'<h2 style="font-size:16px;margin-top:22px">⏳ Cover letters held — do not submit yet <span class="tcount">' + str(n_covers_held) + '</span></h2><div class="sub" style="margin:-6px 0 10px">Written, but carrying a send-precondition that is not met (or not yet structured). <strong>Not ready to submit</strong> — each moves to the list above by itself once its precondition resolves.</div><div class="card">' + covers_held_html + '</div>' if n_covers_held else ''}
-</div>
+    # SOURCED PIPELINE — data/*.jsonl (cutover 2026-07-20); the stats strip's numbers.
+    _sh2, live_rows, closed_rows, _status_idx2, comp_idx2, _jd_idx = opps_from_jsonl()
 
-<div class="tabpanel panel-jobs">
-  <h2>🎯 Opportunities — where each role stands, and what happens next</h2>
-  <div class="sub" style="margin:-6px 0 10px"><strong>What lives here:</strong> every live role,
-  once. The bar under each title is the pipeline stage it has actually reached; the coloured
-  segment is where it is now. Filter to narrow the list — a role never moves to another section,
-  because there are no other sections.</div>
+    def clears_comp(comp_text):
+        c = comp_text.lower()
+        return any(k in c for k in ("clears", "clear the", "comfortably clear", "exceeds"))
 
-  <input type="radio" name="oppf" id="of-all" class="oppfilter" checked>
-  <input type="radio" name="oppf" id="of-you" class="oppfilter">
-  <input type="radio" name="oppf" id="of-app" class="oppfilter">
-  <input type="radio" name="oppf" id="of-per" class="oppfilter">
-  <input type="radio" name="oppf" id="of-non" class="oppfilter">
-  <div class="oppbar">
-    <label for="of-all">All ({opp_counts["all"]})</label>
-    <label for="of-you">Waiting on you ({opp_counts["you"]})</label>
-    <label for="of-app">Applied ({opp_counts["applied"]})</label>
-    <label for="of-per">In play through a person ({opp_counts["person"]})</label>
-    <label for="of-non">Nothing sent ({opp_counts["nothing"]})</label>
-  </div>
-  <div class="card opp-list">{opp_list_html}</div>
+    clearing_count = sum(1 for r in live_rows
+                          if comp_idx2 is not None and comp_idx2 < len(r)
+                          and clears_comp(r[comp_idx2]))
+    stats_html = (
+        '<div class="stats-row">'
+        f'<div class="stat"><strong>{len(live_rows)}</strong> active</div>'
+        f'<div class="stat"><strong>{clearing_count}</strong> clear comp floor</div>'
+        f'<div class="stat"><strong>{len(closed_rows)}</strong> passed / closed</div>'
+        f'<div class="stat"><strong>{len(live_rows) + len(closed_rows)}</strong> total sourced</div>'
+        '</div>'
+    )
 
-  <div class="note" style="margin-top:14px"><strong>Only &ldquo;nothing sent&rdquo; is a gap.</strong>
-  Applied and in-play-through-a-person are both covered; a role carried with nothing sent is the
-  hole. <strong>Cover letter</strong> appears under a role only when it was confirmed —
-  <code>unrecorded</code> means nobody asked, and it is never guessed.</div>
-</div>
+    _opp_rows = load_jsonl("opportunities.jsonl")
+    _opp_comps = {c["id"]: c for c in load_jsonl("companies.jsonl")}
+    ym_links = {o["id"]: best_link(o) for o in _opp_rows if o.get("id")}
+    _due_by_id = {o.get("id"): (o.get("next_action_date") or "") for o in _opp_rows}
 
-<div class="tabpanel panel-sourcing">
-  <h2>🧭 Sourcing strategy — where roles come from, and whether each source is working</h2>
-  <div class="sub" style="margin:-6px 0 10px"><strong>What lives here:</strong> the sourcing
-  channels as data — status, route, review cadence, when each was last reviewed and when the
-  next review is due, and what each has actually yielded. This is the view a strategy review
-  runs on; it used to be reachable only by running <code>channels_due.py</code> and
-  <code>funnel_report.py</code> by hand. Recruiter and referral relationships live on the
-  Network tab.</div>
-  <h2 style="font-size:16px;margin-top:18px">Active channels <span class="tcount">{len(_src_active)}</span></h2>
-  <div class="card">{sourcing_active_html}</div>
-  <h2 style="font-size:16px;margin-top:18px">Retired channels <span class="tcount">{len(_src_retired)}</span></h2>
-  <div class="card">{sourcing_retired_html}</div>
-  <div class="note"><strong>Retiring a channel is one decision with two effects:</strong> it
-  leaves the review queue and the alert sweep stops reading its alert digests — both consult
-  <code>relationship_status</code> in <code>data/channels.jsonl</code>, so no engine edit is
-  involved. The channel record and its sighting history stay on file. Review a due channel by
-  direct search on the source&rsquo;s own job pages, then stamp it:
-  <code>python3 scripts/channels_due.py --stamp &lt;id&gt;</code>. Yield counts are raw
-  (sightings / of-which-pursued); <code>funnel_report.py</code> owns rates and refuses small
-  samples.</div>
-</div>
+    # Membership is your_move.py's alone (#79); this file only renders what it says.
+    role_decisions = your_move_roles_from_jsonl()
+    channel_touches = your_move_channels_from_jsonl()
+    decide_rows = your_move_decides_from_jsonl()
+    _unresolved_rows, _waiting_rows, _fulfilled_rows, _play_rows = your_move_callouts()
+    your_move_callouts_html = render_your_move_callouts(_unresolved_rows, _waiting_rows,
+                                                         _fulfilled_rows, _play_rows,
+                                                         ym_links)
 
-<div class="tabpanel panel-know">
-  <h2>📚 Knowledge — call preps &amp; company files</h2>
-  <div class="sub" style="margin:-6px 0 10px"><strong>What lives here:</strong> the index of
-  durable knowledge artifacts — the dated call-prep notes and the per-company knowledge base.
-  Read each in full on its phase page (call preps → <strong>conversations</strong>, company
-  files → <strong>pipeline</strong>). Durable content from a prep is promoted to the company
-  file before the prep is archived.</div>
-  <h2 style="font-size:16px;margin-top:18px">📞 Call preps <span class="tcount">{len(_preps)}</span></h2>
-  <div class="card">{preps_html}</div>
-  <h2 style="font-size:16px;margin-top:18px">🏢 Company knowledge base <span class="tcount">{len(_kbs)}</span></h2>
-  <div class="card">{kbs_html}</div>
-</div>
+    # ── Preconditions over the staged-message pair (issues #6/#13, dev #169, public #29).
+    # Same grouping rules as ever: NOT_SENDABLE and TERMINAL are precondition.py's to own.
+    _DRAFTS_REL, _COVERS_REL = _tree.rel("drafts"), _tree.rel("cover_letters")
+    try:
+        import precondition as _pre
+        _pre_rows = _pre.report(str(ROOT))
+        _states = {(r.get("file", _DRAFTS_REL), r["title"]): r for r in _pre_rows}
+        _not_sendable = _pre.NOT_SENDABLE
+        _terminal = _pre.TERMINAL
+    except Exception:
+        _pre_rows, _states, _not_sendable, _terminal = [], {}, frozenset(), frozenset()
 
-<div class="tabpanel panel-network">
-  <h2>🤝 Search-firm &amp; PE relationships</h2>
-  <div class="card">{render_table(fh, frows, status_cols=(2,))}
-  <div class="sub" style="margin:12px 0 6px">Retained firms to register with (1–2/week):</div>
-  <div class="pill-row">{pills}</div></div>
-  <h2>👥 Alumni &amp; warm network</h2>
-  <div class="card">{render_table(ah, arows, status_cols=())}</div>
-  <div class="note"><strong>Channel reality check:</strong> public job boards fill roughly 15% of executive seats.
-  Retained-firm relationships and warm intros first; board scanning second.</div>
-</div>
+    # dev #154 — a READY staged message no open ask covers gets a DERIVED queue line.
+    try:
+        _ready_rows = _ym.ready_staged_without_ask(str(ROOT), pre_rows=_pre_rows)
+    except Exception:
+        _ready_rows = []
+    _ready_items = [("✉️ %s" % r["title"],
+                     "Approve and send — staged in %s and cleared to go; no open ask "
+                     "points at it. The full text is in the Pending drafts block on this "
+                     "page." % r["file"], None)
+                    for r in _ready_rows]
+    your_move_ready_html = ""
+    if _ready_items:
+        your_move_ready_html = (
+            '<h2 id="phase-outreach-ready">✉️ Ready to send — staged, no ask '
+            'on file <span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">Fully written, every send-'
+            'precondition met, and no open ask points at it — derived straight from the '
+            'staged files, so a ready reply can never sit invisible again. Sending it (and '
+            'logging the send), or recording the ask that owns it, removes the line by '
+            'itself.</div>'
+            '<div class="card">%s</div>'
+            % (len(_ready_items), render_your_move(_ready_items)))
 
-</div>"""
+    def _pre_state(filename, title):
+        return _states.get((filename, title), {}).get("state")
 
-    _title = _dashboard_title()
+    # public #29 — TERMINAL entries land in NEITHER list.
+    _drafts_active = [d for d in drafts if _pre_state(_DRAFTS_REL, d[0]) not in _terminal]
+    _sendable = [d for d in _drafts_active if _pre_state(_DRAFTS_REL, d[0]) not in _not_sendable]
+    _blocked = [d for d in _drafts_active if _pre_state(_DRAFTS_REL, d[0]) in _not_sendable]
+    drafts_html = render_draft_index(_sendable, _states, _DRAFTS_REL,
+                                     "No pending drafts.", "full body just below")
+    blocked_html = render_draft_index(_blocked, _states, _DRAFTS_REL, "",
+                                      "held — body stays in the file until unblocked")
+    drafts_bodies_html = render_draft_bodies(_sendable, "No pending drafts.", _DRAFTS_REL)
+    n_blocked = len(_blocked)
 
-    # ── THE ROUTER'S NUMBERS (D2 / dev #233) — every one from its owning module. ──
+    # dev #169 — the covers panel consults preconditions exactly as the drafts panel does.
+    _covers_active = [c for c in covers if _pre_state(_COVERS_REL, c[0]) not in _terminal]
+    _covers_ready = [c for c in _covers_active if _pre_state(_COVERS_REL, c[0]) not in _not_sendable]
+    _covers_held = [c for c in _covers_active if _pre_state(_COVERS_REL, c[0]) in _not_sendable]
+    covers_html = render_draft_index(_covers_ready, _states, _COVERS_REL,
+                                     "No cover letters pending.", "full body just below")
+    covers_held_html = render_draft_index(_covers_held, _states, _COVERS_REL, "",
+                                          "held — do not submit yet")
+    covers_bodies_html = render_draft_bodies(_covers_ready, "No cover letters pending.",
+                                             _COVERS_REL)
+    n_covers_held = len(_covers_held)
+
+    # dev #148 — sourcing strategy, via channels_due.py's one definition
+    # (review_rows / channel_yield — the single-owner rule).
+    _src_active, _src_retired, n_sourcing_due = sourcing_view()
+    sourcing_active_html, sourcing_retired_html = render_sourcing_tables(_src_active,
+                                                                          _src_retired)
+
+    # public #20 (amended by the collapse): call preps render IN FULL on this page —
+    # bounded by upcoming-call volume, and the one knowledge type someone reads on a
+    # phone the night before. Company kb stays an INDEX (its bodies are not awaiting a
+    # decision; inlining them is the measured 328 KB of the old 639 KB page).
+    _preps, _kbs = knowledge_docs()
+    preps_full_html = render_knowledge_docs(_preps, "No call preps on file.")
+    kbs_html = render_knowledge_index(
+        _kbs, "No company knowledge files yet.",
+        "read in the file tree — knowledge bodies are not published (the collapse)")
+
+    # ── Trigger-derived outreach numbers — every one from its owning module. ──
     import trigger as _trig
     try:
         _trep = _trig.report(str(ROOT))
         _n_unblocked = sum(1 for s in _trep["sequences"].values()
                            if s["state"] == "unblocked")
-        _n_untrig = len(_trep["untriggered"])
+        _n_waiting_seqs = sum(1 for s in _trep["sequences"].values()
+                              if s["state"] == "waiting")
+        _untrig_rows = _trep["untriggered"]
     except Exception as _e:
         # ⚠️ A failed scan must NEVER read as "nothing owed" — that is the missing-reads-
-        # as-empty trap. Zero counts with a loud next-action line, and a loud console line.
-        print("  !! WARNING: trigger scan failed (%s) — the outreach router row cannot "
-              "count sequences or unlinked applications; run trigger.py --check" % _e)
-        _n_unblocked, _n_untrig, _trep = 0, 0, None
+        # as-empty trap. Zero counts with a loud line on the page and in the console.
+        print("  !! WARNING: trigger scan failed (%s) — the outreach row cannot count "
+              "sequences or unlinked applications; run trigger.py --check" % _e)
+        _trep, _n_unblocked, _n_waiting_seqs, _untrig_rows = None, 0, 0, []
     import applying as _applying
     _apply_q = _applying.queue(_opp_rows)
-    _apply_titles = ["%s — %s" % (_opp_comps.get(o.get("company_id"), {}).get(
-        "name", o.get("company_id", "")), o.get("title", "")) for o in _apply_q]
-    _ctx = {
-        "system_asks": [(t, a) for t, a, _o in system_asks],
-        "role_now": role_decisions, "decide_rows": decide_rows,
-        "apply_queue": _apply_titles,
-        "week": [e[1] for e in thisweek_focus if e[0] == "i"],
-        "n_sendable_msgs": len(_sendable) + len(_covers_ready),
-        "n_unblocked_seqs": _n_unblocked, "n_untriggered": _n_untrig,
-    }
-    _rows = phase_rows(_ctx)
+    _submitted, _human, _nothing = application_tables()
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # THE PHASE SECTIONS — each built as (needs rows, in-flight rows, extra panels),
+    # every count a query. A phase at zero gets a muted router row and NO section.
+    # ─────────────────────────────────────────────────────────────────────────
+    _summaries = []           # (phase, n_needs, n_flight, clause, has_section)
+    _sections = []
+
+    def _emit(phase, n_needs, n_flight, clause, sub_bits, parts):
+        inner = "\n  ".join(p for p in parts if p)
+        has = bool(inner.strip())
+        _summaries.append((phase, n_needs, n_flight, clause, has))
+        if not has:
+            return
+        subs = " · ".join('<a href="#%s">%s</a>' % (sid, esc(lbl))
+                          for lbl, sid in sub_bits if lbl)
+        flight_note = (' <span class="ct2f">· %d in flight</span>' % n_flight) if n_flight else ""
+        _sections.append(
+            '<section class="phase" id="phase-%s">\n'
+            '<h2 class="phase-h">%s %s <span class="tcount">%d</span>%s</h2>\n'
+            '%s\n  %s\n</section>'
+            % (phase, _PHASE_ICON[phase], phase, n_needs, flight_note,
+               ('<div class="subcounts">needs you: %s</div>' % subs) if subs else "",
+               inner))
+
+    # ── configure ──────────────────────────────────────────────────────────
+    cfg_rows = [ws_row("<strong>%s</strong> — %s"
+                       % (md_inline(a.get("title") or a.get("id") or "?"),
+                          esc(_clause(a.get("ask")))),
+                       "you", _age_days(a.get("created")), a.get("act_by") or "")
+                for a in system_asks]
+    cfg_clause = (_clause(system_asks[0].get("title")) if system_asks
+                  else "Nothing needs a settings decision.")
+    cfg_parts = []
+    if cfg_rows:
+        cfg_parts.append(
+            '<h2 id="phase-configure-asks">⚙️ System &amp; tooling — needs you '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">Decisions about the tracker, '
+            'scripts, credentials, or tooling that only you can make. Each stays until it '
+            'is done.</div>'
+            '<div class="card">%s</div>'
+            % (len(cfg_rows), render_ws(cfg_rows, "`data/asks.jsonl`", "")))
+    _emit("configure", len(cfg_rows), 0, cfg_clause,
+          [("settings decisions", "phase-configure-asks")] if cfg_rows else [], cfg_parts)
+
+    # ── presence ───────────────────────────────────────────────────────────
+    n_var, n_stale, _stale_variants = _variant_staleness()
+    if n_var == 0:
+        pres_clause, pres_rows = "No resume variants declared yet.", []
+    elif n_stale:
+        pres_clause = ("Reconcile %s against presence/claims.md — the claim union moved."
+                       % ", ".join(v.get("id", "?") for v in _stale_variants[:3]))
+        pres_rows = [ws_row("<strong>%s</strong> — reconcile against presence/claims.md"
+                            % esc(v.get("id") or "?"), "you")
+                     for v in _stale_variants]
+    else:
+        pres_clause = "%d variant%s reconciled — steady." % (n_var,
+                                                             "" if n_var == 1 else "s")
+        pres_rows = []
+    pres_parts = []
+    if pres_rows:
+        pres_parts.append(
+            '<h2 id="phase-presence-stale">🪞 Variants out of step with the claim union '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="card">%s</div>'
+            % (len(pres_rows),
+               render_ws(pres_rows, "`data/resume_variants.jsonl`", "")))
+    _emit("presence", len(pres_rows), 0, pres_clause,
+          [("stale variants", "phase-presence-stale")] if pres_rows else [], pres_parts)
+
+    # ── pipeline ───────────────────────────────────────────────────────────
+    def _role_ws_rows(tuples):
+        rows = []
+        for t, a, oid in tuples:
+            link = ym_links.get(oid)
+            jd = (' <a class="opp-jd" href="%s" target="_blank" rel="noopener">JD ↗</a>'
+                  % esc(link)) if link else ""
+            rows.append(ws_row("<strong>%s</strong>%s — %s"
+                               % (md_inline(t), jd, esc(_clause(a))),
+                               "you", "", _due_by_id.get(oid, "")))
+        return rows
+
+    hand_role_rows = [ws_row("<strong>%s</strong> — %s"
+                             % (md_inline(a.get("title") or a.get("id") or "?"),
+                                esc(_clause(a.get("ask")))),
+                             "you", _age_days(a.get("created")), a.get("act_by") or "")
+                      for a in role_asks]
+    now_ws = _role_ws_rows(role_decisions) + hand_role_rows
+    decide_ws = _role_ws_rows(decide_rows)
+    due_reviews_ws = [ws_row("<strong>%s</strong> — channel review due"
+                             % esc(label), route, "", "now")
+                      for (label, _scope, route, _cad, _lr, _dh, _y, st) in _src_active
+                      if st == "due"]
+
+    _needs_ids = ({oid for _t, _a, oid in role_decisions if oid}
+                  | {oid for _t, _a, oid in decide_rows if oid})
+    _callout_ids = ({oid for _t, _a, oid in _unresolved_rows if oid}
+                    | {oid for _t, _a, oid in _waiting_rows if oid})
+    _cls_map = {}
+    for o, st, _w in _ym.classify_opportunities(_opp_rows, OWNER_TOKEN):
+        if o.get("id"):
+            _cls_map[o["id"]] = st
+    pipe_flight_ws = []
+    n_pipe_flight = 0
+    for o in _opp_rows:
+        if o.get("status") in _CLOSED_STATUSES or o.get("id") in _needs_ids:
+            continue
+        n_pipe_flight += 1
+        if o.get("id") in _callout_ids:
+            continue      # rendered richer in its callout below; still counted
+        comp = _opp_comps.get(o.get("company_id"), {})
+        st = _cls_map.get(o.get("id")) or ("stage: %s" % (o.get("stage") or "not set"))
+        pipe_flight_ws.append(ws_row(
+            "<strong>%s — %s</strong>"
+            % (esc(comp.get("name", o.get("company_id", ""))), esc(o.get("title") or "")),
+            st, "", o.get("next_action_date") or ""))
+
+    n_pipe_needs = len(now_ws) + len(decide_ws) + len(due_reviews_ws)
+    opp_alive_hint = any(o.get("status") not in _CLOSED_STATUSES for o in _opp_rows)
+    _pipe_first = role_decisions + decide_rows
+    pipe_clause = (_clause(_pipe_first[0][0]) if _pipe_first
+                   else ("A sourcing-channel review is due." if due_reviews_ws
+                         else "No decision is owed on a role."))
+    pipe_parts = []
+    if now_ws or decide_rows or n_pipe_flight or opp_alive_hint:
+        pipe_parts.append(
+            '<h2 id="phase-pipeline-now">⚡ Decisions &amp; actions waiting on you '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="ym-card"><div class="ym-head">Nothing here moves without you</div>'
+            '<div class="ws">%s</div></div>'
+            % (len(now_ws),
+               render_ws(now_ws, "`data/opportunities.jsonl` and `data/asks.jsonl`",
+                         "Nothing is waiting on you right now.")))
+    if decide_rows:
+        pipe_parts.append(
+            '<h2 id="phase-pipeline-decide">🔎 Decide — pursue or pass '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">Sourced roles whose verdict is '
+            'still <code>undecided</code>. A decision owed to you is listed from the '
+            'moment the record exists — the act-by date is a deadline, not a reveal date. '
+            'Deciding moves the record and the row leaves by itself.</div>'
+            '<div class="card">%s</div>'
+            % (len(decide_rows), render_ws(decide_ws, "`data/opportunities.jsonl`", "")))
+    if due_reviews_ws:
+        pipe_parts.append(
+            '<h2 id="phase-pipeline-reviews">🧭 Channel reviews due '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="card">%s</div>'
+            % (len(due_reviews_ws),
+               render_ws(due_reviews_ws, "`data/channels.jsonl` (channels_due.py)", "")))
+    pipe_parts.append(your_move_callouts_html)
+    if pipe_flight_ws:
+        pipe_parts.append(
+            '<div class="inflight"><h2 id="phase-pipeline-flight">⏳ In flight — not '
+            'yours to do <span class="tcount">%d</span></h2>'
+            '<div class="card">%s</div></div>'
+            % (n_pipe_flight,
+               render_ws(pipe_flight_ws, "`data/opportunities.jsonl`", "")))
+    opp_list_html, opp_counts = render_opportunity_list(_opp_rows, _opp_comps)
+    if opp_counts["all"]:
+        pipe_parts.append(
+            '<h2 id="phase-pipeline-roles">🎯 Opportunities — where each role stands</h2>'
+            '<div class="sub" style="margin:-6px 0 10px"><strong>What lives here:</strong> '
+            'every live role, once — waiting-on-you first. The bar under each title is the '
+            'pipeline stage it has actually reached.</div>'
+            + stats_html +
+            f'<input type="radio" name="oppf" id="of-all" class="oppfilter" checked>'
+            f'<input type="radio" name="oppf" id="of-you" class="oppfilter">'
+            f'<input type="radio" name="oppf" id="of-app" class="oppfilter">'
+            f'<input type="radio" name="oppf" id="of-per" class="oppfilter">'
+            f'<input type="radio" name="oppf" id="of-non" class="oppfilter">'
+            '<div class="oppbar">'
+            f'<label for="of-all">All ({opp_counts["all"]})</label>'
+            f'<label for="of-you">Waiting on you ({opp_counts["you"]})</label>'
+            f'<label for="of-app">Applied ({opp_counts["applied"]})</label>'
+            f'<label for="of-per">In play through a person ({opp_counts["person"]})</label>'
+            f'<label for="of-non">Nothing sent ({opp_counts["nothing"]})</label>'
+            '</div>'
+            f'<div class="card opp-list">{opp_list_html}</div>'
+            '<div class="note"><strong>Only &ldquo;nothing sent&rdquo; is a gap.</strong> '
+            'Applied and in-play-through-a-person are both covered; a role carried with '
+            'nothing sent is the hole.</div>')
+    if _src_active or _src_retired:
+        pipe_parts.append(
+            '<h2 id="phase-pipeline-sourcing">🧭 Sourcing — Active channels '
+            '<span class="tcount">%d due</span></h2>'
+            '<div class="card">%s</div>'
+            '<h2 id="phase-pipeline-sourcing-retired">Retired channels '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="card">%s</div>'
+            % (n_sourcing_due, sourcing_active_html,
+               len(_src_retired), sourcing_retired_html))
+    if _kbs:
+        pipe_parts.append(
+            '<h2 id="phase-pipeline-kb">🏢 Company knowledge base '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="card">%s</div>' % (len(_kbs), kbs_html))
+    pipe_subs = [("role decisions", "phase-pipeline-now")]
+    if decide_rows:
+        pipe_subs.append(("pursue/pass", "phase-pipeline-decide"))
+    if due_reviews_ws:
+        pipe_subs.append(("channel reviews", "phase-pipeline-reviews"))
+    _emit("pipeline", n_pipe_needs, n_pipe_flight, pipe_clause, pipe_subs, pipe_parts)
+
+    # ── applying ───────────────────────────────────────────────────────────
+    apply_ws = []
+    for o in _apply_q:
+        comp = _opp_comps.get(o.get("company_id"), {})
+        apply_ws.append(ws_row("<strong>%s — %s</strong>"
+                               % (esc(comp.get("name", o.get("company_id", ""))),
+                                  esc(o.get("title") or "")), "you", "",
+                               o.get("next_action_date") or ""))
+    submitted_ws = [ws_row("<strong>%s — %s</strong>" % (esc(r[0]), esc(r[1])),
+                           r[4], r[3], "")
+                    for r in _submitted]
+    if _apply_q:
+        _q0 = _apply_q[0]
+        _q0name = _opp_comps.get(_q0.get("company_id"), {}).get(
+            "name", _q0.get("company_id", ""))
+        apply_clause = ("%s — work the queue in session (views/applying.md)."
+                        % _clause("%s — %s" % (_q0name, _q0.get("title") or "")))
+    else:
+        apply_clause = "Nothing queued to apply."
+    apply_parts = []
+    if apply_ws:
+        apply_parts.append(
+            '<h2 id="phase-applying-queue">📝 Queued to apply '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">Working happens in session — '
+            '<code class="fileref">views/applying.md</code> is the worksheet; this is the '
+            'queue.</div>'
+            '<div class="card">%s</div>'
+            % (len(apply_ws), render_ws(apply_ws, "`views/applying.md`", "")))
+    if submitted_ws:
+        apply_parts.append(
+            '<div class="inflight"><h2 id="phase-applying-inflight">⏳ Submitted — '
+            'awaiting a response <span class="tcount">%d</span></h2>'
+            '<div class="card">%s</div></div>'
+            % (len(submitted_ws),
+               render_ws(submitted_ws, "`data/opportunities.jsonl`", "")))
+    if _nothing and (apply_ws or submitted_ws):
+        apply_parts.append(
+            '<div class="sub">%d live role%s carried with nothing sent — the real gap; '
+            'each is flagged on its row in the pipeline section.</div>'
+            % (len(_nothing), "" if len(_nothing) == 1 else "s"))
+    _emit("applying", len(apply_ws), len(submitted_ws), apply_clause,
+          [("apply queue", "phase-applying-queue")] if apply_ws else [], apply_parts)
+
+    # ── conversations ──────────────────────────────────────────────────────
+    _today_iso = datetime.date.today().isoformat()
+    _commits = load_jsonl("commitments.jsonl")
+    # Commitment states — unplaceable dates AND preps owed — come from conversations.py's
+    # one resolver (which itself resolves prep existence through knowledge.prep_hits, the
+    # dev #153 single predicate). A second derivation here would disagree with it later,
+    # the same reason the applying row imports applying.queue.
+    import conversations as _conversations
+    conv_needs = []
+    conv_owed = []
+    try:
+        _conv_rows = _conversations.report(str(ROOT))
+    except Exception as _e:
+        # ⚠️ A failed scan must NEVER read as "no prep owed" — that is the missing-reads-
+        # as-empty trap. Zero counts with a loud line on the console, and the
+        # unresolved-date marker still derives from the store directly below.
+        print("  !! WARNING: conversations scan failed (%s) — the conversations row "
+              "cannot count preps owed; run conversations.py" % _e)
+        _conv_rows = None
+    if _conv_rows is None:
+        for c in _commits:
+            if str(c.get("date")) == "unresolved":
+                # The migration marker: an unreadable date is an UNKNOWN, never a pass.
+                conv_needs.append(ws_row(
+                    "<strong>⚠️ %s</strong> — date is the migration marker "
+                    "<code>unresolved</code>: verify the real date (invite "
+                    "<code>.ics</code>, never recall) and set it on the record"
+                    % md_inline(c.get("title") or c.get("id") or "?"),
+                    "you", "", "unresolved", loud=True))
+    else:
+        for r in _conv_rows:
+            if r["state"].endswith("-date"):
+                # Unplaceable: the migration marker, or a date nobody can read — an
+                # UNKNOWN, never a pass.
+                conv_needs.append(ws_row(
+                    "<strong>⚠️ %s</strong> — %s"
+                    % (md_inline(r.get("title") or r.get("id") or "?"), esc(r["why"])),
+                    "you", "", r.get("date") or "unresolved", loud=True))
+            elif r["state"] in _conversations.NEEDS_YOU:
+                _due = r.get("date") or ""
+                if r.get("time"):
+                    _due += " %s" % r["time"]
+                conv_owed.append(ws_row(
+                    "<strong>⛔ %s</strong> — %s"
+                    % (md_inline(r.get("title") or r.get("id") or "?"), esc(r["why"])),
+                    r.get("who") or "you", "", _due, loud=True))
+    conv_flight = []
+
+    def _placed_future(r):
+        # An unplaceable date is an UNKNOWN, never a pass — and never an in-flight row
+        # either. The old lexical compare let a non-ISO date string that happened to sort
+        # above today ("next Tuesday" >= "2026-…") render as an ordinary scheduled
+        # commitment while the needs-you list was simultaneously calling it unreadable.
+        try:
+            return datetime.date.fromisoformat(str(r.get("date"))) >= \
+                datetime.date.fromisoformat(_today_iso)
+        except ValueError:
+            return False
+
+    for c in sorted((r for r in _commits if _placed_future(r)),
+                    key=lambda r: (str(r.get("date")), str(r.get("time") or ""))):
+        due = str(c.get("date"))
+        if c.get("time"):
+            due += " %s" % c["time"]
+        conv_flight.append(ws_row("<strong>%s</strong>"
+                                  % md_inline(c.get("title") or c.get("id") or "?"),
+                                  c.get("who") or "", "", due))
+    if _conv_rows is None:
+        # ⚠️ Mirrors the trigger-scan-failure idiom below (out_clause / the "Trigger scan
+        # failed" note) — the same defect, the same fix. A failed scan must never present
+        # as "Nothing scheduled" or a quiet zero; the clause itself must say UNKNOWN.
+        conv_clause = ("⛔ conversations scan failed — prep-owed counts are UNKNOWN, not "
+                       "zero; run conversations.py")
+    else:
+        conv_clause = ("%s — %s" % (_clause(re.sub(r"<[^>]+>", "",
+                                                   conv_flight[0]["item"])),
+                                    conv_flight[0]["due"])
+                       if conv_flight else "Nothing scheduled.")
+        if conv_owed:
+            conv_clause = ("%d prep%s owed (call-prep) · %s"
+                           % (len(conv_owed), "" if len(conv_owed) == 1 else "s", conv_clause))
+    conv_parts = []
+    if _conv_rows is None:
+        # dev/audit 2026-08-29, item 2 — the S5 phone reader never sees stdout, so the
+        # WARNING printed above (conversations scan failed) must ALSO land on the page,
+        # in this section, or a scan failure renders as an ordinary (not-visibly-broken)
+        # page with a possibly-wrong quiet-zero preps-owed count. This banner must appear
+        # regardless of whether conv_owed happens to be empty — it is the thing that
+        # distinguishes "scan failed, cannot know" from "zero owed".
+        conv_parts.append(
+            '<div class="note">⛔ <strong>Conversations scan failed</strong> — prep-owed '
+            'counts on this page are UNKNOWN, not zero (conversations.report() raised). '
+            'Run <code>conversations.py</code> to see the full traceback, fix it, and '
+            'regenerate before trusting a zero here.</div>')
+    if conv_owed:
+        conv_parts.append(
+            '<h2 id="phase-conversations-owed">⛔ Preps owed — before the call '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">Writing happens in session — the '
+            '<code>call-prep</code> skill drains every row here; a row stands until '
+            '<code>conversations.py</code> reports the note complete (a partial, '
+            'records-only note never satisfies the predicate).</div>'
+            '<div class="card">%s</div>'
+            % (len(conv_owed), render_ws(conv_owed, "`views/conversations.md`", "")))
+    if conv_needs:
+        conv_parts.append(
+            '<h2 id="phase-conversations-unresolved">⚠️ Commitments with unresolved '
+            'dates <span class="tcount">%d</span></h2>'
+            '<div class="card">%s</div>'
+            % (len(conv_needs), render_ws(conv_needs, "`data/commitments.jsonl`", "")))
+    if conv_flight:
+        conv_parts.append(
+            '<h2 id="phase-conversations-week">📅 This week — calls &amp; deadlines '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="card">%s</div>'
+            '<div class="note"><strong>Meeting times are verified from the invite&rsquo;s '
+            '<code>.ics</code>, not from recall.</strong> A calendar receipt only proves '
+            'what was booked when it was sent — confirm anything that may have been '
+            'rescheduled (<code>parse_ics.py</code>).</div>'
+            % (len(conv_flight),
+               render_ws(conv_flight, "`data/commitments.jsonl`", "")))
+    if _preps:
+        conv_parts.append(
+            '<h2 id="phase-conversations-preps">📞 Call preps — in full '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">The one knowledge type that '
+            'renders in full here (public #20: a prep must be readable the night before, '
+            'anywhere) — bounded by upcoming-call volume.</div>'
+            '<div class="card">%s</div>' % (len(_preps), preps_full_html))
+    _emit("conversations", len(conv_needs) + len(conv_owed), len(conv_flight), conv_clause,
+          ([("preps owed", "phase-conversations-owed")] if conv_owed else [])
+          + ([("unresolved dates", "phase-conversations-unresolved")] if conv_needs else []),
+          conv_parts)
+
+    # ── outreach ───────────────────────────────────────────────────────────
+    n_approvals = len(_sendable) + len(_covers_ready)
+    touch_ws = [ws_row("<strong>%s</strong> — %s" % (md_inline(t), esc(_clause(a))),
+                       "you", "", "")
+                for t, a, _oid in channel_touches]
+    untrig_ws = [ws_row("<strong>%s</strong> — application has no follow-up linked"
+                        % esc(r.get("title") or r.get("opp_id") or "?"),
+                        r.get("status") or "", _age_days(r.get("date")), "")
+                 for r in _untrig_rows]
+    n_out_needs = n_approvals + _n_unblocked + len(untrig_ws) + len(touch_ws)
+    n_out_flight = n_blocked + n_covers_held + _n_waiting_seqs
     if _trep is None:
-        _rows = [(p, n, ("⛔ trigger scan failed — sequence/follow-up counts are UNKNOWN, "
-                         "not zero; run trigger.py --check") if p == "outreach" else t)
-                 for p, n, t in _rows]
-    _selected, _share = publish_selection(_rows)
+        out_clause = ("⛔ trigger scan failed — sequence and follow-up counts are "
+                      "UNKNOWN, not zero; run trigger.py --check")
+    else:
+        bits = []
+        if n_approvals:
+            bits.append("%d message%s await%s approval"
+                        % (n_approvals, "" if n_approvals == 1 else "s",
+                           "s" if n_approvals == 1 else ""))
+        if _n_unblocked:
+            bits.append("%d sequence%s unblocked"
+                        % (_n_unblocked, "" if _n_unblocked == 1 else "s"))
+        if untrig_ws:
+            bits.append("%d application%s with no follow-up linked"
+                        % (len(untrig_ws), "" if len(untrig_ws) == 1 else "s"))
+        if touch_ws:
+            bits.append("%d relationship follow-up%s due"
+                        % (len(touch_ws), "" if len(touch_ws) == 1 else "s"))
+        out_clause = (bits[0] + "." if bits else "Nothing staged or owed.")
+    out_parts = [your_move_ready_html]
+    if _sendable:
+        out_parts.append(
+            '<h2 id="phase-outreach-approvals">✉️ Pending drafts — awaiting your approval '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">Nothing is ever sent without your '
+            'explicit approval. The full text of every sendable message is right here — read '
+            'it on this page, never off a transcript.</div>'
+            '<div class="card">%s</div>'
+            '<div class="card">%s</div>'
+            % (len(_sendable), drafts_html, drafts_bodies_html))
+    if n_blocked:
+        out_parts.append(
+            '<div class="inflight"><h2 id="phase-outreach-blocked">⏳ Waiting on someone '
+            'else <span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">Written and ready, but blocked '
+            'until the other person acts. <strong>Not yours to do</strong> — each moves up '
+            'by itself once the precondition is met.</div>'
+            '<div class="card">%s</div></div>' % (n_blocked, blocked_html))
+    if _covers_ready:
+        out_parts.append(
+            '<h2 id="phase-outreach-covers">📄 Cover letters — for applications you submit '
+            'yourself <span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">Every claim traces to the claim '
+            'union (presence/claims.md). You paste and submit these yourself — nothing is '
+            'applied on your behalf.</div>'
+            '<div class="card">%s</div>'
+            '<div class="card">%s</div>'
+            % (len(_covers_ready), covers_html, covers_bodies_html))
+    if n_covers_held:
+        out_parts.append(
+            '<div class="inflight"><h2 id="phase-outreach-covers-held">⏳ Cover letters '
+            'held — do not submit yet <span class="tcount">%d</span></h2>'
+            '<div class="card">%s</div></div>' % (n_covers_held, covers_held_html))
+    if touch_ws:
+        out_parts.append(
+            '<h2 id="phase-outreach-touches">🤝 Relationship follow-ups due '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="card">%s</div>'
+            % (len(touch_ws), render_ws(touch_ws, "`data/channels.jsonl`", "")))
+    if _trep is None:
+        out_parts.append(
+            '<div class="note">⛔ <strong>Trigger scan failed</strong> — sequence and '
+            'follow-up counts on this page are UNKNOWN, not zero. Run '
+            '<code>trigger.py --check</code>.</div>')
+    elif _n_unblocked or untrig_ws or _n_waiting_seqs:
+        seq_bits = []
+        if _n_unblocked:
+            seq_bits.append("%d unblocked — the next step is sendable" % _n_unblocked)
+        if _n_waiting_seqs:
+            seq_bits.append("%d waiting on a trigger" % _n_waiting_seqs)
+        out_parts.append(
+            '<h2 id="phase-outreach-seq">⏱ Follow-up sequences'
+            + ((' <span class="tcount">%d</span>' % (_n_unblocked + _n_waiting_seqs))
+               if (_n_unblocked or _n_waiting_seqs) else "")
+            + '</h2>'
+            + (('<div class="sub" style="margin:-6px 0 10px">%s (trigger.py owns the '
+                'derivation).</div>' % esc("; ".join(seq_bits))) if seq_bits else "")
+            + (('<div class="card">%s</div>'
+                % render_ws(untrig_ws, "`trigger.py --check`", "")) if untrig_ws else ""))
+    out_subs = [("approvals", "phase-outreach-approvals")]
+    if touch_ws:
+        out_subs.append(("follow-ups", "phase-outreach-touches"))
+    if _n_unblocked or untrig_ws:
+        out_subs.append(("sequences", "phase-outreach-seq"))
+    _emit("outreach", n_out_needs, n_out_flight, out_clause, out_subs, out_parts)
 
-    # ── The outputs. EVERY one is written EVERY run (see the module docstring). ──
+    # ── Assemble the ONE page. ─────────────────────────────────────────────
+    # %-d is a glibc/BSD strftime extension; on Windows it raises ValueError and kills the
+    # dashboard at the last step. Build the day number by hand (same fix as parse_ics.py).
+    _t = datetime.date.today()
+    today = "%s %d, %d" % (_t.strftime("%B"), _t.day, _t.year)
+    _title = _dashboard_title()
+
+    n_needs_total = sum(s[1] for s in _summaries)
+    router_html = render_router_rows(_summaries)
+
+    body_inner = (
+        '<h1>%s</h1>\n'
+        # ⭐ The generated-date line stays PROMINENT: for the dashboard-only reader it is
+        # the ONLY staleness signal there is (deployment.md, the S5 read leg).
+        '<div class="updated">Generated <strong>%s</strong> · %d item%s need%s you · '
+        'the phase name in each row jumps to its section · generated by '
+        'scripts/generate_dashboard.py</div>\n'
+        '%s\n%s\n'
+        '<div class="sub" style="margin-top:26px">Not on this page: the network '
+        '(queried in session — <code class="fileref">data/channels.jsonl</code>, '
+        '<code class="fileref">%s</code>), archives, sent and closed items, and knowledge '
+        'bodies — counts above, files in the tree.</div>'
+        % (html.escape(_title), today, n_needs_total,
+           "" if n_needs_total == 1 else "s", "s" if n_needs_total == 1 else "",
+           router_html, "\n".join(_sections), esc(_tree.rel("network"))))
+
+    # ── The outputs: the ONE artifact and the constant tombstone. ──────────
     (ROOT / "views").mkdir(exist_ok=True)
-
-    artifact_doc = f"""<title>{html.escape(_title)}</title>
-<style>{css}</style>
-{body_inner}"""
-    # views/ since the 0.32.0 tree migration (public #28): generated output lives apart
-    # from authored sources; only the constant tombstone stays at the root habit path.
+    artifact_doc = ('<title>%s</title>\n<style>%s</style>\n%s'
+                    % (html.escape(_title), CSS, body_inner))
     (ROOT / "views" / "dashboard_artifact.html").write_text(artifact_doc, encoding="utf-8")
-
-    router_doc = render_router(_rows, _title, today)
-    (ROOT / "views" / "router_artifact.html").write_text(router_doc, encoding="utf-8")
-
-    def _phase_doc(phase, blurb, inner):
-        return (f'<title>{html.escape(_title)} — {phase}</title>\n<style>{css}</style>\n'
-                f'<h1>{html.escape(_title)} — {phase}</h1>'
-                f'<div class="updated">{today} · {blurb} · generated by '
-                f'generate_dashboard.py</div>\n{inner}')
-
-    # ⭐ Python 3.9 — CI's floor — forbids a backslash inside an f-string
-    # expression; 3.12+ allows it. The literal is hoisted so this file parses
-    # on the version that actually ships.
-    _EMPTY_WEEK = '<div class="sub">Nothing scheduled.</div>'
-    _phase_docs = {
-        "pipeline": _phase_doc(
-            "pipeline", "every live role in detail, plus the company knowledge base",
-            f'{stats_html}<div class="card opp-list">{opp_list_html}</div>'
-            f'<h2>🏢 Company knowledge base <span class="tcount">{len(_kbs)}</span></h2>'
-            f'<div class="card">{kbs_full_html}</div>'),
-        "conversations": _phase_doc(
-            "conversations", "this week&rsquo;s commitments, and every call prep in full",
-            f'<h2>📅 This week</h2><div class="card">'
-            f'{thisweek_html or _EMPTY_WEEK}</div>'
-            f'<h2>📞 Call preps <span class="tcount">{len(_preps)}</span></h2>'
-            f'<div class="card">{preps_full_html}</div>'),
-        "outreach": _phase_doc(
-            "outreach", "every pending message in full — the reading surface for approval",
-            f'<h2>✉️ Pending drafts — awaiting your approval</h2>'
-            f'<div class="card">{drafts_full_html}</div>'
-            + (f'<h2>⏳ Waiting on someone else <span class="tcount">{n_blocked}</span></h2>'
-               f'<div class="card">{blocked_full_html}</div>' if n_blocked else "")
-            + f'<h2>📄 Cover letters</h2><div class="card">{covers_full_html}</div>'
-            + (f'<h2>⏳ Cover letters held <span class="tcount">{n_covers_held}</span></h2>'
-               f'<div class="card">{covers_held_full_html}</div>' if n_covers_held else "")),
-    }
-    _sizes = {}
-    for _phase, _doc in _phase_docs.items():
-        _p = ROOT / "views" / ("phase-%s_artifact.html" % _phase)
-        _p.write_text(_doc, encoding="utf-8")
-        _sizes[_phase] = len(_doc.encode("utf-8"))
-
-    # The local full copy is RETIRED (public #22 / dev #233): a constant stub carries no
-    # state, so the two-copies staleness window is gone by construction.
     (ROOT / "dashboard.html").write_text(DASHBOARD_TOMBSTONE, encoding="utf-8")
 
-    _pub = ["router", "dashboard"] + ["phase-%s" % p for p in _selected]
-    print(f"Wrote views/dashboard_artifact.html ({len(artifact_doc.encode('utf-8'))} bytes), "
-          f"views/router_artifact.html ({len(router_doc.encode('utf-8'))} bytes), "
-          + ", ".join("views/phase-%s_artifact.html (%d bytes)" % (p, _sizes[p])
-                      for p in sorted(_sizes))
-          + f", and the dashboard.html tombstone ({len(DASHBOARD_TOMBSTONE)} bytes)")
-    print(f"  publish set (count > equal share {_share:.1f}): {', '.join(_pub)} "
-          f"— phase pages below the threshold are still generated, just not published")
-    print(f"  {n_move} Your Move items ({n_needs} system asks, {len(_ready_items)} ready staged), "
-          f"{n_week} This Week commitments, "
-          f"{len(srows2)} sourced ({len(live_rows)} active / {len(closed_rows)} closed), "
-          f"{len(_src_active)} sourcing channels ({n_sourcing_due} due, {len(_src_retired)} retired), "
-          f"{len(frows)} firm rows, {len(arows)} alumni rows")
+    print("Wrote views/dashboard_artifact.html (%d bytes) and the dashboard.html "
+          "tombstone (%d bytes)"
+          % (len(artifact_doc.encode("utf-8")), len(DASHBOARD_TOMBSTONE)))
+    print("  publish: ONE artifact — views/dashboard_artifact.html, to the URL in "
+          "views/dashboard_artifact_url.txt (the router and phase pages are RETIRED — "
+          "2026-08-29 collapse). If that url file is absent, check "
+          "check_dashboard_fresh.py --publish-state FIRST: never-published (no stamp "
+          "either) means create it on first publish; url-missing (a stamp already exists) "
+          "means RECOVER the URL via the Artifact tool's list action, never mint a new one")
+    print("  " + " · ".join("%s %d/%d" % (p, n, f)
+                             for p, n, f, _c, _h in _summaries)
+          + "  (needs-you/in-flight per phase)")
+    try:
+        import pending_stubs as _stubs
+        _pend = [r for r in _stubs.load_rows(str(ROOT))
+                 if r.get("state") in ("pending", "failed", "unresolved")]
+        if _pend:
+            print("  ⚠️ %d retired page URL(s) still await their moved-stub publish — "
+                  "run scripts/pending_stubs.py" % len(_pend))
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

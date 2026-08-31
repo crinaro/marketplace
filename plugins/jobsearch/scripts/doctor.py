@@ -313,6 +313,65 @@ def check_stray_rulebooks():
     return rows
 
 
+# ⭐⭐ dev #<pending> — FREQUENCY IS THE SIGNAL. One pointer-repair is housekeeping (a version
+# just landed, or the machine's pointer was never written before). A repair on every single call
+# means something keeps rewriting `~/.claude/jobsearch/engine_root` backward BETWEEN calls — a
+# live poisoner (an ephemeral desktop-app session copy, a stray checkout import) — and nothing
+# else surfaces that distinction; a healthy-looking `run` call and a poisoned one that happens to
+# repair itself before failing look identical from the caller's side.
+_POINTER_REPAIR_ALARM = 3
+
+
+def check_pointer_health():
+    """Counts of engine-pointer events from the MACHINE-GLOBAL diagnostics log (never a
+    profile's own — dev #151: these describe which INSTALLED COPY is running, not any one
+    profile's data, so they are read from `_diag.MACHINE_LOG` directly rather than via
+    `state_root()`, which would sometimes answer with a profile's log depending on cwd).
+
+    Three event classes, all written by `install_launcher.py`/`_root.py`, none written here:
+        pointer-repair          the launcher moved the pointer forward — see ALARM threshold above
+        pointer-repair-failed   the launcher tried to move it and the write failed
+        stale-copy-session      `heal_if_stale()` refused to regenerate the launcher backward
+                                because an OLDER engine copy tried to overwrite a NEWER one
+    """
+    try:
+        import _diag
+        lines = _diag.tail(_diag.MAX_LINES, path=_diag.MACHINE_LOG)
+    except Exception as e:
+        return [(WARN, "engine pointer", "could not read the machine diagnostics log — %s: %s"
+                % (type(e).__name__, e))]
+    events = []
+    for l in lines:
+        try:
+            events.append(json.loads(l))
+        except ValueError:
+            continue
+    repairs = [e for e in events if e.get("event") == "pointer-repair"]
+    failed = [e for e in events if e.get("event") == "pointer-repair-failed"]
+    stale = [e for e in events if e.get("event") == "stale-copy-session"]
+    out = []
+    if failed:
+        out.append((BAD, "pointer repair", "%d FAILED write(s) to engine_root recorded — the "
+                    "launcher could not repair its own pointer; check that "
+                    "~/.claude/jobsearch/ is writable" % len(failed)))
+    if len(repairs) >= _POINTER_REPAIR_ALARM:
+        out.append((BAD, "pointer repair", "%d repair(s) recorded in the recent log — this "
+                    "looks like a LIVE POISONER rewriting engine_root backward between calls, "
+                    "not one-off housekeeping" % len(repairs)))
+    elif repairs:
+        out.append((WARN, "pointer repair", "%d repair(s) recorded — housekeeping, unless this "
+                    "count keeps climbing on repeat checks" % len(repairs)))
+    if stale:
+        pairs = ["%s->%s" % (e.get("own_generation"), e.get("disk_generation"))
+                for e in stale[-3:]]
+        out.append((BAD, "stale-copy session", "%d refusal(s): a session ran an OLDER engine "
+                    "copy than what is installed and refused to regenerate the launcher "
+                    "backward (own->disk generation: %s)" % (len(stale), ", ".join(pairs))))
+    if not out:
+        out.append((OK, "engine pointer", "no repairs or refusals in the recent machine log"))
+    return out
+
+
 def main():
     ap = argparse.ArgumentParser(description="Is this profile healthy and current with the plugin?")
     ap.add_argument("--fix", action="store_true",
@@ -333,6 +392,8 @@ def main():
                  check_click_guard()),
                 ("STRAY RULEBOOKS (dev #155 — a stamped CLAUDE.md outside any profile)",
                  check_stray_rulebooks()),
+                ("ENGINE POINTER (repair frequency — one is housekeeping, many is a poisoner)",
+                 check_pointer_health()),
                 ("CREDENTIALS (yours to place)", check_credentials())]
     bad = warn = 0
     for title, rows in sections:

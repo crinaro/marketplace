@@ -82,8 +82,8 @@ empty body on 2026-07-27.**
    the body from `>`-prefixed lines ONLY. Plain prose reads perfectly in the source file and
    **publishes completely empty**, indistinguishable from a letter never written. That shipped once
    and only the candidate noticed. **After the dashboard is regenerated, grep the OUTPUT
-   (`views/phase-outreach_artifact.html` — full letter bodies render THERE since dev #233; the
-   state view carries only an index) for a distinctive phrase from what you wrote** — verifying
+   (`views/dashboard_artifact.html` — a SENDABLE letter's full body renders on the one page
+   since the 2026-08-29 collapse; held ones stay index rows) for a distinctive phrase from what you wrote** — verifying
    the source file is not verifying the deliverable.
 2. **Every claim traces to `presence/claims.md` (the union) or its addenda.** For a printed variant this is
    now mechanically enforced — `resume_variants.py --check` fails a bullet absent from the union —

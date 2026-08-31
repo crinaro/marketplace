@@ -463,4 +463,4 @@ the `jobsearch:weekly-review` skill. In short: update state → regenerate the d
 OUTPUT for what you just added** → publish via the Artifact tool (passing
 `views/dashboard_artifact_url.txt` as `url`) → commit → **push with `scripts/push.sh`** → **release the
 run lock**. Save any pending draft in FULL to `outreach/drafts.md` and any pending letter to
-`applying/cover_letters.md` — the candidate reads full text off the published outreach page, not the transcript.
+`applying/cover_letters.md` — the candidate reads full text off the published dashboard, not the transcript.

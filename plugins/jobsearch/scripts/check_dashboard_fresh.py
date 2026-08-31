@@ -74,17 +74,17 @@ ENGINE_SCRIPTS = os.path.dirname(os.path.realpath(__file__))
 ROOT = _profile_root()
 ARTIFACT = _tree.path(ROOT, "dashboard_artifact")
 
-# ⭐ dev #233 — dashboard.html is a constant TOMBSTONE now (the local full copy is retired;
-# a stub carries no state, so the two-copies staleness window of public #22 is gone by
-# construction). Freshness is measured over the GENERATED SET below, every member of which
-# generate_dashboard.py writes on every run — a missing member means a partial generation,
-# which is stale by definition.
+# ⭐ dev #233 — dashboard.html is a constant TOMBSTONE (the local full copy is retired; a
+# stub carries no state, so the two-copies staleness window of public #22 is gone by
+# construction). The 2026-08-29 one-artifact collapse then shrank the generated set to the
+# SINGLE page below: the router and phase pages are retired (their URLs get moved-stubs
+# via pending_stubs.py), so with one page a dropped publish means the phone reader's
+# ENTIRE view is stale — this stamp is the only mechanical detector, and it is MORE
+# load-bearing than it was over the set, not less. Stamp entries for retired pages in an
+# existing stamp file are simply no longer consulted (OUTPUTS drives every comparison),
+# so a profile mid-migration can never sit forever-red over a page that no longer exists.
 OUTPUTS = [
     _tree.rel("dashboard_artifact"),   # views/ since public #28
-    "views/router_artifact.html",
-    "views/phase-pipeline_artifact.html",
-    "views/phase-conversations_artifact.html",
-    "views/phase-outreach_artifact.html",
 ]
 
 # Everything the generated set renders. If one of these moved, the set is behind it.
@@ -95,8 +95,10 @@ OUTPUTS = [
 # and, via SOURCE_DIRS, kb/ and call_preps/: those files rendered on the page since public
 # #20 but were NEVER in this list, so a knowledge edit could not make the page stale. A
 # freshness gate that skips a source is the missing-reads-as-empty trap wearing mtimes.)
+# network.md left SOURCES with the 2026-08-29 collapse: the page no longer renders it
+# (D4 — the network is queried, not queued), so its edits cannot change the page.
 SOURCES = [
-    _tree.rel("drafts"), _tree.rel("cover_letters"), _tree.rel("network"),
+    _tree.rel("drafts"), _tree.rel("cover_letters"),
     _tree.rel("claims"),
     "data/opportunities.jsonl", "data/companies.jsonl", "data/channels.jsonl",
     "data/messages.jsonl", "data/asks.jsonl", "data/commitments.jsonl",
@@ -130,11 +132,11 @@ def stamp_path():
     return os.path.join(d if os.path.isdir(d) else ROOT, "last_publish.json")
 
 
-# ⭐ EXTENDED TO THE FULL GENERATED SET (gate-keeper dispatch). Used to cover
-# dashboard_artifact.html ALONE, so a dropped phase-page publish was caught only by the
-# freshness dimension above, never by the publish dimension: the stamp went green the moment
-# the ONE file it tracked matched, regardless of what happened to the other four. Every
-# member of OUTPUTS now gets its own entry in one stamp file, keyed by its own path.
+# The stamp file keys each OUTPUTS member by its own path. That shape was introduced when
+# the stamp was extended over dev #233's multi-page set (a dropped phase-page publish used
+# to hide behind a green dashboard-only stamp) and is KEPT under the one-page collapse:
+# it reads legacy single-file stamps and legacy multi-file stamps alike, and it means the
+# next page-set change costs a list edit, not a format migration.
 def sha_of(path):
     try:
         with open(path, "rb") as fh:
@@ -174,16 +176,12 @@ def read_stamp():
     return doc
 
 
-# router + dashboard are published EVERY round by protocol (daily-run/coordinator SKILL.md:
-# "always views/router_artifact.html and dashboard_artifact.html, plus the phase pages whose
-# volume clears the computed threshold") — stamped unconditionally, same as the single-file
-# version always did. A phase page is published only SOMETIMES, and this script has no signal
-# of its own for "was THIS round one of them" — so it is stamped only when it already carries
-# a url file, i.e. some earlier round published it and, per protocol, a page being republished
-# keeps redeploying to that same url. A phase page that has never been published (no url file
-# yet) is deliberately left un-stamped: stamping it here would claim a publish that cannot
-# have happened, since nothing points at it yet.
-ALWAYS_PUBLISHED = (_tree.rel("dashboard_artifact"), "views/router_artifact.html")
+# Since the one-artifact collapse the publish protocol is ONE page, every round —
+# stamped unconditionally, exactly as the original single-file stamp always did. The
+# machinery below still walks OUTPUTS and still honours the url-file rule (a page with no
+# url file is never stamped as published), because that is what keeps a fresh install's
+# never-published state benign instead of forever-red.
+ALWAYS_PUBLISHED = (_tree.rel("dashboard_artifact"),)
 
 
 def write_stamp():
@@ -218,8 +216,18 @@ def write_stamp():
 
 
 def _file_publish_state(o, stamp):
-    """One OUTPUTS member -> ('current'|'behind'|'unstamped'|'never-published'|'no-artifact',
-    detail_line)."""
+    """One OUTPUTS member -> ('current'|'behind'|'unstamped'|'url-missing'|'never-published'|
+    'no-artifact', detail_line).
+
+    ⭐ 'url-missing' (added by this dispatch): a stamp EXISTS for this page (it published at
+    some point) but its `_url.txt` companion is gone now. This must never fall through to
+    'current' (the pre-fix defect — a stale stamp with a matching sha read as current even
+    though the bookmark to reach it no longer exists on disk) nor collapse into
+    'never-published' (which would route a later reader through "url file absent -> mint a
+    new artifact", producing a SECOND artifact at a new URL while the original bookmark, if
+    it still resolves on the platform, keeps serving its last snapshot forever — the exact
+    dangling-live-URL shape pending_stubs.py exists to eliminate). The url-file check must
+    run whenever `entry` exists, not only in the "no entry yet" branch below."""
     sha = sha_of(_tree.resolve_rel(ROOT, o))
     if sha is None:
         return "no-artifact", "%s does not exist yet" % o
@@ -233,6 +241,17 @@ def _file_publish_state(o, stamp):
             return "never-published", "%s — no stamp, no url file; never published" % o
         return "unstamped", ("%s — the generated page exists but NO publish was ever "
                              "stamped for it" % o)
+    # entry exists and has a sha256 — this page WAS published at some point. Check the url
+    # file BEFORE comparing content: without the url file there is nothing to recover the
+    # published view from regardless of whether the bytes still match.
+    if not os.path.exists(url_file_for(o)):
+        return "url-missing", (
+            "%s — a publish WAS stamped for this page (at %s) but its url file (%s) is now "
+            "missing. The artifact URL is NOT lost — recover it via the Artifact tool's "
+            "`list` action and write it back to that file. Do NOT mint a new artifact: that "
+            "leaves the original URL (if it still resolves) serving its last snapshot "
+            "forever while nothing on this profile points at it anymore."
+            % (o, entry.get("stamped_at") or "?", os.path.basename(url_file_for(o))))
     if entry["sha256"] != sha:
         return "behind", ("%s DIFFERS from what was last published (stamped %s)"
                           % (o, entry.get("stamped_at") or "?"))
@@ -240,10 +259,13 @@ def _file_publish_state(o, stamp):
 
 
 def publish_state():
-    """('current'|'behind'|'unstamped'|'never-published'|'no-artifact', detail lines) — the
-    WORST state across every OUTPUTS member, 'worst' meaning 'behind' or 'unstamped' first
-    (both mean the same fix: publish, then stamp) — the single-file version let a dropped
-    phase-page publish hide behind a green dashboard-only stamp; this is the fix."""
+    """('current'|'behind'|'unstamped'|'url-missing'|'never-published'|'no-artifact',
+    detail lines) — the WORST state across every OUTPUTS member, 'worst' meaning
+    'url-missing' first (a stamped page whose bookmark is gone — the fix is recovery, not
+    republishing), then 'behind' or 'unstamped' (both mean the same fix: publish, then
+    stamp) — the single-file version let a dropped phase-page publish hide behind a green
+    dashboard-only stamp; this is the fix. 'url-missing' is the same class of fix (dev/audit
+    2026-08-29): a stamped-but-now-file-less page must never silently read as 'current'."""
     sha = artifact_sha()
     if sha is None:
         return "no-artifact", ["no generated artifact yet — the freshness check above is the "
@@ -252,8 +274,16 @@ def publish_state():
     per_file = {o: _file_publish_state(o, stamp) for o in OUTPUTS}
     behind = [o for o, (s, _) in per_file.items() if s == "behind"]
     unstamped = [o for o, (s, _) in per_file.items() if s == "unstamped"]
-    if behind or unstamped:
+    url_missing = [o for o, (s, _) in per_file.items() if s == "url-missing"]
+    if url_missing or behind or unstamped:
         lines = []
+        if url_missing:
+            lines.append("state: url-missing — the following page(s) were stamped as "
+                         "PUBLISHED but their url file is now MISSING:")
+            for o in url_missing:
+                lines.append("  - %s" % per_file[o][1])
+            lines.append("  RECOVER the URL via the Artifact tool's `list` action — never mint")
+            lines.append("  a new artifact for a page that already has one.")
         if behind:
             lines.append("the following page(s) DIFFER from what was last published:")
             for o in behind:
@@ -263,12 +293,14 @@ def publish_state():
                          "for them:")
             for o in unstamped:
                 lines.append("  - %s" % per_file[o][1])
-        lines.append("A publish was dropped (version conflict), skipped, or never stamped —")
-        lines.append("all three converge on the same fix: publish each page above with the")
-        lines.append("Artifact tool (its own `_url.txt` as `url`; on a conflict: regenerate,")
-        lines.append("publish again — NEVER force), then: %s --stamp-published"
-                     % os.path.basename(__file__))
-        return ("behind" if behind else "unstamped"), lines
+        if behind or unstamped:
+            lines.append("A publish was dropped (version conflict), skipped, or never stamped —")
+            lines.append("all three converge on the same fix: publish each page above with the")
+            lines.append("Artifact tool (its own `_url.txt` as `url`; on a conflict: regenerate,")
+            lines.append("publish again — NEVER force), then: %s --stamp-published"
+                         % os.path.basename(__file__))
+        worst = "url-missing" if url_missing else ("behind" if behind else "unstamped")
+        return worst, lines
     never = [o for o, (s, _) in per_file.items() if s == "never-published"]
     if len(never) == len(per_file):
         return "never-published", [
@@ -315,7 +347,7 @@ def main():
 
     if args.publish_state:
         state, lines = publish_state()
-        if state in ("behind", "unstamped"):
+        if state in ("behind", "unstamped", "url-missing"):
             print("⚠️  PUBLISHED VIEW BEHIND THE REPOSITORY — a publish was dropped or missed.")
             print("=" * 72)
             for l in lines:
@@ -343,11 +375,11 @@ def main():
         if args.fix:
             # --fix is always followed by the publish step in the run prompts, so a pending
             # publish here is the expected NEXT STEP, not a defect — say it, don't gate on it.
-            if state in ("behind", "unstamped"):
+            if state in ("behind", "unstamped", "url-missing"):
                 print("  NEXT: publish dashboard_artifact.html with the Artifact tool, then")
                 print("        %s --stamp-published" % os.path.basename(__file__))
             return 0
-        if state in ("behind", "unstamped"):
+        if state in ("behind", "unstamped", "url-missing"):
             print("\n⚠️  BUT THE PUBLISHED VIEW IS BEHIND — %s" % plines[0])
             for l in plines[1:]:
                 print("  " + l)
@@ -360,9 +392,9 @@ def main():
     for s, secs in sorted(bad, key=lambda x: -x[1]):
         mins = secs // 60
         print("  %-32s newer by %s" % (s, "%d min" % mins if mins else "%d sec" % secs))
-    print("\n  the candidate reads the full text of drafts and letters off the PUBLISHED pages")
-    print("  (the outreach phase page since dev #233), not the transcript. A stale set means work")
-    print("  the candidate cannot see — on 2026-08-03 that was five rounds of drafting unseen.")
+    print("\n  the candidate reads the full text of sendable drafts and letters off the ONE")
+    print("  PUBLISHED page (the collapse, 2026-08-29), not the transcript. A stale page means")
+    print("  work the candidate cannot see — on 2026-08-03 that was five rounds of drafting unseen.")
     print("\n  Fix:  python3 scripts/check_dashboard_fresh.py --fix")
     print("  Then publish with the Artifact tool, passing views/dashboard_artifact_url.txt as `url`,")
     print("  and stamp the publish:  check_dashboard_fresh.py --stamp-published  (dev #133)")

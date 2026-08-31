@@ -2,6 +2,9 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.33.0
+- heal_if_stale() certified a launcher naming a stale engine version as healthy (name-substring predicate, not full-body compare) *(tracked internally as crinaro/marketplace-dev#251)*
+
 ## jobsearch 0.32.0
 - [#29](https://github.com/crinaro/marketplace/issues/29) — Ready-to-send panel does not exclude drafts already marked SENT or MOOT/DO-NOT-SEND
 - [#28](https://github.com/crinaro/marketplace/issues/28) — The profile directory tree is a primary interface and is not designed as one: 23 files at root, no home for application work, retired files still present, and engine directories vestigially mixed into a profile repo

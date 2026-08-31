@@ -226,8 +226,9 @@ August 3) was written in PROSE inside the question, where nothing could sort it.
 the sorting. **This step fixes the other half: surfacing a due item is not the same as proposing
 what to do about it.**
 
-**Never send it.** Draft into `outreach/drafts.md`, then republish the outreach page (and the dashboard)
-so the candidate can read the full text there — the state view carries only the index (dev #233).
+**Never send it.** Draft into `outreach/drafts.md`, then republish the dashboard so the candidate
+can read the full text there — since the one-artifact collapse (2026-08-29) a sendable message's
+body renders on the one page itself, in the outreach section's Pending drafts block.
 
 ## 4. DECIDE — tell the candidate where things stand
 
@@ -280,11 +281,28 @@ history is permanent. Full protocol: `marketplace-dev/docs/intake.md`.
 ~/.claude/jobsearch/run check_dashboard_fresh.py --fix
 ```
 
-Then publish with the **Artifact** tool — the generator's summary names the publish set (the
-router, the dashboard, and the phase pages over the volume threshold), each redeployed with its
-own url file (`views/dashboard_artifact_url.txt`; `views/<page>_url.txt`) — and **grep the OUTPUT**
-(bodies live on `views/phase-outreach_artifact.html`) for a distinctive phrase from whatever you
-just added.
+Then publish with the **Artifact** tool — **ONE artifact, every round** (the 2026-08-29 collapse:
+the router and phase pages are retired): `views/dashboard_artifact.html`, redeployed to the URL in
+`views/dashboard_artifact_url.txt`. **Check `check_dashboard_fresh.py --publish-state` first — the
+url file's absence means two different things, and only one of them is "create":**
+
+- **no stamp AND no url file** → `never-published` — a fresh install has neither. Create the
+  artifact and write the url file in the same step. This is not an error.
+- **a stamp EXISTS (it published before) but the url file is now gone** → `url-missing` — the URL
+  is not lost. **Recover it via the Artifact tool's `list` action and write it back to the file.
+  Do NOT create a new artifact** — that abandons the original bookmark (if it still resolves)
+  serving its last snapshot forever while nothing on the profile points at it any more.
+
+Then **grep the OUTPUT** (`views/dashboard_artifact.html` — sendable bodies render on the one
+page) for a distinctive phrase from whatever you just added.
+
+**Drain pending stubs while you hold the tool.** If `~/.claude/jobsearch/run pending_stubs.py
+--check` reports rows, each is a RETIRED page URL still serving its last snapshot: run
+`pending_stubs.py --stub-html <page>`, publish `views/moved_stub.html` to that row's URL with the
+Artifact tool, then `pending_stubs.py --published <page>` — **only after the publish is
+confirmed**, because that step retires the url file, and retiring it first would make the URL
+permanently unstubbable. A failed publish: `--failed <page> --why '...'` and surface it to the
+candidate as a decision; never drop it silently.
 
 **⭐ Two rules that keep the published view honest (dev #133 / public #22).** If the publish
 reports a **version conflict**, a scheduled run published since you generated: re-run

@@ -45,6 +45,7 @@ Python 3.9+. Standard library only.
 import json
 import os
 import re
+import sys
 import time
 
 
@@ -68,6 +69,22 @@ def _default_log():
 LOG = os.environ.get("CLAUDESEARCH_DIAG_LOG") or _default_log()
 MAX_LINES = 500
 
+# ⭐⭐ THE MACHINE-GLOBAL TWIN OF `LOG` — engine-pointer and launcher-repair events describe the
+# MACHINE's install state, never any one profile's data (dev #151's own distinction, applied to
+# a second class of event). `LOG` resolves via `_root.state_root()`, which PREFERS a profile
+# when the caller's cwd happens to sit inside one — right for a migration or a guard event, which
+# genuinely belongs to that profile, and wrong here: `~/.claude/jobsearch/run` is invoked from
+# wherever an agent's cwd happens to be, so routing pointer-repair events through `state_root()`
+# would scatter them across whichever profile was current at the moment, and `doctor.py`'s
+# pointer section (which reads only this file) would see an incomplete, cwd-dependent slice.
+# These events belong in exactly one place, unconditionally: `~/.claude/jobsearch/diagnostics.log`
+# — the same file `LOG` falls back to when NO profile resolves at all.
+#
+# ⭐ OVERRIDABLE for the same reason `LOG` is (`CLAUDESEARCH_DIAG_LOG`, above): the regression
+# suite must never let a launcher-repair test append into a real machine's log.
+MACHINE_LOG = (os.environ.get("CLAUDESEARCH_MACHINE_DIAG_LOG")
+              or os.path.join(os.path.expanduser("~"), ".claude", "jobsearch", "diagnostics.log"))
+
 # A value that is long, or contains spaces plus mixed case, is prose — and prose is where user
 # data hides. Codes, versions, counts and booleans are what this log is for.
 _CODE = re.compile(r"^[A-Za-z0-9_.:+-]{0,64}$")
@@ -90,8 +107,30 @@ def redact(value):
     return "<%d chars omitted>" % len(s)
 
 
+def _log_to(path, event, when, fields):
+    """Shared body for `log()` and `log_machine()` — the only difference between them is which
+    file they write, never the shape of what gets written."""
+    try:
+        rec = {"event": str(event)[:64], "at": redact(when) if when else _now()}
+        for k, v in sorted(fields.items()):
+            rec[str(k)[:32]] = redact(v)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        lines = []
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as fh:
+                lines = fh.readlines()[-(MAX_LINES - 1):]
+        lines.append(json.dumps(rec, sort_keys=True) + "\n")
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.writelines(lines)
+        os.replace(tmp, path)
+    except Exception:
+        pass
+
+
 def log(event, when=None, **fields):
-    """Append one event. Best-effort and silent — diagnostics must never break a run.
+    """Append one event to the (profile-preferring) diagnostics log. Best-effort and silent —
+    diagnostics must never break a run.
 
     `when` is passed IN rather than read from the clock BY DEFAULT, so a caller that already
     knows the run's timestamp (or wants a deterministic value in a test) can supply its own and
@@ -103,27 +142,45 @@ def log(event, when=None, **fields):
     answer "did this happen after the reboot", which is the one question an event log exists
     for. So: stamp at write time whenever the caller supplies nothing.
     """
-    try:
-        rec = {"event": str(event)[:64], "at": redact(when) if when else _now()}
-        for k, v in sorted(fields.items()):
-            rec[str(k)[:32]] = redact(v)
-        os.makedirs(os.path.dirname(LOG), exist_ok=True)
-        lines = []
-        if os.path.exists(LOG):
-            with open(LOG, "r", encoding="utf-8") as fh:
-                lines = fh.readlines()[-(MAX_LINES - 1):]
-        lines.append(json.dumps(rec, sort_keys=True) + "\n")
-        tmp = LOG + ".tmp"
-        with open(tmp, "w", encoding="utf-8") as fh:
-            fh.writelines(lines)
-        os.replace(tmp, LOG)
-    except Exception:
-        pass
+    _log_to(LOG, event, when, fields)
 
 
-def tail(n=20):
+def log_machine(event, when=None, **fields):
+    """Same shape and same contract as `log()`, but ALWAYS appends to `MACHINE_LOG` — see that
+    constant's own docstring for why engine-pointer / launcher-repair events must never be
+    allowed to land in a profile's log instead."""
+    _log_to(MACHINE_LOG, event, when, fields)
+
+
+def tail(n=20, path=None):
     try:
-        with open(LOG, "r", encoding="utf-8") as fh:
+        with open(path or LOG, "r", encoding="utf-8") as fh:
             return [l.rstrip("\n") for l in fh.readlines()[-n:]]
     except OSError:
         return []
+
+
+def _cli():
+    """`python3 _diag.py <event> [key=value ...]` — appends one event to the MACHINE log.
+
+    Exists so a POSIX-sh caller with no Python state of its own (the generated launcher,
+    `~/.claude/jobsearch/run`) can record a coded event using this module's own shape rather
+    than a shell-side reinvention of it. Deliberately narrow: always `log_machine()`, never
+    `log()` — the one caller this serves (the launcher) is by definition machine state, not any
+    one profile's. Silent on malformed input beyond usage (this module's own rule: diagnostics
+    must never break the run that calls it)."""
+    argv = sys.argv[1:]
+    if not argv:
+        print("usage: _diag.py <event> [key=value ...]", file=sys.stderr)
+        return 2
+    event, fields = argv[0], {}
+    for kv in argv[1:]:
+        if "=" in kv:
+            k, v = kv.split("=", 1)
+            fields[k] = v
+    log_machine(event, **fields)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(_cli())
