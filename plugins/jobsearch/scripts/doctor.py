@@ -315,10 +315,14 @@ def check_stray_rulebooks():
 
 # ⭐⭐ dev #<pending> — FREQUENCY IS THE SIGNAL. One pointer-repair is housekeeping (a version
 # just landed, or the machine's pointer was never written before). A repair on every single call
-# means something keeps rewriting `~/.claude/jobsearch/engine_root` backward BETWEEN calls — a
-# live poisoner (an ephemeral desktop-app session copy, a stray checkout import) — and nothing
-# else surfaces that distinction; a healthy-looking `run` call and a poisoned one that happens to
-# repair itself before failing look identical from the caller's side.
+# means something keeps rewriting `~/.claude/jobsearch/engine_root` BETWEEN calls — a live
+# writer (an ephemeral desktop-app session copy, maintainer tooling, a stray checkout import) —
+# and nothing else surfaces that distinction. Since the launcher's TEMPLATE_GENERATION 3
+# (dev #167) such a writer can no longer influence RESOLUTION — the file is informational — so
+# repeated repairs are evidence to diagnose, not an active outage; each repair event's `from=`
+# field classifies the stale value (cache:<version> = a stale session's pinned copy, temp =
+# tooling run from a temp directory, session = a per-session plugin copy), which is what turns
+# the count into a named writer.
 _POINTER_REPAIR_ALARM = 3
 
 
@@ -355,9 +359,12 @@ def check_pointer_health():
                     "launcher could not repair its own pointer; check that "
                     "~/.claude/jobsearch/ is writable" % len(failed)))
     if len(repairs) >= _POINTER_REPAIR_ALARM:
-        out.append((BAD, "pointer repair", "%d repair(s) recorded in the recent log — this "
-                    "looks like a LIVE POISONER rewriting engine_root backward between calls, "
-                    "not one-off housekeeping" % len(repairs)))
+        froms = sorted({str(e.get("from")) for e in repairs if e.get("from")})
+        out.append((BAD, "pointer repair", "%d repair(s) recorded in the recent log — "
+                    "something keeps rewriting engine_root between calls (writer classes seen: "
+                    "%s). Resolution is unaffected since launcher generation 3; this is a live "
+                    "writer to identify, not an outage"
+                    % (len(repairs), ", ".join(froms) or "unclassified")))
     elif repairs:
         out.append((WARN, "pointer repair", "%d repair(s) recorded — housekeeping, unless this "
                     "count keeps climbing on repeat checks" % len(repairs)))

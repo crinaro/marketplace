@@ -56,15 +56,21 @@ a subdirectory, the way git does.
 """
 
 import os
-import re
 
 MARKERS = ("config.json", "data")
 
 # Written whenever a real profile is resolved; read when nothing else can identify one.
 POINTER = os.path.join(os.path.expanduser("~"), ".claude", "jobsearch", "profile_root")
-# ⭐ The ENGINE's own location, for callers that have no `${CLAUDE_PLUGIN_ROOT}`. Each Bash tool
-# call is a FRESH SHELL, so a variable exported by one command is gone by the next; a run needs a
-# path it can read from disk in every command. Written on import, so any script run repairs it.
+# ⭐ The ENGINE's own location — LEGACY, informational only since the launcher's
+# TEMPLATE_GENERATION 3 (dev #167, closing #249). Nothing resolves through this file any more:
+# `~/.claude/jobsearch/run` resolves the newest COMPLETE installed version itself (with
+# `engine_root.override` — written only by an explicit install_launcher.py run — as the one
+# deliberate exception), then repairs this file after resolution for anything that still opens
+# it. This module used to write it AT IMPORT, which made every import of every engine script a
+# pointer writer, and every copy not carrying the newest write-guard a live poisoning route —
+# the guard stack that grew here (ephemeral rejection, checkout-vs-install ranking, version
+# recency) was three patches on that one symptom, and gen 3 removed the symptom instead: the
+# import-time write is gone, and `run --where` is the supported way to read the engine path.
 ENGINE_POINTER = os.path.join(os.path.expanduser("~"), ".claude", "jobsearch", "engine_root")
 
 
@@ -232,13 +238,15 @@ def profile_root(start=None):
 #
 #   ~/Library/Application Support/Claude/local-agent-mode-sessions/<session-id>/…/rpm/plugin_<id>
 #
-# That path is real and works — for the life of that session. `~/.claude/jobsearch/run` reads this
-# pointer on EVERY call, so once the session is gone every scheduled run fails at its first script
-# call. **The failure lands hours later, in an unattended run, far from the session that caused
-# it**, which is the worst shape a bug can have here.
+# That path is real and works — for the life of that session. At the time, the launcher read
+# this pointer on EVERY call, so once the session was gone every scheduled run failed at its
+# first script call. **The failure lands hours later, in an unattended run, far from the session
+# that caused it**, which is the worst shape a bug can have here.
 #
-# The cause is that _remember_engine recorded whatever copy happened to run last. A pointer meant
-# to outlive sessions must therefore refuse to point INTO one.
+# The cause was `_remember_engine` recording whatever copy happened to run last (removed with
+# dev #167 — see the block above `engine_root()`). The predicate remains load-bearing on the one
+# deliberate write left: `install_launcher.record_deliberate_override()` refuses an ephemeral
+# engine, because a pointer meant to outlive sessions must never point INTO one.
 _EPHEMERAL_MARKERS = (
     os.sep + "local-agent-mode-sessions" + os.sep,
     os.sep + "rpm" + os.sep + "plugin_",
@@ -252,10 +260,27 @@ def is_ephemeral_engine(path):
 
     Conservative on purpose: a false NEGATIVE leaves today's behaviour, while a false POSITIVE
     would refuse to record a legitimate engine and strand a user with no pointer at all.
+
+    ⚠️ ASK THE PLATFORM WHERE TEMP IS — the same lesson `is_disposable_profile` above already
+    carries, applied to one of the pair only until dev #167: macOS puts temp under
+    `/var/folders/<hash>/T/`, which contains neither `/tmp/` nor `/Temp/`, so a literal-marker
+    check waved a maintainer tool's temp-dir engine copy straight through — and the gen-2
+    launcher, seeing an out-of-cache path with a scripts/ dir, honored it.
+    `tempfile.gettempdir()` is the authoritative answer on every platform; the literal markers
+    stay as a backstop for paths that are temp-shaped but not the default.
     """
+    import tempfile
     p = os.path.realpath(path or "")
     if not p.endswith(os.sep):
         p += os.sep
+    try:
+        tmp = os.path.realpath(tempfile.gettempdir())
+        if not tmp.endswith(os.sep):
+            tmp += os.sep
+        if p.startswith(tmp):
+            return True
+    except Exception:
+        pass
     return any(marker in p for marker in _EPHEMERAL_MARKERS)
 
 
@@ -263,31 +288,21 @@ def is_ephemeral_engine(path):
 #
 # `is_installed_engine()` used to test a path against `INSTALL_CACHE`, which hardcoded the
 # marketplace's own NAME ("careers-plugins"). That name is not this plugin's identity — the
-# marketplace rename to `crinaro/marketplace` is approved — and the moment it lands, a
-# literal-name test returns False for a genuinely INSTALLED copy. That matters more than it
-# looks: `_remember_engine`'s ENTIRE guard against a checkout hijacking the durable pointer is
-# `is_installed_engine(current) and not is_installed_engine(path)` (below), and the worktree path
-# this harness uses (`<repo>/.claude/worktrees/agent-<id>`) does not match any
-# `_EPHEMERAL_MARKERS` marker either (they are separator-delimited: `/tmp/`, `/Temp/`,
-# `/local-agent-mode-sessions/`, `/rpm/plugin_`). Once the name check goes stale, that guard
-# silently stops holding — nothing today is broken, because the pointer currently names an
-# installed copy under the CURRENT name, but the day the rename lands, a stray import from a
-# checkout or worktree wins the comparison and hijacks the pointer, silently, with nobody there
-# to notice (the same "the failure lands hours later in an unattended run" shape as the
-# per-session-copy bug `is_ephemeral_engine` exists for, above).
+# marketplace rename to `crinaro/marketplace` was approved — and the moment it landed, a
+# literal-name test would return False for a genuinely INSTALLED copy. So the test is
+# STRUCTURAL — `~/.claude/plugins/cache/<any one marketplace segment>/jobsearch/...` — never
+# the marketplace's literal name. `jobsearch` genuinely IS fixed: it is this file's own
+# identity, the same literal already hardcoded throughout this module (`POINTER`,
+# `ENGINE_POINTER`, `STATE_DIRNAME`). The marketplace segment is read structurally and never
+# compared against a value, so a rename cannot break this file at all.
 #
-# So the test is now STRUCTURAL — `~/.claude/plugins/cache/<any one marketplace segment>/
-# jobsearch/...` — never the marketplace's literal name. `jobsearch` genuinely IS fixed: it is
-# this file's own identity, the same literal already hardcoded throughout this module (`POINTER`,
-# `ENGINE_POINTER`, `STATE_DIRNAME`). The marketplace segment is read structurally (`rest[0]`,
-# below) and never compared against a value, so a rename cannot break this file at all.
+# The callers that still depend on this predicate: `drift_guard.py` (announcing a
+# non-installed engine), `migrate.py`'s trampoline (never second-guessing a deliberate
+# checkout), and `install_launcher.record_deliberate_override()` (an explicit run from the
+# installed copy clears the checkout override rather than setting one).
 #
 # `INSTALL_CACHE` is kept — nothing in this module reads it any more, but `is_installed_engine`'s
 # own tests, and anyone reading this file, still want the concrete default path spelled out.
-# `install_launcher.py`'s `_install_identity()` derives the marketplace name independently for
-# its own generated launcher script; this module deliberately does NOT read that (or the
-# catalog) to do the same — `_remember_engine()` runs at IMPORT for 58 callers, and a file read
-# on every import is exactly the cost `engine_root()`'s own docstring already refuses to pay.
 CACHE_ROOT = os.path.join(os.path.expanduser("~"), ".claude", "plugins", "cache")
 _INSTALLED_PLUGIN_NAME = "jobsearch"  # this engine's own identity — fixed, unlike the marketplace
 INSTALL_CACHE = os.path.join(CACHE_ROOT, "crinaro-marketplace", _INSTALLED_PLUGIN_NAME)
@@ -313,89 +328,18 @@ def is_installed_engine(path):
     return len(rest) >= 2 and rest[1] == _INSTALLED_PLUGIN_NAME
 
 
-_SEMVER = re.compile(r"^\d+\.\d+\.\d+$")
-
-
-def _installed_identity(path):
-    """(marketplace, plugin, version) for an installed cache path, or None.
-
-    Structural, matching `is_installed_engine()`'s own reasoning: the marketplace segment is
-    read, never matched against a literal, and `version` is accepted only when it is strictly
-    `\\d+.\\d+.\\d+` — a partially-synced or hand-named directory (a checkout copied in by hand,
-    a version directory mid-write) must never be treated as a comparable release."""
-    p = os.path.realpath(path or "")
-    if not p:
-        return None
-    root = os.path.realpath(CACHE_ROOT)
-    if not (p == root or p.startswith(root + os.sep)):
-        return None
-    rest = p[len(root):].lstrip(os.sep).split(os.sep)
-    if len(rest) < 3 or rest[1] != _INSTALLED_PLUGIN_NAME or not _SEMVER.match(rest[2]):
-        return None
-    return rest[0], rest[1], rest[2]
-
-
-def _version_tuple(v):
-    """Numeric, never lexicographic — '1.10.0' must sort after '1.9.0', not before it."""
-    return tuple(int(x) for x in v.split("."))
-
-
-def _remember_engine(path):
-    try:
-        if is_ephemeral_engine(path):
-            return  # never point at something that dies with a session
-        if os.path.exists(ENGINE_POINTER):
-            with open(ENGINE_POINTER, encoding="utf-8") as fh:
-                current = fh.read().strip()
-            # Overwrite an unchanged pointer for nothing, no — but DO heal one that is already
-            # ephemeral or has been deleted. Self-healing matters because the run that would
-            # notice is unattended and has nobody to tell.
-            if current == path:
-                return
-            # ⭐⭐ A CHECKOUT RUN MUST NOT HIJACK A POINTER THAT NAMES AN INSTALLED COPY.
-            #
-            # This function runs on IMPORT, so merely executing an engine script re-aims the
-            # durable pointer at whatever copy ran last. That is right for healing and wrong for
-            # everything else: running one gate inside a checkout silently redirects the user's
-            # UNATTENDED runs at a working tree — mid-refactor code, uncommitted edits, whatever
-            # happens to be on disk at the moment the schedule fires. The person running the gate
-            # sees nothing; the cost lands hours later in a run nobody is watching.
-            #
-            # An installed copy therefore outranks a checkout. Pointing at a checkout on purpose
-            # is still available — `install_launcher.py` writes the pointer directly, which is
-            # what makes it a deliberate act rather than a side effect of running anything.
-            if (current and os.path.isdir(current)
-                    and is_installed_engine(current) and not is_installed_engine(path)):
-                return
-            # ⭐⭐ BETWEEN TWO INSTALLED COPIES OF THE SAME IDENTITY, NEVER REPLACE NEWER WITH
-            # OLDER. The guard above only stops a CHECKOUT from hijacking a pointer that names an
-            # install; it does not fire when BOTH sides are installed copies of the same
-            # (marketplace, plugin) — which is exactly the every-session shape once a machine has
-            # two cache directories (the install cache keeps every version ever installed, by
-            # design — see install_launcher.py's TEMPLATE docstring). Without this, whichever
-            # copy happens to import LAST wins the pointer regardless of version: a scheduled run
-            # still resolving an old copy (a session that started before the newest release
-            # landed, an agent invoked from a stale working directory) would silently drag the
-            # durable pointer backward on every import, and the newest install — the one that
-            # `~/.claude/jobsearch/run` itself already treats as authoritative — would keep
-            # getting immediately overwritten by the record of the very tool that would
-            # transparently replace it. Compared numerically, never lexicographically
-            # (`_version_tuple`): `1.9.0` must not read as newer than `1.10.0`.
-            cur_id = _installed_identity(current) if current else None
-            new_id = _installed_identity(path)
-            if (cur_id and new_id and cur_id[0] == new_id[0] and cur_id[1] == new_id[1]
-                    and _version_tuple(new_id[2]) < _version_tuple(cur_id[2])):
-                return
-            if current and not is_ephemeral_engine(current) and os.path.isdir(current):
-                if os.path.realpath(current) == os.path.realpath(path):
-                    return
-        os.makedirs(os.path.dirname(ENGINE_POINTER), exist_ok=True)
-        with open(ENGINE_POINTER, "w", encoding="utf-8") as fh:
-            fh.write(path)
-    except OSError:
-        pass
-
-
+# ⭐⭐ dev #167 (closing #249) — THE IMPORT-TIME POINTER WRITE IS GONE, AND SO IS ITS GUARD
+# STACK. `_remember_engine(_ENGINE_AT_IMPORT)` used to run at the bottom of this module, which
+# made every import of every engine script a writer of `ENGINE_POINTER`. Three generations of
+# guards accumulated on that one write — ephemeral-session rejection, installed-outranks-
+# checkout, version recency — and each closed one observed poisoning route while every engine
+# copy NOT carrying the newest guard remained a live one (a stale session's copy, by
+# construction, never carries it). The launcher meanwhile stopped trusting the file at all:
+# since TEMPLATE_GENERATION 3 it resolves the newest complete installed version itself, honours
+# only the explicit `engine_root.override` (written by `install_launcher.py` alone, as a
+# deliberate act), and repairs `ENGINE_POINTER` after resolution for legacy readers. A guarded
+# write protecting a file nothing resolves through is complexity without a customer, so the
+# write and its guards were removed together rather than patched a fourth time.
 def engine_root():
     """Where the ENGINE physically lives — for schemas, prompts and templates that ship with it.
 
@@ -446,7 +390,3 @@ def profile_or_fixture(start=None):
         return r
     fx = _o.path.join(engine_root(), "tests", "fixtures", "profile")
     return fx if _o.path.exists(_o.path.join(fx, "config.json")) else r
-
-
-_ENGINE_AT_IMPORT = engine_root()
-_remember_engine(_ENGINE_AT_IMPORT)

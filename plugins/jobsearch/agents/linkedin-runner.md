@@ -32,7 +32,7 @@ back to searching the filesystem, which can find the wrong engine (dev #159).
    command with `CLAUDESEARCH_ROOT=<that root>`.
 2. **Engine files resolve through the launcher, never through a filesystem search (dev #159).**
    Every engine script runs as `~/.claude/jobsearch/run <script>.py …` — including scripts this
-   file never names. The launcher reads `~/.claude/jobsearch/engine_root` and always lands in the
+   file never names. The launcher resolves the newest complete installed version itself and always lands in the
    installed plugin; a `find`/`ls`/glob sweep can land in a development checkout a maintainer is
    mid-edit on, which is the incident this project was split around. A missing launcher is a
    finding to report, never a reason to go looking.

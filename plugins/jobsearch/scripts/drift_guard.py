@@ -3,7 +3,9 @@
 
 SessionStart fires exactly once. A session that spans a version bump therefore keeps its
 loaded skills, agents and hooks from the OLD version while every script it shells out to
-resolves the NEW one through `~/.claude/jobsearch/engine_root`, which is read at call time.
+resolves the NEW one through `~/.claude/jobsearch/run`, which walks the install cache for
+the newest complete version at call time (TEMPLATE_GENERATION 3 — the `engine_root` file
+is informational only).
 The migration hook cannot re-fire, so the profile stays on the old shape for the rest of
 that session — and both halves look healthy on their own.
 

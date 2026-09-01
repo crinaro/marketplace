@@ -1716,6 +1716,204 @@ def m_0_34_0_dashboard_collapse(profile, apply_it):
     return True, prefix + "; ".join(bits)
 
 
+TASK_WHERE_OLD = (
+    '$(cat ~/.claude/jobsearch/engine_root)',
+    '$(cat "$HOME/.claude/jobsearch/engine_root")',
+    '$(cat $HOME/.claude/jobsearch/engine_root)',
+    '$(cat "${HOME}/.claude/jobsearch/engine_root")',
+    '$(cat ${HOME}/.claude/jobsearch/engine_root)',
+)
+TASK_WHERE_NEW = "$(~/.claude/jobsearch/run --where)"
+
+
+def m_0_35_0_task_file_where(profile, apply_it, home=None):
+    """0.35.0 — scheduled-task files stop reading the demoted engine pointer (dev #167,
+    closing #249).
+
+    The task files under `~/.claude/scheduled-tasks/<name>/SKILL.md` carry a fallback line,
+    `export CLAUDE_PLUGIN_ROOT="$(cat ~/.claude/jobsearch/engine_root)"`, written back when
+    the pointer file was the resolution mechanism. Since the launcher's TEMPLATE_GENERATION 3
+    nothing resolves through that file — it is repaired after resolution, informationally —
+    so a task reading it gets an answer that is merely USUALLY right: between a poisoning
+    write and the next `run` call, the file can name a dead session copy or a maintainer
+    tool's temp directory. `run --where` returns the SAME resolution every run uses, so the
+    task and the launcher can never disagree.
+
+    ⭐ PRESERVE, THEN TRANSFORM. Only the known command-substitution forms are rewritten, in
+    place, atomically; everything else in the task file is untouched. A task file that
+    mentions `jobsearch/engine_root` in a shape this rewrite does not recognise is recorded
+    LOUDLY — a `task-file-unrewritten` machine event plus a printed line — never silently
+    left looking handled (the unparseable-value rule). That case still returns ok: the file
+    belongs to the scheduler, not the engine, and blocking the schema stamp forever on a
+    hand-authored variant would hold every later migration hostage to it.
+
+    Machine state, not profile data — same precedent as m_0_26_0_state_home and
+    m_0_29_0_gmail_connector_config, which also reach under `$HOME`. Idempotent: a second run
+    finds no old pattern and no-ops. `home` is a test seam; real runs resolve `$HOME`.
+
+    ⚠️ WHAT IS TESTED, AND WHAT REMAINS COMPOSITION-UNTESTED (dev #165 item 2). The rewrite
+    itself, and the `sh`-level command substitution it produces — `export
+    CLAUDE_PLUGIN_ROOT="$(~/.claude/jobsearch/run --where)"` yielding the bare resolved path
+    with nothing else in the variable — are both exercised against a real `/bin/sh`
+    (`TestTaskFileWhereMigration` and `TestLauncherShellNewestWins.
+    test_where_composes_into_the_task_file_fallback_line` in test_checks.py). The DESKTOP
+    SCHEDULER'S OWN HARNESS actually executing a rewritten `SKILL.md` — its own shell, its own
+    environment, its own error handling around a failed `run --where` — is external to this
+    repo and is NOT reproduced by any test here. Stated here plainly, as residue, rather than
+    left to be assumed covered by the sh-level test above.
+    """
+    from _diag import log_machine as _diag_machine
+    base = os.path.join(home or os.path.expanduser("~"), ".claude", "scheduled-tasks")
+    if not os.path.isdir(base):
+        return True, ""
+
+    rewritten, loud = [], []
+    for name in sorted(os.listdir(base)):
+        f = os.path.join(base, name, "SKILL.md")
+        if not os.path.isfile(f):
+            continue
+        try:
+            with open(f, encoding="utf-8") as fh:
+                text = fh.read()
+        except OSError as e:
+            if apply_it:
+                _diag_machine("task-file-unrewritten", task=name, reason="unreadable")
+            loud.append("%s: unreadable (%s) — left untouched" % (name, e))
+            continue
+        new = text
+        for old in TASK_WHERE_OLD:
+            new = new.replace(old, TASK_WHERE_NEW)
+        if new != text:
+            if apply_it:
+                tmp = f + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as fh:
+                    fh.write(new)
+                os.replace(tmp, f)          # atomic: never a half-written task file
+            rewritten.append(name)
+        elif "jobsearch/engine_root" in text and TASK_WHERE_NEW not in text:
+            # Names the pointer in a form this migration does not know how to rewrite. An
+            # unrewritten reader of a demoted pointer must be LOUD: it would go on looking
+            # handled while reading a file nothing keeps authoritative any more.
+            if apply_it:
+                _diag_machine("task-file-unrewritten", task=name, reason="unrecognised-form")
+            loud.append("%s: references jobsearch/engine_root in a form this migration does "
+                        "not recognise — edit it to use %s" % (name, TASK_WHERE_NEW))
+
+    if not (rewritten or loud):
+        return True, ""
+    bits = []
+    if rewritten:
+        bits.append("%s scheduled-task file(s) now resolve the engine via `run --where` "
+                    "instead of the demoted engine_root pointer: %s"
+                    % (len(rewritten), ", ".join(rewritten)))
+    for l in loud:
+        bits.append("⚠️ " + l)
+    prefix = "  ✅ " if apply_it else "  would rewrite: "
+    return True, prefix + "; ".join(bits)
+
+
+# ── install-cache hygiene (dev #167) — owned HERE, never by the launcher ─────────────────────
+# A resolver that deletes is the wrong shape for a constantly-running sh script; pruning is a
+# deliberate, logged act of the SessionStart hook, with the same envelope discipline as the
+# heals above.
+CACHE_KEEP_NEWEST = 2
+CACHE_PRUNE_AFTER_DAYS = 7
+
+
+def prune_install_cache(apply_it=True, home=None, now=None):
+    """Delete long-superseded installed versions from the plugin cache. Hygiene, not
+    correctness: resolution already ignores old versions (the launcher walks newest-complete),
+    so nothing here changes what runs — it only stops the cache growing one directory per
+    release forever, and shrinks the window in which a stale session can execute a very old
+    copy's code.
+
+    The rules, deliberately conservative (CACHE_KEEP_NEWEST / CACHE_PRUNE_AFTER_DAYS):
+      - the newest two COMPLETE versions are always kept (complete: scripts/ AND
+        .claude-plugin/plugin.json — the launcher's own test);
+      - any other complete version is deleted only once it has been superseded for at least
+        seven days, measured from the oldest NEWER complete version's manifest mtime — a
+        session started before a release landed may legitimately run last week's copy, and
+        pruning the code out from under a live session is exactly the failure-lands-hours-
+        later shape this plugin keeps scars from;
+      - an INCOMPLETE version directory is never touched: it may be mid-sync;
+      - the copy running THIS process is never deleted, whatever its age — the trampoline
+        normally guarantees pruning runs from the newest copy, but the trampoline fails open.
+
+    Every deletion logs a `cache-pruned` machine event naming the version. `home`/`now` are
+    test seams; real runs resolve `$HOME` and the clock. Returns (verdict, lines); verdict:
+    pruned | nothing | error. Never raises past its own envelope in main().
+    """
+    import re
+    import time
+    import _root
+    import install_launcher
+    from _diag import log_machine as _diag_machine
+    now = time.time() if now is None else now
+    try:
+        marketplace, plugin = install_launcher._install_identity()
+    except Exception as e:                        # noqa: BLE001 — hygiene fails open
+        return "error", ["  ⚠️ could not derive the install identity (%s) — nothing pruned."
+                         % type(e).__name__]
+    cache_root = (os.path.join(home, ".claude", "plugins", "cache") if home
+                  else _root.CACHE_ROOT)
+    base = os.path.join(cache_root, marketplace, plugin)
+    if not os.path.isdir(base):
+        return "nothing", []
+    try:
+        names = sorted((n for n in os.listdir(base) if re.match(_SEMVER_RE_STR, n)),
+                       key=ver, reverse=True)
+    except OSError:
+        return "nothing", []
+
+    def _complete(n):
+        d = os.path.join(base, n)
+        return (os.path.isdir(os.path.join(d, "scripts"))
+                and os.path.isfile(os.path.join(d, ".claude-plugin", "plugin.json")))
+
+    complete = [n for n in names if _complete(n)]
+    # Snapshot every manifest mtime BEFORE any deletion: the supersession time of an older
+    # version is derived from its newer siblings' manifests, and one of those siblings may
+    # itself be pruned earlier in this very loop (newest-first order) — reading mtimes lazily
+    # made the age test silently unanswerable for everything older than the first prune.
+    mtimes = {}
+    for n in complete:
+        try:
+            mtimes[n] = os.path.getmtime(
+                os.path.join(base, n, ".claude-plugin", "plugin.json"))
+        except OSError:
+            mtimes[n] = None
+    running = os.path.realpath(_root.engine_root())
+    lines, pruned = [], []
+    for i, n in enumerate(complete):
+        if i < CACHE_KEEP_NEWEST:
+            continue
+        d = os.path.join(base, n)
+        if os.path.realpath(d) == running:
+            lines.append("  kept %s — it is the copy running this very process" % n)
+            continue
+        newer_times = [mtimes[m] for m in complete[:i] if mtimes[m] is not None]
+        if not newer_times:
+            continue
+        superseded_at = min(newer_times)
+        age_days = (now - superseded_at) / 86400.0
+        if age_days < CACHE_PRUNE_AFTER_DAYS:
+            continue
+        if apply_it:
+            try:
+                shutil.rmtree(d)
+            except OSError as e:
+                lines.append("  ⚠️ could not prune %s (%s) — left in place" % (n, e))
+                continue
+            _diag_machine("cache-pruned", version=n, superseded_days=int(age_days))
+        pruned.append(n)
+    if pruned:
+        lines.append("  %s %d superseded version(s) (kept the newest %d complete, pruned "
+                     "only past %d days of supersession): %s"
+                     % ("✅ pruned" if apply_it else "would prune", len(pruned),
+                        CACHE_KEEP_NEWEST, CACHE_PRUNE_AFTER_DAYS, ", ".join(pruned)))
+    return ("pruned" if pruned else "nothing"), lines
+
+
 MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               ("0.17.0", m_0_17_0), ("0.18.0", m_0_18_0), ("0.19.0", m_0_19_0),
               ("0.20.0", m_0_20_0), ("0.24.0", m_0_24_0_blocked_until),
@@ -1738,7 +1936,12 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               # means a migration keyed "0.33.0" would never fire for that profile on any
               # later upgrade. It must be keyed to the version it actually ships in.
               ("0.32.0", m_0_32_0_tree),
-              ("0.34.0", m_0_34_0_dashboard_collapse))
+              ("0.34.0", m_0_34_0_dashboard_collapse),
+              # ⚠️ KEYED "0.35.0" — the version that will SHIP it, while 0.34.0 is the newest
+              # PUBLISHED release (ADR-009: migration keys are versions too; a migration keyed
+              # to an already-published version is silently unreachable for everyone who
+              # installed that exact release, because pending_for() compares with strict `<`).
+              ("0.35.0", m_0_35_0_task_file_where))
 
 
 def pending_for(profile, engine=None):
@@ -1817,8 +2020,8 @@ def _maybe_trampoline_to_newest(argv):
     other is newest) cannot recurse. Silent no-op — never raises, never re-execs — when: this
     process is already a hop (the env flag is set); the running copy is a CHECKOUT rather than
     an installed one (`is_installed_engine`) — a deliberate dev tree is not something this ever
-    second-guesses, matching `_remember_engine`'s own "installed outranks checkout, but a
-    checkout is still honored on its own"; this copy's own version cannot be read or does not
+    second-guesses, the same rule the launcher's `engine_root.override` encodes on the
+    resolution side; this copy's own version cannot be read or does not
     look like semver; or nothing newer and complete is installed. FAILS OPEN, ALWAYS, same rule
     as everything else in this module — a trampoline that cannot resolve cleanly must never block
     the session; it just lets this (possibly stale) copy continue, exactly as before this existed.
@@ -1902,6 +2105,19 @@ def main():
         diag("migrate", verdict="launcher-heal-error", reason=type(e).__name__)
         if not args.hook:
             print("Launcher heal skipped: %s" % e, file=sys.stderr)
+
+    # ── install-cache hygiene, same envelope discipline (dev #167) ──────────────────────────
+    # Owned here and never by the launcher: a resolver that deletes is the wrong shape for a
+    # constantly-running sh script. Machine state, so it runs whether or not a profile exists.
+    try:
+        pv, p_lines = prune_install_cache(apply_it=not args.check)
+        if p_lines:
+            print("jobsearch: install cache (%s)" % pv)
+            print("\n".join(p_lines))
+    except Exception as e:                     # noqa: BLE001 — housekeeping must never block
+        diag("migrate", verdict="prune-error", reason=type(e).__name__)
+        if not args.hook:
+            print("Cache prune skipped: %s" % e, file=sys.stderr)
 
     # ⭐⭐ AND THE RULEBOOK, for the same reason and in the same place. It installs into the
     # profile as CLAUDE.md and loads at session start, so a stale copy is read as
