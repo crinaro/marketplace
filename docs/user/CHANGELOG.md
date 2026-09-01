@@ -2,13 +2,18 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.34.0
+- Dashboard collapsed to one artifact with an anchor per phase, replacing separate pages that only republished once a phase's share of the data crossed a threshold — a page under that line used to stop updating while its link kept serving a stale snapshot; retired page links now retire in two steps so a bookmarked URL is never left orphaned *(tracked internally as crinaro/marketplace-dev#254)*
+- Conversations gained a real prep-tracking capability: the dashboard now shows which upcoming calls still owe prep, and the daily run drafts it before the day ends — previously nothing tracked whether a call had prep, and prep only happened if you remembered to ask for it *(tracked internally as crinaro/marketplace-dev#255)*
+- Fixed a launcher self-heal regression that could regenerate the launcher backward: a session running an older installed copy of jobsearch could overwrite a newer copy's correct launcher with older behavior; the launcher now carries a version marker and refuses to regenerate over a newer one going forward *(tracked internally as crinaro/marketplace-dev#256)*
+
 ## jobsearch 0.33.0
 - heal_if_stale() certified a launcher naming a stale engine version as healthy (name-substring predicate, not full-body compare) *(tracked internally as crinaro/marketplace-dev#251)*
 
 ## jobsearch 0.32.0
-- [#29](https://github.com/crinaro/marketplace/issues/29) — Ready-to-send panel does not exclude drafts already marked SENT or MOOT/DO-NOT-SEND
-- [#28](https://github.com/crinaro/marketplace/issues/28) — The profile directory tree is a primary interface and is not designed as one: 23 files at root, no home for application work, retired files still present, and engine directories vestigially mixed into a profile repo
 - [#27](https://github.com/crinaro/marketplace/issues/27) — The dashboard is a state view, but applying is a process: there is no working surface for an application session, and follow-up work is not linked to what triggers it
+- [#28](https://github.com/crinaro/marketplace/issues/28) — The profile directory tree is a primary interface and is not designed as one: 23 files at root, no home for application work, retired files still present, and engine directories vestigially mixed into a profile repo
+- [#29](https://github.com/crinaro/marketplace/issues/29) — Ready-to-send panel does not exclude drafts already marked SENT or MOOT/DO-NOT-SEND
 - [#26](https://github.com/crinaro/marketplace/issues/26) — Resume variants are not a first-class concept: one canonical file cannot serve two buyer archetypes, and nothing detects when it falls behind what is actually sent
 - The dashboard inlines whole documents into a state view: 613KB in one page, a duplicate local copy, and artifacts reportedly not rendering on mobile *(tracked internally as crinaro/marketplace-dev#233)*
 
@@ -20,34 +25,34 @@ Generated from fixes confirmed shipped — public reports and internal fixes ali
 - Marketplace identifier: careers-plugins -> crinaro-marketplace, with a launcher self-heal *(tracked internally as crinaro/marketplace-dev#216)*
 
 ## jobsearch 0.29.0
-- Release: jobsearch 0.29.0 and gmail-multi 0.1.0 — connector self-install replaces the declared dependency *(tracked internally as crinaro/marketplace-dev#210)*
 - _root.py hardcodes the marketplace name while install_launcher.py derives it — the two disagree for any non-default catalog *(tracked internally as crinaro/marketplace-dev#199)*
+- Release: jobsearch 0.29.0 and gmail-multi 0.1.0 — connector self-install replaces the declared dependency *(tracked internally as crinaro/marketplace-dev#210)*
 
 ## jobsearch 0.28.0
 - [#25](https://github.com/crinaro/careers-plugins/issues/25) — Dispatched subagents lack the engine-root pointer/launcher the main run uses to resolve engine files
 
 ## jobsearch 0.27.0
-- A cover letter carrying a send-hold renders as READY — precondition machinery covers drafts.md only *(tracked internally as crinaro/careers-plugins-dev#169)*
-- A staged draft with no matching ask has no guaranteed home in the generated Your Move, so a ready-to-send draft can stay invisible *(tracked internally as crinaro/careers-plugins-dev#154)*
-- Prep-note existing-work guard only scans call_preps/, so prep written into kb/ gets re-promised as owed *(tracked internally as crinaro/careers-plugins-dev#153)*
-- Generated dashboard has no sourcing/strategy tab; channel status, route, cadence and yield are visible only via scripts *(tracked internally as crinaro/careers-plugins-dev#148)*
 - Alert-sweep's aggregator sender list is hardcoded, independent of channel store retirement status *(tracked internally as crinaro/careers-plugins-dev#147)*
+- Generated dashboard has no sourcing/strategy tab; channel status, route, cadence and yield are visible only via scripts *(tracked internally as crinaro/careers-plugins-dev#148)*
+- Prep-note existing-work guard only scans call_preps/, so prep written into kb/ gets re-promised as owed *(tracked internally as crinaro/careers-plugins-dev#153)*
+- A staged draft with no matching ask has no guaranteed home in the generated Your Move, so a ready-to-send draft can stay invisible *(tracked internally as crinaro/careers-plugins-dev#154)*
+- A cover letter carrying a send-hold renders as READY — precondition machinery covers drafts.md only *(tracked internally as crinaro/careers-plugins-dev#169)*
 
 ## jobsearch 0.26.0
-- [#24](https://github.com/crinaro/careers-plugins/issues/24) — A user-owned role recorded with a future action date and a sourced/backlog status is invisible on the 'decisions waiting on you' surface until its action date arrives
-- [#23](https://github.com/crinaro/careers-plugins/issues/23) — record.py's create path leaves the caller to guess a valid record at every stage: --dry-run passes input the real write then refuses, rejection messages name no field, and the fields listing omits enum and type constraints
 - [#22](https://github.com/crinaro/careers-plugins/issues/22) — The generated-dashboard publish model has a staleness window: the published view can lag committed state via two distinct mechanisms
+- [#23](https://github.com/crinaro/careers-plugins/issues/23) — record.py's create path leaves the caller to guess a valid record at every stage: --dry-run passes input the real write then refuses, rejection messages name no field, and the fields listing omits enum and type constraints
+- [#24](https://github.com/crinaro/careers-plugins/issues/24) — A user-owned role recorded with a future action date and a sourced/backlog status is invisible on the 'decisions waiting on you' surface until its action date arrives
 
 ## jobsearch 0.25.0
-- [#21](https://github.com/crinaro/careers-plugins/issues/21) — OPEN DESIGN QUESTION: two dashboard views present the same records through two different taxonomies instead of one lifecycle-state view
-- [#20](https://github.com/crinaro/careers-plugins/issues/20) — Generated dashboard renders knowledge-base and call-preparation artifacts as filename strings, not their content
-- [#19](https://github.com/crinaro/careers-plugins/issues/19) — No schema field represents a pursued opportunity's post-application play-sequence stage
-- [#18](https://github.com/crinaro/careers-plugins/issues/18) — A skill mandates an unconditional per-turn re-claim of a session-scoped notification subscription whose delivery cannot be observed by the session
-- [#17](https://github.com/crinaro/careers-plugins/issues/17) — The write API cannot CREATE a new record, and separately deadlocks when called while the run lock is held, together forcing direct hand-editing of the data store
-- [#15](https://github.com/crinaro/careers-plugins/issues/15) — The browser automation cannot reach a social platform's secondary/message-requests inbox surface, reproducible across multiple runs
-- [#14](https://github.com/crinaro/careers-plugins/issues/14) — A validation gate can never pass on a clean install: shipped design docs point at scripts present in no released version
-- [#13](https://github.com/crinaro/careers-plugins/issues/13) — The weekly reconcile audit again mis-attributes replies and platform events to the wrong sibling outreach row for the same recipient
 - [#12](https://github.com/crinaro/careers-plugins/issues/12) — The outbound-click guard's startup selftest fails to open its own transcript path, so every click is classified unresolvable and allowed through instead of blocked
+- [#13](https://github.com/crinaro/careers-plugins/issues/13) — The weekly reconcile audit again mis-attributes replies and platform events to the wrong sibling outreach row for the same recipient
+- [#14](https://github.com/crinaro/careers-plugins/issues/14) — A validation gate can never pass on a clean install: shipped design docs point at scripts present in no released version
+- [#15](https://github.com/crinaro/careers-plugins/issues/15) — The browser automation cannot reach a social platform's secondary/message-requests inbox surface, reproducible across multiple runs
+- [#17](https://github.com/crinaro/careers-plugins/issues/17) — The write API cannot CREATE a new record, and separately deadlocks when called while the run lock is held, together forcing direct hand-editing of the data store
+- [#18](https://github.com/crinaro/careers-plugins/issues/18) — A skill mandates an unconditional per-turn re-claim of a session-scoped notification subscription whose delivery cannot be observed by the session
+- [#19](https://github.com/crinaro/careers-plugins/issues/19) — No schema field represents a pursued opportunity's post-application play-sequence stage
+- [#20](https://github.com/crinaro/careers-plugins/issues/20) — Generated dashboard renders knowledge-base and call-preparation artifacts as filename strings, not their content
+- [#21](https://github.com/crinaro/careers-plugins/issues/21) — OPEN DESIGN QUESTION: two dashboard views present the same records through two different taxonomies instead of one lifecycle-state view
 
 ## gmail-multi 0.2.0
 - gmail-multi should support send/reply/forward; jobsearch must enforce draft-only as policy rather than rely on the capability being absent *(tracked internally as crinaro/marketplace-dev#213)*
