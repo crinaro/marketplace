@@ -28,7 +28,7 @@ shows up as a one-line diff rather than a reformatted file.
 | `companies.jsonl` | employers — one record each, however many roles they post |
 | `channels.jsonl` | where roles come from: job boards, company career pages, recruiting firms, referrals |
 | `opportunities.jsonl` | the roles themselves, with their contacts, outreach, applications and fit analysis |
-| `messages.jsonl` | every communication, both directions, with its full text |
+| `messages.jsonl` | every communication, both directions, with its full text. Since 0.36.0 an inbound message can carry `answers`, the id of the outbound message it replies to — see *Outreach* below |
 | `asks.jsonl` | things waiting on you — a role decision or a piece of system upkeep |
 | `commitments.jsonl` | what is scheduled — calls, deadlines, follow-ups due on a date |
 
@@ -158,12 +158,17 @@ on. Recording it as `passed` would overstate how selective you are being. `expir
 *absence* of a decision — and because you never declined it, a repost of that same role surfaces
 as a fresh signal rather than being filtered out.
 
-**`play_stage: unresolved`.** Where a role you are pursuing sits in the sequence after you apply
-— verify the posting is still live, identify the recruiter, reach them through someone who knows
-you, use that name with the recruiter, wait for the reply — is tracked as an ordered field so it
-can be sorted and counted. Older records that predate this field carry the same `unresolved`
-marker rather than a guess. If you see it on a role, set the real step once you know it; nothing
-downstream invents one for you.
+**`play_stage`.** Where a role you are pursuing sits in the sequence after you apply — verify the
+posting is still live, identify the recruiter, reach them through someone who knows you, use that
+name with the recruiter, wait for the reply — is tracked as an ordered field so it can be sorted
+and counted. **Since 0.36.0, the floor of that sequence is set for you**, because it is already
+provable from your own records: a role with a submitted application becomes `applied`, one with
+none becomes `needs-application` — nothing asks you a question the store can already answer. A
+step finer than `applied` is still yours to name once you know it (`record.py set <id> play_stage
+<stage>`); nothing downstream invents one for you. The same rule applies to `verdict`: a role
+still reading `undecided` once an application is on record becomes `pursue` automatically — the
+act of applying was the decision, and you are never asked pursue-or-pass on a role you already
+applied to.
 
 ### Contacts — the people
 
@@ -207,6 +212,19 @@ One record per touch. The fields exist to make "which approach actually works?" 
 `accepted` — an accepted connection request that drew no reply — is reported on its own line and
 never merged into `replied`, because it is a real positive signal that unlocks a better second
 touch.
+
+**The reply is a link, not a coincidence of dates.** Since 0.36.0, an inbound message can record
+`messages[].answers`, the id of the outbound message it replies to — a key, not a guess from
+"same recipient, close date." When a linked reply exists, its date becomes this row's
+`responded_on` and, only where the row still read `awaiting` or carried nothing, `outcome`
+becomes `replied` — the neutral fact the reply proves. A finer outcome (`accepted`,
+`declined`, `meeting-booked`) is a reading of what the reply actually said and stays yours to
+set; the link never overwrites one. `responded_on` may never predate this row's own `date`, and a
+linked reply with no `responded_on` at all is a validation error, not a silent gap. Two messages
+sent the same day can't be told apart by date alone, so a same-day pair is left **unlinked** —
+reported, not guessed — for you to link by hand with `answers` once you know which is which.
+`messages[].sent_on` and this row's `date`/`responded_on` may all carry a time
+(`YYYY-MM-DD HH:MM`) as well as a bare date, for exactly that case.
 
 ### Triggers and sequences — what caused a touch, and multi-step plays
 

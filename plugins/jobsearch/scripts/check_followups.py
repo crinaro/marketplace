@@ -160,9 +160,14 @@ def check_silent_jsonl(today, days):
     because the file is not to be edited. Worse, roles added or updated after
     the cutover were invisible to it entirely.
     """
+    import validate_data as _vd
     findings = []
     for opp in load_opps():
-        if opp.get("status") in ("passed", "backlog", "expired"):
+        # Terminal roles (validate_data's ONE set) have no thread to chase. `backlog` is
+        # NOT terminal — it is skipped here as a deliberate, named choice of THIS check: a
+        # shelved role's silence is not a follow-up gap. (build item 1: a surface may still
+        # omit a live status, but it says so instead of calling it closed.)
+        if opp.get("status") in _vd.TERMINAL_OPP_STATUSES or opp.get("status") == "backlog":
             continue
         if opp.get("stage") == "closed":
             continue

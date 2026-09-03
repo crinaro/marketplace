@@ -282,9 +282,57 @@ def validate(data_dir=None):
     env = os.environ.copy()
     if data_dir:
         env["CLAUDESEARCH_DATA_DIR"] = data_dir
-    r = subprocess.run([sys.executable, os.path.join(ENGINE_SCRIPTS, "validate_data.py")],
-                       capture_output=True, text=True, env=env)
-    return r.returncode, r.stdout, r.stderr
+    # dir= is explicit: the suite requires it of every mkstemp here (the store writes must
+    # stay in the store's own directory); this sidecar is not a store, so the system tmp.
+    fd, sidecar = tempfile.mkstemp(dir=tempfile.gettempdir(),
+                                   prefix=".validate-problems-", suffix=".json")
+    os.close(fd)
+    try:
+        env["CLAUDESEARCH_PROBLEMS_OUT"] = sidecar
+        r = subprocess.run([sys.executable, os.path.join(ENGINE_SCRIPTS, "validate_data.py")],
+                           capture_output=True, text=True, env=env)
+        problems = _read_problems(sidecar)
+    finally:
+        try:
+            os.unlink(sidecar)
+        except OSError:
+            pass
+    return r.returncode, r.stdout, r.stderr, problems
+
+
+def _read_problems(path):
+    """The validator's own problem list, or None when it never finished (crashed before its
+    summary — the sidecar is written on every finishing path, so an empty or missing one
+    means exactly that). None is an honest 'unknown', never treated as clean."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError:
+        return None
+    if not text.strip():
+        return None
+    try:
+        got = json.loads(text)
+    except ValueError:
+        return None
+    return [str(x) for x in got] if isinstance(got, list) else None
+
+
+def new_problems(pre, post):
+    """The problems a write INTRODUCED — post minus pre, as sets — or None when either side is
+    unknown (the validator crashed on it), which no comparison can settle.
+
+    ⭐ THIS is the G9 fix (dev/audit 2026-09-02). The carve-out for a pre-existing failure
+    used to compare EXIT CODES: with one standing problem the store returns 1 before and 1
+    after any write, so a write that added a second, unrelated defect was kept under the
+    first one's excuse — "already failing before" — and --dry-run refused to judge anything
+    at all. One standing finding disabled the rollback for every write on every worker
+    until a human dispositioned it. A set comparison sees the difference an exit code
+    cannot: a write is pre-existing-only when every problem after it was already there."""
+    if pre is None or post is None:
+        return None
+    before = set(pre)
+    return [x for x in post if x not in before]
 
 
 def dry_run_validate(store, rows):
@@ -503,7 +551,7 @@ def resolve_linked_asks(rid, rec, array_leaf):
         print("  ⚠️ the action WROTE, but resolving its ask(s) failed: %s" % e)
         print("  The ask(s) remain OPEN — check_action_claims.py will flag the drift.")
         return []
-    rc, out, err = validate()
+    rc, out, err, _problems = validate()
     if rc != 0:
         # Only this file can be guilty: the store validated clean two steps ago.
         ok = False
@@ -763,18 +811,30 @@ def main():
                 print("  %s" % e)
                 return 1
         # Was the REAL store already invalid, independent of this hypothetical write? Same
-        # question the real write asks before it would consider rolling anything back.
-        pre_rc, _, _ = validate()
-        rc, out, err = dry_run_validate(args.file, shadow_rows)
-        if rc != 0 and pre_rc != 0:
-            print("  ⚠️ the store is ALREADY invalid, independent of this hypothetical write —")
-            print("  dry-run cannot tell you whether THIS change is clean until that is fixed:")
-            print("  " + "\n  ".join(_diagnostic_lines(rc, out, err)))
-            return 1
+        # question the real write asks — and answered the same way, by PROBLEM SET, not exit
+        # code (G9): a standing problem must not stop the dry-run judging THIS change.
+        pre_rc, _, _, pre_problems = validate()
+        rc, out, err, problems = dry_run_validate(args.file, shadow_rows)
         if rc != 0:
-            print("  ⛔ a REAL (non-dry-run) write of this would be REFUSED and rolled back.")
-            print("  " + "\n  ".join(_diagnostic_lines(rc, out, err)))
-            return 1
+            added = new_problems(pre_problems, problems)
+            if added is None or added:
+                print("  ⛔ a REAL (non-dry-run) write of this would be REFUSED and rolled back.")
+                if added:
+                    print("  It introduces %d problem(s) the store does not have now:" % len(added))
+                    print("  " + "\n  ".join("- " + a for a in added))
+                else:
+                    print("  " + "\n  ".join(_diagnostic_lines(rc, out, err)))
+                if pre_rc != 0:
+                    print("  (%d pre-existing problem(s) stand as well; they are not this "
+                          "change's.)" % len(pre_problems or []))
+                return 1
+            print("  ✅ THIS change adds no problem — but the store is ALREADY invalid, "
+                  "independent of it:")
+            print("  " + "\n  ".join("- " + a for a in (problems or [])))
+            print("  A real write would LAND and exit 1 (not rolled back — the failure was "
+                  "there before). Fix the pre-existing problem; the store is invalid for the "
+                  "next worker.")
+            return 0
         print("  ✅ dry-run validated clean against the same validator a real write runs.")
         if args.file == "opportunities" and args.op in ("append", "set-in") and args.rest:
             action = ASK_ACTION_FOR_ARRAY.get(args.rest[0].split(".")[-1])
@@ -828,21 +888,40 @@ def main():
         # ⭐ Was the store ALREADY invalid? Asked here, before touching anything, because
         # validate_data.py checks the WHOLE store — an unrelated pre-existing problem would
         # otherwise make this write look guilty and get rolled back for nothing.
-        pre_rc, _, _ = validate()
+        #
+        # ⭐ BY PROBLEM SET, NOT EXIT CODE (G9, dev/audit 2026-09-02). "Already failing" is
+        # decided per problem: the write is kept only when every problem after it was there
+        # before it. A write that adds one is a new defect, whatever else was standing — and
+        # it is rolled back, exactly as it would be on a clean store. The carve-out narrows;
+        # nothing that lands is ever silently discarded (the outcome is always printed).
+        pre_rc, _, _, pre_problems = validate()
 
         save_atomic(args.file, rows)
-        rc, out, err = validate()
+        rc, out, err, problems = validate()
         if rc != 0:
-            if pre_rc != 0:
-                # The store was already invalid. Rolling back would discard a legitimate write to
-                # "fix" something it did not cause, so keep it and say exactly that.
+            added = new_problems(pre_problems, problems)
+            if pre_rc != 0 and added == []:
+                # Every problem pre-exists this write. Rolling back would discard a legitimate
+                # write to "fix" something it did not cause, so keep it and say exactly that.
                 print("  ⚠️ WROTE. The validator still fails — BUT IT WAS ALREADY FAILING BEFORE")
-                print("  this write, so this change is not the cause and was NOT rolled back.")
-                print("  " + "\n  ".join(_diagnostic_lines(rc, out, err)))
+                print("  this write with the SAME problem(s), so this change is not the cause")
+                print("  and was NOT rolled back:")
+                print("  " + "\n  ".join("- " + a for a in (problems or [])))
                 print("  Fix the pre-existing problem; the store is invalid for the next worker.")
                 return 1
+            if pre_rc != 0 and added is None and pre_problems is None:
+                # The validator crashed before the write and crashes after it the same way:
+                # nothing this write did can be blamed, and nothing can be compared. Keep it,
+                # loudly — the crash is the pre-existing problem.
+                print("  ⚠️ WROTE. The validator CRASHED — but it was ALREADY CRASHING BEFORE")
+                print("  this write, so this change is not the cause and was NOT rolled back.")
+                print("  " + "\n  ".join(_diagnostic_lines(rc, out, err)))
+                print("  Fix the validator crash; the store cannot be checked for the next worker.")
+                return 1
 
-            # The store was clean and this write broke it. Put it back.
+            # The store was clean and this write broke it — or it was already invalid and this
+            # write ADDED a problem (or turned a finishing validator into a crashing one).
+            # Either way this write is the cause of something. Put it back.
             #
             # ⭐ WHY THIS EXISTS: previously the invalid write stayed on disk and only a warning
             # was printed. The caller saw exit 1 — a failure — while the data HAD changed. **A
@@ -857,11 +936,28 @@ def main():
             # value, no rule. _diagnostic_lines falls back to stderr, then to a plain statement
             # of the crash, so this is never blank.
             restored = restore(args.file, before)
-            post_rc, _, _ = validate()
+            post_rc, _, _, post_problems = validate()
             print("  ⛔ REFUSED — the write broke the store, so it was ROLLED BACK.")
-            print("  " + "\n  ".join(_diagnostic_lines(rc, out, err)))
-            if restored and post_rc == 0:
-                print("  ✅ Rolled back; the store is byte-identical to before and validates.")
+            if added:
+                print("  It introduced %d problem(s) the store did not have before it:" % len(added))
+                print("  " + "\n  ".join("- " + a for a in added))
+                if pre_rc != 0:
+                    print("  (%d pre-existing problem(s) stand as well and are NOT this write's; "
+                          "they are why the store still fails after the rollback.)"
+                          % len(pre_problems or []))
+            else:
+                print("  " + "\n  ".join(_diagnostic_lines(rc, out, err)))
+            # "Back to before" means back to the pre-write problem set — which, on a store that
+            # was already invalid, is not "validates clean" but "the same problems as before".
+            back = (post_rc == 0) if pre_rc == 0 else (post_problems is not None
+                                                        and pre_problems is not None
+                                                        and set(post_problems) == set(pre_problems))
+            if restored and back:
+                if pre_rc == 0:
+                    print("  ✅ Rolled back; the store is byte-identical to before and validates.")
+                else:
+                    print("  ✅ Rolled back; the store is byte-identical to before, with only "
+                          "its pre-existing problem(s).")
                 print("  Nothing was written. Fix the input and re-run — retrying is safe.")
             else:
                 # Never claim a rollback that did not happen. This is the one outcome that

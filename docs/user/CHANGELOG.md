@@ -2,6 +2,9 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.35.0
+- Fixed the engine pointer's resolution role, not its drift: a hook that bypassed the launcher could still drag ~/.claude/jobsearch/engine_root backward with nothing to catch it; the launcher now resolves the newest complete installed version itself on every call (an explicit override is the only way to point it at a checkout) and keeps the pointer file only as a repaired, informational trace. Does not repair a pointer that has already drifted on an existing install — the cause of that earlier drift remains an open unknown *(tracked internally as crinaro/marketplace-dev#249)*
+
 ## jobsearch 0.34.0
 - Dashboard collapsed to one artifact with an anchor per phase, replacing separate pages that only republished once a phase's share of the data crossed a threshold — a page under that line used to stop updating while its link kept serving a stale snapshot; retired page links now retire in two steps so a bookmarked URL is never left orphaned *(tracked internally as crinaro/marketplace-dev#254)*
 - Conversations gained a real prep-tracking capability: the dashboard now shows which upcoming calls still owe prep, and the daily run drafts it before the day ends — previously nothing tracked whether a call had prep, and prep only happened if you remembered to ask for it *(tracked internally as crinaro/marketplace-dev#255)*

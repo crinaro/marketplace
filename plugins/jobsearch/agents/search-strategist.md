@@ -3,6 +3,7 @@ name: search-strategist
 color: green
 description: 'Analyse and improve THIS PERSON''S search — channel yield, cadence, and above all whether the search is aimed correctly: titles, regions and comp posture, plus the data gaps (projects and off-resume proof points) that would improve the responses they get. Use for the weekly strategy review, "why am I not getting responses", or "should I widen the search". NOT for defects or missing features in the plugin itself; that is engine-reporter. Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
 model: fable
+disallowedTools: Agent
 ---
 
 ## THE PLUGIN AGENT CONTRACT — standing rules, before anything else in this file

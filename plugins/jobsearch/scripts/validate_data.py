@@ -23,7 +23,9 @@ _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 import route as _route
 import profile as _profile
-import your_move as _ym
+# ⚠️ `your_move` is imported BELOW the vocabulary block, not here — see the note above
+# `def load`. It reads this module's TERMINAL_OPP_STATUSES at import time, so a top-of-file
+# import would hand it a half-initialised module whenever validate_data is imported first.
 
 ROOT = _profile_root()
 # ⭐ Overridable so a FRESH INSTALL can be verified (2026-08-05). A new user's very first gate run
@@ -31,6 +33,15 @@ ROOT = _profile_root()
 # have entered anything. Same override as init_profile.py, and the same reason as
 # CLAUDESEARCH_DATA_DIR on funnel_report.py: a guarantee nobody tests is a guarantee nobody has.
 DATA = os.environ.get("CLAUDESEARCH_DATA_DIR") or os.path.join(ROOT, "data")
+# ⭐ THE PROBLEM LIST AS DATA, NOT PROSE (dev/audit 2026-09-02, G9). record.py decides whether
+# a write is kept or rolled back by comparing the problems BEFORE the write with the problems
+# AFTER it — a set comparison, which needs the list itself, never a re-parse of the printed
+# report and never the exit code alone (an exit code cannot tell "the same one problem" from
+# "that problem plus a new one", and that is exactly how a second defect was kept under the
+# first one's excuse). When this names a path, the list is written there as a JSON array —
+# on EVERY finishing path, the clean one included (an empty array), so an absent file means
+# the validator never finished (it crashed), which the reader treats as unknown, not as clean.
+PROBLEMS_OUT = os.environ.get("CLAUDESEARCH_PROBLEMS_OUT")
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -47,6 +58,20 @@ CADENCES = {"daily", "weekly", "biweekly", "monthly", "on-inbound"}
 # `parked` rows written as an expiry workaround are deliberately NOT reclassified: nothing can
 # retroactively distinguish a genuine park from the workaround (adr-013).
 OPP_STATUS = {"active-pursuit", "needs-resolution", "in-motion", "backlog", "passed", "expired"}
+# ⭐⭐ THE ONE TERMINAL SET — owned HERE, imported by every renderer and check (dev/audit
+# 2026-09-02, build item 1). A role is TERMINAL when it has left the funnel for good:
+# declined (`passed`) or vanished (`expired`). Everything else — including `backlog`, which
+# is a shelved-but-reopenable state that a newly sourced role STARTS in (your_move.py's
+# `decide` group) — is live data the surfaces must still account for.
+#
+# The measured defect this closes: generate_dashboard.py carried its own per-file
+# `_CLOSED_STATUSES = {passed, backlog, expired}` and dropped every backlog row as closed,
+# while your_move.py treated backlog+undecided as the entry state and the same renderer's own
+# sort key four lines below ranked backlog as live. Two files, two silent answers to one
+# question. A per-file "closed" set is the inversion that let them disagree: each file named
+# what IT wanted to hide. A shared TERMINAL set names what has actually ended, and anything
+# a surface still wants to omit has to be a deliberate, visible choice on that surface.
+TERMINAL_OPP_STATUSES = frozenset({"passed", "expired"})
 STAGES = {"sourced", "contacted", "screening", "interviewing", "offer", "closed"}
 # ⭐ `play_stage` — where a pursued role sits in the POST-APPLICATION PLAY (public #19 / dev
 # #95). `stage` is the funnel position; the play sequence is finer-grained: which step of the
@@ -215,6 +240,50 @@ def is_date(v):
     return isinstance(v, str) and DATE_RE.match(v)
 
 
+# ⭐ A COMMUNICATION MAY CARRY A TIME (dev/audit 2026-09-02, Class B). Two messages on one day
+# — the outreach and its same-day reply — cannot be ordered from dates alone, which is what
+# made the reconcile audit assert ownership it could not know and left `responded_on >= date`
+# unprovable within a day. Optional `HH:MM[:SS]` after the date, space or `T` separated.
+# Deliberately NOT a widening of DATE_RE for every date field: a commitment carries its time
+# in its own `time` field, and every consumer of a plain date field parses ten characters.
+# Only the three communication timestamps accept it: messages[].sent_on, outreach[].date,
+# outreach[].responded_on. `date_part` is what a consumer compares or parses by — never the
+# raw string, which may now be longer than a date.
+TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?$")
+
+
+def is_when(v):
+    return isinstance(v, str) and TIMESTAMP_RE.match(v)
+
+
+def date_part(v):
+    """The ISO date of a timestamp-or-date string ('' for anything unreadable)."""
+    s = str(v or "")
+    return s[:10] if is_when(s) else ""
+
+
+def precedes(a, b):
+    """Is timestamp `a` PROVABLY before `b`? Different dates decide it; the same date decides
+    it only when both carry a time. A same-day pair with a bare date on either side is
+    unprovable and returns False — the ambiguity is reported by reconcile.py, never asserted
+    here (the Class B rule: an order the data cannot show is not an order)."""
+    da, db = date_part(a), date_part(b)
+    if not (da and db):
+        return False
+    if da != db:
+        return da < db
+    sa, sb = str(a), str(b)
+    return len(sa) > 10 and len(sb) > 10 and sa < sb
+
+
+# ⚠️ Deliberately BELOW the vocabulary: your_move.py imports this module for
+# TERMINAL_OPP_STATUSES / SUBMITTED_APP_STATUS at ITS import time, and this module imports
+# your_move for parse_blocked_until (used only inside main). Whichever is imported first, the
+# names each side needs at import are already bound — a top-of-file import here would hand
+# your_move a half-initialised module whenever validate_data is the entry point.
+import your_move as _ym  # noqa: E402
+
+
 def req(rec, field, label, problems):
     if field not in rec:
         problems.append("%s: missing required field '%s'" % (label, field))
@@ -272,7 +341,26 @@ def check_trigger(row, label, problems, app_refs, sent_ids):
                         "the clock started), got %r" % (label, tr))
 
 
+def emit_problems(problems):
+    """Write the finished problem list to PROBLEMS_OUT as JSON, when asked. Best-effort: a
+    reader that cannot find the file treats the run as unknown, which is the honest answer."""
+    if not PROBLEMS_OUT:
+        return
+    try:
+        with open(PROBLEMS_OUT, "w", encoding="utf-8") as fh:
+            json.dump(list(problems), fh, ensure_ascii=False)
+    except OSError:
+        pass
+
+
 def main():
+    rc, problems = _main()
+    emit_problems(problems)
+    return rc
+
+
+def _main():
+    """(exit code, the problem list) — the list is the fact; the code is a summary of it."""
     problems = []
     companies, e = load("companies.jsonl"); problems += e or []
     channels, e = load("channels.jsonl"); problems += e or []
@@ -281,7 +369,7 @@ def main():
     if companies is None or channels is None or opps is None:
         # Files not created yet — this is fine before the migration lands.
         print("Data validation — dataset not present yet (pre-migration). Nothing to check.")
-        return 0
+        return 0, []
 
     # every contact_id known anywhere — opportunities AND channels both carry people
     all_contact_ids = set()
@@ -345,8 +433,9 @@ def main():
         if not m.get("source"):
             problems.append("%s: missing 'source' — a body with no provenance cannot be "
                             "re-verified against the mailbox" % ml)
-        if m.get("sent_on") and not is_date(m["sent_on"]):
-            problems.append("%s: sent_on not ISO — %r" % (ml, m.get("sent_on")))
+        if m.get("sent_on") and not is_when(m["sent_on"]):
+            problems.append("%s: sent_on is neither an ISO date nor 'YYYY-MM-DD HH:MM' — %r"
+                            % (ml, m.get("sent_on")))
         # MEDIA is the OUTREACH taxonomy — it exists to answer "which of the candidate's own
         # channels works". A third-party message is not their outreach, so a plain generic is
         # correct for it and forcing e.g. 'email-cold' would corrupt the funnel denominators.
@@ -354,6 +443,37 @@ def main():
         if m.get("medium") and m["medium"] not in msg_media:
             problems.append("%s: medium %r not in {%s}"
                             % (ml, m["medium"], ", ".join(sorted(msg_media))))
+
+    # ---- messages[].answers — the reply relation as a KEY (dev/audit 2026-09-02, Class B) ----
+    # "Which message is this a reply to" lived in prose and in the reader's memory; the
+    # reconcile audit re-derived it weekly from header dates and could not tell a same-day
+    # pair apart. Optional (history stays valid); where present it must resolve, must not
+    # point at itself, must answer a message of a DIFFERENT direction (a chase is not a
+    # reply), and must not precede the message it answers. Second pass, so a forward
+    # reference in file order is fine.
+    _msg_by_id = {m.get("id"): m for m in (sent_msgs or []) if m.get("id") != "_README"}
+    answered_by = {}          # answered message id -> [ids of the replies that name it]
+    for m in (sent_msgs or []):
+        if m.get("id") == "_README" or m.get("answers") is None:
+            continue
+        ml = "messages[%s]" % m.get("id", "?")
+        target = m.get("answers")
+        t = _msg_by_id.get(target)
+        if t is None:
+            problems.append("%s: answers %r resolves to no message — a reply relation that "
+                            "points at nothing is worse than none" % (ml, target))
+            continue
+        if target == m.get("id"):
+            problems.append("%s: answers itself" % ml)
+            continue
+        if t.get("direction") == m.get("direction"):
+            problems.append("%s: answers %r but both are %r — a reply answers a message from "
+                            "the other side; a follow-up in the same direction is a chase, "
+                            "not a reply" % (ml, target, m.get("direction")))
+        if precedes(m.get("sent_on"), t.get("sent_on")):
+            problems.append("%s: answers %r but is dated %s, before the message it answers (%s)"
+                            % (ml, target, m["sent_on"], t["sent_on"]))
+        answered_by.setdefault(target, []).append(m.get("id"))
 
     # ---- resume variants (public #26) — structure + the id sets the loops below join on ----
     # Absence is legal: a single-resume profile has no resume_variants.jsonl and owes it
@@ -524,16 +644,34 @@ def main():
         # Optional and nullable — but an unreadable value must be LOUD, never carried: a play
         # position nobody can parse looks handled and is not (the precondition.py rule).
         ps = r.get("play_stage")
+        # Resolve against data the store ALREADY has, the same move as act_by and
+        # precondition.py: the applications[] array is the evidence of submission.
+        submitted = any(a.get("status") in SUBMITTED_APP_STATUS
+                        for a in (r.get("applications") or []))
+        # ⭐ A DECISION MADE BY ACTING (dev/audit 2026-09-02, Class A / public #44). A row can
+        # say `verdict: undecided` while applications[] proves a submission — the human
+        # decided by applying and the field never followed. Left alone it renders a
+        # pursue-or-pass ask for a role already applied to. m_0_36_0_verdict_from_applications
+        # resolves history; this refuses the contradiction from here on.
+        if r.get("verdict") == "undecided" and submitted:
+            problems.append("%s: verdict 'undecided' but an applications[] row is already %s "
+                            "— the act decided; the store already answers this (pursue)"
+                            % (label, "/".join(sorted(SUBMITTED_APP_STATUS))))
         if ps is not None:
             if ps not in PLAY_STAGES:
                 problems.append("%s: play_stage %r not in {%s} — an unreadable play position "
                                 "looks handled and is not; fix the value or null the field"
                                 % (label, ps, ", ".join(sorted(PLAY_STAGES))))
+            elif ps == "unresolved" and r.get("status") not in TERMINAL_OPP_STATUSES:
+                # ⭐ Derivable, so never a printed instruction (dev/audit 2026-09-02, public
+                # #42). The migration marker said "a human must name the stage"; the store
+                # already answers the one question that matters: applied, or not.
+                # m_0_36_0_play_stage_from_applications resolves every historical marker,
+                # and record.py's pre-write validation refuses a new one here.
+                problems.append("%s: play_stage 'unresolved' is derivable from applications[] "
+                                "— the store already answers it: %r"
+                                % (label, _ym.derive_play_stage(r)))
             else:
-                # Resolve against data the store ALREADY has, the same move as act_by and
-                # precondition.py: the applications[] array is the evidence of submission.
-                submitted = any(a.get("status") in SUBMITTED_APP_STATUS
-                                for a in (r.get("applications") or []))
                 if ps == "needs-application" and submitted:
                     problems.append("%s: play_stage 'needs-application' but an applications[] "
                                     "row is already %s — the store knows this role was applied "
@@ -545,7 +683,7 @@ def main():
                                     "application play on a role never applied to is a claim the "
                                     "store contradicts" %
                                     (label, ps, ", ".join(sorted(SUBMITTED_APP_STATUS))))
-                if r.get("status") in ("passed", "expired"):
+                if r.get("status") in TERMINAL_OPP_STATUSES:
                     problems.append("%s: status %r with play_stage %r — a terminal role has no "
                                     "live play position; null the field when a role leaves the "
                                     "funnel" % (label, r.get("status"), ps))
@@ -765,9 +903,31 @@ def main():
             if o2.get("status") == "sent":
                 if not (o2.get("to") or "").strip():
                     problems.append("%s: status='sent' requires a non-empty 'to'" % ol)
-                if not is_date(o2.get("date") or ""):
+                if not is_when(o2.get("date") or ""):
                     problems.append("%s: status='sent' requires an ISO 'date' — an undated row "
                                     "makes check_followups over-report silence" % ol)
+            elif o2.get("date") is not None and not is_when(o2.get("date")):
+                problems.append("%s: date %r is neither an ISO date nor 'YYYY-MM-DD HH:MM'"
+                                % (ol, o2.get("date")))
+            # ---- the reply side, as stored data (dev/audit 2026-09-02, Class B) ----
+            ro2 = o2.get("responded_on")
+            if ro2 is not None:
+                if not is_when(ro2):
+                    problems.append("%s: responded_on %r is neither an ISO date nor "
+                                    "'YYYY-MM-DD HH:MM'" % (ol, ro2))
+                elif precedes(ro2, o2.get("date")):
+                    problems.append("%s: responded_on %s is before the row's own date %s — a "
+                                    "reply cannot precede the message it answers"
+                                    % (ol, ro2, o2["date"]))
+            # A reply LINKED in the store (messages[].answers names this row's message) while
+            # the row still records no response is a contradiction the data itself can see —
+            # the row reads "awaiting" on every surface while the answer sits in
+            # messages.jsonl. Derived, so it never depends on a weekly mailbox audit.
+            _mref = o2.get("message_ref")
+            if _mref and _mref in answered_by and not o2.get("responded_on"):
+                problems.append("%s: still awaiting, but messages[%s] answers its message_ref "
+                                "%r — set responded_on (and outcome) on the row"
+                                % (ol, "/".join(str(x) for x in answered_by[_mref]), _mref))
             for fld, allowed in (("medium", MEDIA), ("touch_type", TOUCH_TYPES),
                                  ("recipient_role", RECIPIENT_ROLES), ("delivery", DELIVERY)):
                 v = o2.get(fld)
@@ -1018,13 +1178,13 @@ def main():
              len(commitments), len(variants)))
     if not problems:
         print("\n  Clean. Schema, enums, types, and every cross-reference resolve.")
-        return 0
+        return 0, []
     print("\n" + "=" * 68)
     print("%d PROBLEM(S)" % len(problems))
     print("=" * 68)
     for p in problems:
         print("  - " + p)
-    return 1
+    return 1, problems
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ name: outreach-drafter
 color: magenta
 description: 'Draft outreach, follow-up and reply messages in the candidate''s established voice — recruiters, warm intros, networking, and replies to inbound. Use whenever a short job-search message needs writing. Not for the cover letter that accompanies a formal ATS application; that is a different artifact with different length and header rules, and it is cover-letter-writer. Drafts only; never sends. Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
 model: sonnet
+disallowedTools: Agent
 ---
 
 ## THE PLUGIN AGENT CONTRACT — standing rules, before anything else in this file

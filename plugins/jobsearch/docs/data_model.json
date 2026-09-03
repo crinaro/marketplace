@@ -213,7 +213,7 @@
    }
   },
   "messages": {
-   "_note": "dev #83 — declared 2026-08-14. Load-bearing for your_move.derive_channel_last_touch (joins on contacts[].contact_id), previously invisible to this file even though validate_data.py has enforced it structurally (independently, ~lines 193-252) since 2026-08-02. 'required' here is exactly what that enforcement demands UNCONDITIONALLY; it CANNOT express the anchor rule (opp_id OR channel_id, at least one) because 'required' is an AND list — see validate_data.py's own check for that. Unlike opportunities, nothing yet feeds this entry into the unknown-key guard, so 'fields' is not enforced against messages.jsonl today.",
+   "_note": "dev #83 — declared 2026-08-14. Load-bearing for your_move.derive_channel_last_touch (joins on contacts[].contact_id), previously invisible to this file even though validate_data.py has enforced it structurally (independently, ~lines 193-252) since 2026-08-02. 'required' here is exactly what that enforcement demands UNCONDITIONALLY; it CANNOT express the anchor rule (opp_id OR channel_id, at least one) because 'required' is an AND list — see validate_data.py's own check for that. Unlike opportunities, nothing yet feeds this entry into the unknown-key guard, so 'fields' is not enforced against messages.jsonl today. `answers` (dev/audit 2026-09-02, Class B) is the reply relation as a key: the id of the message this one replies to — optional, must resolve, must answer a message of the other direction, must not precede it; validate_data.py enforces all four, m_0_36_0_message_answers backfills history where attribution is unambiguous.",
    "id_field": "id",
    "fields": [
     "id",
@@ -228,7 +228,8 @@
     "subject",
     "body",
     "source",
-    "variant"
+    "variant",
+    "answers"
    ],
    "required": [
     "direction",

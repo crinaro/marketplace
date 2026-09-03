@@ -3,6 +3,7 @@ name: profile-optimizer
 color: yellow
 description: 'Audit the candidate''s own live LinkedIn profile against presence/claims.md and configure/strategy.md, and draft concrete improvements — headline, About, experience bullets, skills — to improve network reach, visibility and automated job-match quality. Use for periodic profile reviews, or after the resume gains new proof points. Not for LinkedIn messaging, job search or invitations (linkedin-runner), and never edits the live profile without fresh explicit approval. Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
 model: sonnet
+disallowedTools: Agent
 ---
 
 ## THE PLUGIN AGENT CONTRACT — standing rules, before anything else in this file

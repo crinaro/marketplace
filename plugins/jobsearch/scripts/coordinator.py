@@ -320,6 +320,16 @@ def main():
                           "OK" if rc == 0 else
                           "❌ BEHIND the repo — republish (check_dashboard_fresh.py --fix, "
                           "Artifact tool, then --stamp-published)"))
+    # Class C (dev/audit 2026-09-02) — the page must ACCOUNT for every record: rendered,
+    # counted in a remainder, or terminal, and nothing outside its window. A gap is a
+    # renderer defect surfaced at startup; the remedy is a regeneration, never a hand-edit.
+    rc = subprocess.run([sys.executable,
+                         os.path.join(ENGINE_SCRIPTS, "check_dashboard_coverage.py")],
+                        capture_output=True, text=True).returncode
+    print("  %-26s %s" % ("dashboard coverage",
+                          "OK" if rc == 0 else
+                          "❌ GAP — a record the page lost or rendered out of window; "
+                          "regenerate (check_dashboard_fresh.py --fix) and re-check"))
     # gate-keeper dispatch — D5 says a generated view is declared AND gated; views/applying.md
     # was only ever declared. 'never generated' is informational (rc 0, see the script's own
     # docstring) so a profile that has not yet run application-session is not nagged forever —

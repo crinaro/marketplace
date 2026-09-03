@@ -80,6 +80,7 @@ import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 from _atomic import write_jsonl, write_json
+import validate_data as _vd
 
 try:
     from mail_client import (
@@ -275,9 +276,29 @@ def row_date(r):
     `attribute_hits` — so it is excluded from candidacy rather than treated as "any time".
     """
     try:
-        return datetime.date.fromisoformat(r.get("date") or "")
+        return datetime.date.fromisoformat(_vd.date_part(r.get("date")) or "")
     except (ValueError, TypeError):
         return None
+
+
+def row_time(r):
+    """'HH:MM' if the row's date carries a time (validate_data.TIMESTAMP_RE), else None."""
+    s = str(r.get("date") or "")
+    return s[11:16] if _vd.is_when(s) and len(s) > 10 else None
+
+
+_HDR_TIME_RE = re.compile(r"\b(\d{1,2}):(\d{2})(?::\d{2})?\b")
+
+
+def hdr_time(s):
+    """'HH:MM' from a mail header date, or None. Zone-naive on purpose: same-day ordering
+    against a row's own local time is only asserted when both sides carry a time, and
+    the header time is what the mailbox reported — a best effort, never a claim of
+    precision."""
+    if not s:
+        return None
+    m = _HDR_TIME_RE.search(s)
+    return ("%02d:%s" % (int(m.group(1)), m.group(2))) if m else None
 
 
 def group_by_contact(targets):
@@ -337,20 +358,66 @@ def attribute_hits(rows, hits):
     a subset scoped to one opportunity, or the same non-consumption defect reappears one level
     up).
     """
+    attributed, _ambiguous = attribute_hits_report(rows, hits)
+    return attributed
+
+
+def attribute_hits_report(rows, hits):
+    """(attributed, ambiguous) — `attribute_hits` plus the hits it REFUSED to attribute.
+
+    ⭐ SAME-DAY PAIRS ARE AMBIGUOUS, NEVER ASSERTED (dev/audit 2026-09-02, Class B / public
+    #41/#36/#34). Two rows carry only dates, so two facts the old attribution asserted are
+    unprovable from dates alone: (a) which of two rows sent on the SAME day a later reply
+    answers, and (b) whether a reply dated the SAME day as the row it would answer came
+    after the send at all. Both used to resolve by iteration order — the last candidate
+    won — which is an answer that looks measured and is not. Here either case is reported
+    as `ambiguous` (hit, [candidate rows]) instead, unless BOTH sides carry a time
+    (validate_data.TIMESTAMP_RE on the row; the mail header's own clock on the hit), in
+    which case the order is real and is used. A human can then link the reply as data
+    (messages[].answers) — a decision, recorded once — rather than the audit re-guessing
+    it every week."""
     ordered = sorted(rows, key=lambda t: row_date(t[2]) or datetime.date.min)
     attributed = {}
+    ambiguous = []
     for h in hits:
         hd = parse_hdr_date(h.get("date"))
         if not hd:
             continue
-        owner = None
+        ht = hdr_time(h.get("date"))
+        eligible = []
         for cand in ordered:
             rd = row_date(cand[2])
-            if rd and rd <= hd:
-                owner = cand          # candidates are date-sorted; the last match is the latest
-        if owner is not None:
-            attributed.setdefault(id(owner[2]), []).append(h)
-    return attributed
+            if not rd or rd > hd:
+                continue
+            if rd == hd:
+                # Same day as the hit: eligible only when both clocks say the send came first.
+                rt = row_time(cand[2])
+                if rt is None or ht is None:
+                    eligible.append((cand, "same-day-unordered"))
+                    continue
+                if rt <= ht:
+                    eligible.append((cand, None))
+                continue
+            eligible.append((cand, None))
+        if not eligible:
+            continue
+        latest_date = max(row_date(c[2]) for c, _why in eligible)
+        latest = [(c, why) for c, why in eligible if row_date(c[2]) == latest_date]
+        if any(why for _c, why in latest):
+            ambiguous.append((h, [c for c, _why in latest]))
+            continue
+        if len(latest) > 1:
+            # Two rows sent the same day, both before the hit — a tie on dates. Times on
+            # BOTH rows break it; otherwise the pair is reported, not guessed.
+            times = [row_time(c[2]) for c, _why in latest]
+            if any(t is None for t in times):
+                ambiguous.append((h, [c for c, _why in latest]))
+                continue
+            owner = max(latest, key=lambda cw: row_time(cw[0][2]))[0]
+        else:
+            owner = latest[0][0]
+        attributed.setdefault(id(owner[2]), []).append(h)
+    return attributed, ambiguous
 
 
 def main():
@@ -389,7 +456,7 @@ def main():
     print("Tracked state is a TRANSCRIPTION of what happened in email and LinkedIn. The source")
     print("can be re-read; the transcription can be incomplete, stale, or lossy.\n")
 
-    findings = {"medium": [], "reply": [], "accepted": [], "none": []}
+    findings = {"medium": [], "reply": [], "accepted": [], "none": [], "ambiguous": []}
     sess = Session(accounts)
     n_done = 0
 
@@ -409,7 +476,11 @@ def main():
         n_done += 1
 
         rows = sorted(g["rows"], key=lambda t: row_date(t[2]) or datetime.date.min)
-        attributed = attribute_hits(rows, hits)
+        attributed, ambiguous = attribute_hits_report(rows, hits)
+        for h, cands in ambiguous:
+            findings["ambiguous"].append((name, h, [
+                "%s — sent %s" % (companies.get(o.get("company_id"), o.get("company_id")),
+                                  r.get("date")) for o, _i, r in cands]))
 
         for o, idx, r in rows:
             rd = row_date(r)
@@ -456,6 +527,21 @@ def main():
             for h in replied[:3]:
                 print("      %s | %s" % ((h["date"] or "?")[:31], (h["subject"] or "")[:64]))
             print()
+
+    if findings["ambiguous"]:
+        print("-" * 78)
+        print("❓ AMBIGUOUS — an inbound event on the SAME DAY as the row(s) it might answer")
+        print("-" * 78)
+        print("  Dates alone cannot order these, so nothing is asserted (the old audit picked the")
+        print("  last candidate, which looked measured and was not). Decide once and record it as")
+        print("  data: messages[].answers on the reply, and responded_on on the row. A time on the")
+        print("  row's own date ('YYYY-MM-DD HH:MM') lets the next audit order it mechanically.\n")
+        for name, h, cands in findings["ambiguous"]:
+            print("  • %s  %s | %s" % (name[:40], (h.get("date") or "?")[:31],
+                                      (h.get("subject") or "")[:48]))
+            for c in cands:
+                print("      candidate: %s" % c)
+        print()
 
     if findings["accepted"]:
         print("-" * 78)

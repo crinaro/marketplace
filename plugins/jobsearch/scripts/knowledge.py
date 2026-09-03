@@ -125,6 +125,24 @@ ARCHIVE_DIRS = (os.path.join("archive", "call-preps"), os.path.join("archive", "
 # no ceremony. A field that opens with neither word is UNREADABLE — loud, never guessed over
 # (the precondition.py rule: a marker nobody can read looks handled and is not).
 PREP_STATUS_RE = re.compile(r"^\*\*Prep status:\*\*\s*(.+?)\s*$", re.M | re.I)
+# ⭐ The call's date, from the note's own filename — `call_prep_<date>.md` is the naming rule
+# call-prep writes to. ONE parser (dev/audit 2026-09-02, build item 7): the dashboard's prep
+# window, archive_preps.py and check_dashboard_coverage.py all ask this, never a regex of
+# their own. A name that does not carry a date is "undated" — loud in every consumer, never
+# silently treated as current.
+PREP_DATE_RE = re.compile(r"call_prep_(\d{4}-\d{2}-\d{2})")
+
+
+def prep_date(filename):
+    """datetime.date of the call a prep note is for, from its filename, or None."""
+    import datetime as _dt
+    m = PREP_DATE_RE.search(os.path.basename(str(filename)))
+    if not m:
+        return None
+    try:
+        return _dt.date.fromisoformat(m.group(1))
+    except ValueError:
+        return None
 PREP_INCOMPLETE_RE = re.compile(r"^incomplete\b", re.I)
 PREP_COMPLETE_RE = re.compile(r"^complete\b", re.I)
 

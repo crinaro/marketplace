@@ -29,6 +29,16 @@ check nothing. What each historic rule became:
      only home; (c) an ask duplicating a role the JSONL already routes to Your Move by
      `next_action_owner` — the derived row renders anyway, so the ask is a second copy.
   3. ASK SHAPE — an open ask must read as a question or an imperative aimed at the owner.
+     ⭐ AND THE DERIVED HALF OF THE PANEL (dev/audit 2026-09-02, public #43): the Your Move
+     panel is open asks PLUS role rows derived from opportunities.jsonl (your_move.py's
+     `now`/`decide` groups), and this check used to read only the asks — so it reported
+     clean having seen half the panel. A derived row's text is its `next_action`; here it
+     is held to rule 1 (no resolved text on a row still routed to the owner) and to a
+     weaker shape rule (a `now` row must HAVE an action — an empty one is a decision
+     nobody made, rendered as "No next action set"). The full ASK_SHAPES vocabulary is
+     deliberately not applied to `next_action`: it is a memo field, and most real
+     imperatives there match none of the ask phrases. The footer states how many of
+     each half were checked, so a clean report can never again mean "checked the asks".
   4. WRONG-DOMAIN — kind=role text that is plainly a system/tooling decision, or
      kind=system text that is plainly a role decision. `kind` picks the panel, so a wrong
      kind is the modern form of "system item in Your Move".
@@ -278,6 +288,30 @@ def main():
                     "next_action_owner; the derived row renders by itself. Put the ask text "
                     "in the record's next_action and resolve this row."))
 
+    # ---- 3b: the DERIVED half of the panel (public #43) -------------------------
+    # Membership and grouping are your_move.py's (classify_opportunities); this only reads
+    # what it says. Terminal/other-owner rows never reach here, by that predicate.
+    derived_rows = ([(o, st) for o, st, _w in _ym.classify_opportunities(opps, owner)
+                     if st in ("now", "decide")] if owner else [])
+    for o, st in derived_rows:
+        oid = o.get("id", "?")
+        na = str(o.get("next_action") or "")
+        if any(mk in na.lower() for mk in RESOLVED_MARKERS):
+            problems.append((
+                "RESOLVED TEXT ON A DERIVED ROLE ROW", "opportunities[%s]" % oid,
+                na[:60],
+                "This role is routed to Your Move (next_action_owner names the owner, state "
+                "%r) but its next_action reads as settled. Advance the record — set the "
+                "next action, the owner, or the status — never leave a done line rendering "
+                "as owed." % st))
+        elif st == "now" and not na.strip():
+            problems.append((
+                "DERIVED ROLE ROW WITH NO ACTION", "opportunities[%s]" % oid,
+                str(o.get("title") or "")[:60],
+                "Routed to the owner, now, with no next_action — the row renders as "
+                "\"No next action set\", which is a decision nobody made. Write the action "
+                "or change the owner."))
+
     # ---- 5: a commitment whose date is the migration marker ---------------
     for c in commitments:
         if str(c.get("date")) == "unresolved":
@@ -298,6 +332,10 @@ def main():
                 "regeneration. Refer to it by subject instead."))
 
     print("Section-rule check — data/asks.jsonl · data/commitments.jsonl · handoff.md")
+    # ⭐ Coverage, stated: both halves of the panel, counted — a clean report that had only
+    # seen the asks is the public #43 defect. Copies check_engine_purity's "scanned N of M".
+    print("  checked %d open ask(s) and %d derived role row(s) (your_move now/decide)"
+          % (len(open_asks), len(derived_rows)))
     if not problems:
         print("\n  Clean. Every open ask reads as an ask, nothing resolved is lingering,")
         print("  and no item appears in two places.")

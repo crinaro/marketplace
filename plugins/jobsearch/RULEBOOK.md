@@ -59,9 +59,9 @@ This repo is the single source of truth for the candidate's executive job search
   BE `> `-BLOCKQUOTED OR THEY PUBLISH EMPTY** — that shipped once, and only the candidate noticed. Entry
   format: each file's header.
 - **`pipeline/kb/<company_id>.md`** (durable knowledge, keyed by `company_id`) ·
-  **`conversations/call_prep_<date>.md`** (**stamp `Companies:`; promote durable content to
-  pipeline/kb/ BEFORE archiving, recording `Promoted:`** — `archive/README.md`; `scripts/knowledge.py`
-  audits). **⭐ EVERY KB LINE IS TAGGED BY SOURCE** — `[CANDIDATE]` `[JD]`
+  **`conversations/call_prep_<date>.md`** (**stamp `Companies:`; promote to
+  pipeline/kb/ — archiving proceeds regardless, marking `unresolved`** — `archive/README.md`;
+  `scripts/knowledge.py` audits). **⭐ EVERY KB LINE IS TAGGED BY SOURCE** — `[CANDIDATE]` `[JD]`
   `[RESEARCH]` `[CLAUDE]` `[OPEN]`. Never blur a company's self-description, or my
   inference, with what someone said.
 - **`views/dashboard_artifact.html` + `views/*_artifact.html`** — GENERATED. Never hand-edit

@@ -50,6 +50,7 @@ Usage: python3 scripts/generate_dashboard.py   (run from the profile folder root
 """
 import datetime
 import html
+import json
 import re
 import os
 from pathlib import Path
@@ -63,6 +64,15 @@ import your_move as _ym
 # The one definition of the play sequence — validate_data.py owns the enum; consumers
 # import it rather than restating it (a sequence typed twice disagrees with itself later).
 from validate_data import PLAY_SEQUENCE as _PLAY_SEQUENCE
+import validate_data as _vd
+# ⭐ THE ONE TERMINAL SET — validate_data's, by import. This file used to carry its own
+# `_CLOSED_STATUSES = {passed, backlog, expired}`, which dropped every backlog row as closed
+# while your_move.py treated backlog+undecided as the state a sourced role STARTS in and
+# this file's own sort key ranked backlog as live. Measured on a real profile: most backlog
+# rows appeared NOWHERE on the page — not even in a "+K more" remainder — and the missing
+# JD links were those same rows. A per-file "closed" set names what a file wants to hide; a
+# shared terminal set names what has ended (dev/audit 2026-09-02, build item 1).
+_TERMINAL = _vd.TERMINAL_OPP_STATUSES
 
 # ⚠️ .absolute(), NOT .resolve() — 2026-08-05. `.resolve()` FOLLOWS SYMLINKS, and the tracker
 # consumes this engine as a submodule with `scripts -> engine/scripts`. Resolving made ROOT
@@ -347,7 +357,10 @@ def render_opportunity_list(opps, companies, cap=None):
     crash. `_EMPTY_OPP_COUNTS` is the one place that shape is written down, shared by both the
     empty-case return and the populated-case starting value, so they cannot drift apart.
     """
-    live = [o for o in opps if o.get("status") not in _CLOSED_STATUSES]
+    live = [o for o in opps if o.get("status") not in _TERMINAL]
+    for o in opps:
+        if o.get("status") in _TERMINAL and o.get("id"):
+            _cover("opp:%s" % o["id"], "terminal", "opportunities")
     if not live:
         return '<div class="sub">No live opportunities.</div>', dict(_EMPTY_OPP_COUNTS)
     order = {"active-pursuit": 0, "needs-resolution": 1, "in-motion": 2, "backlog": 3}
@@ -429,8 +442,10 @@ def render_opportunity_list(opps, companies, cap=None):
         body = (f'<details class="opp-more"><summary>Detail</summary>'
                 f'<div class="opp-detail">{detail}</div></details>') if detail else ""
 
-        rows.append(
-            f'<div class="opp" data-bucket="{bucket}" data-you="{"1" if waits else "0"}">'
+        _rec = esc("opp:%s" % (o.get("id") or ""))
+        rows.append((o.get("id"),
+            f'<div class="opp" data-bucket="{bucket}" data-you="{"1" if waits else "0"}" '
+            f'data-rec="{_rec}">'
             f'  <div class="opp-head">'
             f'    <div class="opp-title">{esc(str(o.get("title") or "Untitled role"))}'
             f'      <span class="opp-co">{esc(comp.get("name", o.get("company_id", "")))}</span>'
@@ -439,18 +454,20 @@ def render_opportunity_list(opps, companies, cap=None):
             f'  </div>'
             f'  <div class="opp-meta">{meta}</div>'
             f'  {nxt}{body}'
-            f'</div>')
+            f'</div>'))
     cap = cap if cap is not None else WORKING_SET_CAP
     shown, rest = rows[:cap], rows[cap:]
+    _cover_set("opportunities", ["opp:%s" % i for i, _h in shown if i],
+               ["opp:%s" % i for i, _h in rest if i])
     more = ""
     if rest:
-        more = ('<div class="sub ws-more">+%d more live roles — the counts above cover '
-                'every one; the full list lives in <code class="fileref">'
-                'data/opportunities.jsonl</code> (pipeline_index.py renders it in '
-                'session).</div>' % len(rest))
-    return "".join(shown) + more, counts
+        more = ('<div class="sub ws-more" data-more="opportunities:%d">+%d more live roles '
+                '— the counts above cover every one; the full list lives in '
+                '<code class="fileref">data/opportunities.jsonl</code> (pipeline_index.py '
+                'renders it in session).</div>' % (len(rest), len(rest)))
+    return "".join(h for _i, h in shown) + more, counts
 
-def render_your_move(items, links=None, cap=None, more_at=None) -> str:
+def render_your_move(items, links=None, cap=None, more_at=None, set_name=None) -> str:
     """The numbered ask list (callout groups, Decide, Ready-to-send). Since the one-artifact
     collapse it takes the same cap every working set takes: items are already ordered
     soonest-first before they arrive here, so the cap trims only the tail, and the remainder is
@@ -459,11 +476,16 @@ def render_your_move(items, links=None, cap=None, more_at=None) -> str:
         return '<div class="sub">Nothing is waiting on you right now.</div>'
     cap = cap if cap is not None else WORKING_SET_CAP
     shown, rest = items[:cap], items[cap:]
+    if set_name:
+        _cover_set(set_name,
+                   ["opp:%s" % it[2] for it in shown if len(it) > 2 and it[2]],
+                   ["opp:%s" % it[2] for it in rest if len(it) > 2 and it[2]])
     more = ""
     if rest:
-        more = ('<div class="sub ws-more">+%d more — every one is still counted in the '
+        more = ('<div class="sub ws-more"%s>+%d more — every one is still counted in the '
                 'heading; the full set lives in %s.</div>'
-                % (len(rest), md_inline(more_at or "the operating store (`data/`)")))
+                % ((' data-more="%s:%d"' % (esc(set_name), len(rest))) if set_name else "",
+                   len(rest), md_inline(more_at or "the operating store (`data/`)")))
     items = shown
     links = links or {}
     parts = []
@@ -473,8 +495,9 @@ def render_your_move(items, links=None, cap=None, more_at=None) -> str:
         link = links.get(opp_id) if opp_id else None
         jd_html = (f' <a class="ym-jd" href="{link}" target="_blank" rel="noopener">JD ↗</a>'
                    if link else '')
+        rec_attr = (' data-rec="%s"' % esc("opp:%s" % opp_id)) if opp_id else ""
         parts.append(
-            f'<div class="ym-item"><div class="ym-num">{n}</div><div>'
+            f'<div class="ym-item"{rec_attr}><div class="ym-num">{n}</div><div>'
             f'<div class="ym-title">{md_inline(t)}{jd_html}</div>'
             f'<div class="ym-ask">{md_inline(w)}</div></div></div>')
     return "".join(parts) + more
@@ -752,10 +775,11 @@ def render_knowledge_docs(docs, empty_msg):
     for title, rel, body in docs:
         inner = render_md_doc(body) or ('<div class="sub">⚠️ This file is empty — nothing '
                                         'has been written here yet.</div>')
-        out.append('<details class="kdoc"><summary><strong>%s</strong> '
-                   '<code class="fileref">%s</code></summary>'
+        _cover("prep:%s" % rel, "rendered", "preps")
+        out.append('<details class="kdoc" data-rec="%s" data-full="1"><summary><strong>%s'
+                   '</strong> <code class="fileref">%s</code></summary>'
                    '<div class="kdoc-body">%s</div></details>'
-                   % (md_inline(title), esc(rel), inner))
+                   % (esc("prep:%s" % rel), md_inline(title), esc(rel), inner))
     return "".join(out)
 
 
@@ -834,7 +858,7 @@ def render_draft_bodies(entries, empty_msg, filename, cap=None):
     return "".join(out)
 
 
-def render_knowledge_index(docs, empty_msg, where, cap=None):
+def render_knowledge_index(docs, empty_msg, where, cap=None, rec_kind=None, chip=""):
     """One row per knowledge file: title, location, size — the content itself is NOT on
     the published page (the collapse: a knowledge body is not awaiting a decision), except
     call preps, whose full text renders in the conversations section (public #20's need —
@@ -845,18 +869,24 @@ def render_knowledge_index(docs, empty_msg, where, cap=None):
         return '<div class="sub">%s</div>' % empty_msg
     cap = cap if cap is not None else WORKING_SET_CAP
     shown, rest = docs[:cap], docs[cap:]
+    if rec_kind:
+        _cover_set(rec_kind, ["%s:%s" % (rec_kind, r) for _t, r, _b in shown],
+                   ["%s:%s" % (rec_kind, r) for _t, r, _b in rest])
     out = []
     for title, rel, body in shown:
         words = len(body.split())
         flag = "" if body.strip() else (' <span class="chip action">empty — nothing '
                                         'written yet</span>')
-        out.append('<div class="draft"><div class="draft-title">%s%s</div>'
+        rec_attr = (' data-rec="%s"' % esc("%s:%s" % (rec_kind, rel))) if rec_kind else ""
+        out.append('<div class="draft"%s><div class="draft-title">%s%s%s</div>'
                    '<div class="sub"><code class="fileref">%s</code> · %d words · %s'
                    '</div></div>'
-                   % (md_inline(title), flag, esc(rel), words, esc(where)))
+                   % (rec_attr, md_inline(title), flag, chip, esc(rel), words, esc(where)))
     if rest:
-        out.append('<div class="sub ws-more">+%d more files — the count above is complete; '
-                   'browse the directory in the file tree.</div>' % len(rest))
+        out.append('<div class="sub ws-more"%s>+%d more files — the count above is complete; '
+                   'browse the directory in the file tree.</div>'
+                   % ((' data-more="%s:%d"' % (esc(rec_kind), len(rest))) if rec_kind else "",
+                      len(rest)))
     return "".join(out)
 
 
@@ -898,7 +928,18 @@ _CLAUSE_CLAMP = 110  # same bound OPP_ACTION_CLAMP uses, for the same measured r
 def _clause(text):
     """ONE clause of prose, maximum — the single next action. `next_action` fields are
     measured to be memos (median 419 chars); a router row carries the verdict and the
-    stores carry the memo. Sentence-shaped rows are the defect the owner rejected twice."""
+    stores carry the memo. Sentence-shaped rows are the defect the owner rejected twice.
+
+    ⭐⭐ THE COMPOSED-STRING RULE (dev/audit 2026-09-02, build item 2). A renderer clamps
+    the SOURCE FIELD, then composes — it never parses a string it built itself. `_clause`
+    takes a field, never a composition. The measured defect: `_role_ask` returned
+    `"<comp> · <location>. <next_action>"` and the row builder then ran `_clause` over that
+    composition, which cut at the FIRST ". " — the one this file had just inserted — so on
+    every role row carrying context, the action itself was gone from the page (most role
+    rows on the profile measured). The same shape bit the decide rows ("Decide: pursue or
+    pass — …" cut at its own " — "), the channel rows ("Due <date>. <note>") and the
+    applying clause ("<company> — <title>" cut to the company). Every caller now clamps
+    each field it owns and joins the clamped parts; nothing downstream re-clauses."""
     flat = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", str(text or ""))
     flat = re.sub(r"[*`]+", "", flat).strip()
     for sep in (". ", "; ", " — "):
@@ -908,6 +949,62 @@ def _clause(text):
     if len(flat) > _CLAUSE_CLAMP:
         return flat[:_CLAUSE_CLAMP].rsplit(" ", 1)[0].rstrip(" ,;:—-") + "…"
     return flat
+
+
+def _flat(text):
+    """The field as plain prose (markdown links and emphasis stripped) — what `_clause`
+    clamps, exposed so a caller can tell whether the clause IS the whole field."""
+    flat = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", str(text or ""))
+    return re.sub(r"[*`]+", "", flat).strip()
+
+
+def _clause_cell(text):
+    """public #31, revised by #46: the row shows ONE clause of the SOURCE FIELD, and the
+    full body is on the page too — collapsed, never a click away from being absent. A bare
+    `<details>` alone would have hidden the #46 truncation behind a click rather than fixing
+    it; a clause alone drops the memo the owner still needs on a phone. Returns HTML."""
+    clause = _clause(text)
+    cell = esc(clause)
+    if clause != _flat(text):
+        cell += ('<details class="ws-full"><summary>full</summary>'
+                 '<div class="ws-full-body">%s</div></details>' % md_inline(text))
+    return cell
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ⭐ THE COVERAGE LEDGER — Class C (dev/audit 2026-09-02). Every record in the four
+# row-backed stores (opportunities, asks, commitments, call preps) is placed here as it
+# renders: RENDERED (a row on the page carries `data-rec="<key>"`), REMAINDER (it is inside
+# a "+K more" line whose K counts it, `data-more="<set>:<K>"`), or TERMINAL (it has ended
+# and the page says so by omission). Anything in none of those is a record the page lost
+# silently — the exact shape of the backlog defect above. The ledger is written beside
+# the artifact (views/dashboard_coverage.json) and `check_dashboard_coverage.py` verifies
+# it AGAINST THE HTML, never trusting the ledger alone (verify the artifact, not the plan).
+# Separate from check_dashboard_fresh.py on purpose: freshness is bytes and stamps; this is
+# membership, and one check must not grow a second meaning.
+# ─────────────────────────────────────────────────────────────────────────────
+COVERAGE = {"records": {}, "remainders": {}}
+_DISP_RANK = {"rendered": 3, "remainder": 2, "terminal": 1}
+
+
+def _cover(key, disposition, where):
+    """Place one record. A record rendered anywhere is RENDERED even if another set
+    trimmed it into a remainder — the strongest placement wins."""
+    cur = COVERAGE["records"].get(key)
+    if cur is None or _DISP_RANK[disposition] > _DISP_RANK[cur["disposition"]]:
+        COVERAGE["records"][key] = {"disposition": disposition, "where": where}
+
+
+def _cover_set(set_name, shown_keys, rest_keys):
+    """One capped set: what it showed and what it trimmed into its remainder."""
+    for k in shown_keys:
+        if k:
+            _cover(k, "rendered", set_name)
+    for k in rest_keys:
+        if k:
+            _cover(k, "remainder", set_name)
+    if rest_keys:
+        COVERAGE["remainders"][set_name] = len(rest_keys)
 
 
 def _age_days(iso, today=None):
@@ -921,32 +1018,41 @@ def _age_days(iso, today=None):
         return ""
 
 
-def ws_row(item_html, who="", age="", due="", loud=False):
+def ws_row(item_html, who="", age="", due="", loud=False, rec=None):
     """One working-set row. `item_html` is pre-rendered (it may carry a JD link); the
-    other cells are plain text, escaped at render time."""
-    return {"item": item_html, "who": who, "age": age, "due": due, "loud": loud}
+    other cells are plain text, escaped at render time. `rec` is the coverage key of the
+    store record this row IS ("opp:<id>", "ask:<id>", "commit:<id>"), or None for a row
+    derived from something that is not a record (a channel review, a sequence)."""
+    return {"item": item_html, "who": who, "age": age, "due": due, "loud": loud, "rec": rec}
 
 
-def render_ws(rows, more_at, empty_msg, cap=None):
+def render_ws(rows, more_at, empty_msg, cap=None, set_name=None):
     """One working set → a TABLE (item · who · age · due), soonest-due first (no due
     sorts last), capped at WORKING_SET_CAP with a '+K more' line naming where the
-    remainder lives. Structured rows, never sentences."""
+    remainder lives. Structured rows, never sentences. `set_name` places every record-
+    backed row in the coverage ledger and stamps the remainder line."""
     if not rows:
         return '<div class="sub">%s</div>' % empty_msg
     cap = cap if cap is not None else WORKING_SET_CAP
     rows = sorted(rows, key=lambda r: (str(r.get("due") or "~"), ))
     shown, rest = rows[:cap], rows[cap:]
+    if set_name:
+        _cover_set(set_name, [r.get("rec") for r in shown], [r.get("rec") for r in rest])
     out = ["<table><tr><th>Item</th><th>Who</th><th>Age</th><th>Due</th></tr>"]
     for r in shown:
+        attrs = (' class="ws-loud"' if r.get("loud") else "")
+        if r.get("rec"):
+            attrs += ' data-rec="%s"' % esc(r["rec"])
         out.append('<tr%s><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>'
-                   % (' class="ws-loud"' if r.get("loud") else "", r["item"],
+                   % (attrs, r["item"],
                       esc(str(r.get("who") or "—")), esc(str(r.get("age") or "—")),
                       esc(str(r.get("due") or "—"))))
     out.append("</table>")
     if rest:
-        out.append('<div class="sub ws-more">+%d more — every one is still counted in the '
+        out.append('<div class="sub ws-more"%s>+%d more — every one is still counted in the '
                    'heading; the full set lives in %s.</div>'
-                   % (len(rest), md_inline(more_at)))
+                   % ((' data-more="%s:%d"' % (esc(set_name), len(rest))) if set_name else "",
+                      len(rest), md_inline(more_at)))
     return "".join(out)
 
 
@@ -1047,7 +1153,7 @@ _STATUS_LABEL = {
     "in-motion": "In motion", "backlog": "Parked", "passed": "Passed / closed",
     "expired": "Expired",
 }
-_CLOSED_STATUSES = {"passed", "backlog", "expired"}
+# `_CLOSED_STATUSES` lived here until 2026-09-02 — see the note at `_TERMINAL` (top of file).
 
 
 def opps_from_jsonl():
@@ -1071,7 +1177,7 @@ def opps_from_jsonl():
             _STATUS_LABEL.get(o.get("status"), o.get("status", "")),
             o.get("jd_url") or "",
         ]
-        (closed if o.get("status") in _CLOSED_STATUSES else live).append(row)
+        (closed if o.get("status") in _TERMINAL else live).append(row)
     return headers, live, closed, 4, 2, 5
 
 
@@ -1225,7 +1331,7 @@ def application_tables(today=None):
     for o in opps:
         # Terminal roles have no application gap to report — an expired posting can no longer
         # be applied to, so listing it under "nothing sent" would nag about the impossible.
-        if o.get("status") in ("passed", "expired"):
+        if o.get("status") in _TERMINAL:
             continue
         apps = [a for a in (o.get("applications") or []) if a.get("status") in SUBMITTED_STATES]
         if apps:
@@ -1277,9 +1383,16 @@ def _role_title(o, companies, mark="🎯"):
 
 
 def _role_ask(o):
+    """The row's ask: context (comp · location) and ONE clause of `next_action`, each part
+    clamped BEFORE they are joined — the composed-string rule at `_clause`. The string
+    returned here is display-ready; no caller may run `_clause` over it again (that is the
+    measured defect: most role rows lost their action to the ". " this join inserted)."""
     ctx = [b for b in (_fmt_comp(o.get("comp")) if o.get("comp") else "",
                        _fmt_loc(o.get("location"))) if b]
-    return ((" · ".join(ctx) + ". ") if ctx else "") + (o.get("next_action") or "")
+    action = _clause(o.get("next_action") or "")
+    if ctx and action:
+        return "%s — %s" % (" · ".join(ctx), action)
+    return " · ".join(ctx) or action
 
 
 def your_move_roles_from_jsonl():
@@ -1334,12 +1447,16 @@ def your_move_decides_from_jsonl():
         if state != "decide":
             continue
         d = o.get("next_action_date")
-        ask = "Decide: pursue or pass — the verdict is still undecided."
+        # Clamp the field, then compose (the rule at `_clause`): the old sentence-shaped
+        # ask was re-claused downstream and cut at its own " — ", losing the deadline and
+        # the action on every decide row.
+        bits = ["Decide: pursue or pass"]
         if d:
-            ask += " Act by %s." % d
+            bits.append("act by %s" % d)
         if o.get("next_action"):
-            ask += " %s" % o["next_action"]
-        items.append((_role_title(o, companies, "🔎"), ask, o.get("id"), d or "9999"))
+            bits.append(_clause(o["next_action"]))
+        items.append((_role_title(o, companies, "🔎"), " · ".join(bits), o.get("id"),
+                      d or "9999"))
     items.sort(key=lambda t: t[3])
     return [(t, a, oid) for (t, a, oid, _d) in items]
 
@@ -1381,8 +1498,9 @@ def your_move_channels_from_jsonl():
         label = c.get("label") or c.get("id") or "a channel"
         when = str(nt.get("date"))
         bits = [b for b in (nt.get("time"), nt.get("note")) if b]
-        ask = "Due %s. %s" % (when, " · ".join(str(b) for b in bits)) if bits \
-            else "Due %s." % when
+        # Clamp the note (a field), then compose — never the other way round.
+        ask = ("Due %s — %s" % (when, _clause(" · ".join(str(b) for b in bits))) if bits
+               else "Due %s" % when)
         rel = c.get("relationship_status")
         if rel:
             ask += " (%s)" % rel
@@ -1456,7 +1574,9 @@ def render_your_move_callouts(unresolved, waiting, fulfilled, play_unresolved, l
             '<div class="sub" style="margin:-6px 0 10px">An unreadable or unstructured '
             '<code>blocked_until</code>. Never "needs you" until it is replaced with '
             '<code>contact:&lt;id&gt; outcome:&lt;...&gt;</code>.</div>'
-            '<div class="card">%s</div>' % (len(unresolved), render_your_move(unresolved, links)))
+            '<div class="card">%s</div>'
+            % (len(unresolved), render_your_move(unresolved, links,
+                                                 set_name="pipeline-unresolved")))
     if waiting:
         parts.append(
             '<h2 style="font-size:16px;margin-top:22px">⏳ Waiting on the other side '
@@ -1464,7 +1584,8 @@ def render_your_move_callouts(unresolved, waiting, fulfilled, play_unresolved, l
             '<div class="sub" style="margin:-6px 0 10px">Blocked until the named contact '
             'reaches the outcome the role is waiting on. <strong>Not yours to do</strong> — '
             'moves to the list above by itself once the record shows it.</div>'
-            '<div class="card">%s</div>' % (len(waiting), render_your_move(waiting, links)))
+            '<div class="card">%s</div>'
+            % (len(waiting), render_your_move(waiting, links, set_name="pipeline-waiting")))
     if fulfilled:
         parts.append(
             '<h2 style="font-size:16px;margin-top:22px">✅ Plans fulfilled, not yet cleared '
@@ -1481,7 +1602,8 @@ def render_your_move_callouts(unresolved, waiting, fulfilled, play_unresolved, l
             '<code>unresolved</code>. The prose survives on the role; only a human can name '
             'the position.</div>'
             '<div class="card">%s</div>'
-            % (len(play_unresolved), render_your_move(play_unresolved, links)))
+            % (len(play_unresolved), render_your_move(play_unresolved, links,
+                                                     set_name="pipeline-play")))
     return "".join(parts)
 
 
@@ -1739,6 +1861,11 @@ CSS = """
   .kd-l { font-size: 13px; margin: 4px 0 4px 18px; padding: 0; }
   .kd-q { border-left: 3px solid var(--card-border); background: var(--divider);
           border-radius: 4px; padding: 4px 10px; margin: 4px 0; font-size: 13px; }
+  /* public #31 / #46 — clause on the row, full body collapsed on the same row */
+  .ws-full { display: block; margin-top: 4px; }
+  .ws-full summary { font-size: 12px; opacity: .7; cursor: pointer; }
+  .ws-full-body { margin-top: 6px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+  .prep-past { opacity: .8; }
 """ + _CSS_ROUTER
 
 
@@ -1801,8 +1928,10 @@ def main():
         _states = {(r.get("file", _DRAFTS_REL), r["title"]): r for r in _pre_rows}
         _not_sendable = _pre.NOT_SENDABLE
         _terminal = _pre.TERMINAL
+        _needs_human = _pre.NEEDS_HUMAN
     except Exception:
         _pre_rows, _states, _not_sendable, _terminal = [], {}, frozenset(), frozenset()
+        _needs_human = frozenset()
 
     # dev #154 — a READY staged message no open ask covers gets a DERIVED queue line.
     try:
@@ -1833,7 +1962,14 @@ def main():
     # public #29 — TERMINAL entries land in NEITHER list.
     _drafts_active = [d for d in drafts if _pre_state(_DRAFTS_REL, d[0]) not in _terminal]
     _sendable = [d for d in _drafts_active if _pre_state(_DRAFTS_REL, d[0]) not in _not_sendable]
-    _blocked = [d for d in _drafts_active if _pre_state(_DRAFTS_REL, d[0]) in _not_sendable]
+    # ⭐ public #37 — NOT_SENDABLE is two things. `blocked` waits on the other side (in
+    # flight, muted); `unreadable`/`unresolved` wait on the OWNER, because nobody can say
+    # what the hold is. They used to sit under "waiting on someone else" looking handled.
+    # precondition.NEEDS_HUMAN owns the split; this only groups by it.
+    _blocked = [d for d in _drafts_active
+                if _pre_state(_DRAFTS_REL, d[0]) in _not_sendable
+                and _pre_state(_DRAFTS_REL, d[0]) not in _needs_human]
+    _unreadable = [d for d in _drafts_active if _pre_state(_DRAFTS_REL, d[0]) in _needs_human]
     drafts_html = render_draft_index(_sendable, _states, _DRAFTS_REL,
                                      "No pending drafts.", "full body just below")
     blocked_html = render_draft_index(_blocked, _states, _DRAFTS_REL, "",
@@ -1844,7 +1980,11 @@ def main():
     # dev #169 — the covers panel consults preconditions exactly as the drafts panel does.
     _covers_active = [c for c in covers if _pre_state(_COVERS_REL, c[0]) not in _terminal]
     _covers_ready = [c for c in _covers_active if _pre_state(_COVERS_REL, c[0]) not in _not_sendable]
-    _covers_held = [c for c in _covers_active if _pre_state(_COVERS_REL, c[0]) in _not_sendable]
+    _covers_held = [c for c in _covers_active
+                    if _pre_state(_COVERS_REL, c[0]) in _not_sendable
+                    and _pre_state(_COVERS_REL, c[0]) not in _needs_human]
+    _covers_unreadable = [c for c in _covers_active
+                          if _pre_state(_COVERS_REL, c[0]) in _needs_human]
     covers_html = render_draft_index(_covers_ready, _states, _COVERS_REL,
                                      "No cover letters pending.", "full body just below")
     covers_held_html = render_draft_index(_covers_held, _states, _COVERS_REL, "",
@@ -1852,6 +1992,16 @@ def main():
     covers_bodies_html = render_draft_bodies(_covers_ready, "No cover letters pending.",
                                              _COVERS_REL)
     n_covers_held = len(_covers_held)
+    n_unreadable = len(_unreadable) + len(_covers_unreadable)
+    unreadable_html = ""
+    if _unreadable:
+        unreadable_html += render_draft_index(
+            _unreadable, _states, _DRAFTS_REL, "",
+            "rewrite the **Blocked until:** line as contact:<id> outcome:<...>")
+    if _covers_unreadable:
+        unreadable_html += render_draft_index(
+            _covers_unreadable, _states, _COVERS_REL, "",
+            "rewrite the **Blocked until:** line as contact:<id> outcome:<...>")
 
     # dev #148 — sourcing strategy, via channels_due.py's one definition
     # (review_rows / channel_yield — the single-owner rule).
@@ -1864,7 +2014,47 @@ def main():
     # phone the night before. Company kb stays an INDEX (its bodies are not awaiting a
     # decision; inlining them is the measured 328 KB of the old 639 KB page).
     _preps, _kbs = knowledge_docs()
-    preps_full_html = render_knowledge_docs(_preps, "No call preps on file.")
+    # ⭐ THE PREP WINDOW (dev/audit 2026-09-02, build item 7). "Bounded by upcoming-call
+    # volume" was a claim, not a bound: every file in conversations/ rendered in full,
+    # and preps for calls already held — the bulk of a phone page, by bytes — were still
+    # there because the archive step lived in a skill as a line the model was told to
+    # follow after the call, and was not followed. The bound is now MECHANICAL: a prep
+    # renders in full only for a call inside conversations.py's PREP-OWED horizon
+    # [today, today + HORIZON_DAYS]; a past prep is an index row until archive_preps.py
+    # (the hygiene step and the 0.36.0 migration) moves it; a prep beyond the horizon or
+    # with an undated filename is an index row too, the undated one loudly.
+    import conversations as _conv_mod
+    import knowledge as _kn
+    _today_d = datetime.date.today()
+    _prep_limit = _today_d + datetime.timedelta(days=_conv_mod.HORIZON_DAYS)
+    _preps_now, _preps_past, _preps_far, _preps_undated = [], [], [], []
+    for _p in _preps:
+        _pd = _kn.prep_date(os.path.basename(_p[1]))
+        if _pd is None:
+            _preps_undated.append(_p)
+        elif _pd < _today_d:
+            _preps_past.append(_p)
+        elif _pd > _prep_limit:
+            _preps_far.append(_p)
+        else:
+            _preps_now.append(_p)
+    preps_full_html = render_knowledge_docs(_preps_now, "No call preps on file.")
+    preps_index_html = ""
+    if _preps_past:
+        preps_index_html += render_knowledge_index(
+            _preps_past, "", "call held — archive_preps.py moves it to archive/call-preps/",
+            rec_kind="prep", chip=' <span class="chip">past</span>')
+    if _preps_far:
+        preps_index_html += render_knowledge_index(
+            _preps_far, "", "beyond the %d-day horizon — renders in full when the call "
+            "is near" % _conv_mod.HORIZON_DAYS, rec_kind="prep",
+            chip=' <span class="chip">later</span>')
+    if _preps_undated:
+        preps_index_html += render_knowledge_index(
+            _preps_undated, "", "⚠️ filename carries no call_prep_<date> — cannot be "
+            "windowed; rename a prep call_prep_<date>.md, or move a non-prep note to the "
+            "store it belongs in (archive_preps.py names each)", rec_kind="prep",
+            chip=' <span class="chip action">undated</span>')
     kbs_html = render_knowledge_index(
         _kbs, "No company knowledge files yet.",
         "read in the file tree — knowledge bodies are not published (the collapse)")
@@ -1915,9 +2105,15 @@ def main():
     # ── configure ──────────────────────────────────────────────────────────
     cfg_rows = [ws_row("<strong>%s</strong> — %s"
                        % (md_inline(a.get("title") or a.get("id") or "?"),
-                          esc(_clause(a.get("ask")))),
-                       "you", _age_days(a.get("created")), a.get("act_by") or "")
+                          _clause_cell(a.get("ask"))),
+                       "you", _age_days(a.get("created")), a.get("act_by") or "",
+                       rec=("ask:%s" % a["id"]) if a.get("id") else None)
                 for a in system_asks]
+    # Resolved asks have ENDED — the ledger says so, so the coverage check can tell an
+    # expelled row from a lost one.
+    for _a in _all_asks:
+        if _a.get("resolved_on") and _a.get("id"):
+            _cover("ask:%s" % _a["id"], "terminal", "asks")
     cfg_clause = (_clause(system_asks[0].get("title")) if system_asks
                   else "Nothing needs a settings decision.")
     cfg_parts = []
@@ -1929,7 +2125,8 @@ def main():
             'scripts, credentials, or tooling that only you can make. Each stays until it '
             'is done.</div>'
             '<div class="card">%s</div>'
-            % (len(cfg_rows), render_ws(cfg_rows, "`data/asks.jsonl`", "")))
+            % (len(cfg_rows), render_ws(cfg_rows, "`data/asks.jsonl`", "",
+                                        set_name="configure-asks")))
     _emit("configure", len(cfg_rows), 0, cfg_clause,
           [("settings decisions", "phase-configure-asks")] if cfg_rows else [], cfg_parts)
 
@@ -1959,21 +2156,33 @@ def main():
           [("stale variants", "phase-presence-stale")] if pres_rows else [], pres_parts)
 
     # ── pipeline ───────────────────────────────────────────────────────────
+    _full_by_id = {o.get("id"): (o.get("next_action") or "") for o in _opp_rows}
+
     def _role_ws_rows(tuples):
+        # `a` is DISPLAY-READY: _role_ask / the decide builder clamped each field before
+        # joining. Never `_clause(a)` here — that re-parse is the measured #46 defect (the
+        # composed-string rule at `_clause`). The full memo rides along, collapsed (#31).
         rows = []
         for t, a, oid in tuples:
             link = ym_links.get(oid)
             jd = (' <a class="opp-jd" href="%s" target="_blank" rel="noopener">JD ↗</a>'
                   % esc(link)) if link else ""
-            rows.append(ws_row("<strong>%s</strong>%s — %s"
-                               % (md_inline(t), jd, esc(_clause(a))),
-                               "you", "", _due_by_id.get(oid, "")))
+            full = _full_by_id.get(oid, "")
+            body = ""
+            if full and _clause(full) != _flat(full):
+                body = ('<details class="ws-full"><summary>full</summary>'
+                        '<div class="ws-full-body">%s</div></details>' % md_inline(full))
+            rows.append(ws_row("<strong>%s</strong>%s — %s%s"
+                               % (md_inline(t), jd, esc(a), body),
+                               "you", "", _due_by_id.get(oid, ""),
+                               rec=("opp:%s" % oid) if oid else None))
         return rows
 
     hand_role_rows = [ws_row("<strong>%s</strong> — %s"
                              % (md_inline(a.get("title") or a.get("id") or "?"),
-                                esc(_clause(a.get("ask")))),
-                             "you", _age_days(a.get("created")), a.get("act_by") or "")
+                                _clause_cell(a.get("ask"))),
+                             "you", _age_days(a.get("created")), a.get("act_by") or "",
+                             rec=("ask:%s" % a["id"]) if a.get("id") else None)
                       for a in role_asks]
     now_ws = _role_ws_rows(role_decisions) + hand_role_rows
     decide_ws = _role_ws_rows(decide_rows)
@@ -1993,20 +2202,23 @@ def main():
     pipe_flight_ws = []
     n_pipe_flight = 0
     for o in _opp_rows:
-        if o.get("status") in _CLOSED_STATUSES or o.get("id") in _needs_ids:
+        if o.get("status") in _TERMINAL or o.get("id") in _needs_ids:
             continue
         n_pipe_flight += 1
         if o.get("id") in _callout_ids:
             continue      # rendered richer in its callout below; still counted
         comp = _opp_comps.get(o.get("company_id"), {})
         st = _cls_map.get(o.get("id")) or ("stage: %s" % (o.get("stage") or "not set"))
+        if o.get("status") == "backlog":
+            st = "backlog · %s" % (o.get("verdict") or "no verdict")
         pipe_flight_ws.append(ws_row(
             "<strong>%s — %s</strong>"
             % (esc(comp.get("name", o.get("company_id", ""))), esc(o.get("title") or "")),
-            st, "", o.get("next_action_date") or ""))
+            st, "", o.get("next_action_date") or "",
+            rec=("opp:%s" % o["id"]) if o.get("id") else None))
 
     n_pipe_needs = len(now_ws) + len(decide_ws) + len(due_reviews_ws)
-    opp_alive_hint = any(o.get("status") not in _CLOSED_STATUSES for o in _opp_rows)
+    opp_alive_hint = any(o.get("status") not in _TERMINAL for o in _opp_rows)
     _pipe_first = role_decisions + decide_rows
     pipe_clause = (_clause(_pipe_first[0][0]) if _pipe_first
                    else ("A sourcing-channel review is due." if due_reviews_ws
@@ -2020,7 +2232,7 @@ def main():
             '<div class="ws">%s</div></div>'
             % (len(now_ws),
                render_ws(now_ws, "`data/opportunities.jsonl` and `data/asks.jsonl`",
-                         "Nothing is waiting on you right now.")))
+                         "Nothing is waiting on you right now.", set_name="pipeline-now")))
     if decide_rows:
         pipe_parts.append(
             '<h2 id="phase-pipeline-decide">🔎 Decide — pursue or pass '
@@ -2030,7 +2242,8 @@ def main():
             'moment the record exists — the act-by date is a deadline, not a reveal date. '
             'Deciding moves the record and the row leaves by itself.</div>'
             '<div class="card">%s</div>'
-            % (len(decide_rows), render_ws(decide_ws, "`data/opportunities.jsonl`", "")))
+            % (len(decide_rows), render_ws(decide_ws, "`data/opportunities.jsonl`", "",
+                                           set_name="pipeline-decide")))
     if due_reviews_ws:
         pipe_parts.append(
             '<h2 id="phase-pipeline-reviews">🧭 Channel reviews due '
@@ -2045,7 +2258,8 @@ def main():
             'yours to do <span class="tcount">%d</span></h2>'
             '<div class="card">%s</div></div>'
             % (n_pipe_flight,
-               render_ws(pipe_flight_ws, "`data/opportunities.jsonl`", "")))
+               render_ws(pipe_flight_ws, "`data/opportunities.jsonl`", "",
+                         set_name="pipeline-flight")))
     opp_list_html, opp_counts = render_opportunity_list(_opp_rows, _opp_comps)
     if opp_counts["all"]:
         pipe_parts.append(
@@ -2099,7 +2313,8 @@ def main():
         apply_ws.append(ws_row("<strong>%s — %s</strong>"
                                % (esc(comp.get("name", o.get("company_id", ""))),
                                   esc(o.get("title") or "")), "you", "",
-                               o.get("next_action_date") or ""))
+                               o.get("next_action_date") or "",
+                               rec=("opp:%s" % o["id"]) if o.get("id") else None))
     submitted_ws = [ws_row("<strong>%s — %s</strong>" % (esc(r[0]), esc(r[1])),
                            r[4], r[3], "")
                     for r in _submitted]
@@ -2107,8 +2322,10 @@ def main():
         _q0 = _apply_q[0]
         _q0name = _opp_comps.get(_q0.get("company_id"), {}).get(
             "name", _q0.get("company_id", ""))
-        apply_clause = ("%s — work the queue in session (views/applying.md)."
-                        % _clause("%s — %s" % (_q0name, _q0.get("title") or "")))
+        # Clamp each field, then compose (the rule at `_clause`): clausing the joined
+        # "<company> — <title>" cut it at its own " — " and left only the company.
+        apply_clause = ("%s — %s — work the queue in session (views/applying.md)."
+                        % (_clause(_q0name), _clause(_q0.get("title") or "")))
     else:
         apply_clause = "Nothing queued to apply."
     apply_parts = []
@@ -2120,7 +2337,8 @@ def main():
             '<code class="fileref">views/applying.md</code> is the worksheet; this is the '
             'queue.</div>'
             '<div class="card">%s</div>'
-            % (len(apply_ws), render_ws(apply_ws, "`views/applying.md`", "")))
+            % (len(apply_ws), render_ws(apply_ws, "`views/applying.md`", "",
+                                        set_name="applying-queue")))
     if submitted_ws:
         apply_parts.append(
             '<div class="inflight"><h2 id="phase-applying-inflight">⏳ Submitted — '
@@ -2139,6 +2357,12 @@ def main():
     # ── conversations ──────────────────────────────────────────────────────
     _today_iso = datetime.date.today().isoformat()
     _commits = load_jsonl("commitments.jsonl")
+    # A commitment whose date has passed has ENDED for this page — placed as terminal so
+    # the coverage check can tell "held" from "lost". Unplaceable dates stay loud below.
+    for _c in _commits:
+        _cd = str(_c.get("date") or "")
+        if _c.get("id") and _vd.is_date(_cd) and _cd < _today_iso:
+            _cover("commit:%s" % _c["id"], "terminal", "conversations")
     # Commitment states — unplaceable dates AND preps owed — come from conversations.py's
     # one resolver (which itself resolves prep existence through knowledge.prep_hits, the
     # dev #153 single predicate). A second derivation here would disagree with it later,
@@ -2164,7 +2388,8 @@ def main():
                     "<code>unresolved</code>: verify the real date (invite "
                     "<code>.ics</code>, never recall) and set it on the record"
                     % md_inline(c.get("title") or c.get("id") or "?"),
-                    "you", "", "unresolved", loud=True))
+                    "you", "", "unresolved", loud=True,
+                    rec=("commit:%s" % c["id"]) if c.get("id") else None))
     else:
         for r in _conv_rows:
             if r["state"].endswith("-date"):
@@ -2173,7 +2398,8 @@ def main():
                 conv_needs.append(ws_row(
                     "<strong>⚠️ %s</strong> — %s"
                     % (md_inline(r.get("title") or r.get("id") or "?"), esc(r["why"])),
-                    "you", "", r.get("date") or "unresolved", loud=True))
+                    "you", "", r.get("date") or "unresolved", loud=True,
+                    rec=("commit:%s" % r["id"]) if r.get("id") else None))
             elif r["state"] in _conversations.NEEDS_YOU:
                 _due = r.get("date") or ""
                 if r.get("time"):
@@ -2181,7 +2407,8 @@ def main():
                 conv_owed.append(ws_row(
                     "<strong>⛔ %s</strong> — %s"
                     % (md_inline(r.get("title") or r.get("id") or "?"), esc(r["why"])),
-                    r.get("who") or "you", "", _due, loud=True))
+                    r.get("who") or "you", "", _due, loud=True,
+                    rec=("commit:%s" % r["id"]) if r.get("id") else None))
     conv_flight = []
 
     def _placed_future(r):
@@ -2202,7 +2429,8 @@ def main():
             due += " %s" % c["time"]
         conv_flight.append(ws_row("<strong>%s</strong>"
                                   % md_inline(c.get("title") or c.get("id") or "?"),
-                                  c.get("who") or "", "", due))
+                                  c.get("who") or "", "", due,
+                                  rec=("commit:%s" % c["id"]) if c.get("id") else None))
     if _conv_rows is None:
         # ⚠️ Mirrors the trigger-scan-failure idiom below (out_clause / the "Trigger scan
         # failed" note) — the same defect, the same fix. A failed scan must never present
@@ -2239,13 +2467,15 @@ def main():
             '<code>conversations.py</code> reports the note complete (a partial, '
             'records-only note never satisfies the predicate).</div>'
             '<div class="card">%s</div>'
-            % (len(conv_owed), render_ws(conv_owed, "`views/conversations.md`", "")))
+            % (len(conv_owed), render_ws(conv_owed, "`views/conversations.md`", "",
+                                         set_name="conversations-owed")))
     if conv_needs:
         conv_parts.append(
             '<h2 id="phase-conversations-unresolved">⚠️ Commitments with unresolved '
             'dates <span class="tcount">%d</span></h2>'
             '<div class="card">%s</div>'
-            % (len(conv_needs), render_ws(conv_needs, "`data/commitments.jsonl`", "")))
+            % (len(conv_needs), render_ws(conv_needs, "`data/commitments.jsonl`", "",
+                                          set_name="conversations-unresolved")))
     if conv_flight:
         conv_parts.append(
             '<h2 id="phase-conversations-week">📅 This week — calls &amp; deadlines '
@@ -2256,15 +2486,25 @@ def main():
             'what was booked when it was sent — confirm anything that may have been '
             'rescheduled (<code>parse_ics.py</code>).</div>'
             % (len(conv_flight),
-               render_ws(conv_flight, "`data/commitments.jsonl`", "")))
-    if _preps:
+               render_ws(conv_flight, "`data/commitments.jsonl`", "",
+                         set_name="conversations-week")))
+    if _preps_now:
         conv_parts.append(
             '<h2 id="phase-conversations-preps">📞 Call preps — in full '
             '<span class="tcount">%d</span></h2>'
             '<div class="sub" style="margin:-6px 0 10px">The one knowledge type that '
             'renders in full here (public #20: a prep must be readable the night before, '
-            'anywhere) — bounded by upcoming-call volume.</div>'
-            '<div class="card">%s</div>' % (len(_preps), preps_full_html))
+            'anywhere) — bounded to calls inside the next %d days.</div>'
+            '<div class="card">%s</div>'
+            % (len(_preps_now), _conv_mod.HORIZON_DAYS, preps_full_html))
+    if preps_index_html:
+        conv_parts.append(
+            '<h2 id="phase-conversations-preps-index">📁 Other call preps — index only '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">Held calls, calls beyond the '
+            'horizon, and any note nothing can date. Bodies stay in the file tree.</div>'
+            '<div class="card prep-past">%s</div>'
+            % (len(_preps_past) + len(_preps_far) + len(_preps_undated), preps_index_html))
     _emit("conversations", len(conv_needs) + len(conv_owed), len(conv_flight), conv_clause,
           ([("preps owed", "phase-conversations-owed")] if conv_owed else [])
           + ([("unresolved dates", "phase-conversations-unresolved")] if conv_needs else []),
@@ -2272,20 +2512,25 @@ def main():
 
     # ── outreach ───────────────────────────────────────────────────────────
     n_approvals = len(_sendable) + len(_covers_ready)
-    touch_ws = [ws_row("<strong>%s</strong> — %s" % (md_inline(t), esc(_clause(a))),
+    # `a` is display-ready (the channel builder clamped the note) — never re-claused.
+    touch_ws = [ws_row("<strong>%s</strong> — %s" % (md_inline(t), esc(a)),
                        "you", "", "")
                 for t, a, _oid in channel_touches]
     untrig_ws = [ws_row("<strong>%s</strong> — application has no follow-up linked"
                         % esc(r.get("title") or r.get("opp_id") or "?"),
                         r.get("status") or "", _age_days(r.get("date")), "")
                  for r in _untrig_rows]
-    n_out_needs = n_approvals + _n_unblocked + len(untrig_ws) + len(touch_ws)
+    # public #37 — an unreadable hold needs the OWNER, so it counts as needs-you.
+    n_out_needs = n_approvals + _n_unblocked + len(untrig_ws) + len(touch_ws) + n_unreadable
     n_out_flight = n_blocked + n_covers_held + _n_waiting_seqs
     if _trep is None:
         out_clause = ("⛔ trigger scan failed — sequence and follow-up counts are "
                       "UNKNOWN, not zero; run trigger.py --check")
     else:
         bits = []
+        if n_unreadable:
+            bits.append("%d hold%s nobody can read — rewrite the Blocked until: line"
+                        % (n_unreadable, "" if n_unreadable == 1 else "s"))
         if n_approvals:
             bits.append("%d message%s await%s approval"
                         % (n_approvals, "" if n_approvals == 1 else "s",
@@ -2301,6 +2546,16 @@ def main():
                         % (len(touch_ws), "" if len(touch_ws) == 1 else "s"))
         out_clause = (bits[0] + "." if bits else "Nothing staged or owed.")
     out_parts = [your_move_ready_html]
+    if n_unreadable:
+        out_parts.append(
+            '<h2 id="phase-outreach-unreadable">⛔ Holds nobody can read — needs you '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">A <strong>Blocked until:</strong> '
+            'line the strict parser refuses, or the literal <code>unresolved</code>. Not '
+            '"waiting on someone else" — nobody can say what it waits on until you rewrite '
+            'it as <code>contact:&lt;id&gt; outcome:&lt;...&gt;</code>. Until then the '
+            'message cannot move.</div>'
+            '<div class="card">%s</div>' % (n_unreadable, unreadable_html))
     if _sendable:
         out_parts.append(
             '<h2 id="phase-outreach-approvals">✉️ Pending drafts — awaiting your approval '
@@ -2361,6 +2616,8 @@ def main():
             + (('<div class="card">%s</div>'
                 % render_ws(untrig_ws, "`trigger.py --check`", "")) if untrig_ws else ""))
     out_subs = [("approvals", "phase-outreach-approvals")]
+    if n_unreadable:
+        out_subs.append(("unreadable holds", "phase-outreach-unreadable"))
     if touch_ws:
         out_subs.append(("follow-ups", "phase-outreach-touches"))
     if _n_unblocked or untrig_ws:
@@ -2399,6 +2656,17 @@ def main():
                     % (html.escape(_title), CSS, body_inner))
     (ROOT / "views" / "dashboard_artifact.html").write_text(artifact_doc, encoding="utf-8")
     (ROOT / "dashboard.html").write_text(DASHBOARD_TOMBSTONE, encoding="utf-8")
+    # The coverage ledger (Class C) — verified against the HTML by
+    # check_dashboard_coverage.py; never trusted on its own.
+    _ledger = {
+        "generated_on": _t.isoformat(),
+        "window": {"today": _t.isoformat(), "prep_horizon_days": _conv_mod.HORIZON_DAYS},
+        "terminal_statuses": sorted(_TERMINAL),
+        "records": COVERAGE["records"],
+        "remainders": COVERAGE["remainders"],
+    }
+    (ROOT / "views" / "dashboard_coverage.json").write_text(
+        json.dumps(_ledger, indent=1, sort_keys=True, ensure_ascii=False), encoding="utf-8")
 
     print("Wrote views/dashboard_artifact.html (%d bytes) and the dashboard.html "
           "tombstone (%d bytes)"

@@ -832,11 +832,12 @@ def m_0_25_0_play_stage(profile, apply_it):
         return False, ("  ⚠️ opportunities.jsonl could not be read, so no play_stage was "
                        "backfilled: %s" % e)
 
+    import validate_data as _vd          # the ONE terminal set (build item 1, 2026-09-02)
     changed, marked = 0, []
     for r in rows:
         if "play_stage" in r:
             continue
-        if r.get("status") in ("passed", "expired"):
+        if r.get("status") in _vd.TERMINAL_OPP_STATUSES:
             continue
         if not marker.match(str(r.get("next_action") or "")):
             continue
@@ -1812,6 +1813,221 @@ def m_0_35_0_task_file_where(profile, apply_it, home=None):
     return True, prefix + "; ".join(bits)
 
 
+# ── 0.36.0 — the dev/audit 2026-09-02 build ───────────────────────────────────────────────
+# ⚠️ KEYED "0.36.0": 0.35.0 is PUBLISHED (jobsearch--v0.35.0, MIGRATIONS ending at 0.35.0),
+# so a profile that installed it carries a stamp of exactly "0.35.0" and pending_for()'s
+# strict `<` would never fire a migration keyed "0.35.0" for it (ADR-009, the 0.33.0 trap).
+# release-manager re-verifies the key at the moment 0.36.0 is actually cut.
+
+
+def _rewrite_jsonl(path, rows):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)               # atomic: never a half-written store
+
+
+def _read_jsonl(path):
+    rows = []
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                rows.append(json.loads(line))
+    return rows
+
+
+def m_0_36_0_derive_from_applications(profile, apply_it):
+    """0.36.0 — two fields the store could already prove, written from applications[]
+    (dev/audit 2026-09-02, Class A: public #42 and #44).
+
+    * `play_stage: unresolved` (m_0_25_0's marker, "a human must name the stage") is
+      resolved by `your_move.derive_play_stage`: a submitted application → `applied` (the
+      floor the evidence proves; a finer position stays human-authored, and the prose on
+      the record still carries it), none → `needs-application`. Deterministic, so a run
+      writes it — it was a printed `record.py set …` instruction to the user for 0.25.0
+      through 0.35.0, and a change ships as a version, never as an instruction.
+    * `verdict: undecided` on a row whose applications[] proves a submission becomes
+      `pursue` — the human decided by applying; the field never followed, and Your Move
+      went on asking pursue-or-pass about a role already applied to.
+
+    PRESERVE, THEN TRANSFORM: nothing else on the row changes; both writes are reversible
+    from git. Terminal rows (validate_data.TERMINAL_OPP_STATUSES) are never touched — the
+    validator refuses a play position on one. Idempotent: a second run finds nothing.
+    """
+    import your_move as _ym
+    import validate_data as _vd
+    path = os.path.join(profile, "data", "opportunities.jsonl")
+    if not os.path.exists(path):
+        return True, ""
+    try:
+        rows = _read_jsonl(path)
+    except Exception as e:
+        return False, ("  ⚠️ opportunities.jsonl could not be read, so nothing was derived "
+                       "from applications[]: %s" % e)
+    played, decided = [], []
+    for r in rows:
+        if r.get("status") in _vd.TERMINAL_OPP_STATUSES:
+            continue
+        if r.get("play_stage") == "unresolved":
+            r["play_stage"] = _ym.derive_play_stage(r)
+            played.append("%s→%s" % (r.get("id", "?"), r["play_stage"]))
+        if r.get("verdict") == "undecided" and _ym.has_submitted_application(r):
+            r["verdict"] = "pursue"
+            decided.append(r.get("id", "?"))
+    if not (played or decided):
+        return True, ""
+    bits = []
+    if played:
+        bits.append("play_stage derived from applications[] on %d role(s): %s"
+                    % (len(played), "; ".join(played)[:300]))
+    if decided:
+        bits.append("verdict undecided→pursue on %d role(s) with a submitted application: %s"
+                    % (len(decided), "; ".join(decided)[:300]))
+    if not apply_it:
+        return True, "  would derive from applications[] (0.36.0): " + " · ".join(bits)
+    _rewrite_jsonl(path, rows)
+    return True, "  ✅ opportunities.jsonl (0.36.0): " + " · ".join(bits)
+
+
+def m_0_36_0_message_answers(profile, apply_it):
+    """0.36.0 — the reply relation becomes a KEY: `messages[].answers` (dev/audit 2026-09-02,
+    Class B: public #41/#36/#34). Backfilled ONLY where attribution is unambiguous.
+
+    For every inbound message with no `answers`: the candidate answered messages are the
+    OUTBOUND ones to the same contact_id, anchored to the same opportunity or channel, dated
+    STRICTLY before it (validate_data.date_part — a same-day pair cannot be ordered from dates
+    and is left for a human, exactly as reconcile.py now reports it as ambiguous rather than
+    asserting). The latest such message is the one answered; a tie on that latest date is
+    ambiguous too and is skipped. Skipped rows are named in the report so the coordinator
+    can link them once, as data. History stays valid: the key is optional.
+
+    ⭐ AND THE OUTREACH ROW LEARNS WHAT THE LINK PROVES (G9's second half, 2026-09-03). The
+    validator shipped beside this migration flags an outreach row that is still `awaiting`
+    while `messages[].answers` names its `message_ref` — so a link written here, on its own,
+    CREATED that finding on every profile it touched: the migration manufactured the one
+    contradiction that survived it, and left the owner to disposition by hand what the
+    engine had just proved. This closes it, and only where nothing is guessed:
+
+    * the link is never same-day: an answered message is dated STRICTLY before its reply
+      (and a tie is skipped), so the attribution Class B made ambiguous on purpose is
+      never the basis. A hand-written `answers` that already exists is honoured the same
+      way — it is data the owner recorded, not an inference.
+    * `responded_on` ← the reply's own `sent_on` — RELOCATED from a row that exists to the
+      row that names it (preserve, then transform); never set where one already stands.
+    * `outcome` ← `replied` only where the row reads `awaiting` or carries none: the
+      vocabulary's neutral fact ("a reply exists"), which the linked message proves. A
+      finer outcome (`declined`, `meeting-booked`, `accepted`) is a reading of the reply's
+      CONTENT and stays the human's — a row already carrying one is left alone. What the
+      candidate should DO about the reply is `next_action`, and nothing here touches it.
+    Idempotent: a row with `responded_on` is never revisited."""
+    import validate_data as _vd
+    path = os.path.join(profile, "data", "messages.jsonl")
+    if not os.path.exists(path):
+        return True, ""
+    try:
+        rows = _read_jsonl(path)
+    except Exception as e:
+        return False, "  ⚠️ messages.jsonl could not be read, so no answers were linked: %s" % e
+    linked, ambiguous = [], []
+    outbound = [m for m in rows if m.get("direction") == "outbound" and m.get("id")]
+    for m in rows:
+        if m.get("direction") != "inbound" or m.get("answers") is not None:
+            continue
+        cid, d = m.get("contact_id"), _vd.date_part(m.get("sent_on"))
+        if not cid or not d:
+            continue
+        cands = [o for o in outbound
+                 if o.get("contact_id") == cid and _vd.date_part(o.get("sent_on"))
+                 and _vd.date_part(o["sent_on"]) < d
+                 and (o.get("opp_id") == m.get("opp_id") if m.get("opp_id")
+                      else o.get("channel_id") == m.get("channel_id"))]
+        if not cands:
+            continue
+        latest = max(_vd.date_part(o["sent_on"]) for o in cands)
+        tied = [o for o in cands if _vd.date_part(o["sent_on"]) == latest]
+        if len(tied) > 1:
+            ambiguous.append("%s (two outbound on %s)" % (m.get("id"), latest))
+            continue
+        m["answers"] = tied[0]["id"]
+        linked.append("%s→%s" % (m.get("id"), tied[0]["id"]))
+
+    # ---- the outreach row: responded_on (relocated) and the neutral outcome (proved) ----
+    # EVERY inbound carrying `answers` counts — the links made just above and any the owner
+    # recorded by hand. The earliest reply to a message is when it was responded to.
+    replied_when = {}
+    for m in rows:
+        if m.get("direction") == "inbound" and m.get("answers") and m.get("sent_on"):
+            prev = replied_when.get(m["answers"])
+            if prev is None or _vd.precedes(m["sent_on"], prev):
+                replied_when[m["answers"]] = m["sent_on"]
+    opps_path = os.path.join(profile, "data", "opportunities.jsonl")
+    opps, answered, stamped = [], [], []
+    if replied_when and os.path.exists(opps_path):
+        try:
+            opps = _read_jsonl(opps_path)
+        except Exception as e:
+            return False, ("  ⚠️ opportunities.jsonl could not be read, so no outreach row "
+                           "learned of its reply: %s" % e)
+        for r in opps:
+            for i, o in enumerate(r.get("outreach") or []):
+                when = replied_when.get(o.get("message_ref"))
+                if not when or o.get("responded_on"):
+                    continue
+                if o.get("date") and _vd.precedes(when, o.get("date")):
+                    continue            # the validator names this one; never write it
+                o["responded_on"] = when
+                where = "%s outreach[%d]" % (r.get("id", "?"), i)
+                stamped.append(where)
+                if o.get("outcome") in (None, "awaiting"):
+                    o["outcome"] = "replied"
+                    answered.append(where)
+
+    if not (linked or ambiguous or stamped):
+        return True, ""
+    bits = []
+    if linked:
+        bits.append("%d inbound message(s) linked to the message they answer: %s"
+                    % (len(linked), "; ".join(linked)[:300]))
+    if stamped:
+        bits.append("responded_on set from the linked reply on %d outreach row(s)%s: %s"
+                    % (len(stamped),
+                       (" (outcome awaiting→replied on %d)" % len(answered)) if answered else "",
+                       "; ".join(stamped)[:300]))
+    if ambiguous:
+        bits.append("⚠️ %d left unlinked — ambiguous from dates alone, decide once and "
+                    "record `answers`: %s" % (len(ambiguous), "; ".join(ambiguous)[:300]))
+    if not apply_it:
+        return True, "  would link (0.36.0): " + " · ".join(bits)
+    if linked:
+        _rewrite_jsonl(path, rows)
+    if stamped:
+        _rewrite_jsonl(opps_path, opps)
+    return True, "  ✅ messages.jsonl (0.36.0): " + " · ".join(bits)
+
+
+def m_0_36_0_archive_past_preps(profile, apply_it):
+    """0.36.0 — call preps for calls already held move to archive/call-preps/ (dev/audit
+    2026-09-02, build item 7). The archive step was a skill line the model was told to
+    follow after the call and was skipped every time on the profile measured; it is now
+    `archive_preps.py`, a hygiene step of every run. This runs the SAME function once at
+    upgrade so the backlog moves on the first session after the release — a change ships as
+    a version, never as an instruction. Preserve, then transform: the file moves whole; a
+    note with no `**Promoted:**` record gets the `unresolved` marker knowledge.py already
+    reports. Idempotent: a second run finds nothing past-dated in the live folder."""
+    import archive_preps as _ap
+    try:
+        res = _ap.archive(profile, apply_it=apply_it)
+    except Exception as e:
+        return False, "  ⚠️ call-prep archive could not run: %s" % e
+    lines = _ap.summary(res, apply_it=apply_it)
+    if not lines:
+        return True, ""
+    prefix = "  ✅ call preps (0.36.0): " if apply_it else "  would archive (0.36.0): "
+    return True, prefix + "; ".join(lines)
+
+
 # ── install-cache hygiene (dev #167) — owned HERE, never by the launcher ─────────────────────
 # A resolver that deletes is the wrong shape for a constantly-running sh script; pruning is a
 # deliberate, logged act of the SessionStart hook, with the same envelope discipline as the
@@ -1941,7 +2157,13 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               # PUBLISHED release (ADR-009: migration keys are versions too; a migration keyed
               # to an already-published version is silently unreachable for everyone who
               # installed that exact release, because pending_for() compares with strict `<`).
-              ("0.35.0", m_0_35_0_task_file_where))
+              ("0.35.0", m_0_35_0_task_file_where),
+              # ⚠️ KEYED "0.36.0" — 0.35.0 is the newest PUBLISHED release (ADR-009): a
+              # profile that installed it is stamped exactly "0.35.0", and strict `<` would
+              # never fire a migration keyed to it. Re-verified when 0.36.0 is cut.
+              ("0.36.0", m_0_36_0_derive_from_applications),
+              ("0.36.0", m_0_36_0_message_answers),
+              ("0.36.0", m_0_36_0_archive_past_preps))
 
 
 def pending_for(profile, engine=None):

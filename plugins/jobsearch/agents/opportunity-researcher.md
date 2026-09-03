@@ -3,6 +3,7 @@ name: opportunity-researcher
 color: blue
 description: 'Deep-dive research on ONE newly sourced role — find the original posting on the employer''s own site or ATS, read the full JD, and research the hiring company. Use for any role in `data/opportunities.jsonl` with an empty `research_log` before it is treated as a real lead. Not for FINDING roles: LinkedIn is linkedin-runner, other boards and career pages are board-sweeper. Reports findings; never writes the pipeline. Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
 model: sonnet
+disallowedTools: Agent
 tools: WebSearch, WebFetch, Read, Bash, mcp__Claude_Browser__preview_start, mcp__Claude_Browser__navigate, mcp__Claude_Browser__get_page_text, mcp__Claude_Browser__read_page, mcp__Claude_Browser__find
 ---
 

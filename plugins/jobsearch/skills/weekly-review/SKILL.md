@@ -75,6 +75,7 @@ Run the weekly strategy review of the candidate's search. Read `CLAUDE.md` first
 
 ```bash
 ~/.claude/jobsearch/run push_init.sh                          # mint this session's push token (a no-op that says so under local-only — adr-012)
+~/.claude/jobsearch/run migrate.py                    # finish any pending migration FIRST — the SessionStart hook does not fire on every surface, and a gate below run on unmigrated data reports findings the release already resolved (G11)
 ~/.claude/jobsearch/run runlock.py --take "weekly review" --wait 120
 ~/.claude/jobsearch/run inbox.py                      # drain what background runs queued
 ~/.claude/jobsearch/run check_stale_claims.py         # decayed claims — verify against the machine
@@ -85,6 +86,8 @@ Run the weekly strategy review of the candidate's search. Read `CLAUDE.md` first
 ~/.claude/jobsearch/run resume_variants.py --check    # printed variant bullets trace to the presence/claims.md union (public #26)
 ~/.claude/jobsearch/run channels_due.py               # which sources are due
 ~/.claude/jobsearch/run check_rule_homes.py           # no archived lesson lost its rule
+~/.claude/jobsearch/run archive_preps.py --holding-lock   # preps for calls already held move to archive/call-preps/ — under THIS review's lock (taken above), which stays the review's to release
+~/.claude/jobsearch/run check_dashboard_coverage.py   # every record rendered, counted, or terminal; nothing outside its window
 ~/.claude/jobsearch/run check_engine_purity.py        # engine files carry no profile data
 ~/.claude/jobsearch/run check_pointers.py             # every pointer resolves to real data
 ~/.claude/jobsearch/run check_remote_gate.py          # is the push gate enforced on the remote?
@@ -97,8 +100,9 @@ Run the weekly strategy review of the candidate's search. Read `CLAUDE.md` first
   way the daily does: an audit that quietly becomes a read-only sweep is worse than one that
   never ran, because it gets recorded as done. Reported STALE → `--steal` and say so.
   **`--release` after the commit, even if the run failed partway.**
-- **`compact.py` REQUIRES `--holding-lock` here.** It takes the lock itself; this review already
-  holds it, so the bare form refuses and compacts nothing. Guarded by `TestCompactionActuallyRuns`.
+- **`compact.py` and `archive_preps.py` REQUIRE `--holding-lock` here.** Each takes the lock
+  itself; this review already holds it, so the bare form refuses and does nothing. Guarded by
+  `TestCompactionActuallyRuns` and `TestArchivePrepsRunsUnderTheLock`.
 - **`funnel_report.py` output is EVIDENCE — hand it to the strategist.** Never ask the agent to
   re-derive channel yield by hand; the script refuses to print a rate below n=5 and states plainly
   what the data cannot answer.

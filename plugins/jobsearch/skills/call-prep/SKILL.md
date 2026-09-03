@@ -109,13 +109,18 @@ The row must now read `prepped` (or, degraded, `owed-partial` with your note nam
 owed with the reason. Never report a drained row that was not drained — the summary of a
 scheduled run states what was owed and not completed.
 
-## 6. After the call — the existing promotion path
+## 6. After the call — promotion is yours; the archive is a script's
 
 The note is a dated working artifact; durable content is PROMOTED, not left to rot:
-`pipeline/kb/<company_id>.md` grows, the note records `**Promoted:** kb:<id> on <date>`
-(or `nothing-durable`), and the note is archived to `archive/call-preps/`. `knowledge.py`
-in daily-run's HYGIENE names every gap in that path — this skill only has to leave the
-`**Companies:**` join in place for it to work.
+`pipeline/kb/<company_id>.md` grows and the note records `**Promoted:** kb:<id> on <date>`
+(or `nothing-durable`). **The move to `archive/call-preps/` is NOT a step here** —
+`archive_preps.py` (daily-run HYGIENE §1, and the 0.36.0 migration once) moves every prep
+dated before today by itself, appending `**Promoted:** unresolved` to any note still
+carrying no promotion record. That marker is what `knowledge.py` reports until the
+promotion is written on the archived note. This skill only has to leave the
+`**Companies:**` join in place for any of it to work. (The archive was a line in this
+section for months and was skipped every time — a step a session is told to
+remember is the step that is dropped; a script is not.)
 
 ## Unattended rules (deployment.md — these are requirements, not tone)
 

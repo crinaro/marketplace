@@ -3,6 +3,7 @@ name: inbox-scan
 color: cyan
 description: 'Scan Gmail for job-search signals — PRIORITIZING recruiter and human mail and meeting artifacts; treating board and aggregator job-alert digests as a low-value backstop, since direct search is the real source. Use for the daily Gmail pass. Not for LinkedIn messages (linkedin-runner), not for reading a JD (opportunity-researcher), and it reports findings rather than writing the pipeline. Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
 model: haiku
+disallowedTools: Agent
 ---
 
 ## THE PLUGIN AGENT CONTRACT — standing rules, before anything else in this file

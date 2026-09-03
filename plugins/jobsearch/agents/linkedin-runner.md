@@ -3,6 +3,7 @@ name: linkedin-runner
 color: cyan
 description: 'Execute work on LinkedIn''s own surfaces in a browser — reply checks, messages and InMail, invitations and message requests, notifications, LinkedIn job search, and finding a contact path into a company. **Use for the daily LinkedIn pass, whenever a reply or invitation might be waiting there, and when a named company needs a way in.** Prefers Claude''s in-app Browser pane, which can hold a logged-in session; falls back to the Chrome extension. Not for sweeping non-LinkedIn job boards or employer career pages (board-sweeper), not for reading one posting or researching one company in depth (opportunity-researcher), and not for auditing the candidate''s own profile (profile-optimizer). Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
 model: sonnet
+disallowedTools: Agent
 ---
 
 > ⚠️ **THIS FILE IS OVER THE 10 KB SYSTEM-PROMPT GUIDELINE, DELIBERATELY.** An extraction was

@@ -3,6 +3,7 @@ name: cover-letter-writer
 color: magenta
 description: 'Write the cover letter that accompanies a formal ATS application — a different artifact from short outreach, with its own header, one-page cap and length target. Use whenever the next action on a role is the candidate applying directly. Not for LinkedIn notes, recruiter replies or networking messages; that is outreach-drafter. Drafts only; never submits. Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
 model: sonnet
+disallowedTools: Agent
 ---
 
 ## THE PLUGIN AGENT CONTRACT — standing rules, before anything else in this file

@@ -111,6 +111,7 @@ hours, costing that morning's run outright.
 
 ```bash
 ~/.claude/jobsearch/run push_init.sh                        # mint this session's push token (a no-op that says so under local-only — adr-012)
+~/.claude/jobsearch/run migrate.py                  # finish any pending migration FIRST — the SessionStart hook does not fire on every surface, and a gate below run on unmigrated data reports findings the release already resolved (G11)
 ~/.claude/jobsearch/run check_stale_claims.py       # decayed claims
 ~/.claude/jobsearch/run check_followups.py          # silent threads
 ~/.claude/jobsearch/run check_sections.py           # ask/commitment invariants (dev #93)
@@ -122,6 +123,8 @@ hours, costing that morning's run outright.
 ~/.claude/jobsearch/run check_engine_purity.py      # engine files carry no profile data
 ~/.claude/jobsearch/run check_pointers.py           # every pointer resolves to real data
 ~/.claude/jobsearch/run knowledge.py                # pipeline/kb/prep joins resolve; promotion debt; kb files due
+~/.claude/jobsearch/run archive_preps.py            # preps for calls already held move to archive/call-preps/ (a script, never a step to remember; takes the write lock itself for the seconds of the move — a refusal moves nothing and the next run retries)
+~/.claude/jobsearch/run check_dashboard_coverage.py # every record rendered, counted in a remainder, or terminal — and nothing outside its window
 ~/.claude/jobsearch/run resume_variants.py --check  # printed variant bullets trace to the presence/claims.md union (public #26)
 ```
 
@@ -397,11 +400,15 @@ row that keeps standing is the self-healing form of loudness.
 stores looked populated and answered nothing). Every prep note carries a `**Companies:**`
 line of `company:<id>` token(s) (`channel:<id>` for a call with a recruiting firm; the literal
 `none` if genuinely untracked) — the note is date-keyed on purpose, so this line is the ONLY
-path from a pursuit to its conversation history. Before a prep is archived, promote durable
-content to `pipeline/kb/<company_id>.md` and record `**Promoted:** kb:<id> on <date>` (or
-`nothing-durable`). `knowledge.py` in HYGIENE reports every unjoined file, unrecorded
-promotion, and conversation-stage pursuit with no kb file — **dispose of those in this run:
-structuring a join or creating a named kb file is run work, never a note for the candidate.**
+path from a pursuit to its conversation history. **The archive itself is a script, not a
+step:** `archive_preps.py` (HYGIENE, §1) moves every prep dated before today to
+`archive/call-preps/`, appending `**Promoted:** unresolved` to any note that carries no
+promotion record — so a skipped promotion is a visible debt, never a held call still
+rendering in full on the dashboard. Promote durable content to `pipeline/kb/<company_id>.md`
+and record `**Promoted:** kb:<id> on <date>` (or `nothing-durable`) on the archived note.
+`knowledge.py` in HYGIENE reports every unjoined file, unrecorded promotion, and
+conversation-stage pursuit with no kb file — **dispose of those in this run: structuring a
+join or creating a named kb file is run work, never a note for the candidate.**
 
 ## 9. STAMP THE CHANNELS YOU SWEPT
 
@@ -436,6 +443,7 @@ to zero.**
 
 ```bash
 ~/.claude/jobsearch/run check_dashboard_fresh.py --fix
+~/.claude/jobsearch/run check_dashboard_coverage.py   # the page accounts for every record; a gap here is a renderer defect, never a hand-edit
 ```
 
 Then **grep the OUTPUT** (`views/dashboard_artifact.html` — sendable message and letter bodies

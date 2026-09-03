@@ -83,18 +83,49 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root                                      # noqa: E402
 import precondition as _pre                                         # noqa: E402
 import profile as _profile                                          # noqa: E402
+# ⭐ The status vocabulary has ONE owner — validate_data.py. This module used to carry its
+# own copy of the terminal pair, and generate_dashboard.py a third, wider "closed" set that
+# silently disagreed with the membership rule below (dev/audit 2026-09-02, build item 1).
+# validate_data imports this module too; both sides bind only what they need at import
+# time, and validate_data places its import of us below its vocabulary for that reason.
+import validate_data as _vd                                         # noqa: E402
 
 # Re-exported so a caller (validate_data.py) needs exactly one import to validate the field.
 PreconditionError = _pre.PreconditionError
 
+# The statuses on which a role can be OWNER-ACTIONABLE right now — Your Move MEMBERSHIP, not
+# liveness. `in-motion` and `backlog` are live (not terminal) but reach this surface only
+# through the rules below; see validate_data.TERMINAL_OPP_STATUSES for what has ended.
 LIVE_OPP_STATUSES = {"active-pursuit", "needs-resolution"}
 
 ROLE_STATES = ("unresolved", "waiting", "scheduled", "now", "decide")
 CHANNEL_STATES = ("now", "scheduled", "fulfilled")
 
 # Statuses on which a play position is meaningless — validate_data.py refuses the field on
-# these, and m_0_25_0_play_stage never writes the marker onto them.
-PLAY_TERMINAL_STATUSES = {"passed", "expired"}
+# these, and m_0_25_0_play_stage never writes the marker onto them. The SAME set as the
+# funnel's terminal set, by import rather than by copy.
+PLAY_TERMINAL_STATUSES = _vd.TERMINAL_OPP_STATUSES
+
+
+def has_submitted_application(o):
+    """Does this record's own applications[] prove a submission? The evidence of a decision
+    made by ACTING (dev/audit 2026-09-02, Class A / public #44): a row can still read
+    `verdict: undecided` while an application went in, and the surface must not ask a
+    question the store already answers. SUBMITTED_APP_STATUS is validate_data's."""
+    return any(a.get("status") in _vd.SUBMITTED_APP_STATUS
+               for a in (o.get("applications") or []))
+
+
+def derive_play_stage(o):
+    """The play position the store can PROVE for a row (public #42). The migration marker
+    `unresolved` said "a human must name the stage"; but the one boundary that matters —
+    applied, or not — is on the record already: applications[] proves a submission, and
+    every position after `applied` presupposes one (validate_data.POST_APPLICATION_PLAY).
+    So: a submitted application → `applied` (the floor the evidence proves; a finer
+    position stays human-authored, and the prose on the record still carries it), no
+    submission → `needs-application`. Deterministic, so it is a migration's to write and a
+    validator's to demand — never a printed command to the user."""
+    return "applied" if has_submitted_application(o) else "needs-application"
 
 
 def unresolved_play_stages(opps):
@@ -262,11 +293,18 @@ def is_your_move_candidate(o, owner_token):
 
     Membership = owned by `owner_token` AND (a LIVE status, or — dev #142 — `backlog` with
     `verdict: undecided`, the state a newly sourced role starts in). `backlog` with any
-    DECIDED verdict (`parked`, `pass`) stays off: that is the clutter issue #79 removed."""
+    DECIDED verdict (`parked`, `pass`) stays off: that is the clutter issue #79 removed.
+
+    ⭐ And a decision made by ACTING counts as decided (public #44): a backlog row whose
+    own applications[] proves a submission does not owe a pursue-or-pass answer, whatever
+    its `verdict` field still says — the ask would be about a role already applied to.
+    validate_data flags that row as a contradiction and the 0.36.0 migration sets the
+    verdict the act implies; this predicate stops asking in the meantime."""
     if o.get("next_action_owner") != owner_token:
         return False
     return (o.get("status") in LIVE_OPP_STATUSES
-            or (o.get("status") == "backlog" and o.get("verdict") == "undecided"))
+            or (o.get("status") == "backlog" and o.get("verdict") == "undecided"
+                and not has_submitted_application(o)))
 
 
 def invisible_reason(o, owner_token):
@@ -280,6 +318,10 @@ def invisible_reason(o, owner_token):
     if is_your_move_candidate(o, owner_token):
         return None
     st = o.get("status")
+    if st == "backlog" and o.get("verdict") == "undecided":
+        return ("status 'backlog' with verdict 'undecided' but a submitted application on "
+                "the record — the act decided; set verdict to 'pursue' (the row still "
+                "renders in the opportunity list, never as a pursue/pass ask)")
     if st == "backlog":
         return ("status 'backlog' with verdict %r is a decided \"not now\" and never "
                 "surfaces on Your Move; if a pursue/pass decision is still owed, set "

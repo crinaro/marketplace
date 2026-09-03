@@ -154,6 +154,14 @@ NOT_SENDABLE = frozenset({"blocked", "unreadable", "unresolved", "sent", "moot"}
 # (never lumps them under "blocked", which reads as "blocked on someone else" and would mislead).
 TERMINAL = frozenset({"sent", "moot"})
 
+# ⭐ dev/audit 2026-09-02 (public #37) — NOT_SENDABLE is not one thing. `blocked` waits on
+# the OTHER side; `unreadable` and `unresolved` wait on the OWNER, because nobody can say what
+# the hold even is. The dashboard grouped all three under "waiting on someone else", so a
+# precondition nobody could read sat in the muted in-flight count looking handled. A consumer
+# renders NEEDS_HUMAN as a loud needs-you set and counts it there. (Declined: widening the
+# vocabulary so those rows parse — a strict parser IS the design; the fix is loudness.)
+NEEDS_HUMAN = frozenset({"unreadable", "unresolved"})
+
 # Sentinels used by drafts_with_preconditions for the non-parse states (see its docstring).
 PROSE_HOLD = "prose-hold"
 UNRESOLVED = "unresolved"

@@ -177,8 +177,8 @@ def main():
                   "is a repost and should surface)" % n_exp)
     # The migration marker must stay visible from every view of this index — an `unresolved`
     # play position nobody surfaces looks handled and is not (dev #95 follow-on).
-    n_play_unres = sum(1 for o in opps if o.get("play_stage") == "unresolved"
-                       and o.get("status") not in ("passed", "expired"))
+    import your_move as _ym                     # the one terminal set, by import
+    n_play_unres = len(_ym.unresolved_play_stages(opps))
     if n_play_unres:
         print("  ⚠️ %d role(s) carry play_stage 'unresolved' — the migration marker, not a "
               "position; set the real value: record.py set <id> play_stage <stage>"

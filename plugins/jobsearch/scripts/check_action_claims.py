@@ -162,7 +162,8 @@ def opp_action_evidence():
     return ev
 
 
-TERMINAL = {"passed", "expired"}
+# The ONE terminal set — validate_data's, by import (build item 1).
+TERMINAL = _ym.PLAY_TERMINAL_STATUSES
 
 
 def closed_roles_named_in_prose():
