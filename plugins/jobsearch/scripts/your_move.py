@@ -133,6 +133,35 @@ def attention_by_id(opps, owner_token, today=None):
         out[o["id"]] = "needs-you" if o["id"] in needs else "in-flight"
     return out
 
+
+# ⭐ OWNER — whose move a live role is, as a per-row value (public #54, the 0.37.0 visibility
+# regression). Issue #79 retired OWNERSHIP ALONE as the "needs you" QUEUE key, correctly: a
+# role the candidate owns but has dated weeks out is not today's work. Stage 1 of public #48
+# then replaced the opportunity list's ownership sort tier and its "Waiting on you" chip with
+# ATTENTION — and ATTENTION cannot express ownership: a candidate-owned `scheduled` row, or a
+# candidate-owned row outside Your Move's membership (`in-motion`), is `in-flight` by its
+# definition. Measured on the profile that reported it: every one of 74 live rows was
+# `in-flight`, so the state chip did not even render, and the three candidate-owned rows
+# sorted past the cap and appeared nowhere on the page. Ownership is the wrong QUEUE key and
+# the right FILTER: "which of these is mine" is a question the reader asks, and it is answered
+# by the record's own `next_action_owner`, never re-derived by the renderer. Vocabulary owned
+# here, beside `is_your_move_candidate`, the predicate that already reads the same field.
+#
+# you  ⇔ next_action_owner is the candidate's own token (profile.owner_token()).
+# run  ⇔ anything else validate_data.OWNERS admits — "me", the engine acts next.
+OWNER = ("you", "run")
+
+
+def owner_by_id(opps, owner_token):
+    """{opp id: OWNER value} for every LIVE opportunity — the one definition the
+    dashboard's owner filter, its reading order and its "you / the run" row label read."""
+    out = {}
+    for o in opps:
+        if o.get("status") in _vd.TERMINAL_OPP_STATUSES or not o.get("id"):
+            continue
+        out[o["id"]] = "you" if o.get("next_action_owner") == owner_token else "run"
+    return out
+
 # Statuses on which a play position is meaningless — validate_data.py refuses the field on
 # these, and m_0_25_0_play_stage never writes the marker onto them. The SAME set as the
 # funnel's terminal set, by import rather than by copy.

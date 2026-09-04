@@ -226,6 +226,18 @@ KNOWN_EXCEPTIONS = (
      "a comment enumerating the same six hardcoded board-name keywords, not personal data; "
      "collides only because this owner's profile separately names the same word as an "
      "employer encountered"),
+    # ⭐ dev #225, another hit of the same class, 2026-09-04. Step 3's JD-verification advice
+    # names two real, generic staffing agencies as an example of "wrapper posting, not the
+    # actual employer" — the sentence is unchanged-for-any-candidate advice, not this owner's
+    # search history. Collides only because the profile's `encountered` list separately names
+    # one of the two agencies as a company met during outreach. Per the block above, the term
+    # is context AROUND the colliding name, never the name itself — this file is scripts/*.py
+    # and gets scanned too, so spelling the agency name here would be tomorrow's fresh hit.
+    ("agents/opportunity-researcher.md", "a staffing agency (Ledgent, ", 225,
+     "a generic staffing-agency example in the JD-verification step (two real, well-known "
+     "agencies illustrating the wrapper-vs-employer point, not this owner's search); "
+     "collides only because this owner's profile separately names one of them as an "
+     "employer encountered"),
 )
 
 # Every tracked engine file. The families above remain a taxonomy and an emptiness guard; this

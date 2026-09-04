@@ -50,7 +50,8 @@ closing it, and says so.)
 
 ## States (the precondition.py rule: an unreadable or unstamped value is LOUD, never guessed)
 
-    ok            active, stamped, every bullet contained, stamp current
+    ok            active, stamped, every bullet contained, stamp current — PROVENANCE ONLY;
+                  fitness for a public surface is not checked (public #59)
     stale         union changed since this variant's last reconcile — FLAGGED, does not fail
                   --check (the union legitimately runs ahead; reconcile and --stamp)
     drifted       ≥1 bullet not found in the union — fails --check
@@ -215,7 +216,11 @@ def check_variant(root, rec, union_text, union_norm, union_bullet_set):
                      "whether the new claims belong on this page, then `--stamp %s`" \
                      % (rec.get("union_reconciled_on") or "?", sha, current, vid)
         return row
-    row["why"] = "stamped %s" % (rec.get("union_reconciled_on") or "?")
+    # ⚠️ public #59 stopgap (0.37.1): the green line states its LIMIT. This module proves
+    # where each claim came from — nothing more. Whether a page is fit to hand to a given
+    # audience is not a question it asks, and a bare "ok" read as if it were.
+    row["why"] = "stamped %s — provenance only; fitness for a public surface is not checked" \
+                 % (rec.get("union_reconciled_on") or "?")
     return row
 
 

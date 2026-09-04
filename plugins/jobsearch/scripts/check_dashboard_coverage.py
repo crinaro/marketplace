@@ -51,6 +51,26 @@ that would grow a second meaning. For every filtered list the ledger declares:
                   renders still carries `data-rec`, or extend `_REC_RE` (and re-derive
                   `rec_list` accordingly) to see the new shape.
 
+⭐ REACHABLE (public #54 / #58 point 3 — counted is not reachable)
+--------------------------------------------------------------------
+The 0.37.0 page hid three candidate-owned roles and this check said CLEAN: the working-set
+cap trimmed them into the opportunity list's "+K more" remainder, COVERAGE was satisfied
+(every record accounted for), and nothing asked whether a reader could GET TO one.
+Under CSS-only narrowing a filtered list has ONE rendered row set, so a trimmed row is
+reachable under no filter state, and a chip whose population counts it promises a row
+selecting the chip cannot show. So, for every filtered list the ledger declares:
+  * TRIMMED BEHIND A FILTER — the list has no remainder: no `remainders` entry in the
+                  ledger, no `data-more="<set>:K"` on the page, and no record whose final
+                  disposition is a remainder in that set. REMAINDER stays a legitimate
+                  disposition for an UNFILTERED working set (one ordering, sorted then
+                  capped, the tail named), never for a filtered one.
+  * UNREACHABLE UNDER FILTER — for every chip, the rows on the page carrying its value
+                  equal the members the ledger counts with it (shown == population),
+                  computed from the HTML and the ledger independently, so a chip can never
+                  count a record no filter state can reach.
+These are independent of COUNT AGREES on purpose: a label that honestly reads "(2 shown
+of 17)" passes COUNT AGREES and is exactly the page this side exists to refuse.
+
 ## Verify the artifact, not the plan (CLAUDE.md trap 6)
 
 `generate_dashboard.py` writes a ledger beside the artifact (`views/dashboard_coverage.json`)
@@ -230,9 +250,11 @@ def _count_label(shown, pop):
     return "(%d)" % pop if shown == pop else "(%d shown of %d)" % (shown, pop)
 
 
-def check_filters(page, ledger, exp, remainders):
+def check_filters(page, ledger, exp, remainders, more_on_page=None):
     """(gaps, summary_lines) for MEMBERSHIP UNDER NARROWING — DIMENSION COMPLETE and
-    COUNT AGREES over every filtered list the ledger declares."""
+    COUNT AGREES over every filtered list the ledger declares — and for REACHABLE:
+    TRIMMED BEHIND A FILTER and UNREACHABLE UNDER FILTER (public #54)."""
+    more_on_page = more_on_page or {}
     gaps, lines = [], []
     groups = ledger.get("filters")
     if groups is None:
@@ -314,6 +336,16 @@ def check_filters(page, ledger, exp, remainders):
             gaps.append("POPULATION DOES NOT RECONCILE — list %s counts %d member(s) but the "
                         "page carries %d row(s) and the remainder trims %d"
                         % (name, len(members), len(row_keys), k_rem))
+        # REACHABLE, ledger and page side: a filtered list never trims. Either signal alone
+        # is a gap — the ledger's remainder count and the page's "+K more" line are two
+        # claims, and a regression may carry one without the other.
+        k_page = more_on_page.get(name)
+        if k_rem or k_page:
+            gaps.append("TRIMMED BEHIND A FILTER — list %s trims %s record(s) into a "
+                        "remainder (ledger +%s, page +%s); a member of a filtered list is "
+                        "reachable only if rendered, so a filtered list has no remainder "
+                        "(ADR-024 REACHABLE, public #54)"
+                        % (name, k_rem or k_page, k_rem, "none" if k_page is None else k_page))
         # COUNT AGREES: every label, both numbers, against the rows and the members.
         for dim in sorted(dims):
             expect = {"all": (len(row_keys), len(members))}
@@ -322,6 +354,15 @@ def check_filters(page, ledger, exp, remainders):
                 sh = sum(1 for k in row_keys if row_vals.get(k, {}).get(dim) == v)
                 if pop:
                     expect[v] = (sh, pop)
+            # REACHABLE, chip side: shown == population for every chip, from the HTML rows
+            # and the ledger members independently — never from the label, which may
+            # honestly say "(2 shown of 17)" and still describe an unreachable fifteen.
+            for v, (sh, pop) in sorted(expect.items()):
+                if sh != pop:
+                    gaps.append("UNREACHABLE UNDER FILTER — list %s chip %s=%s counts %d "
+                                "member(s) and the page renders %d of them; a member with no "
+                                "row is reachable under no filter state (public #58 point 3)"
+                                % (name, dim, v, pop, sh))
             for v, (sh, pop) in sorted(expect.items()):
                 lab = labels.get((name, dim, v))
                 if lab is None:
@@ -451,6 +492,13 @@ def check(root, verbose=False):
         if k_ledger is None or k_ledger < len(members):
             gaps.append("REMAINDER MISCOUNT — set %s: ledger says +%s more but %d record(s) "
                         "rest on that count" % (set_name, k_ledger, len(members)))
+        # REACHABLE, record side: a record whose FINAL placement is a filtered list's
+        # remainder is on no part of the page and reachable under no chip.
+        if set_name in (ledger.get("filters") or {}):
+            for key in members:
+                gaps.append("TRIMMED BEHIND A FILTER — %s rests in list %s's remainder and "
+                            "renders nowhere; a filtered list has no remainder (ADR-024 "
+                            "REACHABLE, public #54)" % (key, set_name))
     # Every "+K more" the ledger recorded must be on the page with the same K, and vice
     # versa — whichever side disagrees, the reader is being told a wrong count.
     for set_name in sorted(set(remainders) | set(more_on_page)):
@@ -481,7 +529,7 @@ def check(root, verbose=False):
                 gaps.append("PREP IN FULL OUTSIDE THE WINDOW — %s (call date %s) renders in "
                             "full; the window is %s..%s" % (key, d, today, limit))
     # MEMBERSHIP UNDER NARROWING — the filtered lists.
-    f_gaps, f_lines = check_filters(page, ledger, exp, remainders)
+    f_gaps, f_lines = check_filters(page, ledger, exp, remainders, more_on_page)
     gaps.extend(f_gaps)
     n_exp = len(exp)
     n_placed = n_exp - sum(1 for g in gaps if g.startswith("UNPLACED"))
@@ -523,7 +571,8 @@ def main():
             print("  - " + a)
     if not gaps:
         print("  CLEAN — every record is rendered, counted, or terminal; nothing renders "
-              "outside its window; every filtered list is whole under every filter")
+              "outside its window; every filtered list is whole under every filter and "
+              "every chip shows every row it counts")
         return 0
     print("\n" + "=" * 72)
     print("%d GAP(S)" % len(gaps))

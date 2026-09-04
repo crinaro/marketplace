@@ -343,28 +343,45 @@ def _touch_detail(o):
 # docstring for why this has to be a single shared constant rather than two literals.
 _EMPTY_OPP_COUNTS = {"all": 0, "you": 0, "applied": 0, "person": 0, "nothing": 0}
 
-# The opportunity list's three filter dimensions — every vocabulary imported from the
+# The opportunity list's four filter dimensions — every vocabulary imported from the
 # module that owns it (public #48, stage 1). `state` is the router's two counts as a
-# per-row value (your_move.ATTENTION); `stage` is the record's own funnel position
-# (validate_data.STAGES); `coverage` is applying.COVERAGE. The renderer declares which
-# dimensions exist; it never declares what their values may be.
+# per-row value (your_move.ATTENTION); `owner` is whose move the row is
+# (your_move.OWNER — public #54 restored it: ATTENTION cannot say "yours, not today");
+# `stage` is the record's own funnel position (validate_data.STAGES); `coverage` is
+# applying.COVERAGE. The renderer declares which dimensions exist; it never declares
+# what their values may be.
 OPP_DIMS = (("state", "your_move.ATTENTION", _ym.ATTENTION),
+            ("owner", "your_move.OWNER", _ym.OWNER),
             ("stage", "validate_data.STAGES", tuple(sorted(_vd.STAGES))),
             ("coverage", "applying.COVERAGE", _applying.COVERAGE))
 
 
-def render_opportunity_list(opps, companies, cap=None, attention=None):
-    """One row per LIVE role, needs-you first, CAPPED (the collapse's volume rule: rows are
-    ordered so the cap trims the quiet tail — a role that needs the candidate can never be
-    the row that gets cut), inside a FILTERED LIST over OPP_DIMS. The counts are always
-    over the FULL set. Closed roles are not here — they are not opportunities.
+def render_opportunity_list(opps, companies, attention=None, owner=None):
+    """One row per LIVE role — needs-you first, then yours, then the run's — inside a
+    FILTERED LIST over OPP_DIMS, EVERY member rendered. Closed roles are not here — they
+    are not opportunities.
+
+    ⭐ public #54 — NEVER CAPPED. 0.37.0 trimmed this list to WORKING_SET_CAP rows and
+    the ledger counted the rest in a "+K more" remainder, which satisfied the coverage
+    contract while three candidate-owned rows appeared on no part of the page: a
+    filtered list is narrowed by CSS visibility over ONE rendered row set, so a row the
+    cap trims is reachable under NO filter state, and a chip counting it promises a row
+    that selecting the chip cannot show (public #58 point 3). Sort-then-cap's guarantee —
+    "the cap trims only the tail" — is false the moment more than one ordering is
+    offered: the cap trims by one order while the chips slice by four others. The reading
+    order still matters (it is what the reader meets first), so the tiers are the two
+    ownership answers in precedence: ATTENTION's needs-you, then OWNER's you, then the
+    rest. See ADR-024's REACHABLE side; the cap stays for UNFILTERED sets (render_ws
+    without dims, the queues, the indexes), where one ordering is the only ordering.
 
     ⭐ public #48, stage 1 — "in flight" is a filter value here, not a section. The
     `⏳ In flight — not yours to do` list rendered every live role not in the needs-you
     queue a SECOND time (and a third, when a callout held it too); the owner called it
     noise and asked for the filter instead. `attention` is your_move.attention_by_id's
     map; the router's pipeline in-flight count reads the same map, so the label
-    population and the router number are one query.
+    population and the router number are one query. `owner` is your_move.owner_by_id's
+    map — derived here from OWNER_TOKEN when the caller passes none, never re-derived
+    from the field by this file.
 
     ⭐ dev #80 — the counts dict has a FIXED shape (all/you/applied/person/nothing) because
     main() indexes every key unconditionally. The empty-live case used to return `{}` for
@@ -377,6 +394,7 @@ def render_opportunity_list(opps, companies, cap=None, attention=None):
     rows, and the remainder line OUTSIDE it (never hidden by any filter state).
     """
     attention = attention or {}
+    owner = owner if owner is not None else _ym.owner_by_id(opps, OWNER_TOKEN)
     live = [o for o in opps if o.get("status") not in _TERMINAL]
     for o in opps:
         if o.get("status") in _TERMINAL and o.get("id"):
@@ -386,9 +404,14 @@ def render_opportunity_list(opps, companies, cap=None, attention=None):
     order = {"active-pursuit": 0, "needs-resolution": 1, "in-motion": 2, "backlog": 3}
 
     def key(o):
-        # Anything that needs the candidate sorts first: the list's job is to be actionable.
-        first = 0 if attention.get(o.get("id")) == "needs-you" else 1
-        return (first, order.get(o.get("status"), 9),
+        # Whose move it is, in precedence: needs the candidate today, then the candidate's
+        # (dated out, or outside Your Move's membership), then the run's. The second tier is
+        # the one 0.37.0 dropped (public #54): a row that is yours must never read as the
+        # run's just because it is not today's.
+        oid = o.get("id")
+        tier = (0 if attention.get(oid) == "needs-you"
+                else 1 if owner.get(oid) == "you" else 2)
+        return (tier, order.get(o.get("status"), 9),
                 -(STAGES.index(o["stage"]) if o.get("stage") in STAGES else -1))
 
     counts = dict(_EMPTY_OPP_COUNTS)
@@ -396,8 +419,7 @@ def render_opportunity_list(opps, companies, cap=None, attention=None):
     for o in sorted(live, key=key):
         comp = companies.get(o.get("company_id"), {})
         bucket = opp_bucket(o)
-        owner = str(o.get("next_action_owner") or "").lower()
-        waits = owner not in ("me", "")
+        waits = owner.get(o.get("id")) == "you"
         counts["all"] += 1
         counts[bucket] += 1
         if waits:
@@ -463,7 +485,8 @@ def render_opportunity_list(opps, companies, cap=None, attention=None):
                 f'<div class="opp-detail">{detail}</div></details>') if detail else ""
 
         _key = "opp:%s" % (o.get("id") or "")
-        dims = {"state": attention.get(o.get("id")), "coverage": bucket}
+        dims = {"state": attention.get(o.get("id")), "owner": owner.get(o.get("id")),
+                "coverage": bucket}
         # ⚠️ A stage outside the enum is NOT given a value: the row still renders (coverage),
         # but the dimension is missing and check_dashboard_coverage reports it — an
         # unparseable value must be loud, never guessed over.
@@ -486,19 +509,11 @@ def render_opportunity_list(opps, companies, cap=None, attention=None):
             f'  <div class="opp-meta">{meta}</div>'
             f'  {nxt}{body}'
             f'</div>'))
-    cap = cap if cap is not None else WORKING_SET_CAP
-    shown, rest = rows[:cap], rows[cap:]
-    _cover_set("opportunities", ["opp:%s" % i for i, _h in shown if i],
-               ["opp:%s" % i for i, _h in rest if i])
-    more = ""
-    if rest:
-        more = ('<div class="sub ws-more" data-more="opportunities:%d">+%d more live roles '
-                '— the counts above cover every one; the full list lives in '
-                '<code class="fileref">data/opportunities.jsonl</code> (pipeline_index.py '
-                'renders it in session).</div>' % (len(rest), len(rest)))
-    html_out = render_filtered_list("opportunities", OPP_DIMS, members,
-                                    ["opp:%s" % i for i, _h in shown if i],
-                                    "".join(h for _i, h in shown), more, cls="card opp-list")
+    # REACHABLE (ADR-024, public #54): every member renders; a filtered list has no remainder.
+    keys = ["opp:%s" % i for i, _h in rows if i]
+    _cover_set("opportunities", keys, [])
+    html_out = render_filtered_list("opportunities", OPP_DIMS, members, keys,
+                                    "".join(h for _i, h in rows), "", cls="card opp-list")
     return html_out, counts
 
 
@@ -856,8 +871,7 @@ _SEND_WHERE = {
 }
 
 
-def render_message_list(set_name, kind, entries, states, filename, dims, empty_msg,
-                        cap=None):
+def render_message_list(set_name, kind, entries, states, filename, dims, empty_msg):
     """ONE list per file of the staged pair (public #48, stage 1): every OPEN entry — never
     a terminal one (public #29) — as a row carrying its precondition state chip, its meta
     line, where its full text lives, and, for a SENDABLE entry, the full body inline and
@@ -871,20 +885,19 @@ def render_message_list(set_name, kind, entries, states, filename, dims, empty_m
     `action` chip on a loud row, still counted needs-you by main() (public #37) — but an
     entry now renders in exactly one place.
 
-    Ordered sendable → needs-you holds → blocked, so the cap trims the quiet tail; the
-    remainder line sits OUTSIDE the filtered list and is never hidden."""
+    Ordered sendable → needs-you holds → blocked — the reading order. NEVER CAPPED: a
+    filtered list renders every member (ADR-024 REACHABLE, public #54); the open set is
+    bounded by what is actually pending, since sent and moot entries are terminal."""
     if not entries:
         return '<div class="sub">%s</div>' % empty_msg
-    cap = cap if cap is not None else WORKING_SET_CAP
     dim_names = [d for d, _src, _v in dims]
 
     def _st(title):
         return (states.get((filename, title)) or {}).get("state") or "sendable"
 
     entries = sorted(entries, key=lambda e: _SEND_ORDER.get(_st(e[0]), 9))
-    shown, rest = entries[:cap], entries[cap:]
     keys = ["%s:%s" % (kind, t) for t, _b in entries]
-    _cover_set(set_name, keys[:cap], keys[cap:])
+    _cover_set(set_name, keys, [])
     members, out = {}, []
     for (title, blocks), key in zip(entries, keys):
         row = states.get((filename, title)) or {}
@@ -893,7 +906,7 @@ def render_message_list(set_name, kind, entries, states, filename, dims, empty_m
         if "medium" in dim_names:
             dims_here["medium"] = row.get("medium") or "unknown"
         members[key] = dims_here
-    for (title, blocks), key in zip(shown, keys):
+    for (title, blocks), key in zip(entries, keys):
         dims_here = members[key]
         st = dims_here["sendability"]
         cls, label = _SEND_CHIP.get(st, ("waiting", st))
@@ -920,14 +933,7 @@ def render_message_list(set_name, kind, entries, states, filename, dims, empty_m
                ('<div class="draft-meta">%s</div>' % esc(meta)) if meta else "", body,
                '<code class="fileref">%s</code>' % esc(filename), esc(title[:60]),
                md_inline(_SEND_WHERE.get(st, st))))
-    more = ""
-    if rest:
-        more = ('<div class="sub ws-more" data-more="%s:%d">+%d more — every one is still '
-                'counted in the labels above; the full set lives in '
-                '<code class="fileref">%s</code>.</div>'
-                % (esc(set_name), len(rest), len(rest), esc(filename)))
-    return render_filtered_list(set_name, dims, members, keys[:cap], "".join(out), more,
-                                cls="")
+    return render_filtered_list(set_name, dims, members, keys, "".join(out), "", cls="")
 
 
 def render_knowledge_index(docs, empty_msg, where, cap=None, rec_kind=None, chip=""):
@@ -976,21 +982,21 @@ _PREP_CHIP = {"past": ' <span class="chip">past</span>',
               "undated": ' <span class="chip action">undated</span>'}
 
 
-def render_prep_index(docs, horizon_days, cap=None):
+def render_prep_index(docs, horizon_days):
     """The call preps NOT rendered in full — held calls, calls beyond the horizon, and
     notes nothing can date — as ONE filtered index (public #48, stage 1) over
     knowledge.PREP_WINDOWS, instead of three index sections each with its own cap and
     its own overwrite of the `prep` remainder count. `docs` is [(title, rel, body,
-    window)], already ordered; bodies stay in the file tree (the collapse)."""
+    window)], already ordered; bodies stay in the file tree (the collapse). NEVER
+    CAPPED — a filtered list renders every member (ADR-024 REACHABLE, public #54); the
+    index is bounded because archive_preps.py moves past calls out of the working set."""
     if not docs:
         return ""
-    cap = cap if cap is not None else WORKING_SET_CAP
-    shown, rest = docs[:cap], docs[cap:]
     keys = ["prep:%s" % r for _t, r, _b, _w in docs]
-    _cover_set("prep", keys[:cap], keys[cap:])
+    _cover_set("prep", keys, [])
     members = {k: {"window": w} for k, (_t, _r, _b, w) in zip(keys, docs)}
     out = []
-    for (title, rel, body, window), key in zip(shown, keys):
+    for (title, rel, body, window), key in zip(docs, keys):
         words = len(body.split())
         flag = "" if body.strip() else (' <span class="chip action">empty — nothing '
                                         'written yet</span>')
@@ -1002,13 +1008,7 @@ def render_prep_index(docs, horizon_days, cap=None):
                    '</div></div>'
                    % (esc(key), _dim_attrs(members[key]), md_inline(title), flag,
                       _PREP_CHIP[window], esc(rel), words, esc(where)))
-    more = ""
-    if rest:
-        more = ('<div class="sub ws-more" data-more="prep:%d">+%d more files — the counts '
-                'above are complete; browse the directory in the file tree.</div>'
-                % (len(rest), len(rest)))
-    return render_filtered_list("prep", PREP_DIMS, members, keys[:cap], "".join(out), more,
-                                cls="")
+    return render_filtered_list("prep", PREP_DIMS, members, keys, "".join(out), "", cls="")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1041,6 +1041,15 @@ _PHASE_ICON = {"configure": "⚙️", "presence": "🪞", "pipeline": "🎯",
 # READING surface, not from any profile's distribution: ~20 table rows is a few phone
 # screens, and the page as a whole stays bounded (phases × sets × cap) even at hundreds of
 # items in one phase, which is the future this design is built for.
+#
+# ⚠️ UNFILTERED SETS ONLY (public #54, ADR-024 REACHABLE). The volume-independence
+# argument above rests on ONE ordering: sorted first, the cap trims the tail of that
+# order. A FILTERED list offers several orderings at once — every chip is a slice — and
+# a row the cap trims by the sort is reachable under no chip, while the chip's population
+# count still promises it. So a filtered list (render_filtered_list) never takes this cap;
+# its bound is the reader's own narrowing. Measured cost on the profile that reported the
+# regression: ~4 KB per opportunity row, 74 rows, so the page grows by roughly the size it
+# was — a cost stated, not hidden, and the row's weight (the Detail block) is stage 2's.
 WORKING_SET_CAP = 20
 
 _CLAUSE_CLAMP = 110  # same bound OPP_ACTION_CLAMP uses, for the same measured reason
@@ -1096,8 +1105,10 @@ def _clause_cell(text):
 # ⭐ THE COVERAGE LEDGER — Class C (dev/audit 2026-09-02). Every record in the four
 # row-backed stores (opportunities, asks, commitments, call preps) is placed here as it
 # renders: RENDERED (a row on the page carries `data-rec="<key>"`), REMAINDER (it is inside
-# a "+K more" line whose K counts it, `data-more="<set>:<K>"`), or TERMINAL (it has ended
-# and the page says so by omission). Anything in none of those is a record the page lost
+# a "+K more" line whose K counts it, `data-more="<set>:<K>"` — a disposition only an
+# UNFILTERED set may use, since public #54: counted is not reachable, and a filtered list
+# renders every member), or TERMINAL (it has ended and the page says so by omission).
+# Anything in none of those is a record the page lost
 # silently — the exact shape of the backlog defect above. The ledger is written beside
 # the artifact (views/dashboard_coverage.json) and `check_dashboard_coverage.py` verifies
 # it AGAINST THE HTML, never trusting the ledger alone (verify the artifact, not the plan).
@@ -1144,10 +1155,17 @@ def _cover_set(set_name, shown_keys, rest_keys):
 #
 # ⭐ FILTERING CHANGES CSS VISIBILITY ONLY. The HTML row set is identical in every filter
 # state, so the coverage contract (ADR-024) holds under narrowing, and every label carries
-# BOTH numbers — the population and what is rendered ("Nothing sent (2 shown of 17)") —
-# computed here from the same store query. A label that counts only what it shows repeats
-# the vanished-rows defect one level down. The cap and the remainder line sit OUTSIDE the
-# filtered list and are never hidden.
+# BOTH numbers — the population and what is rendered — computed here from the same store
+# query. A label that counts only what it shows repeats the vanished-rows defect one level
+# down.
+#
+# ⭐ AND A FILTERED LIST IS NEVER CAPPED (public #54, ADR-024's REACHABLE side). Stage 1
+# kept the cap and let a label read "(2 shown of 17)": honest about the trim, and still a
+# chip promising fifteen rows that no filter state could show — because narrowing is
+# visibility over ONE rendered set, a trimmed row is reachable under no chip, and
+# check_dashboard_coverage reported OK against exactly that page (counted is not
+# reachable). So the two numbers are now an INVARIANT, not a disclosure: shown == population
+# for every chip, verified against the HTML, and a filtered list has no remainder line.
 #
 # `:target` is not the filter mechanism (one target per page) — but `.flist
 # [data-rec]:target {display:block !important}` reveals a link's destination even when its
@@ -1165,6 +1183,7 @@ _FILTER_CSS = []
 # renders as the token itself.
 _FILTER_VALUE_LABELS = {
     ("state", "needs-you"): "Needs you", ("state", "in-flight"): "In flight",
+    ("owner", "you"): "Yours", ("owner", "run"): "The run's",
     ("coverage", "applied"): "Applied", ("coverage", "person"): "In play through a person",
     ("coverage", "nothing"): "Nothing sent",
     ("sendability", "sendable"): "Ready to send", ("sendability", "blocked"): "Held",
@@ -1197,9 +1216,10 @@ def _count_label(shown, pop):
 def render_filter_group(set_name, dims, members, shown_keys):
     """The controls for one filtered list: `dims` is ((dim, enum_source, vocabulary), ...);
     `members` is {row key: {dim: value}} for the WHOLE population (before the cap);
-    `shown_keys` the keys actually rendered. Records the group in the ledger and returns
-    (controls_html, css). A value with zero population gets no chip; a value with
-    population but nothing shown gets a chip that says so."""
+    `shown_keys` the keys actually rendered — since public #54 every member, so each label
+    reads "(N)"; the "(a shown of b)" form is kept only so a regression shows on the page
+    as well as in the check. Records the group in the ledger and returns
+    (controls_html, css). A value with zero population gets no chip."""
     shown = [k for k in shown_keys if k in members]
     ctl, css, active = [], [], []
     for dim, source, vocab in dims:
@@ -1275,12 +1295,14 @@ def render_ws(rows, more_at, empty_msg, cap=None, set_name=None, dims=None):
     remainder lives. Structured rows, never sentences. `set_name` places every record-
     backed row in the coverage ledger and stamps the remainder line. With `dims` — a
     ((dim, enum_source, vocabulary), ...) declaration — the table becomes a FILTERED LIST
-    over the rows' own `dims` (public #48, stage 1); the remainder stays outside it."""
+    over the rows' own `dims` (public #48, stage 1), and then it is NEVER CAPPED: every
+    member renders (ADR-024 REACHABLE, public #54) and there is no remainder."""
     if not rows:
         return '<div class="sub">%s</div>' % empty_msg
     cap = cap if cap is not None else WORKING_SET_CAP
     rows = sorted(rows, key=lambda r: (str(r.get("due") or "~"), ))
-    shown, rest = rows[:cap], rows[cap:]
+    filtered = bool(dims and set_name)
+    shown, rest = (rows, []) if filtered else (rows[:cap], rows[cap:])
     if set_name:
         _cover_set(set_name, [r.get("rec") for r in shown], [r.get("rec") for r in rest])
     out = ["<table><tr><th>Item</th><th>Who</th><th>Age</th><th>Due</th></tr>"]
@@ -1301,7 +1323,7 @@ def render_ws(rows, more_at, empty_msg, cap=None, set_name=None, dims=None):
                 'heading; the full set lives in %s.</div>'
                 % ((' data-more="%s:%d"' % (esc(set_name), len(rest))) if set_name else "",
                    len(rest), md_inline(more_at)))
-    if dims and set_name:
+    if filtered:
         members = {r["rec"]: dict(r.get("dims") or {}) for r in rows if r.get("rec")}
         return render_filtered_list(set_name, dims, members,
                                     [r["rec"] for r in shown if r.get("rec")],
@@ -2451,6 +2473,7 @@ def main():
     # are the same query; the `⏳ In flight — not yours to do` table that rendered every
     # such role a second time is gone.
     _attention = _ym.attention_by_id(_opp_rows, OWNER_TOKEN)
+    _owner = _ym.owner_by_id(_opp_rows, OWNER_TOKEN)
     n_pipe_flight = sum(1 for v in _attention.values() if v == "in-flight")
 
     n_pipe_needs = len(now_ws) + len(decide_ws) + len(due_reviews_ws)
@@ -2489,15 +2512,16 @@ def main():
                render_ws(due_reviews_ws, "`data/channels.jsonl` (channels_due.py)", "")))
     pipe_parts.append(your_move_callouts_html)
     opp_list_html, opp_counts = render_opportunity_list(_opp_rows, _opp_comps,
-                                                        attention=_attention)
+                                                        attention=_attention, owner=_owner)
     if opp_counts["all"]:
         pipe_parts.append(
             '<h2 id="phase-pipeline-roles">🎯 Opportunities — where each role stands '
             '<span class="tcount">%d</span><span class="ct2f">· %d in flight</span></h2>'
             '<div class="sub" style="margin:-6px 0 10px"><strong>What lives here:</strong> '
-            'every live role, once — needs-you first. The bar under each title is the '
-            'pipeline stage it has actually reached; the chips narrow the list by state, '
-            'stage and coverage (they combine), and every chip counts the whole set.</div>'
+            'every live role, once — needs-you first, then yours, then the run&rsquo;s. '
+            'The bar under each title is the pipeline stage it has actually reached; the '
+            'chips narrow the list by state, owner, stage and coverage (they combine), and '
+            'every chip shows every row it counts.</div>'
             % (opp_counts["all"] - n_pipe_flight, n_pipe_flight)
             + stats_html + opp_list_html +
             '<div class="note"><strong>Only &ldquo;nothing sent&rdquo; is a gap.</strong> '

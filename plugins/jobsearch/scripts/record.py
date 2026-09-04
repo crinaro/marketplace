@@ -347,16 +347,46 @@ def dry_run_validate(store, rows):
     thing that catches an enum violation or a value of the wrong shape. The identical input as
     a real write was refused and rolled back. A green dry-run that does not predict the real
     write is worse than no dry-run at all, so dry-run now runs the SAME validator, not a lesser
-    one."""
+    one.
+
+    ⭐ THE SHADOW IS SHAPED LIKE THE PROFILE, NOT LIKE A BAG OF JSONL (public #61, 0.37.1).
+    The first version copied the `*.jsonl` files into a FLAT temp dir and pointed the
+    validator at it. validate_data.py resolves AUTHORED files — a declared resume variant's
+    page — off `dirname(DATA)`, the profile root; in a flat shadow that parent is the temp
+    dir itself, so every declared variant's file-existence check failed and a dry run of a
+    NO-OP write (a date field assigned the value it already held) printed that a real write
+    would be refused, naming files that existed and were readable. One-directional: the real
+    write validates against the real profile and succeeds, so the store was never corrupted —
+    what broke was the ability to check anything before writing, and every message looked
+    like a legitimate validation failure. Dormant from dev #143's shadow until a variant was
+    declared.
+
+    So the shadow is now `<tmp>/data/` with every NON-data sibling of the real data dir
+    symlinked into `<tmp>/`: the validator's `dirname(DATA)` lands on a directory whose
+    contents ARE the profile root's, and any future authored-file check resolves correctly
+    with no second override for every fresh-install path to honour. The validator only reads,
+    so a symlink is exactly as safe as the real file. (The repo rule against committed
+    symlinks is about TRACKED files, which dangle in every clone; these live in a temp dir
+    for one subprocess and are gone with it — they are never tracked.) A symlink failure
+    raises rather than falling back to the flat shape: a shadow that silently regressed to
+    the flat layout would reintroduce this exact bug and look like a validation failure."""
+    base = os.path.dirname(os.path.abspath(DATA))       # the validator's own _files_base rule
+    data_name = os.path.basename(os.path.abspath(DATA))
     with tempfile.TemporaryDirectory(prefix="record-dryrun-") as shadow:
+        for name in os.listdir(base):
+            if name == data_name:
+                continue
+            os.symlink(os.path.join(base, name), os.path.join(shadow, name))
+        shadow_data = os.path.join(shadow, data_name)
+        os.mkdir(shadow_data)
         for name in os.listdir(DATA):
             src = os.path.join(DATA, name)
             if name.endswith(".jsonl") and os.path.isfile(src):
-                shutil.copy2(src, os.path.join(shadow, name))
-        with open(os.path.join(shadow, STORES[store]), "w", encoding="utf-8") as fh:
+                shutil.copy2(src, os.path.join(shadow_data, name))
+        with open(os.path.join(shadow_data, STORES[store]), "w", encoding="utf-8") as fh:
             for r in rows:
                 fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-        return validate(data_dir=shadow)
+        return validate(data_dir=shadow_data)
 
 
 def _diagnostic_lines(rc, out, err):
