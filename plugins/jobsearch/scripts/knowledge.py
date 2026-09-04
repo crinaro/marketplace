@@ -143,6 +143,31 @@ def prep_date(filename):
         return _dt.date.fromisoformat(m.group(1))
     except ValueError:
         return None
+
+
+# ⭐ THE PREP WINDOW, named (public #48, stage 1). The dashboard used to classify preps
+# into four lists with an inline if-chain and three separate index sections; the window
+# is now a vocabulary owned here — beside prep_date, the one parser it depends on — so
+# the page's prep-index filter, archive_preps.py and check_dashboard_coverage.py all
+# name the same four words. `now` renders in full (public #20); the other three are
+# index rows, `undated` loudly (a note nothing can date must never read as current).
+PREP_WINDOWS = ("now", "past", "later", "undated")
+
+
+def prep_window(filename, today, horizon_days):
+    """PREP_WINDOWS value for a prep note: where its call sits relative to
+    [today, today + horizon_days]."""
+    import datetime as _dt
+    d = prep_date(filename)
+    if d is None:
+        return "undated"
+    if d < today:
+        return "past"
+    if d > today + _dt.timedelta(days=horizon_days):
+        return "later"
+    return "now"
+
+
 PREP_INCOMPLETE_RE = re.compile(r"^incomplete\b", re.I)
 PREP_COMPLETE_RE = re.compile(r"^complete\b", re.I)
 

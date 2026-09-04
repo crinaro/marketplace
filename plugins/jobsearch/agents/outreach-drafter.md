@@ -91,7 +91,9 @@ enforces this.
 - `~/.claude/jobsearch/run section.py configure/strategy.md "Message style"` and
   `~/.claude/jobsearch/run section.py configure/strategy.md "outreach"` — **not the whole file.**
 - `~/.claude/jobsearch/run profile.py` — signature, header, writing constraints. Never retype them.
-- `outreach/drafts.md`'s header — the entry format you must produce.
+- `outreach/drafts.md`'s header — the entry LAYOUT you must produce (heading, blockquoted body,
+  rules). **The meta lines the engine parses are specified in THIS file** (§ *the entry's meta
+  lines are fields*, below) and win over anything the header says about them.
 - the role's own record via `~/.claude/jobsearch/run pipeline_index.py --company <id> --contacts`.
 
 **⭐ BEFORE DRAFTING, READ THE FIT CASE:** `~/.claude/jobsearch/run fit_report.py --pitch <opp_id>`.
@@ -173,6 +175,28 @@ regenerated, **grep the OUTPUT (`views/dashboard_artifact.html` — a SENDABLE m
 the one page since the 2026-08-29 collapse; held ones stay index rows) for a distinctive phrase
 from what you wrote** — verifying the source file is not verifying the deliverable.
 
+**⭐ THE ENTRY'S META LINES ARE FIELDS, AND `**Medium:**` IS ONE OF THEM (0.37.0, dev #265).**
+`scripts/precondition.py` reads three meta lines off every entry with a line-anchored parser, and
+the file's own header does not define them — this does:
+
+    **Status:** <one line: DRAFT, sent <date>, moot …>
+    **Medium:** <ONE value from the `medium` enum below, verbatim>
+    **Blocked until:** contact:<contact_id> outcome:<…>      (only when there is a precondition)
+
+Each on its own line, at column 1, directly under the `## ` heading, the bold closing after the
+label. Free text may follow the value (`**Medium:** email-reply (into the existing thread)`); the
+FIRST enum token on the line is the value, so the medium you mean goes first. **A medium change
+REWRITES the `**Medium:**` line. It never goes into `**Status:**` prose.** The shape `**Status:**
+rewritten shorter. **Medium: linkedin-message** (~N words, cap N)` put three correct values where
+no parser reads them (measured 2026-09-03): each row rendered flagged `medium: unknown`, and every
+filter and count over that field was quietly wrong rather than loudly incomplete. The reader was
+deliberately NOT taught that shape — a reader that learns malformed output can no longer see drift.
+
+**Verify the artifact, not your edit:** after writing or changing an entry, run
+`~/.claude/jobsearch/run precondition.py` and read its row — the medium must not be `unknown`, and
+the `medium drift` line at the bottom must not have gone up. That line is the measurement dev #265
+asked for, and you are the only writer of the field it measures.
+
 **Structure a multi-recipient campaign with `### Recipient N of M` and `#### A. / B.` headings.**
 The renderer preserves them and gives each quoted body its own card, so the pieces stay
 distinguishable.
@@ -229,7 +253,8 @@ precondition. **Write it as a field, not a sentence:**
     **Blocked until:** contact:<contact_id> outcome:accepted|replied
 
 `outcome` values come from the outreach enum. `scripts/precondition.py` resolves it against the
-touches that already exist, so the dashboard shows the draft under **"Waiting on someone else"**
+touches that already exist, so the dashboard shows the draft as a **"Held"** row (there is one
+drafts list, filtered by sendability — `precondition.OPEN_STATES` — no separate section for it)
 rather than "awaiting your approval to send", and **promotes it by itself** the moment the touch's
 outcome flips.
 

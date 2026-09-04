@@ -130,10 +130,14 @@ hours, costing that morning's run outright.
 
 **Dispose of what they report BEFORE starting.** Verify every **system-state** claim against the
 machine — read the plist, tail the log, run the script — and correct the tracker line in the same
-pass. **`validate_data.py` and `resume_variants.py --check` are the only ones that gate**; the
-rest are advisory and exit 0 so they cannot wedge an unattended run. `resume_variants.py --check`
-is a no-op (exit 0) on a profile that has declared no variants — `presence/claims.md` doubles as the single
-printed resume and owes this check nothing.
+pass. **`validate_data.py`, `resume_variants.py --check`, and `check_dashboard_coverage.py` gate**
+— each exits non-zero on a real finding (`check_dashboard_coverage.py` on any gap: ARTIFACT
+WITHOUT A LEDGER, LEDGER PREDATES FILTERS, ROUTER ROW UNRECOGNIZED, COUNT DISAGREES, and the rest
+of its assertions). The block above still runs to completion either way — it is a list, not an
+`&&` chain — so a non-zero exit is a report to act on, not a run that stops itself. The remaining
+scripts are advisory and exit 0 so they cannot wedge an unattended run. `resume_variants.py
+--check` is a no-op (exit 0) on a profile that has declared no variants — `presence/claims.md`
+doubles as the single printed resume and owes this check nothing.
 
 ## 2. DRAIN THE QUEUE
 
@@ -275,8 +279,10 @@ role makes it concrete.**
 From `outreach/network.md`: check warm-intro deadlines. If fewer than 2 network actions in the last 7 days
 (per `log.md`), propose the next 1–2 with drafts.
 
-**Any draft must be saved IN FULL to `outreach/drafts.md`** (its header carries the entry format — **the
-body MUST be `> `-blockquoted or it publishes EMPTY**). A one-line summary elsewhere is not enough;
+**Any draft must be saved IN FULL to `outreach/drafts.md`** (its header carries the entry layout — **the
+body MUST be `> `-blockquoted or it publishes EMPTY**; the meta lines the engine parses — `**Status:**`,
+`**Medium:**`, `**Blocked until:**` — are specified in `outreach-drafter`, and **a medium change rewrites
+the `**Medium:**` line, never `**Status:**` prose**). A one-line summary elsewhere is not enough;
 **the candidate reads the full text off the published dashboard, not the transcript.** Cover letters go to
 `applying/cover_letters.md` via **`cover-letter-writer`** — a different artifact with different length,
 constraints and failure mode.

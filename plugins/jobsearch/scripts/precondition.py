@@ -162,6 +162,63 @@ TERMINAL = frozenset({"sent", "moot"})
 # vocabulary so those rows parse — a strict parser IS the design; the fix is loudness.)
 NEEDS_HUMAN = frozenset({"unreadable", "unresolved"})
 
+# ⭐ The states an entry can be in while STILL QUEUED — everything report() emits except the
+# TERMINAL pair. The dashboard's drafts and cover-letter lists filter on this vocabulary
+# (public #48, stage 1): sendable rows await the owner, blocked rows wait on the other side,
+# unreadable/unresolved rows wait on the owner to rewrite the hold. One list per file, one
+# dimension, this set — the "Waiting on someone else" and "held" sections it replaces were
+# the same entries rendered under a second heading.
+OPEN_STATES = frozenset({"sendable"}) | (NOT_SENDABLE - TERMINAL)
+
+# ⭐ THE one definition of "an entry" in the staged pair: a `## ` heading and everything up to
+# the next one. drafts_with_preconditions, entry_media and migrate.py's medium-line relocation
+# (0.37.0) all split on this — three walkers that split differently would disagree about which
+# entry a line belongs to, which is the "absorbed into the previous draft" failure the file's
+# own header warns about.
+ENTRY_RE = re.compile(r"^##\s+(.+?)$(.*?)(?=^##\s|\Z)", re.M | re.S)
+
+# The entry's own `**Medium:**` line, read for the FIRST value from validate_data.MEDIA it
+# carries. The line is free text in the field ("linkedin-connection-note + linkedin-message
+# (held until each accepts)", "email-reply (into the existing thread — ...)"), so the first
+# enum token is the medium of the touch the entry opens with; a line naming no enum value at
+# all — or no line — is `unknown`, which MEDIA itself reserves for exactly that, and the
+# dashboard flags it on the row rather than guessing.
+#
+# ⭐ 0.37.0 (dev #265, first instance) — the label's bold may close after the label
+# (`**Medium:** value`) OR after the value (`**Medium: value**`); a model writing the line
+# does both. The two forms differ ONLY in where the bold-close falls, and the relax was
+# approved on the condition that validation strength is unchanged, so everything else is
+# identical in both: the line-start anchor and the literal `**Medium:` label (a token in
+# prose, or a labelled fragment inside another field's value, is still prose), one value
+# region per line (the text after the label, or the bold's interior — never text after the
+# close), and the same first-vocabulary-token selection over it. TestMediumLineBoldForms
+# holds every refusal the strict form made, each failed on purpose before landing.
+MEDIUM_RE = re.compile(
+    r"^\*\*Medium:(?:\*\*\s*(?P<after>.+?)|[ \t]*(?P<within>[^*\n]*?)\*\*.*?)\s*$",
+    re.M | re.I)
+
+
+# validate_data.MEDIA, mirrored as a literal for the same reason OUTCOMES is below: this
+# module must run on a profile with no user.json (`precondition.py --check` at run start),
+# and importing validate_data reads the owner token at import time. test_checks.py asserts
+# the two sets are identical, so the copy cannot drift.
+MEDIA = frozenset({"linkedin-connection-note", "linkedin-inmail", "linkedin-message",
+                   "email-cold", "email-reply", "phone", "sms", "other", "unknown"})
+
+
+def medium_of(body):
+    """validate_data.MEDIA value for a drafts.md / cover_letters.md entry body."""
+    m = MEDIUM_RE.search(body or "")
+    if not m:
+        return "unknown"
+    text = (m.group("after") or m.group("within") or "").lower()
+    hits = []
+    for tok in MEDIA:
+        for mm in re.finditer(r"(?<![a-z0-9-])%s(?![a-z0-9-])" % re.escape(tok), text):
+            hits.append((mm.start(), tok))
+    return min(hits)[1] if hits else "unknown"
+
+
 # Sentinels used by drafts_with_preconditions for the non-parse states (see its docstring).
 PROSE_HOLD = "prose-hold"
 UNRESOLVED = "unresolved"
@@ -263,7 +320,7 @@ def drafts_with_preconditions(root, filename=None):
     except OSError:
         return []
     out = []
-    for m in re.finditer(r"^##\s+(.+?)$(.*?)(?=^##\s|\Z)", md, re.M | re.S):
+    for m in ENTRY_RE.finditer(md):
         title, body = m.group(1).strip(), m.group(2)
         # public #29 — a TERMINAL Status wins outright, before any Blocked-until join is even
         # considered: a sent or moot entry is over regardless of what it was once waiting on.
@@ -300,6 +357,8 @@ def report(root, filenames=FILES):
     touches = touches_by_contact(root)
     rows = []
     for filename in filenames:
+        media = entry_media(root, filename)
+        start = len(rows)
         for title, raw, parsed in drafts_with_preconditions(root, filename):
             if parsed is None:
                 rows.append({"file": filename, "title": title, "state": "sendable",
@@ -328,7 +387,41 @@ def report(root, filenames=FILES):
                 ok, why = resolve(parsed, touches)
                 rows.append({"file": filename, "title": title,
                              "state": "sendable" if ok else "blocked", "why": why})
+        for r in rows[start:]:
+            r["medium"] = media.get(r["title"], "unknown")
     return rows
+
+
+def entry_media(root, filename=None):
+    """{title: validate_data.MEDIA value} for every '## ' entry in one file of the pair —
+    the same split drafts_with_preconditions uses, so the two cannot disagree on what an
+    entry is."""
+    filename = filename or FILES[0]
+    path = _tree.resolve_rel(root, filename)
+    try:
+        with open(path, encoding="utf-8") as fh:
+            md = fh.read()
+    except OSError:
+        return {}
+    out = {}
+    for m in ENTRY_RE.finditer(md):
+        out[m.group(1).strip()] = medium_of(m.group(2))
+    return out
+
+
+def medium_drift(rows):
+    """(unknown, total) over the DRAFTS file's open rows — the drift meter dev #265 asks for,
+    as a measured number rather than an impression.
+
+    Measured over the open queue (OPEN_STATES), not every entry: a sent or moot entry is
+    over, and its medium line stops mattering the moment it is. Drafts only — cover letters
+    carry no medium dimension (generate_dashboard.COVER_DIMS: a letter is pasted into a
+    form, not sent on a medium), so counting them would dilute the rate with rows that can
+    never be anything but `unknown`. The dashboard's medium filter label already shows the
+    same count per value on the page; this is the same number where a run reads it, so the
+    hygiene block can watch it move without opening the page."""
+    open_rows = [r for r in rows if r.get("file") == FILES[0] and r["state"] in OPEN_STATES]
+    return (sum(1 for r in open_rows if r.get("medium") == "unknown"), len(open_rows))
 
 
 def main():
@@ -364,6 +457,13 @@ def main():
         if n_term:
             line += " · %d sent/moot (terminal — public #29)" % n_term
         print(line)
+        n_unknown, n_open = medium_drift(rows)
+        if n_open:
+            print("  medium drift (dev #265): %d of %d open draft(s) name no MEDIA value on a "
+                  "`**Medium:**` line" % (n_unknown, n_open))
+        if n_unknown:
+            print("     each renders flagged `medium: unknown`; the writer owns the line "
+                  "(outreach-drafter), the 0.37.0 migration relocates the one legacy shape")
         if n_block:
             print("  ⭐ Blocked drafts must NOT render as 'needs you'. A line there has to be a")
             print("     question or an imperative aimed at the candidate; a draft the candidate cannot send")

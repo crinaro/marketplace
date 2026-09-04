@@ -61,6 +61,18 @@ HORIZON_DAYS = 7
 NEEDS_YOU = frozenset({"owed", "owed-partial", "unlinked", "unreadable",
                        "unresolved-date", "unreadable-date"})
 
+# Every state report() emits, in the order the working view reads them.
+STATES = ("prepped", "owed", "owed-partial", "unlinked", "unreadable",
+          "unresolved-date", "unreadable-date")
+# ⭐ A placeable commitment PAST the horizon is one report() deliberately does not row —
+# the horizon exists so a run preps the near calls, not the whole quarter. The dashboard's
+# week list still renders it (every future commitment, soonest first), so its prep state
+# needs a name that says exactly that, owned here beside the states it is not one of
+# (public #48, stage 1: a filter value must come from the module that owns the
+# vocabulary, never from the renderer).
+BEYOND_HORIZON = "beyond-horizon"
+PREP_STATES = STATES + (BEYOND_HORIZON,)
+
 # The subset that is genuinely "a prep must be written/finished" — what the firing rule
 # drains via `call-prep`. The other loud states need a data fix first, not a note.
 OWED = frozenset({"owed", "owed-partial"})

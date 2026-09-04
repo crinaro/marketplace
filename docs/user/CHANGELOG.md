@@ -2,6 +2,19 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.36.0
+- [#30](https://github.com/crinaro/marketplace/issues/30) — A browser-executing agent re-dispatches its own agent type instead of performing its assigned task, producing a confident no-op
+- [#31](https://github.com/crinaro/marketplace/issues/31) — The decision surface renders only an ask's title and opening sentence, so every ask body — the reasoning the decision needs — never reaches the page the user is told to read
+- [#34](https://github.com/crinaro/marketplace/issues/34) — The outreach-row schema accepts a reply timestamp earlier than the row's own send date
+- [#36](https://github.com/crinaro/marketplace/issues/36) — reconcile.py's reply-artifact attribution compares dates at day granularity, so a same-day artifact can be bound to an outreach row that was sent later that day
+- [#37](https://github.com/crinaro/marketplace/issues/37) — precondition.py: unparseable precondition is treated as not-sendable, so ready items silently leave the ready count
+- [#41](https://github.com/crinaro/marketplace/issues/41) — Nothing verifies that an inbound reply was written back to the row it answers, so funnel metrics silently undercount and strategy rules are derived from them
+- [#42](https://github.com/crinaro/marketplace/issues/42) — A generated view asks the end user to run a maintenance script, for state the view's own data can derive, on rows it renders without a link
+- [#43](https://github.com/crinaro/marketplace/issues/43) — The reads-as-an-ask invariant is enforced on one record type but not on the other that renders into the same panel
+- [#44](https://github.com/crinaro/marketplace/issues/44) — Root cause: decision-bearing state lives in an unvalidated prose field, while the structured record that contradicts it is never consulted
+- [#45](https://github.com/crinaro/marketplace/issues/45) — Dashboard generator drops an entire pipeline stage, and jd_url often has no rendered link
+- [#46](https://github.com/crinaro/marketplace/issues/46) — Decisions panel's per-role action clause is truncated at an artificial separator the renderer itself inserts, dropping next_action text entirely whenever location or comp context precedes it
+
 ## jobsearch 0.35.0
 - Fixed the engine pointer's resolution role, not its drift: a hook that bypassed the launcher could still drag ~/.claude/jobsearch/engine_root backward with nothing to catch it; the launcher now resolves the newest complete installed version itself on every call (an explicit override is the only way to point it at a checkout) and keeps the pointer file only as a repaired, informational trace. Does not repair a pointer that has already drifted on an existing install — the cause of that earlier drift remains an open unknown *(tracked internally as crinaro/marketplace-dev#249)*
 

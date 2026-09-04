@@ -65,6 +65,11 @@ import your_move as _ym
 # import it rather than restating it (a sequence typed twice disagrees with itself later).
 from validate_data import PLAY_SEQUENCE as _PLAY_SEQUENCE
 import validate_data as _vd
+import applying as _applying
+import knowledge as _kn
+import precondition as _pre
+import channels_due as _cd
+import conversations as _conv_mod
 # ⭐ THE ONE TERMINAL SET — validate_data's, by import. This file used to carry its own
 # `_CLOSED_STATUSES = {passed, backlog, expired}`, which dropped every backlog row as closed
 # while your_move.py treated backlog+undecided as the state a sourced role STARTS in and
@@ -228,16 +233,11 @@ def best_link(o):
 
 
 def opp_bucket(o):
-    """The one bucket this role belongs to — the same three the old tables split across.
-
-    Order matters and is the old precedence: an application beats a person, a person beats
-    nothing. Kept identical so the filter counts match what the buckets used to report.
-    """
-    if o.get("applications"):
-        return "applied"
-    if o.get("outreach") or o.get("contacts"):
-        return "person"
-    return "nothing"
+    """The one COVERAGE bucket this role belongs to — applying.coverage's, by import. The
+    three values were this file's own until public #48 stage 1 made coverage a declared
+    filter dimension, and a dimension's vocabulary must have an owner outside the renderer
+    (the `_CLOSED_STATUSES` lesson at the top of this file)."""
+    return _applying.coverage(o)
 
 
 def stage_rail(o):
@@ -343,20 +343,40 @@ def _touch_detail(o):
 # docstring for why this has to be a single shared constant rather than two literals.
 _EMPTY_OPP_COUNTS = {"all": 0, "you": 0, "applied": 0, "person": 0, "nothing": 0}
 
+# The opportunity list's three filter dimensions — every vocabulary imported from the
+# module that owns it (public #48, stage 1). `state` is the router's two counts as a
+# per-row value (your_move.ATTENTION); `stage` is the record's own funnel position
+# (validate_data.STAGES); `coverage` is applying.COVERAGE. The renderer declares which
+# dimensions exist; it never declares what their values may be.
+OPP_DIMS = (("state", "your_move.ATTENTION", _ym.ATTENTION),
+            ("stage", "validate_data.STAGES", tuple(sorted(_vd.STAGES))),
+            ("coverage", "applying.COVERAGE", _applying.COVERAGE))
 
-def render_opportunity_list(opps, companies, cap=None):
-    """One row per LIVE role, waiting-on-you first, CAPPED (the collapse's volume rule:
-    rows are ordered so the cap trims the quiet tail — a role waiting on the candidate can
-    never be the row that gets cut). The counts are always over the FULL set. Closed roles
-    are not here — they are not opportunities.
+
+def render_opportunity_list(opps, companies, cap=None, attention=None):
+    """One row per LIVE role, needs-you first, CAPPED (the collapse's volume rule: rows are
+    ordered so the cap trims the quiet tail — a role that needs the candidate can never be
+    the row that gets cut), inside a FILTERED LIST over OPP_DIMS. The counts are always
+    over the FULL set. Closed roles are not here — they are not opportunities.
+
+    ⭐ public #48, stage 1 — "in flight" is a filter value here, not a section. The
+    `⏳ In flight — not yours to do` list rendered every live role not in the needs-you
+    queue a SECOND time (and a third, when a callout held it too); the owner called it
+    noise and asked for the filter instead. `attention` is your_move.attention_by_id's
+    map; the router's pipeline in-flight count reads the same map, so the label
+    population and the router number are one query.
 
     ⭐ dev #80 — the counts dict has a FIXED shape (all/you/applied/person/nothing) because
-    main() indexes every key unconditionally to build the filter bar. The empty-live case used
-    to return `{}` for it, which crashed main() with a KeyError — and the profile most likely to
-    have zero live opportunities is a brand-new one, so the dashboard's first-ever render was the
-    crash. `_EMPTY_OPP_COUNTS` is the one place that shape is written down, shared by both the
-    empty-case return and the populated-case starting value, so they cannot drift apart.
+    main() indexes every key unconditionally. The empty-live case used to return `{}` for
+    it, which crashed main() with a KeyError — and the profile most likely to have zero
+    live opportunities is a brand-new one, so the dashboard's first-ever render was the
+    crash. `_EMPTY_OPP_COUNTS` is the one place that shape is written down, shared by both
+    the empty-case return and the populated-case starting value, so they cannot drift apart.
+
+    Returns (html, counts): html is the whole filtered list — controls, the `.flist` of
+    rows, and the remainder line OUTSIDE it (never hidden by any filter state).
     """
+    attention = attention or {}
     live = [o for o in opps if o.get("status") not in _TERMINAL]
     for o in opps:
         if o.get("status") in _TERMINAL and o.get("id"):
@@ -366,13 +386,13 @@ def render_opportunity_list(opps, companies, cap=None):
     order = {"active-pursuit": 0, "needs-resolution": 1, "in-motion": 2, "backlog": 3}
 
     def key(o):
-        # Anything waiting on the candidate sorts first: the tab's job is to be actionable.
-        waiting = 0 if str(o.get("next_action_owner") or "").lower() not in ("me", "") else 1
-        return (waiting, order.get(o.get("status"), 9),
+        # Anything that needs the candidate sorts first: the list's job is to be actionable.
+        first = 0 if attention.get(o.get("id")) == "needs-you" else 1
+        return (first, order.get(o.get("status"), 9),
                 -(STAGES.index(o["stage"]) if o.get("stage") in STAGES else -1))
 
     counts = dict(_EMPTY_OPP_COUNTS)
-    rows = []
+    rows, members = [], {}
     for o in sorted(live, key=key):
         comp = companies.get(o.get("company_id"), {})
         bucket = opp_bucket(o)
@@ -442,10 +462,21 @@ def render_opportunity_list(opps, companies, cap=None):
         body = (f'<details class="opp-more"><summary>Detail</summary>'
                 f'<div class="opp-detail">{detail}</div></details>') if detail else ""
 
-        _rec = esc("opp:%s" % (o.get("id") or ""))
+        _key = "opp:%s" % (o.get("id") or "")
+        dims = {"state": attention.get(o.get("id")), "coverage": bucket}
+        # ⚠️ A stage outside the enum is NOT given a value: the row still renders (coverage),
+        # but the dimension is missing and check_dashboard_coverage reports it — an
+        # unparseable value must be loud, never guessed over.
+        if o.get("stage") in _vd.STAGES:
+            dims["stage"] = o["stage"]
+        else:
+            print("  !! WARNING: %s has stage %r, not a validate_data.STAGES value — the row "
+                  "renders but carries no stage filter value (fix the record)"
+                  % (_key, o.get("stage")))
+        if o.get("id"):
+            members[_key] = dims
         rows.append((o.get("id"),
-            f'<div class="opp" data-bucket="{bucket}" data-you="{"1" if waits else "0"}" '
-            f'data-rec="{_rec}">'
+            f'<div class="opp" data-rec="{esc(_key)}"{_dim_attrs(dims)}>'
             f'  <div class="opp-head">'
             f'    <div class="opp-title">{esc(str(o.get("title") or "Untitled role"))}'
             f'      <span class="opp-co">{esc(comp.get("name", o.get("company_id", "")))}</span>'
@@ -465,7 +496,11 @@ def render_opportunity_list(opps, companies, cap=None):
                 '— the counts above cover every one; the full list lives in '
                 '<code class="fileref">data/opportunities.jsonl</code> (pipeline_index.py '
                 'renders it in session).</div>' % (len(rest), len(rest)))
-    return "".join(h for _i, h in shown) + more, counts
+    html_out = render_filtered_list("opportunities", OPP_DIMS, members,
+                                    ["opp:%s" % i for i, _h in shown if i],
+                                    "".join(h for _i, h in shown), more, cls="card opp-list")
+    return html_out, counts
+
 
 def render_your_move(items, links=None, cap=None, more_at=None, set_name=None) -> str:
     """The numbered ask list (callout groups, Decide, Ready-to-send). Since the one-artifact
@@ -799,63 +834,100 @@ def _draft_meta_summary(blocks):
     return ""
 
 
-def render_draft_index(entries, states, filename, empty_msg, where, cap=None,
-                       loud=False):
-    """One row per staged entry: title, precondition state chip, meta summary, and WHERE
-    the full text lives. Never the body (dev #233): a state view that inlines every held
-    or sent document stops being a state view. `where` names the reading surface — since
-    the one-artifact collapse the phase pages are gone, so it is either the full-body
-    block on this same page (sendable entries) or the authored file itself (held ones).
-    Capped like every working set (the collapse's volume rule)."""
+# The staged pair's filter dimensions (public #48, stage 1). Sendability is
+# precondition.OPEN_STATES — the states an entry can be in while still queued; medium is
+# validate_data.MEDIA, read off the entry's own `**Medium:**` line by precondition.medium_of.
+# Cover letters carry sendability only (a letter is pasted into a form, not sent on a medium).
+DRAFT_DIMS = (("sendability", "precondition.OPEN_STATES", tuple(sorted(_pre.OPEN_STATES))),
+              ("medium", "validate_data.MEDIA", tuple(sorted(_vd.MEDIA))))
+COVER_DIMS = (("sendability", "precondition.OPEN_STATES", tuple(sorted(_pre.OPEN_STATES))),)
+
+_SEND_ORDER = {"sendable": 0, "unreadable": 1, "unresolved": 1, "blocked": 2}
+_SEND_CHIP = {"sendable": ("scheduled", "ready"), "blocked": ("waiting", "held"),
+              "unresolved": ("action", "unresolved"), "unreadable": ("action", "unreadable")}
+_SEND_WHERE = {
+    "sendable": "full text below — expand it and read it here, never off a transcript",
+    "blocked": "held — waits on the other side; moves to ready by itself once the touch "
+               "outcome flips",
+    "unresolved": "needs YOU — rewrite the **Blocked until:** line as contact:<id> "
+                  "outcome:<...>; nobody can say what this waits on",
+    "unreadable": "needs YOU — rewrite the **Blocked until:** line as contact:<id> "
+                  "outcome:<...>; the strict parser refuses it",
+}
+
+
+def render_message_list(set_name, kind, entries, states, filename, dims, empty_msg,
+                        cap=None):
+    """ONE list per file of the staged pair (public #48, stage 1): every OPEN entry — never
+    a terminal one (public #29) — as a row carrying its precondition state chip, its meta
+    line, where its full text lives, and, for a SENDABLE entry, the full body inline and
+    collapsed. The body IS the decision being asked for, so it stays on the page (the
+    collapse's one exception); everything else stays an index row.
+
+    This replaces four surfaces that were the same entries under different headings:
+    "Pending drafts" (index card + a second bodies card), "⏳ Waiting on someone else",
+    "⏳ Cover letters held", and "⛔ Holds nobody can read". Their DISTINCTIONS survive as
+    the sendability filter and as loudness on the row — an unreadable hold is still an
+    `action` chip on a loud row, still counted needs-you by main() (public #37) — but an
+    entry now renders in exactly one place.
+
+    Ordered sendable → needs-you holds → blocked, so the cap trims the quiet tail; the
+    remainder line sits OUTSIDE the filtered list and is never hidden."""
     if not entries:
         return '<div class="sub">%s</div>' % empty_msg
     cap = cap if cap is not None else WORKING_SET_CAP
+    dim_names = [d for d, _src, _v in dims]
+
+    def _st(title):
+        return (states.get((filename, title)) or {}).get("state") or "sendable"
+
+    entries = sorted(entries, key=lambda e: _SEND_ORDER.get(_st(e[0]), 9))
     shown, rest = entries[:cap], entries[cap:]
-    chip = {"sendable": ("scheduled", "ready"), "blocked": ("waiting", "held"),
-            "unresolved": ("action", "unresolved"), "unreadable": ("action", "unreadable")}
-    out = []
-    for title, blocks in shown:
-        st = (states.get((filename, title)) or {}).get("state") or "sendable"
-        cls, label = chip.get(st, ("waiting", st))
+    keys = ["%s:%s" % (kind, t) for t, _b in entries]
+    _cover_set(set_name, keys[:cap], keys[cap:])
+    members, out = {}, []
+    for (title, blocks), key in zip(entries, keys):
+        row = states.get((filename, title)) or {}
+        st = row.get("state") or "sendable"
+        dims_here = {"sendability": st}
+        if "medium" in dim_names:
+            dims_here["medium"] = row.get("medium") or "unknown"
+        members[key] = dims_here
+    for (title, blocks), key in zip(shown, keys):
+        dims_here = members[key]
+        st = dims_here["sendability"]
+        cls, label = _SEND_CHIP.get(st, ("waiting", st))
+        loud = st in _pre.NEEDS_HUMAN
         meta = _draft_meta_summary(blocks)
+        medium_flag = ""
+        if dims_here.get("medium") == "unknown":
+            # Loud on the row: the line named no MEDIA value (or there is no line). The
+            # filter files it under `unknown` — MEDIA's own word for this — never a guess.
+            medium_flag = (' <span class="chip action" title="the **Medium:** line names no '
+                           'validate_data.MEDIA value">medium: unknown</span>')
+        body = ""
+        if st == "sendable":
+            body = ('<details class="kdoc"><summary>full text</summary>'
+                    '<div class="kdoc-body">%s</div></details>'
+                    % render_draft_entries([(title, blocks)], ""))
         out.append(
-            '<div class="draft%s"><div class="draft-title">%s '
-            '<span class="chip %s">%s</span></div>'
-            '%s'
-            '<div class="sub">full text: <code class="fileref">%s › %s</code> · %s</div></div>'
-            % (" ws-loud" if loud else "", md_inline(title), cls, label,
-               ('<div class="draft-meta">%s</div>' % esc(meta)) if meta else "",
-               esc(filename), esc(title[:60]), esc(where)))
+            '<div class="draft%s" data-rec="%s"%s><div class="draft-title">%s '
+            '<span class="chip %s">%s</span>%s</div>'
+            '%s%s'
+            '<div class="sub">%s › %s · %s</div></div>'
+            % (" ws-loud" if loud else "", esc(key), _dim_attrs(dims_here),
+               md_inline(title), cls, label, medium_flag,
+               ('<div class="draft-meta">%s</div>' % esc(meta)) if meta else "", body,
+               '<code class="fileref">%s</code>' % esc(filename), esc(title[:60]),
+               md_inline(_SEND_WHERE.get(st, st))))
+    more = ""
     if rest:
-        out.append('<div class="sub ws-more">+%d more — still counted in the heading; the '
-                   'full set lives in <code class="fileref">%s</code>.</div>'
-                   % (len(rest), esc(filename)))
-    return "".join(out)
-
-
-def render_draft_bodies(entries, empty_msg, filename, cap=None):
-    """⭐ The approval reading surface, ON the one page. The collapse keeps exactly one
-    kind of document body published: a SENDABLE message awaiting the owner's approval —
-    the body IS the decision being asked for, and the standing rule is that the candidate
-    reads the full text off the published page, never the transcript. Everything else
-    (held, sent, moot, knowledge not awaiting a decision) stays an index row or a count.
-    Bodies are collapsed behind their titles and capped like every working set; the
-    remainder is counted and named, and every capped-out body is still fully readable in
-    the authored file."""
-    if not entries:
-        return '<div class="sub">%s</div>' % empty_msg
-    cap = cap if cap is not None else WORKING_SET_CAP
-    shown, rest = entries[:cap], entries[cap:]
-    out = []
-    for title, blocks in shown:
-        inner = render_draft_entries([(title, blocks)], "")
-        out.append('<details class="kdoc"><summary><strong>%s</strong></summary>'
-                   '<div class="kdoc-body">%s</div></details>'
-                   % (md_inline(title), inner))
-    if rest:
-        out.append('<div class="sub ws-more">+%d more pending — read them in '
-                   '<code class="fileref">%s</code>.</div>' % (len(rest), esc(filename)))
-    return "".join(out)
+        more = ('<div class="sub ws-more" data-more="%s:%d">+%d more — every one is still '
+                'counted in the labels above; the full set lives in '
+                '<code class="fileref">%s</code>.</div>'
+                % (esc(set_name), len(rest), len(rest), esc(filename)))
+    return render_filtered_list(set_name, dims, members, keys[:cap], "".join(out), more,
+                                cls="")
 
 
 def render_knowledge_index(docs, empty_msg, where, cap=None, rec_kind=None, chip=""):
@@ -888,6 +960,55 @@ def render_knowledge_index(docs, empty_msg, where, cap=None, rec_kind=None, chip
                    % ((' data-more="%s:%d"' % (esc(rec_kind), len(rest))) if rec_kind else "",
                       len(rest)))
     return "".join(out)
+
+
+PREP_DIMS = (("window", "knowledge.PREP_WINDOWS", _kn.PREP_WINDOWS),)
+WEEK_DIMS = (("prep", "conversations.PREP_STATES", _conv_mod.PREP_STATES),)
+_PREP_WHERE = {
+    "past": "call held — archive_preps.py moves it to archive/call-preps/",
+    "later": "beyond the %d-day horizon — renders in full when the call is near",
+    "undated": "⚠️ filename carries no call_prep_<date> — cannot be windowed; rename a prep "
+               "call_prep_<date>.md, or move a non-prep note to the store it belongs in "
+               "(archive_preps.py names each)",
+}
+_PREP_CHIP = {"past": ' <span class="chip">past</span>',
+              "later": ' <span class="chip">later</span>',
+              "undated": ' <span class="chip action">undated</span>'}
+
+
+def render_prep_index(docs, horizon_days, cap=None):
+    """The call preps NOT rendered in full — held calls, calls beyond the horizon, and
+    notes nothing can date — as ONE filtered index (public #48, stage 1) over
+    knowledge.PREP_WINDOWS, instead of three index sections each with its own cap and
+    its own overwrite of the `prep` remainder count. `docs` is [(title, rel, body,
+    window)], already ordered; bodies stay in the file tree (the collapse)."""
+    if not docs:
+        return ""
+    cap = cap if cap is not None else WORKING_SET_CAP
+    shown, rest = docs[:cap], docs[cap:]
+    keys = ["prep:%s" % r for _t, r, _b, _w in docs]
+    _cover_set("prep", keys[:cap], keys[cap:])
+    members = {k: {"window": w} for k, (_t, _r, _b, w) in zip(keys, docs)}
+    out = []
+    for (title, rel, body, window), key in zip(shown, keys):
+        words = len(body.split())
+        flag = "" if body.strip() else (' <span class="chip action">empty — nothing '
+                                        'written yet</span>')
+        where = _PREP_WHERE[window]
+        if window == "later":
+            where = where % horizon_days
+        out.append('<div class="draft" data-rec="%s"%s><div class="draft-title">%s%s%s</div>'
+                   '<div class="sub"><code class="fileref">%s</code> · %d words · %s'
+                   '</div></div>'
+                   % (esc(key), _dim_attrs(members[key]), md_inline(title), flag,
+                      _PREP_CHIP[window], esc(rel), words, esc(where)))
+    more = ""
+    if rest:
+        more = ('<div class="sub ws-more" data-more="prep:%d">+%d more files — the counts '
+                'above are complete; browse the directory in the file tree.</div>'
+                % (len(rest), len(rest)))
+    return render_filtered_list("prep", PREP_DIMS, members, keys[:cap], "".join(out), more,
+                                cls="")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1007,6 +1128,126 @@ def _cover_set(set_name, shown_keys, rest_keys):
         COVERAGE["remainders"][set_name] = len(rest_keys)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# ⭐ PER-SECTION FILTERS — public #48, stage 1 (owner-approved). Generalises the one
+# mechanism on this page the owner reported liking: the opportunity list's CSS-only
+# radio filter (five inputs and `#of-you:checked ~ .opp-list .opp[data-you="0"]
+# {display:none}`), measured working on a phone. No JavaScript and no embedded dataset:
+# a script is untestable from stdlib Python, and a data blob beside rendered HTML is the
+# data twice.
+#
+# One GROUP per filtered list: for each declared dimension, one radio set (`all` checked
+# by default) and a label bar; every row in the list carries `data-rec="kind:id"` plus one
+# `data-<dim>` per dimension; one deterministic CSS block per group hides the rows whose
+# value is not the checked one. Dimensions AND together through the cascade — each
+# checked radio hides its own non-matches, and a row hidden by any of them stays hidden.
+#
+# ⭐ FILTERING CHANGES CSS VISIBILITY ONLY. The HTML row set is identical in every filter
+# state, so the coverage contract (ADR-024) holds under narrowing, and every label carries
+# BOTH numbers — the population and what is rendered ("Nothing sent (2 shown of 17)") —
+# computed here from the same store query. A label that counts only what it shows repeats
+# the vanished-rows defect one level down. The cap and the remainder line sit OUTSIDE the
+# filtered list and are never hidden.
+#
+# `:target` is not the filter mechanism (one target per page) — but `.flist
+# [data-rec]:target {display:block !important}` reveals a link's destination even when its
+# list's filter would hide it, so no cross-link (stage 2) can be a dead end.
+#
+# The ledger records every group — its dimensions, each dimension's ENUM SOURCE and
+# vocabulary, and every member's values — and check_dashboard_coverage.py verifies
+# DIMENSION COMPLETE, COUNT AGREES and (advisory until stage 2) EXACTLY ONCE against the
+# HTML. Vocabularies are never this file's: every one is imported from the module that
+# owns it (the `_CLOSED_STATUSES` lesson).
+# ─────────────────────────────────────────────────────────────────────────────
+COVERAGE["filters"] = {}
+_FILTER_CSS = []
+# Human labels for filter values whose enum token reads badly on a chip; anything not here
+# renders as the token itself.
+_FILTER_VALUE_LABELS = {
+    ("state", "needs-you"): "Needs you", ("state", "in-flight"): "In flight",
+    ("coverage", "applied"): "Applied", ("coverage", "person"): "In play through a person",
+    ("coverage", "nothing"): "Nothing sent",
+    ("sendability", "sendable"): "Ready to send", ("sendability", "blocked"): "Held",
+    ("sendability", "unreadable"): "Unreadable hold",
+    ("sendability", "unresolved"): "Unresolved hold",
+    ("window", "past"): "Call held", ("window", "later"): "Beyond the horizon",
+    ("window", "undated"): "Undated",
+    ("prep", "prepped"): "Prepped", ("prep", "owed"): "Prep owed",
+    ("prep", "owed-partial"): "Prep partial", ("prep", "beyond-horizon"): "Beyond the horizon",
+    ("prep", "unlinked"): "No counterparty",
+    ("review", "due"): "Review due", ("review", "current"): "Current",
+    ("review", "on-inbound"): "On inbound", ("review", "unscheduled"): "Unscheduled",
+}
+
+
+def _fid(set_name, dim, value):
+    return "f-%s-%s-%s" % (set_name, dim, value)
+
+
+def _dim_attrs(dims):
+    """The `data-<dim>="<value>"` attributes for one row, in a fixed order."""
+    return "".join(' data-%s="%s"' % (esc(d), esc(str(v)))
+                   for d, v in sorted(dims.items()) if v is not None)
+
+
+def _count_label(shown, pop):
+    return "(%d)" % pop if shown == pop else "(%d shown of %d)" % (shown, pop)
+
+
+def render_filter_group(set_name, dims, members, shown_keys):
+    """The controls for one filtered list: `dims` is ((dim, enum_source, vocabulary), ...);
+    `members` is {row key: {dim: value}} for the WHOLE population (before the cap);
+    `shown_keys` the keys actually rendered. Records the group in the ledger and returns
+    (controls_html, css). A value with zero population gets no chip; a value with
+    population but nothing shown gets a chip that says so."""
+    shown = [k for k in shown_keys if k in members]
+    ctl, css, active = [], [], []
+    for dim, source, vocab in dims:
+        name = "f-%s-%s" % (set_name, dim)
+        bar = ['<span class="fdim">%s</span>' % esc(dim)]
+
+        def _one(value, text, pop, sh):
+            fid = _fid(set_name, dim, value)
+            ctl.append('<input type="radio" name="%s" id="%s" class="fctl"%s>'
+                       % (esc(name), esc(fid), " checked" if value == "all" else ""))
+            bar.append('<label for="%s" data-flabel="%s:%s:%s:%d:%d">%s %s</label>'
+                       % (esc(fid), esc(set_name), esc(dim), esc(value), sh, pop,
+                          esc(text), _count_label(sh, pop)))
+            active.append('#%s:checked ~ .fbar label[for="%s"]' % (fid, fid))
+            if value != "all":
+                css.append('  #%s:checked ~ .flist[data-flist="%s"] [data-rec]:not([data-%s="%s"])'
+                           ' { display:none; }' % (fid, set_name, dim, value))
+
+        _one("all", "All", len(members), len(shown))
+        for value in vocab:
+            pop = sum(1 for m in members.values() if m.get(dim) == value)
+            if not pop:
+                continue
+            sh = sum(1 for k in shown if members[k].get(dim) == value)
+            _one(value, _FILTER_VALUE_LABELS.get((dim, value), value), pop, sh)
+        ctl.append('<div class="fbar">%s</div>' % "".join(bar))
+    # One highlight rule per group (a selector list), not one per chip — measured 10 KB
+    # of CSS at realistic volume before this consolidation.
+    css.append('  %s { opacity:1; font-weight:600; border-color:var(--rail-now); '
+               'color:var(--rail-now); }' % ",\n  ".join(active))
+    COVERAGE["filters"][set_name] = {
+        "dims": {d: {"source": src, "values": list(vocab)} for d, src, vocab in dims},
+        "members": members,
+        "shown": shown,
+    }
+    return "".join(ctl), "\n".join(css)
+
+
+def render_filtered_list(set_name, dims, members, shown_keys, rows_html, more_html, cls=""):
+    """Controls + the `.flist` container of rows + the remainder OUTSIDE it. The three are
+    siblings, in that order, because the CSS reaches the list through `~`."""
+    ctl, css = render_filter_group(set_name, dims, members, shown_keys)
+    if css:
+        _FILTER_CSS.append("  /* filters: %s */\n%s" % (set_name, css))
+    return ('%s<div class="%s" data-flist="%s">%s</div>%s'
+            % (ctl, (cls + " flist").strip(), esc(set_name), rows_html, more_html))
+
+
 def _age_days(iso, today=None):
     """'Nd' for a past ISO date, '' for anything unreadable — an unknown age must render
     as absent, never invented."""
@@ -1018,19 +1259,23 @@ def _age_days(iso, today=None):
         return ""
 
 
-def ws_row(item_html, who="", age="", due="", loud=False, rec=None):
+def ws_row(item_html, who="", age="", due="", loud=False, rec=None, dims=None):
     """One working-set row. `item_html` is pre-rendered (it may carry a JD link); the
     other cells are plain text, escaped at render time. `rec` is the coverage key of the
     store record this row IS ("opp:<id>", "ask:<id>", "commit:<id>"), or None for a row
-    derived from something that is not a record (a channel review, a sequence)."""
-    return {"item": item_html, "who": who, "age": age, "due": due, "loud": loud, "rec": rec}
+    derived from something that is not a record (a channel review, a sequence). `dims`
+    is {dim: value} when the row lives in a filtered list (public #48, stage 1)."""
+    return {"item": item_html, "who": who, "age": age, "due": due, "loud": loud, "rec": rec,
+            "dims": dims or {}}
 
 
-def render_ws(rows, more_at, empty_msg, cap=None, set_name=None):
+def render_ws(rows, more_at, empty_msg, cap=None, set_name=None, dims=None):
     """One working set → a TABLE (item · who · age · due), soonest-due first (no due
     sorts last), capped at WORKING_SET_CAP with a '+K more' line naming where the
     remainder lives. Structured rows, never sentences. `set_name` places every record-
-    backed row in the coverage ledger and stamps the remainder line."""
+    backed row in the coverage ledger and stamps the remainder line. With `dims` — a
+    ((dim, enum_source, vocabulary), ...) declaration — the table becomes a FILTERED LIST
+    over the rows' own `dims` (public #48, stage 1); the remainder stays outside it."""
     if not rows:
         return '<div class="sub">%s</div>' % empty_msg
     cap = cap if cap is not None else WORKING_SET_CAP
@@ -1043,17 +1288,25 @@ def render_ws(rows, more_at, empty_msg, cap=None, set_name=None):
         attrs = (' class="ws-loud"' if r.get("loud") else "")
         if r.get("rec"):
             attrs += ' data-rec="%s"' % esc(r["rec"])
+            if dims:
+                attrs += _dim_attrs(r.get("dims") or {})
         out.append('<tr%s><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>'
                    % (attrs, r["item"],
                       esc(str(r.get("who") or "—")), esc(str(r.get("age") or "—")),
                       esc(str(r.get("due") or "—"))))
     out.append("</table>")
+    more = ""
     if rest:
-        out.append('<div class="sub ws-more"%s>+%d more — every one is still counted in the '
-                   'heading; the full set lives in %s.</div>'
-                   % ((' data-more="%s:%d"' % (esc(set_name), len(rest))) if set_name else "",
-                      len(rest), md_inline(more_at)))
-    return "".join(out)
+        more = ('<div class="sub ws-more"%s>+%d more — every one is still counted in the '
+                'heading; the full set lives in %s.</div>'
+                % ((' data-more="%s:%d"' % (esc(set_name), len(rest))) if set_name else "",
+                   len(rest), md_inline(more_at)))
+    if dims and set_name:
+        members = {r["rec"]: dict(r.get("dims") or {}) for r in rows if r.get("rec")}
+        return render_filtered_list(set_name, dims, members,
+                                    [r["rec"] for r in shown if r.get("rec")],
+                                    "".join(out), more)
+    return "".join(out) + more
 
 
 def render_router_rows(phase_summaries):
@@ -1208,8 +1461,9 @@ def firms_from_channels():
 def sourcing_view(today=None):
     """(active_rows, retired_rows, n_due) for the Sourcing tab.
 
-    active_rows: (label, scope, route, cadence, last_reviewed, due_html, yield_text, state)
-    retired_rows: (label, scope, yield_text). `state` is channels_due.review_rows' own
+    active_rows: (label, scope, route, cadence, last_reviewed, due_html, yield_text, state,
+                  channel_id)
+    retired_rows: (label, scope, yield_text, channel_id). `state` is channels_due.review_rows' own
     word (due / current / on-inbound / unscheduled) — carried so the pipeline working set
     can list due reviews without re-deriving membership (the single-owner rule)."""
     import channels_due as _cd
@@ -1231,7 +1485,7 @@ def sourcing_view(today=None):
         scope = c.get("scope_notes") or ""
         ytxt = _yield_text(c.get("id"))
         if state == "retired":
-            retired.append((label, scope, ytxt))
+            retired.append((label, scope, ytxt, c.get("id")))
             continue
         route = " · ".join(b for b in (c.get("type"), c.get("access")) if b) or "—"
         cadence = c.get("review_cadence") or "—"
@@ -1247,8 +1501,14 @@ def sourcing_view(today=None):
         else:  # unscheduled — a misconfiguration, loud on the page as in the CLI
             due_html = ('<span class="chip action">⚠️ unscheduled</span> '
                         '<span class="sub">%s</span>' % esc(detail["why"]))
-        active.append((label, scope, route, cadence, lr, due_html, ytxt, state))
+        active.append((label, scope, route, cadence, lr, due_html, ytxt, state, c.get("id")))
     return active, retired, n_due
+
+
+# The sourcing table's one dimension — channels_due.REVIEW_STATES, the module that owns
+# review state (public #48, stage 1). `retired` is in the vocabulary and always at zero
+# here: retired channels are the second table.
+SOURCING_DIMS = (("review", "channels_due.REVIEW_STATES", _cd.REVIEW_STATES),)
 
 
 def render_sourcing_tables(active, retired):
@@ -1259,16 +1519,26 @@ def render_sourcing_tables(active, retired):
         for h in ("Channel", "Route", "Cadence", "Last reviewed", "Next review", "Yield"):
             out.append("<th>%s</th>" % h)
         out.append("</tr>")
-        for label, scope, route, cadence, lr, due_html, ytxt, _state in active:
+        members, keys = {}, []
+        for label, scope, route, cadence, lr, due_html, ytxt, state, cid in active:
             name = "<strong>%s</strong>" % esc(label)
             if scope:
                 name += '<div class="sub">%s</div>' % esc(scope)
-            out.append("<tr>" + "".join(
+            key = ("chan:%s" % cid) if cid else None
+            attrs = ""
+            if key:
+                keys.append(key)
+                members[key] = {"review": state}
+                attrs = ' data-rec="%s"%s' % (esc(key), _dim_attrs(members[key]))
+            out.append("<tr%s>" % attrs + "".join(
                 "<td>%s</td>" % cell
                 for cell in (name, esc(route), esc(cadence), esc(lr), due_html, esc(ytxt)))
                 + "</tr>")
         out.append("</table>")
-        active_html = "".join(out)
+        # Uncapped, as it always was: a strategy review reads every active channel.
+        _cover_set("sourcing", keys, [])
+        active_html = render_filtered_list("sourcing", SOURCING_DIMS, members, keys,
+                                           "".join(out), "")
     else:
         active_html = '<div class="sub">No sourcing channels on file yet.</div>'
 
@@ -1277,19 +1547,23 @@ def render_sourcing_tables(active, retired):
     # every list since the collapse; the records stay queryable in data/channels.jsonl.
     if retired:
         shown, rest = retired[:WORKING_SET_CAP], retired[WORKING_SET_CAP:]
+        _cover_set("sourcing-retired", ["chan:%s" % c for _l, _s, _y, c in shown if c],
+                   ["chan:%s" % c for _l, _s, _y, c in rest if c])
         rows = []
-        for label, scope, ytxt in shown:
-            rows.append('<tr><td><strong>%s</strong>%s</td>'
+        for label, scope, ytxt, cid in shown:
+            rows.append('<tr%s><td><strong>%s</strong>%s</td>'
                         '<td><span class="chip closed">retired</span></td><td>%s</td></tr>'
-                        % (esc(label),
+                        % ((' data-rec="%s"' % esc("chan:%s" % cid)) if cid else "",
+                           esc(label),
                            '<div class="sub">%s</div>' % esc(scope) if scope else "",
                            esc(ytxt)))
         retired_html = ("<table><tr><th>Channel</th><th>Status</th><th>Lifetime yield</th>"
                         "</tr>%s</table>" % "".join(rows))
         if rest:
-            retired_html += ('<div class="sub ws-more">+%d more retired — all still in '
+            retired_html += ('<div class="sub ws-more" data-more="sourcing-retired:%d">+%d '
+                             'more retired — all still in '
                              '<code class="fileref">data/channels.jsonl</code>.</div>'
-                             % len(rest))
+                             % (len(rest), len(rest)))
         retired_html += ('<div class="sub">Retiring a channel also stops the alert sweep '
                          'reading its digests — both effects follow '
                          '<code>relationship_status</code> in the record.</div>')
@@ -1298,7 +1572,17 @@ def render_sourcing_tables(active, retired):
     return active_html, retired_html
 
 
-SUBMITTED_STATES = ("submitted", "acknowledged", "interviewing", "offer")
+# The owning module's answer to "did a submission actually happen" (validate_data.py: "the
+# applications[].status values that prove a submission actually happened"). Used to be a
+# renderer-private literal here — ("submitted", "acknowledged", "interviewing", "offer") — which
+# had drifted in both directions from validate_data.SUBMITTED_APP_STATUS: "interviewing" and
+# "offer" are STAGES values, never legal on applications[].status, so they could never match
+# anything; "rejected" and "advanced" ARE legal applications[].status values that prove a
+# submission happened, and were silently missing, so an opportunity whose only application was
+# rejected or advanced fell out of the "Submitted" bucket entirely — the exact shape stage 1 of
+# public #48 removed everywhere else (the _TERMINAL / _CLOSED_STATUSES precedent, same pattern:
+# bind the owning module's object directly, no local copy to drift).
+SUBMITTED_STATES = _vd.SUBMITTED_APP_STATUS
 
 
 def application_tables(today=None):
@@ -1821,24 +2105,19 @@ CSS = """
   .rail .seg.now  { background:var(--rail-now); }
   .rail-label { font-size:11px; opacity:.6; margin-left:8px; vertical-align:middle; }
 
-  /* CSS-only filters, matching the tab pattern already used on this page. */
-  .oppfilter { display:none; }
-  .oppbar { display:flex; gap:6px; flex-wrap:wrap; margin:2px 0 8px; }
-  .oppbar label { font-size:12px; padding:4px 10px; border-radius:999px; cursor:pointer;
-                  border:1px solid var(--card-border); opacity:.75; }
-  #of-all:checked ~ .oppbar label[for="of-all"],
-  #of-you:checked ~ .oppbar label[for="of-you"],
-  #of-app:checked ~ .oppbar label[for="of-app"],
-  #of-per:checked ~ .oppbar label[for="of-per"],
-  #of-non:checked ~ .oppbar label[for="of-non"] {
-      opacity:1; font-weight:600; border-color:var(--rail-now); color:var(--rail-now); }
-  #of-you:checked ~ .opp-list .opp[data-you="0"],
-  #of-app:checked ~ .opp-list .opp[data-bucket="person"],
-  #of-app:checked ~ .opp-list .opp[data-bucket="nothing"],
-  #of-per:checked ~ .opp-list .opp[data-bucket="applied"],
-  #of-per:checked ~ .opp-list .opp[data-bucket="nothing"],
-  #of-non:checked ~ .opp-list .opp[data-bucket="applied"],
-  #of-non:checked ~ .opp-list .opp[data-bucket="person"] { display:none; }
+  /* ⭐ Per-section CSS-only filters (public #48, stage 1) — the generic half; the
+     per-group rules (one block per filtered list) are appended by render_filter_group. */
+  .fctl { display:none; }
+  .fbar { display:flex; gap:6px; flex-wrap:wrap; align-items:center; margin:2px 0 6px; }
+  .fbar .fdim { font-size:11px; text-transform:uppercase; letter-spacing:.07em;
+                opacity:.55; margin-right:2px; }
+  .fbar label { font-size:12px; padding:4px 10px; border-radius:999px; cursor:pointer;
+                border:1px solid var(--card-border); opacity:.75; }
+  /* A link's destination is revealed even when its list's filter would hide it — one
+     target per page, so this is never the filter, only the guarantee that no cross-link
+     (stage 2) lands on a hidden row. */
+  .flist [data-rec]:target { display:block !important; }
+  .flist tr[data-rec]:target { display:table-row !important; }
   @media (prefers-reduced-motion: reduce) { .opp-more { transition:none; } }
 
   /* dev #95 follow-on: the migration marker must read as a defect on the row, not a value. */
@@ -1959,25 +2238,29 @@ def main():
     def _pre_state(filename, title):
         return _states.get((filename, title), {}).get("state")
 
-    # public #29 — TERMINAL entries land in NEITHER list.
+    # public #29 — TERMINAL entries render in NEITHER list; the ledger says they ended.
+    for _r in _pre_rows:
+        if _r.get("state") in _terminal:
+            _cover("%s:%s" % ("draft" if _r.get("file") == _DRAFTS_REL else "cover",
+                              _r["title"]), "terminal",
+                   "drafts" if _r.get("file") == _DRAFTS_REL else "covers")
     _drafts_active = [d for d in drafts if _pre_state(_DRAFTS_REL, d[0]) not in _terminal]
     _sendable = [d for d in _drafts_active if _pre_state(_DRAFTS_REL, d[0]) not in _not_sendable]
     # ⭐ public #37 — NOT_SENDABLE is two things. `blocked` waits on the other side (in
     # flight, muted); `unreadable`/`unresolved` wait on the OWNER, because nobody can say
     # what the hold is. They used to sit under "waiting on someone else" looking handled.
-    # precondition.NEEDS_HUMAN owns the split; this only groups by it.
+    # precondition.NEEDS_HUMAN owns the split; this only counts by it — since public #48
+    # stage 1 the three groups are ONE list with a sendability filter, and an unreadable
+    # hold is a loud row in it rather than a section of its own.
     _blocked = [d for d in _drafts_active
                 if _pre_state(_DRAFTS_REL, d[0]) in _not_sendable
                 and _pre_state(_DRAFTS_REL, d[0]) not in _needs_human]
     _unreadable = [d for d in _drafts_active if _pre_state(_DRAFTS_REL, d[0]) in _needs_human]
-    drafts_html = render_draft_index(_sendable, _states, _DRAFTS_REL,
-                                     "No pending drafts.", "full body just below")
-    blocked_html = render_draft_index(_blocked, _states, _DRAFTS_REL, "",
-                                      "held — body stays in the file until unblocked")
-    drafts_bodies_html = render_draft_bodies(_sendable, "No pending drafts.", _DRAFTS_REL)
+    drafts_html = render_message_list("drafts", "draft", _drafts_active, _states,
+                                      _DRAFTS_REL, DRAFT_DIMS, "No pending drafts.")
     n_blocked = len(_blocked)
 
-    # dev #169 — the covers panel consults preconditions exactly as the drafts panel does.
+    # dev #169 — the covers list consults preconditions exactly as the drafts list does.
     _covers_active = [c for c in covers if _pre_state(_COVERS_REL, c[0]) not in _terminal]
     _covers_ready = [c for c in _covers_active if _pre_state(_COVERS_REL, c[0]) not in _not_sendable]
     _covers_held = [c for c in _covers_active
@@ -1985,23 +2268,10 @@ def main():
                     and _pre_state(_COVERS_REL, c[0]) not in _needs_human]
     _covers_unreadable = [c for c in _covers_active
                           if _pre_state(_COVERS_REL, c[0]) in _needs_human]
-    covers_html = render_draft_index(_covers_ready, _states, _COVERS_REL,
-                                     "No cover letters pending.", "full body just below")
-    covers_held_html = render_draft_index(_covers_held, _states, _COVERS_REL, "",
-                                          "held — do not submit yet")
-    covers_bodies_html = render_draft_bodies(_covers_ready, "No cover letters pending.",
-                                             _COVERS_REL)
+    covers_html = render_message_list("covers", "cover", _covers_active, _states,
+                                      _COVERS_REL, COVER_DIMS, "No cover letters pending.")
     n_covers_held = len(_covers_held)
     n_unreadable = len(_unreadable) + len(_covers_unreadable)
-    unreadable_html = ""
-    if _unreadable:
-        unreadable_html += render_draft_index(
-            _unreadable, _states, _DRAFTS_REL, "",
-            "rewrite the **Blocked until:** line as contact:<id> outcome:<...>")
-    if _covers_unreadable:
-        unreadable_html += render_draft_index(
-            _covers_unreadable, _states, _COVERS_REL, "",
-            "rewrite the **Blocked until:** line as contact:<id> outcome:<...>")
 
     # dev #148 — sourcing strategy, via channels_due.py's one definition
     # (review_rows / channel_yield — the single-owner rule).
@@ -2023,38 +2293,22 @@ def main():
     # [today, today + HORIZON_DAYS]; a past prep is an index row until archive_preps.py
     # (the hygiene step and the 0.36.0 migration) moves it; a prep beyond the horizon or
     # with an undated filename is an index row too, the undated one loudly.
-    import conversations as _conv_mod
-    import knowledge as _kn
+    # The window is knowledge.prep_window's (public #48 stage 1 moved the if-chain that
+    # lived here into the module that owns prep_date), and the three index sections are
+    # ONE filtered index over knowledge.PREP_WINDOWS.
     _today_d = datetime.date.today()
-    _prep_limit = _today_d + datetime.timedelta(days=_conv_mod.HORIZON_DAYS)
-    _preps_now, _preps_past, _preps_far, _preps_undated = [], [], [], []
+    _preps_now, _preps_index = [], []
     for _p in _preps:
-        _pd = _kn.prep_date(os.path.basename(_p[1]))
-        if _pd is None:
-            _preps_undated.append(_p)
-        elif _pd < _today_d:
-            _preps_past.append(_p)
-        elif _pd > _prep_limit:
-            _preps_far.append(_p)
-        else:
+        _w = _kn.prep_window(os.path.basename(_p[1]), _today_d, _conv_mod.HORIZON_DAYS)
+        if _w == "now":
             _preps_now.append(_p)
+        else:
+            _preps_index.append((_p[0], _p[1], _p[2], _w))
+    # Undated first (loud), then held calls newest-first as knowledge_docs orders them,
+    # then the far-off ones — so the cap trims the quietest tail.
+    _preps_index.sort(key=lambda t: {"undated": 0, "past": 1, "later": 2}[t[3]])
     preps_full_html = render_knowledge_docs(_preps_now, "No call preps on file.")
-    preps_index_html = ""
-    if _preps_past:
-        preps_index_html += render_knowledge_index(
-            _preps_past, "", "call held — archive_preps.py moves it to archive/call-preps/",
-            rec_kind="prep", chip=' <span class="chip">past</span>')
-    if _preps_far:
-        preps_index_html += render_knowledge_index(
-            _preps_far, "", "beyond the %d-day horizon — renders in full when the call "
-            "is near" % _conv_mod.HORIZON_DAYS, rec_kind="prep",
-            chip=' <span class="chip">later</span>')
-    if _preps_undated:
-        preps_index_html += render_knowledge_index(
-            _preps_undated, "", "⚠️ filename carries no call_prep_<date> — cannot be "
-            "windowed; rename a prep call_prep_<date>.md, or move a non-prep note to the "
-            "store it belongs in (archive_preps.py names each)", rec_kind="prep",
-            chip=' <span class="chip action">undated</span>')
+    preps_index_html = render_prep_index(_preps_index, _conv_mod.HORIZON_DAYS)
     kbs_html = render_knowledge_index(
         _kbs, "No company knowledge files yet.",
         "read in the file tree — knowledge bodies are not published (the collapse)")
@@ -2188,34 +2442,16 @@ def main():
     decide_ws = _role_ws_rows(decide_rows)
     due_reviews_ws = [ws_row("<strong>%s</strong> — channel review due"
                              % esc(label), route, "", "now")
-                      for (label, _scope, route, _cad, _lr, _dh, _y, st) in _src_active
+                      for (label, _scope, route, _cad, _lr, _dh, _y, st, _cid) in _src_active
                       if st == "due"]
 
-    _needs_ids = ({oid for _t, _a, oid in role_decisions if oid}
-                  | {oid for _t, _a, oid in decide_rows if oid})
-    _callout_ids = ({oid for _t, _a, oid in _unresolved_rows if oid}
-                    | {oid for _t, _a, oid in _waiting_rows if oid})
-    _cls_map = {}
-    for o, st, _w in _ym.classify_opportunities(_opp_rows, OWNER_TOKEN):
-        if o.get("id"):
-            _cls_map[o["id"]] = st
-    pipe_flight_ws = []
-    n_pipe_flight = 0
-    for o in _opp_rows:
-        if o.get("status") in _TERMINAL or o.get("id") in _needs_ids:
-            continue
-        n_pipe_flight += 1
-        if o.get("id") in _callout_ids:
-            continue      # rendered richer in its callout below; still counted
-        comp = _opp_comps.get(o.get("company_id"), {})
-        st = _cls_map.get(o.get("id")) or ("stage: %s" % (o.get("stage") or "not set"))
-        if o.get("status") == "backlog":
-            st = "backlog · %s" % (o.get("verdict") or "no verdict")
-        pipe_flight_ws.append(ws_row(
-            "<strong>%s — %s</strong>"
-            % (esc(comp.get("name", o.get("company_id", ""))), esc(o.get("title") or "")),
-            st, "", o.get("next_action_date") or "",
-            rec=("opp:%s" % o["id"]) if o.get("id") else None))
+    # ⭐ public #48, stage 1 — "in flight" is the `state` filter on the opportunity list,
+    # not a section. your_move.attention_by_id is the ONE map both the list's labels and
+    # this router count read, so the "N in flight" number and the "In flight (N)" chip
+    # are the same query; the `⏳ In flight — not yours to do` table that rendered every
+    # such role a second time is gone.
+    _attention = _ym.attention_by_id(_opp_rows, OWNER_TOKEN)
+    n_pipe_flight = sum(1 for v in _attention.values() if v == "in-flight")
 
     n_pipe_needs = len(now_ws) + len(decide_ws) + len(due_reviews_ws)
     opp_alive_hint = any(o.get("status") not in _TERMINAL for o in _opp_rows)
@@ -2252,35 +2488,18 @@ def main():
             % (len(due_reviews_ws),
                render_ws(due_reviews_ws, "`data/channels.jsonl` (channels_due.py)", "")))
     pipe_parts.append(your_move_callouts_html)
-    if pipe_flight_ws:
-        pipe_parts.append(
-            '<div class="inflight"><h2 id="phase-pipeline-flight">⏳ In flight — not '
-            'yours to do <span class="tcount">%d</span></h2>'
-            '<div class="card">%s</div></div>'
-            % (n_pipe_flight,
-               render_ws(pipe_flight_ws, "`data/opportunities.jsonl`", "",
-                         set_name="pipeline-flight")))
-    opp_list_html, opp_counts = render_opportunity_list(_opp_rows, _opp_comps)
+    opp_list_html, opp_counts = render_opportunity_list(_opp_rows, _opp_comps,
+                                                        attention=_attention)
     if opp_counts["all"]:
         pipe_parts.append(
-            '<h2 id="phase-pipeline-roles">🎯 Opportunities — where each role stands</h2>'
+            '<h2 id="phase-pipeline-roles">🎯 Opportunities — where each role stands '
+            '<span class="tcount">%d</span><span class="ct2f">· %d in flight</span></h2>'
             '<div class="sub" style="margin:-6px 0 10px"><strong>What lives here:</strong> '
-            'every live role, once — waiting-on-you first. The bar under each title is the '
-            'pipeline stage it has actually reached.</div>'
-            + stats_html +
-            f'<input type="radio" name="oppf" id="of-all" class="oppfilter" checked>'
-            f'<input type="radio" name="oppf" id="of-you" class="oppfilter">'
-            f'<input type="radio" name="oppf" id="of-app" class="oppfilter">'
-            f'<input type="radio" name="oppf" id="of-per" class="oppfilter">'
-            f'<input type="radio" name="oppf" id="of-non" class="oppfilter">'
-            '<div class="oppbar">'
-            f'<label for="of-all">All ({opp_counts["all"]})</label>'
-            f'<label for="of-you">Waiting on you ({opp_counts["you"]})</label>'
-            f'<label for="of-app">Applied ({opp_counts["applied"]})</label>'
-            f'<label for="of-per">In play through a person ({opp_counts["person"]})</label>'
-            f'<label for="of-non">Nothing sent ({opp_counts["nothing"]})</label>'
-            '</div>'
-            f'<div class="card opp-list">{opp_list_html}</div>'
+            'every live role, once — needs-you first. The bar under each title is the '
+            'pipeline stage it has actually reached; the chips narrow the list by state, '
+            'stage and coverage (they combine), and every chip counts the whole set.</div>'
+            % (opp_counts["all"] - n_pipe_flight, n_pipe_flight)
+            + stats_html + opp_list_html +
             '<div class="note"><strong>Only &ldquo;nothing sent&rdquo; is a gap.</strong> '
             'Applied and in-play-through-a-person are both covered; a role carried with '
             'nothing sent is the hole.</div>')
@@ -2315,9 +2534,9 @@ def main():
                                   esc(o.get("title") or "")), "you", "",
                                o.get("next_action_date") or "",
                                rec=("opp:%s" % o["id"]) if o.get("id") else None))
-    submitted_ws = [ws_row("<strong>%s — %s</strong>" % (esc(r[0]), esc(r[1])),
-                           r[4], r[3], "")
-                    for r in _submitted]
+    # ⭐ public #48, stage 1 — the "⏳ Submitted — awaiting a response" table is gone: every
+    # such role is the opportunity list under `coverage: applied`, with its applications
+    # under Detail. The count stays the store query it always was (application_tables).
     if _apply_q:
         _q0 = _apply_q[0]
         _q0name = _opp_comps.get(_q0.get("company_id"), {}).get(
@@ -2339,19 +2558,17 @@ def main():
             '<div class="card">%s</div>'
             % (len(apply_ws), render_ws(apply_ws, "`views/applying.md`", "",
                                         set_name="applying-queue")))
-    if submitted_ws:
+    if _submitted and apply_ws:
         apply_parts.append(
-            '<div class="inflight"><h2 id="phase-applying-inflight">⏳ Submitted — '
-            'awaiting a response <span class="tcount">%d</span></h2>'
-            '<div class="card">%s</div></div>'
-            % (len(submitted_ws),
-               render_ws(submitted_ws, "`data/opportunities.jsonl`", "")))
-    if _nothing and (apply_ws or submitted_ws):
+            '<div class="sub">%d application%s submitted and awaiting a response — each '
+            'is in the pipeline section under <em>coverage: applied</em>.</div>'
+            % (len(_submitted), "" if len(_submitted) == 1 else "s"))
+    if _nothing and apply_ws:
         apply_parts.append(
             '<div class="sub">%d live role%s carried with nothing sent — the real gap; '
             'each is flagged on its row in the pipeline section.</div>'
             % (len(_nothing), "" if len(_nothing) == 1 else "s"))
-    _emit("applying", len(apply_ws), len(submitted_ws), apply_clause,
+    _emit("applying", len(apply_ws), len(_submitted), apply_clause,
           [("apply queue", "phase-applying-queue")] if apply_ws else [], apply_parts)
 
     # ── conversations ──────────────────────────────────────────────────────
@@ -2422,6 +2639,11 @@ def main():
         except ValueError:
             return False
 
+    # The week list's one dimension (public #48, stage 1): the commitment's prep state,
+    # conversations.report's own word inside the horizon and conversations.BEYOND_HORIZON
+    # past it — that module owns both. When the scan failed there is no state to declare,
+    # so the list renders unfiltered rather than with an invented value.
+    _conv_state = {r["id"]: r["state"] for r in (_conv_rows or []) if r.get("id")}
     for c in sorted((r for r in _commits if _placed_future(r)),
                     key=lambda r: (str(r.get("date")), str(r.get("time") or ""))):
         due = str(c.get("date"))
@@ -2430,7 +2652,9 @@ def main():
         conv_flight.append(ws_row("<strong>%s</strong>"
                                   % md_inline(c.get("title") or c.get("id") or "?"),
                                   c.get("who") or "", "", due,
-                                  rec=("commit:%s" % c["id"]) if c.get("id") else None))
+                                  rec=("commit:%s" % c["id"]) if c.get("id") else None,
+                                  dims={"prep": _conv_state.get(c.get("id"),
+                                                                _conv_mod.BEYOND_HORIZON)}))
     if _conv_rows is None:
         # ⚠️ Mirrors the trigger-scan-failure idiom below (out_clause / the "Trigger scan
         # failed" note) — the same defect, the same fix. A failed scan must never present
@@ -2487,7 +2711,8 @@ def main():
             'rescheduled (<code>parse_ics.py</code>).</div>'
             % (len(conv_flight),
                render_ws(conv_flight, "`data/commitments.jsonl`", "",
-                         set_name="conversations-week")))
+                         set_name="conversations-week",
+                         dims=None if _conv_rows is None else WEEK_DIMS)))
     if _preps_now:
         conv_parts.append(
             '<h2 id="phase-conversations-preps">📞 Call preps — in full '
@@ -2504,7 +2729,7 @@ def main():
             '<div class="sub" style="margin:-6px 0 10px">Held calls, calls beyond the '
             'horizon, and any note nothing can date. Bodies stay in the file tree.</div>'
             '<div class="card prep-past">%s</div>'
-            % (len(_preps_past) + len(_preps_far) + len(_preps_undated), preps_index_html))
+            % (len(_preps_index), preps_index_html))
     _emit("conversations", len(conv_needs) + len(conv_owed), len(conv_flight), conv_clause,
           ([("preps owed", "phase-conversations-owed")] if conv_owed else [])
           + ([("unresolved dates", "phase-conversations-unresolved")] if conv_needs else []),
@@ -2546,49 +2771,36 @@ def main():
                         % (len(touch_ws), "" if len(touch_ws) == 1 else "s"))
         out_clause = (bits[0] + "." if bits else "Nothing staged or owed.")
     out_parts = [your_move_ready_html]
-    if n_unreadable:
+    # ⭐ public #48, stage 1 — ONE drafts list and ONE cover-letter list, each filtered by
+    # sendability (and drafts by medium). "Waiting on someone else", "Cover letters held"
+    # and "Holds nobody can read" were the same entries under second and third headings;
+    # their counts survive (needs-you / in-flight, below and in the router), their
+    # distinction is the filter, and an unreadable hold is a loud row with an `action`
+    # chip (public #37's loudness, kept).
+    if _drafts_active:
         out_parts.append(
-            '<h2 id="phase-outreach-unreadable">⛔ Holds nobody can read — needs you '
-            '<span class="tcount">%d</span></h2>'
-            '<div class="sub" style="margin:-6px 0 10px">A <strong>Blocked until:</strong> '
-            'line the strict parser refuses, or the literal <code>unresolved</code>. Not '
-            '"waiting on someone else" — nobody can say what it waits on until you rewrite '
-            'it as <code>contact:&lt;id&gt; outcome:&lt;...&gt;</code>. Until then the '
-            'message cannot move.</div>'
-            '<div class="card">%s</div>' % (n_unreadable, unreadable_html))
-    if _sendable:
-        out_parts.append(
-            '<h2 id="phase-outreach-approvals">✉️ Pending drafts — awaiting your approval '
-            '<span class="tcount">%d</span></h2>'
+            '<h2 id="phase-outreach-approvals">✉️ Drafts — awaiting your approval '
+            '<span class="tcount">%d</span>%s</h2>'
             '<div class="sub" style="margin:-6px 0 10px">Nothing is ever sent without your '
             'explicit approval. The full text of every sendable message is right here — read '
-            'it on this page, never off a transcript.</div>'
+            'it on this page, never off a transcript. Held messages wait on the other side '
+            'and move to ready by themselves; a hold nobody can read waits on YOU.</div>'
             '<div class="card">%s</div>'
-            '<div class="card">%s</div>'
-            % (len(_sendable), drafts_html, drafts_bodies_html))
-    if n_blocked:
-        out_parts.append(
-            '<div class="inflight"><h2 id="phase-outreach-blocked">⏳ Waiting on someone '
-            'else <span class="tcount">%d</span></h2>'
-            '<div class="sub" style="margin:-6px 0 10px">Written and ready, but blocked '
-            'until the other person acts. <strong>Not yours to do</strong> — each moves up '
-            'by itself once the precondition is met.</div>'
-            '<div class="card">%s</div></div>' % (n_blocked, blocked_html))
-    if _covers_ready:
+            % (len(_sendable) + len(_unreadable),
+               (' <span class="ct2f">· %d held</span>' % n_blocked) if n_blocked else "",
+               drafts_html))
+    if _covers_active:
         out_parts.append(
             '<h2 id="phase-outreach-covers">📄 Cover letters — for applications you submit '
-            'yourself <span class="tcount">%d</span></h2>'
+            'yourself <span class="tcount">%d</span>%s</h2>'
             '<div class="sub" style="margin:-6px 0 10px">Every claim traces to the claim '
             'union (presence/claims.md). You paste and submit these yourself — nothing is '
-            'applied on your behalf.</div>'
+            'applied on your behalf. A held letter waits on a precondition; do not submit it '
+            'yet.</div>'
             '<div class="card">%s</div>'
-            '<div class="card">%s</div>'
-            % (len(_covers_ready), covers_html, covers_bodies_html))
-    if n_covers_held:
-        out_parts.append(
-            '<div class="inflight"><h2 id="phase-outreach-covers-held">⏳ Cover letters '
-            'held — do not submit yet <span class="tcount">%d</span></h2>'
-            '<div class="card">%s</div></div>' % (n_covers_held, covers_held_html))
+            % (len(_covers_ready) + len(_covers_unreadable),
+               (' <span class="ct2f">· %d held</span>' % n_covers_held) if n_covers_held else "",
+               covers_html))
     if touch_ws:
         out_parts.append(
             '<h2 id="phase-outreach-touches">🤝 Relationship follow-ups due '
@@ -2617,7 +2829,7 @@ def main():
                 % render_ws(untrig_ws, "`trigger.py --check`", "")) if untrig_ws else ""))
     out_subs = [("approvals", "phase-outreach-approvals")]
     if n_unreadable:
-        out_subs.append(("unreadable holds", "phase-outreach-unreadable"))
+        out_subs.append(("unreadable holds", "phase-outreach-approvals"))
     if touch_ws:
         out_subs.append(("follow-ups", "phase-outreach-touches"))
     if _n_unblocked or untrig_ws:
@@ -2652,8 +2864,8 @@ def main():
 
     # ── The outputs: the ONE artifact and the constant tombstone. ──────────
     (ROOT / "views").mkdir(exist_ok=True)
-    artifact_doc = ('<title>%s</title>\n<style>%s</style>\n%s'
-                    % (html.escape(_title), CSS, body_inner))
+    artifact_doc = ('<title>%s</title>\n<style>%s\n%s\n</style>\n%s'
+                    % (html.escape(_title), CSS, "\n".join(_FILTER_CSS), body_inner))
     (ROOT / "views" / "dashboard_artifact.html").write_text(artifact_doc, encoding="utf-8")
     (ROOT / "dashboard.html").write_text(DASHBOARD_TOMBSTONE, encoding="utf-8")
     # The coverage ledger (Class C) — verified against the HTML by
@@ -2664,6 +2876,9 @@ def main():
         "terminal_statuses": sorted(_TERMINAL),
         "records": COVERAGE["records"],
         "remainders": COVERAGE["remainders"],
+        # public #48, stage 1 — every filtered list: its dimensions (each with the enum
+        # that owns its vocabulary), every member's values, and what was shown.
+        "filters": COVERAGE["filters"],
     }
     (ROOT / "views" / "dashboard_coverage.json").write_text(
         json.dumps(_ledger, indent=1, sort_keys=True, ensure_ascii=False), encoding="utf-8")

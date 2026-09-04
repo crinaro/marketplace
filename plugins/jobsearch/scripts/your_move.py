@@ -101,6 +101,38 @@ LIVE_OPP_STATUSES = {"active-pursuit", "needs-resolution"}
 ROLE_STATES = ("unresolved", "waiting", "scheduled", "now", "decide")
 CHANNEL_STATES = ("now", "scheduled", "fulfilled")
 
+# ⭐ ATTENTION — the router's two counts, as a per-row value (public #48, stage 1). The
+# published page used to carry "in flight" as a SECTION: every live role not in the
+# needs-you queue rendered again under "⏳ In flight — not yours to do", so one role could
+# render in up to three places and no list could be narrowed. The owner named it noise:
+# "in flight" is not a kind of record, it is a STATE of an opportunity. It is now a filter
+# dimension on the one opportunity list, and this is its vocabulary — owned here, beside
+# the membership rule it derives from, never restated by the renderer (the
+# `_CLOSED_STATUSES` lesson: a renderer-private set is how 23 rows vanished).
+#
+# needs-you  ⇔ classify_opportunities places the role in `now` or `decide` — the two
+#              states generate_dashboard's needs-you queue renders (your_move_roles /
+#              your_move_decides). `unresolved` and `waiting` are loud callouts, not
+#              queue rows, and the router has always counted them in flight.
+# in-flight  ⇔ every other LIVE role (not terminal): waiting on the other side,
+#              scheduled, owned by the run, or a decided backlog row.
+ATTENTION = ("needs-you", "in-flight")
+NEEDS_YOU_ROLE_STATES = frozenset({"now", "decide"})
+
+
+def attention_by_id(opps, owner_token, today=None):
+    """{opp id: ATTENTION value} for every LIVE opportunity — the one definition the
+    dashboard's state filter and its router in-flight count both read, so the label
+    population and the router number cannot disagree."""
+    needs = {o.get("id") for o, st, _w in classify_opportunities(opps, owner_token, today)
+             if st in NEEDS_YOU_ROLE_STATES and o.get("id")}
+    out = {}
+    for o in opps:
+        if o.get("status") in _vd.TERMINAL_OPP_STATUSES or not o.get("id"):
+            continue
+        out[o["id"]] = "needs-you" if o["id"] in needs else "in-flight"
+    return out
+
 # Statuses on which a play position is meaningless — validate_data.py refuses the field on
 # these, and m_0_25_0_play_stage never writes the marker onto them. The SAME set as the
 # funnel's terminal set, by import rather than by copy.
