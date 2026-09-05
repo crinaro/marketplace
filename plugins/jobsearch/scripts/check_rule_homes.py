@@ -59,17 +59,21 @@ ROOT = _pof()
 CLAUDE = os.path.join(_engine_root(), "RULEBOOK.md")
 ARCHIVE = os.path.join(ROOT, "docs", "incident_archive.md")
 
-# The ratchet. LOWER THIS as narrative moves out. It went UP exactly once, on 2026-08-02,
-# when the load-bearing audit found the trim had DELETED FIVE HARD RULES and they were
-# restored — an increase that puts genuine content back is legitimate; an increase that
-# accommodates new narrative is not. CLAUDE.md was 9,468 words before the split.
-# 2026-08-25 (public #26): +73, set to the exact measured count. New RULES, zero narrative —
-# the resume-variant model (claim union, declared variant set, send/sent fields, the
-# projects.md promotion boundary) had to be declared in the file every run loads; its
-# narrative lives in resume_variants.py's docstring, and the pre-existing incident text in
-# the resume.md bullet was SHORTENED to part-pay for it. Still exact-tight: the next word
-# of creep fails.
-MAX_CLAUDE_WORDS = 5737
+# The ratchet. LOWER THIS as narrative moves out. Raised twice, both times to put genuine
+# RULE content back rather than to accommodate narrative — that distinction, not the
+# direction, is what makes an increase legitimate:
+# - 2026-08-02: the load-bearing audit found the trim had DELETED FIVE HARD RULES and they
+#   were restored. CLAUDE.md was 9,468 words before the split.
+# - 2026-08-25 (public #26): +73, set to the exact measured count. New RULES, zero narrative —
+#   the resume-variant model (claim union, declared variant set, send/sent fields, the
+#   projects.md promotion boundary) had to be declared in the file every run loads; its
+#   narrative lives in resume_variants.py's docstring, and the pre-existing incident text in
+#   the resume.md bullet was SHORTENED to part-pay for it.
+# - 2026-09-04 (ADR-028 step 1, dev #84-90): +25, set to the exact measured count. The presence
+#   working set is a second always-published, never-hand-edited artifact and `presence/rules.md`
+#   is a new authored file — both had to enter the generated-files and authored-files bullets,
+#   and the end-of-session checklist had to name the second publish step. Zero narrative added.
+MAX_CLAUDE_WORDS = 5761
 
 # Where a rule is allowed to live. Deliberately broader than focus.md's original list, which
 # named only CLAUDE.md and agent definitions — that is precisely why data-shaped lessons (the

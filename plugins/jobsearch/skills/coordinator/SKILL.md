@@ -296,6 +296,17 @@ url file's absence means two different things, and only one of them is "create":
 Then **grep the OUTPUT** (`views/dashboard_artifact.html` — sendable bodies render on the one
 page) for a distinctive phrase from whatever you just added.
 
+**And the SECOND artifact, every round (ADR-028, 0.39.0): `views/presence_set.html`** — the
+presence working set: the claim union, one tab per active declared variant, the open items, the
+standing rules (`presence/rules.md`). The same `--fix` regenerates it. Publish it to the URL in
+`views/presence_set_url.txt` under the same two rules: `--publish-state` naming it as *first
+publish pending* (no stamp, no url file) means create the artifact and write that url file in
+the same step; `url-missing` means RECOVER via the Artifact tool's `list` action, never mint a
+new one. It publishes on a profile with zero variants exactly as on five — never skip it because
+"nothing is declared". Then `~/.claude/jobsearch/run presence_set.py --check` (the round trip:
+every source paragraph must be in the rendered pane) and grep ITS output for a phrase from any
+presence file you touched. One `--stamp-published` covers both pages.
+
 **Drain pending stubs while you hold the tool.** If `~/.claude/jobsearch/run pending_stubs.py
 --check` reports rows, each is a RETIRED page URL still serving its last snapshot: run
 `pending_stubs.py --stub-html <page>`, publish `views/moved_stub.html` to that row's URL with the

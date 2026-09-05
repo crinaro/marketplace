@@ -2,6 +2,10 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.38.0
+- [#54](https://github.com/crinaro/marketplace/issues/54) — generate_dashboard.py's row-count truncation on the opportunities list no longer prioritizes owner-is-the-candidate state, so every record whose status marks it as awaiting the candidate can fall entirely outside the rendered window
+- [#61](https://github.com/crinaro/marketplace/issues/61) — record.py --dry-run reports a false negative on every opportunities write once any resume variant is declared, because the shadow directory it validates against omits the variant files
+
 ## jobsearch 0.37.0
 - [#48](https://github.com/crinaro/marketplace/issues/48) — Stage 1 of #48's dashboard redesign: six sections (opportunities, submitted, interviewing, offers, drafts, prep) gain per-section CSS-only filters, the four separate in-flight-summary sections users called noise are deleted, and a Submitted-state bug that dropped any role whose only application was rejected or advanced is fixed, so those roles stop vanishing from the Submitted count. This is stage 1 of four — #48 stays open; navigating between sections, staleness, and composing one sendable outreach unit are still ahead.
 - A medium recorded as **Medium: value** inline on a draft's Status line, rather than on its own **Medium:** line, always read as medium: unknown to the dashboard and precondition checks. A one-time migration relocates that one legacy shape onto its own line; every other unrecognized shape is left alone and flagged instead of guessed at, and a new drift meter reports how many open drafts still resolve to an unknown medium. First instance of a broader class that stays open (dev #265): a model-authored field's format drifting against a strict reader over time. *(tracked internally as crinaro/marketplace-dev#265)*

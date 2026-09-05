@@ -96,6 +96,14 @@ LAYOUT = {
     "dashboard_artifact":    ("views/dashboard_artifact.html",    ("dashboard_artifact.html",)),
     "dashboard_artifact_url": ("views/dashboard_artifact_url.txt",
                               ("dashboard_artifact_url.txt",)),
+    # ADR-028 (0.39.0) — the presence working set: a SECOND always-published STATE artifact.
+    # Its rules tab renders `presence/rules.md` (created by m_0_39_0_presence_rules); the
+    # page, its url file and its ledger sit beside the dashboard's. No legacy spellings —
+    # nothing predates these names.
+    "presence_rules":        ("presence/rules.md",                ()),
+    "presence_set":          ("views/presence_set.html",          ()),
+    "presence_set_url":      ("views/presence_set_url.txt",       ()),
+    "presence_set_ledger":   ("views/presence_set_ledger.json",   ()),
 }
 
 # Root entries that BELONG at root (see the header for why each stays). Everything else a

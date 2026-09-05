@@ -2134,6 +2134,57 @@ def m_0_37_0_medium_line(profile, apply_it):
     return True, "  ✅ %s (0.37.0): " % _tree.rel("drafts") + " · ".join(bits)
 
 
+# ── 0.39.0 — the presence standing-rules file (ADR-028 rule 2, public #62) ────────────────────
+# ⚠️ KEYED "0.39.0" — the version that SHIPS it (ADR-009). 0.38.0 is the newest PUBLISHED
+# release, so a profile that installed it is stamped exactly "0.38.0" and strict `<` reaches
+# this only from a key ABOVE that. Re-verified when 0.39.0 is cut: if 0.39.0 ships WITHOUT
+# this migration, it must be re-keyed to the version that does (the 0.33.0 trap).
+
+# The seed for a profile that has no rules file. Every line is one paragraph on purpose —
+# the file it seeds is rendered by presence_set.py's paragraph-faithful renderer, and a seed
+# that wrapped its own prose would open with a paragraph-drift finding against itself.
+PRESENCE_RULES_SEED = """# Presence — standing rules
+
+Settled decisions about the claim union (`presence/claims.md`) and the declared variants. A rule here is DECIDED; an open question belongs on the working set's open-items tab, never here. The two are kept apart on purpose: a decision parked among open items is re-litigated every session, and an open item filed among the rules never gets done.
+
+## Rules
+
+- A variant is a SELECTION from the union: copy its sentences, never paraphrase. A wording a page needs lands in the union first, then on the page.
+- A proof point reaches a printed page only through the union — never straight from `presence/projects.md`.
+- Adjacent lines are one paragraph. Separate paragraphs, roles and bullets with a blank line: every renderer merges what the file does not separate, and the working set shows that merge rather than hiding it.
+"""
+
+
+def m_0_39_0_presence_rules(profile, apply_it):
+    """0.39.0 — `presence/rules.md` exists on every profile (ADR-028 rule 2; public #62).
+
+    The presence working set (`presence_set.py`) renders a rules tab from this file so that
+    settled decisions and open items never share a list. A profile that predates the file
+    has no such tab to render — a missing thing reading as an empty one — so the file is
+    CREATED here, seeded with the three rules the engine already enforces elsewhere, stated
+    for the owner to extend. PRESERVE, THEN TRANSFORM: a rules file that already exists is
+    never touched (the owner's decisions outrank the seed); nothing is relocated because
+    nothing predates this file. Idempotent: the second run finds the file and returns.
+    """
+    import _tree
+    path = _tree.path(profile, "presence_rules")
+    rel = _tree.rel("presence_rules")
+    if os.path.exists(path):
+        return True, ""
+    if not apply_it:
+        return True, "  would create (0.39.0): %s, seeded with the three standing rules" % rel
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            fh.write(PRESENCE_RULES_SEED)
+        os.replace(tmp, path)
+    except OSError as e:
+        return False, "  ⚠️ %s could not be created: %s" % (rel, e)
+    return True, ("  ✅ %s (0.39.0): created, seeded with the three standing rules — the "
+                  "working set's rules tab renders it; extend it with your own decisions" % rel)
+
+
 # ── install-cache hygiene (dev #167) — owned HERE, never by the launcher ─────────────────────
 # A resolver that deletes is the wrong shape for a constantly-running sh script; pruning is a
 # deliberate, logged act of the SessionStart hook, with the same envelope discipline as the
@@ -2272,7 +2323,11 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               ("0.36.0", m_0_36_0_archive_past_preps),
               # ⚠️ KEYED "0.37.0" — the version that ships it; 0.36.0-stamped profiles reach
               # it through strict `<`. Re-keyed if 0.37.0 is cut without it (ADR-009).
-              ("0.37.0", m_0_37_0_medium_line))
+              ("0.37.0", m_0_37_0_medium_line),
+              # ⚠️ KEYED "0.39.0" — 0.38.0 is the newest PUBLISHED release (ADR-009): a
+              # profile that installed it is stamped exactly "0.38.0", and strict `<` would
+              # never fire a migration keyed to it. Re-verified when 0.39.0 is cut.
+              ("0.39.0", m_0_39_0_presence_rules))
 
 
 def pending_for(profile, engine=None):

@@ -67,10 +67,11 @@ Set `search.posture` in your `config.json`, or define your own. See
 - **[Your data](../../docs/user/jobsearch/your-data.md)** — every file it keeps, what the fields mean, and
   how to edit them by hand safely.
 - **[Reading what the search produces](../../docs/user/jobsearch/reading-your-files.md)** — which file
-  opens in which tool. The published surface is one page — `views/dashboard_artifact.html` — with
-  a router section up top and every phase reachable by an in-page anchor, including a pending
-  message's full text on the outreach section. Plus kb files, call preps, drafts and letters, on
-  the desktop, in an editor, in a browser, or on a phone.
+  opens in which tool. There are two published pages: `views/dashboard_artifact.html` — a router
+  section up top and every phase reachable by an in-page anchor, including a pending message's
+  full text on the outreach section — and `views/presence_set.html`, a review copy of your
+  resume/claims/rules that always publishes, even with nothing declared. Plus kb files, call
+  preps, drafts and letters, on the desktop, in an editor, in a browser, or on a phone.
 
 The one idea worth carrying into everything else: **datasets are JSON, documents are markdown.**
 If it gets counted, sorted or joined it is data; if you read and edit it in full it is a

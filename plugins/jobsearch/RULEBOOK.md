@@ -55,6 +55,7 @@ This repo is the single source of truth for the candidate's executive job search
   `resolved_on`+`resolution`; `check_sections.py` enforces the invariants.
 - **`handoff.md`** — the session-handoff letter.
 - **`log.md`** — append-only. Never edit past entries.
+- **`presence/rules.md`** — authored; the working set's rules tab (ADR-028). Migration seeds it once; extend it yourself.
 - **`outreach/drafts.md`** (pending outreach) · **`applying/cover_letters.md`** (pending letters). **⭐ BODIES MUST
   BE `> `-BLOCKQUOTED OR THEY PUBLISH EMPTY** — that shipped once, and only the candidate noticed. Entry
   format: each file's header.
@@ -64,7 +65,7 @@ This repo is the single source of truth for the candidate's executive job search
   `scripts/knowledge.py` audits). **⭐ EVERY KB LINE IS TAGGED BY SOURCE** — `[CANDIDATE]` `[JD]`
   `[RESEARCH]` `[CLAUDE]` `[OPEN]`. Never blur a company's self-description, or my
   inference, with what someone said.
-- **`views/dashboard_artifact.html` + `views/*_artifact.html`** — GENERATED. Never hand-edit
+- **`views/dashboard_artifact.html` + `views/presence_set.html` + `views/*_artifact.html`** — GENERATED. Never hand-edit
   (`dashboard.html`: stub); daily-run carries the steps. **⭐ Then grep the OUTPUT for what you added.**
 - **`archive/process_archive.md`** (retired process items) · **[docs/incident_archive.md](docs/incident_archive.md)**
   (the stories behind these rules — reference only, read on demand by `search-strategist` alone).
@@ -459,8 +460,8 @@ how a wrong fact gets laundered into a confident report.
 ## End-of-session checklist
 
 **The task prompts carry the ordered steps** — the `jobsearch:daily-run` skill and
-the `jobsearch:weekly-review` skill. In short: update state → regenerate the dashboard → **grep the
-OUTPUT for what you just added** → publish via the Artifact tool (passing
-`views/dashboard_artifact_url.txt` as `url`) → commit → **push with `scripts/push.sh`** → **release the
+the `jobsearch:weekly-review` skill. In short: update state → regenerate the dashboard and presence set → **grep the
+OUTPUT for what you just added** → publish both via the Artifact tool (each
+`_url.txt` as `url`: `views/dashboard_artifact_url.txt`, `views/presence_set_url.txt`) → commit → **push with `scripts/push.sh`** → **release the
 run lock**. Save any pending draft in FULL to `outreach/drafts.md` and any pending letter to
 `applying/cover_letters.md` — the candidate reads full text off the published dashboard, not the transcript.
