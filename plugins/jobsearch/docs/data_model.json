@@ -269,7 +269,7 @@
    "arrays": {}
   },
   "commitments": {
-   "_note": "dev #93 (public #21) - scheduled commitments, cut over from focus.md's 'This Week' prose. The This Week tab renders date >= today; meeting_check.py and watch.py reconcile calendar artifacts against ALL rows (a meeting next month is still reconciled). date may be the literal 'unresolved' - the migration marker for a commitment whose date could not be parsed - which renders as a loud defect, never silently dropped. who carries the counterparty tokens the date-collision check matches on; a date alone is not an identity.",
+   "_note": "dev #93 (public #21) - scheduled commitments, cut over from focus.md's 'This Week' prose. The This Week tab renders date >= today; meeting_check.py and watch.py reconcile calendar artifacts against ALL rows (a meeting next month is still reconciled). date may be the literal 'unresolved' - the migration marker for a commitment whose date could not be parsed - which renders as a loud defect, never silently dropped. who carries the counterparty tokens the date-collision check matches on; a date alone is not an identity. status (public #50, additive) is the lifecycle field: 'scheduled' or 'cancelled' - the 0.40.0 seed migration stamps 'scheduled' explicitly onto every pre-existing row.",
    "id_field": "id",
    "fields": [
     "id",
@@ -280,7 +280,8 @@
     "opp_id",
     "channel_id",
     "source",
-    "note"
+    "note",
+    "status"
    ],
    "required": [
     "id",

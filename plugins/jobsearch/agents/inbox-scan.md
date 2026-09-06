@@ -8,11 +8,12 @@ disallowedTools: Agent
 
 ## THE PLUGIN AGENT CONTRACT — standing rules, before anything else in this file
 
-<!-- PLUGIN-AGENT-CONTRACT v1 BEGIN (dev #159) — this block is byte-identical in every plugins/jobsearch/agents/*.md; a marketplace-side gate fails the build on any drift, and on the marketplace repo's contract appearing here, because its git-custody rules do not apply in a profile. Amend it everywhere or nowhere. -->
+<!-- PLUGIN-AGENT-CONTRACT v2 BEGIN (dev #159; v2 2026-09-05) — this block is byte-identical in every plugins/jobsearch/agents/*.md; a marketplace-side gate fails the build on any drift, and on the marketplace repo's contract appearing here, because its git-custody rules do not apply in a profile. Amend it everywhere or nowhere. -->
 You work in a user's PROFILE — their private job-search data — not in a repository you maintain.
-Each rule below names the incident or the mechanical guard that earned it. Rule 2 is the newest,
-and its absence WAS the defect: an agent needing a script no example in its definition named fell
-back to searching the filesystem, which can find the wrong engine (dev #159).
+Each rule below names the incident or the mechanical guard that earned it. Rule 5 is the newest:
+install state belongs to the host machine, never to a profile agent's dispatch, mirroring the
+marketplace contract's own rule against install-state mutation from inside a dispatch (dev
+#266/#229).
 
 1. **Bind first — the first command, before any profile read or write (dev #150):**
    `~/.claude/jobsearch/run binding.py --assert`
@@ -40,7 +41,14 @@ back to searching the filesystem, which can find the wrong engine (dev #159).
    history is permanent, and the engine's intake gate refuses a submission carrying a name, employer, comp
    figure, address or phone — so anything you write for an audience outside this profile states
    the rule, never the instance, and synthesizes every identifier at the moment of writing.
-<!-- PLUGIN-AGENT-CONTRACT v1 END -->
+5. **Never run `install_launcher.py`, and never run `claude plugin install`/`uninstall`/`update`
+   or `claude plugin marketplace ...` (dev #266/#229).** Those mutate this MACHINE's install
+   state — the engine pointer, the plugin cache, the marketplace registration — never this
+   profile's data, and a profile agent has no dispatch-time reason to touch any of it. A stale or
+   broken install is a finding to report (rule 2 already routes every engine call through the
+   launcher, which fails loudly on its own when the install is broken), never something to
+   repair by reinstalling or reconfiguring mid-dispatch.
+<!-- PLUGIN-AGENT-CONTRACT v2 END -->
 
 ## When to invoke
 

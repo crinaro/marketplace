@@ -149,20 +149,51 @@ def main():
 
         # A refresh that happened at THIS session's start still leaves the loaded copy stale,
         # because the rulebook does not reload when the file changes. Only a restart fixes it.
+        #
+        # ⭐ public #33/#49. The flag used to be a bare version string, consumed (read, deleted,
+        # announced) UNCONDITIONALLY by whichever session's next UserPromptSubmit happened to
+        # fire first — not necessarily the session whose SessionStart actually did the refresh.
+        # That is a false "at THIS session's start" claim aimed at the wrong session (#33), and
+        # it can also rob the RIGHT session of the warning it is actually owed if some other
+        # session's prompt won the race (#49: that session then has nothing left to tell it, not
+        # even on a later resume, because the flag is already gone). `migrate.py` now stamps the
+        # flag with the session it ran for and a nonce unique to that write — a per-context
+        # signal `_announce_once`'s dedup key did not have before, so a genuinely NEW write for
+        # the same session/version (e.g. after a resume that still needed the warning) is never
+        # mistaken for a stale one.
         state = _state_dir()
         flag = os.path.join(state, "rulebook-refreshed")
         try:
             with open(flag, encoding="utf-8") as fh:
-                refreshed_to = fh.read().strip()
-            os.remove(flag)
-            if refreshed_to:
+                raw = fh.read().strip()
+        except OSError:
+            raw = None
+        if raw:
+            try:
+                doc = json.loads(raw)
+                refreshed_to = str(doc.get("to") or "")
+                flag_session = str(doc.get("session") or "")
+                nonce = str(doc.get("nonce") or "")
+            except ValueError:
+                # A flag written by an older engine version, before this fix: a bare version
+                # string with no session of its own. Not addressed to anyone in particular, so
+                # (unlike a mismatched session below) it is still fair to consume here —
+                # preserve the old behaviour for a flag already on disk across an upgrade.
+                refreshed_to, flag_session, nonce = raw, "", ""
+            # A flag stamped for a DIFFERENT session is not this session's business — leave it
+            # untouched so the session it actually belongs to can still find it on its own next
+            # prompt, rather than asserting a stale branch this session was never on (#33).
+            if refreshed_to and (not flag_session or flag_session == session):
+                try:
+                    os.remove(flag)
+                except OSError:
+                    pass
                 _announce_once(
                     "jobsearch: the rulebook was refreshed to %s at this session's start, but a "
                     "session reads it once and does not reload it — so THIS session is still "
                     "running the previous rules. Restart to pick them up."
-                    % refreshed_to, session, "rulebook-reload:%s" % refreshed_to)
-        except OSError:
-            pass
+                    % refreshed_to, session,
+                    "rulebook-reload:%s:%s" % (refreshed_to, nonce))
 
         # ⭐⭐ ASK THE REMEDY WHETHER THERE IS ANYTHING TO DO (#6).
         #

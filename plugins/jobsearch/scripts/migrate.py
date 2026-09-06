@@ -57,6 +57,12 @@ from _diag import log as diag
 
 STAMP = ".jobsearch-schema"
 MARKERS = ("config.json", "data")
+# The profile's substantive, known-shape content — the same conservative, explicit-by-name list
+# m_0_17_0's initial commit stages (never `git add -A`: a concurrent writer's in-flight work must
+# never ride along in a commit this migration did not make and cannot describe). Reused by
+# commit_migrated_paths() (public #52) so a migration's own data/config rewrite is committed
+# alongside the schema stamp, not left to whichever later, unrelated commit happens to notice it.
+KNOWN_PROFILE_ARTIFACTS = ("config.json", "user.json", "data", "kb", "call_preps", "archive")
 
 
 def engine_version():
@@ -66,6 +72,20 @@ def engine_version():
             return json.load(fh).get("version") or "0.0.0"
     except Exception:
         return "0.0.0"
+
+
+def _hook_session_id():
+    """The `session_id` Claude Code passes on stdin to every hook invocation — the same field
+    `drift_guard.py` reads the same way. Used ONLY to stamp which session a rulebook refresh
+    happened in (public #33/#49), so `drift_guard.py` can tell its own session apart from an
+    unrelated one whose next prompt happens to fire first. Never load-bearing for the migration
+    itself: any failure here (no stdin, a tty, malformed JSON) falls back to "", never blocks."""
+    try:
+        if not sys.stdin.isatty():
+            return str((json.loads(sys.stdin.read() or "{}") or {}).get("session_id") or "")
+    except Exception:                                   # noqa: BLE001
+        pass
+    return ""
 
 
 def profile_from_cwd():
@@ -155,6 +175,60 @@ def write_stamp_record(profile, version, attempt):
         return True, None
     except OSError as e:
         return False, e
+
+
+def commit_migrated_paths(profile, paths, message):
+    """⭐ public #52 — a rewrite nobody commits sits as an uncommitted diff forever.
+
+    `migrate.py` rewrites the profile's CLAUDE.md (`install_rulebook.refresh_if_stale`) and the
+    schema stamp (`write_stamp_record`) from a SessionStart hook, entirely outside the normal
+    end-of-run commit step — a candidate who never reaches the end of a run (or whose run fails
+    before that step) is left with those changes sitting uncommitted, invisible to `git status`
+    only until someone thinks to look, and one `git stash`/`git checkout` away from being lost.
+
+    ⚠️ COMMIT ONLY ON APPLIED, NEVER ON A NO-OP. `record_noop()`'s own rate-limit comment
+    already states why: the profile is usually a git repository, and stamping (let alone
+    committing) every SessionStart would put a one-line commit's worth of churn in the user's
+    history for the rest of time. This is called ONLY from the genuine-change paths in main()
+    (a real rulebook refresh, or migrations that actually applied) — never from record_noop().
+
+    ⭐ EXPLICIT PATHS, NEVER `git add -A` — the same rule m_0_17_0's initial commit follows,
+    for the same reason: the profile may have a concurrent writer (a scheduled run, another
+    session), and a blanket add would bundle whatever that writer has in flight into a commit
+    this migration did not make and cannot describe.
+
+    Fails open, always: no git binary, not a repo, nothing staged, or the commit itself failing
+    are all silently fine — a housekeeping commit must never block or fail a session, and the
+    change is still on disk either way, ready for the next normal commit to pick up.
+    """
+    try:
+        import sync as _sync
+        state = _sync.git_state(profile)
+        if not state["git"] or not state["repo"]:
+            return
+        existing = [p for p in paths if os.path.exists(os.path.join(profile, p))]
+        if not existing:
+            return
+        add = subprocess.run(["git", "-C", profile, "add", "--"] + existing,
+                             capture_output=True, text=True, timeout=30)
+        if add.returncode != 0:
+            return
+        # Nothing staged (the rewrite left the file byte-identical, e.g. a rulebook refresh
+        # that only touched the provenance stamp to the same value) — nothing to commit.
+        diff = subprocess.run(["git", "-C", profile, "diff", "--cached", "--quiet"],
+                              capture_output=True, timeout=30)
+        if diff.returncode == 0:
+            return
+        ident = []
+        if not (subprocess.run(["git", "-C", profile, "config", "user.email"],
+                               capture_output=True, text=True, timeout=15).stdout or "").strip():
+            # No git identity on this machine — a neutral one for THIS commit only via -c,
+            # same fallback m_0_17_0 uses. Never written into the user's config.
+            ident = ["-c", "user.name=jobsearch-migrate", "-c", "user.email=migrate@localhost"]
+        subprocess.run(["git", "-C", profile] + ident + ["commit", "-q", "-m", message],
+                       capture_output=True, text=True, timeout=30)
+    except Exception:                                   # noqa: BLE001 — never blocks a session
+        pass
 
 
 def attempt_record(engine, result, detail=""):
@@ -396,7 +470,7 @@ def m_0_17_0(profile, apply_it):
     # and a half-completed earlier attempt. A repo that already has commits is the user's own
     # history; nothing here stages into it.
     if _git("rev-parse", "-q", "--verify", "HEAD").returncode != 0:
-        known = ["config.json", "user.json", "data", "kb", "call_preps", "archive"]
+        known = list(KNOWN_PROFILE_ARTIFACTS)
         try:
             known += sorted(n for n in os.listdir(profile)
                             if n.endswith(".md") and os.path.isfile(os.path.join(profile, n)))
@@ -2185,6 +2259,61 @@ def m_0_39_0_presence_rules(profile, apply_it):
                   "working set's rules tab renders it; extend it with your own decisions" % rel)
 
 
+def m_0_40_0_commitment_status(profile, apply_it):
+    """0.40.0 — `commitments.jsonl` gains a `status` lifecycle field (public #50).
+
+    A cancelled meeting had nowhere structured to be recorded — the only place to say "this
+    was called off" was prose (a handoff note, or hand-editing the title), which decays
+    exactly the way ADR-013's `expired` and the asks store's `resolved_on` exist to prevent: a
+    fact the run knows, re-typed into narrative instead of the queryable store. `status` is
+    additive: `scheduled` (every existing commitment WAS scheduled) or `cancelled` (terminal —
+    excluded from the This Week list and conversations.py's prep-owed report regardless of
+    date, same shape as an expired opportunity leaving the active pipeline view).
+
+    ⭐ PRESERVE, THEN TRANSFORM, EXPLICIT OVER IMPLICIT. A row that already carries `status`
+    (however that happened) is left untouched; only a row with no `status` key at all is
+    stamped `scheduled`. This store's sibling (`asks.resolved_on`) lets absence carry meaning,
+    but every OTHER additive lifecycle field in this schema (`play_stage`, `blocked_until`)
+    seeds an explicit value rather than leaving a reader to know that a missing key defaults —
+    the same reasoning applies here, and it is cheap: a bare backfill of one field.
+
+    Idempotent: a second run finds every row already carrying `status` and returns.
+    """
+    path = os.path.join(profile, "data", "commitments.jsonl")
+    if not os.path.exists(path):
+        return True, ""
+    rows = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+    except Exception as e:
+        return False, ("  ⚠️ commitments.jsonl could not be read, so status was left "
+                       "unseeded: %s" % e)
+
+    changed = 0
+    for r in rows:
+        if "status" in r:
+            continue
+        r["status"] = "scheduled"
+        changed += 1
+
+    if not changed:
+        return True, ""
+    if not apply_it:
+        return True, "  would seed status: scheduled on %d commitment(s) (0.40.0)" % changed
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)               # atomic: never a half-written pipeline file
+    return True, ("  ✅ commitments.jsonl (0.40.0) — status: scheduled seeded on %d "
+                  "commitment(s); every existing row was in fact scheduled (public #50)"
+                  % changed)
+
+
 # ── install-cache hygiene (dev #167) — owned HERE, never by the launcher ─────────────────────
 # A resolver that deletes is the wrong shape for a constantly-running sh script; pruning is a
 # deliberate, logged act of the SessionStart hook, with the same envelope discipline as the
@@ -2327,7 +2456,11 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               # ⚠️ KEYED "0.39.0" — 0.38.0 is the newest PUBLISHED release (ADR-009): a
               # profile that installed it is stamped exactly "0.38.0", and strict `<` would
               # never fire a migration keyed to it. Re-verified when 0.39.0 is cut.
-              ("0.39.0", m_0_39_0_presence_rules))
+              ("0.39.0", m_0_39_0_presence_rules),
+              # ⚠️ KEYED "0.40.0" — 0.39.0 is the newest PUBLISHED release (ADR-009): a
+              # profile that installed it is stamped exactly "0.39.0", and strict `<` would
+              # never fire a migration keyed to it. Re-verified when 0.40.0 is cut.
+              ("0.40.0", m_0_40_0_commitment_status))
 
 
 def pending_for(profile, engine=None):
@@ -2521,14 +2654,34 @@ def main():
             # ⚠️ The FILE is current now; the SESSION is not. A rulebook is read into context
             # once and never reloaded, so the session that refreshed it is still running the
             # previous rules (#7). Leave a flag for drift_guard to say so on the next prompt.
+            #
+            # ⭐ public #33/#49: the flag used to be a bare version string, so ANY session's next
+            # UserPromptSubmit — not necessarily the one whose SessionStart just did the refresh
+            # — would consume and announce it. That is a false "this session's start" claim
+            # aimed at whichever session's prompt happened to land first, and it also means the
+            # session that actually needs the warning can lose it to a race. The flag now
+            # records WHICH session this refresh happened in (from the hook's own stdin, the
+            # same field drift_guard.py reads) plus a nonce unique to this write, so
+            # drift_guard.py can (a) only consume a flag addressed to its own session and (b)
+            # never let a stale de-dup stamp from a prior write suppress a genuinely new one.
             try:
                 import _root
                 st = os.path.join(_root.state_root(), "drift")
                 os.makedirs(st, exist_ok=True)
+                payload = {"to": engine_version(),
+                           "session": _hook_session_id() if args.hook else "",
+                           "nonce": "%016x" % int.from_bytes(os.urandom(8), "big")}
                 with open(os.path.join(st, "rulebook-refreshed"), "w", encoding="utf-8") as fh:
-                    fh.write(engine_version())
+                    json.dump(payload, fh)
             except OSError:
                 pass
+            if not args.check:
+                # ⭐ public #52 — the rewrite above must not sit as an uncommitted diff until
+                # some later, unrelated commit happens to pick it up (or never does).
+                import _root
+                commit_migrated_paths(
+                    _root.profile_root(), ["CLAUDE.md"],
+                    "jobsearch: rulebook refreshed to %s" % engine_version())
     except Exception as e:                     # noqa: BLE001
         diag("migrate", verdict="rulebook-error", reason=type(e).__name__)
         if not args.hook:
@@ -2590,6 +2743,17 @@ def main():
                       "the stamp succeeds. Check that %s is writable."
                       % (type(err).__name__, err, os.path.join(profile, STAMP)),
                       file=sys.stderr)
+            else:
+                # ⭐ public #52 — COMMIT ONLY ON APPLIED, never on record_noop()'s rate-limited
+                # no-op stamp (that call site never reaches here). Explicit paths, never `git
+                # add -A`: the schema stamp plus the same conservative "known artifacts" list
+                # m_0_17_0's own initial commit stages, so whatever a migration actually
+                # rewrote (config, data/, kb/, ...) is committed together with the stamp that
+                # now claims it happened — never a stamp claiming a change nothing recorded.
+                commit_migrated_paths(
+                    profile, [STAMP] + list(KNOWN_PROFILE_ARTIFACTS),
+                    "jobsearch: profile migration %s → %s (%d migration(s))"
+                    % (stamp, engine, len(pending)))
         elif not all_done:
             # Do NOT stamp: leaving it unstamped is what makes this retry next session rather
             # than silently deciding the migration is finished when it is not.

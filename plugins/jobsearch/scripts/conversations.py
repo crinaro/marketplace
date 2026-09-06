@@ -142,6 +142,10 @@ def report(root, days=HORIZON_DAYS, today=None):
 
     rows = []
     for c in trigger.load_jsonl(root, "commitments.jsonl"):
+        # public #50: a called-off commitment (`status: cancelled`) is terminal — it needs no
+        # prep, is never NEEDS-YOU, and never occupies a horizon slot meant for a live call.
+        if str(c.get("status") or "") == "cancelled":
+            continue
         base = {"id": c.get("id"), "date": str(c.get("date") or ""),
                 "time": c.get("time") or "", "title": c.get("title") or c.get("id") or "?",
                 "who": c.get("who") or "", "kind": None, "counterparty": None,

@@ -2,6 +2,10 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.39.0
+- [#60](https://github.com/crinaro/marketplace/issues/60) — The claim union's filename does not read as "my resume" to anyone who did not follow the rename, and for a profile with no variants declared it IS the printed resume
+- [#62](https://github.com/crinaro/marketplace/issues/62) — Stage 1 of #62's presence working set: a second page that always publishes alongside the dashboard — one tab per active resume variant, the claim union, an open-items tab, and the presence rules — with paragraph merges rendered the way they actually print instead of collapsed behind a line-break joiner that hid them. A round-trip check compares the page against its source before every publish. This is stage 1 of four — #62 stays open; the check confirms the page renders faithfully, not that any given variant is safe to send.
+
 ## jobsearch 0.38.0
 - [#54](https://github.com/crinaro/marketplace/issues/54) — generate_dashboard.py's row-count truncation on the opportunities list no longer prioritizes owner-is-the-candidate state, so every record whose status marks it as awaiting the candidate can fall entirely outside the rendered window
 - [#61](https://github.com/crinaro/marketplace/issues/61) — record.py --dry-run reports a false negative on every opportunities write once any resume variant is declared, because the shadow directory it validates against omits the variant files

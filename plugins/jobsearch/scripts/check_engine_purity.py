@@ -238,6 +238,42 @@ KNOWN_EXCEPTIONS = (
      "agencies illustrating the wrapper-vs-employer point, not this owner's search); "
      "collides only because this owner's profile separately names one of them as an "
      "employer encountered"),
+    # ⭐ dev #225, another hit of the same class, 2026-09-06 — this is the EIGHTH entry of it.
+    # Four sites, ALL the same ordinary English / software word: a common noun that doubles as
+    # (a) the smallest semver release step, one below a minor, used in this plugin's own
+    # versioning-policy prose, and (b) the standard test-suite verb for swapping an attribute
+    # at runtime for the length of one call. None of the four lines below is about this owner's
+    # search — all four are unchanged-for-any-installation engine prose that predates today.
+    # The collision fires only because the profile gained a company row TODAY (2026-09-06)
+    # whose name is that same common word.
+    # ⚠️ Per the block above: neither the word itself nor any of its case variants appears in
+    # any term below — this file is scripts/*.py and scans itself, so spelling it here would
+    # be tomorrow's fresh hit. Each term is text immediately AROUND the colliding word on its
+    # own line, never the word.
+    (".claude-plugin/plugin.json", "behaviour change, ", 225,
+     "the versioningPolicy metadata string's own release-cadence prose (installation-generic, "
+     "predates this release); collides only because this owner's profile now names a company "
+     "whose name is that same common software-release word"),
+    ("docs/adr-009-versioning-policy.md", "a fix takes a **", 225,
+     "ADR-009's decision line naming the two release-size words a version bump uses "
+     "(installation-generic policy text); collides only because this owner's profile now "
+     "names a company whose name is that same common software-release word"),
+    ("scripts/install_launcher.py", "Each guard was a ", 225,
+     "the generation-3 rewrite comment describing each prior guard as one more of the same "
+     "kind of fix (installation-generic commentary on this file's own history); collides only "
+     "because this owner's profile now names a company whose name is that same common word"),
+    ("scripts/install_launcher.py", "would have been the third ", 225,
+     "the same comment's next sentence, same word, same reason (installation-generic "
+     "commentary on this file's own history); collides only because this owner's profile now "
+     "names a company whose name is that same common word"),
+    ("scripts/test_checks.py", "and HOME redirect stay contained", 225,
+     "a test docstring's parenthetical naming what kind of runtime attribute-swap the test "
+     "performs (installation-generic test terminology); collides only because this owner's "
+     "profile now names a company whose name is that same common word"),
+    ("scripts/test_checks.py", "un-marked the temp", 225,
+     "a comment in the same test describing what the earlier attribute-swap undid "
+     "(installation-generic test terminology); collides only because this owner's profile now "
+     "names a company whose name is that same common word"),
 )
 
 # Every tracked engine file. The families above remain a taxonomy and an emptiness guard; this

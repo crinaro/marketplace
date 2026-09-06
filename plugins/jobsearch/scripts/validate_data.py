@@ -207,6 +207,12 @@ ASK_KINDS = {"role", "system"}
 # means an ask that claims it will self-resolve and never does — it looks handled and is not.
 ASK_RESOLVES_WHEN = {"application", "outreach"}
 UNRESOLVED = "unresolved"
+# public #50 — same shape as ADR-013's `expired` and the asks store's `resolved_on`: a fact
+# the run knows (a meeting was called off) goes into the queryable store, never into prose.
+# Additive; absent means `scheduled` until the 0.40.0 seed migration stamps every existing row
+# explicitly (this store's siblings prefer an explicit value over a reader having to know that
+# a missing key means the default).
+COMMITMENT_STATUS = {"scheduled", "cancelled"}
 # ---- Resume variants (public #26) --------------------------------------------------------
 # The declared printed-resume set. The variant FILES and resume.md (the claim union) are
 # authored prose; the RECORDS — which variants exist, which archetype each serves, which one
@@ -1155,6 +1161,9 @@ def _main():
             problems.append("%s: opp_id %r resolves to no opportunity" % (label, r["opp_id"]))
         if r.get("channel_id") and r["channel_id"] not in channel_ids:
             problems.append("%s: channel_id %r resolves to no channel" % (label, r["channel_id"]))
+        if "status" in r and r.get("status") is not None and r["status"] not in COMMITMENT_STATUS:
+            problems.append("%s: status %r is not one of %s" %
+                            (label, r["status"], "/".join(sorted(COMMITMENT_STATUS))))
 
     # Unknown-key guard for both new stores — same model-driven rule opportunities already
     # gets, because `nxet_action_owner` is exactly the class of typo these fields will grow.

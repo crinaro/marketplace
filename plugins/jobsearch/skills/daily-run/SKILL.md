@@ -251,7 +251,7 @@ the JOB SEARCH capability covers both), contact-path lookup for any new appealin
 **Do not skip the queue step.** That flag used to be prose in a run summary and nothing else — no
 later run recovered the work, and a skipped pass looked identical to one that found nothing.
 Degrading gracefully was never the problem; forgetting was. **Expect this to fire rarely** — if it
-fires repeatedly, run `scripts/wake_chrome.sh` and check macOS Automation access for the app
+fires repeatedly, run `~/.claude/jobsearch/run wake_chrome.sh` and check macOS Automation access for the app
 before assuming a new fault (`docs/architecture.md` §3d).
 
 **Weekly (first run on/after Monday, per `log.md`):** dispatch `board-sweeper` for the non-LinkedIn sourcing pass — boards, aggregators and employer career pages, each reached by its configured route.

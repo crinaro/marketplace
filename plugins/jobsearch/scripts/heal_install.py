@@ -76,6 +76,10 @@ from _diag import log as diag
 # records. Recording them would guarantee false drift on the very next session.
 IGNORE_DIRS = ("__pycache__", ".git", ".in_use")
 IGNORE_SUFFIX = (".pyc", ".pyo")
+# Host-written metadata files: neither the installer's own defect nor an actor's tampering, just
+# the filesystem doing what it always does (adr-014's residual-risk note, public #38). Named, not
+# globbed, so this stays a deliberate allowlist rather than swallowing something that matters.
+IGNORE_FILES = (".DS_Store",)
 PLUGIN_JSON = os.path.join(".claude-plugin", "plugin.json")
 MAX_HEAL_RECORDS = 10
 
@@ -96,6 +100,8 @@ def engine_root_default():
 def interesting(rel):
     parts = rel.split(os.sep)
     if any(p in IGNORE_DIRS for p in parts):
+        return False
+    if os.path.basename(rel) in IGNORE_FILES:
         return False
     return not rel.endswith(IGNORE_SUFFIX)
 

@@ -313,9 +313,12 @@ it, not editing its text into a "done" line in place. The row itself stays as hi
 | `date` | ISO `YYYY-MM-DD`, or the literal `unresolved` if a date could not be read from its source and needs your eyes |
 | `title`, `note` | what it is |
 | `opp_id` | the role it concerns, if any |
+| `status` | `scheduled` or `cancelled` — every commitment starts `scheduled`; a called-off meeting is set to `cancelled` rather than deleted or edited into a "cancelled" title |
 
 Only commitments on or after today show on your dashboard; past ones stay in the file as a
-record rather than being deleted.
+record rather than being deleted. **A `cancelled` commitment is excluded from the This Week
+list and the prep-owed report regardless of its date** — cancelling is terminal, the same way
+an expired opportunity leaves the active pipeline view.
 
 ---
 

@@ -247,8 +247,10 @@ def main():
                                     str(aj.get("title") or "")[:44]),
                     "One item, one row. Shared: " + ", ".join(sorted(overlap))))
 
+    # public #50: a cancelled commitment is no longer "the confirmed commitment" an ask might
+    # duplicate — it has left This Week entirely, so it drops out of this collision check too.
     cm_keys = [(c, keywords("%s %s" % (c.get("title") or "", c.get("who") or "")))
-               for c in commitments]
+               for c in commitments if str(c.get("status") or "") != "cancelled"]
     for a, ka in ask_keys:
         for c, kc in cm_keys:
             if not ka or not kc:
@@ -314,6 +316,8 @@ def main():
 
     # ---- 5: a commitment whose date is the migration marker ---------------
     for c in commitments:
+        if str(c.get("status") or "") == "cancelled":
+            continue        # public #50: called off — no date to verify against an invite
         if str(c.get("date")) == "unresolved":
             problems.append((
                 "COMMITMENT DATE UNRESOLVED", "commitments[%s]" % c.get("id", "?"),

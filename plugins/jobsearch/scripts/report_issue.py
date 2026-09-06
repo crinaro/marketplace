@@ -59,7 +59,12 @@ LEAK_PATTERNS = (
     (r"\b\d{3}[-.\s]\d{3}[-.\s]\d{4}\b", "a phone number"),
     (r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "an email address — say \"my mailbox\""),
     (r"\b\d{6,}\b", "a bare 6+ digit number, which is how a comp figure usually arrives"),
-    (r"(?i)\b(recruiter|contact|manager)\s+[A-Z][a-z]+\s+[A-Z][a-z]+", "a person's name"),
+    # ⭐ public #39 (found via the sibling scan in scripts/intake.py, same defect here by
+    # construction — see the module note above): `(?i)` over the WHOLE pattern case-folds
+    # `[A-Z][a-z]+` too, so the "capitalized word" heuristic degenerates under IGNORECASE to
+    # "any word of 2+ letters" — "manager fixes worth" would match. Scope the case-insensitivity
+    # to the keyword alternation only, so the proper-noun heuristic keeps its case sensitivity.
+    (r"\b(?i:recruiter|contact|manager)\s+[A-Z][a-z]+\s+[A-Z][a-z]+", "a person's name"),
     (r"linkedin\.com/in/[A-Za-z0-9\-_%]+", "a LinkedIn profile URL"),
     (r"/Users/[a-z0-9._\-]+", "a home directory path containing a username"),
 )

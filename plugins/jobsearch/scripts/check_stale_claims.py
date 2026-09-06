@@ -159,7 +159,11 @@ def scan(path, today, threshold):
         return aging, system, False
 
     for n, line in enumerate(lines, 1):
-        if not line.strip() or line.lstrip().startswith(("#", "|---", "_")):
+        # `> `-blockquoted lines are a drafted message BODY, not a tracker claim — RULEBOOK.md's
+        # "BODIES MUST BE `> `-BLOCKQUOTED OR THEY PUBLISH EMPTY" rule (outreach/drafts.md,
+        # applying/cover_letters.md) means every such body was flagged here permanently, with no
+        # way to ever clear it (public #40; ADR-026's extension names this scanner by name).
+        if not line.strip() or line.lstrip().startswith(("#", "|---", "_", ">")):
             continue
 
         is_system = bool(SYSTEM_SUBJECT.search(line) and SYSTEM_STATE.search(line))

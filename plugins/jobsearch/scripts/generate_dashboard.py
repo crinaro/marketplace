@@ -2598,11 +2598,13 @@ def main():
     # ── conversations ──────────────────────────────────────────────────────
     _today_iso = datetime.date.today().isoformat()
     _commits = load_jsonl("commitments.jsonl")
-    # A commitment whose date has passed has ENDED for this page — placed as terminal so
-    # the coverage check can tell "held" from "lost". Unplaceable dates stay loud below.
+    # A commitment whose date has passed, OR that was called off (public #50's `status:
+    # cancelled`), has ENDED for this page — placed as terminal so the coverage check can
+    # tell "held"/"cancelled" from "lost". Unplaceable dates stay loud below.
     for _c in _commits:
         _cd = str(_c.get("date") or "")
-        if _c.get("id") and _vd.is_date(_cd) and _cd < _today_iso:
+        _c_cancelled = str(_c.get("status") or "") == "cancelled"
+        if _c.get("id") and (_c_cancelled or (_vd.is_date(_cd) and _cd < _today_iso)):
             _cover("commit:%s" % _c["id"], "terminal", "conversations")
     # Commitment states — unplaceable dates AND preps owed — come from conversations.py's
     # one resolver (which itself resolves prep existence through knowledge.prep_hits, the
@@ -2622,6 +2624,8 @@ def main():
         _conv_rows = None
     if _conv_rows is None:
         for c in _commits:
+            if str(c.get("status") or "") == "cancelled":
+                continue        # public #50: called off, never a needs-you row
             if str(c.get("date")) == "unresolved":
                 # The migration marker: an unreadable date is an UNKNOWN, never a pass.
                 conv_needs.append(ws_row(
@@ -2657,6 +2661,11 @@ def main():
         # either. The old lexical compare let a non-ISO date string that happened to sort
         # above today ("next Tuesday" >= "2026-…") render as an ordinary scheduled
         # commitment while the needs-you list was simultaneously calling it unreadable.
+        #
+        # public #50: a `status: cancelled` commitment is terminal regardless of date — it
+        # was called off, not merely dated in the past, and belongs on no upcoming list.
+        if str(r.get("status") or "") == "cancelled":
+            return False
         try:
             return datetime.date.fromisoformat(str(r.get("date"))) >= \
                 datetime.date.fromisoformat(_today_iso)

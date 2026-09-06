@@ -355,13 +355,13 @@ history is permanent. It is also the better bug report: the engine is made of ru
   tracked file** — which closes the hole that defeated the old gate: the previous marker was a
   fixed constant printed right here in CLAUDE.md, so subagents read it and reproduced it (7/21,
   7/22, 7/25, 7/28). There is no constant to copy anymore. **Flow for the main session:**
-  1. At run start, mint the token: `scripts/push_init.sh` (writes a fresh `.git/push_token`).
-  2. To push, use the helper: **`scripts/push.sh`** (it reads the token and runs `git push`).
+  1. At run start: `~/.claude/jobsearch/run push_init.sh` (mints a fresh `.git/push_token`).
+  2. To push: **`~/.claude/jobsearch/run push.sh`** (reads the token; runs `git push`).
   **Subagents must never push** (their definitions say so, and the hook now enforces it — a
   subagent that copies any wording from these docs still cannot construct a valid token).
-  Tracked hook source is `scripts/git-hooks/pre-push`; `.git/hooks/` isn't version-controlled,
-  so re-install after a fresh clone with
-  `cp scripts/git-hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push`.
+  Tracked hook source is `${CLAUDE_PLUGIN_ROOT}/scripts/git-hooks/pre-push`; `.git/hooks/` isn't
+  version-controlled, so re-install after a fresh clone with
+  `cp "${CLAUDE_PLUGIN_ROOT}/scripts/git-hooks/pre-push" .git/hooks/pre-push && chmod +x .git/hooks/pre-push`.
   *Honest limit: a subagent with shell access that deliberately reverse-engineers the hook could
   still read `.git/push_token`; this defeats reflexive copying, not a determined bypass. The
   behavioral rule (subagents never push) remains the first line.*
@@ -462,6 +462,6 @@ how a wrong fact gets laundered into a confident report.
 **The task prompts carry the ordered steps** — the `jobsearch:daily-run` skill and
 the `jobsearch:weekly-review` skill. In short: update state → regenerate the dashboard and presence set → **grep the
 OUTPUT for what you just added** → publish both via the Artifact tool (each
-`_url.txt` as `url`: `views/dashboard_artifact_url.txt`, `views/presence_set_url.txt`) → commit → **push with `scripts/push.sh`** → **release the
+`_url.txt` as `url`: `views/dashboard_artifact_url.txt`, `views/presence_set_url.txt`) → commit → **push with `~/.claude/jobsearch/run push.sh`** → **release the
 run lock**. Save any pending draft in FULL to `outreach/drafts.md` and any pending letter to
 `applying/cover_letters.md` — the candidate reads full text off the published dashboard, not the transcript.
