@@ -2314,6 +2314,273 @@ def m_0_40_0_commitment_status(profile, apply_it):
                   % changed)
 
 
+# ── 0.41.0 — design pass A, step 1: the reader's target must exist ─────────────────────────
+# ⚠️ KEYED "0.41.0": 0.40.0 is PUBLISHED (origin carries jobsearch--v0.40.0, whose MIGRATIONS
+# ends at 0.40.0), so a profile that installed it is stamped exactly "0.40.0" and strict `<`
+# would never fire a migration keyed "0.40.0" for it (ADR-009). release-manager re-verifies
+# the key at the moment 0.41.0 is actually cut. Nothing visible to the owner changes in this
+# step: every later step resolves to a key these three guarantee.
+
+
+def _load_config(profile):
+    """(path, cfg, error) — cfg is None when the file is absent (error None) or unreadable."""
+    path = os.path.join(profile, "config.json")
+    if not os.path.exists(path):
+        return path, None, None
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return path, json.load(fh), None
+    except Exception as e:                      # noqa: BLE001 — reported, never raised
+        return path, None, e
+
+
+def _rewrite_config(path, cfg):
+    """Key order preserved (json.load keeps it) so the owner's diff is the change and nothing
+    else; indent=2 is what init_profile.py writes."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, indent=2, ensure_ascii=False)
+        fh.write("\n")
+    os.replace(tmp, path)               # atomic: never a half-written config.json
+
+
+def _merge_lists(keep, extra):
+    """`keep` first, then every item of `extra` not already present. Order kept, nothing dropped."""
+    out = list(keep)
+    for x in extra:
+        if x not in out:
+            out.append(x)
+    return out
+
+
+def m_0_41_0_app_ids(profile, apply_it):
+    """0.41.0 — every applications[] row carries `app_id` (public #27's deferred D3 backfill;
+    design pass A, step 1).
+
+    `app_id` was declared optional "until the deferred migration backfills history", so a
+    trigger (outreach[].trigger_ref, asks.trigger_ref) resolved by DATE for every row written
+    before it — a handle two applications on one day share and nothing guarantees. record.py
+    now mints `<opp_id>-aN` at write time; this is the other half: the backfill that makes the
+    handle exist on every historical row, so every later reader resolves a key the schema
+    guarantees instead of a date somebody remembered.
+
+    ⭐ ARRAY ORDER, NEVER RENUMBERED. Rows are numbered in the order they sit in the array —
+    the first row lacking an id becomes a1, the next a2 — and a row that already carries an
+    `app_id` (hand-minted since public #27) keeps it, its number skipped rather than reused: a
+    trigger naming it must keep naming the same application. Idempotent by construction.
+
+    Then the date refs: an outreach row or ask with `trigger_kind: application` whose
+    `trigger_ref` is the date of EXACTLY ONE application on its record is re-pointed to that
+    row's id (docs/data_model.json's outreach._note anticipated exactly this). A date shared
+    by two rows is left as written — it still resolves by date, and picking one would be a
+    guess recorded as a fact; it is REPORTED so the owner can name the row. PRESERVE, THEN
+    TRANSFORM: nothing is removed, only added (app_id) or made more specific (a ref naming
+    the row instead of its day).
+    """
+    opp_path = os.path.join(profile, "data", "opportunities.jsonl")
+    if not os.path.exists(opp_path):
+        return True, ""
+    try:
+        opps = _read_jsonl(opp_path)
+    except Exception as e:                      # noqa: BLE001
+        return False, ("  ⚠️ opportunities.jsonl could not be read, so app_id was left "
+                       "unminted: %s" % e)
+    asks_path = os.path.join(profile, "data", "asks.jsonl")
+    asks = []
+    if os.path.exists(asks_path):
+        try:
+            asks = _read_jsonl(asks_path)
+        except Exception as e:                  # noqa: BLE001
+            return False, ("  ⚠️ asks.jsonl could not be read, so app_id was left "
+                           "unminted: %s" % e)
+
+    minted, ambiguous = 0, []
+    repointed = {"outreach": 0, "asks": 0}
+    by_opp = {}                                 # rid -> (date -> [app_id...], {app_id...})
+    for r in opps:
+        rid = r.get("id")
+        apps = r.get("applications")
+        if not rid or not isinstance(apps, list):
+            continue
+        taken = {a.get("app_id") for a in apps
+                 if isinstance(a, dict) and isinstance(a.get("app_id"), str) and a.get("app_id")}
+        n = 1
+        for a in apps:
+            if not isinstance(a, dict) or a.get("app_id"):
+                continue
+            while "%s-a%d" % (rid, n) in taken:
+                n += 1
+            a["app_id"] = "%s-a%d" % (rid, n)
+            taken.add(a["app_id"])
+            minted += 1
+            n += 1
+        dates = {}
+        for a in apps:
+            if isinstance(a, dict) and a.get("date"):
+                dates.setdefault(str(a["date"]), []).append(a["app_id"])
+        by_opp[rid] = (dates, taken)
+
+    def _repoint(row, rid, label, bucket):
+        if not isinstance(row, dict) or row.get("trigger_kind") != "application":
+            return
+        ref = row.get("trigger_ref")
+        dates, ids = by_opp.get(rid) or ({}, set())
+        if not isinstance(ref, str) or ref in ids:
+            return
+        owners = dates.get(ref) or []
+        if len(owners) == 1:
+            row["trigger_ref"] = owners[0]
+            repointed[bucket] += 1
+        elif len(owners) > 1:
+            ambiguous.append("%s: trigger_ref %r is the date of %d applications (%s) — name "
+                             "one by app_id" % (label, ref, len(owners), ", ".join(owners)))
+
+    for r in opps:
+        for i, o in enumerate(r.get("outreach") or []):
+            _repoint(o, r.get("id"), "%s outreach[%d]" % (r.get("id"), i), "outreach")
+    for a in asks:
+        if isinstance(a, dict) and a.get("opp_id"):
+            _repoint(a, a["opp_id"], "ask %s" % a.get("id"), "asks")
+
+    if not minted and not repointed["outreach"] and not repointed["asks"]:
+        return True, ""
+    summary = ("app_id minted on %d application row(s) in array order; %d outreach and %d "
+               "ask date trigger_ref(s) re-pointed to the minted id"
+               % (minted, repointed["outreach"], repointed["asks"]))
+    notes = "".join("\n  ℹ️ left by date (still resolves): %s" % x for x in ambiguous)
+    if not apply_it:
+        return True, "  would backfill (0.41.0): %s%s" % (summary, notes)
+    _rewrite_jsonl(opp_path, opps)
+    if repointed["asks"]:
+        _rewrite_jsonl(asks_path, asks)
+    return True, "  ✅ opportunities.jsonl (0.41.0) — %s%s" % (summary, notes)
+
+
+def m_0_41_0_ats_config_keys(profile, apply_it):
+    """0.41.0 — `config.json.ats` carries the names a receipt reader resolves (design pass A,
+    step 1; the names live in scripts/_ats_keys.py).
+
+    `init_profile.py` seeded `ats.sender_domains` and `ats.receipt_phrases`; every profile
+    that actually ran carried `receipt_sender_domains` and `receipt_subject_phrases`. Two
+    spellings of one meaning is ADR-011's banned-alias defect one level up, in config: a
+    reader written against the live names would find NOTHING on a freshly scaffolded profile
+    and read that nothing as "no receipts configured" — public #56's class. The scaffold now
+    seeds the live names; this renames the profiles it already scaffolded.
+
+    ⭐ MERGE, NEVER DROP. Where only the old name exists it is renamed. Where BOTH exist —
+    someone added the live name by hand while the seed sat there — the two lists are unioned
+    in order (the live list first, then anything only the old one had) and the old key
+    removed: a profile carrying both loses nothing. A pair that is not two lists (and not
+    identical) is REPORTED, not touched — merging shapes this migration cannot read would be
+    a guess written as data. Idempotent: the second run finds no old name and returns.
+    """
+    import _ats_keys
+    path, cfg, err = _load_config(profile)
+    if cfg is None:
+        if err is None:
+            return True, ""
+        return False, "  ⚠️ config.json is unreadable, so ats keys were left alone: %s" % err
+    ats = cfg.get("ats")
+    if not isinstance(ats, dict):
+        return True, ""
+    done, refused = [], []
+    for old, new in _ats_keys.LEGACY_RENAMES:
+        if old not in ats:
+            continue
+        if new not in ats:
+            ats[new] = ats.pop(old)
+            done.append("%s -> %s" % (old, new))
+        elif isinstance(ats[old], list) and isinstance(ats[new], list):
+            before = len(ats[new])
+            ats[new] = _merge_lists(ats[new], ats[old])
+            del ats[old]
+            done.append("%s merged into %s (%d value(s) carried over, none dropped)"
+                        % (old, new, len(ats[new]) - before))
+        elif ats[old] == ats[new]:
+            del ats[old]
+            done.append("%s removed (identical to %s)" % (old, new))
+        else:
+            refused.append("%s and %s both exist and are not two lists — merge them by hand"
+                           % (old, new))
+    if refused:
+        return False, "  ⚠️ config.json.ats (0.41.0): " + "; ".join(refused)
+    if not done:
+        return True, ""
+    if not apply_it:
+        return True, "  would rename (0.41.0) config.json.ats: %s" % "; ".join(done)
+    _rewrite_config(path, cfg)
+    return True, "  ✅ config.json.ats (0.41.0) — %s" % "; ".join(done)
+
+
+def m_0_41_0_ats_status_phrases(profile, apply_it):
+    """0.41.0 — `config.json.ats.status_phrases` exists on every profile, keyed by the
+    application status a receipt subject evidences, and the acknowledged-receipt phrases move
+    into it (design pass A, step 1).
+
+    `receipt_subject_phrases` was one flat list that could only ever mean "acknowledged". A
+    reader that also recognises a rejection or an advance needs the phrases keyed by the
+    status they evidence — one shape for every status, so none is a special case.
+
+    ⭐ PRESERVE, THEN TRANSFORM. The existing list is carried into `status_phrases.acknowledged`
+    (unioned in order if that list already exists — nothing dropped) and only THEN is the old
+    key removed; the other status lists are seeded empty so a reader finds the SHAPE and can
+    say "no phrases configured for rejected" instead of finding nothing at all. A profile with
+    no `ats` object gets one carrying only `status_phrases` — `receipt_sender_domains` is
+    deliberately NOT seeded here, because an empty domain list reads as "configured, empty"
+    when the truth is "never configured"; the reader asserts that at start-up. A
+    `status_phrases` that is not an object, or a phrase list that is not a list, is REPORTED,
+    not overwritten. Runs AFTER m_0_41_0_ats_config_keys on purpose: the rename produces the
+    key this moves. Idempotent: the second run finds the shape and no old key.
+    """
+    import _ats_keys
+    path, cfg, err = _load_config(profile)
+    if cfg is None:
+        if err is None:
+            return True, ""
+        return False, ("  ⚠️ config.json is unreadable, so status_phrases was left "
+                       "unseeded: %s" % err)
+    ats = cfg.get("ats")
+    if ats is None:
+        ats = cfg["ats"] = {}
+    if not isinstance(ats, dict):
+        return False, "  ⚠️ config.json.ats is not an object — status_phrases could not be seeded"
+    created = _ats_keys.STATUS_PHRASES not in ats
+    sp = {} if created else ats[_ats_keys.STATUS_PHRASES]
+    if not isinstance(sp, dict):
+        return False, ("  ⚠️ config.json.ats.%s exists but is not an object — left alone; "
+                       "make it {status: [phrases]}" % _ats_keys.STATUS_PHRASES)
+    done = ["created status_phrases"] if created else []
+    seeded = []
+    for k in _ats_keys.STATUS_PHRASE_KEYS:
+        if k not in sp:
+            sp[k] = []
+            seeded.append(k)
+        elif not isinstance(sp[k], list):
+            return False, ("  ⚠️ config.json.ats.%s.%s is not a list — left alone"
+                           % (_ats_keys.STATUS_PHRASES, k))
+    if seeded:
+        done.append("seeded empty %s" % ", ".join(seeded))
+    old = _ats_keys.RECEIPT_SUBJECT_PHRASES
+    if old in ats:
+        if not isinstance(ats[old], list):
+            return False, ("  ⚠️ config.json.ats.%s is not a list — left alone; move it into "
+                           "%s.acknowledged by hand" % (old, _ats_keys.STATUS_PHRASES))
+        before = len(sp["acknowledged"])
+        sp["acknowledged"] = _merge_lists(sp["acknowledged"], ats[old])
+        done.append("moved %d phrase(s) from %s into %s.acknowledged (%d new, none dropped)"
+                    % (len(ats[old]), old, _ats_keys.STATUS_PHRASES,
+                       len(sp["acknowledged"]) - before))
+        del ats[old]
+    if not done:
+        return True, ""
+    if created:
+        ats[_ats_keys.STATUS_PHRASES] = sp
+    if not apply_it:
+        return True, "  would seed (0.41.0) config.json.ats: %s" % "; ".join(done)
+    _rewrite_config(path, cfg)
+    return True, "  ✅ config.json.ats (0.41.0) — %s" % "; ".join(done)
+
+
 # ── install-cache hygiene (dev #167) — owned HERE, never by the launcher ─────────────────────
 # A resolver that deletes is the wrong shape for a constantly-running sh script; pruning is a
 # deliberate, logged act of the SessionStart hook, with the same envelope discipline as the
@@ -2460,7 +2727,16 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               # ⚠️ KEYED "0.40.0" — 0.39.0 is the newest PUBLISHED release (ADR-009): a
               # profile that installed it is stamped exactly "0.39.0", and strict `<` would
               # never fire a migration keyed to it. Re-verified when 0.40.0 is cut.
-              ("0.40.0", m_0_40_0_commitment_status))
+              ("0.40.0", m_0_40_0_commitment_status),
+              # ⚠️ KEYED "0.41.0" — 0.40.0 is the newest PUBLISHED release (ADR-009; verified
+              # 2026-09-06 against origin's jobsearch--v0.40.0 tag, not local tags): a profile
+              # that installed it is stamped exactly "0.40.0", and strict `<` would never fire
+              # a migration keyed to it. Re-verified when 0.41.0 is cut. ORDER IS LOAD-BEARING
+              # within the release: the rename produces `receipt_subject_phrases`, which the
+              # status_phrases move then carries into `status_phrases.acknowledged`.
+              ("0.41.0", m_0_41_0_app_ids),
+              ("0.41.0", m_0_41_0_ats_config_keys),
+              ("0.41.0", m_0_41_0_ats_status_phrases))
 
 
 def pending_for(profile, engine=None):

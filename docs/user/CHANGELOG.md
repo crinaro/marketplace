@@ -2,6 +2,16 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.40.0
+- [#32](https://github.com/crinaro/marketplace/issues/32) — Generated rulebook text and several scripts' own printed usage strings still name a bare scripts/<file> path, after the launcher migration removed that directory from installed profiles
+- [#33](https://github.com/crinaro/marketplace/issues/33) — The rulebook-refresh warning printed at SessionStart cannot observe whether its own file write landed before or after the session loaded its context, and unconditionally asserts the stale branch
+- [#38](https://github.com/crinaro/marketplace/issues/38) — heal_install: tree walk does not exclude the macOS Finder metadata file, so a benign file raises an unexplained-drift alarm every session
+- [#39](https://github.com/crinaro/marketplace/issues/39) — report_issue.py: the personal-data screen false-positives on ordinary technical prose, blocking reports on the only channel that files them
+- [#40](https://github.com/crinaro/marketplace/issues/40) — check_stale_claims: no exemption for a leading quote marker, so a quoted message body is flagged permanently and can never be cleared
+- [#49](https://github.com/crinaro/marketplace/issues/49) — drift_guard cannot re-announce to a resumed session, which is the exact session it just told to restart
+- [#50](https://github.com/crinaro/marketplace/issues/50) — commitments store has no lifecycle field, so a canceled meeting can only be canceled in prose and keeps rendering as a live row
+- [#52](https://github.com/crinaro/marketplace/issues/52) — migrate.py rewrites the rulebook and schema stamp but nothing ever commits them, so a profile stays dirty indefinitely and its recorded schema can regress
+
 ## jobsearch 0.39.0
 - [#60](https://github.com/crinaro/marketplace/issues/60) — The claim union's filename does not read as "my resume" to anyone who did not follow the rename, and for a profile with no variants declared it IS the printed resume
 - [#62](https://github.com/crinaro/marketplace/issues/62) — Stage 1 of #62's presence working set: a second page that always publishes alongside the dashboard — one tab per active resume variant, the claim union, an open-items tab, and the presence rules — with paragraph merges rendered the way they actually print instead of collapsed behind a line-break joiner that hid them. A round-trip check compares the page against its source before every publish. This is stage 1 of four — #62 stays open; the check confirms the page renders faithfully, not that any given variant is safe to send.

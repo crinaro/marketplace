@@ -193,7 +193,19 @@ CONFIG_SKELETON = {
             "{city} • {linkedin_display} • {primary_email} • {phone}",
         ],
     },
-    "ats": {"sender_domains": [], "receipt_phrases": []},
+    # ⭐ 0.41.0 — these are the names a receipt reader resolves (scripts/_ats_keys.py), spelled
+    # here as literals so the skeleton stays readable as a document; test_checks.py holds this
+    # dict's keys equal to _ats_keys.READER_KEYS (the resume_variants mirror precedent). The old
+    # seed (`sender_domains`, `receipt_phrases`) gave a fresh profile keys no reader would ever
+    # find — public #56's class — while every running profile carried these names; a profile
+    # scaffolded under the old seed is renamed by migrate.py's m_0_41_0_ats_config_keys.
+    "ats": {
+        "receipt_sender_domains": [],
+        "status_phrases": {"acknowledged": [], "rejected": [], "advanced": []},
+        "_note": "receipt_sender_domains: the domains your ATS receipts arrive from. "
+                 "status_phrases: subject phrases keyed by the application status they "
+                 "evidence; an empty list means that status is never inferred from mail.",
+    },
 }
 
 CREDENTIAL_CHECKLIST = """# Credentials — YOUR hands, not the assistant's

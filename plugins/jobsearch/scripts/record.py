@@ -252,6 +252,39 @@ def find(rows, rid):
     return None
 
 
+def mint_app_id(rid, existing):
+    """`<opp_id>-aN`, N one past the highest suffix already minted on this record (0.41.0).
+
+    ⭐ THE READER'S TARGET MUST EXIST. Every applications[] row gets its handle AT WRITE TIME,
+    so a trigger (outreach[].trigger_ref, asks.trigger_ref) and every later reader resolve a
+    key this API guarantees rather than a date somebody remembered — two applications on one
+    day share a date and nothing else. Past-the-max, never count-plus-one: a row removed from
+    the middle must not free its number for reuse, or an old trigger naming it would silently
+    move to a different application."""
+    prefix = "%s-a" % rid
+    n = 0
+    for a in existing or []:
+        aid = a.get("app_id") if isinstance(a, dict) else None
+        if isinstance(aid, str) and aid.startswith(prefix) and aid[len(prefix):].isdigit():
+            n = max(n, int(aid[len(prefix):]))
+    return "%s%d" % (prefix, n + 1)
+
+
+def mint_app_ids(rid, rows, also=None):
+    """Fill `app_id` on every applications[] row in `rows` that lacks one, in array order.
+    `also` is the record's CURRENT applications[] when `rows` replaces it wholesale (`set`),
+    so numbering continues past any id the replacement drops. Returns the ids minted."""
+    minted = []
+    seen = list(also or []) + [r for r in rows if isinstance(r, dict) and r.get("app_id")]
+    for r in rows:
+        if not isinstance(r, dict) or r.get("app_id"):
+            continue
+        r["app_id"] = mint_app_id(rid, seen)
+        seen.append(r)
+        minted.append(r["app_id"])
+    return minted
+
+
 def coerce(v):
     """A CLI gives strings; the store is typed. Guessing wrong writes "true" where True belongs."""
     if v in ("true", "True"):
@@ -682,6 +715,9 @@ def main():
 
     # ---- build the mutation, describing it before touching anything -------------
     new_row = None
+    # 0.41.0 — app_ids this write mints (see mint_app_id). Reported after the write lands, so
+    # a caller learns the handle its trigger should name without re-reading the store.
+    minted = []
     if args.op == "create":
         # ⭐ THE MISSING OPERATION (public #17 / dev #97). Without it, adding a brand-new row
         # meant hand-editing the JSONL — the exact ad-hoc read-all/write-all pattern this API
@@ -709,6 +745,9 @@ def main():
                   "stated once." % (idf, new_row[idf], args.rid))
             return 1
         new_row[idf] = args.rid
+        # 0.41.0 — a record born with applications[] gets every row's handle in array order.
+        if args.file == "opportunities" and isinstance(new_row.get("applications"), list):
+            minted = mint_app_ids(args.rid, new_row["applications"])
         # Same refuse-before-write guards every other op gets: unknown keys, aliases, required.
         for k in new_row:
             bad = check_field(args.file, k)
@@ -748,6 +787,10 @@ def main():
             print("  new. --force writes anyway and is almost never right: an unknown field is")
             print("  invisible to every query written against the real one.")
             return 1
+        # 0.41.0 — replacing applications[] wholesale still mints: numbering continues past
+        # whatever the current array holds, so a dropped row's number is never reused.
+        if args.file == "opportunities" and field == "applications" and isinstance(val, list):
+            minted = mint_app_ids(args.rid, val, also=rec.get("applications"))
         desc = "set %s = %r" % (field, val)
 
         def apply(r):
@@ -763,6 +806,15 @@ def main():
             print("⛔ REFUSED — %r is not an array of %s. Known: %s"
                   % (arr, args.file, ", ".join(sorted((m.get("arrays") or {})))))
             return 1
+        # 0.41.0 — an application row is never written without its handle. Minted here
+        # from the pre-lock read (so the uniqueness guard below sees it) and re-minted
+        # against the fresh read inside the lock (so a concurrent append cannot hand two
+        # rows one number).
+        mint_on_append = (args.file == "opportunities" and arr == "applications"
+                          and not blob.get("app_id"))
+        if mint_on_append:
+            blob["app_id"] = mint_app_id(args.rid, rec.get(arr))
+            minted = [blob["app_id"]]
         for k in blob:
             bad = check_field(args.file, k, array=arr)
             if bad and not args.force:
@@ -785,6 +837,9 @@ def main():
         desc = "append to %s[]" % arr
 
         def apply(r):
+            if mint_on_append:
+                blob["app_id"] = mint_app_id(args.rid, r.get(arr))
+                minted[:] = [blob["app_id"]]
             r.setdefault(arr, []).append(blob)
 
     else:  # set-in
@@ -866,6 +921,8 @@ def main():
                   "next worker.")
             return 0
         print("  ✅ dry-run validated clean against the same validator a real write runs.")
+        if minted:
+            print("  · would mint app_id: %s" % ", ".join(minted))
         if args.file == "opportunities" and args.op in ("append", "set-in") and args.rest:
             action = ASK_ACTION_FOR_ARRAY.get(args.rest[0].split(".")[-1])
             for a in linked_asks(args.rid, action, _load_asks()) if action else []:
@@ -1012,6 +1069,9 @@ def main():
         print("  written atomically · validator clean · run's lock left in place")
     else:
         print("  written atomically · validator clean · lock released")
+    if minted:
+        print("  · app_id minted: %s — name it as trigger_ref on whatever this application "
+              "causes" % ", ".join(minted))
     if args.file == "opportunities":
         _your_move_visibility_note(new_row if args.op == "create" else rec)
     return 0

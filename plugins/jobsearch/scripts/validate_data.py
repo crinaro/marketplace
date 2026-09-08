@@ -1002,8 +1002,13 @@ def _main():
                                 "data/resume_variants.jsonl — attribution of outcomes to "
                                 "positioning depends on this join" % (label, i, arv))
             al = "%s: applications[%d]" % (label, i)
-            # app_id (public #27) — the stable handle a trigger names. Optional until the
-            # deferred D3 migration backfills history; where present it must be a slug and
+            # app_id (public #27) — the stable handle a trigger names. record.py mints it on
+            # every write and m_0_41_0_app_ids (0.41.0) backfilled history, so the migration
+            # this comment used to call "deferred" has shipped — app_id is deliberately STILL
+            # not required here: the generated fixture (tests/fixtures/) still carries a
+            # pre-migration row on purpose (drift meters need something to measure), and
+            # requiring it would fail the validator on every un-migrated profile. Promote this
+            # to required once profiles have migrated; where present it must be a slug and
             # unique on the record, or two triggers could name different rows with one ref.
             aid = ap.get("app_id")
             if aid is not None:

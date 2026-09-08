@@ -39,7 +39,8 @@ shows up as a one-line diff rather than a reformatted file.
 This happens automatically, the first time you open a session after upgrading; you do nothing to
 trigger it, and the paths below are what you will have once it has. `config.json`, `user.json`,
 `data/`, `docs/` and the `dashboard.html` tombstone are not part of the move and stay exactly
-where they are.
+where they are. (One part of `config.json` gets its own section below: [ATS receipt
+matching](#ats-receipt-matching-configjsonats).)
 
 | file | holds |
 |---|---|
@@ -258,9 +259,21 @@ actually **submitted**. They are separate because only you know the second, and 
 `true` would corrupt the only comparison that makes your letters measurable. Leave it `null`
 rather than guessing.
 
-`app_id` is a stable handle a trigger can point at (mint it as `<opp_id>-a1`, `-a2`, ...) — it is
-optional today; older rows resolve a trigger by date instead until a future migration backfills
-it everywhere. `form_answers` records what you actually answered on the application's own form
+`app_id` is a stable handle a trigger can point at. **Since 0.41.0 you never mint it yourself** —
+`record.py` assigns `<opp_id>-a1`, `-a2`, ... the moment an application row is written, and the
+0.41.0 upgrade backfilled every row that predated it: each opportunity's applications were
+numbered in the order they already sat in the array, and any id you had minted by hand earlier
+kept its number, with later numbers skipping past it rather than reusing it. **The number is a
+handle, not a timeline** — a historical row backfilled after two newer ones were minted can land
+on `a3`, so nothing should read it as chronological order.
+
+A trigger (an outreach touch's or an ask's `trigger_ref`) written before 0.41.0 used to name an
+application by its date, the only handle that existed at the time. The same upgrade re-pointed
+each of those to the application's new `app_id` wherever that date belonged to exactly one
+application on the role. Where a date was shared by two applications, the trigger was left
+pointing at the date rather than guessed — it still resolves, but only by naming one of the two
+applications yourself (`record.py`) does it stop being ambiguous. `form_answers` records what you
+actually answered on the application's own form
 (salary expectations, reason for leaving, and the like) as
 `{question_key, question, answer, answered_on}`. `question_key` is a shared slug, so the next
 form asking the same question surfaces what you answered last time instead of you re-deriving it
@@ -319,6 +332,39 @@ Only commitments on or after today show on your dashboard; past ones stay in the
 record rather than being deleted. **A `cancelled` commitment is excluded from the This Week
 list and the prep-owed report regardless of its date** — cancelling is terminal, the same way
 an expired opportunity leaves the active pipeline view.
+
+---
+
+## ATS receipt matching — `config.json.ats`
+
+Not a dataset and not one of the documents above — a small settings block inside `config.json`,
+at your profile root (`config.json` itself is not part of the six-phase move; see *the documents*
+table above). It exists to let something read your inbox and recognize an applicant-tracking
+system's automated emails: an acknowledgment, a rejection, an advance to the next round.
+
+| key | what it is |
+|---|---|
+| `receipt_sender_domains` | the domains your ATSes actually send receipts from — for example `["greenhouse-mail.io", "myworkday.com"]` (both fictional; put your own ATSes' real sending domains here, not these) |
+| `status_phrases` | subject-line phrases that evidence a status, grouped by which one: `{acknowledged: [...], rejected: [...], advanced: [...]}` |
+
+Both start **empty** on a fresh profile. **Nothing in the plugin reads these automatically yet —
+filling them in has no visible effect today.** They exist so your profile already carries this
+information, in the right shape, for the ATS-receipt reader this scaffolding is built for; once
+that reader ships, an empty `status_phrases.rejected` will mean "I have no way to recognize a
+rejection from mail," not "no rejections have arrived" — worth knowing now, since filling these in
+today is exactly what gets your profile ready for that day. Match strings are your own words —
+whatever your ATSes' actual subject lines say — not a fixed vocabulary the plugin ships with.
+
+**Renamed in 0.41.0.** Earlier versions of the scaffold seeded this block as `ats.sender_domains`
+and `ats.receipt_phrases` (one flat list, which could only ever mean "acknowledged"); every
+profile that had actually filled the setting in, though, used `receipt_sender_domains` and
+`receipt_subject_phrases` — two spellings of the same thing, split between what got scaffolded
+and what people actually typed. The 0.41.0 upgrade renamed the scaffold's names to the ones
+profiles were already using. If your `config.json` happened to carry both spellings — you added
+the new name by hand while the old scaffolded one still sat there — the two lists were merged in
+order, nothing dropped. Your existing `receipt_subject_phrases` list moved into
+`status_phrases.acknowledged`, since that is the only status it could have meant; `rejected` and
+`advanced` were seeded empty for you to fill in if you want those recognized too.
 
 ---
 
