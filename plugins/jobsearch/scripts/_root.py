@@ -20,7 +20,10 @@ Resolution order:
   1. `CLAUDESEARCH_ROOT`  — explicit; also what lets an AGENCY point the engine at one candidate's
      profile out of many, and what the test suite uses for isolation.
   2. the current working directory, walking UP to find a profile marker.
-  3. ⭐ the REMEMBERED profile (`~/.claude/jobsearch/profile_root`).
+  3. ⭐ the REMEMBERED profile (`~/.claude/jobsearch/profile_root`) — but ONLY when this copy is
+     an INSTALLED one (`is_installed_engine(engine_root())`). A maintainer-checkout copy skips
+     this step outright and falls to (4) — see `profile_root()`'s own docstring, dev #259.
+  4. the CWD, returned as-is (a caller that needs data fails visibly on a missing file).
 
 ⭐⭐ WHY (3) EXISTS — AN MCP SERVER HAS NEITHER OF THE FIRST TWO (2026-08-05).
 A long-lived MCP server is spawned by the Claude runtime, not from a shell: it inherits no
@@ -206,7 +209,59 @@ def state_root(start=None):
 
 
 def profile_root(start=None):
-    """The USER's profile directory. Never the engine's."""
+    """The USER's profile directory. Never the engine's.
+
+    ⭐⭐ dev #259 — THE REMEMBERED-POINTER FALLBACK IS MAINTAINER-CHECKOUT SAFE BY CONSTRUCTION.
+    Two maintenance dispatches on 2026-09-09, each explicitly warned in its own brief, each ran a
+    shipped script directly from this engine CHECKOUT with no `CLAUDESEARCH_ROOT` set and no
+    profile above the cwd — and each landed on this function's third resolution step (the
+    remembered pointer, `~/.claude/jobsearch/profile_root`), which happened to name the owner's
+    real profile from an unrelated earlier session. One printed aggregate counts from it; the
+    other printed profile content outright. Both reported it honestly, which is the only reason
+    it is known — a constraint two careful, explicitly-warned agents violated in one day is not a
+    working constraint, and the fix belongs here, not in a dispatch brief nobody rereads mid-task.
+
+    The remembered-pointer step exists for exactly one documented reason (dev #87, the module
+    docstring above): an MCP server has neither `CLAUDESEARCH_ROOT` nor a meaningful cwd, and the
+    pointer is all it has. A real MCP server's `_root.py` is always the module physically
+    installed under `~/.claude/plugins/cache/...` — `is_installed_engine(engine_root())` is
+    exactly the predicate that already recognises that, structurally, for the pointer-repair
+    logic elsewhere in this file. **A maintainer running a shipped script directly from an engine
+    CHECKOUT is never that caller** — this repo's own rulebook is explicit that the owner's real
+    job search never runs from here at all. So: when nothing above the cwd is a profile and this
+    copy is NOT an installed one, the remembered pointer is never consulted — resolution falls
+    straight through to the SAME last-resort CWD return this function already had (below): a
+    caller that needs data fails visibly on a missing file, exactly the dev #87 property this
+    module already relies on for read-only callers. This requires nothing from the caller to get
+    right; forgetting `CLAUDESEARCH_ROOT` now degrades to "no profile found" instead of
+    escalating to someone else's real one.
+
+    ⚠️ **Deliberately NOT substituted with the tracked fixture.** An earlier version of this fix
+    landed a maintainer-checkout resolution on `tests/fixtures/profile` instead of the cwd —
+    which silently defeats `check_engine_purity.py --require-profile`: that script treats an
+    EMPTY `_profile_terms()` as "no profile reachable, NOT CHECKED, refuse" (correct, loud), but
+    the fixture's `user.json` produces non-empty (synthetic) terms, so the gate would report
+    CHECKED against fixture-only tokens that can never appear in engine source — a vacuous CLEAN,
+    exactly the "missing thing reads as an empty thing and gets reported as fact" trap this
+    marketplace's own rulebook names. `publish.py`'s own preflight calls that script unpinned BY
+    DEFAULT (see its own comment there) and relies on it landing on nothing when no real profile
+    is bound; a maintainer who actually needs the gate to run against real data passes
+    `publish.py --real-profile PATH`, which threads through `run_shipped.py`'s sanctioned opt-in
+    rather than ever substituting the fixture. Fixed before landing, not shipped and then patched.
+
+    The one supported way to reach a REAL profile from a checkout is still what it always was —
+    set `CLAUDESEARCH_ROOT` explicitly (the first branch below, untouched) — because naming the
+    path is the one form of "opt in" that cannot happen by accident. `scripts/run_shipped.py` at
+    the marketplace root is the sanctioned wrapper for routine use: it sets that explicitly by
+    default (pointed at the tracked fixture, so a wrapped run still gets useful synthetic data to
+    work against) and only points it at a real profile when a caller passes `--real-profile` with
+    a stated reason.
+
+    Nothing about the INSTALLED-copy path changes: `is_installed_engine(engine_root())` is True
+    for any script physically running from the plugin cache, so a real MCP server's fallback is
+    untouched — this is proven by `TestProfileBinding.test_mcp_pointer_fallback_is_untouched` in
+    `test_checks.py`, which builds an actually-installed-shaped copy to exercise it.
+    """
     env = os.environ.get("CLAUDESEARCH_ROOT")
     if env:
         root = os.path.abspath(env)
@@ -219,11 +274,15 @@ def profile_root(start=None):
             return cur
         parent = os.path.dirname(cur)
         if parent == cur:
-            # Nothing above the CWD is a profile. Before giving up, use the profile a previous
-            # run recorded — this is the ONLY thing an MCP server has to go on.
-            been_here = remembered_profile()
-            if been_here:
-                return been_here
+            # Nothing above the CWD is a profile. An INSTALLED copy still gets the remembered
+            # pointer — the ONLY thing an MCP server has to go on (dev #87, unchanged). A
+            # maintainer CHECKOUT does not: the remembered pointer names someone else's business
+            # (dev #259 above), so it is skipped entirely and this falls straight to the same
+            # last-resort CWD return below.
+            if is_installed_engine(engine_root()):
+                been_here = remembered_profile()
+                if been_here:
+                    return been_here
             # Still nothing. Return the CWD rather than guessing: a caller that needs data will
             # fail visibly on a missing file, which is far better than silently reading the
             # engine's own directory and reporting an empty pipeline as fact.

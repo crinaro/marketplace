@@ -2,6 +2,9 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.41.0
+- Applications now carry a stable app_id (<opp_id>-aN, minted automatically), and the ATS settings — receipt_sender_domains and status_phrases — are documented for the first time and unified under one set of key names. An existing profile migrates to both automatically on upgrade; no new automated behavior ships yet, since nothing reads these keys until a later release adds the reader. *(tracked internally as crinaro/marketplace-dev#286)*
+
 ## jobsearch 0.40.0
 - [#32](https://github.com/crinaro/marketplace/issues/32) — Generated rulebook text and several scripts' own printed usage strings still name a bare scripts/<file> path, after the launcher migration removed that directory from installed profiles
 - [#33](https://github.com/crinaro/marketplace/issues/33) — The rulebook-refresh warning printed at SessionStart cannot observe whether its own file write landed before or after the session loaded its context, and unconditionally asserts the stale branch

@@ -70,6 +70,14 @@ import knowledge as _kn
 import precondition as _pre
 import channels_due as _cd
 import conversations as _conv_mod
+# ⭐ THE ONE DEFINITION OF "CURRENT" — resume_variants.py owns union_hash (the canonicalized,
+# line-ending/trailing-space/trailing-newline-insensitive stamp `--stamp` writes onto
+# union_sha). This file used to recompute a RAW sha256 of the union's bytes, which agreed with
+# the real stamp only when the claims file happened to have no trailing newline — so on an
+# ordinary file (one that ends with a newline, or has trailing space, or CRLF endings) every
+# active variant read STALE here even seconds after `--stamp` (public #74). Same move as
+# `_TERMINAL` above: import the one answer rather than re-derive it and drift.
+import resume_variants as _resume_variants
 # ⭐ THE ONE TERMINAL SET — validate_data's, by import. This file used to carry its own
 # `_CLOSED_STATUSES = {passed, backlog, expired}`, which dropped every backlog row as closed
 # while your_move.py treated backlog+undecided as the state a sourced role STARTS in and
@@ -1359,13 +1367,12 @@ def render_router_rows(phase_summaries):
 
 def _variant_staleness():
     """(n_active, n_stale) for the presence row: active resume variants whose union_sha
-    no longer matches the claim union (presence/claims.md). Same 12-hex stamp resume_variants.py --stamp writes."""
-    import hashlib as _h
+    no longer matches the claim union (presence/claims.md). Calls resume_variants.union_hash()
+    on resume_variants.read_union() — the SAME 12-hex stamp `resume_variants.py --stamp`
+    writes, computed the same way, so this can never disagree with the gate's own verdict."""
     variants = [v for v in load_jsonl("resume_variants.jsonl") if v.get("status") == "active"]
-    try:
-        cur = _h.sha256(Path(_tree.path(str(ROOT), "claims")).read_bytes()).hexdigest()[:12]
-    except OSError:
-        cur = None
+    union_text = _resume_variants.read_union(str(ROOT))
+    cur = _resume_variants.union_hash(union_text) if union_text is not None else None
     stale = [v for v in variants if cur and v.get("union_sha") != cur]
     return len(variants), len(stale), stale
 
