@@ -58,7 +58,8 @@ import sys
 
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _root import engine_root as _engine_root, profile_root as _profile_root
+from _root import (engine_root as _engine_root, profile_root as _profile_root,
+                    is_tracked_fixture as _is_tracked_fixture)
 
 # ⭐⭐ TWO ROOTS, AND CONFLATING THEM IS TRAP #2 IN THE MARKETPLACE RULEBOOK.
 #
@@ -194,38 +195,20 @@ KNOWN_EXCEPTIONS = (
      "one row of the IMAP provider table (PROVIDER_HELP) — a generic mail-provider entry, not "
      "personal data; collides only because this owner's profile separately names the same "
      "company as an employer encountered"),
-    # ⭐ dev/audit 2026-08-29 (item 3) — three more hits of #225's class, all from the SAME
-    # hardcoded, generic six-entry job-board list (aggregator senders alert_sweep.py watches
-    # for) that has shipped in this plugin since its first import (commit `0ea6c62`,
-    # 2026-08-05) — present in EVERY installation, derived from nothing profile-specific. The
-    # collision fires only because this owner's own profile separately names one of those six
-    # ordinary board names as an employer encountered, and encountered()'s term extraction
-    # pulled that word out, then matched it against these unrelated hardcoded strings.
-    # ⚠️ Per the block above: none of the four terms below, nor this comment, repeat the
-    # colliding board name itself — each is drawn from text immediately AROUND it in the real
-    # source line, the same "describe without repeating" move #222 used, because this gate
-    # scans its own source and a spelled-out term here would be tomorrow's fresh hit.
-    ("scripts/watch.py", "OR from:linkedin OR from:", 225,
-     "one board in the hardcoded alert-digest search query's generic job-board list; collides "
-     "only because this owner's profile separately names the same word as an employer "
-     "encountered"),
-    ("scripts/alert_sweep.py", "Dice, CareerBuilder, ", 225,
-     "a board name in the module docstring's list of the same generic hardcoded aggregators "
-     "watch.py/migrate.py also carry; collides only because this owner's profile separately "
-     "names the same word as an employer encountered"),
-    ("scripts/migrate.py", '": "from:', 225,
-     "one row of LEGACY_ALERT_SENDERS — the same hardcoded generic job-board list kept here "
-     "only as the 0.27.0 backfill's source of truth; collides only because this owner's "
-     "profile separately names the same word as an employer encountered. ⚠️ This term is the "
-     "template text shared by all six rows (`\"<key>\": \"from:<key>\",`), so it is narrower "
-     "than the file alone but not narrower than the row — a future profile term that happens "
-     "to also match one of the other five board names in this SAME dict would be suppressed "
-     "here too; no substring of only the colliding row avoids spelling the row's own key, so "
-     "this is the least-broad term available without doing that (see the block above)."),
-    ("scripts/migrate.py", "dice / careerbuilder / ", 225,
-     "a comment enumerating the same six hardcoded board-name keywords, not personal data; "
-     "collides only because this owner's profile separately names the same word as an "
-     "employer encountered"),
+    # ⭐⭐ dev #225 — THE FOUR JOB-BOARD ENTRIES THAT USED TO LIVE HERE ARE GONE, NOT HIDDEN.
+    #
+    # `scripts/watch.py`'s alert-digest query, `scripts/alert_sweep.py`'s docstring, and
+    # `scripts/migrate.py`'s `LEGACY_ALERT_SENDERS` table (two hits) used to need a manual
+    # exception each, because all four collided with the SAME generic, six-entry, install-wide
+    # job-board vocabulary (indeed / linkedin / dice / careerbuilder / ladders / ziprecruiter)
+    # that ships unchanged to every installation. `_profile_terms()` now derives that exact list
+    # directly from `migrate.py`'s own `LEGACY_ALERT_SENDERS` dict — the same source of truth
+    # these four collisions already pointed at — and excludes it from `encountered()` the same
+    # way a profile's own declared platforms already were (see the `platforms` block above). The
+    # four terms simply never fire any more; they are removed here rather than kept as inert
+    # rows, because an exception that can never fire again is exactly what the staleness check
+    # two sections below exists to catch and force out.
+    #
     # ⭐ dev #225, another hit of the same class, 2026-09-04. Step 3's JD-verification advice
     # names two real, generic staffing agencies as an example of "wrapper posting, not the
     # actual employer" — the sentence is unchanged-for-any-candidate advice, not this owner's
@@ -431,6 +414,46 @@ def _profile_terms():
                             platforms.add(tok.lower())
     except Exception:
         pass
+
+    # ⭐⭐ dev #225 — THE ENGINE'S OWN GENERIC JOB-BOARD VOCABULARY IS *ALSO* NOT PROFILE DATA,
+    # EVEN WHEN NO PROFILE EVER DECLARED IT. The `channels.jsonl` read above only excludes a
+    # board THIS profile subscribes to — but four of #225's own `KNOWN_EXCEPTIONS` entries were
+    # never that: `watch.py`'s alert-digest query, `alert_sweep.py`'s docstring, and
+    # `migrate.py`'s `LEGACY_ALERT_SENDERS` backfill table all name the SAME six generic
+    # aggregator senders (indeed / linkedin / dice / careerbuilder / ladders / ziprecruiter) that
+    # ship, unchanged, to EVERY installation — present whether or not any given profile ever
+    # watches them. That list already exists exactly once, as `migrate.py`'s own
+    # `LEGACY_ALERT_SENDERS` dict (kept there as the 0.27.0 backfill's source of truth) — reading
+    # it directly, rather than retyping the six names here, is the SAME "derive, never hardcode"
+    # discipline the profile-side set above already follows. A term that collides only because a
+    # real employer happens to share a name with one of these six generic, install-wide board
+    # names is not a leak by the identical reasoning that already exempts profile-declared
+    # platforms two paragraphs up: flagging it produces the exact wolf-crying noise that gets a
+    # gate switched off, and it was the actual, sole cause of four separate KNOWN_EXCEPTIONS
+    # entries (all four retired in the same change that added this block).
+    #
+    # ⚠️ THIS DOES NOT TOUCH THE OTHER NINE #225 EXCEPTIONS. The remaining collisions are an
+    # ordinary, common software-release word this repo also uses for its own versioning prose
+    # and test vocabulary (six sites) and a staffing-agency name used as a generic
+    # JD-verification example (one site). Neither is safely derivable the way the board list is:
+    # the software-release word is free-text policy PROSE (`plugin.json`'s `versioningPolicy`
+    # string), not a structured enum this file can read, and — unlike a job board — this same
+    # ordinary word also happens, separately, to be a real employer's name: that collision is
+    # the CURRENT incident, so silencing the word globally would hide the next real occurrence
+    # of the very collision this fix exists for. No dictionary
+    # ships with this gate (Python 3.9+, stdlib only) and none should: the STOPWORDS precedent
+    # above only ever accepted this trade-off for CLOSED-CLASS function words, which are
+    # "essentially never drawn" as a name — an argument that does not hold for an open-class
+    # content word a real company is, in fact, named after. Those nine stay exactly as
+    # manually-scoped KNOWN_EXCEPTIONS entries; automating them away would either reopen that
+    # exact blind spot or resurrect the free-text narrative-pattern matching this repo already
+    # learned (`check_narrative.py`) is wrong four times out of five.
+    try:
+        import importlib as _importlib
+        _migrate = _importlib.import_module("migrate")
+        platforms.update(k.lower() for k in getattr(_migrate, "LEGACY_ALERT_SENDERS", {}))
+    except Exception:
+        pass                                    # best-effort: never break the gate over this
 
     # ⭐ A MASKED EMPLOYER NAMES NO ENTITY — found auditing GitHub #19's blast radius. Several
     # company records here are recruiter-fronted searches where the end client was never
@@ -682,6 +705,52 @@ def main():
         print("\n  !! COVERAGE DOES NOT ADD UP — %d scanned + %d excluded != %d tracked."
               % (len(readable), len(excluded), len(ENGINE)))
         return 1
+
+    # ⭐⭐ dev #299 — A REACHABLE PROFILE IS NOT THE SAME QUESTION AS A REAL ONE.
+    #
+    # `--require-profile` exists so a pre-publish run stops rather than certifying a leak check
+    # that never ran. But `_profile_terms()` cannot tell "the owner's real profile" from "the
+    # tracked, synthetic fixture" — both carry `user.json`/`config.json` and both produce a
+    # non-empty term set, so ROOT resolving to `tests/fixtures/profile` used to sail straight
+    # into the scan below and report a CONFIDENT verdict computed from synthetic terms:
+    #
+    #     real profile:     KNOWN EXCEPTIONS — suppressed, NOT resolved · CLEAN · exit 0
+    #     fixture profile:  !! 13 STALE KNOWN EXCEPTION(S) — they match nothing and must be deleted
+    #
+    # Both ran to completion; only one of them was ever asking about real data. The 13
+    # `KNOWN_EXCEPTIONS` entries document collisions with the OWNER's real profile terms — the
+    # fixture's synthetic terms never produce them, so every one of those exceptions reads as
+    # stale against the fixture even though every one is still live against the real profile.
+    # Acting on the fixture's answer would delete thirteen load-bearing suppressions and the very
+    # next REAL run would fail on the defects they cover — this already happened once, caught
+    # only because a second measurement (against the real profile) disagreed.
+    #
+    # ⚠️ This got MORE dangerous the day `run_shipped.py` shipped (dev #259): its safe-by-default
+    # behaviour is to pin `CLAUDESEARCH_ROOT` at exactly this fixture, so the ordinary, sanctioned
+    # way to run a shipped script from this checkout now reaches the fixture every time — where
+    # before, an unpinned invocation reaching the fixture at all was closer to an accident. An
+    # accidental-but-often-right answer became a safe-but-confidently-wrong one.
+    #
+    # The fix mirrors the existing "no profile at all" discipline one level up: a profile that
+    # CANNOT answer the purity/staleness question must say so loudly rather than answer anyway.
+    # The structural half above (file coverage) is unaffected — it never depended on WHICH
+    # profile resolved, only on the engine tree, so it stays meaningful either way.
+    if _is_tracked_fixture(ROOT):
+        # ⚠️ THIS MESSAGE SHIPS. Naming a marketplace-only maintainer wrapper here (one that
+        # never ships to an install) would be the exact public #73 defect class this same wave
+        # fixed elsewhere — a shipped file pointing a reader at something that does not exist on
+        # the other end. `CLAUDESEARCH_ROOT` is the one mechanism this instruction can name that
+        # is genuinely universal: it is `_root.py`'s own first, always-available resolution step,
+        # true for a maintainer checkout and a real installed copy alike.
+        print("\n  %d engine file(s) found — structure OK." % len(ENGINE))
+        print("  !! NOT CHECKED for real profile data: the resolved profile is the TRACKED,")
+        print("     SYNTHETIC FIXTURE (%s)," % ROOT)
+        print("     not a real profile. Fixture terms cannot validate KNOWN_EXCEPTIONS staleness")
+        print("     or find a real leak — a verdict computed from them would be CONFIDENTLY")
+        print("     WRONG, not merely absent (dev #299).")
+        print("     To actually check real data, point CLAUDESEARCH_ROOT at the real profile")
+        print("     directory before running this check with --require-profile.")
+        return 1 if args.require_profile else 0
 
     terms = _profile_terms()
     if not terms:

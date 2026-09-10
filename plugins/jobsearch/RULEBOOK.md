@@ -12,7 +12,7 @@ This repo is the single source of truth for the candidate's executive job search
 `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/_tree.py" --audit` flags anything else.
 **Retirement is a MOVE to `archive/retired-trackers/`, never a note.**
 
-**DATA (JSON — queried, counted, validated).** Engine `docs/schema.md`; rationale ADR-004.
+**DATA (JSON — queried, counted, validated).** Shape: `record.py fields --file <store>`; rationale ADR-004.
 - **`data/opportunities.jsonl` · `companies.jsonl` · `channels.jsonl` — THE PIPELINE.** Edit
   these, then run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/validate_data.py"`. **⭐ An APPLICATION goes in
   `applications[]`, an outreach touch in `outreach[]` — separate arrays because they are

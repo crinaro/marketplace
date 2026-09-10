@@ -82,6 +82,7 @@ import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 import profile as _profile
+from pipeline_index import is_excluded as _is_excluded
 ENGINE_SCRIPTS = os.path.dirname(os.path.realpath(__file__))
 
 ROOT = _profile_root()
@@ -100,6 +101,30 @@ def rule(t):
     print("\n" + "=" * 76)
     print(t)
     print("=" * 76)
+
+
+def open_fit_questions(opps):
+    """(qs, excluded_q) — qs is [(act_by_or_9999, o, r)] for every OPEN fit question on a role
+    that is NOT already decided; excluded_q counts how many open questions were withheld
+    because the role IS decided.
+
+    public #66 — this used to list a question regardless of whether its role had already been
+    decided, disagreeing with fit_report.py's own "OPEN GAPS" view, which excludes exactly this
+    case via pipeline_index.is_excluded. Bound to that one definition rather than re-deriving
+    "already ruled out" here (the house pattern — generate_dashboard.py's `_TERMINAL =
+    _vd.TERMINAL_OPP_STATUSES`): a role the candidate has passed on, or that was recorded as
+    passed, can carry no LIVE question — asking it again is exactly the already-ruled-out
+    resurfacing pipeline_index.is_excluded exists to prevent.
+    """
+    qs, excluded_q = [], 0
+    for o in opps:
+        for r in ((o.get("fit") or {}).get("requirements") or []):
+            if r.get("question_status") == "open" and r.get("question_for_candidate"):
+                if _is_excluded(o):
+                    excluded_q += 1      # the role is decided; the question is moot
+                    continue
+                qs.append((r.get("act_by") or "9999-99-99", o, r))
+    return qs, excluded_q
 
 
 def main():
@@ -250,18 +275,21 @@ def main():
     # the only kind that can be missed by waiting. <a recruiter>'s out-of-office said she returns
     # Monday August 3; that was sitting in the question text as prose, which nothing can sort.
     rule("3b. OPEN QUESTIONS — from the JD fit analysis")
-    qs = []
-    for o in opps:
-        for r in ((o.get("fit") or {}).get("requirements") or []):
-            if r.get("question_status") == "open" and r.get("question_for_candidate"):
-                qs.append((r.get("act_by") or "9999-99-99", o, r))
+    qs, excluded_q = open_fit_questions(opps)
     today = datetime.date.today().isoformat()
     due = [x for x in qs if x[0] <= today]
     dated = [x for x in qs if today < x[0] < "9999-99-99"]
     if not qs:
         print("  None open.")
+        if excluded_q:
+            print("  (%d question(s) on passed/closed roles withheld — pipeline_index.is_excluded"
+                  % excluded_q)
+            print("   is the predicate; the role is decided, so the question is moot.)")
     else:
         print("  %d open (%d dated, %d DUE TODAY OR OVERDUE)." % (len(qs), len(dated) + len(due), len(due)))
+        if excluded_q:
+            print("  (+%d on passed/closed roles withheld as moot — pipeline_index.is_excluded)"
+                  % excluded_q)
         # key ONLY — tuples carrying dicts blow up when two act_by dates tie.
         for by, o, r in sorted(due + dated, key=lambda x: x[0])[:6]:
             cname = companies.get(o.get("company_id"), o.get("company_id") or "?")

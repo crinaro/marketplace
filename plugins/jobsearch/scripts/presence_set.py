@@ -9,9 +9,21 @@ ships: three consecutive role lines with no blank line between them read fine in
 merge into one paragraph in whatever renders them. The owner assembled this review by hand for
 weeks; this makes it a query.
 
+⭐ A SECOND DEFECT THIS CLOSES (public #77). `n_active` — the count behind the union title,
+the tab label, and the header — used to be `len(panes that rendered)`, so a profile with three
+declared variants that all failed to render (a bad path, a retired status, a broken row) was
+told by its OWN presence page "No variants are declared." The store's declaration and the
+page's claim about that declaration must never disagree: `n_active` now counts DECLARED
+variants (status != "retired", classify_variants() below), whether they render or not — the
+same definition `generate_dashboard._variant_staleness()` already used (public #74). And a
+variant that cannot render gets a tab anyway, carrying a notice that names exactly why
+(retired, file missing, file unreadable, no file declared, or an unreadable row) — visible
+where the reader is already looking, not only summarized on the Open items tab.
+
 ## What it writes (every run, unconditionally — including on a profile with ZERO variants)
 
-    views/presence_set.html          the page: one tab per source, an open-items tab, a rules tab
+    views/presence_set.html          the page: one tab per declared variant — its source, or
+                                     the reason it has none — an open-items tab, a rules tab
     views/presence_set_ledger.json   what each pane was generated FROM (source path + sha256),
                                      the derived open items, the category vocabulary — verified
                                      AGAINST the page by --check, never trusted alone
@@ -59,9 +71,12 @@ words. With variants it is the superset nobody sends, and the tab says THAT. The
 The first PREVIEW_CHARS characters of every source paragraph, heading, item and quote must
 appear in the page's tag-stripped text, inside the pane that claims that source. A preview that
 renders is not a preview that is correct. Exit 1 on: a pane whose ledger sha does not match its
-source or the page; a retired variant with a tab; an active variant without one; a derived item
-the page shows that no longer derives (a resolved item still rendered); a category not named;
-a probe that does not round-trip; the union title not matching the store's variant state.
+source or the page; a retired variant with a rendered CONTENT pane; a derived item the page
+shows that no longer derives (a resolved item still rendered); a category not named; a probe
+that does not round-trip; the union title not matching the store's variant state; a variant
+DECLARED in data/resume_variants.jsonl with no tab at all, rendered or absent (checked
+straight against that file, never through a rebuild that could reproduce the same drop —
+public #77); an absent tab whose stated cause no longer matches the store.
 
 Reads: presence/claims.md (`_tree.py` key `claims`), presence/rules.md (`presence_rules`),
 data/resume_variants.jsonl via resume_variants.py (states, violations, stamps), surfaces.py.
@@ -92,7 +107,8 @@ import surfaces as _surf
 import resume_variants as _rv
 
 PAGE_KEY, LEDGER_KEY, URL_KEY = "presence_set", "presence_set_ledger", "presence_set_url"
-LEDGER_SCHEMA = 1
+LEDGER_SCHEMA = 2   # 2: variants.active is DECLARED (not rendered); variants.absent replaces
+                    # variants.unrenderable and names every drop cause, retired included
 PREVIEW_CHARS = 40
 
 # ⭐ THE CATEGORY VOCABULARY — enum order is render order, and every name renders even when
@@ -411,20 +427,70 @@ def _rel(root, path):
     return os.path.relpath(path, root).replace(os.sep, "/")
 
 
-def variant_panes(root, rep, rows):
-    """[(row, report_row)] for every variant that gets a tab: ACTIVE (not retired) with a file
-    that exists. A retired variant never renders (rule 5 — it has left the working set); a
-    declared file that does not exist has nothing to render and is resume_variants.py's red."""
-    by_id = {r["id"]: r for r in rep["variants"]}
+def variant_key(rec, i):
+    """The tab id a declared row renders under. A row missing its own `id` still gets a
+    tab — public report: three declared variants rendered NOTHING, and a row lacking `id`
+    is exactly the sort of row that used to vanish first. Position makes it nameable anyway."""
+    vid = rec.get("id")
+    return str(vid) if vid else "row%d" % (i + 1)
+
+
+def classify_variants(root, rep, rows):
+    """[dict] — one entry per row in `rows`, POSITIONALLY paired with `rep["variants"]`
+    (both are `check_variant()` over the same list, in the same order — not an `id`-keyed
+    lookup, which mishandles the very rows this exists to name: two rows sharing an id, or
+    lacking one, collide or vanish under a dict keyed by `id`).
+
+    Every row gets an entry. `renders` is True for a row that gets a content pane; when it
+    is False, `cause`/`cause_label`/`why` say EXACTLY why — never a generic "cannot render"
+    (public report). The causes:
+
+        retired         terminal (rule 5) — the row's status says so
+        file-missing    `file` names a path that does not exist under the profile root
+        file-unreadable `file` names a path that EXISTS but could not be read as UTF-8
+                        (permissions, encoding) — distinct from file-missing on purpose
+        no-file         the row has no `file` at all — nothing was ever declared to read
+        no-id           the row has no `id` — unnamed, unselectable
+        unreadable      resume_variants.py marked the row unusable for a reason not covered
+                        above; its own `why` is carried verbatim rather than guessed at
+    """
+    reps = rep.get("variants") or []
     out = []
-    for rec in rows:
-        vid = rec.get("id")
-        if not vid or not rec.get("file") or rec.get("status") == "retired":
-            continue
-        rr = by_id.get(vid) or {}
-        if rr.get("state") in ("missing-file", "unreadable"):
-            continue
-        out.append((rec, rr))
+    for i, rec in enumerate(rows):
+        rr = reps[i] if i < len(reps) else {}
+        vid = variant_key(rec, i)
+        label = str(rec["id"]) if rec.get("id") else "(unnamed variant %d)" % (i + 1)
+        state = rr.get("state")
+        cause = cause_label = why = None
+        if state == "retired":
+            cause, cause_label = "retired", "Retired"
+            why = rr.get("why") or "terminal — history stays resolvable, no claim checks"
+        elif state == "missing-file":
+            fpath = os.path.join(root, rec.get("file") or "")
+            if rec.get("file") and os.path.exists(fpath):
+                cause, cause_label = "file-unreadable", "File unreadable"
+                why = ("%r exists under the profile root but could not be read as UTF-8 "
+                       "text (permissions, or an encoding this reader does not handle) — "
+                       "fix the file, then regenerate." % rec["file"])
+            else:
+                cause, cause_label = "file-missing", "File missing"
+                why = rr.get("why") or ("%r does not exist under the profile root"
+                                        % rec.get("file"))
+        elif state == "unreadable":
+            if not rec.get("id"):
+                cause, cause_label = "no-id", "No id declared"
+                why = ("this row in %s has no id — it cannot be named, selected, or "
+                       "reconciled; give it one." % _rv.STORE_FILE)
+            elif not rec.get("file"):
+                cause, cause_label = "no-file", "No file declared"
+                why = ("%s declares %r with no file — there is nothing to read; add a "
+                       "file path or retire the row." % (_rv.STORE_FILE, rec["id"]))
+            else:
+                cause, cause_label = "unreadable", "Unreadable"
+                why = rr.get("why") or "row lacks id/file — validate_data.py has the details"
+        out.append({"vid": vid, "label": label, "rec": rec, "rr": rr,
+                    "renders": cause is None, "cause": cause, "cause_label": cause_label,
+                    "why": why})
     return out
 
 
@@ -494,6 +560,8 @@ CSS = """
   .pane table { border-collapse: collapse; margin: 0 0 10px; } .pane th, .pane td { border: 1px solid var(--card-border);
              padding: 4px 8px; text-align: left; vertical-align: top; }
   .pane hr { border: 0; border-top: 1px solid var(--card-border); margin: 14px 0; }
+  .absent-pane { color: var(--empty); font-style: italic; font-size: 13px; padding: 18px 4px; }
+  .strip .why { margin-top: 4px; }
   code { font-size: 12.5px; } code.fileref { background: var(--divider); border-radius: 4px; padding: 0 4px; }
   .cat { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: 10px;
          padding: 12px 16px; margin-bottom: 10px; }
@@ -541,9 +609,15 @@ def build(root, today=None):
     today = today or datetime.date.today()
     rep = _rv.report(root)
     rows, _errs, present = _rv.load_store(root)
-    vpanes = variant_panes(root, rep, rows)
-    n_active = len(vpanes)
-    retired = sorted(str(r.get("id")) for r in rows if r.get("status") == "retired")
+    vrows = classify_variants(root, rep, rows)
+    # ⭐ public report: `n_active` used to count PANES THAT RENDERED, so a profile whose
+    # declared variants all failed to render was told the store had none — a claim the store
+    # never made. `active` here is DECLARED (status != "retired"), the same definition
+    # generate_dashboard._variant_staleness() already uses (public #74's fix), so the two
+    # surfaces cannot disagree about how many variants exist.
+    n_active = sum(1 for vr in vrows if vr["rec"].get("status") != "retired")
+    absent = [vr for vr in vrows if not vr["renders"]]
+    retired = sorted(vr["vid"] for vr in vrows if vr["cause"] == "retired")
 
     panes, ledger_panes, panes_blocks = [], [], {}
     tabs = []                                                 # (key, label)
@@ -565,29 +639,45 @@ def build(root, today=None):
                          "blocks": len(ublocks), "probes": len(probes(ublocks))})
     tabs.append(("union", "Union" if n_active else "Resume"))
 
-    # ── one tab per ACTIVE declared variant ──
-    for rec, rr in vpanes:
-        vid = str(rec["id"])
-        vpath = os.path.join(root, rec["file"])
-        vrel = _rel(root, vpath)
-        vtext = read_source(vpath) or ""
-        vblocks = parse_blocks(vtext)
-        panes_blocks[vrel] = vblocks
-        surface = _surf.DEFAULT_SURFACE
-        state = rr.get("state", "?")
-        stamped = rec.get("union_reconciled_on") or "never"
-        strip = ('<div class="strip"><h2>%s</h2>archetype: %s · source: <code>%s</code> '
-                 '· surface: %s · containment: %s · reconciled: %s</div>'
-                 % (esc(vid), esc(str(rec.get("archetype") or "?")), esc(vrel),
-                    esc(_surf.describe(surface)),
-                    ('<span class="warn">%s</span>' % esc(state)) if state in ("drifted", "stale")
-                    else esc(state), esc(stamped)))
+    # ── one tab per DECLARED variant, retired included. A row that renders gets its source
+    # (rule 1); a row that cannot gets a notice naming exactly why — public report: a drop
+    # must never be silent, and never visible only on the Open items tab ──
+    for vr in vrows:
+        rec, rr, vid = vr["rec"], vr["rr"], vr["vid"]
         key = "variant:%s" % vid
-        panes.append((key, strip, _pane(key, vrel, sha_of(vpath), render_blocks(vblocks))))
-        ledger_panes.append({"key": key, "label": vid, "source": vrel, "sha256": sha_of(vpath),
-                             "exists": True, "surface": surface, "state": state,
-                             "blocks": len(vblocks), "probes": len(probes(vblocks))})
-        tabs.append((key, vid))
+        if vr["renders"]:
+            vpath = os.path.join(root, rec["file"])
+            vrel = _rel(root, vpath)
+            vtext = read_source(vpath) or ""
+            vblocks = parse_blocks(vtext)
+            panes_blocks[vrel] = vblocks
+            surface = _surf.DEFAULT_SURFACE
+            state = rr.get("state", "?")
+            stamped = rec.get("union_reconciled_on") or "never"
+            strip = ('<div class="strip"><h2>%s</h2>archetype: %s · source: <code>%s</code> '
+                     '· surface: %s · containment: %s · reconciled: %s</div>'
+                     % (esc(vid), esc(str(rec.get("archetype") or "?")), esc(vrel),
+                        esc(_surf.describe(surface)),
+                        ('<span class="warn">%s</span>' % esc(state)) if state in ("drifted", "stale")
+                        else esc(state), esc(stamped)))
+            panes.append((key, strip, _pane(key, vrel, sha_of(vpath), render_blocks(vblocks))))
+            ledger_panes.append({"key": key, "label": vr["label"], "source": vrel,
+                                 "sha256": sha_of(vpath), "exists": True, "surface": surface,
+                                 "state": state, "blocks": len(vblocks),
+                                 "probes": len(probes(vblocks))})
+            tabs.append((key, vr["label"]))
+        else:
+            icon = "🪦" if vr["cause"] == "retired" else "⛔"
+            strip = ('<div class="strip" data-variant-id="%s" data-variant-absent="%s">'
+                     '<h2>%s — %s</h2>archetype: %s · source: <code>%s</code>'
+                     '<div class="why">%s</div></div>'
+                     % (esc(vid), esc(vr["cause"]), esc(vr["label"]), esc(vr["cause_label"]),
+                        esc(str(rec.get("archetype") or "?")),
+                        esc(rec.get("file") or "(none declared)"), esc(vr["why"])))
+            body = ('<div class="absent-pane">No content renders on this tab — the notice '
+                    'above says why, and what to do.</div>')
+            panes.append((key, strip, body))
+            tabs.append((key, "%s %s" % (icon, vr["label"])))
 
     # ── open items (rule 4: grouped, empty categories named; rule 5: derived only) ──
     items = derive_open_items(root, rep, panes_blocks)
@@ -602,18 +692,16 @@ def build(root, today=None):
         cats.append('<section class="cat" data-category="%s" data-count="%d"><h3>%s</h3>'
                     '<div class="why">%s</div>%s</section>'
                     % (name, len(items[name]), esc(label), esc(why), body))
-    unrenderable = [r["id"] for r in rep["variants"] if r["state"] in ("missing-file", "unreadable")]
     ostrip = ('<div class="strip"><h2>Open items</h2>%d open, derived from the sources on every '
               'run — an item leaves this tab the moment its condition no longer holds; '
-              'nothing here is ever marked done.%s%s</div>'
+              'nothing here is ever marked done.%s</div>'
               % (n_items,
-                 (' <span class="warn">%d retired variant%s not shown: %s</span>'
-                  % (len(retired), "" if len(retired) == 1 else "s", esc(", ".join(retired))))
-                 if retired else "",
-                 (' <span class="warn">%d declared variant%s cannot render (no file): %s '
-                  '— resume_variants.py --check names the fix</span>'
-                  % (len(unrenderable), "" if len(unrenderable) == 1 else "s",
-                     esc(", ".join(map(str, unrenderable))))) if unrenderable else ""))
+                 (' <span class="warn">%d variant %s why %s cannot render — %s</span>'
+                  % (len(absent), "tab shows" if len(absent) == 1 else "tabs show",
+                     "it" if len(absent) == 1 else "they",
+                     esc(", ".join("%s (%s)" % (a["vid"], a["cause_label"])
+                                   for a in absent))))
+                 if absent else ""))
     panes.append(("items", ostrip, "\n".join(cats)))
     tabs.append(("items", "Open items (%d)" % n_items))
 
@@ -644,23 +732,29 @@ def build(root, today=None):
                         "color: var(--tab-active-fg); }" % (k, k, k, k) for k, _l in tabs)
     pages = "\n".join('<div class="tabpage" id="p-%s">\n%s\n%s\n</div>' % (esc(k), strip, body)
                       for k, strip, body in panes)
+    n_absent_active = sum(1 for a in absent if a["cause"] != "retired")
     doc = ('<title>%s</title>\n<style>%s\n%s\n</style>\n'
-           '<h1>%s</h1>\n<div class="updated">generated %s · %d variant tab%s%s</div>\n'
+           '<h1>%s</h1>\n<div class="updated">generated %s · %d variant tab%s%s%s</div>\n'
            '%s\n<div class="tabs">%s</div>\n<div class="panes">\n%s\n</div>\n'
            '<div class="foot">Each pane renders its source file and nothing else; the strip '
            'above it carries everything measured. Regenerate with presence_set.py; verify '
            'with presence_set.py --check (ADR-028).</div>'
            % (esc(title), CSS, tab_css, esc(title), today.isoformat(), n_active,
               "" if n_active == 1 else "s",
+              (" (%d cannot render)" % n_absent_active) if n_absent_active else "",
               (" · %d retired" % len(retired)) if retired else "",
               inputs, labels, pages))
     ledger = {
         "schema": LEDGER_SCHEMA,
         "generated_on": today.isoformat(),
         "union_mode": mode,
-        "variants": {"store_present": present,
-                     "active": [str(rec["id"]) for rec, _ in vpanes], "retired": retired,
-                     "unrenderable": [str(v) for v in unrenderable]},
+        "variants": {
+            "store_present": present,
+            "active": [vr["vid"] for vr in vrows if vr["rec"].get("status") != "retired"],
+            "rendered": [vr["vid"] for vr in vrows if vr["renders"]],
+            "retired": retired,
+            "absent": [{"id": a["vid"], "cause": a["cause"], "why": a["why"]} for a in absent],
+        },
         "surfaces": {n: dict(_surf.get(n)) for n in _surf.names()},
         "categories": list(CATEGORY_NAMES),
         "panes": ledger_panes,
@@ -701,6 +795,8 @@ _PANE_RE = re.compile(r'<div class="pane" data-pane="([^"]*)" data-source="([^"]
 _ITEM_RE = re.compile(r'<li data-item="([^"]*)"')
 _CAT_RE = re.compile(r'<section class="cat" data-category="([^"]*)"')
 _MODE_RE = re.compile(r'data-union-mode="([^"]*)"')
+_VTAB_RE = re.compile(r'<input class="tab" type="radio" name="tab" id="t-variant:([^"]*)"')
+_ABSENT_RE = re.compile(r'data-variant-id="([^"]*)" data-variant-absent="([^"]*)"')
 
 
 _INLINE_TAG_RE = re.compile(r"</?(?:strong|em|code|a)\b[^>]*>")
@@ -827,6 +923,34 @@ def check(root):
                         "variant(s)) — regenerate"
                         % (mm.group(1) if mm else None, fresh["union_mode"],
                            len(fresh["variants"]["active"])))
+
+    # 7. every declared row has SOME tab — measured straight from the store, never through
+    # `fresh` (which is `build(root)` again): a future defect that makes build() itself drop
+    # a row could reproduce identically in both `doc` and `fresh` and hide from every check
+    # above (public report — the reported defect was exactly this: the page agreed with
+    # itself, and disagreed with the store). This is the one check that cannot be fooled that
+    # way, because its "expected" side is read directly from data/resume_variants.jsonl.
+    store_rows, _serrs, _spresent = _rv.load_store(root)
+    expected_vids = {variant_key(r, i) for i, r in enumerate(store_rows)}
+    page_vids = set(_VTAB_RE.findall(doc))
+    for vid in sorted(expected_vids - page_vids):
+        problems.append("VARIANT TAB MISSING FROM PAGE: %s — declared in %s with no tab at "
+                        "all, neither rendered nor named as absent; regenerate"
+                        % (vid, _rv.STORE_FILE))
+    for vid in sorted(page_vids - expected_vids):
+        problems.append("VARIANT TAB ON PAGE WITH NO CURRENT ROW: %s — regenerate" % vid)
+
+    # 8. an absent tab's stated cause matches the store NOW — rule 3's staleness check,
+    # extended to the notice that stands in for a pane when there is nothing to render
+    fresh_absent = {a["id"]: a["cause"] for a in fresh["variants"].get("absent", [])}
+    page_absent = {vid: cause for vid, cause in _ABSENT_RE.findall(doc)}
+    for vid, cause in sorted(page_absent.items()):
+        if vid in fresh_absent and fresh_absent[vid] != cause:
+            problems.append("ABSENT NOTICE STALE: %s — page says %r, the store now says %r; "
+                            "regenerate" % (vid, cause, fresh_absent[vid]))
+        elif vid in expected_vids and vid not in fresh_absent:
+            problems.append("ABSENT NOTICE STALE: %s — page shows it absent (%s) but it "
+                            "renders now; regenerate" % (vid, cause))
 
     n_para_rows = sum(1 for it in fresh["open_items"] if it["category"] == "paragraph")
     if problems:

@@ -33,12 +33,14 @@ all** — no step executed, nothing written. From outside that is identical to a
 shows enabled, correctly scheduled, recently run, and every health check passes. It was caught only
 because a human noticed the sweep's effects were absent and went looking for the session.
 
-⚠️ **`lastRunAt` is not evidence that a run occurred.** The START record is. With it, three states
-that were one become three:
+⚠️ **`lastRunAt` is not evidence that a run occurred.** The START record is. With it, four states
+that were one become four — `fired` (public #65) is written by the `SessionStart` hook itself,
+before any model turn, so it splits the old "no START" bucket into the two rows below it:
 
 | | means |
 |---|---|
-| `lastRunAt` newer than any START | **the run never started** (#7) |
+| `lastRunAt` newer than any `fired` | **the run was never even invoked** — #65's hard case, now distinguishable from every row below |
+| `fired` with no matching START | the hook ran; the model turn that should have called `--start` never completed (#65) |
 | a START with no `end` | it began and died — `journal.py --unfinished` has what it recorded (#4) |
 | START + `end`, footprint empty | it ran; a quiet day is normal |
 
@@ -76,7 +78,6 @@ Run the weekly strategy review of the candidate's search. Read `CLAUDE.md` first
 ```bash
 ~/.claude/jobsearch/run push_init.sh                          # mint this session's push token (a no-op that says so under local-only — adr-012)
 ~/.claude/jobsearch/run migrate.py                    # finish any pending migration FIRST — the SessionStart hook does not fire on every surface, and a gate below run on unmigrated data reports findings the release already resolved (G11)
-~/.claude/jobsearch/run runlock.py --take "weekly review" --wait 120
 ~/.claude/jobsearch/run inbox.py                      # drain what background runs queued
 ~/.claude/jobsearch/run check_stale_claims.py         # decayed claims — verify against the machine
 ~/.claude/jobsearch/run check_followups.py            # silent threads
@@ -86,22 +87,33 @@ Run the weekly strategy review of the candidate's search. Read `CLAUDE.md` first
 ~/.claude/jobsearch/run resume_variants.py --check    # printed variant bullets trace to the presence/claims.md union (public #26)
 ~/.claude/jobsearch/run channels_due.py               # which sources are due
 ~/.claude/jobsearch/run check_rule_homes.py           # no archived lesson lost its rule
-~/.claude/jobsearch/run archive_preps.py --holding-lock   # preps for calls already held move to archive/call-preps/ — under THIS review's lock (taken above), which stays the review's to release
+~/.claude/jobsearch/run runlock.py --take "weekly review" --wait 120   # public #68: taken HERE, immediately before this window's first write — the 9 checks above are reads and ran unlocked
+~/.claude/jobsearch/run archive_preps.py --holding-lock   # preps for calls already held move to archive/call-preps/ — under THIS window's lock (taken above), which stays the review's to release
 ~/.claude/jobsearch/run check_dashboard_coverage.py   # every record rendered, counted, or terminal; nothing outside its window
 ~/.claude/jobsearch/run check_engine_purity.py        # engine files carry no profile data
 ~/.claude/jobsearch/run check_pointers.py             # every pointer resolves to real data
 ~/.claude/jobsearch/run check_remote_gate.py          # is the push gate enforced on the remote?
 ~/.claude/jobsearch/run funnel_report.py              # what is actually working
 ~/.claude/jobsearch/run reconcile.py --all            # AUDIT ONLY — tracked state vs mail/LinkedIn
-~/.claude/jobsearch/run compact.py --holding-lock     # retention
+~/.claude/jobsearch/run compact.py --holding-lock     # retention — the last write of this window
+~/.claude/jobsearch/run runlock.py --release          # public #68: close the window HERE, before the strategist dispatch — a decision loop is not a write and must never sit under an exclusive hold (ADR-031 stage B5 adds one)
 ```
 
-- **Lock refused → report the review SKIPPED and stop.** Do NOT downgrade to a watcher pass the
-  way the daily does: an audit that quietly becomes a read-only sweep is worse than one that
-  never ran, because it gets recorded as done. Reported STALE → `--steal` and say so.
-  **`--release` after the commit, even if the run failed partway.**
+- **⭐ TWO NARROW WINDOWS, NOT ONE RUN-LONG HOLD (public #68).** The lock used to be taken as the
+  third command and released only after the FINISH commit, holding it across every read-only
+  check above, the `search-strategist` dispatch, and the whole process-debt pass in §1–§6 — the
+  exact anti-pattern `runlock.py` itself was corrected against on 2026-08-03 ("hold it for the
+  write, not for the run"). It now opens twice: once here, bracketing `archive_preps.py` and
+  `compact.py` (this window's only writes), and once more in §7 FINISH, bracketing the commit.
+  Nothing between the two windows — the strategist's analysis, the human decision loop, any of
+  §1–§6 — runs under an exclusive hold.
+- **Lock refused here → report `archive_preps.py`/`compact.py` SKIPPED this week** and continue
+  to §1 — the read-only checks above already ran and their findings are still real, so this is
+  not the daily's silent watcher downgrade (an audit quietly becoming a read-only sweep and
+  getting recorded as done); it is a NAMED, reported gap in one window's writes, not the whole
+  review. Reported STALE → `--steal` and say so.
 - **`compact.py` and `archive_preps.py` REQUIRE `--holding-lock` here.** Each takes the lock
-  itself; this review already holds it, so the bare form refuses and does nothing. Guarded by
+  itself; this window already holds it, so the bare form refuses and does nothing. Guarded by
   `TestCompactionActuallyRuns` and `TestArchivePrepsRunsUnderTheLock`.
 - **`funnel_report.py` output is EVIDENCE — hand it to the strategist.** Never ask the agent to
   re-derive channel yield by hand; the script refuses to print a rate below n=5 and states plainly
@@ -202,6 +214,18 @@ mandated a retained-firm touch unconditionally — one person's executive search
 every installation's standing weekly action.
 
 ## 7. FINISH
+
+**Open the second window here (public #68) — this is the write phase everything above was not:**
+
+```bash
+~/.claude/jobsearch/run runlock.py --take "weekly review" --wait 120
+```
+
+Reported STALE → `--steal` and say so. **A refusal here means report the WHOLE REVIEW SKIPPED**
+(unlike window 1's narrower gap above) — every write below, including the commit, depends on
+this window; nothing this run found is durable until it lands. Never let a review that could not
+get here read as done. **`--release` after the commit below, even if the run failed partway** —
+a held lock from a dead session must never wedge the next run.
 
 Append the review summary to `log.md` → regenerate the dashboard AND the presence working set
 (`~/.claude/jobsearch/run check_dashboard_fresh.py --fix` writes both; then

@@ -239,10 +239,87 @@ def get_app_password(account):
 # IMAP
 # --------------------------------------------------------------------------
 
+# ⭐ dev #311 — RFC 6154 special-use resolution, locale-independent by construction.
+#
+# `[Gmail]/All Mail`, `[Gmail]/Drafts` and `[Gmail]/Sent Mail` are the ENGLISH display
+# names of Gmail's special folders. They do not exist under those paths on an account
+# whose Gmail display language is not English — the folder is still there, just named
+# differently, and an IMAP SELECT of the English literal fails outright. Before this fix
+# `select_all_mail()` treated that failure as "fall back to INBOX", which is worse than
+# the failure itself: a sweep that meant to read every message silently narrowed to the
+# inbox and returned a normal-looking result, never naming what happened. A missing thing
+# read as an empty thing (CLAUDE.md's standing trap) and reported as fact.
+#
+# RFC 6154 defines special-use ATTRIBUTES (`\All`, `\Drafts`, `\Sent`, ...) that a server
+# can attach to a mailbox in its IMAP LIST response, independent of that mailbox's display
+# name. Gmail's own IMAP extensions are documented to advertise these on its special
+# folders. This file cannot open a live IMAP connection to verify that against a real
+# account (CLAUDE.md's constraint on this dispatch), so the design below never trusts that
+# fact alone: it PREFERS the RFC 6154 resolution when a LIST response actually advertises
+# it, falls back to the English literal only when RFC 6154 resolution finds nothing (so an
+# ordinary English-language account — the only shape ever exercised against a real mailbox
+# — is unaffected either way), and when NEITHER resolves, REFUSES rather than silently
+# narrowing to another mailbox. That refusal is the floor this fix guarantees regardless
+# of whether the RFC 6154 assumption holds on a real server.
+SPECIAL_USE_ALL = "\\All"
+SPECIAL_USE_SENT = "\\Sent"
+SPECIAL_USE_DRAFTS = "\\Drafts"
+
+_LIST_LINE_RE = re.compile(r'^\((?P<flags>[^)]*)\)\s+"(?P<delim>[^"]*)"\s+(?P<name>.+)$')
+
+
+def _parse_list_line(raw):
+    """(flags: set[str], mailbox_name: str) parsed out of one IMAP LIST response line —
+    e.g. `(\\HasNoChildren \\All) "/" "[Gmail]/All Mail"` -> ({"\\HasNoChildren", "\\All"},
+    "[Gmail]/All Mail"). Returns (None, None) for anything that does not match this shape
+    (a continuation line, an unexpected server quirk) — never a guess."""
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8", "replace")
+        except Exception:
+            return None, None
+    if not isinstance(raw, str):
+        return None, None
+    m = _LIST_LINE_RE.match(raw.strip())
+    if not m:
+        return None, None
+    flags = set(m.group("flags").split())
+    name = m.group("name").strip()
+    if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
+        name = name[1:-1]
+    return flags, name
+
+
+def resolve_special_use_folders(conn):
+    """{special_use_attr: mailbox_name} for every RFC 6154 special-use folder this IMAP
+    LIST response advertises, e.g. {"\\All": "[Gmail]/All Mail"} on an English account or
+    {"\\All": "[Gmail]/Tous les messages"} on a French one — the locale-independent way to
+    find them (dev #311). Returns {} if LIST fails outright or nothing parses; the caller
+    decides what to do with an empty result, this function never guesses a name."""
+    try:
+        typ, data = conn.list()
+    except Exception:
+        return {}
+    if typ != "OK" or not data:
+        return {}
+    found = {}
+    for raw in data:
+        if raw is None:
+            continue
+        flags, name = _parse_list_line(raw)
+        if not flags or not name:
+            continue
+        for attr in (SPECIAL_USE_ALL, SPECIAL_USE_SENT, SPECIAL_USE_DRAFTS):
+            if attr in flags:
+                found[attr] = name
+    return found
+
+
 class Mailbox(object):
     def __init__(self, account):
         self.account = account
         self.conn = None
+        self._special_use = None  # resolved lazily, once per connection (dev #311)
 
     def __enter__(self):
         pw = get_app_password(self.account)
@@ -272,24 +349,73 @@ class Mailbox(object):
                 pass
         return False
 
+    def _special_use_folders(self):
+        """Cached per connection — one IMAP LIST per `with Mailbox(...)` block, not one per
+        select_all_mail()/select_drafts() call."""
+        if self._special_use is None:
+            self._special_use = resolve_special_use_folders(self.conn)
+        return self._special_use
+
+    def _resolve_folder(self, attr, english_literal, label):
+        """The mailbox name to use for special-use `attr` (e.g. \\All): the RFC 6154 name
+        this account's own LIST response advertises when it advertises one, else the
+        English literal this file has always used (dev #311 — see the module-level note
+        above `Mailbox`). Never falls back further than that; the caller decides what a
+        failure to SELECT/APPEND it means."""
+        name = self._special_use_folders().get(attr)
+        if name:
+            return name, "RFC 6154 %s" % attr
+        return english_literal, "the English literal (no %s advertised in LIST)" % attr
+
     def select_all_mail(self):
         # All Mail so Gmail's `in:anywhere` semantics behave as expected.
-        typ, _ = self.conn.select(ALL_MAIL, readonly=True)
+        name, how = self._resolve_folder(SPECIAL_USE_ALL, ALL_MAIL.strip('"'), "All Mail")
+        quoted = '"%s"' % name.replace("\\", "\\\\").replace('"', '\\"')
+        typ, _ = self.conn.select(quoted, readonly=True)
         if typ != "OK":
-            typ, _ = self.conn.select("INBOX", readonly=True)
-            if typ != "OK":
-                raise RuntimeError("Could not select a mailbox for %s" % self.account)
+            # ⚠️ dev #311 — REFUSE, never fall back to INBOX. A sweep that meant to read
+            # every message must never silently narrow to the inbox and report a result as
+            # if it were complete; that is a missing thing reading as an empty thing.
+            raise RuntimeError(
+                "Could not select an All Mail mailbox for %s -- tried %s: %r. Refusing "
+                "rather than silently falling back to INBOX (dev #311): that would read as "
+                "a complete sweep when it covered only the inbox. IMAP LIST advertised "
+                "special-use folders: %s"
+                % (self.account, how, name, sorted(self._special_use_folders()) or "none"))
+
+    def select_drafts(self):
+        """The mailbox name to APPEND a draft to — resolved the same way as `select_all_mail`
+        (dev #311), not selected here (APPEND does not require a prior SELECT)."""
+        name, _how = self._resolve_folder(SPECIAL_USE_DRAFTS, "[Gmail]/Drafts", "Drafts")
+        return name
 
     def search(self, query):
-        """Gmail query syntax via the X-GM-RAW IMAP extension. Returns UIDs."""
+        """Gmail query syntax via the X-GM-RAW IMAP extension. Returns UIDs.
+
+        ⭐ public #76 — a non-ASCII query used to abort the entire multi-account
+        sweep. `imaplib.IMAP4._encoding` is 'ascii' and this client never
+        negotiates ENABLE UTF8=ACCEPT, so `_command()` does `bytes(arg, 'ascii')`
+        on every plain string argument — a non-ASCII query raises
+        UnicodeEncodeError (a ValueError subclass), never imaplib.IMAP4.error.
+        The old retry caught the wrong type, so it was dead code, and even if
+        reached it re-sent the same `str` and would have failed the identical
+        way. Verified against CPython's imaplib source (imaplib.py, `_mode_ascii`
+        / `_command`), not assumed.
+
+        The fix: route a non-ASCII query through an IMAP literal instead of a
+        quoted string — `CHARSET UTF-8 X-GM-RAW {N}\\r\\n<utf-8 bytes>`. A
+        literal is length-prefixed, not delimited, so it needs none of the
+        backslash/quote escaping a quoted string needs, and it carries UTF-8
+        bytes untouched by the client's ASCII encoding step. An ASCII query
+        keeps using the original quoted-string form unchanged.
+        """
         self.select_all_mail()
-        quoted = '"%s"' % query.replace("\\", "\\\\").replace('"', '\\"')
-        try:
+        if query.isascii():
+            quoted = '"%s"' % query.replace("\\", "\\\\").replace('"', '\\"')
             typ, data = self.conn.uid("SEARCH", "X-GM-RAW", quoted)
-        except imaplib.IMAP4.error:
-            # Non-ASCII queries need an explicit charset.
-            typ, data = self.conn.uid(
-                "SEARCH", "CHARSET", "UTF-8", "X-GM-RAW", quoted)
+        else:
+            self.conn.literal = query.encode("utf-8")
+            typ, data = self.conn.uid("SEARCH", "CHARSET", "UTF-8", "X-GM-RAW")
         if typ != "OK":
             raise RuntimeError("IMAP SEARCH failed for %s: %r" % (self.account, data))
         if not data or not data[0]:
@@ -462,8 +588,19 @@ def tool_search(args):
                     msg = mb.fetch_headers(uid)
                     if msg is not None:
                         results.append(summarize(msg, acct, uid))
-        except (CredentialError, RuntimeError, imaplib.IMAP4.error, OSError) as exc:
-            errors.append("%s: %s" % (acct, exc))
+        except Exception as exc:
+            # ⭐ public #76 — a narrow tuple here named CredentialError, RuntimeError,
+            # imaplib.IMAP4.error and OSError, and a non-ASCII query raised
+            # UnicodeEncodeError: not in the tuple, so it escaped the loop and
+            # killed the whole sweep instead of degrading one account. That is
+            # the second unlisted exception type to escape this file's narrow
+            # catches (Mailbox.search's dead charset retry was the first) — the
+            # honest fix for a loop whose entire job is "don't fail wholesale"
+            # is `except Exception`, not a longer guess-list that the next new
+            # failure mode will also miss. `Exception` (not `BaseException`)
+            # still lets KeyboardInterrupt/SystemExit through. The type name is
+            # reported so a truly novel failure is still diagnosable.
+            errors.append("%s: %s: %s" % (acct, type(exc).__name__, exc))
 
     results.sort(key=lambda r: (r.get("date_iso") or ""), reverse=True)
     results = results[:limit]
@@ -667,13 +804,15 @@ def tool_create_draft(args):
         if html_body:
             msg.add_alternative(html_body, subtype="html")
 
-        typ, resp = mb.conn.append('"[Gmail]/Drafts"', r"(\Draft)", None,
+        drafts_name = mb.select_drafts()
+        quoted_drafts = '"%s"' % drafts_name.replace("\\", "\\\\").replace('"', '\\"')
+        typ, resp = mb.conn.append(quoted_drafts, r"(\Draft)", None,
                                    msg.as_bytes())
         if typ != "OK":
-            raise RuntimeError("IMAP APPEND to Drafts failed for %s: %r"
-                               % (acct, resp))
+            raise RuntimeError("IMAP APPEND to %s failed for %s: %r"
+                               % (drafts_name, acct, resp))
 
-    out = ["Draft created in %s -> [Gmail]/Drafts" % acct,
+    out = ["Draft created in %s -> %s" % (acct, drafts_name),
            "  From:    %s" % acct,
            "  To:      %s" % ", ".join(to)]
     if cc:

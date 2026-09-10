@@ -66,7 +66,8 @@ marketplace contract's own rule against install-state mutation from inside a dis
 - `~/.claude/jobsearch/run pipeline_index.py --excluded` — so you never research an already-declined role.
 - `~/.claude/jobsearch/run profile.py --screen <opp_id>` — the comp/location screen. **Run it; never
   judge comp from memory or from a floor quoted in prose.**
-- `docs/schema.md` — the record shape you are filling.
+- `~/.claude/jobsearch/run record.py fields --file opportunities` — the record shape you are
+  filling, including enums and object-typed fields. Run it; do not guess a value.
 
 **DOES NOT READ:** `presence/claims.md` · `outreach/drafts.md` · `applying/cover_letters.md` · `configure/strategy.md` §Positioning ·
 `log.md`. You research the EMPLOYER; you do not write the candidate's pitch.
@@ -212,8 +213,9 @@ the candidate is a fit and what are items that don't align? … I personally don
 everything on my resume and it helps build context for what the candidate has done so the
 knowledge base for the candidate builds."*
 
-Emit a `fit` object for the opportunity record (shape in `docs/schema.md`). One entry per
-material JD requirement:
+Emit a `fit` object for the opportunity record — one `fit.requirements[]` row per material JD
+requirement (run `~/.claude/jobsearch/run record.py fields --file opportunities` for the exact
+shape and its enums):
 
 - **`verdict`**: `aligned` · `partial` · `not-aligned` · `unknown`
 - **`evidence`** — REQUIRED for `aligned`/`partial`. Cite `presence/claims.md`, `presence/projects.md`, a resume

@@ -93,9 +93,10 @@ reasoning prose anywhere.
 > #78). It is a guard, not a sandbox — this prose rule is still the first line, not a formality
 > made redundant by the script.
 
-**PIPELINE:** write roles to `data/opportunities.jsonl` (and `companies.jsonl` if new) per
-`docs/schema.md`, then `~/.claude/jobsearch/run validate_data.py`. Put the JD URL in `jd_url`, not in
-prose, and add a `sighting` for how it was found.
+**PIPELINE:** write roles to `data/opportunities.jsonl` (and `companies.jsonl` if new) — check the
+shape first with `~/.claude/jobsearch/run record.py fields --file opportunities` (or
+`--file companies`), then `~/.claude/jobsearch/run validate_data.py`. Put the JD URL in `jd_url`,
+not in prose, and add a `sighting` for how it was found.
 
 ## Two browser surfaces — pick the right one, never mix them
 

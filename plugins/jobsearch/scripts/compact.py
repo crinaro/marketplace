@@ -39,9 +39,11 @@ and the weekly review DOES hold it, which made `--take` fail every single time. 
 2026-08-02 by running it mid-review: exit 1, `REFUSED`, zero bytes compacted, and the refusal text
 blamed a phantom concurrent writer. **The one caller it was written for could never call it.**
 So a caller that already owns the lock passes `--holding-lock`: compaction proceeds without taking
-it, and does NOT release it — the lock stays the caller's to release, which matters because the
-weekly review still has a commit to make afterwards. Without a lock held by anyone, the flag is
-refused rather than treated as a bypass.
+it, and does NOT release it — the lock stays the caller's to release, on whatever schedule the
+caller's own window follows (the weekly review holds a narrow window around this call and
+`archive_preps.py`, released before the strategist dispatch — public #68 — then opens a second,
+separate window later for its own commit). Without a lock held by anyone, the flag is refused
+rather than treated as a bypass.
 
 Usage:
     python3 scripts/compact.py --dry-run       # what would move, and how much

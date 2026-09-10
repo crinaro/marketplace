@@ -96,6 +96,13 @@ def rule(title):
 def recommend(cut_stats, comms_cfg):
     """Compare the CONFIGURED channel default against what the data actually shows.
 
+    ⚠️ `cut_stats` MUST be a medium cut over FIRST-TOUCH sends only (public #71).
+    `communications.default_sequence` configures the media sent together on the first touch —
+    it says nothing about which medium a chase or a reply-thread uses — so a cut pooled across
+    every touch_type compares default_sequence against a mixed bag it was never a proposal
+    about, and a medium used mostly for chases (already-engaged recipients) can outscore one
+    used mostly for cold first touches on data that supports no such comparison.
+
     Two guards, both required before this will say a configured option is CONTRADICTED:
       * n >= MIN_SAMPLE **resolved** in each arm — sends are not evidence, and with 5-10
         samples a "winner" is usually noise;
@@ -266,9 +273,10 @@ def main():
     def is_win(x):
         return x.get("outcome") in ("replied", "meeting-booked", "accepted")
 
-    def cut(field, title):
+    def cut(field, title, rows=None, quiet=False):
+        rows = sent_rows if rows is None else rows
         buckets = {}
-        for o, x in sent_rows:
+        for o, x in rows:
             v = x.get(field) or "unknown"
             if v == "unknown":
                 continue           # excluded from every rate; counted separately below
@@ -286,7 +294,9 @@ def main():
                 b["unverifiable"] += 1
             else:
                 b["awaiting"] += 1
-        skipped = sum(1 for _o, x in sent_rows if (x.get(field) or "unknown") == "unknown")
+        if quiet:
+            return buckets     # silent recompute for a caller (e.g. recommend()) — no printing
+        skipped = sum(1 for _o, x in rows if (x.get(field) or "unknown") == "unknown")
         print("\n  %s" % title)
         if not buckets:
             print("    (nothing classified yet)")
@@ -321,7 +331,7 @@ def main():
     print("  ⚠️ medium/touch_type/recipient_role are only reliable for rows after 2026-08-02;")
     print("     earlier rows were backfilled from contemporaneous record where one existed.")
 
-    medium_stats = cut("medium", "BY MEDIUM — the question the candidate actually asked")
+    cut("medium", "BY MEDIUM — the question the candidate actually asked")
     cut("touch_type", "BY TOUCH TYPE — a chase and a first touch are not the same bet")
     cut("recipient_role", "BY RECIPIENT — who is worth writing to")
 
@@ -348,7 +358,18 @@ def main():
         try:
             sys.path.insert(0, os.path.join(ROOT, "scripts"))
             import profile as _prof
-            recommend(medium_stats, _prof.comms())
+            # public #71 — this used to pass the POOLED medium cut (every touch_type mixed
+            # together: first touches, chases, replies). `communications.default_sequence`
+            # configures only the FIRST-touch media (see outreach-drafter.md's "CHANNEL
+            # DEFAULT" section — "sent together" describes the first outreach touch, not
+            # every later chase on the same thread). A chase's reply rate is not evidence
+            # about a first-touch medium choice — chases go to people already engaged, so
+            # pooling let a medium used mostly for chases outscore one used mostly for cold
+            # first touches, and CONTRADICTED the configured default on a comparison that was
+            # never apples-to-apples. Re-use the SAME `first` filter the headline above
+            # already applies, via `cut(..., quiet=True)` rather than a second computation.
+            first_touch_medium_stats = cut("medium", "", rows=first, quiet=True)
+            recommend(first_touch_medium_stats, _prof.comms())
         except Exception as exc:
             print("\n  (could not load communications config: %s)" % exc)
 

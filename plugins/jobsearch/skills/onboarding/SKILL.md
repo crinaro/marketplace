@@ -49,8 +49,8 @@ Ask for it in any form (paste, file, PDF). Then:
   variants, so `presence/claims.md` also doubles as the one printed resume: that is the normal, degenerate
   case, not a different mechanism. If the candidate later needs more than one printed page (e.g.
   an executive-facing page and a technical-facing page), each becomes its own variant file,
-  declared in `data/resume_variants.jsonl` — see `docs/schema.md`'s `resume_variants.jsonl`
-  section. **Paraphrasing at this step
+  declared in `data/resume_variants.jsonl` — see `docs/data_model.json`'s `resume_variants` store
+  entry. **Paraphrasing at this step
   poisons everything downstream** — a summarized bullet once dropped the clause naming an
   employer's marquee customers, and the sentence survived while the credential in it did not.
   Copy. Do not improve.

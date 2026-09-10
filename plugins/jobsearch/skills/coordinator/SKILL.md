@@ -118,11 +118,14 @@ Then call `list_scheduled_tasks` and **compare the two**:
 
 ⭐ **THE JOURNAL SEPARATES THEM; THIS STEP USED TO CONFLATE THEM.** Issue #7 was filed precisely
 because "fired and accomplished nothing" is two states wearing one sentence, and `journal.py` now
-distinguishes them at the source:
+distinguishes them at the source. **Public #65 split the old "no START" row again**: `fired` is
+written by the `SessionStart` hook itself, before any model turn, so a session's existence is
+provable even when the run dies before its own first line:
 
 | signal | what actually happened | next move |
 |---|---|---|
-| `lastRunAt` newer than any START | **the run never started** — it never reached its first line | a scheduling/launch problem |
+| `lastRunAt` newer than any `fired` | **the run was never even invoked** — #65's hard case | a scheduling/launch problem |
+| `fired` with no matching START | **the hook ran; the model turn that should have called `--start` never completed** | a run-content problem at the very first line |
 | a START with no `end` | **it began and died** — `~/.claude/jobsearch/run journal.py --unfinished` has what it recorded before dying | a run-content problem; the journal says how far it got |
 | START and `end`, no footprint | it ran and genuinely found nothing | a quiet day; say so in one line |
 
@@ -268,8 +271,10 @@ missing, a gate is broken — **do not fix it here.** Route it to the marketplac
 
 ```bash
 ~/.claude/jobsearch/run report_issue.py \
-  --severity <high|medium|low> --title "..." --symptom "..." --evidence "..." --owner unsure
+  --title "..." --symptom "..." --evidence "..."
 ```
+
+Prints the report for review only — nothing is filed until you re-run with `--file`.
 
 ⚠️ **State the bug as the RULE that misbehaved, never the instance.** That submission crosses into
 a repo gated at zero personal data, and it refuses a currency figure, an address or a name — git

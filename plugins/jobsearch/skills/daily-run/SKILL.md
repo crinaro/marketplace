@@ -33,12 +33,14 @@ all** — no step executed, nothing written. From outside that is identical to a
 shows enabled, correctly scheduled, recently run, and every health check passes. It was caught only
 because a human noticed the sweep's effects were absent and went looking for the session.
 
-⚠️ **`lastRunAt` is not evidence that a run occurred.** The START record is. With it, three states
-that were one become three:
+⚠️ **`lastRunAt` is not evidence that a run occurred.** The START record is. With it, four states
+that were one become four — `fired` (public #65) is written by the `SessionStart` hook itself,
+before any model turn, so it splits the old "no START" bucket into the two rows below it:
 
 | | means |
 |---|---|
-| `lastRunAt` newer than any START | **the run never started** (#7) |
+| `lastRunAt` newer than any `fired` | **the run was never even invoked** — #65's hard case, now distinguishable from every row below |
+| `fired` with no matching START | the hook ran; the model turn that should have called `--start` never completed (#65) |
 | a START with no `end` | it began and died — `journal.py --unfinished` has what it recorded (#4) |
 | START + `end`, footprint empty | it ran; a quiet day is normal |
 
@@ -267,7 +269,8 @@ role's record — comp, scope, reporting line, company snapshot, and any discrep
 alert. **Skip roles already excluded or already researched.** An alert's title/company/comp snippet
 alone cannot support a fit judgement or a draft.
 
-**⭐ ANY ROLE THAT BECOMES A PURSUIT GETS A `fit` ANALYSIS** (shape in `docs/schema.md`):
+**⭐ ANY ROLE THAT BECOMES A PURSUIT GETS A `fit` ANALYSIS** (`fit.requirements[]` — run
+`~/.claude/jobsearch/run record.py fields --file opportunities` for the exact shape):
 requirement → aligned/partial/not-aligned/unknown, each with cited evidence and a `pitch_line`.
 **Every `unknown` carries a targeted question, and a dated one carries `act_by`.** Run
 `~/.claude/jobsearch/run fit_report.py --gaps` and put the open questions on Your Move — the answers file

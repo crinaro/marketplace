@@ -43,8 +43,9 @@ lock", and this ran in hygiene, unattended, before the daily run takes its lock 
 coordinator session could commit a half-moved prep (archive copy present, live copy present)
 into its own change. So the CLI takes the lock itself for the seconds the move takes, the
 way `compact.py` does, and releases it in a `finally`. A caller that already owns the lock
-(the weekly review, which takes it at its step 0) passes `--holding-lock`: the move proceeds
-under the caller's hold, which stays theirs to release. A refused lock moves NOTHING and
+(the weekly review, which holds it for this narrow window — public #68 corrected this from a
+run-long hold to one taken immediately before the window's writes) passes `--holding-lock`: the
+move proceeds under the caller's hold, which stays theirs to release. A refused lock moves NOTHING and
 exits 1, loudly — the next run's hygiene moves the same preps; nothing is lost by waiting.
 `--check` reads only and never touches the lock. The migration calls `archive()` directly,
 inside `migrate.py`'s own envelope.

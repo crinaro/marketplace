@@ -2,6 +2,9 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.42.0
+- [#74](https://github.com/crinaro/marketplace/issues/74) — Generated dashboard keeps listing resume variants as needing reconcile after the variant gate reports them current
+
 ## jobsearch 0.41.0
 - Applications now carry a stable app_id (<opp_id>-aN, minted automatically), and the ATS settings — receipt_sender_domains and status_phrases — are documented for the first time and unified under one set of key names. An existing profile migrates to both automatically on upgrade; no new automated behavior ships yet, since nothing reads these keys until a later release adds the reader. *(tracked internally as crinaro/marketplace-dev#286)*
 

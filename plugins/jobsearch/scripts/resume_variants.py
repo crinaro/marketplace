@@ -98,7 +98,7 @@ STORE_FILE = os.path.join("data", "resume_variants.jsonl")
 ADDENDA_HEADING_RE = re.compile(r"additional\s+detail", re.I)
 
 BULLET_RE = re.compile(r"^\s*[-*+]\s+(.+?)\s*$")
-HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
+HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 
 # applications[].status values that prove a submission happened — mirrored from
 # validate_data.SUBMITTED_APP_STATUS as a literal, same move as precondition.py's OUTCOMES:
@@ -129,16 +129,29 @@ def read_union(root):
 
 
 def bullets_with_sections(text):
-    """[(normalized_bullet, heading_of_its_section)] in file order."""
-    out, heading = [], ""
+    """[(normalized_bullet, heading_path_of_its_section)] in file order.
+
+    public #67 — heading_path is the full ancestor chain ("Outer > Inner"), not just the
+    nearest heading. A single flat `heading` variable overwritten on every heading line loses
+    the addenda association the moment a sub-heading nests under it: an "## Additional Detail"
+    section containing "### <topic>" sub-headings reported every bullet under the sub-heading
+    as having heading "<topic>" alone, so ADDENDA_HEADING_RE.search(heading) in report() no
+    longer matched "additional detail" and those claims were counted as claims outside the
+    addenda — overstated, not actually orphaned. Joining the ancestor chain keeps the match
+    working via the same substring search, however deep the nesting goes.
+    """
+    out, stack = [], []   # stack: [(level, text), ...], outermost first
     for line in (text or "").splitlines():
         hm = HEADING_RE.match(line)
         if hm:
-            heading = hm.group(1)
+            level, htext = len(hm.group(1)), hm.group(2)
+            while stack and stack[-1][0] >= level:
+                stack.pop()
+            stack.append((level, htext))
             continue
         bm = BULLET_RE.match(line)
         if bm:
-            out.append((_norm(bm.group(1)), heading))
+            out.append((_norm(bm.group(1)), " > ".join(t for _, t in stack)))
     return out
 
 

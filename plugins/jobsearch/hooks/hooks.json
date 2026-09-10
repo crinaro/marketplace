@@ -1,9 +1,14 @@
 {
-  "description": "Blocks a profile session from writing into the engine or the installed plugin cache (scripts/guard_engine_writes.py, docs/adr-010-engine-write-guard.md), DENYs a ref-based click that resolves to an outbound-terminal control such as Send/Connect/Invite/Apply (scripts/guard_outbound_click.py, docs/deployment.md's 'outbound-click guard' section), DENYs the gmail-multi connector's send/reply/forward tools so jobsearch stays draft-only now that the connector can send (scripts/guard_mail_send.py, marketplace #213), and self-installs the connector plugins declared in plugin.json metadata.connectors at session start (scripts/ensure_connectors.py — loud on failure, exit 0 on every path).",
+  "description": "Blocks a profile session from writing into the engine or the installed plugin cache (scripts/guard_engine_writes.py, docs/adr-010-engine-write-guard.md), DENYs a ref-based click that resolves to an outbound-terminal control such as Send/Connect/Invite/Apply (scripts/guard_outbound_click.py, docs/deployment.md's 'outbound-click guard' section), DENYs the gmail-multi connector's send/reply/forward tools so jobsearch stays draft-only now that the connector can send (scripts/guard_mail_send.py, marketplace #213), records that a SessionStart hook fired before any model turn so a run that dies before it can call journal.py --start still leaves proof a session existed (scripts/journal.py --fired, the 'fired' event, public #65 — loud on failure, exit 0 on every path, first in the chain so as little as possible can happen before it runs), and self-installs the connector plugins declared in plugin.json metadata.connectors at session start (scripts/ensure_connectors.py — loud on failure, exit 0 on every path).",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/journal.py --fired",
+            "timeout": 10
+          },
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/migrate.py --hook",
@@ -50,7 +55,7 @@
         ]
       },
       {
-        "matcher": "mcp__Claude_Browser__computer|mcp__claude-in-chrome__computer|mcp__claude-in-chrome__browser_batch",
+        "matcher": "mcp__Claude_Browser__computer|mcp__Claude_Browser__browser_batch|mcp__claude-in-chrome__computer|mcp__claude-in-chrome__browser_batch",
         "hooks": [
           {
             "type": "command",

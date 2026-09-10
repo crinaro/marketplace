@@ -98,17 +98,36 @@ def footprints(root):
     # ⚠️ This is NOT a fix for the scheduler recording a run that did not happen — that is Claude
     # Code's, and nothing here can change it. What is ours is refusing to treat `lastRunAt` as
     # evidence that a run occurred, because it is not evidence of that.
-    starts = []
+    #
+    # ⭐⭐ public #65 — #7's OWN FIX HAD A RESIDUAL GAP. `start` is written by the RUN'S OWN
+    # LOGIC — a skill instruction, the model's second action — so a session that IS created and
+    # dies before that instruction ever executes still leaves no `start`, and is STILL
+    # indistinguishable from "the scheduler never invoked a session at all." `journal.py --fired`
+    # closes that gap: it is written by the SessionStart HOOK ITSELF, deterministically, before
+    # any model turn (see hooks.json). That splits the old "no start" bucket into two real states:
+    #
+    #     lastRunAt advanced, no `fired` at all    -> genuinely never invoked (#65's hard case —
+    #                                                  now distinguishable from every row below)
+    #     `fired`, no `start` ever followed        -> the hook ran; the model turn that should
+    #                                                  have called --start never completed
+    #     `start` with no `end`                    -> the run itself began and died (#4)
+    #     `start` + `end`                           -> ran; quiet footprint is normal
+    starts, fired = [], []
     if _journal is not None:
         try:
             recs = _journal.read(root)
             starts = sorted((r for r in recs if r.get("event") == "start"),
                             key=lambda r: r.get("at") or "", reverse=True)
+            fired = sorted((r for r in recs if r.get("event") == "fired"),
+                           key=lambda r: r.get("at") or "", reverse=True)
         except Exception:
-            starts = []
+            starts, fired = [], []
     out["run_starts"] = [{"run_id": r.get("run_id"), "at": r.get("at"), "kind": r.get("kind")}
                          for r in starts[:10]]
     out["last_start"] = starts[0].get("at") if starts else None
+    out["session_fires"] = [{"session_id": r.get("session_id"), "at": r.get("at")}
+                            for r in fired[:10]]
+    out["last_fired"] = fired[0].get("at") if fired else None
 
     dates = [e["date"] for e in out["log_entries"]] + \
             [p["at"][:10] for p in out["inbox_posts"] if len(p["at"]) >= 10]
@@ -130,36 +149,48 @@ def main():
         return 0
 
     print("RUN FOOTPRINT — what the runs actually LEFT BEHIND\n")
+    # ⭐⭐ public #65 — THIS USED TO `return 0` RIGHT HERE, before ever reaching the FIRED/START
+    # section below. That is exactly the case where that section matters most: an empty
+    # footprint is the ambiguous state (#65's whole premise) that FIRED/START exists to resolve,
+    # and the early return threw the resolution away right when it was needed. Report the empty
+    # footprint, then fall through to the same FIRED/START section every other path prints.
     if not fp["log_entries"] and not fp["inbox_posts"]:
         print("  ⚠️ No run footprint found at all. Either nothing has run, or every run is dying")
         print("     before it writes. Both are serious; the scheduler cannot tell you which.")
-        return 0
+    else:
+        print("  most recent evidence: %s" % (fp["latest"] or "unknown"))
+        print("\n  log.md run entries (newest first):")
+        for e in fp["log_entries"][:5]:
+            print("    %s  %s" % (e["date"], e["head"]))
+        if not fp["log_entries"]:
+            print("    (none)")
+        print("\n  inbox posts (newest first):")
+        for p in fp["inbox_posts"][:5]:
+            print("    %s  %s" % (p["at"], p["kind"]))
+        if not fp["inbox_posts"]:
+            print("    (none)")
 
-    print("  most recent evidence: %s" % (fp["latest"] or "unknown"))
-    print("\n  log.md run entries (newest first):")
-    for e in fp["log_entries"][:5]:
-        print("    %s  %s" % (e["date"], e["head"]))
-    if not fp["log_entries"]:
-        print("    (none)")
-    print("\n  inbox posts (newest first):")
-    for p in fp["inbox_posts"][:5]:
-        print("    %s  %s" % (p["at"], p["kind"]))
-    if not fp["inbox_posts"]:
-        print("    (none)")
-
+    print("\n  last journalled FIRED (SessionStart hook): %s"
+          % (fp.get("last_fired") or "none recorded"))
+    for f2 in fp.get("session_fires", [])[:3]:
+        print("    %s  %s" % (f2.get("at"), f2.get("session_id") or "(no session_id on stdin)"))
     print("\n  last journalled START: %s" % (fp.get("last_start") or "none recorded"))
     for s2 in fp.get("run_starts", [])[:3]:
         print("    %s  %s" % (s2.get("at"), s2.get("run_id")))
 
-    print("\n  ⭐ NOW COMPARE WITH THE SCHEDULER — `list_scheduled_tasks`. THREE STATES:")
-    print("     lastRunAt newer than any START      -> THE RUN NEVER STARTED. No session was")
-    print("                                            created and nothing executed. (issue #7)")
+    print("\n  ⭐ NOW COMPARE WITH THE SCHEDULER — `list_scheduled_tasks`. FOUR STATES:")
+    print("     lastRunAt newer than any FIRED      -> THE RUN NEVER STARTED. No session was")
+    print("                                            created and nothing executed. (#7, #65)")
+    print("     a FIRED with no START that follows  -> the SessionStart hook ran but the run's")
+    print("                                            own logic never got a turn to call")
+    print("                                            journal.py --start. (public #65)")
     print("     a START with no matching end        -> it began and died; `journal.py --unfinished`")
-    print("                                            has the findings it managed to record.")
+    print("                                            has the findings it managed to record —")
+    print("                                            `--dispose` once they are reviewed (#72).")
     print("     START + end, footprint empty        -> it ran and the day was quiet. Normal.")
     print("\n     ⚠️ `lastRunAt` IS NOT EVIDENCE THAT A RUN OCCURRED. It advances even when no")
     print("     session is created, so a run can be missed every morning with every automated")
-    print("     signal still green. The START record is the evidence; the scheduler is not.")
+    print("     signal still green. The FIRED record is the evidence; the scheduler is not.")
     return 0
 
 

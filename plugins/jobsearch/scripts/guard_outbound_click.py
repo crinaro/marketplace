@@ -11,11 +11,12 @@ a browser-driving agent's own prompt (`linkedin-runner.md`), which is exactly th
 control that does not survive a session that is mid-task and confident. This is that guard.
 
 ⚠️ THIS IS A GUARD, NOT A SANDBOX — same posture as `guard_engine_writes.py`, not relitigated
-here. It matches the two browser-control channels `linkedin-runner` actually routes to. A
-determined session with a coordinate click, a JS executor, or a channel this plugin does not
-route to can still send something. **The behavioural rule remains the first line**; this stops
-the reflexive click, which is the one that actually happens. See "WHAT THIS DOES NOT COVER"
-below — read it before trusting this guard further than it goes.
+here. It matches the two browser-control channels `linkedin-runner` actually routes to (the
+in-app Browser pane and `claude-in-chrome`), each covered on both its single-click surface and
+its batch surface. A determined session with a coordinate click, a JS executor, or a channel
+this plugin does not route to can still send something. **The behavioural rule remains the
+first line**; this stops the reflexive click, which is the one that actually happens. See "WHAT
+THIS DOES NOT COVER" below — read it before trusting this guard further than it goes.
 
 ## The test, stated once
 
@@ -37,7 +38,7 @@ different and recoverable act.
 exactly. `check_click_guard_matcher.py` asserts that, both as a normal CI gate and inside
 `check_shipped_package.py`'s materialized package (drift control, not relitigated here).
 
-⭐ `mcp__claude-in-chrome__browser_batch` runs a SEQUENCE of `computer` actions inside one call
+⭐ A `browser_batch` call runs a SEQUENCE of `computer` actions inside one call
 (`tool_input["actions"] = [{"name": "computer", "input": {...}}, ...]`). A guard that only
 inspects the top-level `tool_input` lets a Send click through inside a batch — this script
 iterates `tool_input["actions"]` and classifies every `computer` item in it. This is the single
@@ -45,11 +46,23 @@ most important behavioural case in this guard; `TestBrowserBatchIteration` in te
 exists because reverting the iteration is exactly the kind of change that looks like a harmless
 simplification.
 
+⚠️ dev #310 — **BOTH surfaces' batch tools, not just one.** `mcp__claude-in-chrome__browser_batch`
+was in `GUARDED_CLICK_TOOLS` from the start; `mcp__Claude_Browser__browser_batch` — the in-app
+Browser pane's own batch call, and per `linkedin-runner.md` the PREFERRED surface, "TRY FIRST
+for every capability" — was not, on either side of the drift check: absent from this tuple,
+absent from `hooks.json`'s matcher, absent from ADR-015's own prose, absent from every test. The
+matcher-drift gate (`check_click_guard_matcher.py`) only proves the two files agree with EACH
+OTHER; it cannot notice a tool that is consistently missing from both. A click nested inside
+that call bypassed this guard entirely — not "ALLOW, loud" like an unresolvable ref, but never
+routed to this script at all, and therefore never classified, never logged, never noted. Fixed
+by adding it to `GUARDED_CLICK_TOOLS` (below) and to `BATCH_TOOLS`, the set `iter_click_inputs`
+checks membership against instead of a single hardcoded name.
+
 Deliberately NOT in the matcher, each for a stated reason: `form_input` (sets values, does not
 click — an accepted v1 gap, see below); a JS executor on any server (a programmatic click
 carries no ref and no accessible name — nothing to classify); a browser controller the user
 installs outside this plugin (a shipped matcher cannot enumerate it; this guard covers the two
-channels `linkedin-runner` routes to).
+channels `linkedin-runner` routes to, single-click and batch alike).
 
 ## Ref resolution, and the concurrent-agent hazard
 
@@ -223,12 +236,22 @@ import sys
 
 # ⭐ THE SINGLE SOURCE OF TRUTH — hooks.json's matcher must equal "|".join(this).
 # check_click_guard_matcher.py asserts the two agree, both in this repo and inside the
-# materialized shipped package (check_shipped_package.py).
+# materialized shipped package (check_shipped_package.py). dev #310: the matcher-drift gate
+# only proves hooks.json agrees with THIS tuple — it cannot catch a tool absent from both, which
+# is exactly how `mcp__Claude_Browser__browser_batch` (the in-app pane's batch call, and per
+# linkedin-runner.md the PREFERRED browsing surface) went unguarded. Both surfaces' single-click
+# AND batch tools must all four be here.
 GUARDED_CLICK_TOOLS = (
     "mcp__Claude_Browser__computer",
+    "mcp__Claude_Browser__browser_batch",
     "mcp__claude-in-chrome__computer",
     "mcp__claude-in-chrome__browser_batch",
 )
+
+# dev #310: every batch-call tool name GUARDED_CLICK_TOOLS carries — checked by membership
+# rather than a single hardcoded string, so a batch tool added to the tuple above is picked up
+# here automatically instead of needing a second, easy-to-forget edit.
+BATCH_TOOLS = frozenset(t for t in GUARDED_CLICK_TOOLS if t.endswith("browser_batch"))
 
 # The batch tool's own action name for a click/keyboard step, and the read tools whose output
 # a ref resolves against.
@@ -352,6 +375,36 @@ def resolve_transcript_path(payload):
     if path:
         return path, False
     return derive_fallback_transcript_path(payload), True
+
+
+def derive_subagent_transcript_path(main_transcript_path, agent_id):
+    """dev #309 — the subagent's OWN records, not the main session's.
+
+    Two measured facts collide, otherwise: a subagent's tool calls are recorded in
+    `<session-dir>/subagents/agent-<agent_id>.jsonl`, a SIBLING of the main transcript, never
+    inside it; and Claude Code's hook payload for a subagent's own tool call still carries the
+    MAIN session's `transcript_path` (Claude Code's own hooks reference — subagent hook events
+    do not get their own `transcript_path`; that field was added only to `SubagentStop`, not to
+    `PreToolUse`). So `resolve_transcript_path()` above, used alone, always resolves to a file
+    that structurally cannot contain the click this hook is firing for. `find_anchor()` then
+    finds nothing, `find_recent_read()` returns None, and every subagent click takes the
+    unresolved branch — ALLOW, loud. That branch exists for a click this guard genuinely cannot
+    classify; here, it fires on every single subagent click, not on the rare one.
+
+    The payload DOES carry `agent_id` for a subagent's tool call (added to hook events
+    generally for subagents, per Claude Code's own changelog — not independently re-verified
+    against a live-fired subagent hook in this dispatch: CLAUDE.md's constraint on this work
+    prohibits opening a real browser or spawning a real browser-driving subagent to check. This
+    derivation is therefore CORROBORATED evidence, not a measured fact, and is written that way
+    here and in the hand-back), so the subagent's own transcript can be found without one: it is
+    `<same directory as the main transcript>/subagents/agent-<agent_id>.jsonl` — the exact
+    layout a sibling plugin's transcript-mining code independently assumes for the same reason.
+
+    Returns None when either input is missing — never a guess past that."""
+    if not main_transcript_path or not agent_id:
+        return None
+    session_dir = os.path.dirname(main_transcript_path)
+    return os.path.join(session_dir, "subagents", "agent-%s.jsonl" % agent_id)
 
 
 def transcript_pending_creation(payload, path, usable, detail):
@@ -514,10 +567,11 @@ def find_recent_read(records, by_uuid, anchor, want_tab_id):
 # --------------------------------------------------------------------------------------
 
 def iter_click_inputs(tool_name, tool_input):
-    """Yield one `computer`-shaped input dict per click to classify. `browser_batch` fans out
-    into every `computer` action inside `tool_input["actions"]` — the case this guard exists
-    to close; everything else is a single input."""
-    if tool_name == "mcp__claude-in-chrome__browser_batch":
+    """Yield one `computer`-shaped input dict per click to classify. A `browser_batch` call —
+    EITHER surface's (dev #310: checked by membership in `BATCH_TOOLS`, not one hardcoded
+    name) — fans out into every `computer` action inside `tool_input["actions"]`; everything
+    else is a single input."""
+    if tool_name in BATCH_TOOLS:
         for action in (tool_input or {}).get("actions") or []:
             if isinstance(action, dict) and action.get("name") == BATCH_ACTION_NAME:
                 yield action.get("input") or {}
@@ -553,6 +607,20 @@ def classify_one(action_input, page_text):
 _LAST_DIAGNOSIS = None
 
 
+# dev #309 — deny_reasons carrying this prefix are a BLIND-CLICK REFUSAL (no page-read
+# resolvable at all in a subagent's own transcript), never an outbound-verb match. main_hook()
+# checks this prefix to render a different explanation — conflating the two would tell an
+# agent it clicked "Send" when what actually happened is the guard could not see the page.
+BLIND_CLICK_DENY_TAG = "BLIND CLICK REFUSED"
+
+
+def _blind_subagent_deny_reason(action_input, agent_id, diag_detail):
+    return ("%s: ref %s -- a subagent click (agent_id=%s) has no resolvable page-read at all "
+            "in its own transcript (%s) -- refusing rather than allowing a browser-driving "
+            "agent to click blind (dev #309)"
+            % (BLIND_CLICK_DENY_TAG, action_input.get("ref"), agent_id, diag_detail))
+
+
 def evaluate(payload):
     """The whole classify-a-hook-call pipeline. Returns (deny, deny_reasons, notes).
 
@@ -567,7 +635,38 @@ def evaluate(payload):
     transcript not existing YET (see its docstring) — in which case the note says so honestly
     instead of claiming "GUARD INERT", because that claim would usually be false: proven, the
     transcript is reliably present by the time any tool's PreToolUse fires, well before a click
-    could plausibly be the very first tool call of a session."""
+    could plausibly be the very first tool call of a session.
+
+    dev #309 — a SUBAGENT's click (`payload["agent_id"]` present) resolves against the
+    SUBAGENT'S OWN transcript (`derive_subagent_transcript_path()`), never the main session's:
+    the main `transcript_path` this hook otherwise reads structurally cannot contain a
+    subagent's own tool-use records, so every subagent click used to fall through to the
+    generic "unresolved -> ALLOW, loud" branch — not rarely, but on every single one, which is
+    exactly the shape the module docstring's fail-open defence does not hold for. Two changes,
+    both scoped to `agent_id is not None`:
+      1. Resolve and diagnose the subagent's own transcript instead of the main one.
+      2. Narrow fail-open for this context specifically: a click with NO resolvable page-read
+         at all (`page_text is None` — no read tool call found anywhere in the subagent's own
+         chain) is DENIED, not allowed — a browser-driving agent clicking with no visible page
+         is refused rather than trusted blind. A page-read that DID resolve but happens not to
+         contain THIS particular ref (a stale ref, the page changed) stays ordinary per-click
+         ambiguity — ALLOW, loud — unchanged from the main-session behaviour; only total
+         blindness is escalated to DENY. The main session's own fail-open posture is completely
+         untouched: dev #309 is scoped to `agent_id`, and an unresolvable main-session click
+         still ALLOWs and reports exactly as before.
+
+    ⚠️ `agent_id`'s presence on a subagent's `PreToolUse` payload is corroborated from Claude
+    Code's own changelog ("Added `agent_id` ... to hook events" for subagents), not independently
+    re-verified here against a live-fired subagent hook — this dispatch's constraints prohibit
+    opening a real browser or driving a real browser-driving subagent to check. Treat this as
+    INFERRED, not TESTED, per the standing rule on that distinction; state it in any report
+    rather than letting it read as measured.
+
+    ⚠️ Left deliberately out of scope: dev #111/#137's durable `guard_status` recording (below,
+    in `main_hook()`) stays tied to the MAIN transcript's health — `_LAST_DIAGNOSIS` is left
+    `None` on the subagent path, on purpose, so a subagent-transcript-specific hiccup is never
+    folded into the surface-wide ACTIVE/INERT verdict, which would conflate two different
+    failure shapes. A subagent-scoped equivalent of that durable record is not built here."""
     global _LAST_DIAGNOSIS
     _LAST_DIAGNOSIS = None
     tool_name = payload.get("tool_name") or ""
@@ -579,10 +678,21 @@ def evaluate(payload):
     if not inputs:
         return False, [], []
 
-    transcript_path, _used_fallback = resolve_transcript_path(payload)
-    usable, diag_detail = diagnose_transcript(transcript_path)
-    pending = transcript_pending_creation(payload, transcript_path, usable, diag_detail)
-    _LAST_DIAGNOSIS = (usable, diag_detail, pending)
+    agent_id = payload.get("agent_id")
+    main_transcript_path, _used_fallback = resolve_transcript_path(payload)
+
+    if agent_id:
+        # dev #309 — resolve and diagnose the SUBAGENT'S OWN transcript. `pending` (dev #137)
+        # is a main-session-transcript-creation-timing concept; not applied here.
+        transcript_path = derive_subagent_transcript_path(main_transcript_path, agent_id)
+        usable, diag_detail = diagnose_transcript(transcript_path)
+        pending = False
+    else:
+        transcript_path = main_transcript_path
+        usable, diag_detail = diagnose_transcript(transcript_path)
+        pending = transcript_pending_creation(payload, transcript_path, usable, diag_detail)
+        _LAST_DIAGNOSIS = (usable, diag_detail, pending)
+
     records = load_transcript(transcript_path) if usable else None
     by_uuid = index_by_uuid(records) if records else {}
     anchor = find_anchor(records) if records else None
@@ -595,7 +705,14 @@ def evaluate(payload):
         if verdict == "DENY":
             deny_reasons.append(reason)
         elif verdict is None:
-            if not usable and pending:
+            if agent_id and page_text is None:
+                # dev #309 — total blindness in a subagent's own chain: refuse, don't guess.
+                deny_reasons.append(_blind_subagent_deny_reason(inp, agent_id, diag_detail))
+            elif agent_id:
+                # A read DID resolve; this one ref just isn't in it -- ordinary ambiguity,
+                # same as the main session's unchanged behaviour.
+                notes.append(reason)
+            elif not usable and pending:
                 notes.append(
                     "transcript not created yet on this surface at this point in the session "
                     "(dev #137) -- this click was allowed because nothing can be classified "
@@ -634,15 +751,33 @@ def main_hook():
                               payload.get("session_id"))
 
         if denied:
+            # dev #309 — a deny_reasons entry can be a genuine outbound-verb match OR a
+            # blind-subagent refusal (BLIND_CLICK_DENY_TAG); the two mean different things and
+            # must not be reported as if the click resolved to "Send" when it actually resolved
+            # to "nothing could be seen at all".
+            verb_matches = [r for r in deny_reasons if not r.startswith(BLIND_CLICK_DENY_TAG)]
+            blind = [r for r in deny_reasons if r.startswith(BLIND_CLICK_DENY_TAG)]
+            parts = []
+            if verb_matches:
+                parts.append(
+                    "this click resolves to an outbound-terminal control — a message,\n"
+                    "   invitation, application, InMail, post or share directed at a third "
+                    "party.\n\n"
+                    "   %s" % "\n   ".join(verb_matches))
+            if blind:
+                parts.append(
+                    "this click could not be verified at all (dev #309) — a subagent's own\n"
+                    "   transcript could not be resolved, so what is being clicked is unknown.\n"
+                    "   A browser-driving agent clicking with no visible page is refused, not\n"
+                    "   allowed blind.\n\n"
+                    "   %s" % "\n   ".join(blind))
             sys.stderr.write(
-                "⛔ BLOCKED: this click resolves to an outbound-terminal control — a message,\n"
-                "invitation, application, InMail, post or share directed at a third party.\n\n"
-                "   %s\n\n"
+                "⛔ BLOCKED: %s\n\n"
                 "   This guard only classifies; it does not decide for you. The behavioural rule\n"
                 "   is the first line: work you are not meant to send stays a draft. If sending\n"
                 "   really is the approved next step, that happens through the candidate's own\n"
                 "   review, not a reflexive click here.\n"
-                % "\n   ".join(deny_reasons))
+                % "\n\n⛔ BLOCKED: ".join(parts))
             return 2
 
         if notes:

@@ -149,10 +149,70 @@ def get_app_password(account):
 # IMAP
 # --------------------------------------------------------------------------
 
+# ⭐ dev #311 — RFC 6154 special-use resolution, locale-independent by construction. This
+# mirrors gmail-multi's `gmail_mcp_server.py` fix of the same name -- deliberately a
+# duplicate, not a shared import (see this file's own "WHY A VENDORED LIBRARY" note above).
+# `[Gmail]/All Mail` is the folder's ENGLISH display name; it does not exist under that path
+# on an account whose Gmail display language is not English. `select_all_mail()` used to
+# treat that SELECT failure as "fall back to INBOX", which reads as a complete sweep while
+# covering only the inbox -- a missing thing read as an empty thing (CLAUDE.md's standing
+# trap). RFC 6154 names the folder by ATTRIBUTE (`\All`) rather than by display name; this
+# file cannot open a live IMAP connection to verify Gmail advertises it on a real account
+# (CLAUDE.md's constraint on this dispatch), so the design PREFERS that resolution when a
+# LIST response actually offers it, falls back to the English literal only when RFC 6154
+# resolution finds nothing (an ordinary English-language account is unaffected either way),
+# and REFUSES -- never falls back to INBOX -- when neither resolves.
+SPECIAL_USE_ALL = "\\All"
+
+_LIST_LINE_RE = re.compile(r'^\((?P<flags>[^)]*)\)\s+"(?P<delim>[^"]*)"\s+(?P<name>.+)$')
+
+
+def _parse_list_line(raw):
+    """(flags: set[str], mailbox_name: str) parsed out of one IMAP LIST response line.
+    Returns (None, None) for anything that does not match -- never a guess."""
+    if isinstance(raw, bytes):
+        try:
+            raw = raw.decode("utf-8", "replace")
+        except Exception:
+            return None, None
+    if not isinstance(raw, str):
+        return None, None
+    m = _LIST_LINE_RE.match(raw.strip())
+    if not m:
+        return None, None
+    flags = set(m.group("flags").split())
+    name = m.group("name").strip()
+    if len(name) >= 2 and name.startswith('"') and name.endswith('"'):
+        name = name[1:-1]
+    return flags, name
+
+
+def resolve_special_use_folders(conn):
+    """{special_use_attr: mailbox_name} for every RFC 6154 special-use folder this IMAP
+    LIST response advertises (dev #311). Returns {} if LIST fails or nothing parses."""
+    try:
+        typ, data = conn.list()
+    except Exception:
+        return {}
+    if typ != "OK" or not data:
+        return {}
+    found = {}
+    for raw in data:
+        if raw is None:
+            continue
+        flags, name = _parse_list_line(raw)
+        if not flags or not name:
+            continue
+        if SPECIAL_USE_ALL in flags:
+            found[SPECIAL_USE_ALL] = name
+    return found
+
+
 class Mailbox(object):
     def __init__(self, account):
         self.account = account
         self.conn = None
+        self._special_use = None  # resolved lazily, once per connection (dev #311)
 
     def __enter__(self):
         pw = get_app_password(self.account)
@@ -182,13 +242,29 @@ class Mailbox(object):
                 pass
         return False
 
+    def _special_use_folders(self):
+        if self._special_use is None:
+            self._special_use = resolve_special_use_folders(self.conn)
+        return self._special_use
+
     def select_all_mail(self):
         # All Mail so Gmail's `in:anywhere` semantics behave as expected.
-        typ, _ = self.conn.select(ALL_MAIL, readonly=True)
+        name = self._special_use_folders().get(SPECIAL_USE_ALL)
+        how = "RFC 6154 %s" % SPECIAL_USE_ALL
+        if not name:
+            name, how = ALL_MAIL.strip('"'), "the English literal (no %s advertised in LIST)" % SPECIAL_USE_ALL
+        quoted = '"%s"' % name.replace("\\", "\\\\").replace('"', '\\"')
+        typ, _ = self.conn.select(quoted, readonly=True)
         if typ != "OK":
-            typ, _ = self.conn.select("INBOX", readonly=True)
-            if typ != "OK":
-                raise RuntimeError("Could not select a mailbox for %s" % self.account)
+            # ⚠️ dev #311 — REFUSE, never fall back to INBOX. A sweep that meant to read
+            # every message must never silently narrow to the inbox and report a result as
+            # if it were complete.
+            raise RuntimeError(
+                "Could not select an All Mail mailbox for %s -- tried %s: %r. Refusing "
+                "rather than silently falling back to INBOX (dev #311): that would read as "
+                "a complete sweep when it covered only the inbox. IMAP LIST advertised "
+                "special-use folders: %s"
+                % (self.account, how, name, sorted(self._special_use_folders()) or "none"))
 
     def search(self, query):
         """Gmail query syntax via the X-GM-RAW IMAP extension. Returns UIDs."""
