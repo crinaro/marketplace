@@ -43,8 +43,16 @@ DATA = os.path.join(ROOT, "data")
 
 # The empty stores. Every one is a valid (empty) JSONL — validate_data.py must pass on a fresh
 # install, or a new user's first gate run fails and they conclude the system is broken.
+# ⭐ B1 (ADR-031 §28.1 item 2): `people.jsonl`/`involvements.jsonl` join here and
+# make_fixture.PLACEHOLDER_STORES together, in one change — a fresh scaffold must be current-shape
+# from the moment B1 ships, or a new user's first `checkup`/`graph.py` run reads these as
+# ABSENT and reports it as fact (CLAUDE.md's "a missing thing reads as an empty thing" trap,
+# applied to a store instead of a file). `resume_variants.jsonl` stays deliberately absent here
+# (ADR-028, public #62: "legal-absent" — see design §28.3's corrected count) — this list is not
+# "every store", it is every store a fresh profile is BORN with.
 STORES = ("opportunities.jsonl", "companies.jsonl", "channels.jsonl", "messages.jsonl",
-          "inbox.jsonl", "pending_actions.jsonl", "asks.jsonl", "commitments.jsonl")
+          "inbox.jsonl", "pending_actions.jsonl", "asks.jsonl", "commitments.jsonl",
+          "people.jsonl", "involvements.jsonl")
 
 # A fresh profile is BORN in the six-phase tree (public #28) — the same shape the 0.32.0
 # migration produces, so a new user never runs (or needs) the migration at all.
@@ -314,6 +322,31 @@ def main():
             fh.write(CREDENTIAL_CHECKLIST)
         created.append("CREDENTIALS.md")
 
+    # ⭐⭐ B1 (ADR-031 §28.1 item 5 / gates-connected-entities.md §3, "the fresh-scaffold no-op
+    # migration gate"). Before this, init_profile.py wrote NO stamp at all: `migrate.read_stamp`
+    # on an unstamped profile returns "0.0.0", so a brand-new profile replayed EVERY migration
+    # this engine has ever shipped on its first hook-firing session — confirmed red on c05b315
+    # with no plant needed (the gate spec's own words: it is already absent). Stamping at the
+    # engine's OWN version here means a fresh scaffold is current-shape from the first moment,
+    # so the chain is a no-op on it, exactly as the design intends.
+    #
+    # ⭐ ONLY WHEN NO STAMP EXISTS YET — never overwrite one. This call also runs when
+    # `--scaffold` is re-run against an OLDER, populated profile to fill in newly-added stores
+    # (e.g. people.jsonl/involvements.jsonl on an upgrade); that profile is not fresh and may
+    # genuinely have pending migrations, so stamping it "current" here would hide exactly the
+    # backlog migrate.py exists to run. `os.path.exists` is the same is-it-really-fresh signal
+    # every other line in this function already uses.
+    import migrate as _migrate
+    stamp_path = os.path.join(ROOT, _migrate.STAMP)
+    if not os.path.exists(stamp_path):
+        ok, err = _migrate.write_stamp(ROOT, _migrate.engine_version())
+        if ok:
+            created.append(_migrate.STAMP)
+        else:
+            print("  ⚠️ could not write %s (%s) — migrate.py will treat this profile as "
+                  "unmigrated and replay its whole chain on the next hook-firing session."
+                  % (_migrate.STAMP, err))
+
     # adr-012: a new profile is a git repository FROM THE FIRST MOMENT, seeded local-only
     # (the config skeleton above carries the declaration). Explicit paths only, and best-effort:
     # a failed commit here is healed by migrate.py's m_0_17_0, which commits any repo with no
@@ -332,8 +365,8 @@ def main():
                 created.append(".git/ (adr-012: the profile is always a git repository)")
         if _sp.run(["git", "-C", ROOT, "rev-parse", "-q", "--verify", "HEAD"],
                    capture_output=True).returncode != 0:
-            paths = [x for x in ("config.json", "user.json", "CREDENTIALS.md") + DIRS
-                     if os.path.exists(os.path.join(ROOT, x))]
+            paths = [x for x in ("config.json", "user.json", "CREDENTIALS.md", _migrate.STAMP)
+                     + DIRS if os.path.exists(os.path.join(ROOT, x))]
             _sp.run(["git", "-C", ROOT, "add", "--"] + paths, capture_output=True)
             ident = []
             if not (_sp.run(["git", "-C", ROOT, "config", "user.email"], capture_output=True,

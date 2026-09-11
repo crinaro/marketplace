@@ -23,7 +23,6 @@
     "blocked_until",
     "research_log",
     "outreach",
-    "contacts",
     "applications",
     "fit",
     "resume_variant",
@@ -44,7 +43,7 @@
       "address_status",
       "campaign_id",
       "channel_id",
-      "contact_id",
+      "person_id",
       "date",
       "delivery",
       "medium",
@@ -68,24 +67,6 @@
       "status"
      ],
      "id_field": null
-    },
-    "contacts": {
-     "fields": [
-      "contact_id",
-      "name",
-      "email",
-      "email_status",
-      "linkedin",
-      "path_type",
-      "role",
-      "status",
-      "note"
-     ],
-     "required": [
-      "contact_id",
-      "name"
-     ],
-     "id_field": "contact_id"
     },
     "applications": {
      "_note": "public #27 (2026-08-25) - app_id is the stable handle a trigger names (trigger_kind='application', trigger_ref=<app_id>). Since 0.41.0 record.py MINTS it on every write that adds a row (<opp_id>-aN, N one past the highest suffix already on the record - a removed row's number is never reused, or an old trigger would silently move) and m_0_41_0_app_ids backfilled every historical row in array order, so id_field is app_id and a second row carrying an existing one is refused at the door. Not in 'required' on purpose: a caller never supplies it, the API does. form_answers captures what was actually answered on the form's own questions (salary expectations, reason for leaving, AI usage), reasoned out once and previously lost to prose: a list of {question_key, question, answer, answered_on}, question_key a lowercase slug shared across applications so precedent and same-employer inconsistency are queryable. This file cannot express an object shape nested inside an array row (same limitation the messages note records); validate_data.py enforces the entry shape.",
@@ -185,7 +166,6 @@
     "review_cadence",
     "last_reviewed",
     "scope_notes",
-    "contacts",
     "relationship_status",
     "log",
     "next_touch",
@@ -196,30 +176,16 @@
     "label",
     "type"
    ],
-   "arrays": {
-    "contacts": {
-     "fields": [
-      "contact_id",
-      "name",
-      "email",
-      "role",
-      "note"
-     ],
-     "required": [
-      "name"
-     ],
-     "id_field": "contact_id"
-    }
-   }
+   "arrays": {}
   },
   "messages": {
-   "_note": "dev #83 — declared 2026-08-14. Load-bearing for your_move.derive_channel_last_touch (joins on contacts[].contact_id), previously invisible to this file even though validate_data.py has enforced it structurally (independently, ~lines 193-252) since 2026-08-02. 'required' here is exactly what that enforcement demands UNCONDITIONALLY; it CANNOT express the anchor rule (opp_id OR channel_id, at least one) because 'required' is an AND list — see validate_data.py's own check for that. Unlike opportunities, nothing yet feeds this entry into the unknown-key guard, so 'fields' is not enforced against messages.jsonl today. `answers` (dev/audit 2026-09-02, Class B) is the reply relation as a key: the id of the message this one replies to — optional, must resolve, must answer a message of the other direction, must not precede it; validate_data.py enforces all four, m_0_36_0_message_answers backfills history where attribution is unambiguous.",
+   "_note": "dev #83 — declared 2026-08-14. Load-bearing for your_move.derive_channel_last_touch (joins on involvements.person_id, ADR-031 B1), previously invisible to this file even though validate_data.py has enforced it structurally (independently, ~lines 193-252) since 2026-08-02. 'required' here is exactly what that enforcement demands UNCONDITIONALLY; it CANNOT express the anchor rule (opp_id OR channel_id, at least one) because 'required' is an AND list — see validate_data.py's own check for that. Unlike opportunities, nothing yet feeds this entry into the unknown-key guard, so 'fields' is not enforced against messages.jsonl today. `answers` (dev/audit 2026-09-02, Class B) is the reply relation as a key: the id of the message this one replies to — optional, must resolve, must answer a message of the other direction, must not precede it; validate_data.py enforces all four, m_0_36_0_message_answers backfills history where attribution is unambiguous.",
    "id_field": "id",
    "fields": [
     "id",
     "opp_id",
     "channel_id",
-    "contact_id",
+    "person_id",
     "direction",
     "medium",
     "sent_on",
@@ -312,6 +278,48 @@
     "created"
    ],
    "arrays": {}
+  },
+  "people": {
+   "_note": "ADR-031 B1 — promoted from opportunities.contacts[] and channels.contacts[]. The human, once, globally unique. `title`/`cadence`/`created`/`note` are new concepts the migration never guesses at from legacy data; they start null and are filled by hand or by a later stage.",
+   "id_field": "id",
+   "fields": [
+    "id",
+    "name",
+    "email",
+    "email_status",
+    "linkedin",
+    "company_id",
+    "title",
+    "cadence",
+    "status",
+    "merged_into",
+    "not_same_as",
+    "created",
+    "note"
+   ],
+   "required": [
+    "id",
+    "name",
+    "status"
+   ],
+   "arrays": {}
+  },
+  "involvements": {
+   "_note": "ADR-031 B1 — what a person IS in one pursuit or channel: `path_type`/`role`/`status`/`note` are facts about the person IN THAT CONTEXT, never on `people`. No id of its own (design §1: 'nothing else joins to an involvement, and the pair is the identity') — unique on (person_id, opp_id|channel_id), exactly one of which is set, never both, never neither.",
+   "id_field": null,
+   "fields": [
+    "person_id",
+    "opp_id",
+    "channel_id",
+    "path_type",
+    "role",
+    "status",
+    "note"
+   ],
+   "required": [
+    "person_id"
+   ],
+   "arrays": {}
   }
  },
  "banned_aliases": {
@@ -321,6 +329,7 @@
   "remarks": "note",
   "sent_on": "date",
   "replied_on": "responded_on",
-  "channel": "channel_id"
+  "channel": "channel_id",
+  "contact_id": "person_id"
  }
 }

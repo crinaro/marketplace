@@ -106,14 +106,26 @@ def known_entities():
     # it only lacked coverage. No further rewrite is needed here.
     _channel_rows = list(rows("channels.jsonl"))
     _message_rows = list(rows("messages.jsonl"))
+    # ADR-031 B1 — `contacts[]` is retired; the people at a channel or an opportunity now join
+    # through `involvements`, resolved against the global `people` store. Loaded once, here,
+    # for both loops below.
+    _people_by_id = {p.get("id"): p for p in rows("people.jsonl") if p.get("id")}
+    _involvements = list(rows("involvements.jsonl"))
+    _people_by_channel = {}
+    for inv in _involvements:
+        cid = inv.get("channel_id")
+        if cid:
+            _people_by_channel.setdefault(cid, []).append(inv.get("person_id"))
+
     for c in _channel_rows:
         label = c.get("label") or c.get("id")
-        derived, _evidence = _ym.derive_channel_last_touch(c, _message_rows)
+        derived, _evidence = _ym.derive_channel_last_touch(c, _message_rows, _involvements)
         if derived:
             note(label, derived, "the channel's derived last touch (outbound message or log)")
         note(label, c.get("last_reviewed"), "the channel's own last_reviewed")
-        for person in (c.get("contacts") or []):
-            if isinstance(person, dict):
+        for pid in _people_by_channel.get(c.get("id"), []):
+            person = _people_by_id.get(pid)
+            if person:
                 note(person.get("name"), derived, "a touch on their channel")
 
     for m in _message_rows:
@@ -121,12 +133,10 @@ def known_entities():
             note(m.get("to"), m.get("sent_on"), "an outbound message in messages.jsonl")
 
     for o in rows("opportunities.jsonl"):
-        by_id = {c.get("contact_id"): c for c in (o.get("contacts") or [])
-                 if isinstance(c, dict)}
         for out in (o.get("outreach") or []):
             if not isinstance(out, dict) or out.get("status") != "sent":
                 continue
-            person = by_id.get(out.get("contact_id")) or {}
+            person = _people_by_id.get(out.get("person_id")) or {}
             note(person.get("name"), out.get("date"), "a sent outreach row")
     return ent
 

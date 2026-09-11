@@ -2,10 +2,45 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
+## gmail-multi 0.3.0
+- [#76](https://github.com/crinaro/marketplace/issues/76) — gmail-multi: a non-ASCII character in a search query aborts the whole multi-account search
+- Gmail special folders are hardcoded English literals and select_all_mail silently falls back to INBOX *(tracked internally as crinaro/marketplace-dev#311)*
+
+## gmail-multi 0.2.0
+- gmail-multi should support send/reply/forward; jobsearch must enforce draft-only as policy rather than rely on the capability being absent *(tracked internally as crinaro/marketplace-dev#213)*
+
+## gmail-multi 0.1.1
+- Marketplace identifier: careers-plugins -> crinaro-marketplace, with a launcher self-heal *(tracked internally as crinaro/marketplace-dev#216)*
+
+## gmail-multi 0.1.0
+- Release: jobsearch 0.29.0 and gmail-multi 0.1.0 — connector self-install replaces the declared dependency *(tracked internally as crinaro/marketplace-dev#210)*
+
+## jobsearch 0.43.0
+- [#65](https://github.com/crinaro/marketplace/issues/65) — A run the scheduler marks as fired can leave zero engine trace, including no SessionStart hook entry, indistinguishable from the scheduler never invoking a session at all
+- [#66](https://github.com/crinaro/marketplace/issues/66) — Two views over the same fit data disagree about whether a question on a decided role is still live
+- [#67](https://github.com/crinaro/marketplace/issues/67) — resume_variants.py --check overstates "claims outside the addenda" because heading-tracking loses the addenda association across sub-headings
+- [#68](https://github.com/crinaro/marketplace/issues/68) — weekly-review skill takes the shared write lock at run start instead of immediately before its write phase, holding it across every read-only step and the strategy dispatch
+- [#69](https://github.com/crinaro/marketplace/issues/69) — a coverage gap has no field to reference the issue that already explains it, so a known and already-filed limitation reopens a fresh gap on every run that hits it
+- [#71](https://github.com/crinaro/marketplace/issues/71) — funnel_report.py --recommend compares media across different touch types, producing a false CONTRADICTED verdict against a first-touch sequence default
+- [#72](https://github.com/crinaro/marketplace/issues/72) — a run that dies mid-flight has no journal event for "these stranded notes were reviewed and needed no write", so it is reported as an unresolved failure indefinitely
+- [#73](https://github.com/crinaro/marketplace/issues/73) — Rulebook names docs/schema.md as the data-model reference, but no such file ships into a profile
+- [#77](https://github.com/crinaro/marketplace/issues/77) — presence_set.py counts RENDERED variant panes, not DECLARED ones — a profile with active variants can be told it has none
+- [#82](https://github.com/crinaro/marketplace/issues/82) — Printed skill commands and strict-schema rejections are not checked against what the shipped script actually accepts, so both can drift silently
+- check_engine_purity's collision rate grows with the profile: ordinary English words become tripwires as encountered terms accumulate *(tracked internally as crinaro/marketplace-dev#225)*
+- The reconcile step could not represent a public issue closed out-of-band with no dev mirror *(tracked internally as crinaro/marketplace-dev#248)*
+- record-dev's issue-citation requirement forced fabricated issues for non-defect work, which the regression-links gate then flagged red *(tracked internally as crinaro/marketplace-dev#258)*
+- The HOME-mutation tripwire does not watch the profile directory, which is where a shipped generator actually writes *(tracked internally as crinaro/marketplace-dev#278)*
+- check_engine_purity --require-profile accepts the synthetic fixture, so it reports confident false staleness instead of refusing *(tracked internally as crinaro/marketplace-dev#299)*
+- guard_outbound_click fails open for every subagent click, because a subagent's page reads are not in the transcript the guard is given *(tracked internally as crinaro/marketplace-dev#309)*
+- browser_batch bypasses the outbound-click guard entirely, on the surface the LinkedIn agent prefers *(tracked internally as crinaro/marketplace-dev#310)*
+- Gmail special folders are hardcoded English literals and select_all_mail silently falls back to INBOX *(tracked internally as crinaro/marketplace-dev#311)*
+- The fixture generator produced only the config half, so the rulebook's never-hand-edit rule did not cover the data fixtures it was aimed at *(tracked internally as crinaro/marketplace-dev#291)*
+
 ## jobsearch 0.42.0
 - [#74](https://github.com/crinaro/marketplace/issues/74) — Generated dashboard keeps listing resume variants as needing reconcile after the variant gate reports them current
 
 ## jobsearch 0.41.0
+- The changelog sorts by version across plugins, so a new plugin's first release reads as the oldest entry *(tracked internally as crinaro/marketplace-dev#214)*
 - Applications now carry a stable app_id (<opp_id>-aN, minted automatically), and the ATS settings — receipt_sender_domains and status_phrases — are documented for the first time and unified under one set of key names. An existing profile migrates to both automatically on upgrade; no new automated behavior ships yet, since nothing reads these keys until a later release adds the reader. *(tracked internally as crinaro/marketplace-dev#286)*
 
 ## jobsearch 0.40.0
@@ -97,12 +132,3 @@ Generated from fixes confirmed shipped — public reports and internal fixes ali
 - [#19](https://github.com/crinaro/careers-plugins/issues/19) — No schema field represents a pursued opportunity's post-application play-sequence stage
 - [#20](https://github.com/crinaro/careers-plugins/issues/20) — Generated dashboard renders knowledge-base and call-preparation artifacts as filename strings, not their content
 - [#21](https://github.com/crinaro/careers-plugins/issues/21) — OPEN DESIGN QUESTION: two dashboard views present the same records through two different taxonomies instead of one lifecycle-state view
-
-## gmail-multi 0.2.0
-- gmail-multi should support send/reply/forward; jobsearch must enforce draft-only as policy rather than rely on the capability being absent *(tracked internally as crinaro/marketplace-dev#213)*
-
-## gmail-multi 0.1.1
-- Marketplace identifier: careers-plugins -> crinaro-marketplace, with a launcher self-heal *(tracked internally as crinaro/marketplace-dev#216)*
-
-## gmail-multi 0.1.0
-- Release: jobsearch 0.29.0 and gmail-multi 0.1.0 — connector self-install replaces the declared dependency *(tracked internally as crinaro/marketplace-dev#210)*

@@ -27,8 +27,10 @@ shows up as a one-line diff rather than a reformatted file.
 |---|---|
 | `companies.jsonl` | employers — one record each, however many roles they post |
 | `channels.jsonl` | where roles come from: job boards, company career pages, recruiting firms, referrals |
-| `opportunities.jsonl` | the roles themselves, with their contacts, outreach, applications and fit analysis |
+| `opportunities.jsonl` | the roles themselves, with their outreach, applications and fit analysis |
 | `messages.jsonl` | every communication, both directions, with its full text. Since 0.36.0 an inbound message can carry `answers`, the id of the outbound message it replies to — see *Outreach* below |
+| `people.jsonl` | every person you deal with, once each — see *People* below (since 0.44.0; before that, contacts lived nested on the role or channel) |
+| `involvements.jsonl` | how each person connects to a role or a channel — since 0.44.0, alongside `people.jsonl` |
 | `asks.jsonl` | things waiting on you — a role decision or a piece of system upkeep |
 | `commitments.jsonl` | what is scheduled — calls, deadlines, follow-ups due on a date |
 
@@ -98,7 +100,7 @@ roles I pursue?" is a query, not a memory exercise.
 | `last_reviewed` | the date it was last checked |
 | `scope_notes` | which titles, filters and locations this channel covers |
 | `access` | how it is reached — see below |
-| `contacts`, `relationship_status`, `log` | for firms and referrals: who, where you stand, and the thread history |
+| `relationship_status`, `log` | for firms and referrals: where you stand, and the thread history. Who you know there is a person, not a field on the channel — see *People* below |
 | `alert_sender` | for a channel that sends alert-digest emails (a board or aggregator): the Gmail search fragment for its own From address, e.g. `from:indeed`. Absent on a channel with nothing to sweep — a recruiter, a channel you only check by hand — which is correct, not a gap |
 
 **⭐ Retiring a channel now does two things, not one.** Setting `relationship_status: retired` used
@@ -173,27 +175,74 @@ still reading `undecided` once an application is on record becomes `pursue` auto
 act of applying was the decision, and you are never asked pursue-or-pass on a role you already
 applied to.
 
-### Contacts — the people
+### People — the humans you deal with
 
-Contacts live **on the opportunity**, because that is where the conversation happens.
+**As of the 0.44.0 upgrade, a person is one record, period** — not one record per role they
+happen to touch. Before 0.44.0, a contact lived on the opportunity (or the channel) where you
+first recorded them, so the same recruiter showing up on two roles was two disconnected records
+with no way to ask "what is my whole history with this person?" across both. Now every person
+is one row in `data/people.jsonl`, and a separate `data/involvements.jsonl` record links that
+person to each role or channel they touch — with a note on *what they are in that specific
+context* (a warm referral on one role can be a cold recruiter contact on another; that fact
+lives on the link, never on the person).
 
-| field | what it is |
+| field (on the person) | what it is |
 |---|---|
-| `contact_id` | required and unique within the role — this is the join key |
 | `name` | a name. URLs and email addresses go in their own fields, not in here |
 | `email`, `linkedin` | structured and validated, never prose |
-| `role`, `path_type`, `status`, `notes` | who they are, how you reached them, where it stands |
+| `title`, `cadence` | who they are professionally, and (once you set it) how often you want to stay in touch |
+
+| field (on the link to one role or channel) | what it is |
+|---|---|
+| `role`, `path_type`, `status`, `notes` | how you reached them and where it stands, **for this role or channel specifically** |
 
 `path_type` is `warm-referral` · `recruiter` · `hiring-manager` · `hiring-context` ·
 `internal` · `cold`.
 
-> **If you messaged someone, they are a contact of that role by definition.** Every outreach
-> record must point at a contact that exists, and this is enforced — which is what makes
-> "what is my whole history with this person?" answerable.
+> **If you messaged someone, they are a person on record by definition.** Every outreach record
+> must point at a person that exists, and this is enforced — which is what makes "what is my
+> whole history with this person?" answerable, now across every role and channel at once, not
+> just one.
 
-*Known limit, stated rather than hidden:* contact IDs are unique within a role, so the same
-person appearing on two roles is two records. Searching by name spans every role, which covers
-the practical need.
+Query one person's full history with `python3 scripts/pipeline_index.py --person <name>`.
+
+**What happens to your existing contacts on upgrade.** The 0.44.0 upgrade runs this migration
+automatically, the first time you open a session on that version — you don't run anything
+yourself. It reads every contact you already had on every role and every channel and, for each
+one, decides one of two things:
+
+- **Combine two contacts into one person**, but only when it is confident they are the same
+  human by a strict rule: an identical LinkedIn profile URL, **or** an identical email address
+  *and* an identical name — both, together. Two contacts that share only a name, or only an
+  email, are never combined automatically.
+- **Otherwise, keep every contact as its own separate person** — including cases the migration
+  flags as *probably* the same person but isn't sure enough to decide for you: the same email
+  with a different name (a shared team inbox, or a typo somewhere), the same name at the same
+  company (two different people, or one record with a wrong slug), or the same name at two
+  different companies (a slug collision, or genuinely the same person across two jobs over
+  time). Nothing in this second group is merged. It is printed in the upgrade's own report so you
+  can see it, and it stays available afterward from `python3 scripts/people.py --duplicates`
+  — a live query, not a one-time list, so it never goes stale even if you don't act on it right
+  away.
+
+**Nothing is ever silently merged wrong, and nothing is ever silently lost.** When two contacts
+*are* combined, the combination is a pointer (one row is marked as absorbed into the survivor),
+never a rewrite of anything that already pointed at the absorbed record — so every old link to
+either contact keeps resolving correctly. If you later discover a combination is wrong, or that
+two people the migration kept separate really are the same person, `record.py` lets you correct
+either direction by hand. And the whole migration only ever writes once it has checked its own
+work is valid — if anything about your data would make the result invalid, nothing is written
+and you keep exactly what you had before, with a report of what needs attention first.
+
+**On email matching, deliberately:** `jane.doe@company.com` and `janedoe@company.com` are treated
+as **different** email addresses, not the same one, even though some mail providers would
+deliver both to the same inbox. So are `jane@company.com` and `jane+jobsearch@company.com`. This
+is on purpose — collapsing those would risk merging two different people who happen to share a
+mail provider's quirk, which is a worse mistake than leaving two genuinely-identical contacts
+unmerged for you to combine by hand.
+
+*Known limit, resolved by this upgrade:* the old per-role contact records are gone; every person
+is now one record spanning every role and channel they touch.
 
 ### Outreach — messages you sent
 

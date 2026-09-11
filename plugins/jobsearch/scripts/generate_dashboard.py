@@ -240,12 +240,14 @@ def best_link(o):
     return None
 
 
-def opp_bucket(o):
+def opp_bucket(o, involvements=()):
     """The one COVERAGE bucket this role belongs to — applying.coverage's, by import. The
     three values were this file's own until public #48 stage 1 made coverage a declared
     filter dimension, and a dimension's vocabulary must have an owner outside the renderer
-    (the `_CLOSED_STATUSES` lesson at the top of this file)."""
-    return _applying.coverage(o)
+    (the `_CLOSED_STATUSES` lesson at the top of this file). `involvements` — ADR-031 B1 —
+    is the global `involvements.jsonl` rows; optional, so a caller with none yet still gets
+    the outreach-or-nothing half of the answer rather than crashing."""
+    return _applying.coverage(o, involvements)
 
 
 def stage_rail(o):
@@ -364,7 +366,7 @@ OPP_DIMS = (("state", "your_move.ATTENTION", _ym.ATTENTION),
             ("coverage", "applying.COVERAGE", _applying.COVERAGE))
 
 
-def render_opportunity_list(opps, companies, attention=None, owner=None):
+def render_opportunity_list(opps, companies, attention=None, owner=None, involvements=None):
     """One row per LIVE role — needs-you first, then yours, then the run's — inside a
     FILTERED LIST over OPP_DIMS, EVERY member rendered. Closed roles are not here — they
     are not opportunities.
@@ -403,6 +405,10 @@ def render_opportunity_list(opps, companies, attention=None, owner=None):
     """
     attention = attention or {}
     owner = owner if owner is not None else _ym.owner_by_id(opps, OWNER_TOKEN)
+    # ADR-031 B1 — involvements[], not opportunities.contacts[] any more (retired). Loaded
+    # here, not passed by every caller, for the same reason `owner`'s default is derived here:
+    # a caller with no opinion about it should not have to know it exists.
+    involvements = involvements if involvements is not None else load_jsonl("involvements.jsonl")
     live = [o for o in opps if o.get("status") not in _TERMINAL]
     for o in opps:
         if o.get("status") in _TERMINAL and o.get("id"):
@@ -426,7 +432,7 @@ def render_opportunity_list(opps, companies, attention=None, owner=None):
     rows, members = [], {}
     for o in sorted(live, key=key):
         comp = companies.get(o.get("company_id"), {})
-        bucket = opp_bucket(o)
+        bucket = opp_bucket(o, involvements)
         waits = owner.get(o.get("id")) == "you"
         counts["all"] += 1
         counts[bucket] += 1
@@ -1465,12 +1471,28 @@ def opps_from_jsonl():
 
 def firms_from_channels():
     """Recruiter/referral channels -> the Network tab's firms table (cutover 2026-07-20,
-    replacing network.md's firm sections). Columns mirror the old table."""
+    replacing network.md's firm sections). Columns mirror the old table.
+
+    ADR-031 B1 — `channels.contacts[]` is retired; the people at a firm now join through
+    `involvements.channel_id`, resolved (through any merge) against `people`. A merged-away
+    alias never shows twice: `people_by_id` is only ever the survivor because
+    `involvements.person_id` was written pointing at the survivor at migration time (design
+    §3) — this reader does not need its own merge-resolution pass to get that right."""
     chans = [c for c in load_jsonl("channels.jsonl") if c.get("type") in ("recruiter", "referral")]
+    people_by_id = {p.get("id"): p for p in load_jsonl("people.jsonl") if p.get("id")}
+    involvements = load_jsonl("involvements.jsonl")
+    names_by_channel = {}
+    for inv in involvements:
+        cid = inv.get("channel_id")
+        if not cid:
+            continue
+        p = people_by_id.get(inv.get("person_id"))
+        if p and p.get("name"):
+            names_by_channel.setdefault(cid, []).append(p["name"])
     headers = ["Firm", "Contact(s)", "Relationship"]
     rows = []
     for c in sorted(chans, key=lambda c: c.get("label", "")):
-        contacts = ", ".join(ct.get("name", "") for ct in c.get("contacts", [])) or "—"
+        contacts = ", ".join(names_by_channel.get(c.get("id"), [])) or "—"
         rows.append([c.get("label", ""), contacts, c.get("relationship_status") or ""])
     return headers, rows
 
@@ -1803,8 +1825,8 @@ def your_move_channels_from_jsonl():
     """
     messages = load_jsonl("messages.jsonl")
     items = []
-    for c, state, _touch, _evidence in _ym.classify_channels(load_jsonl("channels.jsonl"),
-                                                               messages):
+    for c, state, _touch, _evidence in _ym.classify_channels(
+            load_jsonl("channels.jsonl"), messages, involvements=load_jsonl("involvements.jsonl")):
         if state != "now":
             continue
         nt = c.get("next_touch") or {}
@@ -1848,8 +1870,8 @@ def your_move_callouts():
 
     messages = load_jsonl("messages.jsonl")
     fulfilled = []
-    for c, state, touch, evidence in _ym.classify_channels(load_jsonl("channels.jsonl"),
-                                                            messages):
+    for c, state, touch, evidence in _ym.classify_channels(
+            load_jsonl("channels.jsonl"), messages, involvements=load_jsonl("involvements.jsonl")):
         if state != "fulfilled":
             continue
         label = c.get("label") or c.get("id") or "a channel"

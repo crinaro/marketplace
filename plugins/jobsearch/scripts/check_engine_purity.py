@@ -507,34 +507,33 @@ def _profile_terms():
             return
 
     for rel, fields in (("companies.jsonl", ("name",)),
-                        ("messages.jsonl", ("from", "to"))):
+                        ("messages.jsonl", ("from", "to")),
+                        # ADR-031 B1 — a person's name is now a TOP-LEVEL field on `people`,
+                        # promoted from `opportunities.contacts[]`/`channels.contacts[]`. See
+                        # the retired comment (kept below) for why the nested shape was
+                        # invisible to this loop before the promotion made it moot.
+                        ("people.jsonl", ("name",))):
         for row in rows(rel):
             for f in fields:
                 record(row.get(f))
 
-    # ⭐⭐ CONTACTS LIVE NESTED, AND THE FLAT SCAN ABOVE COULD NOT SEE THEM — added 2026-08-11.
+    # ⭐⭐ CONTACTS USED TO LIVE NESTED, AND THE FLAT SCAN ABOVE COULD NOT SEE THEM — added
+    # 2026-08-11, RESOLVED by ADR-031 B1 (2026-09-10): `contacts[]` is retired and every name
+    # it held is now a top-level `people.jsonl.name` field, read by the loop just above like
+    # every other flat string field. Kept here, unexecuted, as the incident record:
     #
     # `companies.jsonl.name` and `messages.jsonl.from/to` are top-level string fields, so the
-    # loop above reads them by name. **A contact is not stored that way.** It lives in the
-    # `contacts[]` ARRAY inside an opportunity — which is where the names of actual humans
-    # accumulate, because that is where the engine puts them. The gate therefore drew zero
-    # person-terms from the one file that holds people, and a contact named in a portable file
+    # loop above reads them by name. A contact was NOT stored that way — it lived in the
+    # `contacts[]` ARRAY inside an opportunity, which is where the names of actual humans
+    # accumulated, because that is where the engine put them. The gate therefore drew zero
+    # person-terms from the one file that held people, and a contact named in a portable file
     # was invisible to it.
     #
-    # ⚠️ It certified exactly that: four real third-party names survived across `daily-run`'s
+    # It certified exactly that: four real third-party names survived across `daily-run`'s
     # SKILL.md, `docs/schema.md`, `docs/architecture.md`, `migrate_contacts.py`,
     # `reconcile.py` and `test_checks.py` through every green run — every one of them a person
     # in this array. Same signature failure as the two above it: a source that is never read
     # produces an empty term set, and an empty term set reads as CLEAN.
-    #
-    # `outreach[].to` is deliberately NOT read here: it is the free text that
-    # `migrate_contacts.py` exists to normalise INTO `contacts[].name`, and every person it
-    # names has a contact record after that migration. Reading the canonical field is the
-    # point; reading the messy one as well would only add malformed variants.
-    for row in rows("opportunities.jsonl"):
-        for c in (row.get("contacts") or []):
-            if isinstance(c, dict):
-                record(c.get("name"))
 
     return {k: sorted(v) for k, v in terms.items() if v}
 

@@ -35,6 +35,7 @@ Python 3.9+. Standard library only.
 """
 
 import argparse
+import collections
 import json
 import os
 import sys
@@ -85,34 +86,51 @@ def main():
     if args.person:
         # "What is the whole history with this person?" — the question that was
         # unanswerable until outreach[] gained a contact_id joining it to contacts[]
-        # (2026-08-02). Searches across ALL opportunities, because a recruiter or a warm
-        # contact often spans several.
+        # (2026-08-02), and ADR-031 B1 promoted the join to a GLOBAL `people` store: a
+        # recruiter or warm contact spans several opportunities, or none (a relationship
+        # anchored only to a channel) — `people`/`involvements` is where that lives now.
         needle = args.person.lower()
+        people = {p["id"]: p for p in load("people.jsonl")}
+        involvements = load("involvements.jsonl")
+        opps_by_id = {o.get("id"): o for o in opps}
         found = False
-        for o in opps:
-            for c in (o.get("contacts") or []):
-                if needle not in (c.get("name") or "").lower():
+        for pid, p in people.items():
+            if needle not in (p.get("name") or "").lower():
+                continue
+            found = True
+            print("%s — %s" % (p.get("name"), companies.get(p.get("company_id"),
+                                                             p.get("company_id") or "—")))
+            print("  email    : %s" % (p.get("email") or "— none on record"))
+            print("  linkedin : %s" % (p.get("linkedin") or "—"))
+            if p.get("status") == "merged":
+                print("  status   : merged into %s" % p.get("merged_into"))
+            for inv in involvements:
+                if inv.get("person_id") != pid:
                     continue
-                found = True
-                print("%s — %s" % (c.get("name"), companies.get(o.get("company_id"), o.get("company_id"))))
-                print("  role     : %s" % (c.get("role") or c.get("path_type") or "?"))
-                print("  email    : %s" % (c.get("email") or "— none on record"))
-                print("  linkedin : %s" % (c.get("linkedin") or "—"))
-                print("  opp      : %s  [%s / %s]" % (o["id"], o.get("status"), o.get("stage")))
-                touches = [r for r in (o.get("outreach") or [])
-                           if r.get("contact_id") == c.get("contact_id")]
-                if not touches:
-                    print("  touches  : none recorded")
-                for r in sorted(touches, key=lambda x: x.get("date") or ""):
-                    print("    %s  %-14s %-24s %s" % (r.get("date"), r.get("outcome"),
-                                                     r.get("medium"), r.get("touch_type")))
-                    if r.get("responded_on"):
-                        print("               replied %s" % r["responded_on"])
-                if c.get("notes"):
-                    print("  notes    : %s" % c["notes"][:220])
-                print()
+                o = opps_by_id.get(inv.get("opp_id"))
+                if o:
+                    print("  role     : %s" % (inv.get("role") or inv.get("path_type") or "?"))
+                    print("  opp      : %s  [%s / %s]" % (o["id"], o.get("status"),
+                                                          o.get("stage")))
+                    touches = [r for r in (o.get("outreach") or [])
+                              if r.get("person_id") == pid]
+                    if not touches:
+                        print("  touches  : none recorded")
+                    for r in sorted(touches, key=lambda x: x.get("date") or ""):
+                        print("    %s  %-14s %-24s %s" % (r.get("date"), r.get("outcome"),
+                                                         r.get("medium"), r.get("touch_type")))
+                        if r.get("responded_on"):
+                            print("               replied %s" % r["responded_on"])
+                elif inv.get("channel_id"):
+                    print("  channel  : %s  role=%s" % (inv["channel_id"],
+                                                        inv.get("role") or inv.get("path_type") or "?"))
+                if inv.get("note"):
+                    print("  notes    : %s" % str(inv["note"])[:220])
+            if p.get("note"):
+                print("  notes    : %s" % str(p["note"])[:220])
+            print()
         if not found:
-            print("No contact matching %r. Names come from contacts[] across all opportunities."
+            print("No person matching %r. Names come from data/people.jsonl (ADR-031 B1)."
                   % args.person)
             return 1
         return 0
@@ -139,6 +157,14 @@ def main():
           % ("title", "company", "status", "stage", "play", "A=app T=touch", "verdict"))
     print("-" * 130)
 
+    # ADR-031 B1 — `--contacts` joins through `involvements`, not a nested `contacts[]` array.
+    _people_by_id = {p["id"]: p for p in load("people.jsonl")} if args.contacts else {}
+    _person_ids_by_opp = collections.defaultdict(list)
+    if args.contacts:
+        for inv in load("involvements.jsonl"):
+            if inv.get("opp_id"):
+                _person_ids_by_opp[inv["opp_id"]].append(inv.get("person_id"))
+
     for o in sorted(rows, key=lambda x: ((x.get("company_id") or ""), x.get("id"))):
         # ⭐ ACTIVITY COLUMN — added 2026-08-03. `stage` is a MODEL of where a role is; this is
         # the RECEIPT of what was actually sent. On 2026-08-03 I read `research_log: 0` on three
@@ -160,7 +186,9 @@ def main():
         )
         print("  " + line)
         if args.contacts:
-            names = [c.get("name") for c in (o.get("contacts") or []) if c.get("name")]
+            names = [_people_by_id.get(pid, {}).get("name")
+                    for pid in _person_ids_by_opp.get(o.get("id"), [])]
+            names = [n for n in names if n]
             reached = [r.get("to") for r in (o.get("outreach") or []) if r.get("to")]
             if names or reached:
                 print("      contacts: %s" % (", ".join(names) or "none"))

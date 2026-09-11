@@ -66,11 +66,19 @@ CLOSED_STATUS = _vd.TERMINAL_OPP_STATUSES
 COVERAGE = ("applied", "person", "nothing")
 
 
-def coverage(o):
-    """The one COVERAGE value for an opportunity record."""
+def coverage(o, involvements=()):
+    """The one COVERAGE value for an opportunity record. `involvements` is the GLOBAL
+    `involvements.jsonl` rows (ADR-031 B1 — `opportunities.contacts[]` is retired and
+    promoted there); a person "covers" a role by having an involvement anchored to it, not by
+    a nested array on the record any more. Optional, defaulting to `()`, so a caller that
+    genuinely has no involvements list yet degrades to "outreach or nothing" rather than
+    crashing — the same shape every other optional-context parameter in this engine takes."""
     if o.get("applications"):
         return "applied"
-    if o.get("outreach") or o.get("contacts"):
+    oid = o.get("id")
+    has_person = bool(o.get("outreach")) or any(
+        i.get("opp_id") == oid for i in involvements)
+    if has_person:
         return "person"
     return "nothing"
 

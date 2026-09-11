@@ -158,6 +158,7 @@ def main():
     opps = load("opportunities.jsonl")
     companies = {c["id"]: c for c in load("companies.jsonl")}
     channels = {c["id"]: c for c in load("channels.jsonl")}
+    involvements = load("involvements.jsonl")
 
     print("Funnel report - %s" % datetime.date.today().isoformat())
     print("%d opportunities tracked" % len(opps))
@@ -374,14 +375,19 @@ def main():
             print("\n  (could not load communications config: %s)" % exc)
 
     # ---- 4. Paths: which kind of contact actually converts? ----------------
+    # ADR-031 B1 — `opportunities.contacts[]` is retired; a role's people now join through
+    # `involvements.opp_id`, and `path_type` lives on the involvement, never on `people`.
     rule("CONTACT PATHS - which kind of connection converts")
+    verdict_by_opp = {o.get("id"): o.get("verdict") for o in opps}
     paths = collections.defaultdict(lambda: {"total": 0, "pursued": 0})
-    for o in opps:
-        for c in o.get("contacts") or []:
-            pt = c.get("path_type") or "(unset)"
-            paths[pt]["total"] += 1
-            if o.get("verdict") == "pursue":
-                paths[pt]["pursued"] += 1
+    for inv in involvements:
+        opp_id = inv.get("opp_id")
+        if not opp_id:
+            continue
+        pt = inv.get("path_type") or "(unset)"
+        paths[pt]["total"] += 1
+        if verdict_by_opp.get(opp_id) == "pursue":
+            paths[pt]["pursued"] += 1
     for pt, d in sorted(paths.items(), key=lambda kv: -kv[1]["total"]):
         print("  %-18s %3d contacts -> %s on roles we pursued" % (pt, d["total"], pct(d["pursued"], d["total"])))
     print("")

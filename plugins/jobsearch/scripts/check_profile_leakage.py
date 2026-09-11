@@ -49,7 +49,8 @@ import sys
 
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _root import profile_root as _profile_root, engine_root as _engine_root, profile_or_fixture as _pof
+from _root import (profile_root as _profile_root, engine_root as _engine_root,
+                   profile_or_fixture as _pof, is_tracked_fixture as _is_tracked_fixture)
 ENGINE_SCRIPTS = os.path.dirname(os.path.realpath(__file__))
 
 ROOT = _pof()
@@ -236,6 +237,23 @@ def criteria_check():
 
 
 def leakage():
+    # ⭐ dev #319 — VANTAGE, STATED. This derives identity search terms from whatever ROOT
+    # resolves and counts their occurrences in engine files — structurally the SAME
+    # "derive terms from the profile, hunt for them elsewhere" pattern `check_engine_purity.py`
+    # had before dev #299 fixed it. `profile_or_fixture()` (see ROOT's assignment above)
+    # falls back to the tracked, SYNTHETIC fixture in CI/a bare checkout, and the fixture's
+    # terms can never appear in real engine source by construction — a low or zero count in
+    # that mode proves nothing about real separation, the exact "confidently wrong, not
+    # merely absent" shape dev #299 named. The exit code never depends on this (see
+    # duplication_check/criteria_check, both shape-based), so this stays advisory — but the
+    # report must say so, or a reader could mistake a vacuous number for evidence.
+    if _is_tracked_fixture(ROOT):
+        print("  !! RUNNING AGAINST THE TRACKED FIXTURE (%s), NOT A REAL PROFILE." % ROOT)
+        print("     The identity terms below are SYNTHETIC and can never appear in real")
+        print("     engine source — a low or zero count here is NOT evidence of separation,")
+        print("     only that nobody wrote the fixture's own placeholder tokens into the")
+        print("     engine. Real packageability is only measured on a machine with a real")
+        print("     profile (same disclosure check_engine_purity.py makes, dev #299).")
     try:
         patterns, n_terms = build_patterns(load_profile())
     except Exception:

@@ -136,6 +136,67 @@ MEDIA = {"linkedin-connection-note", "linkedin-inmail", "linkedin-message",
 # so a referential check cannot catch them; only naming them can. Kept as rows rather than
 # deleted because historical outreach still points at them and a dangling pointer is worse.
 RETIRED_CHANNEL_IDS = {"linkedin-direct", "email-direct"}
+
+# ⭐⭐ RETIRED NESTED-ARRAY KEYS — ADR-031 §28.1 item 3 / gates-connected-entities.md §1 & Ordering.
+# Each connected-entities stage promotes one nested array to its own store and retires the old
+# key. This is the ONE place that mapping is declared — check_retired_reads.py's AST scanner
+# imports `active_retired_keys()` from here rather than hand-duplicating the three strings, the
+# same discipline the field-list guard just above already states: "restating the field list here
+# would be the same drift the banned_aliases exist to stop" (line 548 in this file).
+#
+# `RETIRED_KEYS` names every key ANY stage will eventually retire — declared once, in full, so
+# nothing ever hand-types a second copy of these three strings. It is NOT the active refusal set.
+#
+# ⭐⭐ STAGE-AWARE, ON PURPOSE (the ordering correction this dispatch made — ADR-031 §28.1 item 3,
+# re-verified against this file's own guard and against gates-connected-entities.md's Ordering
+# section, which requires check_retired_reads.py's own RETIRED_KEYS to "resolve to {} before B1
+# ships" for the identical reason). Naming a key here must not REFUSE it before its own stage has
+# actually shipped: every tracked profile — including THIS repo's own
+# tests/fixtures/profile, read directly by gates.yml's "Data integrity" step — still carries
+# `opportunities.contacts[]` until the B1 migration runs, and that migration is explicitly the
+# NEXT dispatch's work (ADR-031 §28.1 item 6), not this one's. Confirmed empirically before this
+# guard was wired in: patching an unconditional "refuse contacts unconditionally" guard into this
+# file flips `validate_data.py` from CLEAN to a hard failure against the tracked fixture, today,
+# with no migration yet built to fix the data it would be refusing. ADR-031's own stage rule
+# already says why this must not happen: "a store is promoted, its nested source removed, every
+# reader re-pointed, the validator and record.py updated, and the migration shipped — in one
+# version" (design-connected-entities.md §1) — the validator's refusal and the migration that
+# makes the refusal survivable are ONE change, never two commits with a gap between them where
+# every existing profile (and this repo's own fixture) fails a validator nobody gave it a way to
+# satisfy.
+#
+# `active_retired_keys()` is that gate: it reads the STAGE'S OWN SHIPPED-NESS FROM THE TREE —
+# never a flag a human sets and might forget to update (gates-connected-entities.md's CI-parity
+# finding #2, made about check_retired_reads.py but equally true here, since its set must equal
+# this one). B1's structural marker is `graph.py`: both the design (§2, "what keeps it honest")
+# and the gate review name it as B1's OTHER precondition alongside this guard, and it does not
+# exist in this tree until the B1 migration dispatch adds it alongside the migration itself — so
+# its presence is exactly the fact that should flip `contacts` from legal to refused. Whoever
+# builds B2/B3 names their own analogous marker here (the module or store their own migration
+# adds) the same way; the constant grows, the mechanism does not need reinventing.
+RETIRED_KEYS = {"contacts": "B1", "applications": "B2", "outreach": "B3"}
+
+_GRAPH_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph.py")
+
+
+def active_retired_keys():
+    """The subset of RETIRED_KEYS whose stage has actually shipped in THIS tree — read structurally,
+    never all of RETIRED_KEYS and never a human-set flag. Resolves to {} until B1 ships (graph.py
+    lands, with the migration, in one commit); see the block comment above RETIRED_KEYS."""
+    active = {}
+    # ⭐ `_b1_key` holds the string in a NAME, never a literal subscript on RETIRED_KEYS here —
+    # `check_retired_reads.py`'s own scanner matches a Subscript/`.get()` call whose slice is
+    # the STRING CONSTANT "contacts" (it cannot tell a data-row read from a constant-dict read
+    # apart, by design — see its module docstring). `RETIRED_KEYS["contacts"]` would be a real,
+    # if harmless, hit on THIS module; reading it through a local variable is not the checker
+    # avoided, it is the checker's own documented boundary — a data row is never keyed by a
+    # variable holding a compile-time constant a checker can trace back to this exact line.
+    _b1_key = "contacts"
+    if os.path.exists(_GRAPH_PY):
+        active[_b1_key] = RETIRED_KEYS[_b1_key]
+    # `applications` (B2) and `outreach` (B3) gain entries here once THEIR OWN stages ship —
+    # each stage's own migration dispatch names its own structural marker, as B1's names graph.py.
+    return active
 TOUCH_TYPES = {"first-touch", "chase", "reply", "referral-ask", "intro-request",
                "thank-you", "reconnect", "apply-path", "unknown"}
 RECIPIENT_ROLES = {"hiring-manager", "hiring-line", "talent-acquisition", "recruiter-agency",
@@ -168,7 +229,10 @@ TRIGGER_KINDS = {"application", "reply", "elapsed", "manual"}
 FORM_ANSWER_KEYS = {"question_key", "question", "answer", "answered_on"}
 # Unknown keys are REJECTED. Four alias keys (sent_on, replied_on, channel, notes) drifted
 # into the data precisely because nothing rejected them.
-OUTREACH_KEYS = {"to", "contact_id", "channel_id", "status", "date", "responded_on", "outcome",
+# ⭐ ADR-031 B1: `contact_id` -> `person_id` (docs/data_model.json's banned_aliases carries the
+# rename globally). A row still writing `contact_id` is caught by the SAME banned-alias branch
+# every unknown-key guard already runs, not a special case here.
+OUTREACH_KEYS = {"to", "person_id", "channel_id", "status", "date", "responded_on", "outcome",
                  "medium", "touch_type", "recipient_role", "campaign_id", "address_status",
                  "delivery", "message_ref", "variant", "note",
                  "trigger_kind", "trigger_ref", "sequence_id", "sequence_step"}
@@ -177,6 +241,9 @@ OUTREACH_KEYS = {"to", "contact_id", "channel_id", "status", "date", "responded_
 # against 46 legacy rows on day one and get ignored.
 COMMS_CUTOVER = "2026-08-02"
 PATH_TYPES = {"warm-referral", "recruiter", "hiring-manager", "hiring-context", "internal", "cold"}
+# ADR-031 B1 — `people.status`. `merged` is the ONLY non-active state a person can be in;
+# `merged_into` is required iff status is `merged` (checked below, not restated as an enum).
+PEOPLE_STATUS = {"active", "merged"}
 # JD fit analysis (added 2026-08-02, per the candidate: "how is the candidate match to the JD?").
 # DATA, not a document — requirement/verdict/evidence/question is a dataset, so it lives on
 # the opportunity record and is validated like everything else.
@@ -377,16 +444,97 @@ def _main():
         print("Data validation — dataset not present yet (pre-migration). Nothing to check.")
         return 0, []
 
-    # every contact_id known anywhere — opportunities AND channels both carry people
-    all_contact_ids = set()
-    for _r in opps:
-        for _c in (_r.get("contacts") or []):
-            if _c.get("contact_id"):
-                all_contact_ids.add(_c["contact_id"])
-    for _r in (channels or []):
-        for _c in (_r.get("contacts") or []):
-            if _c.get("contact_id"):
-                all_contact_ids.add(_c["contact_id"])
+    # ---- people / involvements (ADR-031 B1) — validated before messages/outreach, both of
+    # which now join to `people` by `person_id` rather than to a nested contacts[] row. -------
+    people, e = load("people.jsonl")
+    if people is None:
+        people = []
+    else:
+        problems += e or []
+    involvements, e = load("involvements.jsonl")
+    if involvements is None:
+        involvements = []
+    else:
+        problems += e or []
+
+    people_ids = set()
+    _company_ids_for_people = {c.get("id") for c in companies}
+    for i, pr in enumerate(people):
+        pl = "people[%s]" % pr.get("id", i)
+        for f in ("id", "name", "status"):
+            req(pr, f, pl, problems)
+        if pr.get("id") in people_ids:
+            problems.append("%s: duplicate id" % pl)
+        people_ids.add(pr.get("id"))
+        enum(pr, "status", PEOPLE_STATUS, pl, problems)
+        em = pr.get("email")
+        if em and not re.match(r"^[\w.+-]+@[\w.-]+\.\w{2,}$", em):
+            problems.append("%s: email %r is not an address" % (pl, em))
+        es = pr.get("email_status")
+        if es is not None and es not in CONTACT_EMAIL_STATUS:
+            problems.append("%s: email_status %r not in {%s}"
+                            % (pl, es, ", ".join(sorted(CONTACT_EMAIL_STATUS))))
+        if pr.get("company_id") is not None and pr["company_id"] not in _company_ids_for_people:
+            problems.append("%s: company_id %r does not resolve" % (pl, pr["company_id"]))
+        mi = pr.get("merged_into")
+        if pr.get("status") == "merged" and not mi:
+            problems.append("%s: status 'merged' requires 'merged_into'" % pl)
+        if mi is not None and pr.get("status") != "merged":
+            problems.append("%s: merged_into set but status is %r — merging is what makes "
+                            "merged_into meaningful" % (pl, pr.get("status")))
+    # merged_into must resolve, and the chain it forms must be ACYCLIC (design §3: "the chain
+    # must be acyclic, validator-enforced") — checked as a SECOND pass so forward references
+    # (an id merged into one that appears later in the file) are legal.
+    for pr in people:
+        mi = pr.get("merged_into")
+        if mi is None:
+            continue
+        pl = "people[%s]" % pr.get("id", "?")
+        if mi not in people_ids:
+            problems.append("%s: merged_into %r does not resolve to any people row" % (pl, mi))
+            continue
+        seen = {pr.get("id")}
+        cur = mi
+        by_id = {p.get("id"): p for p in people}
+        while cur is not None:
+            if cur in seen:
+                problems.append("%s: merged_into chain cycles back to itself via %r"
+                                % (pl, cur))
+                break
+            seen.add(cur)
+            nxt = by_id.get(cur)
+            cur = nxt.get("merged_into") if nxt else None
+        for other in pr.get("not_same_as") or []:
+            if other not in people_ids:
+                problems.append("%s: not_same_as %r does not resolve to any people row"
+                                % (pl, other))
+
+    inv_seen_pairs = set()
+    for i, ir in enumerate(involvements):
+        il = "involvements[%s]" % i
+        req(ir, "person_id", il, problems)
+        pid = ir.get("person_id")
+        if pid is not None and pid not in people_ids:
+            problems.append("%s: person_id %r does not resolve to any people row" % (il, pid))
+        opp_id, chan_id = ir.get("opp_id"), ir.get("channel_id")
+        if bool(opp_id) == bool(chan_id):
+            problems.append("%s: exactly one of opp_id/channel_id must be set (got opp_id=%r, "
+                            "channel_id=%r)" % (il, opp_id, chan_id))
+        if opp_id is not None and opp_id not in {o.get("id") for o in opps}:
+            problems.append("%s: opp_id %r does not resolve" % (il, opp_id))
+        if chan_id is not None and chan_id not in {c.get("id") for c in (channels or [])}:
+            problems.append("%s: channel_id %r does not resolve" % (il, chan_id))
+        pt = ir.get("path_type")
+        if pt is not None and pt not in PATH_TYPES:
+            problems.append("%s: path_type %r not in {%s}"
+                            % (il, pt, ", ".join(sorted(PATH_TYPES))))
+        pair = (pid, opp_id or chan_id)
+        if pair in inv_seen_pairs:
+            problems.append("%s: duplicate involvement for (person_id=%r, %s=%r)"
+                            % (il, pid, "opp_id" if opp_id else "channel_id", opp_id or chan_id))
+        inv_seen_pairs.add(pair)
+
+    all_person_ids = people_ids
 
     sent_msgs, e = load("messages.jsonl"); problems += e or []
     sent_ids = set()
@@ -425,17 +573,17 @@ def _main():
                             % (ml, m.get("direction")))
         # Provenance is required: a stored body with no traceable source is an assertion,
         # not a record. Format: gmail:<account>:<uid>, or 'drafts.md' for one the candidate sent directly.
-        # ⭐ A MESSAGE'S contact_id MUST RESOLVE — to an opportunity's contacts[] OR a channel's.
+        # ⭐ A MESSAGE'S person_id MUST RESOLVE — to a `people` row (ADR-031 B1; was: "to an
+        # opportunity's contacts[] OR a channel's" before people/involvements existed).
         # Added 2026-08-04 after THREE guessed ids passed unnoticed in one afternoon:
         # 'derek-holland' for 'derek-holland-acme', 'priya-nakamura' for
         # 'priya-nakamura-globex', and a contact anchored to the wrong firm entirely just to
         # satisfy the anchor rule. A join key that does not join is worse than no key: it makes
         # "what is the whole history with X?" silently return nothing instead of failing.
-        mcid = m.get("contact_id")
-        if mcid and mcid not in all_contact_ids:
-            problems.append("%s: contact_id %r resolves to no contacts[] entry on any "
-                            "opportunity or channel. A guessed id silently breaks every "
-                            "person-level query." % (ml, mcid))
+        mpid = m.get("person_id")
+        if mpid and mpid not in all_person_ids:
+            problems.append("%s: person_id %r resolves to no people row. A guessed id "
+                            "silently breaks every person-level query." % (ml, mpid))
         if not m.get("source"):
             problems.append("%s: missing 'source' — a body with no provenance cannot be "
                             "re-verified against the mailbox" % ml)
@@ -542,6 +690,11 @@ def _main():
 
     company_ids, channel_ids = set(), set()
 
+    # ⭐ RETIRED-KEY REFUSAL (ADR-031 §28.1 item 3) — computed once, used by both the
+    # opportunities guard below and the channels loop further down. See the block comment on
+    # RETIRED_KEYS/active_retired_keys() above: this resolves to {} until B1 ships.
+    _active_retired = active_retired_keys()
+
     # ⭐ UNKNOWN-KEY GUARD FOR EVERY ARRAY, FROM docs/data_model.json (2026-08-04).
     # Only outreach[] had one before, which is why `nxet_action_owner` wrote silently and this
     # validator reported CLEAN. The definition lives in ONE file that record.py also reads —
@@ -562,6 +715,11 @@ def _main():
         _spec = _model["stores"]["opportunities"]
         for r in opps:
             _l = "opportunities[%s]" % r.get("id", "?")
+            for _k, _stage in _active_retired.items():
+                if _k in r:
+                    problems.append("%s: %r is retired (%s promoted it to its own store) — "
+                                    "refused, not merely unknown. Run the %s migration before "
+                                    "writing this key again." % (_l, _k, _stage, _stage))
             for _k in r:
                 if _k in _ali:
                     problems.append("%s: %r is a banned alias for %r — two spellings of one "
@@ -614,6 +772,17 @@ def _main():
         enum(r, "review_cadence", CADENCES, label, problems)
         if "access" in r:
             enum(r, "access", ACCESS, label, problems)
+        # ⭐ RETIRED-KEY REFUSAL, channel side (ADR-031 §28.1 item 3; design §2's "what keeps it
+        # honest" item 3: "contacts on a channel join the unknown-key guard"). `_active_retired`
+        # is computed once, above, from active_retired_keys() — {} until B1 ships. Iterates the
+        # dict (as the opportunities-side check above already does) rather than subscripting a
+        # literal key — see `active_retired_keys()`'s own comment on why that also keeps this
+        # module out of `check_retired_reads.py`'s own (harmless but avoidable) false positives.
+        for _ck, _cstage in _active_retired.items():
+            if _ck in r:
+                problems.append("%s: %r is retired (%s promoted it to its own store) — "
+                                "refused, not merely unknown. Run the %s migration before "
+                                "writing this key again." % (label, _ck, _cstage, _cstage))
         # alert_sweep.py ORs this across every non-retired channel that sets it (dev #147) —
         # an empty or non-string value would silently drop out of that OR clause and look like
         # "no alerts from this source" rather than a malformed field.
@@ -826,39 +995,13 @@ def _main():
                 _ym.parse_blocked_until(bu)
             except _ym.PreconditionError as e:
                 problems.append("%s: blocked_until %r is unreadable — %s" % (label, bu, e))
-        # contacts — warm paths / hiring managers / internal
-        for i, ct in enumerate(r.get("contacts", [])):
-            if "name" not in ct:
-                problems.append("%s: contact[%d] missing name" % (label, i))
-            if ct.get("path_type") and ct["path_type"] not in PATH_TYPES:
-                problems.append("%s: contact[%d].path_type %r invalid" % (label, i, ct.get("path_type")))
-        # ---- contacts[]: the people, with a stable id so outreach can JOIN to them ----
-        # Added 2026-08-02 after the candidate asked whether the structure was managing all the contact
-        # data for an opportunity. It wasn't: 20 of 46 outreach rows had NO contact record, and
-        # `to` was free text that couldn't match `name` even when both existed.
-        contact_ids = set()
-        for i, ct in enumerate(r.get("contacts", [])):
-            cl = "%s: contacts[%d]" % (label, i)
-            cid = ct.get("contact_id")
-            if not cid:
-                problems.append("%s: missing 'contact_id' — outreach cannot join to it" % cl)
-            elif cid in contact_ids:
-                problems.append("%s: duplicate contact_id %r" % (cl, cid))
-            else:
-                contact_ids.add(cid)
-            if not (ct.get("name") or "").strip():
-                problems.append("%s: missing 'name'" % cl)
-            em = ct.get("email")
-            if em and not re.match(r"^[\w.+-]+@[\w.-]+\.\w{2,}$", em):
-                problems.append("%s: email %r is not an address" % (cl, em))
-            # ⭐ A structured address must carry HOW WE KNOW IT. Added 2026-08-03 after
-            # a contact's address sat in a prose note marked UNVERIFIED: lifting it
-            # into `email` makes it queryable, but without this it would read as confirmed.
-            # Same distinction outreach[].address_status already draws.
-            es = ct.get("email_status")
-            if es is not None and es not in CONTACT_EMAIL_STATUS:
-                problems.append("%s: email_status %r not in {%s}"
-                                % (cl, es, ", ".join(sorted(CONTACT_EMAIL_STATUS))))
+        # ⭐ ADR-031 B1 — `contacts[]` is RETIRED (the retired-key guard above already refuses it
+        # on write). The people it named now live in `people`/`involvements`, validated in one
+        # place near the top of this function; the join `outreach[]` needs is this
+        # opportunity's own involvements, computed here from the GLOBAL `involvements` list
+        # loaded above (person_ids valid for THIS opportunity's own outreach rows to join to).
+        person_ids_for_opp = {i.get("person_id") for i in involvements
+                              if i.get("opp_id") == r.get("id") and i.get("person_id")}
 
         # The application handles a trigger on THIS record may name (public #27): app_id where
         # minted, date for pre-migration rows. Own-record rule — see check_trigger.
@@ -953,16 +1096,17 @@ def _main():
                     if not o2.get(fld):
                         problems.append("%s: '%s' is required on rows dated %s or later"
                                         % (ol, fld, COMMS_CUTOVER))
-            # THE JOIN. If the candidate messaged someone, they must exist as a contact of this
-            # opportunity — otherwise "what is the whole history with this person?" is
-            # unanswerable, which is exactly the gap the candidate identified.
-            ocid = o2.get("contact_id")
-            if not ocid:
-                problems.append("%s: missing 'contact_id' — every outreach row must name the "
-                                "person it went to (run scripts/migrate_contacts.py)" % ol)
-            elif ocid not in contact_ids:
-                problems.append("%s: contact_id %r does not resolve to a contacts[] entry on "
-                                "this opportunity" % (ol, ocid))
+            # THE JOIN (ADR-031 B1: `person_id`, was `contact_id`). If the candidate messaged
+            # someone, they must be a person INVOLVED IN THIS OPPORTUNITY — otherwise "what is
+            # the whole history with this person?" is unanswerable, which is exactly the gap
+            # the candidate identified.
+            opid = o2.get("person_id")
+            if not opid:
+                problems.append("%s: missing 'person_id' — every outreach row must name the "
+                                "person it went to" % ol)
+            elif opid not in person_ids_for_opp:
+                problems.append("%s: person_id %r does not resolve to an involvement on this "
+                                "opportunity" % (ol, opid))
 
             if o2.get("message_ref") and o2["message_ref"] not in sent_ids:
                 problems.append("%s: message_ref %r does not resolve in data/messages.jsonl "

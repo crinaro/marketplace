@@ -43,8 +43,9 @@ undecided row genuinely gated on another party is `waiting`/`unresolved`, never 
 
 ## The `blocked_until` field
 
-Grammar is `precondition.py`'s VERBATIM: `contact:<contact_id> outcome:<v>|<v>`, resolved
-against the RECORD'S OWN `outreach[]` — never the global pipeline, because a join to another
+Grammar is `precondition.py`'s VERBATIM: `contact:<id> outcome:<v>|<v>` (ADR-031 B1: `<id>` is
+now a `people` id, resolved via `outreach[].person_id` — was `contact_id`), resolved against
+the RECORD'S OWN `outreach[]` — never the global pipeline, because a join to another
 opportunity's touch would say this role moved when it did not. Plus the literal `unresolved`.
 No `date:` form: a time trigger already lives in `next_action_date`, and inventing a second
 way to spell the same thing is the exact duplication issue #6 removed for drafts.
@@ -53,8 +54,9 @@ way to spell the same thing is the exact duplication issue #6 removed for drafts
 
 `last_touch` is gone from the schema (nothing ever wrote it — see `migrate.py`'s note). A
 channel's last touch is computed here, always: the max of (the latest OUTBOUND message in
-`messages.jsonl` whose `contact_id` joins any of the channel's `contacts[].contact_id`) and
-(the latest `log[]` entry date).
+`messages.jsonl` whose `person_id` joins any person INVOLVED IN THAT CHANNEL — ADR-031 B1:
+`involvements.channel_id`, was `channels.contacts[].contact_id`) and (the latest `log[]`
+entry date).
 
 ⭐ THE FULFILMENT RULE'S SHARP EDGE. A derived touch dated ON OR AFTER `next_touch.date`
 fulfils the plan. An EARLIER touch does NOT — the row stays `now`, because the cheap error is
@@ -331,9 +333,10 @@ def role_state(o, today):
             return "unresolved", ("blocked_until is the literal 'unresolved' — no structured "
                                   "join yet; write contact:<id> outcome:<...>")
         # THE RECORD'S OWN outreach[], never the global pipeline (see module docstring).
+        # ADR-031 B1 — `person_id`, was `contact_id`.
         touches = {}
         for r in (o.get("outreach") or []):
-            cid = r.get("contact_id")
+            cid = r.get("person_id")
             if cid:
                 touches.setdefault(cid, []).append(r)
         ok, why = _pre.resolve(parsed, touches)
@@ -414,18 +417,21 @@ def classify_opportunities(opps, owner_token, today=None):
     return out
 
 
-def derive_channel_last_touch(channel, messages):
+def derive_channel_last_touch(channel, messages, involvements=()):
     """(date, evidence) — the ISO date of the channel's most recently derived touch and a
     short string naming what produced it, or (None, None) if it has neither.
 
-    max of: the latest OUTBOUND message.sent_on whose contact_id joins any of this channel's
-    contacts[].contact_id, and the latest log[] entry date. Never a hand-authored field."""
-    contact_ids = {c.get("contact_id") for c in (channel.get("contacts") or [])
-                   if c.get("contact_id")}
+    max of: the latest OUTBOUND message.person_id joining any person INVOLVED IN THIS
+    CHANNEL (ADR-031 B1 — `channels.contacts[]` is retired; `involvements.channel_id` is the
+    join now, `person_id` resolved against it rather than `contact_id` against a nested
+    array), and the latest log[] entry date. Never a hand-authored field. `involvements`
+    defaults to `()` so a caller with none yet still gets the log-only half of the answer."""
+    person_ids = {i.get("person_id") for i in involvements
+                 if i.get("channel_id") == channel.get("id") and i.get("person_id")}
     candidates = []
-    if contact_ids:
+    if person_ids:
         for m in messages:
-            if m.get("direction") == "outbound" and m.get("contact_id") in contact_ids:
+            if m.get("direction") == "outbound" and m.get("person_id") in person_ids:
                 d = m.get("sent_on")
                 if d:
                     candidates.append((str(d), "message %s" % (m.get("id") or "?")))
@@ -438,11 +444,11 @@ def derive_channel_last_touch(channel, messages):
     return max(candidates, key=lambda t: t[0])
 
 
-def channel_state(c, messages, today):
+def channel_state(c, messages, today, involvements=()):
     """(state, derived_date, evidence) for one channel carrying a next_touch plan."""
     nt = c.get("next_touch") or {}
     plan = str(nt.get("date"))
-    touch, evidence = derive_channel_last_touch(c, messages)
+    touch, evidence = derive_channel_last_touch(c, messages, involvements)
     # THE FULFILMENT RULE. On-or-after fulfils; strictly earlier does not — see module
     # docstring for why the asymmetry is deliberate.
     if touch and touch >= plan:
@@ -452,7 +458,7 @@ def channel_state(c, messages, today):
     return "now", touch, evidence
 
 
-def classify_channels(channels, messages, today=None):
+def classify_channels(channels, messages, today=None, involvements=()):
     """[(channel, state, derived_date, evidence)] for every channel carrying a next_touch
     plan. A channel with no plan at all is not a candidate and is excluded here, unchanged
     from before this module existed."""
@@ -462,23 +468,26 @@ def classify_channels(channels, messages, today=None):
         nt = c.get("next_touch")
         if not isinstance(nt, dict) or not nt.get("date"):
             continue
-        state, touch, evidence = channel_state(c, messages, today)
+        state, touch, evidence = channel_state(c, messages, today, involvements)
         out.append((c, state, touch, evidence))
     return out
 
 
-def contact_joinability_gaps(channels):
-    """Channel ids carrying a next_touch plan but no joinable contact_id anywhere in
-    contacts[] — the outbound-message half of the derivation can then never fire for them,
-    and their last touch silently degrades to log[]-only forever. Declaring this is the
-    gate-must-assert-its-own-coverage rule: a derivation that can never see half its inputs
-    has to say so, not just return a quietly-partial answer."""
+def contact_joinability_gaps(channels, involvements=()):
+    """Channel ids carrying a next_touch plan but no joinable person anywhere in
+    `involvements` (ADR-031 B1 — was: nowhere in `contacts[]`) — the outbound-message half of
+    the derivation can then never fire for them, and their last touch silently degrades to
+    log[]-only forever. Declaring this is the gate-must-assert-its-own-coverage rule: a
+    derivation that can never see half its inputs has to say so, not just return a
+    quietly-partial answer."""
+    channel_ids_with_people = {i.get("channel_id") for i in involvements
+                               if i.get("channel_id") and i.get("person_id")}
     gaps = []
     for c in channels:
         nt = c.get("next_touch")
         if not isinstance(nt, dict) or not nt.get("date"):
             continue
-        if not any(ct.get("contact_id") for ct in (c.get("contacts") or [])):
+        if c.get("id") not in channel_ids_with_people:
             gaps.append(c.get("id") or c.get("label") or "?")
     return gaps
 
@@ -488,16 +497,17 @@ def report(root, today=None):
     opps = _load_jsonl(root, "opportunities.jsonl")
     channels = _load_jsonl(root, "channels.jsonl")
     messages = _load_jsonl(root, "messages.jsonl")
+    involvements = _load_jsonl(root, "involvements.jsonl")
     owner = _profile.owner_token()
     roles = classify_opportunities(opps, owner, today)
-    chans = classify_channels(channels, messages, today)
+    chans = classify_channels(channels, messages, today, involvements)
     return {
         "roles": [{"id": o.get("id"), "title": o.get("title"), "state": s, "why": w}
                   for o, s, w in roles],
         "channels": [{"id": c.get("id"), "label": c.get("label") or c.get("id"), "state": s,
                       "derived_last_touch": t, "evidence": ev}
                      for c, s, t, ev in chans],
-        "contact_joinability_gaps": contact_joinability_gaps(channels),
+        "contact_joinability_gaps": contact_joinability_gaps(channels, involvements),
         # dev #95 follow-on: the migration marker needs a consumer or it looks handled.
         "play_unresolved": [{"id": o.get("id"), "title": o.get("title"),
                              "status": o.get("status")}
@@ -551,7 +561,7 @@ def main():
             print("  %d role(s) carry play_stage 'unresolved' — each needs a human-written "
                   "value" % len(data["play_unresolved"]))
         for gid in data["contact_joinability_gaps"]:
-            print("  ⚠️  channel %s has no joinable contact_id in contacts[] — its derived "
+            print("  ⚠️  channel %s has no joinable person in involvements — its derived "
                   "touch can only ever come from log[]" % gid)
 
     if args.check:
@@ -567,7 +577,7 @@ def main():
                       "next one" % (c["label"], c["derived_last_touch"], c["evidence"]),
                       file=sys.stderr)
         for gid in data["contact_joinability_gaps"]:
-            print("⚠️  channel %s: no joinable contact_id in contacts[] — the outbound-message "
+            print("⚠️  channel %s: no joinable person in involvements — the outbound-message "
                   "half of its derived touch can never fire" % gid, file=sys.stderr)
         # ⚠️ Loud, but exit 0 — deliberately NOT blocked_until's exit-1 treatment. An
         # unresolved blocked_until makes group membership UNDECIDABLE, so the run must stop.

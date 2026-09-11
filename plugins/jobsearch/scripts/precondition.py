@@ -261,7 +261,9 @@ def parse(raw):
 
 
 def touches_by_contact(root):
-    """contact_id -> [outreach rows], across every opportunity."""
+    """person_id -> [outreach rows], across every opportunity (ADR-031 B1 — the join is
+    `outreach[].person_id` now; the `contact:<id>` PROSE GRAMMAR keyword is unchanged, since
+    it names a role in the sentence, not the JSON field it resolves against)."""
     out = {}
     path = os.path.join(root, "data", "opportunities.jsonl")
     try:
@@ -275,7 +277,7 @@ def touches_by_contact(root):
                 except ValueError:
                     continue
                 for o in r.get("outreach") or []:
-                    cid = o.get("contact_id")
+                    cid = o.get("person_id")
                     if cid:
                         out.setdefault(cid, []).append(o)
     except OSError:

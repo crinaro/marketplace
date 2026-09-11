@@ -61,7 +61,7 @@ import sys
 
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _root import profile_root as _profile_root
+from _root import profile_root as _profile_root, looks_like_profile as _looks_like_profile
 import profile as _profile
 import your_move as _ym
 
@@ -184,6 +184,22 @@ def keywords(text):
 
 
 def main():
+    # ⭐ dev #319 — VANTAGE, STATED. `load_jsonl` swallows a missing file and returns `[]`,
+    # so "no profile reachable at all" (a bare checkout, CI) and "a real profile with
+    # genuinely zero open asks" used to print the IDENTICAL "checked 0 ... Clean." — the same
+    # confidently-wrong-not-merely-absent shape `check_engine_purity.py` was fixed for (dev
+    # #299), just advisory instead of blocking. This is the same disclosure that script now
+    # makes, adapted: a report that checked nothing must not read like one that checked
+    # something and found it clean.
+    if not _looks_like_profile(ROOT):
+        print("Section-rule check — data/asks.jsonl · data/commitments.jsonl · handoff.md")
+        print("  !! NOT CHECKED: no profile reachable from %s (no config.json/data/ found)." % ROOT)
+        print("     This is expected in CI and in a bare checkout. It is NOT a clean result —")
+        print("     '0 open ask(s)' below would mean the same thing whether a real profile")
+        print("     genuinely has none, or there is no profile to read at all; this run is")
+        print("     the second case, so nothing was actually checked against real data.")
+        return 0
+
     asks = load_jsonl("asks.jsonl")
     commitments = load_jsonl("commitments.jsonl")
     opps = load_jsonl("opportunities.jsonl")
