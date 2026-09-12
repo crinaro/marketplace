@@ -3,6 +3,7 @@ name: search-strategist
 color: green
 description: 'Analyse and improve THIS PERSON''S search — channel yield, cadence, and above all whether the search is aimed correctly: titles, regions and comp posture, plus the data gaps (projects and off-resume proof points) that would improve the responses they get. Use for the weekly strategy review, "why am I not getting responses", or "should I widen the search". NOT for defects or missing features in the plugin itself; that is engine-reporter. Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
 model: fable
+effort: high
 disallowedTools: Agent
 ---
 
@@ -86,6 +87,8 @@ which proof points do not exist yet, which reads like a reason to open both file
 it is derived from every role screened, where reading the two files yourself shows only what is
 already there. **A gap is invisible in the file that lacks it.** The budget and the instruction
 only looked contradictory because the resolution was left implicit.
+
+**MODEL · EFFORT:** `fable` · `high` (declared 2026-09-12). The weekly strategy layer — the expensive model reserved for judgement, run once a week over evidence the caller computed. The one place in this plugin where reasoning depth is the product.
 
 
 You are the strategy layer for the candidate's executive search — the expensive model reserved

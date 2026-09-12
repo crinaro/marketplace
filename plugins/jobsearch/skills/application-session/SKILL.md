@@ -72,10 +72,15 @@ the highest-value ask in outreach/drafts.md was the one not referencing its appl
 ## 4. Close the session
 
 ```bash
-~/.claude/jobsearch/run trigger.py --check && ~/.claude/jobsearch/run precondition.py --check
+~/.claude/jobsearch/run trigger.py --check && ~/.claude/jobsearch/run precondition.py --check \
+  && ~/.claude/jobsearch/run brief.py --check
 ~/.claude/jobsearch/run applying.py
 ```
 
-Both checks green, view regenerated. Then report, in one line each: applications submitted,
+**`brief.py --check` runs beside `precondition.py --check`, red on `NEEDS_HUMAN` only** (Query
+or Citation C1, §5.2) — a `WAITS_ON_SURFACE`/queued draft (mailbox not yet checked) is counted,
+never a red close here; closing this session over one is expected, not a defect.
+
+All checks green, view regenerated. Then report, in one line each: applications submitted,
 follow-ups generated (with their triggers), sequences now waiting, and anything the
 candidate still owes a decision on.

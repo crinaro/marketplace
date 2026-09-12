@@ -114,6 +114,34 @@ def claim_is_live(rec, now):
     return held < CLAIM_LEASE_MINUTES
 
 
+class DeferredRefused(ValueError):
+    """`--add` refused the text — it reads like a send (FORBIDDEN)."""
+
+
+def queue_item(what, why="", requires=()):
+    """The ONE append path for a new item — factored out of `main()`'s `--add` handling
+    (Query or Citation C1, §5.2) so `brief.py --probe --held` can queue a probe's own `what`
+    without shelling out to this script. Same FORBIDDEN refusal as the CLI; raises
+    `DeferredRefused` rather than printing and returning an exit code, since a caller here is
+    a script, not a terminal. Does NOT deduplicate on `what` itself — a caller that must not
+    queue the same `what` twice (brief.py's own `queue_probe_if_needed`) checks
+    `replay(load())` first, because "already pending" is a judgment about EXISTING rows the
+    caller already has in hand, not something this append should silently re-derive."""
+    if FORBIDDEN.search(what):
+        raise DeferredRefused(
+            "REFUSED — %r reads like a SEND, and sends never queue (CLAUDE.md: no send "
+            "without the candidate's explicit fresh approval)." % what)
+    now = datetime.datetime.now()
+    rid = "act-%s" % now.strftime("%Y%m%dT%H%M%S")
+    reqs = [r.strip() for r in requires if r and r.strip()] if requires else []
+    rec = {"id": rid, "kind": "action", "what": what, "why": why, "requires": reqs,
+          "queued_at": now.isoformat(timespec="seconds"), "status": "pending",
+          "claimed_by": None, "claimed_at": None, "done_at": None}
+    with open(QUEUE, "a", encoding="utf-8") as fh:          # append-only, like the inbox
+        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return rec
+
+
 def capabilities():
     """Ask whoami.py, never assume. A worker that guesses its own capability is the bug."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -147,8 +175,11 @@ def main():
     rows = replay(load())
 
     if args.add:
-        if FORBIDDEN.search(args.add):
-            print("⛔ REFUSED — this reads like a SEND, and sends never queue.")
+        reqs = [r.strip() for r in args.requires.split(",") if r.strip()]
+        try:
+            rec = queue_item(args.add, why=args.why, requires=reqs)
+        except DeferredRefused as e:
+            print("⛔ %s" % e)
             print()
             print("   CLAUDE.md: 'NEVER send messages, emails, or applications without the candidate's")
             print("   explicit fresh approval.' A send queued now and executed by an unattended")
@@ -158,16 +189,9 @@ def main():
             print("   the candidate sends everything directly anyway. Put the DRAFT in drafts.md and let")
             print("   them send it when they are at the laptop with the thread in front of them.")
             return 1
-        rid = "act-%s" % now.strftime("%Y%m%dT%H%M%S")
-        reqs = [r.strip() for r in args.requires.split(",") if r.strip()]
-        rec = {"id": rid, "kind": "action", "what": args.add, "why": args.why,
-               "requires": reqs,
-               "queued_at": now.isoformat(timespec="seconds"), "status": "pending",
-               "claimed_by": None, "claimed_at": None, "done_at": None}
-        with open(QUEUE, "a", encoding="utf-8") as fh:      # append-only, like the inbox
-            fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
         print("Queued %s%s:\n  %s"
-              % (rid, (" [requires: %s]" % ", ".join(reqs)) if reqs else "", args.add))
+              % (rec["id"], (" [requires: %s]" % ", ".join(rec["requires"])) if rec["requires"] else "",
+                 args.add))
         return 0
 
     caps, me = capabilities()

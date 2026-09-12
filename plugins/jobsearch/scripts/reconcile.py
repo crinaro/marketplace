@@ -85,6 +85,7 @@ import validate_data as _vd
 try:
     from mail_client import (
         Mailbox, configured_accounts, decode_header_value, CredentialError, body_text,
+        sweep_accounts, COVERAGE_BACKFILL_MAX_DAYS,
     )
 except ImportError as exc:  # pragma: no cover
     sys.stderr.write("Run as `python3 scripts/reconcile.py` from the repo root: %s\n" % exc)
@@ -147,19 +148,39 @@ class Session(object):
     The first version opened a fresh Mailbox per search — 22 rows x 2 accounts = 44 logins,
     which took longer than the harness timeout. Connection setup dominates; the searches
     themselves are fast.
+
+    ⭐⭐ dev #334 — connections open THROUGH `mail_client.sweep_accounts()` now, not through a
+    loop this class runs itself. `open_account()` below IS the `search_one(account)`
+    `sweep_accounts()` calls (see `main()`): it opens (or fails to open) exactly one mailbox,
+    keeps it in `self.boxes` for `search()`/`search_uids()`/`fetch_full()` to reuse across every
+    contact-group query, and hands back the error `sweep_accounts()` needs to write that
+    account's ONE `swept` coverage row. Before this fix `__init__` looped over `accounts`
+    directly — the exact private, unrecorded "loop every account, note a failure" copy dev #321
+    built the shared ledger site to retire. `account_errors` is the per-account twin of `errors`
+    (which stays the full, possibly-repeated audit trail used for the terminal banner's detail):
+    each account's FIRST failure — from opening OR from any later query — lands there once.
     """
 
-    def __init__(self, accounts):
-        self.boxes, self.errors = {}, []
-        for acct in accounts:
-            try:
-                mb = Mailbox(acct)
-                mb.__enter__()
-                self.boxes[acct] = mb
-            except CredentialError as exc:
-                self.errors.append("%s: %s" % (acct, exc))
-            except Exception as exc:
-                self.errors.append("%s: %s: %s" % (acct, type(exc).__name__, exc))
+    def __init__(self):
+        self.boxes, self.errors, self.account_errors = {}, [], {}
+
+    def open_account(self, acct):
+        """search_one(account) for mail_client.sweep_accounts() — see the class docstring."""
+        try:
+            mb = Mailbox(acct)
+            mb.__enter__()
+            self.boxes[acct] = mb
+            return None
+        except CredentialError as exc:
+            self._record_error(acct, "%s: %s" % (acct, exc))
+            return str(exc)
+        except Exception as exc:
+            self._record_error(acct, "%s: %s: %s" % (acct, type(exc).__name__, exc))
+            return "%s: %s" % (type(exc).__name__, exc)
+
+    def _record_error(self, acct, msg):
+        self.errors.append(msg)
+        self.account_errors.setdefault(acct, msg)   # first failure per account wins
 
     def search(self, query, limit=25):
         rows = []
@@ -178,7 +199,7 @@ class Session(object):
                         "subject": decode_header_value(msg.get("Subject")),
                     })
             except Exception as exc:
-                self.errors.append("%s: %s: %s" % (acct, type(exc).__name__, exc))
+                self._record_error(acct, "%s: %s: %s" % (acct, type(exc).__name__, exc))
         return rows
 
     def fetch_full(self, acct, uid):
@@ -188,7 +209,7 @@ class Session(object):
         try:
             return mb.fetch_full(uid)
         except Exception as exc:
-            self.errors.append("%s: %s: %s" % (acct, type(exc).__name__, exc))
+            self._record_error(acct, "%s: %s: %s" % (acct, type(exc).__name__, exc))
             return None
 
     def search_uids(self, query, limit=25):
@@ -199,7 +220,7 @@ class Session(object):
                 for uid in reversed(mb.search(query)[-limit:]):
                     out.append((acct, uid))
             except Exception as exc:
-                self.errors.append("%s: %s: %s" % (acct, type(exc).__name__, exc))
+                self._record_error(acct, "%s: %s: %s" % (acct, type(exc).__name__, exc))
         return out
 
     def close(self):
@@ -457,7 +478,24 @@ def main():
     print("can be re-read; the transcription can be incomplete, stale, or lossy.\n")
 
     findings = {"medium": [], "reply": [], "accepted": [], "none": [], "ambiguous": []}
-    sess = Session(accounts)
+    sess = Session()
+
+    # dev #334 — open every account's connection through the shared coverage-ledger site
+    # instead of Session's own former constructor loop. `since_days`: reconcile's own query
+    # (`in:anywhere (...)`, below) carries NO time restriction — it is unbounded, unlike
+    # alert_sweep/meeting_check/watch's `newer_than:%dd` windows. There is no true "window this
+    # sweep searched" to report, so recording `COVERAGE_BACKFILL_MAX_DAYS` is a deliberately
+    # CONSERVATIVE understatement (the real search covers strictly more than this claims) rather
+    # than a guess at "forever" — the ledger's own rule is that a window WIDER than what was
+    # searched is a lie; a window narrower than an actually-unbounded search is merely modest,
+    # never dishonest.
+    def search_one(account):
+        return [], sess.open_account(account)
+
+    _sweep_results, incomplete = sweep_accounts(
+        search_one, since_days=COVERAGE_BACKFILL_MAX_DAYS, root=ROOT, by="reconcile",
+        accounts=accounts)
+
     n_done = 0
 
     # ⭐⭐ THE JOIN KEY IS THE PERSON, ACROSS EVERY OPPORTUNITY THAT NAMES THEM — dev #101 /
@@ -665,9 +703,12 @@ def main():
         print("  Every row carries `source` (gmail:<account>:<uid>) so it can be re-verified.")
 
     sess.close()
-    incomplete = sess.errors
+
+    # dev #334 — `incomplete` is the shared ledger site's own list, from the `search_one` call
+    # made when connections were opened above — not a second, independently-collected one.
     if incomplete:
-        print("!! INCOMPLETE COVERAGE: %s" % "; ".join(sorted(set(incomplete))))
+        print("!! INCOMPLETE COVERAGE: %s"
+              % "; ".join(sess.account_errors.get(a, a) for a in sorted(set(incomplete))))
         print("   Results are PARTIAL. Do not conclude a message does not exist.")
         return 1
     return 0

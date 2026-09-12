@@ -91,6 +91,7 @@ import profile as _profile                                          # noqa: E402
 # validate_data imports this module too; both sides bind only what they need at import
 # time, and validate_data places its import of us below its vocabulary for that reason.
 import validate_data as _vd                                         # noqa: E402
+import config_keys                                                   # noqa: E402
 
 # Re-exported so a caller (validate_data.py) needs exactly one import to validate the field.
 PreconditionError = _pre.PreconditionError
@@ -170,25 +171,34 @@ def owner_by_id(opps, owner_token):
 PLAY_TERMINAL_STATUSES = _vd.TERMINAL_OPP_STATUSES
 
 
-def has_submitted_application(o):
-    """Does this record's own applications[] prove a submission? The evidence of a decision
-    made by ACTING (dev/audit 2026-09-02, Class A / public #44): a row can still read
-    `verdict: undecided` while an application went in, and the surface must not ask a
-    question the store already answers. SUBMITTED_APP_STATUS is validate_data's."""
-    return any(a.get("status") in _vd.SUBMITTED_APP_STATUS
-               for a in (o.get("applications") or []))
+def has_submitted_application(apps):
+    """Does this opportunity's own applications prove a submission? `apps` is the record's own
+    slice of the top-level `applications` store (ADR-031 B2 — `applications.group_by_opp(...)`
+    filtered to this opportunity's id, e.g. `apps_by_opp.get(o["id"], [])`; the caller already
+    has that mapping built once, not re-derived per row). The evidence of a decision made by
+    ACTING (dev/audit 2026-09-02, Class A / public #44): a row can still read `verdict:
+    undecided` while an application went in, and the surface must not ask a question the store
+    already answers. SUBMITTED_APP_STATUS is validate_data's.
+
+    ⭐ Pre-B2 nested reads do NOT belong here any more — migrate.py's own m_0_36_0 historical
+    migration (the one caller that ever needed the PRE-migration nested shape) keeps its own
+    small inline copy of this predicate rather than depend on this signature, because it always
+    runs before B2's own promotion in the migration chain and reads the nested array on
+    purpose. See that function's docstring."""
+    return any(a.get("status") in _vd.SUBMITTED_APP_STATUS for a in (apps or []))
 
 
-def derive_play_stage(o):
-    """The play position the store can PROVE for a row (public #42). The migration marker
-    `unresolved` said "a human must name the stage"; but the one boundary that matters —
-    applied, or not — is on the record already: applications[] proves a submission, and
-    every position after `applied` presupposes one (validate_data.POST_APPLICATION_PLAY).
-    So: a submitted application → `applied` (the floor the evidence proves; a finer
-    position stays human-authored, and the prose on the record still carries it), no
-    submission → `needs-application`. Deterministic, so it is a migration's to write and a
-    validator's to demand — never a printed command to the user."""
-    return "applied" if has_submitted_application(o) else "needs-application"
+def derive_play_stage(apps):
+    """The play position the store can PROVE for a row (public #42), from `apps` — this
+    opportunity's own slice of the top-level `applications` store, same contract as
+    `has_submitted_application`. The migration marker `unresolved` said "a human must name the
+    stage"; but the one boundary that matters — applied, or not — is on the record already: the
+    applications store proves a submission, and every position after `applied` presupposes one
+    (validate_data.POST_APPLICATION_PLAY). So: a submitted application → `applied` (the floor
+    the evidence proves; a finer position stays human-authored, and the prose on the record
+    still carries it), no submission → `needs-application`. Deterministic, so it is a
+    migration's to write and a validator's to demand — never a printed command to the user."""
+    return "applied" if has_submitted_application(apps) else "needs-application"
 
 
 def unresolved_play_stages(opps):
@@ -219,6 +229,217 @@ def open_asks(asks, kind=None):
             if not a.get("resolved_on") and (kind is None or a.get("kind") == kind)]
     return sorted(rows, key=lambda a: (str(a.get("act_by") or "9999"),
                                        str(a.get("created") or "")))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONVERSATION AXIS — Query or Citation C1 (design-query-or-citation.md §3.7), States & Views'
+# declared home. ONE computation over BOTH homes a reply can live in — message rows and
+# `outreach[].outcome`/`responded_on` — because a LinkedIn reply (or any pre-harvest reply)
+# often exists ONLY as the second. A store-only register (the pre-C1 shape) disagreed with a
+# thread-aware one on exactly that row: the store said `chase`/`cold`, the thread said
+# `reply-owed`, and the drafter wrote a cold opener to someone who had already replied
+# (public #79, rebuilt by the mechanism meant to close it — the audit's D6).
+# ─────────────────────────────────────────────────────────────────────────────
+
+# The closed axis vocabulary, in FOLD PRECEDENCE (design §3.7): the newest event on a thread
+# decides the axis, and this is the tie-break order when more than one signal could apply to
+# the same newest moment (an outbound touch carrying BOTH an `accepted` outcome and a bounced
+# delivery, say). Never reordered ad hoc — a fold order is a closed vocabulary, not a heuristic.
+AXIS_FOLD = ("reply-owed", "accepted", "waiting", "silence-unverified", "silent", "nothing-sent")
+
+
+def _touch_rows(record):
+    """The ONE accessor for an opportunity record's outreach touches. Reads `outreach[]`
+    today; B3 promotes it to `touches[]`, and this is the one site that changes when it does
+    (design §3.7 / §15 — 'so B3's read gate finds one site')."""
+    return record.get("outreach") or []
+
+
+def _resolves_to(graph_, maybe_id, target_id):
+    """Does `maybe_id` (a people id, possibly an absorbed alias) resolve, through any merge
+    chain, to the SURVIVOR `target_id`? `graph_` is a `graph.Graph` INSTANCE (named with a
+    trailing underscore so it never shadows the `graph` MODULE the rest of this section
+    imports). False for anything unresolved or cyclic — never raises past this function; a
+    graph walk error is not this caller's problem to solve."""
+    if not maybe_id:
+        return False
+    try:
+        resolved = graph_.resolve_person(maybe_id)
+    except Exception:                                     # noqa: BLE001 — defensive only
+        return False
+    return resolved is not None and resolved.get("id") == target_id
+
+
+def _journal_medium(medium_value):
+    """A message/outreach `medium` (validate_data.MEDIA — 'email-cold', 'linkedin-message', …)
+    folded to the two journal probe media (D1: 'email' | 'linkedin'). Never raises: an
+    unrecognised medium (phone, sms, other) folds to 'email' — the mailbox-search evidence
+    path is the only probe this engine has for anything that is not LinkedIn."""
+    m = str(medium_value or "").lower()
+    return "linkedin" if m.startswith("linkedin") else "email"
+
+
+def _thread_events(graph, person_id, kind, thread_id):
+    """Every event on one thread (`kind` 'opp' or 'channel', `thread_id` the record's own id)
+    touching the SURVIVOR `person_id` — sorted oldest first. One dict per event:
+    `{direction, date, medium, source, outcome, delivery}` (the last three vary by source).
+
+    DEDUPLICATION (design §3.7): an outreach touch naming a `message_ref` that resolves to a
+    message row already counted from `messages.jsonl` is NOT counted twice — only the message
+    row is an event, though the touch's own `outcome`/`delivery` are folded onto it, since a
+    message row carries neither. An outreach touch whose `outcome` is 'replied' with
+    `responded_on` set synthesizes an INBOUND event at that date UNLESS a message row already
+    stands at that same date — the D6 case (a reply that lives only in outreach[]) produces
+    exactly one inbound event, never a duplicate of one messages.jsonl already carries.
+    `outcome: 'no-response'` is IGNORED as a signal (never trusted as terminal) — the axis
+    recomputes silence from sent_on + journal coverage instead of a possibly-stale label."""
+    events = []
+    message_ids = set()
+    inbound_dates = set()
+    for m in graph.stores["messages"]:
+        anchor = m.get("opp_id") if kind == "opp" else m.get("channel_id")
+        if anchor != thread_id:
+            continue
+        if not _resolves_to(graph, m.get("person_id"), person_id):
+            continue
+        events.append({"direction": m.get("direction"), "date": m.get("sent_on"),
+                       "medium": _journal_medium(m.get("medium")), "source": "message",
+                       "id": m.get("id"), "outcome": None, "delivery": None,
+                       "body": m.get("body")})
+        if m.get("id"):
+            message_ids.add(m["id"])
+        if m.get("direction") == "inbound" and m.get("sent_on"):
+            inbound_dates.add(m["sent_on"])
+
+    touches = []
+    if kind == "opp":
+        opp = graph.by_id["opportunities"].get(thread_id)
+        if opp:
+            for t in _touch_rows(opp):
+                if _resolves_to(graph, t.get("person_id"), person_id):
+                    touches.append(t)
+    # kind == "channel": outreach[] lives only on opportunity records (design §3.7 scope);
+    # a channel-scoped thread carries message events only, exactly as your_move.py's own
+    # `derive_channel_last_touch` already treats channels — no outreach array to read there.
+
+    for t in touches:
+        outcome = t.get("outcome")
+        ref = t.get("message_ref")
+        if ref and ref in message_ids:
+            for e in events:
+                if e.get("source") == "message" and e.get("id") == ref:
+                    e["outcome"] = outcome
+                    e["delivery"] = t.get("delivery")
+        else:
+            events.append({"direction": "outbound", "date": t.get("date"),
+                           "medium": _journal_medium(t.get("medium")), "source": "outreach",
+                           "id": None, "outcome": outcome, "delivery": t.get("delivery"),
+                           "body": t.get("note")})
+        responded = t.get("responded_on")
+        if outcome == "replied" and responded and responded not in inbound_dates:
+            events.append({"direction": "inbound", "date": responded,
+                           "medium": _journal_medium(t.get("medium")), "source": "outreach",
+                           "id": None, "outcome": None, "delivery": None, "body": None})
+            inbound_dates.add(responded)
+
+    events.sort(key=lambda e: str(e.get("date") or ""))
+    return events
+
+
+def _outbound_axis(newest, today, window, journal_recs, person_id):
+    """The axis for a thread whose NEWEST event is `newest`, an outbound touch nobody has
+    answered since. `outcome: 'no-response'` is ignored as a signal (design §3.7) — folded
+    to the same path as no outcome at all, so a possibly-stale label never overrides a fresh
+    recomputation from sent_on + journal coverage."""
+    outcome = newest.get("outcome") if newest.get("outcome") != "no-response" else None
+    if outcome == "accepted":
+        return "accepted"          # the owner's move — NEVER ages (design §3.7)
+    if newest.get("delivery") == "bounced":
+        return "nothing-sent"      # a bounced touch never reached anyone — never "waiting"
+    sent_on = str(newest.get("date") or "")
+    if not sent_on:
+        return "waiting"
+    import journal as _journal
+    thread = "contact:%s" % person_id
+    medium = newest.get("medium") or "email"
+    verified_through = _journal.probe_covered_through(journal_recs, thread, medium)
+    if verified_through and str(verified_through) >= sent_on:
+        elapsed = (_parse_date(verified_through) - _parse_date(sent_on)).days
+        return "silent" if elapsed >= window else "waiting"
+    # No thread-scoped probe verifies past sent_on. Fall back to wall-clock age ONLY to
+    # decide 'waiting' (too soon to even ask) vs 'silence-unverified' (old enough that the
+    # silence NEEDS verifying) — never to assert 'silent' itself, which requires a real probe.
+    age = (_parse_date(today) - _parse_date(sent_on)).days
+    return "waiting" if age < window else "silence-unverified"
+
+
+def _parse_date(s):
+    return datetime.datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
+
+
+def conversation_axis(root, subject, counterpart=None, today=None, window=None):
+    """`{thread_id: (axis_token, events)}` for every thread touching person `subject` (a
+    `people.jsonl` id, resolved through any merge) — or exactly the one thread `counterpart`
+    names (`"opp:<id>"` / `"channel:<id>"`), narrowed before anything is computed so a caller
+    that already knows its scope pays for one thread's worth of work, not the whole graph's.
+
+    `today`/`window` are test seams (window otherwise has no engine-wide default — the caller
+    is expected to pass `config_keys.describe(cfg, config_keys.CHASE_AFTER_DAYS)[0]`, brief.py's
+    own job per design §6; a caller that passes neither gets `config_keys.CHASE_AFTER_DAYS_DEFAULT`
+    so this function is still usable standalone).
+
+    The axis token is folded from the thread's newest event (design §3.7):
+    `reply-owed` (newest event is inbound) · `accepted` (an 'accepted' outbound outcome, and
+    this NEVER ages past it) · `waiting` (an outbound touch too recent to chase, or one whose
+    silence nothing has verified yet) · `silence-unverified` (old enough to chase, but no
+    thread-scoped probe covers it) · `silent` (verified, via `journal.probe_covered_through`,
+    through at least `window` days past the send) · `nothing-sent` (no outbound event at all,
+    or the only one bounced)."""
+    import graph as _graph
+    import journal as _journal
+    today = today or datetime.date.today().isoformat()
+    window = config_keys.CHASE_AFTER_DAYS_DEFAULT if window is None else window
+    g = _graph.Graph(os.path.join(root, "data"))
+    try:
+        person = g.resolve_person(subject)
+    except _graph.MergeCycleError:
+        person = None
+    person_id = person["id"] if person else subject
+
+    threads = set()
+    if person is not None:
+        for i in g.involvements_for_person(person_id):
+            if i.get("opp_id"):
+                threads.add(("opp", i["opp_id"]))
+            if i.get("channel_id"):
+                threads.add(("channel", i["channel_id"]))
+        for m in g.messages_for_person(person_id):
+            if m.get("opp_id"):
+                threads.add(("opp", m["opp_id"]))
+            if m.get("channel_id"):
+                threads.add(("channel", m["channel_id"]))
+        for opp in g.stores["opportunities"]:
+            for t in _touch_rows(opp):
+                if _resolves_to(g, t.get("person_id"), person_id):
+                    threads.add(("opp", opp.get("id")))
+
+    if counterpart:
+        kind, _sep, tid = str(counterpart).partition(":")
+        threads = {(k, i) for (k, i) in threads if k == kind and i == tid}
+
+    recs = _journal.read(root)
+    out = {}
+    for kind, tid in threads:
+        events = _thread_events(g, person_id, kind, tid)
+        if not events:
+            out[tid] = ("nothing-sent", events)
+            continue
+        newest = events[-1]
+        if newest["direction"] == "inbound":
+            out[tid] = ("reply-owed", events)
+        else:
+            out[tid] = (_outbound_axis(newest, today, window, recs, person_id), events)
+    return out
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -359,16 +580,22 @@ def is_your_move_candidate(o, owner_token):
     `verdict: undecided`, the state a newly sourced role starts in). `backlog` with any
     DECIDED verdict (`parked`, `pass`) stays off: that is the clutter issue #79 removed.
 
-    ⭐ And a decision made by ACTING counts as decided (public #44): a backlog row whose
-    own applications[] proves a submission does not owe a pursue-or-pass answer, whatever
-    its `verdict` field still says — the ask would be about a role already applied to.
+    ⭐ And a decision made by ACTING counts as decided (public #44): a backlog row whose own
+    applications prove a submission does not owe a pursue-or-pass answer, whatever its
+    `verdict` field still says — the ask would be about a role already applied to.
     validate_data flags that row as a contradiction and the 0.36.0 migration sets the
-    verdict the act implies; this predicate stops asking in the meantime."""
+    verdict the act implies; this predicate stops asking in the meantime.
+
+    ⭐ ADR-031 B2: reads `o["_applications"]` — the caller's own join against the top-level
+    `applications` store (`applications.enrich_opportunities(root, opps)`, called once after
+    loading opportunities), never a nested array on `o` itself. A caller that never enriched
+    `opps` gets `()` here (`applications.attach`'s own default), which is the honest "no
+    applications known" answer rather than a crash."""
     if o.get("next_action_owner") != owner_token:
         return False
     return (o.get("status") in LIVE_OPP_STATUSES
             or (o.get("status") == "backlog" and o.get("verdict") == "undecided"
-                and not has_submitted_application(o)))
+                and not has_submitted_application(o.get("_applications"))))
 
 
 def invisible_reason(o, owner_token):

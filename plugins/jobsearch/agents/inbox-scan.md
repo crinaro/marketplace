@@ -73,6 +73,8 @@ You scan a mailbox and report what you found. You do not judge fit, draft messag
 edit files. If you find yourself wanting one of the "does not read" files, you are being
 asked the wrong question — say so in your report instead of loading it.
 
+**MODEL · EFFORT:** `haiku` · no `effort:` key, on purpose (2026-09-12). Haiku is not in the docs' effort table — "models not listed here do not support effort" — so the key is left off; that is the decision, not an omission. Gather and structure is the cheapest tier's job.
+
 
 > **THE PIPELINE IS `data/*.jsonl`. The old `opportunities.md` was RETIRED 2026-07-20 — frozen, do not read or edit it.** Roles, companies and channels live in the JSONL store; read it with `pipeline_index.py` rather than the raw file. ⚠️ **You do not write it.** Report what you found and let the caller fold it in — this agent's scope rule below is the authority, and the sentence that used to sit here told you to write the store and then validate it, which contradicted that rule three lines later. A model resolving that by coin flip either drops findings or writes unvalidated rows.
 

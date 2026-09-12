@@ -24,6 +24,30 @@ Run it at the START of every daily and weekly run, alongside check_stale_claims.
 Exit code is 0 even when it finds things -- it's an advisory report, not a gate,
 so it can't wedge an unattended run.
 
+⭐⭐ dev #321 — SILENCE IS MEASURED AGAINST VERIFIED COVERAGE, NEVER THE WALL CLOCK
+-----------------------------------------------------------------------------------
+This used to compute every age as `(datetime.now().date() - when).days`. That is a mirror, not a
+measurement: `data/messages.jsonl` (and the outreach rows this reads) are only as current as the
+last sweep, and NOTHING recorded when that was — so on a profile whose sweeps had lagged, this
+reported "silent 9 days" when the engine had simply not looked in 9 days, and the follow-up it
+prompts could go to someone who had already replied. That is the standing "a missing thing reads
+as an empty thing" trap, sitting under the one path that tells a candidate to chase someone.
+
+`journal.covered_through()` (V0's coverage ledger, `mail_client.sweep_accounts()`'s `swept`
+rows) is now the clock. `verified_as_of()` below is the conjunction over every configured
+mailbox — the newest point through which EVERY one of them is verifiably covered — and it is
+`None` on an empty ledger, a never-configured mailbox, or any account whose latest sweep failed.
+**`None` means UNVERIFIED, not zero days and not today's date.** When it is `None`, the SILENT
+OUTREACH class is withheld entirely rather than printed with a wrong number — the phantom chase
+this fix exists to prevent. A fully-covered profile with genuine silence is unaffected: it still
+reports the real day count, now measured to the end of verified coverage rather than to `now()`.
+
+This is deliberately the smallest correct slice (V0 of the states-and-views design, §15.1): it
+fixes the WHOLE-PROFILE version of the defect (are the configured mailboxes covered at all)
+using the same reader V1's finer per-thread/per-medium version will use. It does not yet
+discriminate the three unverified renderings (no sensor / stale sensor / broken sensor) — that
+is V2's row-level surface; this prints one unverified banner and stops there.
+
 Targets system Python 3.8 (/usr/bin/python3): no third-party packages, no
 zoneinfo, no walrus, no X | Y annotations.
 """
@@ -38,8 +62,42 @@ import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 import _tree
+import journal as _journal
+import mail_client as _mail_client
 
 ROOT = _profile_root()
+
+
+def verified_as_of(root):
+    """dev #321 — the newest point through which EVERY configured mailbox is verifiably swept,
+    as a `date`, or `None` when that cannot be said.
+
+    `None` covers three cases alike (V0 does not yet distinguish them on this whole-profile
+    reading — see the module docstring): no mailbox configured at all, an empty ledger (nothing
+    has ever recorded a `swept` row for some configured account), or an account whose most
+    recent `swept` row is `ok: false` (a broken sensor — `covered_through` then returns whatever
+    it had BEFORE the failure, or `None` if it never had anything, either way excluding time the
+    failure covers).
+
+    The conjunction is deliberate: a silence claim about ANY thread implicitly claims "and
+    nobody replied on the other configured mailbox either" the moment more than one account
+    exists, so the whole-profile answer can only be as fresh as the least-covered account.
+    """
+    accounts = _mail_client.configured_accounts()
+    if not accounts:
+        return None
+    recs = _journal.read(root)
+    throughs = []
+    for account in accounts:
+        through = _journal.covered_through(recs, account)
+        if through is None:
+            return None
+        throughs.append(through)
+    as_of = min(throughs)
+    try:
+        return datetime.fromisoformat(as_of).date()
+    except ValueError:
+        return None
 
 
 def load_opps():
@@ -252,12 +310,26 @@ def main():
             except ValueError:
                 pass
 
-    today = datetime.now().date()
-    silent = check_silent_jsonl(today, days) + check_silent(today, days)
-    silent.sort(reverse=True)
+    run_today = datetime.now().date()
+    as_of = verified_as_of(ROOT)
+    unverified = as_of is None
+    if unverified:
+        silent = []
+    else:
+        silent = check_silent_jsonl(as_of, days) + check_silent(as_of, days)
+        silent.sort(reverse=True)
     stalled = check_pursuits_without_next_action()
 
-    print("Follow-up check - %s (silence threshold: %d days)" % (today.isoformat(), days))
+    print("Follow-up check - %s (silence threshold: %d days)" % (run_today.isoformat(), days))
+    if unverified:
+        print("")
+        print("!! SILENCE UNVERIFIED (dev #321) -- no confirmed mailbox coverage, or a "
+              "configured account's last sweep failed.")
+        print("   SILENT OUTREACH is withheld below: a day count computed against the wall")
+        print("   clock instead of a verified sweep could send a chase to someone who already")
+        print("   replied. Run an alert/watch sweep, then re-run this check.")
+    else:
+        print("(silence verified through %s)" % as_of.isoformat())
 
     if silent:
         print("")
@@ -272,6 +344,8 @@ def main():
             if what:
                 print("            %s" % what[:88])
             print("            last dated %s" % when.isoformat())
+    elif unverified:
+        pass  # the banner above already said why nothing is listed here
     elif not quiet:
         print("\n  No silent outreach past %d days." % days)
 
@@ -323,7 +397,7 @@ def main():
         if domains:
             print("\n  recipient domains seen: %s" % ", ".join(d for d in domains if d))
 
-    if not silent and not stalled:
+    if not silent and not stalled and not unverified:
         print("\nNothing to chase.")
     return 0
 

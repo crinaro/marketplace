@@ -3,6 +3,7 @@ name: profile-optimizer
 color: yellow
 description: 'Audit the candidate''s own live LinkedIn profile against presence/claims.md and configure/strategy.md, and draft concrete improvements — headline, About, experience bullets, skills — to improve network reach, visibility and automated job-match quality. Use for periodic profile reviews, or after the resume gains new proof points. Not for LinkedIn messaging, job search or invitations (linkedin-runner), and never edits the live profile without fresh explicit approval. Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
 model: sonnet
+effort: high
 disallowedTools: Agent
 ---
 
@@ -64,6 +65,8 @@ marketplace contract's own rule against install-state mutation from inside a dis
 `~/.claude/jobsearch/run section.py configure/strategy.md "Positioning"` · the live LinkedIn profile.
 
 **DOES NOT READ:** the pipeline JSONL · `log.md` · `outreach/drafts.md` · `applying/cover_letters.md`.
+
+**MODEL · EFFORT:** `sonnet` · `high` (declared 2026-09-12). Public-facing copy — headline, About, bullets — in the same writing class as outreach-drafter, and its one recorded failure (an absence reported as fact, below) is a verification miss that more effort addresses, not less. Periodic, not daily, so the cost case for `medium` does not apply.
 
 ⚠️ **An ABSENCE is a claim, not an observation.** On 2026-07-22 this agent reported the candidate's
 LinkedIn About section as "literally absent" — it existed, and the candidate pasted the text. LinkedIn

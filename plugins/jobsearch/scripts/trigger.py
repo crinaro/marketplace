@@ -31,7 +31,7 @@ Meta lines in a drafts.md / cover_letters.md entry, alongside `**Medium:**` and
     **Triggered by:** manual
     **Sequence:** recruiter-reach step:2
 
-`opp:` is an opportunity id. `app:` names an applications[] row on that opportunity by
+`opp:` is an opportunity id. `app:` names an applications row on that opportunity by
 `app_id` (or by date, for rows predating the app_id backfill); with exactly one application
 on the record `app:` may be omitted and resolves to it — with several, omitting it is LOUD,
 never guessed. `reply:` is a message id in data/messages.jsonl. `elapsed:` is the ISO date
@@ -76,6 +76,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
 import precondition
+import applications as _apps
 
 TRIGGER_FIELD_RE = re.compile(r"^\*\*Triggered by:\*\*\s*(.+?)\s*$", re.M | re.I)
 SEQUENCE_FIELD_RE = re.compile(r"^\*\*Sequence:\*\*\s*(.+?)\s*$", re.M | re.I)
@@ -145,10 +146,13 @@ def load_jsonl(root, name):
 
 
 def app_handles(opp):
-    """Every handle a trigger may use for this record's applications: app_id and date."""
+    """Every handle a trigger may use for this record's applications: id (was app_id) and
+    date. ADR-031 B2: reads `opp["_applications"]` — the caller's own join against the
+    top-level `applications` store (`applications.enrich_opportunities`, called once in
+    `report()` below), never a nested array."""
     out = {}
-    for ap in opp.get("applications") or []:
-        for h in (ap.get("app_id"), ap.get("date")):
+    for ap in opp.get("_applications") or []:
+        for h in (ap.get("id"), ap.get("date")):
             if isinstance(h, str) and h.strip():
                 out[h] = ap
     return out
@@ -169,12 +173,12 @@ def resolve_trigger(t, opps_by_id, message_ids):
         return False, "opp:%s resolves to no opportunity" % t["opp"]
     handles = app_handles(opp)
     if t["ref"] is None:
-        apps = opp.get("applications") or []
+        apps = opp.get("_applications") or []
         if len(apps) == 1:
             return True, "the one application on %s (%s)" % (t["opp"],
                                                              apps[0].get("date") or "undated")
         if not apps:
-            return False, ("opp:%s has no applications[] row — a trigger naming an "
+            return False, ("opp:%s has no applications row — a trigger naming an "
                            "application that is not there is the unlinked-draft defect "
                            "inverted" % t["opp"])
         return False, ("opp:%s has %d applications and no `app:` — which one? Ambiguity is "
@@ -183,7 +187,7 @@ def resolve_trigger(t, opps_by_id, message_ids):
         ap = handles[t["ref"]]
         return True, "application %s on %s (%s)" % (t["ref"], t["opp"],
                                                     ap.get("status") or "?")
-    return False, "app:%s resolves to no applications[] row on %s" % (t["ref"], t["opp"])
+    return False, "app:%s resolves to no applications row on %s" % (t["ref"], t["opp"])
 
 
 def entries(root, filename):
@@ -290,22 +294,23 @@ def untriggered_applications(root, opps, drafts, asks):
             named.add((d.get("trigger_opp"), "*"))
     rows = []
     for opp in opps:
-        for ap in opp.get("applications") or []:
+        for ap in opp.get("_applications") or []:
             if ap.get("status") not in FOLLOWUP_APP_STATUS:
                 continue
-            handles = {h for h in (ap.get("app_id"), ap.get("date"))
+            handles = {h for h in (ap.get("id"), ap.get("date"))
                        if isinstance(h, str) and h.strip()}
             oid = opp.get("id")
             if (oid, "*") in named or any((oid, h) in named for h in handles):
                 continue
             rows.append({"opp_id": oid, "title": opp.get("title"),
-                         "app_id": ap.get("app_id"), "date": ap.get("date"),
+                         "app_id": ap.get("id"), "date": ap.get("date"),
                          "status": ap.get("status")})
     return rows
 
 
 def report(root):
     opps = load_jsonl(root, "opportunities.jsonl")
+    _apps.enrich_opportunities(root, opps)   # ADR-031 B2 — o["_applications"], never nested
     asks = load_jsonl(root, "asks.jsonl")
     message_ids = {m.get("id") for m in load_jsonl(root, "messages.jsonl") if m.get("id")}
     opps_by_id = {o.get("id"): o for o in opps}

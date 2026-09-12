@@ -103,7 +103,12 @@ ROOT = _profile_root()
 DATA = os.path.join(ROOT, "data")
 STORES = {"opportunities": "opportunities.jsonl",
           "companies": "companies.jsonl",
-          "channels": "channels.jsonl"}
+          "channels": "channels.jsonl",
+          # ADR-031 B2 — the two promoted top-level stores. `create auto '{"opp_id": ...}'
+          # --file applications` mints the id (see the create branch below); `cover_letters`
+          # takes an explicit id like any other store.
+          "applications": "applications.jsonl",
+          "cover_letters": "cover_letters.jsonl"}
 LOCK = os.path.join(ENGINE_SCRIPTS, "runlock.py")
 # ⭐ ENGINE, not profile — the data MODEL ships with the code; the DATA belongs to the user.
 MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
@@ -253,36 +258,26 @@ def find(rows, rid):
 
 
 def mint_app_id(rid, existing):
-    """`<opp_id>-aN`, N one past the highest suffix already minted on this record (0.41.0).
+    """`<opp_id>-aN`, N one past the highest suffix already minted for this opp_id (0.41.0;
+    ADR-031 B2 re-pointed this at the top-level `applications` store's own `id` field — was
+    `app_id` on a nested `applications[]` row, same VALUE format, "promotion changes only the
+    lookup").
 
-    ⭐ THE READER'S TARGET MUST EXIST. Every applications[] row gets its handle AT WRITE TIME,
-    so a trigger (outreach[].trigger_ref, asks.trigger_ref) and every later reader resolve a
-    key this API guarantees rather than a date somebody remembered — two applications on one
-    day share a date and nothing else. Past-the-max, never count-plus-one: a row removed from
-    the middle must not free its number for reuse, or an old trigger naming it would silently
-    move to a different application."""
+    ⭐ THE READER'S TARGET MUST EXIST. Every applications row gets its handle AT WRITE TIME, so
+    a trigger (outreach[].trigger_ref, asks.trigger_ref) and every later reader resolve a key
+    this API guarantees rather than a date somebody remembered — two applications on one day
+    share a date and nothing else. Past-the-max, never count-plus-one: a row removed from the
+    middle must not free its number for reuse, or an old trigger naming it would silently move
+    to a different application. `existing` is every row this rid's ids could collide with —
+    the caller filters to the SAME opp_id when it matters (this function itself does not,
+    since the `<opp_id>-a` prefix already scopes the match)."""
     prefix = "%s-a" % rid
     n = 0
     for a in existing or []:
-        aid = a.get("app_id") if isinstance(a, dict) else None
+        aid = a.get("id") if isinstance(a, dict) else None
         if isinstance(aid, str) and aid.startswith(prefix) and aid[len(prefix):].isdigit():
             n = max(n, int(aid[len(prefix):]))
     return "%s%d" % (prefix, n + 1)
-
-
-def mint_app_ids(rid, rows, also=None):
-    """Fill `app_id` on every applications[] row in `rows` that lacks one, in array order.
-    `also` is the record's CURRENT applications[] when `rows` replaces it wholesale (`set`),
-    so numbering continues past any id the replacement drops. Returns the ids minted."""
-    minted = []
-    seen = list(also or []) + [r for r in rows if isinstance(r, dict) and r.get("app_id")]
-    for r in rows:
-        if not isinstance(r, dict) or r.get("app_id"):
-            continue
-        r["app_id"] = mint_app_id(rid, seen)
-        seen.append(r)
-        minted.append(r["app_id"])
-    return minted
 
 
 def coerce(v):
@@ -521,7 +516,12 @@ def _object_shaped_fields(store, _vd):
 # drift this exists to prevent.
 
 ASKS_FILE = "asks.jsonl"
-ASK_ACTION_FOR_ARRAY = {"applications": "application", "outreach": "outreach"}
+# ADR-031 B2 — "applications" left this mapping: it named an ARRAY LEAF on the opportunities
+# record, and that array no longer exists there (promoted to its own top-level store). The
+# "application" action's ask-resolution now fires from the applications-store write site
+# directly (see `_applications_action_evidence` / the write-completion block in `main()`),
+# never through this array-leaf mapping.
+ASK_ACTION_FOR_ARRAY = {"outreach": "outreach"}
 
 
 def _asks_path():
@@ -537,20 +537,30 @@ def _load_asks():
 
 
 def _action_evidence(rec, action):
-    """The newest dated evidence of `action` on this record, or None.
+    """The newest dated evidence of `action` on THIS opportunity RECORD, or None. `action` is
+    always "outreach" here — ADR-031 B2 promoted `applications` off the opportunity record
+    entirely, so "application" evidence no longer lives on `rec` at all; that case is handled
+    directly at the `applications`-store write site below (`_applications_action_evidence`),
+    never through this function.
 
-    Same funnel check_action_claims.opp_action_evidence() trusts: any dated application row;
-    any outreach row with status == "sent" and a date. A drafted outreach row is not evidence —
-    the ask asked for the touch, not for the intention."""
+    Same funnel check_action_claims.opp_action_evidence() trusts for outreach: any outreach
+    row with status == "sent" and a date. A drafted outreach row is not evidence — the ask
+    asked for the touch, not for the intention."""
     dates = []
-    if action == "application":
-        for ap in (rec.get("applications") or []):
-            if isinstance(ap, dict) and ap.get("date"):
-                dates.append(str(ap["date"]))
-    else:
-        for out in (rec.get("outreach") or []):
-            if isinstance(out, dict) and out.get("status") == "sent" and out.get("date"):
-                dates.append(str(out["date"]))
+    for out in (rec.get("outreach") or []):
+        if isinstance(out, dict) and out.get("status") == "sent" and out.get("date"):
+            dates.append(str(out["date"]))
+    return max(dates) if dates else None
+
+
+def _applications_action_evidence(opp_id):
+    """The newest dated evidence of an "application" action on `opp_id`, read from the
+    TOP-LEVEL `applications` store (ADR-031 B2) — the promoted successor to
+    `_action_evidence(rec, "application")`, which read a nested array that no longer exists."""
+    dates = []
+    for ap in load("applications"):
+        if ap.get("opp_id") == opp_id and ap.get("date"):
+            dates.append(str(ap["date"]))
     return max(dates) if dates else None
 
 
@@ -561,25 +571,29 @@ def linked_asks(rid, action, asks):
             and a.get("resolves_when") == action]
 
 
-def resolve_linked_asks(rid, rec, array_leaf):
-    """Resolve every declared-linkage ask this write's action answers. Returns [(id, title)].
+def resolve_linked_asks_dated(rid, when, action):
+    """Resolve every declared-linkage ask this write's action answers, GIVEN its evidence date
+    directly. Returns [(id, title)]. ADR-031 B2 (2026-09-11): extracted from the old
+    `resolve_linked_asks(rid, rec, array_leaf)` — deriving `when`/`action` used to be this
+    function's own job when both the outreach evidence AND the application evidence lived on
+    one opportunity record; `applications` now lives in its own top-level store, so the two
+    call sites (the opportunities-file write path, and the applications-file write path) each
+    derive their own `when` and call this shared core, rather than this function knowing about
+    either store's shape.
 
-    Runs INSIDE the caller's lock hold, after the opportunity write validated clean. Evidence
-    must be dated on/after the ask's `created` — an action that predates the ask is what the
-    ask was written about, not the answer to it (same baseline as check_action_claims.py).
+    Runs INSIDE the caller's lock hold, after the write that produced `when` validated clean.
+    Evidence must be dated on/after the ask's `created` — an action that predates the ask is
+    what the ask was written about, not the answer to it (same baseline as
+    check_action_claims.py).
 
-    ⚠️ Failure honesty: the opportunity write has already landed and validated. If the asks
-    write then fails, we roll back ONLY asks.jsonl and say so loudly — the state degrades to
-    exactly what it was before this change existed (action recorded, ask open), which the
+    ⚠️ Failure honesty: the write that produced `when` has already landed and validated. If the
+    asks write then fails, we roll back ONLY asks.jsonl and say so loudly — the state degrades
+    to exactly what it was before this change existed (action recorded, ask open), which the
     detection backstop catches. Never let an asks problem un-land a valid action record."""
-    action = ASK_ACTION_FOR_ARRAY.get(array_leaf)
-    if not action:
+    if not action or not when:
         return []
     asks = _load_asks()
     if asks is None:
-        return []
-    when = _action_evidence(rec, action)
-    if not when:
         return []
     hit = []
     for a in linked_asks(rid, action, asks):
@@ -738,6 +752,20 @@ def main():
             print("⛔ REFUSED — the record must be a JSON object, got %s."
                   % type(new_row).__name__)
             return 1
+        # ADR-031 B2 — `applications` is now a top-level store whose own id is minted the SAME
+        # way app_id always was (<opp_id>-aN), but the id is no longer known until the record
+        # exists: `create auto '{"opp_id": ..., ...}' --file applications` mints it here, from
+        # `opp_id` in the payload, against every existing row on that same opp_id. This
+        # replaces the old nested-array minting below (0.41.0's own comment), which applied
+        # only while `applications` was still `opportunities.applications[]`.
+        if args.file == "applications" and args.rid in (None, "auto"):
+            _opp_id = new_row.get("opp_id")
+            if not _opp_id:
+                print("⛔ REFUSED — create auto '{...}' --file applications requires 'opp_id' "
+                      "in the JSON payload; the id is minted from it (<opp_id>-aN).")
+                return 1
+            args.rid = mint_app_id(_opp_id, load("applications"))
+            minted = [args.rid]
         m = model()["stores"][args.file]
         idf = m.get("id_field") or "id"
         if idf in new_row and new_row[idf] != args.rid:
@@ -745,9 +773,6 @@ def main():
                   "stated once." % (idf, new_row[idf], args.rid))
             return 1
         new_row[idf] = args.rid
-        # 0.41.0 — a record born with applications[] gets every row's handle in array order.
-        if args.file == "opportunities" and isinstance(new_row.get("applications"), list):
-            minted = mint_app_ids(args.rid, new_row["applications"])
         # Same refuse-before-write guards every other op gets: unknown keys, aliases, required.
         for k in new_row:
             bad = check_field(args.file, k)
@@ -787,10 +812,6 @@ def main():
             print("  new. --force writes anyway and is almost never right: an unknown field is")
             print("  invisible to every query written against the real one.")
             return 1
-        # 0.41.0 — replacing applications[] wholesale still mints: numbering continues past
-        # whatever the current array holds, so a dropped row's number is never reused.
-        if args.file == "opportunities" and field == "applications" and isinstance(val, list):
-            minted = mint_app_ids(args.rid, val, also=rec.get("applications"))
         desc = "set %s = %r" % (field, val)
 
         def apply(r):
@@ -806,15 +827,11 @@ def main():
             print("⛔ REFUSED — %r is not an array of %s. Known: %s"
                   % (arr, args.file, ", ".join(sorted((m.get("arrays") or {})))))
             return 1
-        # 0.41.0 — an application row is never written without its handle. Minted here
-        # from the pre-lock read (so the uniqueness guard below sees it) and re-minted
-        # against the fresh read inside the lock (so a concurrent append cannot hand two
-        # rows one number).
-        mint_on_append = (args.file == "opportunities" and arr == "applications"
-                          and not blob.get("app_id"))
-        if mint_on_append:
-            blob["app_id"] = mint_app_id(args.rid, rec.get(arr))
-            minted = [blob["app_id"]]
+        # ADR-031 B2 — `applications` is no longer an array of `opportunities` (it is its own
+        # top-level store, created via `create auto ... --file applications`, which mints its
+        # own id — see the create branch above), so this array-append path never mints an
+        # app_id any more; `arr` here can only ever be a genuinely nested array
+        # (outreach/sightings/research_log/fit.requirements).
         for k in blob:
             bad = check_field(args.file, k, array=arr)
             if bad and not args.force:
@@ -837,9 +854,6 @@ def main():
         desc = "append to %s[]" % arr
 
         def apply(r):
-            if mint_on_append:
-                blob["app_id"] = mint_app_id(args.rid, r.get(arr))
-                minted[:] = [blob["app_id"]]
             r.setdefault(arr, []).append(blob)
 
     else:  # set-in
@@ -928,6 +942,15 @@ def main():
             for a in linked_asks(args.rid, action, _load_asks()) if action else []:
                 print("  would also resolve ask %r — %s (resolves_when: %s, dev #133)"
                       % (a.get("id"), (a.get("title") or "")[:60], action))
+        # ADR-031 B2 — the applications-store equivalent of the preview above: a create/set
+        # against `applications` may answer an ask whose `resolves_when` is "application" on
+        # this application's own opp_id.
+        if args.file == "applications" and args.op in ("create", "set"):
+            opp_id = new_row.get("opp_id") if args.op == "create" else rec.get("opp_id")
+            if opp_id:
+                for a in linked_asks(opp_id, "application", _load_asks()):
+                    print("  would also resolve ask %r — %s (resolves_when: application, "
+                          "dev #133 / ADR-031 B2)" % (a.get("id"), (a.get("title") or "")[:60]))
         return 0
 
     # ---- the ONLY window the lock is held: read, mutate, write, verify ----------
@@ -1056,9 +1079,22 @@ def main():
         # ---- dev #133: the write landed clean — resolve any ask that DECLARED this action
         # answers it, under the SAME lock hold. Two facts, one transaction boundary.
         if args.file == "opportunities" and args.op in ("append", "set-in") and args.rest:
-            for aid, title in resolve_linked_asks(args.rid, rec, args.rest[0].split(".")[-1]):
+            _array_leaf = args.rest[0].split(".")[-1]
+            _action = ASK_ACTION_FOR_ARRAY.get(_array_leaf)
+            _when = _action_evidence(rec, _action) if _action else None
+            for aid, title in resolve_linked_asks_dated(args.rid, _when, _action):
                 print("  ✦ resolved ask %r — %s (its declared action is now recorded)"
                       % (aid, title[:60]))
+        # ADR-031 B2 — the applications-store write path's own resolution: the ask's rid is the
+        # APPLICATION'S opp_id (an ask names an opportunity, never an application), and the
+        # evidence is this store's own `_applications_action_evidence`, never a nested array.
+        if args.file == "applications" and args.op in ("create", "set"):
+            _opp_id = new_row.get("opp_id") if args.op == "create" else rec.get("opp_id")
+            if _opp_id:
+                _when = _applications_action_evidence(_opp_id)
+                for aid, title in resolve_linked_asks_dated(_opp_id, _when, "application"):
+                    print("  ✦ resolved ask %r — %s (its declared action is now recorded)"
+                          % (aid, title[:60]))
     finally:
         # Under --already-locked the hold belongs to the CALLING RUN — releasing it here would
         # strip the protection off the rest of the run's write phase mid-flight.

@@ -61,6 +61,7 @@ from _root import profile_root as _profile_root
 import _tree
 import profile as _profile
 import your_move as _ym
+import applications as _apps
 # The one definition of the play sequence — validate_data.py owns the enum; consumers
 # import it rather than restating it (a sequence typed twice disagrees with itself later).
 from validate_data import PLAY_SEQUENCE as _PLAY_SEQUENCE
@@ -324,14 +325,18 @@ def _fit_detail(o):
 
 def _touch_detail(o):
     out = []
-    apps = o.get("applications") or []
+    # ADR-031 B2 — o["_applications"] is the caller's join against the top-level applications
+    # store (applications.enrich_opportunities, called once in load_jsonl above), never a
+    # nested array on the record.
+    apps = o.get("_applications") or []
     if apps:
         rows = []
         for a in apps:
             when = esc(str(a.get("applied_on") or a.get("date") or "date unrecorded"))
             how = esc(str(a.get("method") or "application"))
-            cl = a.get("cover_letter")
-            cl = "cover letter recorded" if cl else "cover letter unrecorded"
+            # `cover_letter_id` is the FK to the cover_letters store (was the free-text
+            # `cover_letter` field before B2) — "recorded" now means "linked", not "non-empty".
+            cl = "cover letter recorded" if a.get("cover_letter_id") else "cover letter unrecorded"
             rows.append(f"<li>{when} — {how} · {cl}</li>")
         out.append('<div class="od-h">Applications</div><ul class="od-l">'
                    + "".join(rows) + "</ul>")
@@ -871,9 +876,24 @@ DRAFT_DIMS = (("sendability", "precondition.OPEN_STATES", tuple(sorted(_pre.OPEN
               ("medium", "validate_data.MEDIA", tuple(sorted(_vd.MEDIA))))
 COVER_DIMS = (("sendability", "precondition.OPEN_STATES", tuple(sorted(_pre.OPEN_STATES))),)
 
-_SEND_ORDER = {"sendable": 0, "unreadable": 1, "unresolved": 1, "blocked": 2}
+# ⭐ Query or Citation C1 (design-query-or-citation.md §3.5, D8) — six states join these three
+# dicts, in their own three-way class split: `unaddressed`/`unbriefed`/`brief-mismatch`/
+# `stale-brief` are NEEDS_HUMAN (chip class "action", same as `unresolved`/`unreadable`
+# already render); `unverified-cold`/`unverified-silent` are WAITS_ON_SURFACE — a THIRD chip
+# class, "queued", neither "waiting" (on the other side) nor "action" (on the owner): the
+# draft waits on a session with a keychain. The mirror gate in TestQueryOrCitationC1 below
+# asserts every state in `precondition.OPEN_STATES` is present in all three dicts, so a
+# seventh state added to one and not the others fails loudly instead of rendering muted.
+_SEND_ORDER = {"sendable": 0, "unreadable": 1, "unresolved": 1, "blocked": 2,
+              "unaddressed": 1, "unbriefed": 1, "brief-mismatch": 1, "stale-brief": 1,
+              "unverified-cold": 3, "unverified-silent": 3}
 _SEND_CHIP = {"sendable": ("scheduled", "ready"), "blocked": ("waiting", "held"),
-              "unresolved": ("action", "unresolved"), "unreadable": ("action", "unreadable")}
+              "unresolved": ("action", "unresolved"), "unreadable": ("action", "unreadable"),
+              "unaddressed": ("action", "unaddressed"), "unbriefed": ("action", "unbriefed"),
+              "brief-mismatch": ("action", "brief mismatch"),
+              "stale-brief": ("action", "stale brief"),
+              "unverified-cold": ("queued", "queued — cold unverified"),
+              "unverified-silent": ("queued", "queued — silence unverified")}
 _SEND_WHERE = {
     "sendable": "full text below — expand it and read it here, never off a transcript",
     "blocked": "held — waits on the other side; moves to ready by itself once the touch "
@@ -882,6 +902,16 @@ _SEND_WHERE = {
                   "outcome:<...>; nobody can say what this waits on",
     "unreadable": "needs YOU — rewrite the **Blocked until:** line as contact:<id> "
                   "outcome:<...>; the strict parser refuses it",
+    "unaddressed": "needs YOU — no recipient identified; add a **To:** contact:<id> line",
+    "unbriefed": "needs YOU — drafted without reading the thread; run "
+                "brief.py --rebrief",
+    "brief-mismatch": "needs YOU — the cited brief names someone else; rebrief this entry",
+    "stale-brief": "needs YOU — they wrote since this was drafted; rebrief, or redraft if "
+                  "the register moved",
+    "unverified-cold": "queued for a keychain-holding session — the mailbox has not been "
+                       "checked on this surface",
+    "unverified-silent": "queued for a keychain-holding session — a sweep must cover this "
+                         "thread first",
 }
 
 
@@ -920,12 +950,33 @@ def render_message_list(set_name, kind, entries, states, filename, dims, empty_m
         if "medium" in dim_names:
             dims_here["medium"] = row.get("medium") or "unknown"
         members[key] = dims_here
+    # Query or Citation C1 (plant 10) — a queued row names the deferred item that will clear
+    # it, read once here rather than per row. `deferred.py`'s own queue, never re-derived.
+    _queued_by_contact = {}
+    if any(dims["sendability"] in ("unverified-cold", "unverified-silent")
+          for dims in members.values()):
+        try:
+            import deferred as _deferred_mod
+            for r in _deferred_mod.replay(_deferred_mod.load()):
+                if r.get("status") != "pending":
+                    continue
+                m_id = re.search(r"contact:(\S+)", str(r.get("what") or ""))
+                if m_id:
+                    _queued_by_contact[m_id.group(1)] = r.get("id")
+        except Exception:                                    # noqa: BLE001 — advisory only
+            pass
     for (title, blocks), key in zip(entries, keys):
         dims_here = members[key]
         st = dims_here["sendability"]
         cls, label = _SEND_CHIP.get(st, ("waiting", st))
         loud = st in _pre.NEEDS_HUMAN
         meta = _draft_meta_summary(blocks)
+        queued_note = ""
+        if st in ("unverified-cold", "unverified-silent"):
+            m_to = re.search(r"To:\s*contact:(\S+)", meta)
+            act_id = _queued_by_contact.get(m_to.group(1)) if m_to else None
+            if act_id:
+                queued_note = " · queued: %s" % act_id
         medium_flag = ""
         if dims_here.get("medium") == "unknown":
             # Loud on the row: the line named no MEDIA value (or there is no line). The
@@ -941,12 +992,12 @@ def render_message_list(set_name, kind, entries, states, filename, dims, empty_m
             '<div class="draft%s" data-rec="%s"%s><div class="draft-title">%s '
             '<span class="chip %s">%s</span>%s</div>'
             '%s%s'
-            '<div class="sub">%s › %s · %s</div></div>'
+            '<div class="sub">%s › %s · %s%s</div></div>'
             % (" ws-loud" if loud else "", esc(key), _dim_attrs(dims_here),
                md_inline(title), cls, label, medium_flag,
                ('<div class="draft-meta">%s</div>' % esc(meta)) if meta else "", body,
                '<code class="fileref">%s</code>' % esc(filename), esc(title[:60]),
-               md_inline(_SEND_WHERE.get(st, st))))
+               md_inline(_SEND_WHERE.get(st, st)), esc(queued_note)))
     return render_filtered_list(set_name, dims, members, keys, "".join(out), "", cls="")
 
 
@@ -1203,6 +1254,13 @@ _FILTER_VALUE_LABELS = {
     ("sendability", "sendable"): "Ready to send", ("sendability", "blocked"): "Held",
     ("sendability", "unreadable"): "Unreadable hold",
     ("sendability", "unresolved"): "Unresolved hold",
+    # Query or Citation C1 — the six new precondition.OPEN_STATES members.
+    ("sendability", "unaddressed"): "No recipient",
+    ("sendability", "unbriefed"): "Unbriefed",
+    ("sendability", "brief-mismatch"): "Brief mismatch",
+    ("sendability", "stale-brief"): "Stale brief",
+    ("sendability", "unverified-cold"): "Queued — cold unverified",
+    ("sendability", "unverified-silent"): "Queued — silence unverified",
     ("window", "past"): "Call held", ("window", "later"): "Beyond the horizon",
     ("window", "undated"): "Undated",
     ("prep", "prepped"): "Prepped", ("prep", "owed"): "Prep owed",
@@ -1413,6 +1471,12 @@ def load_jsonl(name):
         line = line.strip()
         if line:
             out.append(_json.loads(line))
+    # ADR-031 B2 — every opportunities.jsonl load in this file gets o["_applications"] set
+    # from the top-level applications store, from THIS one place, so every caller below (there
+    # are several) never has to remember to join it separately and never re-reads a nested
+    # array that no longer exists.
+    if name == "opportunities.jsonl":
+        _apps.enrich_opportunities(str(ROOT), out)
     return out
 
 
@@ -1668,12 +1732,14 @@ def application_tables(today=None):
         # be applied to, so listing it under "nothing sent" would nag about the impossible.
         if o.get("status") in _TERMINAL:
             continue
-        apps = [a for a in (o.get("applications") or []) if a.get("status") in SUBMITTED_STATES]
+        # ADR-031 B2 — o["_applications"], the join against the top-level applications store.
+        apps = [a for a in (o.get("_applications") or []) if a.get("status") in SUBMITTED_STATES]
         if apps:
             a = sorted(apps, key=lambda x: x.get("date") or "")[-1]
             days = age(a.get("date") or "")
-            cl = a.get("cover_letter_attached")
-            cl_txt = "yes" if cl is True else ("no" if cl is False else "unrecorded")
+            # `cover_letter_attached` retired with the array; "attached" is now
+            # "cover_letter_id is non-null" (design §1's own rule).
+            cl_txt = "yes" if a.get("cover_letter_id") else "unrecorded"
             submitted.append([cname(o), o.get("title", ""), a.get("date") or "—",
                               f"{days}d" if days is not None else "—",
                               a.get("status", ""), cl_txt,
@@ -1983,6 +2049,7 @@ CSS = """
     --chip-action-bg: #fde2e2; --chip-action-fg: #a12626;
     --rail-done: #9aa3ad; --rail-todo: #dcdcd8; --rail-now: #2f5fd0;
     --chip-scheduled-bg: #d9f2e3; --chip-scheduled-fg: #1c7c46;
+    --chip-queued-bg: #e6e6fa; --chip-queued-fg: #4b3f8f;
     --chip-closed-bg: #ececec; --chip-closed-fg: #666;
     --pill-bg: #f0efeb; --pill-fg: #1a1a1a; --pill-done-fg: #999;
     --note-bg: #eef4fb; --note-border: #d5e4f5; --note-fg: #2c5580;
@@ -1996,6 +2063,7 @@ CSS = """
       --chip-action-bg: #3d1e1e; --chip-action-fg: #f0908f;
       --rail-done: #5a626b; --rail-todo: #33322f; --rail-now: #7aa2f7;
       --chip-scheduled-bg: #123526; --chip-scheduled-fg: #6fdba4;
+      --chip-queued-bg: #2b2650; --chip-queued-fg: #c3b8f7;
       --chip-closed-bg: #2e2d2b; --chip-closed-fg: #9a9a97;
       --pill-bg: #2b2a28; --pill-fg: #ececeb; --pill-done-fg: #767674;
       --note-bg: #172433; --note-border: #253a52; --note-fg: #8fbaea;
@@ -2008,6 +2076,7 @@ CSS = """
     --chip-waiting-bg: #3d3210; --chip-waiting-fg: #f0c750;
     --chip-action-bg: #3d1e1e; --chip-action-fg: #f0908f;
     --chip-scheduled-bg: #123526; --chip-scheduled-fg: #6fdba4;
+      --chip-queued-bg: #2b2650; --chip-queued-fg: #c3b8f7;
     --chip-closed-bg: #2e2d2b; --chip-closed-fg: #9a9a97;
     --pill-bg: #2b2a28; --pill-fg: #ececeb; --pill-done-fg: #767674;
     --note-bg: #172433; --note-border: #253a52; --note-fg: #8fbaea;
@@ -2019,6 +2088,7 @@ CSS = """
     --chip-waiting-bg: #fef3cd; --chip-waiting-fg: #8a6d00;
     --chip-action-bg: #fde2e2; --chip-action-fg: #a12626;
     --chip-scheduled-bg: #d9f2e3; --chip-scheduled-fg: #1c7c46;
+    --chip-queued-bg: #e6e6fa; --chip-queued-fg: #4b3f8f;
     --chip-closed-bg: #ececec; --chip-closed-fg: #666;
     --pill-bg: #f0efeb; --pill-fg: #1a1a1a; --pill-done-fg: #999;
     --note-bg: #eef4fb; --note-border: #d5e4f5; --note-fg: #2c5580;
@@ -2057,6 +2127,10 @@ CSS = """
   .chip.action { background: var(--chip-action-bg); color: var(--chip-action-fg); }
   .chip.scheduled { background: var(--chip-scheduled-bg); color: var(--chip-scheduled-fg); }
   .chip.closed { background: var(--chip-closed-bg); color: var(--chip-closed-fg); }
+  /* Query or Citation C1 (design-query-or-citation.md sec 3.5) - WAITS_ON_SURFACE: neither
+     owner nor other side, a third class beside action/waiting - queued for a session with a
+     keychain. */
+  .chip.queued { background: var(--chip-queued-bg); color: var(--chip-queued-fg); }
   .sub { color: var(--muted2); font-size: 12px; }
   .pill-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
   .pill { background: var(--pill-bg); color: var(--pill-fg); border-radius: 6px; padding: 3px 8px; font-size: 12px; }
@@ -2259,9 +2333,11 @@ def main():
         _not_sendable = _pre.NOT_SENDABLE
         _terminal = _pre.TERMINAL
         _needs_human = _pre.NEEDS_HUMAN
+        _waits_on_surface = _pre.WAITS_ON_SURFACE
     except Exception:
         _pre_rows, _states, _not_sendable, _terminal = [], {}, frozenset(), frozenset()
         _needs_human = frozenset()
+        _waits_on_surface = frozenset()
 
     # dev #154 — a READY staged message no open ask covers gets a DERIVED queue line.
     try:
@@ -2303,13 +2379,21 @@ def main():
     # precondition.NEEDS_HUMAN owns the split; this only counts by it — since public #48
     # stage 1 the three groups are ONE list with a sendability filter, and an unreadable
     # hold is a loud row in it rather than a section of its own.
+    # ⭐ Query or Citation C1 (§3.5, D8, plant 10) — WAITS_ON_SURFACE is a THIRD group: a
+    # queued draft is neither owner-blocked nor other-side-held. Excluded from BOTH `_blocked`
+    # and `_unreadable` — rendering it in either is the exact public #37 failure recreated for
+    # a state neither dict names.
     _blocked = [d for d in _drafts_active
                 if _pre_state(_DRAFTS_REL, d[0]) in _not_sendable
-                and _pre_state(_DRAFTS_REL, d[0]) not in _needs_human]
+                and _pre_state(_DRAFTS_REL, d[0]) not in _needs_human
+                and _pre_state(_DRAFTS_REL, d[0]) not in _waits_on_surface]
     _unreadable = [d for d in _drafts_active if _pre_state(_DRAFTS_REL, d[0]) in _needs_human]
+    _queued = [d for d in _drafts_active
+              if _pre_state(_DRAFTS_REL, d[0]) in _waits_on_surface]
     drafts_html = render_message_list("drafts", "draft", _drafts_active, _states,
                                       _DRAFTS_REL, DRAFT_DIMS, "No pending drafts.")
     n_blocked = len(_blocked)
+    n_queued = len(_queued)
 
     # dev #169 — the covers list consults preconditions exactly as the drafts list does.
     _covers_active = [c for c in covers if _pre_state(_COVERS_REL, c[0]) not in _terminal]
@@ -2842,14 +2926,17 @@ def main():
     if _drafts_active:
         out_parts.append(
             '<h2 id="phase-outreach-approvals">✉️ Drafts — awaiting your approval '
-            '<span class="tcount">%d</span>%s</h2>'
+            '<span class="tcount">%d</span>%s%s</h2>'
             '<div class="sub" style="margin:-6px 0 10px">Nothing is ever sent without your '
             'explicit approval. The full text of every sendable message is right here — read '
             'it on this page, never off a transcript. Held messages wait on the other side '
-            'and move to ready by themselves; a hold nobody can read waits on YOU.</div>'
+            'and move to ready by themselves; a hold nobody can read waits on YOU; a queued '
+            'one waits on a session with a keychain (Query or Citation C1) — never either of '
+            'the others.</div>'
             '<div class="card">%s</div>'
             % (len(_sendable) + len(_unreadable),
                (' <span class="ct2f">· %d held</span>' % n_blocked) if n_blocked else "",
+               (' <span class="ct2f">· %d queued</span>' % n_queued) if n_queued else "",
                drafts_html))
     if _covers_active:
         out_parts.append(

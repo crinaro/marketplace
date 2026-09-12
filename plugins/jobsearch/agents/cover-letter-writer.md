@@ -3,6 +3,7 @@ name: cover-letter-writer
 color: magenta
 description: 'Write the cover letter that accompanies a formal ATS application — a different artifact from short outreach, with its own header, one-page cap and length target. Use whenever the next action on a role is the candidate applying directly. Not for LinkedIn notes, recruiter replies or networking messages; that is outreach-drafter. Drafts only; never submits. Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
 model: sonnet
+effort: high
 disallowedTools: Agent
 ---
 
@@ -75,6 +76,8 @@ marketplace contract's own rule against install-state mutation from inside a dis
 
 **DOES NOT READ:** `outreach/drafts.md`'s rules · LinkedIn character caps · `log.md` · the pipeline JSONL
 beyond this one role.
+
+**MODEL · EFFORT:** `sonnet` · `high` (declared 2026-09-12). Writing quality against a DO NOT CLAIM list — the same class as outreach-drafter. `fit_report.py --pitch` supplies the case, so the effort goes to the letter, not to re-deriving fit.
 
 ## WHY THIS AGENT IS SEPARATE FROM `outreach-drafter`
 

@@ -116,6 +116,16 @@ APPLICATION_METHODS = {"company-ats", "linkedin-easy-apply", "recruiter-submitte
                        "email", "referral"}
 APPLICATION_STATUS = {"not-started", "started", "submitted", "acknowledged",
                       "rejected", "advanced", "withdrawn"}
+# ADR-031 B2 (design §1/§9, §16 item 3) — a fact about the OPPORTUNITY, not the plan: one
+# vocabulary per fact is the rule, shared with the future plans.outcomes. `consulting` was the
+# pre-Part-3 wording; amended to `contract`, one word, before anything shipped.
+ENGAGEMENT_TYPES = {"full-time", "contract"}
+# ADR-031 B2 (design §1) — `cover_letters`, "resume_variants' twin": a status with a terminal
+# value, same shape as VARIANT_STATUS. `retired` is TERMINAL, same contract as a resolved ask
+# and a retired resume variant. Nullable: a row the 0.45.0 migration preserves verbatim from a
+# legacy applications[] row may carry no status at all — the migration cannot know one and must
+# not invent it (design §4/§28.2, the gate review's own B2 plant).
+COVER_LETTER_STATUS = {"draft", "sent", "retired"}
 # Whether outreach got a reply -- the other half of "what works".
 OUTREACH_OUTCOME = {"awaiting", "replied", "no-response", "declined",
                     "meeting-booked", "accepted", "n/a"}
@@ -177,6 +187,14 @@ RETIRED_CHANNEL_IDS = {"linkedin-direct", "email-direct"}
 RETIRED_KEYS = {"contacts": "B1", "applications": "B2", "outreach": "B3"}
 
 _GRAPH_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph.py")
+# ⭐ B2's OWN structural marker (ADR-031 §29.3's amendment: "each stage names its own structural
+# marker"). B2 has no cross-store WALKER the way B1's graph.py was already a required
+# deliverable — every applications/cover_letters FK is a simple owned pointer, not a
+# many-direction graph — so B2's marker is applications.py: the module that owns the
+# applications/cover_letters joins every reader used to hand-roll against the nested array (see
+# applications.py's own module docstring for the full reasoning). It lands in the SAME commit as
+# the 0.45.0 migration and this guard, never ahead of either — exactly graph.py's own timing.
+_APPLICATIONS_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "applications.py")
 
 
 def active_retired_keys():
@@ -184,18 +202,23 @@ def active_retired_keys():
     never all of RETIRED_KEYS and never a human-set flag. Resolves to {} until B1 ships (graph.py
     lands, with the migration, in one commit); see the block comment above RETIRED_KEYS."""
     active = {}
-    # ⭐ `_b1_key` holds the string in a NAME, never a literal subscript on RETIRED_KEYS here —
-    # `check_retired_reads.py`'s own scanner matches a Subscript/`.get()` call whose slice is
-    # the STRING CONSTANT "contacts" (it cannot tell a data-row read from a constant-dict read
-    # apart, by design — see its module docstring). `RETIRED_KEYS["contacts"]` would be a real,
-    # if harmless, hit on THIS module; reading it through a local variable is not the checker
-    # avoided, it is the checker's own documented boundary — a data row is never keyed by a
-    # variable holding a compile-time constant a checker can trace back to this exact line.
+    # ⭐ `_b1_key`/`_b2_key` hold the string in a NAME, never a literal subscript on RETIRED_KEYS
+    # here — `check_retired_reads.py`'s own scanner matches a Subscript/`.get()` call whose
+    # slice is the STRING CONSTANT "contacts"/"applications" (it cannot tell a data-row read
+    # from a constant-dict read apart, by design — see its module docstring).
+    # `RETIRED_KEYS["contacts"]` would be a real, if harmless, hit on THIS module; reading it
+    # through a local variable is not the checker avoided, it is the checker's own documented
+    # boundary — a data row is never keyed by a variable holding a compile-time constant a
+    # checker can trace back to this exact line.
     _b1_key = "contacts"
     if os.path.exists(_GRAPH_PY):
         active[_b1_key] = RETIRED_KEYS[_b1_key]
-    # `applications` (B2) and `outreach` (B3) gain entries here once THEIR OWN stages ship —
-    # each stage's own migration dispatch names its own structural marker, as B1's names graph.py.
+    _b2_key = "applications"
+    if os.path.exists(_APPLICATIONS_PY):
+        active[_b2_key] = RETIRED_KEYS[_b2_key]
+    # `outreach` (B3) gains an entry here once THAT stage ships — its own migration dispatch
+    # names its own structural marker, the same mechanism B1's graph.py and B2's applications.py
+    # already establish.
     return active
 TOUCH_TYPES = {"first-touch", "chase", "reply", "referral-ask", "intro-request",
                "thank-you", "reconnect", "apply-path", "unknown"}
@@ -291,6 +314,25 @@ COMMITMENT_STATUS = {"scheduled", "cancelled"}
 VARIANT_STATUS = {"active", "retired"}
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 SHA12_RE = re.compile(r"^[0-9a-f]{12}$")
+
+# ---- briefs (Query or Citation C1, design-query-or-citation.md §3.3/§3.7/§4.1) ---------------
+# Mirrored as LITERALS — never imported from `your_move.AXIS_FOLD` or `brief.py`'s own module
+# constants, because `your_move` imports THIS module and `brief` imports `your_move`; importing
+# either back here is the exact load-time cycle `precondition.py`'s lazy import of `brief`
+# already exists to avoid. TestBriefVocabularyMirrorsTheReader holds this identical to the
+# reader's own tuples, so the copy cannot drift silently.
+BRIEF_ID_RE = re.compile(
+    r"^brief:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}-[0-9a-f]{4}$")
+BRIEF_AXES = {"reply-owed", "accepted", "waiting", "silence-unverified", "silent",
+             "nothing-sent"}
+BRIEF_REGISTERS = {"reply-owed", "accepted", "premature", "chase", "reconnect",
+                   "unverified-silent", "cold", "unverified-cold"}
+BRIEF_EVIDENCE_RE = re.compile(
+    r"^(?:none-recorded|not-configured|confirmed-empty(?:\(owner, \d{4}-\d{2}-\d{2}\))?|"
+    r"confirmed \d+ thread\(s\), latest \d{4}-\d{2}-\d{2}.*|"
+    r"candidate \d+ \(by name\)|"
+    r"unreachable\([\w-]+\)|"
+    r"not-permitted\([\w.-]+\))$")
 
 
 def load(name):
@@ -688,6 +730,144 @@ def _main():
             if r.get("status") != "retired":
                 active_variant_ids.add(r["id"])
 
+    # ---- cover_letters (ADR-031 B2) — resume_variants' twin. Validated BEFORE applications so
+    # applications[].cover_letter_id can resolve against cover_letter_ids below. -------------
+    cover_letters, e = load("cover_letters.jsonl")
+    if cover_letters is None:
+        cover_letters = []
+    else:
+        problems += e or []
+    cover_letter_ids = set()
+    _opp_id_set = {o.get("id") for o in opps if o.get("id")}
+    for r in cover_letters:
+        clid = r.get("id", "?")
+        label = "cover_letters[%s]" % clid
+        for f in ("id", "opp_id"):
+            req(r, f, label, problems)
+        if r.get("id"):
+            if r["id"] in cover_letter_ids:
+                problems.append("%s: duplicate id" % label)
+            cover_letter_ids.add(r["id"])
+        oid = r.get("opp_id")
+        if oid is not None and oid not in _opp_id_set:
+            problems.append("%s: opp_id %r does not resolve" % (label, oid))
+        cr = r.get("created")
+        if cr is not None and not is_date(cr):
+            problems.append("%s: created not ISO — %r" % (label, cr))
+        # `status` is deliberately NULLABLE here (not required, unlike resume_variants' own
+        # status): a row the 0.45.0 migration preserves verbatim from an inconsistent legacy
+        # applications[] row (cover_letter_attached true, cover_letter_doc null) must not have
+        # an invented status — "a migration that cannot know a field's type must not interpret
+        # it" (design §1). Where present it must still be a real value.
+        st = r.get("status")
+        if st is not None and st not in COVER_LETTER_STATUS:
+            problems.append("%s: status %r not in {%s}"
+                            % (label, st, ", ".join(sorted(COVER_LETTER_STATUS))))
+        fl = r.get("file")
+        if fl is not None and not (isinstance(fl, str) and fl.strip()):
+            problems.append("%s: file must be a non-empty path relative to the profile root "
+                            "when set" % label)
+        doc = r.get("doc")
+        if doc is not None and not (isinstance(doc, str) and doc.strip()):
+            problems.append("%s: doc must be a non-empty reference when set" % label)
+
+    # ---- applications (ADR-031 B2) — promoted from opportunities.applications[]. `id` is the
+    # store's own id_field (= the old app_id, unchanged VALUE); `opp_id` is a required FK —
+    # "resolve this application" is now a dictionary lookup, never an own-record array walk
+    # (design §1). apps_by_opp is built here once and reused below for every own-record trigger
+    # check the removed nested array used to answer locally. ------------------------------------
+    applications, e = load("applications.jsonl")
+    if applications is None:
+        applications = []
+    else:
+        problems += e or []
+    app_ids_seen = set()
+    apps_by_opp = {}
+    for r in applications:
+        aid = r.get("id", "?")
+        label = "applications[%s]" % aid
+        for f in ("opp_id", "date", "method", "status"):
+            req(r, f, label, problems)
+        if r.get("id"):
+            if not (isinstance(r["id"], str) and SLUG_RE.match(r["id"])):
+                problems.append("%s: id %r must be a lowercase slug (minted as <opp_id>-aN)"
+                                % (label, r["id"]))
+            elif r["id"] in app_ids_seen:
+                problems.append("%s: duplicate id" % label)
+            app_ids_seen.add(r["id"])
+        oid = r.get("opp_id")
+        if oid is not None and oid not in _opp_id_set:
+            problems.append("%s: opp_id %r does not resolve" % (label, oid))
+        if oid:
+            apps_by_opp.setdefault(oid, []).append(r)
+        if r.get("method") not in APPLICATION_METHODS:
+            problems.append("%s: method %r not in {%s}"
+                            % (label, r.get("method"), ", ".join(sorted(APPLICATION_METHODS))))
+        if r.get("status") not in APPLICATION_STATUS:
+            problems.append("%s: status %r not in {%s}"
+                            % (label, r.get("status"), ", ".join(sorted(APPLICATION_STATUS))))
+        if r.get("status") in SUBMITTED_APP_STATUS and not r.get("date"):
+            problems.append("%s: status %r but has no date — that is the field the funnel "
+                            "analysis runs on" % (label, r.get("status")))
+        # Which variant actually WENT (public #26) — retired resolves fine here: history must
+        # stay attributable forever. UNRESOLVED (public #70's own sentinel, see below) is a
+        # legal escape and never "does not resolve".
+        arv = r.get("resume_variant")
+        if arv is not None and arv != UNRESOLVED and arv not in variant_ids:
+            problems.append("%s: resume_variant %r does not resolve in "
+                            "data/resume_variants.jsonl — attribution of outcomes to "
+                            "positioning depends on this join" % (label, arv))
+        cli = r.get("cover_letter_id")
+        if cli is not None and cli not in cover_letter_ids:
+            problems.append("%s: cover_letter_id %r does not resolve in "
+                            "data/cover_letters.jsonl" % (label, cli))
+        # form_answers (public #27) — unchanged shape/logic from the pre-B2 nested check.
+        fa = r.get("form_answers")
+        if fa is not None:
+            if not isinstance(fa, list):
+                problems.append("%s: form_answers must be a list of "
+                                "{question_key, question, answer, answered_on}, got %s"
+                                % (label, type(fa).__name__))
+                fa = []
+            seen_q = set()
+            for j, ans in enumerate(fa):
+                fl = "%s.form_answers[%d]" % (label, j)
+                if not isinstance(ans, dict):
+                    problems.append("%s: entry is %s, not an object" % (fl, type(ans).__name__))
+                    continue
+                extra = set(ans) - FORM_ANSWER_KEYS
+                if extra:
+                    problems.append("%s: unknown key(s) %s" % (fl, ", ".join(sorted(extra))))
+                qk = ans.get("question_key")
+                if not (isinstance(qk, str) and SLUG_RE.match(qk)):
+                    problems.append("%s: question_key %r must be a lowercase slug shared "
+                                    "across applications (e.g. salary-expectations, "
+                                    "reason-for-leaving, ai-usage) — precedent is a join, "
+                                    "not a search" % (fl, qk))
+                elif qk in seen_q:
+                    problems.append("%s: duplicate question_key %r on one application — "
+                                    "which answer is the precedent?" % (fl, qk))
+                else:
+                    seen_q.add(qk)
+                av = ans.get("answer")
+                if not (isinstance(av, str) and av.strip()):
+                    problems.append("%s: 'answer' must be a non-empty string — an empty "
+                                    "answer looks captured and is not" % fl)
+                ao = ans.get("answered_on")
+                if ao is not None and not is_date(ao):
+                    problems.append("%s: answered_on not ISO — %r" % (fl, ao))
+        # ⭐⭐ public #70 — once ANY resume variant is DECLARED, a submitted application must
+        # carry one. `UNRESOLVED` (the same marker blocked_until/play_stage already use) is the
+        # legal escape for a row that predates variants existing — a human decision, never a
+        # default this validator invents.
+        if (r.get("status") in SUBMITTED_APP_STATUS and variant_ids
+                and not r.get("resume_variant")):
+            problems.append(
+                "%s: status %r but resume_variant is unset while %d resume variant(s) are "
+                "declared — outcomes must be attributable to positioning (set resume_variant, "
+                "or %r if this application predates variants existing)"
+                % (label, r.get("status"), len(variant_ids), UNRESOLVED))
+
     company_ids, channel_ids = set(), set()
 
     # ⭐ RETIRED-KEY REFUSAL (ADR-031 §28.1 item 3) — computed once, used by both the
@@ -820,16 +1000,17 @@ def _main():
         # position nobody can parse looks handled and is not (the precondition.py rule).
         ps = r.get("play_stage")
         # Resolve against data the store ALREADY has, the same move as act_by and
-        # precondition.py: the applications[] array is the evidence of submission.
+        # precondition.py: the applications store (now top-level — ADR-031 B2; apps_by_opp is
+        # built once, above, from data/applications.jsonl) is the evidence of submission.
         submitted = any(a.get("status") in SUBMITTED_APP_STATUS
-                        for a in (r.get("applications") or []))
+                        for a in apps_by_opp.get(r.get("id"), []))
         # ⭐ A DECISION MADE BY ACTING (dev/audit 2026-09-02, Class A / public #44). A row can
-        # say `verdict: undecided` while applications[] proves a submission — the human
+        # say `verdict: undecided` while an applications row proves a submission — the human
         # decided by applying and the field never followed. Left alone it renders a
         # pursue-or-pass ask for a role already applied to. m_0_36_0_verdict_from_applications
         # resolves history; this refuses the contradiction from here on.
         if r.get("verdict") == "undecided" and submitted:
-            problems.append("%s: verdict 'undecided' but an applications[] row is already %s "
+            problems.append("%s: verdict 'undecided' but an applications row is already %s "
                             "— the act decided; the store already answers this (pursue)"
                             % (label, "/".join(sorted(SUBMITTED_APP_STATUS))))
         if ps is not None:
@@ -843,12 +1024,12 @@ def _main():
                 # already answers the one question that matters: applied, or not.
                 # m_0_36_0_play_stage_from_applications resolves every historical marker,
                 # and record.py's pre-write validation refuses a new one here.
-                problems.append("%s: play_stage 'unresolved' is derivable from applications[] "
-                                "— the store already answers it: %r"
-                                % (label, _ym.derive_play_stage(r)))
+                problems.append("%s: play_stage 'unresolved' is derivable from the applications "
+                                "store — the store already answers it: %r"
+                                % (label, _ym.derive_play_stage(apps_by_opp.get(r.get("id"), []))))
             else:
                 if ps == "needs-application" and submitted:
-                    problems.append("%s: play_stage 'needs-application' but an applications[] "
+                    problems.append("%s: play_stage 'needs-application' but an applications "
                                     "row is already %s — the store knows this role was applied "
                                     "to; advance the play_stage" %
                                     (label, "/".join(sorted(SUBMITTED_APP_STATUS))))
@@ -882,6 +1063,13 @@ def _main():
                 problems.append("%s: resume_variant %r is retired — a role cannot plan to "
                                 "send a resume no longer sent; point it at an active variant "
                                 "or null the field" % (label, rv))
+
+        # ---- engagement_type (ADR-031 B2, design §1/§16 item 3) — full-time | contract, a
+        # fact about the ROLE, defaulted by the 0.45.0 migration; nullable pre-migration. ----
+        et = r.get("engagement_type")
+        if et is not None and et not in ENGAGEMENT_TYPES:
+            problems.append("%s: engagement_type %r not in {%s}"
+                            % (label, et, ", ".join(sorted(ENGAGEMENT_TYPES))))
 
         # ---- fit analysis (optional block) ----
         fit = r.get("fit")
@@ -1003,11 +1191,13 @@ def _main():
         person_ids_for_opp = {i.get("person_id") for i in involvements
                               if i.get("opp_id") == r.get("id") and i.get("person_id")}
 
-        # The application handles a trigger on THIS record may name (public #27): app_id where
-        # minted, date for pre-migration rows. Own-record rule — see check_trigger.
+        # The application handles a trigger on THIS record may name (public #27): id (was
+        # app_id — unchanged value) where minted, date for pre-migration rows. Own-record
+        # rule — see check_trigger. ADR-031 B2: resolved against apps_by_opp (the top-level
+        # applications store filtered to THIS opportunity), never a nested array walk.
         app_refs = set()
-        for ap in r.get("applications") or []:
-            for h in (ap.get("app_id"), ap.get("date")):
+        for ap in apps_by_opp.get(r.get("id"), []):
+            for h in (ap.get("id"), ap.get("date")):
                 if isinstance(h, str) and h.strip():
                     app_refs.add(h)
 
@@ -1128,78 +1318,6 @@ def _main():
                     problems.append("%s: sequence_id %r must be a lowercase slug" % (ol, sid))
                 if not (isinstance(sst, int) and not isinstance(sst, bool) and sst >= 1):
                     problems.append("%s: sequence_step %r must be an integer >= 1" % (ol, sst))
-        # applications[] — when the candidate applied, how, and what came back
-        for i, ap in enumerate(r.get("applications", [])):
-            if ap.get("method") not in APPLICATION_METHODS:
-                problems.append("%s: applications[%d].method %r not in {%s}" % (label, i, ap.get("method"), ", ".join(sorted(APPLICATION_METHODS))))
-            if ap.get("status") not in APPLICATION_STATUS:
-                problems.append("%s: applications[%d].status %r not in {%s}" % (label, i, ap.get("status"), ", ".join(sorted(APPLICATION_STATUS))))
-            # A submitted application must carry the date it went out, or the
-            # whole point (measuring time-to-response) is lost.
-            if ap.get("status") in ("submitted", "acknowledged", "rejected", "advanced") and not ap.get("date"):
-                problems.append("%s: applications[%d] is %r but has no date — that is the field the funnel analysis runs on" % (label, i, ap.get("status")))
-            # Which variant actually WENT (public #26) — retired resolves fine here: history
-            # must stay attributable forever, which is why 'retired' exists instead of delete.
-            arv = ap.get("resume_variant")
-            if arv is not None and arv not in variant_ids:
-                problems.append("%s: applications[%d].resume_variant %r does not resolve in "
-                                "data/resume_variants.jsonl — attribution of outcomes to "
-                                "positioning depends on this join" % (label, i, arv))
-            al = "%s: applications[%d]" % (label, i)
-            # app_id (public #27) — the stable handle a trigger names. record.py mints it on
-            # every write and m_0_41_0_app_ids (0.41.0) backfilled history, so the migration
-            # this comment used to call "deferred" has shipped — app_id is deliberately STILL
-            # not required here: the generated fixture (tests/fixtures/) still carries a
-            # pre-migration row on purpose (drift meters need something to measure), and
-            # requiring it would fail the validator on every un-migrated profile. Promote this
-            # to required once profiles have migrated; where present it must be a slug and
-            # unique on the record, or two triggers could name different rows with one ref.
-            aid = ap.get("app_id")
-            if aid is not None:
-                if not (isinstance(aid, str) and SLUG_RE.match(aid)):
-                    problems.append("%s: app_id %r must be a lowercase slug (mint as "
-                                    "<opp_id>-aN)" % (al, aid))
-                elif sum(1 for a2 in r.get("applications") or []
-                         if a2.get("app_id") == aid) > 1:
-                    problems.append("%s: duplicate app_id %r on this record — a trigger "
-                                    "naming it would be ambiguous" % (al, aid))
-            # form_answers (public #27) — what was actually answered on the form's own
-            # questions. Unknown entry keys REJECTED (the sent_on/replied_on lesson);
-            # an unreadable answer is LOUD, never skipped — it looks captured and is not.
-            fa = ap.get("form_answers")
-            if fa is not None:
-                if not isinstance(fa, list):
-                    problems.append("%s: form_answers must be a list of "
-                                    "{question_key, question, answer, answered_on}, got %s"
-                                    % (al, type(fa).__name__))
-                    fa = []
-                seen_q = set()
-                for j, ans in enumerate(fa):
-                    fl = "%s.form_answers[%d]" % (al, j)
-                    if not isinstance(ans, dict):
-                        problems.append("%s: entry is %s, not an object" % (fl, type(ans).__name__))
-                        continue
-                    extra = set(ans) - FORM_ANSWER_KEYS
-                    if extra:
-                        problems.append("%s: unknown key(s) %s" % (fl, ", ".join(sorted(extra))))
-                    qk = ans.get("question_key")
-                    if not (isinstance(qk, str) and SLUG_RE.match(qk)):
-                        problems.append("%s: question_key %r must be a lowercase slug shared "
-                                        "across applications (e.g. salary-expectations, "
-                                        "reason-for-leaving, ai-usage) — precedent is a join, "
-                                        "not a search" % (fl, qk))
-                    elif qk in seen_q:
-                        problems.append("%s: duplicate question_key %r on one application — "
-                                        "which answer is the precedent?" % (fl, qk))
-                    else:
-                        seen_q.add(qk)
-                    av = ans.get("answer")
-                    if not (isinstance(av, str) and av.strip()):
-                        problems.append("%s: 'answer' must be a non-empty string — an empty "
-                                        "answer looks captured and is not" % fl)
-                    ao = ans.get("answered_on")
-                    if ao is not None and not is_date(ao):
-                        problems.append("%s: answered_on not ISO — %r" % (fl, ao))
         # status vs. stage — orthogonal, but not every pairing is coherent.
         # Added 2026-07-21: the markdown backfill left two live active pursuits
         # (two employers) sitting at stage "closed", which
@@ -1251,20 +1369,19 @@ def _main():
         if r.get("channel_id") and r["channel_id"] not in channel_ids:
             problems.append("%s: channel_id %r resolves to no channel" % (label, r["channel_id"]))
         # What caused this ask (public #27) — same shared check as outreach[] triggers. An
-        # 'application' ref resolves against the LINKED opp's applications[] and therefore
+        # 'application' ref resolves against the LINKED opp's applications and therefore
         # requires opp_id: without one there is no record to resolve against, which is the
-        # resolves_when-without-opp_id defect in new clothes.
+        # resolves_when-without-opp_id defect in new clothes. ADR-031 B2: resolved against
+        # apps_by_opp (the top-level applications store), never a nested array walk.
         if r.get("trigger_kind") == "application" and not r.get("opp_id"):
             problems.append("%s: trigger_kind 'application' without opp_id — there is no "
-                            "record whose applications[] the ref could resolve against" % label)
+                            "record whose applications the ref could resolve against" % label)
         else:
             ask_app_refs = set()
-            for opp in opps or []:
-                if opp.get("id") == r.get("opp_id"):
-                    for ap in opp.get("applications") or []:
-                        for h in (ap.get("app_id"), ap.get("date")):
-                            if isinstance(h, str) and h.strip():
-                                ask_app_refs.add(h)
+            for ap in apps_by_opp.get(r.get("opp_id"), []):
+                for h in (ap.get("id"), ap.get("date")):
+                    if isinstance(h, str) and h.strip():
+                        ask_app_refs.add(h)
             check_trigger(r, label, problems, ask_app_refs, sent_ids)
         # An ask that is resolved must say how it resolved — "expelled" with no outcome is
         # the old delete-the-prose move with less accountability, not more.
@@ -1314,12 +1431,64 @@ def _main():
             problems.append("%s: status %r is not one of %s" %
                             (label, r["status"], "/".join(sorted(COMMITMENT_STATUS))))
 
+    # ---- briefs (Query or Citation C1, design-query-or-citation.md §3.3/§8) — brief.py's own
+    # ledger. Structure and closed vocabulary only; `person_id` resolving is the one
+    # cross-reference check here (people.jsonl is loaded above, B1). Mirrored as LITERALS,
+    # never imported from `your_move`/`brief` — `your_move` imports THIS module, and `brief`
+    # imports `your_move`, so an import here in either direction is the exact cycle
+    # `precondition.py`'s own lazy import of `brief` already exists to avoid.
+    briefs, e = load("briefs.jsonl")
+    if briefs is None:
+        briefs = []
+    else:
+        problems += e or []
+    brief_ids = set()
+    for r in briefs:
+        bid = r.get("id", "?")
+        label = "briefs[%s]" % bid
+        for f in ("id", "computed_at", "person_id", "axis", "register", "evidence"):
+            req(r, f, label, problems)
+        if r.get("id"):
+            if not BRIEF_ID_RE.match(str(r["id"])):
+                problems.append("%s: id %r is not brief:<offset-bearing ISO ts>-<4 hex>"
+                                % (label, r["id"]))
+            if r["id"] in brief_ids:
+                problems.append("%s: duplicate id" % label)
+            brief_ids.add(r["id"])
+        pid = r.get("person_id")
+        if pid is not None and pid not in people_ids:
+            problems.append("%s: person_id %r does not resolve to any people row" % (label, pid))
+        if r.get("opp_id") and r["opp_id"] not in opp_ids:
+            problems.append("%s: opp_id %r does not resolve" % (label, r["opp_id"]))
+        if r.get("channel_id") and r["channel_id"] not in channel_ids:
+            problems.append("%s: channel_id %r does not resolve" % (label, r["channel_id"]))
+        reg = r.get("register")
+        if reg is not None and reg not in BRIEF_REGISTERS:
+            problems.append("%s: register %r not in {%s}"
+                            % (label, reg, ", ".join(sorted(BRIEF_REGISTERS))))
+        axis = r.get("axis")
+        if axis is not None and axis not in BRIEF_AXES:
+            problems.append("%s: axis %r not in {%s}"
+                            % (label, axis, ", ".join(sorted(BRIEF_AXES))))
+        ev = r.get("evidence")
+        if isinstance(ev, dict):
+            for medium in ("email", "linkedin"):
+                tok = (ev.get(medium) or {}).get("token") if isinstance(ev.get(medium), dict) else None
+                if tok is not None and not BRIEF_EVIDENCE_RE.match(str(tok)):
+                    problems.append("%s: evidence.%s.token %r is not in the §4.1 vocabulary"
+                                    % (label, medium, tok))
+        elif ev is not None:
+            problems.append("%s: evidence must be an object" % label)
+
     # Unknown-key guard for both new stores — same model-driven rule opportunities already
     # gets, because `nxet_action_owner` is exactly the class of typo these fields will grow.
     if _model:
         _ali = {k: v for k, v in _model["banned_aliases"].items() if not k.startswith("_")}
         for store_name, rows_ in (("asks", asks), ("commitments", commitments),
-                                  ("resume_variants", variants)):
+                                  ("resume_variants", variants),
+                                  ("applications", applications),
+                                  ("cover_letters", cover_letters),
+                                  ("briefs", briefs)):
             _sspec = _model["stores"].get(store_name) or {}
             for r in rows_:
                 _l = "%s[%s]" % (store_name, r.get("id", "?"))
@@ -1331,9 +1500,9 @@ def _main():
                                         % (_l, _k, ", ".join(sorted(_sspec.get("fields") or ()))))
 
     print("Data validation — %d companies, %d channels, %d opportunities, %d asks, "
-          "%d commitments, %d resume variants"
+          "%d commitments, %d resume variants, %d applications, %d cover letters"
           % (len(companies), len(channels), len(opps), len(asks),
-             len(commitments), len(variants)))
+             len(commitments), len(variants), len(applications), len(cover_letters)))
     if not problems:
         print("\n  Clean. Schema, enums, types, and every cross-reference resolve.")
         return 0, []

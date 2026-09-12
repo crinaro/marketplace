@@ -146,7 +146,14 @@ HOLD_RE = re.compile(
 # States that must NEVER render as "needs you". Owned here so consumers (generate_dashboard.py)
 # group by membership instead of re-deriving the set — `state != "blocked"` was how `unreadable`
 # drafts ended up under "awaiting your approval to send".
-NOT_SENDABLE = frozenset({"blocked", "unreadable", "unresolved", "sent", "moot"})
+#
+# ⭐ Query or Citation C1 (design-query-or-citation.md §3.5) — six states join this set, from
+# `brief.verdict()`: `unaddressed`/`unbriefed`/`brief-mismatch`/`stale-brief` (NEEDS_HUMAN, below)
+# and `unverified-cold`/`unverified-silent` (WAITS_ON_SURFACE, below — neither owner nor other
+# side: the draft waits for a session with a keychain).
+NOT_SENDABLE = frozenset({"blocked", "unreadable", "unresolved", "sent", "moot",
+                          "unaddressed", "unbriefed", "brief-mismatch", "stale-brief",
+                          "unverified-cold", "unverified-silent"})
 
 # public #29 — states that are OVER, not merely un-sendable: a "blocked" entry still needs a
 # human's eyes when its precondition clears, but a "sent"/"moot" one needs nothing further from
@@ -160,7 +167,15 @@ TERMINAL = frozenset({"sent", "moot"})
 # precondition nobody could read sat in the muted in-flight count looking handled. A consumer
 # renders NEEDS_HUMAN as a loud needs-you set and counts it there. (Declined: widening the
 # vocabulary so those rows parse — a strict parser IS the design; the fix is loudness.)
-NEEDS_HUMAN = frozenset({"unreadable", "unresolved"})
+NEEDS_HUMAN = frozenset({"unreadable", "unresolved",
+                         "unaddressed", "unbriefed", "brief-mismatch", "stale-brief"})
+
+# ⭐ Query or Citation C1 (D8) — the THIRD render class the shipped code did not have: neither
+# "needs you" nor "waiting on the other side", but waiting for a SESSION WITH A CAPABILITY (a
+# keychain-holding surface that can actually run the mailbox probe). Rendering these as muted
+# "waiting" recreates public #37's failure for a state that is not in either dict; rendering
+# them as NEEDS_HUMAN would send the owner chasing something only a different surface can do.
+WAITS_ON_SURFACE = frozenset({"unverified-cold", "unverified-silent"})
 
 # ⭐ The states an entry can be in while STILL QUEUED — everything report() emits except the
 # TERMINAL pair. The dashboard's drafts and cover-letter lists filter on this vocabulary
@@ -224,6 +239,30 @@ PROSE_HOLD = "prose-hold"
 UNRESOLVED = "unresolved"
 SENT = "sent"
 MOOT = "moot"
+
+
+class BriefHold(object):
+    """Query or Citation C1 — wraps one of `brief.verdict()`'s six states
+    (`unaddressed`/`unbriefed`/`brief-mismatch`/`stale-brief`/`unverified-cold`/
+    `unverified-silent`) so `report()` can tell it apart from a `**Blocked until:**` parse
+    result without a fifth string sentinel colliding with PROSE_HOLD/UNRESOLVED/SENT/MOOT."""
+    __slots__ = ("state", "why")
+
+    def __init__(self, state, why):
+        self.state = state
+        self.why = why
+
+
+def _brief_state(root, title, body):
+    """The brief-side draft state, or `None` (falls through to the `**Blocked until:**` logic
+    below — unchanged). `brief.py` is imported LAZILY, inside this function, never at this
+    module's top level: `brief.py` itself imports `precondition` for the entry-parsing
+    primitives below (`FILES`, `ENTRY_RE`, `medium_of`, …), and a top-level import in both
+    directions is a cycle. `precondition.py` stays the single owner of sendability —
+    `report()` is the only caller of this function; `brief.verdict()` is never called from
+    anywhere else in this module."""
+    import brief as _brief
+    return _brief.verdict(root, title, body)
 
 # ⭐ The staged-message pair, owned HERE (dev #169). check_sent_drafts.py already treats these
 # two as siblings; this module and the dashboard did not, which is exactly how a held cover
@@ -313,6 +352,8 @@ def drafts_with_preconditions(root, filename=None):
                            done, terminal (public #29)
         PreconditionError  a field nobody can read — loud, never guessed over
         dict               a parsed precondition, ready for resolve()
+        BriefHold          Query or Citation C1 — one of brief.verdict()'s six states
+                           (drafts.md ONLY — cover_letters.md is exempt, §3.4)
     """
     filename = filename or FILES[0]
     path = _tree.resolve_rel(root, filename)
@@ -334,6 +375,15 @@ def drafts_with_preconditions(root, filename=None):
                 continue
             if MOOT_RE.search(status_text):
                 out.append((title, status_text, MOOT))
+                continue
+        # Query or Citation C1 (§3.4) — the brief-side gate outranks the Blocked-until join: an
+        # entry that names no recipient, or cites no current brief, cannot even be asked whether
+        # an outreach touch resolved its hold. `cover_letters.md` is exempt (a cover letter is
+        # addressed to an application, not a person; §3.4).
+        if filename == FILES[0]:
+            bstate = _brief_state(root, title, body)
+            if bstate:
+                out.append((title, None, BriefHold(bstate[0], bstate[1])))
                 continue
         fm = FIELD_RE.search(body)
         if not fm:
@@ -365,6 +415,9 @@ def report(root, filenames=FILES):
             if parsed is None:
                 rows.append({"file": filename, "title": title, "state": "sendable",
                              "why": "no precondition"})
+            elif isinstance(parsed, BriefHold):
+                rows.append({"file": filename, "title": title, "state": parsed.state,
+                             "why": parsed.why})
             elif parsed is PROSE_HOLD:
                 rows.append({"file": filename, "title": title, "state": "unresolved",
                              "why": "hold phrase in prose but no structured precondition — the "
@@ -446,7 +499,12 @@ def main():
             print("  %s" % filename)
             for r in file_rows:
                 mark = {"sendable": "✅", "blocked": "⏳", "unreadable": "⛔",
-                        "unresolved": "🚧", "sent": "🏁", "moot": "🏁"}[r["state"]]
+                        "unresolved": "🚧", "sent": "🏁", "moot": "🏁",
+                        # Query or Citation C1 (D8) — the six new states, so text mode never
+                        # KeyErrors on one the way it did before this dict was closed.
+                        "unaddressed": "⛔", "unbriefed": "⛔", "brief-mismatch": "⛔",
+                        "stale-brief": "⛔", "unverified-cold": "⏸", "unverified-silent": "⏸",
+                        }[r["state"]]
                 print("    %s %-10s %s" % (mark, r["state"], r["title"][:70]))
                 print("          %s" % r["why"])
         n_send = sum(1 for r in rows if r["state"] == "sendable")
@@ -476,7 +534,11 @@ def main():
             print("     Structure each with `**Blocked until:** contact:<id> outcome:<...>`.")
 
     if args.check:
-        bad = [r for r in rows if r["state"] in ("unreadable", "unresolved")]
+        # Query or Citation C1 (§3.5) — NEEDS_HUMAN is the ONE exit-1 set, not a hand-repeated
+        # tuple: a WAITS_ON_SURFACE row (unverified-cold/unverified-silent) is counted, never a
+        # red close — "a WAITS_ON_SURFACE draft is not a red close, or every application-session
+        # close on S4/S5 is red forever."
+        bad = [r for r in rows if r["state"] in NEEDS_HUMAN]
         for r in bad:
             print("⛔ %s › %s [%s]: %s" % (r.get("file", "?"), r["title"][:60],
                                            r["state"], r["why"]), file=sys.stderr)

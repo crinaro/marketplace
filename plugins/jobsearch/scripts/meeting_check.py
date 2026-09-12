@@ -64,7 +64,7 @@ import profile as _profile
 try:
     from mail_client import (
         Mailbox, configured_accounts, decode_header_value, CredentialError,
-        body_text,
+        body_text, sweep_accounts,
     )
 except ImportError as exc:  # pragma: no cover - defensive
     sys.stderr.write(
@@ -312,12 +312,16 @@ def main():
     if args.account:
         print("!! NARROWED to one account (%s) — NOT every configured mailbox." % args.account)
 
-    incomplete, unreconciled, collisions, undated, seen = [], [], [], [], 0
-    for account in accounts:
-        rows, err = sweep(account, query)
+    unreconciled, collisions, undated, seen = [], [], [], 0
+    # dev #334 — the shared multi-account sweep site: `since_days=args.days` is exactly the
+    # window MEETING_QUERY's own `newer_than:%dd` searched, so the `swept` row it writes never
+    # claims more than this run actually covered.
+    results, incomplete = sweep_accounts(
+        lambda acct: sweep(acct, query), since_days=args.days,
+        root=ROOT, by="meeting_check", accounts=accounts)
+    for account, rows, err in results:
         print("\n[%s]" % account)
         if err:
-            incomplete.append(account)
             print("  !! INCOMPLETE COVERAGE — %s" % err)
             print("  Results MISSING, not empty. Do not conclude a meeting does not exist.")
             continue

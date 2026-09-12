@@ -3,6 +3,7 @@ name: board-sweeper
 color: cyan
 description: 'Sweep the non-LinkedIn sourcing surfaces for new roles — job boards and aggregators, employer career pages, and any board that has a dedicated plugin installed. Reaches each one by its CONFIGURED ROUTE: a site plugin when one is available, otherwise a browser. Use for the breadth pass that finds candidate roles. Not for LinkedIn, whose own surfaces are linkedin-runner; not for reading one posting or company in depth, which is opportunity-researcher; and it never writes the pipeline. Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
 model: sonnet
+effort: low
 disallowedTools: Agent
 tools: WebSearch, WebFetch, Read, Bash, mcp__Claude_Browser__preview_start, mcp__Claude_Browser__navigate, mcp__Claude_Browser__get_page_text, mcp__Claude_Browser__read_page, mcp__Claude_Browser__find
 ---
@@ -72,6 +73,8 @@ person against them.
 
 **DOES NOT** write `data/*.jsonl`, draft anything, contact anyone, submit a form, or click apply.
 Report what you found; the caller folds it in.
+
+**MODEL · EFFORT:** `sonnet` · `low` (declared 2026-09-12). A mechanical breadth sweep: channels, routes and titles are all data, the pipeline is never written, a miss is re-swept on the next run and a false positive is filtered downstream by opportunity-researcher. The one `low` in the roster, because its errors are the cheapest to recover.
 
 ## ⭐⭐ THE ROUTE IS DATA — NEVER PICK A MECHANISM FROM MEMORY
 

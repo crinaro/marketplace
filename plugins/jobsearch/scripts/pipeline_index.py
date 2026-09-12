@@ -81,6 +81,8 @@ def main():
     args = ap.parse_args()
 
     opps = load("opportunities.jsonl")
+    import applications as _apps                # ADR-031 B2 — o["_applications"], never nested
+    _apps.enrich_opportunities(ROOT, opps)
     companies = {c["id"]: c.get("name", c["id"]) for c in load("companies.jsonl")}
 
     if args.person:
@@ -172,7 +174,7 @@ def main():
         # each had an application filed 07/31 WITH a cover letter and four outreach touches the
         # same day. The candidate corrected me. An empty research_log is not an unworked role, and `stage:
         # contacted` did not disambiguate it. **Never infer that nothing was done from ONE array.**
-        napp = len(o.get("applications") or [])
+        napp = len(o.get("_applications") or [])
         nout = len([r for r in (o.get("outreach") or []) if r.get("status") == "sent"])
         act = ("A%d" % napp if napp else "  ") + " " + ("T%d" % nout if nout else "  ")
         line = "%-42s | %-20s | %-15s | %-11s | %-23s | %-5s | %s" % (

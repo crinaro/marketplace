@@ -45,6 +45,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from _root import profile_or_fixture as _pof                       # noqa: E402
 import your_move as _ym                                            # noqa: E402
+import applications as _apps                                       # noqa: E402
 
 ROOT = _pof()
 DATE_RE = re.compile(r"\b(20\d\d-\d\d-\d\d)\b")
@@ -161,9 +162,12 @@ def opp_action_evidence():
         if cur is None or str(when) > cur[0]:
             ev[opp_id] = (str(when), why)
 
+    # ADR-031 B2 — apps_by_opp is the top-level applications store, grouped by opp_id; never a
+    # nested array on the opportunity record.
+    apps_by_opp = _apps.group_by_opp(_apps.load(ROOT)[0])
     for o in rows("opportunities.jsonl"):
         oid = o.get("id")
-        for ap in (o.get("applications") or []):
+        for ap in apps_by_opp.get(oid, []):
             if isinstance(ap, dict) and ap.get("date"):
                 note(oid, ap["date"], "an application recorded on the linked opportunity")
         for out in (o.get("outreach") or []):

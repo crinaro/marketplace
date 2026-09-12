@@ -2,18 +2,11 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
-## gmail-multi 0.3.0
-- [#76](https://github.com/crinaro/marketplace/issues/76) — gmail-multi: a non-ASCII character in a search query aborts the whole multi-account search
-- Gmail special folders are hardcoded English literals and select_all_mail silently falls back to INBOX *(tracked internally as crinaro/marketplace-dev#311)*
-
-## gmail-multi 0.2.0
-- gmail-multi should support send/reply/forward; jobsearch must enforce draft-only as policy rather than rely on the capability being absent *(tracked internally as crinaro/marketplace-dev#213)*
-
-## gmail-multi 0.1.1
-- Marketplace identifier: careers-plugins -> crinaro-marketplace, with a launcher self-heal *(tracked internally as crinaro/marketplace-dev#216)*
-
-## gmail-multi 0.1.0
-- Release: jobsearch 0.29.0 and gmail-multi 0.1.0 — connector self-install replaces the declared dependency *(tracked internally as crinaro/marketplace-dev#210)*
+## jobsearch 0.44.0
+- Release tags exist only on the publish target: dev remote is missing jobsearch--v0.30.0/v0.31.0/v0.32.0 *(tracked internally as crinaro/marketplace-dev#247)*
+- the review-findings check had no CI wiring, and both it and the doc-impact check were invisible until publish time — CI now runs the real refusals *(tracked internally as crinaro/marketplace-dev#318)*
+- check_sections.py and check_profile_leakage.py answer confidently from the wrong vantage (no fixture disclosure, dev #299's shape) *(tracked internally as crinaro/marketplace-dev#319)*
+- 0.44.0 runs a one-time migration on your contacts the next time a session starts: opportunity- and channel-level contacts become real people and involvement records, so a person you know through one channel can now carry a LinkedIn URL and be recognized wherever else they appear. Two contacts merge into one person only when they share an identical LinkedIn URL, or an identical email and name — everything weaker (same email with a different name, same name at a different company, and the like) is left as separate people and surfaced for you to review, never merged automatically. A merge is a pointer (merged_into), never a rewrite, so it can be undone. The migration prints a report naming every merge it made and which rule fired (LinkedIn URL or email+name), plus every near-duplicate it surfaced instead of merging — at the start of that first session, in the SessionStart output that runs it. *(tracked internally as crinaro/marketplace-dev PR#325)*
 
 ## jobsearch 0.43.0
 - [#65](https://github.com/crinaro/marketplace/issues/65) — A run the scheduler marks as fired can leave zero engine trace, including no SessionStart hook entry, indistinguishable from the scheduler never invoking a session at all
@@ -132,3 +125,16 @@ Generated from fixes confirmed shipped — public reports and internal fixes ali
 - [#19](https://github.com/crinaro/careers-plugins/issues/19) — No schema field represents a pursued opportunity's post-application play-sequence stage
 - [#20](https://github.com/crinaro/careers-plugins/issues/20) — Generated dashboard renders knowledge-base and call-preparation artifacts as filename strings, not their content
 - [#21](https://github.com/crinaro/careers-plugins/issues/21) — OPEN DESIGN QUESTION: two dashboard views present the same records through two different taxonomies instead of one lifecycle-state view
+
+## gmail-multi 0.3.0
+- [#76](https://github.com/crinaro/marketplace/issues/76) — gmail-multi: a non-ASCII character in a search query aborts the whole multi-account search
+- Gmail special folders are hardcoded English literals and select_all_mail silently falls back to INBOX *(tracked internally as crinaro/marketplace-dev#311)*
+
+## gmail-multi 0.2.0
+- gmail-multi should support send/reply/forward; jobsearch must enforce draft-only as policy rather than rely on the capability being absent *(tracked internally as crinaro/marketplace-dev#213)*
+
+## gmail-multi 0.1.1
+- Marketplace identifier: careers-plugins -> crinaro-marketplace, with a launcher self-heal *(tracked internally as crinaro/marketplace-dev#216)*
+
+## gmail-multi 0.1.0
+- Release: jobsearch 0.29.0 and gmail-multi 0.1.0 — connector self-install replaces the declared dependency *(tracked internally as crinaro/marketplace-dev#210)*

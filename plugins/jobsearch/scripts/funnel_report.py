@@ -184,12 +184,12 @@ def main():
     print("  from. Channel yield only becomes meaningful for roles sourced after")
     print("  that date. Reported as-is rather than quietly excluded.")
 
-    # ---- 2. Applications ----------------------------------------------------
+    # ---- 2. Applications (ADR-031 B2 — the top-level applications/cover_letters stores,
+    # joined by opp_id; never a nested array on the opportunity record) --------
     rule("APPLICATIONS - when the candidate applied, how, and what came back")
-    apps = []
-    for o in opps:
-        for a in o.get("applications") or []:
-            apps.append((o, a))
+    opps_by_id = {o.get("id"): o for o in opps}
+    cover_letters_by_id = {c["id"]: c for c in load("cover_letters.jsonl") if c.get("id")}
+    apps = [(opps_by_id.get(a.get("opp_id"), {}), a) for a in load("applications.jsonl")]
     if not apps:
         print("  None recorded.")
     else:
@@ -202,13 +202,15 @@ def main():
         live = [(o, a) for o, a in apps if a.get("status") in ("submitted", "acknowledged")]
         heard = [(o, a) for o, a in apps if a.get("status") in ("advanced", "rejected")]
         print("  Response rate on submitted applications: %s" % pct(len(heard), len(live) + len(heard)))
-        # Does sending a cover letter correlate with hearing back? Only answerable
-        # because cover_letter_attached is recorded from the candidate rather than inferred.
-        withcl = [a for _, a in apps if a.get("cover_letter_attached") is True]
-        nocl = [a for _, a in apps if a.get("cover_letter_attached") is False]
-        unknown = [a for _, a in apps if a.get("cover_letter_attached") is None]
-        print("  Cover letter attached: %d yes / %d no / %d unrecorded" % (len(withcl), len(nocl), len(unknown)))
-        if len(withcl) + len(nocl) < MIN_SAMPLE:
+        # Does sending a cover letter correlate with hearing back? `cover_letter_attached`
+        # retired with the nested array; "attached" is now "cover_letter_id is non-null"
+        # (design §1's own rule) — the three-way yes/no/unrecorded split narrows to two,
+        # since nothing distinguishes a recorded "no cover letter" from an unrecorded one
+        # any more.
+        withcl = [a for _, a in apps if a.get("cover_letter_id")]
+        nocl = [a for _, a in apps if not a.get("cover_letter_id")]
+        print("  Cover letter linked: %d yes / %d unrecorded" % (len(withcl), len(nocl)))
+        if len(withcl) < MIN_SAMPLE or len(nocl) < MIN_SAMPLE:
             print("    (too few recorded either way to compare against response rate yet)")
         print("")
         for o, a in sorted(apps, key=lambda t: (t[1].get("date") or "9999")):
@@ -216,10 +218,11 @@ def main():
             age = days_since(a.get("date"))
             age_s = "%3d days ago" % age if age is not None else "  no date  "
             print("  %-11s %-13s %-34s %s" % (a.get("date") or "(none)", a.get("status"), name[:34], age_s))
-            if a.get("cover_letter"):
-                print("              cover letter: %s" % a["cover_letter"])
-            if a.get("notes"):
-                print("              %s" % a["notes"][:150])
+            cl = cover_letters_by_id.get(a.get("cover_letter_id"))
+            if cl and cl.get("cover_letter"):
+                print("              cover letter: %s" % cl["cover_letter"])
+            if a.get("note"):
+                print("              %s" % a["note"][:150])
 
     # ---- 3. Outreach: who we connected with, and did they reply? -----------
     rule("OUTREACH - who the candidate connected with, and whether they replied")

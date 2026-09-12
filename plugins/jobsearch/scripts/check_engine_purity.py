@@ -257,6 +257,120 @@ KNOWN_EXCEPTIONS = (
      "a comment in the same test describing what the earlier attribute-swap undid "
      "(installation-generic test terminology); collides only because this owner's profile now "
      "names a company whose name is that same common word"),
+    # ⭐ dev #225, same class, 2026-09-12 — THE NINTH ENTRY, AND A SECOND WORD JOINS IT.
+    #
+    # Two unrelated collisions surfaced in the same run, both the identical shape as the eighth
+    # entry above: an ordinary, installation-generic engine word that happens, separately, to
+    # also be a real company's name in this owner's profile (a company row added 2026-09-12).
+    #
+    # (A) SEVEN MORE sites for the SAME word as the eighth entry — the test suite's own
+    #     attribute-swap helper, this time matched as a bound method NAME (`self._<word>(...)`)
+    #     rather than as prose. The eighth entry's six sites were all prose describing the verb;
+    #     these seven are the method itself and every call site, all in scripts/test_checks.py,
+    #     which the eighth entry's own two sites already live in — the method predates this
+    #     release and is unchanged by it; only the profile-side collision is new.
+    #
+    # (B) A NEW ordinary word: the common noun for "the matching party on the other side of a
+    #     two-way relationship" — used two ways across engine prose and code, neither about this
+    #     owner's search: (i) a doc cross-reference convention naming ADR-032 as the read-side
+    #     pairing of ADR-017/ADR-022's write-side rule, repeated near-verbatim across four docs
+    #     (adr-017, adr-022, adr-index, architecture) plus once more in design-query-or-citation
+    #     as ordinary connective prose; (ii) a function parameter / local variable in
+    #     `your_move.conversation_axis()` and its one caller in `brief.py`, naming the single
+    #     thread a caller already knows the scope of, as opposed to the default of scanning every
+    #     thread touching a person.
+    #
+    # ⚠️ Per the block above: neither word nor any case variant appears below. Each term is text
+    # immediately adjacent to the colliding word on its own scanned line — and for the one very
+    # long table row in adr-index.md, the line is truncated to its first 110 characters before
+    # this gate ever compares it (see `scan()`), so the stored term is drawn from THAT truncated
+    # text, not from the word's actual position in the full line.
+    ("scripts/test_checks.py", "(self, mod, **attrs):", 225,
+     "the test-suite's own attribute-swap helper method's signature (installation-generic test "
+     "vocabulary, same method the eighth entry's two sites already describe); collides only "
+     "because this owner's profile now names a company whose name is that same common word"),
+    ("scripts/test_checks.py", "(alert_sweep, sweep_account=stub)", 225,
+     "one call site of that same helper, in the alert_sweep test (installation-generic test "
+     "vocabulary); collides only because this owner's profile now names a company whose name "
+     "is that same common word"),
+    ("scripts/test_checks.py", "(meeting_check, ROOT=self.tmp,", 225,
+     "one call site of that same helper, in the meeting_check ROOT-rebind test "
+     "(installation-generic test vocabulary); collides only because this owner's profile now "
+     "names a company whose name is that same common word"),
+    ("scripts/test_checks.py", "(meeting_check, sweep=stub)", 225,
+     "another call site of that same helper, in the meeting_check sweep-stub test "
+     "(installation-generic test vocabulary); collides only because this owner's profile now "
+     "names a company whose name is that same common word"),
+    ("scripts/test_checks.py", "(watch, ROOT=self.tmp,", 225,
+     "one call site of that same helper, in the watch.py ROOT-rebind test (installation-generic "
+     "test vocabulary); collides only because this owner's profile now names a company whose "
+     "name is that same common word"),
+    ("scripts/test_checks.py", "(reconcile, ROOT=self.tmp, DATA=os.path.join", 225,
+     "one call site of that same helper, in the reconcile.py ROOT-rebind test "
+     "(installation-generic test vocabulary); collides only because this owner's profile now "
+     "names a company whose name is that same common word"),
+    ("scripts/test_checks.py", "ambient profile — ", 225,
+     "a comment explaining why the same helper is needed for a module bound at import time "
+     "(installation-generic test commentary); collides only because this owner's profile now "
+     "names a company whose name is that same common word"),
+    ("docs/adr-017-focus-md-retirement.md",
+     "## Cross-reference added 2026-09-11 — the read-side ", 225,
+     "this ADR's own cross-reference heading naming ADR-032 as the read-side pairing of this "
+     "ADR's write-side rule (installation-generic doc cross-reference, predates this release); "
+     "collides only because this owner's profile now names a company whose name is that same "
+     "common relationship-noun"),
+    ("docs/adr-017-focus-md-retirement.md", "ships the ", 225,
+     "the same cross-reference paragraph's next sentence, same word, same reason "
+     "(installation-generic doc prose); collides only because this owner's profile now names a "
+     "company whose name is that same common relationship-noun"),
+    ("docs/adr-022-derive-from-evidence.md",
+     "## Cross-reference added 2026-09-11 — the read-side ", 225,
+     "the identical cross-reference heading, repeated in this ADR (installation-generic doc "
+     "cross-reference, predates this release); collides only because this owner's profile now "
+     "names a company whose name is that same common relationship-noun"),
+    ("docs/adr-index.md",
+     "Query or Citation: generated narrative carries a claim, never a senten", 225,
+     "the ADR-032 index row's own summary sentence — the stored term is this line's first 110 "
+     "characters after truncation (see `scan()`), which happens not to reach the colliding word "
+     "at all; collides only because this owner's profile now names a company whose name is that "
+     "same common relationship-noun and the word appears later in this same long table row"),
+    ("docs/architecture.md", "The read-side ", 225,
+     "architecture.md's own naming of ADR-032 as the read-side pairing of the marketplace's "
+     "derive-don't-restate rule (installation-generic doc prose, predates this release); "
+     "collides only because this owner's profile now names a company whose name is that same "
+     "common relationship-noun"),
+    ("docs/design-query-or-citation.md",
+     "**One function.** C1 lands `your_move.conversation_axis(root, subject, ", 225,
+     "this design doc's own function signature for `conversation_axis()` (installation-generic "
+     "doc prose describing engine code, predates this release); collides only because this "
+     "owner's profile now names a company whose name is that same common relationship-noun"),
+    ("scripts/brief.py", ' = ("opp:%s" % opp_id) if opp_id else', 225,
+     "brief.py's own local variable naming the single thread its caller already knows the scope "
+     "of, before passing it to conversation_axis() (installation-generic engine code); collides "
+     "only because this owner's profile now names a company whose name is that same common "
+     "relationship-noun"),
+    ("scripts/brief.py", "axes = _ym.conversation_axis(root, person_id, ", 225,
+     "the same function's call into conversation_axis(), passing that local along "
+     "(installation-generic engine code); collides only because this owner's profile now names "
+     "a company whose name is that same common relationship-noun"),
+    ("scripts/your_move.py", "def conversation_axis(root, subject, ", 225,
+     "conversation_axis()'s own signature, naming the parameter for the one thread a caller may "
+     "already know the scope of (installation-generic engine code); collides only because this "
+     "owner's profile now names a company whose name is that same common relationship-noun"),
+    ("scripts/your_move.py", "or exactly the one thread `", 225,
+     "the same function's docstring explaining that same parameter (installation-generic "
+     "engine prose); collides only because this owner's profile now names a company whose name "
+     "is that same common relationship-noun"),
+    ("scripts/your_move.py", "if ", 225,
+     "the same function's guard clause narrowing to that one thread when the parameter is given "
+     "(installation-generic engine code; the stored term is a short prefix because this hit's "
+     "line is a single short statement with the colliding word in the middle of it); collides "
+     "only because this owner's profile now names a company whose name is that same common "
+     "relationship-noun"),
+    ("scripts/your_move.py", "kind, _sep, tid = str(", 225,
+     "the same guard clause's next line, splitting that same parameter's value "
+     "(installation-generic engine code); collides only because this owner's profile now names "
+     "a company whose name is that same common relationship-noun"),
 )
 
 # Every tracked engine file. The families above remain a taxonomy and an emptiness guard; this

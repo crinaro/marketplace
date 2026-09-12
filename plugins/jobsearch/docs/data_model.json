@@ -23,9 +23,9 @@
     "blocked_until",
     "research_log",
     "outreach",
-    "applications",
     "fit",
     "resume_variant",
+    "engagement_type",
     "note"
    ],
    "required": [
@@ -67,31 +67,6 @@
       "status"
      ],
      "id_field": null
-    },
-    "applications": {
-     "_note": "public #27 (2026-08-25) - app_id is the stable handle a trigger names (trigger_kind='application', trigger_ref=<app_id>). Since 0.41.0 record.py MINTS it on every write that adds a row (<opp_id>-aN, N one past the highest suffix already on the record - a removed row's number is never reused, or an old trigger would silently move) and m_0_41_0_app_ids backfilled every historical row in array order, so id_field is app_id and a second row carrying an existing one is refused at the door. Not in 'required' on purpose: a caller never supplies it, the API does. form_answers captures what was actually answered on the form's own questions (salary expectations, reason for leaving, AI usage), reasoned out once and previously lost to prose: a list of {question_key, question, answer, answered_on}, question_key a lowercase slug shared across applications so precedent and same-employer inconsistency are queryable. This file cannot express an object shape nested inside an array row (same limitation the messages note records); validate_data.py enforces the entry shape.",
-     "fields": [
-      "app_id",
-      "date",
-      "method",
-      "status",
-      "url",
-      "req_id",
-      "cover_letter",
-      "cover_letter_attached",
-      "cover_letter_doc",
-      "form_answers",
-      "resume_variant",
-      "portal_status",
-      "portal_confirmed_on",
-      "note"
-     ],
-     "required": [
-      "date",
-      "method",
-      "status"
-     ],
-     "id_field": "app_id"
     },
     "sightings": {
      "fields": [
@@ -320,6 +295,85 @@
     "person_id"
    ],
    "arrays": {}
+  },
+  "applications": {
+   "_note": "ADR-031 B2 — promoted from opportunities.applications[]. `id` (= the old `app_id`, unchanged VALUE — <opp_id>-aN, still minted by record.py) is now this store's own id_field, so 'resolve this application' is a global dictionary lookup instead of an own-record array walk; the design's own words: 'promotion changes only the lookup'. `opp_id` is required (an application is always to a role; this is containment, and a plain FK is right — design §1). The three untyped legacy fields (`cover_letter`, `cover_letter_attached`, `cover_letter_doc`) do NOT survive here — a migration that cannot know a field's type must not interpret it, so where any was set on a legacy row the 0.45.0 migration creates a `cover_letters` row carrying them VERBATIM under their original names, and `cover_letter_id` points at it (`cover_letter_attached` becomes '`cover_letter_id` is non-null'). Not in 'required' on purpose: a caller never supplies `id`, the API mints it. form_answers captures what was actually answered on the form's own questions, unchanged from the pre-B2 shape: a list of {question_key, question, answer, answered_on}; validate_data.py enforces the entry shape (this file cannot express an object nested inside an array field).",
+   "id_field": "id",
+   "fields": [
+    "id",
+    "opp_id",
+    "date",
+    "method",
+    "status",
+    "url",
+    "req_id",
+    "form_answers",
+    "resume_variant",
+    "cover_letter_id",
+    "portal_status",
+    "portal_confirmed_on",
+    "note"
+   ],
+   "required": [
+    "opp_id",
+    "date",
+    "method",
+    "status"
+   ],
+   "arrays": {}
+  },
+  "cover_letters": {
+   "_note": "ADR-031 B2 — resume_variants' twin (design §1: 'template copied, not changed'): a top-level store, a stable id, a `status` with a terminal value, a declared file where the artifact is prose. `opp_id` required (a letter is written for a role). `file` is where the authored text lives (the outreach/cover_letters.md entry, relative to the profile root — the old, untyped `cover_letter` free-text field's replacement); `doc` is the rendered artifact reference letter_out.py produces (the old `cover_letter_doc`). The 0.45.0 migration copies the three legacy applications[] fields VERBATIM under their OWN original names onto rows created here — including an inconsistent legacy row (cover_letter_attached true, cover_letter_doc null) preserved exactly as found, never resolved or guessed at.",
+   "id_field": "id",
+   "fields": [
+    "id",
+    "opp_id",
+    "created",
+    "file",
+    "doc",
+    "status",
+    "cover_letter",
+    "cover_letter_attached",
+    "cover_letter_doc",
+    "note"
+   ],
+   "required": [
+    "id",
+    "opp_id"
+   ],
+   "arrays": {}
+  },
+  "briefs": {
+   "_note": "Query or Citation C1 (design-query-or-citation.md §3.3) — brief.py's own ledger: a stamped row a draft must CITE, never a source of state (§3.6 — read only by brief.py, validate_data.py and make_fixture.py; check_ledger_reads.py is the AST gate). `id` is offset-bearing (`brief:<ISO ts with UTC offset>-<4 hex>`, D12 — a naive local timestamp orders wrongly across a DST fall-back pair). `opp_id`/`channel_id` are nullable (a brief may be person-only, folded across every thread — §3.7's AXIS_FOLD). `evidence` is `{\"email\": {...}, \"linkedin\": {...}}`, each a `{token, probes}` pair from the §4.1 vocabulary. `windows` carries the two config_keys.py values AND their provenance, printed on the card. `open_asks` is a list of asks.jsonl ids. Never sorted by `computed_at` — `--check` resolves only the cited id (§3.9).",
+   "id_field": "id",
+   "fields": [
+    "id",
+    "computed_at",
+    "person_id",
+    "opp_id",
+    "channel_id",
+    "thread",
+    "today",
+    "axis",
+    "register",
+    "last_word",
+    "days_since_in",
+    "latest_in",
+    "latest_out",
+    "evidence",
+    "windows",
+    "open_asks",
+    "engine"
+   ],
+   "required": [
+    "id",
+    "computed_at",
+    "person_id",
+    "axis",
+    "register",
+    "evidence"
+   ],
+   "arrays": {}
   }
  },
  "banned_aliases": {
@@ -330,6 +384,7 @@
   "sent_on": "date",
   "replied_on": "responded_on",
   "channel": "channel_id",
-  "contact_id": "person_id"
+  "contact_id": "person_id",
+  "app_id": "id"
  }
 }

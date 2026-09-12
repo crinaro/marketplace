@@ -57,7 +57,7 @@ from _root import profile_root as _profile_root
 
 try:
     from mail_client import (
-        Mailbox, configured_accounts, decode_header_value, CredentialError,
+        Mailbox, configured_accounts, decode_header_value, CredentialError, sweep_accounts,
     )
 except ImportError as exc:  # pragma: no cover
     sys.stderr.write("Run as `python3 scripts/watch.py` from the repo root: %s\n" % exc)
@@ -91,19 +91,40 @@ def existing_keys():
 
 
 class Reader(object):
-    """Read-only mailbox access. One connection per account, reused."""
+    """Read-only mailbox access. One connection per account, reused.
+
+    ⭐⭐ dev #334 — connections open THROUGH `mail_client.sweep_accounts()` now, not through a
+    loop this class runs itself. `open_account()` below IS the `search_one(account)`
+    `sweep_accounts()` calls (see `main()`): it opens (or fails to open) exactly one mailbox,
+    keeps it in `self.boxes` for `search()` to reuse across every category, and hands back the
+    error `sweep_accounts()` needs to write that account's ONE `swept` coverage row. Before this
+    fix `__init__` looped over `configured_accounts()` directly — the exact private,
+    unrecorded "loop every account, note a failure" copy dev #321 built the shared ledger site
+    to retire. `account_errors` is the per-account twin of `errors` (which stays the full,
+    possibly-repeated audit trail used for the terminal banner's detail): each account's FIRST
+    failure — from opening OR from any later per-category `search()` call — lands there once.
+    """
 
     def __init__(self):
-        self.boxes, self.errors = {}, []
-        for acct in configured_accounts():
-            try:
-                mb = Mailbox(acct)
-                mb.__enter__()
-                self.boxes[acct] = mb
-            except CredentialError as exc:
-                self.errors.append("%s: %s" % (acct, exc))
-            except Exception as exc:
-                self.errors.append("%s: %s: %s" % (acct, type(exc).__name__, exc))
+        self.boxes, self.errors, self.account_errors = {}, [], {}
+
+    def open_account(self, acct):
+        """search_one(account) for mail_client.sweep_accounts() — see the class docstring."""
+        try:
+            mb = Mailbox(acct)
+            mb.__enter__()
+            self.boxes[acct] = mb
+            return None
+        except CredentialError as exc:
+            self._record_error(acct, "%s: %s" % (acct, exc))
+            return str(exc)
+        except Exception as exc:
+            self._record_error(acct, "%s: %s: %s" % (acct, type(exc).__name__, exc))
+            return "%s: %s" % (type(exc).__name__, exc)
+
+    def _record_error(self, acct, msg):
+        self.errors.append(msg)
+        self.account_errors.setdefault(acct, msg)   # first failure per account wins
 
     def search(self, query, limit=30):
         out = []
@@ -120,7 +141,7 @@ class Reader(object):
                         "subject": decode_header_value(msg.get("Subject")),
                     })
             except Exception as exc:
-                self.errors.append("%s: %s: %s" % (acct, type(exc).__name__, exc))
+                self._record_error(acct, "%s: %s: %s" % (acct, type(exc).__name__, exc))
         return out
 
     def close(self):
@@ -156,6 +177,17 @@ def main():
 
     rd = Reader()
     days = max(1, (args.since + 23) // 24)
+
+    # dev #334 — open every configured account's connection through the shared coverage-ledger
+    # site: `since_days=days` is the same `newer_than:%dd` window every category search below
+    # actually uses. This is now the ONLY place `configured_accounts()` is consulted for this
+    # sweep — `sweep_accounts()` calls it internally to build the account list `open_account`
+    # (Reader's `search_one`) runs against, and writes one `swept` row per account before any
+    # category search below ever runs.
+    def search_one(account):
+        return [], rd.open_account(account)
+
+    _sweep_results, incomplete = sweep_accounts(search_one, since_days=days, root=ROOT, by="watch")
 
     # ---- 1. alert digests: roles we may not have -------------------------------
     for m in rd.search('(from:indeed OR from:linkedin OR from:ladders OR '
@@ -229,8 +261,12 @@ def main():
 
     print("WATCHER — read-only sweep, %s (window %dh)" % (now.strftime("%Y-%m-%d %H:%M"), args.since))
     print("=" * 74)
-    if rd.errors:
-        print("!! INCOMPLETE COVERAGE: %s" % "; ".join(sorted(set(rd.errors))))
+    if incomplete:
+        # dev #334 — `incomplete` is the shared ledger site's own list (from the `search_one`
+        # call above), not a second, independently-collected one; `account_errors` supplies the
+        # detailed text for exactly those accounts so the banner keeps its original detail.
+        print("!! INCOMPLETE COVERAGE: %s"
+              % "; ".join(rd.account_errors.get(a, a) for a in sorted(set(incomplete))))
         print("   Findings below are PARTIAL. Do not read a zero as an absence.")
     if not findings:
         print("  Nothing new. (%d finding(s) already queued from earlier sweeps.)" % len(seen))
@@ -253,7 +289,7 @@ def main():
         print("\n  (--dry-run: nothing written)")
 
     print("\n  This sweep wrote NO state and touched NO git. The coordinator is the only writer.")
-    return 1 if rd.errors else 0
+    return 1 if incomplete else 0
 
 
 if __name__ == "__main__":

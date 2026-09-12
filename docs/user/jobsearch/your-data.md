@@ -27,12 +27,15 @@ shows up as a one-line diff rather than a reformatted file.
 |---|---|
 | `companies.jsonl` | employers — one record each, however many roles they post |
 | `channels.jsonl` | where roles come from: job boards, company career pages, recruiting firms, referrals |
-| `opportunities.jsonl` | the roles themselves, with their outreach, applications and fit analysis |
+| `opportunities.jsonl` | the roles themselves, with their outreach and fit analysis |
 | `messages.jsonl` | every communication, both directions, with its full text. Since 0.36.0 an inbound message can carry `answers`, the id of the outbound message it replies to — see *Outreach* below |
 | `people.jsonl` | every person you deal with, once each — see *People* below (since 0.44.0; before that, contacts lived nested on the role or channel) |
 | `involvements.jsonl` | how each person connects to a role or a channel — since 0.44.0, alongside `people.jsonl` |
+| `applications.jsonl` | every application you have submitted, once each — see *Applications* below (since 0.45.0; before that, applications lived nested on the role) |
+| `cover_letters.jsonl` | the link between an application and its cover letter — since 0.45.0, alongside `applications.jsonl`, see *Cover letters* below |
 | `asks.jsonl` | things waiting on you — a role decision or a piece of system upkeep |
 | `commitments.jsonl` | what is scheduled — calls, deadlines, follow-ups due on a date |
+| `briefs.jsonl` | since 0.46.0 — the append-only ledger of what a draft's `**Brief:**` line cites; see *What a draft now carries* below. Never edit this by hand and never read it as "the current state of a thread" — it is evidence of what a computation SAW at drafting time, not a source of state |
 
 ### The documents
 
@@ -50,7 +53,7 @@ matching](#ats-receipt-matching-configjsonats).)
 | `presence/projects.md` | projects and their scale, each with a note about when it is worth surfacing |
 | `archive/retired-trackers/focus.md` | retired — a frozen stub. See *"focus.md is retired"* below |
 | `handoff.md` | a short letter one session leaves for the next, so nothing gets lost between runs |
-| `outreach/drafts.md` | staged messages awaiting your review |
+| `outreach/drafts.md` | staged messages awaiting your review — since 0.46.0, every open entry carries `**To:**` and `**Brief:**` meta lines; see *What a draft now carries* below |
 | `applying/cover_letters.md` | letters, one anchor per role |
 | `pipeline/kb/<company>.md` | what you have learned about a specific company (older profiles used flat `kb_<company>.md` files at the root; migrations moved them first into a `kb/` directory and then, at 0.32.0, into `pipeline/kb/`) |
 | `conversations/call_prep_<date>.md` | prep notes for a scheduled call, dated rather than named by company; durable content gets promoted into `pipeline/kb/<company>.md`. A note written when full research wasn't available carries a `**Prep status:** incomplete — <reason>` line under its heading rather than being skipped — see [Reading what the search produces](reading-your-files.md) for what that marker means |
@@ -134,6 +137,7 @@ The main record. Everything about one role hangs off it.
 | `stage` | where it **is** in the funnel |
 | `play_stage` | for a role you are actively pursuing after applying, which step of that chase you are on — see below |
 | `verdict` | `pursue` · `pass` · `parked` · `undecided` |
+| `engagement_type` | `full-time` · `contract` — since 0.45.0; the 0.45.0 upgrade set this to `full-time` on every existing role, since that fact about a role isn't derivable from anything else on the record |
 | `jd_url` | the posting. Required as a URL **or an explicit `null`** — never simply missing |
 | `sightings` | every time this role was seen, and where |
 | `next_action`, `next_action_date`, `next_action_owner` | what happens next, when, and whose move it is |
@@ -278,6 +282,47 @@ reported, not guessed — for you to link by hand with `answers` once you know w
 `messages[].sent_on` and this row's `date`/`responded_on` may all carry a time
 (`YYYY-MM-DD HH:MM`) as well as a bare date, for exactly that case.
 
+### What a draft now carries — `**To:**` and `**Brief:**` (since 0.46.0)
+
+Every **open** entry in `outreach/drafts.md` carries two meta lines under its heading:
+
+- `**To:** contact:<id>` — who the draft is for, resolved through `people.jsonl` (following a
+  merge if the person was later merged into another record). If it cannot be resolved, the line
+  reads the literal `**To:** unaddressed`.
+- `**Brief:**` — either the literal `none` (nobody has computed a brief for this draft yet)
+  or a `brief:<timestamp>-<id>` token citing one row in `data/briefs.jsonl`. That row is what
+  `brief.py` computed about the thread — who last wrote, how long it has been, and what the
+  mailbox has (and has not) confirmed — the moment it was written. **The ledger row is evidence
+  of what the drafter saw, never a source of state**: the engine recomputes the register from
+  `data/*.jsonl` and the journal every time a draft is checked, so a citation can go stale (the
+  thread moved since) without anyone editing the draft.
+
+Tombstoned entries (`**Status:** SENT …` or `MOOT / DO-NOT-SEND …`) are never stamped — only
+open entries carry these lines.
+
+**Upgrading to the release that carries this.** The first session you open after upgrading
+stamps every open draft that does not already have both lines: `**To:**` from whatever contact
+the entry's own `**Blocked until:**` hold names (never guessed from the heading or body — a
+wrong recipient is worse than an honestly-counted absence), and `**Brief:** none` underneath
+every open entry regardless of whether `**To:**` resolved. It then computes a real brief for
+every draft it could address, in bulk, straight from your existing stores — no mailbox is
+touched for this step. Running it twice changes nothing the second time.
+
+**What that release morning actually looks like**, once the bulk pass has run:
+
+- A draft whose recipient could not be resolved reads `**To:** unaddressed` and needs you to
+  fix the hold before it can be briefed at all.
+- A draft aimed at someone with no prior thread and no confirmed-empty mailbox check holds as
+  `unverified-cold` — it is not sendable until either a mailbox probe confirms the mailbox is
+  genuinely empty, or, for someone with no known email address at all, you attest to having
+  checked yourself: `brief.py --for contact:<id> --i-checked <date>` (refused if an address on
+  file means the engine could have checked itself instead).
+- Everything else is briefed and ready to re-check the normal way.
+
+The migration's own summary line names the one command that drains what it could not resolve
+on its own: `~/.claude/jobsearch/run brief.py --probe --held` — it walks every held draft and
+probes the mailbox for each, promoting whatever it can confirm.
+
 ### Triggers and sequences — what caused a touch, and multi-step plays
 
 Submitting an application creates work: ask a retained recruiter whether they know the employer,
@@ -301,33 +346,71 @@ Deliberately **separate** from outreach, because they are different funnels with
 success measures. An application asks *did anyone respond at all*; outreach asks *did this
 person reply*. Collapsing them makes both unmeasurable.
 
-`{date, method, url, status, cover_letter, cover_letter_attached, notes, app_id, form_answers}`
+**As of the 0.45.0 upgrade, applications are their own file, `data/applications.jsonl`** — not a
+list nested inside the role that filed them. Before 0.45.0, each opportunity's own record carried
+its applications as a small array on itself; now every application is one row in its own file,
+linked back to its role by `opp_id`. Nothing about what an application means or how you work with
+it changed — only where it lives, so "how do my applications with a warm touch compare to bare
+ones?" is a query across every application at once, rather than a walk over every role.
 
-`cover_letter` says a letter **exists** for the role. `cover_letter_attached` says one was
-actually **submitted**. They are separate because only you know the second, and an assumed
-`true` would corrupt the only comparison that makes your letters measurable. Leave it `null`
-rather than guessing.
+| field | what it is |
+|---|---|
+| `id` | the stable handle a trigger points at (`<opp_id>-a1`, `-a2`, ...). This was called `app_id` before 0.45.0 — the value is unchanged, it is just this file's own id now. **You never mint it yourself**: `record.py` assigns the next number the moment an application is recorded |
+| `opp_id` | the role this application is for |
+| `date`, `method`, `status` | when and how you applied, and where it stands: `status` runs `not-started` → `started` → `submitted` → `acknowledged` / `rejected` / `advanced` / `withdrawn` |
+| `url` | the application's own URL, if it has one separate from the posting |
+| `req_id` | the employer's own requisition id, where the posting or portal shows one |
+| `portal_status`, `portal_confirmed_on` | what the employer's applicant portal shows, and when you last checked it |
+| `resume_variant` | the page actually **sent** with this application — distinct from the opportunity's own `resume_variant`, the page *planned* to be sent. A retired variant still resolves here, so outcomes stay attributable to what really went out even after a variant is retired |
+| `cover_letter_id` | points at this application's row in `cover_letters.jsonl`, or `null` if there is no letter for it — see *Cover letters* below |
+| `notes` | |
+| `form_answers` | what you actually answered on the application's own form (salary expectations, reason for leaving, and the like), as `{question_key, question, answer, answered_on}`. `question_key` is a shared slug, so the next form asking the same question surfaces what you answered last time instead of you re-deriving it — and if a later answer to the same question disagrees with an earlier one, that is flagged rather than silently overwritten |
 
-`app_id` is a stable handle a trigger can point at. **Since 0.41.0 you never mint it yourself** —
-`record.py` assigns `<opp_id>-a1`, `-a2`, ... the moment an application row is written, and the
-0.41.0 upgrade backfilled every row that predated it: each opportunity's applications were
-numbered in the order they already sat in the array, and any id you had minted by hand earlier
-kept its number, with later numbers skipping past it rather than reusing it. **The number is a
-handle, not a timeline** — a historical row backfilled after two newer ones were minted can land
-on `a3`, so nothing should read it as chronological order.
+**The number is a handle, not a timeline** — a historical row backfilled after two newer ones
+were minted can land on `a3`, so nothing should read it as chronological order. A trigger (an
+outreach touch's or an ask's `trigger_ref`) written before the 0.41.0 upgrade used to name an
+application by its date, the only handle that existed at the time; that upgrade re-pointed each
+of those to the application's `id` wherever the date belonged to exactly one application on the
+role, and left a trigger pointing at the date, rather than guessing, wherever two applications
+shared it — it still resolves, but only by naming one of the two applications yourself
+(`record.py`) does it stop being ambiguous.
 
-A trigger (an outreach touch's or an ask's `trigger_ref`) written before 0.41.0 used to name an
-application by its date, the only handle that existed at the time. The same upgrade re-pointed
-each of those to the application's new `app_id` wherever that date belonged to exactly one
-application on the role. Where a date was shared by two applications, the trigger was left
-pointing at the date rather than guessed — it still resolves, but only by naming one of the two
-applications yourself (`record.py`) does it stop being ambiguous. `form_answers` records what you
-actually answered on the application's own form
-(salary expectations, reason for leaving, and the like) as
-`{question_key, question, answer, answered_on}`. `question_key` is a shared slug, so the next
-form asking the same question surfaces what you answered last time instead of you re-deriving it
-— and if a later answer to the same question disagrees with an earlier one, that is flagged
-rather than silently overwritten.
+**What happens to your existing applications on upgrade.** The 0.45.0 upgrade runs this migration
+automatically, the first time you open a session on that version — you don't run anything
+yourself. Every application already nested on a role is copied out into `data/applications.jsonl`
+as its own row, one for one, keeping its existing handle as the new file's `id`; nothing about
+the application itself changes.
+
+Wherever any of the three old fields — `cover_letter`, `cover_letter_attached`, `cover_letter_doc`
+— was set on an application, a new row is written to `data/cover_letters.jsonl` carrying those
+three values exactly as they were, under their original names, and the application's new
+`cover_letter_id` points at it. The migration never invents a status for that letter — see *Cover
+letters* below for what "attached" means going forward. As with every migration in this plugin,
+the whole thing only ever writes once it has checked its own result is valid; if anything about
+your data would make it invalid, nothing is written and you keep exactly what you had before,
+with a report of what needs attention first.
+
+### Cover letters — `cover_letters.jsonl`
+
+`resume_variants.jsonl`'s twin, introduced by the 0.45.0 upgrade described above. Before it, the
+only structured facts about a cover letter lived inline on the application itself
+(`cover_letter`, `cover_letter_attached`, `cover_letter_doc`) — pointer, submitted-or-not, and
+rendered file, with no row of its own to hang a status on.
+
+| field | what it is |
+|---|---|
+| `id` | stable handle, `<application id>-cl` |
+| `opp_id` | the role the letter was written for |
+| `file` | where the authored text lives — an anchor into `applying/cover_letters.md` |
+| `doc` | the rendered file actually sent, once one exists |
+| `status` | `draft` · `sent` · `retired` |
+| `created` | when the row was created |
+| `note` | |
+| `cover_letter`, `cover_letter_attached`, `cover_letter_doc` | the three original fields, carried over **verbatim** by the 0.45.0 upgrade for any letter that predates it — including a row where they disagree with each other (e.g. `cover_letter_attached: true` with no `cover_letter_doc`), preserved exactly as found rather than resolved or guessed at. A letter created after the upgrade uses `file`/`doc`/`status` instead and leaves these three `null` |
+
+**"Attached" is now a structural fact, not a separate flag to remember.** A letter is attached to
+an application exactly when that application's `cover_letter_id` is non-null — there is no second
+boolean that can drift out of sync with whether the row actually exists.
 
 ### Fit — how you match the role
 

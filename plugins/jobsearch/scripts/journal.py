@@ -70,6 +70,37 @@ notes are disposed of. Disposing is not the same as `--end`: `--end` claims the 
 cleanly, which would be a lie about a run that actually died; `--dispose` tells the truth about a
 dead run AND records that someone looked at what it left behind.
 
+⭐⭐⭐⭐ dev #321 (V0) — A FIFTH STATE, AND IT IS AN INTERVAL, NOT A TIMESTAMP: nothing anywhere
+recorded WHEN a mailbox was covered, so every "nobody has replied" rested on a mirror
+(`data/messages.jsonl`) whose absence could mean either "nothing arrived" or "nothing looked."
+`check_followups.py` measured silence against `datetime.now()` regardless of whether a sweep had
+run in days — the exact "missing thing read as an empty thing" trap this repo names everywhere
+else, sitting under the one path that tells a candidate to chase someone.
+
+Two more events, both **positive** coverage (everything above is either negative — `gap` — or
+run-shaped; these are per-mailbox and per-thread):
+
+    swept   a multi-account search covered [from, through] for one mailbox, or failed
+    probe   a LinkedIn thread was looked at — pointwise, one look sees the whole thread
+
+`swept` is written by `mail_client.py`'s multi-account search, one row per configured account
+per sweep, `ok: true` with the window actually searched or `ok: false` with a reason code — a
+failed account is the loud `!! INCOMPLETE COVERAGE` banner **stored**, not just printed, so a
+partial failure marks that account uncovered rather than merely annotated. `probe` is written
+per LinkedIn thread look (`linkedin-runner`, wired later; V0 defines the shape so the
+vocabulary exists — Class C's `probe … result=empty|thread:<date>`).
+
+**Why an interval and not a timestamp:** sweeps are windowed (`watch --since <hours>`,
+`alert_sweep --days 1`), so *"swept at T"* is not *"covered through T"* — a scheduler outage
+leaves a hole a later sweep does not backfill unless something widens the window over it.
+`covered_through(recs, mailbox, as_of=None)` merges every `ok: true` row's `[from, through]`
+window for that mailbox and returns the end of the interval that contains `as_of` (or, with no
+`as_of`, the newest merged interval's end) — `None` when nothing verifies coverage there. `None`
+is the honest, load-bearing answer on an empty ledger: a caller that would otherwise fall back to
+the wall clock (`check_followups.py`, fixed here) must render "unverified" instead of a
+confidently wrong day count. `probe_covered_through(recs, thread)` is `probe`'s pointwise twin —
+one look verifies through its own timestamp, no interval needed.
+
 Usage:
     python3 journal.py --start daily                     # prints the run id
     python3 journal.py --run <id> --note "what was found"
@@ -87,6 +118,13 @@ Usage:
     python3 journal.py --check-coverage # on demand, needs gh+network: is every covered_by
                                          # citation still open? (#69, never run in CI)
     python3 journal.py --fired          # hook use only — see hooks.json's SessionStart entry
+    python3 journal.py --probe opp:<id> --thread contact:<id> --result empty      # (dev #321)
+    python3 journal.py --probe opp:<id> --thread contact:<id> \
+                       --result thread:2026-09-10T09:00:00
+    python3 journal.py --probe contact:<id> --thread contact:<id> --medium email \
+                       --mailbox acct-a@example.com --result empty       # Query or Citation C1
+    python3 journal.py --probe contact:<id> --thread contact:<id> --medium linkedin \
+                       --result empty --read inbox,requests,invitations,degree   # D14
 
 Python 3.9+. Standard library only.
 """
@@ -103,13 +141,19 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
 
 JOURNAL = os.path.join("data", "runs.jsonl")
-EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose")
+EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swept", "probe")
 
 # A reason is a CODE, not a sentence — codes can be counted, sentences cannot. An unrecognised
 # one is refused rather than stored, because a taxonomy nobody enforces becomes free text within
-# a month and then nothing can group by it.
+# a month and then nothing can group by it. dev #321 (V0): `swept ok:false` rows use this same
+# set — a failed sweep is the same shape of "why didn't this complete" as a gap.
 REASONS = {"browser-unavailable", "credential-missing", "rate-limited", "timeout",
            "partial-results", "skipped-for-cost", "upstream-error", "interrupted", "other"}
+
+# ⭐ dev #321 — a `probe` result is either the literal "empty" or "thread:<ISO timestamp>" (the
+# newest inbound's date/time) — Class C's own vocabulary, settled here since V0 is the first
+# design to ship it. Anything else is refused, loud, at write time (the precondition.py rule).
+PROBE_RESULT_RE = re.compile(r"^(empty|thread:\d{4}-\d{2}-\d{2}.*)$")
 
 STALE_DAYS = 3
 
@@ -230,6 +274,158 @@ def fired_events(recs):
     """Every `fired` record — proof a SessionStart hook ran, independent of whether the run's
     own `--start` ever followed it. See the module docstring, public #65."""
     return sorted((r for r in recs if r.get("event") == "fired"), key=lambda r: r.get("at") or "")
+
+
+def record_swept(root, mailbox, frm, through, by, ok, reason=None, at=None):
+    """⭐ dev #321 (V0) — the ONE writer for positive mailbox coverage. `ok=True` needs `frm`
+    and `through` (the window this sweep actually searched, ISO timestamps) — a positive
+    coverage row with no window is not verifiable, so that shape is refused rather than stored
+    with nulls. `ok=False` needs a REASON CODE from `REASONS` (the same "a code can be counted,
+    a sentence cannot" rule the rest of this journal already enforces) and stores no window: a
+    failed sweep covers nothing, which is the whole point — this is the `!! INCOMPLETE COVERAGE`
+    banner stored instead of merely printed, so `covered_through()` for that mailbox does not
+    advance past whatever it already had."""
+    at = at or now_iso()
+    if not mailbox:
+        raise JournalError("record_swept requires a mailbox")
+    if ok:
+        if not (frm and through):
+            raise JournalError(
+                "record_swept(ok=True) requires frm and through — the window this sweep "
+                "actually searched. A positive coverage row with no window is not verifiable.")
+        rec = {"event": "swept", "mailbox": mailbox, "from": frm, "through": through,
+               "at": at, "by": by or "", "ok": True}
+    else:
+        if reason not in REASONS:
+            raise JournalError(
+                "record_swept(ok=False) requires reason in REASONS, got %r — a failure without "
+                "a reason code cannot be counted or grouped" % reason)
+        rec = {"event": "swept", "mailbox": mailbox, "from": None, "through": None,
+               "at": at, "by": by or "", "ok": False, "reason": reason}
+    return append(root, rec)
+
+
+MEDIA = ("email", "linkedin")
+
+# Query or Citation C1, D14 — a LinkedIn `empty` verifies "no reply" only when the look actually
+# covered every surface a reply could sit on: the inbox (both tabs a client can show), pending
+# message requests, sent invitations (whose acceptance carries no message but does carry a
+# reply-shaped signal), and connection degree (a reply can arrive as an acceptance rather than a
+# message). A look that skipped one of these is not evidence of silence — see main()'s --probe
+# handling, which refuses --result empty unless --read names all four.
+LINKEDIN_SURFACES = frozenset({"inbox", "requests", "invitations", "degree"})
+
+
+def record_probe(root, subject, thread, result, medium="linkedin", mailbox=None, by=None,
+                 at=None):
+    """⭐ dev #321 item 2 (V0), extended by Query or Citation C1 (D1) — one thread look, on
+    either medium. Pointwise: unlike a mailbox sweep, which searches a window, a probe OPENS the
+    thread (or, for email, searches an address/name-term set — see brief.py §4.3) and sees
+    everything relevant, so one probe at T verifies that thread through T with no interval to
+    merge.
+
+    `medium` defaults to `"linkedin"` so every V0 caller (none existed before C1, but the
+    default keeps the shape backward-compatible on principle) is unaffected. `mailbox` names the
+    email account this probe searched — required when `medium="email"`, refused otherwise (a
+    LinkedIn probe has no per-account shape; carrying a stray value there would let a reader
+    mistake it for an email probe of that account). `by="owner"` marks the owner's own
+    `--i-checked` attestation (brief.py §4.4) rather than a script-run search.
+
+    C1's writers: `brief.py`'s mailbox probe (medium="email", one row per configured account)
+    and `journal.py --probe --medium linkedin` (`linkedin-runner`, via --read — see main())."""
+    at = at or now_iso()
+    if not (subject and thread):
+        raise JournalError("record_probe requires subject and thread")
+    if medium not in MEDIA:
+        raise JournalError("medium %r is not recognised — use 'email' or 'linkedin'" % medium)
+    if medium == "email" and not mailbox and by != "owner":
+        raise JournalError("record_probe(medium='email') requires mailbox (unless by='owner' "
+                           "— the owner's own attestation names no specific account)")
+    if medium == "linkedin" and mailbox:
+        raise JournalError("record_probe(medium='linkedin') takes no mailbox — a LinkedIn probe "
+                           "is not per-account")
+    if not PROBE_RESULT_RE.match(result or ""):
+        raise JournalError(
+            "--result %r is not recognised — use 'empty' or 'thread:<ISO timestamp>' "
+            "(Class C's probe vocabulary)" % result)
+    rec = {"event": "probe", "medium": medium, "mailbox": mailbox, "subject": subject,
+           "thread": thread, "result": result, "at": at}
+    if by:
+        rec["by"] = by
+    return append(root, rec)
+
+
+def _parse_iso(raw):
+    try:
+        return datetime.datetime.fromisoformat(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _merge_intervals(intervals):
+    """[(from_dt, through_dt), ...] -> the same list with every overlapping or touching pair
+    merged into one. Adjacency is guaranteed across a healthy run history by the ledger-derived
+    lookback in `mail_client.py` (each sweep reaches back to the end of the last covered
+    interval), so a gap that survives this merge is a REAL hole, not a rounding artefact."""
+    merged = []
+    for f, t in sorted(intervals, key=lambda p: p[0]):
+        if merged and f <= merged[-1][1]:
+            if t > merged[-1][1]:
+                merged[-1] = (merged[-1][0], t)
+        else:
+            merged.append((f, t))
+    return merged
+
+
+def covered_through(recs, mailbox, as_of=None):
+    """⭐⭐ dev #321 (V0) — THE READER every silence consumer imports. The end (ISO string) of
+    the contiguous VERIFIED-coverage interval for `mailbox` that CONTAINS `as_of` — or, with no
+    `as_of`, the newest merged interval's end. Returns `None` when nothing verifies coverage
+    there: no `swept` rows at all, or `as_of` falls in a gap between them. `None` is the honest
+    default on an empty ledger — the caller's job (check_followups.py) is to render "unverified"
+    rather than fall back to the wall clock, which is dev #321 itself.
+
+    Coverage is the union of `[from, through]` windows from `ok: true` swept rows for this
+    mailbox; a `swept ok: false` row (a failed account) contributes nothing, which is what makes
+    a partial failure mark that account uncovered rather than merely annotated.
+    """
+    intervals = []
+    for r in recs:
+        if r.get("event") != "swept" or r.get("mailbox") != mailbox or not r.get("ok"):
+            continue
+        fd, td = _parse_iso(r.get("from")), _parse_iso(r.get("through"))
+        if fd is None or td is None:
+            continue
+        intervals.append((fd, td))
+    if not intervals:
+        return None
+    merged = _merge_intervals(intervals)
+    if as_of is None:
+        return merged[-1][1].isoformat()
+    as_of_dt = as_of if isinstance(as_of, datetime.datetime) else _parse_iso(as_of)
+    if as_of_dt is None:
+        return None
+    for f, t in merged:
+        if f <= as_of_dt <= t:
+            return t.isoformat()
+    return None
+
+
+def probe_covered_through(recs, thread, medium):
+    """⭐ dev #321 item 2 (V0), medium-filtered by Query or Citation C1 (D1) — the newest
+    `probe` row's `at` for this `thread` ON THIS MEDIUM, or `None`. A probe is pointwise (see
+    `record_probe`), so the newest one alone verifies coverage through its own timestamp; no
+    interval merge applies.
+
+    `medium` carries NO DEFAULT on purpose: V0 had exactly one caller and none existed yet, so a
+    default was harmless; C1 adds the first real consumers (`your_move.conversation_axis()`),
+    and a caller that does not say which medium it means would silently accept an email probe
+    as LinkedIn coverage of the same `contact:<id>` thread (or vice versa) — the exact
+    cross-medium confusion D1 exists to prevent."""
+    ats = [r.get("at") for r in recs
+          if r.get("event") == "probe" and r.get("thread") == thread
+          and r.get("medium") == medium and r.get("at")]
+    return max(ats) if ats else None
 
 
 def age_days(at):
@@ -382,6 +578,28 @@ def main():
     ap.add_argument("--fired", action="store_true",
                     help="hook use only — SessionStart wrote this before any model turn "
                          "(public #65); see hooks.json")
+    ap.add_argument("--probe", metavar="SUBJECT",
+                    help="record a thread/mailbox look (dev #321; extended C1) — needs --thread "
+                         "and --result")
+    ap.add_argument("--thread", metavar="THREAD",
+                    help="with --probe: the thread this probe looked at (e.g. contact:<id>)")
+    ap.add_argument("--result", metavar="RESULT",
+                    help="with --probe: 'empty' or 'thread:<ISO timestamp>'")
+    ap.add_argument("--medium", choices=sorted(MEDIA), default="linkedin",
+                    help="with --probe: which medium this look covered (default: linkedin, "
+                         "V0's original and only medium)")
+    ap.add_argument("--mailbox", metavar="ADDRESS",
+                    help="with --probe --medium email: the account this probe searched — "
+                         "required for medium=email, refused for medium=linkedin")
+    ap.add_argument("--read", metavar="SURFACES",
+                    help="with --probe --medium linkedin --result empty: comma-separated "
+                         "surfaces this look actually covered. `empty` is refused unless this "
+                         "names all four of inbox,requests,invitations,degree (D14) — a look "
+                         "that skipped one is not evidence of silence, and is recorded as a "
+                         "'gap' instead, with no probe row")
+    ap.add_argument("--by", choices=("owner",),
+                    help="with --probe: 'owner' marks this as the owner's own attestation "
+                         "(brief.py --i-checked), not a script-run search")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--at", help="ISO timestamp; for tests and for replaying a known time")
     args = ap.parse_args()
@@ -396,6 +614,33 @@ def main():
         return 0
 
     try:
+        if args.probe:
+            if not args.thread:
+                raise JournalError("--probe requires --thread")
+            if not args.result:
+                raise JournalError("--probe requires --result ('empty' or 'thread:<ISO ts>')")
+            # ⭐ D14 — a LinkedIn `empty` verifies silence only when every surface a reply
+            # could sit on was actually read. A look that skipped one is NOT evidence, and gets
+            # NO probe row — linkedin-runner's own standing rules (agents/linkedin-runner.md)
+            # already say what to do instead: file the existing gap vocabulary
+            # (`--gap linkedin:message-requests --reason surface-unreachable`) under the run
+            # that attempted the look. This refusal is what keeps a partial read from being
+            # written as if it were a complete one; it does not invent a second gap mechanism.
+            if args.medium == "linkedin" and args.result == "empty":
+                read_surfaces = {s.strip() for s in (args.read or "").split(",") if s.strip()}
+                missing = LINKEDIN_SURFACES - read_surfaces
+                if missing:
+                    raise JournalError(
+                        "--result empty refused (D14) — --read did not name %s. A LinkedIn "
+                        "look that skips a surface a reply could sit on is not evidence of "
+                        "silence. File the gap instead: journal.py --run <id> --gap "
+                        "linkedin:message-requests --reason surface-unreachable ..."
+                        % ", ".join(sorted(missing)))
+            record_probe(root, args.probe, args.thread, args.result,
+                        medium=args.medium, mailbox=args.mailbox, by=args.by, at=at)
+            print("probed")
+            return 0
+
         if args.start:
             rid = new_run_id(args.start, at)
             append(root, {"event": "start", "run_id": rid, "kind": args.start, "at": at})

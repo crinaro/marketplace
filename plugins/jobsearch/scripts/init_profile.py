@@ -50,9 +50,13 @@ DATA = os.path.join(ROOT, "data")
 # applied to a store instead of a file). `resume_variants.jsonl` stays deliberately absent here
 # (ADR-028, public #62: "legal-absent" — see design §28.3's corrected count) — this list is not
 # "every store", it is every store a fresh profile is BORN with.
+# ⭐ B2 (ADR-031 §28.1 item 2's own pattern, applied a second time): `applications.jsonl`/
+# `cover_letters.jsonl` join here and make_fixture.PLACEHOLDER_STORES together, same reasoning —
+# a fresh scaffold must be current-shape the moment B2 ships, or a new user's first
+# `applications.py`/`validate_data.py` run reads these as ABSENT and reports it as fact.
 STORES = ("opportunities.jsonl", "companies.jsonl", "channels.jsonl", "messages.jsonl",
           "inbox.jsonl", "pending_actions.jsonl", "asks.jsonl", "commitments.jsonl",
-          "people.jsonl", "involvements.jsonl")
+          "people.jsonl", "involvements.jsonl", "applications.jsonl", "cover_letters.jsonl")
 
 # A fresh profile is BORN in the six-phase tree (public #28) — the same shape the 0.32.0
 # migration produces, so a new user never runs (or needs) the migration at all.

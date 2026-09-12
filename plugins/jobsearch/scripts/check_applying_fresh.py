@@ -53,10 +53,13 @@ OUTPUT = "views/applying.md"
 
 # Read directly from applying.py's render(): trigger.report() (opportunities/asks/messages +
 # precondition/draft_rows' drafts.md+cover_letters.md) plus render()'s own companies.jsonl
-# load for the display name. Nothing else is opened anywhere in the render path.
+# load for the display name. ADR-031 B2 (2026-09-11): render() now also enriches opportunities
+# from data/applications.jsonl (applications.enrich_opportunities) — a rewritten application row
+# (a resume_variant decided, a status advanced) must count as a source the same way the nested
+# array it replaced always did. Nothing else is opened anywhere in the render path.
 SOURCES = [
     "data/opportunities.jsonl", "data/companies.jsonl",
-    "data/asks.jsonl", "data/messages.jsonl",
+    "data/asks.jsonl", "data/messages.jsonl", "data/applications.jsonl",
     _tree.rel("drafts"), _tree.rel("cover_letters"),
 ]
 

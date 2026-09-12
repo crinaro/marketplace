@@ -89,6 +89,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
 import _tree
 import _atomic
+import applications as _apps
 
 UNION_FILE = _tree.rel("claims")           # presence/claims.md; legacy spellings resolve via _tree
 STORE_FILE = os.path.join("data", "resume_variants.jsonl")
@@ -238,28 +239,13 @@ def check_variant(root, rec, union_text, union_norm, union_bullet_set):
 
 
 def uncovered_applications(root, active_ids):
-    """Submitted applications with no resume_variant, while active variants exist."""
-    if not active_ids:
-        return []
-    out = []
-    path = os.path.join(root, "data", "opportunities.jsonl")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    r = json.loads(line)
-                except ValueError:
-                    continue
-                for i, ap in enumerate(r.get("applications") or []):
-                    if ap.get("status") in SUBMITTED and not ap.get("resume_variant"):
-                        out.append("%s applications[%d] (%s)"
-                                   % (r.get("id", "?"), i, ap.get("date") or "undated"))
-    except OSError:
-        pass
-    return out
+    """Submitted applications with no resume_variant, while active variants exist.
+
+    ⭐ ADR-031 B2: delegates to `applications.uncovered()` — the top-level `applications`
+    store's own module, never a nested array walk here any more (public #70's own validator
+    rule, validate_data.py, now enforces the hard version of this same question; this stays
+    the soft/advisory report's feed)."""
+    return _apps.uncovered(root, active_ids)
 
 
 def report(root):

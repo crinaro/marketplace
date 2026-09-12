@@ -3,6 +3,7 @@ name: linkedin-runner
 color: cyan
 description: 'Execute work on LinkedIn''s own surfaces in a browser — reply checks, messages and InMail, invitations and message requests, notifications, LinkedIn job search, and finding a contact path into a company. **Use for the daily LinkedIn pass, whenever a reply or invitation might be waiting there, and when a named company needs a way in.** Prefers Claude''s in-app Browser pane, which can hold a logged-in session; falls back to the Chrome extension. Not for sweeping non-LinkedIn job boards or employer career pages (board-sweeper), not for reading one posting or researching one company in depth (opportunity-researcher), and not for auditing the candidate''s own profile (profile-optimizer). Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
 model: sonnet
+effort: medium
 disallowedTools: Agent
 ---
 
@@ -75,6 +76,8 @@ for titles, geography and comp tiers.
 
 **DOES NOT READ:** `presence/claims.md` · `presence/projects.md` · `applying/cover_letters.md` · `log.md` in full · comp
 reasoning prose anywhere.
+
+**MODEL · EFFORT:** `sonnet` · `medium` (declared 2026-09-12). Browser driving under guards: the judgement is in the route data and `guard_outbound_click.py`, not in the model, and the transcript cost is page text — context, which effort does not reduce.
 
 > 🛑 **HARD STOP — THIS OVERRIDES ANY "run the checklist" INSTINCT.** You GATHER and REPORT.
 > **NEVER:**
@@ -250,6 +253,21 @@ from the outside, to one read and found empty** — the same shape `route.py` ex
 for sourcing channels, and the same shape as the truncating Sent-Invitations list below. Never
 report the reply check as complete without saying which of its four surfaces you actually
 reached.
+
+**⭐ THE PROBE — record the look, for `brief.py`'s evidence (Query or Citation C1, §4.5).**
+When a per-person thread check above finds no reply, record it as a `probe`, not silence:
+
+```bash
+~/.claude/jobsearch/run journal.py --probe contact:<people-id> --thread contact:<people-id> \
+  --medium linkedin --result empty --read inbox,requests,invitations,degree
+```
+
+**`--read` must name all four surfaces (a)–(d) above, or `--result empty` is REFUSED (D14) —
+a look that skipped one (the message-requests gap is the recurring case) is not evidence of
+silence, only a look that covered ALL FOUR is.** When (b) is unreachable this pass, do not
+call `--probe --result empty` for that person at all; the `--gap linkedin:message-requests`
+record above is the honest state instead. A person you DID find a reply from is `--result
+thread:<the reply's ISO date>`, not `empty`.
 
 **2. INBOX SCAN** — new recruiter InMail/messages not in the tracker.
 

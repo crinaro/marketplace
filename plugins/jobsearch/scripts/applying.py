@@ -49,6 +49,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
 import trigger
 import validate_data as _vd
+import applications as _apps
 
 # Where a pursued role sits when the next act is submitting — validate_data.PLAY_SEQUENCE[0].
 QUEUE_PLAY_STAGE = "needs-application"
@@ -72,8 +73,11 @@ def coverage(o, involvements=()):
     promoted there); a person "covers" a role by having an involvement anchored to it, not by
     a nested array on the record any more. Optional, defaulting to `()`, so a caller that
     genuinely has no involvements list yet degrades to "outreach or nothing" rather than
-    crashing — the same shape every other optional-context parameter in this engine takes."""
-    if o.get("applications"):
+    crashing — the same shape every other optional-context parameter in this engine takes.
+
+    ⭐ ADR-031 B2: `o["_applications"]` — the caller's own join against the top-level
+    `applications` store (`applications.enrich_opportunities`), never a nested array."""
+    if o.get("_applications"):
         return "applied"
     oid = o.get("id")
     has_person = bool(o.get("outreach")) or any(
@@ -91,7 +95,7 @@ GENERATED_HEADER = (
 
 VARIANT_CAUTION = ("the variant is a markdown file; the document actually uploaded is "
                    "produced outside the engine (dev #234, open) — confirm what you "
-                   "attach, and record it on the applications[] row")
+                   "attach, and record it on the applications row")
 
 
 def queue(opps):
@@ -123,7 +127,7 @@ def answer_precedents(opps, companies_by_id):
     becomes a query instead of re-deriving the rule from scratch per form."""
     out = {}
     for opp in opps:
-        for ap in opp.get("applications") or []:
+        for ap in opp.get("_applications") or []:
             for ans in ap.get("form_answers") or []:
                 qk = ans.get("question_key")
                 if not qk:
@@ -142,6 +146,7 @@ def answer_precedents(opps, companies_by_id):
 
 def render(root):
     opps = trigger.load_jsonl(root, "opportunities.jsonl")
+    _apps.enrich_opportunities(root, opps)     # ADR-031 B2 — o["_applications"], never nested
     companies_by_id = {c.get("id"): c for c in trigger.load_jsonl(root, "companies.jsonl")}
     rep = trigger.report(root)
     precedents = answer_precedents(opps, companies_by_id)
@@ -167,7 +172,7 @@ def render(root):
         company = (companies_by_id.get(comp_id) or {}).get("name") or comp_id
         L.append("### %s — %s" % (o.get("title") or o.get("id"), company))
         L.append("")
-        started = next((a for a in o.get("applications") or []
+        started = next((a for a in o.get("_applications") or []
                         if a.get("status") == "started"), None)
         L.append("- **Posting:** %s" % (o.get("jd_url") or "no jd_url on the record"))
         L.append("- **Req id:** %s" % ((started or {}).get("req_id") or "none recorded"))
@@ -207,7 +212,7 @@ def render(root):
             L.extend(own)
         else:
             L.append("- **Form answers — precedent:** none captured yet; record what you "
-                     "answer (`form_answers` on the applications[] row) so the next form "
+                     "answer (`form_answers` on the applications row) so the next form "
                      "starts from precedent, not from the rule")
         L.append("")
 

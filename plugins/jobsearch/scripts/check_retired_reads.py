@@ -105,7 +105,21 @@ from validate_data import RETIRED_KEYS, active_retired_keys  # noqa: E402
 # stages ship, since a frozen historical fixture is not "a reader nobody re-pointed," it is the
 # thing the design commits to never re-pointing. `test_checks.py` is a test file, never a
 # shipped script's write path, so this cannot reintroduce `contacts[]` into a real profile.
-KNOWN_EXCEPTIONS = (("migrate.py", "contacts"), ("test_checks.py", "contacts"))
+#
+# `migrate.py` / `applications` — B2's own migration handler
+# (`m_0_45_0_applications_cover_letters`) reads `opportunities.jsonl`'s `applications[]` EXACTLY
+# ONCE, to promote it into `applications`/`cover_letters` rows and then `.pop()` it off the
+# record. It ALSO covers `m_0_36_0_derive_from_applications` (0.36.0, pre-dates B2 and always
+# runs earlier in MIGRATIONS — its own docstring explains why it keeps a small inline copy of
+# the submitted/play-stage predicates rather than depending on `your_move`'s post-B2 promoted-
+# store API): the same one file, same discipline as B1's `contacts` entry above.
+#
+# `test_checks.py` / `applications` — same permanent-reader shape as `test_checks.py` /
+# `contacts`: `tests/fixtures/migrations/pre-b2/` is B2's own golden migration INPUT, frozen
+# forever, and its own coverage tests read the frozen nested `applications[]` shape to prove
+# the fixture's coverage properties hold.
+KNOWN_EXCEPTIONS = (("migrate.py", "contacts"), ("test_checks.py", "contacts"),
+                    ("migrate.py", "applications"), ("test_checks.py", "applications"))
 
 
 class Hit:

@@ -68,7 +68,7 @@ from _root import profile_root as _profile_root
 
 try:
     from mail_client import (
-        Mailbox, configured_accounts, decode_header_value, CredentialError,
+        Mailbox, configured_accounts, decode_header_value, CredentialError, sweep_accounts,
     )
 except ImportError as exc:  # pragma: no cover - defensive
     sys.stderr.write(
@@ -163,12 +163,16 @@ def main():
     print("=" * 72)
 
     total = 0
-    incomplete = []
-    for account in accounts:
-        rows, err = sweep_account(account, query)
+    # dev #334 — the ONE shared multi-account sweep site: iterate + write the coverage ledger,
+    # instead of this loop's own private copy. `since_days=args.days` is exactly the window this
+    # sweep actually searched (`build_query` bakes the same value into `newer_than:%dd`), so the
+    # `swept` row never claims coverage wider than what was really queried.
+    results, incomplete = sweep_accounts(
+        lambda acct: sweep_account(acct, query), since_days=args.days,
+        root=_profile_root(), by="alert_sweep", accounts=accounts)
+    for account, rows, err in results:
         print("\n[%s]" % account)
         if err:
-            incomplete.append(account)
             print("  !! INCOMPLETE COVERAGE — %s" % err)
             print("  Results for this account are MISSING, not empty. "
                   "Do not conclude a message does not exist.")

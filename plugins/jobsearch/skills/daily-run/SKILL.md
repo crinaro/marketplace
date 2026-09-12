@@ -129,6 +129,7 @@ hours, costing that morning's run outright.
 ~/.claude/jobsearch/run check_dashboard_coverage.py # every record rendered, counted in a remainder, or terminal — and nothing outside its window
 ~/.claude/jobsearch/run presence_set.py --check     # the presence working set round-trips against its sources: every pane carries its file, no retired tab, no resolved item (ADR-028)
 ~/.claude/jobsearch/run resume_variants.py --check  # printed variant bullets trace to the presence/claims.md union (public #26)
+~/.claude/jobsearch/run brief.py --check            # every open draft's brief verdict (Query or Citation C1) — counts by state; exits 1 on any NEEDS_HUMAN (a queued/WAITS_ON_SURFACE row is not a red close)
 ```
 
 **Dispose of what they report BEFORE starting.** Verify every **system-state** claim against the
@@ -172,6 +173,27 @@ expire in 45 minutes so a dead worker cannot strand work.
 **Items needing a capability this worker lacks stay unclaimed and are REPORTED in the summary**
 ("2 items need chrome; this worker has none") rather than silently skipped — that visibility is
 the whole point of `whoami.py` declaring capability instead of everyone attempting everything.
+
+**⭐ An item whose `what` starts with `brief.py --probe` (Query or Citation C1, §5.2) drains
+differently: run the `what` VERBATIM, then apply the disposition it prints** — every account
+`confirmed*` → exit 0 → `deferred.py --done <id>`; any account `unreachable`/`not-permitted`/
+`not-configured` → exit 2 → `deferred.py --release <id>` (the item stays queued; a per-account
+credential gap is common — this worker held a keychain entry for one account and not another).
+Never call `brief.py --probe` a second time with different arguments to "help" — the printed
+disposition is the authority, not a re-run.
+
+## 2c. ⭐ PROBE HELD DRAFTS — Query or Citation C1 (new step)
+
+```bash
+~/.claude/jobsearch/run brief.py --probe --held
+```
+
+Every draft currently held `unverified-cold` (mailbox not yet checked on ANY surface) gets
+probed directly here, on a surface that can reach a mailbox — this IS that surface for most
+runs. On one that cannot (no keychain), it queues one deferred row per person instead
+(`brief.py --probe contact:<id>`, deduplicated on `what` — §2b above is what drains those on a
+worker that can). Report the split in the summary: "N probed directly, M queued for a
+keychain-holding session."
 
 ## 3. GMAIL — two passes, and the order matters
 
@@ -365,8 +387,10 @@ For every INBOUND reply this run discovers (Gmail or LinkedIn), after the increm
    thread (a rejection, a "not my search" with no pointer) — then the queue line says so instead.
 3. **Regenerate + verify the dashboard** (the DASHBOARD step covers it) so the draft is readable there.
 
-⚠️ The drafter must read the SENT thread from `outreach[]`/`messages.jsonl` so the response builds
-on what was already said — never a fresh introduction (the Part-B lesson, 2026-08-04).
+⚠️ The drafter's first read is `brief.py --for contact:<people-id> [--opp <id> | --channel <id>]`
+(Query or Citation C1) — a computed, stamped brief of what was actually said, never re-derived
+from memory or a fresh introduction (the Part-B lesson, 2026-08-04). Cite the printed id on the
+new entry's `**Brief:**` line, `**To:** contact:<people-id>` on the recipient.
 
 ## 8. MEETING CROSS-CHECK
 

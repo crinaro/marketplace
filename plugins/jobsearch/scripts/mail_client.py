@@ -61,8 +61,10 @@ import json
 import os
 import re
 import sys
+import datetime as _dt
 
 import credentials as _cred
+import journal as _journal
 
 # Kept as an alias: the service name is shared with mailboxes.py and doctor.py.
 KEYCHAIN_SERVICE = _cred.SERVICE
@@ -125,6 +127,125 @@ def configured_accounts():
     if raw:
         return [a.strip() for a in raw.split(",") if a.strip()]
     return _accounts_from_user_json() or list(FALLBACK_ACCOUNTS)
+
+
+# --------------------------------------------------------------------------
+# ⭐⭐ THE COVERAGE LEDGER (dev #321, V0) — every multi-account sweep goes through here now
+# --------------------------------------------------------------------------
+#
+# Before this, `alert_sweep.py`, `watch.py`, `meeting_check.py` and `reconcile.py --harvest`
+# each carried its OWN copy of "loop over configured_accounts(), print `!! INCOMPLETE COVERAGE`
+# on a failure" — four sites, and none of them wrote the fact down. `data/messages.jsonl` is
+# only as current as the last sweep, and nothing recorded when that was, so every "nobody
+# replied" rested on a mirror that could mean either "nothing arrived" or "nothing looked" —
+# and `check_followups.py` measured silence against `datetime.now()` regardless. Filed as
+# dev #321; the states-and-views design's §15.1 amendment is what forced the question of what
+# the fact actually needs to be (an INTERVAL, not a timestamp — see journal.py's module
+# docstring).
+#
+# `sweep_accounts()` below is that one shared site: it does what each caller's loop already did
+# (iterate accounts, call a per-account search, collect an incomplete list) PLUS writes exactly
+# one `swept` row per account, every call, whether or not anything was found. Adopting it in
+# `alert_sweep.py`/`watch.py`/`meeting_check.py`/`reconcile.py` — replacing each script's own
+# loop with a call through here — is out of this file's scope for V0 (none of those four files
+# were touched); this function is the complete, independently-tested mechanism they can each
+# adopt with a small, mechanical change (their own `sweep_account(account, query) -> (rows,
+# error)` callbacks already match the `search_one` contract this expects).
+
+# ⭐ dev #321 §15.1 — a FLOOR on how far a sweep reaches back to close a coverage hole, capped so
+# a long-dead ledger (or the first run ever) does not demand an unbounded backfill. Decided as an
+# ENGINE CONSTANT, not a config key, for the same reason the design settled on: an operator who
+# wants deeper backfill runs one sweep with a wider `--days`/`--since` flag and the ledger
+# records it from then on — there is no recurring decision here for a config key to hold, only a
+# one-time ceiling. It is NOT yet surfaced through any `--options` discovery path (that
+# infrastructure is V1's `config_keys.py` / `profile.py --options`, states-and-views design §15.7
+# — it does not exist in this engine today); until it does, this module constant IS where the
+# default is spelled, and any caller that uses `lookback_days()` below is expected to print the
+# value it got back (as `lookback_days()`'s docstring says) so the number is visible in the run's
+# own output rather than only in source.
+COVERAGE_BACKFILL_MAX_DAYS = 30
+
+
+def lookback_days(root, mailbox, floor_days):
+    """dev #321 §15.1 — the LEDGER-DERIVED lookback for one mailbox's next sweep: reach back far
+    enough to close any coverage hole, never less than the caller's own requested window.
+
+    `since_days = max(floor_days, min(days since covered_through(mailbox), COVERAGE_BACKFILL_MAX_DAYS))`
+
+    A two-day scheduler outage means the next sweep reaches back (at least) two days and the
+    interval closes by construction; the very first sweep of an empty ledger reaches back the
+    full `COVERAGE_BACKFILL_MAX_DAYS`, so history up to that depth becomes verifiable on day
+    one. `floor_days` is a FLOOR, never a ceiling — a caller whose own window is wider than the
+    computed backfill (a deliberate `--days 14` run) is never narrowed by this function.
+
+    Callers SHOULD print the returned value (or `floor_days` when they are equal) so the window
+    a sweep actually used is visible in its own output — `COVERAGE_BACKFILL_MAX_DAYS` has no
+    other discovery surface yet (see the module-level note above).
+    """
+    recs = _journal.read(root)
+    through = _journal.covered_through(recs, mailbox)
+    if through is None:
+        return max(int(floor_days or 0), COVERAGE_BACKFILL_MAX_DAYS)
+    try:
+        through_dt = _dt.datetime.fromisoformat(through)
+    except ValueError:
+        return max(int(floor_days or 0), COVERAGE_BACKFILL_MAX_DAYS)
+    hole_days = (_dt.datetime.now() - through_dt).days
+    capped = min(max(hole_days, 0), COVERAGE_BACKFILL_MAX_DAYS)
+    return max(int(floor_days or 0), capped)
+
+
+# Error text -> a REASON CODE from journal.REASONS. Deliberately a small, named heuristic rather
+# than free text: `search_one` callbacks today return a plain error STRING (CredentialError's
+# message, or `"%s: %s" % (type(exc).__name__, exc)` — see alert_sweep.py's `sweep_account`), so
+# this is what turns that string into something `record_swept`'s REASONS set will accept. A
+# caller that already knows its own reason code can bypass this by calling
+# `journal.record_swept()` directly with an explicit `reason=`.
+def _classify_failure(error_text):
+    low = (error_text or "").lower()
+    if "credentialerror" in low or "credential" in low or "app password" in low:
+        return "credential-missing"
+    if "timed out" in low or "timeout" in low:
+        return "timeout"
+    if "rate" in low and "limit" in low:
+        return "rate-limited"
+    if "could not select" in low or "imap" in low:
+        return "upstream-error"
+    return "other"
+
+
+def sweep_accounts(search_one, since_days, root=None, by="", accounts=None):
+    """dev #321 (V0) — THE shared multi-account sweep site. `search_one(account) -> (rows,
+    error)` performs ONE account's actual search (Gmail query construction is the caller's —
+    different sweeps search different things); this function does the part every caller
+    duplicated: iterate every configured account (or `accounts`, for a narrowed run), call
+    `search_one`, and — the fix — write exactly ONE `swept` row per account via
+    `journal.record_swept()`: `ok: true` with the window `[now - since_days, now]` when
+    `search_one` succeeds, `ok: false` with a classified reason when it reports an error. A
+    `search_one` failure is never a crash here — that IS the `ok:false` row, not an exception.
+
+    Returns `(results, incomplete)`: `results` is `[(account, rows, error), ...]` in call order
+    (exactly what a caller's own loop already produces, so this is a drop-in for that loop's
+    body); `incomplete` is the list of accounts whose sweep failed — a caller's existing
+    `!! INCOMPLETE COVERAGE` banner logic needs no other change.
+    """
+    root = root or _profile_root()
+    now = _dt.datetime.now().replace(microsecond=0)
+    frm = (now - _dt.timedelta(days=since_days)).isoformat()
+    through = now.isoformat()
+    accounts = accounts if accounts is not None else configured_accounts()
+    results, incomplete = [], []
+    for account in accounts:
+        rows, error = search_one(account)
+        if error:
+            incomplete.append(account)
+            _journal.record_swept(root, account, None, None, by, False,
+                                  reason=_classify_failure(error), at=through)
+        else:
+            _journal.record_swept(root, account, frm, through, by, True, at=through)
+        results.append((account, rows, error))
+    return results, incomplete
+
 
 # --------------------------------------------------------------------------
 # Credentials — platform-aware, via scripts/credentials.py

@@ -64,6 +64,7 @@ _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root, looks_like_profile as _looks_like_profile
 import profile as _profile
 import your_move as _ym
+import applications as _apps
 
 ROOT = _profile_root()
 
@@ -203,6 +204,7 @@ def main():
     asks = load_jsonl("asks.jsonl")
     commitments = load_jsonl("commitments.jsonl")
     opps = load_jsonl("opportunities.jsonl")
+    _apps.enrich_opportunities(ROOT, opps)   # ADR-031 B2 — o["_applications"], never a nested array
     open_asks = _ym.open_asks(asks)          # membership is your_move.py's, never re-derived
     problems = []
 

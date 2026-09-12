@@ -1931,9 +1931,26 @@ def m_0_36_0_derive_from_applications(profile, apply_it):
     PRESERVE, THEN TRANSFORM: nothing else on the row changes; both writes are reversible
     from git. Terminal rows (validate_data.TERMINAL_OPP_STATUSES) are never touched — the
     validator refuses a play position on one. Idempotent: a second run finds nothing.
-    """
-    import your_move as _ym
+
+    ⭐ ADR-031 B2 (2026-09-11): this function keeps its OWN small copy of the submitted/
+    play-stage predicates (`_legacy_submitted`/`_legacy_play_stage` below) rather than calling
+    `your_move.has_submitted_application`/`derive_play_stage`. Those two now read an explicit
+    applications LIST (the caller's join against the promoted top-level store — B2 retired the
+    nested-array reading they used to do internally), but THIS migration always runs against
+    the PRE-B2 shape: it is keyed 0.36.0, B2's own promotion (m_0_45_0) always runs LATER in
+    MIGRATIONS, and a profile reaching this function has not had `applications[]` promoted away
+    yet. Depending on the promoted-store API here would be backwards — this migration is one of
+    the two legitimate remaining readers of the nested key
+    (`check_retired_reads.KNOWN_EXCEPTIONS` names this file for exactly this)."""
     import validate_data as _vd
+
+    def _legacy_submitted(r):
+        return any(a.get("status") in _vd.SUBMITTED_APP_STATUS
+                   for a in (r.get("applications") or []))
+
+    def _legacy_play_stage(r):
+        return "applied" if _legacy_submitted(r) else "needs-application"
+
     path = os.path.join(profile, "data", "opportunities.jsonl")
     if not os.path.exists(path):
         return True, ""
@@ -1947,9 +1964,9 @@ def m_0_36_0_derive_from_applications(profile, apply_it):
         if r.get("status") in _vd.TERMINAL_OPP_STATUSES:
             continue
         if r.get("play_stage") == "unresolved":
-            r["play_stage"] = _ym.derive_play_stage(r)
+            r["play_stage"] = _legacy_play_stage(r)
             played.append("%s→%s" % (r.get("id", "?"), r["play_stage"]))
-        if r.get("verdict") == "undecided" and _ym.has_submitted_application(r):
+        if r.get("verdict") == "undecided" and _legacy_submitted(r):
             r["verdict"] = "pursue"
             decided.append(r.get("id", "?"))
     if not (played or decided):
@@ -2593,11 +2610,33 @@ def _shadow_validate(profile, overrides):
     exact `dirname(DATA)` shape record.py's own `dry_run_validate` established for the same
     reason — public #61), every EXISTING `data/*.jsonl` file copied in unchanged, and each
     `{filename: [rows...]}` in `overrides` written in its place instead. Returns
-    `(returncode, problems)` — `problems` is the validator's own list (never re-parsed from
-    printed text) or `None` when the validator crashed before writing its sidecar. The REAL
-    profile is never touched by this function — it only ever reads it (to copy), and only ever
-    writes into a throwaway temp directory."""
+    `(returncode, problems, new_problems)`:
+
+      problems      the shadow's own full problem list (never re-parsed from printed text),
+                    or None when the validator crashed before writing its sidecar
+      new_problems  `problems` MINUS whatever the REAL, UNMODIFIED profile already reports
+                    right now (record.py's own G9 "new_problems" comparison, dev/audit
+                    2026-09-02) — None when either side is unknown (a crash), else a list
+
+    ⭐⭐ WHY THE COMPARISON IS BY PROBLEM SET, NOT BY rc (ADR-031 B2, 2026-09-11). A stage's
+    own migration must refuse only what IT introduces — never an unrelated, pre-existing
+    problem the profile already had. Confirmed as a real, not hypothetical, failure mode: a
+    profile pending BOTH 0.44.0 and 0.45.0 runs 0.44.0 FIRST (`migrate.py`'s pending-migration
+    loop is strictly sequential), and AT THAT MOMENT `applications[]` is still nested — 0.45.0
+    has not run yet — so once 0.45.0's own retired-key guard is active in the shipped code
+    (the same commit, `active_retired_keys()`'s own stage-gating), 0.44.0's OLD blanket
+    `if rc != 0: refuse` check would refuse EVERY SUCH PROFILE's 0.44.0 migration for a defect
+    0.44.0 has nothing to do with and cannot fix — the exact "a migration that refuses has not
+    shipped either" trap, at the migration-CHAINING layer rather than the single-migration one
+    B1 first solved it for. The fix is exactly record.py's own: compare problem SETS, refuse
+    only on a genuinely NEW one, and let a pre-existing problem stand (loudly reported by the
+    caller) for a LATER stage's own migration to resolve.
+
+    The REAL profile is never touched by this function — it only ever reads it (to copy and to
+    measure its own current problems), and only ever writes into a throwaway temp directory."""
     import record as _record
+    real_data = os.path.join(profile, "data")
+    _pre_rc, _, _, pre_problems = _record.validate(data_dir=real_data)
     with tempfile.TemporaryDirectory(prefix="migrate-b1-shadow-") as shadow:
         if os.path.isdir(profile):
             for name in os.listdir(profile):
@@ -2609,7 +2648,6 @@ def _shadow_validate(profile, overrides):
                     pass
         shadow_data = os.path.join(shadow, "data")
         os.makedirs(shadow_data, exist_ok=True)
-        real_data = os.path.join(profile, "data")
         if os.path.isdir(real_data):
             for name in os.listdir(real_data):
                 if name.endswith(".jsonl") and name not in overrides:
@@ -2619,7 +2657,8 @@ def _shadow_validate(profile, overrides):
                 for r in rows:
                     fh.write(json.dumps(r, ensure_ascii=False) + "\n")
         rc, _out, _err, problems = _record.validate(data_dir=shadow_data)
-        return rc, problems
+        new = _record.new_problems(pre_problems, problems)
+        return rc, problems, new
 
 
 def m_0_44_0_people_involvements(profile, apply_it, _inject_fault=None):
@@ -2928,18 +2967,315 @@ def m_0_44_0_people_involvements(profile, apply_it, _inject_fault=None):
         overrides = dict(overrides)
         overrides["people.jsonl"] = faulted
 
-    rc, problems = _shadow_validate(profile, overrides)
+    rc, problems, new = _shadow_validate(profile, overrides)
+    if new is None or new:
+        # A genuinely NEW problem (or an unreadable pre/post comparison) — THIS migration's
+        # own change is implicated; refuse and write nothing (see _shadow_validate's own
+        # docstring for why the comparison is by problem SET, not by rc).
+        detail = "; ".join((new if new else (problems or []))[:8]) or (
+            "validator exited %d with no problem list — it crashed" % rc)
+        return False, ("  ⚠️ 0.44.0 REFUSED — the migrated shape introduces a new validation "
+                       "problem, so NOTHING was written (the real profile is untouched): %s"
+                       % detail)
+    pre_existing_note = ""
     if rc != 0:
-        detail = "; ".join((problems or [])[:8]) or ("validator exited %d with no problem list "
-                                                      "— it crashed" % rc)
-        return False, ("  ⚠️ 0.44.0 REFUSED — the migrated shape does not validate, so NOTHING "
-                       "was written (the real profile is untouched): %s" % detail)
+        pre_existing_note = ("  ⚠️ %d pre-existing problem(s) stand, unrelated to this "
+                             "migration (a later stage's own migration may resolve them): %s"
+                             % (len(problems or []), "; ".join((problems or [])[:4])))
 
     import _atomic
     for name in ("people.jsonl", "involvements.jsonl", "opportunities.jsonl",
                 "channels.jsonl", "messages.jsonl"):
         _atomic.write_jsonl(os.path.join(profile, "data", name), overrides[name])
-    return True, "  ✅ people/involvements (0.44.0) — %s" % summary
+    msg = "  ✅ people/involvements (0.44.0) — %s" % summary
+    return True, (msg + "\n" + pre_existing_note if pre_existing_note else msg)
+
+
+def m_0_45_0_applications_cover_letters(profile, apply_it, _inject_fault=None):
+    """0.45.0 — B2 of ADR-031's connected-entities design: `applications` and `cover_letters`
+    become real, top-level, globally-unique stores; `opportunities.applications[]` is promoted
+    into `applications` and removed; `opportunities.engagement_type` is added, defaulting
+    `full-time`.
+
+    ⭐⭐ KEYED "0.45.0", NOT "0.44.0" (ADR-009, same rule m_0_44_0's own docstring states).
+    0.44.0 is the newest PUBLISHED jobsearch release (`plugin.json` at HEAD; origin carries
+    `jobsearch--v0.44.0` — verified 2026-09-11 against the local tag list and the 0.44.0
+    changelog-discharge commits already merged to origin/main). A profile that installed
+    0.44.0 is stamped exactly "0.44.0", and `pending_for()`'s strict `<` would never fire a
+    migration keyed to it.
+
+    PRESERVE, THEN TRANSFORM, ALL-OR-NOTHING (design §4 / gate review §2, same shape as
+    0.44.0's own migration). Every new/changed row is built ENTIRELY IN MEMORY first; the
+    result is validated against a throwaway shadow copy (`_shadow_validate`) BEFORE a single
+    real byte moves; only a CLEAN shadow run is written, atomically, to the three real files
+    this stage touches (`opportunities.jsonl` and the two new stores). A dirty shadow leaves
+    the real profile byte-for-byte untouched and this function returns `(False, ...)` naming
+    what failed — a defect in THIS migration to fix before release, never a refusal on data
+    grounds (every ambiguity below has a defined, non-destructive outcome).
+
+    PROMOTION — design §1, verbatim:
+      * every `applications[]` row becomes one `applications` row, 1:1, `opp_id` = the record
+        it came from. `app_id` (minted since 0.41.0; m_0_41_0_app_ids backfilled every
+        historical row) becomes this store's own `id` — "promotion changes only the lookup,
+        the key value is identical." A row somehow still missing `app_id` (hand-edited,
+        never written through record.py) gets one minted here, same `<opp_id>-aN` scheme
+        `record.py.mint_app_id` uses, rather than refused.
+      * the three UNTYPED legacy fields (`cover_letter`, `cover_letter_attached`,
+        `cover_letter_doc`) LEAVE the application row. Where ANY of the three is set (not
+        None/False — `cover_letter_attached: false` alone does not count, since "false, no
+        letter" needs no record), a `cover_letters` row is minted (`<app_id>-cl` — unique by
+        construction, since app_id already is) carrying the three legacy values VERBATIM
+        under their OWN original names — a migration that cannot know a field's type must
+        not interpret it (design §1/§4; this is the gate review's own B2 plant). No `status`,
+        `file`, `doc`, or `created` is invented — those stay null, a human's or a later
+        session's to fill. `cover_letter_id` on the application row points at it.
+      * `engagement_type` (design §1/§9/§16 item 3): defaulted to `full-time` on every
+        opportunity row that does not already carry one — a fact about the role, not
+        derivable from anything else on the record, so `full-time` (the vocabulary's own
+        default per the design) is the only non-guessing choice.
+
+    Idempotent: a profile with no `applications` key anywhere in `opportunities.jsonl` AND
+    every opportunity already carrying `engagement_type` is treated as already migrated and
+    this returns `(True, "")`. (A profile with `engagement_type` already set everywhere but
+    `applications[]` still nested — impossible via this migration, but defensive rather than
+    assumed — still promotes the arrays; the two halves are independent facts, checked
+    independently, exactly like m_0_44_0's own two independent facts.)
+
+    `_inject_fault` is a test-only hook (never reachable from the CLI): `"drop_required_field"`
+    corrupts one freshly-built application row (drops its `opp_id`) in the SHADOW copy right
+    before validation, to prove the all-or-nothing property from outside this function rather
+    than by reading its source and assuming. `"invent_status"` makes the cover-letter promotion
+    guess `status: "sent"` whenever `cover_letter_attached` is true, regardless of
+    `cover_letter_doc` — the gate review's own "a migration that starts guessing" plant.
+    """
+    opp_path = os.path.join(profile, "data", "opportunities.jsonl")
+    if not os.path.exists(opp_path):
+        return True, ""
+    try:
+        opps = _read_jsonl(opp_path)
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ opportunities.jsonl could not be read — nothing migrated: %s" % e
+
+    any_applications = any("applications" in r for r in opps)
+    any_missing_engagement = any("engagement_type" not in r for r in opps)
+    if not (any_applications or any_missing_engagement):
+        return True, ""
+
+    application_rows = []
+    cover_letter_rows = []
+    new_opps = []
+    promoted = 0
+    letters_minted = 0
+    defaulted = 0
+
+    for o in opps:
+        o = dict(o)
+        legacy_apps = o.pop("applications", None)
+        if legacy_apps is not None:
+            existing_ids = {a.get("app_id") for a in legacy_apps if isinstance(a, dict)}
+            for ap in (legacy_apps or []):
+                if not isinstance(ap, dict):
+                    continue
+                ap = dict(ap)
+                aid = ap.pop("app_id", None)
+                if not (isinstance(aid, str) and aid.strip()):
+                    # Defensive only — m_0_41_0_app_ids already backfilled every historical
+                    # row; a hand-edited row with none still gets one, never refused.
+                    import record as _record
+                    aid = _record.mint_app_id(o.get("id"),
+                                              [{"id": x} for x in existing_ids if x])
+                    existing_ids.add(aid)
+                cl_text = ap.pop("cover_letter", None)
+                cl_attached = ap.pop("cover_letter_attached", None)
+                cl_doc = ap.pop("cover_letter_doc", None)
+                cover_letter_id = None
+                if cl_text is not None or cl_attached is not None or cl_doc is not None:
+                    clid = "%s-cl" % aid
+                    status = None
+                    if _inject_fault == "invent_status" and cl_attached:
+                        # TEST-ONLY — see docstring. The exact defect the gate review's plant
+                        # names: inferring status from cover_letter_attached regardless of
+                        # cover_letter_doc, which must lose the golden-output comparison.
+                        status = "sent"
+                    cover_letter_rows.append({
+                        "id": clid, "opp_id": o.get("id"), "created": None, "file": None,
+                        "doc": None, "status": status,
+                        "cover_letter": cl_text, "cover_letter_attached": cl_attached,
+                        "cover_letter_doc": cl_doc, "note": None,
+                    })
+                    cover_letter_id = clid
+                    letters_minted += 1
+                ap["id"] = aid
+                ap["opp_id"] = o.get("id")
+                ap["cover_letter_id"] = cover_letter_id
+                application_rows.append(ap)
+                promoted += 1
+        if "engagement_type" not in o:
+            o["engagement_type"] = "full-time"
+            defaulted += 1
+        new_opps.append(o)
+
+    if not apply_it:
+        summary = ("%d application(s) promoted, %d cover letter(s) minted, %d role(s) "
+                  "defaulted to engagement_type=full-time" % (promoted, letters_minted, defaulted))
+        return True, "  would migrate (0.45.0) to applications/cover_letters: %s" % summary
+
+    overrides = {
+        "opportunities.jsonl": new_opps,
+        "applications.jsonl": application_rows,
+        "cover_letters.jsonl": cover_letter_rows,
+    }
+
+    if _inject_fault == "drop_required_field" and application_rows:
+        # TEST-ONLY — see docstring. Mutated on a COPY inside the override dict; the real
+        # `application_rows` list used for the write below is untouched, so this only ever
+        # corrupts what the SHADOW sees.
+        faulted = [dict(r) for r in application_rows]
+        del faulted[0]["opp_id"]
+        overrides = dict(overrides)
+        overrides["applications.jsonl"] = faulted
+
+    rc, problems, new = _shadow_validate(profile, overrides)
+    if new is None or new:
+        detail = "; ".join((new if new else (problems or []))[:8]) or (
+            "validator exited %d with no problem list — it crashed" % rc)
+        return False, ("  ⚠️ 0.45.0 REFUSED — the migrated shape introduces a new validation "
+                       "problem, so NOTHING was written (the real profile is untouched): %s"
+                       % detail)
+    pre_existing_note = ""
+    if rc != 0:
+        pre_existing_note = ("  ⚠️ %d pre-existing problem(s) stand, unrelated to this "
+                             "migration (a later stage's own migration may resolve them): %s"
+                             % (len(problems or []), "; ".join((problems or [])[:4])))
+
+    import _atomic
+    for name in ("opportunities.jsonl", "applications.jsonl", "cover_letters.jsonl"):
+        _atomic.write_jsonl(os.path.join(profile, "data", name), overrides[name])
+    summary = ("%d application(s) promoted, %d cover letter(s) minted, %d role(s) "
+              "defaulted to engagement_type=full-time" % (promoted, letters_minted, defaulted))
+    msg = "  ✅ applications/cover_letters (0.45.0) — %s" % summary
+    return True, (msg + "\n" + pre_existing_note if pre_existing_note else msg)
+
+
+def m_0_46_0_brief_line(profile, apply_it):
+    """0.46.0 — Query or Citation C1's own migration (design-query-or-citation.md §7): stamps
+    `**To:**`/`**Brief:**` onto every OPEN `outreach/drafts.md` entry (tombstones sent/moot
+    skipped — public #29's TERMINAL check, read the same way `precondition.py` reads it), then
+    runs a bulk, store-only rebrief (`brief.rebrief(profile, probe=False)`) so only genuinely
+    unattributable and unverified rows are loud on day one (D7, owner decision 4).
+
+    PRESERVE, THEN TRANSFORM. `**To:**` is derived ONLY from the entry's own `**Blocked
+    until:** contact:<id>` token, resolved through `people.jsonl` (`merged_into` followed) —
+    never inferred from headings or bodies, because a WRONG recipient is worse than a counted
+    absence (§7 step 1). An entry with no such token, or one that does not resolve, gets the
+    literal `**To:** unaddressed`. `**Brief:** none` is stamped under every open entry
+    regardless of whether `**To:**` resolved (public #13's lesson: absence of a field must
+    never read as "no brief needed").
+
+    Idempotent: an entry that already carries BOTH lines is left untouched entirely; the bulk
+    rebrief's own `only_all=False` default (this migration never passes `only_all=True`) skips
+    any entry whose `**Brief:**` is already a real (non-`none`) citation, so a second run
+    stamps nothing new and rebriefs nothing new.
+
+    `briefs.jsonl` is created empty by THIS migration if it does not already exist yet — an
+    absent store reads as an empty one and is reported as fact (trap 1's shape). `**To:**`/
+    `**Brief:**` LINES are this migration's own write; `briefs.jsonl` ROWS are `brief.py`'s
+    (via the bulk rebrief this migration calls, and every later `--for`/`--rebrief`).
+    """
+    import _tree
+    import precondition as _pre
+    import brief as _brief
+    import graph as _graph
+
+    # `brief.LEDGER` — never the literal "briefs.jsonl" here: check_ledger_reads.py's own
+    # allowlist for that string constant is {brief.py, validate_data.py, make_fixture.py}
+    # (§3.6), and this migration is not on it.
+    briefs_path = os.path.join(profile, _brief.LEDGER)
+    briefs_created = False
+
+    path = _tree.resolve_rel(profile, _tree.rel("drafts"))
+    if not os.path.exists(path):
+        return True, ""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            md = fh.read()
+    except OSError as e:
+        return False, ("  ⚠️ %s could not be read, so nothing was stamped: %s"
+                       % (_tree.rel("drafts"), e))
+
+    try:
+        g = _graph.Graph(os.path.join(profile, "data"))
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ could not load the graph, so nothing was stamped: %s" % e
+
+    inserts = []           # (offset, text) — always right after the entry's title line
+    attributed, unaddressed_ct, already = 0, 0, 0
+    for m in _pre.ENTRY_RE.finditer(md):
+        body = m.group(2)
+        sm = _pre.STATUS_RE.search(body)
+        if sm:
+            st = sm.group(1)
+            if _pre.SENT_RE.match(st) or _pre.MOOT_RE.search(st):
+                continue    # tombstones — never stamped (§7)
+        has_to = _brief.TO_RE.search(body) is not None
+        has_brief = _brief.BRIEF_LINE_RE.search(body) is not None
+        if has_to and has_brief:
+            already += 1
+            continue
+        lines = []
+        if not has_to:
+            pid = None
+            bm = _pre.FIELD_RE.search(body)
+            if bm:
+                contact_val = dict(_pre.TOKEN_RE.findall(bm.group(1))).get("contact")
+                if contact_val:
+                    try:
+                        person = g.resolve_person(contact_val)
+                    except _graph.MergeCycleError:
+                        person = None
+                    if person is not None:
+                        pid = person["id"]
+            if pid:
+                lines.append("**To:** contact:%s" % pid)
+                attributed += 1
+            else:
+                lines.append("**To:** unaddressed")
+                unaddressed_ct += 1
+        if not has_brief:
+            lines.append("**Brief:** none")
+        # `m.start(2)` is the newline immediately after the `## title` line (ENTRY_RE's own
+        # split, D3's precedent in precondition.py) — insert AFTER that newline, never before
+        # it, or the stamped line would run onto the title itself.
+        offset = m.start(2) + (1 if body.startswith("\n") else 0)
+        inserts.append((offset, "\n".join(lines) + "\n"))
+
+    if not apply_it:
+        would = attributed + unaddressed_ct
+        return True, ("  would stamp (0.46.0): %d entr%s (%d attributed, %d unaddressed), "
+                      "%d already stamped"
+                      % (would, "y" if would == 1 else "ies", attributed, unaddressed_ct,
+                         already))
+
+    if not os.path.exists(briefs_path):
+        os.makedirs(os.path.dirname(briefs_path), exist_ok=True)
+        open(briefs_path, "a").close()
+        briefs_created = True
+
+    if inserts:
+        new_md = md
+        for offset, text in sorted(inserts, key=lambda t: t[0], reverse=True):
+            new_md = new_md[:offset] + text + new_md[offset:]
+        import _atomic
+        _atomic.write_text(path, new_md)
+
+    result = _brief.rebrief(profile, probe=False)
+    stamped = attributed + unaddressed_ct
+    summary = ("%d entr%s stamped (%d attributed, %d unaddressed) · %d already stamped · "
+              "%d rebriefed%s"
+              % (stamped, "y" if stamped == 1 else "ies", attributed, unaddressed_ct, already,
+                 result["rebriefed"], " · briefs.jsonl created" if briefs_created else ""))
+    return True, ("  ✅ **To:**/**Brief:** (0.46.0) — %s\n"
+                 "     next: ~/.claude/jobsearch/run brief.py --probe --held" % summary)
 
 
 # ── install-cache hygiene (dev #167) — owned HERE, never by the launcher ─────────────────────
@@ -3105,7 +3441,19 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               # non-publication). A profile that installed 0.43.0 is stamped exactly "0.43.0",
               # and pending_for()'s strict `<` would never fire a migration keyed to it.
               # Re-verified when 0.44.0 is actually cut.
-              ("0.44.0", m_0_44_0_people_involvements))
+              ("0.44.0", m_0_44_0_people_involvements),
+              # ⚠️ KEYED "0.45.0" — 0.44.0 is the newest PUBLISHED release (ADR-009; verified
+              # 2026-09-11: `jobsearch--v0.44.0` exists in the local tag list and plugin.json
+              # at HEAD reads 0.44.0). A profile that installed 0.44.0 is stamped exactly
+              # "0.44.0", and pending_for()'s strict `<` would never fire a migration keyed to
+              # it. Re-verified when 0.45.0 is actually cut.
+              ("0.45.0", m_0_45_0_applications_cover_letters),
+              # ⚠️ KEYED "0.46.0" — 0.44.0 is the newest PUBLISHED release at the time this
+              # was written (plugin.json at HEAD reads 0.44.0; 0.45.0 is merged but not yet
+              # cut). Query or Citation C1's own migration keys to whatever minor actually
+              # ships it (design-query-or-citation.md, front matter: "C1 keys >= 0.46.0",
+              # ADR-009) — re-verified when 0.46.0 is actually cut.
+              ("0.46.0", m_0_46_0_brief_line))
 
 
 def pending_for(profile, engine=None):

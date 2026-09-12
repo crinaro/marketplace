@@ -3,6 +3,7 @@ name: engine-reporter
 color: red
 description: 'Raise a defect or enhancement request with the team that owns the PLUGIN, as an issue on its marketplace repository. Use when a script, skill, gate or agent misbehaved, or when the plugin lacks a capability the search needs. NOT for how this person should run their search — titles, regions, cadence or missing proof points are search-strategist. Normally dispatched by /jobsearch:checkup or the weekly review after triage, rather than reached directly from a user complaint. Proposes by default; files only what the prompt says was approved. Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
 model: sonnet
+effort: medium
 disallowedTools: Agent
 ---
 
@@ -72,6 +73,8 @@ duplicate. `~/.claude/jobsearch/run check_stale_claims.py`.
 `configure/strategy.md` · the raw `data/opportunities.jsonl`. You are reviewing the MACHINE, not the search.
 
 **DOES NOT DO:** edit engine code · edit tracker files · push.
+
+**MODEL · EFFORT:** `sonnet` · `medium` (declared 2026-09-12). Proposes issues against the engine. Not `low`: every submission must be screened for personal data before it crosses into a public tracker — the marketplace's intake gate refuses it mechanically on the far side, but the screen happens here first.
 
 ---
 
