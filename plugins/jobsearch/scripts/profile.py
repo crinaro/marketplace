@@ -293,13 +293,43 @@ def _load_opps():
         return [json.loads(l) for l in fh if l.strip()]
 
 
+def print_options(cfg):
+    """States & Views V1 §15.7 — 'options should be visible in the configuration.' The whole
+    adjustable surface, read from `config_keys.py` (the ONE registry `doctor.py`'s CONFIG
+    CURRENCY also reads — see that module's own check — so the two can never enumerate two
+    different key lists), then the FIXED-by-the-engine block for the rest of "what else could
+    I adjust". Never a second, hand-typed list."""
+    import config_keys as _ck
+    print("CONFIGURABLE — in config.json, with a default the engine falls back to")
+    for key in sorted(_ck.READER_KEYS):
+        value, provenance = _ck.describe(cfg, key)
+        default, kind, bounds, why = _ck.metadata(key)
+        legal = ("%d–%d" % bounds) if kind == "int" else "{%s}" % ", ".join(bounds)
+        print("  %-40s %-24r %s" % (key, value, provenance))
+        print("  %-40s default %r · legal %s" % ("", default, legal))
+        print("  %-40s %s" % ("", why))
+    print("\nFIXED BY THE ENGINE — a change here is a report, not a setting")
+    for name, value in sorted(_ck.FIXED.items()):
+        print("  %-40s %r" % (name, value))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Profile loader + executable comp screen.")
     ap.add_argument("--screen", metavar="OPP_ID")
     ap.add_argument("--screen-all", action="store_true")
+    ap.add_argument("--options", action="store_true",
+                    help="print the whole adjustable config surface, with defaults and "
+                         "provenance (design-states-and-views.md §15.7)")
     args = ap.parse_args()
 
     profile = load()
+
+    if args.options:
+        # `profile` (load()'s merge of config()+user()) still carries every config.json
+        # top-level section unchanged — config_keys.describe()'s dotted lookups (ats.*,
+        # communications.*) read exactly the same tree either way, without a third read.
+        return print_options(profile)
 
     if args.screen or args.screen_all:
         opps = _load_opps()

@@ -276,6 +276,71 @@ def check_silent(today, days):
     return findings
 
 
+def check_silent_applications(as_of, silence_days):
+    """States & Views V1 §3c/§15.4 — the THIRD class: SILENT APPLICATION. An `applied` row
+    (`your_move.application_axis()`) whose silence, measured to the END OF VERIFIED COVERAGE
+    (`as_of` — never today, the same dev #321 rule one level up) is `>= silence_days`.
+
+    The anchor is the NEWEST of the application's own `date`, its `status_on`, and any
+    inbound message on the opportunity — never `date` alone: an `acknowledged` row's
+    `status_on: null` is true of ALL history (§3d's own seed never derives it from `date`),
+    so anchoring on `date` would propose a close, on the very first run after upgrade, for
+    every application acknowledged last week but SUBMITTED long ago. Such a row is returned
+    separately, as UNMEASURED — never silently skipped and never proposed.
+
+    Returns (findings, unmeasured): `findings` is `[(age, company_id, title, anchor_date)]`,
+    newest-first; `unmeasured` is opportunity ids withheld for the reason above."""
+    if as_of is None:
+        return [], []
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import applications as _apps_mod
+    import your_move as _ym
+
+    apps_rows, _errs, _present = _apps_mod.load(ROOT)
+    by_opp = _apps_mod.group_by_opp(apps_rows)
+
+    inbound_by_opp = {}
+    msg_path = os.path.join(ROOT, "data", "messages.jsonl")
+    if os.path.exists(msg_path):
+        with open(msg_path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                m = json.loads(line)
+                if m.get("direction") == "inbound" and m.get("opp_id") and m.get("sent_on"):
+                    prev = inbound_by_opp.get(m["opp_id"])
+                    if prev is None or m["sent_on"] > prev:
+                        inbound_by_opp[m["opp_id"]] = m["sent_on"]
+
+    findings, unmeasured = [], []
+    for opp in load_opps():
+        apps = by_opp.get(opp.get("id"), [])
+        if not apps:
+            continue
+        if _ym.application_axis(opp, apps) != "applied":
+            continue
+        newest = sorted(apps, key=lambda a: str(a.get("date") or ""))[-1]
+        if newest.get("status") == "acknowledged" and not newest.get("status_on"):
+            unmeasured.append(opp.get("id"))
+            continue
+        anchors = [d for d in (newest.get("date"), newest.get("status_on"),
+                               inbound_by_opp.get(opp.get("id"))) if d]
+        if not anchors:
+            continue
+        anchor = max(str(a) for a in anchors)
+        try:
+            anchor_date = datetime.fromisoformat(str(anchor)[:10]).date()
+        except ValueError:
+            continue
+        age = (as_of - anchor_date).days
+        if age >= silence_days:
+            findings.append((age, opp.get("company_id") or opp.get("id") or "",
+                            (opp.get("title") or "")[:60], anchor_date))
+    findings.sort(reverse=True)
+    return findings, unmeasured
+
+
 def check_pursuits_without_next_action():
     """Active pursuits with no next action, read from the JSONL.
 
@@ -315,9 +380,16 @@ def main():
     unverified = as_of is None
     if unverified:
         silent = []
+        silent_apps, unmeasured_apps = [], []
     else:
         silent = check_silent_jsonl(as_of, days) + check_silent(as_of, days)
         silent.sort(reverse=True)
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import config_keys as _ck
+        import profile as _profile_mod
+        _cfg = _profile_mod.config()
+        ats_silence_days, _prov = _ck.describe(_cfg, _ck.ATS_SILENCE_DAYS)
+        silent_apps, unmeasured_apps = check_silent_applications(as_of, ats_silence_days)
     stalled = check_pursuits_without_next_action()
 
     print("Follow-up check - %s (silence threshold: %d days)" % (run_today.isoformat(), days))
@@ -348,6 +420,27 @@ def main():
         pass  # the banner above already said why nothing is listed here
     elif not quiet:
         print("\n  No silent outreach past %d days." % days)
+
+    if silent_apps:
+        print("")
+        print("=" * 72)
+        print("SILENT APPLICATION — submitted, no ATS answer (design-states-and-views.md §3c)")
+        print("=" * 72)
+        print("  measured to verified coverage, never to today (dev #321) — propose a close:")
+        print("  `record.py application-status <app_id> closed`, or re-date if you heard back")
+        print("  somewhere this profile has not recorded.")
+        print("")
+        for age, who, what, anchor in silent_apps:
+            print("  %3d days  %s" % (age, who))
+            if what:
+                print("            %s" % what)
+            print("            anchored on %s (as of %s)" % (anchor.isoformat(),
+                                                              as_of.isoformat()))
+    if unmeasured_apps:
+        print("")
+        print("  %d acknowledged application(s) carry no status_on — UNMEASURED, never "
+              "proposed: `record.py application-status <app_id> acknowledged --on <date>` "
+              "first. ids: %s" % (len(unmeasured_apps), ", ".join(unmeasured_apps[:20])))
 
     if stalled:
         print("")
@@ -397,7 +490,7 @@ def main():
         if domains:
             print("\n  recipient domains seen: %s" % ", ".join(d for d in domains if d))
 
-    if not silent and not stalled and not unverified:
+    if not silent and not silent_apps and not stalled and not unverified:
         print("\nNothing to chase.")
     return 0
 

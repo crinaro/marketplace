@@ -443,6 +443,196 @@ def conversation_axis(root, subject, counterpart=None, today=None, window=None):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# STATES & VIEWS V1 (design-states-and-views.md) — the application axis, the ending
+# dimension (§2b), the stop-networking in-force flag (§3b), the triage suggestion (§3a) and
+# the two-axis workflow state (§2). The conversation axis ABOVE is ADOPTED unchanged (§15.2's
+# own words: "never build a second one") — everything below folds or composes its events,
+# never re-derives them.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# One imported definition (validate_data.py owns it) — never a second spelling here.
+APPLICATION_ENDINGS = _vd.APPLICATION_ENDINGS
+
+
+def ended_because(opp, apps):
+    """§2b — why a pursuit STOPPED, or `None` if it is still live. `apps` is this
+    opportunity's own slice of the top-level applications store (same contract as
+    `has_submitted_application` — `applications.group_by_opp(...)[opp_id]`, or `[]`).
+
+    Precedence, top to bottom (§2b's table): `rejected` (the employer said no) >
+    `closed-silence` (we closed it after ATS silence, §3c) > `withdrawn` (they did, after
+    applying) > `expired` (the posting vanished) > `unrecorded` — two shapes, an
+    opportunity that is terminal (`passed`/`stage: closed`) with nothing saying why — >
+    `passed` (they walked away before applying). Each fact stays where it already lives
+    (application status vs. opportunity status/stage); this only composes them, and never
+    invents a reason a value older than this vocabulary should have recorded (§3d)."""
+    apps = sorted(apps or [], key=lambda a: str(a.get("date") or ""))
+    newest = apps[-1] if apps else None
+    app_status = newest.get("status") if newest else None
+    opp_status = opp.get("status")
+    stage = opp.get("stage")
+    verdict = opp.get("verdict")
+
+    if app_status == "rejected":
+        return "rejected"
+    if app_status == "closed":
+        return "closed-silence"
+    if app_status == "withdrawn":
+        return "withdrawn"
+    if opp_status == "expired":
+        return "expired"
+
+    terminal_opp = opp_status == "passed" or stage == "closed"
+    submitted_like = app_status in ("submitted", "acknowledged", "advanced")
+    past_started = any((a.get("status") or "not-started") not in ("not-started", "started")
+                       for a in apps)
+    if terminal_opp and submitted_like:
+        return "unrecorded"
+    if stage == "closed" and not past_started:
+        # §15.4 finding 6 — a dead req with NO application at all is not "still pursuing".
+        # Nothing says whether they passed or the posting vanished, so this is unrecorded too,
+        # never guessed as `expired` (only the posting's OWN status says that).
+        return "unrecorded"
+
+    if (verdict == "pass" or opp_status == "passed") and not past_started:
+        return "passed"
+
+    return None
+
+
+def application_axis(opp, apps):
+    """§2 — the application axis, precedence `ended` > `parked` > `undecided` >
+    `in-process` > `applied` > `pursuing`. `apps` is this opportunity's own applications
+    slice, same contract as `ended_because`/`has_submitted_application`."""
+    if ended_because(opp, apps) is not None:
+        return "ended"
+    verdict = opp.get("verdict")
+    if verdict == "parked":
+        return "parked"
+    if verdict == "undecided":
+        return "undecided"
+    apps = sorted(apps or [], key=lambda a: str(a.get("date") or ""))
+    newest = apps[-1] if apps else None
+    advanced = newest is not None and newest.get("status") == "advanced"
+    if opp.get("stage") in ("screening", "interviewing", "offer") or advanced:
+        return "in-process"
+    if newest is not None and newest.get("status") in ("submitted", "acknowledged"):
+        return "applied"
+    if verdict == "pursue":
+        return "pursuing"
+    return "undecided"          # defensive: validate_data.VERDICTS admits nothing else here
+
+
+def networking_in_force(opp, newest_outbound_on=None):
+    """§3b/§15.3 — is the stop-networking flag actually IN FORCE right now? Set, and no
+    outbound event dated after it — NEVER cleared, only compared, so no writer has to
+    remember to reset it on a later touch (the flag says *reopened by touch <date>*, both
+    facts still on file). `newest_outbound_on` is the caller's own reading of the newest
+    outbound event across every thread on this pursuit (see
+    `opportunity_conversation_axis`'s second return value), or None if there never was one."""
+    closed_on = opp.get("networking_closed_on")
+    if not closed_on:
+        return False
+    if newest_outbound_on and str(newest_outbound_on) > str(closed_on):
+        return False              # reopened by construction — a later touch, not a writer
+    return True
+
+
+def opportunity_conversation_axis(root, opp_id, today=None, window=None):
+    """§2/§15.2 — the conversation axis for an OPPORTUNITY subject, folded over every
+    counterpart thread on it. `conversation_axis()` above is person-centred (subject = a
+    people id); this reads the SAME events from the opposite direction — one counterpart at
+    a time, through that same function, folded by `AXIS_FOLD` precedence (§2: "one thread
+    still within its window keeps the subject waiting; the subject is silent only when every
+    outstanding thread is"). Never a second derivation of what an event is.
+
+    Returns (token, newest_outbound_on) — the second value feeds `networking_in_force()`
+    without a second scan of the same rows."""
+    import graph as _graph
+    g = _graph.Graph(os.path.join(root, "data"))
+    opp = g.by_id["opportunities"].get(opp_id)
+    if opp is None:
+        return "nothing-sent", None
+
+    person_ids = set()
+    for t in _touch_rows(opp):
+        pid = t.get("person_id")
+        if not pid:
+            continue
+        try:
+            resolved = g.resolve_person(pid)
+        except Exception:                                   # noqa: BLE001 — defensive only
+            resolved = None
+        person_ids.add(resolved["id"] if resolved else pid)
+    for m in g.stores["messages"]:
+        if m.get("opp_id") != opp_id or not m.get("person_id"):
+            continue
+        try:
+            resolved = g.resolve_person(m["person_id"])
+        except Exception:                                   # noqa: BLE001 — defensive only
+            resolved = None
+        person_ids.add(resolved["id"] if resolved else m["person_id"])
+
+    if not person_ids:
+        return "nothing-sent", None
+
+    best_token, newest_outbound = None, None
+    for pid in person_ids:
+        axes = conversation_axis(root, pid, counterpart="opp:%s" % opp_id,
+                                 today=today, window=window)
+        token, events = axes.get(opp_id, ("nothing-sent", []))
+        if best_token is None or AXIS_FOLD.index(token) < AXIS_FOLD.index(best_token):
+            best_token = token
+        for e in events:
+            if e.get("direction") == "outbound" and e.get("date"):
+                if newest_outbound is None or str(e["date"]) > str(newest_outbound):
+                    newest_outbound = e["date"]
+    return best_token or "nothing-sent", newest_outbound
+
+
+def triage_suggestion(opp, cfg, company=None, fit=None):
+    """§3a — the engine's OWN pursue/pass suggestion, recomputed fresh every call (never
+    stored — only `decision.suggested` freezes what THIS returned at decision time).
+    Returns (suggestion, missing): suggestion is `'pursue'` | `'pass'` | `None`; `missing`
+    names the input a `None` suggestion is waiting on (`profile.screen_comp()`'s own verdict,
+    or `'fit-misjudged'` when CLEARS but neither company nor fit supports pursuing)."""
+    tag, _detail = _profile.screen_comp(opp, cfg)
+    if tag == _profile.BELOW:
+        return "pass", None
+    if tag in (_profile.UNDISCLOSED, _profile.UNRESOLVED, _profile.NEEDS_COMMUTE):
+        return None, tag
+    if tag == _profile.CLEARS:
+        active = bool(company) and company.get("status") == "active-target"
+        aligned = None
+        if fit is not None:
+            reqs = fit.get("requirements") or []
+            if reqs:
+                met = sum(1 for q in reqs if q.get("verdict") == "aligned")
+                aligned = met * 2 >= len(reqs)
+        if active or aligned or (company is None and fit is None):
+            return "pursue", None
+        if aligned is False and not active:
+            return None, "fit-misjudged"
+        return "pursue", None
+    return None, tag
+
+
+def workflow_state(root, opp, apps, today=None, window=None):
+    """§2 — the nine-cell state of one opportunity as a dict: `application` (the axis
+    token), `conversation` (the folded axis token), `networking_closed_in_force` (bool),
+    `ended_because` (the ending, or None while live). `apps` is this opportunity's own
+    applications slice. Reads through `opportunity_conversation_axis()` for the
+    conversation half — one thread scan, reused for both the axis and the
+    networking-in-force reading (§15.3)."""
+    app_axis = application_axis(opp, apps)
+    conv_axis, newest_outbound = opportunity_conversation_axis(root, opp.get("id"),
+                                                                today=today, window=window)
+    return {"application": app_axis, "conversation": conv_axis,
+            "networking_closed_in_force": networking_in_force(opp, newest_outbound),
+            "ended_because": ended_because(opp, apps)}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # READY STAGED MESSAGES WITH NO ASK — dev #154 (GitHub issue #154).
 #
 # Your Move was built from asks.jsonl (plus the derived role/channel views), so a draft

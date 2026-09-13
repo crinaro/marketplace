@@ -68,7 +68,7 @@ def sent_markers(opps):
                 out.append((o["to"], "outreach sent %s (%s)"
                             % (o.get("date", "?"), o.get("medium", "?"))))
         for a in r.get("_applications") or []:
-            if a.get("status") in ("submitted", "acknowledged", "rejected", "advanced"):
+            if a.get("status") in ("submitted", "acknowledged", "rejected", "advanced", "closed"):
                 out.append((r.get("title", ""), "application %s %s"
                             % (a.get("status"), a.get("date", "?"))))
     return out

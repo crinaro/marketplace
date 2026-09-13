@@ -2,6 +2,24 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.47.0
+- States & Views V1: a role or an application can now end in more than one way, and the record says which. `applications[].status` gains `closed` — you gave up on it after the employer's ATS went silent, rather than hearing back `rejected`/`advanced`/`withdrawn` — with `status_on` recording when the current status was written. `networking_closed_on` records, separately, your own decision to stop working the network on a role. Two new `config.json.ats` settings, `silence_days` (default 30) and `close` (default `propose`), are seeded onto every existing profile automatically and are what let `check_followups.py` turn ATS silence into a proposal to close rather than leaving a stalled application sitting there indefinitely. You record either ending with `record.py application-status` / `record.py networking-closed --i-checked <date>` — never by hand-editing the field. *(tracked internally as crinaro/marketplace-dev PR#347)*
+- States & Views V1b: when your own verdict on a role diverges from what the engine's triage would have suggested, `record.py decide` now records why — `{on, suggested, reason_kind, reason}` — from a fixed set of reasons, so an override is auditable later instead of silent. And `outreach/drafts.md` becomes a true working set: as of this upgrade it holds only entries still under review, never a sent or moot one sitting there forever. The 0.47.0 upgrade walks your existing file once, automatically, the first session you open on this version: an entry already recorded elsewhere (`data/outreach.jsonl`/`messages.jsonl`) is removed as a duplicate fact, everything else is relocated to the role's `research_log[]` or the channel's `log[]` with its title and status preserved as a note, and anything naming neither is left in place and reported as `unresolved` rather than guessed at. Nothing is ever silently deleted. *(tracked internally as crinaro/marketplace-dev PR#348)*
+- Three migrations run automatically on this upgrade, in order: application endings, the new `ats` config keys, and the drafts working-set relocation. Each is safe to run twice — a second run reports the profile current and changes nothing.
+- `check_engine_purity.py` now exempts a known term by its *occurrence shape* rather than by a fixed allowlist entry per string, which is why its list of named exceptions drops from 28 to 2 this release — this changes what the shipped purity gate accepts, not just how it is configured. *(tracked internally as crinaro/marketplace-dev PR#346, dev #342)*
+
+## jobsearch 0.46.0
+- V0's sweep ledger has no production writer — the four sweep callers do not call sweep_accounts() yet *(tracked internally as crinaro/marketplace-dev#334)*
+- Drain the four doc-impact rows from B2 *(tracked internally as crinaro/marketplace-dev PR#336)*
+- Query or Citation design, revised after the C1 audit (D1–D14) *(tracked internally as crinaro/marketplace-dev PR#337)*
+- Wire the four sweeps to sweep_accounts() so the coverage ledger has a writer (#334) *(tracked internally as crinaro/marketplace-dev PR#338)*
+- Query or Citation C1: brief.py, the probe row, **To:**, and five draft states *(tracked internally as crinaro/marketplace-dev PR#339)*
+- Drain C1's doc rows, record ADR-032 and the build deviations *(tracked internally as crinaro/marketplace-dev PR#340)*
+- Every agent declares effort: with a reason; Haiku left bare on purpose *(tracked internally as crinaro/marketplace-dev PR#341)*
+- Release jobsearch 0.46.0: B2, sweep ledger, Query or Citation C1, effort levels *(tracked internally as crinaro/marketplace-dev PR#343)*
+- States V0: sweep-coverage ledger fixes check_followups' wall-clock silence (dev #321) *(tracked internally as crinaro/marketplace-dev PR#332)*
+- B2: applications and cover_letters ship — store, migration, golden fixture, #70 *(tracked internally as crinaro/marketplace-dev PR#335)*
+
 ## jobsearch 0.44.0
 - Release tags exist only on the publish target: dev remote is missing jobsearch--v0.30.0/v0.31.0/v0.32.0 *(tracked internally as crinaro/marketplace-dev#247)*
 - the review-findings check had no CI wiring, and both it and the doc-impact check were invisible until publish time — CI now runs the real refusals *(tracked internally as crinaro/marketplace-dev#318)*

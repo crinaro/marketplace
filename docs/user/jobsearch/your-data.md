@@ -53,7 +53,7 @@ matching](#ats-receipt-matching-configjsonats).)
 | `presence/projects.md` | projects and their scale, each with a note about when it is worth surfacing |
 | `archive/retired-trackers/focus.md` | retired — a frozen stub. See *"focus.md is retired"* below |
 | `handoff.md` | a short letter one session leaves for the next, so nothing gets lost between runs |
-| `outreach/drafts.md` | staged messages awaiting your review — since 0.46.0, every open entry carries `**To:**` and `**Brief:**` meta lines; see *What a draft now carries* below |
+| `outreach/drafts.md` | **since 0.47.0, the working set only** — entries still under review: sendable, blocked on someone else, or needing you to resolve a precondition. Every open entry carries `**To:**` and `**Brief:**` meta lines (since 0.46.0; see *What a draft now carries* below). A sent or moot entry no longer stays here — see *The working set — what leaves and where it goes* below |
 | `applying/cover_letters.md` | letters, one anchor per role |
 | `pipeline/kb/<company>.md` | what you have learned about a specific company (older profiles used flat `kb_<company>.md` files at the root; migrations moved them first into a `kb/` directory and then, at 0.32.0, into `pipeline/kb/`) |
 | `conversations/call_prep_<date>.md` | prep notes for a scheduled call, dated rather than named by company; durable content gets promoted into `pipeline/kb/<company>.md`. A note written when full research wasn't available carries a `**Prep status:** incomplete — <reason>` line under its heading rather than being skipped — see [Reading what the search produces](reading-your-files.md) for what that marker means |
@@ -142,6 +142,8 @@ The main record. Everything about one role hangs off it.
 | `sightings` | every time this role was seen, and where |
 | `next_action`, `next_action_date`, `next_action_owner` | what happens next, when, and whose move it is |
 | `research_log` | append-only role history |
+| `decision` | `{on, suggested, reason_kind, reason}`, since 0.47.0 — see *Recording why a decision diverged* below |
+| `networking_closed_on` | the date you decided to stop working the network on this role, since 0.47.0 — see *Endings* below |
 
 ### `status` and `stage` are different questions
 
@@ -178,6 +180,35 @@ step finer than `applied` is still yours to name once you know it (`record.py se
 still reading `undecided` once an application is on record becomes `pursue` automatically — the
 act of applying was the decision, and you are never asked pursue-or-pass on a role you already
 applied to.
+
+### Endings — since 0.47.0
+
+A role or an application can end in more than one way, and the record now says which:
+
+- **`applications[].status: closed`** — you gave up on this application after the employer's ATS
+  went silent, rather than hearing back `rejected`, `advanced`, or withdrawing it yourself. It
+  joins those three as one of the ways an application can be over. `status_on` records the date
+  the status last changed, so "how long did this sit before I gave up on it" is answerable.
+- **`networking_closed_on`** — separately from the application, your own decision to stop working
+  your network on this role. Once set it is never cleared automatically by a later touch; it is
+  compared against the newest outbound touch to tell whether networking is still in force.
+- **The two new `config.json.ats` settings below** (`silence_days`, `close`) are what turn ATS
+  silence into a proposal to close, rather than leaving a stalled application sitting there
+  indefinitely with no signal.
+
+You record either ending with `record.py application-status` / `record.py networking-closed
+--i-checked <date the you looked personally>` — you never hand-edit either field.
+
+### Recording why a decision diverged — since 0.47.0
+
+Every role's `verdict` (`pursue`/`pass`/`parked`/`undecided`) can be compared against what the
+engine's own triage would have suggested at the time you decided. When you agree, nothing extra
+is asked. When your call **diverges** from that suggestion, `decision` records why:
+`{on: <date>, suggested: pursue|pass, reason_kind: <one of a fixed set>, reason: <your own
+words>}`. The fixed set of reasons is `comp-acceptable` · `setting-acceptable` ·
+`fit-misjudged` · `company-priority` · `not-interested` · `timing` · `other`. An override with no
+reason recorded is a decision nobody — including future you — can audit later, which is exactly
+what this closes. Written by `record.py decide`.
 
 ### People — the humans you deal with
 
@@ -323,6 +354,39 @@ The migration's own summary line names the one command that drains what it could
 on its own: `~/.claude/jobsearch/run brief.py --probe --held` — it walks every held draft and
 probes the mailbox for each, promoting whatever it can confirm.
 
+### The working set — what leaves `drafts.md` and where it goes (since 0.47.0)
+
+`drafts.md` used to accumulate every draft you ever staged, sent or not — a sent or moot entry
+just sat there with a `**Status:**` line under it, forever. As of 0.47.0 it holds **only what is
+still under review**: nothing sent, nothing moot. `precondition.py --prune` (and, once, the
+0.47.0 upgrade itself) walks the file and, for every entry whose `**Status:**` reads `SENT` or
+`MOOT / DO-NOT-SEND`, does one of two things — nothing is ever simply deleted with no trace:
+
+- **If a matching row already exists** in `data/outreach.jsonl`/`messages.jsonl` recording the
+  send, the draft's paragraph is just removed — the fact it recorded is already on the record
+  elsewhere, so keeping the draft too would be the same fact twice.
+- **Otherwise it is relocated**, never dropped: to the named role's `research_log[]` (in
+  `data/opportunities.jsonl`) when the entry names one via `**Triggered by: opp:<id>**`, or to
+  `data/channels.jsonl`'s `log[]` when the entry addresses only a channel-anchored person with no
+  role attached. Either way, the entry's own title and status line become the note on that new
+  row, dated from the entry's own `SENT <date>` where it has one, otherwise today.
+- **An entry naming neither an opportunity nor a channel-resolvable contact is left exactly where
+  it is**, reported as `unresolved` — the one thing this will not do automatically is guess a
+  home for it.
+
+**The header above your first entry is now generated, not something you (or an earlier session)
+wrote by hand.** It carries an HTML comment marking it as generated and explains the meta-line
+grammar; `precondition.py --format` reprints it, and if you ever hand-edit it, the next
+`precondition.py --check` calls that out rather than silently accepting the drift. Regenerate it
+with `--format` rather than editing it directly.
+
+**Upgrading to 0.47.0** runs this relocation once, automatically, the same session you first open
+on that version — every already-terminal entry in your existing `drafts.md` is either deleted (a
+row already existed) or relocated, and the file's preamble is replaced with the generated one.
+Nothing is lost: `--prune` and the upgrade share the exact same decision about where each entry
+goes, so running `--prune` yourself afterward is a no-op unless you have staged and closed out
+new drafts since.
+
 ### Triggers and sequences — what caused a touch, and multi-step plays
 
 Submitting an application creates work: ask a retained recruiter whether they know the employer,
@@ -357,7 +421,8 @@ ones?" is a query across every application at once, rather than a walk over ever
 |---|---|
 | `id` | the stable handle a trigger points at (`<opp_id>-a1`, `-a2`, ...). This was called `app_id` before 0.45.0 — the value is unchanged, it is just this file's own id now. **You never mint it yourself**: `record.py` assigns the next number the moment an application is recorded |
 | `opp_id` | the role this application is for |
-| `date`, `method`, `status` | when and how you applied, and where it stands: `status` runs `not-started` → `started` → `submitted` → `acknowledged` / `rejected` / `advanced` / `withdrawn` |
+| `date`, `method`, `status` | when and how you applied, and where it stands: `status` runs `not-started` → `started` → `submitted` → `acknowledged` / `rejected` / `advanced` / `withdrawn` / `closed`. `closed` (added 0.47.0) means you gave up on it after ATS silence — see *Endings* below |
+| `status_on` | the date the *current* `status` was written (added 0.47.0). `null` on a row from before this field existed — an honest "we don't know when," never a guessed date |
 | `url` | the application's own URL, if it has one separate from the posting |
 | `req_id` | the employer's own requisition id, where the posting or portal shows one |
 | `portal_status`, `portal_confirmed_on` | what the employer's applicant portal shows, and when you last checked it |
@@ -478,14 +543,21 @@ system's automated emails: an acknowledgment, a rejection, an advance to the nex
 |---|---|
 | `receipt_sender_domains` | the domains your ATSes actually send receipts from — for example `["greenhouse-mail.io", "myworkday.com"]` (both fictional; put your own ATSes' real sending domains here, not these) |
 | `status_phrases` | subject-line phrases that evidence a status, grouped by which one: `{acknowledged: [...], rejected: [...], advanced: [...]}` |
+| `silence_days` | since 0.47.0 — how many days of ATS silence, measured to your verified mailbox coverage (never to today), before `check_followups.py` proposes closing an application. Defaults to **30**; seeded onto every existing profile by the 0.47.0 upgrade if you had not already set it |
+| `close` | since 0.47.0 — `propose` (the default: the run only proposes a close, you confirm it) or `auto` (the run writes the close itself). Also seeded to its default, `propose`, by the 0.47.0 upgrade |
 
-Both start **empty** on a fresh profile. **Nothing in the plugin reads these automatically yet —
-filling them in has no visible effect today.** They exist so your profile already carries this
-information, in the right shape, for the ATS-receipt reader this scaffolding is built for; once
-that reader ships, an empty `status_phrases.rejected` will mean "I have no way to recognize a
-rejection from mail," not "no rejections have arrived" — worth knowing now, since filling these in
-today is exactly what gets your profile ready for that day. Match strings are your own words —
-whatever your ATSes' actual subject lines say — not a fixed vocabulary the plugin ships with.
+`receipt_sender_domains` and `status_phrases` both start **empty** on a fresh profile. **Nothing
+in the plugin reads either of those two automatically yet — filling them in has no visible effect
+today.** They exist so your profile already carries this information, in the right shape, for the
+ATS-receipt reader this scaffolding is built for; once that reader ships, an empty
+`status_phrases.rejected` will mean "I have no way to recognize a rejection from mail," not "no
+rejections have arrived" — worth knowing now, since filling these in today is exactly what gets
+your profile ready for that day. Match strings are your own words — whatever your ATSes' actual
+subject lines say — not a fixed vocabulary the plugin ships with.
+
+**`silence_days` and `close`, unlike those two, are read today** — `check_followups.py` uses them
+to decide when a stalled application is worth proposing as `closed`, so a value you set here has
+a visible effect the next run after you change it.
 
 **Renamed in 0.41.0.** Earlier versions of the scaffold seeded this block as `ats.sender_domains`
 and `ats.receipt_phrases` (one flat list, which could only ever mean "acknowledged"); every

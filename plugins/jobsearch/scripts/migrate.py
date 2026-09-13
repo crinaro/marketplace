@@ -3380,6 +3380,236 @@ def prune_install_cache(apply_it=True, home=None, now=None):
     return ("pruned" if pruned else "nothing"), lines
 
 
+def m_0_47_0_application_endings(profile, apply_it):
+    """0.47.0 — States & Views V1 §3d: the endings vocabulary (`applications[].status:
+    closed`, `status_on`, `your_move.ended_because()`) is ADDITIVE ONLY, and this migration
+    does the least possible: it invents no reason a value older than the vocabulary should
+    have recorded (ADR-013's same call for `parked`-as-expiry-workaround rows).
+
+    1. ASSERTS, never reinterprets: any application row that somehow already carries
+       `status: 'closed'` is impossible to write through `record.py` before this release —
+       the validator has always refused it — so any found are REPORTED with their ids and
+       left completely untouched.
+    2. Seeds `status_on: null` on every application row that lacks the key at all — an
+       EXPLICIT unknown (the `COMMITMENT_STATUS` seed's own rule: a reader must never guess
+       that a missing key means the default), never a date DERIVED from `date` (§3d — that
+       would anchor an ATS-silence proposal on the wrong event, §15.4 finding 5).
+    3. COUNTS the `unrecorded` population (`your_move.ended_because()` == 'unrecorded') and
+       prints it WITH IDS for the next weekly review to carry. Writes NOTHING for them.
+
+    Idempotent for (1) and (2): a second run finds every `status_on` key present and no new
+    stray `closed` row. `unrecorded` is DERIVED, not stamped (§2b: "detects the same shape
+    going forward"), so it is legitimately recomputed and reported EVERY run — that is not a
+    non-idempotence, it is the point.
+    """
+    apps_path = os.path.join(profile, "data", "applications.jsonl")
+    opps_path = os.path.join(profile, "data", "opportunities.jsonl")
+    if not os.path.exists(apps_path):
+        return True, ""
+    try:
+        apps = _read_jsonl(apps_path)
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ applications.jsonl could not be read — nothing migrated: %s" % e
+    try:
+        opps = _read_jsonl(opps_path) if os.path.exists(opps_path) else []
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ opportunities.jsonl could not be read — nothing migrated: %s" % e
+
+    stray_closed = [a.get("id") or a.get("opp_id") or "?"
+                    for a in apps if a.get("status") == "closed"]
+    missing_status_on = [a for a in apps if "status_on" not in a]
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import your_move as _ym
+    import applications as _apps_mod
+    by_opp = _apps_mod.group_by_opp(apps)
+    unrecorded_ids = []
+    for o in opps:
+        reason = _ym.ended_because(o, by_opp.get(o.get("id"), []))
+        if reason == "unrecorded":
+            unrecorded_ids.append(o.get("id"))
+
+    if not missing_status_on and not stray_closed and not unrecorded_ids:
+        return True, ""
+
+    if not apply_it:
+        parts = []
+        if missing_status_on:
+            parts.append("would seed status_on=null on %d application(s)"
+                        % len(missing_status_on))
+        if stray_closed:
+            parts.append("%d stray 'closed' row(s) predate this vocabulary — reported, "
+                        "left untouched" % len(stray_closed))
+        if unrecorded_ids:
+            parts.append("%d ended pursuit(s) carry no recorded ending (reason unrecorded)"
+                        % len(unrecorded_ids))
+        return True, "  would migrate (0.47.0) application endings: %s" % "; ".join(parts)
+
+    new_apps = []
+    seeded = 0
+    for a in apps:
+        a = dict(a)
+        if "status_on" not in a:
+            a["status_on"] = None
+            seeded += 1
+        new_apps.append(a)
+
+    import _atomic
+    _atomic.write_jsonl(apps_path, new_apps)
+
+    msg = ["  ✅ application endings (0.47.0) — seeded status_on=null on %d row(s)" % seeded]
+    if stray_closed:
+        msg.append("  ⚠️ %d application(s) already carry status='closed' predating this "
+                  "release — left untouched, ids: %s"
+                  % (len(stray_closed), ", ".join(str(x) for x in stray_closed[:20])))
+    if unrecorded_ids:
+        msg.append("  ℹ️ %d ended pursuit(s) carry no recorded ending — each shows under "
+                  "Ended · reason unrecorded until you write one: `record.py "
+                  "application-status <app_id> rejected|withdrawn|closed` — ids: %s"
+                  % (len(unrecorded_ids), ", ".join(str(x) for x in unrecorded_ids[:20])))
+    return True, "\n".join(msg)
+
+
+def m_0_47_0_states_config_keys(profile, apply_it):
+    """0.47.0 — States & Views V1 §15.7: seeds `config.json.ats.silence_days` and
+    `config.json.ats.close` with the registry's own defaults (`config_keys.py`) where
+    absent — the `m_0_41_0_ats_config_keys` precedent — so the two settings the owner asked
+    to make configurable ("make sure the is a configurable setting") are visible in the owner's file
+    literally, not only in the registry's defaults. Additive only; never overwrites a value
+    already there, however it got there. `communications.chase_after_days` needs no seed
+    here — every profile pre-dating C1 already carries it (config_keys.py's own docstring)."""
+    path, cfg, err = _load_config(profile)
+    if cfg is None:
+        if err is None:
+            return True, ""
+        return False, "  ⚠️ config.json is unreadable, so ats keys were left alone: %s" % err
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import config_keys as _ck
+    ats = cfg.get("ats")
+    if not isinstance(ats, dict):
+        ats = {}
+    seeded = []
+    if "silence_days" not in ats:
+        ats["silence_days"] = _ck.ATS_SILENCE_DAYS_DEFAULT
+        seeded.append("ats.silence_days=%s" % _ck.ATS_SILENCE_DAYS_DEFAULT)
+    if "close" not in ats:
+        ats["close"] = _ck.ATS_CLOSE_DEFAULT
+        seeded.append("ats.close=%r" % _ck.ATS_CLOSE_DEFAULT)
+    if not seeded:
+        return True, ""
+    if not apply_it:
+        return True, "  would seed (0.47.0) config.json.ats: %s" % ", ".join(seeded)
+    cfg["ats"] = ats
+    _rewrite_config(path, cfg)
+    return True, "  ✅ config.json.ats (0.47.0) — seeded %s" % ", ".join(seeded)
+
+
+def m_0_47_0_drafts_working_set(profile, apply_it, today=None):
+    """0.47.0 — States & Views V1b, design-states-and-views.md §4: `drafts.md` becomes the
+    working set and nothing else. PRESERVE, THEN TRANSFORM (the standing rule): every
+    TERMINAL (sent/moot) entry either DELETES (a matching `outreach[]`/`messages.jsonl` row
+    already records the fact) or RELOCATES — its paragraph becomes a `research_log[]` row on
+    the opportunity `**Triggered by:**` names, or a `channels[].log[]` row when the entry
+    addresses only a channel-anchored person — never dropped, always counted
+    (`precondition.plan_prune`, the SAME decision core `--prune` uses, so the migration and
+    the CLI can never answer "what does this tombstone relocate to" two different ways).
+
+    An entry with NEITHER anchor is left exactly where it is, reported, and counted —
+    refusing to guess an anchor is the ONE thing this migration will not do automatically,
+    and it says so loudly (the standing rule: a migration that refuses has not shipped
+    either — this one refuses NOTHING, it just cannot invent a home).
+
+    The header above the first `## ` entry is replaced with the GENERATED preamble
+    (`precondition.format_header()`), so it stops being prose someone maintains by hand.
+
+    ALL-OR-NOTHING for the JSONL half: every relocation is built in memory first and
+    shadow-validated (`_shadow_validate`, the B1/B2 precedent) before a single real byte
+    moves; a relocation that would introduce a new problem writes nothing at all, and
+    drafts.md itself is untouched in that case either (never delete/relocate a paragraph out
+    of the working set on the strength of a write that did not actually land).
+
+    Idempotent: a second run finds no TERMINAL entries left to relocate/delete and a preamble
+    that already matches `format_header()` byte for byte, and reports a no-op.
+
+    `today` is test-only (never passed by the MIGRATIONS runner, which calls every migration
+    with exactly `(profile, apply_it=...)`): a MOOT tombstone's relocated `research_log[]` row
+    is dated `today` when its own Status line names no date (most don't), so the golden-output
+    test (`TestV1bMigrationGoldenOutput`) pins it to the date the committed `post-v1b` fixture
+    was generated on — real runs always take the actual date.
+    """
+    import precondition as _pre
+    drafts_path = _pre._tree.resolve_rel(profile, _pre.FILES[0])
+    if not os.path.exists(drafts_path):
+        return True, ""
+    plan = _pre.plan_prune(profile, today=today)
+    if plan["new_text"] is None:
+        return True, ""
+
+    header_ok = (_pre._preamble_text(plan["new_text"]).rstrip("\n")
+                == _pre.format_header().rstrip("\n"))
+    n_relocated, n_deleted, n_unresolved = (len(plan["relocations"]), len(plan["deleted_only"]),
+                                            len(plan["unresolved"]))
+    if not n_relocated and not n_deleted and header_ok:
+        return True, ""
+
+    if not apply_it:
+        parts = []
+        if n_relocated:
+            parts.append("%d relocated to research_log[]/channels[].log[]" % n_relocated)
+        if n_deleted:
+            parts.append("%d deleted (a row already exists)" % n_deleted)
+        if n_unresolved:
+            parts.append("%d left in place — no resolvable anchor" % n_unresolved)
+        if not header_ok:
+            parts.append("preamble regenerated")
+        return True, "  would migrate (0.47.0) drafts.md working set: %s" % "; ".join(parts)
+
+    opps_path = os.path.join(profile, "data", "opportunities.jsonl")
+    chans_path = os.path.join(profile, "data", "channels.jsonl")
+    try:
+        opps = _read_jsonl(opps_path) if os.path.exists(opps_path) else []
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ opportunities.jsonl could not be read — nothing migrated: %s" % e
+    try:
+        chans = _read_jsonl(chans_path) if os.path.exists(chans_path) else []
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ channels.jsonl could not be read — nothing migrated: %s" % e
+    opps_by_id = {o.get("id"): o for o in opps}
+    chans_by_id = {c.get("id"): c for c in chans}
+    for r in plan["relocations"]:
+        rec = (opps_by_id if r["anchor_kind"] == "opp" else chans_by_id).get(r["anchor_id"])
+        if rec is None:
+            # plan_prune resolves an anchor against THIS SAME profile, so this is not
+            # expected to happen — defensive rather than assumed (the m_0_45_0 precedent).
+            return False, ("  ⚠️ %s:%s no longer resolves — nothing migrated (re-run after "
+                          "investigating)" % (r["anchor_kind"], r["anchor_id"]))
+        arr = "research_log" if r["anchor_kind"] == "opp" else "log"
+        rec.setdefault(arr, []).append(r["row"])
+
+    if plan["relocations"]:
+        rc, _problems, new = _shadow_validate(profile, {"opportunities.jsonl": opps,
+                                                         "channels.jsonl": chans})
+        if rc != 0 and new:
+            return False, ("  ⚠️ this migration would introduce %d new problem(s) — nothing "
+                          "written: %s" % (len(new), "; ".join(new[:5])))
+        import _atomic
+        _atomic.write_jsonl(opps_path, opps)
+        _atomic.write_jsonl(chans_path, chans)
+
+    rest = plan["new_text"][len(_pre._preamble_text(plan["new_text"])):]
+    final_text = _pre.format_header() + rest
+    import _atomic
+    _atomic.write_text(drafts_path, final_text)
+
+    msg = ["  ✅ drafts.md working set (0.47.0) — %d relocated, %d deleted (a row already "
+          "existed), preamble regenerated" % (n_relocated, n_deleted)]
+    if n_unresolved:
+        msg.append("  ℹ️ %d TERMINAL entr%s left in place — no resolvable anchor: %s"
+                  % (n_unresolved, "y" if n_unresolved == 1 else "ies",
+                     ", ".join(t for t, _r, _w in plan["unresolved"])[:200]))
+    return True, "\n".join(msg)
+
+
 MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               ("0.17.0", m_0_17_0), ("0.18.0", m_0_18_0), ("0.19.0", m_0_19_0),
               ("0.20.0", m_0_20_0), ("0.24.0", m_0_24_0_blocked_until),
@@ -3453,7 +3683,24 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               # cut). Query or Citation C1's own migration keys to whatever minor actually
               # ships it (design-query-or-citation.md, front matter: "C1 keys >= 0.46.0",
               # ADR-009) — re-verified when 0.46.0 is actually cut.
-              ("0.46.0", m_0_46_0_brief_line))
+              ("0.46.0", m_0_46_0_brief_line),
+              # ⚠️ KEYED "0.47.0" — 0.46.0 is the newest PUBLISHED release (ADR-009; verified
+              # 2026-09-12: `jobsearch--v0.46.0` exists in the local tag list and plugin.json
+              # at HEAD reads 0.46.0). A profile that installed 0.46.0 is stamped exactly
+              # "0.46.0", and pending_for()'s strict `<` would never fire a migration keyed
+              # to it. Re-verified when 0.47.0 is actually cut. ORDER IS LOAD-BEARING: the
+              # config-key seed runs after the endings seed only because neither reads the
+              # other's output — independent facts, same as 0.44.0's own two.
+              ("0.47.0", m_0_47_0_application_endings),
+              ("0.47.0", m_0_47_0_states_config_keys),
+              # States & Views V1b (design §4) — ORDER: after the endings/config-keys seeds,
+              # same reasoning 0.44.0's own two carry (independent facts, neither reads the
+              # other's output) — this one additionally reads `data/opportunities.jsonl` and
+              # `data/channels.jsonl`, which the endings migration may have just seeded
+              # `status_on` on; drafts_working_set never touches `status`/`status_on` itself,
+              # so the two cannot conflict, but running after keeps every 0.47.0 opportunities
+              # write in one declared order rather than an accidental one.
+              ("0.47.0", m_0_47_0_drafts_working_set))
 
 
 def pending_for(profile, engine=None):

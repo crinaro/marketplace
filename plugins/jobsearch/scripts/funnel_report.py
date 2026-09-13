@@ -199,9 +199,59 @@ def main():
         print("  by status: " + ", ".join("%s=%d" % (k, v) for k, v in sorted(by_status.items())))
         print("  by method: " + ", ".join("%s=%d" % (k, v) for k, v in sorted(by_method.items())))
         print("")
-        live = [(o, a) for o, a in apps if a.get("status") in ("submitted", "acknowledged")]
-        heard = [(o, a) for o, a in apps if a.get("status") in ("advanced", "rejected")]
-        print("  Response rate on submitted applications: %s" % pct(len(heard), len(live) + len(heard)))
+        # ⭐ States & Views V1 §3c — the buckets are the ENDING vocabulary, not the raw status:
+        # heard (rejected/advanced) · closed on silence (closed, plus resolved-aged — an
+        # application past the ATS window that nobody confirmed a close on: COUNTED as no
+        # answer, the row itself never mutated, exactly NO_RESPONSE_AFTER's own existing rule
+        # for outreach) · live (still within the window) · withdrawn · expired · unrecorded —
+        # the last three EXCLUDED from every rate and each printed with its own count.
+        # Response rate = heard / (heard + closed on silence). Reuses your_move.ended_because()
+        # — one derivation, never a second reading of the same fields.
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import your_move as _ym
+        import config_keys as _ck
+        import profile as _profile_mod
+        try:
+            _silence_days, _ = _ck.describe(_profile_mod.config(), _ck.ATS_SILENCE_DAYS)
+        except Exception:                                   # noqa: BLE001 — report, never crash
+            _silence_days = _ck.ATS_SILENCE_DAYS_DEFAULT
+        by_opp_apps = collections.defaultdict(list)
+        for _o, _a in apps:
+            if _a.get("opp_id"):
+                by_opp_apps[_a["opp_id"]].append(_a)
+        heard, closed_silence = [], []
+        live_bucket, withdrawn_b, expired_b, unrecorded_b = [], [], [], []
+        for oid, opp_apps in by_opp_apps.items():
+            o = opps_by_id.get(oid, {})
+            newest = sorted(opp_apps, key=lambda a: str(a.get("date") or ""))[-1]
+            reason = _ym.ended_because(o, opp_apps)
+            status = newest.get("status")
+            if reason == "rejected" or status == "advanced":
+                heard.append((o, newest))
+            elif reason == "closed-silence":
+                closed_silence.append((o, newest))
+            elif reason == "withdrawn":
+                withdrawn_b.append((o, newest))
+            elif reason == "expired":
+                expired_b.append((o, newest))
+            elif reason == "unrecorded":
+                unrecorded_b.append((o, newest))
+            elif status in ("submitted", "acknowledged"):
+                anchor = newest.get("status_on") or newest.get("date")
+                age = days_since(anchor) if anchor else None
+                if age is not None and age >= _silence_days:
+                    closed_silence.append((o, newest))   # resolved-aged — counted, not mutated
+                else:
+                    live_bucket.append((o, newest))
+        print("  Response rate (heard / (heard + closed on silence)): %s"
+              % pct(len(heard), len(heard) + len(closed_silence)))
+        print("  heard=%d · closed-on-silence=%d (incl. resolved-aged) · live=%d"
+              % (len(heard), len(closed_silence), len(live_bucket)))
+        print("  excluded from every rate — withdrawn=%d · expired=%d · unrecorded=%d"
+              % (len(withdrawn_b), len(expired_b), len(unrecorded_b)))
+        if unrecorded_b:
+            print("    unrecorded: %s" % ", ".join(sorted(o.get("id", "?")
+                                                          for o, _a in unrecorded_b)))
         # Does sending a cover letter correlate with hearing back? `cover_letter_attached`
         # retired with the nested array; "attached" is now "cover_letter_id is non-null"
         # (design §1's own rule) — the three-way yes/no/unrecorded split narrows to two,

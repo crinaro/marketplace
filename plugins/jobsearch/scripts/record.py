@@ -87,8 +87,10 @@ Python 3.9+. Standard library only.
 """
 
 import argparse
+import datetime
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -108,7 +110,15 @@ STORES = {"opportunities": "opportunities.jsonl",
           # --file applications` mints the id (see the create branch below); `cover_letters`
           # takes an explicit id like any other store.
           "applications": "applications.jsonl",
-          "cover_letters": "cover_letters.jsonl"}
+          "cover_letters": "cover_letters.jsonl",
+          # States & Views V1b (design §15.3) — `messages` joins STORES, APPEND-ONLY: a
+          # message row is immutable once written (its id is what every other row links to).
+          # `set`/`set-in`/`append`/`create`/`show` on `--file messages` are refused in main()
+          # before any of the generic single-store machinery runs — `answered` and `touched`
+          # are the only verbs that write it (see MESSAGES_WRITE_VERBS below).
+          "messages": "messages.jsonl"}
+# The only two ops allowed to touch `--file messages` — everything else is refused in main().
+MESSAGES_WRITE_VERBS = frozenset({"touched", "answered"})
 LOCK = os.path.join(ENGINE_SCRIPTS, "runlock.py")
 # ⭐ ENGINE, not profile — the data MODEL ships with the code; the DATA belongs to the user.
 MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
@@ -278,6 +288,18 @@ def mint_app_id(rid, existing):
         if isinstance(aid, str) and aid.startswith(prefix) and aid[len(prefix):].isdigit():
             n = max(n, int(aid[len(prefix):]))
     return "%s%d" % (prefix, n + 1)
+
+
+def mint_message_id(anchor_id, person_id, date):
+    """Deterministic id for a message THIS API creates (`touched`/`answered`, §15.3) — the
+    SAME inputs always mint the SAME id, which is what makes the two-append write
+    'idempotent by id' (§15.3 point 2): a re-run after a crash between the message append and
+    the outreach append finds the message already there (by this id) and completes only the
+    missing half, rather than writing a duplicate. Not a collision-proof id in general (two
+    touches to the same person on the same day via different media share one id) — an
+    accepted, stated trade-off, the same shape `mint_app_id`'s own docstring accepts for
+    same-day applications sharing a date."""
+    return "msg-record-%s-%s-%s" % (anchor_id or "none", person_id or "none", date)
 
 
 def coerce(v):
@@ -653,12 +675,320 @@ def resolve_linked_asks_dated(rid, when, action):
     return hit
 
 
+# ── States & Views V1b (design §13/§15.3) — `touched` and `answered` ───────────────────────
+#
+# Both span TWO files (messages.jsonl + opportunities.jsonl) with no cross-file transaction —
+# §3b's own correction, generalised: "the touch lands in messages.jsonl or outreach[], the
+# flag on the opportunity row, two files and two writers." So each write here is TWO
+# ORDERED, IDEMPOTENT appends under ONE lock hold (message first, §15.3 point 2) rather than
+# one atomic multi-file commit: a crash between them leaves a message with no completing
+# outreach[] row, which validate_data.py's own orphan check (MESSAGES_TOUCHED_SOURCE) names,
+# and a RE-RUN with the SAME arguments finds the message already there (mint_message_id is
+# deterministic over the call's own inputs) and writes only the missing half.
+
+def _load_involvements():
+    try:
+        with open(os.path.join(DATA, "involvements.jsonl"), encoding="utf-8") as fh:
+            return [json.loads(l) for l in fh if l.strip()]
+    except OSError:
+        return []
+
+
+def _person_name(person_id):
+    """The person's display name, for a message/outreach row's own `to` field — never the
+    bare id, when a name is available. Fails open to None (the caller falls back to the id
+    itself, which is always non-empty)."""
+    try:
+        import graph as _graph
+        g = _graph.Graph(DATA)
+        row = g.by_id["people"].get(person_id)
+        return row.get("name") if row else None
+    except Exception:                                        # noqa: BLE001 — cosmetic only
+        return None
+
+
+def cmd_touched(args):
+    """`record.py touched <opp_id> --to contact:<person-id> --on <date> --medium <medium>
+    [--role <role>]` — cell 3's own action line (design §3): a touch made OUTSIDE the normal
+    draft-and-send flow (a handshake, a phone call, any medium this API does not draft for).
+    Appends the `outreach[]` row on the named opportunity and, for an EMAIL medium, the
+    message row that documents it.
+
+    `--_inject-fault after-message` is a TEST-ONLY hook (never reachable except by passing the
+    flag explicitly): after the message half lands, it exits before the outreach half — so the
+    half-written case and its repair are proven from OUTSIDE this function, by actually
+    breaking it and re-running, the same discipline `migrate.py`'s own `_inject_fault` plants
+    use rather than trusting the mechanism by reading the source."""
+    opp_id = args.rid
+    if not opp_id or args.rest:
+        print("usage: touched <opp_id> --to contact:<person-id> --on <date> --medium <medium> "
+              "[--role <role>]")
+        return 2
+    if not args.to_token:
+        print("⛔ REFUSED — --to contact:<person-id> is required.")
+        return 1
+    tm = re.match(r"^contact:(.+)$", args.to_token)
+    if not tm:
+        print("⛔ REFUSED — --to must be `contact:<person-id>`, got %r" % args.to_token)
+        return 1
+    person_id = tm.group(1)
+    date = args.on_date or datetime.date.today().isoformat()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        print("⛔ REFUSED — --on must be an ISO date (YYYY-MM-DD), got %r" % date)
+        return 1
+    _vd = _validator_module()
+    medium = args.medium
+    if not medium or medium not in _vd.MEDIA:
+        print("⛔ REFUSED — --medium must be one of %s" % ", ".join(sorted(_vd.MEDIA)))
+        return 1
+    if args.recipient_role is not None and args.recipient_role not in _vd.RECIPIENT_ROLES:
+        print("⛔ REFUSED — --role must be one of %s" % ", ".join(sorted(_vd.RECIPIENT_ROLES)))
+        return 1
+
+    opps0 = load("opportunities")
+    if find(opps0, opp_id) is None:
+        print("No opportunities record with id %r." % opp_id)
+        return 1
+    # The join validate_data.py itself enforces on every outreach[] row — checked here too so
+    # a bad --to refuses BEFORE any write, not two steps later via a rollback.
+    if not any(r.get("person_id") == person_id and r.get("opp_id") == opp_id
+              for r in _load_involvements()):
+        print("⛔ REFUSED — person_id %r has no involvement on opportunity %r. Every outreach "
+              "row must name a person actually involved in THIS pursuit — add the "
+              "involvement first, or check the --to id." % (person_id, opp_id))
+        return 1
+
+    is_email = medium.startswith("email")
+    msg_id = mint_message_id(opp_id, person_id, date) if is_email else None
+    to_label = _person_name(person_id) or person_id
+
+    if args.already_locked:
+        if not lock_is_held():
+            print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
+            print("  Take it first (runlock.py --take), or drop the flag.")
+            return 1
+    else:
+        try:
+            take_lock("record.py touched %s" % opp_id, wait=args.wait)
+        except LockError as e:
+            print("  REFUSED — %s" % e)
+            return 1
+    try:
+        if is_email:
+            messages = load("messages")
+            if not any(m.get("id") == msg_id for m in messages):
+                # ⭐ NO validate-and-rollback dance for THIS append. §15.3 point 2 is explicit
+                # that the store may be legitimately, TEMPORARILY invalid between the two
+                # halves — a message with `source: 'record.py touched'` and no completing
+                # outreach[] row is EXACTLY the shape validate_data.py's own orphan check
+                # exists to name, and it would fire on this half by construction, every
+                # time, even on the ordinary (uninterrupted) path. Rolling back on that
+                # 'new problem' would make a normal `touched` call refuse itself. The real
+                # commit point is the outreach append below, which DOES get the full
+                # validate-and-rollback treatment — a genuine defect in the message's own
+                # shape (an unknown medium, a dangling person_id) is already refused by the
+                # checks earlier in this function, before the lock was even taken.
+                messages.append({
+                    "id": msg_id, "opp_id": opp_id, "channel_id": None,
+                    "person_id": person_id, "direction": "outbound", "medium": medium,
+                    "sent_on": date, "from": None, "to": to_label, "subject": None,
+                    "body": "(recorded by `record.py touched` — no body captured)",
+                    "source": "record.py touched", "variant": None, "answers": None,
+                })
+                save_atomic("messages", messages)
+                print("  ✦ message %s recorded" % msg_id)
+            else:
+                print("  · message %s already recorded (completing the outreach half)"
+                     % msg_id)
+
+            if args.inject_fault == "after-message":
+                print("  ⚠️ TEST FAULT INJECTED — stopping before the outreach half is "
+                      "written. Re-run the SAME command to complete it.")
+                return 1
+
+        opps = load("opportunities")
+        opp = find(opps, opp_id)
+        if opp is None:
+            print("  record vanished between read and lock — aborting.")
+            return 1
+        already = any(o.get("person_id") == person_id and o.get("date") == date
+                     and o.get("medium") == medium and o.get("message_ref") == msg_id
+                     for o in (opp.get("outreach") or []))
+        if already:
+            print("  · outreach row already recorded — nothing further to do")
+            return 0
+
+        before_opps = snapshot("opportunities")
+        pre_rc2, _, _, pre_problems2 = validate()
+        opp.setdefault("outreach", []).append({
+            "person_id": person_id, "channel_id": None, "status": "sent", "date": date,
+            "medium": medium, "to": to_label, "outcome": "awaiting",
+            # COMMS_CUTOVER (validate_data.py) requires touch_type/recipient_role on any row
+            # dated 2026-08-02 or later — "unknown" is the enum's own explicit-unknown value,
+            # never a guess at which one actually applies.
+            "touch_type": "unknown", "recipient_role": args.recipient_role or "unknown",
+            "address_status": "unknown", "delivery": "unknown", "message_ref": msg_id,
+        })
+        save_atomic("opportunities", opps)
+        rc2, out2, err2, problems2 = validate()
+        if rc2 != 0:
+            added2 = new_problems(pre_problems2, problems2)
+            if not (pre_rc2 != 0 and added2 == []):
+                restore("opportunities", before_opps)
+                print("  ⛔ REFUSED — the outreach half broke the store; rolled back.")
+                print("  " + "\n  ".join(_diagnostic_lines(rc2, out2, err2)))
+                return 1
+        print("  ✦ outreach row recorded on %s" % opp_id)
+    finally:
+        if not args.already_locked:
+            release_lock()
+    print("touched: %s -> %s via %s on %s — written atomically, validator clean"
+         % (opp_id, person_id, medium, date))
+    return 0
+
+
+def cmd_answered(args):
+    """`record.py answered <inbound-message-id | contact:<person-id>> --on <date> --via
+    <medium> [--opp <opp_id>]` — cell 4's own action line (design §3/§15.3): records that the
+    OWNER replied, appending the outbound message whose `answers` names the inbound it
+    responds to. `target` is either a bare message id (an inbound row already in
+    messages.jsonl — its own opp_id/channel_id/person_id are inherited) or `contact:<id>` — a
+    touch ref, for cell 4's own 'the outreach[] row alone ... no message body in the store'
+    case (a LinkedIn or pre-harvest reply with no message row to point `answers` at)."""
+    target = args.rid
+    if not target or args.rest:
+        print("usage: answered <inbound-message-id | contact:<person-id>> --on <date> "
+              "--via <medium> [--opp <opp_id>]")
+        return 2
+    date = args.on_date or datetime.date.today().isoformat()
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
+        print("⛔ REFUSED — --on must be an ISO date (YYYY-MM-DD), got %r" % date)
+        return 1
+    _vd = _validator_module()
+    medium = args.via_medium
+    if not medium or medium not in _vd.MEDIA:
+        print("⛔ REFUSED — --via must be one of %s" % ", ".join(sorted(_vd.MEDIA)))
+        return 1
+
+    messages0 = load("messages")
+    cm = re.match(r"^contact:(.+)$", target)
+    if cm:
+        person_id = cm.group(1)
+        answers, opp_id, channel_id = None, args.opp_id, None
+        if not opp_id:
+            for row in _load_involvements():
+                if (row.get("person_id") == person_id and row.get("channel_id")
+                        and not row.get("opp_id")):
+                    channel_id = row["channel_id"]
+                    break
+            if not channel_id:
+                print("⛔ REFUSED — contact:%s names no opportunity (--opp) and resolves to "
+                      "no channel-only involvement either — a message must anchor to "
+                      "SOMETHING." % person_id)
+                return 1
+    else:
+        inbound = find(messages0, target)
+        if inbound is None:
+            print("⛔ REFUSED — %r resolves to no message in data/messages.jsonl, and is not "
+                  "`contact:<person-id>` either." % target)
+            return 1
+        if inbound.get("direction") != "inbound":
+            print("⛔ REFUSED — %r is not an inbound message (direction=%r) — 'answered' "
+                  "records a REPLY to something THEY sent." % (target, inbound.get("direction")))
+            return 1
+        answers = inbound.get("id")
+        opp_id, channel_id, person_id = (inbound.get("opp_id"), inbound.get("channel_id"),
+                                         inbound.get("person_id"))
+
+    msg_id = mint_message_id(opp_id or channel_id, person_id, date)
+    if any(m.get("id") == msg_id for m in messages0):
+        print("  · message %s already recorded — nothing further to do" % msg_id)
+        return 0
+    to_label = _person_name(person_id) or person_id or "unknown"
+
+    if args.already_locked:
+        if not lock_is_held():
+            print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
+            return 1
+    else:
+        try:
+            take_lock("record.py answered %s" % target, wait=args.wait)
+        except LockError as e:
+            print("  REFUSED — %s" % e)
+            return 1
+    try:
+        messages = load("messages")
+        if any(m.get("id") == msg_id for m in messages):
+            print("  · message %s already recorded — nothing further to do" % msg_id)
+            return 0
+        before = snapshot("messages")
+        pre_rc, _, _, pre_problems = validate()
+        messages.append({
+            "id": msg_id, "opp_id": opp_id, "channel_id": channel_id, "person_id": person_id,
+            "direction": "outbound", "medium": medium, "sent_on": date,
+            "from": None, "to": to_label, "subject": None,
+            "body": "(recorded by `record.py answered` — no body captured)",
+            "source": "record.py answered", "variant": None, "answers": answers,
+        })
+        save_atomic("messages", messages)
+        rc, out, err, problems = validate()
+        if rc != 0:
+            added = new_problems(pre_problems, problems)
+            if not (pre_rc != 0 and added == []):
+                restore("messages", before)
+                print("  ⛔ REFUSED — this reply broke the store; rolled back.")
+                print("  " + "\n  ".join(_diagnostic_lines(rc, out, err)))
+                return 1
+    finally:
+        if not args.already_locked:
+            release_lock()
+    print("answered: %s -> outbound message %s recorded (medium=%s, on=%s) — written "
+         "atomically, validator clean" % (target, msg_id, medium, date))
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Atomic writes to the record stores.")
-    ap.add_argument("op", choices=("create", "set", "set-in", "append", "show", "fields"))
+    # States & Views V1 (design-states-and-views.md §13/§15.3) — three new verbs, each a
+    # transaction over ONE file: `decide` and `networking-closed` on opportunities,
+    # `application-status` on applications. Presented as new operations (not `set`/`set-in`)
+    # because each carries its own refusal logic `set` cannot express (§15.3's own reasoning).
+    # States & Views V1b (design §13/§15.3) — `answered`/`touched` join the verb set: the
+    # only two writers `messages` (append-only, MESSAGES_WRITE_VERBS above) ever gets.
+    ap.add_argument("op", choices=("create", "set", "set-in", "append", "show", "fields",
+                                   "decide", "application-status", "networking-closed",
+                                   "answered", "touched"))
     ap.add_argument("rid", nargs="?", help="record id (e.g. an opportunity_id)")
     ap.add_argument("rest", nargs="*")
     ap.add_argument("--file", default="opportunities", choices=sorted(STORES))
+    ap.add_argument("--why-kind", dest="why_kind", default=None,
+                    help="decide: required when the verdict diverges from the engine's own "
+                         "suggestion — one of validate_data.DECISION_REASON_KINDS.")
+    ap.add_argument("--why", dest="why", default=None,
+                    help="decide: the reason in the owner's own words, required alongside "
+                         "--why-kind on a diverging decision.")
+    ap.add_argument("--i-checked", dest="i_checked", default=None,
+                    help="networking-closed: an ISO date asserting the owner looked personally — "
+                         "the one way to close on UNVERIFIED silence (§15.1).")
+    ap.add_argument("--on", dest="on_date", default=None,
+                    help="application-status/touched/answered: the ISO date the write takes "
+                         "(default: today for touched/answered; required for "
+                         "application-status is optional too, same default).")
+    ap.add_argument("--to", dest="to_token", default=None,
+                    help="touched: `contact:<person-id>` — who the touch went to.")
+    ap.add_argument("--medium", dest="medium", default=None,
+                    help="touched: one of validate_data.MEDIA.")
+    ap.add_argument("--via", dest="via_medium", default=None,
+                    help="answered: the medium the reply went out on — one of "
+                         "validate_data.MEDIA.")
+    ap.add_argument("--role", dest="recipient_role", default=None,
+                    help="touched: one of validate_data.RECIPIENT_ROLES (optional).")
+    ap.add_argument("--opp", dest="opp_id", default=None,
+                    help="answered: the opportunity this reply belongs to — required when "
+                         "the target is a `contact:<id>` touch ref rather than a message id "
+                         "(a bare message id already carries its own opp_id/channel_id).")
+    ap.add_argument("--_inject-fault", dest="inject_fault", default=None,
+                    help=argparse.SUPPRESS)     # test-only — see cmd_touched's own docstring
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--wait", type=int, default=DEFAULT_WAIT,
                     help="Seconds to wait for the run lock (default %d — holders release in "
@@ -674,6 +1004,32 @@ def main():
     ap.add_argument("--fields", action="store_true",
                     help="Print what this store accepts, so a caller never has to guess.")
     args = ap.parse_args()
+
+    # These three verbs each own exactly one store — --file is never the caller's to pick for
+    # them (a mistaken --file would silently target the wrong record and never be diagnosed).
+    if args.op in ("decide", "networking-closed"):
+        args.file = "opportunities"
+    elif args.op == "application-status":
+        args.file = "applications"
+    elif args.op == "touched":
+        args.file = "opportunities"          # the outreach[] row lands here; messages.jsonl
+                                              # is written internally, never via --file
+    elif args.op == "answered":
+        args.file = "messages"
+
+    # §15.3 point 1 — `messages` is append-only; `answered`/`touched` are its ONLY writers.
+    # Refused here, before any generic single-store machinery runs, so the refusal is the
+    # very first thing printed rather than a confusing failure two steps later.
+    if args.file == "messages" and args.op not in MESSAGES_WRITE_VERBS:
+        print("⛔ REFUSED — 'messages' is append-only (design §15.3): a message row is "
+              "immutable once written. Use `record.py answered ...` or `record.py touched "
+              "...` — never set/set-in/append/create/show --file messages.")
+        return 1
+
+    if args.op == "touched":
+        return cmd_touched(args)
+    if args.op == "answered":
+        return cmd_answered(args)
 
     if args.op == "fields" or args.fields:
         # ⭐ dev #143 / public #23 failure #3: this listing used to print field names and
@@ -856,7 +1212,7 @@ def main():
         def apply(r):
             r.setdefault(arr, []).append(blob)
 
-    else:  # set-in
+    elif args.op == "set-in":
         if len(args.rest) != 4:
             print("usage: set-in <id> <array> <key>=<match> <field> <value>")
             return 2
@@ -888,6 +1244,99 @@ def main():
                 raise KeyError("no %s[] entry with %s == %r" % (arr, mk, mv))
             for x in hits:
                 x[field] = val
+
+    elif args.op == "decide":
+        # design-states-and-views.md §3a — writes `verdict` + `decision{}` ATOMICALLY, in the
+        # SAME write: a verdict with no recorded suggestion (or a diverging one with no reason)
+        # is the exact gap this verb closes.
+        if len(args.rest) != 1:
+            print("usage: decide <opp_id> pursue|pass|park [--why-kind K --why \"...\"]")
+            return 2
+        _verdict_alias = {"park": "parked"}
+        new_verdict = _verdict_alias.get(args.rest[0], args.rest[0])
+        if new_verdict not in ("pursue", "pass", "parked"):
+            print("⛔ REFUSED — verdict must be one of pursue, pass, park (parked) — 'undecided' "
+                  "is the state before a decision, never something you decide TO.")
+            return 1
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import your_move as _ym
+        import profile as _profile_mod
+        _companies = {c.get("id"): c for c in load("companies")}
+        _company = _companies.get(rec.get("company_id"))
+        _cfg = _profile_mod.config()
+        try:
+            suggested, _missing = _ym.triage_suggestion(rec, _cfg, company=_company,
+                                                        fit=rec.get("fit"))
+        except Exception as e:                              # noqa: BLE001 — comp screen can
+            suggested, _missing = None, "screen-error:%s" % type(e).__name__   # raise on bad data
+        diverges = suggested is not None and suggested != new_verdict
+        if diverges and not (args.why_kind and (args.why or "").strip()):
+            print("⛔ REFUSED — the engine's own suggestion today is %r; your decision (%r) "
+                  "diverges. Pass --why-kind <%s> and --why \"...\" so the override is "
+                  "auditable later (design §3a)."
+                  % (suggested, new_verdict, "|".join(sorted(_validator_module().DECISION_REASON_KINDS))))
+            return 1
+        if args.why_kind and args.why_kind not in _validator_module().DECISION_REASON_KINDS:
+            print("⛔ REFUSED — --why-kind must be one of %s"
+                  % ", ".join(sorted(_validator_module().DECISION_REASON_KINDS)))
+            return 1
+        decision_obj = {"on": datetime.date.today().isoformat(), "suggested": suggested,
+                        "reason_kind": args.why_kind, "reason": args.why}
+        desc = "decide verdict=%s (engine suggested %s)" % (new_verdict, suggested)
+
+        def apply(r):
+            r["verdict"] = new_verdict
+            r["decision"] = decision_obj
+
+    elif args.op == "application-status":
+        # §3c — `status` + `status_on` in ONE transaction. `closed` presupposes a submission
+        # (what was never sent is `withdrawn`, never `closed`) — refused below `submitted`.
+        if len(args.rest) != 1:
+            print("usage: application-status <app_id> <status> [--on <date>]")
+            return 2
+        new_status = args.rest[0]
+        if new_status not in _validator_module().APPLICATION_STATUS:
+            print("⛔ REFUSED — status must be one of %s"
+                  % ", ".join(sorted(_validator_module().APPLICATION_STATUS)))
+            return 1
+        current = rec.get("status")
+        if new_status == "closed" and current in ("not-started", "started", None):
+            print("⛔ REFUSED — 'closed' presupposes a submission; this application's status "
+                  "is %r. What was never sent is 'withdrawn', not 'closed' (§3c)." % current)
+            return 1
+        if args.on_date is not None and not re.match(r"^\d{4}-\d{2}-\d{2}$", args.on_date):
+            print("⛔ REFUSED — --on must be an ISO date (YYYY-MM-DD), got %r" % args.on_date)
+            return 1
+        on_date = args.on_date or datetime.date.today().isoformat()
+        desc = "application-status %s -> %s (status_on=%s)" % (current, new_status, on_date)
+
+        def apply(r):
+            r["status"] = new_status
+            r["status_on"] = on_date
+
+    else:  # networking-closed
+        # §3b/§15.1 — refuses on UNVERIFIED silence unless the owner says they looked personally.
+        if len(args.rest) != 0:
+            print("usage: networking-closed <opp_id> [--i-checked <date>]")
+            return 2
+        if args.i_checked is not None and not re.match(r"^\d{4}-\d{2}-\d{2}$", args.i_checked):
+            print("⛔ REFUSED — --i-checked must be an ISO date (YYYY-MM-DD)")
+            return 1
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import your_move as _ym
+        today = datetime.date.today().isoformat()
+        conv_axis, _newest = _ym.opportunity_conversation_axis(ROOT, args.rid, today=today)
+        if conv_axis == "silence-unverified" and not args.i_checked:
+            print("⛔ REFUSED — silence on this pursuit is UNVERIFIED (no mailbox coverage "
+                  "confirms nobody wrote back). Pass --i-checked <date> to assert you looked "
+                  "yourself (§15.1) — or 'you are the sensor' if no mailbox is configured.")
+            return 1
+        closed_on = args.i_checked or today
+        desc = "networking-closed on %s (conversation axis at write time: %s)" % (closed_on,
+                                                                                  conv_axis)
+
+        def apply(r):
+            r["networking_closed_on"] = closed_on
 
     print("%s: %s" % (args.rid, desc))
     if args.dry_run:

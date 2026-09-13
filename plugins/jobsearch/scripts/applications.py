@@ -48,7 +48,7 @@ COVER_LETTERS_FILE = os.path.join("data", "cover_letters.jsonl")
 # caught by the regression suite, not by an import cycle at run start"; precondition.py's
 # OUTCOMES is the original precedent). Kept consistent with that convention here, not
 # reinvented — a caller that wants validate_data's own copy can still read it there directly.
-SUBMITTED_APP_STATUS = {"submitted", "acknowledged", "rejected", "advanced"}
+SUBMITTED_APP_STATUS = {"submitted", "acknowledged", "rejected", "advanced", "closed"}
 
 
 def _load_jsonl(path):

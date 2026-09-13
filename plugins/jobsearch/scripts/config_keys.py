@@ -50,13 +50,43 @@ CHASE_AFTER_DAYS_DEFAULT = _cf.DEFAULT_DAYS
 NO_RESPONSE_AFTER_DAYS = "communications.no_response_after_days"
 NO_RESPONSE_AFTER_DAYS_DEFAULT = 14
 
+# States & Views V1 (design-states-and-views.md §3c/§15.7) — the owner's own two values:
+# "make sure the is a configurable setting" (30 days, `propose`, not `auto`). Home is the
+# EXISTING `ats` section (about the ATS's clock and receipts), never `applying` (a phase
+# directory name that is not a config section at all — §15.7's own correction).
+ATS_SILENCE_DAYS = "ats.silence_days"
+ATS_SILENCE_DAYS_DEFAULT = 30
+ATS_CLOSE = "ats.close"
+ATS_CLOSE_DEFAULT = "propose"
+ATS_CLOSE_VALUES = ("propose", "auto")
+
 # What a reader resolves — and therefore exactly what a scaffold seeding fresh defaults would
 # need to seed (the `_ats_keys.READER_KEYS` / `resume_variants.SUBMITTED` mirror precedent).
-# Both keys already exist on every profile pre-dating C1 (they were declared, unread, before
-# this registry existed) — nothing seeds them; `describe()` below reports the default when a
-# profile has not set one, same as the register line at brief.py §3.2 prints "default — not in
-# your file".
-READER_KEYS = frozenset({CHASE_AFTER_DAYS, NO_RESPONSE_AFTER_DAYS})
+# `describe()` below reports the default when a profile has not set one, same as the register
+# line at brief.py §3.2 prints "default — not in your file". ONE registry — `profile.py
+# --options` and `doctor.py`'s CONFIG CURRENCY both iterate `READER_KEYS` (via `describe()`)
+# rather than each naming its own list, so the two cannot enumerate two different sets
+# (design §15.7's own gate: "profile.py --options and doctor.py reading different key lists").
+READER_KEYS = frozenset({CHASE_AFTER_DAYS, NO_RESPONSE_AFTER_DAYS, ATS_SILENCE_DAYS, ATS_CLOSE})
+
+# {key: (default, kind, bounds_or_values, why)} — the metadata `profile.py --options` and
+# `doctor.py` render alongside the value/provenance `describe()` returns. `kind` is "int" or
+# "enum"; `bounds` is (lo, hi) for "int", a tuple of legal values for "enum".
+_METADATA = {
+    CHASE_AFTER_DAYS: (CHASE_AFTER_DAYS_DEFAULT, "int", (1, 60),
+                       "days of silence before an outreach thread reads 'silent' "
+                       "(your_move.conversation_axis / workflow_state)"),
+    NO_RESPONSE_AFTER_DAYS: (NO_RESPONSE_AFTER_DAYS_DEFAULT, "int", (1, 90),
+                             "verified silence below this many days is a 'chase' register "
+                             "line, at or past it a 'reconnect' (brief.py)"),
+    ATS_SILENCE_DAYS: (ATS_SILENCE_DAYS_DEFAULT, "int", (7, 180),
+                       "days of ATS silence, measured to verified mailbox coverage — never "
+                       "to today — before a close is PROPOSED (check_followups.py)"),
+    ATS_CLOSE: (ATS_CLOSE_DEFAULT, "enum", ATS_CLOSE_VALUES,
+               "whether the run only PROPOSES a close ('propose') or writes it itself "
+               "('auto') — a window is a guess about the employer's clock; the owner's confirmation "
+               "is what turns it into a fact"),
+}
 
 # Engine constants C1 hardcodes rather than reading from config — never resolved by describe(),
 # printed here so "is this configurable?" has a documented answer.
@@ -80,14 +110,21 @@ def describe(cfg, key):
     `provenance` is one of the exact two phrases brief.py's register line prints, so every
     caller renders identically: `"in your config.json"` or `"default — not in your file"`.
     Raises `KeyError` for a key this registry does not know — never guessed over."""
-    if key == CHASE_AFTER_DAYS:
-        default = CHASE_AFTER_DAYS_DEFAULT
-    elif key == NO_RESPONSE_AFTER_DAYS:
-        default = NO_RESPONSE_AFTER_DAYS_DEFAULT
-    else:
+    if key not in _METADATA:
         raise KeyError("config_keys does not know %r — READER_KEYS: %s"
                        % (key, ", ".join(sorted(READER_KEYS))))
+    default = _METADATA[key][0]
     v = _get_dotted(cfg, key)
     if v is None:
         return default, "default — not in your file"
     return v, "in your config.json"
+
+
+def metadata(key):
+    """(default, kind, bounds_or_values, why) for a registered `key` — what `--options`
+    prints beside the value/provenance `describe()` returns. Raises `KeyError` the same way
+    `describe()` does for an unknown key."""
+    if key not in _METADATA:
+        raise KeyError("config_keys does not know %r — READER_KEYS: %s"
+                       % (key, ", ".join(sorted(READER_KEYS))))
+    return _METADATA[key]

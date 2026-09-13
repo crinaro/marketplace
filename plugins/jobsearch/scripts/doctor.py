@@ -126,6 +126,17 @@ def check_config_currency(fix=False):
         # then RE-OPENED in append mode for the trailing newline -- two chances to leave a
         # half-written profile behind.
         write_json(os.path.join(ROOT, "config.json"), cfg)
+
+    # States & Views V1 §15.7 — the SAME registry `profile.py --options` reads
+    # (config_keys.READER_KEYS), never a second hand-typed list: an adjustable key always has
+    # an engine default, so its absence is never BAD here (that is what "adjustable" means) —
+    # it is reported OK, with provenance, so CONFIG CURRENCY answers "what does this engine
+    # read" for the adjustable surface too, not only the five structural keys above.
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import config_keys as _ck
+    for key in sorted(_ck.READER_KEYS):
+        value, provenance = _ck.describe(cfg, key)
+        out.append((OK, key, "%r (%s)" % (value, provenance)))
     return out
 
 

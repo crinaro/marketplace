@@ -188,9 +188,6 @@ def _tracked_engine_files():
 #     owner's name and solved it the same way: describe the collision without repeating the
 #     colliding word. The term below is drawn from the row's URL, never its name.
 KNOWN_EXCEPTIONS = (
-    ("scripts/generate_dashboard.py", "which the JSONL-backed ", 225,
-     "an ordinary English word in a code comment about JSONL-backed helpers; collides only "
-     "because this owner's profile now names a company whose name is that common noun"),
     ("scripts/mailboxes.py", ', "https://login.', 222,
      "one row of the IMAP provider table (PROVIDER_HELP) — a generic mail-provider entry, not "
      "personal data; collides only because this owner's profile separately names the same "
@@ -221,156 +218,16 @@ KNOWN_EXCEPTIONS = (
      "agencies illustrating the wrapper-vs-employer point, not this owner's search); "
      "collides only because this owner's profile separately names one of them as an "
      "employer encountered"),
-    # ⭐ dev #225, another hit of the same class, 2026-09-06 — this is the EIGHTH entry of it.
-    # Four sites, ALL the same ordinary English / software word: a common noun that doubles as
-    # (a) the smallest semver release step, one below a minor, used in this plugin's own
-    # versioning-policy prose, and (b) the standard test-suite verb for swapping an attribute
-    # at runtime for the length of one call. None of the four lines below is about this owner's
-    # search — all four are unchanged-for-any-installation engine prose that predates today.
-    # The collision fires only because the profile gained a company row TODAY (2026-09-06)
-    # whose name is that same common word.
-    # ⚠️ Per the block above: neither the word itself nor any of its case variants appears in
-    # any term below — this file is scripts/*.py and scans itself, so spelling it here would
-    # be tomorrow's fresh hit. Each term is text immediately AROUND the colliding word on its
-    # own line, never the word.
-    (".claude-plugin/plugin.json", "behaviour change, ", 225,
-     "the versioningPolicy metadata string's own release-cadence prose (installation-generic, "
-     "predates this release); collides only because this owner's profile now names a company "
-     "whose name is that same common software-release word"),
-    ("docs/adr-009-versioning-policy.md", "a fix takes a **", 225,
-     "ADR-009's decision line naming the two release-size words a version bump uses "
-     "(installation-generic policy text); collides only because this owner's profile now "
-     "names a company whose name is that same common software-release word"),
-    ("scripts/install_launcher.py", "Each guard was a ", 225,
-     "the generation-3 rewrite comment describing each prior guard as one more of the same "
-     "kind of fix (installation-generic commentary on this file's own history); collides only "
-     "because this owner's profile now names a company whose name is that same common word"),
-    ("scripts/install_launcher.py", "would have been the third ", 225,
-     "the same comment's next sentence, same word, same reason (installation-generic "
-     "commentary on this file's own history); collides only because this owner's profile now "
-     "names a company whose name is that same common word"),
-    ("scripts/test_checks.py", "and HOME redirect stay contained", 225,
-     "a test docstring's parenthetical naming what kind of runtime attribute-swap the test "
-     "performs (installation-generic test terminology); collides only because this owner's "
-     "profile now names a company whose name is that same common word"),
-    ("scripts/test_checks.py", "un-marked the temp", 225,
-     "a comment in the same test describing what the earlier attribute-swap undid "
-     "(installation-generic test terminology); collides only because this owner's profile now "
-     "names a company whose name is that same common word"),
-    # ⭐ dev #225, same class, 2026-09-12 — THE NINTH ENTRY, AND A SECOND WORD JOINS IT.
+    # ⭐⭐ dev #342, 2026-09-12 — 26 ENTRIES OF DEV #225's CLASS RETIRED HERE, NOT HIDDEN.
     #
-    # Two unrelated collisions surfaced in the same run, both the identical shape as the eighth
-    # entry above: an ordinary, installation-generic engine word that happens, separately, to
-    # also be a real company's name in this owner's profile (a company row added 2026-09-12).
-    #
-    # (A) SEVEN MORE sites for the SAME word as the eighth entry — the test suite's own
-    #     attribute-swap helper, this time matched as a bound method NAME (`self._<word>(...)`)
-    #     rather than as prose. The eighth entry's six sites were all prose describing the verb;
-    #     these seven are the method itself and every call site, all in scripts/test_checks.py,
-    #     which the eighth entry's own two sites already live in — the method predates this
-    #     release and is unchanged by it; only the profile-side collision is new.
-    #
-    # (B) A NEW ordinary word: the common noun for "the matching party on the other side of a
-    #     two-way relationship" — used two ways across engine prose and code, neither about this
-    #     owner's search: (i) a doc cross-reference convention naming ADR-032 as the read-side
-    #     pairing of ADR-017/ADR-022's write-side rule, repeated near-verbatim across four docs
-    #     (adr-017, adr-022, adr-index, architecture) plus once more in design-query-or-citation
-    #     as ordinary connective prose; (ii) a function parameter / local variable in
-    #     `your_move.conversation_axis()` and its one caller in `brief.py`, naming the single
-    #     thread a caller already knows the scope of, as opposed to the default of scanning every
-    #     thread touching a person.
-    #
-    # ⚠️ Per the block above: neither word nor any case variant appears below. Each term is text
-    # immediately adjacent to the colliding word on its own scanned line — and for the one very
-    # long table row in adr-index.md, the line is truncated to its first 110 characters before
-    # this gate ever compares it (see `scan()`), so the stored term is drawn from THAT truncated
-    # text, not from the word's actual position in the full line.
-    ("scripts/test_checks.py", "(self, mod, **attrs):", 225,
-     "the test-suite's own attribute-swap helper method's signature (installation-generic test "
-     "vocabulary, same method the eighth entry's two sites already describe); collides only "
-     "because this owner's profile now names a company whose name is that same common word"),
-    ("scripts/test_checks.py", "(alert_sweep, sweep_account=stub)", 225,
-     "one call site of that same helper, in the alert_sweep test (installation-generic test "
-     "vocabulary); collides only because this owner's profile now names a company whose name "
-     "is that same common word"),
-    ("scripts/test_checks.py", "(meeting_check, ROOT=self.tmp,", 225,
-     "one call site of that same helper, in the meeting_check ROOT-rebind test "
-     "(installation-generic test vocabulary); collides only because this owner's profile now "
-     "names a company whose name is that same common word"),
-    ("scripts/test_checks.py", "(meeting_check, sweep=stub)", 225,
-     "another call site of that same helper, in the meeting_check sweep-stub test "
-     "(installation-generic test vocabulary); collides only because this owner's profile now "
-     "names a company whose name is that same common word"),
-    ("scripts/test_checks.py", "(watch, ROOT=self.tmp,", 225,
-     "one call site of that same helper, in the watch.py ROOT-rebind test (installation-generic "
-     "test vocabulary); collides only because this owner's profile now names a company whose "
-     "name is that same common word"),
-    ("scripts/test_checks.py", "(reconcile, ROOT=self.tmp, DATA=os.path.join", 225,
-     "one call site of that same helper, in the reconcile.py ROOT-rebind test "
-     "(installation-generic test vocabulary); collides only because this owner's profile now "
-     "names a company whose name is that same common word"),
-    ("scripts/test_checks.py", "ambient profile — ", 225,
-     "a comment explaining why the same helper is needed for a module bound at import time "
-     "(installation-generic test commentary); collides only because this owner's profile now "
-     "names a company whose name is that same common word"),
-    ("docs/adr-017-focus-md-retirement.md",
-     "## Cross-reference added 2026-09-11 — the read-side ", 225,
-     "this ADR's own cross-reference heading naming ADR-032 as the read-side pairing of this "
-     "ADR's write-side rule (installation-generic doc cross-reference, predates this release); "
-     "collides only because this owner's profile now names a company whose name is that same "
-     "common relationship-noun"),
-    ("docs/adr-017-focus-md-retirement.md", "ships the ", 225,
-     "the same cross-reference paragraph's next sentence, same word, same reason "
-     "(installation-generic doc prose); collides only because this owner's profile now names a "
-     "company whose name is that same common relationship-noun"),
-    ("docs/adr-022-derive-from-evidence.md",
-     "## Cross-reference added 2026-09-11 — the read-side ", 225,
-     "the identical cross-reference heading, repeated in this ADR (installation-generic doc "
-     "cross-reference, predates this release); collides only because this owner's profile now "
-     "names a company whose name is that same common relationship-noun"),
-    ("docs/adr-index.md",
-     "Query or Citation: generated narrative carries a claim, never a senten", 225,
-     "the ADR-032 index row's own summary sentence — the stored term is this line's first 110 "
-     "characters after truncation (see `scan()`), which happens not to reach the colliding word "
-     "at all; collides only because this owner's profile now names a company whose name is that "
-     "same common relationship-noun and the word appears later in this same long table row"),
-    ("docs/architecture.md", "The read-side ", 225,
-     "architecture.md's own naming of ADR-032 as the read-side pairing of the marketplace's "
-     "derive-don't-restate rule (installation-generic doc prose, predates this release); "
-     "collides only because this owner's profile now names a company whose name is that same "
-     "common relationship-noun"),
-    ("docs/design-query-or-citation.md",
-     "**One function.** C1 lands `your_move.conversation_axis(root, subject, ", 225,
-     "this design doc's own function signature for `conversation_axis()` (installation-generic "
-     "doc prose describing engine code, predates this release); collides only because this "
-     "owner's profile now names a company whose name is that same common relationship-noun"),
-    ("scripts/brief.py", ' = ("opp:%s" % opp_id) if opp_id else', 225,
-     "brief.py's own local variable naming the single thread its caller already knows the scope "
-     "of, before passing it to conversation_axis() (installation-generic engine code); collides "
-     "only because this owner's profile now names a company whose name is that same common "
-     "relationship-noun"),
-    ("scripts/brief.py", "axes = _ym.conversation_axis(root, person_id, ", 225,
-     "the same function's call into conversation_axis(), passing that local along "
-     "(installation-generic engine code); collides only because this owner's profile now names "
-     "a company whose name is that same common relationship-noun"),
-    ("scripts/your_move.py", "def conversation_axis(root, subject, ", 225,
-     "conversation_axis()'s own signature, naming the parameter for the one thread a caller may "
-     "already know the scope of (installation-generic engine code); collides only because this "
-     "owner's profile now names a company whose name is that same common relationship-noun"),
-    ("scripts/your_move.py", "or exactly the one thread `", 225,
-     "the same function's docstring explaining that same parameter (installation-generic "
-     "engine prose); collides only because this owner's profile now names a company whose name "
-     "is that same common relationship-noun"),
-    ("scripts/your_move.py", "if ", 225,
-     "the same function's guard clause narrowing to that one thread when the parameter is given "
-     "(installation-generic engine code; the stored term is a short prefix because this hit's "
-     "line is a single short statement with the colliding word in the middle of it); collides "
-     "only because this owner's profile now names a company whose name is that same common "
-     "relationship-noun"),
-    ("scripts/your_move.py", "kind, _sep, tid = str(", 225,
-     "the same guard clause's next line, splitting that same parameter's value "
-     "(installation-generic engine code); collides only because this owner's profile now names "
-     "a company whose name is that same common relationship-noun"),
+    # The eighth block (six sites, one ordinary release/attribute-swap word) and the ninth block
+    # (nineteen sites: seven more of that same word matched as a bound method name, plus twelve
+    # for a second, unrelated relationship-noun word) used to need a manually-scoped tuple each,
+    # the same treadmill issue #342 names. All 26 — plus the earlier `generate_dashboard.py`
+    # entry, the first hit of the class — are now retired structurally by `_shape_exempt()`
+    # above: every one of them was a bare-lowercase, unjoined, single-token occurrence, exactly
+    # the shape a proper noun never takes. An entry that can never fire again is exactly what the
+    # staleness check two sections below exists to force out.
 )
 
 # Every tracked engine file. The families above remain a taxonomy and an emptiness guard; this
@@ -546,22 +403,15 @@ def _profile_terms():
     # gate switched off, and it was the actual, sole cause of four separate KNOWN_EXCEPTIONS
     # entries (all four retired in the same change that added this block).
     #
-    # ⚠️ THIS DOES NOT TOUCH THE OTHER NINE #225 EXCEPTIONS. The remaining collisions are an
-    # ordinary, common software-release word this repo also uses for its own versioning prose
-    # and test vocabulary (six sites) and a staffing-agency name used as a generic
-    # JD-verification example (one site). Neither is safely derivable the way the board list is:
-    # the software-release word is free-text policy PROSE (`plugin.json`'s `versioningPolicy`
-    # string), not a structured enum this file can read, and — unlike a job board — this same
-    # ordinary word also happens, separately, to be a real employer's name: that collision is
-    # the CURRENT incident, so silencing the word globally would hide the next real occurrence
-    # of the very collision this fix exists for. No dictionary
-    # ships with this gate (Python 3.9+, stdlib only) and none should: the STOPWORDS precedent
-    # above only ever accepted this trade-off for CLOSED-CLASS function words, which are
-    # "essentially never drawn" as a name — an argument that does not hold for an open-class
-    # content word a real company is, in fact, named after. Those nine stay exactly as
-    # manually-scoped KNOWN_EXCEPTIONS entries; automating them away would either reopen that
-    # exact blind spot or resurrect the free-text narrative-pattern matching this repo already
-    # learned (`check_narrative.py`) is wrong four times out of five.
+    # ⚠️ dev #342, 2026-09-12 — CORRECTED. This paragraph used to say the other nine #225
+    # exceptions "stay exactly as manually-scoped KNOWN_EXCEPTIONS entries" — that is now false.
+    # `_shape_exempt()` (below, near `scan()`) retires all but two of them structurally: a proper
+    # noun is never written as a bare lowercase word, standing alone, inside longer text, and
+    # every one of those nine collisions took exactly that shape. The two survivors —
+    # `scripts/mailboxes.py`'s #222 provider row and `agents/opportunity-researcher.md`'s #225
+    # staffing-agency example — are Title-case real entities used generically, the one shape
+    # `_shape_exempt()` deliberately leaves strict; see its own docstring for the residual this
+    # narrows the treadmill to, and why that residual is acceptable in this repo's threat model.
     try:
         import importlib as _importlib
         _migrate = _importlib.import_module("migrate")
@@ -696,7 +546,78 @@ def _publisher_allowances():
 ALLOWANCES = _publisher_allowances()
 
 
-def scan(path, terms):
+# ⭐⭐ dev #342 — EXEMPT BY OCCURRENCE SHAPE, NEVER BY TERM.
+#
+# Issue #342: a real, colliding term that also happens to be an ordinary English/software word
+# (not caught by STOPWORDS, which only ever covers closed-class function words) becomes a
+# `KNOWN_EXCEPTIONS` tuple for every site that already used the word in ordinary,
+# installation-generic prose or code — a treadmill that scales with the codebase, not with real
+# risk, and that never runs backwards (an entry is only ever removed by a data migration, never
+# by a code fix). Two options already rejected by this file's own history (a dictionary of common
+# words; globally silencing a colliding term) stay rejected — see the issue.
+#
+# The structural signal instead: **a proper noun is never written as a bare lowercase word,
+# standing alone, inside longer text.** In English prose it is capitalised; in machine text
+# (identifiers, slugs, domains, paths, emails) it is lowercase but JOINED to a neighbour across
+# `-_./:@`; as a datum it is the WHOLE of a quoted literal. The one shape a name essentially never
+# takes is exactly the shape a common noun, verb or parameter always takes. This is the SAME
+# argument STOPWORDS above already accepted for closed-class words, turned from a property of the
+# TERM into a property of the OCCURRENCE: the word still fires everywhere it is written the way a
+# name is written — capitalised, joined, or quoted whole — and is exempt only in the one shape a
+# name never takes.
+#
+# Every leak shape on this repo's record still fires under this rule: dev #45's joined
+# identifiers (`NEEDS_<term>_HEADER`, `..._requires_<term>`) and dev #46's fixture map KEY (the
+# whole of a quoted literal) are both excluded from the exemption by construction, not by
+# coincidence — see the tests built against `_shape_exempt()`.
+JOIN = "-_./:@"
+
+
+def _shape_exempt(kind, w, m, line):
+    """True when a match of term `w` (kind `kind`) at `m` on `line` is exempt by OCCURRENCE
+    SHAPE — dev #342 — rather than by term. ALL of the following must hold:
+
+      1. `kind != "name"` — the owner's own name kind stays fully strict; the treadmill cost
+         there is zero, so there is nothing to trade away.
+      2. `w` is single-token (no internal space) — a multi-word term (`"Ordinary Word" Fresh
+         Robotics`-shaped) is never exempt; two ordinary words combining into one specific phrase
+         is not something prose does by accident (the same reasoning `_is_ordinary_word()` above
+         already applies).
+      3. the matched TEXT — `m.group(0)`, not `w` — is entirely lowercase. Title-case, UPPER and
+         mixed case all still fire; GitHub #19's case-insensitive matching is untouched.
+      4. NOT joined to an alphanumeric neighbour exactly one separator deep on either side:
+         neither `line[s-1] in JOIN and line[s-2].isalnum()` nor `line[e] in JOIN and
+         line[e+1].isalnum()` (every index bounds-checked first). `self._x(` / `def _x(` are
+         unjoined (`_` then `.` or a space); `NEEDS_X_HEADER`, `x-cto`, `login.x.com`,
+         `docs/x/`, `old@x.com` are joined and still fire.
+      5. NOT the whole of a quoted literal: not (`line[s-1] in "\\"'"` and `line[e] ==
+         line[s-1]`). A JSON key (`"x": {`) or a value literal (`== 'x'`) still fires — the
+         dev #46 shape. Backticks are NOT quotes here: a docstring's `` `param` `` reference is
+         an identifier reference, one of the shapes this exempts.
+
+    Residual, accepted deliberately (design §5 / CLAUDE.md dev #342): a real entity written as a
+    bare lowercase word inside otherwise-ordinary text — "talked to sprocket today" — is exempt
+    and NOT caught. No leak on this repo's record has ever taken that shape; every one on record
+    (dev #45's joined identifiers, dev #46's quoted key) still fires under rules 4 and 5 above.
+    The count of every exempted match prints on every run (see `main()`), so the trade is never
+    silent.
+    """
+    if kind == "name" or " " in w:
+        return False
+    text = m.group(0)
+    if text != text.lower():
+        return False
+    s, e = m.span()
+    if s >= 2 and line[s - 1] in JOIN and line[s - 2].isalnum():
+        return False
+    if e + 1 < len(line) and line[e] in JOIN and line[e + 1].isalnum():
+        return False
+    if s >= 1 and e < len(line) and line[s - 1] in "\"'" and line[e] == line[s - 1]:
+        return False
+    return True
+
+
+def scan(path, terms, exempt_sink=None):
     rel = os.path.relpath(path, ENGINE_ROOT)
     hits = []
     if not os.path.exists(path):
@@ -735,10 +656,18 @@ def scan(path, terms):
                     # VALUES and a name had been baked into an IDENTIFIER. Requiring a
                     # non-alphanumeric neighbour instead treats `_`, `-`, `.` and `/` as the
                     # separators they are, while still refusing to fire inside a longer word.
+                    # ⭐ dev #342 — this separator-aware match is what makes `_shape_exempt()`'s
+                    # own join test meaningful: it reuses the exact same neighbour-character
+                    # definition to tell "joined" from "unjoined". Loosen one without the other
+                    # and the two stop agreeing on what a boundary is.
                     for m in re.finditer(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(w),
                                          line, re.IGNORECASE):
                         if any(s <= m.start() and m.end() <= e for s, e in allowed):
                             continue      # inside the published publisher identity
+                        if _shape_exempt(kind, w, m, line):
+                            if exempt_sink is not None:
+                                exempt_sink.append((n, kind, w, line.strip()[:110]))
+                            continue      # dev #342 — exempt by shape, never by term
                         hits.append((n, kind, w, line.strip()[:110]))
                         break
     return rel, hits
@@ -881,8 +810,12 @@ def main():
           % ", ".join("%s=%d" % (k, len(v)) for k, v in terms.items()))
     total, dirty = 0, []
     fired = set()
+    exempt_by_file = {}
     for p in readable:
-        rel, hits = scan(p, terms)
+        exempt_sink = []
+        rel, hits = scan(p, terms, exempt_sink)
+        if exempt_sink:
+            exempt_by_file[rel] = exempt_sink
         if hits is None:
             continue
         keep = []
@@ -899,6 +832,19 @@ def main():
         if args.verbose and hits:
             print("\n  %s" % rel)
             for n, kind, w, line in hits[:12]:
+                print("    %4d  [%s:%s]  %s" % (n, kind, w, line))
+
+    # ⭐⭐ dev #342 — VISIBLE EVERY RUN, RED NEVER. The mechanism that retires a KNOWN_EXCEPTIONS
+    # entry by occurrence shape must be as visible as the exceptions it replaces — the count
+    # prints unconditionally, and --verbose names every site, so the trade in `_shape_exempt()`'s
+    # own docstring (a bare-lowercase-mid-sentence company mention goes uncaught) is never silent.
+    total_exempt = sum(len(v) for v in exempt_by_file.values())
+    print("\n  shape-exempt (dev #342): %d lowercase, unjoined single-token match(es) in %d "
+          "file(s)" % (total_exempt, len(exempt_by_file)))
+    if args.verbose:
+        for rel, ex in sorted(exempt_by_file.items()):
+            print("\n  %s (shape-exempt)" % rel)
+            for n, kind, w, line in ex[:12]:
                 print("    %4d  [%s:%s]  %s" % (n, kind, w, line))
 
     # ⭐⭐ THE COVERAGE LINE IS THE POINT OF #45. A gate that cannot say what it skipped is a

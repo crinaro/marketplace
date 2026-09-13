@@ -88,8 +88,27 @@ PLAY_SEQUENCE = ("needs-application", "applied", "needs-recruiter-contact", "ver
 PLAY_STAGES = set(PLAY_SEQUENCE) | {"unresolved"}
 # Every play position from `applied` onward presupposes a submitted application on the record.
 POST_APPLICATION_PLAY = set(PLAY_SEQUENCE[1:])
-# applications[].status values that prove a submission actually happened.
-SUBMITTED_APP_STATUS = {"submitted", "acknowledged", "rejected", "advanced"}
+# applications[].status values that prove a submission actually happened. States & Views V1
+# (design-states-and-views.md §3c) adds `closed` here — a close PRESUPPOSES a submission (you
+# cannot close what was never sent), which is exactly what SUBMITTED_APP_STATUS already means
+# for every other status in this set. `_CLOSED_STATUSES` scar (§14): this is spelled by hand in
+# TWO other places (check_sent_drafts.py, funnel_report.py) and mirrored behind an equality
+# test in a third (applications.py) — see APPLICATION_ENDINGS below for the ending vocabulary,
+# which is a DIFFERENT set (a subset of statuses that mean "the pursuit is over", not "a
+# submission happened").
+SUBMITTED_APP_STATUS = {"submitted", "acknowledged", "rejected", "advanced", "closed"}
+# ⭐ States & Views V1 §2b/§3c — the ONE imported definition of "an application status that
+# means the pursuit through this application is OVER" (the `TERMINAL_OPP_STATUSES` move, one
+# layer down). `rejected` (the employer said no), `withdrawn` (they did, after applying) and
+# `closed` (we gave up on ATS silence — §3c) are the three; `advanced`/`submitted`/`acknowledged`
+# are live, and `not-started`/`started` never reached a submission to end. Read by
+# `your_move.ended_because()` and `funnel_report.py`; never re-spelled.
+APPLICATION_ENDINGS = frozenset({"rejected", "withdrawn", "closed"})
+# States & Views V1 §3a — `opportunities.decision.reason_kind`, required whenever a written
+# verdict diverges from `triage_suggestion()`'s own reading at decision time. Proposed by the
+# design, not yet vetoed or extended by the owner (§3a's own note).
+DECISION_REASON_KINDS = frozenset({"comp-acceptable", "setting-acceptable", "fit-misjudged",
+                                   "company-priority", "not-interested", "timing", "other"})
 VERDICTS = {"pursue", "pass", "parked", "undecided"}
 # `unresolved` added 2026-08-11 (issue #4): a posting that declares two settings at once (e.g.
 # tagged both hybrid and remote) previously forced a silent pick, and the pick selected which
@@ -115,7 +134,7 @@ OUTREACH_STATUS = {"drafted", "staged", "sent", "declined"}
 APPLICATION_METHODS = {"company-ats", "linkedin-easy-apply", "recruiter-submitted",
                        "email", "referral"}
 APPLICATION_STATUS = {"not-started", "started", "submitted", "acknowledged",
-                      "rejected", "advanced", "withdrawn"}
+                      "rejected", "advanced", "withdrawn", "closed"}
 # ADR-031 B2 (design §1/§9, §16 item 3) — a fact about the OPPORTUNITY, not the plan: one
 # vocabulary per fact is the rule, shared with the future plans.outcomes. `consulting` was the
 # pre-Part-3 wording; amended to `contract`, one word, before anything shipped.
@@ -809,6 +828,13 @@ def _main():
         if r.get("status") in SUBMITTED_APP_STATUS and not r.get("date"):
             problems.append("%s: status %r but has no date — that is the field the funnel "
                             "analysis runs on" % (label, r.get("status")))
+        # States & Views V1 §3c — `status_on`: when the CURRENT `status` was written. Stamped
+        # by every record.py status write and the (future) ADR-030 receipt reader; null on
+        # history (§3d's migration seeds it explicitly rather than guessing from `date`) — so
+        # only an unreadable non-null value is a problem here, never the null itself.
+        son = r.get("status_on")
+        if son is not None and not is_date(son):
+            problems.append("%s: status_on not ISO or null — %r" % (label, son))
         # Which variant actually WENT (public #26) — retired resolves fine here: history must
         # stay attributable forever. UNRESOLVED (public #70's own sentinel, see below) is a
         # legal escape and never "does not resolve".
@@ -982,6 +1008,12 @@ def _main():
 
     # ---- opportunities ----
     opp_ids = set()
+    # States & Views V1b (design §15.3 point 2) — every outreach[].message_ref seen, across
+    # EVERY opportunity, so the touched-orphan check below (after this loop) can tell a
+    # `record.py touched` message that landed with no completing outreach[] row apart from
+    # one that is genuinely still mid-write from a caller who has not gotten to the second
+    # append yet — the SAME half-written case a crash between the two appends produces.
+    outreach_message_refs = set()
     for r in opps:
         oid = r.get("id", "?")
         label = "opportunities[%s]" % oid
@@ -994,6 +1026,50 @@ def _main():
         enum(r, "status", OPP_STATUS, label, problems)
         enum(r, "stage", STAGES, label, problems)
         enum(r, "verdict", VERDICTS, label, problems)
+
+        # ⭐ States & Views V1 §3a — `decision{}`, the divergence reason as a FIELD, not a note.
+        # {"on": ISO date, "suggested": "pursue"|"pass"|null, "reason_kind": <enum>|null,
+        # "reason": str|null}. `suggested` freezes what `your_move.triage_suggestion()` returned
+        # AT THE MOMENT the verdict was written — a fact about that event, never re-derived.
+        # `reason_kind`/`reason` are required IFF `suggested` is non-null and differs from the
+        # verdict actually on the record: an override with no reason is a decision nobody can
+        # audit later, which is exactly the gap this field exists to close.
+        dec = r.get("decision")
+        if dec is not None:
+            if not isinstance(dec, dict):
+                problems.append("%s: decision must be an object — got %s: %r"
+                                % (label, type(dec).__name__, dec))
+            else:
+                if not is_date(dec.get("on", "")):
+                    problems.append("%s: decision.on not ISO — %r" % (label, dec.get("on")))
+                sug = dec.get("suggested")
+                if sug is not None and sug not in ("pursue", "pass"):
+                    problems.append("%s: decision.suggested %r not in {pursue, pass, null}"
+                                    % (label, sug))
+                rk = dec.get("reason_kind")
+                if rk is not None and rk not in DECISION_REASON_KINDS:
+                    problems.append("%s: decision.reason_kind %r not in {%s, null}"
+                                    % (label, rk, ", ".join(sorted(DECISION_REASON_KINDS))))
+                rs = dec.get("reason")
+                if rs is not None and not isinstance(rs, str):
+                    problems.append("%s: decision.reason must be a string or null — %r"
+                                    % (label, rs))
+                diverges = sug is not None and sug != r.get("verdict")
+                if diverges and not (rk and (rs or "").strip()):
+                    problems.append(
+                        "%s: decision.suggested=%r differs from verdict=%r — reason_kind and "
+                        "reason are required when a decision diverges from the engine's own "
+                        "suggestion (design-states-and-views.md §3a)"
+                        % (label, sug, r.get("verdict")))
+
+        # ⭐ States & Views V1 §3b — `networking_closed_on`: the owner's decision to stop
+        # working the network on this pursuit. Owner-written, dated, NEVER derived (the
+        # next_action_date rule) and NEVER cleared — it is compared against the newest
+        # outbound event, not reset by a later touch (§3b/§15.3; your_move.networking_in_force()
+        # is the reader).
+        nco = r.get("networking_closed_on")
+        if nco is not None and not is_date(nco):
+            problems.append("%s: networking_closed_on not ISO — %r" % (label, nco))
 
         # ---- play_stage: the post-application play position (public #19 / dev #95) ----
         # Optional and nullable — but an unreadable value must be LOUD, never carried: a play
@@ -1302,6 +1378,8 @@ def _main():
                 problems.append("%s: message_ref %r does not resolve in data/messages.jsonl "
                                 "— a pointer to text that isn't there is worse than no pointer"
                                 % (ol, o2["message_ref"]))
+            if o2.get("message_ref"):
+                outreach_message_refs.add(o2["message_ref"])
             if o2.get("campaign_id") and not re.match(r"^[a-z0-9][a-z0-9-]*$", o2["campaign_id"]):
                 problems.append("%s: campaign_id %r must be a lowercase slug" % (ol, o2["campaign_id"]))
             # What caused this touch (public #27) — shared with asks, see check_trigger.
@@ -1339,6 +1417,27 @@ def _main():
             problems.append("%s: status 'expired' with verdict 'pass' — expired records that NO "
                             "decision was made before the posting vanished; if the candidate "
                             "decided to pass, the status is 'passed'" % label)
+
+    # ---- record.py touched — the half-written orphan (design §15.3 point 2) ----
+    # `record.py touched` appends a message row FIRST, then the completing outreach[] row —
+    # two idempotent appends, never one cross-file transaction. A crash between them (or a
+    # test's fault injection) leaves a message with `source: 'record.py touched'` and no
+    # outreach[] row naming it as `message_ref` — the exact half-written shape §15.3 itself
+    # names. Scoped to THIS source string on purpose: a message with no completing outreach
+    # row is entirely normal for every OTHER source (a harvested reply, a relationship
+    # message with no touch at all) — only a message this API itself promised to complete
+    # can be orphaned by it.
+    TOUCHED_SOURCE = "record.py touched"
+    for m in (sent_msgs or []):
+        if m.get("id") == "_README" or m.get("source") != TOUCHED_SOURCE:
+            continue
+        if m.get("id") not in outreach_message_refs:
+            problems.append(
+                "messages[%s]: source is %r but no outreach[] row on %s names it as "
+                "message_ref — a half-written `record.py touched` call. Re-run the SAME "
+                "`record.py touched <opp_id> --to contact:<id> --on <date> --medium <m>` "
+                "call to complete it (design §15.3 point 2)."
+                % (m.get("id", "?"), TOUCHED_SOURCE, m.get("opp_id") or "?"))
 
     # ---- asks (dev #93) — the hand-authored tail of Your Move, structured ----
     # Absence is legal: a profile predating the 0.25.0 migration has no asks.jsonl yet, and

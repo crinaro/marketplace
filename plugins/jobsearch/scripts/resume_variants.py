@@ -104,7 +104,7 @@ HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 # applications[].status values that prove a submission happened — mirrored from
 # validate_data.SUBMITTED_APP_STATUS as a literal, same move as precondition.py's OUTCOMES:
 # a drifted mirror is caught by the regression suite, not by an import cycle at run start.
-SUBMITTED = {"submitted", "acknowledged", "rejected", "advanced"}
+SUBMITTED = {"submitted", "acknowledged", "rejected", "advanced", "closed"}
 
 FAIL_STATES = frozenset({"drifted", "no-claims", "unstamped", "missing-file", "unreadable"})
 
