@@ -118,8 +118,45 @@ from validate_data import RETIRED_KEYS, active_retired_keys  # noqa: E402
 # `contacts`: `tests/fixtures/migrations/pre-b2/` is B2's own golden migration INPUT, frozen
 # forever, and its own coverage tests read the frozen nested `applications[]` shape to prove
 # the fixture's coverage properties hold.
+#
+# `migrate.py` / `outreach` — B3's own migration handler (`m_0_48_0_touches`) reads
+# `opportunities.jsonl`'s `outreach[]` EXACTLY ONCE, to promote it into `touches` rows and
+# then drop it from the record. Same discipline as the two entries above.
+#
+# `test_checks.py` / `outreach` — same permanent-reader shape as the two `test_checks.py`
+# entries above: `tests/fixtures/migrations/pre-b3/` is B3's own golden migration INPUT,
+# frozen forever, and its own coverage tests read the frozen nested `outreach[]` shape to
+# prove the fixture's coverage properties hold.
+#
+# `make_fixture.py` / `outreach` — NOT a migration handler; a THIRD kind of legitimate
+# reader this design's own fixture-generation route (gates-connected-entities.md §Fixture
+# mechanism (b)) requires. `_patched_model_for()` restores the RETIRED pre-B3 schema shape
+# (contact_id-named outreach fields, before B1's rename) onto `docs/data_model.json`'s own
+# in-memory copy so `pre-b1`'s frozen case can still be CHECKED against the schema it was
+# actually written against — the exact same "historical shape must survive" reasoning as the
+# two `test_checks.py` entries above, applied to the SCHEMA half rather than the DATA half.
+# It reads `spec["arrays"]["outreach"]` to rename that array's fields, never a real profile's
+# data row — permanent, like `test_checks.py`'s own entries, never scoped to one stage's
+# transform-then-drop lifecycle the way `migrate.py`'s entries are.
+#
+# `precondition.py` / `outreach` — a FOURTH kind, and the only one that reads a REAL profile's
+# data row outside a migration handler itself. `_sent_row_exists()` is called by
+# `plan_prune()`, which `m_0_47_0_drafts_working_set` (keyed 0.47.0, strictly BEFORE B3's
+# 0.48.0) calls directly. Migrations run in strict version order, so at the moment 0.47.0
+# executes on a real upgrading profile, `outreach[]` is STILL nested — B3 has not run yet.
+# Reading only the top-level `touches` store there would make `_sent_row_exists` silently
+# blind on exactly that (common, real) profile shape, turning a genuine "already sent" fact
+# into a false negative (the CLAUDE.md trap: a missing thing reading as an empty one) and a
+# relocate into a needless duplicate — measured directly: `TestV1bMigrationGoldenOutput`
+# reported 9 relocated where 7 was correct until this fallback was added. So
+# `_sent_row_exists` checks the top-level store FIRST and falls back to the nested array
+# SECOND, permanently — not scoped to one release the way `migrate.py`'s own entries are,
+# because a profile can be paused mid-upgrade (mid-migration-chain) indefinitely between two
+# session starts, and this function must read either shape correctly whenever it runs.
 KNOWN_EXCEPTIONS = (("migrate.py", "contacts"), ("test_checks.py", "contacts"),
-                    ("migrate.py", "applications"), ("test_checks.py", "applications"))
+                    ("migrate.py", "applications"), ("test_checks.py", "applications"),
+                    ("migrate.py", "outreach"), ("test_checks.py", "outreach"),
+                    ("make_fixture.py", "outreach"), ("precondition.py", "outreach"))
 
 
 class Hit:

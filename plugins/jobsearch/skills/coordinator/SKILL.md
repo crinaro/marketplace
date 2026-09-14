@@ -313,12 +313,17 @@ every source paragraph must be in the rendered pane) and grep ITS output for a p
 presence file you touched. One `--stamp-published` covers both pages.
 
 **Drain pending stubs while you hold the tool.** If `~/.claude/jobsearch/run pending_stubs.py
---check` reports rows, each is a RETIRED page URL still serving its last snapshot: run
-`pending_stubs.py --stub-html <page>`, publish `views/moved_stub.html` to that row's URL with the
-Artifact tool, then `pending_stubs.py --published <page>` — **only after the publish is
+--check` reports rows, each is a RETIRED page URL still serving its last snapshot. **Read the
+live page at that URL first** (Artifact `action: "read"`) — the publishing tool refuses a publish
+over a URL this session has not read, by design, and skipping this step is why a stub publish
+used to be refused outright every time (public #35). Then run `pending_stubs.py --stub-html
+<page>`, and publish `views/moved_stub.html` to that row's URL with the Artifact tool — its
+content is never byte-identical to the live page it replaces, so the identical-resend refusal
+never fires either. Only then `pending_stubs.py --published <page>` — **only after the publish is
 confirmed**, because that step retires the url file, and retiring it first would make the URL
-permanently unstubbable. A failed publish: `--failed <page> --why '...'` and surface it to the
-candidate as a decision; never drop it silently.
+permanently unstubbable. Read, then publish, then mark: no override or force is needed at any
+step. A failed publish: `--failed <page> --why '...'` and surface it to the candidate as a
+decision; never drop it silently.
 
 **⭐ Two rules that keep the published view honest (dev #133 / public #22).** If the publish
 reports a **version conflict**, a scheduled run published since you generated: re-run

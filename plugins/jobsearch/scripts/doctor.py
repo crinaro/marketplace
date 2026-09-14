@@ -22,6 +22,7 @@ Python 3.9+, stdlib only.
 """
 
 import argparse, json, os, subprocess, sys
+from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root, engine_root, looks_like_profile
 from _atomic import write_jsonl, write_json
@@ -35,6 +36,115 @@ def _cfg():
         return json.load(open(os.path.join(ROOT, "config.json"), encoding="utf-8"))
     except Exception:
         return None
+
+
+def _load_jsonl(name):
+    """Best-effort JSONL read off THIS profile's data/ dir — an absent store is EMPTY, never a
+    crash. A profile that predates a store (or a fresh install with no opportunities yet) must
+    still get a clean DOCTOR run, the same "missing thing is not a failure" contract every other
+    section here honours."""
+    path = os.path.join(ROOT, "data", name)
+    if not os.path.exists(path):
+        return []
+    out = []
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+    return out
+
+
+# public #83 — channel TYPES that carry "a public URL was available at the moment of sighting".
+# Recruiter/referral/company-site/alert-email sightings do not carry that guarantee (a recruiter
+# can tell you about a role with no public posting at all), so a record sighted ONLY through one
+# of those is never in scope for the advisory below, regardless of whether jd_url is null.
+_URL_BEARING_CHANNEL_TYPES = {"job-board", "aggregator"}
+
+
+def check_linkless_sightings():
+    """public #83, disposed 2026-09-13 (half 1 of 2 — the capture-time rule in record.py is the
+    other half and is not this check's job).
+
+    A sighting from a URL-bearing channel (job-board/aggregator) that never recorded the link
+    becomes permanently unverifiable the moment the posting comes down — the link is free at the
+    moment of sighting and effectively unrecoverable afterward. Non-fatal (WARN, never BAD):
+    three shapes are LEGITIMATELY linkless, excluded BY RULE rather than by hand, so an
+    exclusion is never a silent guess:
+
+      1. recruiter-sourced — the record's own channel_id, or any of its sightings' channel_id,
+         resolves to a channel of type 'recruiter'. There was never a public posting to link.
+      2. receipt-backed — an applications.jsonl row for this opportunity carries a status in
+         SUBMITTED_APP_STATUS (validate_data.py's own "proves a submission actually happened"
+         set). The application itself stands as durable evidence the role existed.
+      3. too fresh — every board/aggregator sighting is younger than
+         `sourcing.linkless_grace_days` (config_keys.py, default 3) — a research/backfill pass
+         has not had a chance to run yet.
+
+    A record with NO sighting from a URL-bearing channel at all (recruiter-only,
+    company-site-only, …) is out of scope entirely — it was never going to carry a public link,
+    so its absence is the sourcing model working as intended, not this advisory's business.
+    """
+    import config_keys as _ck
+    import validate_data as _vd
+
+    opps = _load_jsonl("opportunities.jsonl")
+    if not opps:
+        return [(OK, "linkless sightings", "no opportunities recorded yet")]
+
+    channel_type = {c.get("id"): c.get("type") for c in _load_jsonl("channels.jsonl")}
+    receipted_opp_ids = {a.get("opp_id") for a in _load_jsonl("applications.jsonl")
+                         if a.get("opp_id") and a.get("status") in _vd.SUBMITTED_APP_STATUS}
+
+    cfg = _cfg() or {}
+    grace_days, provenance = _ck.describe(cfg, _ck.LINKLESS_GRACE_DAYS)
+    today = date.today()
+
+    named = []
+    for o in opps:
+        if o.get("jd_url"):
+            continue
+        sightings = o.get("sightings") or []
+        if any(sg.get("source_url") for sg in sightings):
+            continue
+
+        board_sightings = [sg for sg in sightings if channel_type.get(sg.get("channel_id"))
+                           in _URL_BEARING_CHANNEL_TYPES]
+        if not board_sightings:
+            continue    # never sighted through a URL-bearing channel — out of scope
+
+        referenced = {o.get("channel_id")} | {sg.get("channel_id") for sg in sightings}
+        if any(channel_type.get(cid) == "recruiter" for cid in referenced if cid):
+            continue    # 1. recruiter-sourced
+
+        if o.get("id") in receipted_opp_ids:
+            continue    # 2. receipt-backed
+
+        ages = []
+        for sg in board_sightings:
+            seen_on = sg.get("seen_on") or ""
+            try:
+                ages.append((today - date.fromisoformat(seen_on[:10])).days)
+            except ValueError:
+                continue
+        if ages and min(ages) < grace_days:
+            continue    # 3. too fresh — still inside the grace period
+
+        named.append(o.get("id", "?"))
+
+    if not named:
+        return [(OK, "linkless sightings",
+                "none — every board/aggregator sighting carries a link, or is "
+                "recruiter-sourced, receipt-backed, or within the %sd grace (%s)"
+                % (grace_days, provenance))]
+    return [(WARN, "linkless sightings",
+            "%d record(s) with no jd_url and no sightings[].source_url from a board/aggregator "
+            "channel, past the %sd grace (%s): %s"
+            % (len(named), grace_days, provenance, ", ".join(sorted(named))))]
 
 
 def check_profile():
@@ -406,6 +516,8 @@ def main():
                 ("COST — does the schedule match the tier you chose?", check_cost_matches_intent()),
                 ("SCHEDULED RUNS", check_scheduled_tasks()),
                 ("DATA", check_data()),
+                ("SOURCING (public #83 — board/aggregator sightings with no recoverable link)",
+                 check_linkless_sightings()),
                 ("OUTBOUND-CLICK GUARD (report only — a probe never gates the hook)",
                  check_click_guard()),
                 ("STRAY RULEBOOKS (dev #155 — a stamped CLAUDE.md outside any profile)",

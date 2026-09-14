@@ -221,7 +221,8 @@ search as ground truth for "does this thread exist"** — it has returned "We di
 for threads found seconds later by scrolling the raw list.
 
 **1. REPLY CHECK — driven by the outreach state, and it covers EVERY response surface.**
-For each `outreach[]` row with medium `linkedin-*` and `outcome` in (`awaiting`, `accepted`):
+For each `data/touches.jsonl` row (ADR-031 B3 — was a nested `outreach[]` row) with medium
+`linkedin-*` and `outcome` in (`awaiting`, `accepted`):
 open the person's thread via **profile → Message** and report replied / accepted / no change.
 Then, regardless of the per-person list, open all four surfaces:
 **(a) Sent invitations** — acceptances AND **replies attached to invitations**;

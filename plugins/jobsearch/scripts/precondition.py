@@ -119,6 +119,56 @@ import _tree
 FIELD_RE = re.compile(r"^\*\*Blocked until:\*\*\s*(.+?)\s*$", re.M | re.I)
 TOKEN_RE = re.compile(r"(contact|outcome)\s*:\s*([A-Za-z0-9_|-]+)")
 
+# ⭐ public #92 — a SECOND meta line an entry may carry: `**Contact:** <person-id>`, written by
+# whoever drafted the entry (a person or an upstream agent) as a direct statement of who this
+# is addressed to — distinct from `**Blocked until:** contact:<id>`, which names who a SEND
+# HOLD is waiting on, not who the draft is FOR (an entry can be addressed to someone with no
+# hold at all). `m_0_46_0_brief_line`/its 0.48.0 re-stamp read this FIRST (§ "attribution
+# precedence" below) before falling back to the `**Blocked until:**` token, because it is the
+# more direct statement when both are present.
+CONTACT_RE = re.compile(r"^\*\*Contact:\*\*\s*(.+?)\s*$", re.M | re.I)
+
+
+def contact_id_from_line(raw):
+    """The bare person id out of a `**Contact:**` line's raw value — the first whitespace- or
+    `(`-delimited token, so `**Contact:** dana-holbrong (VP, Example Corp)` still resolves
+    against just `dana-holbrong` rather than the whole descriptive tail. Never raises;
+    unreadable input returns None (matching every other field parser in this module)."""
+    s = (raw or "").strip()
+    if not s:
+        return None
+    return re.split(r"[\s(]", s, maxsplit=1)[0].strip() or None
+
+
+def resolve_entry_contact(g, body):
+    """The person id a draft entry's body resolves to, or None — `**Contact:** <id>` FIRST
+    (public #92: evidence already IN the entry that the original migration never consulted),
+    then `**Blocked until:** contact:<id>` as the existing fallback. `g` is a `graph.Graph`
+    (merge-resolved, `graph.MergeCycleError` treated as unresolvable rather than raised —
+    the same defensive stance `m_0_46_0_brief_line` already took for the fallback alone)."""
+    import graph as _graph
+    cm = CONTACT_RE.search(body or "")
+    if cm:
+        cid = contact_id_from_line(cm.group(1))
+        if cid:
+            try:
+                person = g.resolve_person(cid)
+            except _graph.MergeCycleError:
+                person = None
+            if person is not None:
+                return person["id"]
+    bm = FIELD_RE.search(body or "")
+    if bm:
+        cid = dict(TOKEN_RE.findall(bm.group(1))).get("contact")
+        if cid:
+            try:
+                person = g.resolve_person(cid)
+            except _graph.MergeCycleError:
+                person = None
+            if person is not None:
+                return person["id"]
+    return None
+
 # The literal the migration writes when it finds a prose hold it cannot structure itself.
 UNRESOLVED_RE = re.compile(r"^unresolved\b", re.I)
 
@@ -300,27 +350,17 @@ def parse(raw):
 
 
 def touches_by_contact(root):
-    """person_id -> [outreach rows], across every opportunity (ADR-031 B1 — the join is
-    `outreach[].person_id` now; the `contact:<id>` PROSE GRAMMAR keyword is unchanged, since
-    it names a role in the sentence, not the JSON field it resolves against)."""
+    """person_id -> [touch rows], across every touch (ADR-031 B1 — the join is
+    `person_id` now; ADR-031 B3 — read from the TOP-LEVEL `touches` store, never a nested
+    array on an opportunity. The `contact:<id>` PROSE GRAMMAR keyword is unchanged, since it
+    names a role in the sentence, not the JSON field it resolves against)."""
+    import touches as _touches
     out = {}
-    path = os.path.join(root, "data", "opportunities.jsonl")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    r = json.loads(line)
-                except ValueError:
-                    continue
-                for o in r.get("outreach") or []:
-                    cid = o.get("person_id")
-                    if cid:
-                        out.setdefault(cid, []).append(o)
-    except OSError:
-        pass
+    rows, _errs, _present = _touches.load(root)
+    for o in rows:
+        cid = o.get("person_id")
+        if cid:
+            out.setdefault(cid, []).append(o)
     return out
 
 
@@ -620,14 +660,30 @@ def _channel_anchor(root, person_id):
 
 
 def _sent_row_exists(root, opp_id, person_id, date):
-    """True when this send is ALREADY a fact elsewhere — an `outreach[]` row on this
-    opportunity for this person dated the same day, or an outbound `messages.jsonl` row
-    anchored the same way (§4: 'if the message id it names resolves ... or an outreach[] row
-    matches by contact + date -> delete'). Undated (no date on the Status line) never matches
-    — refusing to guess is safer than a false 'already recorded'."""
+    """True when this send is ALREADY a fact elsewhere — a `touches` row on this opportunity
+    for this person dated the same day (ADR-031 B3 — was an `outreach[]` row on the
+    opportunity record), or an outbound `messages.jsonl` row anchored the same way (§4: 'if
+    the message id it names resolves ... or an outreach row matches by contact + date ->
+    delete'). Undated (no date on the Status line) never matches — refusing to guess is safer
+    than a false 'already recorded'.
+
+    ⭐ READS BOTH SHAPES, ON PURPOSE. Migrations run strictly in version order (0.47.0 before
+    0.48.0), so `m_0_47_0_drafts_working_set` calls this (via `plan_prune`) on a profile that
+    is STILL pre-B3 — `outreach[]` still nested, `touches.jsonl` not yet populated. Reading
+    only the top-level store would make this function silently blind on exactly that profile
+    shape (the CLAUDE.md trap: a missing thing reading as an empty one), turning a real
+    'already sent' fact into a false negative and a relocate into a needless duplicate. Both
+    sources are checked; a real profile only ever has data in one of them at a time."""
     if not date:
         return False
     if opp_id:
+        import touches as _touches
+        rows, _errs, _present = _touches.load(root)
+        for out in rows:
+            if (out.get("opp_id") == opp_id and out.get("person_id") == person_id
+                    and str(out.get("date") or "")[:10] == date):
+                return True
+        # Pre-B3 fallback — see the docstring's "reads both shapes" note.
         for o in _load_jsonl_rows(root, "opportunities.jsonl"):
             if o.get("id") != opp_id:
                 continue

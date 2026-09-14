@@ -54,9 +54,14 @@ DATA = os.path.join(ROOT, "data")
 # `cover_letters.jsonl` join here and make_fixture.PLACEHOLDER_STORES together, same reasoning —
 # a fresh scaffold must be current-shape the moment B2 ships, or a new user's first
 # `applications.py`/`validate_data.py` run reads these as ABSENT and reports it as fact.
+# ⭐ B3 (the same pattern a third time): `touches.jsonl` joins here and
+# make_fixture.PLACEHOLDER_STORES together — a fresh scaffold must be current-shape the
+# moment B3 ships, or a new user's first `touches.py`/`validate_data.py` run reads it as
+# ABSENT and reports it as fact.
 STORES = ("opportunities.jsonl", "companies.jsonl", "channels.jsonl", "messages.jsonl",
           "inbox.jsonl", "pending_actions.jsonl", "asks.jsonl", "commitments.jsonl",
-          "people.jsonl", "involvements.jsonl", "applications.jsonl", "cover_letters.jsonl")
+          "people.jsonl", "involvements.jsonl", "applications.jsonl", "cover_letters.jsonl",
+          "touches.jsonl")
 
 # A fresh profile is BORN in the six-phase tree (public #28) — the same shape the 0.32.0
 # migration produces, so a new user never runs (or needs) the migration at all.

@@ -22,7 +22,6 @@
     "next_action_date",
     "blocked_until",
     "research_log",
-    "outreach",
     "fit",
     "resume_variant",
     "engagement_type",
@@ -39,37 +38,6 @@
     "verdict"
    ],
    "arrays": {
-    "outreach": {
-     "_note": "public #27 (2026-08-25) - trigger_kind/trigger_ref declare what CAUSED this touch, so 'you applied to X, so ask Y' is generated rather than remembered; the measured defect was a drafted ask sitting unlinked to the application that generated it. trigger_kind enum lives in validate_data.py (TRIGGER_KINDS); 'application' refs resolve against THIS record's applications[] (app_id; a date ref written before the 0.41.0 backfill still resolves, and m_0_41_0_app_ids re-pointed every date that named exactly one row to that row's minted id) - same own-record rule as blocked_until, because a join to another record's application would say this role moved when it did not. sequence_id/sequence_step make a multi-step play ('part A sent, part B held') one queryable unit instead of a state machine in a markdown heading; the staged half of a sequence lives in outreach/drafts.md under **Sequence:**, resolved by scripts/trigger.py, and its hold stays in **Blocked until:** (precondition.py) - a sequence adds GROUPING, never a second way to spell a hold.",
-     "fields": [
-      "address_status",
-      "campaign_id",
-      "channel_id",
-      "person_id",
-      "date",
-      "delivery",
-      "medium",
-      "message_ref",
-      "note",
-      "outcome",
-      "recipient_role",
-      "responded_on",
-      "sequence_id",
-      "sequence_step",
-      "status",
-      "to",
-      "touch_type",
-      "trigger_kind",
-      "trigger_ref",
-      "variant"
-     ],
-     "required": [
-      "date",
-      "medium",
-      "status"
-     ],
-     "id_field": null
-    },
     "sightings": {
      "fields": [
       "channel_id",
@@ -155,8 +123,14 @@
    ],
    "arrays": {
     "log": {
-     "fields": ["date", "note"],
-     "required": ["date", "note"],
+     "fields": [
+      "date",
+      "note"
+     ],
+     "required": [
+      "date",
+      "note"
+     ],
      "id_field": null
     }
    }
@@ -349,6 +323,43 @@
    "required": [
     "id",
     "opp_id"
+   ],
+   "arrays": {}
+  },
+  "touches": {
+   "_note": "ADR-031 B3 — promoted from opportunities.outreach[]. `id` (= <person_id>-tN, minted by record.py — a touch is owned by the PERSON, design §1) is this store's own id_field. `person_id` is required (every outreach row already carried a resolving person_id after B1's rename; the 0.48.0 migration mints an `unresolved-<opp_id>-tN` person for any row whose person_id does not resolve, loud, never dropped). `opp_id` is OPTIONAL (public #53 — a touch to a person about no role, or anchored only to a channel, is now a legal row; the network capability's basis). `channel_id` keeps its pre-B3 meaning unchanged: the relationship the touch travelled through. `object_person_id`/`object_company_id` (design §12, both nullable FKs) name whom or what the touch is ABOUT when that differs from the recipient — an introduction ask is the concrete case. Every other field is the pre-B3 outreach[] field set, unchanged.",
+   "id_field": "id",
+   "fields": [
+    "id",
+    "person_id",
+    "opp_id",
+    "channel_id",
+    "object_person_id",
+    "object_company_id",
+    "to",
+    "status",
+    "date",
+    "responded_on",
+    "outcome",
+    "medium",
+    "touch_type",
+    "recipient_role",
+    "campaign_id",
+    "address_status",
+    "delivery",
+    "message_ref",
+    "variant",
+    "note",
+    "trigger_kind",
+    "trigger_ref",
+    "sequence_id",
+    "sequence_step"
+   ],
+   "required": [
+    "person_id",
+    "date",
+    "medium",
+    "status"
    ],
    "arrays": {}
   },

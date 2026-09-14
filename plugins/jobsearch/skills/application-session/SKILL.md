@@ -60,7 +60,7 @@ the highest-value ask in outreach/drafts.md was the one not referencing its appl
 
 - For each follow-up the play calls for (retained-firm relationship ask, insider check,
   chase after N days): create the ask or draft NOW, and stamp the join —
-  - a record (`asks`, `outreach[]`): `trigger_kind: application`,
+  - a record (`asks`, `touches` — `data/touches.jsonl`, ADR-031 B3): `trigger_kind: application`,
     `trigger_ref: <app_id>` (+ `opp_id` on an ask);
   - a staged draft in `outreach/drafts.md`: a `**Triggered by:** opp:<opp_id> app:<app_id>` meta
     line; a multi-step play also carries `**Sequence:** <sequence-id> step:<n>`, and any

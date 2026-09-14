@@ -31,6 +31,7 @@ import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 from _atomic import write_jsonl, write_json
+import touches as _touches
 
 ROOT = _profile_root()
 DATA = os.path.join(ROOT, "data")
@@ -253,13 +254,13 @@ def main():
     # review — Ashford Search showed 12 days while the <an employer> chase to Calloway had gone out 7/31.
     # A nudge decision made off that list would have been wrong, so the live pipeline is
     # now folded in as a touch source.
+    # ADR-031 B3 — the top-level touches store, never a nested array on the opportunity.
     outreach_touch = {}   # channel_id -> most recent outreach date
-    for o in load_opps():
-        for r in o.get("outreach", []) or []:
-            d = as_date(r.get("date"))
-            cid = r.get("channel_id")
-            if d and cid and (cid not in outreach_touch or d > outreach_touch[cid]):
-                outreach_touch[cid] = d
+    for r in _touches.load(ROOT)[0]:
+        d = as_date(r.get("date"))
+        cid = r.get("channel_id")
+        if d and cid and (cid not in outreach_touch or d > outreach_touch[cid]):
+            outreach_touch[cid] = d
 
     quiet = []
     for c in chans:

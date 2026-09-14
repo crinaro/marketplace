@@ -18,11 +18,11 @@ in the SAME commit as the B1 migration, never before it and never after.
 
 WHAT IT LOADS, ONCE
 --------------------
-Every store this design's B1 stage actually has data for: `companies`, `channels`,
-`opportunities`, `people`, `involvements`, `messages`, `asks`, `commitments`. Nothing is
-persisted — a stored reverse index is a second copy of the same fact, which is the drift
-ADR-001 exists to end (design §2). A `Graph` is built fresh, in memory, for the lifetime of one
-call.
+Every store this design's B1/B3 stages actually have data for: `companies`, `channels`,
+`opportunities`, `people`, `involvements`, `messages`, `asks`, `commitments`, `touches`.
+Nothing is persisted — a stored reverse index is a second copy of the same fact, which is the
+drift ADR-001 exists to end (design §2). A `Graph` is built fresh, in memory, for the lifetime
+of one call.
 
 MERGE RESOLUTION — THE ONE PLACE A `person_id` BECOMES A LIVING PERSON
 ------------------------------------------------------------------------
@@ -54,8 +54,13 @@ DATA = os.environ.get("CLAUDESEARCH_DATA_DIR") or os.path.join(ROOT, "data")
 
 # Every store this walker knows about. `involvements` has no `id` field (design §1: "No id of
 # its own... the pair is the identity") so it is deliberately absent from STORES_WITH_ID below.
+# ⭐ ADR-031 B3 — `touches` joins here because it is genuinely multi-directional (person,
+# opportunity, channel, and §12's object person/company), the shape this walker exists for —
+# unlike B2's applications (an owned pointer, one opportunity each), which stayed out of this
+# file and got its own flat join module (`applications.py`) instead. See `touches.py`'s own
+# module docstring for why BOTH files exist and what each owns.
 STORES = ("companies", "channels", "opportunities", "people", "involvements", "messages",
-          "asks", "commitments")
+          "asks", "commitments", "touches")
 STORES_WITH_ID = tuple(s for s in STORES if s != "involvements")
 
 
@@ -144,6 +149,35 @@ class Graph:
                 out.append(m)
         return out
 
+    # ---- touches (ADR-031 B3) — person/opportunity/channel, all merge-resolved on the person
+    # side exactly as messages_for_person is above; the FK is what "belongs to the person"
+    # means (design §1) so the merge chain must be honoured here too. ------------------------
+
+    def touches_for_person(self, person_id):
+        """Every touch whose `person_id` resolves to this survivor — same resolve-and-match
+        shape as `messages_for_person`."""
+        out = []
+        for t in self.stores["touches"]:
+            pid = t.get("person_id")
+            if not pid:
+                continue
+            try:
+                resolved = self.resolve_person(pid)
+            except MergeCycleError:
+                continue
+            if resolved is not None and resolved.get("id") == person_id:
+                out.append(t)
+        return out
+
+    def touches_for_opportunity(self, opp_id):
+        """Every touch anchored to this opportunity — a direct FK match, no merge resolution
+        needed on the opp side (an opportunity is never merged)."""
+        return [t for t in self.stores["touches"] if t.get("opp_id") == opp_id]
+
+    def touches_for_channel(self, channel_id):
+        """Every touch that travelled through this channel (design §1: 'unchanged meaning')."""
+        return [t for t in self.stores["touches"] if t.get("channel_id") == channel_id]
+
     # ---- opportunities / channels, the other side of an involvement --------------------------
 
     def involvements_for_opportunity(self, opp_id):
@@ -196,6 +230,7 @@ class Graph:
                 "opportunities": [i["opp_id"] for i in invs if i.get("opp_id")],
                 "channels": [i["channel_id"] for i in invs if i.get("channel_id")],
                 "messages": self.messages_for_person(p["id"]),
+                "touches": self.touches_for_person(p["id"]),
                 "company": self.by_id["companies"].get(p.get("company_id")),
             }
         if kind == "opportunity":
@@ -205,13 +240,15 @@ class Graph:
             return {
                 "opportunity": opp,
                 "people": self.people_for_opportunity(id_),
+                "touches": self.touches_for_opportunity(id_),
                 "company": self.by_id["companies"].get(opp.get("company_id")),
             }
         if kind == "channel":
             ch = self.by_id["channels"].get(id_)
             if ch is None:
                 return {}
-            return {"channel": ch, "people": self.people_for_channel(id_)}
+            return {"channel": ch, "people": self.people_for_channel(id_),
+                    "touches": self.touches_for_channel(id_)}
         if kind == "company":
             c = self.by_id["companies"].get(id_)
             if c is None:

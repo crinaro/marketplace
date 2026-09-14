@@ -210,10 +210,10 @@ state from the mailbox; it reads `data/*.jsonl` and writes changes **immediately
 
 | finding | write |
 |---|---|
-| a **reply** | the outreach row's `outcome` + `responded_on`, AND the message into `data/messages.jsonl` (`direction: inbound`, with `source`) |
-| a **new person** | a `contacts[]` entry with `contact_id`, structured `email`/`linkedin`, and the outreach row's `contact_id` pointing at it |
+| a **reply** | the touch's `outcome` + `responded_on` (`data/touches.jsonl`, ADR-031 B3), AND the message into `data/messages.jsonl` (`direction: inbound`, with `source`) |
+| a **new person** | a `people.jsonl` entry with `id`, structured `email`/`linkedin`, and the touch's `person_id` pointing at it |
 | a **meeting booked** | advance `stage`, add it to This Week |
-| **the candidate reports sending** | the outreach row AND the draft body moved into `data/messages.jsonl` (`direction: outbound`) |
+| **the candidate reports sending** | the touch AND the draft body moved into `data/messages.jsonl` (`direction: outbound`) |
 
 **Never leave a change for the weekly audit to find.** A reply once sat unrecorded for 11 days
 while the knowledge was already in the repo, written in one place and not the other.
@@ -225,7 +225,7 @@ you treat one as needing a response, **fetch the full thread and look for a mess
 sent AFTER the inbound** — search the candidate's sent mail in that thread (`from:<candidate's address>` on the same
 subject, or `in:sent`/`in:anywhere`). Two outcomes:
 - **They already replied** → record BOTH directions into `data/messages.jsonl` (the inbound AND their
-  reply, each with its `source` uid), set the outreach row to reflect the latest state, and **do
+  reply, each with its `source` uid), set the touch to reflect the latest state, and **do
   NOT queue a needs-response or spawn a drafter** — the loop is closed. Note "candidate already
   replied" in the run summary so the candidate knows it was seen, not missed.
 - **The last word is theirs** → proceed to §7b (queue + draft).
@@ -249,7 +249,8 @@ that response lands on the invitations/message-requests surfaces the sweep never
 detector for LinkedIn events.
 
 **The sweep, every run:**
-1. Build the check-list FROM THE DATA: every `outreach[]` row with medium `linkedin-*` and
+1. Build the check-list FROM THE DATA: every `data/touches.jsonl` row (ADR-031 B3 — was a nested
+   `outreach[]` row) with medium `linkedin-*` and
    `outcome` in (`awaiting`, `accepted`) — `~/.claude/jobsearch/run pipeline_index.py` or the JSONL.
 2. For EACH person on that list, open their thread via profile → Message (in-app message SEARCH
    false-negatives; never use it to conclude absence) and report replied / accepted / no change.
@@ -457,11 +458,11 @@ that changes it. **It is the only field that can answer "what actually converts,
 infers it.** A move into `screening` creates `pipeline/kb/<company_id>.md` in the same pass if it is
 missing — accumulation is the run's job, and `knowledge.py` names every gap.
 
-**When the candidate reports sending something, WRITE THE OUTREACH ROW** with its `date` — a log entry once
-claimed a row had been added and it never was, and `validate_data.py` cannot catch that because a
-MISSING row is schema-valid.
+**When the candidate reports sending something, WRITE THE TOUCH** (a `data/touches.jsonl` row,
+ADR-031 B3) with its `date` — a log entry once claimed a row had been added and it never was, and
+`validate_data.py` cannot catch that because a MISSING row is schema-valid.
 
-**Every new outreach row carries** `medium` · `touch_type` · `recipient_role` · `delivery` (plus
+**Every new touch carries** `medium` · `touch_type` · `recipient_role` · `delivery` (plus
 `address_status` for email, `campaign_id` for a multi-touch push). **`outreach-drafter` emits these
 with the draft — copy them verbatim**, because the drafter is the only actor that knows which
 medium applies. Then **MOVE the `outreach/drafts.md` entry into `data/messages.jsonl`** and set
@@ -498,8 +499,11 @@ router and phase pages are retired). Create the artifact and write that url file
 if it is absent — a fresh install has neither, and that is the defined `never-published` state, not
 an error. Skip gracefully (and note it) if the tool is unavailable. If
 `~/.claude/jobsearch/run pending_stubs.py --check` reports retired-URL rows, drain them while you
-hold the tool (stub-publish first, `--published` only after it is confirmed — that order is what
-keeps a retired URL stubbable at all).
+hold the tool: **read the live page at the row's URL first** (the publishing tool refuses a
+publish over an unread URL, and the stub's content is never identical to what it replaces, so
+neither refusal fires once you have), then stub-publish, then `--published` only after it is
+confirmed — that order is what keeps a retired URL stubbable at all. See coordinator/SKILL.md's
+own "Drain pending stubs" section for the full sequence.
 
 **⭐ If the publish reports a VERSION CONFLICT, another session published since you generated
 (dev #133 / public #22). Never pass `force`, and never drop the publish silently:** re-run

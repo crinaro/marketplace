@@ -111,6 +111,18 @@ STORES = {"opportunities": "opportunities.jsonl",
           # takes an explicit id like any other store.
           "applications": "applications.jsonl",
           "cover_letters": "cover_letters.jsonl",
+          # ADR-031 B3 — the third promoted top-level store. `create auto
+          # '{"person_id": ...}' --file touches` mints the id (see the create branch below,
+          # `<person_id>-tN` — design §1: a touch is owned by the PERSON, not the opportunity).
+          "touches": "touches.jsonl",
+          # ADR-031 B1 — the `people` store (public #93). Only `people` joins here, never
+          # `involvements`: `involvements` has no `id` field of its own (design §1 — "the pair
+          # (person_id, opp_id|channel_id) IS the identity"), so it does not fit this generic
+          # id-keyed single-record API at all; nothing needs it to yet (`merge-person` below
+          # only ever touches the `people` row itself, per ADR-031 §3's "a merge is a pointer,
+          # never a rewrite" — every involvement keeps naming the absorbed id and resolves
+          # through it at READ time via `graph.Graph.resolve_person`).
+          "people": "people.jsonl",
           # States & Views V1b (design §15.3) — `messages` joins STORES, APPEND-ONLY: a
           # message row is immutable once written (its id is what every other row links to).
           # `set`/`set-in`/`append`/`create`/`show` on `--file messages` are refused in main()
@@ -267,6 +279,38 @@ def find(rows, rid):
     return None
 
 
+def _merge_would_cycle(people_rows, dup_id, survivor_id):
+    """True if pointing `dup_id.merged_into = survivor_id` would close a cycle — i.e. the
+    SURVIVOR's own existing merge chain already leads back to `dup_id`. Public #93: `record.py`
+    had no merge verb at all, so nothing ever exercised `graph.MergeCycleError`'s refusal from
+    the write side; this reuses `graph.py` itself (never a second, hand-rolled chain-walk) by
+    writing the hypothetical `people` rows to a throwaway directory and asking
+    `graph.Graph.resolve_person` to walk it — the one place this chain is ever resolved
+    (graph.py's own docstring: 'a merge is a pointer... graph.py resolves through merged_into
+    at read time'). No other store is needed for this question, so the throwaway directory
+    carries `people.jsonl` alone; every other store `Graph.__init__` loads is simply absent,
+    which it already treats as an empty store."""
+    import graph as _graph
+    shadow = [dict(r) for r in people_rows]
+    for r in shadow:
+        if r.get("id") == dup_id:
+            r["status"] = "merged"
+            r["merged_into"] = survivor_id
+    tmpdir = tempfile.mkdtemp(prefix=".record-merge-check-")
+    try:
+        with open(os.path.join(tmpdir, "people.jsonl"), "w", encoding="utf-8") as fh:
+            for r in shadow:
+                fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+        g = _graph.Graph(data_dir=tmpdir)
+        try:
+            g.resolve_person(dup_id)
+            return False
+        except _graph.MergeCycleError:
+            return True
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def mint_app_id(rid, existing):
     """`<opp_id>-aN`, N one past the highest suffix already minted for this opp_id (0.41.0;
     ADR-031 B2 re-pointed this at the top-level `applications` store's own `id` field — was
@@ -287,6 +331,24 @@ def mint_app_id(rid, existing):
         aid = a.get("id") if isinstance(a, dict) else None
         if isinstance(aid, str) and aid.startswith(prefix) and aid[len(prefix):].isdigit():
             n = max(n, int(aid[len(prefix):]))
+    return "%s%d" % (prefix, n + 1)
+
+
+def mint_touch_id(person_id, existing):
+    """`<person_id>-tN`, N one past the highest suffix already minted FOR THIS PERSON — ADR-031
+    B3's own id scheme (design §1: 'id (= <person_id>-tN, minted by record.py)'). A touch is
+    owned by the PERSON, not the opportunity — the one deliberate difference from
+    `mint_app_id`'s `<opp_id>-aN`, which owns by the opportunity because an application is
+    containment (design §1). `existing` is every row this person_id's ids could collide with —
+    same past-the-max, never count-plus-one rule as `mint_app_id`, for the same reason: a
+    removed touch must not free its number for a later trigger_ref/message_ref to collide
+    into."""
+    prefix = "%s-t" % person_id
+    n = 0
+    for t in existing or []:
+        tid = t.get("id") if isinstance(t, dict) else None
+        if isinstance(tid, str) and tid.startswith(prefix) and tid[len(prefix):].isdigit():
+            n = max(n, int(tid[len(prefix):]))
     return "%s%d" % (prefix, n + 1)
 
 
@@ -485,18 +547,25 @@ def _enum_registry(_vd):
         "opportunities": {"status": _vd.OPP_STATUS, "stage": _vd.STAGES,
                           "verdict": _vd.VERDICTS, "play_stage": _vd.PLAY_STAGES,
                           "next_action_owner": _vd.OWNERS},
+        # ADR-031 B3 — `touches` is a top-level store now (promoted from
+        # opportunities.outreach[]), so its enums move from `_array_enum_registry` below to
+        # here, the same move B2 never made for applications/cover_letters (a pre-existing
+        # gap this dispatch does not otherwise touch) but is worth making for the store it is
+        # actually building.
+        "touches": {
+            "status": _vd.OUTREACH_STATUS, "outcome": _vd.OUTREACH_OUTCOME,
+            "medium": _vd.MEDIA, "touch_type": _vd.TOUCH_TYPES,
+            "recipient_role": _vd.RECIPIENT_ROLES, "delivery": _vd.DELIVERY,
+            "address_status": _vd.ADDRESS_STATUS, "trigger_kind": _vd.TRIGGER_KINDS,
+        },
     }
 
 
 # (store, array-name) -> {field: allowed-value SET}. Same reference-not-restatement rule.
 def _array_enum_registry(_vd):
     return {
-        ("opportunities", "outreach"): {
-            "status": _vd.OUTREACH_STATUS, "outcome": _vd.OUTREACH_OUTCOME,
-            "medium": _vd.MEDIA, "touch_type": _vd.TOUCH_TYPES,
-            "recipient_role": _vd.RECIPIENT_ROLES, "delivery": _vd.DELIVERY,
-            "address_status": _vd.ADDRESS_STATUS,
-        },
+        # ADR-031 B3 — `("opportunities", "outreach")` retired along with the array itself;
+        # its enums moved to `_enum_registry`'s new `"touches"` entry above.
         ("opportunities", "contacts"): {
             "email_status": _vd.CONTACT_EMAIL_STATUS, "path_type": _vd.PATH_TYPES,
         },
@@ -538,12 +607,15 @@ def _object_shaped_fields(store, _vd):
 # drift this exists to prevent.
 
 ASKS_FILE = "asks.jsonl"
-# ADR-031 B2 — "applications" left this mapping: it named an ARRAY LEAF on the opportunities
-# record, and that array no longer exists there (promoted to its own top-level store). The
-# "application" action's ask-resolution now fires from the applications-store write site
-# directly (see `_applications_action_evidence` / the write-completion block in `main()`),
-# never through this array-leaf mapping.
-ASK_ACTION_FOR_ARRAY = {"outreach": "outreach"}
+# ADR-031 B2/B3 — "applications" and (now) "outreach" both left this mapping empty: each named
+# an ARRAY LEAF on the opportunities record, and neither array exists there any more (each
+# promoted to its own top-level store). Both actions' ask-resolution now fire from their own
+# store's write site directly (`_applications_action_evidence`/`_touches_action_evidence` and
+# the two matching write-completion blocks in `main()`), never through this array-leaf mapping.
+# Left EMPTY rather than removed: a future nested array with a declared `resolves_when` action
+# would use exactly this shape again, and an empty dict documents the mechanism still exists
+# for one, rather than a caller having to reconstruct why it disappeared.
+ASK_ACTION_FOR_ARRAY = {}
 
 
 def _asks_path():
@@ -558,31 +630,27 @@ def _load_asks():
         return None          # no asks store at all — legal (pre-0.25.0 profiles)
 
 
-def _action_evidence(rec, action):
-    """The newest dated evidence of `action` on THIS opportunity RECORD, or None. `action` is
-    always "outreach" here — ADR-031 B2 promoted `applications` off the opportunity record
-    entirely, so "application" evidence no longer lives on `rec` at all; that case is handled
-    directly at the `applications`-store write site below (`_applications_action_evidence`),
-    never through this function.
-
-    Same funnel check_action_claims.opp_action_evidence() trusts for outreach: any outreach
-    row with status == "sent" and a date. A drafted outreach row is not evidence — the ask
-    asked for the touch, not for the intention."""
-    dates = []
-    for out in (rec.get("outreach") or []):
-        if isinstance(out, dict) and out.get("status") == "sent" and out.get("date"):
-            dates.append(str(out["date"]))
-    return max(dates) if dates else None
-
-
 def _applications_action_evidence(opp_id):
     """The newest dated evidence of an "application" action on `opp_id`, read from the
-    TOP-LEVEL `applications` store (ADR-031 B2) — the promoted successor to
-    `_action_evidence(rec, "application")`, which read a nested array that no longer exists."""
+    TOP-LEVEL `applications` store (ADR-031 B2) — the promoted successor to a function that
+    once read a nested array that no longer exists."""
     dates = []
     for ap in load("applications"):
         if ap.get("opp_id") == opp_id and ap.get("date"):
             dates.append(str(ap["date"]))
+    return max(dates) if dates else None
+
+
+def _touches_action_evidence(opp_id):
+    """The newest dated evidence of an "outreach" action on `opp_id`, read from the TOP-LEVEL
+    `touches` store (ADR-031 B3) — the promoted successor to a function that once read
+    `rec.get("outreach")`, a nested array that no longer exists. Same funnel
+    check_action_claims.opp_action_evidence() trusts: any touch with status == "sent" and a
+    date. A drafted touch is not evidence — the ask asked for the touch, not the intention."""
+    dates = []
+    for t in load("touches"):
+        if t.get("opp_id") == opp_id and t.get("status") == "sent" and t.get("date"):
+            dates.append(str(t["date"]))
     return max(dates) if dates else None
 
 
@@ -711,11 +779,11 @@ def cmd_touched(args):
     """`record.py touched <opp_id> --to contact:<person-id> --on <date> --medium <medium>
     [--role <role>]` — cell 3's own action line (design §3): a touch made OUTSIDE the normal
     draft-and-send flow (a handshake, a phone call, any medium this API does not draft for).
-    Appends the `outreach[]` row on the named opportunity and, for an EMAIL medium, the
-    message row that documents it.
+    Writes a row on the top-level `touches` store (ADR-031 B3 — was: appended to the
+    opportunity's own `outreach[]`) and, for an EMAIL medium, the message row that documents it.
 
     `--_inject-fault after-message` is a TEST-ONLY hook (never reachable except by passing the
-    flag explicitly): after the message half lands, it exits before the outreach half — so the
+    flag explicitly): after the message half lands, it exits before the touch half — so the
     half-written case and its repair are proven from OUTSIDE this function, by actually
     breaking it and re-running, the same discipline `migrate.py`'s own `_inject_fault` plants
     use rather than trusting the mechanism by reading the source."""
@@ -749,13 +817,13 @@ def cmd_touched(args):
     if find(opps0, opp_id) is None:
         print("No opportunities record with id %r." % opp_id)
         return 1
-    # The join validate_data.py itself enforces on every outreach[] row — checked here too so
-    # a bad --to refuses BEFORE any write, not two steps later via a rollback.
+    # The join validate_data.py itself enforces on every touch naming an opp_id — checked here
+    # too so a bad --to refuses BEFORE any write, not two steps later via a rollback.
     if not any(r.get("person_id") == person_id and r.get("opp_id") == opp_id
               for r in _load_involvements()):
-        print("⛔ REFUSED — person_id %r has no involvement on opportunity %r. Every outreach "
-              "row must name a person actually involved in THIS pursuit — add the "
-              "involvement first, or check the --to id." % (person_id, opp_id))
+        print("⛔ REFUSED — person_id %r has no involvement on opportunity %r. Every touch "
+              "naming an opportunity must name a person actually involved in THIS pursuit — "
+              "add the involvement first, or check the --to id." % (person_id, opp_id))
         return 1
 
     is_email = medium.startswith("email")
@@ -780,14 +848,14 @@ def cmd_touched(args):
                 # ⭐ NO validate-and-rollback dance for THIS append. §15.3 point 2 is explicit
                 # that the store may be legitimately, TEMPORARILY invalid between the two
                 # halves — a message with `source: 'record.py touched'` and no completing
-                # outreach[] row is EXACTLY the shape validate_data.py's own orphan check
-                # exists to name, and it would fire on this half by construction, every
-                # time, even on the ordinary (uninterrupted) path. Rolling back on that
-                # 'new problem' would make a normal `touched` call refuse itself. The real
-                # commit point is the outreach append below, which DOES get the full
-                # validate-and-rollback treatment — a genuine defect in the message's own
-                # shape (an unknown medium, a dangling person_id) is already refused by the
-                # checks earlier in this function, before the lock was even taken.
+                # touches row is EXACTLY the shape validate_data.py's own orphan check exists
+                # to name, and it would fire on this half by construction, every time, even on
+                # the ordinary (uninterrupted) path. Rolling back on that 'new problem' would
+                # make a normal `touched` call refuse itself. The real commit point is the
+                # touch write below, which DOES get the full validate-and-rollback treatment —
+                # a genuine defect in the message's own shape (an unknown medium, a dangling
+                # person_id) is already refused by the checks earlier in this function, before
+                # the lock was even taken.
                 messages.append({
                     "id": msg_id, "opp_id": opp_id, "channel_id": None,
                     "person_id": person_id, "direction": "outbound", "medium": medium,
@@ -798,47 +866,51 @@ def cmd_touched(args):
                 save_atomic("messages", messages)
                 print("  ✦ message %s recorded" % msg_id)
             else:
-                print("  · message %s already recorded (completing the outreach half)"
+                print("  · message %s already recorded (completing the touch half)"
                      % msg_id)
 
             if args.inject_fault == "after-message":
-                print("  ⚠️ TEST FAULT INJECTED — stopping before the outreach half is "
+                print("  ⚠️ TEST FAULT INJECTED — stopping before the touch half is "
                       "written. Re-run the SAME command to complete it.")
                 return 1
 
-        opps = load("opportunities")
-        opp = find(opps, opp_id)
-        if opp is None:
-            print("  record vanished between read and lock — aborting.")
-            return 1
-        already = any(o.get("person_id") == person_id and o.get("date") == date
-                     and o.get("medium") == medium and o.get("message_ref") == msg_id
-                     for o in (opp.get("outreach") or []))
+        # ADR-031 B3 — the touch itself is a row on the TOP-LEVEL `touches` store now, never
+        # an append to `opp["outreach"]` (which no longer exists — the retired-key guard
+        # would refuse it). `mint_touch_id` mints `<person_id>-tN` the same way applications'
+        # own `create auto` path mints `<opp_id>-aN`.
+        touches_rows = load("touches")
+        already = any(o.get("person_id") == person_id and o.get("opp_id") == opp_id
+                     and o.get("date") == date and o.get("medium") == medium
+                     and o.get("message_ref") == msg_id
+                     for o in touches_rows)
         if already:
-            print("  · outreach row already recorded — nothing further to do")
+            print("  · touch already recorded — nothing further to do")
             return 0
 
-        before_opps = snapshot("opportunities")
+        before_touches = snapshot("touches")
         pre_rc2, _, _, pre_problems2 = validate()
-        opp.setdefault("outreach", []).append({
-            "person_id": person_id, "channel_id": None, "status": "sent", "date": date,
-            "medium": medium, "to": to_label, "outcome": "awaiting",
+        new_touch_id = mint_touch_id(person_id, touches_rows)
+        touches_rows.append({
+            "id": new_touch_id, "person_id": person_id, "opp_id": opp_id, "channel_id": None,
+            "object_person_id": None, "object_company_id": None,
+            "status": "sent", "date": date, "medium": medium, "to": to_label,
+            "outcome": "awaiting",
             # COMMS_CUTOVER (validate_data.py) requires touch_type/recipient_role on any row
             # dated 2026-08-02 or later — "unknown" is the enum's own explicit-unknown value,
             # never a guess at which one actually applies.
             "touch_type": "unknown", "recipient_role": args.recipient_role or "unknown",
             "address_status": "unknown", "delivery": "unknown", "message_ref": msg_id,
         })
-        save_atomic("opportunities", opps)
+        save_atomic("touches", touches_rows)
         rc2, out2, err2, problems2 = validate()
         if rc2 != 0:
             added2 = new_problems(pre_problems2, problems2)
             if not (pre_rc2 != 0 and added2 == []):
-                restore("opportunities", before_opps)
-                print("  ⛔ REFUSED — the outreach half broke the store; rolled back.")
+                restore("touches", before_touches)
+                print("  ⛔ REFUSED — the touch write broke the store; rolled back.")
                 print("  " + "\n  ".join(_diagnostic_lines(rc2, out2, err2)))
                 return 1
-        print("  ✦ outreach row recorded on %s" % opp_id)
+        print("  ✦ touch %s recorded on %s" % (new_touch_id, opp_id))
     finally:
         if not args.already_locked:
             release_lock()
@@ -957,7 +1029,7 @@ def main():
     # only two writers `messages` (append-only, MESSAGES_WRITE_VERBS above) ever gets.
     ap.add_argument("op", choices=("create", "set", "set-in", "append", "show", "fields",
                                    "decide", "application-status", "networking-closed",
-                                   "answered", "touched"))
+                                   "answered", "touched", "merge-person"))
     ap.add_argument("rid", nargs="?", help="record id (e.g. an opportunity_id)")
     ap.add_argument("rest", nargs="*")
     ap.add_argument("--file", default="opportunities", choices=sorted(STORES))
@@ -987,6 +1059,10 @@ def main():
                     help="answered: the opportunity this reply belongs to — required when "
                          "the target is a `contact:<id>` touch ref rather than a message id "
                          "(a bare message id already carries its own opp_id/channel_id).")
+    ap.add_argument("--into", dest="into_id", default=None,
+                    help="merge-person: the SURVIVOR person id. The record named by <rid> "
+                         "(the duplicate) gets status=merged, merged_into=<--into>, in one "
+                         "write. Refused if that would close a merge cycle (public #93).")
     ap.add_argument("--_inject-fault", dest="inject_fault", default=None,
                     help=argparse.SUPPRESS)     # test-only — see cmd_touched's own docstring
     ap.add_argument("--dry-run", action="store_true")
@@ -1012,10 +1088,14 @@ def main():
     elif args.op == "application-status":
         args.file = "applications"
     elif args.op == "touched":
-        args.file = "opportunities"          # the outreach[] row lands here; messages.jsonl
-                                              # is written internally, never via --file
+        # ADR-031 B3 — `cmd_touched` writes `touches`/`messages` internally by name, never
+        # through this generic `--file`-driven path (it returns before reaching it, below);
+        # this assignment only keeps the messages-append-only refusal check harmless.
+        args.file = "opportunities"
     elif args.op == "answered":
         args.file = "messages"
+    elif args.op == "merge-person":
+        args.file = "people"
 
     # §15.3 point 1 — `messages` is append-only; `answered`/`touched` are its ONLY writers.
     # Refused here, before any generic single-store machinery runs, so the refusal is the
@@ -1122,6 +1202,28 @@ def main():
                 return 1
             args.rid = mint_app_id(_opp_id, load("applications"))
             minted = [args.rid]
+        # ADR-031 B3 — `touches` is a top-level store whose own id is minted `<person_id>-tN`
+        # (design §1: a touch is owned by the PERSON, unlike an application's `<opp_id>-aN`
+        # containment). `create auto '{"person_id": ..., ...}' --file touches` mints it here.
+        if args.file == "touches" and args.rid in (None, "auto"):
+            _person_id = new_row.get("person_id")
+            if not _person_id:
+                print("⛔ REFUSED — create auto '{...}' --file touches requires 'person_id' "
+                      "in the JSON payload; the id is minted from it (<person_id>-tN).")
+                return 1
+            args.rid = mint_touch_id(_person_id, load("touches"))
+            minted = [args.rid]
+        # ⭐ design §12 — an unshaped introduction is exactly the row that "looks handled and
+        # is not": a new intro-request touch naming neither object is refused at the door.
+        # `validate_data.py` treats a MIGRATED intro-request with no object as legal (a
+        # migration cannot know a fact it cannot derive) — this refusal is for NEW writes only.
+        if (args.file == "touches" and new_row.get("touch_type") == "intro-request"
+                and not new_row.get("object_person_id") and not new_row.get("object_company_id")):
+            print("⛔ REFUSED — touch_type 'intro-request' with neither object_person_id nor "
+                  "object_company_id set. An introduction is always ABOUT someone or some "
+                  "company (design §12) — without one this row looks like any other touch and "
+                  "nothing could ever ask 'who is being worked toward <company>?'")
+            return 1
         m = model()["stores"][args.file]
         idf = m.get("id_field") or "id"
         if idf in new_row and new_row[idf] != args.rid:
@@ -1314,6 +1416,37 @@ def main():
             r["status"] = new_status
             r["status_on"] = on_date
 
+    elif args.op == "merge-person":
+        # ADR-031 §3 / public #93 — "a merge is a pointer, never a rewrite": this sets
+        # `status`+`merged_into` on the DUPLICATE row (args.rid) in ONE transaction —
+        # `validate_data.py` refuses `merged_into` set without `status: merged`, and vice
+        # versa (PEOPLE_STATUS) — and touches nothing else. Every other record's `person_id`
+        # keeps naming the duplicate and resolves through it at READ time
+        # (`graph.Graph.resolve_person`), never rewritten here.
+        if len(args.rest) != 0:
+            print("usage: merge-person <duplicate-id> --into <survivor-id>")
+            return 2
+        if not args.into_id:
+            print("⛔ REFUSED — merge-person requires --into <survivor-id>.")
+            return 1
+        if args.into_id == args.rid:
+            print("⛔ REFUSED — a person cannot be merged into itself.")
+            return 1
+        survivor = find(rows, args.into_id)
+        if survivor is None:
+            print("⛔ REFUSED — no people record with id %r (--into)." % args.into_id)
+            return 1
+        if _merge_would_cycle(rows, args.rid, args.into_id):
+            print("⛔ REFUSED — merging %r into %r would close a merged_into CYCLE: %r's own "
+                  "merge chain already leads back to %r."
+                  % (args.rid, args.into_id, args.into_id, args.rid))
+            return 1
+        desc = "merge-person into %s" % args.into_id
+
+        def apply(r):
+            r["status"] = "merged"
+            r["merged_into"] = args.into_id
+
     else:  # networking-closed
         # §3b/§15.1 — refuses on UNVERIFIED silence unless the owner says they looked personally.
         if len(args.rest) != 0:
@@ -1385,7 +1518,8 @@ def main():
             return 0
         print("  ✅ dry-run validated clean against the same validator a real write runs.")
         if minted:
-            print("  · would mint app_id: %s" % ", ".join(minted))
+            _mint_label = "touch id" if args.file == "touches" else "app_id"
+            print("  · would mint %s: %s" % (_mint_label, ", ".join(minted)))
         if args.file == "opportunities" and args.op in ("append", "set-in") and args.rest:
             action = ASK_ACTION_FOR_ARRAY.get(args.rest[0].split(".")[-1])
             for a in linked_asks(args.rid, action, _load_asks()) if action else []:
@@ -1400,6 +1534,14 @@ def main():
                 for a in linked_asks(opp_id, "application", _load_asks()):
                     print("  would also resolve ask %r — %s (resolves_when: application, "
                           "dev #133 / ADR-031 B2)" % (a.get("id"), (a.get("title") or "")[:60]))
+        # ADR-031 B3 — the touches-store equivalent: a create/set against `touches` may answer
+        # an ask whose `resolves_when` is "outreach" on the touch's own opp_id.
+        if args.file == "touches" and args.op in ("create", "set"):
+            opp_id = new_row.get("opp_id") if args.op == "create" else rec.get("opp_id")
+            if opp_id:
+                for a in linked_asks(opp_id, "outreach", _load_asks()):
+                    print("  would also resolve ask %r — %s (resolves_when: outreach, "
+                          "dev #133 / ADR-031 B3)" % (a.get("id"), (a.get("title") or "")[:60]))
         return 0
 
     # ---- the ONLY window the lock is held: read, mutate, write, verify ----------
@@ -1527,11 +1669,15 @@ def main():
 
         # ---- dev #133: the write landed clean — resolve any ask that DECLARED this action
         # answers it, under the SAME lock hold. Two facts, one transaction boundary.
+        # ADR-031 B2/B3 — `ASK_ACTION_FOR_ARRAY` is permanently empty now (both actions that
+        # ever populated it were promoted off nested arrays), so `_array_leaf`/`_action` here
+        # can never resolve to anything and this branch is presently inert — left in place for
+        # a future nested array with a declared `resolves_when` action, the same reasoning
+        # `ASK_ACTION_FOR_ARRAY`'s own comment states.
         if args.file == "opportunities" and args.op in ("append", "set-in") and args.rest:
             _array_leaf = args.rest[0].split(".")[-1]
             _action = ASK_ACTION_FOR_ARRAY.get(_array_leaf)
-            _when = _action_evidence(rec, _action) if _action else None
-            for aid, title in resolve_linked_asks_dated(args.rid, _when, _action):
+            for aid, title in resolve_linked_asks_dated(args.rid, None, _action) if _action else ():
                 print("  ✦ resolved ask %r — %s (its declared action is now recorded)"
                       % (aid, title[:60]))
         # ADR-031 B2 — the applications-store write path's own resolution: the ask's rid is the
@@ -1542,6 +1688,17 @@ def main():
             if _opp_id:
                 _when = _applications_action_evidence(_opp_id)
                 for aid, title in resolve_linked_asks_dated(_opp_id, _when, "application"):
+                    print("  ✦ resolved ask %r — %s (its declared action is now recorded)"
+                          % (aid, title[:60]))
+        # ADR-031 B3 — the touches-store write path's own resolution, the exact mirror of
+        # applications' above: the ask's rid is the TOUCH'S opp_id (an ask names an
+        # opportunity, never a touch), and the evidence is this store's own
+        # `_touches_action_evidence`, never a nested array.
+        if args.file == "touches" and args.op in ("create", "set"):
+            _opp_id = new_row.get("opp_id") if args.op == "create" else rec.get("opp_id")
+            if _opp_id:
+                _when = _touches_action_evidence(_opp_id)
+                for aid, title in resolve_linked_asks_dated(_opp_id, _when, "outreach"):
                     print("  ✦ resolved ask %r — %s (its declared action is now recorded)"
                           % (aid, title[:60]))
     finally:
@@ -1555,8 +1712,12 @@ def main():
     else:
         print("  written atomically · validator clean · lock released")
     if minted:
-        print("  · app_id minted: %s — name it as trigger_ref on whatever this application "
-              "causes" % ", ".join(minted))
+        if args.file == "touches":
+            print("  · touch id minted: %s — name it on the draft entry's own `**Touch:**` "
+                  "line, or as trigger_ref on whatever it causes" % ", ".join(minted))
+        else:
+            print("  · app_id minted: %s — name it as trigger_ref on whatever this application "
+                  "causes" % ", ".join(minted))
     if args.file == "opportunities":
         _your_move_visibility_note(new_row if args.op == "create" else rec)
     return 0

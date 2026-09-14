@@ -62,6 +62,7 @@ import _tree
 import profile as _profile
 import your_move as _ym
 import applications as _apps
+import touches as _touches
 # The one definition of the play sequence — validate_data.py owns the enum; consumers
 # import it rather than restating it (a sequence typed twice disagrees with itself later).
 from validate_data import PLAY_SEQUENCE as _PLAY_SEQUENCE
@@ -340,12 +341,14 @@ def _touch_detail(o):
             rows.append(f"<li>{when} — {how} · {cl}</li>")
         out.append('<div class="od-h">Applications</div><ul class="od-l">'
                    + "".join(rows) + "</ul>")
-    tou = o.get("outreach") or []
+    # ADR-031 B3 — o["_touches"], the caller's join against the top-level touches store
+    # (touches.enrich_opportunities, called once in load_jsonl above), never a nested array.
+    tou = o.get("_touches") or []
     if tou:
         rows = []
         for t in tou:
             when = esc(str(t.get("sent_on") or t.get("date") or "date unrecorded"))
-            who = esc(str(t.get("to") or t.get("contact_id") or "recipient unrecorded"))
+            who = esc(str(t.get("to") or t.get("person_id") or "recipient unrecorded"))
             med = esc(str(t.get("medium") or ""))
             res = t.get("outcome") or "no reply yet"
             rows.append(f"<li>{when} — {who}{' · ' + med if med else ''} · {esc(str(res))}</li>")
@@ -1471,12 +1474,13 @@ def load_jsonl(name):
         line = line.strip()
         if line:
             out.append(_json.loads(line))
-    # ADR-031 B2 — every opportunities.jsonl load in this file gets o["_applications"] set
-    # from the top-level applications store, from THIS one place, so every caller below (there
-    # are several) never has to remember to join it separately and never re-reads a nested
-    # array that no longer exists.
+    # ADR-031 B2/B3 — every opportunities.jsonl load in this file gets o["_applications"] and
+    # o["_touches"] set from their own top-level stores, from THIS one place, so every caller
+    # below (there are several) never has to remember to join them separately and never
+    # re-reads a nested array that no longer exists.
     if name == "opportunities.jsonl":
         _apps.enrich_opportunities(str(ROOT), out)
+        _touches.enrich_opportunities(str(ROOT), out)
     return out
 
 
@@ -1745,12 +1749,13 @@ def application_tables(today=None):
                               a.get("status", ""), cl_txt,
                               (a.get("method") or "").replace("-", " ")])
             continue
-        contacts = len(o.get("outreach") or [])
+        # ADR-031 B3 — o["_touches"], never a nested array.
+        contacts = len(o.get("_touches") or [])
         # `in-motion` is defined in CLAUDE.md as a recruiter/network thread — the
-        # recruiter approached the candidate, so there is no outreach[] row from their side and
+        # recruiter approached the candidate, so there is no touches row from their side and
         # its absence is NOT evidence that nothing is happening.
         if contacts or o.get("status") == "in-motion" or o.get("stage") in ("screening", "interviewing", "offer"):
-            who = ", ".join(x.get("to", "") for x in (o.get("outreach") or []) if x.get("to")) or "in process"
+            who = ", ".join(x.get("to", "") for x in (o.get("_touches") or []) if x.get("to")) or "in process"
             nxt = (o.get("next_action") or "").strip()
             human.append([cname(o), o.get("title", ""), o.get("stage", ""), who, nxt[:150]])
         else:

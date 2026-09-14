@@ -46,6 +46,7 @@ sys.path.insert(0, HERE)
 from _root import profile_or_fixture as _pof                       # noqa: E402
 import your_move as _ym                                            # noqa: E402
 import applications as _apps                                       # noqa: E402
+import touches as _touches                                         # noqa: E402
 
 ROOT = _pof()
 DATE_RE = re.compile(r"\b(20\d\d-\d\d-\d\d)\b")
@@ -133,8 +134,10 @@ def known_entities():
         if m.get("direction") == "outbound":
             note(m.get("to"), m.get("sent_on"), "an outbound message in messages.jsonl")
 
+    # ADR-031 B3 — the top-level touches store, grouped by opp_id; never a nested array.
+    touches_by_opp = _touches.group_by_opp(_touches.load(ROOT)[0])
     for o in rows("opportunities.jsonl"):
-        for out in (o.get("outreach") or []):
+        for out in touches_by_opp.get(o.get("id"), []):
             if not isinstance(out, dict) or out.get("status") != "sent":
                 continue
             person = _people_by_id.get(out.get("person_id")) or {}
@@ -165,12 +168,13 @@ def opp_action_evidence():
     # ADR-031 B2 — apps_by_opp is the top-level applications store, grouped by opp_id; never a
     # nested array on the opportunity record.
     apps_by_opp = _apps.group_by_opp(_apps.load(ROOT)[0])
+    touches_by_opp = _touches.group_by_opp(_touches.load(ROOT)[0])
     for o in rows("opportunities.jsonl"):
         oid = o.get("id")
         for ap in apps_by_opp.get(oid, []):
             if isinstance(ap, dict) and ap.get("date"):
                 note(oid, ap["date"], "an application recorded on the linked opportunity")
-        for out in (o.get("outreach") or []):
+        for out in touches_by_opp.get(oid, []):
             if isinstance(out, dict) and out.get("status") == "sent" and out.get("date"):
                 note(oid, out["date"], "a sent outreach row on the linked opportunity")
     return ev

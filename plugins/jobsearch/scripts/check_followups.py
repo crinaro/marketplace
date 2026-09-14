@@ -64,6 +64,7 @@ from _root import profile_root as _profile_root
 import _tree
 import journal as _journal
 import mail_client as _mail_client
+import touches as _touches
 
 ROOT = _profile_root()
 
@@ -114,6 +115,8 @@ def load_opps():
                 out.append(json.loads(line))
     finally:
         fh.close()
+    # ADR-031 B3 — o["_touches"], never a nested array on the opportunity.
+    _touches.enrich_opportunities(ROOT, out)
     return out
 
 DEFAULT_DAYS = 7
@@ -229,7 +232,7 @@ def check_silent_jsonl(today, days):
             continue
         if opp.get("stage") == "closed":
             continue
-        sent = [o for o in (opp.get("outreach") or [])
+        sent = [o for o in (opp.get("_touches") or [])
                 if o.get("status") == "sent" and o.get("date")]
         if not sent:
             continue
@@ -463,7 +466,7 @@ def main():
     # "is it silent?" is already being asked.
     suspects = []
     for o in load_opps():
-        for x in (o.get("outreach") or []):
+        for x in (o.get("_touches") or []):
             if (x.get("status") == "sent"
                     and x.get("outcome") == "awaiting"
                     and (x.get("medium") or "").startswith("email")

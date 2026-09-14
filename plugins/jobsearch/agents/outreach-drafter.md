@@ -252,11 +252,11 @@ wrong there.**
 reason the candidate fits THIS role, with a hard proof point; **(2) NEXT STEP** — a specific,
 low-friction invitation. *"I look forward to hearing from you" does NOT satisfy the second job.*
 
-**⭐ NAME THE PERSON, NOT JUST THE MESSAGE.** Every draft targets a `contacts[]` entry. Give the
-`contact_id` (or say the contact is new and needs creating, with their email/LinkedIn if known).
-**If the candidate messages someone, they are a contact of that opportunity by definition** — an
-outreach row that doesn't join to a person makes "what is the whole history with X?" unanswerable,
-and `validate_data.py` rejects it. Look them up with
+**⭐ NAME THE PERSON, NOT JUST THE MESSAGE.** Every draft targets a `people.jsonl` entry. Give the
+`person_id` (or say the person is new and needs creating, with their email/LinkedIn if known).
+**If the candidate messages someone, they are a person on record by definition** — a touch (a
+`data/touches.jsonl` row since ADR-031 B3) that doesn't join to a person makes "what is the whole
+history with X?" unanswerable, and `validate_data.py` rejects it. Look them up with
 `~/.claude/jobsearch/run pipeline_index.py --person "<name>"`.
 
 **Emit with every draft**, so the send can be recorded without reconstruction:

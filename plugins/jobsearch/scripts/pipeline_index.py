@@ -83,6 +83,8 @@ def main():
     opps = load("opportunities.jsonl")
     import applications as _apps                # ADR-031 B2 — o["_applications"], never nested
     _apps.enrich_opportunities(ROOT, opps)
+    import touches as _touches                  # ADR-031 B3 — o["_touches"], never nested
+    _touches.enrich_opportunities(ROOT, opps)
     companies = {c["id"]: c.get("name", c["id"]) for c in load("companies.jsonl")}
 
     if args.person:
@@ -114,7 +116,7 @@ def main():
                     print("  role     : %s" % (inv.get("role") or inv.get("path_type") or "?"))
                     print("  opp      : %s  [%s / %s]" % (o["id"], o.get("status"),
                                                           o.get("stage")))
-                    touches = [r for r in (o.get("outreach") or [])
+                    touches = [r for r in (o.get("_touches") or [])
                               if r.get("person_id") == pid]
                     if not touches:
                         print("  touches  : none recorded")
@@ -175,7 +177,7 @@ def main():
         # same day. The candidate corrected me. An empty research_log is not an unworked role, and `stage:
         # contacted` did not disambiguate it. **Never infer that nothing was done from ONE array.**
         napp = len(o.get("_applications") or [])
-        nout = len([r for r in (o.get("outreach") or []) if r.get("status") == "sent"])
+        nout = len([r for r in (o.get("_touches") or []) if r.get("status") == "sent"])
         act = ("A%d" % napp if napp else "  ") + " " + ("T%d" % nout if nout else "  ")
         line = "%-42s | %-20s | %-15s | %-11s | %-23s | %-5s | %s" % (
             (o.get("title") or "?")[:42],
@@ -191,7 +193,7 @@ def main():
             names = [_people_by_id.get(pid, {}).get("name")
                     for pid in _person_ids_by_opp.get(o.get("id"), [])]
             names = [n for n in names if n]
-            reached = [r.get("to") for r in (o.get("outreach") or []) if r.get("to")]
+            reached = [r.get("to") for r in (o.get("_touches") or []) if r.get("to")]
             if names or reached:
                 print("      contacts: %s" % (", ".join(names) or "none"))
                 if reached:

@@ -13,10 +13,13 @@ is model-invoked only: **no script can publish**. So the retirement is two-phase
   1. `migrate.m_0_34_0_dashboard_collapse` only RECORDS: each surviving
      `views/*_url.txt` (other than the dashboard's own) becomes a row here, state
      `pending`. **The url file is not deleted at that step.**
-  2. A tool-holding session DRAINS: it publishes the constant moved-stub
-     (`--stub-html` writes the file to publish) to the row's URL, then — only on a
-     confirmed publish — runs `--published <page>`, which marks the row `stubbed` and
-     retires the url file.
+  2. A tool-holding session DRAINS: it **reads the row's URL first** (the Artifact tool's own
+     `read` action) — publishing refuses a publish over a URL the session has not read, by
+     design (public #35), and the read is what makes the publish below actually go through —
+     then publishes the constant moved-stub (`--stub-html` writes the file to publish) to that
+     same URL (its content is never byte-identical to the live page it replaces, so the
+     identical-resend refusal never fires either), then — only on a confirmed publish — runs
+     `--published <page>`, which marks the row `stubbed` and retires the url file.
 
 ⭐ THE ORDERING IS LOAD-BEARING. Retiring a url file before its stub publish is
 confirmed makes that URL **permanently unstubbable** — nothing would remember it

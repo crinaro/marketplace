@@ -276,10 +276,8 @@ def main():
 
     # ---- 3. Outreach: who we connected with, and did they reply? -----------
     rule("OUTREACH - who the candidate connected with, and whether they replied")
-    rows = []
-    for o in opps:
-        for x in o.get("outreach") or []:
-            rows.append((o, x))
+    # ADR-031 B3 — the top-level touches store, joined by opp_id; never a nested array.
+    rows = [(opps_by_id.get(t.get("opp_id"), {}), t) for t in load("touches.jsonl")]
     if not rows:
         print("  None recorded.")
     else:

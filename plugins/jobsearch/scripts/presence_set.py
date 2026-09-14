@@ -255,6 +255,28 @@ def esc(s):
     return html.escape(s, quote=False)
 
 
+# public #97 — a tab `key` (e.g. "variant:engineering") is a fine HTML attribute value
+# (`data-pane`, the ledger's own "key" field, every check() comparison above all keep using it
+# UNCHANGED) but an unsafe CSS id/selector: a bare `:` inside `#id` is a pseudo-class delimiter,
+# so a browser parses `#t-variant:engineering:checked` as `#t-variant` plus two unrecognized
+# pseudo-classes and drops the WHOLE rule — silently, with no console error, one pane at a time.
+# `--check` used to round-trip only the HTML text, never asking whether the CSS it wrote could
+# ever match anything, so a page where half the tabs were permanently dead shipped CLEAN. This
+# is the ONLY place a `key` becomes an `id=`/`for=`/`#selector` string; every other use of `key`
+# (data-pane, the ledger, check()'s own comparisons) is untouched by design, so this fix cannot
+# disturb pane identity, only how that identity is spelled where CSS parses it.
+_CSS_UNSAFE_ID_RE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def css_id(key):
+    """`key`, made safe to use as a CSS id and inside a CSS selector: every character outside
+    `[A-Za-z0-9_-]` (the one shape a `#id` selector can never misparse) becomes `-`. Guaranteed
+    total, not just "no colon" — a future key carrying some OTHER CSS-significant character
+    (a space, a dot, a `#`) is caught by this the same way, never re-litigated one character at
+    a time."""
+    return _CSS_UNSAFE_ID_RE.sub("-", key)
+
+
 _STRONG_RE = re.compile(r"\*\*(.+?)\*\*")
 _EM_RE = re.compile(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])|(?<!\w)_(?!\s)(.+?)(?<!\s)_(?!\w)")
 _CODE_RE = re.compile(r"`([^`]+)`")
@@ -723,14 +745,18 @@ def build(root, today=None):
     tabs.append(("rules", "Rules"))
 
     # ── assemble: CSS-only tabs (radio inputs precede the pages they reveal) ──
+    # public #97: every id/for/#selector below is built from css_id(k), never k itself — k
+    # (e.g. "variant:engineering") stays exactly as it is for data-pane / the ledger / check().
     title = _title(root)
     inputs = "".join('<input class="tab" type="radio" name="tab" id="t-%s"%s>'
-                     % (esc(k), " checked" if i == 0 else "") for i, (k, _l) in enumerate(tabs))
-    labels = "".join('<label for="t-%s">%s</label>' % (esc(k), esc(l)) for k, l in tabs)
+                     % (esc(css_id(k)), " checked" if i == 0 else "")
+                     for i, (k, _l) in enumerate(tabs))
+    labels = "".join('<label for="t-%s">%s</label>' % (esc(css_id(k)), esc(l)) for k, l in tabs)
     tab_css = "\n".join("  #t-%s:checked ~ .panes #p-%s { display:block; }\n"
                         "  #t-%s:checked ~ .tabs label[for=\"t-%s\"] { background: var(--tab-active); "
-                        "color: var(--tab-active-fg); }" % (k, k, k, k) for k, _l in tabs)
-    pages = "\n".join('<div class="tabpage" id="p-%s">\n%s\n%s\n</div>' % (esc(k), strip, body)
+                        "color: var(--tab-active-fg); }" % (cid, cid, cid, cid)
+                        for cid in (css_id(k) for k, _l in tabs))
+    pages = "\n".join('<div class="tabpage" id="p-%s">\n%s\n%s\n</div>' % (esc(css_id(k)), strip, body)
                       for k, strip, body in panes)
     n_absent_active = sum(1 for a in absent if a["cause"] != "retired")
     doc = ('<title>%s</title>\n<style>%s\n%s\n</style>\n'
@@ -795,8 +821,25 @@ _PANE_RE = re.compile(r'<div class="pane" data-pane="([^"]*)" data-source="([^"]
 _ITEM_RE = re.compile(r'<li data-item="([^"]*)"')
 _CAT_RE = re.compile(r'<section class="cat" data-category="([^"]*)"')
 _MODE_RE = re.compile(r'data-union-mode="([^"]*)"')
-_VTAB_RE = re.compile(r'<input class="tab" type="radio" name="tab" id="t-variant:([^"]*)"')
+# public #97: the HTML id is css_id("variant:%s" % vid) = "variant-<vid>" (colon -> hyphen,
+# see css_id()) -- kept in step with that function, not with the raw "variant:" pane key
+# _PANE_RE matches above (data-pane keeps the colon; this is the id attribute, which cannot).
+_VTAB_RE = re.compile(r'<input class="tab" type="radio" name="tab" id="t-variant-([^"]*)"')
 _ABSENT_RE = re.compile(r'data-variant-id="([^"]*)" data-variant-absent="([^"]*)"')
+
+# public #97 -- the CSS-only tab switcher's own selector validity, never round-tripped by any
+# check above (all of them compare HTML TEXT, never ask whether the CSS this script wrote could
+# match anything). `_ID_ATTR_RE` finds a real `id="..."` attribute -- the negative lookbehind
+# excludes `data-variant-id="..."` (whose "id" is the tail of a longer attribute name, not this
+# attribute) without needing to enumerate every other data-* attribute that happens to end in
+# "id". `_SAFE_ID_RE` is the one shape a CSS parser can never misread: no character outside
+# [A-Za-z0-9_-]. `_CSS_SELECTOR_ID_RE` extracts a `#token` the SAME way a real browser's parser
+# effectively does -- stopping at the first character outside that same safe set -- so an id
+# smuggling a ':' (or any other CSS-significant character) into the stylesheet yields a
+# TRUNCATED token that can never equal the full id it was meant to select.
+_ID_ATTR_RE = re.compile(r'(?<![\w-])id="([^"]*)"')
+_SAFE_ID_RE = re.compile(r'^[A-Za-z0-9_-]+$')
+_CSS_SELECTOR_ID_RE = re.compile(r'#([A-Za-z0-9_-]+)')
 
 
 _INLINE_TAG_RE = re.compile(r"</?(?:strong|em|code|a)\b[^>]*>")
@@ -951,6 +994,27 @@ def check(root):
         elif vid in expected_vids and vid not in fresh_absent:
             problems.append("ABSENT NOTICE STALE: %s — page shows it absent (%s) but it "
                             "renders now; regenerate" % (vid, cause))
+
+    # 9. public #97 — the CSS-only tab switcher's SELECTOR VALIDITY, never checked above: every
+    # prior check round-trips HTML TEXT and never asks whether the CSS this script wrote could
+    # ever match anything. Two independent assertions; either alone would have caught the
+    # reported defect (an unescaped ':' in a variant tab id silently dropped every rule
+    # containing it, and every check still reported CLEAN).
+    tab_pane_ids = [hid for hid in _ID_ATTR_RE.findall(doc) if hid[:2] in ("t-", "p-")]
+    for hid in sorted(set(tab_pane_ids)):
+        if not _SAFE_ID_RE.match(hid):
+            problems.append("UNSAFE CSS ID: id=%r contains a character outside [A-Za-z0-9_-] — "
+                            "a real CSS parser treats it as a selector delimiter (most often "
+                            "':', a pseudo-class) and drops the WHOLE rule naming it; that "
+                            "tab/pane can never be switched to (public #97)" % hid)
+    style_m = re.search(r"<style>(.*?)</style>", doc, re.S)
+    css_ref_ids = set(_CSS_SELECTOR_ID_RE.findall(style_m.group(1) if style_m else ""))
+    for hid in sorted(set(tab_pane_ids)):
+        if hid not in css_ref_ids:
+            problems.append("CSS SELECTOR CANNOT MATCH id=%r — parsing the generated <style> "
+                            "block the same way a browser does (stopping at the first character "
+                            "outside [A-Za-z0-9_-]) never yields this id whole, so no generated "
+                            "rule can ever select it; regenerate (public #97)" % hid)
 
     n_para_rows = sum(1 for it in fresh["open_items"] if it["category"] == "paragraph")
     if problems:

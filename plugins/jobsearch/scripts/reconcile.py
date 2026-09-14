@@ -81,6 +81,7 @@ _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 from _atomic import write_jsonl, write_json
 import validate_data as _vd
+import touches as _touches
 
 try:
     from mail_client import (
@@ -119,6 +120,21 @@ def person_terms(to_field):
 
     Returns (display_name, [terms]). The parenthetical is often the firm, which is a useful
     second term, and an embedded email address is the strongest term of all.
+
+    ⭐ Public #90 — a SINGLE-TOKEN name is never sent as a term ALONE. The query these terms
+    build is `"in:anywhere (%s)" % " OR ".join(terms)` (Gmail's X-GM-RAW search, mail_client.py)
+    — every term in the list is OR'd against the whole mailbox. Quoting a lone word changes
+    nothing there (Gmail phrase-quoting only narrows a MULTI-word phrase to adjacency; a single
+    quoted word matches exactly what the same word unquoted matches), so the fix is not
+    quoting — it is that a bare first name is too weak a term to stand on its own: run against
+    eight held contacts, a short common first name matched over 12,000 threads, all dated to
+    the run date, and each one posted a false `store-behind-mailbox` finding (brief.py's D13).
+    A one-token name is used only PAIRED with the firm, as one AND'd term (Gmail: space-
+    separated quoted phrases inside one list entry are ANDed, unlike the OR every other entry
+    in the list gets against each other) — never appended bare, and never OR'd loose. With
+    neither an email nor a firm to pair it with, a one-token name contributes NOTHING (the
+    caller's own `if not terms: continue` — reconcile.py:354/667, brief.py:266/794 — already
+    treats an empty term list as "nothing to search on", the same as no name at all).
     """
     raw = (to_field or "").strip()
     email = None
@@ -127,18 +143,27 @@ def person_terms(to_field):
         email = m.group(0)
     name = re.split(r"\(|,|;", raw)[0].strip()
     paren = re.search(r"\(([^)]+)\)", raw)
+    firm = None
+    if paren:
+        firm = re.split(r"[,;—-]", paren.group(1))[0].strip()
+        firm = re.sub(r"\b(1st|2nd|3rd)-degree connection\b", "", firm).strip()
+        if not (firm and len(firm) > 3 and not firm.lower().startswith("to forward")):
+            firm = None
+
     terms = []
     if email:
         terms.append(email)
     if name and len(name.split()) >= 2:
         terms.append('"%s"' % name)
-    elif name:
-        terms.append(name)
-    if paren:
-        firm = re.split(r"[,;—-]", paren.group(1))[0].strip()
-        firm = re.sub(r"\b(1st|2nd|3rd)-degree connection\b", "", firm).strip()
-        if firm and len(firm) > 3 and not firm.lower().startswith("to forward"):
-            terms.append('"%s"' % firm)
+    elif name and firm:
+        # A single-token name paired with the firm as ONE combined (AND'd) term — narrow
+        # enough to send; "spent" the firm here so it is never also appended below as its own
+        # loose OR'd term (which would let it match without the name at all).
+        terms.append('"%s" "%s"' % (name, firm))
+        firm = None
+    # else: a bare single-token name with no firm and no email is DROPPED — public #90.
+    if firm:
+        terms.append('"%s"' % firm)
     return name, terms
 
 
@@ -456,18 +481,24 @@ def main():
     opps = load("opportunities.jsonl")
     companies = {c["id"]: c.get("name", c["id"]) for c in load("companies.jsonl")}
     accounts = configured_accounts()
+    opps_by_id = {o.get("id"): o for o in opps}
 
+    # ADR-031 B3 — `touches` is the top-level store now, joined by `opp_id`; never a nested
+    # array on the opportunity record. `idx` is retired in favor of the touch's own `id` — the
+    # write-back below addresses a row by id, never by position in an array that no longer
+    # exists (see the `--apply` block).
     targets = []
-    for o in opps:
-        if args.role and o["id"] != args.role:
+    for r in _touches.load(ROOT)[0]:
+        oid = r.get("opp_id")
+        o = opps_by_id.get(oid) or {}
+        if args.role and oid != args.role:
             continue
         if not args.role and not args.all and not args.unknown_medium:
             if o.get("status") not in ("active-pursuit", "needs-resolution", "in-motion"):
                 continue
-        for idx, r in enumerate(o.get("outreach") or []):
-            if args.unknown_medium and r.get("medium") != "unknown":
-                continue
-            targets.append((o, idx, r))
+        if args.unknown_medium and r.get("medium") != "unknown":
+            continue
+        targets.append((o, r.get("id"), r))
     if args.limit:
         targets = targets[:args.limit]
 
@@ -612,29 +643,32 @@ def main():
         print("  a LinkedIn touch with notifications off, or a name the mailbox spells differently.\n")
 
     if args.apply and findings["medium"]:
+        # ADR-031 B3 — the write lands on `data/touches.jsonl`, addressed by the touch's OWN
+        # `id`, never by position in `opportunities[].outreach[]` (which no longer exists).
         by_id = {}
-        for o, idx, r, label, medium, n in findings["medium"]:
-            by_id.setdefault(o["id"], []).append((idx, medium))
-        path = os.path.join(DATA, "opportunities.jsonl")
+        for o, tid, r, label, medium, n in findings["medium"]:
+            by_id[tid] = medium
+        path = os.path.join(DATA, "touches.jsonl")
         with open(path, encoding="utf-8") as fh:
             lines = [json.loads(l) for l in fh if l.strip()]
         changed = 0
-        for rec in lines:
-            for idx, medium in by_id.get(rec["id"], []):
-                row = rec["outreach"][idx]
-                # Only the coarse family is provable from a header. linkedin-message vs
-                # connection-note vs InMail is NOT distinguishable this way, so don't pretend.
-                row["medium"] = "email-reply" if medium == "email" and \
-                    (row.get("touch_type") in ("reply", "chase")) else (
-                        "email-cold" if medium == "email" else "linkedin-message")
-                if row["medium"].startswith("email") and not row.get("address_status"):
-                    row["address_status"] = "unknown"
-                row["note"] = ((row.get("note") + " | ") if row.get("note") else "") + \
-                    ("MEDIUM RECOVERED 2026-08-02 by scripts/reconcile.py from the mailbox. "
-                     "The header proves the FAMILY (email vs LinkedIn); it cannot distinguish "
-                     "connection-note vs InMail vs free message, so the finer value is not "
-                     "asserted.")
-                changed += 1
+        for row in lines:
+            medium = by_id.get(row.get("id"))
+            if medium is None:
+                continue
+            # Only the coarse family is provable from a header. linkedin-message vs
+            # connection-note vs InMail is NOT distinguishable this way, so don't pretend.
+            row["medium"] = "email-reply" if medium == "email" and \
+                (row.get("touch_type") in ("reply", "chase")) else (
+                    "email-cold" if medium == "email" else "linkedin-message")
+            if row["medium"].startswith("email") and not row.get("address_status"):
+                row["address_status"] = "unknown"
+            row["note"] = ((row.get("note") + " | ") if row.get("note") else "") + \
+                ("MEDIUM RECOVERED 2026-08-02 by scripts/reconcile.py from the mailbox. "
+                 "The header proves the FAMILY (email vs LinkedIn); it cannot distinguish "
+                 "connection-note vs InMail vs free message, so the finer value is not "
+                 "asserted.")
+            changed += 1
         write_jsonl(path, lines)
         print("APPLIED: medium filled on %d row(s). Run validate_data.py." % changed)
     elif findings["medium"]:
@@ -682,10 +716,10 @@ def main():
                 d = parse_hdr_date(decode_header_value(msg.get("Date")))
                 inbound = last in frm.lower() if last else False
                 existing.append({
-                    "id": "%s-%s-%s" % (o["id"][:28], (r.get("contact_id") or "x"),
-                                        uid),
-                    "opp_id": o["id"],
-                    "contact_id": r.get("contact_id"),
+                    "id": "%s-%s-%s" % ((o.get("id") or "x")[:28],
+                                        (r.get("person_id") or "x"), uid),
+                    "opp_id": o.get("id"),
+                    "person_id": r.get("person_id"),
                     "direction": "inbound" if inbound else "outbound",
                     "medium": r.get("medium") if not inbound else "email-reply",
                     "sent_on": d.isoformat() if d else None,

@@ -215,29 +215,45 @@ _GRAPH_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph.py")
 # the 0.45.0 migration and this guard, never ahead of either — exactly graph.py's own timing.
 _APPLICATIONS_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "applications.py")
 
+# ⭐ B3's OWN structural marker (ADR-031 §29.3's amendment: "each stage names its own structural
+# marker"). Unlike B2, B3's `touches` store IS genuinely multi-directional (person, opportunity,
+# channel, and §12's object person/company) — exactly the shape `graph.py` exists to walk, and
+# `graph.py` gains `touches_for_person()`/`touches_for_opportunity()`/`touches_for_channel()`
+# accordingly. But `graph.py` already exists on disk (shipped with B1), so its mere presence
+# cannot newly prove B3 shipped the way it proved B1 did — B3 needs its OWN marker file the same
+# reason B2 did, even though its join IS a "real" walker this time. `touches.py` is that file:
+# the flat load/group module every simple per-opportunity reader (`applying.py`,
+# `pipeline_index.py`, `trigger.py`, `precondition.py`, `check_sent_drafts.py`,
+# `check_action_claims.py`, `channels_due.py`, `check_followups.py`, `funnel_report.py`,
+# `watch.py`, `generate_dashboard.py`) now calls instead of hand-rolling the nested array (see
+# touches.py's own module docstring for the full "graph.py vs touches.py" reasoning). It lands
+# in the SAME commit as the 0.48.0 migration and this guard, never ahead of either — exactly
+# graph.py's own timing for B1, applications.py's for B2.
+_TOUCHES_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "touches.py")
+
 
 def active_retired_keys():
     """The subset of RETIRED_KEYS whose stage has actually shipped in THIS tree — read structurally,
     never all of RETIRED_KEYS and never a human-set flag. Resolves to {} until B1 ships (graph.py
     lands, with the migration, in one commit); see the block comment above RETIRED_KEYS."""
     active = {}
-    # ⭐ `_b1_key`/`_b2_key` hold the string in a NAME, never a literal subscript on RETIRED_KEYS
-    # here — `check_retired_reads.py`'s own scanner matches a Subscript/`.get()` call whose
-    # slice is the STRING CONSTANT "contacts"/"applications" (it cannot tell a data-row read
-    # from a constant-dict read apart, by design — see its module docstring).
-    # `RETIRED_KEYS["contacts"]` would be a real, if harmless, hit on THIS module; reading it
-    # through a local variable is not the checker avoided, it is the checker's own documented
-    # boundary — a data row is never keyed by a variable holding a compile-time constant a
-    # checker can trace back to this exact line.
+    # ⭐ `_b1_key`/`_b2_key`/`_b3_key` hold the string in a NAME, never a literal subscript on
+    # RETIRED_KEYS here — `check_retired_reads.py`'s own scanner matches a Subscript/`.get()`
+    # call whose slice is the STRING CONSTANT "contacts"/"applications"/"outreach" (it cannot
+    # tell a data-row read from a constant-dict read apart, by design — see its module
+    # docstring). `RETIRED_KEYS["contacts"]` would be a real, if harmless, hit on THIS module;
+    # reading it through a local variable is not the checker avoided, it is the checker's own
+    # documented boundary — a data row is never keyed by a variable holding a compile-time
+    # constant a checker can trace back to this exact line.
     _b1_key = "contacts"
     if os.path.exists(_GRAPH_PY):
         active[_b1_key] = RETIRED_KEYS[_b1_key]
     _b2_key = "applications"
     if os.path.exists(_APPLICATIONS_PY):
         active[_b2_key] = RETIRED_KEYS[_b2_key]
-    # `outreach` (B3) gains an entry here once THAT stage ships — its own migration dispatch
-    # names its own structural marker, the same mechanism B1's graph.py and B2's applications.py
-    # already establish.
+    _b3_key = "outreach"
+    if os.path.exists(_TOUCHES_PY):
+        active[_b3_key] = RETIRED_KEYS[_b3_key]
     return active
 TOUCH_TYPES = {"first-touch", "chase", "reply", "referral-ask", "intro-request",
                "thank-you", "reconnect", "apply-path", "unknown"}
@@ -274,10 +290,10 @@ FORM_ANSWER_KEYS = {"question_key", "question", "answer", "answered_on"}
 # ⭐ ADR-031 B1: `contact_id` -> `person_id` (docs/data_model.json's banned_aliases carries the
 # rename globally). A row still writing `contact_id` is caught by the SAME banned-alias branch
 # every unknown-key guard already runs, not a special case here.
-OUTREACH_KEYS = {"to", "person_id", "channel_id", "status", "date", "responded_on", "outcome",
-                 "medium", "touch_type", "recipient_role", "campaign_id", "address_status",
-                 "delivery", "message_ref", "variant", "note",
-                 "trigger_kind", "trigger_ref", "sequence_id", "sequence_step"}
+# ⭐ ADR-031 B3 — OUTREACH_KEYS retired along with the nested array it governed. `touches` is
+# now a top-level store (docs/data_model.json's own field list, gaining `id` and the two §12
+# object FKs no nested row ever had) checked by the GENERIC model-driven unknown-key guard
+# every other top-level store added since B2 uses — never a second, dedicated set here.
 # New required fields apply only from the cutover — backfilled history carries "unknown"
 # where no contemporaneous record supports a value. Without this the validator would fail
 # against 46 legacy rows on day one and get ignored.
@@ -1006,14 +1022,35 @@ def _main():
             if not is_date(e.get("date", "")):
                 problems.append("%s: log date not ISO — %r" % (label, e.get("date")))
 
+    # ---- messages[].channel_id — the FK half of public #63 ----------------------------------
+    # Since ADR-031 B1/B3 a message joins by `person_id` (required to resolve when set) and
+    # `opp_id: null` is a LEGAL row (a message to a person about no role — see the anchor check
+    # above). What is NOT legal is a `channel_id` that resolves nowhere: asks/commitments/briefs/
+    # touches have all checked their own `channel_id` against `channel_ids` since B1 shipped
+    # (each below or above this block), but the messages loop runs BEFORE `channel_ids` exists
+    # (people/involvements/messages are validated ahead of companies/channels — see that block's
+    # own comment) and nothing ever came back to close the gap once the set existed. A dangling
+    # `channel_id` here is exactly what a referential check exists for — a message silently
+    # unreachable from the relationship it names, which is how a stale thread and a decision to
+    # cold-approach the same channel can coexist with nothing in the store admitting it.
+    for m in (sent_msgs or []):
+        if m.get("id") == "_README":
+            continue
+        mcid = m.get("channel_id")
+        if mcid is not None and mcid not in channel_ids:
+            problems.append("messages[%s]: channel_id %r does not resolve"
+                            % (m.get("id", "?"), mcid))
+
     # ---- opportunities ----
     opp_ids = set()
-    # States & Views V1b (design §15.3 point 2) — every outreach[].message_ref seen, across
-    # EVERY opportunity, so the touched-orphan check below (after this loop) can tell a
-    # `record.py touched` message that landed with no completing outreach[] row apart from
+    # States & Views V1b (design §15.3 point 2) — every touches[].message_ref seen, across
+    # EVERY touch, so the touched-orphan check below (after the touches section) can tell a
+    # `record.py touched` message that landed with no completing touches row apart from
     # one that is genuinely still mid-write from a caller who has not gotten to the second
     # append yet — the SAME half-written case a crash between the two appends produces.
-    outreach_message_refs = set()
+    # ADR-031 B3 — was `outreach_message_refs`; populated from the top-level `touches` store
+    # now, never from a nested array.
+    touch_message_refs = set()
     for r in opps:
         oid = r.get("id", "?")
         label = "opportunities[%s]" % oid
@@ -1259,143 +1296,11 @@ def _main():
                 _ym.parse_blocked_until(bu)
             except _ym.PreconditionError as e:
                 problems.append("%s: blocked_until %r is unreadable — %s" % (label, bu, e))
-        # ⭐ ADR-031 B1 — `contacts[]` is RETIRED (the retired-key guard above already refuses it
-        # on write). The people it named now live in `people`/`involvements`, validated in one
-        # place near the top of this function; the join `outreach[]` needs is this
-        # opportunity's own involvements, computed here from the GLOBAL `involvements` list
-        # loaded above (person_ids valid for THIS opportunity's own outreach rows to join to).
-        person_ids_for_opp = {i.get("person_id") for i in involvements
-                              if i.get("opp_id") == r.get("id") and i.get("person_id")}
-
-        # The application handles a trigger on THIS record may name (public #27): id (was
-        # app_id — unchanged value) where minted, date for pre-migration rows. Own-record
-        # rule — see check_trigger. ADR-031 B2: resolved against apps_by_opp (the top-level
-        # applications store filtered to THIS opportunity), never a nested array walk.
-        app_refs = set()
-        for ap in apps_by_opp.get(r.get("id"), []):
-            for h in (ap.get("id"), ap.get("date")):
-                if isinstance(h, str) and h.strip():
-                    app_refs.add(h)
-
-        # outreach — links drafts to the role (kills the phantom-drafts bug)
-        for i, o2 in enumerate(r.get("outreach", [])):
-            if o2.get("status") not in OUTREACH_STATUS:
-                problems.append("%s: outreach[%d].status %r not in {%s}" % (label, i, o2.get("status"), ", ".join(sorted(OUTREACH_STATUS))))
-            ocid = o2.get("channel_id")
-            if ocid is not None and ocid not in channel_ids:
-                problems.append("%s: outreach[%d].channel_id %r does not resolve" % (label, i, ocid))
-            # ⭐⭐ A MEDIUM IS NOT A RELATIONSHIP — enforced HERE, not only in the test suite.
-            #
-            # `linkedin-direct` and `email-direct` are legacy rows that still RESOLVE in
-            # channels.jsonl, so the resolve check above waves them through. The rule that they
-            # are media masquerading as relationships lived only in `test_checks.py`, which runs
-            # weekly and in CI — **so the write API could not enforce it.** A row stamped
-            # `channel_id: linkedin-direct` was written on 2026-08-06, passed validation, passed
-            # record.py's post-write check, and persisted; only the regression suite noticed,
-            # days later, by which point it is history rather than a rejected keystroke.
-            #
-            # THE GENERAL LESSON, and it is the reason this moved: **a rule that lives only in
-            # the test suite cannot protect a write.** The validator runs on every write; the
-            # suite runs on a schedule. Any invariant about DATA belongs in the validator, and
-            # the suite's job is to assert that the validator still enforces it.
-            if ocid in RETIRED_CHANNEL_IDS:
-                problems.append(
-                    "%s: outreach[%d].channel_id %r is a MEDIUM, not a relationship — it is "
-                    "retired. Put the medium in 'medium' (%s) and leave channel_id null unless a "
-                    "real relationship (a firm or referrer) carried the message."
-                    % (label, i, ocid, ", ".join(sorted(MEDIA))))
-            if o2.get("outcome") is not None and o2["outcome"] not in OUTREACH_OUTCOME:
-                problems.append("%s: outreach[%d].outcome %r not in {%s}" % (label, i, o2.get("outcome"), ", ".join(sorted(OUTREACH_OUTCOME))))
-
-            ol = "%s: outreach[%d]" % (label, i)
-            # Unknown keys REJECTED — this is what catches the next sent_on/replied_on alias.
-            extra = set(o2) - OUTREACH_KEYS
-            if extra:
-                problems.append("%s: unknown key(s) %s — an alias key that nothing rejects is "
-                                "how sent_on/replied_on/channel/notes drifted into the data"
-                                % (ol, ", ".join(sorted(extra))))
-            # `to` and `date` were never required or type-checked before 2026-08-02.
-            if o2.get("status") == "sent":
-                if not (o2.get("to") or "").strip():
-                    problems.append("%s: status='sent' requires a non-empty 'to'" % ol)
-                if not is_when(o2.get("date") or ""):
-                    problems.append("%s: status='sent' requires an ISO 'date' — an undated row "
-                                    "makes check_followups over-report silence" % ol)
-            elif o2.get("date") is not None and not is_when(o2.get("date")):
-                problems.append("%s: date %r is neither an ISO date nor 'YYYY-MM-DD HH:MM'"
-                                % (ol, o2.get("date")))
-            # ---- the reply side, as stored data (dev/audit 2026-09-02, Class B) ----
-            ro2 = o2.get("responded_on")
-            if ro2 is not None:
-                if not is_when(ro2):
-                    problems.append("%s: responded_on %r is neither an ISO date nor "
-                                    "'YYYY-MM-DD HH:MM'" % (ol, ro2))
-                elif precedes(ro2, o2.get("date")):
-                    problems.append("%s: responded_on %s is before the row's own date %s — a "
-                                    "reply cannot precede the message it answers"
-                                    % (ol, ro2, o2["date"]))
-            # A reply LINKED in the store (messages[].answers names this row's message) while
-            # the row still records no response is a contradiction the data itself can see —
-            # the row reads "awaiting" on every surface while the answer sits in
-            # messages.jsonl. Derived, so it never depends on a weekly mailbox audit.
-            _mref = o2.get("message_ref")
-            if _mref and _mref in answered_by and not o2.get("responded_on"):
-                problems.append("%s: still awaiting, but messages[%s] answers its message_ref "
-                                "%r — set responded_on (and outcome) on the row"
-                                % (ol, "/".join(str(x) for x in answered_by[_mref]), _mref))
-            for fld, allowed in (("medium", MEDIA), ("touch_type", TOUCH_TYPES),
-                                 ("recipient_role", RECIPIENT_ROLES), ("delivery", DELIVERY)):
-                v = o2.get(fld)
-                if v is not None and v not in allowed:
-                    problems.append("%s: %s=%r not in {%s}" % (ol, fld, v, ", ".join(sorted(allowed))))
-            if o2.get("address_status") is not None and o2["address_status"] not in ADDRESS_STATUS:
-                problems.append("%s: address_status=%r not in {%s}"
-                                % (ol, o2["address_status"], ", ".join(sorted(ADDRESS_STATUS))))
-            # An email medium without an address_status can't distinguish a bounce from silence.
-            if (o2.get("medium") or "").startswith("email") and not o2.get("address_status"):
-                problems.append("%s: medium=%r requires 'address_status' — otherwise a bounced "
-                                "pattern-inferred address is indistinguishable from a non-reply"
-                                % (ol, o2.get("medium")))
-            # From the cutover, the comms fields are required (history carries 'unknown').
-            if (o2.get("date") or "") >= COMMS_CUTOVER and o2.get("status") == "sent":
-                for fld in ("medium", "touch_type", "recipient_role", "delivery"):
-                    if not o2.get(fld):
-                        problems.append("%s: '%s' is required on rows dated %s or later"
-                                        % (ol, fld, COMMS_CUTOVER))
-            # THE JOIN (ADR-031 B1: `person_id`, was `contact_id`). If the candidate messaged
-            # someone, they must be a person INVOLVED IN THIS OPPORTUNITY — otherwise "what is
-            # the whole history with this person?" is unanswerable, which is exactly the gap
-            # the candidate identified.
-            opid = o2.get("person_id")
-            if not opid:
-                problems.append("%s: missing 'person_id' — every outreach row must name the "
-                                "person it went to" % ol)
-            elif opid not in person_ids_for_opp:
-                problems.append("%s: person_id %r does not resolve to an involvement on this "
-                                "opportunity" % (ol, opid))
-
-            if o2.get("message_ref") and o2["message_ref"] not in sent_ids:
-                problems.append("%s: message_ref %r does not resolve in data/messages.jsonl "
-                                "— a pointer to text that isn't there is worse than no pointer"
-                                % (ol, o2["message_ref"]))
-            if o2.get("message_ref"):
-                outreach_message_refs.add(o2["message_ref"])
-            if o2.get("campaign_id") and not re.match(r"^[a-z0-9][a-z0-9-]*$", o2["campaign_id"]):
-                problems.append("%s: campaign_id %r must be a lowercase slug" % (ol, o2["campaign_id"]))
-            # What caused this touch (public #27) — shared with asks, see check_trigger.
-            check_trigger(o2, ol, problems, app_refs, sent_ids)
-            # Sequence membership (public #27): grouping only — the hold on a staged step
-            # lives in **Blocked until:** and is precondition.py's, never restated here.
-            sid, sst = o2.get("sequence_id"), o2.get("sequence_step")
-            if (sid is None) != (sst is None):
-                problems.append("%s: sequence_id and sequence_step come together — half a "
-                                "sequence membership cannot be grouped and must not look like "
-                                "one (got id=%r step=%r)" % (ol, sid, sst))
-            elif sid is not None:
-                if not (isinstance(sid, str) and SLUG_RE.match(sid)):
-                    problems.append("%s: sequence_id %r must be a lowercase slug" % (ol, sid))
-                if not (isinstance(sst, int) and not isinstance(sst, bool) and sst >= 1):
-                    problems.append("%s: sequence_step %r must be an integer >= 1" % (ol, sst))
+        # ⭐ ADR-031 B3 — `outreach[]` is RETIRED (the retired-key guard above already refuses
+        # it on write, once touches.py exists). Every former outreach[] row is now a `touches`
+        # row, validated in its OWN top-level section below (mirroring `applications`'/
+        # `cover_letters`' own promotion out of this loop in B2) — there is nothing left to
+        # check on `r` itself here.
         # status vs. stage — orthogonal, but not every pairing is coherent.
         # Added 2026-07-21: the markdown backfill left two live active pursuits
         # (two employers) sitting at stage "closed", which
@@ -1418,26 +1323,178 @@ def _main():
                             "decision was made before the posting vanished; if the candidate "
                             "decided to pass, the status is 'passed'" % label)
 
+    # ---- touches (ADR-031 B3) — promoted from opportunities.outreach[]. `id` is minted
+    # `<person_id>-tN` by record.py; `person_id` is a required FK; `opp_id`/`channel_id` are
+    # BOTH optional (public #53 — a touch to a person about no role, or anchored only to a
+    # channel, is now a legal row; the network capability's basis). Structurally the SAME
+    # per-row checks the nested outreach[] loop used to run, moved out to their own top-level
+    # section the same way B2 promoted applications[] — this is the one site every reader that
+    # used to walk `opportunity["outreach"]` by hand is re-pointed away from. ------------------
+    touches, e = load("touches.jsonl")
+    if touches is None:
+        touches = []
+    else:
+        problems += e or []
+    touch_ids_seen = set()
+    # Per-anchor involvement sets, computed ONCE from the GLOBAL `involvements` list (the same
+    # join the old per-opportunity `person_ids_for_opp` performed, now needed for touches
+    # anchored to either an opportunity OR a channel, never both required at once).
+    _inv_by_opp = {}
+    _inv_by_channel = {}
+    for _i in involvements:
+        if _i.get("opp_id") and _i.get("person_id"):
+            _inv_by_opp.setdefault(_i["opp_id"], set()).add(_i["person_id"])
+        if _i.get("channel_id") and _i.get("person_id"):
+            _inv_by_channel.setdefault(_i["channel_id"], set()).add(_i["person_id"])
+    for i, t in enumerate(touches):
+        tid = t.get("id", "?")
+        label = "touches[%s]" % tid
+        req(t, "person_id", label, problems)
+        if t.get("id"):
+            if t["id"] in touch_ids_seen:
+                problems.append("%s: duplicate id" % label)
+            touch_ids_seen.add(t["id"])
+        pid = t.get("person_id")
+        if pid and pid not in all_person_ids:
+            problems.append("%s: person_id %r does not resolve to any people row" % (label, pid))
+        oid2 = t.get("opp_id")
+        if oid2 is not None and oid2 not in opp_ids:
+            problems.append("%s: opp_id %r does not resolve" % (label, oid2))
+        tcid = t.get("channel_id")
+        if tcid is not None and tcid not in channel_ids:
+            problems.append("%s: channel_id %r does not resolve" % (label, tcid))
+        # ⭐⭐ A MEDIUM IS NOT A RELATIONSHIP — enforced HERE, not only in the test suite (see
+        # the history in this file's own git log for why this moved out of the test suite once
+        # already; carried over verbatim from the pre-B3 nested check).
+        if tcid in RETIRED_CHANNEL_IDS:
+            problems.append(
+                "%s: channel_id %r is a MEDIUM, not a relationship — it is retired. Put the "
+                "medium in 'medium' (%s) and leave channel_id null unless a real relationship "
+                "(a firm or referrer) carried the message."
+                % (label, tcid, ", ".join(sorted(MEDIA))))
+        # §12 — the object of the touch, when it is not the recipient (an introduction ask).
+        opid_obj = t.get("object_person_id")
+        if opid_obj is not None and opid_obj not in all_person_ids:
+            problems.append("%s: object_person_id %r does not resolve to any people row"
+                            % (label, opid_obj))
+        ocid_obj = t.get("object_company_id")
+        if ocid_obj is not None and ocid_obj not in company_ids:
+            problems.append("%s: object_company_id %r does not resolve" % (label, ocid_obj))
+        if t.get("status") not in OUTREACH_STATUS:
+            problems.append("%s: status %r not in {%s}"
+                            % (label, t.get("status"), ", ".join(sorted(OUTREACH_STATUS))))
+        if t.get("outcome") is not None and t["outcome"] not in OUTREACH_OUTCOME:
+            problems.append("%s: outcome %r not in {%s}"
+                            % (label, t.get("outcome"), ", ".join(sorted(OUTREACH_OUTCOME))))
+        # Unknown-key/banned-alias rejection for `touches` is the GENERIC model-driven guard
+        # below (same one applications/cover_letters/asks/commitments/variants/briefs use) —
+        # never a second, dedicated set here; two lists of one store's field names is exactly
+        # the drift this file's own comment on RETIRED_KEYS/`docs/data_model.json` already
+        # names. `to` and `date` were never required or type-checked before 2026-08-02.
+        if t.get("status") == "sent":
+            if not (t.get("to") or "").strip():
+                problems.append("%s: status='sent' requires a non-empty 'to'" % label)
+            if not is_when(t.get("date") or ""):
+                problems.append("%s: status='sent' requires an ISO 'date' — an undated row "
+                                "makes check_followups over-report silence" % label)
+        elif t.get("date") is not None and not is_when(t.get("date")):
+            problems.append("%s: date %r is neither an ISO date nor 'YYYY-MM-DD HH:MM'"
+                            % (label, t.get("date")))
+        # ---- the reply side, as stored data (dev/audit 2026-09-02, Class B) ----
+        ro3 = t.get("responded_on")
+        if ro3 is not None:
+            if not is_when(ro3):
+                problems.append("%s: responded_on %r is neither an ISO date nor "
+                                "'YYYY-MM-DD HH:MM'" % (label, ro3))
+            elif precedes(ro3, t.get("date")):
+                problems.append("%s: responded_on %s is before the row's own date %s — a "
+                                "reply cannot precede the message it answers"
+                                % (label, ro3, t["date"]))
+        # A reply LINKED in the store (messages[].answers names this row's message) while the
+        # row still records no response is a contradiction the data itself can see.
+        _mref = t.get("message_ref")
+        if _mref and _mref in answered_by and not t.get("responded_on"):
+            problems.append("%s: still awaiting, but messages[%s] answers its message_ref %r "
+                            "— set responded_on (and outcome) on the row"
+                            % (label, "/".join(str(x) for x in answered_by[_mref]), _mref))
+        for fld, allowed in (("medium", MEDIA), ("touch_type", TOUCH_TYPES),
+                             ("recipient_role", RECIPIENT_ROLES), ("delivery", DELIVERY)):
+            v = t.get(fld)
+            if v is not None and v not in allowed:
+                problems.append("%s: %s=%r not in {%s}" % (label, fld, v, ", ".join(sorted(allowed))))
+        if t.get("address_status") is not None and t["address_status"] not in ADDRESS_STATUS:
+            problems.append("%s: address_status=%r not in {%s}"
+                            % (label, t["address_status"], ", ".join(sorted(ADDRESS_STATUS))))
+        # An email medium without an address_status can't distinguish a bounce from silence.
+        if (t.get("medium") or "").startswith("email") and not t.get("address_status"):
+            problems.append("%s: medium=%r requires 'address_status' — otherwise a bounced "
+                            "pattern-inferred address is indistinguishable from a non-reply"
+                            % (label, t.get("medium")))
+        # From the cutover, the comms fields are required (history carries 'unknown').
+        if (t.get("date") or "") >= COMMS_CUTOVER and t.get("status") == "sent":
+            for fld in ("medium", "touch_type", "recipient_role", "delivery"):
+                if not t.get(fld):
+                    problems.append("%s: '%s' is required on rows dated %s or later"
+                                    % (label, fld, COMMS_CUTOVER))
+        # THE JOIN (ADR-031 B1: `person_id`, was `contact_id`). When the touch names an
+        # opportunity, the person must be INVOLVED IN THAT OPPORTUNITY — otherwise "what is
+        # the whole history with this person?" is unanswerable. A touch with no opp_id (a
+        # channel-anchored or fully unanchored network touch, public #53) skips this specific
+        # check — there is no single opportunity's involvement list to resolve against, and
+        # `person_id` resolving to a real person (checked above) is the join that DOES apply.
+        if pid and oid2 and pid not in _inv_by_opp.get(oid2, ()):
+            problems.append("%s: person_id %r does not resolve to an involvement on "
+                            "opportunity %r" % (label, pid, oid2))
+
+        if t.get("message_ref") and t["message_ref"] not in sent_ids:
+            problems.append("%s: message_ref %r does not resolve in data/messages.jsonl — a "
+                            "pointer to text that isn't there is worse than no pointer"
+                            % (label, t["message_ref"]))
+        if t.get("message_ref"):
+            touch_message_refs.add(t["message_ref"])
+        if t.get("campaign_id") and not re.match(r"^[a-z0-9][a-z0-9-]*$", t["campaign_id"]):
+            problems.append("%s: campaign_id %r must be a lowercase slug" % (label, t["campaign_id"]))
+        # What caused this touch (public #27) — shared with asks, see check_trigger. Own-record
+        # rule: an 'application' ref resolves against THIS TOUCH'S OWN opp_id's applications
+        # (never a nested array walk any more — ADR-031 B2's apps_by_opp, filtered here).
+        _t_app_refs = set()
+        for ap in apps_by_opp.get(oid2, []):
+            for h in (ap.get("id"), ap.get("date")):
+                if isinstance(h, str) and h.strip():
+                    _t_app_refs.add(h)
+        check_trigger(t, label, problems, _t_app_refs, sent_ids)
+        # Sequence membership (public #27): grouping only — the hold on a staged step lives in
+        # **Blocked until:** and is precondition.py's, never restated here.
+        sid, sst = t.get("sequence_id"), t.get("sequence_step")
+        if (sid is None) != (sst is None):
+            problems.append("%s: sequence_id and sequence_step come together — half a "
+                            "sequence membership cannot be grouped and must not look like one "
+                            "(got id=%r step=%r)" % (label, sid, sst))
+        elif sid is not None:
+            if not (isinstance(sid, str) and SLUG_RE.match(sid)):
+                problems.append("%s: sequence_id %r must be a lowercase slug" % (label, sid))
+            if not (isinstance(sst, int) and not isinstance(sst, bool) and sst >= 1):
+                problems.append("%s: sequence_step %r must be an integer >= 1" % (label, sst))
+
     # ---- record.py touched — the half-written orphan (design §15.3 point 2) ----
-    # `record.py touched` appends a message row FIRST, then the completing outreach[] row —
-    # two idempotent appends, never one cross-file transaction. A crash between them (or a
-    # test's fault injection) leaves a message with `source: 'record.py touched'` and no
-    # outreach[] row naming it as `message_ref` — the exact half-written shape §15.3 itself
-    # names. Scoped to THIS source string on purpose: a message with no completing outreach
-    # row is entirely normal for every OTHER source (a harvested reply, a relationship
-    # message with no touch at all) — only a message this API itself promised to complete
-    # can be orphaned by it.
+    # `record.py touched` appends a message row FIRST, then the completing touches row — two
+    # idempotent appends, never one cross-file transaction. A crash between them (or a test's
+    # fault injection) leaves a message with `source: 'record.py touched'` and no touches row
+    # naming it as `message_ref` — the exact half-written shape §15.3 itself names. Scoped to
+    # THIS source string on purpose: a message with no completing touch is entirely normal for
+    # every OTHER source (a harvested reply, a relationship message with no touch at all) —
+    # only a message this API itself promised to complete can be orphaned by it.
     TOUCHED_SOURCE = "record.py touched"
     for m in (sent_msgs or []):
         if m.get("id") == "_README" or m.get("source") != TOUCHED_SOURCE:
             continue
-        if m.get("id") not in outreach_message_refs:
+        if m.get("id") not in touch_message_refs:
             problems.append(
-                "messages[%s]: source is %r but no outreach[] row on %s names it as "
-                "message_ref — a half-written `record.py touched` call. Re-run the SAME "
-                "`record.py touched <opp_id> --to contact:<id> --on <date> --medium <m>` "
-                "call to complete it (design §15.3 point 2)."
-                % (m.get("id", "?"), TOUCHED_SOURCE, m.get("opp_id") or "?"))
+                "messages[%s]: source is %r but no touches row names it as message_ref — a "
+                "half-written `record.py touched` call. Re-run the SAME `record.py touched "
+                "<opp_id> --to contact:<id> --on <date> --medium <m>` call to complete it "
+                "(design §15.3 point 2)."
+                % (m.get("id", "?"), TOUCHED_SOURCE))
 
     # ---- asks (dev #93) — the hand-authored tail of Your Move, structured ----
     # Absence is legal: a profile predating the 0.25.0 migration has no asks.jsonl yet, and
@@ -1587,6 +1644,7 @@ def _main():
                                   ("resume_variants", variants),
                                   ("applications", applications),
                                   ("cover_letters", cover_letters),
+                                  ("touches", touches),
                                   ("briefs", briefs)):
             _sspec = _model["stores"].get(store_name) or {}
             for r in rows_:
@@ -1599,9 +1657,10 @@ def _main():
                                         % (_l, _k, ", ".join(sorted(_sspec.get("fields") or ()))))
 
     print("Data validation — %d companies, %d channels, %d opportunities, %d asks, "
-          "%d commitments, %d resume variants, %d applications, %d cover letters"
+          "%d commitments, %d resume variants, %d applications, %d cover letters, %d touches"
           % (len(companies), len(channels), len(opps), len(asks),
-             len(commitments), len(variants), len(applications), len(cover_letters)))
+             len(commitments), len(variants), len(applications), len(cover_letters),
+             len(touches)))
     if not problems:
         print("\n  Clean. Schema, enums, types, and every cross-reference resolve.")
         return 0, []

@@ -49,7 +49,8 @@ for a call with a recruiting firm):
 - `pipeline/kb/<company_id>.md` — promoted durable knowledge from every prior conversation
 - the paths `conversations.py` listed for any partial note, and `archive/call-preps/`
 - the opportunity record in `data/opportunities.jsonl`: `fit` (aligned/partial/unknown
-  rows and their `pitch_line`s), `outreach[]`, `applications[]`, `research_log`, `note`
+  rows and their `pitch_line`s), `research_log`, `note` — plus this role's own touches
+  (`data/touches.jsonl`, ADR-031 B3) and applications (`data/applications.jsonl`, ADR-031 B2)
 - `data/messages.jsonl` — what has actually been said in both directions
 - open asks with `act_by` touching this company (`data/asks.jsonl`) — a call is the
   cheapest place to close an open fit question

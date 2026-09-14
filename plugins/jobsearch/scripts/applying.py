@@ -50,6 +50,7 @@ from _root import profile_root
 import trigger
 import validate_data as _vd
 import applications as _apps
+import touches as _touches
 
 # Where a pursued role sits when the next act is submitting — validate_data.PLAY_SEQUENCE[0].
 QUEUE_PLAY_STAGE = "needs-application"
@@ -76,11 +77,13 @@ def coverage(o, involvements=()):
     crashing — the same shape every other optional-context parameter in this engine takes.
 
     ⭐ ADR-031 B2: `o["_applications"]` — the caller's own join against the top-level
-    `applications` store (`applications.enrich_opportunities`), never a nested array."""
+    `applications` store (`applications.enrich_opportunities`), never a nested array.
+    ⭐ ADR-031 B3: `o["_touches"]` — the same join against the top-level `touches` store
+    (`touches.enrich_opportunities`), never a nested array."""
     if o.get("_applications"):
         return "applied"
     oid = o.get("id")
-    has_person = bool(o.get("outreach")) or any(
+    has_person = bool(o.get("_touches")) or any(
         i.get("opp_id") == oid for i in involvements)
     if has_person:
         return "person"
@@ -147,6 +150,7 @@ def answer_precedents(opps, companies_by_id):
 def render(root):
     opps = trigger.load_jsonl(root, "opportunities.jsonl")
     _apps.enrich_opportunities(root, opps)     # ADR-031 B2 — o["_applications"], never nested
+    _touches.enrich_opportunities(root, opps)  # ADR-031 B3 — o["_touches"], never nested
     companies_by_id = {c.get("id"): c for c in trigger.load_jsonl(root, "companies.jsonl")}
     rep = trigger.report(root)
     precedents = answer_precedents(opps, companies_by_id)

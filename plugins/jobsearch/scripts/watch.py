@@ -160,6 +160,8 @@ def main():
 
     now = datetime.datetime.now()
     opps = load("opportunities.jsonl")
+    import touches as _touches                  # ADR-031 B3 — o["_touches"], never nested
+    _touches.enrich_opportunities(ROOT, opps)
     seen = existing_keys()
     findings = []
 
@@ -237,7 +239,7 @@ def main():
     # ---- 3. inbound mail from a tracked contact we're awaiting ------------------
     awaiting = []
     for o in opps:
-        for r in (o.get("outreach") or []):
+        for r in (o.get("_touches") or []):
             if r.get("status") == "sent" and r.get("outcome") == "awaiting" and r.get("to"):
                 nm = re.split(r"\(|,", r["to"])[0].strip()
                 if len(nm.split()) >= 2:

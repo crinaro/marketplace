@@ -36,6 +36,7 @@ Usage:
     python3 brief.py --probe contact:<id>                          # mailbox probe alone
     python3 brief.py --probe --held                                # probe/queue every held draft
     python3 brief.py --rebrief [--all]                             # bulk, store-only evidence
+    python3 brief.py --restamp                                     # re-stamp unaddressed (#92)
 
 Python 3.9+. Standard library only.
 """
@@ -883,6 +884,68 @@ def cmd_rebrief(root, only_all):
     return 0
 
 
+def restamp_unaddressed(root, apply=True):
+    """§7 / public #92 — a RE-RUNNABLE pass, never a one-shot: re-examines every OPEN draft
+    entry currently stamped the literal `**To:** unaddressed` and, when the entry's body NOW
+    resolves a contact (`precondition.resolve_entry_contact` — the `**Contact:**` meta line
+    the ORIGINAL 0.46.0 migration never read at all, or `**Blocked until:** contact:<id>`,
+    once its prerequisite people store actually exists), rewrites `**To:**` to name that
+    contact. An entry that still does not resolve is left exactly as it was — unaddressed,
+    for a human — never guessed.
+
+    Callable any time the underlying data changes (a coordinator drain, by hand, or once by
+    the 0.48.0 migration's own re-stamp step) — the module docstring's own opening rule ("a
+    fact a run STATES comes out of the queryable store at the moment it states it") applied to
+    a field this module STAMPS, not only reads: a `**To:**` line written once must not stay
+    wrong forever just because the moment it was written was too early.
+
+    `apply=False` computes and counts without writing (migrate.py's `--check`/dry-run path) —
+    the same compute-then-branch shape every migration in this file follows.
+
+    Returns `{"restamped": N, "path": <drafts.md path or None>}`."""
+    path = _tree.resolve_rel(root, _pre.FILES[0])
+    try:
+        with open(path, encoding="utf-8") as fh:
+            md = fh.read()
+    except OSError:
+        return {"restamped": 0, "path": None}
+    try:
+        g = _graph.Graph(os.path.join(root, "data"))
+    except Exception:                                     # noqa: BLE001 — nothing to restamp
+        return {"restamped": 0, "path": path}
+    replacements = []
+    restamped = 0
+    for m in _pre.ENTRY_RE.finditer(md):
+        body = m.group(2)
+        sm = _pre.STATUS_RE.search(body)
+        if sm:
+            st = sm.group(1)
+            if _pre.SENT_RE.match(st) or _pre.MOOT_RE.search(st):
+                continue           # tombstones — never restamped, same rule 0.46.0 follows
+        tm = TO_RE.search(body)
+        if not tm or tm.group(1).strip() != UNADDRESSED:
+            continue
+        pid = _pre.resolve_entry_contact(g, body)
+        if not pid:
+            continue
+        restamped += 1
+        start, end = m.start(2) + tm.start(), m.start(2) + tm.end()
+        replacements.append((start, end, "**To:** contact:%s" % pid))
+    if replacements and apply:
+        new_md = md
+        for start, end, text in sorted(replacements, key=lambda t: t[0], reverse=True):
+            new_md = new_md[:start] + text + new_md[end:]
+        import _atomic
+        _atomic.write_text(path, new_md)
+    return {"restamped": restamped, "path": path}
+
+
+def cmd_restamp(root):
+    result = restamp_unaddressed(root)
+    print("%d draft(s) re-stamped from unaddressed to a resolved contact." % result["restamped"])
+    return 0
+
+
 def _shingles(text, n):
     words = re.findall(r"[a-z0-9']+", str(text or "").lower())
     return [tuple(words[i:i + n]) for i in range(len(words) - n + 1)]
@@ -971,20 +1034,36 @@ def main():
     ap.add_argument("--overlap", metavar="TITLE")
     ap.add_argument("--check", action="store_true")
     ap.add_argument("--json", action="store_true")
-    ap.add_argument("--probe", metavar="contact:<id>")
+    # ⭐ Public #91 — `nargs="?"` + `const=True` so `--probe --held` (this module's own
+    # docstring usage line, migrate.py's printed next-step, and design-query-or-citation.md
+    # §5.2/§7 all show this literal invocation) actually parses: argparse does not consume the
+    # NEXT token as `--probe`'s value when that token itself looks like a defined option
+    # (`--held` here), so `--probe --held` sets `args.probe = True` (the const) rather than
+    # raising "expected one argument". `--probe contact:<id>` is unaffected — argparse still
+    # consumes an ordinary value when one is there.
+    ap.add_argument("--probe", nargs="?", const=True, default=None, metavar="contact:<id>")
     ap.add_argument("--held", action="store_true")
     ap.add_argument("--rebrief", action="store_true")
+    ap.add_argument("--restamp", action="store_true",
+                    help="re-stamp `**To:** unaddressed` entries that now resolve a contact "
+                         "(public #92) — re-runnable, safe to call any time")
     ap.add_argument("--all", action="store_true")
     args = ap.parse_args()
 
     root = profile_root()
     try:
+        if args.probe is True and not args.held:
+            # `--probe` with no value and no `--held` is not a form anything documents — say
+            # so plainly rather than handing a bare `True` to `cmd_probe`'s contact-token path.
+            ap.error("--probe requires a value (contact:<id>) unless paired with --held")
         if args.probe and args.held:
             return cmd_probe_held(root)
         if args.probe:
             return cmd_probe(root, args.probe)
         if args.rebrief:
             return cmd_rebrief(root, args.all)
+        if args.restamp:
+            return cmd_restamp(root)
         if args.check:
             return cmd_check(root)
         if args.thread:
@@ -995,7 +1074,8 @@ def main():
             if args.json:
                 return cmd_json_for(root, args.for_, args.opp, args.channel)
             return cmd_for(root, args.for_, args.opp, args.channel, args.i_checked, args.json)
-        ap.error("one of --for / --thread / --overlap / --check / --probe / --rebrief is required")
+        ap.error("one of --for / --thread / --overlap / --check / --probe / --rebrief / "
+                 "--restamp is required")
     except BriefError as e:
         print("⛔ %s" % e, file=sys.stderr)
         return 2

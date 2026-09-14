@@ -378,32 +378,55 @@ def resolve_transcript_path(payload):
 
 
 def derive_subagent_transcript_path(main_transcript_path, agent_id):
-    """dev #309 — the subagent's OWN records, not the main session's.
+    """dev #309 / dev #88 — the subagent's OWN records, not the main session's.
 
     Two measured facts collide, otherwise: a subagent's tool calls are recorded in
-    `<session-dir>/subagents/agent-<agent_id>.jsonl`, a SIBLING of the main transcript, never
-    inside it; and Claude Code's hook payload for a subagent's own tool call still carries the
-    MAIN session's `transcript_path` (Claude Code's own hooks reference — subagent hook events
-    do not get their own `transcript_path`; that field was added only to `SubagentStop`, not to
-    `PreToolUse`). So `resolve_transcript_path()` above, used alone, always resolves to a file
-    that structurally cannot contain the click this hook is firing for. `find_anchor()` then
-    finds nothing, `find_recent_read()` returns None, and every subagent click takes the
-    unresolved branch — ALLOW, loud. That branch exists for a click this guard genuinely cannot
-    classify; here, it fires on every single subagent click, not on the rare one.
+    `<project-dir>/<session_id>/subagents/agent-<agent_id>.jsonl` — a directory NAMED AFTER THE
+    SESSION ID that sits ALONGSIDE the main transcript file (itself
+    `<project-dir>/<session_id>.jsonl`); and Claude Code's hook payload for a subagent's own tool
+    call still carries the MAIN session's `transcript_path` (Claude Code's own hooks reference —
+    subagent hook events do not get their own `transcript_path`; that field was added only to
+    `SubagentStop`, not to `PreToolUse`). So `resolve_transcript_path()` above, used alone, always
+    resolves to a file that structurally cannot contain the click this hook is firing for.
+    `find_anchor()` then finds nothing, `find_recent_read()` returns None, and every subagent
+    click takes the unresolved branch — ALLOW, loud. That branch exists for a click this guard
+    genuinely cannot classify; here, it fires on every single subagent click, not on the rare one.
+
+    ⚠️ **dev #88 — measured directly against a real subagent transcript on this engine's own
+    running session (path existence only, never transcript content), and the FIRST
+    implementation of this function was wrong.** It computed `os.path.dirname(main_transcript_path)`
+    — the PROJECT directory, one level further up — and joined `subagents/agent-<id>.jsonl` onto
+    THAT. That path never exists: the real `subagents/` directory is one level DEEPER, under a
+    directory named after the session id — i.e. `main_transcript_path` with its trailing
+    `.jsonl` stripped, not `os.path.dirname()` of it. (The paragraph above already said
+    "<session-dir>/subagents/..." and meant that per-session directory; the code silently
+    substituted "the directory the session FILE lives in" instead — a one-word confusion between
+    "session dir" and "main transcript's dirname" that produced a path structurally guaranteed
+    never to resolve.) Consequence: `diagnose_transcript()` failed FileNotFoundError on EVERY
+    subagent click, `page_text` was always None, and dev #309's total-blindness refusal
+    (`BLIND_CLICK_DENY_TAG`) fired on every subagent click regardless of its actual target — a
+    plain tab switch denied exactly like a Send (public #88). That issue asked which of two
+    causes was at fault: the derived path being wrong on this build, or the refusal logic firing
+    too broadly. Root cause is the FORMER — the refusal logic's behavior for a click that really
+    is blind is unchanged and correct; only the path it was ever handed was unreachable.
 
     The payload DOES carry `agent_id` for a subagent's tool call (added to hook events
     generally for subagents, per Claude Code's own changelog — not independently re-verified
-    against a live-fired subagent hook in this dispatch: CLAUDE.md's constraint on this work
-    prohibits opening a real browser or spawning a real browser-driving subagent to check. This
-    derivation is therefore CORROBORATED evidence, not a measured fact, and is written that way
-    here and in the hand-back), so the subagent's own transcript can be found without one: it is
-    `<same directory as the main transcript>/subagents/agent-<agent_id>.jsonl` — the exact
-    layout a sibling plugin's transcript-mining code independently assumes for the same reason.
+    against a live-fired subagent hook in the dev #309 dispatch: CLAUDE.md's constraint on that
+    work prohibited opening a real browser or spawning a real browser-driving subagent to check.
+    That part of the derivation is therefore still CORROBORATED evidence, not a measured fact, and
+    is written that way here and in the hand-back). The on-disk LAYOUT itself — main transcript at
+    `<project-dir>/<session_id>.jsonl`, its subagent records at
+    `<project-dir>/<session_id>/subagents/agent-<agent_id>.jsonl` — IS now measured (dev #88),
+    not merely corroborated.
 
-    Returns None when either input is missing — never a guess past that."""
+    Returns None when either input is missing, or when `main_transcript_path` does not end in
+    `.jsonl` (an unexpected shape this guard should not guess past) — never a guess past that."""
     if not main_transcript_path or not agent_id:
         return None
-    session_dir = os.path.dirname(main_transcript_path)
+    if not main_transcript_path.endswith(".jsonl"):
+        return None
+    session_dir = main_transcript_path[:-len(".jsonl")]
     return os.path.join(session_dir, "subagents", "agent-%s.jsonl" % agent_id)
 
 

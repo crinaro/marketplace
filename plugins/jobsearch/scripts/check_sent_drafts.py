@@ -37,6 +37,7 @@ _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 import _tree
 import applications as _apps
+import touches as _touches
 
 ROOT = _profile_root()
 OPPS = os.path.join(ROOT, "data", "opportunities.jsonl")
@@ -56,6 +57,7 @@ def load_opps():
                 except ValueError:
                     pass
     _apps.enrich_opportunities(ROOT, rows)      # ADR-031 B2 — r["_applications"], never nested
+    _touches.enrich_opportunities(ROOT, rows)    # ADR-031 B3 — r["_touches"], never nested
     return rows
 
 
@@ -63,7 +65,7 @@ def sent_markers(opps):
     """-> list of (label, why) for anything already sent or submitted."""
     out = []
     for r in opps:
-        for o in r.get("outreach") or []:
+        for o in r.get("_touches") or []:
             if o.get("status") == "sent" and o.get("to"):
                 out.append((o["to"], "outreach sent %s (%s)"
                             % (o.get("date", "?"), o.get("medium", "?"))))

@@ -249,10 +249,15 @@ AXIS_FOLD = ("reply-owed", "accepted", "waiting", "silence-unverified", "silent"
 
 
 def _touch_rows(record):
-    """The ONE accessor for an opportunity record's outreach touches. Reads `outreach[]`
-    today; B3 promotes it to `touches[]`, and this is the one site that changes when it does
-    (design §3.7 / §15 — 'so B3's read gate finds one site')."""
-    return record.get("outreach") or []
+    """The ONE accessor for an opportunity record's touches. ADR-031 B3 promoted
+    `outreach[]` to the top-level `touches` store — this is the one site that changed
+    (design §3.7 / §15 — 'so B3's read gate finds one site'). Reads `record["_touches"]`, the
+    caller's own join against that store (`touches.enrich_opportunities(root, opps)`, called
+    once after loading opportunities — the exact ADR-031 B2 `_applications` shape), never a
+    nested array on `record` itself. A caller that never enriched `opps` gets `()` here
+    (`touches.attach`'s own default), the honest "no touches known" answer rather than a
+    crash."""
+    return record.get("_touches") or []
 
 
 def _resolves_to(graph_, maybe_id, target_id):
@@ -313,14 +318,15 @@ def _thread_events(graph, person_id, kind, thread_id):
 
     touches = []
     if kind == "opp":
-        opp = graph.by_id["opportunities"].get(thread_id)
-        if opp:
-            for t in _touch_rows(opp):
-                if _resolves_to(graph, t.get("person_id"), person_id):
-                    touches.append(t)
-    # kind == "channel": outreach[] lives only on opportunity records (design §3.7 scope);
-    # a channel-scoped thread carries message events only, exactly as your_move.py's own
-    # `derive_channel_last_touch` already treats channels — no outreach array to read there.
+        for t in graph.touches_for_opportunity(thread_id):
+            if _resolves_to(graph, t.get("person_id"), person_id):
+                touches.append(t)
+    # kind == "channel": ADR-031 B3 — touches CAN now be channel-anchored with no opp_id
+    # (public #53, the network capability's basis), but design §3.7's own scope stays: a
+    # channel-scoped THREAD (this function's own concept, keyed by opp_id/channel_id as the
+    # counterpart) still carries message events only here — a channel-anchored touch with no
+    # opp_id is a person-to-channel fact, not a per-thread one, and belongs to
+    # `derive_channel_last_touch`'s own reading of channels, not to this per-thread walk.
 
     for t in touches:
         outcome = t.get("outcome")
@@ -418,10 +424,14 @@ def conversation_axis(root, subject, counterpart=None, today=None, window=None):
                 threads.add(("opp", m["opp_id"]))
             if m.get("channel_id"):
                 threads.add(("channel", m["channel_id"]))
-        for opp in g.stores["opportunities"]:
-            for t in _touch_rows(opp):
-                if _resolves_to(g, t.get("person_id"), person_id):
-                    threads.add(("opp", opp.get("id")))
+        # ADR-031 B3 — touches are their own top-level store now; walk it directly rather
+        # than per-opportunity (`_touch_rows` stays the per-record accessor for callers that
+        # already have an enriched opportunity in hand, e.g. `role_state`). A touch anchored
+        # to no opportunity (channel-only or fully unanchored, public #53) never opens an
+        # "opp" thread here — the scope note above `_thread_events`'s own touches branch.
+        for t in g.stores["touches"]:
+            if t.get("opp_id") and _resolves_to(g, t.get("person_id"), person_id):
+                threads.add(("opp", t["opp_id"]))
 
     if counterpart:
         kind, _sep, tid = str(counterpart).partition(":")
@@ -459,13 +469,23 @@ def ended_because(opp, apps):
     opportunity's own slice of the top-level applications store (same contract as
     `has_submitted_application` — `applications.group_by_opp(...)[opp_id]`, or `[]`).
 
-    Precedence, top to bottom (§2b's table): `rejected` (the employer said no) >
-    `closed-silence` (we closed it after ATS silence, §3c) > `withdrawn` (they did, after
-    applying) > `expired` (the posting vanished) > `unrecorded` — two shapes, an
-    opportunity that is terminal (`passed`/`stage: closed`) with nothing saying why — >
-    `passed` (they walked away before applying). Each fact stays where it already lives
-    (application status vs. opportunity status/stage); this only composes them, and never
-    invents a reason a value older than this vocabulary should have recorded (§3d)."""
+    Precedence, top to bottom (§2b's table, RE-ORDERED 2026-09-13 — public #94): `rejected`
+    (the employer said no) > `closed-silence` (we closed it after ATS silence, §3c) >
+    `withdrawn` (they did, after applying) > `expired` (the posting vanished) >
+    `unrecorded` (a submitted application on a now-terminal opportunity, with nothing saying
+    why it ended) > `passed` (a verdict of `pass`, or an opportunity `status: passed` — they,
+    or we, walked away before applying) > `unrecorded` a second time (a `stage: closed` req
+    with NO application and NO passed verdict either — genuinely nothing says why).
+
+    ⭐ `passed` now runs BEFORE the second `unrecorded` check, not after. Before this fix a
+    closed-and-never-applied-to opportunity that WAS in fact passed on (`verdict: pass`) hit
+    the `stage == closed and not past_started` branch first and read as `unrecorded` — the
+    exact shape public #94 traced the migration's over-count to (`m_0_47_0_application_
+    endings` only ever printed what this function returned). A `passed` verdict is a fact
+    already on hand; treating it as merely "closed" threw that fact away. Each fact stays
+    where it already lives (application status vs. opportunity status/stage/verdict); this
+    only composes them, and never invents a reason a value older than this vocabulary should
+    have recorded (§3d)."""
     apps = sorted(apps or [], key=lambda a: str(a.get("date") or ""))
     newest = apps[-1] if apps else None
     app_status = newest.get("status") if newest else None
@@ -488,14 +508,19 @@ def ended_because(opp, apps):
                        for a in apps)
     if terminal_opp and submitted_like:
         return "unrecorded"
+
+    # ⭐ public #94 — MOVED ABOVE the `stage == "closed"` catch-all below: a passed verdict is
+    # a fact already on hand and must win over a bare "it's closed" guess.
+    if (verdict == "pass" or opp_status == "passed") and not past_started:
+        return "passed"
+
     if stage == "closed" and not past_started:
         # §15.4 finding 6 — a dead req with NO application at all is not "still pursuing".
         # Nothing says whether they passed or the posting vanished, so this is unrecorded too,
-        # never guessed as `expired` (only the posting's OWN status says that).
+        # never guessed as `expired` (only the posting's OWN status says that) — and, since
+        # the `passed` check above already ran, never guessed as `passed` either: this is
+        # reached only when NEITHER a verdict nor a status says why.
         return "unrecorded"
-
-    if (verdict == "pass" or opp_status == "passed") and not past_started:
-        return "passed"
 
     return None
 
@@ -555,7 +580,7 @@ def opportunity_conversation_axis(root, opp_id, today=None, window=None):
         return "nothing-sent", None
 
     person_ids = set()
-    for t in _touch_rows(opp):
+    for t in g.touches_for_opportunity(opp_id):
         pid = t.get("person_id")
         if not pid:
             continue
@@ -743,10 +768,11 @@ def role_state(o, today):
         if parsed == _pre.UNRESOLVED:
             return "unresolved", ("blocked_until is the literal 'unresolved' — no structured "
                                   "join yet; write contact:<id> outcome:<...>")
-        # THE RECORD'S OWN outreach[], never the global pipeline (see module docstring).
-        # ADR-031 B1 — `person_id`, was `contact_id`.
+        # THE RECORD'S OWN touches, never the global pipeline (see module docstring).
+        # ADR-031 B1 — `person_id`, was `contact_id`. ADR-031 B3 — `_touch_rows(o)`, the
+        # caller's own join against the top-level `touches` store, never a nested array.
         touches = {}
-        for r in (o.get("outreach") or []):
+        for r in _touch_rows(o):
             cid = r.get("person_id")
             if cid:
                 touches.setdefault(cid, []).append(r)
@@ -915,6 +941,10 @@ def report(root, today=None):
     channels = _load_jsonl(root, "channels.jsonl")
     messages = _load_jsonl(root, "messages.jsonl")
     involvements = _load_jsonl(root, "involvements.jsonl")
+    # ADR-031 B3 — o["_touches"], the join `role_state`/`_touch_rows` read; never a nested
+    # array on the opportunity record any more.
+    import touches as _touches
+    _touches.enrich_opportunities(root, opps)
     owner = _profile.owner_token()
     roles = classify_opportunities(opps, owner, today)
     chans = classify_channels(channels, messages, today, involvements)

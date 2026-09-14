@@ -3157,6 +3157,26 @@ def m_0_45_0_applications_cover_letters(profile, apply_it, _inject_fault=None):
     return True, (msg + "\n" + pre_existing_note if pre_existing_note else msg)
 
 
+def _people_prerequisite_pending(profile):
+    """True if `m_0_44_0_people_involvements` (0.44.0, B1) has not yet successfully landed —
+    decided the SAME way THAT migration decides it has nothing left to do (a `contacts` key
+    still present on any opportunity or channel row), never by `people.jsonl`'s mere
+    existence: a profile that never had any legacy `contacts` at all also never gets a
+    `people.jsonl` on disk (0.44.0's own `any_contacts` short-circuit returns `(True, "")`
+    without writing one), and that is a genuinely FINISHED state, not a pending one — public
+    #92's bug was treating 0.46.0 as safe to run the moment it was REACHED, not the moment its
+    prerequisite had actually succeeded."""
+    opp_path = os.path.join(profile, "data", "opportunities.jsonl")
+    chan_path = os.path.join(profile, "data", "channels.jsonl")
+    try:
+        opps = _read_jsonl(opp_path) if os.path.exists(opp_path) else []
+        channels = _read_jsonl(chan_path) if os.path.exists(chan_path) else []
+    except Exception:                                                  # noqa: BLE001
+        return False           # unreadable is a DIFFERENT failure — the normal read below
+                                # (inside m_0_46_0_brief_line itself) surfaces it properly
+    return (any("contacts" in r for r in opps) or any("contacts" in r for r in channels))
+
+
 def m_0_46_0_brief_line(profile, apply_it):
     """0.46.0 — Query or Citation C1's own migration (design-query-or-citation.md §7): stamps
     `**To:**`/`**Brief:**` onto every OPEN `outreach/drafts.md` entry (tombstones sent/moot
@@ -3181,11 +3201,29 @@ def m_0_46_0_brief_line(profile, apply_it):
     absent store reads as an empty one and is reported as fact (trap 1's shape). `**To:**`/
     `**Brief:**` LINES are this migration's own write; `briefs.jsonl` ROWS are `brief.py`'s
     (via the bulk rebrief this migration calls, and every later `--for`/`--rebrief`).
+
+    ⭐ PENDING ON ITS OWN PREREQUISITE (public #92, part 2). This migration's attribution reads
+    `people.jsonl` through a `graph.Graph` — if 0.44.0 (B1, `m_0_44_0_people_involvements`) has
+    not yet actually LANDED (refused, or not yet reached in this same batch), that store is
+    either absent or still missing the rows this migration needs, and attributing against it
+    silently stamps every entry `unaddressed` — wrong, not merely incomplete, because a later
+    successful 0.44.0 run leaves those entries "already stamped" and this migration's own
+    idempotency then skips them FOREVER (`brief.restamp_unaddressed` / the 0.48.0 migration is
+    the recovery for a profile that already hit this). So this now checks the SAME condition
+    0.44.0 itself uses to decide it has nothing to do (a `contacts` key still present on any
+    opportunity or channel row) and returns PENDING — never silently "done" — rather than
+    stamping anything at all: `_people_prerequisite_pending()` below.
     """
     import _tree
     import precondition as _pre
     import brief as _brief
     import graph as _graph
+
+    if _people_prerequisite_pending(profile):
+        return False, ("  ⏳ 0.46.0 PENDING — the people/involvements migration (0.44.0) has "
+                       "not landed yet (opportunities/channels still carry a legacy `contacts` "
+                       "key). Nothing stamped this run: attributing **To:** against a people "
+                       "store that is not there yet is how public #92 happened.")
 
     # `brief.LEDGER` — never the literal "briefs.jsonl" here: check_ledger_reads.py's own
     # allowlist for that string constant is {brief.py, validate_data.py, make_fixture.py}
@@ -3224,17 +3262,10 @@ def m_0_46_0_brief_line(profile, apply_it):
             continue
         lines = []
         if not has_to:
-            pid = None
-            bm = _pre.FIELD_RE.search(body)
-            if bm:
-                contact_val = dict(_pre.TOKEN_RE.findall(bm.group(1))).get("contact")
-                if contact_val:
-                    try:
-                        person = g.resolve_person(contact_val)
-                    except _graph.MergeCycleError:
-                        person = None
-                    if person is not None:
-                        pid = person["id"]
+            # ⭐ public #92 — `**Contact:**` FIRST (evidence already in the entry the
+            # ORIGINAL version of this migration never consulted), `**Blocked until:**
+            # contact:<id>` as the fallback. `precondition.resolve_entry_contact` owns both.
+            pid = _pre.resolve_entry_contact(g, body)
             if pid:
                 lines.append("**To:** contact:%s" % pid)
                 attributed += 1
@@ -3610,6 +3641,414 @@ def m_0_47_0_drafts_working_set(profile, apply_it, today=None):
     return True, "\n".join(msg)
 
 
+def m_0_48_0_touches(profile, apply_it, _inject_fault=None):
+    """0.48.0 — B3 of ADR-031's connected-entities design: `touches` becomes a real,
+    top-level, globally-unique store; `opportunities.outreach[]` is promoted into it and
+    removed.
+
+    ⭐⭐ KEYED "0.48.0", NOT "0.47.0" (ADR-009, same rule every prior stage's own docstring
+    states). 0.47.0 is the newest PUBLISHED jobsearch release (`plugin.json` at HEAD; the
+    0.47.0 release record was discharged and its changelog PR merged to origin/main before
+    this dispatch started). A profile that installed 0.47.0 is stamped exactly "0.47.0", and
+    `pending_for()`'s strict `<` would never fire a migration keyed to it.
+
+    PRESERVE, THEN TRANSFORM, ALL-OR-NOTHING (design §4 / gate review §2, same shape as every
+    prior stage's own migration). Every new/changed row is built ENTIRELY IN MEMORY first; the
+    result is validated against a throwaway shadow copy (`_shadow_validate`) BEFORE a single
+    real byte moves; only a CLEAN shadow run is written, atomically, to the two real files this
+    stage touches (`opportunities.jsonl`, `touches.jsonl`) plus `people.jsonl` when an
+    unresolved mint occurs. A dirty shadow leaves the real profile byte-for-byte untouched and
+    this function returns `(False, ...)` naming what failed.
+
+    PROMOTION — design §1, verbatim:
+      * every `outreach[]` row becomes one `touches` row, 1:1, `opp_id` = the record it came
+        from. `id` is minted `<person_id>-tN` (record.py's own scheme — design §1: "a touch is
+        owned by the PERSON"), counted per resolved person_id across the WHOLE profile, in
+        file order (opportunities, then each one's own outreach[] entries) — deterministic,
+        reproducible from the input alone.
+      * `person_id` was already renamed from `contact_id` by B1's own 0.44.0 migration (its own
+        step 5) — this migration does not repeat that rename. What B1's step 5 left behind for
+        a row whose raw `contact_id` did not resolve within its own anchor is `person_id: null`
+        (preserved, never silently re-guessed there): this migration treats a null OR
+        non-resolving `person_id` identically — it MINTS `unresolved-<opp_id>-t<n>` (a fresh,
+        active `people` row, `status: active`, a note naming what could not be resolved),
+        counted per opportunity, and points the touch at it — preserved and loud, never
+        dropped (design §22: "synthesize, never refuse; demotions printed, never hidden" —
+        the Scope's own generalisation of that rule to an unresolvable person_id here).
+      * every other outreach[] field is carried over VERBATIM — this migration does not
+        interpret or invent a value for any of them.
+
+    Idempotent: a profile with no `outreach` key anywhere in `opportunities.jsonl` is treated
+    as already migrated and this returns `(True, "")`.
+
+    `_inject_fault` is a test-only hook (never reachable from the CLI): `"drop_required_field"`
+    corrupts one freshly-built touch row (drops its `person_id`) in the SHADOW copy right
+    before validation, to prove the all-or-nothing property from outside this function rather
+    than by reading its source and assuming.
+    """
+    opp_path = os.path.join(profile, "data", "opportunities.jsonl")
+    people_path = os.path.join(profile, "data", "people.jsonl")
+    if not os.path.exists(opp_path):
+        return True, ""
+    try:
+        opps = _read_jsonl(opp_path)
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ opportunities.jsonl could not be read — nothing migrated: %s" % e
+    try:
+        people_rows = _read_jsonl(people_path) if os.path.exists(people_path) else []
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ people.jsonl could not be read — nothing migrated: %s" % e
+
+    any_outreach = any("outreach" in r for r in opps)
+    if not any_outreach:
+        return True, ""
+
+    people_rows = [dict(p) for p in people_rows]
+    people_by_id = {p.get("id") for p in people_rows if p.get("id")}
+
+    touch_rows = []
+    new_opps = []
+    promoted = 0
+    minted_notes = []
+    person_touch_counters = {}          # resolved person_id -> next N, for <person_id>-tN
+    per_opp_mint_counters = {}          # opp_id -> next N, for unresolved-<opp_id>-t<n>
+
+    def _mint_touch_id(pid):
+        n = person_touch_counters.get(pid, 0) + 1
+        person_touch_counters[pid] = n
+        return "%s-t%d" % (pid, n)
+
+    for o in opps:
+        o = dict(o)
+        legacy = o.pop("outreach", None)
+        if legacy is not None:
+            oid = o.get("id")
+            for entry in (legacy or []):
+                if not isinstance(entry, dict):
+                    continue
+                entry = dict(entry)
+                # Defensive only — B1's own 0.44.0 already renamed contact_id -> person_id on
+                # every outreach[] row; a hand-edited row with the old spelling still surviving
+                # is handled the same way a raw, never-resolved id would be, below.
+                raw_pid = entry.pop("contact_id", None) or entry.get("person_id")
+                pid = entry.get("person_id") or raw_pid
+                if not pid or pid not in people_by_id:
+                    n = per_opp_mint_counters.get(oid, 0) + 1
+                    per_opp_mint_counters[oid] = n
+                    minted = "unresolved-%s-t%d" % (oid, n)
+                    note = ("minted by the 0.48.0 migration: opportunities[%s] outreach "
+                            "person_id %r %s — preserved as its own person rather than "
+                            "dropped" % (oid, pid, "was empty" if not pid else
+                                         "resolves to no people row"))
+                    people_rows.append({
+                        "id": minted, "name": entry.get("to") or pid or "unknown",
+                        "email": None, "email_status": None, "linkedin": None,
+                        "company_id": None, "title": None, "cadence": None,
+                        "status": "active", "merged_into": None, "not_same_as": [],
+                        "created": None, "note": note,
+                    })
+                    people_by_id.add(minted)
+                    minted_notes.append(note)
+                    pid = minted
+                entry["person_id"] = pid
+                entry["opp_id"] = oid
+                entry.setdefault("channel_id", None)
+                entry.setdefault("object_person_id", None)
+                entry.setdefault("object_company_id", None)
+                entry["id"] = _mint_touch_id(pid)
+                touch_rows.append(entry)
+                promoted += 1
+        new_opps.append(o)
+
+    if not apply_it:
+        summary = "%d touch(es) promoted to touches; %d unresolved person(s) minted" % (
+            promoted, len(minted_notes))
+        return True, "  would migrate (0.48.0) to touches: %s" % summary
+
+    overrides = {
+        "opportunities.jsonl": new_opps,
+        "touches.jsonl": touch_rows,
+        "people.jsonl": people_rows,
+    }
+
+    if _inject_fault == "drop_required_field" and touch_rows:
+        # TEST-ONLY — see docstring. Mutated on a COPY inside the override dict; the real
+        # `touch_rows` list used for the write below is untouched, so this only ever corrupts
+        # what the SHADOW sees.
+        faulted = [dict(r) for r in touch_rows]
+        del faulted[0]["person_id"]
+        overrides = dict(overrides)
+        overrides["touches.jsonl"] = faulted
+
+    rc, problems, new = _shadow_validate(profile, overrides)
+    if new is None or new:
+        detail = "; ".join((new if new else (problems or []))[:8]) or (
+            "validator exited %d with no problem list — it crashed" % rc)
+        return False, ("  ⚠️ 0.48.0 REFUSED — the migrated shape introduces a new validation "
+                       "problem, so NOTHING was written (the real profile is untouched): %s"
+                       % detail)
+    pre_existing_note = ""
+    if rc != 0:
+        pre_existing_note = ("  ⚠️ %d pre-existing problem(s) stand, unrelated to this "
+                             "migration (a later stage's own migration may resolve them): %s"
+                             % (len(problems or []), "; ".join((problems or [])[:4])))
+
+    import _atomic
+    for name in ("opportunities.jsonl", "touches.jsonl", "people.jsonl"):
+        _atomic.write_jsonl(os.path.join(profile, "data", name), overrides[name])
+    summary_bits = ["%d touch(es) promoted to touches" % promoted]
+    if minted_notes:
+        summary_bits.append("%d unresolved person(s) minted: %s"
+                            % (len(minted_notes), " | ".join(minted_notes)))
+    summary = "; ".join(summary_bits)
+    msg = "  ✅ touches (0.48.0) — %s" % summary
+    return True, (msg + "\n" + pre_existing_note if pre_existing_note else msg)
+
+
+# ── the first real run of 0.44.0→0.47.0: public #90–#94 ──────────────────────────────────────
+# Five defects the OWNER's own profile surfaced on its first real upgrade (design-first-real-
+# run-2026-09-13.md §1) — every one of them a bug in code the migrations ALREADY ran with, so
+# fixing the code alone leaves the damage already on disk. These three migrations are the
+# re-runnable/one-shot repair for what already happened; the code-level fixes (your_move.
+# ended_because's precedence, reconcile.person_terms's quoting, people.find_duplicates'
+# stuffed-title normalization, brief.py's --probe/--held argparse, record.py's merge-person
+# verb) are separate and apply to every FUTURE run regardless of these three.
+
+
+def m_0_48_0_brief_line_restamp(profile, apply_it):
+    """0.48.0 — public #92, the repair half. The ORIGINAL `m_0_46_0_brief_line` (a) never
+    consulted a `**Contact:**` meta line before falling back to `unaddressed`, and (b) could
+    run — and did, on the owner's own profile — before its own prerequisite (0.44.0) had
+    actually landed, attributing against an empty people store. Both are fixed at the SOURCE
+    now (`precondition.resolve_entry_contact`; `_people_prerequisite_pending` above), which
+    protects every future run, but an entry ALREADY stamped `**To:** unaddressed` by the old,
+    blind code is "already stamped" as far as 0.46.0's own idempotency is concerned and would
+    never be revisited on its own.
+
+    This calls `brief.restamp_unaddressed(profile)` — a RE-RUNNABLE query-and-fix pass, not a
+    one-shot private to this migration — exactly once, so an entry that was stamped blind and
+    NOW resolves (because `**Contact:**` is read, or because 0.44.0 has since landed) gets its
+    real `**To:**` line. An entry that still does not resolve is left exactly as it was.
+    """
+    import _tree
+    path = _tree.resolve_rel(profile, _tree.rel("drafts"))
+    if not os.path.exists(path):
+        return True, ""
+    import brief as _brief
+    try:
+        result = _brief.restamp_unaddressed(profile, apply=apply_it)
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ 0.48.0 restamp could not run — nothing changed: %s" % e
+    if not apply_it:
+        if result["restamped"]:
+            return True, ("  would re-stamp (0.48.0): %d entr%s currently 'unaddressed' now "
+                          "resolve a contact (public #92)"
+                          % (result["restamped"],
+                             "y" if result["restamped"] == 1 else "ies"))
+        return True, ""
+    if result["restamped"]:
+        return True, ("  ✅ **To:** restamp (0.48.0) — %d entr%s moved from unaddressed to a "
+                     "resolved contact (public #92)"
+                     % (result["restamped"],
+                        "y" if result["restamped"] == 1 else "ies"))
+    return True, ""
+
+
+def m_0_48_0_application_endings_restamp(profile, apply_it):
+    """0.48.0 — public #94, the repair half. The 0.47.0 migration's own count was wrong
+    (`your_move.ended_because()`'s precedence bug, fixed at the source above: a `passed`
+    verdict now wins over the `stage == closed` catch-all), and its remainder was N printed
+    `record.py application-status <app_id> ...` commands — a per-row hand-off the 'never
+    mechanical work' rule (CLAUDE.md) never allowed in the first place, and worse, most of
+    those ids were OPPORTUNITY ids on rows with no application at all, so the printed verb
+    could never even apply.
+
+    This recomputes `unrecorded` with the FIXED precedence and replaces the printed hand-off
+    with ONE queryable `asks.jsonl` row (`kind: system`) — never N printed commands. Re-run
+    safe: the row's id is stable (`system-application-endings`), so a second run REPLACES it
+    with the fresh count rather than appending a second one, and removes it outright once the
+    corrected count reaches zero.
+
+    `resolves_when` is deliberately left UNSET — `validate_data.ASK_RESOLVES_WHEN` only ever
+    means "one recorded action on ONE `opp_id` answers this" (application/outreach), and this
+    ask spans however many opportunities the corrected count still names; setting it here
+    would be exactly the 'resolves_when that can never fire' shape `validate_data.py` refuses
+    for good reason. The ask stays on the manual review path (its own `ask` text names every
+    id), and a future run of this SAME migration (impossible — it is one-shot per profile) or
+    a later periodic pass is the mechanism that shrinks the count as the owner acts; for now
+    it is a correct, queryable count where an unbounded printed list stood before.
+    """
+    apps_path = os.path.join(profile, "data", "applications.jsonl")
+    opps_path = os.path.join(profile, "data", "opportunities.jsonl")
+    asks_path = os.path.join(profile, "data", "asks.jsonl")
+    if not os.path.exists(opps_path):
+        return True, ""
+    try:
+        opps = _read_jsonl(opps_path)
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ opportunities.jsonl could not be read — nothing migrated: %s" % e
+    try:
+        apps = _read_jsonl(apps_path) if os.path.exists(apps_path) else []
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ applications.jsonl could not be read — nothing migrated: %s" % e
+    try:
+        asks = _read_jsonl(asks_path) if os.path.exists(asks_path) else []
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ asks.jsonl could not be read — nothing migrated: %s" % e
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import your_move as _ym
+    import applications as _apps_mod
+    by_opp = _apps_mod.group_by_opp(apps)
+    unrecorded_ids = sorted(o.get("id") for o in opps
+                            if _ym.ended_because(o, by_opp.get(o.get("id"), [])) == "unrecorded")
+
+    ASK_ID = "system-application-endings"
+    existing = [a for a in asks if a.get("id") == ASK_ID]
+
+    if not unrecorded_ids:
+        if not existing:
+            return True, ""
+        if not apply_it:
+            return True, "  would remove system ask %r (0.48.0) — the corrected count is 0" % ASK_ID
+        new_asks = [a for a in asks if a.get("id") != ASK_ID]
+        rc, problems, new = _shadow_validate(profile, {"asks.jsonl": new_asks})
+        if new is None or new:
+            detail = "; ".join((new if new else (problems or []))[:8]) or (
+                "validator exited %d with no problem list — it crashed" % rc)
+            return False, ("  ⚠️ 0.48.0 restamp REFUSED — removing %r introduces a new "
+                          "validation problem, so NOTHING was written: %s" % (ASK_ID, detail))
+        import _atomic
+        _atomic.write_jsonl(asks_path, new_asks)
+        return True, ("  ✅ application endings restamp (0.48.0) — removed %r, corrected "
+                     "count is 0 (public #94)" % ASK_ID)
+
+    if not apply_it:
+        return True, ("  would write system ask %r (0.48.0): %d ended pursuit(s) carry no "
+                      "recorded ending under the CORRECTED precedence (was over-counted by "
+                      "public #94's bug)" % (ASK_ID, len(unrecorded_ids)))
+
+    import datetime
+    today = datetime.date.today().isoformat()
+    ask_row = {
+        "id": ASK_ID, "kind": "system",
+        "title": "%d ended pursuit(s) carry no recorded ending" % len(unrecorded_ids),
+        "ask": ("Each of these opportunities ended (closed/passed) with nothing recorded "
+                "saying why — `record.py application-status <app_id> rejected|withdrawn|"
+                "closed` where an application exists, or a plain read for the rest (public "
+                "#94's over-count is fixed; this is the corrected remainder). ids: %s"
+                % ", ".join(unrecorded_ids[:40])
+                + (" … (%d more)" % (len(unrecorded_ids) - 40) if len(unrecorded_ids) > 40
+                   else "")),
+        "created": today, "act_by": None, "opp_id": None, "channel_id": None,
+        "resolves_when": None, "resolved_on": None, "resolution": None,
+        "trigger_kind": None, "trigger_ref": None, "note": None,
+    }
+    new_asks = [a for a in asks if a.get("id") != ASK_ID] + [ask_row]
+    rc, problems, new = _shadow_validate(profile, {"asks.jsonl": new_asks})
+    if new is None or new:
+        detail = "; ".join((new if new else (problems or []))[:8]) or (
+            "validator exited %d with no problem list — it crashed" % rc)
+        return False, ("  ⚠️ 0.48.0 restamp REFUSED — the system ask introduces a new "
+                       "validation problem, so NOTHING was written: %s" % detail)
+    import _atomic
+    _atomic.write_jsonl(asks_path, new_asks)
+    verb = "replaced" if existing else "wrote"
+    return True, ("  ✅ application endings restamp (0.48.0) — %s system ask %r: %d ended "
+                 "pursuit(s), corrected count (public #94)"
+                 % (verb, ASK_ID, len(unrecorded_ids)))
+
+
+def m_0_48_0_probe_single_token_ack(profile, apply_it):
+    """0.48.0 — public #90, the repair half. `reconcile.person_terms()` used to append a
+    single-token name as a BARE, unquoted OR'd search term (fixed at the source above — see
+    `person_terms`'s own docstring); against a short common first name this searched the
+    WHOLE mailbox and posted a `store-behind-mailbox` finding (`brief.post_store_behind_
+    mailbox`, D13) for every one of the eight held contacts whose name happened to be one
+    token, all false.
+
+    Every `store-behind-mailbox` row is deterministically keyed
+    `store-behind-mailbox:<person_id>:<date>` (brief.py). This finds every currently-PENDING
+    one, resolves `<person_id>` (through `merged_into`) to its CURRENT name, and — for exactly
+    the shape the bug could produce, a one-token name — appends an `_ack` record the same way
+    `inbox.py --ack` does (APPEND ONLY; `inbox.jsonl` is a log, never rewritten — see
+    `inbox.append`'s own docstring for why a rewrite here would race a concurrent watcher).
+    A pending row whose person has a multi-token name is NOT this bug's shape and is left
+    exactly as it is, for a human. Re-run safe: only PENDING rows are considered (the replay
+    fold `inbox.replay` already treats an acked row as handled), so a second run acks nothing
+    new once the first pass has caught up.
+    """
+    inbox_path = os.path.join(profile, "data", "inbox.jsonl")
+    people_path = os.path.join(profile, "data", "people.jsonl")
+    if not os.path.exists(inbox_path):
+        return True, ""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import inbox as _inbox
+    import graph as _graph
+    try:
+        raw = _read_jsonl(inbox_path)
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ inbox.jsonl could not be read — nothing acked: %s" % e
+    rows = _inbox.replay(raw)
+    pending_sbm = [r for r in rows
+                  if r.get("kind") == "store-behind-mailbox" and r.get("status") == "pending"]
+    if not pending_sbm:
+        return True, ""
+    try:
+        g = _graph.Graph(os.path.join(profile, "data")) if os.path.exists(people_path) else None
+    except Exception:                                               # noqa: BLE001
+        g = None
+    if g is None:
+        # No people store to resolve a name against yet — nothing to ack, and nothing pending
+        # forever either: this simply has nothing to say until 0.44.0 lands.
+        return True, ""
+
+    to_ack = []
+    for r in pending_sbm:
+        rid = r.get("id") or ""
+        parts = rid.split(":")
+        person_id = parts[1] if len(parts) >= 3 and parts[0] == "store-behind-mailbox" else None
+        if not person_id:
+            continue
+        person = g.by_id["people"].get(person_id)
+        name = (person or {}).get("name") or ""
+        if name and len(name.split()) == 1:
+            to_ack.append(rid)
+
+    if not to_ack:
+        return True, ""
+    if not apply_it:
+        # ⭐ COUNTS ONLY, NEVER IDS — this is `--check` output, the exact surface a release
+        # preflight captures verbatim into the release record (design-first-real-run-
+        # 2026-09-13.md §1 (c): "migrate.py --check output must print counts and never ids —
+        # today #94's print carries <app_id>s: that line is the leak shape"). The finding id
+        # embeds a person_id; the apply-mode message below still names them, because that
+        # output lands only in the owner's own session, same as every other migration's
+        # apply-mode summary in this file.
+        return True, ("  would ack %d pending store-behind-mailbox finding(s) (0.48.0) — "
+                      "single-token name, public #90's own shape" % len(to_ack))
+
+    import datetime
+    now_iso = datetime.datetime.now().isoformat(timespec="seconds")
+    acks = [{"id": rid, "kind": "_ack", "acked_at": now_iso,
+            "note": "auto-acked by 0.48.0 migration — single-token name term sent unquoted/"
+                    "bare searched the whole mailbox (public #90); false positive"}
+           for rid in to_ack]
+    # ⭐ `inbox.append()` is NOT used here — its `INBOX` path is a MODULE-LEVEL constant
+    # resolved from `_root.profile_root()` at IMPORT time, i.e. THIS PROCESS's own ambient
+    # profile, never the `profile` argument a migration is asked to act on (the exact
+    # dev #278/#259 shape CLAUDE.md trap 10 names: a helper that resolves its own root instead
+    # of taking one). Append the same shape `inbox.append()` writes (one JSON object per line,
+    # APPEND ONLY — `inbox.py`'s own docstring on why a rewrite here would race a concurrent
+    # watcher), directly at the target profile's own path.
+    with open(inbox_path, "a", encoding="utf-8") as fh:
+        for r in acks:
+            fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+    return True, ("  ✅ store-behind-mailbox ack (0.48.0) — %d false finding(s) acked "
+                 "(single-token name, public #90): %s"
+                 % (len(to_ack), ", ".join(to_ack[:10])))
+
+
 MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               ("0.17.0", m_0_17_0), ("0.18.0", m_0_18_0), ("0.19.0", m_0_19_0),
               ("0.20.0", m_0_20_0), ("0.24.0", m_0_24_0_blocked_until),
@@ -3700,7 +4139,25 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               # `status_on` on; drafts_working_set never touches `status`/`status_on` itself,
               # so the two cannot conflict, but running after keeps every 0.47.0 opportunities
               # write in one declared order rather than an accidental one.
-              ("0.47.0", m_0_47_0_drafts_working_set))
+              ("0.47.0", m_0_47_0_drafts_working_set),
+              # ⚠️ KEYED "0.48.0" — 0.47.0 is the newest PUBLISHED release (ADR-009; verified
+              # 2026-09-13: the gitStatus at this dispatch's own start shows the 0.47.0
+              # release record discharged and its changelog PR already merged to
+              # origin/main). A profile that installed 0.47.0 is stamped exactly "0.47.0",
+              # and pending_for()'s strict `<` would never fire a migration keyed to it.
+              # Re-verified when 0.48.0 is actually cut. ADR-031 B3 — the third store
+              # promoted off the opportunity record, same pattern as 0.44.0/0.45.0.
+              ("0.48.0", m_0_48_0_touches),
+              # The first real run of 0.44.0->0.47.0: public #90-#94 (design-first-real-run-
+              # 2026-09-13.md §1). Repairs for damage the ALREADY-RUN 0.44.0-0.47.0 migrations
+              # left on disk under their own pre-fix bugs — the code-level fixes protect every
+              # future run regardless of these three; these three are for the run that already
+              # happened. Order does not matter between them (three independent facts: drafts,
+              # asks, inbox) but all three run after m_0_48_0_touches so ADR-031 B3's own
+              # writes land first, same reasoning 0.44.0/0.45.0's ordering note gives.
+              ("0.48.0", m_0_48_0_brief_line_restamp),
+              ("0.48.0", m_0_48_0_application_endings_restamp),
+              ("0.48.0", m_0_48_0_probe_single_token_ack))
 
 
 def pending_for(profile, engine=None):
@@ -3846,6 +4303,31 @@ def main():
         diag("migrate", verdict="heal-error", reason=type(e).__name__)
         if not args.hook:
             print("Install self-heal skipped: %s" % e, file=sys.stderr)
+
+    # ── update-availability line, dev #351 ───────────────────────────────────────────────────
+    # Same envelope as the heal above: machine state, not profile state, so it runs whether or
+    # not a profile exists. `check_update_available.py` is deliberately self-contained — it
+    # duplicates the small LOCAL-file autoUpdate read `scripts/check_install.py`'s
+    # `autoupdate_state()` already has, rather than importing that script, because
+    # `scripts/check_install.py` and `scripts/check_delivery.py` live in the MARKETPLACE repo's
+    # own `scripts/` and never ship with the plugin (dev #259/#278) — and it reads no network,
+    # ever: the "newer" version it can name is only what THIS MACHINE's already-registered
+    # marketplace clone happens to have on disk right now.
+    #
+    # ⚠️ UNLIKE THE SIBLINGS ABOVE, THIS STAYS LOUD EVEN IN --hook MODE ON FAILURE. dev #351's
+    # own plant forces this to raise, to prove the session still gets SOME visible evidence
+    # rather than the check silently vanishing — a courtesy notice that can disappear without a
+    # trace is the same "and then nothing tells the owner" gap dev #351 exists to close, just on
+    # its own failure path instead of the release path.
+    try:
+        import check_update_available
+        verdict, cu_lines = check_update_available.check_default()
+        if cu_lines:
+            print("\n".join(cu_lines))
+    except Exception as e:                     # noqa: BLE001 — housekeeping must never block
+        diag("migrate", verdict="update-check-error", reason=type(e).__name__)
+        print("jobsearch: update-availability check skipped (%s: %s)" % (type(e).__name__, e),
+              file=sys.stderr)
 
     # ── launcher self-heal, same envelope and same reason (marketplace identifier rename) ────
     # `~/.claude/jobsearch/run` is a GENERATED file that bakes in the marketplace identity at

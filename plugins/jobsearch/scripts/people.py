@@ -150,7 +150,7 @@ def find_duplicates(rows):
         a = cands[i]
         if a["status"] == "merged" or not a["id"]:
             continue
-        na = normalize_name(a["name"])
+        na = normalize_name(_strip_role_suffix(a["name"]))
         ea = normalize_email(a["email"])
         for j in range(i + 1, n):
             b = cands[j]
@@ -160,18 +160,26 @@ def find_duplicates(rows):
                 continue
             if b["id"] in a["not_same_as"] or a["id"] in b["not_same_as"]:
                 continue
-            nb = normalize_name(b["name"])
+            nb = normalize_name(_strip_role_suffix(b["name"]))
             eb = normalize_email(b["email"])
             reason = None
             if ea and eb and ea == eb and na != nb:
                 reason = "same email (%s), different name — a shared inbox or a typo" % ea
             elif na and nb and na == nb:
+                # public #93 — a name that only compares equal after `_strip_role_suffix`
+                # (one side carried a title stuffed into the name field) gets its own reason,
+                # never folded into the plain same-name case: it names the MECHANISM so the
+                # human deciding does not have to re-derive it from two raw strings.
+                stuffed = (normalize_name(a["name"]) != normalize_name(b["name"]))
                 if a["company_id"] and a["company_id"] == b["company_id"]:
-                    reason = ("same name, same company (%s) — two different people, or one "
-                              "mis-slugged" % a["company_id"])
+                    reason = ("same name%s, same company (%s) — two different people, or one "
+                              "mis-slugged"
+                              % (" once a stuffed title is stripped" if stuffed else "",
+                                 a["company_id"]))
                 else:
-                    reason = ("same name, different company — a slug collision, or the same "
-                              "person across employers")
+                    reason = ("same name%s, different company — a slug collision, or the same "
+                              "person across employers"
+                              % (" once a stuffed title is stripped" if stuffed else ""))
             if reason:
                 pair = tuple(sorted((a["id"], b["id"])))
                 if pair not in seen_pairs:
@@ -179,6 +187,40 @@ def find_duplicates(rows):
                     out.append({"a": pair[0], "b": pair[1], "reason": reason})
     out.sort(key=lambda p: (p["a"], p["b"]))
     return out
+
+
+_TITLE_SEP_RE = re.compile(r"\s*[,\-–—|/]\s*")
+# A small, closed, role-class vocabulary (public #93) — deliberately NOT "any word after a
+# separator", because a hyphenated surname ("Mary Smith-Jones") or a genuine suffix ("Pat
+# Rivera, Jr.") must NEVER be stripped: the tail there never matches one of these words, so
+# both are left exactly as recorded. Lowercased, single tokens only (matched against the
+# tail's own lowercased word set) — this never changes `normalize_name` itself, only what
+# `find_duplicates` (below) compares, because the IDENTITY rule §3 states is unaffected: a
+# stuffed-title pair is SURFACED here, never auto-merged, exactly as any other weak signal is.
+_ROLE_WORDS = frozenset({
+    "vp", "svp", "evp", "avp", "director", "manager", "lead", "head", "chief", "president",
+    "officer", "founder", "ceo", "cto", "coo", "cfo", "cmo", "engineer", "engineering",
+    "recruiter", "recruiting", "talent", "partner", "principal", "staff", "architect",
+    "consultant", "specialist", "coordinator", "associate", "analyst",
+})
+
+
+def _strip_role_suffix(name):
+    """`"Jordan Rivera, VP Engineering"` -> `"Jordan Rivera"` — strip a trailing role/title
+    clause STUFFED into a name field, for DUPLICATE DETECTION ONLY (never `normalize_name`
+    itself, and never what a migration mints an id or a survivor from). Splits on the first
+    separator (comma, hyphen, en/em dash, pipe, slash) and drops the tail only when it
+    contains at least one word from the closed `_ROLE_WORDS` list — a name that happens to
+    contain a hyphen or comma for an unrelated reason is returned unchanged, because its tail
+    never matches a role word. Never raises; unreadable input returns "" (matching
+    `normalize_name`'s own contract for the same input)."""
+    s = str(name or "")
+    m = _TITLE_SEP_RE.search(s)
+    if not m:
+        return s
+    head, tail = s[:m.start()], s[m.end():]
+    tail_words = set(re.findall(r"[a-z]+", tail.lower()))
+    return head if (tail_words & _ROLE_WORDS) else s
 
 
 def _load_jsonl(path):
@@ -202,8 +244,9 @@ def main():
     if not pairs:
         print("No un-answered likely-duplicate people. (%d people row(s) checked.)" % len(rows))
         return 0
-    print("%d possible duplicate pair(s) — your call (record.py set <id> merged_into <survivor>, "
-          "or set <id> not_same_as '[\"<other-id>\"]' to say they are different):" % len(pairs))
+    print("%d possible duplicate pair(s) — your call (record.py merge-person <id> --into "
+          "<survivor>, or set <id> not_same_as '[\"<other-id>\"]' --file people to say they "
+          "are different):" % len(pairs))
     for p in pairs:
         print("  %s <-> %s — %s" % (p["a"], p["b"], p["reason"]))
     return 0

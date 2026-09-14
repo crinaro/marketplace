@@ -27,12 +27,13 @@ shows up as a one-line diff rather than a reformatted file.
 |---|---|
 | `companies.jsonl` | employers — one record each, however many roles they post |
 | `channels.jsonl` | where roles come from: job boards, company career pages, recruiting firms, referrals |
-| `opportunities.jsonl` | the roles themselves, with their outreach and fit analysis |
-| `messages.jsonl` | every communication, both directions, with its full text. Since 0.36.0 an inbound message can carry `answers`, the id of the outbound message it replies to — see *Outreach* below |
+| `opportunities.jsonl` | the roles themselves, with their fit analysis |
+| `messages.jsonl` | every communication, both directions, with its full text. Since 0.36.0 an inbound message can carry `answers`, the id of the outbound message it replies to — see *Touches* below |
 | `people.jsonl` | every person you deal with, once each — see *People* below (since 0.44.0; before that, contacts lived nested on the role or channel) |
 | `involvements.jsonl` | how each person connects to a role or a channel — since 0.44.0, alongside `people.jsonl` |
 | `applications.jsonl` | every application you have submitted, once each — see *Applications* below (since 0.45.0; before that, applications lived nested on the role) |
 | `cover_letters.jsonl` | the link between an application and its cover letter — since 0.45.0, alongside `applications.jsonl`, see *Cover letters* below |
+| `touches.jsonl` | every outreach touch you have made, once each — see *Touches* below (since 0.48.0; before that, touches lived nested on the role as `outreach[]`) |
 | `asks.jsonl` | things waiting on you — a role decision or a piece of system upkeep |
 | `commitments.jsonl` | what is scheduled — calls, deadlines, follow-ups due on a date |
 | `briefs.jsonl` | since 0.46.0 — the append-only ledger of what a draft's `**Brief:**` line cites; see *What a draft now carries* below. Never edit this by hand and never read it as "the current state of a thread" — it is evidence of what a computation SAW at drafting time, not a source of state |
@@ -199,6 +200,17 @@ A role or an application can end in more than one way, and the record now says w
 You record either ending with `record.py application-status` / `record.py networking-closed
 --i-checked <date the you looked personally>` — you never hand-edit either field.
 
+**The remainder — pursuits that ended with nothing recorded saying why — is one queryable ask,
+not a list of commands to run.** The 0.47.0 upgrade that introduced this section originally
+printed its own remainder as N separate `record.py application-status <app_id> ...` lines for
+you to run by hand; as of 0.48.0 that remainder is instead one `kind: system` row in
+`asks.jsonl` (`id: system-application-endings` — see *Asks and commitments* below), which shows
+in your dashboard's System & tooling group like any other system ask and disappears once you
+resolve it, the same as every other ask. A second 0.48.0 fix corrected the count itself: the
+original logic could count a role you had already passed on and closed as "unrecorded" even
+though it had no application to record an ending against — that precedence bug is fixed, and the
+one system ask now carries the corrected count.
+
 ### Recording why a decision diverged — since 0.47.0
 
 Every role's `verdict` (`pursue`/`pass`/`parked`/`undecided`) can be compared against what the
@@ -264,10 +276,19 @@ one, decides one of two things:
 *are* combined, the combination is a pointer (one row is marked as absorbed into the survivor),
 never a rewrite of anything that already pointed at the absorbed record — so every old link to
 either contact keeps resolving correctly. If you later discover a combination is wrong, or that
-two people the migration kept separate really are the same person, `record.py` lets you correct
-either direction by hand. And the whole migration only ever writes once it has checked its own
-work is valid — if anything about your data would make the result invalid, nothing is written
-and you keep exactly what you had before, with a report of what needs attention first.
+two people the migration kept separate really are the same person, confirm it yourself with
+`record.py merge-person <duplicate-id> --into <survivor-id>` — a dedicated verb (since 0.48.0)
+that sets `status: merged` and `merged_into` on the duplicate in one write, and refuses outright
+if that merge would close a cycle (A into B, B already into A). And the whole migration only ever
+writes once it has checked its own work is valid — if anything about your data would make the
+result invalid, nothing is written and you keep exactly what you had before, with a report of
+what needs attention first.
+
+**`python3 scripts/people.py --duplicates` now also catches a name with a role or title stuffed
+into it** — "Jordan Casey, VP Engineering" and "Jordan Casey" surface as the same pair, flagged
+with the mechanism named in the reason (`stuffed title`) rather than leaving you to notice it
+from two raw strings, the same discipline every other weak-signal pair already gets: surfaced for
+you to decide, never merged for you.
 
 **On email matching, deliberately:** `jane.doe@company.com` and `janedoe@company.com` are treated
 as **different** email addresses, not the same one, even though some mail providers would
@@ -279,12 +300,23 @@ unmerged for you to combine by hand.
 *Known limit, resolved by this upgrade:* the old per-role contact records are gone; every person
 is now one record spanning every role and channel they touch.
 
-### Outreach — messages you sent
+### Touches — outreach you made
+
+**As of the 0.48.0 upgrade, touches are their own file, `data/touches.jsonl`** — not a list
+nested inside the role you were reaching out about. Before 0.48.0, each opportunity's own record
+carried its outreach as a small array on itself (`outreach[]`); now every touch is one row in its
+own file, linked back to its role by the optional `opp_id` below. Nothing about what a touch means
+or how you work with it changed — only where it lives, and one new thing it can now say: a touch
+no longer has to be about a role at all. A periodic reconnect with someone in your network, or an
+introduction ask, is a legal touch with no `opp_id` — see *the object of a touch*, below.
 
 One record per touch. The fields exist to make "which approach actually works?" a real question.
 
 | field | why it exists |
 |---|---|
+| `id` | the stable handle a trigger points at (`<person_id>-t1`, `-t2`, ...). **You never mint it yourself**: `record.py` assigns the next number the moment a touch is recorded |
+| `person_id` | who you reached — every touch is to a person, always resolved through `people.jsonl` |
+| `opp_id` | the role this touch was about, if any. **Optional** — a channel-anchored or fully unanchored networking touch is a legal row with no role attached |
 | `medium` | a LinkedIn connection note, an InMail and a direct message get read at completely different rates. Pooling them makes any reply rate meaningless |
 | `touch_type` | a first touch and a chase have different base rates |
 | `recipient_role` | a hiring manager, a recruiter and a peer are not the same audience |
@@ -295,6 +327,14 @@ One record per touch. The fields exist to make "which approach actually works?" 
 | `message_ref` | points at the full text in `messages.jsonl`, and must resolve |
 | `trigger_kind`, `trigger_ref` | what CAUSED this touch — `application`, `reply`, `elapsed` or `manual`, plus the specific application/message/date it points at. See *Triggers and sequences* below |
 | `sequence_id`, `sequence_step` | groups this touch into a multi-step play with other outreach and staged drafts under the same `sequence_id`, ordered by `sequence_step` |
+
+#### The object of a touch — who or what it's about, when that's not the recipient
+
+Two more fields, both optional: `object_person_id` and `object_company_id`. Most touches don't
+need either — the touch is to the recipient, about the recipient. An **introduction ask** is the
+case where that isn't true: you ask person A to introduce you to person B, or into company C. The
+touch's `person_id` is still A (who you actually messaged); `object_person_id`/`object_company_id`
+name who or what the ask is actually about.
 
 `accepted` — an accepted connection request that drew no reply — is reported on its own line and
 never merged into `replied`, because it is a real positive signal that unlocks a better second
@@ -318,8 +358,11 @@ reported, not guessed — for you to link by hand with `answers` once you know w
 Every **open** entry in `outreach/drafts.md` carries two meta lines under its heading:
 
 - `**To:** contact:<id>` — who the draft is for, resolved through `people.jsonl` (following a
-  merge if the person was later merged into another record). If it cannot be resolved, the line
-  reads the literal `**To:** unaddressed`.
+  merge if the person was later merged into another record). **Since the 0.48.0 upgrade**, this
+  reads the entry's own `**Contact:**` meta line first — a direct statement of who the draft is
+  for — and only falls back to the `**Blocked until:** contact:<id>` hold when there is no
+  `**Contact:**` line, or it does not resolve. If neither resolves, the line reads the literal
+  `**To:** unaddressed`.
 - `**Brief:**` — either the literal `none` (nobody has computed a brief for this draft yet)
   or a `brief:<timestamp>-<id>` token citing one row in `data/briefs.jsonl`. That row is what
   `brief.py` computed about the thread — who last wrote, how long it has been, and what the
@@ -333,11 +376,26 @@ open entries carry these lines.
 
 **Upgrading to the release that carries this.** The first session you open after upgrading
 stamps every open draft that does not already have both lines: `**To:**` from whatever contact
-the entry's own `**Blocked until:**` hold names (never guessed from the heading or body — a
-wrong recipient is worse than an honestly-counted absence), and `**Brief:** none` underneath
-every open entry regardless of whether `**To:**` resolved. It then computes a real brief for
-every draft it could address, in bulk, straight from your existing stores — no mailbox is
-touched for this step. Running it twice changes nothing the second time.
+the entry's own `**Contact:**` line or `**Blocked until:**` hold names (never guessed from the
+heading or body otherwise — a wrong recipient is worse than an honestly-counted absence), and
+`**Brief:** none` underneath every open entry regardless of whether `**To:**` resolved. It then
+computes a real brief for every draft it could address, in bulk, straight from your existing
+stores — no mailbox is touched for this step. Running it twice changes nothing the second time.
+It also refuses outright, stamping nothing, if it runs before the people/involvements upgrade
+(0.44.0) has actually landed on your profile — attributing `**To:**` against a people store that
+is not there yet is exactly the wrong-recipient risk this whole feature exists to avoid, so it
+waits rather than guesses.
+
+**0.48.0 — a one-time repair, if you upgraded before this fix.** Two bugs in the original
+0.46.0 code could leave a draft mis-stamped: it never read a `**Contact:**` line at all (only the
+`**Blocked until:**` fallback), and on at least one real profile it ran before 0.44.0 had
+actually finished, stamping `**To:** unaddressed` against an empty people store. Both are fixed
+at the source now, but an entry already stamped `unaddressed` by the old code would never be
+revisited on its own — 0.46.0's own idempotency treats "already stamped" as done forever. The
+0.48.0 upgrade runs a one-time, re-runnable pass (`brief.py --restamp`) that finds every entry
+still reading `**To:** unaddressed` and re-checks it against the fixed logic; anything that now
+resolves — because a `**Contact:**` line was there all along, or because 0.44.0 has since landed
+— gets its real `**To:**` line. An entry that still does not resolve is left exactly as it was.
 
 **What that release morning actually looks like**, once the bulk pass has run:
 
@@ -362,7 +420,7 @@ still under review**: nothing sent, nothing moot. `precondition.py --prune` (and
 0.47.0 upgrade itself) walks the file and, for every entry whose `**Status:**` reads `SENT` or
 `MOOT / DO-NOT-SEND`, does one of two things — nothing is ever simply deleted with no trace:
 
-- **If a matching row already exists** in `data/outreach.jsonl`/`messages.jsonl` recording the
+- **If a matching row already exists** in `data/touches.jsonl`/`messages.jsonl` recording the
   send, the draft's paragraph is just removed — the fact it recorded is already on the record
   elsewhere, so keeping the draft too would be the same fact twice.
 - **Otherwise it is relocated**, never dropped: to the named role's `research_log[]` (in
@@ -390,7 +448,7 @@ new drafts since.
 ### Triggers and sequences — what caused a touch, and multi-step plays
 
 Submitting an application creates work: ask a retained recruiter whether they know the employer,
-chase after a week of silence. `trigger_kind`/`trigger_ref` on an outreach row (or an ask) name
+chase after a week of silence. `trigger_kind`/`trigger_ref` on a touch (or an ask) name
 what caused it, so a draft never sits unlinked to the application or reply that generated it:
 
 - `application` → resolves against **this same role's own** applications
@@ -507,7 +565,7 @@ data rather than kept up to date by hand.
 
 | field | what it is |
 |---|---|
-| `kind` | `role` (about one opportunity) or `system` (tooling, a credential, a setting) — decides which group it shows in |
+| `kind` | `role` (about one opportunity) or `system` (tooling, a credential, a setting — for example `system-application-endings`, the one row naming every ended pursuit with no recorded ending, described under *Endings* above) — decides which group it shows in |
 | `title`, `ask` | what it is, and what is actually being asked |
 | `opp_id` | the role it concerns, if any |
 | `resolved_on`, `resolution` | set together, once, when it is answered |
@@ -569,6 +627,34 @@ the new name by hand while the old scaffolded one still sat there — the two li
 order, nothing dropped. Your existing `receipt_subject_phrases` list moved into
 `status_phrases.acknowledged`, since that is the only status it could have meant; `rejected` and
 `advanced` were seeded empty for you to fill in if you want those recognized too.
+
+---
+
+## Sourcing — `config.json.sourcing`
+
+Another small settings block at your profile root, alongside `ats` above — this one about **how**
+a role was found, rather than the application's own clock.
+
+| key | what it is |
+|---|---|
+| `linkless_grace_days` | since 0.48.0 — how many days a board/aggregator sighting with no link gets before it is named in the SOURCING advisory below. Defaults to **3** |
+
+**The SOURCING advisory (since 0.48.0).** `doctor.py` now warns, at the start of every run, about
+an opportunity that was sighted on a job board or aggregator but never recorded a link to the
+posting (`jd_url`, or a sighting's own `source_url`) — once that posting comes down, there is no
+way to ever recover it. Three shapes are excluded **by rule**, never by a guess:
+
+- **recruiter-sourced** — the role's channel (or any of its sightings' channels) is a recruiting
+  firm. There was never a public posting to link.
+- **receipt-backed** — you have a submitted application on record for this role. The application
+  itself is durable evidence the role existed, with or without the link.
+- **too fresh** — every board/aggregator sighting is younger than `linkless_grace_days` above, so
+  a research or backfill pass simply hasn't had the chance to fill the link in yet.
+
+A role with no board/aggregator sighting at all — recruiter-only, company-site-only — is out of
+scope entirely; it was never going to carry a public link, so its absence is not this advisory's
+business. The advisory is a warning, never a hard failure: it names the gap so you can fill it
+before the posting disappears, and does nothing on its own.
 
 ---
 

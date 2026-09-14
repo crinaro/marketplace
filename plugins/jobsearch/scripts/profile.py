@@ -63,6 +63,17 @@ NEEDS_COMMUTE = "NEEDS-COMMUTE-CHECK"
 # an answer exists, it just has to come from the employer instead of an inference.
 UNRESOLVED = "UNRESOLVED-SETTING"
 
+# public #84 — the statuses `--screen-all` actually screens. `backlog` was missing from this
+# tuple: newly sourced roles accumulate there and the screen never looked at them at all, with
+# no skipped-count or warning anywhere in the output — the same "coverage, not silence" trap
+# `check_engine_purity.py` prints `scanned N of M` against. `backlog` is live, screenable data
+# (validate_data.TERMINAL_OPP_STATUSES excludes it for exactly this reason — a role that has not
+# yet been decided still needs its comp checked), so it belongs here now. `passed`/`expired`
+# stay OUT on purpose: a terminal role has already left the funnel and screening it again would
+# print a verdict for a decision that is not live any more — the coverage line below is what
+# says so, by name and count, instead of by silence.
+SCREEN_ALL_STATUSES = ("active-pursuit", "needs-resolution", "in-motion", "backlog")
+
 
 def _read(path):
     with open(path, encoding="utf-8") as fh:
@@ -332,15 +343,24 @@ def main():
         return print_options(profile)
 
     if args.screen or args.screen_all:
-        opps = _load_opps()
+        all_opps = _load_opps()
+        excluded_counts = {}
         if args.screen:
-            opps = [o for o in opps if o["id"] == args.screen]
+            opps = [o for o in all_opps if o["id"] == args.screen]
             if not opps:
                 print("No opportunity with id %r" % args.screen)
                 return 1
         elif args.screen_all:
-            opps = [o for o in opps if o.get("status") in
-                    ("active-pursuit", "needs-resolution", "in-motion")]
+            screened = set(SCREEN_ALL_STATUSES)
+            opps = [o for o in all_opps if o.get("status") in screened]
+            # ⭐ public #84 — COVERAGE, NOT SILENCE. Every status this run did NOT screen, and
+            # how many rows sat in it, computed from what is actually on disk (never a
+            # hardcoded enum that could itself drift from the data) — so an exclusion is a
+            # printed fact, not a fact nobody stated.
+            for o in all_opps:
+                st = o.get("status")
+                if st not in screened:
+                    excluded_counts[st] = excluded_counts.get(st, 0) + 1
 
         print("Comp screen — %d opportunit%s" % (len(opps), "y" if len(opps) == 1 else "ies"))
         print("=" * 78)
@@ -352,6 +372,12 @@ def main():
             print("  %-20s %s" % ("", detail))
         print("\n" + "=" * 78)
         print("  " + " · ".join("%s=%d" % (k, v) for k, v in sorted(counts.items())))
+        if args.screen_all:
+            if excluded_counts:
+                print("  NOT screened (status excluded from --screen-all): " +
+                     " · ".join("%s=%d" % (k, v) for k, v in sorted(excluded_counts.items())))
+            else:
+                print("  NOT screened: none — every status present in the pipeline was covered.")
         print("\n  Reminder: BELOW-FLOOR is a REMOVE unless the candidate explicitly opts in.")
         print("  NEEDS-COMMUTE-CHECK is never 'relocation by default' — that assumption")
         print("  is what mis-scored <an employer> on 2026-07-22.")

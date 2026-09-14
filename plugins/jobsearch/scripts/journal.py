@@ -148,7 +148,16 @@ EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swep
 # a month and then nothing can group by it. dev #321 (V0): `swept ok:false` rows use this same
 # set — a failed sweep is the same shape of "why didn't this complete" as a gap.
 REASONS = {"browser-unavailable", "credential-missing", "rate-limited", "timeout",
-           "partial-results", "skipped-for-cost", "upstream-error", "interrupted", "other"}
+           "partial-results", "skipped-for-cost", "upstream-error", "interrupted", "other",
+           # ⭐ dev #354 / public #91's own gate — `linkedin-runner.md:247` and this file's own
+           # D14 refusal message (below) have instructed `--reason surface-unreachable` since
+           # public #15, while this set never actually admitted it: every such call was
+           # refused by argparse's own `choices=sorted(REASONS)`, the exact "a shipped file
+           # instructs a flag/value its own target refuses" shape check_cli_flags.py now scans
+           # for. A page that never opened at all — distinct from `browser-unavailable`
+           # (nothing answers) and from public #96's `render-stalled` (the page answered, the
+           # click landed, nothing painted — a separate, not-yet-built token).
+           "surface-unreachable"}
 
 # ⭐ dev #321 — a `probe` result is either the literal "empty" or "thread:<ISO timestamp>" (the
 # newest inbound's date/time) — Class C's own vocabulary, settled here since V0 is the first

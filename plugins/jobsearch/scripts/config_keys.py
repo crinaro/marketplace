@@ -60,6 +60,15 @@ ATS_CLOSE = "ats.close"
 ATS_CLOSE_DEFAULT = "propose"
 ATS_CLOSE_VALUES = ("propose", "auto")
 
+# public #83 — the run-start "linkless sighting" advisory (doctor.py's
+# `check_linkless_sightings`). A sighting is caught freshly-sighted, not linkless, below this
+# many days old — the grace period a batch research pass gets before a board/aggregator
+# sighting with no jd_url/source_url is named. Home is `sourcing` (about HOW a role was found),
+# the same section `route_preference` already lives in — never `ats` (that section is about the
+# APPLICATION's clock, a different phase).
+LINKLESS_GRACE_DAYS = "sourcing.linkless_grace_days"
+LINKLESS_GRACE_DAYS_DEFAULT = 3
+
 # What a reader resolves — and therefore exactly what a scaffold seeding fresh defaults would
 # need to seed (the `_ats_keys.READER_KEYS` / `resume_variants.SUBMITTED` mirror precedent).
 # `describe()` below reports the default when a profile has not set one, same as the register
@@ -67,7 +76,8 @@ ATS_CLOSE_VALUES = ("propose", "auto")
 # --options` and `doctor.py`'s CONFIG CURRENCY both iterate `READER_KEYS` (via `describe()`)
 # rather than each naming its own list, so the two cannot enumerate two different sets
 # (design §15.7's own gate: "profile.py --options and doctor.py reading different key lists").
-READER_KEYS = frozenset({CHASE_AFTER_DAYS, NO_RESPONSE_AFTER_DAYS, ATS_SILENCE_DAYS, ATS_CLOSE})
+READER_KEYS = frozenset({CHASE_AFTER_DAYS, NO_RESPONSE_AFTER_DAYS, ATS_SILENCE_DAYS, ATS_CLOSE,
+                         LINKLESS_GRACE_DAYS})
 
 # {key: (default, kind, bounds_or_values, why)} — the metadata `profile.py --options` and
 # `doctor.py` render alongside the value/provenance `describe()` returns. `kind` is "int" or
@@ -86,6 +96,9 @@ _METADATA = {
                "whether the run only PROPOSES a close ('propose') or writes it itself "
                "('auto') — a window is a guess about the employer's clock; the owner's confirmation "
                "is what turns it into a fact"),
+    LINKLESS_GRACE_DAYS: (LINKLESS_GRACE_DAYS_DEFAULT, "int", (0, 30),
+                          "days a board/aggregator sighting with no jd_url/source_url is given "
+                          "before doctor.py's run-start advisory names it (public #83)"),
 }
 
 # Engine constants C1 hardcodes rather than reading from config — never resolved by describe(),

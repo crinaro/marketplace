@@ -77,6 +77,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
 import precondition
 import applications as _apps
+import touches as _touches
 
 TRIGGER_FIELD_RE = re.compile(r"^\*\*Triggered by:\*\*\s*(.+?)\s*$", re.M | re.I)
 SEQUENCE_FIELD_RE = re.compile(r"^\*\*Sequence:\*\*\s*(.+?)\s*$", re.M | re.I)
@@ -240,19 +241,21 @@ def draft_rows(root, opps_by_id, message_ids):
 
 
 def sequence_report(root, opps, drafts):
-    """sequence_id -> {'steps': [...], 'state': ...}. Steps merge sent outreach[] rows and
-    staged drafts; a draft step's own state is precondition.py's verdict, read back — never
-    re-derived here."""
+    """sequence_id -> {'steps': [...], 'state': ...}. Steps merge sent touches and staged
+    drafts; a draft step's own state is precondition.py's verdict, read back — never
+    re-derived here. ADR-031 B3: `opp["_touches"]`, the caller's own join against the
+    top-level `touches` store (`touches.enrich_opportunities`, called once in `report()`
+    below), never a nested array."""
     pre = {(p["file"], p["title"]): p["state"] for p in precondition.report(root)}
     seqs = {}
     for opp in opps:
-        for o in opp.get("outreach") or []:
+        for o in opp.get("_touches") or []:
             sid = o.get("sequence_id")
             if not sid:
                 continue
             seqs.setdefault(sid, []).append({
-                "step": o.get("sequence_step"), "kind": "outreach",
-                "where": "%s outreach[]" % opp.get("id"),
+                "step": o.get("sequence_step"), "kind": "touch",
+                "where": "touches[%s]" % (o.get("id") or "?"),
                 "state": "sent" if o.get("status") == "sent" else (o.get("status") or "?"),
                 "date": o.get("date")})
     for d in drafts:
@@ -282,7 +285,7 @@ def untriggered_applications(root, opps, drafts, asks):
     'you applied to X, so ask Y': generated, not remembered."""
     named = set()          # (opp_id, handle) pairs any trigger anywhere points at
     for opp in opps:
-        for o in opp.get("outreach") or []:
+        for o in opp.get("_touches") or []:
             if o.get("trigger_kind") == "application" and o.get("trigger_ref"):
                 named.add((opp.get("id"), o["trigger_ref"]))
     for a in asks:
@@ -311,6 +314,7 @@ def untriggered_applications(root, opps, drafts, asks):
 def report(root):
     opps = load_jsonl(root, "opportunities.jsonl")
     _apps.enrich_opportunities(root, opps)   # ADR-031 B2 — o["_applications"], never nested
+    _touches.enrich_opportunities(root, opps)  # ADR-031 B3 — o["_touches"], never nested
     asks = load_jsonl(root, "asks.jsonl")
     message_ids = {m.get("id") for m in load_jsonl(root, "messages.jsonl") if m.get("id")}
     opps_by_id = {o.get("id"): o for o in opps}
