@@ -1,0 +1,19 @@
+{
+  "id": "contract-direct",
+  "description": "no ATS application — go straight to the decider for a contract engagement",
+  "steps": [
+    {
+      "id": "identify-decider",
+      "when": ["!decider-known"],
+      "do": {"kind": "research", "find": "decider"}
+    },
+    {
+      "id": "contact-decider",
+      "when": ["decider-known", "!done:contact-decider"],
+      "do": {"kind": "touch", "touch_type": "first-touch", "to": "decider"},
+      "say": ["fit", "ask-conversation"]
+    }
+  ],
+  "goal": "interview-scheduled",
+  "params": {}
+}

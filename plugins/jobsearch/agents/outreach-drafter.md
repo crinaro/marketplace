@@ -78,6 +78,15 @@ enforces this.
   `reply-owed` register makes a cold or chasing opener wrong; an `unverified-cold`/
   `unverified-silent` register means the draft is held for a keychain-holding session before it
   can send — write it anyway, the hold is mechanical, not a reason to skip drafting).
+- **`plays.py --brief <opp_id>` (ADR-031 B4, since 0.49.0) — the source for WHAT to say and to
+  WHOM on a role-anchored draft.** It composes from `brief.py --json` (never recomputes a
+  register or a silence window — `check_ledger_reads.py` stays green) and adds the play's own
+  `next_step` and `say` list: the closed set of things the current step licenses saying
+  (`referral`, `fit`, `ask-conversation`, `ask-open`, `referral-ask`, `reconnect`). **The referral
+  hard rule below is now backed by this, not by your own judgement alone** — `say` includes
+  `referral` only when the store already proves one (the `has-referral` predicate: a
+  `referral-ask` touch with `outcome: accepted`), so a draft that leans on a referral without
+  `referral` in the step's `say` list is drafting past what the record supports.
 - `presence/claims.md` (and its addenda — facts the candidate chose not to print are still usable).
 - `presence/projects.md` — **grep it for the JD's own terms**; never read it whole and never dump projects.
   **⚠️ AND OBEY ITS `Surface when:` AND FRAMING INSTRUCTIONS — they are the candidate's own
@@ -164,8 +173,12 @@ upfront.** Concise: **run `~/.claude/jobsearch/run profile.py` for the per-mediu
 retyping one.** `config.json.communications` is the single source — the connection-note cap lived
 in prose in four places before 2026-08-02 and drifted.
 
-**Hard rules:** NEVER fabricate mutual connections, referrals, or shared history. Use genuine
-mutual-connection framing only when the tracker or the caller confirms the mutual is real. If the
+**Hard rules:** NEVER fabricate mutual connections, referrals, or shared history. **On a
+role-anchored draft, `plays.py --brief <opp_id>`'s `say` list is the gate, not your own
+judgement** — referral framing is licensed only when it names `referral`, which requires a
+recorded, accepted `referral-ask` touch on the record (`has-referral`, see READS above). Off a
+role (a pure networking touch) or where the caller otherwise confirms a mutual is real, the same
+"never invent it" rule applies without the automated gate. If the
 message is for a specific job posting, confirm the caller has actually provided the JD's content
 (responsibilities, required skills, named tools/frameworks) before drafting — if only a
 title/comp/location was given, say so and ask for the JD text rather than drafting generic

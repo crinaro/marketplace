@@ -123,6 +123,10 @@ STORES = {"opportunities": "opportunities.jsonl",
           # never a rewrite" — every involvement keeps naming the absorbed id and resolves
           # through it at READ time via `graph.Graph.resolve_person`).
           "people": "people.jsonl",
+          # ADR-031 B4 — the strategy stores. `plans`/`plays` both take an explicit id like
+          # any other store (no auto-minting — a plan/play id is chosen, not counted).
+          "plans": "plans.jsonl",
+          "plays": "plays.jsonl",
           # States & Views V1b (design §15.3) — `messages` joins STORES, APPEND-ONLY: a
           # message row is immutable once written (its id is what every other row links to).
           # `set`/`set-in`/`append`/`create`/`show` on `--file messages` are refused in main()
@@ -533,6 +537,13 @@ def _validator_module():
     return _vd
 
 
+def _plans_mod():
+    """ADR-031 B4 — `plans.py`, the enum-owning module for `plans`/`plays`, imported lazily
+    the same way `_validator_module()` is (only the code paths that need it pay for it)."""
+    import plans as _pl
+    return _pl
+
+
 # field -> allowed-value SET, keyed by store then field name. Every set here is a REFERENCE to
 # a validate_data.py constant, never a restated literal — the values still live in exactly one
 # place. ⚠️ If a future enum() call in validate_data.py covers a new field, add it here too, or
@@ -545,8 +556,12 @@ def _enum_registry(_vd):
         "channels": {"type": _vd.CHANNEL_TYPES, "review_cadence": _vd.CADENCES,
                     "access": _vd.ACCESS},
         "opportunities": {"status": _vd.OPP_STATUS, "stage": _vd.STAGES,
-                          "verdict": _vd.VERDICTS, "play_stage": _vd.PLAY_STAGES,
-                          "next_action_owner": _vd.OWNERS},
+                          "verdict": _vd.VERDICTS, "next_action_owner": _vd.OWNERS},
+        # ADR-031 B4 — `plans`/`plays` join here for the same reason `touches` did in B3: the
+        # enum values live in one place (`plans.py`), never restated.
+        "plans": {"subject_kind": _plans_mod().SUBJECT_KINDS, "status": _plans_mod().PLAN_STATUS,
+                 "resolves_when": _plans_mod().RESOLVES_WHEN},
+        "plays": {"status": _plans_mod().PLAY_STATUS},
         # ADR-031 B3 — `touches` is a top-level store now (promoted from
         # opportunities.outreach[]), so its enums move from `_array_enum_registry` below to
         # here, the same move B2 never made for applications/cover_letters (a pre-existing
@@ -753,6 +768,47 @@ def resolve_linked_asks_dated(rid, when, action):
 # outreach[] row, which validate_data.py's own orphan check (MESSAGES_TOUCHED_SOURCE) names,
 # and a RE-RUN with the SAME arguments finds the message already there (mint_message_id is
 # deterministic over the call's own inputs) and writes only the missing half.
+
+def _resolve_plan_goal(opp_id, new_stage):
+    """ADR-031 B4 (design §17) — [(plan_id, resolution)] for the ONE plan this write may have
+    resolved: `new_stage` at screening or beyond, on a governing plan whose `resolves_when` is
+    'goal-reached' and is not already resolved. The exact best-effort shape
+    `resolve_linked_asks_dated` already uses — the primary write already landed and validated;
+    a failure here is loud and never un-lands it."""
+    if new_stage not in ("screening", "interviewing", "offer"):
+        return []
+    opps = load("opportunities")
+    opp = find(opps, opp_id)
+    if opp is None or not opp.get("plan_id"):
+        return []
+    plans = load("plans")
+    plan = find(plans, opp["plan_id"])
+    if plan is None or plan.get("resolved_on") or plan.get("resolves_when") != "goal-reached":
+        return []
+    today_iso = datetime.date.today().isoformat()
+    plan["resolved_on"] = today_iso
+    plan["resolution"] = "goal reached — %s advanced to stage %r on %s" % (opp_id, new_stage,
+                                                                          today_iso)
+    fd, tmp = tempfile.mkstemp(dir=DATA, prefix=".record-plans-", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            for p in plans:
+                fh.write(json.dumps(p, ensure_ascii=False) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, os.path.join(DATA, STORES["plans"]))
+    except Exception as e:                                        # noqa: BLE001
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        print("  ⚠️ the write landed, but resolving its plan failed: %s" % e)
+        return []
+    rc, _out, _err, _problems = validate()
+    if rc != 0:
+        print("  ⚠️ the write landed, but resolving the plan left the store invalid — check "
+              "data/plans.jsonl.")
+        return []
+    return [(plan.get("id"), plan.get("resolution"))]
+
 
 def _load_involvements():
     try:
@@ -1059,6 +1115,13 @@ def main():
                     help="answered: the opportunity this reply belongs to — required when "
                          "the target is a `contact:<id>` touch ref rather than a message id "
                          "(a bare message id already carries its own opp_id/channel_id).")
+    ap.add_argument("--when", dest="when_token", default=None,
+                    help="set play:<id> params.<name>: the arm's predicate token — creates or "
+                         "edits that arm (design §24.1). A NEW arm requires --why.")
+    ap.add_argument("--plan", dest="plan_id", default=None,
+                    help="create --file opportunities: which search plan sourced this role, "
+                         "when more than one active search plan sources role/contract "
+                         "(design §26.5) — required only in that ambiguous case.")
     ap.add_argument("--into", dest="into_id", default=None,
                     help="merge-person: the SURVIVOR person id. The record named by <rid> "
                          "(the duplicate) gets status=merged, merged_into=<--into>, in one "
@@ -1224,6 +1287,28 @@ def main():
                   "company (design §12) — without one this row looks like any other touch and "
                   "nothing could ever ask 'who is being worked toward <company>?'")
             return 1
+        # ⭐ ADR-031 B4 (design §17, §26.5) — a freshly created opportunity is auto-assigned
+        # its governing `plan_id` from the one active search plan sourcing role/contract,
+        # unless the payload already names one. With more than one candidate, `--plan` is
+        # required — the refusal names every candidate (§26.5).
+        if args.file == "opportunities" and not new_row.get("plan_id"):
+            _plans_rows, _e, _present = _plans_mod().load(ROOT)
+            _cfg_for_plan = {}
+            try:
+                import profile as _profile_for_plan
+                _cfg_for_plan = _profile_for_plan.config()
+            except Exception:                                   # noqa: BLE001 — advisory only
+                pass
+            _resolved_plan, _plan_err = _plans_mod().resolve_sourcing_plan(
+                _plans_rows, _cfg_for_plan, explicit_id=args.plan_id)
+            if _resolved_plan:
+                new_row["plan_id"] = _resolved_plan
+                new_row["plan_assigned_on"] = datetime.date.today().isoformat()
+            elif args.plan_id or len(_plans_mod().sourcing_candidates(_plans_rows)) > 1:
+                print("⛔ REFUSED — %s" % _plan_err)
+                return 1
+            # else: no active sourcing plan at all — plan_id stays unset; the required-field
+            # check below refuses it the same way any other missing required field would.
         m = model()["stores"][args.file]
         idf = m.get("id_field") or "id"
         if idf in new_row and new_row[idf] != args.rid:
@@ -1257,6 +1342,77 @@ def main():
 
         def apply(r):        # unused for create; the lock section appends new_row instead
             raise AssertionError("create does not mutate an existing record")
+
+    elif args.op == "set" and args.file == "plays" and args.rest \
+            and args.rest[0].startswith("params."):
+        # ⭐ ADR-031 B4 (design §27.1) — `set <play-id> params.<name> <value> --file plays
+        # [--when TOKEN] [--why TEXT]`: a bounded, reasoned parameter tweak. **The refusal
+        # names the legal set** (§27.1's own resolution: "the rejection IS the option list",
+        # #73 applied here) — a caller never has to re-read a pattern file to learn what it
+        # could have set instead.
+        if len(args.rest) != 2:
+            print("usage: set <play-id> params.<name> <value> --file plays [--when TOKEN] "
+                 "[--why \"...\"]")
+            return 2
+        field, raw_val = args.rest
+        pname = field.split(".", 1)[1]
+        if rec is None:
+            print("No plays record with id %r." % args.rid)
+            return 1
+        params_now = rec.get("params") or {}
+        spec = params_now.get(pname)
+        if spec is None:
+            print("⛔ REFUSED — %r declares no parameter %r. Known: %s"
+                 % (args.rid, pname, ", ".join(sorted(params_now)) or "(none)"))
+            return 1
+        if isinstance(spec, (int, float)):
+            print("⛔ REFUSED — parameter %r is FIXED by the pattern (no min/max declared) "
+                 "and cannot be tweaked. To change it, fork the play (edit steps/params by "
+                 "hand or via record.py set-in)." % pname)
+            return 1
+        try:
+            new_val = int(raw_val)
+        except (TypeError, ValueError):
+            print("⛔ REFUSED — %r must be an integer number of days, got %r" % (pname, raw_val))
+            return 1
+        mn, mx = spec.get("min"), spec.get("max")
+        arm_desc = ", ".join("%s -> %s" % (a.get("when"), a.get("days"))
+                             for a in spec.get("unless") or []) or "(none)"
+        if mn is not None and mx is not None and not (mn <= new_val <= mx):
+            print("⛔ REFUSED — %s: %d is outside [%s, %s]. anchored to the %s touch; "
+                 "default %s; arms: %s"
+                 % (pname, new_val, mn, mx, spec.get("anchor"), spec.get("days"), arm_desc))
+            return 1
+        when_tok = args.when_token
+        today_iso = datetime.date.today().isoformat()
+        if when_tok:
+            existing_arm = next((a for a in (spec.get("unless") or [])
+                                if a.get("when") == when_tok), None)
+            if existing_arm is None and not (args.why or "").strip():
+                print("⛔ REFUSED — a NEW arm (--when %r) requires --why: a second value for "
+                     "one concept with no stated reason is the row a later reader merges "
+                     "(design §24.2)." % when_tok)
+                return 1
+            desc = "set play %s params.%s (--when %s) = %d" % (args.rid, pname, when_tok, new_val)
+
+            def apply(r, _pname=pname, _when=when_tok, _val=new_val, _why=args.why,
+                     _on=today_iso):
+                arms = r["params"][_pname].setdefault("unless", [])
+                for a in arms:
+                    if a.get("when") == _when:
+                        a["days"] = _val
+                        a["set_on"] = _on
+                        if _why:
+                            a["why"] = _why
+                        return
+                arms.append({"when": _when, "days": _val, "why": _why, "set_on": _on})
+        else:
+            desc = "set play %s params.%s = %d (every arm's why: %s)" % (args.rid, pname,
+                                                                        new_val, arm_desc)
+
+            def apply(r, _pname=pname, _val=new_val, _on=today_iso):
+                r["params"][_pname]["days"] = _val
+                r["params"][_pname]["set_on"] = _on
 
     elif args.op == "set":
         if len(args.rest) != 2:
@@ -1701,6 +1857,15 @@ def main():
                 for aid, title in resolve_linked_asks_dated(_opp_id, _when, "outreach"):
                     print("  ✦ resolved ask %r — %s (its declared action is now recorded)"
                           % (aid, title[:60]))
+        # ⭐ ADR-031 B4 (design §17) — "resolution is atomic with the act": a plan whose
+        # `resolves_when` is 'goal-reached' resolves the moment the stage this write just
+        # landed moves to screening or beyond, under the SAME lock hold, never a later sweep
+        # that may not run. Mirrors `resolve_linked_asks_dated`'s own best-effort shape: the
+        # opportunity write already landed and validated; this never un-lands it.
+        if args.file == "opportunities" and args.op in ("create", "set"):
+            _new_stage = new_row.get("stage") if args.op == "create" else rec.get("stage")
+            for pid, resolution in _resolve_plan_goal(args.rid, _new_stage):
+                print("  ✦ resolved plan %r — %s (goal-reached, design §17)" % (pid, resolution))
     finally:
         # Under --already-locked the hold belongs to the CALLING RUN — releasing it here would
         # strip the protection off the rest of the run's write phase mid-flight.

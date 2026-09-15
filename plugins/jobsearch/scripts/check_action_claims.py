@@ -181,7 +181,10 @@ def opp_action_evidence():
 
 
 # The ONE terminal set — validate_data's, by import (build item 1).
-TERMINAL = _ym.PLAY_TERMINAL_STATUSES
+import validate_data as _vd                                         # noqa: E402
+# ADR-031 B4 — `your_move.PLAY_TERMINAL_STATUSES` (an alias for validate_data's own set) was
+# retired along with `play_stage` (design §19); this now reads the ONE terminal set directly.
+TERMINAL = _vd.TERMINAL_OPP_STATUSES
 
 
 def closed_roles_named_in_prose():
@@ -309,8 +312,8 @@ def main():
         print("        %s — evidence dated %s (%s)%s"
               % (name, when, why, (", after this ask's %s" % deadline) if deadline else ""))
     print("\n  If the action already happened, resolve the ask (resolved_on + resolution) or")
-    print("  move it onto the record — a channel's next_touch or an opportunity's next_action")
-    print("  surfaces on Your Move by itself and leaves it by itself. See GitHub #44.")
+    print("  move it onto the record — a channel's next_touch, or record the play step (the")
+    print("  play surfaces on Your Move by itself and leaves it by itself). See GitHub #44.")
     return 0
 
 

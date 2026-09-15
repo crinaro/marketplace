@@ -58,10 +58,16 @@ DATA = os.path.join(ROOT, "data")
 # make_fixture.PLACEHOLDER_STORES together — a fresh scaffold must be current-shape the
 # moment B3 ships, or a new user's first `touches.py`/`validate_data.py` run reads it as
 # ABSENT and reports it as fact.
+# ⭐ B4 (ADR-031 §26.7, the same pattern a fourth time): `plans.jsonl`/`plays.jsonl` join here
+# and make_fixture.PLACEHOLDER_STORES together — a fresh scaffold must be current-shape the
+# moment B4 ships, or a new user's first `plays.py`/`validate_data.py` run reads them as
+# ABSENT and reports it as fact. A fresh profile's own onboarding still SEEDS a `default-plan`
+# row (play_id: null — see `onboarding` skill) rather than leaving this file empty; scaffolding
+# the empty store here is only the floor every store gets.
 STORES = ("opportunities.jsonl", "companies.jsonl", "channels.jsonl", "messages.jsonl",
           "inbox.jsonl", "pending_actions.jsonl", "asks.jsonl", "commitments.jsonl",
           "people.jsonl", "involvements.jsonl", "applications.jsonl", "cover_letters.jsonl",
-          "touches.jsonl")
+          "touches.jsonl", "plans.jsonl", "plays.jsonl")
 
 # A fresh profile is BORN in the six-phase tree (public #28) — the same shape the 0.32.0
 # migration produces, so a new user never runs (or needs) the migration at all.
@@ -99,6 +105,7 @@ CONFIG_SKELETON = {
                             "runs_per_day": 1,
                             "cron": "0 8 * * *",
                             "max_agents_per_run": 0,
+                            "max_drafts_per_run": 0,
                             "unattended": [
                                     "sweeps"
                             ],
@@ -108,6 +115,7 @@ CONFIG_SKELETON = {
                             "runs_per_day": 2,
                             "cron": "0 8,15 * * *",
                             "max_agents_per_run": 1,
+                            "max_drafts_per_run": 0,
                             "unattended": [
                                     "sweeps",
                                     "linkedin"
@@ -118,6 +126,7 @@ CONFIG_SKELETON = {
                             "runs_per_day": 3,
                             "cron": "0 8,12,16 * * *",
                             "max_agents_per_run": 2,
+                            "max_drafts_per_run": 0,
                             "unattended": [
                                     "sweeps",
                                     "linkedin",
@@ -129,6 +138,7 @@ CONFIG_SKELETON = {
                             "runs_per_day": 5,
                             "cron": "0 7,9,11,13,15 * * *",
                             "max_agents_per_run": 5,
+                            "max_drafts_per_run": 5,
                             "unattended": [
                                     "sweeps",
                                     "linkedin",

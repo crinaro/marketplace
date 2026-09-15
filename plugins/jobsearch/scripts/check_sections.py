@@ -296,7 +296,11 @@ def main():
     # Membership is your_move.py's ONE predicate — dev #142 widened it (backlog+undecided
     # rows now render as the Decide group), and re-deriving it here would have silently
     # missed exactly those rows.
-    derived = [(o, keywords("%s %s" % (o.get("title") or "", o.get("next_action") or "")))
+    # ADR-031 B4 (design §19) — `next_action` (free text) is retired; its content relocates
+    # to `note`. The duplication heuristic reads `note` now — the same subject-overlap idea,
+    # a weaker signal than before (plays.py is the real authority for "what's next"), never
+    # re-derived as anything stronger here.
+    derived = [(o, keywords("%s %s" % (o.get("title") or "", o.get("note") or "")))
                for o in opps
                if owner and _ym.is_your_move_candidate(o, owner)]
     for a, ka in ask_keys:
@@ -308,7 +312,7 @@ def main():
                     str(a.get("title") or "")[:60],
                     "This role's record already routes it to Your Move via "
                     "next_action_owner; the derived row renders by itself. Put the ask text "
-                    "in the record's next_action and resolve this row."))
+                    "in the record's note and resolve this row."))
 
     # ---- 3b: the DERIVED half of the panel (public #43) -------------------------
     # Membership and grouping are your_move.py's (classify_opportunities); this only reads
@@ -317,22 +321,15 @@ def main():
                      if st in ("now", "decide")] if owner else [])
     for o, st in derived_rows:
         oid = o.get("id", "?")
-        na = str(o.get("next_action") or "")
+        na = str(o.get("note") or "")
         if any(mk in na.lower() for mk in RESOLVED_MARKERS):
             problems.append((
                 "RESOLVED TEXT ON A DERIVED ROLE ROW", "opportunities[%s]" % oid,
                 na[:60],
                 "This role is routed to Your Move (next_action_owner names the owner, state "
-                "%r) but its next_action reads as settled. Advance the record — set the "
-                "next action, the owner, or the status — never leave a done line rendering "
-                "as owed." % st))
-        elif st == "now" and not na.strip():
-            problems.append((
-                "DERIVED ROLE ROW WITH NO ACTION", "opportunities[%s]" % oid,
-                str(o.get("title") or "")[:60],
-                "Routed to the owner, now, with no next_action — the row renders as "
-                "\"No next action set\", which is a decision nobody made. Write the action "
-                "or change the owner."))
+                "%r) but its note reads as settled. Advance the record — record the act "
+                "(plays.py --show shows what's next), change the owner, or the status — never "
+                "leave a done line rendering as owed." % st))
 
     # ---- 5: a commitment whose date is the migration marker ---------------
     for c in commitments:

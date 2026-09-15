@@ -63,9 +63,6 @@ import profile as _profile
 import your_move as _ym
 import applications as _apps
 import touches as _touches
-# The one definition of the play sequence — validate_data.py owns the enum; consumers
-# import it rather than restating it (a sequence typed twice disagrees with itself later).
-from validate_data import PLAY_SEQUENCE as _PLAY_SEQUENCE
 import validate_data as _vd
 import applying as _applying
 import knowledge as _kn
@@ -425,6 +422,13 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
         return '<div class="sub">No live opportunities.</div>', dict(_EMPTY_OPP_COUNTS)
     order = {"active-pursuit": 0, "needs-resolution": 1, "in-motion": 2, "backlog": 3}
 
+    # ADR-031 B4 (design §19) — `play_stage`/`next_action` are retired; the row's position
+    # and "what's next" are now DERIVED from the play engine, every render. The shared
+    # Context (`_play_context()`) is reused across every row in this list, and every other
+    # function in this file that needs one.
+    _play_ctx = _play_context()
+    _today_iso = datetime.date.today().isoformat()
+
     def key(o):
         # Whose move it is, in precedence: needs the candidate today, then the candidate's
         # (dated out, or outside Your Move's membership), then the run's. The second tier is
@@ -447,29 +451,27 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
         if waits:
             counts["you"] += 1
 
-        # The play position, on the row itself — the field's first dashboard reader (dev #95
-        # follow-on: the schema gained play_stage and no surface the owner meets displayed it).
-        _play = str(o.get("play_stage") or "")
-        if _play == "unresolved":
-            play_html = ('<span class="play-unres">play: unresolved — set the real '
-                         'stage</span>')
-        elif _play:
-            play_html = esc("play: " + _play)
+        # ADR-031 B4 (design §19) — the play position, DERIVED, on the row itself.
+        _ns = _play_next_step(o, _play_ctx, _today_iso)
+        if _ns.kind == "stalled":
+            play_html = '<span class="play-unres">play: stalled — %s</span>' % esc(_ns.why or "")
+        elif _ns.kind == "step":
+            play_html = esc("play: " + (_ns.step or "?"))
+        elif _ns.kind not in ("no-plan", "no-play"):
+            play_html = esc("play: " + _ns.kind)
         else:
             play_html = ""
         meta = " · ".join(x for x in (
             _fmt_loc(o.get("location")), _fmt_comp(o.get("comp")),
             esc(str(o.get("channel_id") or "").replace("firm:", "via ")) or "",
             play_html) if x)
-        na = o.get("next_action")
         action_full = ""
-        if na:
-            due = o.get("next_action_date")
+        label = _play_step_label(_ns)
+        if label:
+            due = _ns.due
             who = "you" if waits else "the run"
-            text = str(na).strip()
-            # Flatten markdown before clamping so the teaser never shows raw syntax.
-            flat = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", text)
-            flat = re.sub(r"[*`]+", "", flat)
+            text = label
+            flat = re.sub(r"[*`]+", "", text)
             if len(flat) > OPP_ACTION_CLAMP:
                 teaser = flat[:OPP_ACTION_CLAMP].rsplit(" ", 1)[0].rstrip(" ,;:—-") + "…"
                 action_full = text
@@ -478,10 +480,18 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
             nxt = (f'<div class="opp-next{" opp-next-you" if waits else ""}">'
                    f'<span class="opp-arrow">→</span> {esc(teaser)} '
                    f'<span class="opp-owner">{who}{" · due " + esc(str(due)) if due else ""}</span></div>')
+        elif _ns.kind == "waiting":
+            nxt = ('<div class="opp-next">waiting until %s — %s</div>'
+                  % (esc(str(_ns.until or "?")), esc(_ns.why or "")))
+        elif _ns.kind == "goal-reached":
+            nxt = '<div class="opp-next">goal reached</div>'
+        elif _ns.kind == "manual":
+            nxt = '<div class="opp-next">manual play — the owner decides each step</div>'
         else:
-            # ⚠️ Named, not omitted. A role with no next action is a decision nobody has made,
+            # ⚠️ Named, not omitted. A role with no next step is a decision nobody has made,
             # and an empty space reads as "handled".
-            nxt = '<div class="opp-next opp-next-none">No next action set</div>'
+            nxt = ('<div class="opp-next opp-next-none">%s</div>'
+                  % esc(_ns.why or "No next step derived"))
 
         # ⭐⭐ THE POSTING LINK IS A ROW-LEVEL AFFORDANCE, NEVER BEHIND `Detail`.
         # The reported frustration was literally "I just wanted the JD link" — and the first
@@ -1484,6 +1494,45 @@ def load_jsonl(name):
     return out
 
 
+# ADR-031 B4 (design §19) — the play engine's Context is loaded ONCE per dashboard render and
+# shared by every function in this file that needs a derived play position, rather than each
+# rebuilding it (a `Context` loads the whole graph plus plans/plays/touches/applications).
+_PLAY_CONTEXT_CACHE = {}
+
+
+def _play_context():
+    if "ctx" not in _PLAY_CONTEXT_CACHE:
+        import plays as _plays_mod
+        _PLAY_CONTEXT_CACHE["ctx"] = _plays_mod.Context(str(ROOT))
+    return _PLAY_CONTEXT_CACHE["ctx"]
+
+
+def _play_next_step(o, ctx=None, today=None):
+    import plays as _plays_mod
+    ctx = ctx or _play_context()
+    today = today or datetime.date.today().isoformat()
+    plan = ctx.plans_by_id.get(o.get("plan_id"))
+    play = ctx.plays_by_id.get((plan or {}).get("play_id"))
+    return _plays_mod.next_step(plan, play, o, ctx, today)
+
+
+def _play_step_label(ns):
+    """A short, row-scale label for one `plays.NextStep` — 'apply', 'research: find
+    recruiter', 'touch (referral-ask) → insider' — or None when there is no runnable
+    step to name (waiting/goal-reached/manual/stalled each render their own line)."""
+    if ns.kind != "step":
+        return None
+    d = ns.detail or {}
+    kind = d.get("kind")
+    if kind == "apply":
+        return "apply"
+    if kind == "research":
+        return "research: find %s" % d.get("find")
+    if kind == "touch":
+        return "touch (%s) → %s" % (d.get("touch_type"), d.get("to"))
+    return ns.step
+
+
 def _fmt_comp(c):
     if not c:
         return "Not disclosed"
@@ -1754,13 +1803,13 @@ def application_tables(today=None):
         # `in-motion` is defined in CLAUDE.md as a recruiter/network thread — the
         # recruiter approached the candidate, so there is no touches row from their side and
         # its absence is NOT evidence that nothing is happening.
+        _ns = _play_next_step(o)
+        nxt = _play_step_label(_ns) or _ns.why or ""
         if contacts or o.get("status") == "in-motion" or o.get("stage") in ("screening", "interviewing", "offer"):
             who = ", ".join(x.get("to", "") for x in (o.get("_touches") or []) if x.get("to")) or "in process"
-            nxt = (o.get("next_action") or "").strip()
             human.append([cname(o), o.get("title", ""), o.get("stage", ""), who, nxt[:150]])
         else:
-            nxt = (o.get("next_action") or "").strip()
-            nothing.append([cname(o), o.get("title", ""), o.get("status", ""), nxt[:180] or "— no next action recorded —"])
+            nothing.append([cname(o), o.get("title", ""), o.get("status", ""), nxt[:180] or "— no next step derived —"])
 
     submitted.sort(key=lambda r: r[2], reverse=True)
     return submitted, human, nothing
@@ -1789,13 +1838,16 @@ def _role_title(o, companies, mark="🎯"):
 
 
 def _role_ask(o):
-    """The row's ask: context (comp · location) and ONE clause of `next_action`, each part
-    clamped BEFORE they are joined — the composed-string rule at `_clause`. The string
-    returned here is display-ready; no caller may run `_clause` over it again (that is the
-    measured defect: most role rows lost their action to the ". " this join inserted)."""
+    """The row's ask: context (comp · location) and ONE clause naming the play's DERIVED next
+    step (ADR-031 B4, design §19 — `next_action` free text is retired), each part clamped
+    BEFORE they are joined — the composed-string rule at `_clause`. The string returned here
+    is display-ready; no caller may run `_clause` over it again (that is the measured defect:
+    most role rows lost their action to the ". " this join inserted)."""
     ctx = [b for b in (_fmt_comp(o.get("comp")) if o.get("comp") else "",
                        _fmt_loc(o.get("location"))) if b]
-    action = _clause(o.get("next_action") or "")
+    ns = _play_next_step(o)
+    label = _play_step_label(ns) or ns.why or ns.kind
+    action = _clause(label or "")
     if ctx and action:
         return "%s — %s" % (" · ".join(ctx), action)
     return " · ".join(ctx) or action
@@ -1859,8 +1911,10 @@ def your_move_decides_from_jsonl():
         bits = ["Decide: pursue or pass"]
         if d:
             bits.append("act by %s" % d)
-        if o.get("next_action"):
-            bits.append(_clause(o["next_action"]))
+        _ns = _play_next_step(o)
+        _label = _play_step_label(_ns)
+        if _label:
+            bits.append(_clause(_label))
         items.append((_role_title(o, companies, "🔎"), " · ".join(bits), o.get("id"),
                       d or "9999"))
     items.sort(key=lambda t: t[3])
@@ -1952,22 +2006,27 @@ def your_move_callouts():
         fulfilled.append(("✅ %s" % label, ask, None, str(touch or "")))
     fulfilled.sort(key=lambda t: t[3])
 
-    # dev #95 follow-on — membership is your_move.py's, never re-derived here. The ask is an
-    # imperative aimed at the owner (check_sections.py's own rule for Your Move lines).
-    play = []
-    for o in _ym.unresolved_play_stages(all_opps):
-        ask = ("The play position is the migration marker, not a real value — replace it: "
-               "`record.py set %s play_stage <stage>` (sequence: %s)."
-               % (o.get("id") or "?", " → ".join(_PLAY_SEQUENCE)))
-        play.append((_role_title(o, companies, "🎬"), ask, o.get("id")))
+    # ADR-031 B4 (design §19) — `play_stage 'unresolved'`'s successor: a STALLED play. The
+    # ask is an imperative aimed at the owner (check_sections.py's own rule for Your Move
+    # lines). Membership is `plays.next_step()`'s, never re-derived here.
+    _play_ctx = _play_context()
+    _today_iso = datetime.date.today().isoformat()
+    stalled = []
+    for o in all_opps:
+        if o.get("status") in _vd.TERMINAL_OPP_STATUSES:
+            continue
+        ns = _play_next_step(o, _play_ctx, _today_iso)
+        if ns.kind == "stalled":
+            ask = "The play is stalled: %s — see `plays.py --check`." % ns.why
+            stalled.append((_role_title(o, companies, "🎬"), ask, o.get("id")))
 
     return ([(t, a, oid) for (t, a, oid, _d) in unresolved],
             [(t, a, oid) for (t, a, oid, _d) in waiting],
             [(t, a, oid) for (t, a, oid, _d) in fulfilled],
-            play)
+            stalled)
 
 
-def render_your_move_callouts(unresolved, waiting, fulfilled, play_unresolved, links=None):
+def render_your_move_callouts(unresolved, waiting, fulfilled, stalled_plays, links=None):
     """Loud, non-"needs you" callouts for Your Move — GitHub #79. None of these three groups
     render inside render_your_move's primary list; they exist so an unresolved precondition,
     a still-pending one, or an uncleared fulfilled plan is visible rather than silently
@@ -1999,17 +2058,16 @@ def render_your_move_callouts(unresolved, waiting, fulfilled, play_unresolved, l
             '<div class="sub" style="margin:-6px 0 10px">A touch landed on or after the '
             'planned date. Clear <code>next_touch</code> or author the next one.</div>'
             '<div class="card">%s</div>' % (len(fulfilled), render_your_move(fulfilled, links)))
-    if play_unresolved:
+    if stalled_plays:
         parts.append(
-            '<h2 style="font-size:16px;margin-top:22px">🎬 Play position unresolved — set the '
-            'real stage <span class="tcount">%d</span></h2>'
-            '<div class="sub" style="margin:-6px 0 10px">The migration found a numbered play '
-            'marker in prose but could not name the stage, so it wrote the literal '
-            '<code>unresolved</code>. The prose survives on the role; only a human can name '
-            'the position.</div>'
+            '<h2 style="font-size:16px;margin-top:22px">🎬 Stalled plays '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">No runnable step, and no known clock '
+            'will flip one (<code>plays.py --check</code>). The play is the authority for '
+            "what's next — this is what it found nothing to do about.</div>"
             '<div class="card">%s</div>'
-            % (len(play_unresolved), render_your_move(play_unresolved, links,
-                                                     set_name="pipeline-play")))
+            % (len(stalled_plays), render_your_move(stalled_plays, links,
+                                                    set_name="pipeline-play")))
     return "".join(parts)
 
 
@@ -2550,7 +2608,12 @@ def main():
           [("stale variants", "phase-presence-stale")] if pres_rows else [], pres_parts)
 
     # ── pipeline ───────────────────────────────────────────────────────────
-    _full_by_id = {o.get("id"): (o.get("next_action") or "") for o in _opp_rows}
+    # ADR-031 B4 (design §19) — `next_action` free text is retired; there is no longer a
+    # longer memo to expand beneath the clamped teaser (the derived label IS the full text),
+    # so this map is kept only for the `full and _clause(full) != _flat(full)` shape below,
+    # which now never triggers the expand affordance for a role row — an honest simplification
+    # of a UI feature whose source field no longer exists.
+    _full_by_id = {o.get("id"): (_play_step_label(_play_next_step(o)) or "") for o in _opp_rows}
 
     def _role_ws_rows(tuples):
         # `a` is DISPLAY-READY: _role_ask / the decide builder clamped each field before

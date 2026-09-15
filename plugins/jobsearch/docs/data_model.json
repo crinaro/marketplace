@@ -12,12 +12,10 @@
     "location",
     "status",
     "stage",
-    "play_stage",
     "verdict",
     "jd_url",
     "channel_id",
     "sightings",
-    "next_action",
     "next_action_owner",
     "next_action_date",
     "blocked_until",
@@ -27,6 +25,8 @@
     "engagement_type",
     "decision",
     "networking_closed_on",
+    "plan_id",
+    "plan_assigned_on",
     "note"
    ],
    "required": [
@@ -52,9 +52,12 @@
      "id_field": null
     },
     "research_log": {
+     "_note": "ADR-031 B4 (design §26.3) — `find`/`result` are optional, added so `referral-resolved`'s nobody-found clause can require EVIDENCE that a search actually ran, never merely that a window elapsed (nobody-looked is not nobody-found). Every research step that runs appends one entry, whether or not it found anyone; a queued or refused step appends nothing.",
      "fields": [
       "date",
-      "note"
+      "note",
+      "find",
+      "result"
      ],
      "required": [
       "date",
@@ -353,12 +356,64 @@
     "trigger_kind",
     "trigger_ref",
     "sequence_id",
-    "sequence_step"
+    "sequence_step",
+    "plan_id",
+    "play_step"
    ],
    "required": [
     "person_id",
     "date",
     "medium",
+    "status"
+   ],
+   "arrays": {}
+  },
+  "plans": {
+   "_note": "ADR-031 B4 (design §10, §17) — the owner's strategy as data: a plan whose subject is a role search, a company, a person's relationship, or one bespoke opportunity. `subject_kind`/`subject_id` say what the plan is ABOUT; `opportunities.plan_id` says which plan GOVERNS a pursuit (a different question — see design §17's table). `outcomes[]` is required only on `search` plans (role|contract|access). `play_id` is a FK to `plays`, the literal `manual` (no play; the owner decides each step), or null (not yet chosen) — required only on a plan that GOVERNS pursuits (search/company/opportunity), refused on a `person` plan (design §17: 'person: governs none'). `play_confirmed` is required whenever `play_id` names a real play — an unconfirmed play acts on nothing outward (design §26.1). `goal`/`approach` are the owner's own words; no shipped code path ever writes them (ADR-031 decision 12) — null counts, never invented. `resolves_when`/`resolved_on`/`resolution` are the asks contract, copied (design §17): both-or-neither, resolution atomic with the act. `targets` is an optional override of config.json's `targets` shape, only meaningful on a `search` plan (design §26.5, owner decision 20).",
+   "id_field": "id",
+   "fields": [
+    "id",
+    "subject_kind",
+    "subject_id",
+    "outcomes",
+    "goal",
+    "approach",
+    "cadence",
+    "status",
+    "play_id",
+    "play_confirmed",
+    "resolves_when",
+    "resolved_on",
+    "resolution",
+    "targets",
+    "note"
+   ],
+   "required": [
+    "id",
+    "subject_kind",
+    "subject_id",
+    "status"
+   ],
+   "arrays": {}
+  },
+  "plays": {
+   "_note": "ADR-031 B4 (design §18, §20) — a play IN USE by a profile: a full copy of a pattern's structure, stamped with the pattern it was copied from so a shipped improvement arrives as a reviewable diff, never a silent merge. `pattern` names the shipped `plugins/jobsearch/plays/<id>.json` this row was adopted from, or null for a hand-built play; `pattern_sha`/`pattern_reconciled_on` are the stamp (design §20). `params`/`steps`/`goal` are validated deeply by validate_data.py (the closed 15-token predicate vocabulary, the three step kinds, the closed `say` slugs) rather than by this file's generic field-list guard, the same way `comp`/`fit` on opportunities are hand-validated objects.",
+   "id_field": "id",
+   "fields": [
+    "id",
+    "pattern",
+    "pattern_sha",
+    "pattern_reconciled_on",
+    "params",
+    "steps",
+    "goal",
+    "status",
+    "note"
+   ],
+   "required": [
+    "id",
+    "steps",
+    "goal",
     "status"
    ],
    "arrays": {}

@@ -147,17 +147,22 @@ def main():
         return 0
 
     # ---- register --------------------------------------------------------------
-    rule("JD FIT REGISTER — %d of %d role(s) analyzed" % (len(analyzed), len(opps)))
-    if not analyzed:
-        print("  No fit analyses yet. The analysis runs when a role becomes a pursuit.")
+    # `--gaps` means what its own help text says: "Only the open questions for the candidate."
+    # (issue #368 — declared and never read; this is the class `check_cli_flags.py`'s new
+    # declared-but-unread scan now catches.) Skipping the register/accumulation sections and
+    # printing only the harvest below IS that behavior.
+    if not args.gaps:
+        rule("JD FIT REGISTER — %d of %d role(s) analyzed" % (len(analyzed), len(opps)))
+        if not analyzed:
+            print("  No fit analyses yet. The analysis runs when a role becomes a pursuit.")
 
-    for o in sorted(analyzed, key=lambda x: x["id"]):
-        c = counts(o["fit"]["requirements"])
-        openq = sum(1 for q in o["fit"]["requirements"] if q.get("question_status") == "open")
-        print("  %-52s %s%s" % (
-            name(o)[:52],
-            " · ".join("%s=%d" % (k, v) for k, v in sorted(c.items())),
-            ("   ❓ %d open" % openq) if openq else ""))
+        for o in sorted(analyzed, key=lambda x: x["id"]):
+            c = counts(o["fit"]["requirements"])
+            openq = sum(1 for q in o["fit"]["requirements"] if q.get("question_status") == "open")
+            print("  %-52s %s%s" % (
+                name(o)[:52],
+                " · ".join("%s=%d" % (k, v) for k, v in sorted(c.items())),
+                ("   ❓ %d open" % openq) if openq else ""))
 
     # ---- the harvest: open questions -------------------------------------------
     gaps, excluded_q = [], 0
@@ -186,6 +191,9 @@ def main():
             print("     role        : %s" % name(o))
             print("     requirement : %s" % q["requirement"])
             print()
+
+    if args.gaps:
+        return 0
 
     # ---- is the knowledge base actually accumulating? ---------------------------
     answered = [(o, q) for o in analyzed for q in o["fit"]["requirements"]

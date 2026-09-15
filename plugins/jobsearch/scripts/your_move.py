@@ -165,12 +165,6 @@ def owner_by_id(opps, owner_token):
         out[o["id"]] = "you" if o.get("next_action_owner") == owner_token else "run"
     return out
 
-# Statuses on which a play position is meaningless — validate_data.py refuses the field on
-# these, and m_0_25_0_play_stage never writes the marker onto them. The SAME set as the
-# funnel's terminal set, by import rather than by copy.
-PLAY_TERMINAL_STATUSES = _vd.TERMINAL_OPP_STATUSES
-
-
 def has_submitted_application(apps):
     """Does this opportunity's own applications prove a submission? `apps` is the record's own
     slice of the top-level `applications` store (ADR-031 B2 — `applications.group_by_opp(...)`
@@ -188,33 +182,12 @@ def has_submitted_application(apps):
     return any(a.get("status") in _vd.SUBMITTED_APP_STATUS for a in (apps or []))
 
 
-def derive_play_stage(apps):
-    """The play position the store can PROVE for a row (public #42), from `apps` — this
-    opportunity's own slice of the top-level `applications` store, same contract as
-    `has_submitted_application`. The migration marker `unresolved` said "a human must name the
-    stage"; but the one boundary that matters — applied, or not — is on the record already: the
-    applications store proves a submission, and every position after `applied` presupposes one
-    (validate_data.POST_APPLICATION_PLAY). So: a submitted application → `applied` (the floor
-    the evidence proves; a finer position stays human-authored, and the prose on the record
-    still carries it), no submission → `needs-application`. Deterministic, so it is a
-    migration's to write and a validator's to demand — never a printed command to the user."""
-    return "applied" if has_submitted_application(apps) else "needs-application"
-
-
-def unresolved_play_stages(opps):
-    """Every non-terminal row whose `play_stage` is the literal `unresolved` — the marker
-    m_0_25_0_play_stage writes when it finds a numbered play marker in prose but cannot name
-    the stage (dev #95). The way out is a human writing the real value
-    (`record.py set <id> play_stage <stage>`), and this is the consumer that keeps the marker
-    visible until that happens: without one, `unresolved` survives migration day looking
-    handled — the exact defect `blocked_until`'s unresolved callout already closes for holds.
-
-    ⭐ Deliberately NOT filtered by owner or by LIVE_OPP_STATUSES. The marker is data hygiene
-    on the record, not a Your Move ownership question — an owner filter would hide precisely
-    the rows nobody is currently looking at, and a backlog row keeps its marker too."""
-    return [o for o in opps
-            if o.get("play_stage") == "unresolved"
-            and o.get("status") not in PLAY_TERMINAL_STATUSES]
+# ⭐⭐ `derive_play_stage` / `unresolved_play_stages` — RETIRED in ADR-031 B4 (design §19).
+# `play_stage` itself is gone (retired, see validate_data.RETIRED_KEYS/banned_aliases); the
+# position it used to name a hand-set cursor for is now DERIVED, every time it is asked, by
+# `plays.next_step()` — a real derivation over the stores, not a floor a migration could only
+# guess at from `applications`. `plays.py --check` is `unresolved_play_stages`'s successor: it
+# reports every pursuit whose play is `stalled`, a check that can actually fire (design §19).
 
 
 def open_asks(asks, kind=None):
@@ -935,6 +908,105 @@ def contact_joinability_gaps(channels, involvements=()):
     return gaps
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# CLASSIFY_PEOPLE — ADR-031 B4, design §14: the correction to Part 1's `network_due.py`, folded
+# into this module's own stated ownership of "which group does this row belong in?" A person's
+# `access.py`/`graph.warmth()` reach state (the full warm/contacted/known/thin table) is B5's
+# own deliverable (design §11/§16 item 5); this classifier needs only ONE narrower fact from
+# that future table early — "has this person answered recently" — so it reads it directly here
+# rather than waiting on a module that does not exist yet. `access.py` may fold this in later
+# without changing this function's own contract.
+# ─────────────────────────────────────────────────────────────────────────────
+
+PEOPLE_STATES = ("due", "awaiting-intro", "quiet", "fresh")
+
+
+def _last_touch_date(person_id, g, as_of):
+    """The most recent event (an outbound/inbound touch, or a message) involving this person,
+    on or before `as_of` — the same "touches ∪ messages" union design §14 states."""
+    dates = []
+    for t in g.touches_for_person(person_id):
+        d = t.get("date")
+        if d and str(d)[:10] <= as_of:
+            dates.append(str(d)[:10])
+        rd = t.get("responded_on")
+        if rd and str(rd)[:10] <= as_of:
+            dates.append(str(rd)[:10])
+    for m in g.messages_for_person(person_id):
+        d = m.get("sent_on")
+        if d and str(d)[:10] <= as_of:
+            dates.append(str(d)[:10])
+    return max(dates) if dates else None
+
+
+def _has_recent_inbound(person_id, g, as_of, window_days):
+    for m in g.messages_for_person(person_id):
+        if m.get("direction") != "inbound":
+            continue
+        d = m.get("sent_on")
+        if not d or str(d)[:10] > as_of:
+            continue
+        try:
+            elapsed = (_parse_date(as_of) - _parse_date(str(d)[:10])).days
+        except ValueError:
+            continue
+        if elapsed <= window_days:
+            return True
+    return False
+
+
+def _awaiting_intro_object(person_id, g, as_of):
+    """design §12/§14 — is `person_id` the OBJECT of a still-open intro-request touch (design
+    §12's introduction shape)? Returns the requester's own id, or None."""
+    for t in g.stores["touches"]:
+        if t.get("touch_type") != "intro-request" or t.get("outcome") != "awaiting":
+            continue
+        if t.get("object_person_id") == person_id:
+            return t.get("person_id")
+    return None
+
+
+def classify_people(root, today=None, warm_days=180):
+    """[(person, state, why)] — design §14's classifier, the ONE owner of Your Move people-due
+    membership (`network_due.py` folds in here, never a second owner). `root` is the profile
+    root; a fresh `graph.Graph` is built once per call (the module's own convention)."""
+    import graph as _graph
+    today = today or datetime.date.today().isoformat()
+    g = _graph.Graph(os.path.join(root, "data"))
+    out = []
+    for p in g.stores["people"]:
+        if p.get("status") == "merged":
+            continue
+        pid = p.get("id")
+        requester = _awaiting_intro_object(pid, g, today)
+        if requester is not None:
+            out.append((p, "awaiting-intro",
+                       "an introduction to this person, requested by %s, is still awaiting"
+                       % requester))
+            continue
+        last = _last_touch_date(pid, g, today)
+        cadence = p.get("cadence")
+        if isinstance(cadence, int) and not isinstance(cadence, bool):
+            elapsed = None
+            if last:
+                try:
+                    elapsed = (_parse_date(today) - _parse_date(last)).days
+                except ValueError:
+                    elapsed = None
+            if elapsed is None or elapsed >= cadence:
+                out.append((p, "due", "cadence %d day(s); last touch %s"
+                           % (cadence, last or "never")))
+            else:
+                out.append((p, "fresh", "touched %s, within the %d-day cadence"
+                           % (last, cadence)))
+            continue
+        if _has_recent_inbound(pid, g, today, warm_days):
+            out.append((p, "quiet", "answers within %d days but has no cadence set — the plan "
+                       "is missing, not the touch" % warm_days))
+        # else: nothing owed, nothing missing — renders nowhere (design §14).
+    return out
+
+
 def report(root, today=None):
     """Everything --json / --check need, computed once from the profile at `root`."""
     opps = _load_jsonl(root, "opportunities.jsonl")
@@ -955,10 +1027,11 @@ def report(root, today=None):
                       "derived_last_touch": t, "evidence": ev}
                      for c, s, t, ev in chans],
         "contact_joinability_gaps": contact_joinability_gaps(channels, involvements),
-        # dev #95 follow-on: the migration marker needs a consumer or it looks handled.
-        "play_unresolved": [{"id": o.get("id"), "title": o.get("title"),
-                             "status": o.get("status")}
-                            for o in unresolved_play_stages(opps)],
+        # ADR-031 B4 (design §14) — the people-due group, folded from the retired
+        # `network_due.py`. `plays.py --check`'s stalled-pursuit report is `play_stage
+        # 'unresolved'`'s successor (design §19); it is not this module's to compute.
+        "people": [{"id": p.get("id"), "name": p.get("name"), "state": s, "why": w}
+                  for p, s, w in classify_people(root, today)],
         # dev #154: a ready staged message no ask covers is WORK IN HAND, not silence.
         "ready_staged": ready_staged_without_ask(root),
     }
@@ -992,10 +1065,12 @@ def main():
             if c["state"] == "fulfilled":
                 print("        plan fulfilled on %s by %s" % (c["derived_last_touch"],
                                                                 c["evidence"]))
-        for p in data["play_unresolved"]:
-            print("  🎬 play-unres  %s" % ((p["title"] or p["id"] or "?")[:60]))
-            print("        play_stage is the migration marker 'unresolved' — set the real "
-                  "value: record.py set %s play_stage <stage>" % (p["id"] or "?"))
+        pmarks = {"due": "📇", "awaiting-intro": "🔗", "quiet": "🤫", "fresh": "✅"}
+        for p in data["people"]:
+            if p["state"] == "fresh":
+                continue
+            print("  %s %-14s %s" % (pmarks[p["state"]], p["state"], p["name"] or p["id"]))
+            print("        %s" % p["why"])
         for r in data["ready_staged"]:
             print("  ✉️  ready       %s › %s" % (r["file"], r["title"][:60]))
             print("        %s — approve and send it, or record the ask that owns it"
@@ -1004,9 +1079,9 @@ def main():
         n_fulfilled = sum(1 for c in data["channels"] if c["state"] == "fulfilled")
         print("\n  %d role(s) unresolved · %d channel plan(s) fulfilled but not yet cleared"
               % (n_unres, n_fulfilled))
-        if data["play_unresolved"]:
-            print("  %d role(s) carry play_stage 'unresolved' — each needs a human-written "
-                  "value" % len(data["play_unresolved"]))
+        n_due = sum(1 for p in data["people"] if p["state"] == "due")
+        if n_due:
+            print("  %d person/people due for a reconnect" % n_due)
         for gid in data["contact_joinability_gaps"]:
             print("  ⚠️  channel %s has no joinable person in involvements — its derived "
                   "touch can only ever come from log[]" % gid)
@@ -1028,14 +1103,8 @@ def main():
                   "half of its derived touch can never fire" % gid, file=sys.stderr)
         # ⚠️ Loud, but exit 0 — deliberately NOT blocked_until's exit-1 treatment. An
         # unresolved blocked_until makes group membership UNDECIDABLE, so the run must stop.
-        # play_stage 'unresolved' is a valid, durable enum value validate_data.py accepts:
-        # migration day writes it onto every marked row at once, and a check that goes red for
-        # weeks over a backlog everyone knows about is a check people learn to ignore. The
-        # dashboard callout and the lines below are the consumer that keeps it visible.
-        for p in data["play_unresolved"]:
-            print("⚠️  %s: play_stage is the migration marker 'unresolved' — set the real "
-                  "value: record.py set %s play_stage <stage>"
-                  % ((p["title"] or p["id"] or "?")[:60], p["id"] or "?"), file=sys.stderr)
+        # `plays.py --check` is where a STALLED play now goes loud (design §19) — this
+        # function's own `--check` stays scoped to blocked_until and channel plans.
         return 1 if bad else 0
     return 0
 

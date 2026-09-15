@@ -23,6 +23,10 @@ _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 import route as _route
 import profile as _profile
+# ADR-031 B4 — `plans.py` has no dependency on this module (unlike `plays.py`, which DOES
+# import validate_data and is therefore imported LAZILY, inside `_main()`, to avoid the cycle),
+# so it is safe as a normal top-level import.
+import plans as _plans
 # ⚠️ `your_move` is imported BELOW the vocabulary block, not here — see the note above
 # `def load`. It reads this module's TERMINAL_OPP_STATUSES at import time, so a top-of-file
 # import would hand it a half-initialised module whenever validate_data is imported first.
@@ -73,21 +77,16 @@ OPP_STATUS = {"active-pursuit", "needs-resolution", "in-motion", "backlog", "pas
 # a surface still wants to omit has to be a deliberate, visible choice on that surface.
 TERMINAL_OPP_STATUSES = frozenset({"passed", "expired"})
 STAGES = {"sourced", "contacted", "screening", "interviewing", "offer", "closed"}
-# ⭐ `play_stage` — where a pursued role sits in the POST-APPLICATION PLAY (public #19 / dev
-# #95). `stage` is the funnel position; the play sequence is finer-grained: which step of the
-# apply-then-reach-the-recruiter play is next. It used to be encoded as numbered free-text
-# markers prefixed onto `next_action`, which nothing could filter, group, count, sort or
-# validate — the fourth instance of "a fact a run knows goes into the queryable store"
-# (act_by, precondition.py, location 'unresolved'). ORDERED, so consumers can sort by
-# sequence position rather than alphabetically.
-PLAY_SEQUENCE = ("needs-application", "applied", "needs-recruiter-contact", "verify-req-live",
-                 "identify-recruiter", "reach-insider", "contact-recruiter", "awaiting-reply")
-# `unresolved` is the migration marker (same precedent as blocked_until and location.type): a
-# play position was detected in prose but could not be structured mechanically. Valid, durable,
-# and deliberately NOT part of the sequence — the way out is a human writing the real value.
-PLAY_STAGES = set(PLAY_SEQUENCE) | {"unresolved"}
-# Every play position from `applied` onward presupposes a submitted application on the record.
-POST_APPLICATION_PLAY = set(PLAY_SEQUENCE[1:])
+# ⭐⭐ `play_stage`, `PLAY_SEQUENCE`, `PLAY_STAGES`, `POST_APPLICATION_PLAY` — RETIRED in
+# ADR-031 B4 (design §19). `play_stage` was a HAND-SET cursor over a fixed sequence; a
+# hand-set position not backed by a record is exactly "looks handled and is not". `plays.py`'s
+# `next_step()` now DERIVES the position from the stores every time it is asked — the play is
+# the authority for content, `plans.jsonl`/`plays.jsonl` the store. The field itself, and
+# `next_action` (free text), join `banned_aliases` below (docs/data_model.json); a write of
+# either is refused, not merely unknown. See RETIRED_KEYS/`active_retired_keys()` for the B4
+# structural-marker gate and `check_retired_reads.py` for the source-code half of the same
+# retirement. `record.py set <id> play_stage ...` disappears with it — the way to advance the
+# play is to record the act.
 # applications[].status values that prove a submission actually happened. States & Views V1
 # (design-states-and-views.md §3c) adds `closed` here — a close PRESUPPOSES a submission (you
 # cannot close what was never sent), which is exactly what SUBMITTED_APP_STATUS already means
@@ -203,7 +202,18 @@ RETIRED_CHANNEL_IDS = {"linkedin-direct", "email-direct"}
 # its presence is exactly the fact that should flip `contacts` from legal to refused. Whoever
 # builds B2/B3 names their own analogous marker here (the module or store their own migration
 # adds) the same way; the constant grows, the mechanism does not need reinventing.
-RETIRED_KEYS = {"contacts": "B1", "applications": "B2", "outreach": "B3"}
+# ⭐⭐ B4 EXTENDS THE MECHANISM PAST NESTED-ARRAY PROMOTION (2026-09-14). `play_stage` and
+# `next_action` are not a nested array being promoted to a store — they are two plain fields on
+# `opportunities` being DROPPED outright, their content relocated (design §19: prose to `note`,
+# the position to a derivation). The same "the fixture already carries the old shape until the
+# migration lands in the same commit" problem applies: `active_retired_keys()` must not refuse
+# them until B4's migration (and the fixture regeneration that goes with it) has actually
+# shipped. Reusing RETIRED_KEYS/`active_retired_keys()` rather than inventing a second
+# mechanism for "a field, not an array" keeps `check_retired_reads.py` a single scanner for
+# both retirement shapes — it was already written generically ("every ast.Subscript ... every
+# X.get(...) call") and never assumed the key named an array.
+RETIRED_KEYS = {"contacts": "B1", "applications": "B2", "outreach": "B3",
+               "play_stage": "B4", "next_action": "B4"}
 
 _GRAPH_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph.py")
 # ⭐ B2's OWN structural marker (ADR-031 §29.3's amendment: "each stage names its own structural
@@ -231,6 +241,12 @@ _APPLICATIONS_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "app
 # graph.py's own timing for B1, applications.py's for B2.
 _TOUCHES_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "touches.py")
 
+# ⭐ B4's OWN structural marker (ADR-031 §29.3's amendment: "each stage names its own structural
+# marker"). `plans.py` is B4's flat load/join module (`opportunities.plan_id` is a simple owned
+# pointer, not a many-direction graph — the same B2 reasoning `applications.py`'s own docstring
+# states). It lands in the SAME commit as the 0.49.0 migration and this guard.
+_PLANS_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plans.py")
+
 
 def active_retired_keys():
     """The subset of RETIRED_KEYS whose stage has actually shipped in THIS tree — read structurally,
@@ -254,6 +270,10 @@ def active_retired_keys():
     _b3_key = "outreach"
     if os.path.exists(_TOUCHES_PY):
         active[_b3_key] = RETIRED_KEYS[_b3_key]
+    _b4_key_1, _b4_key_2 = "play_stage", "next_action"
+    if os.path.exists(_PLANS_PY):
+        active[_b4_key_1] = RETIRED_KEYS[_b4_key_1]
+        active[_b4_key_2] = RETIRED_KEYS[_b4_key_2]
     return active
 TOUCH_TYPES = {"first-touch", "chase", "reply", "referral-ask", "intro-request",
                "thank-you", "reconnect", "apply-path", "unknown"}
@@ -551,6 +571,13 @@ def _main():
         if es is not None and es not in CONTACT_EMAIL_STATUS:
             problems.append("%s: email_status %r not in {%s}"
                             % (pl, es, ", ".join(sorted(CONTACT_EMAIL_STATUS))))
+        # ADR-031 B4 (design §14) — the first stage that actually READS `people.cadence`:
+        # elapsed DAYS (an integer), never a named enum — "last touch + cadence <= today" is
+        # arithmetic, unlike a channel's own named CADENCES.
+        cad = pr.get("cadence")
+        if cad is not None and not (isinstance(cad, int) and not isinstance(cad, bool)
+                                    and cad > 0):
+            problems.append("%s: cadence %r must be a positive integer (days) or null" % (pl, cad))
         if pr.get("company_id") is not None and pr["company_id"] not in _company_ids_for_people:
             problems.append("%s: company_id %r does not resolve" % (pl, pr["company_id"]))
         mi = pr.get("merged_into")
@@ -910,6 +937,200 @@ def _main():
                 "or %r if this application predates variants existing)"
                 % (label, r.get("status"), len(variant_ids), UNRESOLVED))
 
+    # ---- plans / plays (ADR-031 B4, design §17, §18, §20) — the owner's strategy as data.
+    # Loaded and validated BEFORE `opportunities` so `plan_id` can be checked as a real FK in
+    # that loop below (the same ordering `cover_letters` already uses ahead of `applications`).
+    # `plays.py` is imported LAZILY here (never at module level) because it imports THIS
+    # module — see the comment beside the top-level `import plans as _plans`.
+    import plays as _plays_mod
+    plans_rows, e = load("plans.jsonl")
+    if plans_rows is None:
+        plans_rows = []
+    else:
+        problems += e or []
+    plays_rows, e = load("plays.jsonl")
+    if plays_rows is None:
+        plays_rows = []
+    else:
+        problems += e or []
+
+    play_ids = set()
+    for r in plays_rows:
+        rid = r.get("id", "?")
+        label = "plays[%s]" % rid
+        for f in ("id", "steps", "goal", "status"):
+            req(r, f, label, problems)
+        if r.get("id") in play_ids:
+            problems.append("%s: duplicate id" % label)
+        play_ids.add(r.get("id"))
+        enum(r, "status", _plans.PLAY_STATUS, label, problems)
+        sha = r.get("pattern_sha")
+        if sha is not None and not SHA12_RE.match(str(sha)):
+            problems.append("%s: pattern_sha %r is not 12 hex chars" % (label, sha))
+        prc = r.get("pattern_reconciled_on")
+        if prc is not None and not is_date(prc):
+            problems.append("%s: pattern_reconciled_on not ISO — %r" % (label, prc))
+        steps = r.get("steps")
+        if not isinstance(steps, list) or not steps:
+            problems.append("%s: steps must be a non-empty list" % label)
+            steps = []
+        step_ids_seen = set()
+        for i, s in enumerate(steps):
+            sl = "%s steps[%d]" % (label, i)
+            if not isinstance(s, dict):
+                problems.append("%s: entry is not an object" % sl)
+                continue
+            sid = s.get("id")
+            if not sid:
+                problems.append("%s: missing 'id'" % sl)
+            elif sid in step_ids_seen:
+                problems.append("%s: duplicate step id %r" % (sl, sid))
+            step_ids_seen.add(sid)
+            do = s.get("do")
+            if not isinstance(do, dict) or do.get("kind") not in _plays_mod.DO_KINDS:
+                problems.append("%s: do.kind must be one of {%s}"
+                                % (sl, ", ".join(sorted(_plays_mod.DO_KINDS))))
+            elif do["kind"] == "research" and do.get("find") not in _plays_mod.RESEARCH_FINDS:
+                problems.append("%s: do.find must be one of {%s}"
+                                % (sl, ", ".join(sorted(_plays_mod.RESEARCH_FINDS))))
+            elif do["kind"] == "touch":
+                if do.get("touch_type") not in TOUCH_TYPES:
+                    problems.append("%s: do.touch_type %r not in {%s}"
+                                    % (sl, do.get("touch_type"), ", ".join(sorted(TOUCH_TYPES))))
+                if do.get("to") not in _plays_mod.DO_TO_CLASSES:
+                    problems.append("%s: do.to must be one of {%s}"
+                                    % (sl, ", ".join(sorted(_plays_mod.DO_TO_CLASSES))))
+            for j, entry in enumerate(s.get("say") or []):
+                sayl = "%s say[%d]" % (sl, j)
+                if isinstance(entry, str):
+                    if entry not in _plays_mod.SAY_SLUGS:
+                        problems.append("%s: %r not in {%s}"
+                                        % (sayl, entry, ", ".join(sorted(_plays_mod.SAY_SLUGS))))
+                elif isinstance(entry, dict):
+                    if entry.get("content") not in _plays_mod.SAY_SLUGS:
+                        problems.append("%s: content %r not in {%s}"
+                                        % (sayl, entry.get("content"),
+                                           ", ".join(sorted(_plays_mod.SAY_SLUGS))))
+                else:
+                    problems.append("%s: must be a string or {when, content}" % sayl)
+
+        params = r.get("params")
+        if params is not None and not isinstance(params, dict):
+            problems.append("%s: params must be an object" % label)
+            params = {}
+        for name, spec in (params or {}).items():
+            pl = "%s params[%s]" % (label, name)
+            if isinstance(spec, bool) or not isinstance(spec, (int, float, dict)):
+                problems.append("%s: must be an integer or an object" % pl)
+                continue
+            if isinstance(spec, (int, float)):
+                continue
+            days = spec.get("days")
+            if not isinstance(days, int) or isinstance(days, bool):
+                problems.append("%s: 'days' must be an integer" % pl)
+            mn, mx = spec.get("min"), spec.get("max")
+            if days is not None and mn is not None and mx is not None and not (mn <= days <= mx):
+                problems.append("%s: days=%r is outside its own bound [%s, %s]"
+                                % (pl, days, mn, mx))
+            arms = spec.get("unless") or []
+            if arms and not (spec.get("why") or "").strip():
+                problems.append("%s: 'why' is required whenever a parameter has more than one "
+                                "value (a base plus at least one arm)" % pl)
+            elif not arms and not (spec.get("why") or "").strip():
+                problems.append("%s: 'why' is required" % pl)
+            for j, arm in enumerate(arms):
+                al = "%s unless[%d]" % (pl, j)
+                if not (arm.get("why") or "").strip():
+                    problems.append("%s: 'why' is required on every arm" % al)
+                adays = arm.get("days")
+                if adays is not None and mn is not None and mx is not None \
+                        and not (mn <= adays <= mx):
+                    problems.append("%s: days=%r is outside the parameter's bound [%s, %s]"
+                                    % (al, adays, mn, mx))
+                # ⭐ Predicate-grammar validation for the ARM'S OWN `when` — design §18/§24.1:
+                # an arm chooses its value by the SAME closed vocabulary a step does. Caught
+                # by PLANT (gate-keeper, this dispatch): a mutated arm token
+                # ('not-a-real-token') validated CLEAN until this call was added — the step/
+                # goal validation below does not reach INTO params[].unless[].when at all.
+                _plays_mod.validate_when(arm.get("when") or [], r, problems, "%s.when" % al)
+        # Predicate-grammar validation — every `when` (steps and goal) parsed against THIS
+        # play's own step ids and parameter names (design §18: "an unknown token, an undeclared
+        # <param>, a <step> not in the play... fails validate_data.py with the token named").
+        for s in steps:
+            if isinstance(s, dict):
+                _plays_mod.validate_when(s.get("when") or [], r, problems,
+                                        "%s steps[%r].when" % (label, s.get("id")))
+        goal = r.get("goal")
+        if goal:
+            _plays_mod.validate_when([goal], r, problems, "%s.goal" % label)
+
+    plays_by_id = {r.get("id"): r for r in plays_rows if r.get("id")}
+    _plans_by_id = {}
+    for r in plans_rows:
+        rid = r.get("id", "?")
+        label = "plans[%s]" % rid
+        for f in ("id", "subject_kind", "subject_id", "status"):
+            req(r, f, label, problems)
+        if r.get("id") in _plans_by_id:
+            problems.append("%s: duplicate id" % label)
+        _plans_by_id[r.get("id")] = r
+        enum(r, "subject_kind", _plans.SUBJECT_KINDS, label, problems)
+        enum(r, "status", _plans.PLAN_STATUS, label, problems)
+        sk = r.get("subject_kind")
+        outs = r.get("outcomes")
+        if sk == "search" and not outs:
+            problems.append("%s: subject_kind 'search' requires a non-empty outcomes[]" % label)
+        if outs is not None:
+            if not isinstance(outs, list) or any(x not in _plans.OUTCOMES for x in outs):
+                problems.append("%s: outcomes %r must be a list drawn from {%s}"
+                                % (label, outs, ", ".join(sorted(_plans.OUTCOMES))))
+        play_id = r.get("play_id")
+        if play_id is not None:
+            if sk == "person":
+                problems.append("%s: subject_kind 'person' governs no pursuit — play_id must "
+                                "be null (design §17)" % label)
+            elif play_id != _plans.MANUAL_PLAY and play_id not in play_ids:
+                problems.append("%s: play_id %r does not resolve in data/plays.jsonl and is "
+                                "not the literal 'manual'" % (label, play_id))
+        pc = r.get("play_confirmed")
+        if play_id not in (None,) and pc is None:
+            problems.append("%s: play_confirmed is required whenever play_id names a play "
+                            "(design §26.1(d) — an unconfirmed play acts on nothing outward)"
+                            % label)
+        if pc is not None and not isinstance(pc, bool):
+            problems.append("%s: play_confirmed must be a boolean" % label)
+        rw = r.get("resolves_when")
+        if rw is not None and rw not in _plans.RESOLVES_WHEN:
+            problems.append("%s: resolves_when %r not in {%s}"
+                            % (label, rw, ", ".join(sorted(_plans.RESOLVES_WHEN))))
+        ro, res = r.get("resolved_on"), r.get("resolution")
+        if bool(ro) != bool(res):
+            problems.append("%s: resolved_on and resolution come together — one without the "
+                            "other cannot be audited (the asks contract, copied)" % label)
+        if ro is not None and not is_date(ro):
+            problems.append("%s: resolved_on not ISO — %r" % (label, ro))
+        tg = r.get("targets")
+        if tg is not None and not isinstance(tg, dict):
+            problems.append("%s: targets must be an object ({\"titles\": [...], "
+                            "\"verticals\": [...]})" % label)
+
+    # design §26.5 — two ACTIVE search plans that both source role/contract must differ in
+    # their EFFECTIVE targets, or sourcing cannot tell them apart. Compared pairwise, naming
+    # both ids on a match (§28.2's own decidability restatement).
+    try:
+        import profile as _profile_for_targets
+        _cfg_for_targets = _profile_for_targets.config()
+    except Exception:                                             # noqa: BLE001 — advisory
+        _cfg_for_targets = {}
+    _sourcing = _plans.sourcing_candidates(plans_rows)
+    for i, p1 in enumerate(_sourcing):
+        for p2 in _sourcing[i + 1:]:
+            if _plans.effective_targets(p1, _cfg_for_targets) == \
+                    _plans.effective_targets(p2, _cfg_for_targets):
+                problems.append("plans[%s]/plans[%s]: both active search plans source role/"
+                                "contract with the SAME effective targets — sourcing cannot "
+                                "tell them apart (design §26.5)" % (p1.get("id"), p2.get("id")))
+
     company_ids, channel_ids = set(), set()
 
     # ⭐ RETIRED-KEY REFUSAL (ADR-031 §28.1 item 3) — computed once, used by both the
@@ -938,7 +1159,10 @@ def _main():
         for r in opps:
             _l = "opportunities[%s]" % r.get("id", "?")
             for _k, _stage in _active_retired.items():
-                if _k in r:
+                # A key that is ALSO a banned alias (play_stage/next_action, B4 — design §19)
+                # gets its own, more specific message from the banned-alias loop just below;
+                # printing both would say the same thing twice.
+                if _k in r and _k not in _ali:
                     problems.append("%s: %r is retired (%s promoted it to its own store) — "
                                     "refused, not merely unknown. Run the %s migration before "
                                     "writing this key again." % (_l, _k, _stage, _stage))
@@ -1051,6 +1275,9 @@ def _main():
     # ADR-031 B3 — was `outreach_message_refs`; populated from the top-level `touches` store
     # now, never from a nested array.
     touch_message_refs = set()
+    # opp id -> plan_id, populated below as each opportunity is validated — read back by the
+    # touches loop's own plan_id/play_step check (design §21's re-planned-pursuit warning).
+    r_opp_plan_id_by_id = {}
     for r in opps:
         oid = r.get("id", "?")
         label = "opportunities[%s]" % oid
@@ -1108,54 +1335,40 @@ def _main():
         if nco is not None and not is_date(nco):
             problems.append("%s: networking_closed_on not ISO — %r" % (label, nco))
 
-        # ---- play_stage: the post-application play position (public #19 / dev #95) ----
-        # Optional and nullable — but an unreadable value must be LOUD, never carried: a play
-        # position nobody can parse looks handled and is not (the precondition.py rule).
-        ps = r.get("play_stage")
-        # Resolve against data the store ALREADY has, the same move as act_by and
-        # precondition.py: the applications store (now top-level — ADR-031 B2; apps_by_opp is
-        # built once, above, from data/applications.jsonl) is the evidence of submission.
-        submitted = any(a.get("status") in SUBMITTED_APP_STATUS
-                        for a in apps_by_opp.get(r.get("id"), []))
         # ⭐ A DECISION MADE BY ACTING (dev/audit 2026-09-02, Class A / public #44). A row can
         # say `verdict: undecided` while an applications row proves a submission — the human
         # decided by applying and the field never followed. Left alone it renders a
         # pursue-or-pass ask for a role already applied to. m_0_36_0_verdict_from_applications
         # resolves history; this refuses the contradiction from here on.
+        submitted = any(a.get("status") in SUBMITTED_APP_STATUS
+                        for a in apps_by_opp.get(r.get("id"), []))
         if r.get("verdict") == "undecided" and submitted:
             problems.append("%s: verdict 'undecided' but an applications row is already %s "
                             "— the act decided; the store already answers this (pursue)"
                             % (label, "/".join(sorted(SUBMITTED_APP_STATUS))))
-        if ps is not None:
-            if ps not in PLAY_STAGES:
-                problems.append("%s: play_stage %r not in {%s} — an unreadable play position "
-                                "looks handled and is not; fix the value or null the field"
-                                % (label, ps, ", ".join(sorted(PLAY_STAGES))))
-            elif ps == "unresolved" and r.get("status") not in TERMINAL_OPP_STATUSES:
-                # ⭐ Derivable, so never a printed instruction (dev/audit 2026-09-02, public
-                # #42). The migration marker said "a human must name the stage"; the store
-                # already answers the one question that matters: applied, or not.
-                # m_0_36_0_play_stage_from_applications resolves every historical marker,
-                # and record.py's pre-write validation refuses a new one here.
-                problems.append("%s: play_stage 'unresolved' is derivable from the applications "
-                                "store — the store already answers it: %r"
-                                % (label, _ym.derive_play_stage(apps_by_opp.get(r.get("id"), []))))
-            else:
-                if ps == "needs-application" and submitted:
-                    problems.append("%s: play_stage 'needs-application' but an applications "
-                                    "row is already %s — the store knows this role was applied "
-                                    "to; advance the play_stage" %
-                                    (label, "/".join(sorted(SUBMITTED_APP_STATUS))))
-                if ps in POST_APPLICATION_PLAY and not submitted:
-                    problems.append("%s: play_stage %r presupposes a submitted application, but "
-                                    "no applications[] row has status in {%s} — a post-"
-                                    "application play on a role never applied to is a claim the "
-                                    "store contradicts" %
-                                    (label, ps, ", ".join(sorted(SUBMITTED_APP_STATUS))))
-                if r.get("status") in TERMINAL_OPP_STATUSES:
-                    problems.append("%s: status %r with play_stage %r — a terminal role has no "
-                                    "live play position; null the field when a role leaves the "
-                                    "funnel" % (label, r.get("status"), ps))
+
+        # ---- plan_id (ADR-031 B4, design §17) — required on every non-terminal opportunity;
+        # kept (nullable) once terminal. The subject rule: a `company`-subject plan may only
+        # govern a pursuit at that company, an `opportunity`-subject plan only the one it
+        # names — enforced here rather than in `plans.py` because it is a fact about THIS row.
+        pid_plan = r.get("plan_id")
+        if pid_plan:
+            r_opp_plan_id_by_id[oid] = pid_plan
+        if pid_plan is None:
+            if r.get("status") not in TERMINAL_OPP_STATUSES:
+                problems.append("%s: plan_id is required while the pursuit is live (design "
+                                "§17) — every pursuit is governed by a plan" % label)
+        else:
+            plan = _plans_by_id.get(pid_plan)
+            if plan is None:
+                problems.append("%s: plan_id %r does not resolve in data/plans.jsonl" % (label, pid_plan))
+            elif not _plans.governs(plan, r):
+                problems.append("%s: plan_id %r (subject_kind=%r, subject_id=%r) does not "
+                                "govern this pursuit (design §17's subject rule)"
+                                % (label, pid_plan, plan.get("subject_kind"), plan.get("subject_id")))
+        pad = r.get("plan_assigned_on")
+        if pad is not None and not is_date(pad):
+            problems.append("%s: plan_assigned_on not ISO — %r" % (label, pad))
 
         # referential integrity
         if r.get("company_id") not in company_ids:
@@ -1476,6 +1689,30 @@ def _main():
             if not (isinstance(sst, int) and not isinstance(sst, bool) and sst >= 1):
                 problems.append("%s: sequence_step %r must be an integer >= 1" % (label, sst))
 
+        # ---- plan_id / play_step (ADR-031 B4, design §21) — attribution is a fact at WRITE
+        # TIME, like responded_on; `play_step` is `unresolved` only as a migration marker.
+        t_plan_id = t.get("plan_id")
+        if t_plan_id is not None and t_plan_id not in _plans_by_id:
+            problems.append("%s: plan_id %r does not resolve in data/plans.jsonl" % (label, t_plan_id))
+        play_step = t.get("play_step")
+        if play_step is not None and play_step != "unresolved" and t_plan_id:
+            _plan_for_step = _plans_by_id.get(t_plan_id)
+            _play_for_step = plays_by_id.get((_plan_for_step or {}).get("play_id")) \
+                if _plan_for_step else None
+            if _play_for_step is not None:
+                _known_steps = {s.get("id") for s in (_play_for_step.get("steps") or [])
+                                if isinstance(s, dict)}
+                if play_step not in _known_steps:
+                    problems.append("%s: play_step %r is not a step of plan %r's play %r"
+                                    % (label, play_step, t_plan_id, _plan_for_step.get("play_id")))
+        if oid2 and t_plan_id:
+            _opp_plan = r_opp_plan_id_by_id.get(oid2)
+            if _opp_plan and _opp_plan != t_plan_id:
+                problems.append("%s: plan_id %r does not match opportunity %r's own plan_id "
+                                "%r — a re-planned pursuit (design §21, warning-shaped but "
+                                "printed so a hand-typo is caught too)"
+                                % (label, t_plan_id, oid2, _opp_plan))
+
     # ---- record.py touched — the half-written orphan (design §15.3 point 2) ----
     # `record.py touched` appends a message row FIRST, then the completing touches row — two
     # idempotent appends, never one cross-file transaction. A crash between them (or a test's
@@ -1645,7 +1882,9 @@ def _main():
                                   ("applications", applications),
                                   ("cover_letters", cover_letters),
                                   ("touches", touches),
-                                  ("briefs", briefs)):
+                                  ("briefs", briefs),
+                                  ("plans", plans_rows),
+                                  ("plays", plays_rows)):
             _sspec = _model["stores"].get(store_name) or {}
             for r in rows_:
                 _l = "%s[%s]" % (store_name, r.get("id", "?"))
@@ -1657,10 +1896,11 @@ def _main():
                                         % (_l, _k, ", ".join(sorted(_sspec.get("fields") or ()))))
 
     print("Data validation — %d companies, %d channels, %d opportunities, %d asks, "
-          "%d commitments, %d resume variants, %d applications, %d cover letters, %d touches"
+          "%d commitments, %d resume variants, %d applications, %d cover letters, %d touches, "
+          "%d plans, %d plays"
           % (len(companies), len(channels), len(opps), len(asks),
              len(commitments), len(variants), len(applications), len(cover_letters),
-             len(touches)))
+             len(touches), len(plans_rows), len(plays_rows)))
     if not problems:
         print("\n  Clean. Schema, enums, types, and every cross-reference resolve.")
         return 0, []

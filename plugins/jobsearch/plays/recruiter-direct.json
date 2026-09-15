@@ -1,0 +1,30 @@
+{
+  "id": "recruiter-direct",
+  "description": "apply, then go straight to the recruiter — no insider step",
+  "steps": [
+    {
+      "id": "apply",
+      "when": ["!application-submitted"],
+      "do": {"kind": "apply"}
+    },
+    {
+      "id": "identify-recruiter",
+      "when": ["application-submitted", "!recruiter-known"],
+      "do": {"kind": "research", "find": "recruiter"}
+    },
+    {
+      "id": "verify-open",
+      "when": ["recruiter-known", "!done:verify-open", "!done:contact-recruiter"],
+      "do": {"kind": "touch", "touch_type": "first-touch", "to": "recruiter"},
+      "say": ["ask-open"]
+    },
+    {
+      "id": "contact-recruiter",
+      "when": ["recruiter-known", "role-open", "!done:contact-recruiter"],
+      "do": {"kind": "touch", "touch_type": "first-touch", "to": "recruiter"},
+      "say": ["fit", "ask-conversation"]
+    }
+  ],
+  "goal": "interview-scheduled",
+  "params": {}
+}

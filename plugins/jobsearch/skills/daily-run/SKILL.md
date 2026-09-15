@@ -263,6 +263,13 @@ detector for LinkedIn events.
 4. Anything found goes into the run's incremental write (`outcome`, `responded_on`,
    `messages.jsonl` with the verbatim text) — not just the summary.
 
+**⭐ The sourcing step is conditional on the active search plan's `outcomes` (ADR-031 B4, design
+§13).** Read `plans.jsonl` once at the top of the run: job search runs when the active `search`
+plan's `outcomes` includes `role` or `contract`, and is **skipped — say so in the summary** —
+when it names only `access` (a run working the network toward introductions, with no role search
+live). Mailbox and LinkedIn reply sweeps above run regardless: a reply from a person is the
+network working, whichever outcome the plan serves.
+
 Job search since the last successful run (remote AND on-site/hybrid within the commute anchor —
 the JOB SEARCH capability covers both), contact-path lookup for any new appealing role.
 
@@ -344,8 +351,14 @@ ago, and record.py normally takes it again — waiting on your own hold never en
 The flag says "write under the run's hold"; record.py verifies a hold actually exists and
 neither takes nor releases anything.
 
+**`plan_id` is required on every live opportunity (ADR-031 B4, design §17).** `create` derives it
+for you when exactly one `search` plan is active (`plans.subject_kind: search`, sourcing
+`role`/`contract`) — leave it off the payload. **With more than one active search plan, name
+which one sourced this role:** `--plan <plan_id>` on the `create` call, or the write is refused
+naming the ambiguity.
+
 ```bash
-~/.claude/jobsearch/run record.py create <opp_id> '{"company_id":"...","title":"...","status":"backlog","stage":"sourced","verdict":"undecided","jd_url":null,"location":{...},"sightings":[...],"next_action_owner":"..."}' --already-locked
+~/.claude/jobsearch/run record.py create <opp_id> '{"company_id":"...","title":"...","status":"backlog","stage":"sourced","verdict":"undecided","jd_url":null,"location":{...},"sightings":[...],"next_action_owner":"..."}' --already-locked [--plan <plan_id>]
 ~/.claude/jobsearch/run record.py set <opp_id> stage screening --already-locked
 ~/.claude/jobsearch/run record.py set-in <opp_id> outreach contact_id=<cid> outcome replied --already-locked
 ~/.claude/jobsearch/run record.py append <opp_id> research_log '{"date":"...","note":"..."}' --already-locked
@@ -356,6 +369,21 @@ destroy every record in the file), and validates. **A full cycle is ~0.2s.** Ad-
 `read-all / write-all` is what forced the lock to be coarse in the first place. **`--dry-run`
 describes the change without touching anything.** (Outside a lock-holding run — an interactive
 one-off — drop the flag and record.py takes and releases the lock itself, in milliseconds.)
+
+**⭐ `plays.py --all` (ADR-031 B4, design §26.8) — the due play step across every confirmed plan,
+in this same write phase.** It is a **pure selector, not a writer** — it prints which pursuits
+are due a research or a draft step (capped by `posture.py --may` and the plan's own
+`max_drafts_per_run`, 0 unattended below `full` posture, and skipping `apply` steps, the owner's
+own act, always); the actual write is the ordinary `research`-step delegation (§5) or
+`outreach-drafter` dispatch (§7b) recording via `record.py touched`/`answered` — so one step
+stays one transaction by construction, never a batch this run holds the lock across:
+
+```bash
+~/.claude/jobsearch/run plays.py --all
+```
+
+Run it once, after the incremental per-role writes above, to catch any due play step this run's
+own event-driven passes (reply arrived, meeting confirmed, …) did not already surface.
 
 Then: remaining edits to `outreach/network.md`; record any new cross-cutting ask in `data/asks.jsonl`
 (kind: role|system — an ask leaves by setting `resolved_on`+`resolution`, never by rewriting

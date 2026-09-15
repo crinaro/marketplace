@@ -1,0 +1,68 @@
+{
+  "id": "referral-first",
+  "description": "find roles that meet the criteria, apply, connect with an employee for a referral before contacting the recruiter — if there is no referral, ask the recruiter whether the role is still open",
+  "steps": [
+    {
+      "id": "apply",
+      "when": ["!application-submitted"],
+      "do": {"kind": "apply"}
+    },
+    {
+      "id": "identify-insider",
+      "when": ["application-submitted", "!insider-known",
+               "!referral-resolved:referral_wait_days:insider_search_days"],
+      "do": {"kind": "research", "find": "insider"}
+    },
+    {
+      "id": "reach-insider",
+      "when": ["application-submitted", "insider-known", "!done:reach-insider"],
+      "do": {"kind": "touch", "touch_type": "referral-ask", "to": "insider"},
+      "say": ["referral-ask"]
+    },
+    {
+      "id": "identify-recruiter",
+      "when": ["application-submitted", "!recruiter-known"],
+      "do": {"kind": "research", "find": "recruiter"}
+    },
+    {
+      "id": "verify-open",
+      "when": ["recruiter-known", "!has-referral",
+               "referral-resolved:referral_wait_days:insider_search_days",
+               "!done:verify-open"],
+      "do": {"kind": "touch", "touch_type": "first-touch", "to": "recruiter"},
+      "say": ["ask-open"]
+    },
+    {
+      "id": "contact-recruiter",
+      "when": ["recruiter-known", "pitch-ready", "!done:contact-recruiter"],
+      "do": {"kind": "touch", "touch_type": "first-touch", "to": "recruiter"},
+      "say": [{"when": ["has-referral"], "content": "referral"}, "fit", "ask-conversation"]
+    }
+  ],
+  "goal": "interview-scheduled",
+  "params": {
+    "referral_wait_days": {
+      "days": 2,
+      "min": 1,
+      "max": 14,
+      "anchor": "reach-insider",
+      "set_on": null,
+      "why": "waiting longer than two days for the insider's answer lets the recruiter's queue move past this application — the window runs from the day the ask went out",
+      "unless": [
+        {
+          "when": ["recruiter-first"],
+          "days": 5,
+          "why": "the recruiter already heard from the candidate before the ask, so the place in the queue is held and the insider's answer is worth a longer wait"
+        }
+      ]
+    },
+    "insider_search_days": {
+      "days": 2,
+      "min": 1,
+      "max": 14,
+      "anchor": "application",
+      "set_on": null,
+      "why": "the cold path should reach the recruiter no later than the warm path does — the day a silent insider would time out is the day a search that found nobody goes without"
+    }
+  }
+}

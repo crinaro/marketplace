@@ -136,17 +136,6 @@ SENT = ("message sent", "sent", "connection request", "inmail", "reply sent",
 
 DATE_RE = re.compile(r"(20\d\d)-(\d\d)-(\d\d)")
 
-# Verbs that make a next_action actionable. Extended 2026-07-21 once this check
-# was pointed at the JSONL: the original list was written against focus.md prose
-# and lacked the verbs the structured records actually use ("apply", "call",
-# "decide", "chase"), so three real next actions read as missing.
-NEXT_ACTION_HINTS = (
-    "next action", "next:", "next step", "await", "todo", "to do",
-    "draft", "send", "ask ", "confirm", "follow up", "follow-up", "schedule",
-    "apply", "call ", "decide", "chase", "close", "find ", "raise ", "verify",
-    "reach out", "research", "approve", "watch for",
-)
-
 
 def read(name):
     path = _tree.resolve_rel(ROOT, name)
@@ -345,26 +334,28 @@ def check_silent_applications(as_of, silence_days):
 
 
 def check_pursuits_without_next_action():
-    """Active pursuits with no next action, read from the JSONL.
-
-    This function used to parse focus.md's `## Active Pursuit` section. That
-    section was RETIRED 2026-07-20 (role state is now generated from the JSONL),
-    so the regex stopped matching, the function returned [] on every run, and
-    the check reported a clean bill of health it could not possibly have earned.
-    Found 2026-07-21 with five pursuits actually missing a next action.
-    """
+    """ADR-031 B4 (design §19) — active pursuits whose PLAY IS STALLED: `next_action` (free
+    text) is retired, and `next_action`'s hint-word scan is what this function used to run — a
+    check that could report clean on a role with no next action at all, as long as the text
+    happened to contain no recognizable verb. `plays.next_step()` is the authority now: a
+    STALLED play means no runnable step and no known clock will ever flip one, which is a
+    check that can actually fire (design §19's own words)."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import plays as _plays_mod
+    import validate_data as _vd_mod
+    root = _profile_root()
+    ctx = _plays_mod.Context(root)
+    as_of = date.today().isoformat()
     out = []
     for opp in load_opps():
         if opp.get("status") != "active-pursuit":
             continue
-        na = (opp.get("next_action") or "").strip()
-        if not na:
-            out.append("%s - %s" % (opp.get("company_id", ""),
-                                    (opp.get("title") or "")[:55]))
-            continue
-        if not any(h in na.lower() for h in NEXT_ACTION_HINTS):
-            out.append("%s - %s (next_action is not a recognizable action)"
-                       % (opp.get("company_id", ""), (opp.get("title") or "")[:45]))
+        plan = ctx.plans_by_id.get(opp.get("plan_id"))
+        play = ctx.plays_by_id.get((plan or {}).get("play_id"))
+        ns = _plays_mod.next_step(plan, play, opp, ctx, as_of)
+        if ns.kind == "stalled":
+            out.append("%s - %s (%s)" % (opp.get("company_id", ""),
+                                         (opp.get("title") or "")[:55], ns.why))
     return out
 
 
@@ -448,15 +439,15 @@ def main():
     if stalled:
         print("")
         print("=" * 72)
-        print("ACTIVE PURSUIT WITH NO RECOGNIZABLE NEXT ACTION")
+        print("ACTIVE PURSUIT WITH A STALLED PLAY")
         print("=" * 72)
-        print('"Pursue" without a next action is how a plan quietly becomes a')
-        print("wait-and-see. Give each one a concrete next step or demote it.")
+        print("No runnable step, and no known clock will flip one — this is how a")
+        print("pursuit quietly becomes a wait-and-see. See plays.py --check.")
         print("")
         for t in stalled:
             print("  - %s" % t)
     elif not quiet:
-        print("  Every active pursuit names a next action.")
+        print("  Every active pursuit's play is runnable, waiting on a clock, or manual.")
 
     # ---- Bounce check: silence, or did it never arrive? ------------------------
     # Added 2026-08-02. The 2026-07-31 campaign used PATTERN-INFERRED addresses

@@ -56,6 +56,18 @@ def load():
     return name, postures[name], None
 
 
+def may(capability):
+    """True iff the ACTIVE posture permits `capability` unattended — the in-process form of
+    `--may`, so a caller that must ask this before every step (design §26.8: `plays.py --all`
+    is the first such caller, dev #292) does not pay a subprocess per step. Fails SAFE: an
+    unreadable posture (no config, an undefined name) returns False, never True — the same
+    "unreadable looks handled and is not" rule as everywhere else in this engine."""
+    _name, p, err = load()
+    if err or p is None:
+        return False
+    return capability in (p.get("unattended") or [])
+
+
 def main():
     ap = argparse.ArgumentParser(description="What may this run do?")
     ap.add_argument("--may", metavar="CAPABILITY",
@@ -80,7 +92,7 @@ def main():
         return 0
 
     if args.may:
-        allowed = args.may in (p.get("unattended") or [])
+        allowed = may(args.may)
         print("%s: %r is %s unattended on posture %r"
               % ("OK" if allowed else "REFUSED", args.may,
                  "PERMITTED" if allowed else "NOT permitted", name))

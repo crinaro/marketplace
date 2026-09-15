@@ -136,12 +136,12 @@ The main record. Everything about one role hangs off it.
 | `location` | `{type, primary, remote, declared}` — see *contested settings* below |
 | `status` | what you are **doing** about it |
 | `stage` | where it **is** in the funnel |
-| `play_stage` | for a role you are actively pursuing after applying, which step of that chase you are on — see below |
 | `verdict` | `pursue` · `pass` · `parked` · `undecided` |
 | `engagement_type` | `full-time` · `contract` — since 0.45.0; the 0.45.0 upgrade set this to `full-time` on every existing role, since that fact about a role isn't derivable from anything else on the record |
 | `jd_url` | the posting. Required as a URL **or an explicit `null`** — never simply missing |
 | `sightings` | every time this role was seen, and where |
-| `next_action`, `next_action_date`, `next_action_owner` | what happens next, when, and whose move it is |
+| `plan_id`, `plan_assigned_on` | which plan (see *Plans and plays* below) is working this role, and since when — every role has one, since 0.49.0 |
+| `next_action_date`, `next_action_owner` | when the next thing happens, and whose move it is — *which* thing is now the plan's job (see below) |
 | `research_log` | append-only role history |
 | `decision` | `{on, suggested, reason_kind, reason}`, since 0.47.0 — see *Recording why a decision diverged* below |
 | `networking_closed_on` | the date you decided to stop working the network on this role, since 0.47.0 — see *Endings* below |
@@ -170,14 +170,11 @@ on. Recording it as `passed` would overstate how selective you are being. `expir
 *absence* of a decision — and because you never declined it, a repost of that same role surfaces
 as a fresh signal rather than being filtered out.
 
-**`play_stage`.** Where a role you are pursuing sits in the sequence after you apply — verify the
-posting is still live, identify the recruiter, reach them through someone who knows you, use that
-name with the recruiter, wait for the reply — is tracked as an ordered field so it can be sorted
-and counted. **Since 0.36.0, the floor of that sequence is set for you**, because it is already
-provable from your own records: a role with a submitted application becomes `applied`, one with
-none becomes `needs-application` — nothing asks you a question the store can already answer. A
-step finer than `applied` is still yours to name once you know it (`record.py set <id> play_stage
-<stage>`); nothing downstream invents one for you. The same rule applies to `verdict`: a role
+**Where a role sits in the chase after you apply** — verify the posting is still live, identify
+the recruiter, reach them through someone who knows you, use that name with the recruiter, wait
+for the reply — used to be a field you set by hand (`play_stage`). **Since 0.49.0 it is no longer
+a field at all: it is derived, every time, from your plan and your play** — see *Plans and plays*
+below. The same "don't ask what the record already proves" rule applies to `verdict`: a role
 still reading `undecided` once an application is on record becomes `pursue` automatically — the
 act of applying was the decision, and you are never asked pursue-or-pass on a role you already
 applied to.
@@ -221,6 +218,57 @@ words>}`. The fixed set of reasons is `comp-acceptable` · `setting-acceptable` 
 `fit-misjudged` · `company-priority` · `not-interested` · `timing` · `other`. An override with no
 reason recorded is a decision nobody — including future you — can audit later, which is exactly
 what this closes. Written by `record.py decide`.
+
+### Plans and plays — your strategy, worked automatically (since 0.49.0)
+
+Every role you're pursuing is worked by a **plan** — what it's for, and (through a **play**) how
+you're working it. `data/plans.jsonl` and `data/plays.jsonl` are the two new files this ships:
+
+- **A plan** says what you're doing — `subject_kind` (`search` / `company` / `person` /
+  `opportunity`) and `subject_id` say what it's *about*; `plan_id` on the role says which plan
+  *governs* it. `outcomes` (`role`/`contract`/`access`) matters only on a `search` plan — several
+  can be active at once, e.g. a themed search alongside your main one. `goal`/`approach` are your
+  own words; nothing writes them for you.
+- **A play** is the sequence a plan is worked by — steps, each gated on a condition the engine
+  can already prove (an application submitted, an insider known, a referral in hand, silence past
+  a window, …), never a rule language. The chase-after-applying sequence that used to be the
+  `play_stage` field is now one of these: `plays.py`'s engine looks at what you've actually
+  recorded and tells you the next step, instead of asking you to keep a position field current by
+  hand.
+
+**On upgrade,** the 0.49.0 migration adopts the shipped `referral-first` pattern into a play,
+seeds a `default-plan` (a `search` plan, `outcomes: [role]`) and assigns it to every role you
+have — even closed ones, so history stays attributable. **That plan starts UNCONFIRMED: nothing
+acts outward on it until you look and confirm it.** Any `play_stage` text you had set by hand is
+compared against what the play would derive, and if your hand-set position was *ahead* of what
+the record can prove, the migration prints a **demotion** — the gap, and the `record.py touch
+...` command that would close it. Your old free-text `next_action` moves onto the role's own
+`note`, prefixed so you can find it, never dropped.
+
+**Reading your plan and play:**
+
+- `plays.py --options` — every adjustable parameter (a wait window, a search window), its bound,
+  its anchor (what date it's counted from), its current value, and the command to change it.
+- `plays.py --show <plan_id>` — the resolved position and *why* each parameter is set where it is.
+- `plays.py --check` — how many pursuits are runnable now, waiting, manual, or stalled.
+- `plays.py --late` — which pursuits are overdue their next step, and by how many days.
+- `plays.py --brief <opp_id>` — what the drafter should say next for one role, and to whom.
+- `plays.py --all` — drafts the due next steps across every confirmed plan in one pass (this is
+  what a scheduled run calls); how many it's allowed to draft unattended depends on your posture
+  (`posture.py --may drafting`) and the play's own `max_drafts_per_run` setting — 0 below `full`
+  posture, up to 5 at `full`.
+
+**Adjusting a play:** `record.py --file plays set <play_id> params.<name> <value>` — it refuses a
+value outside the parameter's bound, or a parameter name that doesn't exist, naming the legal set
+either way, so you can never silently set something the engine will never read.
+`plays.py --adopt <pattern_id> --plan <plan_id>` swaps in a different shipped pattern (or
+`--manual <plan_id>` to drop the play and decide each step yourself); `--confirm <plan_id>` /
+`--unconfirm <plan_id>` turn outward action on and off.
+
+**People, too.** `people.jsonl` rows can carry their own `cadence` (how often you want to stay in
+touch); the same due-list logic that surfaces overdue pursuit steps surfaces people whose cadence
+has lapsed, right beside the channels-due list — a run can exist to work your network alone, with
+no application in view.
 
 ### People — the humans you deal with
 
@@ -327,6 +375,7 @@ One record per touch. The fields exist to make "which approach actually works?" 
 | `message_ref` | points at the full text in `messages.jsonl`, and must resolve |
 | `trigger_kind`, `trigger_ref` | what CAUSED this touch — `application`, `reply`, `elapsed` or `manual`, plus the specific application/message/date it points at. See *Triggers and sequences* below |
 | `sequence_id`, `sequence_step` | groups this touch into a multi-step play with other outreach and staged drafts under the same `sequence_id`, ordered by `sequence_step` |
+| `plan_id`, `play_step` | since 0.49.0 — which plan this touch counts toward, and which play step it satisfies (`reach-insider`, …), or the marker `unresolved` when the touch predates 0.49.0 and can't be assigned a step automatically. Only set on a touch anchored to a role (`opp_id`); a networking touch has no plan to derive one from. See *Plans and plays* above |
 
 #### The object of a touch — who or what it's about, when that's not the recipient
 

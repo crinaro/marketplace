@@ -51,9 +51,8 @@ import trigger
 import validate_data as _vd
 import applications as _apps
 import touches as _touches
+import your_move as _ym
 
-# Where a pursued role sits when the next act is submitting — validate_data.PLAY_SEQUENCE[0].
-QUEUE_PLAY_STAGE = "needs-application"
 # Out-of-funnel statuses never queue — the ONE terminal set, validate_data's (build item 1:
 # a per-file closed set is how two files came to disagree about backlog).
 CLOSED_STATUS = _vd.TERMINAL_OPP_STATUSES
@@ -104,9 +103,14 @@ VARIANT_CAUTION = ("the variant is a markdown file; the document actually upload
 def queue(opps):
     """The roles queued to apply — THE one definition, shared with the router row in
     generate_dashboard.py (dev #233): a second copy of this filter would disagree with
-    this one later."""
+    this one later.
+
+    ⭐ ADR-031 B4 — was `play_stage == 'needs-application'` (a hand-set cursor, retired,
+    design §19). The store already proves this: no submitted application on the record IS
+    "needs-application" (`your_move.has_submitted_application`, the same floor
+    `plays.next_step()`'s own `apply` step reads)."""
     return [o for o in opps
-            if o.get("play_stage") == QUEUE_PLAY_STAGE
+            if not _ym.has_submitted_application(o.get("_applications"))
             and o.get("verdict") == "pursue"
             and o.get("status") not in CLOSED_STATUS]
 
@@ -168,8 +172,7 @@ def render(root):
     L.append("## Queue to apply (%d)" % len(q))
     L.append("")
     if not q:
-        L.append("Nothing queued: no pursued role sits at play stage `%s`."
-                 % QUEUE_PLAY_STAGE)
+        L.append("Nothing queued: no pursued role has a submitted application on the record.")
         L.append("")
     for o in q:
         comp_id = o.get("company_id")

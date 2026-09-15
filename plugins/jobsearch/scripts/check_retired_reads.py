@@ -153,10 +153,27 @@ from validate_data import RETIRED_KEYS, active_retired_keys  # noqa: E402
 # SECOND, permanently — not scoped to one release the way `migrate.py`'s own entries are,
 # because a profile can be paused mid-upgrade (mid-migration-chain) indefinitely between two
 # session starts, and this function must read either shape correctly whenever it runs.
+#
+# `migrate.py` / `play_stage` and `migrate.py` / `next_action` — TWO kinds of legitimate B4
+# reader in the SAME file. `m_0_25_0_play_stage` (historical, keyed 0.25.0, runs BEFORE B4 in
+# the migration chain) reads `next_action` to detect a numbered play marker and writes
+# `play_stage` — both fields are still legally nested/present at that point in an upgrading
+# profile's replay, exactly the ordering `_sent_row_exists`'s own KNOWN_EXCEPTIONS entry above
+# already established for a pre-B3 migration reading a still-nested shape. `m_0_49_0_plans_
+# plays` (B4's OWN migration handler) reads both EXACTLY ONCE each, to relocate/derive them
+# and then drop them — the same transform-then-drop shape every other stage's own entry has.
+#
+# `test_checks.py` / `play_stage` and `test_checks.py` / `next_action` — the same permanent-
+# reader shape as every other `test_checks.py` entry above: `tests/fixtures/migrations/pre-b4/`
+# is B4's own golden migration INPUT, frozen forever, and its own coverage tests read the
+# frozen pre-migration shape (`play_stage`/`next_action` still present) to prove the fixture's
+# own coverage properties hold.
 KNOWN_EXCEPTIONS = (("migrate.py", "contacts"), ("test_checks.py", "contacts"),
                     ("migrate.py", "applications"), ("test_checks.py", "applications"),
                     ("migrate.py", "outreach"), ("test_checks.py", "outreach"),
-                    ("make_fixture.py", "outreach"), ("precondition.py", "outreach"))
+                    ("make_fixture.py", "outreach"), ("precondition.py", "outreach"),
+                    ("migrate.py", "play_stage"), ("test_checks.py", "play_stage"),
+                    ("migrate.py", "next_action"), ("test_checks.py", "next_action"))
 
 
 class Hit:

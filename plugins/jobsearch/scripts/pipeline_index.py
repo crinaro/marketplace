@@ -161,6 +161,21 @@ def main():
           % ("title", "company", "status", "stage", "play", "A=app T=touch", "verdict"))
     print("-" * 130)
 
+    # ADR-031 B4 (design §19) — the `play` column is now DERIVED, per pursuit, from the play
+    # engine, never a hand-set cursor. One Context, built once, reused across every row.
+    import plays as _plays_mod
+    import validate_data as _vd_mod
+    _play_ctx = _plays_mod.Context(ROOT)
+    _today_iso = __import__("datetime").date.today().isoformat()
+
+    def _play_label(o):
+        plan = _play_ctx.plans_by_id.get(o.get("plan_id"))
+        play = _play_ctx.plays_by_id.get((plan or {}).get("play_id"))
+        ns = _plays_mod.next_step(plan, play, o, _play_ctx, _today_iso)
+        if ns.kind == "step":
+            return ns.step
+        return ns.kind
+
     # ADR-031 B1 — `--contacts` joins through `involvements`, not a nested `contacts[]` array.
     _people_by_id = {p["id"]: p for p in load("people.jsonl")} if args.contacts else {}
     _person_ids_by_opp = collections.defaultdict(list)
@@ -184,7 +199,7 @@ def main():
             (companies.get(o.get("company_id"), o.get("company_id") or "?"))[:20],
             (o.get("status") or "?")[:15],
             (o.get("stage") or "?")[:11],
-            (o.get("play_stage") or "—")[:23],
+            (_play_label(o) or "—")[:23],
             act,
             (o.get("verdict") or "?"),
         )
@@ -207,14 +222,17 @@ def main():
         if n_exp:
             print("  (%d expired record(s) hidden — terminal but NEVER declined; a re-sighting "
                   "is a repost and should surface)" % n_exp)
-    # The migration marker must stay visible from every view of this index — an `unresolved`
-    # play position nobody surfaces looks handled and is not (dev #95 follow-on).
-    import your_move as _ym                     # the one terminal set, by import
-    n_play_unres = len(_ym.unresolved_play_stages(opps))
-    if n_play_unres:
-        print("  ⚠️ %d role(s) carry play_stage 'unresolved' — the migration marker, not a "
-              "position; set the real value: record.py set <id> play_stage <stage>"
-              % n_play_unres)
+    # ADR-031 B4 (design §19) — `play_stage 'unresolved'`'s successor is a STALLED play,
+    # visible via `plays.py --check` (a check that can actually fire, unlike a hand-set marker
+    # nobody was forced to update).
+    n_stalled = sum(1 for o in opps if o.get("status") not in _vd_mod.TERMINAL_OPP_STATUSES
+                    and _plays_mod.next_step(
+                        _play_ctx.plans_by_id.get(o.get("plan_id")),
+                        _play_ctx.plays_by_id.get(
+                            (_play_ctx.plans_by_id.get(o.get("plan_id")) or {}).get("play_id")),
+                        o, _play_ctx, _today_iso).kind == "stalled")
+    if n_stalled:
+        print("  ⚠️ %d role(s) have a STALLED play — see plays.py --check" % n_stalled)
     return 0
 
 
