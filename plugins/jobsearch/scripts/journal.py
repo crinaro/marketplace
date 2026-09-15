@@ -90,6 +90,16 @@ partial failure marks that account uncovered rather than merely annotated. `prob
 per LinkedIn thread look (`linkedin-runner`, wired later; V0 defines the shape so the
 vocabulary exists — Class C's `probe … result=empty|thread:<date>`).
 
+⭐⭐ public #85 — THE `end` EVENT NOW CARRIES A `footprint` OBJECT: a scheduled run once posted a
+queue summary claiming "no change" while it had, in the same run, recorded a genuine reply and
+left real writes uncommitted. `--end` computes `run_summary.footprint()` (defined in that module,
+imported lazily right here — see the code) at the moment it is called, and stores the result on
+the event: files/insertions/deletions from `git diff --stat`, a `git status --porcelain` count,
+and this run's own swept/probe/gap/note counts from the journal itself. `run_summary.py --post`
+computes the SAME shape independently, earlier in the run (before the commit, so its numbers are
+the run's real diff rather than a post-commit clean tree) — the two calls measure two different
+moments on purpose and are not expected to agree in value; `check_runs.py` reads both.
+
 **Why an interval and not a timestamp:** sweeps are windowed (`watch --since <hours>`,
 `alert_sweep --days 1`), so *"swept at T"* is not *"covered through T"* — a scheduler outage
 leaves a hole a later sweep does not backfill unless something widens the window over it.
@@ -157,7 +167,16 @@ REASONS = {"browser-unavailable", "credential-missing", "rate-limited", "timeout
            # for. A page that never opened at all — distinct from `browser-unavailable`
            # (nothing answers) and from public #96's `render-stalled` (the page answered, the
            # click landed, nothing painted — a separate, not-yet-built token).
-           "surface-unreachable"}
+           "surface-unreachable",
+           # design-linkedin-runner-resilience.md §8 (public #47/#96) — closing the two tokens
+           # the comment above named as not-yet-built. `pane-held`: a `--take` on
+           # `runlock.py --resource pane` was refused because another run genuinely holds it
+           # (§1) — distinct from `browser-unavailable` (nothing answers at all). `render-stalled`:
+           # the pane's own paint-proof missed twice, 4s apart, while the document stayed visible
+           # (§2) — the page answered, a click may have landed, nothing painted. Reusing
+           # `browser-unavailable` for either would erase exactly the signal these two issues say
+           # is missing; a code exists to be counted.
+           "pane-held", "render-stalled"}
 
 # ⭐ dev #321 — a `probe` result is either the literal "empty" or "thread:<ISO timestamp>" (the
 # newest inbound's date/time) — Class C's own vocabulary, settled here since V0 is the first
@@ -264,9 +283,18 @@ def unfinished(recs):
     return sorted(out, key=lambda x: x.get("at") or "")
 
 
-def open_gaps(recs):
+def open_gaps(recs, run_id=None):
+    """Every open (not `gap-closed`) `gap` event, oldest first — journal-wide by default.
+
+    `run_id`, added for design-linkedin-runner-resilience.md §4 (closes D-5's sibling): when
+    given, restricts to gaps opened by THAT run. `--end` uses this to report `gaps_open` (this
+    run's own count, so a pass that opened nothing ends clean) alongside the unfiltered
+    `gaps_open_all` — an older gap standing elsewhere must stay visible, just not blamed on a
+    run that never touched it."""
     closed = {r.get("gap_id") for r in recs if r["event"] == "gap-closed"}
     gaps = [r for r in recs if r["event"] == "gap" and r.get("gap_id") not in closed]
+    if run_id is not None:
+        gaps = [g for g in gaps if g.get("run_id") == run_id]
     return sorted(gaps, key=lambda g: g.get("at") or "")
 
 
@@ -322,7 +350,27 @@ MEDIA = ("email", "linkedin")
 # reply-shaped signal), and connection degree (a reply can arrive as an acceptance rather than a
 # message). A look that skipped one of these is not evidence of silence — see main()'s --probe
 # handling, which refuses --result empty unless --read names all four.
-LINKEDIN_SURFACES = frozenset({"inbox", "requests", "invitations", "degree"})
+#
+# design-linkedin-runner-resilience.md §6 (public #47/#96) — renamed from the bare
+# `LINKEDIN_SURFACES` this was before: `notifications` (the bell) is real coverage vocabulary a
+# gap scope or a run's report can name, but it is NOT one of the four a reply can sit on — the
+# bell has never been the surface a reply was found on, and making it part of the silence proof
+# would refuse `--result empty` on every pass where it was unreachable for no reason tied to
+# replies at all. `LINKEDIN_SURFACES` below is now the five-token superset.
+LINKEDIN_REPLY_SURFACES = frozenset({"inbox", "requests", "invitations", "degree"})
+
+# The coverage vocabulary a gap scope (`linkedin:<token>`) or a runner report names — the four
+# reply surfaces above, plus `notifications` (the bell; LinkedIn's algorithmic feed and
+# saved-search alerts, a distinct surface neither the inbox nor a deliberate job search reads).
+LINKEDIN_SURFACES = LINKEDIN_REPLY_SURFACES | frozenset({"notifications"})
+
+# design-linkedin-runner-resilience.md §6 — the old spelling stays ACCEPTED (profiles already
+# carry gap rows written this way) but is no longer the canon a shipped file instructs: every
+# `--gap` naming it is normalized to `linkedin:requests` at write time, printed once so the
+# normalization is never silent. Rows already on disk keep their stored scope — nothing keys on
+# scope, `--close-gap` is by id.
+LINKEDIN_MESSAGE_REQUESTS_ALIAS = "linkedin:message-requests"
+LINKEDIN_MESSAGE_REQUESTS_CANON = "linkedin:requests"
 
 
 def record_probe(root, subject, thread, result, medium="linkedin", mailbox=None, by=None,
@@ -386,7 +434,7 @@ def _merge_intervals(intervals):
     return merged
 
 
-def covered_through(recs, mailbox, as_of=None):
+def covered_through(recs, mailbox, as_of=None, by=None):
     """⭐⭐ dev #321 (V0) — THE READER every silence consumer imports. The end (ISO string) of
     the contiguous VERIFIED-coverage interval for `mailbox` that CONTAINS `as_of` — or, with no
     `as_of`, the newest merged interval's end. Returns `None` when nothing verifies coverage
@@ -397,10 +445,24 @@ def covered_through(recs, mailbox, as_of=None):
     Coverage is the union of `[from, through]` windows from `ok: true` swept rows for this
     mailbox; a `swept ok: false` row (a failed account) contributes nothing, which is what makes
     a partial failure mark that account uncovered rather than merely annotated.
+
+    ⭐ design-inbound-resolution.md §5 amendment D3 (surface pass 2026-09-14) — `by`, optional,
+    filters to rows written by that sweep kind ONLY. Before this fix `by` was ignored entirely,
+    so `covered_through(recs, mailbox)` merged EVERY sweep's coverage regardless of which one
+    wrote it — a mailbox the daily `alert_sweep` has been covering every day reads as covered
+    through today even though `reconcile-ats` has never once run there, so the very first
+    `--ats` run saw the daily's 3-day floor instead of the 30-day first-run backfill, and a
+    25-day-old decline (public #55) was never even in the searched window. `by=None` keeps the
+    old, cross-sweep-kind merge every EXISTING caller relies on (check_followups.verified_as_of,
+    the plain `mail_client.lookback_days(..., by=None)` call `watch.py`/`alert_sweep.py`/
+    `meeting_check.py` already make) — only a caller that asks for its OWN sweep kind's history
+    gets the narrower answer.
     """
     intervals = []
     for r in recs:
         if r.get("event") != "swept" or r.get("mailbox") != mailbox or not r.get("ok"):
+            continue
+        if by is not None and r.get("by") != by:
             continue
         fd, td = _parse_iso(r.get("from")), _parse_iso(r.get("through"))
         if fd is None or td is None:
@@ -435,6 +497,46 @@ def probe_covered_through(recs, thread, medium):
           if r.get("event") == "probe" and r.get("thread") == thread
           and r.get("medium") == medium and r.get("at")]
     return max(ats) if ats else None
+
+
+def pass_durations(recs):
+    """design-linkedin-runner-resilience.md §1 (public #47/#96) — the MEASUREMENT tool behind
+    `linkedin.pane_stale_minutes`'s UNVERIFIED default. For every run that both started and
+    ended AND carries evidence of LinkedIn work, its wall-clock duration in minutes — longest
+    first, so the owner reads the worst case off the top rather than guessing.
+
+    "Carries LinkedIn work" is two different correlations, because a `gap` carries `run_id`
+    directly but a `probe` never has (it is pointwise, not run-scoped — see `record_probe`):
+    a `gap` whose scope starts with `linkedin:` counts its own `run_id` directly; a `probe` on
+    medium `linkedin` counts every run whose [start, end] window contains the probe's `at` —
+    the same interval-containment idea `covered_through()` uses, applied to run duration
+    instead of mailbox coverage."""
+    starts, ends = {}, {}
+    for r in recs:
+        if r.get("event") == "start":
+            starts[r.get("run_id")] = r.get("at")
+        elif r.get("event") == "end":
+            ends[r.get("run_id")] = r.get("at")
+    linkedin_run_ids = {r.get("run_id") for r in recs
+                        if r.get("event") == "gap"
+                        and str(r.get("scope") or "").startswith("linkedin:")}
+    probe_ats = [d for d in (_parse_iso(r.get("at")) for r in recs
+                            if r.get("event") == "probe" and r.get("medium") == "linkedin")
+                if d is not None]
+    out = []
+    for rid, s in starts.items():
+        e = ends.get(rid)
+        if not e:
+            continue
+        sd, ed = _parse_iso(s), _parse_iso(e)
+        if sd is None or ed is None:
+            continue
+        carries = rid in linkedin_run_ids or any(sd <= p <= ed for p in probe_ats)
+        if not carries:
+            continue
+        out.append({"run_id": rid, "minutes": round((ed - sd).total_seconds() / 60.0, 1),
+                    "start": s, "end": e})
+    return sorted(out, key=lambda d: -d["minutes"])
 
 
 def age_days(at):
@@ -584,6 +686,11 @@ def main():
     ap.add_argument("--check-coverage", dest="check_coverage", action="store_true",
                     help="on demand, needs gh+network: is every covered_by still open? "
                          "(public #69, never run in CI)")
+    ap.add_argument("--pass-durations", dest="pass_durations", action="store_true",
+                    help="read: wall-clock duration of every run carrying LinkedIn work (a "
+                         "linkedin:* gap, or a linkedin probe inside its [start,end] window), "
+                         "longest first — measures linkedin.pane_stale_minutes instead of "
+                         "guessing it (design-linkedin-runner-resilience.md §1)")
     ap.add_argument("--fired", action="store_true",
                     help="hook use only — SessionStart wrote this before any model turn "
                          "(public #65); see hooks.json")
@@ -632,18 +739,22 @@ def main():
             # could sit on was actually read. A look that skipped one is NOT evidence, and gets
             # NO probe row — linkedin-runner's own standing rules (agents/linkedin-runner.md)
             # already say what to do instead: file the existing gap vocabulary
-            # (`--gap linkedin:message-requests --reason surface-unreachable`) under the run
-            # that attempted the look. This refusal is what keeps a partial read from being
-            # written as if it were a complete one; it does not invent a second gap mechanism.
+            # (`--gap linkedin:requests --reason surface-unreachable`) under the run that
+            # attempted the look. This refusal is what keeps a partial read from being written
+            # as if it were a complete one; it does not invent a second gap mechanism.
+            #
+            # design-linkedin-runner-resilience.md §6 — checked against LINKEDIN_REPLY_SURFACES
+            # (the four a reply can sit on), never the five-token LINKEDIN_SURFACES: `notifications`
+            # joining the coverage vocabulary must not make it required for a silence proof.
             if args.medium == "linkedin" and args.result == "empty":
                 read_surfaces = {s.strip() for s in (args.read or "").split(",") if s.strip()}
-                missing = LINKEDIN_SURFACES - read_surfaces
+                missing = LINKEDIN_REPLY_SURFACES - read_surfaces
                 if missing:
                     raise JournalError(
                         "--result empty refused (D14) — --read did not name %s. A LinkedIn "
                         "look that skips a surface a reply could sit on is not evidence of "
                         "silence. File the gap instead: journal.py --run <id> --gap "
-                        "linkedin:message-requests --reason surface-unreachable ..."
+                        "linkedin:requests --reason surface-unreachable ..."
                         % ", ".join(sorted(missing)))
             record_probe(root, args.probe, args.thread, args.result,
                         medium=args.medium, mailbox=args.mailbox, by=args.by, at=at)
@@ -675,6 +786,20 @@ def main():
                 print("  No covered gaps open. Nothing to verify.")
             return 1 if stale else 0
 
+        if args.pass_durations:
+            durs = pass_durations(read(root))
+            if not durs:
+                print("No completed run carries LinkedIn evidence (a linkedin:* gap or a "
+                      "linkedin probe) yet — nothing to measure linkedin.pane_stale_minutes "
+                      "against.")
+                return 0
+            print("LINKEDIN PASS DURATIONS — longest first "
+                  "(measures linkedin.pane_stale_minutes)\n")
+            for d in durs:
+                print("  %7.1f min  %s  (%s -> %s)"
+                      % (d["minutes"], d["run_id"], d["start"], d["end"]))
+            return 0
+
         if args.note or args.gap or args.end or args.close_gap or args.dispose:
             if args.close_gap:
                 append(root, {"event": "gap-closed", "gap_id": args.close_gap, "at": at})
@@ -690,16 +815,51 @@ def main():
                     raise JournalError(
                         "--reason is required with --gap. A gap without a reason code cannot be "
                         "counted or grouped, which is the whole reason this is not prose.")
+                scope = args.gap
+                if scope == LINKEDIN_MESSAGE_REQUESTS_ALIAS:
+                    # design-linkedin-runner-resilience.md §6 — the old spelling is still
+                    # ACCEPTED (rows already on disk say it) but is normalized at write time so
+                    # the tree never carries two spellings as canon going forward.
+                    print("normalizing gap scope %r -> %r"
+                          % (LINKEDIN_MESSAGE_REQUESTS_ALIAS, LINKEDIN_MESSAGE_REQUESTS_CANON))
+                    scope = LINKEDIN_MESSAGE_REQUESTS_CANON
                 covered_by = normalize_citation(args.covered_by) if args.covered_by else ""
-                gid = "%s:%s" % (args.run, re.sub(r"[^A-Za-z0-9:._-]+", "-", args.gap))
+                gid = "%s:%s" % (args.run, re.sub(r"[^A-Za-z0-9:._-]+", "-", scope))
                 append(root, {"event": "gap", "run_id": args.run, "gap_id": gid,
-                              "scope": args.gap, "reason": args.reason,
+                              "scope": scope, "reason": args.reason,
                               "covered_by": covered_by,
                               "closes_when": args.closes_when or "", "at": at})
                 print(gid)
             if args.end:
-                append(root, {"event": "end", "run_id": args.run, "at": at})
-                print("ended")
+                # design-linkedin-runner-resilience.md §4 (closes D-5) — derived at write time,
+                # never a new --end argument: THIS run's own open gaps (a pass that opened
+                # nothing ends clean) alongside the journal-wide count (an older gap standing
+                # elsewhere stays visible in gaps_open_all and --check, never hidden by a clean
+                # --end elsewhere).
+                recs_before_end = read(root)
+                gaps_open_run = len(open_gaps(recs_before_end, run_id=args.run))
+                gaps_open_all = len(open_gaps(recs_before_end))
+                rec = {"event": "end", "run_id": args.run, "at": at,
+                       "gaps_open": gaps_open_run, "gaps_open_all": gaps_open_all}
+                # ⭐⭐ public #85 — THE FOOTPRINT IS DEFINED ONCE, in `run_summary.py`, and
+                # written HERE, on the `end` event, so `check_runs.py` can ask "did this run
+                # leave a footprint nobody flagged?" without recomputing anything itself.
+                # Imported LAZILY (never at module top) so this foundational ledger module
+                # never depends on the higher-level reporting script at import time — only
+                # this branch ever needs it, and by the time it runs, `journal` itself is
+                # already fully loaded, so `run_summary`'s own `import journal` cannot see a
+                # half-built module (see run_summary.py's own docstring for the full reasoning
+                # on why the dependency runs this direction and not the other).
+                try:
+                    from run_summary import footprint as _footprint
+                    rec["footprint"] = _footprint(root, args.run, at=at)
+                except Exception as e:                        # noqa: BLE001 — never block --end
+                    print("⚠️ journal.py --end: footprint could not be computed (%s) — the end "
+                          "event was recorded WITHOUT one; check_runs.py will flag this run"
+                          % e, file=sys.stderr)
+                append(root, rec)
+                print("ended (gaps_open: %d, gaps_open_all: %d)"
+                      % (gaps_open_run, gaps_open_all))
             if args.dispose:
                 append(root, {"event": "dispose", "run_id": args.run,
                               "because": args.because or "", "at": at})

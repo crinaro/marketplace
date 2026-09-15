@@ -201,7 +201,10 @@ HOLD_RE = re.compile(
 # `brief.verdict()`: `unaddressed`/`unbriefed`/`brief-mismatch`/`stale-brief` (NEEDS_HUMAN, below)
 # and `unverified-cold`/`unverified-silent` (WAITS_ON_SURFACE, below — neither owner nor other
 # side: the draft waits for a session with a keychain).
-NOT_SENDABLE = frozenset({"blocked", "unreadable", "unresolved", "sent", "moot",
+# "moot-derived" — design-inbound-resolution.md §8 (MOOT_DERIVED_STATE, defined below with its
+# sibling sentinels; the literal is repeated here rather than forward-referenced because these
+# sets are built before that point in the file).
+NOT_SENDABLE = frozenset({"blocked", "unreadable", "unresolved", "sent", "moot", "moot-derived",
                           "unaddressed", "unbriefed", "brief-mismatch", "stale-brief",
                           "unverified-cold", "unverified-silent"})
 
@@ -209,7 +212,7 @@ NOT_SENDABLE = frozenset({"blocked", "unreadable", "unresolved", "sent", "moot",
 # human's eyes when its precondition clears, but a "sent"/"moot" one needs nothing further from
 # anyone. A consumer that renders "awaiting your approval" work excludes TERMINAL entirely
 # (never lumps them under "blocked", which reads as "blocked on someone else" and would mislead).
-TERMINAL = frozenset({"sent", "moot"})
+TERMINAL = frozenset({"sent", "moot", "moot-derived"})
 
 # ⭐ dev/audit 2026-09-02 (public #37) — NOT_SENDABLE is not one thing. `blocked` waits on
 # the OTHER side; `unreadable` and `unresolved` wait on the OWNER, because nobody can say what
@@ -289,6 +292,11 @@ PROSE_HOLD = "prose-hold"
 UNRESOLVED = "unresolved"
 SENT = "sent"
 MOOT = "moot"
+# design-inbound-resolution.md §8 — the report() row `state` for a MootDerived-wrapped entry.
+# A distinct string from MOOT (an explicit Status line) so a reader can tell "the owner marked
+# this done" from "the engine derived it from the opportunity's own ending" apart, while both
+# join TERMINAL below (either way, nothing further is queued from this entry).
+MOOT_DERIVED_STATE = "moot-derived"
 
 
 class BriefHold(object):
@@ -416,6 +424,15 @@ def drafts_with_preconditions(root, filename=None):
             if MOOT_RE.search(status_text):
                 out.append((title, status_text, MOOT))
                 continue
+        # design-inbound-resolution.md §8 — MOOT_DERIVED outranks the brief-side gate and the
+        # Blocked-until join too, for the same reason an explicit MOOT Status line does: a
+        # role that has ENDED makes every other question about this entry moot, literally.
+        # Checked here (never inside `report()` alone) so every direct caller of this function
+        # — not just `report()` — sees the derived state.
+        ending = _ended_because_for_opp(root, _opp_anchor(root, body))
+        if ending:
+            out.append((title, None, MootDerived(ending)))
+            continue
         # Query or Citation C1 (§3.4) — the brief-side gate outranks the Blocked-until join: an
         # entry that names no recipient, or cites no current brief, cannot even be asked whether
         # an outreach touch resolved its hold. `cover_letters.md` is exempt (a cover letter is
@@ -458,6 +475,14 @@ def report(root, filenames=FILES):
             elif isinstance(parsed, BriefHold):
                 rows.append({"file": filename, "title": title, "state": parsed.state,
                              "why": parsed.why})
+            elif isinstance(parsed, MootDerived):
+                rows.append({"file": filename, "title": title, "state": MOOT_DERIVED_STATE,
+                             "reason": parsed.reason,
+                             "why": "the opportunity this entry is triggered by has ENDED "
+                                    "(%s, %s) — derived, not the entry's own Status line "
+                                    "(design-inbound-resolution.md §8); `--prune` relocates "
+                                    "it with a derived tombstone"
+                                    % (parsed.ending, parsed.reason)})
             elif parsed is PROSE_HOLD:
                 rows.append({"file": filename, "title": title, "state": "unresolved",
                              "why": "hold phrase in prose but no structured precondition — the "
@@ -635,6 +660,70 @@ def _opp_anchor(root, body):
     return None
 
 
+def _ended_because_for_opp(root, opp_id):
+    """design-inbound-resolution.md §8 — `your_move.ended_because()` for `opp_id`, or None.
+    The SAME join `cmd_format`'s own `_cell()` already performs for ordering only (its `"E"`
+    cell) — this promotes it to a REPORTED state (`MOOT_DERIVED` below) rather than leaving it
+    a display-only convenience. Fails open (None) on any error: this is advisory reporting,
+    never a reason to refuse a read of the working set."""
+    if not opp_id:
+        return None
+    try:
+        import your_move as _ym
+        import applications as _apps
+        opps = _load_jsonl_rows(root, "opportunities.jsonl")
+        opp = next((o for o in opps if o.get("id") == opp_id), None)
+        if opp is None:
+            return None
+        apps_rows, _errs, _present = _apps.load(root)
+        apps = _apps.group_by_opp(apps_rows).get(opp_id, [])
+        return _ym.ended_because(opp, apps)
+    except Exception:                                        # noqa: BLE001 — reporting only
+        return None
+
+
+def _status_on_for_opp(root, opp_id):
+    """The newest application's own `status_on` for `opp_id`, for the derived tombstone's
+    date — the same "newest application" convention `your_move.ended_because()` itself uses."""
+    try:
+        import applications as _apps
+        apps_rows, _errs, _present = _apps.load(root)
+        apps = sorted(_apps.group_by_opp(apps_rows).get(opp_id, []),
+                     key=lambda a: str(a.get("date") or ""))
+        return apps[-1].get("status_on") if apps else None
+    except Exception:                                        # noqa: BLE001
+        return None
+
+
+class MootDerived(object):
+    """design-inbound-resolution.md §8 — wraps the ENDING (`your_move.ended_because()`'s own
+    return value) so `report()`/`draft_checks()` can tell this apart from an entry's own
+    explicit MOOT Status line, the same shape `BriefHold` already uses for `brief.verdict()`.
+
+    ⭐ public #95 (the terminal-transition cascade) adds `.reason` — a coarse category over
+    `ending`, `application-terminal` (an APPLICATION itself reached a terminal status —
+    rejected / closed-silence / withdrawn) or `opportunity-ended` (the ROLE ended with no
+    terminal application driving it — expired / passed / unrecorded) — additive beside
+    #377's own `.ending`, never replacing it: a consumer that only cares which HALF ended
+    (the application side or the role side) reads `.reason`; one that wants the full
+    `ended_because()` vocabulary still reads `.ending` exactly as before."""
+    __slots__ = ("ending", "reason")
+
+    # `your_move.ended_because()`'s own precedence table (its docstring) split into the two
+    # halves public #95's issue named: "an application ... reaches a terminal status" vs.
+    # "an opportunity ... to passed/closed". `unrecorded` can arise from either half (a
+    # submitted-but-terminal opp with nothing saying why, OR a closed req with no
+    # application at all) — grouped with `opportunity-ended` because in both of
+    # `ended_because()`'s `unrecorded` branches the OPPORTUNITY's own stage/status is what
+    # triggered the check, never a specific application's own terminal status.
+    _APPLICATION_TERMINAL_ENDINGS = frozenset({"rejected", "closed-silence", "withdrawn"})
+
+    def __init__(self, ending):
+        self.ending = ending
+        self.reason = ("application-terminal" if ending in self._APPLICATION_TERMINAL_ENDINGS
+                       else "opportunity-ended")
+
+
 def _to_person(root, body):
     """The person id a `**To:**` line resolves to, or None — `brief.py`'s own resolver,
     reused rather than re-derived (lazy import, same cycle-avoidance reason as above)."""
@@ -735,18 +824,29 @@ def plan_prune(root, filename=None, today=None):
     remove_spans = []
     for m in ENTRY_RE.finditer(md):
         title, body = m.group(1).strip(), m.group(2)
-        sm = STATUS_RE.search(body)
-        if not sm:
-            continue
-        status_text = sm.group(1)
-        if SENT_RE.match(status_text):
-            reason = "sent"
-        elif MOOT_RE.search(status_text):
-            reason = "moot"
-        else:
-            continue
-
         opp_id = _opp_anchor(root, body)
+        sm = STATUS_RE.search(body)
+        status_text = None
+        if sm:
+            status_text = sm.group(1)
+            if SENT_RE.match(status_text):
+                reason = "sent"
+            elif MOOT_RE.search(status_text):
+                reason = "moot"
+            else:
+                status_text = None
+        if status_text is None:
+            # design-inbound-resolution.md §8 — MOOT_DERIVED: no Status line says so (the
+            # common case — nobody edited the draft after the role died), but the opportunity
+            # this entry is triggered by has ENDED. Relocates with a DERIVED tombstone, same
+            # as an explicit MOOT Status line, never dropped and never left silently stale.
+            ending = _ended_because_for_opp(root, opp_id)
+            if not ending:
+                continue
+            reason = "moot-derived"
+            status_on = _status_on_for_opp(root, opp_id) or "unknown"
+            status_text = "MOOT — %s %s" % (ending, status_on)
+
         person_id = _to_person(root, body)
         chan_id = None if opp_id else _channel_anchor(root, person_id)
 
@@ -784,11 +884,17 @@ def plan_prune(root, filename=None, today=None):
            "deleted_only": deleted_only, "unresolved": unresolved}
 
 
-def cmd_prune(root):
+def cmd_prune(root, already_locked=False):
     """`--prune`: relocate/delete every TERMINAL entry in drafts.md, via `record.py` (so the
     relocation gets the SAME lock/validate/rollback guarantees any other write to
     opportunities.jsonl or channels.jsonl gets) — never touches drafts.md itself until every
-    relocation has actually landed (durability before deletion)."""
+    relocation has actually landed (durability before deletion).
+
+    `already_locked` (design-inbound-resolution.md §8) — weekly-review's own write window
+    already holds the run lock when it calls `--prune`; passed through to every `record.py`
+    relocation call so it writes under THAT hold rather than trying to take a second one
+    (record.py's own `--already-locked` contract, the same one every other in-run caller
+    uses)."""
     plan = plan_prune(root)
     if plan["new_text"] is None:
         print("no %s found — nothing to prune" % FILES[0])
@@ -796,14 +902,15 @@ def cmd_prune(root):
 
     import subprocess
     record_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "record.py")
+    lock_flag = ["--already-locked"] if already_locked else []
     failed = []
     for r in plan["relocations"]:
         if r["anchor_kind"] == "opp":
             args = [sys.executable, record_py, "append", r["anchor_id"], "research_log",
-                   json.dumps(r["row"])]
+                   json.dumps(r["row"])] + lock_flag
         else:
             args = [sys.executable, record_py, "append", r["anchor_id"], "log",
-                   json.dumps(r["row"]), "--file", "channels"]
+                   json.dumps(r["row"]), "--file", "channels"] + lock_flag
         res = subprocess.run(args, capture_output=True, text=True)
         if res.returncode != 0:
             failed.append((r["title"], (res.stdout + res.stderr).strip()[-400:]))
@@ -945,13 +1052,18 @@ def main():
     ap.add_argument("--prune", action="store_true",
                     help="States & Views V1b (design §4): relocate every TERMINAL (sent/moot) "
                          "drafts.md entry to the record it belongs to, then remove it")
+    ap.add_argument("--already-locked", dest="already_locked", action="store_true",
+                    help="--prune: the calling run already holds the run lock (weekly-review's "
+                         "own write window) — every relocation write passes this through to "
+                         "record.py rather than trying to take a second lock "
+                         "(design-inbound-resolution.md §8).")
     args = ap.parse_args()
 
     root = profile_root()
     if args.format:
         return cmd_format(root)
     if args.prune:
-        return cmd_prune(root)
+        return cmd_prune(root, already_locked=args.already_locked)
 
     rows = report(root)
     if args.json:
@@ -970,6 +1082,10 @@ def main():
                         # KeyErrors on one the way it did before this dict was closed.
                         "unaddressed": "⛔", "unbriefed": "⛔", "brief-mismatch": "⛔",
                         "stale-brief": "⛔", "unverified-cold": "⏸", "unverified-silent": "⏸",
+                        # design-inbound-resolution.md §8 — MOOT_DERIVED joins its sibling
+                        # terminal states, same mark: it renders identically to an explicit
+                        # MOOT (both are "over"), and the `why` line already says derived.
+                        "moot-derived": "🏁",
                         }[r["state"]]
                 print("    %s %-10s %s" % (mark, r["state"], r["title"][:70]))
                 print("          %s" % r["why"])

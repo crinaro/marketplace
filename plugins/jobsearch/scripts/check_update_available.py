@@ -40,6 +40,11 @@ one" a second way — that predicate (matching `installed_plugins.json` by realp
 adr-014's own evidence for "this is a real install, not a checkout, CI clone or test tree," and
 `plugin_id`'s `name@marketplace` shape hands back the marketplace identity for free.
 
+⭐ public #104 also reuses `heal_install.py`'s `clone_path_for()` — the `known_marketplaces.json`
+-> `installLocation` lookup below used to be inlined here a second time; `heal_install.py`'s own
+truncation repair needs the identical lookup to find a clone to `git show` against, so it moved
+there and this module calls it instead of re-deriving it. One resolver, not two.
+
 FAILS OPEN, ALWAYS — same rule as every other SessionStart housekeeping step in this hook chain.
 `check()` itself does NOT swallow its own exceptions (unlike `heal_install.heal()`): dev #351's
 own plant forces it to raise, and the failure the plant exists to prove is that migrate.py's
@@ -199,13 +204,8 @@ def check(plugins_dir=None, root=None, settings_path=None, known_path=None):
     known_path = known_path or os.path.join(plugins_dir, "known_marketplaces.json")
     settings_path = settings_path or os.path.join(os.path.expanduser("~"), ".claude",
                                                   "settings.json")
-    try:
-        with open(known_path, encoding="utf-8") as fh:
-            known = json.load(fh)
-        clone_path = (known.get(marketplace) or {}).get("installLocation")
-    except Exception:                                  # noqa: BLE001 — no registration is a result
-        clone_path = None
-    if not clone_path or not os.path.isdir(clone_path):
+    clone_path = heal_install.clone_path_for(marketplace, plugins_dir, known_path)
+    if not clone_path:
         return "no-clone", []
 
     clone_version, _reason = clone_plugin_version(clone_path, plugin_name)

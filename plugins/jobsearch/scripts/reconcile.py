@@ -69,24 +69,29 @@ Python 3.9+. Standard library only.
 """
 
 import argparse
+import collections
 import datetime
+import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
+import urllib.parse
 from email.utils import parseaddr
 
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
-from _atomic import write_jsonl, write_json
+from _atomic import write_jsonl, write_json, write_text
 import validate_data as _vd
 import touches as _touches
+import journal as _journal
 
 try:
     from mail_client import (
         Mailbox, configured_accounts, decode_header_value, CredentialError, body_text,
-        sweep_accounts, COVERAGE_BACKFILL_MAX_DAYS,
+        sweep_accounts, COVERAGE_BACKFILL_MAX_DAYS, lookback_days,
     )
 except ImportError as exc:  # pragma: no cover
     sys.stderr.write("Run as `python3 scripts/reconcile.py` from the repo root: %s\n" % exc)
@@ -466,6 +471,679 @@ def attribute_hits_report(rows, hits):
     return attributed, ambiguous
 
 
+# ═══════════════════════════════════════════════════════════════════════════════════════════
+# design-inbound-resolution.md — ADR-029/030's deterministic ATS sweep (`--ats`/`--verify`).
+# ═══════════════════════════════════════════════════════════════════════════════════════════
+#
+# §3.1/§3.2 — identification (sender domain) and resolution (three tiers) are two different
+# questions with two different kinds of evidence; neither substitutes for the other. Everything
+# in this section down to `cmd_ats`/`cmd_verify` is a PURE function — no mailbox, no store I/O
+# — so the decision logic is testable directly, the same split `classify()`/
+# `attribute_hits_report()` already give this file's older audit path.
+
+Resolved = collections.namedtuple("Resolved", "app_id tier")
+Tie = collections.namedtuple("Tie", "tier candidate_ids")
+
+
+class _NoHit(object):
+    def __repr__(self):
+        return "NoHit"
+
+
+NoHit = _NoHit()
+
+TIER_NAME = {1: "req-id", 2: "url", 3: "company-single"}
+
+_WORD_BOUND_FMT = r"(?<![A-Za-z0-9_-])%s(?![A-Za-z0-9_-])"
+_URL_RE = re.compile(r"https?://[^\s<>\"'()\[\]]+")
+
+
+def identify_sender_class(from_domain, configured_domains, derived_domains):
+    """§3.1 — is `from_domain` candidate ATS mail? Leg 1: `configured_domains`
+    (`ats.receipt_sender_domains`), matched as the domain OR A SUBDOMAIN of it. Leg 2:
+    `derived_domains` (every existing `messages.jsonl` row that carries `resolves`) —
+    identify-only, exact match, never a subdomain widening (a derived domain is observed
+    fact, not a policy the owner stated). Returns (bool, 'configured'|'derived'|None)."""
+    fd = (from_domain or "").strip().lower()
+    if not fd:
+        return False, None
+    for d in configured_domains or ():
+        d = (d or "").strip().lower()
+        if d and (fd == d or fd.endswith("." + d)):
+            return True, "configured"
+    for d in derived_domains or ():
+        d = (d or "").strip().lower()
+        if d and fd == d:
+            return True, "derived"
+    return False, None
+
+
+def derived_sender_domains(messages):
+    """§3.1 leg 2 — the From domain of every `messages.jsonl` row that carries `resolves`."""
+    out = set()
+    for m in messages or ():
+        if not m.get("resolves"):
+            continue
+        addr = parseaddr(m.get("from") or "")[1]
+        if "@" in addr:
+            out.add(addr.rsplit("@", 1)[-1].strip().lower())
+    return sorted(out)
+
+
+def resolve_application(subject, body_text_, from_domain, live_apps, companies):
+    """§3.2 — ADR-030's three tiers, first hit wins, a tie STOPS (never falls through to a
+    weaker tier). `live_apps` is every candidate application to consider, each optionally
+    carrying `_company_id` (the caller's own derived field, `applications.py`'s
+    underscore-prefix convention — never written back) for tier 3's company join.
+    `from_domain` is accepted for the call signature ADR-030 states but never consulted:
+    identification and resolution are deliberately two different questions."""
+    text = "%s\n%s" % (subject or "", body_text_ or "")
+
+    # Tier 1 — req_id, verbatim, word-bounded. A req_id shorter than 4 characters never
+    # matches at this tier (a two-digit id is a substring of everything).
+    hits1 = []
+    for app in live_apps:
+        rid = app.get("req_id")
+        if not rid or len(str(rid)) < 4:
+            continue
+        if re.search(_WORD_BOUND_FMT % re.escape(str(rid)), text):
+            hits1.append(app["id"])
+    if hits1:
+        uniq = sorted(set(hits1))
+        return Resolved(uniq[0], "req-id") if len(uniq) == 1 else Tie(1, uniq)
+
+    # Tier 2 — URL: host equal, stored path a PATH-PREFIX of the found path. Never a
+    # substring match on raw text.
+    found = [urllib.parse.urlparse(u) for u in _URL_RE.findall(body_text_ or "")]
+    hits2 = []
+    for app in live_apps:
+        stored = app.get("url")
+        if not stored:
+            continue
+        su = urllib.parse.urlparse(stored)
+        if not su.netloc:
+            continue
+        s_path = su.path.rstrip("/") or "/"
+        for fu in found:
+            if fu.netloc != su.netloc:
+                continue
+            f_path = fu.path or "/"
+            if f_path == s_path or f_path.startswith(s_path.rstrip("/") + "/") or s_path == "/":
+                hits2.append(app["id"])
+                break
+    if hits2:
+        uniq = sorted(set(hits2))
+        return Resolved(uniq[0], "url") if len(uniq) == 1 else Tie(2, uniq)
+
+    # Tier 3 — company name (subject/body/display name), exactly one live application at
+    # that company. A tie at this tier is any company mentioned with 2+ live applications,
+    # OR more than one distinct company mentioned — a title is not a stored key.
+    text_low = text.lower()
+    by_company = {}
+    for app in live_apps:
+        cid = app.get("_company_id")
+        if cid:
+            by_company.setdefault(cid, []).append(app["id"])
+    mentioned = [cid for cid in by_company
+                if (companies.get(cid) or "").strip()
+                and companies[cid].strip().lower() in text_low]
+    if mentioned:
+        singles = [cid for cid in mentioned if len(by_company[cid]) == 1]
+        if len(singles) == 1 and len(mentioned) == 1:
+            return Resolved(by_company[singles[0]][0], "company-single")
+        all_ids = sorted({aid for cid in mentioned for aid in by_company[cid]})
+        return Tie(3, all_ids)
+    return NoHit
+
+
+def classify_status_phrase(text_low, status_phrases):
+    """§3.3 — exactly one status class hit -> (status, False). Zero, or two at once ->
+    (None, ambiguous_bool). `status_phrases`: dict status -> [phrase, ...]."""
+    hits = []
+    for status, phrases in (status_phrases or {}).items():
+        for p in phrases or ():
+            if p and str(p).lower() in text_low:
+                hits.append(status)
+                break
+    uniq = sorted(set(hits))
+    if len(uniq) == 1:
+        return uniq[0], False
+    return None, bool(uniq)
+
+
+_SUBJECT_PREFIX_RE = re.compile(r"^\s*(re|fwd?)\s*:\s*", re.I)
+
+
+def normalize_subject(subject):
+    """§4.4 — strip Re:/Fwd: prefixes, digits, and whitespace runs, for the dedup hash."""
+    s = (subject or "").strip()
+    while True:
+        s2 = _SUBJECT_PREFIX_RE.sub("", s)
+        if s2 == s:
+            break
+        s = s2
+    s = re.sub(r"\d+", "", s)
+    return re.sub(r"\s+", " ", s).strip().lower()
+
+
+def iso_week(date_iso):
+    try:
+        d = datetime.date.fromisoformat(str(date_iso)[:10])
+    except ValueError:
+        d = datetime.date.today()
+    y, w, _wd = d.isocalendar()
+    return "%04dW%02d" % (y, w)
+
+
+def ask_digest_id(kind, domain, subject, date_iso):
+    """§4.4 — dedup is by (sender domain, normalized subject) per ISO week, never by uid."""
+    h = hashlib.sha1(("%s|%s" % ((domain or "").lower(), normalize_subject(subject)))
+                     .encode("utf-8")).hexdigest()[:10]
+    return "ask-ats-%s-%s-%s" % (kind, h, iso_week(date_iso))
+
+
+def _read_config(root):
+    """`config.json`, read directly off `root` — never `profile.config()`, whose own `ROOT`/
+    `CONFIG_PATH` are bound once at FIRST IMPORT. A test (or a caller) that patches THIS
+    module's `ROOT` (the established convention — `TestSweepAccountsWiredIntoTheFourCallers`'s
+    own `_patch()`) would otherwise still read the profile.py module saw at its own first
+    import, which is exactly the kind of staleness `configured_accounts()` above already
+    documents fixing for the account list. `config_keys.describe()` takes a plain dict, so it
+    is unaffected either way."""
+    try:
+        with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def is_first_run_for_mailbox(root, mailbox):
+    """§5 — has `reconcile.py --ats` (the REAL sweep, not a plan-only run — D6) ever
+    completed a sweep of this mailbox? A `by: reconcile-ats-plan` row never counts."""
+    recs = _journal.read(root)
+    return not any(r.get("event") == "swept" and r.get("mailbox") == mailbox
+                  and r.get("by") == "reconcile-ats" and r.get("ok")
+                  for r in recs)
+
+
+RECORD_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "record.py")
+
+
+def _ats_scratch_dir(root):
+    d = os.path.join(root, ".jobsearch", "ats-tmp")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _run_record(args_list):
+    r = subprocess.run([sys.executable, RECORD_PY] + args_list, capture_output=True, text=True)
+    return r.returncode == 0, (r.stdout + r.stderr).strip()
+
+
+def write_ats_message(subject, body, from_addr, mail_date_iso, source, scratch_dir,
+                      opp_id=None, resolves=None, resolved_by=None, already_locked=False):
+    """`record.py received ...` via subprocess — the CLI face is the write API; this never
+    touches messages.jsonl directly. Returns (mid, ok, output)."""
+    mid = "in-%s" % hashlib.sha1(source.encode("utf-8")).hexdigest()[:12]
+    # `_atomic.write_text` — never a bare truncating write of this file's own — into a scratch
+    # path named from the source's own hash, so two concurrent candidates never collide.
+    path = os.path.join(scratch_dir, ".ats-body-%s.txt" % mid)
+    try:
+        write_text(path, body or "")
+        cmd = ["received", "--from", from_addr or "unknown", "--on", mail_date_iso,
+              "--subject", (subject or "")[:500], "--body-file", path, "--source", source]
+        if opp_id and not resolves:
+            cmd += ["--opp", opp_id]
+        if resolves:
+            cmd += ["--resolves", resolves, "--resolved-by", resolved_by]
+        if already_locked:
+            cmd += ["--already-locked"]
+        ok, out = _run_record(cmd)
+        return mid, ok, out
+    finally:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+
+
+def write_ats_status(app_id, status, on_date, note, already_locked=False):
+    cmd = ["application-status", app_id, status, "--on", on_date, "--note", note]
+    if already_locked:
+        cmd += ["--already-locked"]
+    return _run_record(cmd)
+
+
+def write_or_extend_ask(kind, domain, subject, date_iso, note_tag, already_locked=False,
+                        opp_id=None, trigger_ref=None, asks_by_id=None, cap=None,
+                        created_counter=None):
+    """§4.4 — one ask per (domain, normalized subject, ISO week); every further uid it
+    absorbs is appended to the ask's `note`, never a second row. `cap`/`created_counter`
+    (a one-item mutable list, `[n]`) enforce ADR-030 decision 5: a NEW ask counts against the
+    per-run cap; extending an existing one's note does not. Returns (ask_id_or_None,
+    withheld_bool)."""
+    ask_id = ask_digest_id(kind, domain, subject, date_iso)
+    existing = (asks_by_id or {}).get(ask_id)
+    if existing is not None:
+        new_note = ("%s | %s" % (existing.get("note"), note_tag)) if existing.get("note") \
+            else note_tag
+        _run_record(["set", ask_id, "note", new_note, "--file", "asks"] +
+                   (["--already-locked"] if already_locked else []))
+        return ask_id, False
+    if cap is not None and created_counter is not None and created_counter[0] >= cap:
+        return None, True
+    title = ("Unidentified/unresolved ATS mail" if kind == "unresolved"
+            else "ATS status change proposed")
+    text = ("A message from %s (%s) could not be resolved to a live application — check "
+           "whether it names one, or add the domain to receipt_sender_domains."
+           % (domain, subject[:60]) if kind == "unresolved" else
+           "A parsed ATS status change from %s (%s) is proposed, not applied — confirm or "
+           "correct it." % (domain, subject[:60]))
+    fields = {
+        "kind": "system", "title": title[:120], "ask": text,
+        "created": date_iso[:10], "act_by": (
+            datetime.date.fromisoformat(date_iso[:10]) + datetime.timedelta(days=2)
+        ).isoformat(),
+        "opp_id": opp_id, "channel_id": None, "resolves_when": None,
+        "resolved_on": None, "resolution": None,
+        "trigger_kind": "reply" if trigger_ref else None,
+        "trigger_ref": trigger_ref, "note": note_tag,
+    }
+    ok, _out = _run_record(["create", ask_id, json.dumps(fields), "--file", "asks"] +
+                           (["--already-locked"] if already_locked else []))
+    if ok:
+        if created_counter is not None:
+            created_counter[0] += 1
+        if asks_by_id is not None:
+            # Update the CALLER's own dict in place — a second candidate landing later in
+            # THIS SAME run (the same digest, a different uid) must see the ask this call
+            # just created as already existing, or it tries `create` again on an id that is
+            # now on disk and gets refused instead of extending the note.
+            asks_by_id[ask_id] = dict(fields, id=ask_id)
+    return (ask_id if ok else None), False
+
+
+def cmd_ats(args):
+    """`reconcile.py --ats [--already-locked]` — the fifth `sweep_accounts()` caller (design
+    §4). Runs once, in the daily's write phase, immediately after its own lock take
+    (design §6). Every write goes through `record.py`'s own lock/validate/rollback (§2);
+    this function never opens a store file for writing."""
+    import applications as _apps_mod
+    import config_keys as _ck
+    import record as _record
+
+    # public #101's own fix, applied here too: every provenance/historical-window comparison
+    # in this sweep uses the RUN's own date, never a fresh `datetime.date.today()` call at the
+    # point of use — `--as-of` (validated in main() before dispatch) is the identical test
+    # seam `--apply`'s MEDIUM RECOVERED note now uses, so a test can pin the clock here the
+    # same way.
+    run_date = args.as_of or datetime.date.today().isoformat()
+    run_date_d = datetime.date.fromisoformat(run_date)
+
+    cfg = _read_config(ROOT)
+    parsed_status, _p1 = _ck.describe(cfg, _ck.ATS_PARSED_STATUS)
+    sweep_floor, _p2 = _ck.describe(cfg, _ck.ATS_SWEEP_DAYS)
+    max_asks, _p3 = _ck.describe(cfg, _ck.ATS_MAX_ASKS_PER_RUN)
+
+    opps = load("opportunities.jsonl")
+    opps_by_id = {o.get("id"): o for o in opps}
+    companies_map = {c["id"]: c.get("name", c["id"]) for c in load("companies.jsonl")}
+    all_apps, _e, _pres = _apps_mod.load(ROOT)
+    app_by_id = {a["id"]: a for a in all_apps if a.get("id")}
+    live_apps = _apps_mod.live(all_apps)
+    for a in live_apps:
+        opp = opps_by_id.get(a.get("opp_id")) or {}
+        a["_company_id"] = opp.get("company_id")
+
+    messages_all = load("messages.jsonl")
+    have_sources = {m.get("source") for m in messages_all if m.get("source")}
+    configured_domains = list(((cfg.get("ats") or {}).get("receipt_sender_domains")) or [])
+    derived_domains = derived_sender_domains(messages_all)
+    sp = (cfg.get("ats") or {}).get("status_phrases")
+    status_phrases = sp if isinstance(sp, dict) else {}
+
+    asks_all = load("asks.jsonl")
+    asks_by_id = {a.get("id"): a for a in asks_all}
+
+    # D5/D6 — `can_write` is the ACTUAL lock state, independent of whether `--already-locked`
+    # was passed: unheld -> plan-only (classify, print, write a `by: reconcile-ats-plan`
+    # `swept` row, exit 2, touch no other store); held (or no flag at all, in which case this
+    # call takes its own short lock per write via record.py's plain path) -> real writes.
+    can_write = (not args.already_locked) or _record.lock_is_held()
+    by_tag = "reconcile-ats" if can_write else "reconcile-ats-plan"
+    scratch = _ats_scratch_dir(ROOT)
+
+    accounts = configured_accounts()
+    plan_lines, asks_created, applied, proposed, withheld = [], [0], [0], [0], [0]
+    history_counts = {"total": 0, "applied": 0, "recorded": 0, "unresolved": 0}
+
+    # design-inbound-resolution.md §2 amendment D1 (surface pass 2026-09-14) — a message that
+    # RESOLVES an application is its own idempotency mark by uid (via `source`), so a status
+    # write that was refused, rolled back, or never reached because the process died between
+    # the two writes would otherwise never be retried: the uid is already "seen". THE
+    # COMPLETION MARK ON THE APPLY PATH IS THE STATUS WRITE ITSELF, not the message row — every
+    # already-landed `resolves` message whose application's own `note` does not yet carry
+    # `reconcile-ats <message id>` gets its status write RE-ATTEMPTED here, before any mailbox
+    # search runs (no mail access needed: the message row already carries the evidence).
+    # Idempotent under the monotone rule — a status already applied, or one whose new value
+    # matches what is already there, is a no-op, never re-applied twice.
+    for m in messages_all:
+        resolves = m.get("resolves")
+        if not resolves:
+            continue
+        app = app_by_id.get(resolves)
+        if app is None:
+            continue
+        mark = "reconcile-ats %s" % m.get("id")
+        if mark in (app.get("note") or ""):
+            continue
+        status, ambiguous = classify_status_phrase(
+            ("%s\n%s" % (m.get("subject") or "", m.get("body") or "")).lower(), status_phrases)
+        if status is None or ambiguous:
+            continue          # a phrase-0/2 (unresolved-ask) case, not an apply — no retry
+        current_status, current_status_on = app.get("status"), app.get("status_on")
+        if current_status == "withdrawn" or current_status == status:
+            continue
+        if (current_status_on and
+                _vd.date_part(m.get("sent_on")) < _vd.date_part(current_status_on)):
+            continue
+        if not can_write:
+            plan_lines.append("  would retry status write for %s (message %s landed, status "
+                             "write incomplete — D1)" % (resolves, m.get("id")))
+            continue
+        note = "reconcile-ats %s; was %s since %s" % (m.get("id"), current_status,
+                                                       current_status_on)
+        ok2, out2 = write_ats_status(resolves, status, _vd.date_part(m.get("sent_on")), note,
+                                     already_locked=args.already_locked)
+        if ok2:
+            applied[0] += 1
+            plan_lines.append("  applied (D1 retry): %s -> %s" % (resolves, status))
+        else:
+            plan_lines.append("  ⚠️ %s: D1 retry status write refused: %s" % (resolves, out2))
+
+    def process_candidate(mb, account, uid, since_days, first_run):
+        source = "ats:%s:%s" % (account, uid)
+        if source in have_sources:
+            return
+        tag = "mail:%s:%s" % (account, uid)
+        if any(tag in (a.get("note") or "") for a in asks_all):
+            return
+        hdr = mb.fetch_headers(uid)
+        if hdr is None:
+            return
+        frm = decode_header_value(hdr.get("From")) or ""
+        from_addr = parseaddr(frm)[1]
+        from_domain = from_addr.rsplit("@", 1)[-1].strip().lower() if "@" in from_addr else ""
+        ok_class, _leg = identify_sender_class(from_domain, configured_domains, derived_domains)
+        if not ok_class:
+            return
+        subject = decode_header_value(hdr.get("Subject")) or ""
+        body = ""
+        full = mb.fetch_full(uid)
+        if full is not None:
+            body = body_text(full, limit=8000) or ""
+        mail_date = parse_hdr_date(decode_header_value(hdr.get("Date")))
+        mail_date_iso = mail_date.isoformat() if mail_date else run_date
+        historical = bool(first_run and mail_date
+                          and (run_date_d - mail_date).days > sweep_floor)
+
+        result = resolve_application(subject, body, from_domain, live_apps, companies_map)
+        status, ambiguous = classify_status_phrase(("%s\n%s" % (subject, body)).lower(),
+                                                    status_phrases)
+        have_sources.add(source)          # never re-process this uid, whatever happens below
+        if historical:
+            history_counts["total"] += 1
+
+        def _write_msg(opp_id=None, resolves=None, resolved_by=None):
+            if not can_write:
+                return None, False, "(plan-only)"
+            return write_ats_message(subject, body, from_addr, mail_date_iso, source, scratch,
+                                     opp_id=opp_id, resolves=resolves, resolved_by=resolved_by,
+                                     already_locked=args.already_locked)
+
+        def _ask(kind, opp_id=None, trigger_ref=None):
+            if not can_write:
+                withheld[0] += 1
+                return None
+            aid, was_withheld = write_or_extend_ask(
+                kind, from_domain, subject, mail_date_iso, tag,
+                already_locked=args.already_locked, opp_id=opp_id, trigger_ref=trigger_ref,
+                asks_by_id=asks_by_id, cap=max_asks, created_counter=asks_created)
+            if was_withheld:
+                withheld[0] += 1
+            return aid
+
+        if isinstance(result, Resolved):
+            app = app_by_id.get(result.app_id)
+            opp_id = app.get("opp_id") if app else None
+            tier_num = 1 if result.tier == "req-id" else (2 if result.tier == "url" else 3)
+            receipt_grade = tier_num in (1, 2)
+            apply_it = parsed_status == "all" or (receipt_grade and parsed_status == "receipt-grade")
+
+            if status is None or ambiguous:
+                if historical:
+                    history_counts["unresolved"] += 1
+                    return
+                mid, wrote_ok, _out = _write_msg(opp_id=opp_id, resolves=result.app_id,
+                                                 resolved_by=result.tier)
+                if can_write and not wrote_ok:
+                    plan_lines.append("  ⚠️ %s: message write refused: %s" % (source, _out))
+                    return
+                if not can_write:
+                    plan_lines.append("  would ask (unresolved status phrase): %s / %s"
+                                     % (opp_id, subject[:60]))
+                    return
+                _ask("unresolved", opp_id=opp_id, trigger_ref=mid if wrote_ok else None)
+                return
+
+            if not apply_it:
+                if historical:
+                    history_counts["unresolved"] += 1
+                    return
+                mid, wrote_ok, _out = _write_msg(opp_id=opp_id, resolves=result.app_id,
+                                                 resolved_by=result.tier)
+                if not can_write:
+                    plan_lines.append("  would propose: %s -> %s (tier %s)"
+                                     % (result.app_id, status, result.tier))
+                    return
+                if not wrote_ok:
+                    plan_lines.append("  ⚠️ %s: message write refused: %s" % (source, _out))
+                    return
+                _ask("proposed", opp_id=opp_id, trigger_ref=mid)
+                proposed[0] += 1
+                return
+
+            # apply path — monotonicity first.
+            current_status = app.get("status") if app else None
+            current_status_on = app.get("status_on") if app else None
+            if current_status == "withdrawn":
+                plan_lines.append("  · %s: withdrawn — mail ignored (owner's own statement)"
+                                 % result.app_id)
+                if historical:
+                    history_counts["recorded"] += 1
+                return
+            if (current_status_on and
+                    _vd.date_part(mail_date_iso) < _vd.date_part(current_status_on)):
+                plan_lines.append("  · %s: mail predates status_on — refused (monotone)"
+                                 % result.app_id)
+                if historical:
+                    history_counts["recorded"] += 1
+                return
+            if current_status == status:
+                _write_msg(opp_id=opp_id, resolves=result.app_id, resolved_by=result.tier)
+                if historical:
+                    history_counts["recorded"] += 1
+                return
+            if not can_write:
+                plan_lines.append("  would apply: %s -> %s (tier %s)"
+                                 % (result.app_id, status, result.tier))
+                return
+            mid, wrote_ok, _out = _write_msg(opp_id=opp_id, resolves=result.app_id,
+                                             resolved_by=result.tier)
+            if not wrote_ok:
+                plan_lines.append("  ⚠️ %s: message write refused, status NOT applied: %s"
+                                 % (result.app_id, _out))
+                return
+            note = "reconcile-ats %s; was %s since %s" % (mid, current_status, current_status_on)
+            ok2, out2 = write_ats_status(result.app_id, status, _vd.date_part(mail_date_iso),
+                                         note, already_locked=args.already_locked)
+            if ok2:
+                applied[0] += 1
+                if historical:
+                    history_counts["applied"] += 1
+                plan_lines.append("  applied: %s -> %s (tier %s)" % (result.app_id, status,
+                                                                     result.tier))
+            else:
+                plan_lines.append("  ⚠️ %s: status write refused: %s" % (result.app_id, out2))
+            return
+
+        # Tie or NoHit — an anchor exists only when every candidate shares one opp_id.
+        candidate_ids = result.candidate_ids if isinstance(result, Tie) else []
+        candidate_opps = {app_by_id.get(cid, {}).get("opp_id") for cid in candidate_ids}
+        candidate_opps.discard(None)
+        anchor_opp = next(iter(candidate_opps)) if len(candidate_opps) == 1 else None
+        if historical:
+            history_counts["unresolved"] += 1
+            return
+        mid = None
+        if anchor_opp and can_write:
+            mid, wrote_ok, _out = _write_msg(opp_id=anchor_opp)
+            if not wrote_ok:
+                mid = None
+        if not can_write:
+            plan_lines.append("  would ask (unidentified/tie): %s" % subject[:60])
+            return
+        _ask("unresolved", opp_id=anchor_opp, trigger_ref=mid)
+
+    incomplete_all = []
+    for account in accounts:
+        since_days = lookback_days(ROOT, account, sweep_floor, by="reconcile-ats")
+        first_run = is_first_run_for_mailbox(ROOT, account)
+        domains = sorted(set(configured_domains) | set(derived_domains))
+        plan_lines.append("  %s: window %dd (floor %d, ledger says covered through %s)%s"
+                          % (account, since_days, sweep_floor,
+                             _journal.covered_through(_journal.read(ROOT), account,
+                                                      by="reconcile-ats") or "never",
+                             " — FIRST RUN: history counted, receipt-grade applied, nothing "
+                             "asked" if first_run else ""))
+        plan_lines.append("  %s: class %d configured, %d derived%s"
+                          % (account, len(configured_domains), len(derived_domains),
+                             " — %s add it to receipt_sender_domains to make the record "
+                             "say so" % ", ".join(derived_domains) if derived_domains else ""))
+
+        def search_one(acct, _since_days=since_days, _first_run=first_run):
+            """D7 — catches EVERYTHING. A non-CredentialError exception is an ok:false row
+            with reason 'other', never a traceback out of sweep_accounts()."""
+            if not domains:
+                return [], None
+            try:
+                with Mailbox(acct) as mb:
+                    q = "(%s) newer_than:%dd" % (
+                        " OR ".join("from:%s" % d for d in domains), _since_days)
+                    uids = mb.search(q)
+                    for uid in uids:
+                        process_candidate(mb, acct, uid, _since_days, _first_run)
+                return [], None
+            except CredentialError as exc:
+                return None, str(exc)
+            except Exception as exc:                            # noqa: BLE001 — D7
+                return None, "%s: %s" % (type(exc).__name__, exc)
+
+        _res, incomplete = sweep_accounts(search_one, since_days=since_days, root=ROOT,
+                                          by=by_tag, accounts=[account])
+        incomplete_all += incomplete
+
+    print("ATS STATUS SWEEP — reconcile.py --ats (design-inbound-resolution.md)")
+    print("=" * 78)
+    print("  posture: ats.parsed_status=%s · ats.max_asks_per_run=%d"
+         % (parsed_status, max_asks))
+    for line in plan_lines:
+        print(line)
+    if history_counts["total"]:
+        print("  %d historical ATS message(s): %d applied, %d already recorded, %d "
+             "unresolved (not asked; --backfill-asks writes them under the cap)"
+             % (history_counts["total"], history_counts["applied"],
+                history_counts["recorded"], history_counts["unresolved"]))
+    print("  applied: %d · proposed: %d · asks created: %d · withheld this run: %d"
+         % (applied[0], proposed[0], asks_created[0], withheld[0]))
+    if withheld[0]:
+        print("  %d candidate(s) not asked this run (cap %d) — re-seen next run"
+             % (withheld[0], max_asks))
+    if incomplete_all:
+        print("!! INCOMPLETE COVERAGE: %s" % ", ".join(sorted(set(incomplete_all))))
+
+    if not can_write:
+        print("WRITE PHASE SKIPPED — the run lock is not held. Plan only; every store is "
+             "byte-identical to before this run. Re-run under the daily's write phase, or "
+             "take the lock by hand, to actually apply this plan.")
+        return 2
+    return 1 if incomplete_all else 0
+
+
+def cmd_verify(args):
+    """`reconcile.py --ats --verify [--days 30]` — design §7's ingestion half of the
+    invariant: a READ, independent of the ledger, that catches a record.py write that never
+    happened for mail the mailbox actually has. D2 — a mailbox this cannot even OPEN prints
+    UNVERIFIED (the SILENCE UNVERIFIED banner's own shape), never 'no traffic', and the run
+    exits non-zero."""
+    cfg = _read_config(ROOT)
+    configured_domains = list(((cfg.get("ats") or {}).get("receipt_sender_domains")) or [])
+    messages_all = load("messages.jsonl")
+    derived_domains = derived_sender_domains(messages_all)
+    domains = sorted(set(configured_domains) | set(derived_domains))
+    asks_all = load("asks.jsonl")
+    have_sources = {m.get("source") for m in messages_all if m.get("source")}
+    days = args.days or COVERAGE_BACKFILL_MAX_DAYS
+
+    problem = False
+    accounts = configured_accounts()
+    for account in accounts:
+        try:
+            with Mailbox(account) as mb:
+                per_domain = {}
+                for d in domains:
+                    uids = mb.search("from:%s newer_than:%dd" % (d, days))
+                    n_recorded = n_asked = n_unrecorded = n_historical = 0
+                    first_run = is_first_run_for_mailbox(ROOT, account)
+                    for uid in uids:
+                        source = "ats:%s:%s" % (account, uid)
+                        tag = "mail:%s:%s" % (account, uid)
+                        if source in have_sources:
+                            n_recorded += 1
+                        elif any(tag in (a.get("note") or "") for a in asks_all):
+                            n_asked += 1
+                        elif first_run:
+                            n_historical += 1
+                        else:
+                            n_unrecorded += 1
+                            problem = True
+                    per_domain[d] = (len(uids), n_recorded, n_asked, n_historical,
+                                     n_unrecorded)
+                print("--VERIFY %s (window %dd)" % (account, days))
+                for d in domains:
+                    n, rec, asked, hist, unrec = per_domain.get(d, (0, 0, 0, 0, 0))
+                    if n == 0:
+                        print("  %s: no traffic" % d)
+                        continue
+                    leg = "derived, not configured" if d in derived_domains and d not in \
+                        configured_domains else "configured"
+                    print("  %s (%s): %d received · %d rows · %d asked · %d historical · "
+                         "%d UNRECORDED" % (d, leg, n, rec, asked, hist, unrec))
+                    if unrec:
+                        print("  ⛔ %d UNRECORDED — inside the sweep's own window; this is a "
+                             "PROCESS FAILURE" % unrec)
+        except CredentialError as exc:
+            print("--VERIFY %s: UNVERIFIED (credential-missing: %s)" % (account, exc))
+            problem = True
+        except Exception as exc:                                # noqa: BLE001
+            print("--VERIFY %s: UNVERIFIED (%s: %s)" % (account, type(exc).__name__, exc))
+            problem = True
+    if not accounts:
+        print("--VERIFY: no mailbox configured — UNVERIFIED")
+        problem = True
+    return 1 if problem else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Reconcile tracked state against mail + LinkedIn.")
     ap.add_argument("--all", action="store_true")
@@ -476,7 +1154,41 @@ def main():
     ap.add_argument("--limit", type=int, default=0, help="Max rows to check (0 = no cap).")
     ap.add_argument("--harvest", action="store_true",
                     help="Write the ACTUAL messages (both directions) into data/messages.jsonl.")
+    ap.add_argument("--ats", action="store_true",
+                    help="design-inbound-resolution.md — the deterministic ATS status sweep "
+                         "(ADR-029/030). Run in the daily's write phase, immediately after its "
+                         "own lock take; every write is under record.py's own lock/validate/"
+                         "rollback.")
+    ap.add_argument("--already-locked", action="store_true",
+                    help="--ats: the calling run already holds the run lock. Verified, not "
+                         "trusted — unheld, --ats degrades to plan-only (exit 2) rather than "
+                         "hard-refusing (design §6).")
+    ap.add_argument("--verify", action="store_true",
+                    help="--ats --verify: read-only ingestion check (design §7) — queries "
+                         "each mailbox for the sender class over the window independent of "
+                         "the ledger; an UNRECORDED uid inside the sweep's own window is a "
+                         "process failure, exit 1. A mailbox this cannot open prints "
+                         "UNVERIFIED and exits non-zero (D2).")
+    ap.add_argument("--days", type=int, default=0,
+                    help="--ats --verify: window in days (default: "
+                         "COVERAGE_BACKFILL_MAX_DAYS).")
+    # ⭐ public #101 — the test seam. `--apply`'s provenance note used to carry a LITERAL date
+    # string (the date this feature was first written), so a row recovered weeks later carried
+    # a false provenance date forever — nothing about the write depended on when the RUN
+    # actually happened. `--as-of` lets a test assert the stamp tracks a controlled clock
+    # rather than reading real wall time in the harness; every real invocation leaves it unset
+    # and gets today, exactly as before this fix in every way except correctness.
+    ap.add_argument("--as-of", dest="as_of", default=None,
+                    help="ISO date (YYYY-MM-DD) this run's own provenance stamps use — "
+                         "default: today. Test seam; a real run never needs this.")
     args = ap.parse_args()
+    if args.as_of and not re.match(r"^\d{4}-\d{2}-\d{2}$", args.as_of):
+        print("⛔ REFUSED — --as-of must be an ISO date (YYYY-MM-DD), got %r" % args.as_of)
+        return 1
+    run_date = args.as_of or datetime.date.today().isoformat()
+
+    if args.ats:
+        return cmd_verify(args) if args.verify else cmd_ats(args)
 
     opps = load("opportunities.jsonl")
     companies = {c["id"]: c.get("name", c["id"]) for c in load("companies.jsonl")}
@@ -664,10 +1376,10 @@ def main():
             if row["medium"].startswith("email") and not row.get("address_status"):
                 row["address_status"] = "unknown"
             row["note"] = ((row.get("note") + " | ") if row.get("note") else "") + \
-                ("MEDIUM RECOVERED 2026-08-02 by scripts/reconcile.py from the mailbox. "
+                ("MEDIUM RECOVERED %s by scripts/reconcile.py from the mailbox. "
                  "The header proves the FAMILY (email vs LinkedIn); it cannot distinguish "
                  "connection-note vs InMail vs free message, so the finer value is not "
-                 "asserted.")
+                 "asserted." % run_date)
             changed += 1
         write_jsonl(path, lines)
         print("APPLIED: medium filled on %d row(s). Run validate_data.py." % changed)
@@ -675,12 +1387,18 @@ def main():
         print("  (re-run with --apply to write these; outcome changes are never auto-applied)\n")
 
     # ---- --harvest: store the ACTUAL conversation, both directions -------------
+    #
+    # design-inbound-resolution.md §2 (ADR-029) — every row lands through
+    # `record.append_message()`, in-process, never a second hand-rolled append+write_jsonl.
+    # Before this fix the whole batch was ONE unlocked, unvalidated write at the end of the
+    # loop; now each message is its own short-held-lock, validator-run, rollback-on-a-new-
+    # problem transaction — the same guarantee `cmd_touched`/`cmd_answered` give their own
+    # writes. `have` is still read once up front (an id-membership check, never a second
+    # source of truth) so a uid already recorded is skipped before the write is even attempted.
     if args.harvest:
-        mpath = os.path.join(DATA, "messages.jsonl")
-        with open(mpath, encoding="utf-8") as fh:
-            existing = [json.loads(l) for l in fh if l.strip()]
-        have = {m.get("source") for m in existing}
-        added = 0
+        import record as _record
+        have = {m.get("source") for m in load("messages.jsonl")}
+        added, refused = 0, 0
         print("\n" + "-" * 78)
         print("HARVEST — writing the actual messages into data/messages.jsonl")
         print("-" * 78)
@@ -715,25 +1433,31 @@ def main():
                     continue
                 d = parse_hdr_date(decode_header_value(msg.get("Date")))
                 inbound = last in frm.lower() if last else False
-                existing.append({
+                row = {
                     "id": "%s-%s-%s" % ((o.get("id") or "x")[:28],
                                         (r.get("person_id") or "x"), uid),
-                    "opp_id": o.get("id"),
+                    "opp_id": o.get("id"), "channel_id": None,
                     "person_id": r.get("person_id"),
                     "direction": "inbound" if inbound else "outbound",
                     "medium": r.get("medium") if not inbound else "email-reply",
                     "sent_on": d.isoformat() if d else None,
                     "from": frm, "to": decode_header_value(msg.get("To")),
                     "subject": subj, "body": body[:8000],
-                    "source": src, "variant": None,
-                })
-                have.add(src)
-                added += 1
-        write_jsonl(mpath, existing)
+                    "source": src, "variant": None, "answers": None,
+                    "resolves": None, "resolved_by": None,
+                }
+                rc, out = _record.append_message(row, already_locked=False)
+                have.add(src)          # never re-attempt this uid, refused or not
+                if rc == 0:
+                    added += 1
+                else:
+                    refused += 1
+                    print("  ⚠️ %s: %s" % (src, out.strip()))
+        existing = load("messages.jsonl")
         ins = sum(1 for m in existing if m.get("direction") == "inbound")
         outs = sum(1 for m in existing if m.get("direction") == "outbound")
-        print("  harvested %d new message(s). Store now: %d inbound / %d outbound."
-              % (added, ins, outs))
+        print("  harvested %d new message(s)%s. Store now: %d inbound / %d outbound."
+              % (added, (" (%d refused)" % refused) if refused else "", ins, outs))
         print("  Every row carries `source` (gmail:<account>:<uid>) so it can be re-verified.")
 
     sess.close()

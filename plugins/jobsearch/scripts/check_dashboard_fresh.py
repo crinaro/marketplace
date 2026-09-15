@@ -411,12 +411,29 @@ def main():
     if args.fix and (bad or absent):
         print("Regenerating (%d source(s) newer, %d page(s) not generated yet)..."
               % (len(bad), len(absent)))
-        for gen in GENERATORS:
+        # public #104 — GENERATORS and OUTPUTS are parallel (each generator owns exactly the
+        # OUTPUTS member at the same index; see the comment on OUTPUTS above). Watching that
+        # member's own mtime around each generator's run is what tells "ran and rewrote its
+        # page" apart from "exited 0 and did nothing" — the shape a truncated engine script
+        # (public #104's own incident: scripts/generate_dashboard.py was 0 bytes) actually
+        # takes: no error, no output, target untouched. Before this fix that silently fell
+        # through into the generic re-check below, which could only ever say "STALE" — never
+        # naming the generator that produced nothing.
+        for gen, out_rel in zip(GENERATORS, OUTPUTS):
+            target = _tree.resolve_rel(ROOT, out_rel)
+            before_mtime = mtime(target)
             r = subprocess.run([sys.executable, os.path.join(ENGINE_SCRIPTS, gen)],
                                capture_output=True, text=True)
-            print("  " + (r.stdout.strip().splitlines() or ["?"])[0])
+            out = r.stdout.strip()
+            print("  " + (out.splitlines() or ["?"])[0])
             if r.returncode:
                 print("  !! %s failed:\n" % gen + r.stderr.strip()[:400])
+                return 1
+            if not out and mtime(target) == before_mtime:
+                print("  !! %s exited 0 but wrote nothing — %s was NOT regenerated." % (gen, out_rel))
+                print("     A silent no-op success here is exactly what let a truncated engine")
+                print("     script (public #104) report a bare STALE with no cause named.")
+                print("     Investigate %s directly — do not re-run --fix." % gen)
                 return 1
         bad = stale()
         absent = missing()

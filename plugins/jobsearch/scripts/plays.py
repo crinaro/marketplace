@@ -402,18 +402,31 @@ def _evaluate_body(name, args, opp, play, ctx, as_of, _stack):
 # ---- next_step() — "the answer is a date, not silence" (§18) -------------------------------
 
 class NextStep:
-    __slots__ = ("kind", "step", "due", "expires", "why", "detail")
+    """§18: "while waiting, the answer is a date." `due` is a `step`'s own anchor (when its
+    entry condition became true — usually in the past, the date the step has been actionable
+    SINCE); `until` is a `waiting` step's own clock (when the wait itself ends — always in the
+    future or today, the date nothing changes before). Two different questions, two fields —
+    never one field wearing two meanings.
 
-    def __init__(self, kind, step=None, due=None, expires=None, why=None, detail=None):
+    ⭐ dev #369-follow-up — `until` was ADDED here (was: a same-shaped but unused `expires`
+    slot, never read by any caller, never passed by `next_step()`'s own `waiting` branch,
+    which called `NextStep("waiting", until=close, ...)` regardless — an argument no
+    `__init__` param or `__slots__` entry existed for, so EVERY waiting-state pursuit raised
+    `TypeError` on construction. `generate_dashboard.py`'s renderer already read `_ns.until`
+    (unchanged here) — the caller and the renderer had already agreed on the name; only the
+    constructor in between never caught up."""
+    __slots__ = ("kind", "step", "due", "until", "why", "detail")
+
+    def __init__(self, kind, step=None, due=None, until=None, why=None, detail=None):
         self.kind = kind
         self.step = step
         self.due = due
-        self.expires = expires
+        self.until = until
         self.why = why
         self.detail = detail
 
     def as_dict(self):
-        return {"kind": self.kind, "step": self.step, "due": self.due, "expires": self.expires,
+        return {"kind": self.kind, "step": self.step, "due": self.due, "until": self.until,
                "why": self.why, "detail": self.detail}
 
 

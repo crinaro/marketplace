@@ -80,6 +80,13 @@ def replay(rows):
     once, so a claim must be an atomic append and never a rewrite — the same reasoning that made
     the findings queue append-only. Last claim wins, which is safe because a claim is a LEASE:
     it expires, so a worker that dies holding one cannot strand the task forever.
+
+    ⭐ design-linkedin-runner-resilience.md §5.1 (public #47/#96) — `_withheld` is the same
+    shape: a fact THIS run already knows (the pane is stalled or not signed in, so a
+    `requires: chrome` item cannot actually be finished right now) goes into the queryable
+    store, never only into a run's summary prose. It folds onto `withheld_because`, cleared the
+    moment a `_claim` succeeds — a claim only ever succeeds past the withholding check in
+    `main()` below, so reaching `_claim` at all means the state that justified it has moved on.
     """
     state = {}
     for r in rows:
@@ -91,10 +98,12 @@ def replay(rows):
             state[rid] = dict(state[rid], status="done", done_at=r.get("done_at"))
         elif kind == "_claim" and rid in state:
             state[rid] = dict(state[rid], claimed_by=r.get("claimed_by"),
-                              claimed_at=r.get("claimed_at"))
+                              claimed_at=r.get("claimed_at"), withheld_because=None)
         elif kind == "_release" and rid in state:
             state[rid] = dict(state[rid], claimed_by=None, claimed_at=None)
-        elif kind not in ("_done", "_claim", "_release"):
+        elif kind == "_withheld" and rid in state:
+            state[rid] = dict(state[rid], withheld_because=r.get("because"))
+        elif kind not in ("_done", "_claim", "_release", "_withheld"):
             state[rid] = r
     return list(state.values())
 
@@ -112,6 +121,80 @@ def claim_is_live(rec, now):
     except Exception:
         return False
     return held < CLAIM_LEASE_MINUTES
+
+
+# design-linkedin-runner-resilience.md §5.1 (public #47/#96, D-6) — the skip is DATA, never
+# skill prose. `#96` is exactly the loop the old (withdrawn) draft left open: a stalled pane
+# was keyed to THIS session's run_id and the rule lived in daily-run's prose, so the next
+# scheduled session — a fresh run_id, a fresh reading of the skill — re-claimed the same
+# still-stalled item. `pane_withhold_reason()` below reads ANY run_id's record: the fact that
+# matters is the SURFACE's state, not who last observed it.
+
+def _pane_lock_path():
+    return os.environ.get("CLAUDESEARCH_PANE_LOCK_PATH") or \
+        os.path.join(ROOT, ".git", "pane_lock.json")
+
+
+def _pane_stale_minutes():
+    """`linkedin.pane_stale_minutes` — the SAME registered key `runlock.py --resource pane`
+    reads for the opposite question (should the lock be taken over). Here it answers "is this
+    OBSERVATION still fresh enough to act on" — a `stalled_at`/`verdict_at` older than the
+    window is assumed superseded by now, so it stops withholding rather than blocking forever."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import config_keys as _ck
+        try:
+            with open(os.path.join(ROOT, "config.json"), encoding="utf-8") as fh:
+                cfg = json.load(fh)
+        except (OSError, ValueError):
+            cfg = {}
+        value, _ = _ck.describe(cfg, _ck.LINKEDIN_PANE_STALE_MINUTES)
+        return value
+    except Exception:
+        return 90
+
+
+def _minutes_since(iso_ts):
+    if not iso_ts:
+        return None
+    try:
+        t = datetime.datetime.fromisoformat(iso_ts)
+    except (TypeError, ValueError):
+        return None
+    return (datetime.datetime.now() - t).total_seconds() / 60.0
+
+
+def pane_withhold_reason():
+    """Why a `requires: chrome` item should be withheld right now, or None. Two conditions,
+    either sufficient: a recent confirmed render-stall (`stalled_at`), or a recent
+    not-signed-in preflight verdict (`last_verdict`/`verdict_at`) — both within
+    `linkedin.pane_stale_minutes`, both written by `runlock.py --resource pane` (§1, §5.2).
+    A missing or unreadable lock file withholds nothing: no evidence of a problem is not
+    evidence of one."""
+    p = _pane_lock_path()
+    if not os.path.exists(p):
+        return None
+    try:
+        with open(p, encoding="utf-8") as fh:
+            rec = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    limit = _pane_stale_minutes()
+    age = _minutes_since(rec.get("stalled_at"))
+    if age is not None and age <= limit:
+        return "pane-stalled %s %s" % (rec.get("run_id"), rec.get("stalled_at"))
+    if rec.get("last_verdict") == "not-signed-in":
+        age = _minutes_since(rec.get("verdict_at"))
+        if age is not None and age <= limit:
+            return "not-signed-in %s" % rec.get("verdict_at")
+    return None
+
+
+def _record_withheld(rid, reason, now):
+    rec = {"id": rid, "kind": "_withheld", "because": reason,
+          "at": now.isoformat(timespec="seconds")}
+    with open(QUEUE, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
 class DeferredRefused(ValueError):
@@ -210,6 +293,16 @@ def main():
                 print("   Leave it for a worker that can. A claimed task that fails is WORSE than")
                 print("   an unclaimed one, because it looks handled.")
                 return 1
+            # design-linkedin-runner-resilience.md §5.1 — ALWAYS a LIVE check, never the stored
+            # `withheld_because`: that field is folded state from whenever `--claimable` last
+            # observed a withholding condition, and only `_claim` clears it — a pane that
+            # recovered since then must not stay gated on a stale marker. `pane_withhold_reason`
+            # is itself time-windowed (stalled_at/verdict_at vs linkedin.pane_stale_minutes), so
+            # recomputing it here is cheap and always current.
+            reason = pane_withhold_reason() if "chrome" in (cur.get("requires") or []) else None
+            if reason:
+                print("⛔ WITHHELD — %s. Leave it; the pane is not usable right now." % reason)
+                return 1
             if claim_is_live(cur, now) and cur.get("claimed_by") != me:
                 print("Already claimed by %s at %s (lease %d min). Not stealing."
                       % (cur["claimed_by"], cur.get("claimed_at"), CLAIM_LEASE_MINUTES))
@@ -231,14 +324,44 @@ def main():
         return 0
 
     pending = [r for r in rows if r.get("status") == "pending"]
-    mine = [r for r in pending if can_run(r, caps)]
+
+    # design-linkedin-runner-resilience.md §5.1 — ALWAYS a LIVE recomputation (never gated on a
+    # stale folded `withheld_because`, which only `_claim` clears and would otherwise stick
+    # past a pane that already recovered): computed for every listing, so the header stat is
+    # honest even without --claimable, but only APPENDED as a durable `_withheld` record on
+    # --claimable — that is the moment a worker actually attempted to see what it could claim,
+    # which is what makes the row worth recording.
+    withheld_now = {}
+    for r in pending:
+        if "chrome" in (r.get("requires") or []) and can_run(r, caps):
+            reason = pane_withhold_reason()
+            if reason:
+                withheld_now[r["id"]] = reason
+                if args.claimable:
+                    _record_withheld(r["id"], reason, now)
+    if args.claimable and withheld_now:
+        rows = replay(load())
+        pending = [r for r in rows if r.get("status") == "pending"]
+
+    def _is_withheld(r):
+        return r["id"] in withheld_now
+
+    mine = [r for r in pending if can_run(r, caps) and not _is_withheld(r)]
+    withheld = [r for r in pending if can_run(r, caps) and _is_withheld(r)]
     blocked = [r for r in pending if not can_run(r, caps)]
     show = rows if args.all else (mine if args.claimable else pending)
 
     print("DEFERRED WORK — worker %s" % me)
     print("=" * 72)
-    print("  %d pending · %d this worker can run · %d need another environment · %d done"
-          % (len(pending), len(mine), len(blocked), len(rows) - len(pending)))
+    print("  %d pending · %d this worker can run · %d withheld (pane) · "
+          "%d need another environment · %d done"
+          % (len(pending), len(mine), len(withheld), len(blocked), len(rows) - len(pending)))
+    if withheld and args.claimable:
+        print("\n  ⏸ WITHHELD — a stalled or not-signed-in pane makes these unclaimable "
+              "right now (the item stays queued for a session whose probe says otherwise):")
+        for r in withheld:
+            print("     %-52s %s" % ((r.get("what") or "")[:52],
+                                     withheld_now.get(r["id"]) or r.get("withheld_because")))
     if blocked and not args.claimable:
         print("\n  ⛔ NEEDS ANOTHER ENVIRONMENT — do not attempt these here:")
         for r in blocked:
@@ -254,6 +377,11 @@ def main():
             print("      why deferred: %s" % r["why"])
         if r.get("requires"):
             print("      requires: %s" % ", ".join(r["requires"]))
+        # Only the CURRENT computation, never the folded `withheld_because` alone — that field
+        # is last-observed-at-some-point state and would otherwise keep printing WITHHELD for
+        # an item this same run just counted as claimable, once the pane has recovered.
+        if r["id"] in withheld_now:
+            print("      WITHHELD: %s" % withheld_now[r["id"]])
         if claim_is_live(r, now):
             print("      CLAIMED by %s at %s" % (r.get("claimed_by"), r.get("claimed_at")))
         print("      queued %s · id %s" % (r.get("queued_at"), r.get("id")))

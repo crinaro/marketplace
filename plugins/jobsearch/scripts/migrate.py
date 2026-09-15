@@ -4071,7 +4071,7 @@ _NEW_STEP_ORDER = ("apply", "identify-insider", "reach-insider", "identify-recru
                   "verify-open", "contact-recruiter")
 
 
-def m_0_49_0_plans_plays(profile, apply_it, _inject_fault=None):
+def m_0_49_0_plans_plays(profile, apply_it, _inject_fault=None, today=None):
     """0.49.0 — B4 of ADR-031's connected-entities design: the owner's strategy becomes data.
     `plans`/`plays` become real, top-level stores; `opportunities.plan_id` becomes mandatory
     on every non-terminal pursuit; `play_stage`/`next_action` are retired (design §19, §22).
@@ -4099,7 +4099,17 @@ def m_0_49_0_plans_plays(profile, apply_it, _inject_fault=None):
     (and no `plays.jsonl`/`plans.jsonl` exist yet only on a genuinely fresh, never-migrated
     profile) is treated as done. `_inject_fault="drop_required_field"` corrupts one freshly
     built plan row (drops its `status`) in the SHADOW copy only, to prove the all-or-nothing
-    property from outside this function (the m_0_48_0_touches precedent)."""
+    property from outside this function (the m_0_48_0_touches precedent).
+
+    `today` is test-only (never passed by the MIGRATIONS runner, which calls every migration
+    with exactly `(profile, apply_it=...)` — see TestMessyMigrationChain, which runs this
+    function unmodified alongside every other migration and gets the real date, same as
+    before this parameter existed): `pattern_reconciled_on` and every row's
+    `plan_assigned_on` are stamped `today` when given, so the golden-output test
+    (`TestB4MigrationGoldenOutput`) can pin it to the date the committed `post-b4` fixture was
+    generated on, the same seam `m_0_47_0_drafts_working_set` already uses for the identical
+    reason — a byte-for-byte comparison against a committed golden file must never depend on
+    which day the SUITE happens to run; real runs always take the actual date."""
     opp_path = os.path.join(profile, "data", "opportunities.jsonl")
     touches_path = os.path.join(profile, "data", "touches.jsonl")
     if not os.path.exists(opp_path):
@@ -4127,7 +4137,7 @@ def m_0_49_0_plans_plays(profile, apply_it, _inject_fault=None):
         return False, ("  ⚠️ 0.49.0 REFUSED — the shipped pattern 'referral-first' is missing "
                        "from plugins/jobsearch/plays/; nothing migrated.")
 
-    today_iso = _datetime.date.today().isoformat()
+    today_iso = today or _datetime.date.today().isoformat()
     play_row = {
         "id": "referral-first", "pattern": "referral-first",
         "pattern_sha": _plays_mod.pattern_sha(referral_first),
@@ -4304,6 +4314,208 @@ def m_0_49_0_plans_plays(profile, apply_it, _inject_fault=None):
     return True, (msg + "\n" + pre_existing_note if pre_existing_note else msg)
 
 
+def m_0_50_0_ats_config_keys(profile, apply_it):
+    """0.50.0 — design-inbound-resolution.md §5.2: seeds `config.json.ats.parsed_status`,
+    `ats.sweep_days` and `ats.max_asks_per_run` with the registry's own defaults
+    (`config_keys.py`) where absent — the `m_0_47_0_states_config_keys` precedent, verbatim
+    shape, applied to the three new knobs `reconcile.py --ats` reads. Additive only; never
+    overwrites a value already there, however it got there."""
+    path, cfg, err = _load_config(profile)
+    if cfg is None:
+        if err is None:
+            return True, ""
+        return False, "  ⚠️ config.json is unreadable, so ats keys were left alone: %s" % err
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import config_keys as _ck
+    ats = cfg.get("ats")
+    if not isinstance(ats, dict):
+        ats = {}
+    seeded = []
+    if "parsed_status" not in ats:
+        ats["parsed_status"] = _ck.ATS_PARSED_STATUS_DEFAULT
+        seeded.append("ats.parsed_status=%r" % _ck.ATS_PARSED_STATUS_DEFAULT)
+    if "sweep_days" not in ats:
+        ats["sweep_days"] = _ck.ATS_SWEEP_DAYS_DEFAULT
+        seeded.append("ats.sweep_days=%s" % _ck.ATS_SWEEP_DAYS_DEFAULT)
+    if "max_asks_per_run" not in ats:
+        ats["max_asks_per_run"] = _ck.ATS_MAX_ASKS_PER_RUN_DEFAULT
+        seeded.append("ats.max_asks_per_run=%s" % _ck.ATS_MAX_ASKS_PER_RUN_DEFAULT)
+    if not seeded:
+        return True, ""
+    if not apply_it:
+        return True, "  would seed (0.50.0) config.json.ats: %s" % ", ".join(seeded)
+    cfg["ats"] = ats
+    _rewrite_config(path, cfg)
+    return True, "  ✅ config.json.ats (0.50.0) — seeded %s" % ", ".join(seeded)
+
+# ── geo_screen (public #89, dev #355) ──────────────────────────────────────────────────────────
+def m_0_50_0_geography_keys(profile, apply_it):
+    """0.50.0 — public #89 / dev #355: `config.json.geography` carries the shape every profile
+    actually derived from a resume already has (`relocation.{open, affirmative_destinations}`,
+    `commute_anchors[].max_commute_minutes`) — `init_profile.py` scaffolded a DIFFERENT shape
+    (`relocation_open_to`, `radius_minutes`) that no shipped script has ever read. Same defect
+    class as `m_0_41_0_ats_config_keys` — two spellings of one meaning, config.geography instead
+    of config.ats — and the reason public #89's daily-run triage answered from memory: there was
+    nothing for it to consult even if it had tried to read the live names.
+
+    ⭐ MERGE, NEVER DROP. `relocation_open_to` (the destinations the candidate named as open to)
+    becomes `relocation.affirmative_destinations` — renamed outright when only the old key
+    exists, unioned in order (the existing list first, then anything only the old one had) when
+    both already exist, the same precedent `m_0_41_0_ats_config_keys` set for `ats.*`.
+    `radius_minutes` (one global commute radius) seeds `max_commute_minutes` on every
+    `commute_anchors[]` entry that does not already carry its own — an anchor that already
+    states its own minutes keeps it, never overwritten. `relocation.open` is then seeded True
+    when the merged `affirmative_destinations` ends up non-empty, False otherwise — never
+    guessed True from an empty list, the same caution `effective_setting()` already applies to
+    an unrecognized commute location (never default to "relocation").
+
+    A shape this cannot read — `relocation_open_to` not a list, `geography.relocation` present
+    and not an object, `radius_minutes` not a number, `commute_anchors` not a list of objects —
+    is REPORTED, not overwritten, exactly the `m_0_41_0_ats_config_keys` refusal shape. Runs
+    only when at least one old key is present; idempotent, the second run finds neither and
+    returns.
+    """
+    path, cfg, err = _load_config(profile)
+    if cfg is None:
+        if err is None:
+            return True, ""
+        return False, ("  ⚠️ config.json is unreadable, so geography keys were left alone: %s"
+                       % err)
+    geo = cfg.get("geography")
+    if not isinstance(geo, dict):
+        return True, ""
+
+    has_old_dest = "relocation_open_to" in geo
+    has_old_radius = "radius_minutes" in geo
+    if not has_old_dest and not has_old_radius:
+        return True, ""
+
+    old_dest = geo.get("relocation_open_to")
+    relocation = geo.get("relocation")
+    old_radius = geo.get("radius_minutes")
+    anchors = geo.get("commute_anchors")
+
+    refused = []
+    if has_old_dest and not isinstance(old_dest, list):
+        refused.append("geography.relocation_open_to is not a list — merge it by hand")
+    if relocation is not None and not isinstance(relocation, dict):
+        refused.append("geography.relocation exists and is not an object — merge it by hand")
+    if has_old_radius and not isinstance(old_radius, (int, float)):
+        refused.append("geography.radius_minutes is not a number — merge it by hand")
+    if has_old_radius:
+        if anchors is not None and not isinstance(anchors, list):
+            refused.append("geography.commute_anchors is not a list — merge it by hand")
+        elif isinstance(anchors, list):
+            for i, a in enumerate(anchors):
+                if not isinstance(a, dict):
+                    refused.append("geography.commute_anchors[%d] is not an object — merge it "
+                                   "by hand" % i)
+    if refused:
+        return False, "  ⚠️ config.json.geography (0.50.0): " + "; ".join(refused)
+
+    if not isinstance(relocation, dict):
+        relocation = {}
+    done = []
+
+    if has_old_dest:
+        existing = relocation.get("affirmative_destinations")
+        if isinstance(existing, list):
+            before = len(existing)
+            relocation["affirmative_destinations"] = _merge_lists(existing, old_dest)
+            done.append("relocation_open_to merged into relocation.affirmative_destinations "
+                        "(%d value(s) carried over, none dropped)"
+                        % (len(relocation["affirmative_destinations"]) - before))
+        else:
+            relocation["affirmative_destinations"] = list(old_dest)
+            done.append("relocation_open_to -> relocation.affirmative_destinations")
+        del geo["relocation_open_to"]
+
+    if has_old_radius:
+        seeded_anchors = 0
+        if isinstance(anchors, list):
+            for a in anchors:
+                if "max_commute_minutes" not in a:
+                    a["max_commute_minutes"] = old_radius
+                    seeded_anchors += 1
+        del geo["radius_minutes"]
+        done.append("radius_minutes -> max_commute_minutes on %d anchor(s) lacking their own"
+                    % seeded_anchors)
+
+    if "open" not in relocation:
+        relocation["open"] = bool(relocation.get("affirmative_destinations"))
+        done.append("relocation.open seeded %r" % relocation["open"])
+
+    geo["relocation"] = relocation
+
+    if not apply_it:
+        return True, "  would rename (0.50.0) config.json.geography: %s" % "; ".join(done)
+    cfg["geography"] = geo
+    _rewrite_config(path, cfg)
+    return True, "  ✅ config.json.geography (0.50.0) — %s" % "; ".join(done)
+
+def m_0_50_0_variant_surface_field(profile, apply_it):
+    """0.50.0 — public #59/#64, ADR-027 (build step 3 of ADR-028's own `surface` field):
+    `resume_variants.py --check` proved only that a printed claim traces to the union, which
+    is the right check for a page sent to a named recipient and the wrong one, alone, for a
+    page published to the open web. Every declared variant now carries `surface`
+    (`scripts/surfaces.py` is the one lookup table); `visibility` is DERIVED from it and is
+    never stored (ADR-027 rejected storing it a second time — the alternative an EARLIER,
+    now-superseded version of this same fix tried; see docs/doc_impact.jsonl).
+
+    ⚠️ ADR-027, quoted, governs what this migration may NOT do: "An undeclared `surface` is
+    not a default — it is a state, and it fails" ... "Default-private ... hides the true state
+    (nobody decided) behind a value that looks decided" ... "Neither default is acceptable;
+    the gate must refuse to guess." That is a rule about resume_variants.py's own CHECK LOGIC
+    going forward — it must never treat an absent `surface` as `print` on an ONGOING basis.
+
+    What this migration DOES do, and why it is not the rejected alternative: at 0.50.0,
+    `surfaces.SURFACES` carries exactly ONE entry (`print`) reachable by any PRE-EXISTING
+    variant (the second, `public-profile`, is new in this same release and cannot be what an
+    already-declared row meant). `surfaces.py`'s own prior comment on this exact fact: "Not a
+    guess — with one row in the table there is exactly one possible value." Seeding `print`
+    here is recording, once, in an audited migration, the single fact that was already true of
+    every such row (the code's own `DEFAULT_SURFACE` fallback already rendered every one of
+    them as `print` before this field existed) — never an ongoing default a reader would have
+    to already suspect the gap to find, and never a guess among options that could disagree.
+    Going forward the CHECK never guesses: a NEW row with no `surface`, or a profile that
+    later gains a third surface, is `unplaced` — a state, never a default — exactly as
+    ADR-027 requires.
+
+    RETIRED rows are seeded too (a store that reads uniformly; the CHECK itself never asks a
+    retired row for its surface, same as it never asks a retired row for anything else —
+    terminal, no claim checks). PRESERVE, THEN TRANSFORM is vacuous in the usual sense
+    (nothing is relocated — a missing key is filled, not a value replaced) but the
+    ADDITIVE-ONLY half still matters: a row that already carries ANY value for `surface` —
+    including a value this migration would not itself have chosen — is left exactly as it is.
+
+    Idempotent: a second run finds no row missing the key and reports a no-op.
+    """
+    path = os.path.join(profile, "data", "resume_variants.jsonl")
+    if not os.path.exists(path):
+        return True, ""
+    try:
+        rows = _read_jsonl(path)
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ resume_variants.jsonl could not be read — nothing seeded: %s" % e
+    missing = [r for r in rows if "surface" not in r]
+    if not missing:
+        return True, ""
+    if not apply_it:
+        return True, ("  would seed (0.50.0) resume_variants.jsonl: surface=print on "
+                      "%d row(s) (the one surface any pre-existing row could mean)"
+                      % len(missing))
+    for r in rows:
+        if "surface" not in r:
+            r["surface"] = "print"
+    import _atomic
+    _atomic.write_jsonl(path, rows)
+    return True, ("  ✅ resume_variants.jsonl (0.50.0) — seeded surface=print on %d row(s) "
+                 "(the only surface a pre-existing row could mean); declare 'public-profile' "
+                 "by hand on the one meant for the open web — the engine cannot make that "
+                 "call for you, and any FUTURE row with no surface is 'unplaced', never "
+                 "guessed" % len(missing))
+
+
 MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               ("0.17.0", m_0_17_0), ("0.18.0", m_0_18_0), ("0.19.0", m_0_19_0),
               ("0.20.0", m_0_20_0), ("0.24.0", m_0_24_0_blocked_until),
@@ -4416,7 +4628,21 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               # ⚠️ KEYED "0.49.0" — 0.48.0 is the newest PUBLISHED jobsearch release
               # (plugin.json at HEAD; ADR-009's rule, same note every prior stage's own
               # migration carries). Re-verified when 0.49.0 is actually cut.
-              ("0.49.0", m_0_49_0_plans_plays))
+              ("0.49.0", m_0_49_0_plans_plays),
+              # ⚠️ KEYED "0.50.0" — 0.49.0 is the newest PUBLISHED jobsearch release
+              # (plugin.json at HEAD reads 0.49.0; gitStatus at this dispatch's own start
+              # shows the 0.49.0 release record discharged). A profile that installed 0.49.0
+              # is stamped exactly "0.49.0", and pending_for()'s strict `<` would never fire a
+              # migration keyed to it. Re-verified when 0.50.0 is actually cut.
+              # design-inbound-resolution.md (ADR-029/030 build).
+              ("0.50.0", m_0_50_0_ats_config_keys),
+              # ⚠️ KEYED "0.50.0" — 0.49.0 is the newest PUBLISHED jobsearch release (gitStatus
+              # at this dispatch's own start shows the 0.49.0 release record discharged, commit
+              # d9d3b3a). A profile that installed 0.49.0 is stamped exactly "0.49.0", and
+              # pending_for()'s strict `<` would never fire a migration keyed to it.
+              # Re-verified when 0.50.0 is actually cut. Public #89 / dev #355.
+              ("0.50.0", m_0_50_0_geography_keys),
+              ("0.50.0", m_0_50_0_variant_surface_field))
 
 
 def pending_for(profile, engine=None):
@@ -4552,11 +4778,18 @@ def main():
     # user's DATA below, and heals the INSTALL here. The heal does not depend on a profile —
     # the install belongs to the machine — so it runs even when the cwd has nothing to migrate.
     # Its own envelope, so a heal crash can never cost the profile its migrations.
+    #
+    # ⭐ public #104 — captured in its OWN variable (`heal_verdict`, never the generic `verdict`
+    # the profile-migration branch below also uses) specifically so the "Profile is current"
+    # line further down can say what the TREE check actually found, instead of speaking only
+    # from the schema version string. Defaults to None: a heal that raised below could not
+    # verify the tree at all, and None is read the same as "not verified" there, never as "fine".
+    heal_verdict = None
     try:
         import heal_install
-        verdict, h_lines = heal_install.heal_default(apply_it=not args.check)
+        heal_verdict, h_lines = heal_install.heal_default(apply_it=not args.check)
         if h_lines:
-            print("jobsearch: install self-heal (%s)" % verdict)
+            print("jobsearch: install self-heal (%s)" % heal_verdict)
             print("\n".join(h_lines))
     except Exception as e:                     # noqa: BLE001 — housekeeping must never block
         diag("migrate", verdict="heal-error", reason=type(e).__name__)
@@ -4689,7 +4922,25 @@ def main():
             if not args.check:
                 record_noop(profile, engine)
             if not args.hook:
-                print("Profile is current (schema %s, engine %s)." % (stamp, engine))
+                # ⭐⭐ public #104 — THE LINE THE OWNER'S OWN RUN CAUGHT: this used to read
+                # "Profile is current" from the schema version string alone, over an install
+                # tree the heal above had ALREADY reported as corrupt (1 drifted, unexplained)
+                # — both true of the version, both false of the tree. The schema-currency claim
+                # this line makes is still only ever about the version string; say so plainly,
+                # and never let it stand in for "the tree was verified clean this session."
+                # ⚠️ the exact sentence below is pinned by existing tests (assertIn "Profile is
+                # current") — extend what follows it, never the sentence itself.
+                base = "Profile is current (schema %s, engine %s)." % (stamp, engine)
+                if heal_verdict == "repaired":
+                    print(base + " Install tree repaired this session (public #104) — see the "
+                                 "install self-heal line above.")
+                elif heal_verdict in ("unexplained", "no-manifest", "error"):
+                    print(base)
+                    print("  ⚠️ but the install TREE was not verified clean this session — see "
+                          "the install self-heal warning above. The schema version matching "
+                          "does not mean the files on disk do.")
+                else:
+                    print(base)
             return 0
 
         lines, all_done = [], True

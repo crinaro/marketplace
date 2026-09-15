@@ -139,7 +139,7 @@
    }
   },
   "messages": {
-   "_note": "dev #83 — declared 2026-08-14. Load-bearing for your_move.derive_channel_last_touch (joins on involvements.person_id, ADR-031 B1), previously invisible to this file even though validate_data.py has enforced it structurally (independently, ~lines 193-252) since 2026-08-02. 'required' here is exactly what that enforcement demands UNCONDITIONALLY; it CANNOT express the anchor rule (opp_id OR channel_id, at least one) because 'required' is an AND list — see validate_data.py's own check for that. Unlike opportunities, nothing yet feeds this entry into the unknown-key guard, so 'fields' is not enforced against messages.jsonl today. `answers` (dev/audit 2026-09-02, Class B) is the reply relation as a key: the id of the message this one replies to — optional, must resolve, must answer a message of the other direction, must not precede it; validate_data.py enforces all four, m_0_36_0_message_answers backfills history where attribution is unambiguous.",
+   "_note": "dev #83 — declared 2026-08-14. Load-bearing for your_move.derive_channel_last_touch (joins on involvements.person_id, ADR-031 B1), previously invisible to this file even though validate_data.py has enforced it structurally (independently, ~lines 193-252) since 2026-08-02. 'required' here is exactly what that enforcement demands UNCONDITIONALLY; it CANNOT express the anchor rule (opp_id OR channel_id, at least one) because 'required' is an AND list — see validate_data.py's own check for that. Unlike opportunities, nothing yet feeds this entry into the unknown-key guard, so 'fields' is not enforced against messages.jsonl today. `answers` (dev/audit 2026-09-02, Class B) is the reply relation as a key: the id of the message this one replies to — optional, must resolve, must answer a message of the other direction, must not precede it; validate_data.py enforces all four, m_0_36_0_message_answers backfills history where attribution is unambiguous. `resolves`/`resolved_by` (design-inbound-resolution.md §2, ADR-029) are the SAME shape one layer over: `resolves` names the `applications.id` this INBOUND message resolves; `resolved_by` names which of ADR-030's three tiers matched (req-id|url|company-single). Both optional (no migration backfills history — ADR-029's own open question closes as 'no migration'); never set alongside `answers` on the same row (a message either answers a person or resolves an application, never both); validate_data.py enforces the five rules design §2 states.",
    "id_field": "id",
    "fields": [
     "id",
@@ -155,7 +155,9 @@
     "body",
     "source",
     "variant",
-    "answers"
+    "answers",
+    "resolves",
+    "resolved_by"
    ],
    "required": [
     "direction",
@@ -217,7 +219,7 @@
    "arrays": {}
   },
   "resume_variants": {
-   "_note": "public #26 - the DECLARED printed-resume set. The variant FILES are authored markdown (the candidate writes them; D5); this store is the record of WHICH variants exist, which buyer archetype each serves, and when each was last reconciled against presence/claims.md (the claim union, formerly resume.md). `status` is `active`|`retired` and `retired` is TERMINAL: an applications[] row may reference a retired variant forever (history stays resolvable), but an opportunity's `resume_variant` (the variant to SEND) must name an active one - validate_data.py enforces both directions. `union_sha` is the 12-hex sha256 stamp of presence/claims.md at the last reconcile, written by resume_variants.py --stamp; prose-level hygiene (claim containment, staleness, orphan union claims) lives in resume_variants.py, NOT here - this store is structure only.",
+   "_note": "public #26 - the DECLARED printed-resume set. The variant FILES are authored markdown (the candidate writes them; D5); this store is the record of WHICH variants exist, which buyer archetype each serves, and when each was last reconciled against presence/claims.md (the claim union, formerly resume.md). `status` is `active`|`retired` and `retired` is TERMINAL: an applications[] row may reference a retired variant forever (history stays resolvable), but an opportunity's `resume_variant` (the variant to SEND) must name an active one - validate_data.py enforces both directions. `union_sha` is the 12-hex sha256 stamp of presence/claims.md at the last reconcile, written by resume_variants.py --stamp; prose-level hygiene (claim containment, staleness, orphan union claims) lives in resume_variants.py, NOT here - this store is structure only. `surface` (public #59/#64, ADR-027, ADR-028) names the destination this variant targets - scripts/surfaces.py is the one lookup table (currently `print`, `public-profile`); NULLABLE here (an undeclared surface is resume_variants.py's own 'unplaced' FAIL state, not a schema violation - validate_data.py only refuses a value that IS present and not in surfaces.py's own table). `visibility` is DERIVED from `surface` by that lookup and is NEVER stored on this row - ADR-027 rejected storing it a second time. resume_variants.py --check requires a valid `surface` on every non-retired row and additionally fails 'private-on-public' on a public-surface row that prints a claim whose union bullet (presence/claims.md) carries no per-claim `[public]` tag at its head.",
    "id_field": "id",
    "fields": [
     "id",
@@ -228,6 +230,7 @@
     "union_sha",
     "union_reconciled_on",
     "retired_on",
+    "surface",
     "note"
    ],
    "required": [

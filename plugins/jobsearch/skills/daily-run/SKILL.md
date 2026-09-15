@@ -174,6 +174,16 @@ expire in 45 minutes so a dead worker cannot strand work.
 ("2 items need chrome; this worker has none") rather than silently skipped — that visibility is
 the whole point of `whoami.py` declaring capability instead of everyone attempting everything.
 
+**⭐ A `chrome` item can also be WITHHELD even on a worker that HAS chrome** (design-linkedin-
+runner-resilience.md §5.1, public #47/#96) — `--claimable` reads the pane lock, and while it
+shows a recent render-stall or not-signed-in verdict, the item is printed under a `⏸ WITHHELD`
+heading with the reason instead of being claimed. **Leave it; do not `--claim` a withheld item,
+and do not re-run the pane probe yourself to "check" — a session whose own probe finds the pane
+usable claims it normally, on a later pass.** This is the fix for the #96 loop: the old rule
+keyed the skip to THIS session's run_id in skill prose, so the next scheduled session (a fresh
+run_id) re-claimed the same still-stalled pane. The withholding is data, read fresh every run,
+never a rule this file states.
+
 **⭐ An item whose `what` starts with `brief.py --probe` (Query or Citation C1, §5.2) drains
 differently: run the `what` VERBATIM, then apply the disposition it prints** — every account
 `confirmed*` → exit 0 → `deferred.py --done <id>`; any account `unreachable`/`not-permitted`/
@@ -197,6 +207,10 @@ keychain-holding session."
 
 ## 3. GMAIL — two passes, and the order matters
 
+**⭐ ATS status mail (rejections, receipts, interview invites) is NOT read here or by
+`inbox-scan` — it is §7a′'s `reconcile.py --ats`, in the write phase**, because resolving it
+to a specific application is a write (a status change), not a finding to report.
+
 **a. ALERT SWEEP — run this DIRECTLY, do NOT delegate it.**
 `~/.claude/jobsearch/run alert_sweep.py` (`--days 1`; widen if a run was skipped). It deterministically
 finds board and aggregator digests across EVERY configured mailbox. Read them yourself and cross-check
@@ -204,6 +218,25 @@ against the pipeline — **the exclusion list is `verdict: pass` OR `status: pas
 script because a model summary once reported these "silent" for three consecutive runs while the
 digest sat in the mailbox: **a daily, predictable artifact is a query, not a summary.** A non-zero
 exit means an account could not be searched — the result is PARTIAL, never a zero.
+
+**3a. ⭐⭐ A GEOGRAPHY DISMISSAL IS A QUERY, NEVER A MEMORY (public #89, dev #355).** The daily run
+once dismissed a WHOLE digest on the reasoning that its metro "was not a relocation destination" —
+while that exact metro had been sitting in `config.json.geography.relocation.affirmative_destinations`
+for days. The model answered from memory because nothing forced it to look. **For every digest row
+you are about to screen out on geography, run the script and quote its verdict line — never write
+your own geography reasoning from recall:**
+
+```bash
+~/.claude/jobsearch/run geo_screen.py "<the row's location, verbatim>"
+~/.claude/jobsearch/run geo_screen.py "<the row's location, verbatim>" --type remote
+```
+
+Six verdicts, each citing the config key it came from: `remote`, `commute`, `affirmative`,
+`relocation-ok`, `out`, `unknown`. **Only `out` is a dismissal.** `unknown` (the profile's
+`geography` section is missing entirely) is NEVER read as `out` — surface it in the run summary
+as a gap needing the owner's config, and keep the row. Paste the script's own printed line (the
+`out: ...` sentence, citing `geography.relocation.open`) into the digest-triage note as the
+reason — never a paraphrase, never "not a relocation destination" typed from memory.
 
 **b. ⭐ WRITE IT DOWN NOW — the JSON is the OPERATING STORE.** The daily run does not re-derive
 state from the mailbox; it reads `data/*.jsonl` and writes changes **immediately**:
@@ -237,6 +270,17 @@ and — swept FIRST per the hard rule — meeting artifacts. **It is NOT trusted
 (pass a owns those); brief it so it neither re-reports nor skips them.
 
 ## 4. LINKEDIN — delegate to `linkedin-runner`
+
+**⭐ CHECK THE BUDGET BEFORE DISPATCHING (dev #292 — this is its first skill caller; ADR-031
+§17 named the gap: no skill consulted `posture.may()`):**
+
+```bash
+~/.claude/jobsearch/run posture.py --may linkedin
+```
+
+A LinkedIn pass is unattended browser work like any other spend this posture gates — **exit
+non-zero means this posture does not permit it unattended; skip the dispatch, say so in the
+summary, and do not improvise a lighter-weight substitute.**
 
 **⭐⭐ THE RESPONSE SWEEP IS DRIVEN BY THE OUTREACH STATE, NOT BY UI SURFACES (2026-08-04, per the
 candidate: "if our process has me sending messages & connection requests, it should be checking
@@ -272,12 +316,15 @@ network working, whichever outcome the plan serves.
 
 Job search since the last successful run (remote AND on-site/hybrid within the commute anchor —
 the JOB SEARCH capability covers both), contact-path lookup for any new appealing role.
+**Screen every candidate role's location with `~/.claude/jobsearch/run geo_screen.py
+"<location>"` before deciding it is out of scope — §3a's rule applies here too: only its own
+`out:` line dismisses a role, never a from-memory read of the metro.**
 
 **If it reports BROWSER UNAVAILABLE or NOT SIGNED IN**, flag it at the top of the summary, tell the candidate to run **`/jobsearch:linkedin`** (a lapsed session is the commonest cause and they must sign in directly), **and QUEUE the work:**
 
 ```bash
 ~/.claude/jobsearch/run deferred.py --add "LinkedIn pass: reply check + inbox + job search" \
-    --why "Chrome extension unreachable this run"
+    --why "Chrome extension unreachable this run" --requires chrome
 ```
 
 **Do not skip the queue step.** That flag used to be prose in a run summary and nothing else — no
@@ -344,6 +391,21 @@ connection.** This is per-application, not weekly.
   this design removed.
 - **Still refused, or reported STALE** → a session died holding it. `--steal`, and say so.
 
+**7a′. ⭐ ATS STATUS SWEEP (design-inbound-resolution.md, ADR-029/030) — run it DIRECTLY, never
+delegate:**
+
+```bash
+~/.claude/jobsearch/run reconcile.py --ats --already-locked
+```
+
+Deterministic — sender-domain identification, three-tier resolution (req-id/URL/company),
+first hit wins, a tie asks rather than guesses. A tier-1/tier-2 hit (the ATS's own key
+appeared in the mail) is applied; a tier-3 name match is proposed as an ask instead
+(`ats.parsed_status`, default `receipt-grade`). **Read its plan lines into the run summary** —
+what applied, what was proposed, what was withheld under the per-run ask cap. Every write is
+under THIS run's own lock hold (`--already-locked`); invoked with the lock unheld it degrades
+to plan-only and exits 2 — never a hard failure, never a half-written store.
+
 **⭐ USE THE WRITE API — do not hand-edit the JSONL. A brand-new row is `create`, not an edit.**
 
 **⭐ `--already-locked` on every call in this phase.** This run took the run lock two commands
@@ -357,10 +419,20 @@ for you when exactly one `search` plan is active (`plans.subject_kind: search`, 
 which one sourced this role:** `--plan <plan_id>` on the `create` call, or the write is refused
 naming the ambiguity.
 
+**⭐ public #83 rule 1 — a sighting from a URL-bearing channel (`job-board`/`aggregator`, board-
+sweeper's and linkedin-runner's own channels) must carry `source_url`, captured NOW.** Put it
+directly in the `sightings[]` entry on `create` (`{"channel_id":"...","seen_on":"...",
+"source_url":"<the posting's own URL>"}`), or pass `--source-url <url>` on an `append ...
+sightings` call so it never has to be hand-embedded in the JSON. `record.py` refuses a new
+URL-bearing sighting that omits it, naming the channel and the rule — the link is free to grab
+this moment and effectively unrecoverable once the posting comes down. (A recruiter-sourced
+sighting, or one on a role an application already backs, is unaffected.)
+
 ```bash
-~/.claude/jobsearch/run record.py create <opp_id> '{"company_id":"...","title":"...","status":"backlog","stage":"sourced","verdict":"undecided","jd_url":null,"location":{...},"sightings":[...],"next_action_owner":"..."}' --already-locked [--plan <plan_id>]
+~/.claude/jobsearch/run record.py create <opp_id> '{"company_id":"...","title":"...","status":"backlog","stage":"sourced","verdict":"undecided","jd_url":null,"location":{...},"sightings":[{"channel_id":"...","seen_on":"...","source_url":"..."}],"next_action_owner":"..."}' --already-locked [--plan <plan_id>]
 ~/.claude/jobsearch/run record.py set <opp_id> stage screening --already-locked
 ~/.claude/jobsearch/run record.py set-in <opp_id> outreach contact_id=<cid> outcome replied --already-locked
+~/.claude/jobsearch/run record.py append <opp_id> sightings '{"channel_id":"...","seen_on":"..."}' --source-url "..." --already-locked
 ~/.claude/jobsearch/run record.py append <opp_id> research_log '{"date":"...","note":"..."}' --already-locked
 ```
 
@@ -560,26 +632,37 @@ rule:** a *role-only* pursue/pass ask unanswered past its act-by date is closed 
 removed from Your Move — reversible, and logged. **NEVER applies to letters, sends, or anything
 with an external deadline.**
 
-## 14. POST A RUN-SUMMARY, THEN COMMIT + PUSH
+## 14. POST A RUN-SUMMARY, THEN COMMIT + PUSH, THEN CLOSE THE JOURNAL
+
+**public #85** — a scheduled run once posted "no change across mail, the professional network,
+and sourcing" while that SAME run had recorded a genuine inbound reply and left real writes
+uncommitted. The summary is no longer typed prose; it is a QUERY over this run's own journal and
+its own git diff, computed at the moment it is posted — the model cannot assert a claim the
+machine disagrees with, because the machine is what generates the claim:
 
 ```bash
-~/.claude/jobsearch/run inbox.py --post "<one line: what changed>" \
-    --detail "<what the candidate must decide, act-by date first>" --urgency high
+~/.claude/jobsearch/run run_summary.py --run <id> --post \
+    [--annotate "<what the candidate must decide, act-by date first>"]
 ```
 
-**Do this even on a quiet run** — "nothing new" is information, and its absence is
-indistinguishable from a run that never fired. **Writing state is not the same as telling the candidate:**
-one run booked a call and sourced three roles while `notifyOnCompletion` was unclaimed and the run
-queued nothing, so none of it reached their view. `--urgency high` if anything needs them.
+This prints the run's own footprint — files changed, mailboxes swept, probes, gaps opened — as a
+GENERATED headline (`CHANGED: …` or `NO CHANGE: …`) and posts it to the coordinator queue.
+**`--annotate` adds context UNDER the headline; it can never change what the headline says** — an
+annotation that contradicts the machine-measured footprint (e.g. "nothing new" over a real diff)
+is REFUSED outright rather than silently posted, exactly the shape #85's bad summary would have
+hit. **Do this even on a quiet run** — "nothing new" is information, and its absence is
+indistinguishable from a run that never fired. **Writing state is not the same as telling the
+candidate:** one run booked a call and sourced three roles while `notifyOnCompletion` was
+unclaimed and the run queued nothing, so none of it reached their view.
 
-Then commit, genuinely last, and let the sync resolver decide the push half:
+Then commit, genuinely last for the DATA, and let the sync resolver decide the push half:
 
 ```bash
 # ⚠️ EXPLICIT PATHS, never `git add -A`. Subagents have written into this same tree during the
 # run, and `-A` bundles whatever they left mid-edit into this commit -- the exact failure the
 # rulebook records for 2026-07-25. Name what this run changed.
 git add data/ handoff.md log.md outreach/drafts.md applying/cover_letters.md dashboard.html 2>/dev/null
-git commit -m "Daily run $(date +%F): <one-line summary>"
+git commit -m "Daily run $(date +%F): <one-line summary> [run:<id>]"
 ~/.claude/jobsearch/run sync.py --end-of-run
 ```
 
@@ -587,15 +670,32 @@ git commit -m "Daily run $(date +%F): <one-line summary>"
 It resolves the profile's DECLARED `config.sync.mode` and acts: under `remote` it delegates to
 `push.sh` (which reads this session's `.git/push_token`, minted at run start — a bare `git push`
 still fails by design); under `local-only` it prints the one line the run summary must carry
-verbatim: *committed locally; not pushed — this profile declares `sync.mode: local-only`*.
-**Copy its output into the run summary either way** — the summary is where "did this run's work
-leave the machine?" travels as fact, never as ad-hoc prose. Two exits are LOUD, not optional
-reading: **NOT PERSISTED** means the push FAILED and the commit exists only on this machine —
-the summary carries `NOT PUSHED: <reason>`, because a run that persisted off-machine and one
-that did not are otherwise identical afterwards. **COMMIT-ONLY** means the mode is `undeclared`,
-`mismatch`, or unreadable — never push by hand on a guess; say so and let `migrate.py` or
-`sync.py --set` resolve it. **`git status` should be clean when you finish**; if it isn't, a
-step after the commit mutated state and the ordering is wrong again.
+verbatim: *committed locally; not pushed — this profile declares `sync.mode: local-only`*. Two
+exits are LOUD, not optional reading: **NOT PERSISTED** means the push FAILED and the commit
+exists only on this machine; **COMMIT-ONLY** means the mode is `undeclared`, `mismatch`, or
+unreadable — never push by hand on a guess; say so and let `migrate.py` or `sync.py --set`
+resolve it. **Either way, journal it immediately** rather than editing the already-posted
+summary by hand — a fact the run knows goes into the store, never into prose someone has to
+remember to update:
+
+```bash
+~/.claude/jobsearch/run journal.py --run <id> --note "<sync.py --end-of-run's own output line>"
+```
+
+**Close the journal now that the tree has settled — this is the run's own check that its writes
+actually PERSISTED, not merely that it posted about them:**
+
+```bash
+~/.claude/jobsearch/run journal.py --run <id> --end
+```
+
+`--end` records this same footprint shape a SECOND time, measured NOW — after the commit/push
+attempt, as the run's genuinely last action. A clean tree here is the proof the writes actually
+landed; a dirty one means either the commit above never happened or something after it mutated
+state, and `check_runs.py` reports exactly that run as one that wrote and never persisted. This
+number is expected to differ from the one `--post` showed earlier (that one is the run's real
+diff, taken BEFORE the commit) — the two are independent measurements of two different moments,
+not one value copied twice.
 
 **THEN, and only then:** `~/.claude/jobsearch/run runlock.py --release`. **Release even if the run failed
 partway** — a held lock blocks every subsequent run until it goes stale, which is far worse than

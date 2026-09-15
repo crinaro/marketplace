@@ -99,7 +99,15 @@ reasoning prose anywhere.
 **PIPELINE:** write roles to `data/opportunities.jsonl` (and `companies.jsonl` if new) — check the
 shape first with `~/.claude/jobsearch/run record.py fields --file opportunities` (or
 `--file companies`), then `~/.claude/jobsearch/run validate_data.py`. Put the JD URL in `jd_url`,
-not in prose, and add a `sighting` for how it was found.
+not in prose, and add a `sighting` for how it was found. **⭐ public #83 rule 1 — a LinkedIn Jobs
+posting is a URL-bearing channel (`job-board`, same as a board or aggregator): the sighting's
+`source_url` is the posting's own URL, captured now, in the SAME `record.py` call that adds the
+sighting — `record.py` refuses a new sighting from this channel type that omits it. The link is
+free to grab this moment and effectively unrecoverable once the posting comes down.**
+
+```bash
+~/.claude/jobsearch/run record.py append <opp_id> sightings '{"channel_id":"linkedin-jobsearch","seen_on":"..."}' --source-url "<the posting's own LinkedIn URL>"
+```
 
 ## Two browser surfaces — pick the right one, never mix them
 
@@ -140,10 +148,58 @@ carries the candidate's OWN NAME (read it from `profile.py`, never hard-code it)
 here. Absent, or a sign-in wall → fall back to the Chrome extension ladder below, and SAY in the
 report which surface you used.
 
+**Record the verdict on the pane lock the moment you know it** (design-linkedin-runner-
+resilience.md §5.2 — three gates answer three separate questions; this is the STATE gate, and
+it is learned here, nowhere else):
+
+```bash
+~/.claude/jobsearch/run runlock.py --resource pane --verdict signed-in --nonce <printed-nonce>
+# or:
+~/.claude/jobsearch/run runlock.py --resource pane --verdict not-signed-in --nonce <printed-nonce>
+```
+
+`deferred.py --claimable` reads this to withhold a `chrome`-requiring item while a recent
+`not-signed-in` verdict stands — recorded here, not guessed elsewhere.
+
 **Never mix the two in one pass** — a half-and-half sweep makes it impossible to tell which surface
 missed something.
 
 ---
+
+## ⭐⭐ TAKE THE PANE LOCK — THE FIRST CALL, BEFORE ANY BROWSER TOOL (closes public #47)
+
+**Two instances of this agent on one pane is public #47, exactly.** A lock closes it the same
+way `runlock.py` already closes two writers on the profile — a SECOND, independent lock
+(`--resource pane`), never the write lock:
+
+```bash
+~/.claude/jobsearch/run runlock.py --resource pane --take linkedin-runner --run-id <this run's id> [--surface extension]
+```
+
+**Refused → do not retry, do not improvise a workaround.** The refusal names the holder's
+`run_id` and `taken_at` — including when the holder happens to be an earlier instance of THIS
+SAME run_id (public #47 is exactly that case; the lock admits no exception for it). Journal it
+and return — a COMPLETE answer, never a partial one:
+
+```bash
+~/.claude/jobsearch/run journal.py --run <id> --gap linkedin:pane --reason pane-held \
+  --closes-when "the holding run ends"
+```
+
+Then hand back `PANE HELD by <run_id> since <taken_at>`. **Never `deferred.py --add` here** —
+the holding run is already doing this work; queuing a duplicate would run it again next session.
+
+**Keep the NONCE `--take` prints.** Every later pane-lock call this pass (`--verdict` above,
+`--stalled` below, and the final `--release`) needs it — a call carrying the wrong nonce, or
+none, is refused and changes nothing.
+
+**`--surface extension` when this pass runs on the Chrome extension** (S3, `--chrome`) — the
+SAME lock: two extension passes collide on the candidate's real Chrome exactly as two pane
+passes collide on the pane.
+
+**Release with the nonce, and end the journal run, as the LAST two calls this agent makes**
+(§"What you hand back" and §"The protocol, end to end" below) — never earlier, and never
+skipped, including on an early `BROWSER UNAVAILABLE` return.
 
 ## ⭐⭐ PREFLIGHT BEFORE ANY LONG CALL — the outage is not the bug, the DISCOVERY COST is
 
@@ -176,6 +232,7 @@ Encoded because a real run had to derive it under time pressure, and the next on
 |---|---|---|
 | cheap calls fail too | the browser is not connected at all | `BROWSER UNAVAILABLE`, queue it |
 | **cheap calls ANSWER but navigation hangs** | **the page-load / CDP path**, not the MV3 service worker | ⭐ go **straight to `--relaunch`** — a plain wake addresses the service-worker drop and will not fix this |
+| **navigation ANSWERS, a click lands, and the FRAME PROBE below confirms `render-stalled`** | **the pane answers but stops PAINTING** — clicks land, nothing renders (public #96) | go to **§"A CONFIRMED RENDER STALL"** below — never `--relaunch`, never `wake_chrome.sh`: the pane is not wedged, it is not painting, and quitting the candidate's browser fixes neither |
 
 **That second row is the expensive one to get wrong.** A plain wake looks like the gentler first
 step and costs another long timeout to fail; when cheap calls are answering, the service worker is
@@ -220,40 +277,117 @@ and right after any click meant to change the screen. **Also do not trust Linked
 search as ground truth for "does this thread exist"** — it has returned "We didn't find anything"
 for threads found seconds later by scrolling the raw list.
 
+### ⭐⭐ THE FRAME PROBE — does the pane still PAINT, not just respond? (closes public #96)
+
+**A screenshot can time out (see "SCREENSHOT MAY TIME OUT" below); the pane can still ANSWER a
+tool call while it has stopped RENDERING anything new** — the aria state can flip on a click
+while nothing paints, which is indistinguishable from a landed click without a real paint-proof.
+Run this probe **after every DOM-changing action** (a navigate, a click on a non-outbound
+control, a scroll that loads more) — one probe, not two, unless the first returns a candidate.
+
+**Run it on THIS PASS'S OWN EXECUTOR, by name — never "via javascript_tool," which does not say
+which browser:** `mcp__Claude_Browser__javascript_tool` on the pane, `mcp__claude-in-chrome__javascript_tool`
+on the extension. The wrong executor answers for a browser that is not under test. **No
+executor available → no verdict, ever** — this probe never substitutes for the preflight ladder
+above, it extends it.
+
+The probe itself is `scripts/pane_probe.py`'s `PROBE_JS` constant, byte-equal to the fence
+below (a test asserts this):
+
+<!-- pane-probe:begin -->
+```js
+(async () => {
+  if (document.visibilityState !== 'visible') return {hidden: true};
+  let painted = false;
+  requestAnimationFrame(() => requestAnimationFrame(() => { painted = true; }));
+  await new Promise(r => setTimeout(r, 4000));
+  if (painted) return {painted: true};
+  await new Promise(r => setTimeout(r, 0));
+  return {painted: false, tasks_ran: true, ready: document.readyState};
+})()
+```
+<!-- pane-probe:end -->
+
+**Read the result:**
+
+| result | verdict |
+|---|---|
+| `{hidden: true}` | **no verdict.** Chromium pauses `requestAnimationFrame` in a hidden document — a timer-vs-rAF probe there reads "stalled" forever. The pane's visibility on a scheduled (S2) pass is UNVERIFIED; on `hidden`, proceed WITHOUT stall detection, record `journal.py --note "pane hidden: stall detection unavailable this pass"`, say so in the report's first block, and rely on the preflight ladder alone. |
+| `{painted: true}` | painting normally — proceed |
+| `{painted: false, tasks_ran: true}` | a **candidate**, not yet a verdict. Probe again, **at least 4 seconds after the first returned** (the two windows must not sit inside one busy stretch), document still visible. Two such candidates in a row → **confirmed render-stall.** |
+| the call errors, times out, or returns anything else | **no verdict** — the existing ladder's `BROWSER UNAVAILABLE`, not a new state |
+
+**The honest limit:** a page whose main thread stays continuously busy across both 4-second
+windows plus the gap between them (over 8 seconds with no rendering opportunity) reads as
+stalled and is not — this probe cannot tell the two apart, and does not claim to. That false
+read is bounded by "no click is re-issued after a confirmed verdict" below and by the rule that
+follows: the cost of a false stall is a deferred pass, never a duplicated click.
+
+### ⭐⭐ A CONFIRMED RENDER STALL — stop, journal, defer; never click again
+
+On a confirmed stall (two candidates, 4s+ apart, both visible):
+
+1. **`RENDER STALLED` is the FIRST LINE of this agent's report** — never folded into "partial"
+   or omitted. A pass that degrades without naming why is the exact shape public #96 records.
+2. `~/.claude/jobsearch/run runlock.py --resource pane --stalled --nonce <the nonce>` — records
+   it on the lock, read by `deferred.py --claimable` (§5.1) so the NEXT session does not
+   re-claim the same still-stalled pane.
+3. `~/.claude/jobsearch/run journal.py --run <id> --gap linkedin:pane --reason render-stalled`,
+   plus **one `--gap linkedin:<token> --reason render-stalled` per surface this stall kept you
+   from reaching** (the five-token vocabulary below — `inbox`, `requests`, `invitations`,
+   `degree`, `notifications`).
+4. **Stop every click-dependent surface for the rest of THIS pass — no click is re-issued after a confirmed stall verdict.**
+   A read (`read_page`, `get_page_text`, `find`) may still be
+   retried; a click may not — the DOM may have taken the click without painting, and "landed"
+   is unknowable without an observed effect.
+5. **No extension fallback in the same pass.** The standing rules stand: the Chrome extension is
+   FALLBACK ONLY for a pane that is not SIGNED IN (below), never for a pane that stalled. Never
+   run `wake_chrome.sh` for a pane fault — the pane is not wedged, and quitting the candidate's
+   real Chrome fixes nothing here.
+6. `~/.claude/jobsearch/run deferred.py --add "<the work the stall blocked>" --requires chrome`
+   — queued for a session whose probe finds the pane usable again, per §5.1's own state gate.
+7. Release the pane lock and end the journal run as usual (§"What you hand back") — a stalled
+   pass still finishes cleanly from the lock's point of view; it is the WORK that is deferred,
+   not the housekeeping.
+
 **1. REPLY CHECK — driven by the outreach state, and it covers EVERY response surface.**
 For each `data/touches.jsonl` row (ADR-031 B3 — was a nested `outreach[]` row) with medium
 `linkedin-*` and `outcome` in (`awaiting`, `accepted`):
 open the person's thread via **profile → Message** and report replied / accepted / no change.
-Then, regardless of the per-person list, open all four surfaces:
-**(a) Sent invitations** — acceptances AND **replies attached to invitations**;
-**(b) message requests** — a separate surface from the inbox;
-**(c) the inbox, BOTH Focused and Other tabs**; **(d) the notification bell.**
+Then, regardless of the per-person list, open the coverage vocabulary's five tokens
+(`journal.LINKEDIN_SURFACES`) — **`invitations`** (sent invitations: acceptances AND **replies
+attached to invitations**); **`requests`** (message requests — a separate surface from the
+inbox); **`inbox`** (BOTH Focused and Other tabs); **`notifications`** (the bell); and
+**`degree`** (the per-contact connection-degree check below — a read of a person's page, not a
+UI surface you "open" once).
 ⭐ **A 3rd-degree recipient can REPLY TO AN INVITATION WITHOUT ACCEPTING IT** — that response
-appears on (a)/(b) and NEVER in the inbox, which is exactly how a 3rd-degree hiring-line
-response (<an employer>) went unseen on 2026-08-04 while the sweep read "no new
+appears on `invitations`/`requests` and NEVER in the inbox, which is exactly how a 3rd-degree
+hiring-line response (<an employer>) went unseen on 2026-08-04 while the sweep read "no new
 replies." The candidate's mailbox receives NO LinkedIn notification emails, so this browser pass
 is the ONLY detector. (Per the candidate, 2026-08-04: "if our process has me sending messages &
 connection requests, it should be checking linkedin messages.")
 
-**⭐ PER-SURFACE COVERAGE IS PART OF THE REPORT — name each of (a)–(d) as REACHED or
-UNREACHABLE, every pass (public #15).** The message-requests surface (b) was unreachable in
-three consecutive runs while (a), (c) and (d) stayed reachable in the same runs — so "the reply
-check ran" is NOT evidence that (b) was covered, and inbound messages landing there are
-invisible while the gap stands. **Treat (b) as a declared blind spot, not a covered surface:**
-still attempt it every pass (the failure may be UI drift and a later run may get through), and
-when any of the four is unreachable while the browser otherwise works, record it exactly like a
-browser outage, scoped to the surface:
+**⭐ PER-SURFACE COVERAGE IS PART OF THE REPORT — name each of the five tokens as REACHED,
+UNREACHABLE, or NOT-ATTEMPTED, every pass (public #15).** `requests` was unreachable in three
+consecutive runs while the others stayed reachable in the same runs — so "the reply check ran"
+is NOT evidence that `requests` was covered, and inbound messages landing there are invisible
+while the gap stands. **Treat any token with a history of failing as a declared blind spot, not
+a covered surface:** still attempt it every pass (the failure may be UI drift and a later run
+may get through), and when any token is unreachable while the browser otherwise works — or a
+confirmed render-stall (§"A CONFIRMED RENDER STALL" above) kept you from reaching it — record it
+exactly like a browser outage, scoped to the surface:
 
 ```bash
-~/.claude/jobsearch/run journal.py --run <id> --gap linkedin:message-requests --reason surface-unreachable \
-  --closes-when "a run reads the message-requests surface and reports what it found"
+~/.claude/jobsearch/run journal.py --run <id> --gap linkedin:requests --reason surface-unreachable \
+  --closes-when "a run reads the requests surface and reports what it found"
 ```
 
-and name it in the report's blocked section. ⚠️ **A sub-surface silently skipped is identical,
-from the outside, to one read and found empty** — the same shape `route.py` exists to prevent
-for sourcing channels, and the same shape as the truncating Sent-Invitations list below. Never
-report the reply check as complete without saying which of its four surfaces you actually
-reached.
+(`--reason render-stalled` instead of `surface-unreachable` when a confirmed stall, not UI
+drift, is why the token was unreached — see above.) Name it in the report's blocked section.
+⚠️ **A sub-surface silently skipped is identical, from the outside, to one read and found
+empty** — the same shape `route.py` exists to prevent for sourcing channels, and the same shape
+as the truncating Sent-Invitations list below. Never report the reply check as complete without
+saying which of the five tokens you actually reached.
 
 **⭐ THE PROBE — record the look, for `brief.py`'s evidence (Query or Citation C1, §4.5).**
 When a per-person thread check above finds no reply, record it as a `probe`, not silence:
@@ -263,11 +397,14 @@ When a per-person thread check above finds no reply, record it as a `probe`, not
   --medium linkedin --result empty --read inbox,requests,invitations,degree
 ```
 
-**`--read` must name all four surfaces (a)–(d) above, or `--result empty` is REFUSED (D14) —
-a look that skipped one (the message-requests gap is the recurring case) is not evidence of
-silence, only a look that covered ALL FOUR is.** When (b) is unreachable this pass, do not
-call `--probe --result empty` for that person at all; the `--gap linkedin:message-requests`
-record above is the honest state instead. A person you DID find a reply from is `--result
+**`--read` must name all four of `journal.LINKEDIN_REPLY_SURFACES` — `inbox`, `requests`,
+`invitations`, `degree` — or `--result empty` is REFUSED (D14).** `notifications` is coverage
+vocabulary only (decision 4: the bell has never been the surface a reply was found on, so it is
+never required for a silence proof) and is deliberately absent from `--read`. A look that
+skipped one of the required four (the `requests` gap is the recurring case) is not evidence of
+silence, only a look that covered all four is. When `requests` is unreachable this pass, do not
+call `--probe --result empty` for that person at all; the `--gap linkedin:requests` record above
+is the honest state instead. A person you DID find a reply from is `--result
 thread:<the reply's ISO date>`, not `empty`.
 
 **2. INBOX SCAN** — new recruiter InMail/messages not in the tracker.
@@ -285,12 +422,14 @@ thread:<the reply's ISO date>`, not `empty`.
 **4. CONTACT PATH** — for a company, find a Talent/Recruiting/People person via people search.
 Prefer current employees. **Note mutual connections ONLY if they actually exist.**
 
-**5. NOTIFICATIONS SCAN** — `linkedin.com/notifications/`, reading through its sections (job search
-updates, top picks, saved-search alerts). **This is a distinct surface** from the JOB SEARCH capability's
-deliberate searches — it is LinkedIn's algorithmic feed plus third-party saved-search alerts
-mirrored into notifications, and neither the INBOX SCAN nor the JOB SEARCH sees it. Report every job-relevant
-item so it can be cross-checked; same new-vs-tracked discipline. If a specific alert is named,
-read that one in full rather than skimming past it.
+**5. NOTIFICATIONS SCAN** (the `notifications` token) — `linkedin.com/notifications/`, reading
+through its sections (job search updates, top picks, saved-search alerts). **This is a distinct
+surface** from the JOB SEARCH capability's deliberate searches — it is LinkedIn's algorithmic
+feed plus third-party saved-search alerts mirrored into notifications, and neither the INBOX
+SCAN nor the JOB SEARCH sees it. Report every job-relevant item so it can be cross-checked; same
+new-vs-tracked discipline. If a specific alert is named, read that one in full rather than
+skimming past it. Report REACHED/UNREACHABLE/NOT-ATTEMPTED alongside the other four tokens —
+`notifications` is coverage vocabulary, never required for the reply silence proof (decision 4).
 
 **Rules:** NEVER click Send on any message, invite or application — `guard_outbound_click.py`
 backstops this mechanically, but it does not replace it. Return a compact structured report;
@@ -350,18 +489,33 @@ parent session's working tree.** Uncommitted changes in `git status` are almost 
 parent's work in progress. **That is normal, and never evidence of a concurrent session or a rival
 writer.**
 
+## The protocol, end to end
+
+1. **Take the pane lock** (`runlock.py --resource pane --take`). Refused → journal `pane-held`,
+   return `PANE HELD by <run_id> since <at>`, done — no queue entry (§"TAKE THE PANE LOCK").
+2. **Preflight** as usual (§"PREFLIGHT BEFORE ANY LONG CALL"); verify the session; record
+   `--verdict signed-in|not-signed-in` on the lock.
+3. **Probe** after each DOM-changing action, on this pass's own executor by name
+   (§"THE FRAME PROBE").
+4. **Confirmed stall** → §"A CONFIRMED RENDER STALL": journal, defer, stop clicking, never the
+   extension in the same pass.
+5. **Release the pane lock with the nonce, then end the journal run** — the last two calls,
+   always, even on an early `BROWSER UNAVAILABLE`.
+
 ## What you hand back
 
-**Which browser surface you used, in the first line** — in-app pane or Chrome extension. Every
-later claim depends on it, and a reader cannot tell from the findings alone.
+**Which browser surface you used, in the first line** — in-app pane or Chrome extension.
+**`RENDER STALLED` is the first line instead when §"A CONFIRMED RENDER STALL" fired this pass** —
+never folded into "partial" or left for the reader to infer. Every later claim depends on
+knowing which of these applies, and a reader cannot tell from the findings alone.
 
 Then, per capability you ran: what you found, or an explicit "nothing new". ⚠️ **A capability you
 did NOT run is named as not run** — a silent omission and a genuine zero are indistinguishable,
 and this agent covers the only surface where LinkedIn replies exist. **For the REPLY CHECK, that
-resolution goes down to the surface: name (a) sent invitations, (b) message requests, (c) inbox
-Focused+Other, (d) notifications individually as REACHED or UNREACHABLE — (b) is a known repeat
-offender (public #15), and an unreached (b) folded into "reply check: done" is the exact defect
-that issue records.**
+resolution goes down to the surface: name each of the five tokens — `invitations`, `requests`,
+`inbox` (Focused+Other), `notifications`, `degree` — individually as REACHED, UNREACHABLE, or
+NOT-ATTEMPTED.** `requests` is a known repeat offender (public #15), and an unreached `requests`
+folded into "reply check: done" is the exact defect that issue records.
 
 Close with anything blocked: a session that was not signed in, a page that would not render, a
 call that timed out. **`BROWSER UNAVAILABLE` is a complete, acceptable answer** and is far better

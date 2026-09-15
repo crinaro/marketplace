@@ -44,6 +44,11 @@ _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 from _root import profile_or_fixture as _pof
 import _tree
 import profile as _profile
+# public #100 — the generated drafts.md preamble is exempt from this scan, BY CONSTRUCTION:
+# the marker and the text it guards are IMPORTED from precondition.py, never re-typed here.
+# A hand-typed lookalike (same words, no real marker, or a body that no longer matches what
+# the generator emits today) is NOT exempt — see _generated_preamble_line_count below.
+import precondition as _precondition
 
 
 def _candidate_ref():
@@ -142,6 +147,27 @@ def newest_date(line, today):
     return max(found) if found else None
 
 
+def _generated_preamble_line_count(full_text):
+    """public #100 — how many leading lines of `full_text` are the VERBATIM generated
+    drafts.md preamble (`precondition.format_header()`), or 0 if it is absent, hand-edited,
+    or merely a lookalike. Exemption is BY CONSTRUCTION: the marker must be present AND the
+    text up to the first `## ` heading (or end of file) must match `format_header()`'s own
+    output byte-for-byte after stripping trailing newlines — the identical check
+    `precondition.draft_checks()` already applies to detect a hand-edited preamble, reused
+    here rather than a second hand-typed copy of what "generated" means.
+
+    A plain line that merely CONTAINS the same words (typed by hand, or the real sentence
+    pasted somewhere else in the file) does NOT get this exemption — only the real generator's
+    own, unmodified output does."""
+    if _precondition.GENERATED_MARKER not in full_text:
+        return 0
+    m = re.search(r"^##\s", full_text, re.M)
+    preamble = full_text[:m.start()] if m else full_text
+    if preamble.rstrip("\n") != _precondition.format_header().rstrip("\n"):
+        return 0
+    return preamble.count("\n")
+
+
 def trim(line, width=150):
     line = line.strip().lstrip("0123456789. ").strip()
     line = re.sub(r"\s+", " ", line)
@@ -154,11 +180,17 @@ def scan(path, today, threshold):
     aging, system = [], []
     try:
         with open(_tree.resolve_rel(REPO, path), "r", errors="replace") as fh:
-            lines = fh.readlines()
+            full_text = fh.read()
     except IOError:
         return aging, system, False
+    lines = full_text.splitlines(keepends=True)
+    # public #100 — the real generated drafts.md preamble (see _generated_preamble_line_count)
+    # is boilerplate, not a claim anyone wrote about THIS search — never scanned at all.
+    exempt_upto = _generated_preamble_line_count(full_text)
 
     for n, line in enumerate(lines, 1):
+        if n <= exempt_upto:
+            continue
         # `> `-blockquoted lines are a drafted message BODY, not a tracker claim — RULEBOOK.md's
         # "BODIES MUST BE `> `-BLOCKQUOTED OR THEY PUBLISH EMPTY" rule (outreach/drafts.md,
         # applying/cover_letters.md) means every such body was flagged here permanently, with no
@@ -173,8 +205,16 @@ def scan(path, today, threshold):
 
         if AGING.search(line):
             d = newest_date(line, today)
-            age = (today - d).days if d else None
-            if age is None or age >= threshold:
+            # ⭐ public #100 — THE FIX. 17 of 19 flags in one run were lines matched purely on
+            # a word ("awaiting"/"still"/…) with NO date anywhere on the line — that is a
+            # WORD match, not a CLAIM: nothing about it can be judged "aging" without
+            # something to measure the age FROM. A line with no date is no longer reported
+            # here at all (it is neither provably stale nor provably current — see
+            # SYSTEM-STATE above for the "go check the machine" case, which is unaffected).
+            if d is None:
+                continue
+            age = (today - d).days
+            if age >= threshold:
                 aging.append((path, n, trim(line), age))
     return aging, system, True
 
@@ -233,14 +273,11 @@ def main():
         print("\n" + "=" * 72)
         print("AGING CLAIMS - dispose of each: chase, re-date, or close out")
         print("=" * 72 + "\n")
-        undated = [r for r in all_aging if r[3] is None]
-        dated = sorted([r for r in all_aging if r[3] is not None],
-                       key=lambda r: -r[3])
-        for path, n, text, age in dated:
+        # public #100 — `scan()` no longer reports a NO-DATE match here at all (a word match
+        # with nothing to measure an age FROM is not a claim); every row past this point
+        # carries a real age, so there is no separate undated bucket to print.
+        for path, n, text, age in sorted(all_aging, key=lambda r: -r[3]):
             print("  %s:%d  [%d days]" % (path, n, age))
-            print("      %s\n" % text)
-        for path, n, text, _ in undated:
-            print("  %s:%d  [NO DATE - cannot age it; add one]" % (path, n))
             print("      %s\n" % text)
 
     missing = [p for p in FILES if p not in found]

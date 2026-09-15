@@ -166,7 +166,7 @@ def configured_accounts():
 COVERAGE_BACKFILL_MAX_DAYS = 30
 
 
-def lookback_days(root, mailbox, floor_days):
+def lookback_days(root, mailbox, floor_days, by=None):
     """dev #321 §15.1 — the LEDGER-DERIVED lookback for one mailbox's next sweep: reach back far
     enough to close any coverage hole, never less than the caller's own requested window.
 
@@ -181,9 +181,15 @@ def lookback_days(root, mailbox, floor_days):
     Callers SHOULD print the returned value (or `floor_days` when they are equal) so the window
     a sweep actually used is visible in its own output — `COVERAGE_BACKFILL_MAX_DAYS` has no
     other discovery surface yet (see the module-level note above).
+
+    ⭐ design-inbound-resolution.md §5 amendment D3 (surface pass 2026-09-14) — `by`, optional,
+    is passed straight to `journal.covered_through()`: `by=None` (every existing caller) keeps
+    the old cross-sweep-kind merge; a caller naming its OWN `by` (`reconcile.py --ats` passes
+    `by="reconcile-ats"`) sees only ITS OWN sweep history for this mailbox, so a mailbox the
+    daily `alert_sweep` covers every day does not mask `reconcile-ats`'s own first-ever run.
     """
     recs = _journal.read(root)
-    through = _journal.covered_through(recs, mailbox)
+    through = _journal.covered_through(recs, mailbox, by=by)
     if through is None:
         return max(int(floor_days or 0), COVERAGE_BACKFILL_MAX_DAYS)
     try:

@@ -251,13 +251,12 @@ def main():
                 "%s | %s | opp %s" % (m["subject"], m["date"], o["id"]),
                 opp_id=o["id"], urgency="high")
 
-    # ---- 4. ATS movement on submitted applications -----------------------------
-    for m in rd.search('(subject:("your application" OR "application status" OR interview OR '
-                       '"next steps" OR "not selected" OR "no longer under consideration")) '
-                       'newer_than:%dd' % days, limit=20):
-        add("ats", "ats:%s:%s" % (m["account"], m["uid"]),
-            "ATS/application mail: %s" % (m["subject"] or "")[:90],
-            "from %s | %s" % (m["from"], m["date"]))
+    # Block 4 (ATS movement on submitted applications) RETIRED —
+    # design-inbound-resolution.md §4.5 (ADR-030). This subject-phrase-only detection had no
+    # opp_id, no resolution, and no idempotency beyond a raw inbox key — it is exactly the
+    # "company name in the subject" identification ADR-030 rejects. `reconcile.py --ats` is
+    # the deterministic sweep now: sender-domain identification, three-tier resolution, and a
+    # real write (or a proposed one) rather than a bare inbox finding.
 
     rd.close()
 

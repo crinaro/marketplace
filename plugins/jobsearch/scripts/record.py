@@ -88,6 +88,7 @@ Python 3.9+. Standard library only.
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -98,8 +99,15 @@ import tempfile
 
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _root import profile_root as _profile_root
+from _root import profile_root as _profile_root, looks_like_profile as _looks_like_profile
 ENGINE_SCRIPTS = os.path.dirname(os.path.realpath(__file__))
+
+# design-inbound-resolution.md §2 amendment D4 (surface pass 2026-09-14) — the same code
+# `binding.py` uses (`EXIT_NO_PROFILE = 3`). Measured: on S6 (claude.ai/Home) or any surface
+# with no resolvable profile, `ROOT` falls to the CWD (`_root.py`'s own fallthrough) and every
+# store load then raised a bare FileNotFoundError — a traceback, not a refusal naming the
+# actual problem. record.py now asserts a profile before ANY verb touches a store.
+EXIT_NO_PROFILE = 3
 
 ROOT = _profile_root()
 DATA = os.path.join(ROOT, "data")
@@ -130,11 +138,33 @@ STORES = {"opportunities": "opportunities.jsonl",
           # States & Views V1b (design §15.3) — `messages` joins STORES, APPEND-ONLY: a
           # message row is immutable once written (its id is what every other row links to).
           # `set`/`set-in`/`append`/`create`/`show` on `--file messages` are refused in main()
-          # before any of the generic single-store machinery runs — `answered` and `touched`
-          # are the only verbs that write it (see MESSAGES_WRITE_VERBS below).
-          "messages": "messages.jsonl"}
-# The only two ops allowed to touch `--file messages` — everything else is refused in main().
-MESSAGES_WRITE_VERBS = frozenset({"touched", "answered"})
+          # before any of the generic single-store machinery runs — `answered`/`touched` and
+          # (design-inbound-resolution.md §2) `received` are the only verbs that write it (see
+          # MESSAGES_WRITE_VERBS below).
+          "messages": "messages.jsonl",
+          # design-inbound-resolution.md §2 — `asks` joins STORES (the `cover_letters`
+          # precedent: an explicit id, no auto-minting). Before this an ask could only ever be
+          # APPENDED by `migrate.py`; `create <id> '<json>' --file asks` / `set-in` / `append`
+          # (e.g. a `note` addendum — §4.4's dedup digest) now exist, validator-run like every
+          # other store.
+          "asks": "asks.jsonl"}
+# The only ops allowed to touch `--file messages` — everything else is refused in main().
+# design-inbound-resolution.md §2 — `received` joins `touched`/`answered`: the one public
+# INBOUND writer (ADR-029), promoted from `reconcile.py --harvest`'s own private append.
+MESSAGES_WRITE_VERBS = frozenset({"touched", "answered", "received"})
+# ⭐ public #103 — THE SINGLE SOURCE for every verb this CLI has. main()'s parser is built
+# from this tuple (never a second hand-typed list), and so is
+# TestPublic103RecordDryRunNeverWrites.test_every_verb_dry_run_leaves_every_store_byte_identical
+# in test_checks.py: a verb added here without a --dry-run mapping in that test fails LOUDLY
+# instead of silently shipping a write-capable verb nobody proved honours --dry-run — which
+# is exactly how `answered`/`touched` went unnoticed (they were added as their own
+# early-return branches in main(), before the shared dry-run gate near the bottom of main()
+# ever runs for them). `received` (design-inbound-resolution.md §2) joins the tuple for the
+# identical reason — it is its own early-return branch too, and must prove --dry-run the
+# same way.
+OPS = ("create", "set", "set-in", "append", "show", "fields",
+       "decide", "application-status", "networking-closed",
+       "answered", "touched", "received", "merge-person")
 LOCK = os.path.join(ENGINE_SCRIPTS, "runlock.py")
 # ⭐ ENGINE, not profile — the data MODEL ships with the code; the DATA belongs to the user.
 MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
@@ -182,6 +212,47 @@ def check_field(store, field, array=None):
     return None
 
 
+def sighting_source_url_problem(sighting, channel_type_by_id, referenced_channel_ids, receipted):
+    """public #83 rule 1 — refuse a NEW sighting from a URL-bearing channel (job-board/
+    aggregator — `validate_data.URL_BEARING_CHANNEL_TYPES`, imported rather than re-typed, the
+    same set doctor.py's run-start advisory (#360) reads) with no source_url, AT THE MOMENT IT
+    IS CAPTURED. The link is free right now and effectively unrecoverable once the posting
+    comes down — making it optional guaranteed it was sometimes dropped (public #83's own
+    finding). Returns None if the sighting is fine to write, else the reason to refuse.
+
+    The SAME two exclusions the run-start advisory computes (never re-typed, only re-derived
+    from data this caller already has, since the advisory works from a whole record after the
+    fact and this works from one sighting before it is written):
+
+      1. recruiter-sourced — `referenced_channel_ids` (the record's own channel_id plus every
+         sighting already on it, plus this new one) resolves ANY channel of type 'recruiter'.
+         There was never a public posting to link, regardless of this sighting's own channel.
+      2. receipt-backed — `receipted` is True when an applications.jsonl row for this
+         opportunity already carries a status in validate_data.SUBMITTED_APP_STATUS. The
+         application itself is durable evidence the role existed.
+
+    A channel type outside URL_BEARING_CHANNEL_TYPES (recruiter/referral/company-site/
+    alert-email) is never in scope at all — it never carried a public URL to lose.
+    """
+    if sighting.get("source_url"):
+        return None
+    _vd = _validator_module()
+    ctype = channel_type_by_id.get(sighting.get("channel_id"))
+    if ctype not in _vd.URL_BEARING_CHANNEL_TYPES:
+        return None
+    if any(channel_type_by_id.get(cid) == "recruiter"
+           for cid in referenced_channel_ids if cid):
+        return None    # 1. recruiter-sourced
+    if receipted:
+        return None    # 2. receipt-backed
+    return ("sighting from channel %r (type %r) has no source_url. public #83 rule 1: a "
+            "sighting from a URL-bearing channel (job-board/aggregator) must carry its URL at "
+            "the moment it is captured — the link is free now and effectively unrecoverable "
+            "once the posting comes down. Pass 'source_url' in the sighting JSON, or record it "
+            "through a channel that never carries one (e.g. a recruiter relationship)."
+            % (sighting.get("channel_id"), ctype))
+
+
 class LockError(RuntimeError):
     pass
 
@@ -214,6 +285,19 @@ def load(store):
     p = os.path.join(DATA, STORES[store])
     with open(p, encoding="utf-8") as fh:
         return [json.loads(l) for l in fh if l.strip()]
+
+
+def _load_or_empty(store):
+    """`load(store)`, but an ABSENT store is empty rather than a crash — the same "missing
+    thing is not a failure" contract every read-only check in this engine honours (a profile
+    that predates a store, or one a test harness never populated because it is testing
+    something else, must not blow up a check that merely wants to LOOK at it). Only for checks
+    that read a store to inform a refusal; a write path that actually MUTATES a store still
+    wants load()'s own crash — a missing store there is a real problem, not an empty one."""
+    try:
+        return load(store)
+    except OSError:
+        return []
 
 
 def save_atomic(store, rows):
@@ -886,6 +970,27 @@ def cmd_touched(args):
     msg_id = mint_message_id(opp_id, person_id, date) if is_email else None
     to_label = _person_name(person_id) or person_id
 
+    # ⭐ public #103 — THE FIX. `touched` used to have no --dry-run gate at all: every check
+    # above (opp exists, involvement exists, medium/role valid) already ran, so this is the
+    # exact point the write-shaped verbs (decide/set-in/…) stop at too. No lock is taken and
+    # neither append below ever runs.
+    if args.dry_run:
+        preview = []
+        if is_email:
+            already_msg = any(m.get("id") == msg_id for m in load("messages"))
+            preview.append(("message %s already recorded" % msg_id) if already_msg
+                           else ("would record message %s" % msg_id))
+        touches_rows = load("touches")
+        already_touch = any(o.get("person_id") == person_id and o.get("opp_id") == opp_id
+                            and o.get("date") == date and o.get("medium") == medium
+                            and o.get("message_ref") == msg_id
+                            for o in touches_rows)
+        preview.append("touch already recorded" if already_touch
+                       else "would record a touch on %s" % opp_id)
+        print("touched: %s -> %s via %s on %s" % (opp_id, person_id, medium, date))
+        print("  --dry-run: nothing written. (%s)" % "; ".join(preview))
+        return 0
+
     if args.already_locked:
         if not lock_is_held():
             print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
@@ -1034,6 +1139,17 @@ def cmd_answered(args):
         return 0
     to_label = _person_name(person_id) or person_id or "unknown"
 
+    # ⭐ public #103 — THE FIX. This is the worst shape on record: `answered --dry-run` used to
+    # write to `messages`, which is append-only (§15.3) — the resulting row could then never
+    # be removed except by hand-editing the store, which the engine's own rules forbid. Every
+    # refusal check above (target resolves, medium valid, not already recorded) has already
+    # run, so this is the same point the write-shaped verbs stop at.
+    if args.dry_run:
+        print("answered: %s -> outbound message %s (medium=%s, on=%s)"
+             % (target, msg_id, medium, date))
+        print("  --dry-run: nothing written.")
+        return 0
+
     if args.already_locked:
         if not lock_is_held():
             print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
@@ -1075,7 +1191,185 @@ def cmd_answered(args):
     return 0
 
 
+# ── design-inbound-resolution.md §2 (ADR-029) — the shared inbound message writer ──────────
+#
+# THE ONE PUBLIC INBOUND WRITER. Before this, the only code that ever appended an inbound
+# `messages` row was `reconcile.py --harvest`'s own private `existing.append(...)` +
+# `write_jsonl` — no lock, no validator, no rollback. `append_message` is that write, promoted:
+# `cmd_received` below is its CLI face (`record.py received ...`); `reconcile.py --harvest`
+# calls this function IN-PROCESS instead of keeping a second copy of the append+validate+
+# rollback dance (§2's own words: "one inbound writer path and one rollback").
+
+def append_message(row, already_locked=False, wait=DEFAULT_WAIT):
+    """Append `row` (a full messages.jsonl dict, `id` already minted by the caller
+    deterministically) under the lock, validator-run, rolled back byte-identical on a new
+    problem — the exact `cmd_answered` shape, generalised to a caller-supplied row rather than
+    one this function builds itself.
+
+    Idempotent by id: a second call with the SAME `id` (the deterministic mint from `--source`
+    means the SAME source mints the SAME id) is a no-op, not a duplicate and not a re-validate
+    — this is what makes a re-swept uid safe (design §5).
+
+    Returns `(returncode, message)`: 0 with the store landed (or already there) clean, 1
+    refused or rolled back. Locking mirrors every other write here: `already_locked=True`
+    VERIFIES `lock_is_held()` rather than trusting the caller; the plain path takes and
+    releases its own short-lived hold."""
+    mid = row.get("id")
+    if any(m.get("id") == mid for m in load("messages")):
+        return 0, "  · message %s already recorded — nothing further to do" % mid
+
+    if already_locked:
+        if not lock_is_held():
+            return 1, ("  REFUSED — --already-locked, but NOBODY holds the run lock.\n"
+                       "  Take it first (runlock.py --take), or drop the flag.")
+    else:
+        try:
+            take_lock("record.py received %s" % mid, wait=wait)
+        except LockError as e:
+            return 1, "  REFUSED — %s" % e
+    try:
+        messages = load("messages")
+        if any(m.get("id") == mid for m in messages):
+            return 0, "  · message %s already recorded — nothing further to do" % mid
+        before = snapshot("messages")
+        pre_rc, _, _, pre_problems = validate()
+        messages.append(row)
+        save_atomic("messages", messages)
+        rc, out, err, problems = validate()
+        if rc != 0:
+            added = new_problems(pre_problems, problems)
+            if not (pre_rc != 0 and added == []):
+                restore("messages", before)
+                return 1, ("  ⛔ REFUSED — this message broke the store; rolled back.\n  "
+                           + "\n  ".join(_diagnostic_lines(rc, out, err)))
+    finally:
+        if not already_locked:
+            release_lock()
+    return 0, ("  ✦ message %s recorded — written atomically, validator clean" % mid)
+
+
+_TIMESTAMP_ARG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?$")
+
+
+def cmd_received(args):
+    """`record.py received --opp <opp_id> | --channel <channel_id> [--person <person_id>]
+    --from <addr> [--to <addr>] --on <ISO ts> --subject <text> --body-file <path>
+    --source <token> [--medium email] [--resolves <app_id> --resolved-by
+    req-id|url|company-single] [--already-locked]`
+
+    design-inbound-resolution.md §2 — the ONE public writer for an INBOUND message
+    (ADR-029). `id` is minted from `--source` (`in-<sha1(source)[:12]>`), deterministic, so a
+    second write of the same source is idempotent by construction (see `append_message`).
+    `--body-file`, never `--body`: an ATS body is thousands of characters and argv is the
+    wrong place."""
+    if args.rest:
+        print("usage: received --opp <opp_id> | --channel <channel_id> [--person <id>] "
+              "--from <addr> [--to <addr>] --on <ISO ts> --subject <text> "
+              "--body-file <path> --source <token> [--medium email] "
+              "[--resolves <app_id> --resolved-by req-id|url|company-single]")
+        return 2
+    if not args.source_token:
+        print("⛔ REFUSED — --source is required — a body with no provenance cannot be "
+              "re-verified against the mailbox.")
+        return 1
+    if not args.on_date or not _TIMESTAMP_ARG_RE.match(args.on_date):
+        print("⛔ REFUSED — --on must be an ISO date or 'YYYY-MM-DD HH:MM[:SS]' timestamp, "
+              "got %r" % args.on_date)
+        return 1
+    if args.opp_id and args.channel_id:
+        print("⛔ REFUSED — pass --opp OR --channel, never both.")
+        return 1
+    if not args.opp_id and not args.channel_id and not args.resolves:
+        print("⛔ REFUSED — needs an anchor: --opp <opp_id> or --channel <channel_id> "
+              "(at least one, unless --resolves derives one). A message anchored to nothing "
+              "is unfindable.")
+        return 1
+    if not args.body_file:
+        print("⛔ REFUSED — --body-file is required — an ATS body belongs in a file, never "
+              "argv.")
+        return 1
+    try:
+        with open(args.body_file, encoding="utf-8") as fh:
+            body = fh.read()
+    except OSError as e:
+        print("⛔ REFUSED — could not read --body-file %r: %s" % (args.body_file, e))
+        return 1
+    # `email-reply` is the default: MEDIA is an OUTREACH taxonomy (validate_data.py's own
+    # comment) and bare 'email' is legal only for direction='third-party' — an inbound ATS/
+    # employer message is a reply-channel event, not a third party, so it needs a real MEDIA
+    # value. Checked BEFORE the write (the touched/answered convention) rather than left to the
+    # validator's rollback, so a bad --medium refuses immediately with the legal set named.
+    medium = args.medium or "email-reply"
+    if medium not in _validator_module().MEDIA:
+        print("⛔ REFUSED — --medium must be one of %s"
+              % ", ".join(sorted(_validator_module().MEDIA)))
+        return 1
+    if bool(args.resolves) != bool(args.resolved_by):
+        print("⛔ REFUSED — --resolves and --resolved-by are required TOGETHER, or not at "
+              "all (ADR-030: the tier that matched is recorded).")
+        return 1
+
+    opp_id = args.opp_id
+    if args.resolves:
+        app = find(load("applications"), args.resolves)
+        if app is None:
+            print("⛔ REFUSED — --resolves %r does not resolve to any applications row."
+                  % args.resolves)
+            return 1
+        derived_opp = app.get("opp_id")
+        if opp_id and opp_id != derived_opp:
+            print("⛔ REFUSED — --opp %r conflicts with --resolves %r's own opp_id %r — a "
+                  "message cannot point at one role while resolving another's application."
+                  % (opp_id, args.resolves, derived_opp))
+            return 1
+        opp_id = derived_opp
+        if args.channel_id:
+            print("⛔ REFUSED — --resolves names an application (always role-anchored); "
+                  "--channel is refused alongside it.")
+            return 1
+
+    mid = "in-%s" % hashlib.sha1(args.source_token.encode("utf-8")).hexdigest()[:12]
+    row = {
+        "id": mid, "opp_id": opp_id, "channel_id": args.channel_id,
+        "person_id": args.person_id_arg, "direction": "inbound",
+        "medium": medium, "sent_on": args.on_date,
+        "from": args.from_addr, "to": args.to_token, "subject": args.subject, "body": body,
+        "source": args.source_token, "variant": None, "answers": None,
+        "resolves": args.resolves, "resolved_by": args.resolved_by,
+    }
+
+    # ⭐ public #103's own shape, closed for THIS verb too — `received` is its own
+    # early-return branch in main(), reached and returned from before main()'s shared
+    # dry-run gate ever runs, exactly like `touched`/`answered` were. Every refusal check
+    # above has already run, so this is the same point those two verbs stop at.
+    if args.dry_run:
+        already = any(m.get("id") == mid for m in load("messages"))
+        print("received: %s -> inbound message %s (source=%s)"
+             % (opp_id or args.channel_id, mid, args.source_token))
+        print("  --dry-run: nothing written. (%s)"
+             % ("message already recorded" if already
+                else "would record message %s" % mid))
+        return 0
+
+    rc, msg = append_message(row, already_locked=args.already_locked, wait=args.wait)
+    print(msg)
+    if rc == 0:
+        print("received: %s -> inbound message %s recorded (source=%s)"
+             % (opp_id or args.channel_id, mid, args.source_token))
+    return rc
+
+
 def main():
+    # design-inbound-resolution.md §2 amendment D4 — asserted before ANY argument parsing or
+    # store touch, for every verb (not just `received`): a surface with no resolvable profile
+    # (S6; a maintainer checkout with no CLAUDESEARCH_ROOT pinned) must refuse loudly rather
+    # than fall to the cwd and traceback on the first missing store file.
+    if not _looks_like_profile(ROOT):
+        print("⛔ REFUSED — %r does not look like a job-search profile (no config.json, no "
+              "data/ directory). record.py writes a PROFILE's stores; pin CLAUDESEARCH_ROOT to "
+              "one, or run this from inside one." % ROOT)
+        return EXIT_NO_PROFILE
+
     ap = argparse.ArgumentParser(description="Atomic writes to the record stores.")
     # States & Views V1 (design-states-and-views.md §13/§15.3) — three new verbs, each a
     # transaction over ONE file: `decide` and `networking-closed` on opportunities,
@@ -1083,9 +1377,7 @@ def main():
     # because each carries its own refusal logic `set` cannot express (§15.3's own reasoning).
     # States & Views V1b (design §13/§15.3) — `answered`/`touched` join the verb set: the
     # only two writers `messages` (append-only, MESSAGES_WRITE_VERBS above) ever gets.
-    ap.add_argument("op", choices=("create", "set", "set-in", "append", "show", "fields",
-                                   "decide", "application-status", "networking-closed",
-                                   "answered", "touched", "merge-person"))
+    ap.add_argument("op", choices=OPS)
     ap.add_argument("rid", nargs="?", help="record id (e.g. an opportunity_id)")
     ap.add_argument("rest", nargs="*")
     ap.add_argument("--file", default="opportunities", choices=sorted(STORES))
@@ -1126,6 +1418,41 @@ def main():
                     help="merge-person: the SURVIVOR person id. The record named by <rid> "
                          "(the duplicate) gets status=merged, merged_into=<--into>, in one "
                          "write. Refused if that would close a merge cycle (public #93).")
+    ap.add_argument("--note", dest="note_text", default=None,
+                    help="application-status: appended to the row's existing `note` (never "
+                         "overwritten — an owner's hand note survives) in the SAME transaction "
+                         "as status/status_on (design-inbound-resolution.md §2).")
+    ap.add_argument("--channel", dest="channel_id", default=None,
+                    help="received: `--channel <channel_id>` — the other half of the anchor "
+                         "rule (--opp or --channel, at least one, never both).")
+    ap.add_argument("--person", dest="person_id_arg", default=None,
+                    help="received: the sender's people.jsonl id, when known.")
+    ap.add_argument("--from", dest="from_addr", default=None,
+                    help="received: the message's From address.")
+    ap.add_argument("--subject", dest="subject", default=None,
+                    help="received: the message's Subject line.")
+    ap.add_argument("--body-file", dest="body_file", default=None,
+                    help="received: path to a file holding the body — never argv (an ATS "
+                         "body is thousands of characters); written under the profile's own "
+                         "scratch, never /tmp.")
+    ap.add_argument("--source", dest="source_token", default=None,
+                    help="received: provenance, e.g. gmail:<account>:<uid> — the id is minted "
+                         "from this deterministically, so re-sending the same source is a "
+                         "no-op, never a duplicate.")
+    ap.add_argument("--resolves", dest="resolves", default=None,
+                    help="received: the applications.id this inbound message resolves "
+                         "(ADR-029/030). Requires --resolved-by; the opp anchor is then "
+                         "DERIVED from the application's own opp_id — a conflicting --opp is "
+                         "refused.")
+    ap.add_argument("--resolved-by", dest="resolved_by", default=None,
+                    choices=("req-id", "url", "company-single"),
+                    help="received: which of ADR-030's three tiers matched. Required iff "
+                         "--resolves is given.")
+    ap.add_argument("--source-url", dest="source_url_flag", default=None,
+                    help="append <id> sightings '{...}': merges this URL into the sighting as "
+                         "'source_url' — public #83 rule 1's own convenience, so a caller never "
+                         "has to hand-embed it in the JSON blob. Conflicts with an already-set "
+                         "'source_url' in the JSON are refused (one fact, stated once).")
     ap.add_argument("--_inject-fault", dest="inject_fault", default=None,
                     help=argparse.SUPPRESS)     # test-only — see cmd_touched's own docstring
     ap.add_argument("--dry-run", action="store_true")
@@ -1157,22 +1484,27 @@ def main():
         args.file = "opportunities"
     elif args.op == "answered":
         args.file = "messages"
+    elif args.op == "received":
+        args.file = "messages"
     elif args.op == "merge-person":
         args.file = "people"
 
-    # §15.3 point 1 — `messages` is append-only; `answered`/`touched` are its ONLY writers.
-    # Refused here, before any generic single-store machinery runs, so the refusal is the
-    # very first thing printed rather than a confusing failure two steps later.
+    # §15.3 point 1 — `messages` is append-only; `answered`/`touched`/`received` are its ONLY
+    # writers. Refused here, before any generic single-store machinery runs, so the refusal is
+    # the very first thing printed rather than a confusing failure two steps later.
     if args.file == "messages" and args.op not in MESSAGES_WRITE_VERBS:
         print("⛔ REFUSED — 'messages' is append-only (design §15.3): a message row is "
-              "immutable once written. Use `record.py answered ...` or `record.py touched "
-              "...` — never set/set-in/append/create/show --file messages.")
+              "immutable once written. Use `record.py answered ...`, `record.py touched ...` "
+              "or `record.py received ...` — never set/set-in/append/create/show --file "
+              "messages.")
         return 1
 
     if args.op == "touched":
         return cmd_touched(args)
     if args.op == "answered":
         return cmd_answered(args)
+    if args.op == "received":
+        return cmd_received(args)
 
     if args.op == "fields" or args.fields:
         # ⭐ dev #143 / public #23 failure #3: this listing used to print field names and
@@ -1332,6 +1664,26 @@ def main():
                         if bad and not args.force:
                             print("⛔ REFUSED — %s[%d]: %s" % (k, i, bad))
                             return 1
+        # ⭐ public #83 rule 1 — a freshly created opportunity's own sightings[] get the SAME
+        # capture-time check the append branch gives an existing one (see
+        # sighting_source_url_problem's own docstring). Never gated by --force, for the same
+        # reason as there: a data-integrity rule about an unrecoverable link, not a guess.
+        if args.file == "opportunities" and isinstance(new_row.get("sightings"), list):
+            _channel_type_by_id = {c.get("id"): c.get("type") for c in _load_or_empty("channels")}
+            _receipted = any(a.get("status") in _validator_module().SUBMITTED_APP_STATUS
+                            for a in _load_or_empty("applications") if a.get("opp_id") == args.rid)
+            _seen_channel_ids = set()
+            for _i, _sg in enumerate(new_row["sightings"]):
+                if not isinstance(_sg, dict):
+                    continue    # unshaped entries are the required/array-item guards' job
+                _referenced = ({new_row.get("channel_id"), _sg.get("channel_id")}
+                              | _seen_channel_ids)
+                _problem = sighting_source_url_problem(_sg, _channel_type_by_id, _referenced,
+                                                       _receipted)
+                if _problem:
+                    print("⛔ REFUSED — sightings[%d]: %s" % (_i, _problem))
+                    return 1
+                _seen_channel_ids.add(_sg.get("channel_id"))
         missing = [f for f in (m.get("required") or []) if not new_row.get(f)]
         if missing and not args.force:
             print("⛔ REFUSED — %s requires %s" % (args.file, ", ".join(missing)))
@@ -1441,6 +1793,16 @@ def main():
             print("⛔ REFUSED — %r is not an array of %s. Known: %s"
                   % (arr, args.file, ", ".join(sorted((m.get("arrays") or {})))))
             return 1
+        # public #83 rule 1 — --source-url merges into a sightings[] blob so a caller never
+        # has to hand-embed it in the JSON string. One fact, stated once: a JSON value that
+        # DISAGREES with the flag is refused rather than silently picking one.
+        if args.source_url_flag is not None and args.file == "opportunities" and arr == "sightings":
+            existing_url = blob.get("source_url")
+            if existing_url and existing_url != args.source_url_flag:
+                print("⛔ REFUSED — the JSON carries source_url=%r but --source-url says %r. "
+                      "One URL, stated once." % (existing_url, args.source_url_flag))
+                return 1
+            blob["source_url"] = args.source_url_flag
         # ADR-031 B2 — `applications` is no longer an array of `opportunities` (it is its own
         # top-level store, created via `create auto ... --file applications`, which mints its
         # own id — see the create branch above), so this array-append path never mints an
@@ -1464,6 +1826,22 @@ def main():
                 print("⛔ REFUSED — %s %r already exists on this record." % (idf, blob[idf]))
                 print("  Use set-in to update it. Appending a second row with the same id is how")
                 print("  a join silently returns two answers.")
+                return 1
+        # ⭐ public #83 rule 1 — a NEW sighting from a URL-bearing channel must carry its
+        # source_url at the moment it is captured (see sighting_source_url_problem's own
+        # docstring). Never gated by --force: this is a data-integrity rule about a link that
+        # cannot be recovered later, not a schema-shape guess --force exists to override.
+        if args.file == "opportunities" and arr == "sightings":
+            _channel_type_by_id = {c.get("id"): c.get("type") for c in _load_or_empty("channels")}
+            _receipted = any(a.get("status") in _validator_module().SUBMITTED_APP_STATUS
+                            for a in _load_or_empty("applications") if a.get("opp_id") == rec.get("id"))
+            _existing_sightings = rec.get("sightings") or []
+            _referenced = ({rec.get("channel_id"), blob.get("channel_id")}
+                          | {sg.get("channel_id") for sg in _existing_sightings})
+            _problem = sighting_source_url_problem(blob, _channel_type_by_id, _referenced,
+                                                   _receipted)
+            if _problem:
+                print("⛔ REFUSED — %s" % _problem)
                 return 1
         desc = "append to %s[]" % arr
 
@@ -1567,10 +1945,17 @@ def main():
             return 1
         on_date = args.on_date or datetime.date.today().isoformat()
         desc = "application-status %s -> %s (status_on=%s)" % (current, new_status, on_date)
+        if args.note_text:
+            desc += " · note: %s" % args.note_text[:60]
 
-        def apply(r):
+        def apply(r, _note=args.note_text):
             r["status"] = new_status
             r["status_on"] = on_date
+            # design-inbound-resolution.md §2 — `--note` APPENDS to the existing `note`, never
+            # overwrites it: an owner's hand note (or an earlier sweep's own evidence line)
+            # must survive a later status write, not be silently replaced by it.
+            if _note:
+                r["note"] = ("%s | %s" % (r["note"], _note)) if r.get("note") else _note
 
     elif args.op == "merge-person":
         # ADR-031 §3 / public #93 — "a merge is a pointer, never a rewrite": this sets

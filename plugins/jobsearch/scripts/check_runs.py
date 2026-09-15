@@ -44,8 +44,54 @@ try:
 except Exception:                                  # pragma: no cover - journal is optional
     _journal = None
 
+try:
+    import inbox as _inbox
+    import run_summary as _run_summary
+except Exception:                                  # pragma: no cover - both optional
+    _inbox = None
+    _run_summary = None
+
 # `## 2026-08-06 (Thu, ~07:08–07:35 AM PDT) — Daily run …`
 LOG_ENTRY = re.compile(r"^##\s*(\d{4}-\d{2}-\d{2})\b(.*)$", re.M)
+
+
+def missing_end_footprint(recs):
+    """⭐ public #85 — every `end` event with NO `footprint` field at all: either the run
+    predates this feature, or `journal.py --end`'s own footprint computation failed (it prints
+    a warning to stderr but never blocks `--end` — see that file). Either way the run's
+    footprint was never durably recorded, which is exactly the hole #85 reported: a real run
+    that left no verifiable trace of whether it persisted."""
+    return [r.get("run_id") for r in recs
+           if r.get("event") == "end" and "footprint" not in r]
+
+
+def summary_disagreements(root):
+    """⭐ public #85 — every posted `run-summary` inbox row whose OWN headline+detail disagrees
+    with its OWN stored footprint. Reuses `run_summary.disagrees()` (the check_stale_claims.py
+    shape) rather than re-implementing the phrase scan, so this and `run_summary.py --check`
+    can never quietly diverge on what counts as a disagreement. A legacy row with no `run_id`
+    or no stored `footprint` is not checkable and is never flagged (there is nothing to compare
+    it against) — counted separately so a growing legacy pile is still visible."""
+    if _inbox is None or _run_summary is None:
+        return [], 0
+    try:
+        rows = _inbox.replay(_inbox.load())
+    except Exception:                                  # pragma: no cover - defensive
+        return [], 0
+    bad, uncheckable = [], 0
+    for r in rows:
+        if r.get("kind") != "run-summary":
+            continue
+        run_id, fp = r.get("run_id"), r.get("footprint")
+        if not run_id or fp is None:
+            uncheckable += 1
+            continue
+        text = "%s\n%s" % (r.get("summary") or "", r.get("detail") or "")
+        disagreed, phrase = _run_summary.disagrees(text, fp)
+        if disagreed:
+            bad.append({"id": r.get("id"), "run_id": run_id, "phrase": phrase,
+                        "summary": r.get("summary")})
+    return bad, uncheckable
 
 
 def footprints(root):
@@ -112,7 +158,7 @@ def footprints(root):
     #                                                  have called --start never completed
     #     `start` with no `end`                    -> the run itself began and died (#4)
     #     `start` + `end`                           -> ran; quiet footprint is normal
-    starts, fired = [], []
+    starts, fired, recs = [], [], []
     if _journal is not None:
         try:
             recs = _journal.read(root)
@@ -121,13 +167,23 @@ def footprints(root):
             fired = sorted((r for r in recs if r.get("event") == "fired"),
                            key=lambda r: r.get("at") or "", reverse=True)
         except Exception:
-            starts, fired = [], []
+            starts, fired, recs = [], [], []
     out["run_starts"] = [{"run_id": r.get("run_id"), "at": r.get("at"), "kind": r.get("kind")}
                          for r in starts[:10]]
     out["last_start"] = starts[0].get("at") if starts else None
     out["session_fires"] = [{"session_id": r.get("session_id"), "at": r.get("at")}
                             for r in fired[:10]]
     out["last_fired"] = fired[0].get("at") if fired else None
+
+    # ⭐⭐ public #85 — A THIRD FOOTPRINT SOURCE: not "did a run leave a trace", but "did the
+    # trace it left agree with itself." Two independent findings, both from data already read
+    # above (`recs`) plus the inbox: an `end` event recorded with no `footprint` at all, and a
+    # posted run-summary whose own headline contradicts its own stored footprint.
+    end_events = [r for r in recs if r.get("event") == "end"]
+    out["end_missing_footprint"] = missing_end_footprint(end_events)[:10]
+    disagreements, uncheckable = summary_disagreements(root)
+    out["summary_disagreements"] = disagreements[:10]
+    out["summary_uncheckable"] = uncheckable
 
     dates = [e["date"] for e in out["log_entries"]] + \
             [p["at"][:10] for p in out["inbox_posts"] if len(p["at"]) >= 10]
@@ -177,6 +233,24 @@ def main():
     print("\n  last journalled START: %s" % (fp.get("last_start") or "none recorded"))
     for s2 in fp.get("run_starts", [])[:3]:
         print("    %s  %s" % (s2.get("at"), s2.get("run_id")))
+
+    # ⭐⭐ public #85 — A THIRD ROW: did the trace a run left agree with ITSELF? Distinct from
+    # every check above, which only asks whether a trace exists at all.
+    missing = fp.get("end_missing_footprint") or []
+    disagreements = fp.get("summary_disagreements") or []
+    print("\n  run-summary footprint check (public #85):")
+    if missing:
+        print("    ⛔ %d `end` event(s) recorded with NO footprint — the run's own persistence "
+              "was never verified: %s" % (len(missing), ", ".join(str(m) for m in missing)))
+    if disagreements:
+        for d in disagreements:
+            print("    ⛔ %s (%s) claims %r while its own stored footprint shows real change"
+                  % (d["run_id"], d["id"], d["phrase"]))
+    if not missing and not disagreements:
+        extra = (" (%d legacy row(s) not checkable — no run_id/footprint)"
+                % fp["summary_uncheckable"]) if fp.get("summary_uncheckable") else ""
+        print("    clean — every `end` event carries a footprint, and every posted run-summary "
+              "agrees with its own%s." % extra)
 
     print("\n  ⭐ NOW COMPARE WITH THE SCHEDULER — `list_scheduled_tasks`. FOUR STATES:")
     print("     lastRunAt newer than any FIRED      -> THE RUN NEVER STARTED. No session was")

@@ -32,6 +32,13 @@ _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 from _atomic import write_jsonl, write_json
 import touches as _touches
+# public #98 — your_move.py is the SINGLE OWNER of "which group does a channel plan belong
+# in" (ADR-031 §14, your_move.py's own docstring: "generate_dashboard.py must never
+# re-derive group membership"). This queue used to have zero awareness of `next_touch` at
+# all, so a plan your_move.py put in its 'now' group (dashboard: overdue) rendered here as
+# nothing due — the exact disagreement #98 reports. Never re-derive the fulfilment rule;
+# only read its answer (now_channel_plans below).
+import your_move as _ym
 
 ROOT = _profile_root()
 DATA = os.path.join(ROOT, "data")
@@ -136,6 +143,28 @@ def review_rows(chans, today):
     return rows
 
 
+def now_channel_plans(chans, root, today_iso):
+    """{channel_id: (channel, why)} for every channel `your_move.classify_channels` puts in
+    its 'now' group — a `next_touch` plan that is due (§14). This is never a second
+    computation of the fulfilment rule (public #98: the two used to disagree because this
+    file had no `next_touch` awareness at all); it reads `your_move`'s own answer and
+    renders it, exactly as `review_rows()` above is this file's single owner for cadence-
+    scheduled review."""
+    messages = _ym._load_jsonl(root, "messages.jsonl")
+    involvements = _ym._load_jsonl(root, "involvements.jsonl")
+    classified = _ym.classify_channels(chans, messages, today=today_iso,
+                                       involvements=involvements)
+    out = {}
+    for c, state, touch, evidence in classified:
+        if state != "now":
+            continue
+        nt = c.get("next_touch") or {}
+        why = "next_touch plan due %s (%s)" % (nt.get("date"),
+                                                evidence or "no derived touch yet")
+        out[c.get("id")] = (c, why)
+    return out
+
+
 def channel_yield(opps, since=None):
     """{channel_id: {"sightings": n, "pursued": n}} from opportunities' sightings[] —
     a QUERY of the records, never a hand-derived summary. `since` (datetime.date) windows
@@ -221,13 +250,30 @@ def main():
                   "NOT being scheduled. Add it to CADENCE_DAYS."
                   % (c["id"], c.get("review_cadence")))
 
+    # public #98 — fold in your_move.py's own 'now' group for channel `next_touch` plans.
+    # Never a second computation of the fulfilment rule: `now_channel_plans` only reads
+    # `your_move.classify_channels`'s answer. A channel review_rows() already put in `due`
+    # (cadence-scheduled) keeps that entry unchanged — this only ADDS ids review_rows()
+    # never considers (recruiter/referral channels, and any sourcing channel that also
+    # carries a next_touch plan).
+    due_ids = {c.get("id") for c, _why in due}
+    for cid, (c, why) in now_channel_plans(chans, ROOT, today.isoformat()).items():
+        if cid in due_ids:
+            continue
+        due.append((c, why))
+        due_ids.add(cid)
+
     print("=" * 68)
     print("DUE NOW — review by DIRECT SEARCH on the source, then --stamp it")
     print("=" * 68)
     if due:
         for c, why in sorted(due, key=lambda x: x[0].get("last_reviewed") or ""):
             acc = c.get("access", "?")
-            print("  ● %-24s %-9s [%s] %s" % (c["label"][:24], c["review_cadence"], acc, why))
+            # `review_cadence` is absent on a channel surfaced only via now_channel_plans
+            # (recruiter/referral channels are excluded from review_rows() by design,
+            # ADR-031 §14) — never assume it is set just because this channel is due.
+            cad = c.get("review_cadence") or "next_touch"
+            print("  ● %-24s %-9s [%s] %s" % (c["label"][:24], cad, acc, why))
             if c.get("scope_notes"):
                 print("      %s" % c["scope_notes"][:80])
     else:

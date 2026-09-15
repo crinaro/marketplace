@@ -2,7 +2,15 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.49.0
+- Release jobsearch 0.49.0: the strategy as data — with plays.py --confirm actually wired *(tracked internally as crinaro/marketplace-dev PR#369)*
+- Two designs, tracked: inbound resolution (ADR-029/030, #55/#57) and runner resilience (#47/#96) *(tracked internally as crinaro/marketplace-dev PR#364)*
+- ADR-031 B4: plans and plays — the strategy as data, play_stage retired *(tracked internally as crinaro/marketplace-dev PR#366)*
+- Drain B4's five doc-impact rows; ADR-031 → B4 IMPLEMENTED; ADR-016 superseded *(tracked internally as crinaro/marketplace-dev PR#367)*
+
 ## jobsearch 0.48.0
+- Three releases (0.44.0, 0.46.0, 0.47.0) never reached the owner's machine: marketplace autoUpdate is OFF, and deployment.md asserts it is TESTED true *(tracked internally as crinaro/marketplace-dev#351)*
+- journal.REASONS refuses 'surface-unreachable', the very reason linkedin-runner.md and journal.py's own D14 error text instruct the runner to file *(tracked internally as crinaro/marketplace-dev#354)*
 - 0.48.0 repairs damage three 0.46.0/0.47.0 migration bugs already left on real profiles (public #90, #92, #94), on top of fixing all three at the source: a draft wrongly stamped `**To:** unaddressed` gets one re-check, and wherever a `**Contact:**` line was there all along or the people/involvements upgrade has since landed, it gets its real recipient; eight held contacts whose single-token first name made a mailbox search scan the whole inbox instead of one address, and so raised a false 'store-behind-mailbox' finding, are automatically acknowledged; and the leftover 'application endings' hand-off — previously N printed `record.py` commands, several naming ids with no application to act on — becomes one correct, queryable ask in `asks.jsonl` instead. *(tracked internally as crinaro/marketplace-dev PR#359)*
 - Small-fix batch: `doctor.py` now warns at the start of every run about a job-board or aggregator sighting with no link to its posting, before it disappears for good — unless the role is recruiter-sourced, already has a submitted application on record, or every sighting is too fresh (configurable via the new `config.json.sourcing.linkless_grace_days`, default 3 days) (#83); `--screen-all` now covers roles it previously skipped (#84); and a message's channel reference is now validated the same way every other foreign key is (#63). *(tracked internally as crinaro/marketplace-dev PR#360)*
 - Drain 0.48.0's six doc-impact rows; fix the page-retirement flow (#35) *(tracked internally as crinaro/marketplace-dev PR#361)*

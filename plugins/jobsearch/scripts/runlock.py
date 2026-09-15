@@ -80,6 +80,28 @@ LOCK = os.environ.get("CLAUDESEARCH_LOCK_PATH") or \
 # 06:41 to 09:11 because an idle coordinator never released.
 STALE_MINUTES = 20
 
+# ⭐⭐ design-linkedin-runner-resilience.md §1 (public #47/#96) — A SECOND RESOURCE, NOT A SECOND
+# LOCK FILE FORMAT. Two instances of one `run_id` colliding on the Browser pane (#47) and a
+# stalled pane re-claimed five sessions running (#96) are both "two writers, one exclusive
+# resource" — exactly what this module already exists to serialize. So `--resource pane` reuses
+# this file's take/release/status/steal vocabulary against a SECOND, independent lock file
+# (never `LOCK` above — the write lock is held for seconds and must never span a pass; the pane
+# is held for the whole pass by design, so sharing a file would make the two staleness policies
+# fight each other).
+#
+# Three differences from the write lock, each closing a specific defect:
+#   - a per-`--take` NONCE (`os.urandom(8).hex()`), never `run_id` — D-4: two instances of ONE
+#     run share a run_id, so a lock keyed on run_id would let a run's second instance walk right
+#     past its own first instance's hold. `--release` must present the nonce it was given.
+#   - staleness is JOURNAL-DERIVED first (the holder's run_id has an `end`/`dispose` event) and
+#     only falls back to an age threshold (`linkedin.pane_stale_minutes`) when the journal has
+#     nothing to say — a crashed holder never writes `end`, so age is what recovers the pane.
+#   - `--stalled` and `--verdict` write onto the CURRENT holder's record (nonce-gated, same as
+#     `--release`) rather than taking or releasing anything — §2's render-stall verdict and §5's
+#     signed-in fact are both learned mid-pass, not at take/release time.
+PANE_LOCK = os.environ.get("CLAUDESEARCH_PANE_LOCK_PATH") or \
+    os.path.join(ROOT, ".git", "pane_lock.json")
+
 
 def read():
     if not os.path.exists(LOCK):
@@ -97,6 +119,171 @@ def age_minutes(rec):
     except (KeyError, ValueError):
         return None
     return int((datetime.datetime.now() - t).total_seconds() // 60)
+
+
+# ---- --resource pane -------------------------------------------------------------------------
+
+def _pane_read():
+    if not os.path.exists(PANE_LOCK):
+        return None
+    try:
+        with open(PANE_LOCK, encoding="utf-8") as fh:
+            return json.load(fh)
+    except (ValueError, OSError):
+        return None
+
+
+def _pane_write(rec):
+    os.makedirs(os.path.dirname(PANE_LOCK), exist_ok=True)
+    with open(PANE_LOCK, "w", encoding="utf-8") as fh:
+        json.dump(rec, fh)
+
+
+def _pane_new_nonce():
+    return os.urandom(8).hex()
+
+
+def _pane_stale_minutes():
+    """`linkedin.pane_stale_minutes`, config_keys' own registered default when the profile has
+    not set one. Reads config.json directly rather than importing `profile.py` — that module
+    binds ITS OWN root at import time via `profile_or_fixture()`, which need not be the same
+    root this process is pointed at (CLAUDESEARCH_ROOT), and a pane lock must answer for the
+    root it actually runs against."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import config_keys as _ck
+        cfg_path = os.path.join(ROOT, "config.json")
+        try:
+            with open(cfg_path, encoding="utf-8") as fh:
+                cfg = json.load(fh)
+        except (OSError, ValueError):
+            cfg = {}
+        value, _ = _ck.describe(cfg, _ck.LINKEDIN_PANE_STALE_MINUTES)
+        return value
+    except Exception:
+        return 90     # config_keys' own default, mirrored defensively if it cannot be imported
+
+
+def _run_ended_or_disposed(run_id):
+    """Staleness rule (i): the holder's run_id has an `end` or `dispose` event in the journal —
+    a crashed holder never writes `end`, so this only ever fires for a run that finished (or was
+    reviewed and disposed) normally, never for one that is merely slow."""
+    if not run_id:
+        return False
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import journal as _journal
+        recs = _journal.read(ROOT)
+        return any(r.get("run_id") == run_id and r.get("event") in ("end", "dispose")
+                  for r in recs)
+    except Exception:
+        return False
+
+
+def _pane_is_stale(rec):
+    """(is_stale, reason) — journal-derived end/dispose first (rule i), then the age threshold
+    (rule ii). `reason` is one of the two exact phrases §1/plant 12 name, so a caller (and a
+    test) can match on it without re-deriving which rule fired."""
+    run_id = rec.get("run_id")
+    if _run_ended_or_disposed(run_id):
+        return True, "stale (run ended)"
+    try:
+        t = datetime.datetime.fromisoformat(rec.get("taken_at"))
+    except (TypeError, ValueError):
+        return False, None
+    age_min = (datetime.datetime.now() - t).total_seconds() / 60.0
+    limit = _pane_stale_minutes()
+    if age_min > limit:
+        return True, "stale (%d min)" % int(age_min)
+    return False, None
+
+
+def _main_pane(args):
+    cur = _pane_read()
+
+    if args.stalled:
+        if not args.nonce:
+            print("--stalled requires --nonce")
+            return 2
+        if not cur or cur.get("nonce") != args.nonce:
+            print("REFUSED — nonce does not match the current pane-lock holder; nothing "
+                  "recorded.")
+            return 1
+        cur["stalled_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        _pane_write(cur)
+        print("stalled_at recorded for run %s" % cur.get("run_id"))
+        return 0
+
+    if args.verdict:
+        if not args.nonce:
+            print("--verdict requires --nonce")
+            return 2
+        if not cur or cur.get("nonce") != args.nonce:
+            print("REFUSED — nonce does not match the current pane-lock holder; nothing "
+                  "recorded.")
+            return 1
+        cur["last_verdict"] = args.verdict
+        cur["verdict_at"] = datetime.datetime.now().isoformat(timespec="seconds")
+        _pane_write(cur)
+        print("verdict recorded: %s" % args.verdict)
+        return 0
+
+    if args.release:
+        if not cur:
+            print("Nothing to release.")
+            return 0
+        if not args.nonce or cur.get("nonce") != args.nonce:
+            # ⭐ D-7's other half: a refused `--take` never received a nonce, so its exit-path
+            # `--release` cannot free the holder's pane. Nothing releases by run_id or by who.
+            print("REFUSED — nonce does not match the current pane-lock holder; nothing "
+                  "released.")
+            return 1
+        os.remove(PANE_LOCK)
+        print("Released.")
+        return 0
+
+    if args.take or args.steal:
+        who = args.take or args.steal
+        if not args.run_id:
+            print("--run-id is required with --take/--steal on --resource pane")
+            return 2
+        if cur and not args.steal:
+            # ⭐ D-4 — no exception for the holder's OWN run_id. #47 is two INSTANCES of one
+            # run; a lock that admits its own run_id back in is not a lock for that case.
+            stale, reason = _pane_is_stale(cur)
+            if not stale:
+                print("REFUSED — pane held by %r (run %s) since %s."
+                      % (cur.get("who"), cur.get("run_id"), cur.get("taken_at")))
+                return 1
+            print("%s — taking over." % reason)
+        displaced = cur if (cur and args.steal) else None
+        nonce = _pane_new_nonce()
+        rec = {"who": who, "run_id": args.run_id, "nonce": nonce,
+              "surface": args.surface or "pane",
+              "taken_at": datetime.datetime.now().isoformat(timespec="seconds"),
+              "stalled_at": None, "last_verdict": None, "verdict_at": None}
+        _pane_write(rec)
+        print("NONCE %s" % nonce)
+        if displaced:
+            print("STOLE the pane lock from %r (run %s)."
+                  % (displaced.get("who"), displaced.get("run_id")))
+        return 0
+
+    # --status, or nothing else was asked
+    if not cur:
+        print("UNLOCKED — the pane is free.")
+        return 0
+    stale, reason = _pane_is_stale(cur)
+    print("PANE %s by %r (run %s, surface %s) since %s"
+          % ("LOCKED" if not stale else "STALE", cur.get("who"), cur.get("run_id"),
+             cur.get("surface"), cur.get("taken_at")))
+    if stale:
+        print("  %s — the next --take will succeed without --steal." % reason)
+    if cur.get("stalled_at"):
+        print("  stalled_at: %s" % cur["stalled_at"])
+    if cur.get("last_verdict"):
+        print("  last_verdict: %s at %s" % (cur["last_verdict"], cur.get("verdict_at")))
+    return 0 if stale else 1
 
 
 def main():
@@ -120,7 +307,35 @@ def main():
                          "data/*.jsonl, and prefer leaving it on even then; it is cheap.")
     ap.add_argument("cmd", nargs=argparse.REMAINDER,
                     help="With --run: the command to execute under the lock, after a `--`.")
+    ap.add_argument("--resource", choices=("pane",),
+                    help="Operate on a SECOND, independent lock — design-linkedin-runner-"
+                         "resilience.md §1 (public #47/#96). Omit for the ordinary write lock "
+                         "above; '--resource pane' serializes Claude's in-app Browser pane "
+                         "(or the Chrome extension, with --surface extension) instead. Its own "
+                         "vocabulary: --take/--steal need --run-id; --release/--stalled/"
+                         "--verdict need --nonce (printed by --take).")
+    ap.add_argument("--run-id", dest="run_id", metavar="ID",
+                    help="--resource pane --take/--steal: the caller's own run id (from "
+                         "journal.py --start) — carried on the record so a refusal can name it.")
+    ap.add_argument("--nonce", metavar="NONCE",
+                    help="--resource pane --release/--stalled/--verdict: the nonce --take "
+                         "printed. A mismatch (or a refused --take's missing nonce) is a no-op, "
+                         "exit 1 — nothing releases or records by run_id or who.")
+    ap.add_argument("--surface", choices=("pane", "extension"),
+                    help="--resource pane --take/--steal: which browser surface this pass is "
+                         "using (default: pane). An extension pass records surface: extension "
+                         "and holds the SAME lock — two extension passes collide on the "
+                         "candidate's real Chrome exactly as two pane passes collide on the pane.")
+    ap.add_argument("--stalled", action="store_true",
+                    help="--resource pane: record a confirmed render-stall verdict on the "
+                         "current holder (needs --nonce). §2's paint-proof miss twice, 4s apart.")
+    ap.add_argument("--verdict", choices=("signed-in", "not-signed-in"),
+                    help="--resource pane: record the preflight signed-in fact on the current "
+                         "holder (needs --nonce) — §5.2, read by deferred.py --claimable.")
     args = ap.parse_args()
+
+    if args.resource == "pane":
+        return _main_pane(args)
 
     # ---- --run: take / execute / release, with the release in a finally ---------------------
     # ⭐ Added 2026-08-03, per the candidate: "shouldn't this happen when you're done with a write?"

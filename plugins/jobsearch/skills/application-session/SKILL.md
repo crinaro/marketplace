@@ -38,10 +38,13 @@ unreadable trigger or a dangling ref looks handled and is not.
 
 1. **Verify the posting is live** at the view's link before anything else.
 2. **The resume variant line.** `⛔ not decided` means decide NOW, with the candidate, and
-   record it on the opportunity (`resume_variant`) before the form is opened. ⚠️ The
-   printed-resume gap (dev #234) is open: the variant is a markdown file and the uploaded
-   document is produced outside the engine. Confirm with the candidate what was actually
-   attached; do not treat the gap as closed.
+   record it on the opportunity (`resume_variant`) before the form is opened. Render the
+   deliverable before attaching it — `~/.claude/jobsearch/run variant_out.py --render
+   <variant-id>` (public #64 closed the markdown-only gap: gated by the visibility check, a
+   `public-profile` surface variant printing a claim nobody reviewed for a public audience
+   refuses to render at all, same as `resume_variants.py --check` reports it). Confirm with the
+   candidate that the rendered file is what actually gets attached — rendering is mechanical;
+   attaching the right file is still a human action inside this session.
 3. **Answer the form from precedent.** The view lists prior answers per `question_key` —
    same employer first, latest elsewhere second. A `⛔ conflicting precedent` line is
    resolved with the candidate before answering a third way.

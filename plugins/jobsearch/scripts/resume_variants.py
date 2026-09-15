@@ -61,12 +61,50 @@ closing it, and says so.)
                   nobody has reconciled looks handled and is not
     missing-file  the declared file does not exist — fails --check
     unreadable    the store row cannot be used (no id/file) — fails --check
+    unplaced      no `surface` declared, or an undeclared one (ADR-027) — fails --check; an
+                  undeclared surface is a STATE, never a default, so a row this module cannot
+                  place either way is loud, never guessed
+    private-on-public
+                  a public-surface row prints a claim with no per-claim `[public]` marking —
+                  fails --check; public #59's own defect, now mechanized (ADR-027)
     retired       terminal; informational row, no claim checks
 
 Also reported, never failing: union bullets outside the addenda that appear in NO active
 variant (the observed failure in reverse — a differentiator resting unprinted), and submitted
 applications carrying no `resume_variant` while active variants exist (unattributable
 positioning).
+
+## Visibility (public #59, ADR-027) — union membership is provenance, not clearance
+
+A claim can be true, present in the union, and still unpublishable on the open web (a
+security-posture claim about a former employer is the reported instance — appropriate inside a
+screened hiring process, harmful once indexed and public). ADR-027's decision, not this
+module's own invention:
+
+- **A declared variant carries `surface`, never `visibility` directly** (`data/
+  resume_variants.jsonl`; `surfaces.py` is the one lookup table). `visibility` is DERIVED from
+  `surface` by property — *private* = the candidate chooses every recipient, *public* = any
+  reader can reach it without being chosen — never stored a second time.
+- **An undeclared, or unrecognized, `surface` is not a default — it is the `unplaced` state,
+  and it fails.** Neither a private-by-default nor a public-by-default guess is acceptable
+  (ADR-027's own words: "a surface nobody classified silently permits everything" versus
+  "turns every existing variant red at upgrade, which trains bypassing the check"); the gate
+  refuses to guess either way.
+- **Claim marking is a bracketed tag at the HEAD of the union bullet's own text** —
+  `[public]`/`[private]`, never a section default, never a cross-reference table, never an id.
+  Because the tag sits at the head of a line the existing whole-text substring containment
+  (`b in union_norm`) already tolerates it as a prefix — the printed, UNTAGGED wording is still
+  literally a substring of the tagged union line, so ordinary containment needs no change.
+  `union_claim_tags()` reads the tag directly off each bullet.
+- **Pairing is nesting plus the tag**, for the failure message only, never for the pass/fail
+  decision itself: a `[private]`-tagged bullet indented directly under a `[public]`-tagged one
+  is that claim's original wording, paired with its reviewed, safe public version.
+- **The `[public]` tag is a per-claim review stamp, not metadata inherited from a section.**
+  Deliberately no section-level default — a section default lets claims onto a public page
+  nobody individually reviewed, which is the failure ADR-027 exists to close. On a
+  public-surface variant, a printed bullet whose matching union claim is `[private]`-tagged
+  OR carries no tag at all fails `private-on-public` — cannot-decide always resolves to RED on
+  this axis, never a guess either way.
 
 Usage:
     python3 resume_variants.py             # list + hygiene report
@@ -90,6 +128,7 @@ from _root import profile_root
 import _tree
 import _atomic
 import applications as _apps
+import surfaces as _surf
 
 UNION_FILE = _tree.rel("claims")           # presence/claims.md; legacy spellings resolve via _tree
 STORE_FILE = os.path.join("data", "resume_variants.jsonl")
@@ -99,14 +138,23 @@ STORE_FILE = os.path.join("data", "resume_variants.jsonl")
 ADDENDA_HEADING_RE = re.compile(r"additional\s+detail", re.I)
 
 BULLET_RE = re.compile(r"^\s*[-*+]\s+(.+?)\s*$")
+# Same bullet grammar as BULLET_RE, with the leading indentation captured separately —
+# union_claim_tags() needs it to pair a nested `[private]` twin with its `[public]` parent; the
+# plain containment path (bullets_with_sections) never needed nesting, only section membership.
+BULLET_INDENT_RE = re.compile(r"^(\s*)[-*+]\s+(.+?)\s*$")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
+
+# public #59, ADR-027 — the per-claim marking, at the HEAD of a union bullet's own text. No
+# section default, no cross-reference table, no id: the tag IS the claim's review stamp.
+CLAIM_TAG_RE = re.compile(r"^\[(public|private)\]\s*(.+)$", re.I)
 
 # applications[].status values that prove a submission happened — mirrored from
 # validate_data.SUBMITTED_APP_STATUS as a literal, same move as precondition.py's OUTCOMES:
 # a drifted mirror is caught by the regression suite, not by an import cycle at run start.
 SUBMITTED = {"submitted", "acknowledged", "rejected", "advanced", "closed"}
 
-FAIL_STATES = frozenset({"drifted", "no-claims", "unstamped", "missing-file", "unreadable"})
+FAIL_STATES = frozenset({"drifted", "no-claims", "unstamped", "missing-file", "unreadable",
+                        "unplaced", "private-on-public"})
 
 
 def _norm(s):
@@ -156,6 +204,96 @@ def bullets_with_sections(text):
     return out
 
 
+def union_claim_tags(text):
+    """(tag_by_text, twin_of_private) — ADR-027's per-claim marking, over the union file.
+
+    tag_by_text     {stripped claim text: "public"|"private"} for every union bullet whose OWN
+                    text starts with `[public]`/`[private]` (case-insensitive). An untagged
+                    bullet is simply absent here — union bullets never require a tag; only
+                    PRINTING one on a public-surface variant does. The tag is stripped from the
+                    text this dict keys on, because the tag itself is never printed.
+    twin_of_private {private claim text: its paired public claim's stripped text} — for the
+                    private-on-public failure message ONLY. A `[private]`-tagged bullet nested
+                    directly under a `[public]`-tagged one (bullet indentation, independent of
+                    heading depth) is treated as that claim's original wording; a private
+                    bullet with no such parent simply has no entry.
+
+    Nesting never affects the pass/fail decision — only which suggestion the message can make.
+    A printed bullet's own tag (found by a plain dict lookup on its text) decides everything.
+    """
+    tag_by_text = {}
+    twin_of_private = {}
+    bullet_stack = []      # [(indent, tag_or_None, claim_text), ...] — reset at every heading
+    for line in (text or "").splitlines():
+        if HEADING_RE.match(line):
+            bullet_stack = []
+            continue
+        bm = BULLET_INDENT_RE.match(line)
+        if not bm:
+            continue
+        indent = len(bm.group(1))
+        raw = bm.group(2)
+        while bullet_stack and bullet_stack[-1][0] >= indent:
+            bullet_stack.pop()
+        parent = bullet_stack[-1] if bullet_stack else None
+        tm = CLAIM_TAG_RE.match(raw)
+        if tm:
+            tag = tm.group(1).lower()
+            claim = _norm(tm.group(2))
+            tag_by_text[claim] = tag
+            if tag == "private" and parent is not None and parent[1] == "public":
+                twin_of_private[claim] = parent[2]
+            bullet_stack.append((indent, tag, claim))
+        else:
+            bullet_stack.append((indent, None, _norm(raw)))
+    return tag_by_text, twin_of_private
+
+
+def _levenshtein_le(a, b, limit):
+    """True if the edit distance between a and b is <= limit. Small words only (tag tokens) —
+    a plain O(len(a)*len(b)) table, stdlib-only, no reason to reach for anything smarter at
+    this size."""
+    if abs(len(a) - len(b)) > limit:
+        return False
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (ca != cb))
+        prev = cur
+    return prev[-1] <= limit
+
+
+_TAG_WORD_RE = re.compile(r"^\[([A-Za-z]{3,10})\]")
+
+
+def suspected_tag_typos(text):
+    """[(bullet_text, word)] — a union bullet whose head carries a bracketed word close to
+    "public"/"private" (edit distance <= 2, case-insensitive) that CLAIM_TAG_RE does NOT
+    recognize ("[pubic] ..." is the shape a fat-fingered mark takes).
+
+    Never a SAFETY gap under this design — an unrecognized tag reads as no tag at all, which
+    already fails CLOSED on a public-surface variant (`private-on-public`'s own "cannot-decide
+    -> red, never a guess" rule). Reported anyway so the typo is found by inspection rather
+    than by a private-on-public failure with no visible cause."""
+    hits = []
+    for line in (text or "").splitlines():
+        bm = BULLET_INDENT_RE.match(line)
+        if not bm:
+            continue
+        raw = bm.group(2)
+        if CLAIM_TAG_RE.match(raw):
+            continue
+        tm = _TAG_WORD_RE.match(raw)
+        if not tm:
+            continue
+        word = tm.group(1)
+        wl = word.lower()
+        if _levenshtein_le(wl, "public", 2) or _levenshtein_le(wl, "private", 2):
+            hits.append((_norm(raw), word))
+    return hits
+
+
 def load_store(root):
     """(rows, errors, present). Absence is legal — a profile that has not adopted variants —
     and is a DIFFERENT state from present-but-broken (the trap: a missing thing must never
@@ -176,12 +314,20 @@ def load_store(root):
     return rows, errs, True
 
 
-def check_variant(root, rec, union_text, union_norm, union_bullet_set):
-    """One report row for one store record."""
+def check_variant(root, rec, union_text, union_norm, union_bullet_set,
+                  union_tag_by_text=None, union_twin_of_private=None):
+    """One report row for one store record.
+
+    `union_tag_by_text`/`union_twin_of_private` come from union_claim_tags() — passed in
+    rather than recomputed per row, the same "compute once in report(), reuse per record"
+    shape `union_bullet_set`/`union_norm` already use.
+    """
+    union_tag_by_text = union_tag_by_text or {}
+    union_twin_of_private = union_twin_of_private or {}
     vid = rec.get("id") or "?"
     row = {"id": vid, "archetype": rec.get("archetype"), "file": rec.get("file"),
            "status": rec.get("status"), "state": "ok", "why": "", "violations": [],
-           "stale": False}
+           "stale": False, "surface": rec.get("surface"), "visibility": None}
     if not rec.get("id") or not rec.get("file"):
         row["state"] = "unreadable"
         row["why"] = "row lacks id/file — validate_data.py has the details"
@@ -190,6 +336,22 @@ def check_variant(root, rec, union_text, union_norm, union_bullet_set):
         row["state"] = "retired"
         row["why"] = "terminal — history stays resolvable, no claim checks"
         return row
+    surface = rec.get("surface")
+    if surface not in _surf.names():
+        row["state"] = "unplaced"
+        known = ", ".join(_surf.names())
+        if surface is None:
+            row["why"] = ("no surface declared — ADR-027: 'an undeclared surface is not a "
+                         "default; it is a state, and it fails' — declare the surface on "
+                         "the variant row (known: %s)" % known)
+        else:
+            row["why"] = ("surface %r is not declared in surfaces.py (known: %s) — an "
+                         "undeclared surface fails rather than guesses" % (surface, known))
+        return row
+    # ⭐ derived, never stored a second time (ADR-027) — computed here from `surface`, the
+    # one lookup this module (and presence_set.py, and any future renderer) reads.
+    visibility = _surf.visibility(surface)
+    row["visibility"] = visibility
     path = os.path.join(root, rec["file"])
     try:
         with open(path, encoding="utf-8") as fh:
@@ -216,6 +378,33 @@ def check_variant(root, rec, union_text, union_norm, union_bullet_set):
                      "straight from projects.md without review; land it in %s first" \
                      % (len(row["violations"]), UNION_FILE, UNION_FILE)
         return row
+    # public #59, ADR-027 — the pass containment alone cannot make: a public-surface variant
+    # printing a claim with no per-claim `[public]` marking. Checked only for a `public`
+    # surface, and only after ordinary containment already passed (a bullet absent from the
+    # union entirely is still `drifted`, never this).
+    if visibility == "public":
+        leaked = [b for b in vbullets if union_tag_by_text.get(b) != "public"]
+        if leaked:
+            first = leaked[0]
+            tag = union_tag_by_text.get(first)
+            twin = union_twin_of_private.get(first) if tag == "private" else None
+            row["state"] = "private-on-public"
+            row["violations"] = leaked
+            if twin:
+                row["why"] = ("prints a claim marked [private] — union membership alone is "
+                             "not sufficient for a public page; use its public wording: %r"
+                             % twin)
+            elif tag == "private":
+                row["why"] = ("prints a claim marked [private] with no declared [public] "
+                             "twin — union membership alone is not sufficient for a public "
+                             "page; add a `[public]` twin bullet directly above it, or "
+                             "remove the claim")
+            else:
+                row["why"] = ("prints a claim with no per-claim [public] marking — union "
+                             "membership alone is not sufficient for a public page; mark it "
+                             "`[public]` (nest the original wording as `[private]` beneath "
+                             "it when the two differ), or remove the claim")
+            return row
     sha = rec.get("union_sha")
     if not sha:
         row["state"] = "unstamped"
@@ -230,11 +419,19 @@ def check_variant(root, rec, union_text, union_norm, union_bullet_set):
                      "whether the new claims belong on this page, then `--stamp %s`" \
                      % (rec.get("union_reconciled_on") or "?", sha, current, vid)
         return row
-    # ⚠️ public #59 stopgap (0.37.1): the green line states its LIMIT. This module proves
-    # where each claim came from — nothing more. Whether a page is fit to hand to a given
-    # audience is not a question it asks, and a bare "ok" read as if it were.
-    row["why"] = "stamped %s — provenance only; fitness for a public surface is not checked" \
-                 % (rec.get("union_reconciled_on") or "?")
+    if visibility == "public":
+        # public #59, closed for this row: every printed claim traces to the union AND every
+        # one of them carries its own `[public]` review stamp — a stronger claim than the
+        # 0.37.1 stopgap below.
+        row["why"] = ("stamped %s — public-safe: every printed claim traces to the union and "
+                     "carries its own [public] marking" % (rec.get("union_reconciled_on") or "?"))
+    else:
+        # ⚠️ the 0.37.1 stopgap's own limit, still true for a PRIVATE-surface row: this module
+        # proves provenance, not audience fitness — but a private-surface variant never claims
+        # public fitness in the first place, so there is nothing left unchecked that this
+        # row's own visibility promises.
+        row["why"] = ("stamped %s — provenance only (surface %r, private)"
+                     % (rec.get("union_reconciled_on") or "?", surface))
     return row
 
 
@@ -269,12 +466,19 @@ def report(root):
     union_pairs = bullets_with_sections(union_text)
     union_bullet_set = {b for b, _ in union_pairs}
     union_norm = _norm(union_text)
+    union_tag_by_text, union_twin_of_private = union_claim_tags(union_text)
+    for btext, word in suspected_tag_typos(union_text):
+        out["problems"].append(
+            "%s: bullet %r carries %r — close to \"public\"/\"private\" but not a recognized "
+            "tag (edit distance <= 2); fix the spelling, or it is read as UNTAGGED — blocked "
+            "from every public surface, never silently printed" % (UNION_FILE, btext, word))
 
     active_bullets = set()
     for rec in rows:
-        row = check_variant(root, rec, union_text, union_norm, union_bullet_set)
+        row = check_variant(root, rec, union_text, union_norm, union_bullet_set,
+                           union_tag_by_text, union_twin_of_private)
         out["variants"].append(row)
-        if row["state"] in ("ok", "stale", "drifted") and rec.get("file"):
+        if row["state"] in ("ok", "stale", "drifted", "private-on-public") and rec.get("file"):
             try:
                 with open(os.path.join(root, rec["file"]), encoding="utf-8") as fh:
                     active_bullets |= {b for b, _ in bullets_with_sections(fh.read())}
@@ -283,7 +487,8 @@ def report(root):
 
     # The observed failure in reverse: a union claim outside the addenda printed NOWHERE.
     # Flagged, never failing — a claim may legitimately rest between page redesigns.
-    if any(r["state"] in ("ok", "stale", "drifted") for r in out["variants"]):
+    if any(r["state"] in ("ok", "stale", "drifted", "private-on-public")
+          for r in out["variants"]):
         for b, heading in union_pairs:
             if ADDENDA_HEADING_RE.search(heading):
                 continue
@@ -332,8 +537,9 @@ def main():
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--check", action="store_true",
-                    help="exit 1 on drifted/no-claims/unstamped/missing-file/unreadable "
-                         "or a broken store; stale and orphans are flagged, never failing")
+                    help="exit 1 on drifted/no-claims/unstamped/missing-file/unreadable/"
+                         "unplaced/private-on-public or a broken store; stale and orphans "
+                         "are flagged, never failing")
     ap.add_argument("--stamp", metavar="ID",
                     help="record a reconcile against %s onto this variant" % UNION_FILE)
     args = ap.parse_args()
@@ -354,8 +560,15 @@ def main():
             print("  ⛔ %s" % p)
         for r in rep["variants"]:
             mark = {"ok": "✅", "stale": "🕰", "retired": "🪦"}.get(r["state"], "⛔")
-            print("  %s %-12s %-14s archetype=%-14s %s"
-                  % (mark, r["state"], str(r["id"]), str(r["archetype"]), str(r["file"])))
+            # public #59 — "ok" alone reads as one verdict for two different guarantees;
+            # the display label says which without changing the machine state any reader
+            # (presence_set.py, generate_dashboard.py, the tests) compares against.
+            label = r["state"]
+            if r["state"] == "ok":
+                label = "ok (public-safe)" if r.get("visibility") == "public" \
+                       else "ok (provenance only)"
+            print("  %s %-19s %-14s archetype=%-14s %s"
+                  % (mark, label, str(r["id"]), str(r["archetype"]), str(r["file"])))
             if r["why"]:
                 print("        %s" % r["why"])
             for v in r["violations"]:

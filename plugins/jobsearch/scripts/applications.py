@@ -98,6 +98,20 @@ def group_cover_letters_by_id(rows):
     return {r.get("id"): r for r in rows if r.get("id")}
 
 
+def group_by_cover_letter(rows):
+    """cover_letter_id -> [application row, ...] — the REVERSE of `group_cover_letters_by_id`:
+    "which application(s), if any, actually carry this letter's id" (public #95's terminal-
+    transition cascade, `your_move.letter_state()`'s own join). `rows` is `applications.jsonl`
+    rows (this file's own `load()`), not cover_letters rows. A row with no `cover_letter_id`
+    is never grouped, the same convention `group_by_opp` uses for a row with no `opp_id`."""
+    out = {}
+    for r in rows:
+        cli = r.get("cover_letter_id")
+        if cli:
+            out.setdefault(cli, []).append(r)
+    return out
+
+
 def attach(opps, by_opp):
     """Sets `o["_applications"]` on every `opps` row, IN PLACE, from `by_opp`
     (`group_by_opp`'s own output) — the underscore prefix is this engine's own convention for a
@@ -122,6 +136,32 @@ def enrich_opportunities(root, opps):
 def submitted(rows):
     """Every row whose status proves a submission actually happened."""
     return [r for r in rows if r.get("status") in SUBMITTED_APP_STATUS]
+
+
+# design-inbound-resolution.md §3.2 — "live" for ADR-030's resolution tiers: a submission that
+# has not yet ENDED. Mirrored as a literal (the SUBMITTED_APP_STATUS precedent above) rather
+# than importing validate_data.APPLICATION_ENDINGS: the three ENDING statuses
+# (rejected/withdrawn/closed) are excluded, leaving exactly the statuses a still-open pursuit
+# can be resolving mail against.
+LIVE_APP_STATUS = {"submitted", "acknowledged", "advanced"}
+
+
+def live(rows):
+    """Every row still open — not yet rejected/withdrawn/closed (design §3.2's "Live")."""
+    return [r for r in rows if r.get("status") in LIVE_APP_STATUS]
+
+
+def open_for_company(rows, opps_by_id, company_id):
+    """Live applications whose opportunity belongs to `company_id` — tier 3's own "exactly
+    one live application at that company" test, as a reusable join (design §3.2)."""
+    out = []
+    for r in rows:
+        if r.get("status") not in LIVE_APP_STATUS:
+            continue
+        opp = opps_by_id.get(r.get("opp_id")) or {}
+        if opp.get("company_id") == company_id:
+            out.append(r)
+    return out
 
 
 def uncovered(root, active_variant_ids):

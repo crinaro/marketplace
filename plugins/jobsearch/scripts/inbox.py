@@ -52,8 +52,9 @@ ACTION = {
                 "can be weeks stale. Then put it in This Week and advance `stage`."),
     "alert": ("Read the roles. Cross-check `pipeline_index.py --excluded` before treating any as "
               "new; hand genuinely-new ones to opportunity-researcher."),
-    "ats": ("Update the application's `status`. A rejection or an interview invite both change "
-            "what the candidate should do next."),
+    "ats": ("superseded — see data/asks.jsonl (ask-ats-*). This kind stays in the replay "
+            "vocabulary for rows already in profiles from before reconcile.py --ats existed "
+            "(design-inbound-resolution.md §4.5); a new row of this kind is never written."),
     "run-summary": ("READ THIS FIRST — it is what a background run did while you were away. The "
                     "state is ALREADY written; this is the notification, not the work. Ack it "
                     "once you have told the candidate anything they need to act on."),

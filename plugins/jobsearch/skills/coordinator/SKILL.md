@@ -133,6 +133,17 @@ provable even when the run dies before its own first line:
 "the job did not run" when it started and died sends the next person to the scheduler, which is
 the one place the answer is not.
 
+**⭐⭐ public #85 — `check_runs.py` now also asks whether a run that DID end AGREED WITH ITSELF.**
+This is a different question from the table above (which only asks whether a trace exists at
+all): a scheduled run once posted "no change" to this very queue while it had, in the same run,
+recorded a real reply and left writes uncommitted — nothing above would have caught that, because
+the run left plenty of trace, all of it self-contradictory. Two new findings in `check_runs.py`'s
+own output, under "run-summary footprint check": an `end` event recorded with **no footprint at
+all** (the run predates this feature, or `journal.py --end`'s own computation failed — its
+stderr says which), and a posted run-summary whose **own headline contradicts its own stored
+footprint**. Either is an ENGINE issue — route it to `engine-reporter` the same way a
+`lastRunAt`/journal disagreement is, never worked around by hand.
+
 **Why this step exists (2026-08-06, the candidate: *"i also noticed that the jobs did not run"*).**
 `search-daily` reported `lastRunAt` 09:08 and the scheduler counted it a success. It had left no
 `log.md` entry, no inbox post, no commit — while the 07:08 run left all three. It fired, died

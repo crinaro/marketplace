@@ -17,12 +17,13 @@ measured (`as_of`). A surface with no cap says so (`cap: None`), which is a diff
 posture ADR-027 takes toward an unmarked surface and precondition.py takes toward an unreadable
 value: undecidable is loud, never a default that silently permits everything.
 
-## Step 1 (ADR-028 build, 0.39.0): the `print` surface ONLY.
+## Step 1 (ADR-028 build, 0.39.0): the `print` surface.
+## Step 3 (public #59/#64, ADR-027): `public-profile` — the destination the claim-safety gate
+## in resume_variants.py exists for — plus the `surface` field itself on the variant row.
 
-A printed resume — handed to a named recipient, no field cap. Every declared variant renders
-under it until the variant row carries its own `surface` field (ADR-027 / ADR-028 step 3,
-a schema change this step deliberately does not make). Adding a surface is adding a row here,
-with its cap measured and dated, never inferred from its name.
+A printed resume — handed to a named recipient, no field cap — versus a page published to the
+open web: indexed, permanent, reachable by anyone. Adding a surface is adding a row here, with
+its cap measured and dated, never inferred from its name.
 
 Usage (library; the CLI prints the table):
     python3 scripts/surfaces.py
@@ -43,11 +44,22 @@ SURFACES = {
         "as_of": None,
         "why": "a resume handed to a named recipient: sent, never published",
     },
+    "public-profile": {
+        "label": "public profile page",
+        "visibility": "public",        # any reader can reach it without being chosen
+        "cap": None,                   # no cap measured yet — a future step's job, dated
+        "as_of": None,
+        "why": "a page published to the open web: indexed, permanent, reachable by anyone — "
+               "the destination public #59's own claim-safety gate exists for",
+    },
 }
 
-# The surface a variant renders under while no row carries a `surface` field (step 3). Not a
-# guess — with one row in the table there is exactly one possible value, and the strip on
-# the working set says which it is and why.
+# ⚠️ HISTORICAL — the value every variant rendered under BEFORE the `surface` field existed on
+# the row (step 1 through step 2). Since step 3 (public #59/#64) the field exists and an absent
+# one is the `unplaced` state (ADR-027: "an undeclared surface is not a default"), never this
+# constant guessed silently in its place — no shipped script reads it as a fallback any more.
+# Kept only because a row genuinely predating `surface` altogether still needs SOME name to
+# print in a "here is what that used to mean" message, should one ever be written.
 DEFAULT_SURFACE = "print"
 
 VISIBILITIES = ("public", "private")
@@ -91,7 +103,8 @@ def main():
     for n in names():
         print("  %s" % describe(n))
         print("      %s" % SURFACES[n]["why"])
-    print("\n  default while no variant row carries a `surface` field: %s" % DEFAULT_SURFACE)
+    print("\n  a variant row with no `surface` field, or one naming an undeclared surface, is "
+          "'unplaced' (resume_variants.py) — never guessed as any of the above.")
     return 0
 
 

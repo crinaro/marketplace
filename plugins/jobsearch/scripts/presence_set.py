@@ -51,7 +51,8 @@ zero-variant profile exactly as it does on five.
    its condition holds — so nothing can be "done" on the page. `--check` re-derives and fails on
    any item the page carries that the sources no longer produce.
 6. A SURFACE WITH A HARD LIMIT IS MEASURED AGAINST IT, and the number shown — in the strip.
-   Step 1 declares the `print` surface only (surfaces.py), which has no cap; the strip says so.
+   Neither declared surface carries a cap yet (surfaces.py: `print`, `public-profile`); the
+   strip says so for whichever one a row's own `surface` field names.
 7. THE RENDERER IS PARAGRAPH-FAITHFUL — CommonMark, both directions: adjacent non-blank lines
    join with a SPACE into one paragraph (a real renderer merges them, so the merge is VISIBLE in
    the preview instead of hidden), and a blank line ENDS a paragraph (never joined). This is a
@@ -673,14 +674,23 @@ def build(root, today=None):
             vtext = read_source(vpath) or ""
             vblocks = parse_blocks(vtext)
             panes_blocks[vrel] = vblocks
-            surface = _surf.DEFAULT_SURFACE
+            # public #59/#64, ADR-027 — the row's OWN `surface` field, never a silent default
+            # (surfaces.DEFAULT_SURFACE is historical: see its own docstring). A row with no
+            # declared surface, or one naming an undeclared surface, is 'unplaced' the same
+            # way resume_variants.py's own check reports it — this strip must never disagree
+            # with the gate about what the row currently is.
+            surface = rec.get("surface")
+            surface_desc = (_surf.describe(surface) if surface in _surf.names()
+                           else ("unplaced — no surface declared" if surface is None
+                                 else "unplaced — %r not declared in surfaces.py" % surface))
             state = rr.get("state", "?")
             stamped = rec.get("union_reconciled_on") or "never"
             strip = ('<div class="strip"><h2>%s</h2>archetype: %s · source: <code>%s</code> '
                      '· surface: %s · containment: %s · reconciled: %s</div>'
                      % (esc(vid), esc(str(rec.get("archetype") or "?")), esc(vrel),
-                        esc(_surf.describe(surface)),
-                        ('<span class="warn">%s</span>' % esc(state)) if state in ("drifted", "stale")
+                        esc(surface_desc),
+                        ('<span class="warn">%s</span>' % esc(state))
+                        if state in ("drifted", "stale", "unplaced", "private-on-public")
                         else esc(state), esc(stamped)))
             panes.append((key, strip, _pane(key, vrel, sha_of(vpath), render_blocks(vblocks))))
             ledger_panes.append({"key": key, "label": vr["label"], "source": vrel,

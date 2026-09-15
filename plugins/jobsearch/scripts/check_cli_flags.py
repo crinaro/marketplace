@@ -722,6 +722,10 @@ UNREAD_ALLOWLIST = {
         "documented-shape no-op — the un-flagged fallthrough (`return status()`) reached when "
         "neither --set-mode nor --render is given — the same shape as mailboxes.py/sync.py "
         "below (issue #368).",
+    ("variant_out.py", "status"):
+        "documented-shape no-op — same shape as letter_out.py's own --status above, its twin "
+        "renderer (public #64): the un-flagged fallthrough (`return status()`) is reached "
+        "whether or not --status is given, whenever neither --set-mode nor --render is.",
     ("mailboxes.py", "status"):
         "documented-shape no-op — its own help text ('what is configured and what works') is "
         "the un-flagged fallthrough reached when neither --add nor --remove is given "

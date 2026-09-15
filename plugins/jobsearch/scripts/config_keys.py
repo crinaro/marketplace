@@ -60,6 +60,16 @@ ATS_CLOSE = "ats.close"
 ATS_CLOSE_DEFAULT = "propose"
 ATS_CLOSE_VALUES = ("propose", "auto")
 
+# design-linkedin-runner-resilience.md §1 (public #47/#96) — how long a taken-but-never-released
+# pane lock is trusted to mean "a run is genuinely still using it" before the next `--take`
+# treats it as abandoned and takes over. No pass duration exists anywhere in this repo and this
+# design was read-only against the tree, so the default below is UNVERIFIED — the honest
+# state, not a guess dressed as a measurement. `journal.py --pass-durations` (new, a read) prints
+# every run's actual wall-clock length so the owner can set this key from real numbers rather
+# than from this file's placeholder.
+LINKEDIN_PANE_STALE_MINUTES = "linkedin.pane_stale_minutes"
+LINKEDIN_PANE_STALE_MINUTES_DEFAULT = 90
+
 # public #83 — the run-start "linkless sighting" advisory (doctor.py's
 # `check_linkless_sightings`). A sighting is caught freshly-sighted, not linkless, below this
 # many days old — the grace period a batch research pass gets before a board/aggregator
@@ -69,6 +79,53 @@ ATS_CLOSE_VALUES = ("propose", "auto")
 LINKLESS_GRACE_DAYS = "sourcing.linkless_grace_days"
 LINKLESS_GRACE_DAYS_DEFAULT = 3
 
+# design-inbound-resolution.md §5.2/§5.4 (ADR-029/030 build) — the deterministic ATS sweep's
+# own three owner-facing knobs. Home is the EXISTING `ats` section (about the ATS's clock and
+# receipts), same reasoning ATS_SILENCE_DAYS/ATS_CLOSE already state.
+#
+# `ats.parsed_status` — ADR-030 decision 1: the apply/propose line follows RESOLUTION
+# CONFIDENCE, not mail kind. `receipt-grade` (default) applies a tier-1/tier-2 hit (the ATS's
+# own key appeared in the mail) and proposes a tier-3 hit (a name match); `propose` proposes
+# everything; `all` applies everything. See design §4.2's table.
+ATS_PARSED_STATUS = "ats.parsed_status"
+ATS_PARSED_STATUS_DEFAULT = "receipt-grade"
+ATS_PARSED_STATUS_VALUES = ("receipt-grade", "propose", "all")
+
+# `ats.sweep_days` — the FLOOR `reconcile.py --ats` passes to `mail_client.lookback_days()`
+# (design §5's own "first caller"). The ledger widens it past this floor whenever a coverage
+# hole exists; this is never a ceiling.
+ATS_SWEEP_DAYS = "ats.sweep_days"
+ATS_SWEEP_DAYS_DEFAULT = 3
+
+# `ats.max_asks_per_run` — ADR-030 decision 5: a reader who clears this many asks a day keeps
+# up with any ATS. Applied writes (a receipt-grade resolution) are never capped — only asks
+# are, because an ask is a decision queued for a human and an applied write is evidence with
+# a key already resolved.
+ATS_MAX_ASKS_PER_RUN = "ats.max_asks_per_run"
+ATS_MAX_ASKS_PER_RUN_DEFAULT = 5
+# ── geo_screen (public #89, dev #355) ──────────────────────────────────────────────────────────
+# The geography keys a screening reader resolves. `init_profile.py` used to scaffold
+# `geography.relocation_open_to` / `geography.radius_minutes`; every profile actually derived
+# from a resume carries the shape below instead — the `_ats_keys.py` two-spellings defect, one
+# config section over. Registered here ONCE so `profile.py --options` and `geo_screen.py --list`
+# read the identical key set (§15.7's own gate, applied to geography); `migrate.py`'s
+# `m_0_50_0_geography_keys` rewrites a profile still carrying the old names into this shape.
+GEOGRAPHY_REMOTE_OK = "geography.remote_ok"
+GEOGRAPHY_REMOTE_OK_DEFAULT = True
+
+# False, not True: the same caution `effective_setting()` already applies to an unrecognized
+# commute location (never default to "relocation") — a profile that has never SET this is read
+# as closed to relocation outside its named commute anchors and affirmative destinations, never
+# open by silent default.
+GEOGRAPHY_RELOCATION_OPEN = "geography.relocation.open"
+GEOGRAPHY_RELOCATION_OPEN_DEFAULT = False
+
+GEOGRAPHY_AFFIRMATIVE_DESTINATIONS = "geography.relocation.affirmative_destinations"
+GEOGRAPHY_AFFIRMATIVE_DESTINATIONS_DEFAULT = ()
+
+GEOGRAPHY_COMMUTE_ANCHORS = "geography.commute_anchors"
+GEOGRAPHY_COMMUTE_ANCHORS_DEFAULT = ()
+
 # What a reader resolves — and therefore exactly what a scaffold seeding fresh defaults would
 # need to seed (the `_ats_keys.READER_KEYS` / `resume_variants.SUBMITTED` mirror precedent).
 # `describe()` below reports the default when a profile has not set one, same as the register
@@ -77,7 +134,10 @@ LINKLESS_GRACE_DAYS_DEFAULT = 3
 # rather than each naming its own list, so the two cannot enumerate two different sets
 # (design §15.7's own gate: "profile.py --options and doctor.py reading different key lists").
 READER_KEYS = frozenset({CHASE_AFTER_DAYS, NO_RESPONSE_AFTER_DAYS, ATS_SILENCE_DAYS, ATS_CLOSE,
-                         LINKLESS_GRACE_DAYS})
+                         LINKLESS_GRACE_DAYS, ATS_PARSED_STATUS, ATS_SWEEP_DAYS,
+                         ATS_MAX_ASKS_PER_RUN, LINKEDIN_PANE_STALE_MINUTES, GEOGRAPHY_REMOTE_OK,
+                         GEOGRAPHY_RELOCATION_OPEN, GEOGRAPHY_AFFIRMATIVE_DESTINATIONS,
+                         GEOGRAPHY_COMMUTE_ANCHORS})
 
 # {key: (default, kind, bounds_or_values, why)} — the metadata `profile.py --options` and
 # `doctor.py` render alongside the value/provenance `describe()` returns. `kind` is "int" or
@@ -99,6 +159,41 @@ _METADATA = {
     LINKLESS_GRACE_DAYS: (LINKLESS_GRACE_DAYS_DEFAULT, "int", (0, 30),
                           "days a board/aggregator sighting with no jd_url/source_url is given "
                           "before doctor.py's run-start advisory names it (public #83)"),
+    ATS_PARSED_STATUS: (ATS_PARSED_STATUS_DEFAULT, "enum", ATS_PARSED_STATUS_VALUES,
+                       "whether a parsed ATS status is APPLIED or only PROPOSED, by resolution "
+                       "confidence — receipt-grade (tier 1/2 apply, tier 3 proposes), propose "
+                       "(everything proposed), or all (everything applied) — "
+                       "reconcile.py --ats"),
+    ATS_SWEEP_DAYS: (ATS_SWEEP_DAYS_DEFAULT, "int", (1, 30),
+                     "the FLOOR reconcile.py --ats passes to mail_client.lookback_days() — "
+                     "the ledger widens past this floor on a coverage hole, never narrows"),
+    ATS_MAX_ASKS_PER_RUN: (ATS_MAX_ASKS_PER_RUN_DEFAULT, "int", (1, 50),
+                          "asks reconcile.py --ats will write in one run before withholding "
+                          "the remainder (counted, re-seen next run) — applied writes are "
+                          "never capped, only asks are (ADR-030 decision 5)"),
+    GEOGRAPHY_REMOTE_OK: (GEOGRAPHY_REMOTE_OK_DEFAULT, "bool", ("True", "False"),
+                          "whether a fully-remote posting screens as REMOTE at all "
+                          "(geo_screen.py) — False is an explicit config no, never silence"),
+    GEOGRAPHY_RELOCATION_OPEN: (GEOGRAPHY_RELOCATION_OPEN_DEFAULT, "bool", ("True", "False"),
+                                "whether a metro that is neither a commute anchor nor an "
+                                "affirmative destination still screens RELOCATION-OK "
+                                "(geo_screen.py) — False means OUT"),
+    GEOGRAPHY_AFFIRMATIVE_DESTINATIONS: (GEOGRAPHY_AFFIRMATIVE_DESTINATIONS_DEFAULT, "list",
+                                         ("free-form list of metro names",),
+                                         "metros that screen AFFIRMATIVE regardless of "
+                                         "relocation.open (geo_screen.py) — public #89's own "
+                                         "list, the one the daily run dismissed a whole digest "
+                                         "for never consulting"),
+    GEOGRAPHY_COMMUTE_ANCHORS: (GEOGRAPHY_COMMUTE_ANCHORS_DEFAULT, "list",
+                                ("free-form list of anchor objects",),
+                                "each anchor's own max_commute_minutes is what geo_screen.py "
+                                "and profile.py's within_commute() both screen a location "
+                                "against"),
+    LINKEDIN_PANE_STALE_MINUTES: (LINKEDIN_PANE_STALE_MINUTES_DEFAULT, "int", (20, 360),
+                                  "minutes a taken pane lock is trusted before the next --take "
+                                  "treats it as abandoned (runlock.py --resource pane) — "
+                                  "UNVERIFIED: no pass duration exists in this repo; measure "
+                                  "with journal.py --pass-durations before trusting the default"),
 }
 
 # Engine constants C1 hardcodes rather than reading from config — never resolved by describe(),

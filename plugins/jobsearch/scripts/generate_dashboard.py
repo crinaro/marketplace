@@ -2469,6 +2469,21 @@ def main():
     covers_html = render_message_list("covers", "cover", _covers_active, _states,
                                       _COVERS_REL, COVER_DIMS, "No cover letters pending.")
     n_covers_held = len(_covers_held)
+
+    # public #95 — the terminal-transition cascade's data-store half (design-inbound-
+    # resolution.md §8's own stated remainder: "cover_letters.status has no terminal value
+    # on an ending" — the markdown pane above is #377's own MOOT_DERIVED already; this is
+    # the `data/cover_letters.jsonl` row itself, which #377 never touched). Advisory only —
+    # never blocks rendering; a broken resolver here must not take the whole page down.
+    try:
+        _ended_ctx = _ym.build_ended_context(str(ROOT))
+        _letter_rows, _cl_errs, _cl_present = _apps.load_cover_letters(str(ROOT))
+        n_letters_moot = sum(1 for _l in _letter_rows
+                             if _ym.letter_state(_l, _ended_ctx)[0] == "moot")
+        n_letters_used = sum(1 for _l in _letter_rows
+                             if _ym.letter_state(_l, _ended_ctx)[0] == "used")
+    except Exception:
+        n_letters_moot = n_letters_used = 0
     n_unreadable = len(_unreadable) + len(_covers_unreadable)
 
     # dev #148 — sourcing strategy, via channels_due.py's one definition
@@ -3007,6 +3022,20 @@ def main():
                (' <span class="ct2f">· %d queued</span>' % n_queued) if n_queued else "",
                drafts_html))
     if _covers_active:
+        # public #95 — the data-store side of the cascade, distinct from the markdown pane
+        # above: a letter the data store says is `used`/`moot` never counts against either card
+        # (`data/cover_letters.jsonl` is the record of what actually happened; the markdown
+        # pane is the working draft), so this is reported once, plainly, rather than folded
+        # into a count that would otherwise double a row the markdown side already excludes.
+        _cascade_note = ""
+        if n_letters_moot or n_letters_used:
+            _bits = []
+            if n_letters_used:
+                _bits.append("%d used (an application already carries it)" % n_letters_used)
+            if n_letters_moot:
+                _bits.append("%d moot (its pursuit has ended)" % n_letters_moot)
+            _cascade_note = ('<div class="sub" style="margin:6px 0 0">data/cover_letters.'
+                             'jsonl: %s — public #95</div>' % "; ".join(_bits))
         out_parts.append(
             '<h2 id="phase-outreach-covers">📄 Cover letters — for applications you submit '
             'yourself <span class="tcount">%d</span>%s</h2>'
@@ -3014,10 +3043,10 @@ def main():
             'union (presence/claims.md). You paste and submit these yourself — nothing is '
             'applied on your behalf. A held letter waits on a precondition; do not submit it '
             'yet.</div>'
-            '<div class="card">%s</div>'
+            '<div class="card">%s</div>%s'
             % (len(_covers_ready) + len(_covers_unreadable),
                (' <span class="ct2f">· %d held</span>' % n_covers_held) if n_covers_held else "",
-               covers_html))
+               covers_html, _cascade_note))
     if touch_ws:
         out_parts.append(
             '<h2 id="phase-outreach-touches">🤝 Relationship follow-ups due '

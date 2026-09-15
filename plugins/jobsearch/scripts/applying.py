@@ -29,9 +29,13 @@ Plus the follow-up half of the session (public #27, parts C/D, via trigger.py):
   - submitted applications that no follow-up work names — each is work the submission created
   - sequences whose next step is sendable NOW
 
-⚠️ The printed-resume gap (dev #234) is OPEN and this view does not close it: the variant
-named here is a markdown file, and the document actually uploaded is produced outside the
-engine. The view says so on every variant line rather than implying the gap is closed.
+⚠️ The variant named here is still a markdown file, not the document itself — since public #64
+(0.50.0), `variant_out.py` renders a declared variant into a real `.docx`/Drive document, gated
+by `resume_variants.report()`'s own FAIL_STATES (refuses on `unplaced`/`private-on-public`
+before rendering anything). The printed-resume gap (dev #234) is closed for that render path;
+what remains open is confirming that the rendered file is actually what gets attached — the
+view's caution now points at rendering with `variant_out.py` and confirming that IS what was
+sent, rather than stating the gap as unclosed.
 
 Usage:
     python3 applying.py              # write <profile>/views/applying.md
@@ -95,9 +99,9 @@ GENERATED_HEADER = (
     "     overwritten by the next regeneration without notice. Change the record in\n"
     "     session (record.py) and regenerate. -->\n")
 
-VARIANT_CAUTION = ("the variant is a markdown file; the document actually uploaded is "
-                   "produced outside the engine (dev #234, open) — confirm what you "
-                   "attach, and record it on the applications row")
+VARIANT_CAUTION = ("render this variant with variant_out.py (public #64) and confirm the "
+                   "rendered document IS what you attach — then record it on the "
+                   "applications row")
 
 
 def queue(opps):

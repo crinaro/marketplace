@@ -22,6 +22,13 @@ session's job, deliberately, so it happens once and on purpose.
 whose body was written as plain text published EMPTY once and only the candidate noticed — the source
 file reads perfectly, so every constraint check passes while the deliverable is blank. This script
 fails loudly on an unquoted body rather than writing an empty document.
+
+⭐ THE .DOCX WRITER LIVES IN `_docx.py` (public #64). The resume-variant renderer
+(`variant_out.py`) needed a richer paragraph model than this letter ever did — real headings,
+hanging-indent bullets, keep-with-next, widow/orphan control, an authored page break — so
+`write_docx` below moved there and grew that shape. This module keeps calling it with the exact
+same five arguments it always has; see `_docx.py`'s own docstring for the byte-identity
+guarantee that move rests on.
 """
 
 import argparse
@@ -29,12 +36,12 @@ import json
 import os
 import re
 import sys
-import zipfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
 import _tree
 import profile as prof
+from _docx import write_docx
 
 MODES = ("drive", "local_docx")
 DEFAULT_MODE = "drive"
@@ -152,82 +159,9 @@ def check_text(body_lines):
 
 
 # ---------------------------------------------------------------- .docx
-
-def _xml_escape(s):
-    return (s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-             .replace('"', "&quot;"))
-
-
-def _para(text, bold=False, size_half_pt=22, space_after=160, align=None):
-    runs = ""
-    if text:
-        rpr = "<w:rPr>%s<w:sz w:val=\"%d\"/></w:rPr>" % (
-            "<w:b/>" if bold else "", size_half_pt)
-        runs = ('<w:r>%s<w:t xml:space="preserve">%s</w:t></w:r>'
-                % (rpr, _xml_escape(text)))
-    jc = '<w:jc w:val="%s"/>' % align if align else ""
-    return ('<w:p><w:pPr>%s<w:spacing w:after="%d" w:line="240" w:lineRule="auto"/></w:pPr>%s</w:p>'
-            % (jc, space_after, runs))
-
-
-def write_docx(path, header_lines, body_lines, font="Times New Roman", margin_twips=1080):
-    """Write a real .docx using only the stdlib. A .docx is a zip of XML parts."""
-    paras = []
-    for i, line in enumerate(header_lines):
-        paras.append(_para(line, bold=(i == 0), size_half_pt=24 if i == 0 else 20,
-                           space_after=40, align="center"))
-    paras.append(_para("", space_after=200))
-    for line in body_lines:
-        paras.append(_para(line, space_after=160 if line.strip() else 80))
-
-    sect = ('<w:sectPr><w:pgSz w:w="12240" w:h="15840"/>'
-            '<w:pgMar w:top="%d" w:right="%d" w:bottom="%d" w:left="%d" '
-            'w:header="720" w:footer="720" w:gutter="0"/></w:sectPr>'
-            % (margin_twips, margin_twips, margin_twips, margin_twips))
-
-    document = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        '<w:body>%s%s</w:body></w:document>' % ("".join(paras), sect))
-
-    styles = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
-        '<w:docDefaults><w:rPrDefault><w:rPr>'
-        '<w:rFonts w:ascii="%s" w:hAnsi="%s" w:cs="%s"/><w:sz w:val="22"/>'
-        '</w:rPr></w:rPrDefault></w:docDefaults></w:styles>' % (font, font, font))
-
-    content_types = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
-        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.'
-        'relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>'
-        '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-'
-        'officedocument.wordprocessingml.document.main+xml"/>'
-        '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-'
-        'officedocument.wordprocessingml.styles+xml"/></Types>')
-
-    rels = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
-        'relationships/officeDocument" Target="word/document.xml"/></Relationships>')
-
-    doc_rels = (
-        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
-        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
-        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/'
-        'relationships/styles" Target="styles.xml"/></Relationships>')
-
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr("[Content_Types].xml", content_types)
-        z.writestr("_rels/.rels", rels)
-        z.writestr("word/document.xml", document)
-        z.writestr("word/styles.xml", styles)
-        z.writestr("word/_rels/document.xml.rels", doc_rels)
-    return path
-
+#
+# write_docx() itself now lives in _docx.py (public #64's extraction) — imported at the top of
+# this file under its own name, so every existing call site (render(), below) needs no change.
 
 # ---------------------------------------------------------------- commands
 

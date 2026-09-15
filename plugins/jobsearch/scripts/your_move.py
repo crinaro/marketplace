@@ -92,6 +92,11 @@ import profile as _profile                                          # noqa: E402
 # time, and validate_data places its import of us below its vocabulary for that reason.
 import validate_data as _vd                                         # noqa: E402
 import config_keys                                                   # noqa: E402
+# public #95 (terminal-transition cascade) — `letter_state`/`touch_state` below read these
+# two top-level stores directly; neither imports this module (or validate_data), so this is
+# safe at module top level, unlike the lazy `import your_move` precondition.py/watch.py do.
+import applications as _apps                                         # noqa: E402
+import touches as _touches                                           # noqa: E402
 
 # Re-exported so a caller (validate_data.py) needs exactly one import to validate the field.
 PreconditionError = _pre.PreconditionError
@@ -496,6 +501,126 @@ def ended_because(opp, apps):
         return "unrecorded"
 
     return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE TERMINAL-TRANSITION CASCADE — public #95. `ended_because()` above is the ending
+# oracle States & Views V1 already built; nothing about an ending is re-derived here. What
+# was missing is the DRAIN: two stores whose own rows carry no field a terminal transition
+# ever updates, so work that hung off the prior state (a cover letter still "pending" for a
+# role already decided, an outreach touch still "due" for a pursuit already over) survived
+# indefinitely, looking exactly like live work.
+#
+# Both derivations below are PURE — computed fresh from the stores every call, never stored
+# back (this module's own stated contract: `report()`'s own docstring, `workflow_state()`'s
+# precedent). No migration accompanies this: nothing on disk changes shape or gains a field:
+# `cover_letters.status: null` stays exactly as legal as it always was
+# (`validate_data.COVER_LETTER_STATUS` — nullable on purpose, design §1's "a migration that
+# cannot know a field's type must not interpret it"); this only computes, on top of what is
+# already there, the fact a reader actually needs.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def build_ended_context(root):
+    """{'opps_by_id', 'apps_by_opp', 'apps_by_letter'} — built ONCE by a caller that scores
+    many `cover_letters`/`touches` rows through `letter_state`/`touch_state` below, so N rows
+    cost one load of `opportunities.jsonl` + `applications.jsonl`, never N. Every key reads
+    through the SAME `applications.py` joins every other B2/B3 reader in this engine uses —
+    `group_by_opp` for `ended_because()`'s own contract, and the new `group_by_cover_letter`
+    for "which application (if any) actually carries this letter's id"."""
+    opps = _load_jsonl(root, "opportunities.jsonl")
+    opps_by_id = {o.get("id"): o for o in opps if o.get("id")}
+    apps_rows, _errs, _present = _apps.load(root)
+    return {"opps_by_id": opps_by_id,
+            "apps_by_opp": _apps.group_by_opp(apps_rows),
+            "apps_by_letter": _apps.group_by_cover_letter(apps_rows)}
+
+
+# The five states `letter_state()` can return, in PRECEDENCE order (the first that applies
+# wins) — the vocabulary is closed, the same convention ROLE_STATES/CHANNEL_STATES set.
+LETTER_STATES = ("used", "retired", "moot", "sent", "pending")
+
+
+def letter_state(letter, ctx):
+    """(state, why) for one `data/cover_letters.jsonl` row — public #95's cover-letter half,
+    named in design-inbound-resolution.md §8 as the explicit remainder ("`cover_letters.
+    status` has no terminal value on an ending"). `ctx` is `build_ended_context(root)`'s own
+    dict, built once and reused across every row.
+
+    Precedence, top to bottom — the first that applies wins:
+
+        used     some application's own `cover_letter_id` names THIS letter, and that
+                 application's status proves a submission actually happened
+                 (`applications.SUBMITTED_APP_STATUS`). Outranks `moot` on purpose: a used
+                 letter attached to an application that later gets rejected is still
+                 `used` forever — "we sent this" is a permanent fact history must not
+                 relabel as "we never got around to it" just because the pursuit later
+                 ended.
+        retired  the letter's own `status` is the explicit literal `retired`.
+        moot     never used, but the opportunity it was written for (`letter['opp_id']`)
+                 has ENDED (`ended_because()`, the one ending oracle) — nothing will ever
+                 attach this letter now.
+        sent     the letter's own `status` is the explicit literal `sent` — recorded, but
+                 with no application FK corroborating it (a legacy or hand-recorded row).
+        pending  none of the above: still awaiting the owner. `status` is NULLABLE here by
+                 design (a migration-minted row's explicit unknown — the same
+                 `status_on: null` shape `applications` already uses) — a null status is
+                 reported as **unrecorded**, counted exactly like any other pending row,
+                 and the `why` string never calls it a "draft": a reader that defaults a
+                 missing/null status to `draft` manufactures a fact (someone actually
+                 drafted this) the store never asserted."""
+    lid = letter.get("id")
+    using = ctx["apps_by_letter"].get(lid) or []
+    used_app = next((a for a in using if a.get("status") in _apps.SUBMITTED_APP_STATUS), None)
+    if used_app is not None:
+        return "used", ("application %s (status %r) carries this letter's id"
+                        % (used_app.get("id") or "?", used_app.get("status")))
+    if letter.get("status") == "retired":
+        return "retired", "cover letter's own status is retired"
+    opp = ctx["opps_by_id"].get(letter.get("opp_id"))
+    if opp is not None:
+        ending = ended_because(opp, ctx["apps_by_opp"].get(letter.get("opp_id"), []))
+        if ending:
+            return "moot", ("opportunity %s has ended (%s) — nothing will attach this "
+                            "letter now" % (letter.get("opp_id"), ending))
+    if letter.get("status") == "sent":
+        return "sent", "cover letter's own status is sent"
+    raw = letter.get("status")
+    if raw is None:
+        return "pending", ("status is unrecorded (null) — a migration-minted row nothing "
+                           "has stamped yet")
+    return "pending", "recorded status is %r, not yet sent" % raw
+
+
+# `touch_state()`'s own vocabulary. `ended` is rung 0 — checked before anything else a
+# caller might otherwise compute (silence age, cadence, …), because a touch whose
+# opportunity has ended cannot be "due" for a follow-up under any of those rules: there is
+# nothing left to follow up ON. `active` is every other touch — this function does not
+# invent the rest of a due/not-due ladder; it only answers the one question its callers
+# actually need (design-inbound-resolution.md's own "the cascade is a derivation" framing,
+# scoped to what public #95 reported: an ended pursuit's touch still counting as live work).
+TOUCH_STATES = ("ended", "active")
+
+
+def touch_state(touch, ctx):
+    """(state, why) for one `data/touches.jsonl` row. `ended` fires when the touch's own
+    `opp_id` resolves to an opportunity that `ended_because()` says has ended — independent
+    of the touch's own `outcome`/`status` fields, because those describe what happened
+    ON the touch, not whether the pursuit it was FOR is still open. A touch with no
+    `opp_id` at all (a channel-only or fully unanchored touch — ADR-031 B3 / public #53) can
+    never be `ended` by this rule: there is no opportunity for it to end WITH, so it is
+    always `active`. `ctx` is `build_ended_context(root)`'s own dict."""
+    opp_id = touch.get("opp_id")
+    if not opp_id:
+        return "active", "no opp_id — not anchored to a pursuit that can end"
+    opp = ctx["opps_by_id"].get(opp_id)
+    if opp is None:
+        return "active", "opp_id %r does not resolve" % opp_id
+    ending = ended_because(opp, ctx["apps_by_opp"].get(opp_id, []))
+    if ending:
+        return "ended", ("opportunity %s has ended (%s) — not due for a follow-up"
+                         % (opp_id, ending))
+    return "active", "opportunity is still live"
 
 
 def application_axis(opp, apps):
@@ -921,11 +1046,24 @@ def contact_joinability_gaps(channels, involvements=()):
 PEOPLE_STATES = ("due", "awaiting-intro", "quiet", "fresh")
 
 
-def _last_touch_date(person_id, g, as_of):
+def _last_touch_date(person_id, g, as_of, ended_ctx=None):
     """The most recent event (an outbound/inbound touch, or a message) involving this person,
-    on or before `as_of` — the same "touches ∪ messages" union design §14 states."""
+    on or before `as_of` — the same "touches ∪ messages" union design §14 states.
+
+    ⭐ public #95 — a touch whose OWN opportunity has ENDED is excluded from this union
+    (`touch_state(..., ended_ctx)[0] == 'ended'`), `ended_ctx` optional so a caller with no
+    context yet (or a test exercising the pre-#95 shape) still gets an answer, just without
+    the exclusion. Without it, a touch that is really "we told you no" (a rejection, a
+    portal close) resets the cadence clock as if it were a genuine relationship touch — the
+    scenario `classify_people`'s own docstring below plants: a person touched only through a
+    since-ended pursuit reads as freshly touched, when nothing about the RELATIONSHIP
+    actually happened recently. Messages are read unfiltered here on purpose — an inbound
+    reply is evidence a human engaged, whatever the pursuit's fate, and this module scopes
+    the exclusion to what public #95 actually reported (a stale TOUCH, not a stale reply)."""
     dates = []
     for t in g.touches_for_person(person_id):
+        if ended_ctx is not None and touch_state(t, ended_ctx)[0] == "ended":
+            continue
         d = t.get("date")
         if d and str(d)[:10] <= as_of:
             dates.append(str(d)[:10])
@@ -969,10 +1107,17 @@ def _awaiting_intro_object(person_id, g, as_of):
 def classify_people(root, today=None, warm_days=180):
     """[(person, state, why)] — design §14's classifier, the ONE owner of Your Move people-due
     membership (`network_due.py` folds in here, never a second owner). `root` is the profile
-    root; a fresh `graph.Graph` is built once per call (the module's own convention)."""
+    root; a fresh `graph.Graph` is built once per call (the module's own convention).
+
+    ⭐ public #95 — a cadence-due read must not be driven by a touch whose OWN pursuit has
+    ended: `build_ended_context(root)` is built once here and threaded into
+    `_last_touch_date` so a person touched only through a since-closed role is judged on
+    what is left once that touch is excluded (never touched at all — `elapsed is None` —
+    or, when a LIVE pursuit also touched them, that live touch alone)."""
     import graph as _graph
     today = today or datetime.date.today().isoformat()
     g = _graph.Graph(os.path.join(root, "data"))
+    ended_ctx = build_ended_context(root)
     out = []
     for p in g.stores["people"]:
         if p.get("status") == "merged":
@@ -984,7 +1129,7 @@ def classify_people(root, today=None, warm_days=180):
                        "an introduction to this person, requested by %s, is still awaiting"
                        % requester))
             continue
-        last = _last_touch_date(pid, g, today)
+        last = _last_touch_date(pid, g, today, ended_ctx=ended_ctx)
         cadence = p.get("cadence")
         if isinstance(cadence, int) and not isinstance(cadence, bool):
             elapsed = None
@@ -1015,11 +1160,14 @@ def report(root, today=None):
     involvements = _load_jsonl(root, "involvements.jsonl")
     # ADR-031 B3 — o["_touches"], the join `role_state`/`_touch_rows` read; never a nested
     # array on the opportunity record any more.
-    import touches as _touches
     _touches.enrich_opportunities(root, opps)
     owner = _profile.owner_token()
     roles = classify_opportunities(opps, owner, today)
     chans = classify_channels(channels, messages, today, involvements)
+    # public #95 — the terminal-transition cascade, over the same context every row shares.
+    ended_ctx = build_ended_context(root)
+    letters_rows, _errs, _present = _apps.load_cover_letters(root)
+    touches_rows, _t_errs, _t_present = _touches.load(root)
     return {
         "roles": [{"id": o.get("id"), "title": o.get("title"), "state": s, "why": w}
                   for o, s, w in roles],
@@ -1034,6 +1182,16 @@ def report(root, today=None):
                   for p, s, w in classify_people(root, today)],
         # dev #154: a ready staged message no ask covers is WORK IN HAND, not silence.
         "ready_staged": ready_staged_without_ask(root),
+        # public #95 — every `cover_letters.jsonl` row, derived (never stored back).
+        "letters": [{"id": l.get("id"), "opp_id": l.get("opp_id"),
+                    "raw_status": l.get("status"), "state": s, "why": w}
+                   for l in letters_rows
+                   for s, w in (letter_state(l, ended_ctx),)],
+        # public #95 — every `data/touches.jsonl` row's ended/active read.
+        "touches": [{"id": t.get("id"), "opp_id": t.get("opp_id"),
+                    "person_id": t.get("person_id"), "state": s, "why": w}
+                   for t in touches_rows
+                   for s, w in (touch_state(t, ended_ctx),)],
     }
 
 
@@ -1075,6 +1233,15 @@ def main():
             print("  ✉️  ready       %s › %s" % (r["file"], r["title"][:60]))
             print("        %s — approve and send it, or record the ask that owns it"
                   % r["why"])
+        # public #95 — the terminal-transition cascade: only the STILL-PENDING letters are a
+        # queue row (used/retired/moot/sent are all over — the whole point of the
+        # derivation is that nothing further renders for them).
+        for l in data["letters"]:
+            if l["state"] != "pending":
+                continue
+            label = "unrecorded" if l["raw_status"] is None else l["raw_status"]
+            print("  📄 pending      cover letter %s (opp %s, status: %s)"
+                  % (l["id"] or "?", l["opp_id"] or "?", label))
         n_unres = sum(1 for r in data["roles"] if r["state"] == "unresolved")
         n_fulfilled = sum(1 for c in data["channels"] if c["state"] == "fulfilled")
         print("\n  %d role(s) unresolved · %d channel plan(s) fulfilled but not yet cleared"
@@ -1082,6 +1249,10 @@ def main():
         n_due = sum(1 for p in data["people"] if p["state"] == "due")
         if n_due:
             print("  %d person/people due for a reconnect" % n_due)
+        n_moot_letters = sum(1 for l in data["letters"] if l["state"] == "moot")
+        n_ended_touches = sum(1 for t in data["touches"] if t["state"] == "ended")
+        print("  %d letter(s) moot by ending, %d touch(es) on ended pursuits"
+              % (n_moot_letters, n_ended_touches))
         for gid in data["contact_joinability_gaps"]:
             print("  ⚠️  channel %s has no joinable person in involvements — its derived "
                   "touch can only ever come from log[]" % gid)

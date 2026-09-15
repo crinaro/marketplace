@@ -109,7 +109,10 @@ silent zero.
    the list, it is not in the rotation, and that is a decision, not an oversight.
 2. **For each due channel, resolve the route, then search it** for each configured title, in both
    postures the profile asks for: remote, and in-radius on-site/hybrid. Filter to the most recent
-   postings the surface allows.
+   postings the surface allows. **Before dropping any hit for geography, run
+   `~/.claude/jobsearch/run geo_screen.py "<location>"` and quote its verdict line** (public #89,
+   dev #355) — only its own `out:` line is grounds to drop a hit; `unknown` is reported as a gap,
+   never treated as a drop.
 3. **Cross-check every hit against `pipeline_index.py --excluded`** before reporting it as new.
    Re-surfacing a declined role costs the reviewer real time and erodes trust in the whole sweep.
 4. **Report per channel**, including the ones that yielded nothing — a zero from a channel you
@@ -122,8 +125,13 @@ concluding the board is empty. A malformed query and an empty board look identic
 ## Output
 
 Per channel: the route actually used, what was searched, and each new role with title, company,
-location, comp if stated, and a link. Then the gaps — any channel that was due and could not be
-reached, with the reason `route.py` gave.
+location, comp if stated, and a link. **⭐ public #83 rule 1 — the link is not optional colour: it
+is `sightings[].source_url` at capture time.** Every channel this agent sweeps is URL-bearing
+(`job-board`/`aggregator`), and it is free to grab now and effectively unrecoverable once the
+posting comes down — the caller that folds this report into `record.py create`/`append` needs
+the exact posting URL for every role, not just for the ones that end up pursued, or `record.py`
+refuses the write. Then the gaps — any channel that was due and could not be reached, with the
+reason `route.py` gave.
 
 **Never submit a form, never click apply, never sign in.** If a surface demands a login this
 machine does not have, that is a gap to report, not an obstacle to work around.

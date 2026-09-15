@@ -201,7 +201,7 @@ def status_of(headers, cells):
     return " ".join(cells)
 
 
-def check_silent_jsonl(today, days):
+def check_silent_jsonl(today, days, ended_ctx=None):
     """Silent threads from data/opportunities.jsonl -- THE source of truth.
 
     Replaces the markdown scan for roles (2026-07-21). `opportunities.md` was
@@ -209,8 +209,20 @@ def check_silent_jsonl(today, days):
     report a historical snapshot, and a row it flagged could never be re-dated
     because the file is not to be edited. Worse, roles added or updated after
     the cutover were invisible to it entirely.
+
+    ⭐ public #95 — the opp-level `status`/`stage` skip below is the FAST, coarse gate; it
+    can lag `your_move.ended_because()` (e.g. the newest application already reads
+    `rejected` while nothing has yet moved the opportunity's own `status` off
+    `active-pursuit` — `ended_because()`'s own precedence checks the application first for
+    exactly this reason). `touch_state()` is the precise, per-touch check that cannot lag:
+    a touch is excluded the moment ITS OWN opportunity has ended, whatever the opportunity
+    record's own `status`/`stage` still say. `ended_ctx` is `your_move.build_ended_context
+    (root)`'s own dict, built once by the caller (`main()`) and reused across every opp.
     """
     import validate_data as _vd
+    import your_move as _ym
+    if ended_ctx is None:
+        ended_ctx = _ym.build_ended_context(ROOT)
     findings = []
     for opp in load_opps():
         # Terminal roles (validate_data's ONE set) have no thread to chase. `backlog` is
@@ -222,7 +234,8 @@ def check_silent_jsonl(today, days):
         if opp.get("stage") == "closed":
             continue
         sent = [o for o in (opp.get("_touches") or [])
-                if o.get("status") == "sent" and o.get("date")]
+                if o.get("status") == "sent" and o.get("date")
+                and _ym.touch_state(o, ended_ctx)[0] != "ended"]
         if not sent:
             continue
         when = latest_date(" ".join(o["date"] for o in sent))
@@ -333,6 +346,57 @@ def check_silent_applications(as_of, silence_days):
     return findings, unmeasured
 
 
+def check_unresolved_inbound(root):
+    """design-inbound-resolution.md §7 — the NARROW half of the invariant this check can see
+    (derivation is validate_data.py's job; ingestion is `reconcile.py --ats --verify`'s):
+    every message that carries `resolves` should have moved the application it names, unless
+    the process died between the two writes (D1's own failure window — record.py's `received`
+    then `application-status` are two transactions, and the message is the idempotency mark).
+
+    Deliberately scoped to messages that explicitly `resolves` an application — never every
+    historical inbound row with an `opp_id` (the 2026-09-13 design's withdrawn class, which
+    flooded on day one because a sweep-written row did not yet exist to anchor it). A
+    sweep-written row always carries `resolves` by construction, so this fires almost never —
+    exactly in D1's own window — which is what makes it a PROCESS FAILURE worth a non-zero
+    exit rather than an advisory line lost among routine findings."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import applications as _apps_mod
+    apps_rows, _errs, _present = _apps_mod.load(root)
+    app_by_id = {a.get("id"): a for a in apps_rows if a.get("id")}
+    msg_path = os.path.join(root, "data", "messages.jsonl")
+    findings = []
+    if not os.path.exists(msg_path):
+        return findings
+    with open(msg_path, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            m = json.loads(line)
+            resolves = m.get("resolves")
+            if not resolves:
+                continue
+            app = app_by_id.get(resolves)
+            if app is None:
+                continue          # validate_data.py already refuses a dangling resolves
+            msg_date = _vd_date_part(m.get("sent_on"))
+            app_date = _vd_date_part(app.get("status_on"))
+            if not msg_date:
+                continue
+            if not app_date or app_date < msg_date:
+                findings.append((m.get("id"), resolves, m.get("sent_on"), app.get("status"),
+                                 app.get("status_on")))
+    return findings
+
+
+def _vd_date_part(v):
+    """`validate_data.date_part`, imported lazily so this module's own import surface stays
+    unchanged for every caller that never touches this check."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import validate_data as _vd
+    return _vd.date_part(v)
+
+
 def check_pursuits_without_next_action():
     """ADR-031 B4 (design §19) — active pursuits whose PLAY IS STALLED: `next_action` (free
     text) is retired, and `next_action`'s hint-word scan is what this function used to run — a
@@ -359,6 +423,31 @@ def check_pursuits_without_next_action():
     return out
 
 
+def check_moot_letters_and_touches(root, ended_ctx=None):
+    """public #95 (the terminal-transition cascade) — the checkup line: how many
+    `cover_letters.jsonl` rows `your_move.letter_state()` now derives as `moot` (a pending
+    letter for a pursuit that has since ended) and how many `data/touches.jsonl` rows
+    `your_move.touch_state()` derives as `ended`. No migration accompanies this fix (nothing
+    on disk changes shape), so this line is the one place the owner actually SEES the
+    cascade's effect the first time this ships — CLAUDE.md's own rule for a migration's
+    leftover work, applied here to a pure derivation's first run instead.
+
+    Returns (n_moot_letters, n_ended_touches). `ended_ctx` lets a caller that already built
+    `your_move.build_ended_context(root)` (this module's `main()` does, for
+    `check_silent_jsonl`) reuse it rather than reload `opportunities.jsonl`/
+    `applications.jsonl` a second time."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import your_move as _ym
+    import applications as _apps_mod
+    if ended_ctx is None:
+        ended_ctx = _ym.build_ended_context(root)
+    letters, _errs, _present = _apps_mod.load_cover_letters(root)
+    n_moot = sum(1 for l in letters if _ym.letter_state(l, ended_ctx)[0] == "moot")
+    touches_rows, _t_errs, _t_present = _touches.load(root)
+    n_ended = sum(1 for t in touches_rows if _ym.touch_state(t, ended_ctx)[0] == "ended")
+    return n_moot, n_ended
+
+
 def main():
     days = DEFAULT_DAYS
     quiet = "--quiet" in sys.argv
@@ -370,13 +459,22 @@ def main():
                 pass
 
     run_today = datetime.now().date()
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import your_move as _ym
+    # public #95 — built once, unconditionally: neither the cascade check below nor the
+    # per-touch exclusion inside check_silent_jsonl depends on mailbox coverage, so both run
+    # even on an UNVERIFIED profile (never gated behind the silence banner: a moot cover
+    # letter or an ended-pursuit touch is a fact about the stores, not about a sweep).
+    ended_ctx = _ym.build_ended_context(ROOT)
+    n_moot_letters, n_ended_touches = check_moot_letters_and_touches(ROOT, ended_ctx=ended_ctx)
     as_of = verified_as_of(ROOT)
     unverified = as_of is None
     if unverified:
         silent = []
         silent_apps, unmeasured_apps = [], []
     else:
-        silent = check_silent_jsonl(as_of, days) + check_silent(as_of, days)
+        silent = (check_silent_jsonl(as_of, days, ended_ctx=ended_ctx)
+                 + check_silent(as_of, days))
         silent.sort(reverse=True)
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import config_keys as _ck
@@ -387,6 +485,11 @@ def main():
     stalled = check_pursuits_without_next_action()
 
     print("Follow-up check - %s (silence threshold: %d days)" % (run_today.isoformat(), days))
+    # public #95 — the terminal-transition cascade's checkup line. Always printed, unlike the
+    # sections below: it never depends on mailbox coverage, and the whole point is that the
+    # owner sees the cascade's effect on the very first run after this ships.
+    print("(%d letter(s) moot by ending, %d touch(es) on ended pursuits)"
+          % (n_moot_letters, n_ended_touches))
     if unverified:
         print("")
         print("!! SILENCE UNVERIFIED (dev #321) -- no confirmed mailbox coverage, or a "
@@ -484,9 +587,28 @@ def main():
         if domains:
             print("\n  recipient domains seen: %s" % ", ".join(d for d in domains if d))
 
-    if not silent and not silent_apps and not stalled and not unverified:
+    # design-inbound-resolution.md §7 — UNRESOLVED INBOUND: a message that resolved an
+    # application but whose status write never landed (D1's own failure window). Narrow by
+    # construction (scoped to `resolves`, never every historical inbound row), so a hit here
+    # is a PROCESS FAILURE, not a routine finding — this is what makes main() return non-zero.
+    unresolved_inbound = check_unresolved_inbound(ROOT)
+    if unresolved_inbound:
+        print("")
+        print("=" * 72)
+        print("UNRESOLVED INBOUND — a message resolved an application; the status never moved")
+        print("=" * 72)
+        print("  D1: the message write landed but the status write did not (refused, rolled")
+        print("  back, or the process died between the two). Re-run reconcile.py --ats — the")
+        print("  uid is skipped, but the status write re-attempts because this row's own")
+        print("  `note` has not yet recorded it.")
+        print("")
+        for mid, app_id, sent_on, status, status_on in unresolved_inbound:
+            print("  - message %s -> application %s (sent %s; status %r since %s)"
+                 % (mid, app_id, sent_on, status, status_on))
+
+    if not silent and not silent_apps and not stalled and not unverified and not unresolved_inbound:
         print("\nNothing to chase.")
-    return 0
+    return 1 if unresolved_inbound else 0
 
 
 if __name__ == "__main__":

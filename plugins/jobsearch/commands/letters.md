@@ -5,6 +5,9 @@ description: Configure where finished cover letters go — a Google Doc in your 
 
 # Cover-letter output
 
+See also `/resume` — the same output pattern (a Google Doc or a local `.docx`, no Google account
+needed) for a declared resume variant, via `variant_out.py`.
+
 Show the current setting:
 
 ```bash

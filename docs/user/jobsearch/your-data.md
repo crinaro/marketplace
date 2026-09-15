@@ -28,7 +28,7 @@ shows up as a one-line diff rather than a reformatted file.
 | `companies.jsonl` | employers — one record each, however many roles they post |
 | `channels.jsonl` | where roles come from: job boards, company career pages, recruiting firms, referrals |
 | `opportunities.jsonl` | the roles themselves, with their fit analysis |
-| `messages.jsonl` | every communication, both directions, with its full text. Since 0.36.0 an inbound message can carry `answers`, the id of the outbound message it replies to — see *Touches* below |
+| `messages.jsonl` | every communication, both directions, with its full text. Since 0.36.0 an inbound message can carry `answers`, the id of the outbound message it replies to — see *Touches* below. Since 0.50.0 it can also carry `resolves`/`resolved_by`, the ATS sweep's own resolution — see *ATS receipt matching* below |
 | `people.jsonl` | every person you deal with, once each — see *People* below (since 0.44.0; before that, contacts lived nested on the role or channel) |
 | `involvements.jsonl` | how each person connects to a role or a channel — since 0.44.0, alongside `people.jsonl` |
 | `applications.jsonl` | every application you have submitted, once each — see *Applications* below (since 0.45.0; before that, applications lived nested on the role) |
@@ -37,6 +37,7 @@ shows up as a one-line diff rather than a reformatted file.
 | `asks.jsonl` | things waiting on you — a role decision or a piece of system upkeep |
 | `commitments.jsonl` | what is scheduled — calls, deadlines, follow-ups due on a date |
 | `briefs.jsonl` | since 0.46.0 — the append-only ledger of what a draft's `**Brief:**` line cites; see *What a draft now carries* below. Never edit this by hand and never read it as "the current state of a thread" — it is evidence of what a computation SAW at drafting time, not a source of state |
+| `resume_variants.jsonl` | the declared printed-resume set — since 0.39.0 (public #26); see *Resume variants* below |
 
 ### The documents
 
@@ -562,6 +563,42 @@ the whole thing only ever writes once it has checked its own result is valid; if
 your data would make it invalid, nothing is written and you keep exactly what you had before,
 with a report of what needs attention first.
 
+### Resume variants — `resume_variants.jsonl`
+
+A declared printed resume. With none declared, `presence/claims.md` (the claim union) doubles as
+your single printed resume — the degenerate case, not a different mechanism. Once you declare
+one or more variants, each is its own authored markdown file, and each bullet line in it must
+appear in the union, verbatim (whitespace normalized), or `resume_variants.py --check` flags it
+as drifted.
+
+| field | what it is |
+|---|---|
+| `id`, `archetype` | a stable slug, and the buyer/audience this page is written for |
+| `file` | path to the variant's own markdown file |
+| `status` | `active` or `retired` (`retired` requires `retired_on`) |
+| `union_sha`, `union_reconciled_on` | a stamp of the claim union at the last reconcile, written by `resume_variants.py --stamp` |
+| `surface` | **since 0.50.0 (public #59/#64)** — which destination this variant targets: `print` or `public-profile` (`scripts/surfaces.py` is the one lookup table). A variant declared before this upgrade, or one that never sets it, has no `surface` and reads as `unplaced` — never silently defaulted to `print` |
+
+**Visibility is derived from `surface`, never stored.** A claim can be true, provenanced in the
+union, and still not safe to publish — a `print` variant only proves the claim traces back to the
+union; a `public-profile` variant additionally requires every printed claim to carry its own
+`[public]` tag at the head of its union bullet line (a `[private]`-tagged claim, or one with no
+tag at all, is unsafe by default). A union bullet can carry both: a `[private]` line nested
+directly under the `[public]` version of the same claim is that claim's original wording paired
+with its reviewed, public-safe rewrite.
+
+`resume_variants.py --check` reports one of these states per variant: `ok` · `stale` · `drifted`
+· `no-claims` · `unstamped` · `missing-file` · `unreadable` · `unplaced` (no recognized
+`surface`) · `private-on-public` (a `public-profile` variant printing an untagged or
+`[private]`-tagged claim) · `retired`. `unplaced` and `private-on-public` both fail the check —
+neither is ever read as "print, probably" or "private, probably."
+
+**What happened to every existing variant on the 0.50.0 upgrade.** `m_0_50_0_variant_surface_field`
+seeds `surface: "print"` onto every row that predates this field — every printed variant that
+existed before 0.50.0 was, in fact, a print page, so the migration records that rather than
+leaving the field unset (which would read as `unplaced`, a state that did not describe those
+rows' actual history).
+
 ### Cover letters — `cover_letters.jsonl`
 
 `resume_variants.jsonl`'s twin, introduced by the 0.45.0 upgrade described above. Before it, the
@@ -575,7 +612,7 @@ rendered file, with no row of its own to hang a status on.
 | `opp_id` | the role the letter was written for |
 | `file` | where the authored text lives — an anchor into `applying/cover_letters.md` |
 | `doc` | the rendered file actually sent, once one exists |
-| `status` | `draft` · `sent` · `retired` |
+| `status` | the value stored on the row: `draft` · `sent` · `retired` — or `null` on a legacy or migration-minted row the store never assigned a status to. This is not the same as the state you see reported below |
 | `created` | when the row was created |
 | `note` | |
 | `cover_letter`, `cover_letter_attached`, `cover_letter_doc` | the three original fields, carried over **verbatim** by the 0.45.0 upgrade for any letter that predates it — including a row where they disagree with each other (e.g. `cover_letter_attached: true` with no `cover_letter_doc`), preserved exactly as found rather than resolved or guessed at. A letter created after the upgrade uses `file`/`doc`/`status` instead and leaves these three `null` |
@@ -583,6 +620,20 @@ rendered file, with no row of its own to hang a status on.
 **"Attached" is now a structural fact, not a separate flag to remember.** A letter is attached to
 an application exactly when that application's `cover_letter_id` is non-null — there is no second
 boolean that can drift out of sync with whether the row actually exists.
+
+**What you actually see reported is a derived state, not the stored `status` above** — the
+terminal cascade (since 0.50.0, public #95). A pending letter whose role has since ended reads
+`moot`, not `draft` or `pending` — nothing will ever attach it now. A letter that some application
+actually submitted reads `used` — permanently, even if that application is later rejected: "we
+sent this" never gets relabeled just because the pursuit ended. The stored literals `sent` and
+`retired` still read as themselves when neither of the above applies, and a `null` stored
+`status` reads as **unrecorded** rather than `draft` — a missing status never asserts that
+drafting actually happened.
+
+Nothing on disk changes shape for this — it is a pure derivation, no migration accompanies it.
+The one place you actually see its effect is a checkup line counting how many letters now read
+`moot` this way, alongside the equivalent count for a touch whose role has ended
+(`data/touches.jsonl`, derived the same way by `your_move.touch_state()`).
 
 ### Fit — how you match the role
 
@@ -623,6 +674,9 @@ data rather than kept up to date by hand.
 **An ask disappears from every view the moment it is resolved** — resolving it is what removes
 it, not editing its text into a "done" line in place. The row itself stays as history.
 
+**Since 0.50.0, `asks.jsonl` is writable through `record.py`**, the same tool you already use for
+everything else — before this, an ask row could only ever be created by a migration.
+
 **`commitments.jsonl`** — things scheduled on a date: a call, a deadline, a follow-up.
 
 | field | what it is |
@@ -652,6 +706,9 @@ system's automated emails: an acknowledgment, a rejection, an advance to the nex
 | `status_phrases` | subject-line phrases that evidence a status, grouped by which one: `{acknowledged: [...], rejected: [...], advanced: [...]}` |
 | `silence_days` | since 0.47.0 — how many days of ATS silence, measured to your verified mailbox coverage (never to today), before `check_followups.py` proposes closing an application. Defaults to **30**; seeded onto every existing profile by the 0.47.0 upgrade if you had not already set it |
 | `close` | since 0.47.0 — `propose` (the default: the run only proposes a close, you confirm it) or `auto` (the run writes the close itself). Also seeded to its default, `propose`, by the 0.47.0 upgrade |
+| `parsed_status` | since 0.50.0 — `receipt-grade` (the default), `propose`, or `all`. Governs the deterministic ATS sweep (`reconcile.py --ats`, below): whether a resolution is written straight to the record or only proposed for you to confirm, by how confident the match is |
+| `sweep_days` | since 0.50.0 — the floor, in days, the sweep uses when it asks your mailbox to look back. Defaults to **3**; the sweep widens this automatically when it finds a coverage gap, never narrows it |
+| `max_asks_per_run` | since 0.50.0 — how many asks the sweep will write in one run before holding the rest back for the next run. Defaults to **5**. Applied resolutions (the ones confident enough to write straight to the record) are never capped — only the ones that need your decision are |
 
 `receipt_sender_domains` and `status_phrases` both start **empty** on a fresh profile. **Nothing
 in the plugin reads either of those two automatically yet — filling them in has no visible effect
@@ -666,6 +723,20 @@ subject lines say — not a fixed vocabulary the plugin ships with.
 to decide when a stalled application is worth proposing as `closed`, so a value you set here has
 a visible effect the next run after you change it.
 
+**The deterministic ATS sweep — since 0.50.0.** `reconcile.py --ats` identifies an ATS's
+automated mail by sender domain, then resolves it to a specific application through three
+checks, in order, stopping on the first hit or a tie: a requisition id, an application URL, or
+(when only one open application at that company could match) the company name alone. The first
+two are receipt-grade and, by default (`parsed_status: receipt-grade`), written straight to the
+application's record; the third is always a lower-confidence match and only ever *proposed* as
+an ask for you to confirm, unless you set `parsed_status` to `all`. `sweep_days` and
+`max_asks_per_run` are the two knobs on how far back it looks and how many asks it will hand you
+in one sitting — both above. `parsed_status`, `sweep_days` and `max_asks_per_run` were seeded
+onto every existing profile, absent-only, by the 0.50.0 upgrade. Every resolution the sweep makes
+is recorded on the inbound message itself — `messages.jsonl`'s `resolves` (the application it
+resolves) and `resolved_by` (which of the three checks decided it) — not only on the
+application, so you can always trace a status change back to the specific email that caused it.
+
 **Renamed in 0.41.0.** Earlier versions of the scaffold seeded this block as `ats.sender_domains`
 and `ats.receipt_phrases` (one flat list, which could only ever mean "acknowledged"); every
 profile that had actually filled the setting in, though, used `receipt_sender_domains` and
@@ -678,6 +749,51 @@ order, nothing dropped. Your existing `receipt_subject_phrases` list moved into
 `advanced` were seeded empty for you to fill in if you want those recognized too.
 
 ---
+
+## LinkedIn — `config.json.linkedin`
+
+A small settings block governing how the LinkedIn runner recovers from a stalled Browser pane
+(since 0.50.0, public #47/#96).
+
+| key | what it is |
+|---|---|
+| `pane_stale_minutes` | how many minutes a taken-but-never-released pane lock is trusted to mean "a run is genuinely still using it" before the next run treats it as abandoned and takes over. Defaults to **90** |
+
+**This default is stated honestly as unverified**, not as a measured figure: no real pass
+duration exists anywhere in this plugin's own history to derive it from. `journal.py
+--pass-durations` prints every run's actual wall-clock length, so you can set this key from your
+own real numbers once you have a few runs to look at, rather than trusting the placeholder.
+Staleness itself is checked two ways, in order — first whether the run that took the lock has
+actually ended (visible in the journal), and only when that is silent does the age threshold
+above apply — so a crashed run is recovered by the journal check well before this timer would
+otherwise matter.
+
+## Geography — `config.json.geography`
+
+A settings section a screening reader consults to decide whether a role's location works for
+you (since 0.50.0, public #89).
+
+| key | what it is |
+|---|---|
+| `remote_ok` | whether a fully-remote posting screens as usable at all. Defaults to **true** |
+| `relocation.open` | whether a metro that is neither a commute anchor nor an affirmative destination (below) still screens as workable. Defaults to **false** — silence is never read as "open to relocating anywhere" |
+| `relocation.affirmative_destinations` | metros you have explicitly said yes to, regardless of `relocation.open` |
+| `commute_anchors` | places you can actually commute to, each with its own `max_commute_minutes` |
+
+Screening one location produces exactly one of six verdicts, each citing the specific key that
+decided it: `remote`, `commute` (names a commute anchor), `affirmative` (names an affirmative
+destination), `relocation-ok` (`relocation.open` is true and nothing more specific matched),
+`out` (`relocation.open` is false and nothing matched — the one verdict that ends a role's
+consideration, reached only through an explicit or default-but-registered key, never through
+silence), or `unknown` (your `config.json` has no `geography` section at all — different from an
+unset key, which always has a registered default).
+
+**Renamed by the 0.50.0 upgrade, the same defect one config section over as `ats`'s 0.41.0
+rename.** `init_profile.py` used to scaffold this section as `geography.relocation_open_to` /
+`geography.radius_minutes`, but every profile actually derived from a resume ended up with the
+shape documented above instead — two spellings of one meaning, with nothing ever reading the
+scaffolded names. `m_0_50_0_geography_keys` rewrites a profile still carrying the old names into
+the shape above; nothing is dropped in the process.
 
 ## Sourcing — `config.json.sourcing`
 
@@ -704,6 +820,16 @@ A role with no board/aggregator sighting at all — recruiter-only, company-site
 scope entirely; it was never going to carry a public link, so its absence is not this advisory's
 business. The advisory is a warning, never a hard failure: it names the gap so you can fill it
 before the posting disappears, and does nothing on its own.
+
+**Since 0.50.0 (public #83 rule 1), a NEW sighting is no longer just advised — it can be
+refused.** Recording a sighting from a URL-bearing channel (a job board or aggregator) with no
+`source_url` at the moment you capture it is refused outright by `record.py`, unless the
+sighting is recruiter-sourced or receipt-backed (the same two exclusions the advisory itself
+uses). And `validate_data.py` now hard-fails, as a PROBLEM rather than an advisory line, any
+linkless URL-bearing sighting dated on or after **2026-09-14**. The SOURCING advisory above has
+narrowed to match: it now names only sightings dated *before* that line — a sighting recorded
+since then that is missing its link is the validator's problem to report, not the advisory's,
+because it should never have been possible to record one that way in the first place.
 
 ---
 

@@ -159,8 +159,15 @@ CONFIG_SKELETON = {
     # key. The old name inverted the sense AND the spelling. True here reproduces the old
     # default's actual behavior (org structure was NOT applied as a filter out of the box).
     "targets": {"titles": [], "org_structure_is_not_a_filter": True},
-    "geography": {"commute_anchors": [], "radius_minutes": 60, "relocation_open_to": [],
-                  "remote_ok": True},
+    # ⭐ public #89 / dev #355: this used to scaffold `radius_minutes`/`relocation_open_to`,
+    # names NO shipped script ever read — every profile actually derived from a resume carries
+    # the shape below instead (`commute_anchors[].max_commute_minutes`,
+    # `relocation.{open, affirmative_destinations}`), which is what `geo_screen.py` and
+    # `profile.within_commute()` both resolve, and what `config_keys.py` registers under
+    # GEOGRAPHY_*. A profile scaffolded before this fix is rewritten by `migrate.py`'s
+    # `m_0_50_0_geography_keys`, never left on the old spelling.
+    "geography": {"commute_anchors": [], "remote_ok": True,
+                  "relocation": {"open": False, "affirmative_destinations": []}},
     "compensation": {
         "_basis_note": "FLOORS ARE BASE SALARY. A band whose TOP is below the applicable floor is "
                        "removed, not flagged. Undisclosed comp is KEPT - it is the first question, "

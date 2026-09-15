@@ -27,6 +27,9 @@ import profile as _profile
 # import validate_data and is therefore imported LAZILY, inside `_main()`, to avoid the cycle),
 # so it is safe as a normal top-level import.
 import plans as _plans
+# ADR-027 — the one surface vocabulary (also imported by resume_variants.py, presence_set.py);
+# zero dependencies of its own, so no cycle risk as a normal top-level import.
+import surfaces as _surfaces
 # ⚠️ `your_move` is imported BELOW the vocabulary block, not here — see the note above
 # `def load`. It reads this module's TERMINAL_OPP_STATUSES at import time, so a top-of-file
 # import would hand it a half-initialised module whenever validate_data is imported first.
@@ -54,6 +57,21 @@ VERTICALS = {"healthcare-payer", "healthcare-provider", "healthtech", "saas",
 COMPANY_STATUS = {"active-target", "watching", "passed"}
 CHANNEL_TYPES = {"job-board", "aggregator", "company-site", "recruiter",
                  "referral", "alert-email"}
+# ⭐ public #83 rule 1 — channel TYPES that carry "a public URL was available at the moment of
+# sighting". Recruiter/referral/company-site/alert-email sightings do not carry that guarantee
+# (a recruiter can tell you about a role with no public posting at all), so a sighting from any
+# other type is never in scope for either half of #83: doctor.py's run-start advisory (#360,
+# `check_linkless_sightings`) and record.py's capture-time refusal (this rule's other half)
+# both import THIS set rather than re-typing it — it is the one place it is spelled.
+URL_BEARING_CHANNEL_TYPES = {"job-board", "aggregator"}
+# public #83 rule 1's effective date — the day the capture-time refusal in record.py shipped.
+# A sighting dated BEFORE this could not have been refused at write time (it predates the code
+# that refuses it), so it stays doctor.py's advisory's business (WARN, non-fatal, and excluded
+# there by the same recruiter-sourced/receipt-backed/grace-period rules). Only a sighting dated
+# ON OR AFTER this date turns a missing source_url into a hard PROBLEM here — pinned to a
+# constant, never "today", so a profile is never turned red retroactively for history it could
+# not have prevented.
+SOURCE_URL_REQUIRED_SINCE = "2026-09-14"
 CADENCES = {"daily", "weekly", "biweekly", "monthly", "on-inbound"}
 # `expired` added 2026-08-11 (issue #6): the posting vanished/closed before any decision was
 # recorded. TERMINAL, and distinct from `passed` — "I declined this" and "it disappeared before
@@ -293,6 +311,10 @@ DELIVERY = {"delivered", "bounced", "unknown"}
 # means a human decided with no recorded cause — a manual trigger carrying a ref is a
 # contradiction, refused rather than guessed over.
 TRIGGER_KINDS = {"application", "reply", "elapsed", "manual"}
+# design-inbound-resolution.md §2 (ADR-029/030) — `messages[].resolved_by`: which of ADR-030's
+# three deterministic tiers matched when a message resolves an application. Recorded so the
+# EVIDENCE for a status change is auditable later, not just the fact of the change.
+RESOLVED_BY = {"req-id", "url", "company-single"}
 # A multi-step play ("part A sent, part B held until the connection is accepted") was a state
 # machine living in a markdown heading — nothing could query "which sequences are unblocked
 # today". sequence_id groups the steps; sequence_step orders them (int, 1-based). The HOLD on
@@ -760,6 +782,18 @@ def _main():
             if v is not None and not SLUG_RE.match(str(v)):
                 problems.append("%s: %s %r must be a lowercase slug" % (label, f, v))
         enum(r, "status", VARIANT_STATUS, label, problems)
+        # ADR-027 — `surface` is genuinely optional at the schema level (an undeclared surface
+        # is resume_variants.py's own 'unplaced' STATE, never a schema violation) — the same
+        # `.get()` + validate-only-if-present shape `union_sha`/`union_reconciled_on` already
+        # use below, not `enum()`'s `nullable`, which only excuses an explicit `null` and
+        # would refuse every row missing the key outright. `visibility` is never stored here
+        # at all — it is DERIVED from `surface` by _surfaces.visibility(), never a field.
+        sf = r.get("surface")
+        if sf is not None and sf not in _surfaces.names():
+            problems.append("%s: surface %r not declared in surfaces.py (known: %s) — "
+                            "resume_variants.py reports an undeclared surface as 'unplaced', "
+                            "loud, never guessed either way"
+                            % (label, sf, ", ".join(_surfaces.names())))
         if not is_date(r.get("created", "")):
             problems.append("%s: created not ISO — %r" % (label, r.get("created")))
         vf = r.get("file")
@@ -936,6 +970,51 @@ def _main():
                 "declared — outcomes must be attributable to positioning (set resume_variant, "
                 "or %r if this application predates variants existing)"
                 % (label, r.get("status"), len(variant_ids), UNRESOLVED))
+    # ---- messages[].resolves / resolved_by — the resolution relation as a key (ADR-029, ---
+    # design-inbound-resolution.md §2). Same shape as `answers` above (a second pass; a message
+    # naming an application that appears later in file order is fine), but joined against
+    # `applications` rather than `messages`, so it runs here — after both `sent_msgs` (the
+    # messages loop, above) and `applications`/`app_ids_seen` (this store's own loop, just
+    # above) exist. Five rules, per §2:
+    #   1. `resolves` must name an existing `applications.id`.
+    #   2. `resolved_by` is required IFF `resolves` is, and must be one of RESOLVED_BY.
+    #   3. never both `answers` and `resolves` on the same row (a message either answers a
+    #      person or resolves an application, never both — ADR-029).
+    #   4. `direction` must be `inbound` (only an employer's own reply resolves an application).
+    #   5. the message's own `opp_id` must equal the resolved application's `opp_id` (a row
+    #      cannot point at one role while resolving another's application).
+    _apps_by_id = {a.get("id"): a for a in applications if a.get("id")}
+    for m in (sent_msgs or []):
+        if m.get("id") == "_README":
+            continue
+        ml = "messages[%s]" % m.get("id", "?")
+        resolves, resolved_by = m.get("resolves"), m.get("resolved_by")
+        if resolves is None and resolved_by is None:
+            continue
+        if bool(resolves) != bool(resolved_by):
+            problems.append("%s: resolves and resolved_by must be set TOGETHER, or not at "
+                            "all (ADR-030: the tier that matched is recorded)" % ml)
+            continue
+        target = _apps_by_id.get(resolves)
+        if target is None:
+            problems.append("%s: resolves %r does not resolve to any applications row"
+                            % (ml, resolves))
+            continue
+        if resolved_by not in RESOLVED_BY:
+            problems.append("%s: resolved_by %r not in {%s}"
+                            % (ml, resolved_by, ", ".join(sorted(RESOLVED_BY))))
+        if m.get("answers") is not None:
+            problems.append("%s: carries both answers %r and resolves %r — a message either "
+                            "answers a person or resolves an application, never both (ADR-029)"
+                            % (ml, m.get("answers"), resolves))
+        if m.get("direction") != "inbound":
+            problems.append("%s: resolves %r but direction is %r — only an inbound message "
+                            "(the employer's own statement) resolves an application"
+                            % (ml, resolves, m.get("direction")))
+        if m.get("opp_id") != target.get("opp_id"):
+            problems.append("%s: opp_id %r does not match resolves %r's own opp_id %r — a "
+                            "message cannot point at one role while resolving another's "
+                            "application" % (ml, m.get("opp_id"), resolves, target.get("opp_id")))
 
     # ---- plans / plays (ADR-031 B4, design §17, §18, §20) — the owner's strategy as data.
     # Loaded and validated BEFORE `opportunities` so `plan_id` can be checked as a real FK in
@@ -1265,6 +1344,11 @@ def _main():
             problems.append("messages[%s]: channel_id %r does not resolve"
                             % (m.get("id", "?"), mcid))
 
+    # public #83 rule 1 — channel_id -> type, for the sighting source_url check in the
+    # opportunities loop below. Built once from the already-loaded `channels` rows (not
+    # `channel_ids`, which only ever tracked membership, never the type).
+    channel_type_by_id = {c.get("id"): c.get("type") for c in channels}
+
     # ---- opportunities ----
     opp_ids = set()
     # States & Views V1b (design §15.3 point 2) — every touches[].message_ref seen, across
@@ -1486,12 +1570,42 @@ def _main():
         sightings = r.get("sightings", [])
         if not sightings:
             problems.append("%s: no sightings (how was it found?)" % label)
+        # public #83 rule 1 — the same two exclusions doctor.py's check_linkless_sightings
+        # (#360) computes, for the SAME reason: recruiter-sourced (the record's own channel_id,
+        # or any of its sightings' channel_id, resolves to a channel of type 'recruiter' — there
+        # was never a public posting to link) and receipt-backed (an applications.jsonl row for
+        # this opportunity carries a status in SUBMITTED_APP_STATUS — the application itself is
+        # durable evidence the role existed). Computed once per record, reused per-sighting below.
+        _referenced_channels = {r.get("channel_id")} | {sg.get("channel_id") for sg in sightings}
+        _recruiter_sourced = any(channel_type_by_id.get(cid) == "recruiter"
+                                 for cid in _referenced_channels if cid)
+        _receipted = any(a.get("status") in SUBMITTED_APP_STATUS
+                        for a in apps_by_opp.get(r.get("id"), []))
         for i, sg in enumerate(sightings):
             scid = sg.get("channel_id")
             if scid not in channel_ids:
                 problems.append("%s: sighting[%d].channel_id %r does not resolve" % (label, i, scid))
-            if not is_date(sg.get("seen_on", "")):
+            _sg_date_ok = is_date(sg.get("seen_on", ""))
+            if not _sg_date_ok:
                 problems.append("%s: sighting[%d].seen_on not ISO — %r" % (label, i, sg.get("seen_on")))
+            # ⭐ public #83 rule 1, hard PROBLEM half (record.py's capture-time refusal is the
+            # other half — this is the backstop for a row that reached the store some other
+            # way: a migration, a hand-authored fixture, or a write predating the refusal).
+            # Only a sighting dated ON OR AFTER SOURCE_URL_REQUIRED_SINCE is in scope — an
+            # older one is doctor.py's advisory's business (#360), never turned red here. Gated
+            # on the date actually being ISO (checked just above) so an unparseable seen_on is
+            # reported once, as the date problem, never a second time by string-comparing junk.
+            if (_sg_date_ok and not sg.get("source_url")
+                    and channel_type_by_id.get(scid) in URL_BEARING_CHANNEL_TYPES
+                    and not _recruiter_sourced and not _receipted
+                    and sg.get("seen_on", "") >= SOURCE_URL_REQUIRED_SINCE):
+                problems.append(
+                    "%s: sighting[%d] from channel %r (type %r) has no source_url and is "
+                    "dated %s (on/after %s) — public #83 rule 1: a sighting from a "
+                    "URL-bearing channel (job-board/aggregator) must carry its URL at the "
+                    "moment it is captured"
+                    % (label, i, scid, channel_type_by_id.get(scid), sg.get("seen_on"),
+                       SOURCE_URL_REQUIRED_SINCE))
 
         # ownership — required, drives Your Move vs my-tasks generation
         enum(r, "next_action_owner", OWNERS, label, problems)

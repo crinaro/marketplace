@@ -87,6 +87,7 @@ Run the weekly strategy review of the candidate's search. Read `CLAUDE.md` first
 ~/.claude/jobsearch/run resume_variants.py --check    # printed variant bullets trace to the presence/claims.md union (public #26)
 ~/.claude/jobsearch/run channels_due.py               # which sources are due
 ~/.claude/jobsearch/run check_rule_homes.py           # no archived lesson lost its rule
+~/.claude/jobsearch/run reconcile.py --ats --verify   # design-inbound-resolution.md §7 — a READ, independent of the ledger: catches an ATS message the sweep should have resolved and didn't
 ~/.claude/jobsearch/run runlock.py --take "weekly review" --wait 120   # public #68: taken HERE, immediately before this window's first write — the 9 checks above are reads and ran unlocked
 ~/.claude/jobsearch/run archive_preps.py --holding-lock   # preps for calls already held move to archive/call-preps/ — under THIS window's lock (taken above), which stays the review's to release
 ~/.claude/jobsearch/run check_dashboard_coverage.py   # every record rendered, counted, or terminal; nothing outside its window
@@ -226,6 +227,16 @@ Reported STALE → `--steal` and say so. **A refusal here means report the WHOLE
 this window; nothing this run found is durable until it lands. Never let a review that could not
 get here read as done. **`--release` after the commit below, even if the run failed partway** —
 a held lock from a dead session must never wedge the next run.
+
+```bash
+~/.claude/jobsearch/run precondition.py --prune --already-locked
+```
+
+design-inbound-resolution.md §8 — relocates every TERMINAL drafts.md entry (sent/moot),
+including one MOOT_DERIVED because its opportunity ended (`ended_because()`): the derived
+tombstone lands in `research_log[]`, nothing is dropped without a row somewhere. Until this
+line ran nowhere unattended, MOOT_DERIVED was a report only, never a cascade — this is what
+makes it one.
 
 Append the review summary to `log.md` → regenerate the dashboard AND the presence working set
 (`~/.claude/jobsearch/run check_dashboard_fresh.py --fix` writes both; then
