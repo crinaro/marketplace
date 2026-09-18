@@ -90,13 +90,19 @@ DERIVED_FIELDS = frozenset({"days_since_in", "last_word", "latest_in", "latest_o
 # own discipline, reused verbatim (check_retired_reads.py's own precedent). Each entry is
 # (relative_path, matched_string): the one file, and the one literal, it is allowed to carry.
 #
-# `test_checks.py` / "briefs.jsonl" and / "register" — the SAME permanent-reader shape
-# check_retired_reads.py's own KNOWN_EXCEPTIONS grants `test_checks.py` for `contacts`/
-# `applications`: a test file directly constructs and inspects ledger rows (a synthetic
-# person's `**Brief:**` citation, a planted `register` value) to prove brief.py's own
-# mechanism — never a shipped script's write path, so this cannot reintroduce a production
-# reader of the ledger.
-KNOWN_EXCEPTIONS = (("test_checks.py", LEDGER_FILENAME), ("test_checks.py", "register"))
+# dev #399 §1 — the single `test_checks.py` entry pair this used to carry split into these
+# four as the classes that build/inspect ledger rows landed across different tests/*.py
+# files by dependency, not all in one place. Same reason as before, per file: each directly
+# constructs and inspects ledger rows (a synthetic person's `**Brief:**` citation, a planted
+# `register` value) to prove brief.py's own mechanism — never a shipped script's write path,
+# so this cannot reintroduce a production reader of the ledger. Re-verified against the real
+# tracked tree after the split: exactly these four, zero others.
+KNOWN_EXCEPTIONS = (
+    ("tests/_common.py", LEDGER_FILENAME),
+    ("tests/test_migrate_2.py", LEDGER_FILENAME),
+    ("tests/test_record.py", LEDGER_FILENAME),
+    ("tests/test_profile.py", "register"),
+)
 
 
 class Hit:
@@ -265,14 +271,14 @@ def main():
         for path, matched in KNOWN_EXCEPTIONS:
             print("      %s carries %r" % (path, matched))
 
-    if stale:
-        print("\n  !! %d STALE KNOWN EXCEPTION(S) — matched no hit; delete the entry:"
-              % len(stale))
-        for path, matched in stale:
-            print("      %s / %r" % (path, matched))
-        return 1
-
+    # dev #399 §1 — these used to be `if stale: ... return 1` THEN `if unresolved: ...`, so a
+    # stale KNOWN_EXCEPTIONS entry returned before real unresolved hits were ever printed —
+    # found because the split produced exactly this shape (2 stale entries masking 9 real
+    # hits) and the "CLEAN" the early return implied for the unresolved half was never
+    # actually checked. Both conditions are now independent and both get reported.
+    problems = False
     if unresolved:
+        problems = True
         print("\n  !! %d LEDGER READ(S) OUTSIDE THE ALLOWLIST:" % len(unresolved))
         for h in unresolved:
             if h.matched == LEDGER_FILENAME:
@@ -282,6 +288,15 @@ def main():
                 print("      %s:%d reads %r off a row — brief.py recomputes this at every "
                       "read; a snapshot must never be trusted (§80/#80)"
                      % (h.path, h.line, h.matched))
+
+    if stale:
+        problems = True
+        print("\n  !! %d STALE KNOWN EXCEPTION(S) — matched no hit; delete the entry:"
+              % len(stale))
+        for path, matched in stale:
+            print("      %s / %r" % (path, matched))
+
+    if problems:
         return 1
 
     print("\n  CLEAN. The ledger has exactly its three readers.")

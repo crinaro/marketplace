@@ -25,10 +25,13 @@ sharing is a log nobody shares**, and then the diagnostic value is zero.
 
 Location (dev #151): `<profile>/.jobsearch/diagnostics.log` — per-profile state lives WITH the
 profile, so two profiles on one machine cannot interleave in one file. A context with no
-resolvable profile falls back to `~/.claude/jobsearch/diagnostics.log`, which is machine state.
-The 0.26.0 migration relocates the old machine-global log and gitignores `.jobsearch/`, so the
-log is still never committed anywhere — and it still carries no user data, so either file can
-be pasted into an issue as-is.
+resolvable profile falls back to `~/.claude/jobsearch/diagnostics.log`, which is machine state —
+⭐⭐ dev #394: ONLY for an installed copy. A maintainer CHECKOUT with no resolvable profile falls
+to `_root.checkout_scratch_dir()` instead (`<TMPDIR>/jobsearch-checkout-diag/`), never the real
+machine log — see this module's own `_default_log()`/`_default_machine_log()` docstrings. The
+0.26.0 migration relocates the old machine-global log and gitignores
+`.jobsearch/`, so the log is still never committed anywhere — and it still carries no user data,
+so either file can be pasted into an issue as-is.
 
 ⭐ THE PATH IS OVERRIDABLE — `CLAUDESEARCH_DIAG_LOG`, same shape as `CLAUDESEARCH_LOCK_PATH`
 (GitHub #9). Without this, the regression suite's own migration tests appended straight into
@@ -53,14 +56,27 @@ def _default_log():
     """`<state_root>/diagnostics.log` — per-profile when a genuine profile resolves (dev #151),
     the machine-global `~/.claude/jobsearch/` fallback otherwise. Resolved once at import: a
     process serves one profile for its lifetime (an MCP server most of all), and a stable path
-    is what lets `guard_status()` read the same file the writers wrote."""
+    is what lets `guard_status()` read the same file the writers wrote.
+
+    ⭐⭐ dev #394 — the ONE narrow exception: when `state_root()` itself fell all the way back to
+    the machine-global path (no profile resolved, or a disposable one) AND this running copy is a
+    maintainer CHECKOUT, redirect to `_root.checkout_scratch_dir()` instead of the real
+    `~/.claude/jobsearch/`. Deliberately compares the RESULT against `_root._HOME_STATE` rather
+    than gating `state_root()` itself (see that function's own comment for why: its $HOME fallback
+    is also the regression suite's standard test-isolation idiom, and gating it there breaks
+    tests that redirect `HOME` themselves and expect the fallback to land exactly there). A
+    resolved, non-disposable PROFILE's own `.jobsearch/` is untouched either way — that write
+    lands in the profile, never in real machine state, checkout or not."""
     try:
         import sys
         here = os.path.dirname(os.path.abspath(__file__))
         if here not in sys.path:
             sys.path.insert(0, here)
         import _root
-        return os.path.join(_root.state_root(), "diagnostics.log")
+        root = _root.state_root()
+        if root == _root._HOME_STATE and not _root.is_installed_engine(_root.engine_root()):
+            root = _root.checkout_scratch_dir("state")
+        return os.path.join(root, "diagnostics.log")
     except Exception:
         return os.path.join(os.path.expanduser("~"), ".claude", "jobsearch",
                             "diagnostics.log")
@@ -82,8 +98,30 @@ MAX_LINES = 500
 #
 # ⭐ OVERRIDABLE for the same reason `LOG` is (`CLAUDESEARCH_DIAG_LOG`, above): the regression
 # suite must never let a launcher-repair test append into a real machine's log.
-MACHINE_LOG = (os.environ.get("CLAUDESEARCH_MACHINE_DIAG_LOG")
-              or os.path.join(os.path.expanduser("~"), ".claude", "jobsearch", "diagnostics.log"))
+def _default_machine_log():
+    """`~/.claude/jobsearch/diagnostics.log` for an INSTALLED copy — the one place engine-pointer
+    and launcher-repair events belong (see `MACHINE_LOG`'s own docstring below). ⭐⭐ dev #394 — a
+    maintainer CHECKOUT has no business writing the OWNER'S REAL machine log just because a
+    shipped script happened to run from here with no override set; it gets
+    `_root.checkout_scratch_dir()` instead (`TMPDIR`-based, disposable by construction). Unlike
+    `_default_log()` above, this constant has no profile branch to preserve — it is ALWAYS
+    machine-global by design (see `MACHINE_LOG`'s own docstring for why) — so the checkout check
+    applies unconditionally, not just on a fallback. Falls back to the real path only when `_root`
+    cannot even be imported (a pathological case that predates this gate) — the same defensive
+    shape `_default_log()` already has."""
+    try:
+        here = os.path.dirname(os.path.abspath(__file__))
+        if here not in sys.path:
+            sys.path.insert(0, here)
+        import _root
+        if not _root.is_installed_engine(_root.engine_root()):
+            return os.path.join(_root.checkout_scratch_dir(), "diagnostics.log")
+    except Exception:
+        pass
+    return os.path.join(os.path.expanduser("~"), ".claude", "jobsearch", "diagnostics.log")
+
+
+MACHINE_LOG = os.environ.get("CLAUDESEARCH_MACHINE_DIAG_LOG") or _default_machine_log()
 
 # A value that is long, or contains spaces plus mixed case, is prose — and prose is where user
 # data hides. Codes, versions, counts and booleans are what this log is for.

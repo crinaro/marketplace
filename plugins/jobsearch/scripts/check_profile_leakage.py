@@ -61,8 +61,12 @@ if ROOT != _profile_root():
     os.environ.setdefault("CLAUDESEARCH_DATA_DIR", os.path.join(ROOT, "data"))
 
 # The ENGINE: machinery that should ideally be reusable by a different person.
+# dev #399 §1: the glob is non-recursive on purpose (declare-what-you-scan), so the split
+# regression suite's own directory (scripts/tests/) needs its own explicit entry or its
+# fixture content would go unscanned by silent omission rather than by a stated exemption.
 ENGINE = (["CLAUDE.md", "docs/schema.md"]
           + sorted(glob.glob(os.path.join(ENGINE_SCRIPTS, "*.py")))
+          + sorted(glob.glob(os.path.join(ENGINE_SCRIPTS, "tests", "*.py")))
           + sorted(glob.glob(os.path.join(_engine_root(), "agents", "*.md")))
           + sorted(glob.glob(os.path.join(_engine_root(), "skills", "*", "SKILL.md")))
           + sorted(glob.glob(os.path.join(_engine_root(), "commands", "*.md"))))
@@ -176,7 +180,10 @@ def duplication_check():
             continue
         # The test suite legitimately contains figures — they are fixtures asserting
         # profile.json's own values, which is verification, not a second source.
-        if os.path.basename(p) == "test_checks.py":
+        # dev #399 §1: test_checks.py itself is now a thin runner with no fixture content;
+        # the actual test classes (and their figures) live under scripts/tests/test_*.py.
+        rel_p = os.path.relpath(p, ENGINE_SCRIPTS)
+        if os.path.basename(p) == "test_checks.py" or rel_p.split(os.sep)[0] == "tests":
             continue
         with open(p, encoding="utf-8") as fh:
             for n, line in enumerate(fh, 1):

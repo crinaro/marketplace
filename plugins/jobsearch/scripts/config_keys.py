@@ -203,6 +203,94 @@ FIXED = {
     "brief_id_hex_digits": 4,       # the random suffix on a `brief:<ts>-<hex>` id
 }
 
+# ── search postures (dev #323) ──────────────────────────────────────────────────────────────
+# `doctor.py --fix`'s seed for a profile whose `config.json` predates `search.posture` /
+# `search.postures`, or lost one by hand-edit. This is what `scripts/_config_skeleton.json`
+# was meant to be — it never existed, and the read was wrapped in an `os.path.exists` guard,
+# so `--fix` reported success having repaired nothing (issue #323, the project's own named
+# failure shape: a missing thing read as an empty thing).
+#
+# Deliberately NOT in READER_KEYS/_METADATA: that registry describes the scalar ADJUSTABLE
+# surface (`profile.py --options`, doctor's per-key value/provenance line) — `postures` is a
+# nested tier TABLE, not one adjustable value, and folding it in would print `search.posture` /
+# `search.postures` TWICE in CONFIG CURRENCY (once for the structural presence check
+# `doctor.check_config_currency`'s own `need` list already runs, once more for provenance).
+# `SEEDABLE_DEFAULTS` below is doctor.py's own separate, narrower registry: exactly the two
+# dotted paths its additive-safe `--fix` seeds — a key doctor.py never attempts to seed
+# (`compensation.tiers`, …) is simply absent from it, on purpose, not an oversight.
+#
+# ⚠️ Duplicated with `init_profile.py`'s `CONFIG_SKELETON["search"]` on purpose, for now.
+# `init_profile.py`'s own config seeding is out of scope for this fix (tracked separately);
+# it keeps its own literal until it adopts this constant instead of re-typing it — the stated
+# follow-up. Two copies of the same four postures is exactly the `_ats_keys.py` two-spellings
+# defect this module exists to prevent, so treat any change to one as a change owed to the
+# other until that follow-up lands.
+SEARCH_POSTURE = "search.posture"
+SEARCH_POSTURE_DEFAULT = "economy"
+
+SEARCH_POSTURES = "search.postures"
+SEARCH_POSTURES_DEFAULT = {
+    "minimal": {
+        "runs_per_day": 1,
+        "cron": "0 8 * * *",
+        "max_agents_per_run": 0,
+        "max_drafts_per_run": 0,
+        "unattended": ["sweeps"],
+        "_for": "The lowest tier, or a quiet week. Deterministic sweeps only: mailbox digests, "
+                "calendar artifacts, silence detection, gates, dashboard. Zero model fan-out. "
+                "Everything expensive is on demand.",
+    },
+    "economy": {
+        "runs_per_day": 2,
+        "cron": "0 8,15 * * *",
+        "max_agents_per_run": 1,
+        "max_drafts_per_run": 0,
+        "unattended": ["sweeps", "linkedin"],
+        "_for": "DEFAULT FOR NEW INSTALLS. Adds the LinkedIn sweep, which is where the outreach "
+                "funnel lives, at one agent per run. A reply can wait ~8h.",
+    },
+    "standard": {
+        "runs_per_day": 3,
+        "cron": "0 8,12,16 * * *",
+        "max_agents_per_run": 2,
+        "max_drafts_per_run": 0,
+        "unattended": ["sweeps", "linkedin", "research"],
+        "_for": "Adds unattended research on genuinely NEW roles. Suits an active search on a "
+                "mid tier.",
+    },
+    "full": {
+        "runs_per_day": 5,
+        "cron": "0 7,9,11,13,15 * * *",
+        "max_agents_per_run": 5,
+        "max_drafts_per_run": 5,
+        "unattended": ["sweeps", "linkedin", "research", "drafting"],
+        "_for": "Everything unattended, including auto-drafting replies. Assumes real token "
+                "headroom; this is what the original installation runs.",
+    },
+}
+
+SEEDABLE_DEFAULTS = {
+    SEARCH_POSTURE: SEARCH_POSTURE_DEFAULT,
+    SEARCH_POSTURES: SEARCH_POSTURES_DEFAULT,
+}
+
+
+def seed_default(dotted_key):
+    """The registered default `doctor.py --fix` seeds for `dotted_key` (e.g. "search.posture")
+    when a profile's `config.json` is missing it entirely. Raises `KeyError` for anything
+    `SEEDABLE_DEFAULTS` does not know — the same discipline `describe()`/`metadata()` already
+    apply to `READER_KEYS`: never guess over an unregistered key, and never let "cannot fix
+    this" quietly become "nothing to fix".
+
+    Returns the registry's own object. A caller that writes this into a profile's config.json
+    (as `doctor.py` does) must deep-copy it first — this module's module-level default must
+    never be mutated in place, or one profile's write corrupts every later caller's default in
+    the same process."""
+    if dotted_key not in SEEDABLE_DEFAULTS:
+        raise KeyError("config_keys has no seedable default for %r — SEEDABLE_DEFAULTS: %s"
+                       % (dotted_key, ", ".join(sorted(SEEDABLE_DEFAULTS))))
+    return SEEDABLE_DEFAULTS[dotted_key]
+
 
 def _get_dotted(cfg, dotted):
     node = cfg or {}

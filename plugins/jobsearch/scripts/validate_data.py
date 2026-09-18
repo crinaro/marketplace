@@ -52,6 +52,138 @@ PROBLEMS_OUT = os.environ.get("CLAUDESEARCH_PROBLEMS_OUT")
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+# ADR-031 B5 (design-b5-assessment.md §2) — `plans.assessments[]`, the weekly assessment's one
+# stored row, and its `proposals[]`. The engine writes the dates, the window, the version and the
+# proposals; `working`/`not_working`/`next_steps`/`note` are the owner's words only.
+ASSESSMENT_PROPOSAL_STATUS = {"proposed", "accepted", "declined", "reported", "superseded"}
+# The key decides the direction mechanically (design §27.2): a `parameter` proposal names a value
+# the owner controls (a declared parameter of the plan's play, or a `config:<dotted>` key that
+# config_keys registers); a `construct` proposal names `<signal>:<step|token>` with the signal in
+# funnel_report.CONSTRUCT_SIGNALS — the shape is the engine's. There is no third kind.
+ASSESSMENT_PROPOSAL_KINDS = {"parameter", "construct"}
+ASSESSMENT_OWNER_PROSE = ("working", "not_working", "next_steps", "note")
+
+
+def check_assessments(plan, play, model, label, problems):
+    """`plans[<id>].assessments[]` — every check the row's own contract states, each a PROBLEM
+    with the legal set named (the `enum()` shape, #73): entry key set and dates; proposal key
+    set; `kind`/`status` enums; `key` shape BY KIND; `evidence` keys EXACTLY the kind's declared
+    set (funnel_report.PROPOSAL_EVIDENCE_KEYS — an undeclared key is refused, never dropped,
+    §28.2); `decided_on`/`decision` both-or-neither (the asks contract). Field lists come from
+    docs/data_model.json (`model`) so this cannot drift from what record.py enforces; with the
+    model unreadable the key-set half is skipped (the caller has already said the guard is OFF)
+    and every other check still runs."""
+    entries = plan.get("assessments")
+    if entries is None:
+        return
+    if not isinstance(entries, list):
+        problems.append("%s: assessments must be a list of entries — got %s"
+                        % (label, type(entries).__name__))
+        return
+    import funnel_report as _fr                    # lazy: resolves the profile at import
+    import config_keys as _ck
+    spec = (((model or {}).get("stores") or {}).get("plans") or {}).get("arrays") or {}
+    spec = spec.get("assessments") or {}
+    entry_fields = set(spec.get("fields") or [])
+    prop_fields = set((((spec.get("arrays") or {}).get("proposals") or {}).get("fields")) or [])
+    declared = set(((play or {}).get("params") or {}).keys())
+    for i, e in enumerate(entries):
+        el = "%s.assessments[%d]" % (label, i)
+        if not isinstance(e, dict):
+            problems.append("%s: entry must be an object — got %s" % (el, type(e).__name__))
+            continue
+        if entry_fields:
+            for k in sorted(set(e) - entry_fields):
+                problems.append("%s: unknown key %r (known: %s)"
+                                % (el, k, ", ".join(sorted(entry_fields))))
+        for f in ("date", "as_of", "window_from"):
+            v = e.get(f)
+            if not is_date(v or ""):
+                problems.append("%s: %s must be an ISO date — %r" % (el, f, v))
+        if is_date(e.get("as_of") or "") and is_date(e.get("window_from") or "") \
+                and e["window_from"] > e["as_of"]:
+            problems.append("%s: window_from %s is after as_of %s — the window runs backwards"
+                            % (el, e["window_from"], e["as_of"]))
+        for f in ASSESSMENT_OWNER_PROSE + ("engine_version",):
+            v = e.get(f)
+            if v is not None and not isinstance(v, str):
+                problems.append("%s: %s must be a string or null — %r" % (el, f, v))
+        props = e.get("proposals")
+        if not isinstance(props, list):
+            problems.append("%s: proposals must be a list (empty is fine) — got %s"
+                            % (el, type(props).__name__))
+            continue
+        seen_ids = set()
+        for j, p in enumerate(props):
+            pl = "%s.proposals[%d]" % (el, j)
+            if not isinstance(p, dict):
+                problems.append("%s: must be an object — got %s" % (pl, type(p).__name__))
+                continue
+            if prop_fields:
+                for k in sorted(set(p) - prop_fields):
+                    problems.append("%s: unknown key %r (known: %s)"
+                                    % (pl, k, ", ".join(sorted(prop_fields))))
+            pid = p.get("id")
+            if not isinstance(pid, str) or not pid.strip():
+                problems.append("%s: id must be a non-empty string (<plan>:<as_of>:<n>)" % pl)
+            elif pid in seen_ids:
+                problems.append("%s: duplicate proposal id %r within one entry" % (pl, pid))
+            seen_ids.add(pid)
+            enum(p, "kind", ASSESSMENT_PROPOSAL_KINDS, pl, problems)
+            enum(p, "status", ASSESSMENT_PROPOSAL_STATUS, pl, problems)
+            kind, key = p.get("kind"), p.get("key")
+            if not isinstance(key, str) or not key:
+                problems.append("%s: key must be a non-empty string" % pl)
+            elif kind == "parameter":
+                if key.startswith("config:"):
+                    dotted = key[len("config:"):]
+                    if dotted not in _ck.READER_KEYS:
+                        problems.append("%s: key %r names a config key config_keys does not "
+                                        "register (READER_KEYS: %s)"
+                                        % (pl, key, ", ".join(sorted(_ck.READER_KEYS))))
+                elif play is None:
+                    problems.append("%s: key %r is a parameter name but the plan has no play "
+                                    "that could declare it — a parameter proposal needs a "
+                                    "resolving play or a config:<dotted> key" % (pl, key))
+                elif key not in declared:
+                    problems.append("%s: key %r is not a parameter play %r declares (declared: "
+                                    "%s)" % (pl, key, play.get("id"),
+                                             ", ".join(sorted(declared)) or "none"))
+            elif kind == "construct":
+                sig, _sep, ident = key.partition(":")
+                if not _sep or not ident or sig not in _fr.CONSTRUCT_SIGNALS:
+                    problems.append("%s: key %r must be <signal>:<step|token> with the signal "
+                                    "in the closed catalogue {%s}"
+                                    % (pl, key, ", ".join(_fr.CONSTRUCT_SIGNALS)))
+            ev = p.get("evidence")
+            if not isinstance(ev, dict):
+                problems.append("%s: evidence must be an object" % pl)
+            elif kind in _fr.PROPOSAL_EVIDENCE_KEYS:
+                want = _fr.PROPOSAL_EVIDENCE_KEYS[kind]
+                extra, missing = sorted(set(ev) - want), sorted(want - set(ev))
+                if extra:
+                    problems.append("%s: evidence key(s) %s not declared for kind %r — an "
+                                    "undeclared key is refused, never dropped (declared: %s)"
+                                    % (pl, ", ".join(extra), kind, ", ".join(sorted(want))))
+                if missing:
+                    problems.append("%s: evidence is missing declared key(s) %s for kind %r"
+                                    % (pl, ", ".join(missing), kind))
+            txt = p.get("text")
+            if txt is not None and not isinstance(txt, str):
+                problems.append("%s: text must be a string or null — %r" % (pl, txt))
+            don, dec = p.get("decided_on"), p.get("decision")
+            if (don is None) != (dec is None):
+                problems.append("%s: decided_on and decision come together — one without the "
+                                "other cannot be audited (the asks contract, copied)" % pl)
+            if don is not None and not is_date(don):
+                problems.append("%s: decided_on not ISO — %r" % (pl, don))
+            if dec is not None and not isinstance(dec, str):
+                problems.append("%s: decision must be a string or null — %r" % (pl, dec))
+            rep = p.get("reported")
+            if rep is not None and not isinstance(rep, str):
+                problems.append("%s: reported must be a string (the issue url) or null — %r"
+                                % (pl, rep))
+
 VERTICALS = {"healthcare-payer", "healthcare-provider", "healthtech", "saas",
              "fintech", "insurtech", "other"}
 COMPANY_STATUS = {"active-target", "watching", "passed"}
@@ -543,6 +675,79 @@ def emit_problems(problems):
             json.dump(list(problems), fh, ensure_ascii=False)
     except OSError:
         pass
+
+
+# ── dev #365 (design-connected-entities.md §26.7/§28.2) ──────────────────────────────────────
+# Deliberately placed OUTSIDE `_main()`, far from every per-store loop above: this is a
+# cross-store completeness check over `migrate.STORE_INTRODUCED`, not another per-section
+# validator, and it needs nothing any per-section loop already computed — it re-checks file
+# existence directly, so it can be added (and later extended) without touching any of them.
+#
+# `migrate` is imported LAZILY, inside the function, the same caution this file already applies
+# to `plays`/`brief` (`migrate.py` itself lazily imports `validate_data` inside functions, never
+# at module level, so there is no real cycle either way — but a top-level import here would be
+# the one exception to this file's own pattern, for no benefit).
+_STORE_INTRODUCTION_EXEMPT = frozenset({
+    # ADR-028 / public #62 — legal-absent FOREVER, not merely pre-introduction: a single-resume
+    # profile never gets one, at any stamp. `validate_data.py`'s own `resume_variants` load
+    # above already documents this; this is the same rule, never re-litigated here.
+    "resume_variants.jsonl",
+    # Query or Citation C1 — created lazily by `brief.py`'s `append_ledger()` (`os.makedirs` +
+    # append-mode) and deliberately not in `init_profile.STORES`. Absence is this store's normal
+    # resting state between the first brief and the first draft that needs one, not a sign of
+    # data loss, so it is exempt the same way `resume_variants.jsonl` is. Listed here for the
+    # same reason companies/channels/opportunities/messages are below: legible, even though it
+    # is currently a no-op — `migrate.STORE_INTRODUCED` deliberately carries no entry for the
+    # ledger at all (its own comment says why: naming it there is exactly the bare-literal shape
+    # `check_ledger_reads.py`'s rule (a) refuses outside its three readers), so this loop never
+    # actually sees "briefs.jsonl" to exempt. If that ever changes, this line is already correct.
+    "briefs.jsonl",
+    # `companies.jsonl`/`channels.jsonl`/`opportunities.jsonl` already gate `_main()`'s own
+    # entry (any one of the three absent returns "pre-migration, nothing to check" before this
+    # function is ever reached) — excluded here only so the exclusion is legible; it is a
+    # no-op, since this function never runs when any of the three is missing.
+    "companies.jsonl", "channels.jsonl", "opportunities.jsonl",
+    # `messages.jsonl` is already unconditionally required by the load at its own call site
+    # above (`problems += e or []` with no `is None` guard) — including it here too would
+    # double-report the same absence under two different messages.
+    "messages.jsonl",
+})
+
+
+def check_store_introduction(problems):
+    """dev #365 — a governed store absent below the version that introduced it is legal (the
+    profile predates it, or was never stamped at all); absent AT OR PAST that version is a
+    validator failure naming the store, the stamp, and the version, because a migrated profile
+    that lost a file is a materially different fact than one that never had a reason for it
+    yet — and nothing before this function told the two apart.
+
+    ⭐ THE STAMP IS READ FROM `DATA`'S OWN PARENT, NEVER FROM THE MODULE-LEVEL `ROOT`. `ROOT` is
+    computed once, at import time, from whatever `_profile_root()` resolves for the WHOLE
+    process — and a great many existing tests only ever override `DATA` (directly, or via
+    `CLAUDESEARCH_DATA_DIR`), because nothing before this function ever cared what `ROOT` was.
+    Reading the stamp from `ROOT` while checking file existence against `DATA` mixes two
+    profiles whenever they diverge, which — confirmed by running the full suite while building
+    this — is most of the time: 23 pre-existing tests failed this way on the first pass, every
+    one of them a synthetic profile whose `DATA` pointed at a temp directory with no stamp file
+    while `ROOT` still resolved to whatever the test PROCESS had (the tracked fixture, stamped
+    0.18.0, in this suite's own case), so every one of those was falsely told it was a stamped,
+    migrated profile missing several stores. `os.path.dirname(DATA)` is the profile these
+    stores actually belong to — identical to `ROOT` whenever `DATA` is the ordinary
+    `<profile>/data`, and correct instead of stale whenever a caller (a test, or a future
+    script) points `DATA` somewhere else without also repointing `ROOT`."""
+    import migrate as _migrate
+    stamp = _migrate.read_stamp(os.path.dirname(DATA))
+    for store, introduced_at in sorted(_migrate.STORE_INTRODUCED.items()):
+        if store in _STORE_INTRODUCTION_EXEMPT:
+            continue
+        if os.path.exists(os.path.join(DATA, store)):
+            continue
+        if _migrate.store_absence_legal(stamp, store):
+            continue
+        problems.append(
+            "%s: absent, but the profile is stamped %s and %s introduced this store at or "
+            "before that — a migrated profile is missing a file, not merely pre-dating it"
+            % (store, stamp, introduced_at))
 
 
 def main():
@@ -1268,6 +1473,13 @@ def _main():
                         elif _k not in _aspec["fields"]:
                             problems.append("%s: %s[%d] unknown key %r (known: %s)"
                                             % (_l, _arr, _i, _k, ", ".join(sorted(_aspec["fields"]))))
+
+    # ADR-031 B5 — `plans.assessments[]`, checked once the model is in hand (its field lists come
+    # from data_model.json, never restated here). Nothing writes the field yet (item C of
+    # design-b5-assessment.md §9); the contract is enforced from the day the field exists.
+    for r in plans_rows:
+        check_assessments(r, plays_by_id.get(r.get("play_id")), _model,
+                          "plans[%s]" % r.get("id", "?"), problems)
 
     # ---- companies ----
     for r in companies:
@@ -2008,6 +2220,10 @@ def _main():
                     elif _k not in (_sspec.get("fields") or ()):
                         problems.append("%s: unknown key %r (known: %s)"
                                         % (_l, _k, ", ".join(sorted(_sspec.get("fields") or ()))))
+
+    # dev #365 — cross-store completeness, defined far below (near `main()`), independent of
+    # every per-store loop above.
+    check_store_introduction(problems)
 
     print("Data validation — %d companies, %d channels, %d opportunities, %d asks, "
           "%d commitments, %d resume variants, %d applications, %d cover letters, %d touches, "

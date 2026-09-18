@@ -21,7 +21,7 @@ human can fix, and safe to run any time.
 Python 3.9+, stdlib only.
 """
 
-import argparse, json, os, subprocess, sys
+import argparse, copy, json, os, subprocess, sys
 from datetime import date
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root, engine_root, looks_like_profile
@@ -210,11 +210,20 @@ def check_sync(root=None):
     return [(sev, "sync mode", detail.get(verdict, verdict))]
 
 
+# The dotted `need` paths --fix will attempt to seed (dev #323). Kept as doctor's OWN fact,
+# separate from config_keys.SEEDABLE_DEFAULTS's current contents — so a default missing from
+# the registry for a key named here is "the registry broke its promise" (loud, non-zero), never
+# silently read as "this was never fixable" (a quiet, ordinary MISSING row).
+_ADDITIVE_SAFE_KEYS = frozenset({"search.posture", "search.postures"})
+
+
 def check_config_currency(fix=False):
     """Keys the CURRENT engine reads. A profile older than the engine is the whole point of this."""
     out, cfg = [], _cfg()
     if cfg is None:
         return [(BAD, "config.json", "unreadable")]
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import config_keys as _ck
     # (path, why the engine needs it)
     need = [(("search", "posture"), "which budget tier the scheduled runs use (ADR-008)"),
             (("search", "postures"), "the tier definitions themselves"),
@@ -233,16 +242,30 @@ def check_config_currency(fix=False):
         if not missing:
             out.append((OK, label, ""))
             continue
-        if fix and path[0] == "search":
-            # additive only, and only for the block we can safely default
-            skel = json.load(open(os.path.join(ENGINE, "scripts", "_config_skeleton.json"),
-                                  encoding="utf-8")) if os.path.exists(
-                os.path.join(ENGINE, "scripts", "_config_skeleton.json")) else None
-            if skel:
-                cfg.setdefault("search", {}).update(skel.get("search", {}))
-                added.append(label)
-                out.append((OK, label, "ADDED from the engine default"))
+        # additive only, and only for the two paths this doctor knows how to safely default
+        # (dev #323 — this used to read `scripts/_config_skeleton.json`, which never existed;
+        # the read was wrapped in an `os.path.exists` guard, so --fix silently repaired
+        # nothing). `_ADDITIVE_SAFE_KEYS` is what makes "should this be fixable" a fact this
+        # doctor states on its own, never a fact borrowed from whether config_keys.py *happens*
+        # to still have the default right now — a key outside it (compensation.tiers, …) is out
+        # of scope for additive repair on purpose and falls straight through to the ordinary
+        # MISSING row below, with or without --fix, exactly as before.
+        if fix and label in _ADDITIVE_SAFE_KEYS:
+            try:
+                default = _ck.seed_default(label)
+            except KeyError:
+                # this key IS supposed to be additively fixable, and the registry could not
+                # produce a default for it — never silently fall through to a plain MISSING
+                # row, that is exactly the "missing thing read as empty" bug this fix closes.
+                out.append((BAD, label, "cannot seed %s: no default registered" % label))
                 continue
+            node = cfg
+            for k in path[:-1]:
+                node = node.setdefault(k, {})
+            node[path[-1]] = copy.deepcopy(default)   # never mutate the registry's own default
+            added.append(label)
+            out.append((OK, label, "seeded config.%s = %r (registry)" % (label, default)))
+            continue
         out.append((BAD, label, "MISSING — the engine reads this. %s" % why))
     if added:
         # ⚠️ This is the user's ENTIRE configuration. It used to be truncated by json.dump and
@@ -255,8 +278,6 @@ def check_config_currency(fix=False):
     # an engine default, so its absence is never BAD here (that is what "adjustable" means) —
     # it is reported OK, with provenance, so CONFIG CURRENCY answers "what does this engine
     # read" for the adjustable surface too, not only the five structural keys above.
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import config_keys as _ck
     for key in sorted(_ck.READER_KEYS):
         value, provenance = _ck.describe(cfg, key)
         out.append((OK, key, "%r (%s)" % (value, provenance)))
@@ -539,11 +560,17 @@ def main():
                  check_pointer_health()),
                 ("CREDENTIALS (yours to place)", check_credentials())]
     bad = warn = 0
+    fix_failed = False
     for title, rows in sections:
         print("\n%s" % title)
         for status, label, note in rows:
             bad += status == BAD
             warn += status == WARN
+            # dev #323: --fix asked to seed a key config_keys.py's own registry says it should
+            # cover, and the registry could not produce a default. Never a quiet exit 0 — a
+            # repair tool that reports success without repairing trains its reader to trust it.
+            if args.fix and status == BAD and note.startswith("cannot seed "):
+                fix_failed = True
             print("  [%s] %-34s %s" % (status, label[:34], note))
     print("\n" + "=" * 74)
     if bad:
@@ -553,6 +580,9 @@ def main():
         print("  %d warning(s), nothing broken." % warn)
     else:
         print("  Healthy and current with the installed engine.")
+    if fix_failed:
+        print("  --fix could not seed everything it should have — see 'cannot seed' above.")
+        return 1
     return 0
 
 

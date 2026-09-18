@@ -42,8 +42,11 @@ in a directory **you** create and own, outside the plugin, and the two are never
 That separation is what makes it safe for this repository to be public and updated while your
 search stays private.
 
-Automated checks enforce it on every change, and a published version is verified against a real
-profile before release rather than trusted because a test passed.
+Automated checks enforce it on every change. A shape-based leak audit (comp figures, phone
+numbers, bare email addresses, across every tracked file) runs in CI and before every release,
+with no profile needed. The term-level check (does an engine file carry *your* data) runs on
+your own machine, once per install, at session start — never from this repository, and never
+against anyone else's profile.
 
 ## Reporting a problem
 

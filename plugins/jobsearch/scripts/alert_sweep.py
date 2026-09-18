@@ -65,6 +65,7 @@ import sys
 # connector plugin), so importing it starts nothing.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
+import journal as _journal
 
 try:
     from mail_client import (
@@ -79,6 +80,31 @@ except ImportError as exc:  # pragma: no cover - defensive
 # Generic digest fallback — deliberately NOT channel state (see the module docstring's #147
 # section for why). Extend as new identifying patterns appear.
 SUBJECT_FALLBACK = 'subject:("new jobs" OR "jobs for you" OR "job alert" OR "new job")'
+
+# ⭐⭐ public #99 — PER-UID IDEMPOTENCY, the same ledger discipline the ATS sweep shipped in
+# 0.50.0 (design-inbound-resolution.md §5, dev #376), adopted here rather than reinvented: ONE
+# ledger (journal.py's `data/runs.jsonl`), not two. Before this, every run re-fetched and
+# re-printed every uid the search window still covered — a uid found on three consecutive daily
+# runs was triaged three times, because nothing recorded that a prior run had already surfaced
+# it. `sweep_account()` below now reads `journal.triaged_uids()` BEFORE fetching any header, and
+# writes `journal.record_triaged()` immediately after building each new uid's own row — never
+# batched at the end — so a run killed between fetching a uid and recording its disposition
+# leaves that one uid un-triaged for the next run to pick back up (see `record_triaged()`'s own
+# docstring). `ALERT_SWEEP_BY` tags every row this sweep writes, the same `by` convention
+# `record_swept`'s callers already use, so a second sweep kind sharing this ledger later would
+# never silently cover for this one's own history.
+ALERT_SWEEP_BY = "alert_sweep"
+
+# Reset at the top of every `main()` call. `sweep_account()` records this run's own per-account
+# skip count here so `main()`'s printed output can report the saving (public #99) without
+# widening `sweep_account`'s own `(rows, error)` return contract — `mail_client.sweep_accounts()`
+# unpacks exactly two values from whatever `search_one` returns, and a caller that already
+# replaces `sweep_account` wholesale for a test (a plain two-arg stub, e.g.
+# `TestSweepAccountsWiredIntoTheFourCallers`'s own) must keep working unmodified; widening the
+# return arity would either break that unpacking or force every test double to grow a third
+# value it has no reason to know about. A module-level side channel, reset per run, is the
+# narrowest fix that touches neither.
+_last_skipped = {}
 
 
 def _channel_senders(root=None):
@@ -120,13 +146,27 @@ def build_query(days, root=None):
 
 
 def sweep_account(account, query):
-    """Return (rows, error). rows = list of (date, from, subject)."""
+    """Return (rows, error). rows = list of (date, from, subject).
+
+    ⭐ public #99 — per-uid idempotent: a uid already triaged for THIS account (within
+    `journal.TRIAGE_TTL_DAYS`) is skipped before `fetch_headers` is ever called for it, and
+    `_last_skipped[account]` records how many were skipped so `main()` can report the saving. A
+    uid processed here is marked triaged (`journal.record_triaged`) only AFTER its row is built
+    — never before — so a run killed mid-loop leaves every not-yet-recorded uid to be re-triaged
+    next time, not silently skipped."""
     rows = []
+    skipped = 0
     try:
+        root = _profile_root()
+        recs = _journal.read(root)
+        already = _journal.triaged_uids(recs, account, by=ALERT_SWEEP_BY)
         with Mailbox(account) as mb:
             uids = mb.search(query)
             # Newest first, cap the fetch so a busy mailbox can't run long.
             for uid in reversed(uids[-40:]):
+                if str(uid) in already:
+                    skipped += 1
+                    continue
                 msg = mb.fetch_headers(uid)
                 if msg is None:
                     continue
@@ -135,10 +175,14 @@ def sweep_account(account, query):
                     decode_header_value(msg.get("From")),
                     decode_header_value(msg.get("Subject")),
                 ))
+                _journal.record_triaged(root, account, uid, "surfaced", ALERT_SWEEP_BY)
+        _last_skipped[account] = skipped
         return rows, None
     except CredentialError as exc:
+        _last_skipped[account] = skipped
         return [], str(exc)
     except Exception as exc:  # network/IMAP hiccup — report, never swallow
+        _last_skipped[account] = skipped
         return [], "%s: %s" % (type(exc).__name__, exc)
 
 
@@ -155,6 +199,11 @@ def main():
     accounts = [args.account] if args.account else configured_accounts()
     query = build_query(args.days)
 
+    # public #99 — a fresh run must not see a prior in-process call's skip counts (relevant to
+    # tests that call main() more than once in the same process; a real CLI invocation only
+    # ever runs main() once, so this is a no-op there).
+    _last_skipped.clear()
+
     print("Alert sweep — window: last %d day(s)" % args.days)
     print("Query: %s" % query)
     if args.account:
@@ -163,13 +212,14 @@ def main():
     print("=" * 72)
 
     total = 0
+    total_skipped = 0
     # dev #334 — the ONE shared multi-account sweep site: iterate + write the coverage ledger,
     # instead of this loop's own private copy. `since_days=args.days` is exactly the window this
     # sweep actually searched (`build_query` bakes the same value into `newer_than:%dd`), so the
     # `swept` row never claims coverage wider than what was really queried.
     results, incomplete = sweep_accounts(
         lambda acct: sweep_account(acct, query), since_days=args.days,
-        root=_profile_root(), by="alert_sweep", accounts=accounts)
+        root=_profile_root(), by=ALERT_SWEEP_BY, accounts=accounts)
     for account, rows, err in results:
         print("\n[%s]" % account)
         if err:
@@ -177,21 +227,30 @@ def main():
             print("  Results for this account are MISSING, not empty. "
                   "Do not conclude a message does not exist.")
             continue
-        if not rows:
+        skipped = _last_skipped.get(account, 0)
+        total_skipped += skipped
+        if not rows and not skipped:
             print("  (no alert emails in window)")
-            continue
-        total += len(rows)
-        for date, frm, subj in rows:
-            print("  %-31s | %s" % ((date or "?")[:31], subj or "(no subject)"))
-            print("  %-31s   from %s" % ("", frm or "?"))
+        else:
+            if not rows:
+                print("  (no new alert emails in window)")
+            total += len(rows)
+            for date, frm, subj in rows:
+                print("  %-31s | %s" % ((date or "?")[:31], subj or "(no subject)"))
+                print("  %-31s   from %s" % ("", frm or "?"))
+            if skipped:
+                print("  (%d already triaged, skipped)" % skipped)
 
     print("\n" + "=" * 72)
     if incomplete:
         print("!! %d account(s) could not be searched: %s"
               % (len(incomplete), ", ".join(incomplete)))
         print("   The count below is PARTIAL. Fix credentials before trusting a zero.")
-    print("%d alert email(s) found across %d searchable account(s)."
-          % (total, len(accounts) - len(incomplete)))
+    summary = ("%d alert email(s) found across %d searchable account(s)."
+              % (total, len(accounts) - len(incomplete)))
+    if total_skipped:
+        summary += " (%d already triaged, skipped)" % total_skipped
+    print(summary)
     print("\nNext: read each role, cross-check against data/opportunities.jsonl and "
           "its exclusion list, and hand genuinely-new roles to opportunity-researcher.")
     # Exit non-zero only when coverage was incomplete, so an unattended caller can

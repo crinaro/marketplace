@@ -23,9 +23,11 @@ This reads data/opportunities.jsonl and reports only what the data can actually
 support. Where the sample is too small to mean anything, it says so rather than
 printing a confident percentage over n=3.
 
-    python3 scripts/funnel_report.py
+    python3 scripts/funnel_report.py [--recommend]
+    python3 scripts/funnel_report.py --by step [--as-of YYYY-MM-DD] [--window-from YYYY-MM-DD]
 
-Advisory only; always exits 0. Targets Python 3.9+, stdlib only.
+Advisory only; always exits 0 (2 on a malformed --as-of/--window-from). Targets Python 3.9+,
+stdlib only.
 """
 
 import argparse
@@ -49,6 +51,40 @@ DATA = os.environ.get("CLAUDESEARCH_DATA_DIR") or os.path.join(ROOT, "data")
 
 # Below this, a percentage is noise dressed up as a finding.
 MIN_SAMPLE = 5
+# The smallest gap, in percentage points, between two RATABLE arms before recommend() will call
+# the configured one CONTRADICTED. ADR-031 B5: hoisted from a local inside recommend() to module
+# level so `plays.py --assess` imports the same number this report prints — one home for both
+# thresholds (design-connected-entities.md §27.2, design-b5-assessment.md §0). Value unchanged.
+MIN_GAP_PP = 20
+
+# A touch outcome that ENDS the wait — the resolution every reply/resolution rate reads. One
+# tuple, read by `resolution()` in main() and by `step_funnel()` below, so the two funnels can
+# never disagree about what "resolved" means.
+TERMINAL_TOUCH_OUTCOMES = ("replied", "meeting-booked", "accepted", "no-response", "declined")
+
+# ADR-031 B5 — the CLOSED construct-signal catalogue (design-connected-entities.md §27.3: four
+# kinds; a fifth is an engine change, never a profile's). A proposal keyed `<signal>:<step|token>`
+# is a CONSTRUCT — the shape did not play out, and the shape is the engine's. validate_data.py
+# refuses any other signal name in a `plans.assessments[].proposals[].key`.
+CONSTRUCT_SIGNALS = ("stalled", "no-exit", "goal-off-path", "branch-idle")
+
+# ADR-031 B5 — the evidence keys a proposal of each kind carries: EXACTLY these, no more and no
+# fewer (design-b5-assessment.md §2: "typed, fixed per kind"). A parameter proposal's evidence is
+# how the resolutions split against the declared window (§27.2's parameter-evidence row); a
+# construct proposal's is counts and medians over the shape plus the shipped pattern id and stamp
+# it was observed on (§27.3's whitelist — nothing owner-typed is a key here). An undeclared key is
+# a validator PROBLEM, never a dropped field (§28.2's type refusal, moved from the composer to the
+# row so it holds on every write path).
+PROPOSAL_EVIDENCE_KEYS = {
+    "parameter": frozenset({"n_resolved", "answered_in_window", "silent", "answered_after",
+                            "answer_days"}),
+    "construct": frozenset({"pursuits", "attempts_median", "days_median", "pattern",
+                            "pattern_sha"}),
+}
+
+# Owner decision 27 (design-b5-assessment.md §8, PENDING): an assessment window with no prior
+# entry reaches back six weeks — a bound on how far the first replay goes, nothing else.
+DEFAULT_WINDOW_DAYS = 42
 
 
 def load(name):
@@ -74,6 +110,19 @@ def pct(n, d):
     if d < MIN_SAMPLE:
         return "%d/%d (too few to rate)" % (n, d)
     return "%d/%d = %d%%" % (n, d, round(100.0 * n / d))
+
+
+def _iso_to_date(s):
+    y, m, d = (int(x) for x in s.split("-"))
+    return datetime.date(y, m, d)
+
+
+def is_iso(v):
+    try:
+        _iso_to_date(v)
+        return True
+    except (ValueError, AttributeError, TypeError):
+        return False
 
 
 def days_since(d):
@@ -113,7 +162,6 @@ def recommend(cut_stats, comms_cfg):
     It NEVER edits config.json. It emits a proposal that the weekly review takes to the candidate —
     same rule search-strategist already follows.
     """
-    MIN_GAP_PP = 20
     rule("RECOMMENDATION — is the configured default supported by the data?")
     default = comms_cfg.get("default_sequence", [])
     print("  configured default_sequence: %s" % " + ".join(default))
@@ -149,11 +197,206 @@ def recommend(cut_stats, comms_cfg):
                   % (k, round(rates[k]), ratable[k]["resolved"]))
 
 
+# ---- ADR-031 B5 — the step funnel (`--by step`) ---------------------------------------------
+#
+# Per governing plan, per step of its play: how many pursuits the step became RUNNABLE for
+# (replaying `plays.next_step` DAILY over the window — never a stored stage), how many were
+# ACTED on (a touch naming the step by `play_step`, a submitted application, or a person of the
+# step's class on the record), SENT, REPLIED (`responded_on`), RESOLVED (a terminal touch
+# outcome), and the median days the step stayed the answer. Every rate goes through `pct()`, so
+# `n < MIN_SAMPLE` prints "too few to rate" with the n and no percentage — the same refusal the
+# rest of this report makes. `as_of` is ALWAYS an argument: nothing on this path reads the wall
+# clock, so the same window over the same stores renders the same bytes on any day.
+
+def _median(values):
+    xs = sorted(values)
+    if not xs:
+        return None
+    mid = len(xs) // 2
+    if len(xs) % 2:
+        return xs[mid]
+    return (xs[mid - 1] + xs[mid]) / 2.0
+
+
+def step_funnel(ctx_or_root, as_of, window_from=None):
+    """{plan_id: {"play_id", "pattern", "pursuits", "window_from", "as_of", "skipped",
+    "steps": [{"id", "kind", "runnable", "acted", "sent", "replied", "resolved",
+    "days_median"}]}} — counts of PURSUITS (a pursuit counts once per column), replayed daily
+    from `max(plan_assigned_on, window_from)` to `as_of` inclusive with `plays.next_step` pinned
+    to each day (next_step is a pure function of the stores and a date, so starting the replay
+    at the window edge loses nothing). `ctx_or_root` is a `plays.Context` or a profile root to
+    build one from. `window_from` defaults to `as_of - DEFAULT_WINDOW_DAYS`.
+
+    What each column means, stated rather than left to the reader:
+      runnable    — the step was next_step()'s answer on at least one replayed day in the
+                    window (a pursuit that entered the step before the window and is still
+                    there counts — it IS in the step during the window)
+      acted       — touch step: any touch (any status) naming the step by `play_step` and dated
+                    in the window, or a SENT touch that resolves to the step through
+                    plays._matching_touches (§26.1(a)); apply step: a submitted application
+                    dated in the window; research step: a person of the step's `find` class on
+                    the record (plays.class_known — involvements carry no date, so this one is
+                    as-of the record, not the window)
+      sent / replied / resolved — touch steps only (a sent matching touch · one with
+                    `responded_on` · one whose outcome is in TERMINAL_TOUCH_OUTCOMES); an apply
+                    step's `sent` equals its `acted`; a research step has none of the three
+                    (rendered as —)
+      days_median — median over pursuits of the replayed days the step was the answer,
+                    truncated at the window edges
+    """
+    import plays as _plays
+    ctx = ctx_or_root if hasattr(ctx_or_root, "plans_by_id") else _plays.Context(ctx_or_root)
+    if window_from is None:
+        window_from = (_iso_to_date(as_of)
+                       - datetime.timedelta(days=DEFAULT_WINDOW_DAYS)).isoformat()
+    out = {}
+    opps_by_plan = collections.defaultdict(list)
+    for o in ctx.opps:
+        if o.get("plan_id"):
+            opps_by_plan[o["plan_id"]].append(o)
+    for plan in sorted(ctx.plans, key=lambda p: str(p.get("id"))):
+        pid = plan.get("id")
+        play_id = plan.get("play_id")
+        play = ctx.plays_by_id.get(play_id) if play_id else None
+        entry = {"play_id": play_id, "pattern": (play or {}).get("pattern"),
+                 "pursuits": len(opps_by_plan.get(pid, ())), "window_from": window_from,
+                 "as_of": as_of, "skipped": None, "steps": []}
+        out[pid] = entry
+        if play_id == _plays._plans.MANUAL_PLAY:
+            entry["skipped"] = "manual play — the owner decides each step; nothing to replay"
+            continue
+        if play is None:
+            entry["skipped"] = "no play to replay (play_id=%r)" % play_id
+            continue
+        steps = [s for s in play.get("steps") or [] if isinstance(s, dict) and s.get("id")]
+        per_step = {s["id"]: {"runnable": set(), "acted": set(), "sent": set(),
+                              "replied": set(), "resolved": set(), "days": []} for s in steps}
+        for opp in opps_by_plan.get(pid, ()):
+            oid = opp.get("id")
+            start = max(opp.get("plan_assigned_on") or window_from, window_from)
+            day, end = _iso_to_date(start), _iso_to_date(as_of)
+            days_in = collections.Counter()
+            while day <= end:
+                ns = _plays.next_step(plan, play, opp, ctx, day.isoformat())
+                if ns.kind == "step" and ns.step in per_step:
+                    days_in[ns.step] += 1
+                day += datetime.timedelta(days=1)
+            for sid, n in days_in.items():
+                per_step[sid]["runnable"].add(oid)
+                per_step[sid]["days"].append(n)
+            for s in steps:
+                sid, do = s["id"], s.get("do") or {}
+                kind, cell = do.get("kind"), per_step[sid]
+                if kind == "touch":
+                    named = [t for t in ctx.touches_by_opp.get(oid, ())
+                             if t.get("play_step") == sid
+                             and window_from <= str(t.get("date") or "")[:10] <= as_of]
+                    sent = [t for t in _plays._matching_touches(oid, sid, play, ctx, as_of)
+                            if str(t.get("date") or "")[:10] >= window_from]
+                    if named or sent:
+                        cell["acted"].add(oid)
+                    if sent:
+                        cell["sent"].add(oid)
+                    if any(t.get("responded_on") and str(t["responded_on"])[:10] <= as_of
+                           for t in sent):
+                        cell["replied"].add(oid)
+                    if any(t.get("outcome") in TERMINAL_TOUCH_OUTCOMES for t in sent):
+                        cell["resolved"].add(oid)
+                elif kind == "apply":
+                    ad = _plays.application_date(oid, ctx, as_of)
+                    if ad and ad >= window_from:
+                        cell["acted"].add(oid)
+                        cell["sent"].add(oid)
+                elif kind == "research":
+                    if do.get("find") and _plays.class_known(oid, do["find"], ctx):
+                        cell["acted"].add(oid)
+        for s in steps:
+            sid, do = s["id"], s.get("do") or {}
+            kind, cell = do.get("kind"), per_step[sid]
+            entry["steps"].append({
+                "id": sid, "kind": kind,
+                "runnable": len(cell["runnable"]), "acted": len(cell["acted"]),
+                "sent": len(cell["sent"]) if kind in ("touch", "apply") else None,
+                "replied": len(cell["replied"]) if kind == "touch" else None,
+                "resolved": len(cell["resolved"]) if kind == "touch" else None,
+                "days_median": _median(cell["days"]),
+            })
+    return out
+
+
+def render_step_funnel(ctx_or_root, as_of, window_from=None):
+    """Print `step_funnel()` — one block per plan, one line per step plus its rates, every rate
+    through pct(). Returns the computed table so a caller can assert on numbers, not on text."""
+    table = step_funnel(ctx_or_root, as_of, window_from)
+    some = next(iter(table.values()), None)
+    wf = some["window_from"] if some else (window_from or "?")
+    rule("STEP FUNNEL — per play step, replayed daily (ADR-031 B5)")
+    print("  as of %s · window from %s · a pursuit counts once per column · no rate below n=%d"
+          % (as_of, wf, MIN_SAMPLE))
+    if not table:
+        print("  No plans recorded.")
+    for pid, entry in table.items():
+        print("")
+        print("  plan %s · play %s%s · %d pursuit(s) governed"
+              % (pid, entry["play_id"],
+                 (" (pattern %s)" % entry["pattern"]) if entry["pattern"] else "",
+                 entry["pursuits"]))
+        if entry["skipped"]:
+            print("    skipped — %s" % entry["skipped"])
+            continue
+        print("    %-20s %-9s %8s %6s %5s %8s %9s %9s"
+              % ("step", "kind", "runnable", "acted", "sent", "replied", "resolved",
+                 "median d"))
+        for s in entry["steps"]:
+            med = s["days_median"]
+            print("    %-20s %-9s %8d %6d %5s %8s %9s %9s"
+                  % (s["id"], s["kind"] or "?", s["runnable"], s["acted"],
+                     "—" if s["sent"] is None else s["sent"],
+                     "—" if s["replied"] is None else s["replied"],
+                     "—" if s["resolved"] is None else s["resolved"],
+                     "—" if med is None else ("%g" % med)))
+            rates = ["acted/runnable %s" % pct(s["acted"], s["runnable"])]
+            if s["replied"] is not None:
+                rates.append("replied/sent %s" % pct(s["replied"], s["sent"]))
+                rates.append("resolved/sent %s" % pct(s["resolved"], s["sent"]))
+            print("    %-20s   %s" % ("", " · ".join(rates)))
+    return table
+
+
+def _today():
+    """The ONE wall-clock read on the `--by step` path, and only as the CLI default for
+    `--as-of` — `step_funnel()`/`render_step_funnel()` never call it (a test freezes this
+    module's clock on two different days and asserts identical bytes)."""
+    return datetime.date.today().isoformat()
+
+
 def main():
     ap = argparse.ArgumentParser(description="What's actually working.")
     ap.add_argument("--recommend", action="store_true",
                     help="Also compare the configured channel default against the data.")
+    ap.add_argument("--by", choices=("step",), default=None,
+                    help="ADR-031 B5: `--by step` prints the per-play-step funnel INSTEAD of "
+                         "the standard report (the assessment's arithmetic; weekly-review "
+                         "runs the two as separate commands).")
+    ap.add_argument("--as-of", default=None, metavar="YYYY-MM-DD",
+                    help="--by step only: the replay's last day (default: today).")
+    ap.add_argument("--window-from", default=None, metavar="YYYY-MM-DD",
+                    help="--by step only: the replay's first day (default: as-of minus %d days)."
+                         % DEFAULT_WINDOW_DAYS)
     args = ap.parse_args()
+
+    if args.by == "step":
+        as_of = args.as_of or _today()
+        for label, v in (("--as-of", as_of), ("--window-from", args.window_from)):
+            if v is not None and not is_iso(v):
+                print("%s must be YYYY-MM-DD, got %r" % (label, v))
+                return 2
+        print("Funnel report — by step, as of %s" % as_of)
+        # plays.Context reads <root>/data; DATA is that directory (CLAUDESEARCH_DATA_DIR-
+        # overridable), so the root the replay reads is DATA's parent — never a second
+        # resolution of the profile that could disagree with the one this report reads.
+        render_step_funnel(os.path.dirname(os.path.abspath(DATA)), as_of, args.window_from)
+        return 0
 
     opps = load("opportunities.jsonl")
     companies = {c["id"]: c for c in load("companies.jsonl")}
@@ -310,7 +553,7 @@ def main():
         if x.get("delivery") == "bounced":
             return "bounced"
         oc = x.get("outcome")
-        if oc in ("replied", "meeting-booked", "accepted", "no-response", "declined"):
+        if oc in TERMINAL_TOUCH_OUTCOMES:
             return "resolved"
         age = days_since(x.get("date"))
         if oc == "awaiting" and age is not None and age >= NO_RESPONSE_AFTER:

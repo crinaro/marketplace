@@ -530,6 +530,35 @@ def derived_sender_domains(messages):
     return sorted(out)
 
 
+def _normalize_name_token(s):
+    """Strip everything but alnum, casefolded — for comparing a company name against a
+    domain, which carries none of a name's spaces or punctuation of its own."""
+    return re.sub(r"[^a-z0-9]", "", (s or "").lower())
+
+
+def unidentified_finding_company(display_name, from_domain, live_apps, companies):
+    """design-inbound-resolution.md §3.1 — identification uncertain (dev #376 item 1): does
+    this message's DISPLAY NAME or DOMAIN — never subject or body, which is §3.2's resolution
+    evidence, not §3.1's identification evidence — name a live application's company? Returns
+    the first matching company id (in `live_apps`' own order, deterministic), or None. Company
+    mention alone is not a finding; the caller also requires a `status_phrases` hit before
+    this is asked about at all."""
+    dn_low = (display_name or "").lower()
+    dom_norm = _normalize_name_token(from_domain)
+    seen = set()
+    for app in live_apps:
+        cid = app.get("_company_id")
+        if not cid or cid in seen:
+            continue
+        seen.add(cid)
+        name = (companies.get(cid) or "").strip()
+        if not name:
+            continue
+        if name.lower() in dn_low or (dom_norm and _normalize_name_token(name) in dom_norm):
+            return cid
+    return None
+
+
 def resolve_application(subject, body_text_, from_domain, live_apps, companies):
     """§3.2 — ADR-030's three tiers, first hit wins, a tie STOPS (never falls through to a
     weaker tier). `live_apps` is every candidate application to consider, each optionally
@@ -635,11 +664,27 @@ def iso_week(date_iso):
     return "%04dW%02d" % (y, w)
 
 
+def _ask_key_hash(domain, subject):
+    """The (domain, normalized subject) key's own hash — independent of `kind` and of the ISO
+    week, so it is stable across both. §4.4's dedup key, and (dev #376 item 2) the same key a
+    `resolution: noise` disposition suppresses future asks by."""
+    return hashlib.sha1(("%s|%s" % ((domain or "").lower(), normalize_subject(subject)))
+                        .encode("utf-8")).hexdigest()[:10]
+
+
+_ASK_ID_RE = re.compile(r"^ask-ats-[a-z]+-([0-9a-f]{10})-\d{4}W\d{2}$")
+
+
+def _ask_key_hash_from_id(ask_id):
+    """The `_ask_key_hash(...)` segment embedded in an `ask-ats-<kind>-<hash>-<week>` id, or
+    None when `ask_id` is not that shape at all (a hand-authored or pre-ADR-030 ask row)."""
+    m = _ASK_ID_RE.match(ask_id or "")
+    return m.group(1) if m else None
+
+
 def ask_digest_id(kind, domain, subject, date_iso):
     """§4.4 — dedup is by (sender domain, normalized subject) per ISO week, never by uid."""
-    h = hashlib.sha1(("%s|%s" % ((domain or "").lower(), normalize_subject(subject)))
-                     .encode("utf-8")).hexdigest()[:10]
-    return "ask-ats-%s-%s-%s" % (kind, h, iso_week(date_iso))
+    return "ask-ats-%s-%s-%s" % (kind, _ask_key_hash(domain, subject), iso_week(date_iso))
 
 
 def _read_config(root):
@@ -716,12 +761,18 @@ def write_ats_status(app_id, status, on_date, note, already_locked=False):
 
 def write_or_extend_ask(kind, domain, subject, date_iso, note_tag, already_locked=False,
                         opp_id=None, trigger_ref=None, asks_by_id=None, cap=None,
-                        created_counter=None):
+                        created_counter=None, company_name=None):
     """§4.4 — one ask per (domain, normalized subject, ISO week); every further uid it
     absorbs is appended to the ask's `note`, never a second row. `cap`/`created_counter`
     (a one-item mutable list, `[n]`) enforce ADR-030 decision 5: a NEW ask counts against the
     per-run cap; extending an existing one's note does not. Returns (ask_id_or_None,
-    withheld_bool)."""
+    withheld_bool).
+
+    dev #376 item 2 — before a NEW ask is created (never before extending an existing one's
+    own note; the exact-id lookup above already covers a same-week re-sight), check whether
+    this (domain, normalized subject) KEY was ever resolved `noise`: if so, the caller's own
+    count still advances (the message is not lost), but nothing is written here, ever again,
+    for that key. `company_name` is used only by the `unidentified` finding kind's own text."""
     ask_id = ask_digest_id(kind, domain, subject, date_iso)
     existing = (asks_by_id or {}).get(ask_id)
     if existing is not None:
@@ -730,15 +781,28 @@ def write_or_extend_ask(kind, domain, subject, date_iso, note_tag, already_locke
         _run_record(["set", ask_id, "note", new_note, "--file", "asks"] +
                    (["--already-locked"] if already_locked else []))
         return ask_id, False
+    key_hash = _ask_key_hash(domain, subject)
+    if any(a.get("resolution") == "noise" and _ask_key_hash_from_id(a.get("id")) == key_hash
+          for a in (asks_by_id or {}).values()):
+        print("  suppressed (noise): %s|%s" % ((domain or "").lower(),
+                                                normalize_subject(subject)))
+        return None, False
     if cap is not None and created_counter is not None and created_counter[0] >= cap:
         return None, True
-    title = ("Unidentified/unresolved ATS mail" if kind == "unresolved"
-            else "ATS status change proposed")
-    text = ("A message from %s (%s) could not be resolved to a live application — check "
-           "whether it names one, or add the domain to receipt_sender_domains."
-           % (domain, subject[:60]) if kind == "unresolved" else
-           "A parsed ATS status change from %s (%s) is proposed, not applied — confirm or "
-           "correct it." % (domain, subject[:60]))
+    if kind == "unresolved":
+        title = "Unidentified/unresolved ATS mail"
+        text = ("A message from %s (%s) could not be resolved to a live application — check "
+               "whether it names one, or add the domain to receipt_sender_domains."
+               % (domain, subject[:60]))
+    elif kind == "unidentified":
+        title = "Possible ATS domain not configured"
+        text = ("A message from %s (%s) names %s, a live application's company, but %s is "
+               "not a configured or derived ATS domain — add it to receipt_sender_domains if "
+               "this is the ATS." % (domain, subject[:60], company_name or domain, domain))
+    else:
+        title = "ATS status change proposed"
+        text = ("A parsed ATS status change from %s (%s) is proposed, not applied — confirm "
+               "or correct it." % (domain, subject[:60]))
     fields = {
         "kind": "system", "title": title[:120], "ask": text,
         "created": date_iso[:10], "act_by": (
@@ -809,7 +873,10 @@ def cmd_ats(args):
     # was passed: unheld -> plan-only (classify, print, write a `by: reconcile-ats-plan`
     # `swept` row, exit 2, touch no other store); held (or no flag at all, in which case this
     # call takes its own short lock per write via record.py's plain path) -> real writes.
-    can_write = (not args.already_locked) or _record.lock_is_held()
+    backfill = bool(getattr(args, "backfill_asks", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    lock_ok = (not args.already_locked) or _record.lock_is_held()
+    can_write = lock_ok and not dry_run
     by_tag = "reconcile-ats" if can_write else "reconcile-ats-plan"
     scratch = _ats_scratch_dir(ROOT)
 
@@ -872,12 +939,46 @@ def cmd_ats(args):
         if hdr is None:
             return
         frm = decode_header_value(hdr.get("From")) or ""
-        from_addr = parseaddr(frm)[1]
+        display_name, from_addr = parseaddr(frm)
         from_domain = from_addr.rsplit("@", 1)[-1].strip().lower() if "@" in from_addr else ""
-        ok_class, _leg = identify_sender_class(from_domain, configured_domains, derived_domains)
-        if not ok_class:
-            return
         subject = decode_header_value(hdr.get("Subject")) or ""
+        ok_class, _leg = identify_sender_class(from_domain, configured_domains, derived_domains)
+
+        if not ok_class:
+            # §3.1's identification-uncertain case (dev #376 item 1) — a domain in NEITHER
+            # leg that (a) hits a status_phrases entry AND (b) names a live application's
+            # company in its DISPLAY NAME or DOMAIN (never subject/body — that is §3.2's
+            # resolution evidence, not §3.1's identification evidence) gets an
+            # `ask-ats-unidentified-*` finding. It never resolves, never writes a status,
+            # never enters messages.jsonl (design table §4.4).
+            body = ""
+            full = mb.fetch_full(uid)
+            if full is not None:
+                body = body_text(full, limit=8000) or ""
+            mail_date = parse_hdr_date(decode_header_value(hdr.get("Date")))
+            mail_date_iso = mail_date.isoformat() if mail_date else run_date
+            status_hit, status_ambig = classify_status_phrase(
+                ("%s\n%s" % (subject, body)).lower(), status_phrases)
+            if status_hit is None and not status_ambig:
+                return
+            cid = unidentified_finding_company(display_name, from_domain, live_apps,
+                                               companies_map)
+            if cid is None:
+                return
+            company_name = companies_map.get(cid, cid)
+            if not can_write:
+                plan_lines.append("  would ask (unidentified sender): %s / %s (%s)"
+                                 % (from_domain, subject[:60], company_name))
+                return
+            _aid, was_withheld = write_or_extend_ask(
+                "unidentified", from_domain, subject, mail_date_iso, tag,
+                already_locked=args.already_locked, opp_id=None, trigger_ref=None,
+                asks_by_id=asks_by_id, cap=max_asks, created_counter=asks_created,
+                company_name=company_name)
+            if was_withheld:
+                withheld[0] += 1
+            return
+
         body = ""
         full = mb.fetch_full(uid)
         if full is not None:
@@ -923,7 +1024,8 @@ def cmd_ats(args):
             if status is None or ambiguous:
                 if historical:
                     history_counts["unresolved"] += 1
-                    return
+                    if not backfill:
+                        return
                 mid, wrote_ok, _out = _write_msg(opp_id=opp_id, resolves=result.app_id,
                                                  resolved_by=result.tier)
                 if can_write and not wrote_ok:
@@ -939,7 +1041,8 @@ def cmd_ats(args):
             if not apply_it:
                 if historical:
                     history_counts["unresolved"] += 1
-                    return
+                    if not backfill:
+                        return
                 mid, wrote_ok, _out = _write_msg(opp_id=opp_id, resolves=result.app_id,
                                                  resolved_by=result.tier)
                 if not can_write:
@@ -1004,7 +1107,8 @@ def cmd_ats(args):
         anchor_opp = next(iter(candidate_opps)) if len(candidate_opps) == 1 else None
         if historical:
             history_counts["unresolved"] += 1
-            return
+            if not backfill:
+                return
         mid = None
         if anchor_opp and can_write:
             mid, wrote_ok, _out = _write_msg(opp_id=anchor_opp)
@@ -1055,15 +1159,17 @@ def cmd_ats(args):
 
     print("ATS STATUS SWEEP — reconcile.py --ats (design-inbound-resolution.md)")
     print("=" * 78)
-    print("  posture: ats.parsed_status=%s · ats.max_asks_per_run=%d"
-         % (parsed_status, max_asks))
+    print("  posture: ats.parsed_status=%s · ats.max_asks_per_run=%d%s"
+         % (parsed_status, max_asks, " · --backfill-asks" if backfill else ""))
     for line in plan_lines:
         print(line)
     if history_counts["total"]:
+        tail = ("not asked; --backfill-asks writes them under the cap" if not backfill
+               else "backfilled this run under the cap")
         print("  %d historical ATS message(s): %d applied, %d already recorded, %d "
-             "unresolved (not asked; --backfill-asks writes them under the cap)"
+             "unresolved (%s)"
              % (history_counts["total"], history_counts["applied"],
-                history_counts["recorded"], history_counts["unresolved"]))
+                history_counts["recorded"], history_counts["unresolved"], tail))
     print("  applied: %d · proposed: %d · asks created: %d · withheld this run: %d"
          % (applied[0], proposed[0], asks_created[0], withheld[0]))
     if withheld[0]:
@@ -1073,9 +1179,12 @@ def cmd_ats(args):
         print("!! INCOMPLETE COVERAGE: %s" % ", ".join(sorted(set(incomplete_all))))
 
     if not can_write:
-        print("WRITE PHASE SKIPPED — the run lock is not held. Plan only; every store is "
-             "byte-identical to before this run. Re-run under the daily's write phase, or "
-             "take the lock by hand, to actually apply this plan.")
+        if dry_run:
+            print("DRY RUN — plan only; every store is byte-identical to before this run.")
+        else:
+            print("WRITE PHASE SKIPPED — the run lock is not held. Plan only; every store is "
+                 "byte-identical to before this run. Re-run under the daily's write phase, or "
+                 "take the lock by hand, to actually apply this plan.")
         return 2
     return 1 if incomplete_all else 0
 
@@ -1181,6 +1290,14 @@ def main():
     ap.add_argument("--as-of", dest="as_of", default=None,
                     help="ISO date (YYYY-MM-DD) this run's own provenance stamps use — "
                          "default: today. Test seam; a real run never needs this.")
+    ap.add_argument("--backfill-asks", action="store_true",
+                    help="--ats: write the historical unresolved/proposed candidates the "
+                         "first-run history branch (design §5, decision 5) normally only "
+                         "counts, under the per-run cap. A hand flag — never invoked from a "
+                         "skill.")
+    ap.add_argument("--dry-run", action="store_true",
+                    help="--ats --backfill-asks: print the plan without writing anything; "
+                         "every store stays byte-identical to before the run.")
     args = ap.parse_args()
     if args.as_of and not re.match(r"^\d{4}-\d{2}-\d{2}$", args.as_of):
         print("⛔ REFUSED — --as-of must be an ISO date (YYYY-MM-DD), got %r" % args.as_of)

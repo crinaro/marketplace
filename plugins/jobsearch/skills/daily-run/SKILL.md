@@ -585,13 +585,21 @@ to zero.**
 Then **grep the OUTPUT** (`views/dashboard_artifact.html` — sendable message and letter bodies
 render on the ONE page since the 2026-08-29 collapse) for a distinctive phrase from what you added.
 
-**Two pages publish every round since 0.39.0 (ADR-028):** the dashboard, and
+**Two pages CAN publish each round since 0.39.0 (ADR-028):** the dashboard, and
 `views/presence_set.html` — the presence working set (claim union, one tab per active variant,
 open items, standing rules), to the URL in `views/presence_set_url.txt`. Same create-if-absent
 rule on first publish (write that url file in the same step; `check_dashboard_fresh.py
 --publish-state` names it as *first publish pending*), same recover-never-mint rule on
 `url-missing`. It publishes on a zero-variant profile exactly as on five — its existence never
-depends on the data. One `--stamp-published` covers both.
+depends on the data.
+
+**⭐ Check `check_dashboard_fresh.py --publish-state` before publishing either page (public
+#107 §4.1): publish each page whose verdict is not `unchanged — skip`; never read a page you
+are not publishing.** The presence page changes only when a presence file does, so on most
+rounds it is byte-identical to its own stamp — the check names it `unchanged — skip`, and that
+round it is neither opened nor republished, saving the read and the publish for nothing. One
+`--stamp-published` still covers every published page in one call — it stays unconditional, so
+a page you skipped has its existing stamp simply re-affirmed, not left stale.
 **Verifying the source file is not verifying the deliverable** — a body that fails to render is
 indistinguishable from one never written. Publish with the Artifact tool: **ONE artifact, every
 round** — `views/dashboard_artifact.html`, to the URL in `views/dashboard_artifact_url.txt` (the

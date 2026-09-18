@@ -297,8 +297,8 @@ history is permanent. Full protocol: `marketplace-dev/docs/intake.md`.
 ~/.claude/jobsearch/run check_dashboard_fresh.py --fix
 ```
 
-Then publish with the **Artifact** tool — **ONE artifact, every round** (the 2026-08-29 collapse:
-the router and phase pages are retired): `views/dashboard_artifact.html`, redeployed to the URL in
+Then publish with the **Artifact** tool — **ONE artifact** (the 2026-08-29 collapse: the router
+and phase pages are retired): `views/dashboard_artifact.html`, redeployed to the URL in
 `views/dashboard_artifact_url.txt`. **Check `check_dashboard_fresh.py --publish-state` first — the
 url file's absence means two different things, and only one of them is "create":**
 
@@ -312,16 +312,23 @@ url file's absence means two different things, and only one of them is "create":
 Then **grep the OUTPUT** (`views/dashboard_artifact.html` — sendable bodies render on the one
 page) for a distinctive phrase from whatever you just added.
 
-**And the SECOND artifact, every round (ADR-028, 0.39.0): `views/presence_set.html`** — the
-presence working set: the claim union, one tab per active declared variant, the open items, the
-standing rules (`presence/rules.md`). The same `--fix` regenerates it. Publish it to the URL in
+**And the SECOND page (ADR-028, 0.39.0): `views/presence_set.html`** — the presence working set:
+the claim union, one tab per active declared variant, the open items, the standing rules
+(`presence/rules.md`). The same `--fix` regenerates it. Publish it to the URL in
 `views/presence_set_url.txt` under the same two rules: `--publish-state` naming it as *first
 publish pending* (no stamp, no url file) means create the artifact and write that url file in
 the same step; `url-missing` means RECOVER via the Artifact tool's `list` action, never mint a
 new one. It publishes on a profile with zero variants exactly as on five — never skip it because
 "nothing is declared". Then `~/.claude/jobsearch/run presence_set.py --check` (the round trip:
 every source paragraph must be in the rendered pane) and grep ITS output for a phrase from any
-presence file you touched. One `--stamp-published` covers both pages.
+presence file you touched.
+
+**⭐ Check `--publish-state` before publishing either page (public #107 §4.1): publish each page
+whose verdict is not `unchanged — skip`; never read a page you are not publishing.** The presence
+page changes only when a presence file does, so most rounds it is byte-identical to its own
+stamp — that round it is neither opened nor republished. One `--stamp-published` still covers
+every published page in one call — it stays unconditional, so a page you skipped has its
+existing stamp simply re-affirmed.
 
 **Drain pending stubs while you hold the tool.** If `~/.claude/jobsearch/run pending_stubs.py
 --check` reports rows, each is a RETIRED page URL still serving its last snapshot. **Read the

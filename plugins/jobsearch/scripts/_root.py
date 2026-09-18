@@ -59,6 +59,7 @@ a subdirectory, the way git does.
 """
 
 import os
+import sys
 
 MARKERS = ("config.json", "data")
 
@@ -148,9 +149,37 @@ def is_disposable_profile(path):
     return is_tracked_fixture(path) or any(marker in p for marker in _TEMP_MARKERS)
 
 
+# ⭐⭐ dev #394 — trap 10 wave one, PREVENTION half. `profile_root()`'s dev #259 fix closed the
+# READ side: a maintainer checkout never CONSULTS the remembered pointer. It left this function,
+# the WRITE side, ungated — and a checkout with `CLAUDESEARCH_ROOT` set explicitly (the one
+# sanctioned way to point at real data, e.g. `env CLAUDESEARCH_ROOT=<tmp> python3 migrate.py
+# --check` from a worktree) still WROTE that path into the OWNER'S REAL
+# `~/.claude/jobsearch/profile_root` — observed for real: it rewrote the pointer to name a
+# worktree's own `scripts/` directory, and a concurrent dispatch's `check_no_home_mutation.py`
+# run then watched the WRONG profile because of it (dev #313's false HOME-MUTATION flag).
+# Printed once per process, not silent, so a run that declines is not silently different from
+# one that succeeded — the same "loud, not silent" discipline `_diag.py` states for itself.
+_DECLINED_REMEMBER_ONCE = False
+
+
 def _remember(path):
-    """Record a resolved profile. Best-effort and silent: never break a run over a cache."""
+    """Record a resolved profile. Best-effort and silent: never break a run over a cache.
+
+    ⭐⭐ dev #394 — a no-op, unconditionally, when the running copy is not an installed engine.
+    The remembered pointer exists for exactly one documented reason (dev #87): a real MCP
+    server has neither `CLAUDESEARCH_ROOT` nor a meaningful cwd, and the pointer is all it has.
+    A maintainer CHECKOUT is never that caller — this repo's own rulebook is explicit that the
+    owner's real job search never runs from here — so it has no business RECORDING anything on
+    the owner's machine either, the write-side twin of `profile_root()`'s dev #259 read-side gate.
+    """
+    global _DECLINED_REMEMBER_ONCE
     try:
+        if not is_installed_engine(engine_root()):
+            if not _DECLINED_REMEMBER_ONCE:
+                _DECLINED_REMEMBER_ONCE = True
+                print("jobsearch: maintainer checkout — not remembering %s" % path,
+                      file=sys.stderr)
+            return
         if not looks_like_profile(path):
             return
         if is_disposable_profile(path):
@@ -189,6 +218,34 @@ STATE_DIRNAME = ".jobsearch"
 _HOME_STATE = os.path.join(os.path.expanduser("~"), ".claude", "jobsearch")
 
 
+# ⭐⭐ dev #394 — where a MAINTAINER CHECKOUT's own machine-level diagnostics land when nothing
+# legitimate names the real machine and no explicit override is set. `_HOME_STATE` above (the
+# real machine's `~/.claude/jobsearch`) is legitimate ONLY for an installed copy: a real MCP
+# server genuinely has no other place to put machine-level events when no profile resolves at all
+# (dev #151's own reasoning). A checkout has nothing legitimate to say about the owner's machine
+# in that same situation, so it gets a scratch directory instead — fixed under `TMPDIR` so it is
+# disposable by construction, the same reasoning `is_disposable_profile` already applies to a
+# resolved profile, applied here to where a checkout's OWN machine-level writes go.
+#
+# ⭐ DELIBERATELY NOT WIRED INTO `state_root()` ITSELF. An earlier version of this fix redirected
+# `state_root()`'s own `_HOME_STATE` fallback whenever the running copy is a checkout — which is
+# the architecturally cleaner place for it, since every caller (`_diag.py`, `drift_guard.py`,
+# `migrate.py`'s drift marker) would inherit the gate for free. It was reverted before landing:
+# `state_root()`'s $HOME fallback is also the regression suite's own standard isolation idiom —
+# `TestStateHomeMigration.test_state_root_prefers_the_profile_and_falls_back_to_home` and
+# `TestDriftGuardRulebookRefreshFlagOwnership` both deliberately redirect `HOME` to a throwaway
+# directory and then assert the fallback lands exactly there, run from THIS checkout — gating on
+# `is_installed_engine(engine_root())` would have redirected those runs to the checkout scratch
+# dir instead and broken both, for a scenario (`HOME` already redirected by the caller) that is
+# not the incident this fix is for. `_diag.py`'s `_default_log()`/`_default_machine_log()` apply
+# this same helper themselves instead, narrowly, only when `state_root()` actually returned
+# `_HOME_STATE` unchanged — see that module's own docstring for the reasoning and for
+# `drift_guard.py`'s write site, which is NOT gated by this fix (stated, not silently dropped).
+def checkout_scratch_dir(*parts):
+    import tempfile
+    return os.path.join(tempfile.gettempdir(), "jobsearch-checkout-diag", *parts)
+
+
 def state_root(start=None):
     """Where per-profile engine STATE lives: `<profile>/.jobsearch` when a genuine profile is
     resolvable, else the machine-global `~/.claude/jobsearch` fallback.
@@ -201,7 +258,11 @@ def state_root(start=None):
     A disposable resolution (test fixture, temp tree) must never grow a state directory —
     `is_disposable_profile` already encodes that judgement — so those fall back to $HOME, which
     the test suite redirects. Events from a context with NO resolvable profile also land in the
-    $HOME fallback: they are machine state, not any profile's."""
+    $HOME fallback: they are machine state, not any profile's.
+
+    ⚠️ This fallback is $HOME-obedient regardless of checkout-vs-installed — see
+    `checkout_scratch_dir()`'s own comment just above for why that is deliberate here, and where
+    the dev #394 checkout gate for THIS fallback actually lives instead (`_diag.py`, narrowly)."""
     root = profile_root(start)
     if looks_like_profile(root) and not is_disposable_profile(root):
         return os.path.join(root, STATE_DIRNAME)
@@ -243,19 +304,24 @@ def profile_root(start=None):
     the fixture's `user.json` produces non-empty (synthetic) terms, so the gate would report
     CHECKED against fixture-only tokens that can never appear in engine source — a vacuous CLEAN,
     exactly the "missing thing reads as an empty thing and gets reported as fact" trap this
-    marketplace's own rulebook names. `publish.py`'s own preflight calls that script unpinned BY
-    DEFAULT (see its own comment there) and relies on it landing on nothing when no real profile
-    is bound; a maintainer who actually needs the gate to run against real data passes
-    `publish.py --real-profile PATH`, which threads through `run_shipped.py`'s sanctioned opt-in
-    rather than ever substituting the fixture. Fixed before landing, not shipped and then patched.
+    marketplace's own rulebook names. Fixed before landing, not shipped and then patched.
 
-    The one supported way to reach a REAL profile from a checkout is still what it always was —
-    set `CLAUDESEARCH_ROOT` explicitly (the first branch below, untouched) — because naming the
-    path is the one form of "opt in" that cannot happen by accident. `scripts/run_shipped.py` at
-    the marketplace root is the sanctioned wrapper for routine use: it sets that explicitly by
-    default (pointed at the tracked fixture, so a wrapped run still gets useful synthetic data to
-    work against) and only points it at a real profile when a caller passes `--real-profile` with
-    a stated reason.
+    ⭐ dev #411 — the rationale above still holds; the mechanism that keeps it honest changed.
+    `--require-profile` and `--real-profile` are both retired (exit 2, naming dev #411) on every
+    script that carried them (`check_engine_purity.py`, `publish.py`, `run_shipped.py`) — there
+    is no longer a flag that threads a real profile through to this gate from a checkout at all.
+    The fixture is still not substituted for a missing profile, and the reason is now simpler:
+    the TERM half of purity (does an engine file carry this user's data) no longer runs from a
+    checkout under any path. It runs once per install, on the user's own machine, at
+    SessionStart (`check_engine_purity.hook_step()`, the last envelope of `migrate.py --hook`)
+    against that machine's own real profile — never against a path this repo names. From a
+    checkout, `check_engine_purity.py --structure-only` (file coverage only, no terms, never
+    prints CLEAN) is what `publish.py`'s preflight and CI run instead. The one supported way to
+    name a real profile at all is still `CLAUDESEARCH_ROOT` set explicitly (the first branch
+    below, untouched) — for a maintainer who needs the resolution chain itself, not the retired
+    purity flags. `scripts/run_shipped.py` remains the sanctioned wrapper for an ad hoc shipped-
+    script run from this checkout; it pins the tracked fixture and a scratch `HOME` by default
+    and has no opt-in to a real profile any more.
 
     Nothing about the INSTALLED-copy path changes: `is_installed_engine(engine_root())` is True
     for any script physically running from the plugin cache, so a real MCP server's fallback is

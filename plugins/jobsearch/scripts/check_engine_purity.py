@@ -50,16 +50,20 @@ Python 3.9+. Standard library only.
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import (engine_root as _engine_root, profile_root as _profile_root,
-                    is_tracked_fixture as _is_tracked_fixture)
+                    is_tracked_fixture as _is_tracked_fixture,
+                    is_installed_engine as _is_installed_engine,
+                    looks_like_profile as _looks_like_profile)
 
 # ⭐⭐ TWO ROOTS, AND CONFLATING THEM IS TRAP #2 IN THE MARKETPLACE RULEBOOK.
 #
@@ -304,28 +308,51 @@ def _is_ordinary_word(term):
     return bool(term) and " " not in term and term.lower() in STOPWORDS
 
 
-def _profile_terms():
+def _profile_terms(root=None):
     """The names to look for come FROM the profile — never hard-coded here, or this script
-    becomes the very thing it is checking for."""
+    becomes the very thing it is checking for. `root` lets a caller (hook_step()) point this at
+    an arbitrary profile dir rather than the module-level ROOT (dev #411)."""
+    root = root or ROOT
     terms = {}
     try:
-        with open(os.path.join(ROOT, "user.json"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "user.json"), encoding="utf-8") as fh:
             u = json.load(fh)
         ident = u.get("identity", {})
         for k in ("full_name", "name", "preferred_reference"):
             if ident.get(k):
                 for part in re.split(r"\s+", str(ident[k])):
                     part = part.strip(".,")
-                    if len(part) > 2 and not _is_ordinary_word(part):
+                    # dev #411 T1 — a single-token name part under 4 characters is dropped.
+                    # `Max` fired 272 times and `Los`/`De` (particles of a multi-word name)
+                    # fired dozens more on a synthetic reviewer profile; the floor moved from
+                    # >2 to >=4 rather than trying to special-case particles by language.
+                    if len(part) >= 4 and not _is_ordinary_word(part):
                         terms.setdefault("name", set()).add(part)
-        for m in (u.get("mailboxes") or {}).values() if isinstance(u.get("mailboxes"), dict) \
-                else (u.get("mailboxes") or []):
-            if isinstance(m, str) and "@" in m:
-                terms.setdefault("mailbox", set()).add(m.split("@")[1].split(".")[0])
+        # dev #411 T4 — the mailbox term is READ FROM A DICT ENTRY, never derived from a
+        # public provider's host. `user.json` stores `mailboxes` as dicts with `address`
+        # today; the legacy string shape (still handled) yields the address itself. Before
+        # this fix `isinstance(m, str)` derived nothing for the current dict shape, and the
+        # legacy string branch derived the PROVIDER HOST (`gmail`), which fired 159 times on
+        # the engine's own `gmail-multi` connector name — a public provider list is engine-safe
+        # by definition; a user's own address is the leak shape, never the host it uses.
+        mailboxes = u.get("mailboxes")
+        entries = mailboxes.values() if isinstance(mailboxes, dict) else (mailboxes or [])
+        for m in entries:
+            addr = None
+            if isinstance(m, dict):
+                addr = m.get("address")
+            elif isinstance(m, str) and "@" in m:
+                addr = m
+            if addr and "@" in str(addr):
+                addr = str(addr)
+                terms.setdefault("mailbox", set()).add(addr)
+                local = addr.split("@")[0]
+                if len(local) >= 4 and not _is_ordinary_word(local):
+                    terms.setdefault("mailbox", set()).add(local)
     except Exception:
         pass
     try:
-        with open(os.path.join(ROOT, "config.json"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
             c = json.load(fh)
         er = (c.get("positioning") or {}).get("employer_recognition") or {}
         for e in (er.get("recognizable") or []) + (er.get("niche_needs_context") or []):
@@ -343,9 +370,12 @@ def _profile_terms():
             for tok in re.split(r"[,/()]| and |\s{2,}", v):
                 tok = tok.strip()
                 # a place name: capitalised, not a sentence, not a bare state code
+                # dev #411 T1 — a single-token geo term under 4 characters is dropped, same
+                # floor and same reasoning as the name floor just above.
                 if (2 < len(tok) < 30 and tok[0].isupper() and tok.count(" ") <= 2
                         and not tok.endswith(".") and tok.upper() != tok
-                        and not _is_ordinary_word(tok)):
+                        and not _is_ordinary_word(tok)
+                        and (tok.count(" ") > 0 or len(tok) >= 4)):
                     terms.setdefault("geo", set()).add(tok)
     except Exception:
         pass
@@ -373,7 +403,7 @@ def _profile_terms():
     # a gate that cries wolf is a gate somebody switches off.
     platforms = set()
     try:
-        with open(os.path.join(ROOT, "data", "channels.jsonl"), encoding="utf-8") as fh:
+        with open(os.path.join(root, "data", "channels.jsonl"), encoding="utf-8") as fh:
             for line in fh:
                 line = line.strip()
                 if not line:
@@ -461,7 +491,7 @@ def _profile_terms():
 
     def rows(rel):
         try:
-            with open(os.path.join(ROOT, "data", rel), encoding="utf-8") as fh:
+            with open(os.path.join(root, "data", rel), encoding="utf-8") as fh:
                 for line in fh:
                     line = line.strip()
                     if not line:
@@ -660,10 +690,24 @@ def scan(path, terms, exempt_sink=None):
                     # own join test meaningful: it reuses the exact same neighbour-character
                     # definition to tell "joined" from "unjoined". Loosen one without the other
                     # and the two stop agreeing on what a boundary is.
-                    for m in re.finditer(r"(?<![A-Za-z0-9])%s(?![A-Za-z0-9])" % re.escape(w),
+                    # dev #411 T5 — Unicode-aware boundary: `(?<![^\W_])...(?![^\W_])` treats
+                    # any Unicode letter/digit as a boundary-breaking neighbour (not just
+                    # A-Za-z0-9), so `Über` cannot match inside `Überprüfung`, while `_` stays
+                    # a separator (matches `[^\W_]`'s own exclusion) so dev #45's joined-
+                    # identifier shape keeps firing. Same character class `_shape_exempt()`'s
+                    # own join test already uses via `str.isalnum()` (Unicode-aware itself), so
+                    # the two stay in agreement about what a boundary is.
+                    for m in re.finditer(r"(?<![^\W_])%s(?![^\W_])" % re.escape(w),
                                          line, re.IGNORECASE):
                         if any(s <= m.start() and m.end() <= e for s, e in allowed):
                             continue      # inside the published publisher identity
+                        # dev #411 T2 — a single-token term under 6 characters must match in
+                        # Title-case or UPPER to fire; a lowercase/mixed occurrence (e.g. `max`
+                        # mid-sentence) no longer counts as a hit, for ANY kind including
+                        # `name` (unlike `_shape_exempt()`, which leaves `name` strict).
+                        text = m.group(0)
+                        if len(w) < 6 and " " not in w and not (text.istitle() or text.isupper()):
+                            continue
                         if _shape_exempt(kind, w, m, line):
                             if exempt_sink is not None:
                                 exempt_sink.append((n, kind, w, line.strip()[:110]))
@@ -673,15 +717,496 @@ def scan(path, terms, exempt_sink=None):
     return rel, hits
 
 
+# ══════════════════════════════════════════════════════════════════════════════════════════
+# dev #411 — hook_step(): the INSTALL-SIDE caller. One scanner (scan()/_profile_terms() above),
+# three callers (this hook, the CLI below, and the differential plant in
+# scripts/check_shipped_package.py::run_purity_plant()). See
+# plugins/jobsearch/docs/design-purity-at-startup.md §2 for the full design; this is a scoped
+# build of it (§5.3's build order note in the design; residuals are named in the build's own
+# hand-back, not hidden here).
+# ══════════════════════════════════════════════════════════════════════════════════════════
+
+# §2.3 — what the term set is derived FROM. `_profile_terms()` MUST iterate exactly this list
+# (§6 Q7) so the key (below) and the reader can never drift apart.
+TERM_SOURCES = ("user.json", "config.json",
+                os.path.join("data", "channels.jsonl"),
+                os.path.join("data", "companies.jsonl"),
+                os.path.join("data", "messages.jsonl"),
+                os.path.join("data", "people.jsonl"))
+
+STAMP_REL = os.path.join(".jobsearch", "purity-check.json")
+
+# §2.4 T3 — a term whose hits span this many distinct files or more is folded into one
+# "pervasive" line instead of one line per hit. Threshold and its measurement travel together
+# (design §2.4 T3): `Target`/`Reading`/`Mobile` on a hostile synthetic profile produced
+# 316/246/32 hits respectively; a real employer leak is a handful of files, not dozens.
+PERVASIVE_FILE_THRESHOLD = 6
+
+ASK_ID = "system-engine-purity"
+
+
+def _sha256_text(s):
+    return hashlib.sha256((s or "").encode("utf-8", "replace")).hexdigest()
+
+
+def _now_iso():
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _read_json(path):
+    try:
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return None
+
+
+def _write_json_atomic(path, obj):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump(obj, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+
+
+def _term_sources_stat(profile):
+    out = {}
+    for rel in TERM_SOURCES:
+        p = os.path.join(profile, rel)
+        try:
+            st = os.stat(p)
+            out[rel] = [st.st_mtime_ns, st.st_size]
+        except OSError:
+            out[rel] = None
+    return out
+
+
+def _terms_hash(terms):
+    blob = json.dumps({k: sorted(v) for k, v in terms.items()}, sort_keys=True)
+    return _sha256_text(blob)
+
+
+def _engine_files_for(engine):
+    """Every readable tracked engine file under `engine` — mirrors `_tracked_engine_files()`
+    but against an arbitrary engine root, so the hook can run against the installed copy
+    (`engine` param) rather than only the module-level ENGINE_ROOT."""
+    try:
+        out = subprocess.run(["git", "-C", engine, "ls-files"],
+                             capture_output=True, text=True, timeout=60)
+        if out.returncode == 0 and out.stdout.strip():
+            return sorted(os.path.join(engine, p) for p in out.stdout.split("\n") if p.strip())
+    except (OSError, subprocess.SubprocessError):
+        pass
+    found = []
+    for dirpath, dirnames, filenames in os.walk(engine):
+        dirnames[:] = [d for d in dirnames if d not in (".git", "__pycache__")]
+        found += [os.path.join(dirpath, f) for f in filenames if not f.endswith(".pyc")]
+    return sorted(found)
+
+
+def _engine_version_of(engine):
+    try:
+        with open(os.path.join(engine, ".claude-plugin", "plugin.json"), encoding="utf-8") as fh:
+            return json.load(fh).get("version") or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def _pervasive_fold(hits, terms, threshold=PERVASIVE_FILE_THRESHOLD):
+    """§2.4 T3 — hits: list of dicts with path/line/kind/term/text_sha256. Returns
+    (kept, pervasive) where `pervasive` never names the term — only a stable per-kind index
+    into the SORTED term list, so the fold can be reported without ever printing the term."""
+    by_term = {}
+    for h in hits:
+        by_term.setdefault((h["kind"], h["term"]), []).append(h)
+    kept, pervasive = [], []
+    for (kind, term), group in sorted(by_term.items()):
+        files = {h["path"] for h in group}
+        if len(files) >= threshold:
+            index = sorted(terms.get(kind, [])).index(term) if term in terms.get(kind, []) else -1
+            pervasive.append({"kind": kind, "term_index": index,
+                              "files": len(files), "lines": len(group)})
+        else:
+            kept.extend(group)
+    return kept, sorted(pervasive, key=lambda p: -p["lines"])[:5]
+
+
+def _write_purity_ask(profile, engine_version, open_hits, pervasive):
+    """§2.5(b) — one `asks.jsonl` row, kind=system, stable id, replace-by-id, re-run safe. The
+    ask text names path:line:kind — NEVER the term."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import _atomic
+        asks_path = os.path.join(profile, "data", "asks.jsonl")
+        asks = []
+        if os.path.exists(asks_path):
+            with open(asks_path, encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if line:
+                        asks.append(json.loads(line))
+        lines_txt = []
+        for h in open_hits[:20]:
+            lines_txt.append("    %s:%s  [%s]" % (h["path"], h["line"], h["kind"]))
+        remainder = len(open_hits) - 20
+        if remainder > 0:
+            lines_txt.append("    ... and %d more" % remainder)
+        for p in pervasive:
+            lines_txt.append("    [%s] term #%d matches %d line(s) in %d file(s) — a common "
+                             "word, most likely; dismiss or report as one"
+                             % (p["kind"], p["term_index"], p["lines"], p["files"]))
+        body = ("%d engine file(s) contain text matching your profile (jobsearch %s). The "
+               "engine must be portable. Nothing below is your data itself — only where a "
+               "match sits:\n%s\nDecide, then resolve this ask with ONE word as the "
+               "resolution:\n    report       the next session start files the file:line list "
+               "and the engine version to the public tracker — never the matched text — from a "
+               "machine that has `gh`\n    not-my-data  these lines stay quiet until the engine "
+               "changes"
+               % (len(open_hits) + len(pervasive), engine_version, "\n".join(lines_txt)))
+        row = {"id": ASK_ID, "kind": "system",
+              "title": "%d engine line(s) match your profile data" % (len(open_hits) + len(pervasive)),
+              "ask": body, "created": _now_iso()[:10], "act_by": None, "opp_id": None,
+              "channel_id": None, "resolves_when": None, "resolved_on": None,
+              "resolution": None, "trigger_kind": None, "trigger_ref": None, "note": None}
+        # Preserve a prior open row's resolution fields ONLY when this hit set is unchanged —
+        # a genuinely new scan replaces the row fresh, exactly as system-application-endings does.
+        new_asks = [a for a in asks if a.get("id") != ASK_ID] + [row]
+        _atomic.write_jsonl(asks_path, new_asks)
+    except Exception:
+        pass                                      # dev #411 §2.2 — housekeeping never blocks
+
+
+def _resolve_purity_ask(profile, engine_version):
+    """§2.5 decision table — read the ask's own `resolution` field (no shape change) and act:
+    `not-my-data` → dismiss every currently-open hit into the stamp; `report` → (best-effort,
+    scoped) attempted only when `gh` is on PATH, else deferred; anything unreadable is re-raised
+    LOUD. Returns True if it changed the stamp/ask (so the caller can re-read before reporting)."""
+    try:
+        asks_path = os.path.join(profile, "data", "asks.jsonl")
+        if not os.path.exists(asks_path):
+            return False
+        asks = []
+        with open(asks_path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    asks.append(json.loads(line))
+        row = next((a for a in asks if a.get("id") == ASK_ID), None)
+        if not row or not row.get("resolved_on"):
+            return False
+        resolution = (row.get("resolution") or "").strip()
+        stamp_path = os.path.join(profile, STAMP_REL)
+        stamp = _read_json(stamp_path) or {}
+        if not resolution:
+            try:
+                from _diag import log as _dlog
+                _dlog("purity", verdict="resolution-unreadable")
+            except Exception:
+                pass
+            return False
+        if resolution.split()[0] == "not-my-data" or resolution != "report":
+            dismissed = list(stamp.get("dismissed", []))
+            for h in stamp.get("hits", []):
+                key_row = dict(h, engine_version=engine_version)
+                if key_row not in dismissed:
+                    dismissed.append(key_row)
+            stamp["dismissed"] = dismissed
+            stamp["hits"] = []
+            stamp["pervasive"] = []
+            _write_json_atomic(stamp_path, stamp)
+            try:
+                from _diag import log as _dlog
+                _dlog("purity", verdict="dismissed", n=len(dismissed))
+            except Exception:
+                pass
+            return True
+        # resolution == "report" — best-effort, scoped: only when `gh` is reachable.
+        import shutil as _shutil
+        if not _shutil.which("gh"):
+            stamp["report"] = {"decided": _now_iso(), "filed": None, "deferred_reason": "no-gh"}
+            _write_json_atomic(stamp_path, stamp)
+            try:
+                from _diag import log as _dlog
+                _dlog("purity", verdict="report-deferred", reason="no-gh")
+            except Exception:
+                pass
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def hook_step(profile, engine, budget_s=8, migrations_verdict="current"):
+    """The INSTALL-SIDE caller — `migrate.py --hook`'s seventh (last) envelope (design §2.1).
+    Every precondition (§2.2) is checked IN ORDER, each declining with a diag row and exit 0
+    semantics (this never raises past its own try). Returns (verdict, lines) — `lines` is
+    term-free stdout the caller may print.
+    """
+    def _decline(code, **extra):
+        try:
+            from _diag import log as _dlog
+            _dlog("purity", verdict=code, **extra)
+        except Exception:
+            pass
+        return code, []
+
+    try:
+        # §2.2 row 1
+        if migrations_verdict != "current":
+            return _decline("migrations-not-settled")
+        # §2.2 row 2 — a maintainer checkout never scans on its own initiative; the explicit
+        # env exception is what lets the plant (§3.3) and tests drive the hook path deliberately.
+        explicit_root = bool(os.environ.get("CLAUDESEARCH_ROOT"))
+        if not _is_installed_engine(engine) and not explicit_root:
+            return _decline("not-installed")
+        # §2.2 row 4 — `profile` must already have been resolved by the CALLER (never
+        # `_root.profile_root()` here) — no caller in this module ever calls that itself for
+        # the write side.
+        if not profile:
+            return _decline("no-profile")
+        # §2.2 row 3 — BEFORE row 5's profile-shape check, and before any write.
+        if _is_tracked_fixture(profile):
+            return _decline("tracked-fixture")
+        # §2.2 row 5
+        if not _looks_like_profile(profile):
+            return _decline("no-profile")
+        # §2.2 row 6 — the one measurable form of "state does not persist here".
+        state_dir = os.path.join(profile, ".jobsearch")
+        try:
+            os.makedirs(state_dir, exist_ok=True)
+            probe = os.path.join(state_dir, ".purity-write-probe")
+            with open(probe, "w", encoding="utf-8") as fh:
+                fh.write("x")
+            os.remove(probe)
+        except OSError:
+            return _decline("no-persistent-state")
+
+        terms = _profile_terms(profile)
+        # §2.2 row 7
+        if not terms:
+            return _decline("no-terms")
+
+        # §2.2 row 9 — never write under a user's own run.
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import runlock
+            if runlock.read() is not None:
+                return _decline("store-busy")
+        except Exception:
+            pass
+
+        engine_version = _engine_version_of(engine)
+
+        # §2.5 decision table — process a PENDING resolution on the ask row BEFORE the
+        # stamp-fast-path decision below, so a resolution the user made between sessions is
+        # acted on even on a session where nothing else about the engine or profile changed
+        # (the common case: the scan itself would otherwise short-circuit as "unchanged" and
+        # never look at the ask row again). Re-read the stamp AFTER this, since the resolution
+        # step may have just mutated it (dismissed hits, cleared verdict).
+        _resolve_purity_ask(profile, engine_version)
+
+        stamp_path = os.path.join(state_dir, "purity-check.json")
+        stamp = _read_json(stamp_path) or {}
+        engine_real = os.path.realpath(engine)
+        src_stat = _term_sources_stat(profile)
+        thash = _terms_hash(terms)
+
+        # §2.3 step 1 — the steady state.
+        if (stamp.get("engine_version") == engine_version and stamp.get("engine_root") == engine_real
+                and stamp.get("sources") == src_stat):
+            return _decline("unchanged")
+
+        # §2.3 step 2 — term set unchanged even though a source's stat moved.
+        if (stamp.get("terms_sha256") == thash and stamp.get("engine_version") == engine_version
+                and stamp.get("engine_root") == engine_real):
+            new_stamp = dict(stamp)
+            new_stamp["sources"] = src_stat
+            new_stamp["scanned_at"] = _now_iso()
+            _write_json_atomic(stamp_path, new_stamp)
+            return _decline("unchanged-terms")
+
+        # §2.3 step 3 — the scan itself, sliced under budget_s (best-effort: a whole-file pass
+        # is atomic here rather than mid-file, which keeps a hit's line count honest).
+        t0 = time.time()
+        files = _engine_files_for(engine)
+        hits_raw, resume_from, partial = [], None, False
+        for i, f in enumerate(files):
+            if time.time() - t0 > budget_s:
+                resume_from, partial = i, True
+                break
+            rel, hs = scan(f, terms)
+            if hs is None:
+                continue
+            for n, kind, w, _line in hs:
+                snippet_line = ""
+                try:
+                    with open(f, encoding="utf-8") as fh:
+                        snippet_line = fh.readlines()[n - 1]
+                except Exception:
+                    pass
+                hits_raw.append({"path": rel, "line": n, "kind": kind, "term": w,
+                                 "text_sha256": _sha256_text(snippet_line)})
+
+        kept, pervasive = _pervasive_fold(hits_raw, terms)
+
+        dismissed = stamp.get("dismissed", [])
+        dismissed_keys = {(d.get("path"), d.get("line"), d.get("kind"), d.get("text_sha256"))
+                          for d in dismissed}
+        open_hits_internal = [h for h in kept
+                    if (h["path"], h["line"], h["kind"], h["text_sha256"]) not in dismissed_keys]
+        # dev #411 §2.3/§2.5 — the TERM ITSELF is written NOWHERE past this point: not in the
+        # stamp, not in --json, not in the ask, not on stdout. `open_hits_internal` (which still
+        # carries `term`, used only for the pervasive fold and dismissal keying above) never
+        # escapes this function; everything downstream uses this stripped shape.
+        open_hits = [{"path": h["path"], "line": h["line"], "kind": h["kind"],
+                     "text_sha256": h["text_sha256"]} for h in open_hits_internal]
+
+        if partial:
+            verdict = "partial"
+        elif open_hits or pervasive:
+            verdict = "hit"
+        else:
+            verdict = "clean"
+
+        new_stamp = {
+            "engine_version": engine_version, "engine_root": engine_real, "sources": src_stat,
+            "terms_sha256": thash, "scanned_at": _now_iso(),
+            "files_total": len(files), "files_scanned": len(files) - (1 if partial else 0),
+            "resume_from": resume_from, "verdict": verdict, "hits": open_hits,
+            "pervasive": pervasive, "dismissed": dismissed, "report": stamp.get("report"),
+        }
+        _write_json_atomic(stamp_path, new_stamp)
+
+        lines = []
+        if verdict == "hit":
+            _write_purity_ask(profile, engine_version, open_hits, pervasive)
+            lines.append("jobsearch: %d engine line(s) match your profile data — see Your "
+                         "Move › System & tooling." % (len(open_hits) + len(pervasive)))
+        elif verdict == "partial":
+            lines.append("jobsearch: purity scan incomplete (%d of %d engine files) — resumes "
+                         "next session where this profile's state persists"
+                         % (resume_from or 0, len(files)))
+
+        try:
+            from _diag import log as _dlog
+            _dlog("purity", verdict=verdict, files=len(files), hits=len(open_hits),
+                 pervasive=len(pervasive), partial=partial,
+                 kinds=",".join(sorted(terms.keys())))
+        except Exception:
+            pass
+
+        return verdict, lines
+    except Exception as e:                        # noqa: BLE001 — housekeeping must never block
+        try:
+            from _diag import log as _dlog
+            _dlog("purity", verdict="error", reason=type(e).__name__)
+        except Exception:
+            pass
+        return "error", []
+
+
+def _profile_from_env_or_cwd():
+    """dev #411 §2.2 row 4 / #51 — the `--hook` CLI's own profile resolution: EXPLICIT
+    `CLAUDESEARCH_ROOT`, or a plain cwd walk. Deliberately never `_root.profile_root()` — that
+    function's remembered-pointer fallback (even though gated to installed copies only) is not
+    a resolution this design ever wants for the hook path; see the design's #51 disposition."""
+    env = os.environ.get("CLAUDESEARCH_ROOT")
+    if env:
+        return os.path.abspath(env)
+    cur = os.path.abspath(os.getcwd())
+    while True:
+        if _looks_like_profile(cur):
+            return cur
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def _run_hook_cli(args):
+    engine = ENGINE_ROOT
+    profile = _profile_from_env_or_cwd()
+    verdict, lines = hook_step(profile, engine, budget_s=8, migrations_verdict="current")
+    if args.json:
+        stamp = _read_json(os.path.join(profile or "", STAMP_REL)) or {}
+        print(json.dumps({"verdict": verdict, "hits": stamp.get("hits", []),
+                          "pervasive": stamp.get("pervasive", [])}, sort_keys=True))
+    else:
+        for line in lines:
+            print(line)
+        print("purity hook: %s" % verdict)
+    return 0
+
+
+def _run_structure_only():
+    """dev #411 §3.2 — the engine-side structural half. Enumerate, count, print coverage; fail
+    on an unreadable engine file or a family that vanished in a checkout; NEVER print CLEAN, and
+    always print the fixed disclosure so `gates.yml` can assert its continued presence (§6 Q6)."""
+    print("ENGINE PURITY — STRUCTURE ONLY (dev #411)")
+    print("=" * 78)
+    print("  engine : %s" % ENGINE_ROOT)
+    empty = [name for name, pat in ENGINE_FAMILIES if not glob.glob(pat)]
+    if not ENGINE:
+        print("\n  !! THE GATE SCANNED NOTHING — this is a BROKEN GATE, not a clean tree.")
+        return 1
+    is_checkout = os.path.isdir(os.path.join(ENGINE_ROOT, "tests"))
+    if empty:
+        if is_checkout:
+            print("\n  !! FAMILY MATCHED NOTHING in a checkout: %s" % ", ".join(empty))
+            return 1
+        print("  note: family matching zero files in this package: %s" % ", ".join(empty))
+    excluded, readable = [], []
+    for p in ENGINE:
+        try:
+            with open(p, encoding="utf-8") as fh:
+                fh.read(1)
+            readable.append(p)
+        except (OSError, UnicodeDecodeError):
+            excluded.append((os.path.relpath(p, ENGINE_ROOT), "not readable as UTF-8 text"))
+    print("  scanned %d of %d tracked engine file(s)  ·  %d excluded  ·  %d family taxonomy"
+         % (len(readable), len(ENGINE), len(excluded), len(ENGINE_FAMILIES)))
+    if len(readable) + len(excluded) != len(ENGINE):
+        print("\n  !! COVERAGE DOES NOT ADD UP — %d scanned + %d excluded != %d tracked."
+             % (len(readable), len(excluded), len(ENGINE)))
+        return 1
+    print("\n  TERM SCAN NOT RUN HERE — it runs on each install at SessionStart (dev #411)")
+    return 0
+
+
+# dev #411 §3.5/§3.2 — `--require-profile` is RETIRED, not narrowed: the only caller was the
+# manual pre-publish step this design removes. Checked by hand, before argparse ever sees it, so
+# the refusal names dev #411 rather than argparse's generic "unrecognized arguments".
+def _refuse_require_profile_if_present(argv):
+    if "--require-profile" in argv:
+        print("REFUSED: --require-profile is retired (dev #411) — the term scan now runs on "
+              "each install at SessionStart, never against a real profile from this checkout. "
+              "See plugins/jobsearch/docs/design-purity-at-startup.md.", file=sys.stderr)
+        sys.exit(2)
+
+
 def main():
+    _refuse_require_profile_if_present(sys.argv[1:])
     ap = argparse.ArgumentParser(description="Is a reusable file carrying one person's data?")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--all", action="store_true", help="Audit every class, advisory only.")
-    ap.add_argument("--require-profile", action="store_true",
-                    help="Fail if no profile is reachable, instead of reporting NOT CHECKED. "
-                         "Use before a push: locally there IS a profile, so a run that cannot "
-                         "find one is a resolution bug worth stopping for.")
+    ap.add_argument("--structure-only", action="store_true",
+                    help="dev #411 — engine-side half only: enumerate/count/print coverage, "
+                         "never the term half. Never prints CLEAN. What the marketplace's own "
+                         "release preflight and CI now run in place of --require-profile.")
+    ap.add_argument("--hook", action="store_true",
+                    help="dev #411 — the CLI entry to hook_step(), the install-side caller "
+                         "migrate.py --hook drives directly. For tests and the CI plant.")
+    ap.add_argument("--json", action="store_true",
+                    help="with --hook: print the stamp's verdict/hits/pervasive as one JSON "
+                         "object on stdout (the scanner's RETURN VALUE, never the human print — "
+                         "§3.3 #52).")
     args = ap.parse_args()
+
+    if args.hook:
+        return _run_hook_cli(args)
+
+    if args.structure_only:
+        return _run_structure_only()
 
     print("ENGINE PURITY — could another candidate use these files unchanged?")
     print("=" * 78)
@@ -791,8 +1316,9 @@ def main():
         print("     or find a real leak — a verdict computed from them would be CONFIDENTLY")
         print("     WRONG, not merely absent (dev #299).")
         print("     To actually check real data, point CLAUDESEARCH_ROOT at the real profile")
-        print("     directory before running this check with --require-profile.")
-        return 1 if args.require_profile else 0
+        print("     directory. dev #411: the term scan itself now runs on each install at")
+        print("     SessionStart, never from this checkout — --require-profile is retired.")
+        return 0
 
     terms = _profile_terms()
     if not terms:
@@ -804,7 +1330,7 @@ def main():
         print("  !! NOT CHECKED for profile data: no user.json/config.json reachable from %s"
               % ROOT)
         print("     This is expected in CI. It is NOT a clean result and must not be read as one.")
-        return 1 if args.require_profile else 0
+        return 0
 
     print("  terms drawn from the PROFILE (never hard-coded here): %s"
           % ", ".join("%s=%d" % (k, len(v)) for k, v in terms.items()))

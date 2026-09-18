@@ -389,7 +389,8 @@
     "resolved_on",
     "resolution",
     "targets",
-    "note"
+    "note",
+    "assessments"
    ],
    "required": [
     "id",
@@ -397,7 +398,53 @@
     "subject_id",
     "status"
    ],
-   "arrays": {}
+   "arrays": {
+    "assessments": {
+     "_note": "ADR-031 B5 (design-b5-assessment.md §2) — one entry per weekly assessment of this plan, written whole by `plays.py --assess` (item C; nothing writes it before that lands). `date`/`as_of`/`window_from`/`engine_version` are the engine's; `working`/`not_working`/`next_steps`/`note` are the OWNER'S words only (`record.py assess`), never engine-written. `proposals[]` is the nested array this entry carries — declared under this entry's own `arrays` key (a list nested in a list; the dotted `fit.requirements` form addresses an OBJECT parent and cannot name it) and validated by validate_data.py's check_assessments(), which reads these two field lists rather than restating them.",
+     "fields": [
+      "date",
+      "as_of",
+      "window_from",
+      "engine_version",
+      "working",
+      "not_working",
+      "next_steps",
+      "note",
+      "proposals"
+     ],
+     "required": [
+      "date",
+      "as_of",
+      "window_from",
+      "proposals"
+     ],
+     "id_field": null,
+     "arrays": {
+      "proposals": {
+       "_note": "`kind` ∈ {parameter, construct} and the KEY decides the direction mechanically (design §27.2): `parameter` → a declared parameter name of the plan's play, or `config:<dotted>` registered in config_keys.READER_KEYS — the owner's to accept; `construct` → `<signal>:<step|token>` with the signal in funnel_report.CONSTRUCT_SIGNALS — a report to the plugin team, drafted, never auto-filed (owner decision 22, pending). `evidence` keys are EXACTLY funnel_report.PROPOSAL_EVIDENCE_KEYS[kind]; an undeclared key is a validator PROBLEM. `status` ∈ {proposed, accepted, declined, reported, superseded}; `decided_on`/`decision` both-or-neither (the asks contract); `reported` is the filed issue url or null.",
+       "fields": [
+        "id",
+        "kind",
+        "key",
+        "evidence",
+        "text",
+        "status",
+        "decided_on",
+        "decision",
+        "reported"
+       ],
+       "required": [
+        "id",
+        "kind",
+        "key",
+        "evidence",
+        "status"
+       ],
+       "id_field": "id"
+      }
+     }
+    }
+   }
   },
   "plays": {
    "_note": "ADR-031 B4 (design §18, §20) — a play IN USE by a profile: a full copy of a pattern's structure, stamped with the pattern it was copied from so a shipped improvement arrives as a reviewable diff, never a silent merge. `pattern` names the shipped `plugins/jobsearch/plays/<id>.json` this row was adopted from, or null for a hand-built play; `pattern_sha`/`pattern_reconciled_on` are the stamp (design §20). `params`/`steps`/`goal` are validated deeply by validate_data.py (the closed 15-token predicate vocabulary, the three step kinds, the closed `say` slugs) rather than by this file's generic field-list guard, the same way `comp`/`fit` on opportunities are hand-validated objects.",

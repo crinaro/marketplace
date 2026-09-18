@@ -168,12 +168,32 @@ from validate_data import RETIRED_KEYS, active_retired_keys  # noqa: E402
 # is B4's own golden migration INPUT, frozen forever, and its own coverage tests read the
 # frozen pre-migration shape (`play_stage`/`next_action` still present) to prove the fixture's
 # own coverage properties hold.
-KNOWN_EXCEPTIONS = (("migrate.py", "contacts"), ("test_checks.py", "contacts"),
-                    ("migrate.py", "applications"), ("test_checks.py", "applications"),
-                    ("migrate.py", "outreach"), ("test_checks.py", "outreach"),
+# dev #399 §1 — every single `test_checks.py` entry above split into several, one per
+# tests/test_*.py file the relevant classes actually landed in by dependency (not all in one
+# place), same reason as before per file: each is the frozen pre-migration golden-fixture
+# coverage the comment above already describes, never a shipped reader. Re-derived from the
+# real tracked tree after the split (`check_retired_reads.scan_tree` against `known_exceptions
+# =()`), not guessed — 14 pairs across 12 files.
+KNOWN_EXCEPTIONS = (("migrate.py", "contacts"),
+                    ("tests/test_migrate_2.py", "contacts"),
+                    ("tests/test_resume_variants.py", "contacts"),
+                    ("migrate.py", "applications"),
+                    ("tests/test_check_dashboard_coverage.py", "applications"),
+                    ("tests/test_migrate_2.py", "applications"),
+                    ("tests/test_record.py", "applications"),
+                    ("migrate.py", "outreach"),
+                    ("tests/test__docx.py", "outreach"),
+                    ("tests/test_check_dashboard_coverage.py", "outreach"),
+                    ("tests/test_check_engine_purity.py", "outreach"),
+                    ("tests/test_heal_install.py", "outreach"),
+                    ("tests/test_migrate_2.py", "outreach"),
+                    ("tests/test_misc.py", "outreach"),
+                    ("tests/test_validate_data.py", "outreach"),
                     ("make_fixture.py", "outreach"), ("precondition.py", "outreach"),
-                    ("migrate.py", "play_stage"), ("test_checks.py", "play_stage"),
-                    ("migrate.py", "next_action"), ("test_checks.py", "next_action"))
+                    ("migrate.py", "play_stage"),
+                    ("tests/test_migrate_1.py", "play_stage"),
+                    ("migrate.py", "next_action"),
+                    ("tests/test_migrate_1.py", "next_action"))
 
 
 class Hit:
@@ -361,17 +381,26 @@ def main():
         for path, key in KNOWN_EXCEPTIONS:
             print("      %s reads %r (stage migration handler)" % (path, key))
 
+    # dev #399 §1 — same fix as check_ledger_reads.py's identical shape: `if stale: return 1`
+    # used to run BEFORE `if unresolved:` was ever checked, so a stale KNOWN_EXCEPTIONS entry
+    # masked real unresolved hits instead of surfacing them. The split produced exactly this
+    # (5 stale entries hiding what were, before repointing them, real unresolved hits) and the
+    # "CLEAN" the early return implied for the unresolved half was never actually checked.
+    problems = False
+    if unresolved:
+        problems = True
+        print("\n  !! %d RETIRED-KEY READ(S) — a reader was not re-pointed:" % len(unresolved))
+        for h in unresolved:
+            print("      %s:%d reads retired key %r" % (h.path, h.line, h.key))
+
     if stale:
+        problems = True
         print("\n  !! %d STALE KNOWN EXCEPTION(S) — matched no hit; delete the entry:"
               % len(stale))
         for path, key in stale:
             print("      %s / %r" % (path, key))
-        return 1
 
-    if unresolved:
-        print("\n  !! %d RETIRED-KEY READ(S) — a reader was not re-pointed:" % len(unresolved))
-        for h in unresolved:
-            print("      %s:%d reads retired key %r" % (h.path, h.line, h.key))
+    if problems:
         return 1
 
     print("\n  CLEAN. No unresolved retired-key read.")

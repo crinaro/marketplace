@@ -148,10 +148,11 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _root import profile_root
+from _root import profile_root, is_tracked_fixture
 
 JOURNAL = os.path.join("data", "runs.jsonl")
-EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swept", "probe")
+EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swept", "probe",
+         "triaged")
 
 # A reason is a CODE, not a sentence — codes can be counted, sentences cannot. An unrecognised
 # one is refused rather than stored, because a taxonomy nobody enforces becomes free text within
@@ -193,6 +194,36 @@ STALE_DAYS = 3
 CITATION_RE = re.compile(r"^\s*(dev|github|marketplace|public)\s*#\s*([1-9]\d*)\s*$",
                          re.IGNORECASE)
 
+# ⭐ public #99 — the per-uid TRIAGE disposition an alert-digest sweep writes so a LATER run can
+# skip a uid it already surfaced instead of re-fetching and re-screening it every day it still
+# falls inside the search window. This copies the ATS sweep's own per-uid idempotency discipline
+# (design-inbound-resolution.md §5, dev #376) rather than inventing a second mechanism: ONE
+# ledger (this file's `data/runs.jsonl`), not two. Unlike the ATS sweep, whose idempotency mark
+# is a permanent `messages.jsonl` row (a resolved receipt is never re-seen), a digest sweep never
+# writes to any data store — it only surfaces mail for the run to read — so its own disposition
+# lives here as a new event kind rather than riding on a store row that does not exist for it.
+#
+# A verdict is a CODE, matching REASONS' own "counted, not narrated" rule. `alert_sweep.py` does
+# not classify a digest's content today — it only surfaces it — so exactly one verdict exists;
+# the set stays a set (not a bare string field) so a future verdict (e.g. a script-side
+# duplicate-role check) is a vocabulary addition here, not a free-text drift.
+TRIAGE_VERDICTS = {"surfaced"}
+
+# How far back a `triaged` row still counts as a live disposition — BOUNDED, never unbounded
+# growth of what a sweep must scan to answer "have I seen this uid before". Unlike the ATS
+# sweep's mark (permanent, because a resolved receipt is never re-fetched), a digest uid can
+# only ever be RE-FOUND by a later run while it still falls inside that run's own
+# `newer_than:Nd` search window — `alert_sweep.py`'s own `--days` (default 1, rarely widened).
+# A disposition older than the widest window the sweep can reasonably run can never be re-checked
+# against a live search hit, so keeping it forever would only grow the ledger scan for no
+# caller that could ever ask about it. The natural ceiling is the sweep's own lookback, capped
+# the same way `mail_client.COVERAGE_BACKFILL_MAX_DAYS` caps the coverage ledger's own backfill
+# reach, for the identical reason — this module cannot import `mail_client` (`mail_client`
+# imports THIS module, so the reverse would be circular), so the number is repeated, not shared;
+# both name the ceiling they express, not each other. A uid outside this window is simply
+# treated as never-triaged and re-triaged the next time it is found — see `triaged_uids()`.
+TRIAGE_TTL_DAYS = 30
+
 
 class JournalError(ValueError):
     """Unparseable or unrecognised. Loud on purpose."""
@@ -219,7 +250,34 @@ def now_iso():
     return datetime.datetime.now().replace(microsecond=0).isoformat()
 
 
+# ⭐⭐ dev #313 — THE ONE CHOKE POINT, GUARDED ONCE. Every write site in this file — `--fired`,
+# `--start`, `--note`, `--gap`, `--gap-closed`, `--end` (including its `footprint`), `--dispose`,
+# `record_swept`, `record_probe` — funnels through this single `append()`, so a guard here covers
+# all of them without touching each call site individually.
+#
+# `journal.py --fired` is the FIRST SessionStart hook, ahead of `migrate.py` — so it is the first
+# shipped write of any session, and `scripts/run_shipped.py`'s DEFAULT (safe-by-construction) pin
+# points `CLAUDESEARCH_ROOT` straight at the tracked, checked-in fixture
+# (`plugins/jobsearch/tests/fixtures/profile`) precisely so a maintainer verification has
+# somewhere synthetic to run against. That is exactly the path that triggers this: running the
+# hook chain against the fixture the safe way silently created an untracked
+# `tests/fixtures/profile/data/runs.jsonl` (issue #313).
+#
+# `_root.is_tracked_fixture()` is the existing, already-shared predicate (`check_engine_purity.py`,
+# `check_profile_leakage.py`, `install_rulebook.py` all use it) — this file adds no new predicate,
+# only a caller. Per `_root.py`'s own docstring ("this module resolves; it does not decide
+# whether the resolution is safe to act on... every WRITE-capable caller decides that for
+# itself"), the refusal lives HERE, in the write-capable caller, not inside `_root.py` itself.
+#
+# The guard is the TRACKED PATH, not the fixture's *shape* — `is_tracked_fixture` matches on
+# `.../tests/fixtures/...` or `.../fixtures/...` appearing in the resolved path, so a scratch
+# COPY of the fixture (no `fixtures` segment in its path — e.g. `check_shipped_package.py`'s own
+# `tmp/profile` materialization) is a different path and is correctly left writable.
 def append(root, rec):
+    if is_tracked_fixture(root):
+        raise JournalError(
+            "%s is the tracked fixture — journal refuses to write; pin CLAUDESEARCH_ROOT to a "
+            "scratch copy" % root)
     p = path(root)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "a", encoding="utf-8") as fh:
@@ -339,6 +397,32 @@ def record_swept(root, mailbox, frm, through, by, ok, reason=None, at=None):
                 "a reason code cannot be counted or grouped" % reason)
         rec = {"event": "swept", "mailbox": mailbox, "from": None, "through": None,
                "at": at, "by": by or "", "ok": False, "reason": reason}
+    return append(root, rec)
+
+
+def record_triaged(root, mailbox, uid, verdict, by, at=None):
+    """⭐ public #99 — the completion mark for one triaged uid. `mailbox` is REQUIRED and stored
+    alongside `uid` (never a bare `"<mailbox>:<uid>"` string) so two mailboxes that happen to
+    reuse the same IMAP uid number are never confused by a caller that filters on `mailbox`
+    first, the same shape `record_swept`'s own `mailbox` field already has.
+
+    ⭐ Call this ONLY after a uid's disposition is actually decided — for `alert_sweep.py`, after
+    its header fetch and its own row is built, never before. A run killed between fetching a uid
+    and calling this leaves NO row for it, so the next run finds it un-triaged and processes it
+    again — the same crash-safety the ATS sweep's own uid mark has (design-inbound-resolution.md
+    §5): an unwritten disposition is re-seen next run, never silently skipped, by construction
+    rather than by a recovery pass."""
+    at = at or now_iso()
+    if not mailbox:
+        raise JournalError("record_triaged requires a mailbox")
+    if not uid:
+        raise JournalError("record_triaged requires a uid")
+    if verdict not in TRIAGE_VERDICTS:
+        raise JournalError(
+            "record_triaged verdict %r is not in TRIAGE_VERDICTS %r — a verdict is a code, not "
+            "a sentence" % (verdict, sorted(TRIAGE_VERDICTS)))
+    rec = {"event": "triaged", "mailbox": mailbox, "uid": str(uid), "verdict": verdict,
+           "at": at, "by": by or ""}
     return append(root, rec)
 
 
@@ -480,6 +564,46 @@ def covered_through(recs, mailbox, as_of=None, by=None):
         if f <= as_of_dt <= t:
             return t.isoformat()
     return None
+
+
+def triaged_uids(recs, mailbox, by=None, as_of=None, ttl_days=TRIAGE_TTL_DAYS):
+    """⭐ public #99 — the set of uid strings already triaged for `mailbox`, within the last
+    `ttl_days` of `as_of` (default: now) — what a sweep should SKIP rather than re-fetch and
+    re-screen. Read BEFORE any mailbox fetch, exactly the way `covered_through()` is read before
+    a sweep decides its own search window.
+
+    `by`, optional, narrows to one sweep kind's own history — the same filter
+    `covered_through(..., by=...)` already carries (design-inbound-resolution.md §5 amendment
+    D3), so a second sweep that someday triages the same mailbox for a different purpose does
+    not silently cover for this one. `mailbox` is matched exactly, never merged across accounts
+    — two mailboxes sharing an IMAP uid number are two different rows here, filtered apart the
+    same way `covered_through()` never merges two mailboxes' coverage.
+
+    A row older than `ttl_days` is treated as though it were never written — see
+    `TRIAGE_TTL_DAYS`'s own docstring for why an aged-out disposition is correct rather than a
+    leak: the uid can only be re-found inside a sweep's own bounded search window, so a
+    disposition that has outlived every window a sweep could plausibly run can never be checked
+    against a live hit anyway."""
+    if as_of is None:
+        as_of_dt = datetime.datetime.now()
+    elif isinstance(as_of, datetime.datetime):
+        as_of_dt = as_of
+    else:
+        as_of_dt = _parse_iso(as_of) or datetime.datetime.now()
+    floor = as_of_dt - datetime.timedelta(days=ttl_days)
+    out = set()
+    for r in recs:
+        if r.get("event") != "triaged" or r.get("mailbox") != mailbox:
+            continue
+        if by is not None and r.get("by") != by:
+            continue
+        at_dt = _parse_iso(r.get("at"))
+        if at_dt is None or at_dt < floor:
+            continue
+        uid = r.get("uid")
+        if uid:
+            out.add(str(uid))
+    return out
 
 
 def probe_covered_through(recs, thread, medium):

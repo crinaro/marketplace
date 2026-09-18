@@ -93,13 +93,14 @@ def _label(path):
 
 def rule_homes():
     homes = {}
+    test_suite_path = os.path.join(ENGINE_SCRIPTS, "test_checks.py")
     for path in ([CLAUDE]
                  + sorted(glob.glob(os.path.join(_engine_root(), "agents", "*.md")))
                  + sorted(glob.glob(os.path.join(_engine_root(), "skills", "*", "SKILL.md")))
                  + sorted(glob.glob(os.path.join(_engine_root(), "commands", "*.md")))
                  + sorted(glob.glob(os.path.join(_engine_root(), "docs", "*.md")))
                  + sorted(glob.glob(os.path.join(ROOT, "docs", "*.md")))
-                 + [os.path.join(ENGINE_SCRIPTS, "test_checks.py")]):
+                 + [test_suite_path]):
         # NOTE: test_checks.py counts as a home because a REGRESSION TEST is a durable home for
         # a rule — arguably the strongest one. But see audit_load_bearing(): a test DOCSTRING
         # merely describing a rule is NOT a home, and letting one satisfy an anchor is how the
@@ -110,7 +111,19 @@ def rule_homes():
                 # The rulebook is keyed by its INSTALLED name: archive back-pointers say
                 # "CLAUDE.md" because that is the file every session actually reads.
                 key = "CLAUDE.md" if os.path.abspath(path) == os.path.abspath(CLAUDE) else _label(path)
-                homes[key] = fh.read()
+                text = fh.read()
+                if os.path.abspath(path) == os.path.abspath(test_suite_path):
+                    # dev #399 §1 — test_checks.py is now a thin runner; the actual test
+                    # classes (and the assertions that make this file a legitimate rule HOME)
+                    # live under tests/test_*.py. Concatenated under the SAME "test_checks.py"
+                    # label so every archive back-pointer that ever resolved against the
+                    # suite's content keeps resolving, regardless of which file inside the
+                    # suite the asserting class physically lives in today.
+                    for tp in sorted(glob.glob(os.path.join(ENGINE_SCRIPTS, "tests",
+                                                             "test_*.py"))):
+                        with open(tp, encoding="utf-8") as tfh:
+                            text += "\n" + tfh.read()
+                homes[key] = text
     return homes
 
 
