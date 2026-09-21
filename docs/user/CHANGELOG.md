@@ -3,10 +3,31 @@
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
 
 ## jobsearch 0.52.0
-- Supersedes 0.51.0, which was merged and tagged (`jobsearch--v0.51.0`) but never published — this section folds its changelog forward; the dev-side tag stands as the record of what was merged.
-- Test suite split; dev #405's guard fix; the install checker no longer flags ordinary OS litter; citations for public #55/#57; public #107 §4.1 — the presence page now publishes only when it changed; doc-impact #172 drained; the dispatch ledger.
-- dev #411: the plugin now checks itself for your data at session start; nothing about your profile is ever read by the maintainers. The term-based purity scan moves from the maintainers' own checkout to each install's own `SessionStart` hook (`check_engine_purity.hook_step()`, the last envelope of the migration's own hook run); a hit lands as a queryable ask on your own machine, never in a report the maintainers see. The maintainers' tooling no longer has any way to point at a real profile at all. ADR-035; AGENT-CONTRACT v7.
-- Note: the session that installs 0.52.0 does not itself run the new scan — it runs on the next session start after that.
+- Purity must resolve at plugin startup on the user's machine — the engine team never points a script at a real profile (publish.py --real-profile contradicts dev #167) *(tracked internally as crinaro/marketplace-dev#411)*
+  The plugin now checks itself for your data at session start, so nothing about your profile is ever read by the maintainers. The first session after upgrading skips the check; the second one runs it. If it finds something, it shows up as a single item on your own decision list.
+- gate-keeper: the dispatch ledger (dev #399 §5) — docs/dispatches.jsonl, dispatch_ledger.py --check, seeded with today's five rows (two over budget) *(tracked internally as crinaro/marketplace-dev PR#407)*
+- public #107 §4.1: check_dashboard_fresh --publish-state prints 'unchanged — skip' per page; daily-run never reads a page it is not publishing *(tracked internally as crinaro/marketplace-dev PR#408)*
+  the presence page now publishes only when it changed
+- docs-steward: drain doc-impact 172 (design-script-first sec 1 / 4.1 shipped) *(tracked internally as crinaro/marketplace-dev PR#409)*
+- Release: jobsearch 0.51.0 *(tracked internally as crinaro/marketplace-dev PR#410)*
+- design: purity resolves at plugin startup on the user's machine (dev #411) *(tracked internally as crinaro/marketplace-dev PR#412)*
+- review: 13 findings against the dev #411 design (deployment-auditor + gate-keeper) *(tracked internally as crinaro/marketplace-dev PR#413)*
+- design: purity-at-startup rev 2 — all 13 findings dispositioned (dev #411) *(tracked internally as crinaro/marketplace-dev PR#414)*
+- Release: jobsearch 0.52.0 — purity resolves at plugin startup (dev #411, ADR-035) *(tracked internally as crinaro/marketplace-dev PR#415)*
+- docs: 2026-09-17 owner decisions (B5 22–28, script-first §9), doc-impact #168–#171 drained, HANDOFF pruned 105→~20 KB, token discipline *(tracked internally as crinaro/marketplace-dev PR#403)*
+- gate-keeper: check_install ignores OS litter; public #55/#57 cited by the classes that cover them; #265 confirmed fixed, #259 not *(tracked internally as crinaro/marketplace-dev PR#404)*
+- gate-keeper: dev #405 (19 never-run tests now run, main-guard gate) and dev #399 §1 — test_checks.py split into scripts/tests/ (1835 before and after) *(tracked internally as crinaro/marketplace-dev PR#406)*
+- Inbound resolution: the unidentified-sender finding, noise suppression, --backfill-asks (dev #376) *(tracked internally as crinaro/marketplace-dev PR#388)*
+- ADR-031 B5 items A+B: plans.assessments[] + validator, funnel_report --by step *(tracked internally as crinaro/marketplace-dev PR#389)*
+- release_log.py: a per-row note for installer-facing prose; the 0.48.0 titles restored (dev #370) *(tracked internally as crinaro/marketplace-dev PR#390)*
+- check_shipped_package.py runs the SessionStart hook chain inside the published set (dev #314) *(tracked internally as crinaro/marketplace-dev PR#391)*
+- journal.py refuses to write into the tracked fixture; check_fixture_generated allowlists stores (dev #313) *(tracked internally as crinaro/marketplace-dev PR#392)*
+- STORE_INTRODUCED: a store's absence is decidable against the stamp; the fresh-scaffold gate (dev #365) *(tracked internally as crinaro/marketplace-dev PR#393)*
+- A maintainer checkout never writes the real profile pointer or diagnostics log (dev #394, trap 10 wave one) *(tracked internally as crinaro/marketplace-dev PR#395)*
+- alert_sweep.py: per-uid triage ledger through journal.py — the digest half of public #99 *(tracked internally as crinaro/marketplace-dev PR#396)*
+- Rule 3 as a mechanism: a PreToolUse guard denies git stash/checkout/switch/reset/restore (dev #307) *(tracked internally as crinaro/marketplace-dev PR#397)*
+- doctor.py --fix seeds search.* from the config_keys registry; a missing default is loud (dev #323) *(tracked internally as crinaro/marketplace-dev PR#398)*
+- The script-first design: public #105–#111 as one class, the dispatch packet, the cost ledger *(tracked internally as crinaro/marketplace-dev PR#401)*
 
 ## jobsearch 0.50.0
 - First run on 0.49.0: the midnight-UTC golden, a waiting-state TypeError, and #98/#100/#101/#103 *(tracked internally as crinaro/marketplace-dev PR#372)*

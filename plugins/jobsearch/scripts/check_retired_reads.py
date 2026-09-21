@@ -173,7 +173,8 @@ from validate_data import RETIRED_KEYS, active_retired_keys  # noqa: E402
 # place), same reason as before per file: each is the frozen pre-migration golden-fixture
 # coverage the comment above already describes, never a shipped reader. Re-derived from the
 # real tracked tree after the split (`check_retired_reads.scan_tree` against `known_exceptions
-# =()`), not guessed — 14 pairs across 12 files.
+# =()`), not guessed — originally 14 pairs across 12 files; 13 pairs across 11 files since
+# dev #411 piece 3 retired the `tests/test__docx.py`/`outreach` entry (comment above).
 KNOWN_EXCEPTIONS = (("migrate.py", "contacts"),
                     ("tests/test_migrate_2.py", "contacts"),
                     ("tests/test_resume_variants.py", "contacts"),
@@ -182,7 +183,12 @@ KNOWN_EXCEPTIONS = (("migrate.py", "contacts"),
                     ("tests/test_migrate_2.py", "applications"),
                     ("tests/test_record.py", "applications"),
                     ("migrate.py", "outreach"),
-                    ("tests/test__docx.py", "outreach"),
+                    # ("tests/test__docx.py", "outreach") RETIRED (dev #411 piece 3,
+                    # design-purity-at-startup.md §2.10) —
+                    # test_it_actually_catches_a_sent_draft_left_pending was rewritten to
+                    # read data/touches.jsonl (what check_sent_drafts.py itself reads today),
+                    # never `opportunities[].outreach`; the real hit this exception covered
+                    # is gone, so keeping the entry would make it STALE by construction.
                     ("tests/test_check_dashboard_coverage.py", "outreach"),
                     ("tests/test_check_engine_purity.py", "outreach"),
                     ("tests/test_heal_install.py", "outreach"),

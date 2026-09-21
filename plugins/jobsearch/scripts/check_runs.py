@@ -45,6 +45,11 @@ except Exception:                                  # pragma: no cover - journal 
     _journal = None
 
 try:
+    import _diag
+except Exception:                                  # pragma: no cover - diag is optional
+    _diag = None
+
+try:
     import inbox as _inbox
     import run_summary as _run_summary
 except Exception:                                  # pragma: no cover - both optional
@@ -92,6 +97,36 @@ def summary_disagreements(root):
             bad.append({"id": r.get("id"), "run_id": run_id, "phrase": phrase,
                         "summary": r.get("summary")})
     return bad, uncheckable
+
+
+def guard_blind_rows(path=None):
+    """Every `guard-blind` diag row (design-manifest-heal.md § The boundary, item 1 / #67) —
+    `guard_mail_scope.py` writes exactly one per session when `tool_input` was absent from a
+    PreToolUse payload for a guarded mailbox tool, so counting rows here also counts the
+    profile-sessions where the guard could not see its own argument. Reads via `_diag`'s own
+    resolved path (never a hand-rebuilt one, so this can never silently look at a different file
+    than the guard wrote) unless a path is given explicitly for testing. Never raises — an
+    absent or corrupt log reads as "no rows", never a crash."""
+    if _diag is None:
+        return []
+    log_path = path if path is not None else _diag.LOG
+    rows = []
+    try:
+        with open(log_path, "r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("event") == "guard-blind":
+                    rows.append(r)
+    except OSError:
+        return []
+    rows.sort(key=lambda r: r.get("at") or "", reverse=True)
+    return rows
 
 
 def footprints(root):
@@ -188,6 +223,10 @@ def footprints(root):
     dates = [e["date"] for e in out["log_entries"]] + \
             [p["at"][:10] for p in out["inbox_posts"] if len(p["at"]) >= 10]
     out["latest"] = max(dates) if dates else None
+
+    # ⭐ design-manifest-heal.md § The boundary, item 1 (#67) — the guard-blind probe, read
+    # beside session_fires so it is never a fact that exists only in a diag file nobody looks at.
+    out["guard_blind"] = guard_blind_rows()[:10]
     return out
 
 
@@ -233,6 +272,18 @@ def main():
     print("\n  last journalled START: %s" % (fp.get("last_start") or "none recorded"))
     for s2 in fp.get("run_starts", [])[:3]:
         print("    %s  %s" % (s2.get("at"), s2.get("run_id")))
+
+    # ⭐ design-manifest-heal.md § The boundary, item 1 (#67) — one line per profile-session
+    # that hit `guard_mail_scope.py`'s blind branch (`tool_input` absent from the payload). A
+    # row here is the queryable fact that per-address mail scoping was NOT enforced on that
+    # session's build; the guard fails open when this happens, so this is the only place that
+    # fact is visible unless someone reads the raw diag log by hand.
+    blind = fp.get("guard_blind") or []
+    if blind:
+        for b in blind:
+            print("\n  ⚠️ %s (session %s): mail-scope guard could not see tool arguments on "
+                  "this build — scoping is not enforced; connector-side fallback pending"
+                  % (b.get("at") or "unknown time", b.get("session_id") or "no session_id"))
 
     # ⭐⭐ public #85 — A THIRD ROW: did the trace a run left agree with ITSELF? Distinct from
     # every check above, which only asks whether a trace exists at all.

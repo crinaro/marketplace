@@ -154,10 +154,17 @@ def _addresses_from_obj(data):
     return out
 
 
-def _accounts_from_config():
-    """Read the connector's config file. Raises AccountsError on anything unreadable —
-    an unparseable config must be LOUD, because a swallowed error here reports
-    'no mailboxes configured', indistinguishable from a user who has none."""
+def _accounts_from_config_with_provenance():
+    """The ONE resolver that actually reads the config file — `_accounts_from_config()` below
+    is a thin wrapper that drops the provenance this function computes, never a second,
+    divergent read of the same file (design-manifest-heal.md § The boundary, item 2: a
+    standalone user should see exactly what their machine's config resolves to). Returns a
+    list of (address, source) pairs, source being "via accounts" for the config's own literal
+    list, or "via <include path>" for an address that arrived through one included file — the
+    same shape `gmail_accounts` prints so a union is visible rather than silent. Raises
+    AccountsError on anything unreadable, identically to the un-annotated resolver this used to
+    be — an unparseable config must be LOUD, because a swallowed error here reports 'no
+    mailboxes configured', indistinguishable from a user who has none."""
     path = os.environ.get("GMAIL_MULTI_CONFIG", "").strip() or CONFIG_PATH
     if not os.path.exists(path):
         return []
@@ -170,23 +177,30 @@ def _accounts_from_config():
     if not isinstance(data, dict):
         raise AccountsError("Config file %s must hold a JSON object, got %s."
                             % (path, type(data).__name__))
-    accounts = _addresses_from_obj(data)
+    pairs = [(a, "via accounts") for a in _addresses_from_obj(data)]
     for inc in data.get("include") or []:
         inc = os.path.expanduser(str(inc))
         try:
             with open(inc, encoding="utf-8") as fh:
-                accounts.extend(_addresses_from_obj(json.load(fh)))
+                pairs.extend((a, "via %s" % inc) for a in _addresses_from_obj(json.load(fh)))
         except (OSError, ValueError) as exc:
             raise AccountsError(
                 "Config file %s includes %s, which cannot be read: %s\n"
                 "A skipped include would silently shrink coverage, so this is an error."
                 % (path, inc, exc))
     seen, ordered = set(), []
-    for a in accounts:
-        if a not in seen:
-            seen.add(a)
-            ordered.append(a)
+    for addr, source in pairs:
+        if addr not in seen:
+            seen.add(addr)
+            ordered.append((addr, source))
     return ordered
+
+
+def _accounts_from_config():
+    """Read the connector's config file. Raises AccountsError on anything unreadable — see
+    `_accounts_from_config_with_provenance()`, which does the actual reading; this just drops
+    the source label for callers that only need the address list."""
+    return [addr for addr, _source in _accounts_from_config_with_provenance()]
 
 
 def configured_accounts():
@@ -559,13 +573,21 @@ def tool_accounts(_args):
     accounts = configured_accounts()
     if not accounts:
         return UNCONFIGURED_HELP
+    # design-manifest-heal.md § The boundary, item 2 — a standalone user should see exactly
+    # what their machine's config resolves to. GMAIL_MCP_ACCOUNTS (the env override) bypasses
+    # the config file entirely, so every address it names gets that one, honest provenance.
+    if os.environ.get("GMAIL_MCP_ACCOUNTS", "").strip():
+        provenance = {acct: "via GMAIL_MCP_ACCOUNTS" for acct in accounts}
+    else:
+        provenance = dict(_accounts_from_config_with_provenance())
     lines = ["Configured accounts (searched together by default):", ""]
     for acct in accounts:
+        tag = " (%s)" % provenance[acct] if acct in provenance else ""
         try:
             get_app_password(acct)
-            lines.append("  [OK]      %s — Keychain credential present" % acct)
+            lines.append("  [OK]      %s%s — Keychain credential present" % (acct, tag))
         except CredentialError as exc:
-            lines.append("  [MISSING] %s" % acct)
+            lines.append("  [MISSING] %s%s" % (acct, tag))
             lines.append("            %s" % str(exc).replace("\n", "\n            "))
     lines.append("")
     lines.append("Keychain service: %s" % KEYCHAIN_SERVICE)
@@ -606,7 +628,7 @@ def tool_search(args):
     results = results[:limit]
 
     out = ["Query: %s" % query,
-           "Searched: %s" % ", ".join(accounts), ""]
+           "Searched (%d account(s)): %s" % (len(accounts), ", ".join(accounts)), ""]
     if errors:
         # Loud, never silent. Partial coverage must be visible.
         out.append("!! INCOMPLETE COVERAGE — these accounts were NOT searched:")

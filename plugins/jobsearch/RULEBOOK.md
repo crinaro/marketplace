@@ -216,11 +216,11 @@ still `false`. Ask before any comp conversation leans on that tier.
   ⭐ Gmail: the configured set in `user.json` is the COMPLETE set** — read it with
   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/profile.py"`, never retype an address, and never add one that shows up in a
   recruiting database (at least one such address is bad data and must not be re-raised as a
-  coverage gap). Gmail search (`scripts/mail_client.py` for sweeps, `gmail-multi`'s tools
-  interactively) covers **all** accounts by default and raises a loud coverage error —
-  **never pass a single `account` unless you mean to narrow it, and never read
-  that error as a zero.** Correspondence also spans LinkedIn and phone, so any one mailbox is a
-  partial view. Added 2026-07-20 after wrongly accusing a subagent of fabrication. **When a
+  coverage gap). **Coverage means every address was searched, not one call:** sweeps
+  (`mail_client.py`) search every account per run; `gmail-multi`'s tools, interactive,
+  are scoped per address by `guard_mail_scope.py` (line 385) — never `account` unset or
+  `all`, never one address as covering the rest. Correspondence also spans LinkedIn and
+  phone, so one mailbox is a partial view. Added 2026-07-20 after wrongly accusing a subagent of fabrication. **When a
   subagent reports something you cannot find, the first hypothesis is a gap in YOUR search
   scope, not invention by the agent.** Say "I couldn't find it in X," never "it doesn't exist."
   _Forwarding, per-account quirks, and the excluded address are DATA:_ `user.json`.
@@ -382,8 +382,11 @@ broken one reads downstream as "no matching proof points" — same as having non
 - `mail_client.py` — **library only, no `mcpServers` entry**: sweeps import it, reading
   `user.json`. Interactive `gmail_*` tools: `gmail-multi`'s own server, reading
   `~/.claude/gmail-multi/accounts.json`, kept pointed here via `include` (`m_0_29_0`). **⭐
-  `account` defaults to `all` on both; an unreachable one raises `!! INCOMPLETE COVERAGE`
-  (sweeps) or `AccountsError` (connector)** — see above. Credentials: OS credential store only
+  `account` defaults to `all` in the library only** — on the connector `all` is the MACHINE's
+  union of every consumer/profile; `guard_mail_scope.py` denies any call here whose `account`
+  isn't exactly this profile's own address, printing the list (`gmail_accounts` shows
+  provenance). An unreachable one still raises `!! INCOMPLETE COVERAGE` (sweeps) or
+  `AccountsError` (connector) — see above. Credentials: OS credential store only
   (service `claudesearch-imap`), never the repo. **Claude must not handle them** — if
   `gmail_accounts` reports `[MISSING]`, say so rather than searching one mailbox silently.
 

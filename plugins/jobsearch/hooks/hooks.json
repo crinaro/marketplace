@@ -1,5 +1,5 @@
 {
-  "description": "Blocks a profile session from writing into the engine or the installed plugin cache (scripts/guard_engine_writes.py, docs/adr-010-engine-write-guard.md), DENYs a ref-based click that resolves to an outbound-terminal control such as Send/Connect/Invite/Apply (scripts/guard_outbound_click.py, docs/deployment.md's 'outbound-click guard' section), DENYs the gmail-multi connector's send/reply/forward tools so jobsearch stays draft-only now that the connector can send (scripts/guard_mail_send.py, marketplace #213), records that a SessionStart hook fired before any model turn so a run that dies before it can call journal.py --start still leaves proof a session existed (scripts/journal.py --fired, the 'fired' event, public #65 — loud on failure, exit 0 on every path; the hooks in this SessionStart group run in parallel, not in sequence, so this is one of several rather than a guaranteed first), runs the engine-purity term scan against this machine's own real profile as the last envelope of migrate.py --hook (scripts/check_engine_purity.hook_step(), dev #411 — loud on a real hit via an asks.jsonl row, exit 0 on every path, 30s timeout), and self-installs the connector plugins declared in plugin.json metadata.connectors at session start (scripts/ensure_connectors.py — loud on failure, exit 0 on every path).",
+  "description": "Blocks a profile session from writing into the engine or the installed plugin cache (scripts/guard_engine_writes.py, docs/adr-010-engine-write-guard.md), DENYs a ref-based click that resolves to an outbound-terminal control such as Send/Connect/Invite/Apply (scripts/guard_outbound_click.py, docs/deployment.md's 'outbound-click guard' section), DENYs the gmail-multi connector's send/reply/forward tools so jobsearch stays draft-only now that the connector can send (scripts/guard_mail_send.py, marketplace #213), DENYs a gmail-multi mailbox read/draft call whose account is not exactly one of this profile's own addresses — the connector's config is machine-wide and would otherwise return another profile's mail (scripts/guard_mail_scope.py, design-manifest-heal.md § The boundary — fails OPEN with a queryable diag row when tool_input is not visible to this build at all), records that a SessionStart hook fired before any model turn so a run that dies before it can call journal.py --start still leaves proof a session existed (scripts/journal.py --fired, the 'fired' event, public #65 — loud on failure, exit 0 on every path; the hooks in this SessionStart group run in parallel, not in sequence, so this is one of several rather than a guaranteed first), runs the engine-purity term scan against this machine's own real profile as the last envelope of migrate.py --hook (scripts/check_engine_purity.hook_step(), dev #411 — loud on a real hit via an asks.jsonl row, exit 0 on every path, 30s timeout), and self-installs the connector plugins declared in plugin.json metadata.connectors at session start (scripts/ensure_connectors.py — loud on failure, exit 0 on every path).",
   "hooks": {
     "SessionStart": [
       {
@@ -22,6 +22,11 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/guard_mail_send.py --selftest",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/guard_mail_scope.py --selftest",
             "timeout": 10
           },
           {
@@ -70,6 +75,16 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/guard_mail_send.py",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "mcp__plugin_gmail-multi_gmail-multi__gmail_search|mcp__plugin_gmail-multi_gmail-multi__gmail_get_message|mcp__plugin_gmail-multi_gmail-multi__gmail_get_attachment|mcp__plugin_gmail-multi_gmail-multi__gmail_create_draft|mcp__gmail-multi__gmail_search|mcp__gmail-multi__gmail_get_message|mcp__gmail-multi__gmail_get_attachment|mcp__gmail-multi__gmail_create_draft",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/guard_mail_scope.py",
             "timeout": 10
           }
         ]

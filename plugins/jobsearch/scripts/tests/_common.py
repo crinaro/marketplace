@@ -1247,12 +1247,39 @@ SKIP_BASELINE = {
         # a duplicate-id check ever runs — so the test was rewritten to build its own throwaway
         # profile and assert the successor property (`involvements` duplicate-pair refusal)
         # directly, which needs no real profile at all. One fewer real-profile-only skip.
+        # 34 -> 2 (gate-keeper, dev #411 piece 3, design-purity-at-startup.md §2.10 — the
+        # 40-skip disposition table). `SKIP_BASELINE[False]` retires below: under the owner's
+        # rule (CLAUDE.md, dev #411) no engine-team run ever binds this suite to a real
+        # profile again, so that branch is categorically unreachable and every one of its
+        # skips was an unfalsifiable green one layer above the property it claimed to guard.
+        # 32 of the 34 landed this piece, one class/commit at a time (fixture gains
+        # `strategy.md` sections, a 200-entry `log.md`, `archive/README.md`,
+        # `pipeline/kb/`, `conversations/`, a retired-channel pair, an open dated fit
+        # question, a second sent touch, and two config.json leaves synthesized to a
+        # geo/enum SHAPE instead of an ALL-CAPS placeholder); one
+        # (`test_no_engine_file_carries_profile_data`) is RETIRED outright — it is dev #411
+        # itself, and `TestPurityHookStep`/`TestPurityHookRetiredFlagsRefuseLoudly`/
+        # `TestPurityHookDecisionResolution` already exercise its replacement. Two remain,
+        # named rather than silently carried: `TestNoPlaceholderContactData.
+        # test_no_contact_stores_a_placeholder_address` and `TestValidateData.
+        # test_delivery_is_never_INFERRED` each need a NEW `validate_data.py` rule the
+        # design table calls for but this piece did not build — the placeholder-email rule
+        # in particular collides with the fixture's OWN synthetic `@example.com` addresses,
+        # a real design question next piece's author should not resolve by accident.
         "asserts the OWNER's real profile content; the synthetic fixture cannot satisfy it, and "
-        "weakening the assertion would weaken a real guard": 34,
+        "weakening the assertion would weaken a real guard": 2,
+        # `TestFixtureMirrorsTheRealProfile`'s 6 `skipTest`s (design §2.10's three "I" rows —
+        # `docs/profile_shape.json` generation plus the install-side profile-shape self-check
+        # this piece did not build) are UNCHANGED — named in the same design row, deferred
+        # for the same reason: real engineering the fixture-infra half of this piece did not
+        # have budget for, not something to carry silently.
         "no real profile here to compare against": 6,
         "archive not created yet": 1,
     },
-    False: {  # a real profile is present — a maintainer's own machine
+    False: {  # a real profile is present — a maintainer's own machine; dev #411 (CLAUDE.md)
+              # makes this branch categorically unreachable from an engine-team run, kept
+              # only so `_run_with_skip_accounting()` has a defined baseline if anyone ever
+              # points this suite at real data again by mistake, which is itself now a defect.
         "archive not created yet": 1,
     },
 }

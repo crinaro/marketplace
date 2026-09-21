@@ -1,0 +1,16 @@
+{
+  "description": "Self-heals this connector's own install manifest at SessionStart (scripts/heal_install.py --hook, a byte-identical synced copy of jobsearch's adr-014 mechanism — a maintainer-only marketplace gate keeps the two copies identical). Writes a `hook-fired` diag row before the registry is even opened, then heals the version-move case (marketplace issue #11) if that is what explains the drift; same-version drift stays loud and unwritten, on purpose. Standalone: nothing else in this plugin needs a session hook. Exits 0 on every path.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/heal_install.py --hook",
+            "timeout": 15
+          }
+        ]
+      }
+    ]
+  }
+}

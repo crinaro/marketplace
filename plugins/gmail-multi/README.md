@@ -39,9 +39,31 @@ yet say so explicitly.
    sees one. Use an app password, never the account password — 2-Step Verification must
    be on.
 
-Accounts live in `~/.claude/gmail-multi/accounts.json`. A consumer plugin can delegate
-its own account list via that file's `include` field instead of copying addresses; the
-server re-reads the file on every tool call.
+`accounts.json` is **one file per machine**. Every address in `accounts` and every file
+in `include` is searched by every `gmail_search` that omits `account` — including a
+second consumer's, or a second profile's, on the same machine. A consumer plugin
+delegates its list through `include` instead of copying addresses; to scope a call to
+one mailbox, pass `account=<address>`. `gmail_accounts` shows where each address came
+from.
+
+## Who reads which mailbox
+
+There is no server-side scope: whatever is in `accounts.json` — every literal address
+plus everything every `include` file adds — is what a call with `account` unset or
+`account="all"` searches, machine-wide, regardless of which plugin or profile is asking.
+Scoping is the **caller's** job, not the connector's:
+
+- Two profiles on one machine (say `acct-a@example.com` and `acct-b@example.com`, each
+  added by its own consumer's setup) each keep their own address in `include` — nobody's
+  address is ever removed to scope someone else — and each profile's own calls pass
+  `account=<its own address>`, one call per address.
+- jobsearch enforces this for itself with a `PreToolUse` guard
+  (`plugins/jobsearch/scripts/guard_mail_scope.py`) that denies any mailbox-reading call
+  whose `account` is not exactly one of that profile's own addresses, and prints the list
+  when it denies. A consumer without such a guard is trusting its own text to pass
+  `account` correctly — `all` will otherwise return every profile's mail on that machine.
+- `gmail_accounts` always shows the full resolved list with provenance, so a "why did I
+  get someone else's mail" question is answerable by running it, not by reading source.
 
 ## The rule the design serves
 
