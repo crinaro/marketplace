@@ -269,6 +269,21 @@ def state_root(start=None):
     return _HOME_STATE
 
 
+# design-script-first.md §8.2 (public #111) — where the CURRENT session's Claude Code
+# transcript path is stashed by `guard_outbound_click.py`'s SessionStart selftest, so
+# `journal.py --fold-dispatches` can find it later without re-deriving
+# `resolve_transcript_path()` a second time. Lives under `state_root()` so it is per-profile
+# (dev #151) and, for a real profile, never committed (`.jobsearch/` is gitignored — see
+# `_diag.py`'s own docstring). One definition, imported by both writer and reader, rather than
+# hand-duplicated (the same "one definition" rule `check_ledger_reads.py` follows for
+# `brief.LEDGER_READERS`).
+TRANSCRIPT_STASH_NAME = "transcript_path"
+
+
+def transcript_stash_path(start=None):
+    return os.path.join(state_root(start), TRANSCRIPT_STASH_NAME)
+
+
 def profile_root(start=None):
     """The USER's profile directory. Never the engine's.
 

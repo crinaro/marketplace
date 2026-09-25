@@ -4516,6 +4516,312 @@ def m_0_50_0_variant_surface_field(profile, apply_it):
                  "guessed" % len(missing))
 
 
+# ── linkedin quota (design-script-first.md §2/§12, public #75/#76/#87/#110) ────────────────────
+def m_0_54_0_linkedin_quota(profile, apply_it):
+    """0.54.0 — design-script-first.md §2/§12, build-list item 3, decision 1/4:
+    `config.json.search.postures.<name>.linkedin_runs_per_day` is written EXPLICITLY on every
+    posture whose `unattended` list contains "linkedin" — 1 for each
+    (`config_keys.LINKEDIN_RUNS_PER_DAY_DEFAULT`), 2 for `full` (decision 4's own carve-out,
+    `full` keeping five daily runs but only two LinkedIn passes). "Explicitly" matters: this key
+    already has a default `describe()` would apply silently, but a profile upgrading loses real
+    cadence (`standard` goes from 3 unbounded LinkedIn sweeps/day to a 1/day quota) and that
+    belongs in config.json where the owner can see and edit it, never left implicit (the same
+    reasoning `m_0_47_0_states_config_keys` and `m_0_50_0_ats_config_keys` already state for
+    their own knobs). Additive only — the `m_0_50_0_ats_config_keys` precedent: a posture that
+    already carries the key, however it got there, is left exactly as it is; a second run is a
+    byte-identical no-op.
+
+    A posture entry this cannot safely read — its own value not an object, or `unattended`
+    present and not a list — is not silently skipped and does not block every OTHER posture's
+    seed either: it is named in ONE queryable `asks.jsonl` row (`kind: system`, stable id), the
+    `m_0_48_0_application_endings_restamp` precedent (CLAUDE.md: "never N printed commands").
+    The row is replaced with the fresh set on a re-run and removed outright once nothing is left
+    unreadable. `search.postures` missing entirely, or not an object, refuses the whole
+    migration (`_load_config`'s own "reported, never guessed" shape) — a profile that has never
+    had a postures table is `doctor.py --fix`'s job, not this one's.
+    """
+    path, cfg, err = _load_config(profile)
+    if cfg is None:
+        if err is None:
+            return True, ""
+        return False, ("  ⚠️ config.json is unreadable, so linkedin_runs_per_day was left "
+                       "alone: %s" % err)
+
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import config_keys as _ck
+
+    search = cfg.get("search")
+    if search is not None and not isinstance(search, dict):
+        return False, "  ⚠️ config.json.search is not an object — linkedin_runs_per_day left alone"
+    search = search or {}
+    postures = search.get("postures")
+    if postures is None:
+        return True, ""            # nothing to seed — search.postures is missing entirely
+    if not isinstance(postures, dict):
+        return False, ("  ⚠️ config.json.search.postures is not an object — "
+                       "linkedin_runs_per_day left alone")
+
+    ASK_ID = "system-linkedin-quota-unreadable"
+    asks_path = os.path.join(profile, "data", "asks.jsonl")
+    try:
+        asks = _read_jsonl(asks_path) if os.path.exists(asks_path) else []
+    except Exception as e:                                              # noqa: BLE001
+        return False, "  ⚠️ asks.jsonl could not be read — nothing migrated: %s" % e
+
+    unreadable = []
+    seeded = []
+    for name in sorted(postures):
+        p = postures[name]
+        if not isinstance(p, dict):
+            unreadable.append(name)
+            continue
+        unattended = p.get("unattended")
+        if unattended is None:
+            continue                # this posture has never named an unattended list at all
+        if not isinstance(unattended, list):
+            unreadable.append(name)
+            continue
+        if "linkedin" not in unattended:
+            continue
+        if _ck.LINKEDIN_RUNS_PER_DAY in p:
+            continue                # additive only — already set, however it got there
+        value = 2 if name == "full" else _ck.LINKEDIN_RUNS_PER_DAY_DEFAULT
+        seeded.append((name, value))
+
+    existing_ask = [a for a in asks if a.get("id") != ASK_ID]
+    if unreadable:
+        import datetime
+        ask_row = {
+            "id": ASK_ID, "kind": "system",
+            "title": "%d posture(s) cannot be read for linkedin_runs_per_day" % len(unreadable),
+            "ask": ("search.postures.%s has no readable 'unattended' list, so "
+                   "linkedin_runs_per_day could not be seeded there — fix the posture's shape "
+                   "by hand (design-script-first.md §2)." % ", ".join(sorted(unreadable))),
+            "created": datetime.date.today().isoformat(), "act_by": None, "opp_id": None,
+            "channel_id": None, "resolves_when": None, "resolved_on": None, "resolution": None,
+            "trigger_kind": None, "trigger_ref": None, "note": None,
+        }
+        new_asks = existing_ask + [ask_row]
+    else:
+        new_asks = existing_ask
+    asks_changed = new_asks != asks
+
+    if not seeded and not asks_changed:
+        return True, ""
+
+    if not apply_it:
+        bits = []
+        if seeded:
+            bits.append("seed %s" % ", ".join("%s.linkedin_runs_per_day=%d" % (n, v)
+                                              for n, v in seeded))
+        if asks_changed:
+            bits.append("%s asks.jsonl %r"
+                       % ("write" if unreadable else "clear", ASK_ID))
+        return True, "  would (0.54.0) " + "; ".join(bits)
+
+    if asks_changed:
+        rc, problems, new = _shadow_validate(profile, {"asks.jsonl": new_asks})
+        if new is None or new:
+            detail = "; ".join((new if new else (problems or []))[:8]) or (
+                "validator exited %d with no problem list — it crashed" % rc)
+            return False, ("  ⚠️ 0.54.0 linkedin quota REFUSED asks.jsonl write — a new "
+                          "validation problem, so NOTHING was written: %s" % detail)
+
+    for name, value in seeded:
+        postures[name][_ck.LINKEDIN_RUNS_PER_DAY] = value
+    if seeded:
+        _rewrite_config(path, cfg)
+
+    if asks_changed:
+        import _atomic
+        _atomic.write_jsonl(asks_path, new_asks)
+
+    bits = []
+    if seeded:
+        bits.append("seeded %s" % ", ".join("%s.linkedin_runs_per_day=%d" % (n, v)
+                                            for n, v in seeded))
+    if asks_changed:
+        bits.append("%s asks.jsonl %r" % ("wrote" if unreadable else "cleared", ASK_ID))
+    return True, "  ✅ linkedin quota (0.54.0) — " + "; ".join(bits)
+
+
+def m_0_54_0_touch_propagation(profile, apply_it, _inject_fault=None, today=None):
+    """0.54.0 — dev #479 / public #114: `record.py touched`/`answered` now propagates a
+    freshly-recorded outbound touch to the recipient's `involvements` row and to the
+    opportunity's `next_action_owner`/`next_action_date` (record.py's own `_propagate_touch`).
+    Fixing the write path does nothing for a touch that was already recorded under the OLD,
+    non-propagating path — its involvement row is still missing or stale, and its opportunity
+    can still be stuck reading `next_action_owner` as the candidate's own token forever after
+    the send. This is that backfill, run once per profile.
+
+    ⭐⭐ KEYED "0.54.0" — 0.53.0 is the newest PUBLISHED jobsearch release (plugin.json at HEAD
+    reads 0.53.0; `jobsearch--v0.53.0` exists in the local tag list), the same fact
+    `m_0_54_0_linkedin_quota` above already verified for this same key. A profile that
+    installed 0.53.0 is stamped exactly "0.53.0", and `pending_for()`'s strict `<` would never
+    fire a migration keyed to it. Re-verified when 0.54.0 is actually cut.
+
+    SAME ALGORITHM AS `record._propagate_touch`, deliberately NOT a call into it — that
+    function runs under record.py's own run-lock against `record.ROOT`/`record.DATA` (resolved
+    once, at import, from `_root.profile_root()`), which is exactly the wrong thing to depend
+    on from a migration that is handed an explicit `profile` path and must act on THAT path
+    only (a hook running from inside the profile and one running from the engine repo must
+    never resolve to two different roots — trap 2). The shape is copied instead: for every
+    `touches.jsonl` row with `status: 'sent'`, group by (person_id, opp_id) and take the
+    NEWEST date; upsert that pair's involvement (status -> 'contacted'; `path_type` filled via
+    `plays.ROLE_TO_PATH` only when absent, the same "never reclassify" restraint the write path
+    keeps); then, for every opportunity with at least one such touch, if its
+    `next_action_owner` still names the candidate, clear it to 'me' and clear
+    `next_action_date` alongside it — the touch already on file completed the action it was
+    waiting on.
+
+    PRESERVE, THEN TRANSFORM, ALL-OR-NOTHING (the `m_0_48_0_touches` shape). The involvements
+    upsert is purely additive (never discards a fact) and is written FIRST; the opportunity
+    write is the one destructive step (the old `next_action_owner`/`next_action_date` values
+    are overwritten) and — preserved rather than merely overwritten — each cleared opportunity
+    gets a `research_log` entry naming exactly what the migration changed, appended in the
+    SAME write that clears the fields, so the old values survive on the record even though the
+    columns themselves move on. Both writes are validated against a throwaway shadow first
+    (`_shadow_validate`); a genuinely new validation problem refuses the WHOLE migration and
+    touches neither real file.
+
+    ⭐ PENDING, NEVER A FALSE '0 done'. `_inject_fault == 'after_involvements'` (test-only,
+    never reachable from the CLI) writes involvements.jsonl for real and then returns
+    `(False, ...)` naming the incomplete state — proving, from OUTSIDE this function, that an
+    interrupted run (a) reports PENDING rather than claiming nothing was pending, (b) has
+    preserved the involvements half it already landed, and (c) a plain re-run finds only the
+    remaining opportunities half still to do (the involvements half is now idempotent-clean)
+    and completes it — the same discipline `m_0_48_0_touches`'s own fault hook and
+    `m_0_47_0_drafts_working_set`'s `today` parameter establish for this file's other
+    migrations.
+
+    Idempotent: a profile with no `status: 'sent'` touch at all, or where every such touch's
+    pair already has a 'contacted' involvement and no opportunity is still candidate-owned
+    underneath one, returns `(True, "")` and writes nothing."""
+    import datetime
+    today = today or datetime.date.today().isoformat()
+
+    touches_path = os.path.join(profile, "data", "touches.jsonl")
+    opp_path = os.path.join(profile, "data", "opportunities.jsonl")
+    inv_path = os.path.join(profile, "data", "involvements.jsonl")
+    if not os.path.exists(touches_path):
+        return True, ""
+    try:
+        touches = _read_jsonl(touches_path)
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ touches.jsonl could not be read — nothing migrated: %s" % e
+    try:
+        opps = _read_jsonl(opp_path) if os.path.exists(opp_path) else []
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ opportunities.jsonl could not be read — nothing migrated: %s" % e
+    try:
+        involvements = _read_jsonl(inv_path) if os.path.exists(inv_path) else []
+    except Exception as e:                                          # noqa: BLE001
+        return False, "  ⚠️ involvements.jsonl could not be read — nothing migrated: %s" % e
+
+    # The newest 'sent' touch per (person_id, opp_id) — its date feeds the research_log note,
+    # its recipient_role feeds the involvement's path_type.
+    latest = {}
+    for t in touches:
+        if t.get("status") != "sent":
+            continue
+        pid, oid, date = t.get("person_id"), t.get("opp_id"), t.get("date")
+        if not pid or not oid or not date:
+            continue
+        cur = latest.get((pid, oid))
+        if cur is None or str(date) > str(cur[0]):
+            latest[(pid, oid)] = (date, t.get("recipient_role"))
+    if not latest:
+        return True, ""
+
+    import plays as _plays
+
+    involvements = [dict(r) for r in involvements]
+    inv_index = {(r.get("person_id"), r.get("opp_id")): r
+                for r in involvements if r.get("opp_id")}
+    created, upserted = [], []
+    for (pid, oid), (_date, role) in latest.items():
+        inv = inv_index.get((pid, oid))
+        mapped = _plays.ROLE_TO_PATH.get(role) if role else None
+        if inv is None:
+            inv = {"person_id": pid, "opp_id": oid, "channel_id": None, "path_type": mapped,
+                  "role": None, "status": "contacted", "note": None}
+            involvements.append(inv)
+            inv_index[(pid, oid)] = inv
+            created.append("%s/%s" % (pid, oid))
+        else:
+            changed = False
+            if inv.get("status") != "contacted":
+                inv["status"] = "contacted"
+                changed = True
+            if mapped and inv.get("path_type") is None:
+                inv["path_type"] = mapped
+                changed = True
+            if changed:
+                upserted.append("%s/%s" % (pid, oid))
+
+    import profile as _profile_mod
+    owner_token = _profile_mod.owner_token()
+    opps = [dict(o) for o in opps]
+    opps_by_id = {o.get("id"): o for o in opps if o.get("id")}
+    cleared = []
+    for oid in {oid for (_pid, oid) in latest}:
+        o = opps_by_id.get(oid)
+        if o is None or o.get("next_action_owner") != owner_token:
+            continue
+        old_owner, old_date = o.get("next_action_owner"), o.get("next_action_date")
+        o["next_action_owner"] = "me"
+        o["next_action_date"] = None
+        log = list(o.get("research_log") or [])
+        log.append({"date": today,
+                    "note": ("0.54.0 migration (dev #479): next_action_owner cleared from %r "
+                             "to 'me' (next_action_date was %r) — a touch already on file had "
+                             "already completed the action this was waiting on."
+                             % (old_owner, old_date))})
+        o["research_log"] = log
+        cleared.append(oid)
+
+    if not created and not upserted and not cleared:
+        return True, ""
+
+    if not apply_it:
+        summary = ("%d involvement(s) to create, %d to upsert, %d opportunity(ies) to clear "
+                  "off %s" % (len(created), len(upserted), len(cleared), owner_token))
+        return True, "  would migrate (0.54.0) touch propagation backfill: %s" % summary
+
+    if _inject_fault == "after_involvements":
+        # TEST-ONLY — see docstring. Lands involvements.jsonl for real, then stops before
+        # opportunities.jsonl — the PRESERVE half survives; the TRANSFORM half does not
+        # happen at all (never a partial write of it either).
+        import _atomic
+        _atomic.write_jsonl(inv_path, involvements)
+        return False, ("  ⏳ 0.54.0 PENDING — TEST FAULT INJECTED: involvements.jsonl written "
+                       "(%d created, %d upserted); opportunities.jsonl NOT YET written (%d "
+                       "still to clear). Re-run to complete."
+                       % (len(created), len(upserted), len(cleared)))
+
+    overrides = {"involvements.jsonl": involvements, "opportunities.jsonl": opps}
+    rc, problems, new = _shadow_validate(profile, overrides)
+    if new is None or new:
+        detail = "; ".join((new if new else (problems or []))[:8]) or (
+            "validator exited %d with no problem list — it crashed" % rc)
+        return False, ("  ⚠️ 0.54.0 REFUSED — the migrated shape introduces a new validation "
+                       "problem, so NOTHING was written (the real profile is untouched): %s"
+                       % detail)
+    pre_existing_note = ""
+    if rc != 0:
+        pre_existing_note = ("  ⚠️ %d pre-existing problem(s) stand, unrelated to this "
+                             "migration: %s"
+                             % (len(problems or []), "; ".join((problems or [])[:4])))
+
+    import _atomic
+    _atomic.write_jsonl(inv_path, involvements)
+    _atomic.write_jsonl(opp_path, opps)
+    summary = ("%d involvement(s) created, %d upserted, %d opportunity(ies) cleared off %s"
+              % (len(created), len(upserted), len(cleared), owner_token))
+    msg = "  ✅ touch propagation backfill (0.54.0) — %s" % summary
+    return True, (msg + "\n" + pre_existing_note if pre_existing_note else msg)
+
+
 MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               ("0.17.0", m_0_17_0), ("0.18.0", m_0_18_0), ("0.19.0", m_0_19_0),
               ("0.20.0", m_0_20_0), ("0.24.0", m_0_24_0_blocked_until),
@@ -4642,7 +4948,18 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               # pending_for()'s strict `<` would never fire a migration keyed to it.
               # Re-verified when 0.50.0 is actually cut. Public #89 / dev #355.
               ("0.50.0", m_0_50_0_geography_keys),
-              ("0.50.0", m_0_50_0_variant_surface_field))
+              ("0.50.0", m_0_50_0_variant_surface_field),
+              # ⚠️ KEYED "0.54.0" — 0.53.0 is the newest PUBLISHED jobsearch release
+              # (plugin.json at HEAD reads 0.53.0; `jobsearch--v0.53.0` exists in the local tag
+              # list). A profile that installed 0.53.0 is stamped exactly "0.53.0", and
+              # pending_for()'s strict `<` would never fire a migration keyed to it.
+              # Re-verified when 0.54.0 is actually cut. design-script-first.md §2/§12,
+              # build-list item 3 (public #75/#76/#87/#110).
+              ("0.54.0", m_0_54_0_linkedin_quota),
+              # ⚠️ KEYED "0.54.0" — same ADR-009 verification as m_0_54_0_linkedin_quota
+              # immediately above (0.53.0 is the newest published release). dev #479 /
+              # public #114.
+              ("0.54.0", m_0_54_0_touch_propagation))
 
 
 # ⭐⭐ dev #365 (design-connected-entities.md §26.7/§28.2) — "no record of which version added

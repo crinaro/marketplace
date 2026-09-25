@@ -49,8 +49,29 @@ import unittest
 # against the production lock they failed whenever any session legitimately held it, which is
 # exactly the false-RED flakiness that made "take the lock before the gate sweep" self-defeating.
 # A test that exercises a lock must use its own.
+#
+# ⭐ dev #442: "its own" must mean per-PROCESS, not merely per-suite-file. A fixed filename here
+# is shared by every concurrently-running Python process on the machine, not just by tests
+# within ONE process — unittest itself runs a process's own tests serially, so nothing inside a
+# single `test_checks.py` run ever raced. What actually raced was TWO full-suite runs (or a
+# full-suite run alongside `check_ci_parity.py`/`check_unfalsifiable_skips.py`'s own in-process
+# re-run of one test) sharing this SAME `/tmp/claudesearch-test-lock.json` path: reproduced by
+# running `TestLockReleaseIsStructural` 20x in a loop while two more full-suite processes ran
+# concurrently in the background — 8/20 iterations failed, with exactly the shapes a shared lock
+# file predicts ("precondition: lock must be free" when a concurrent process's subprocess was
+# mid-hold; "lock leaked after a failing command" when a concurrent process's own release raced
+# ours; "the command's exit code must propagate" seeing 7 instead of 1 when a concurrent
+# process's release freed OUR refused-take's lock out from under the assertion). The same shared
+# file also produced `check_engine_purity.hook_step()`'s "store-busy" decline
+# (`runlock.read() is not None`) firing under a concurrent process's hold, which is what dev #442
+# separately named as `check_unfalsifiable_skips.py`'s "1 in 11" flake. A per-process suffix
+# (`os.getpid()`) keeps every subprocess call WITHIN one process on the one shared file the
+# take/release contract needs to exercise, while giving every concurrently-running process (two
+# full-suite runs, or a full-suite run plus a gate's own re-run) its own — no shared resource
+# left to contend over.
 os.environ.setdefault("CLAUDESEARCH_LOCK_PATH",
-                      os.path.join(tempfile.gettempdir(), "claudesearch-test-lock.json"))
+                      os.path.join(tempfile.gettempdir(),
+                                   "claudesearch-test-lock-%d.json" % os.getpid()))
 
 # ⭐ SAME SHAPE, FOR THE DIAGNOSTICS LOG (GitHub #9). Migrations here are exercised against
 # synthetic temp fixtures, never a real profile — a run against `_diag`'s hard-coded production
@@ -89,6 +110,60 @@ ENGINE_SCRIPTS = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))  #
 #   anywhere else -> tests/fixtures/profile, synthetic, no real person or figure in it
 _real = _pr()
 _FIXTURE = os.path.join(ENGINE, "tests", "fixtures", "profile")
+
+# ⭐⭐ dev #507 — SELF-HEAL A POISONED FIXTURE, AT IMPORT TIME, BEFORE ANYTHING COPIES IT.
+#
+# `_run_with_skip_accounting()` below (`test_checks.py`'s own entry point) wraps a full suite
+# run in `_fixture_locked_for_run()`, which strips the write bit from every tracked fixture
+# path for the run and restores it in `finally` — "even on a crash", per that function's own
+# docstring, but that claim is only true for a Python exception. A process KILLED mid-run (a
+# dispatch hitting its tool-use/time cap while `runner.run(suite)` is still executing — the
+# full suite is ~1850 tests) never reaches ANY `finally`: no signal handler and no `atexit`
+# hook runs for SIGKILL. The tracked fixture is then left write-stripped ON DISK, in THAT ONE
+# worktree, invisible to `git status` (git tracks the executable bit only, never read/write) —
+# permanently, until something notices and repairs it by hand.
+#
+# Left uncorrected, every OTHER `shutil.copytree(_FIXTURE, scratch)` call site in this suite
+# (dozens of them — `_fixture_locked_for_run()`'s own docstring names the count) silently
+# inherits the same read-only bits onto its scratch copy (`shutil.copystat`'s default
+# behavior), so an unrelated write inside that scratch copy fails with a bare `OSError` a
+# caller three layers up reads as a real, structural verdict —
+# `check_engine_purity.hook_step()`'s persistent-state probe reads it as `no-persistent-state`,
+# and `TestPurityHookStep`'s tests then read `verdict != "hit"` and skip, UNCITED. That is a
+# RED `check_ci_parity.py`'s own fresh `git clone --no-local` never reproduces (a clone writes
+# every blob's bytes fresh from the object database and never inherits a SOURCE WORKING TREE's
+# own on-disk-only permission mutation) — the exact "passes only in a clone, never in the
+# worktree that actually ran the killed suite" shape dev #507 was opened to explain.
+#
+# So: BEFORE anything else in this process touches `_FIXTURE`, repair it if it is currently not
+# fully writable, loudly (the same "state the gap, do not paper over it" convention this file's
+# own "maintainer checkout — not remembering" print already uses below) — never silently.
+def _self_heal_fixture_writability():
+    unwritable = []
+    for dirpath, dirs, files in os.walk(_FIXTURE):
+        for name in dirs + files:
+            p = os.path.join(dirpath, name)
+            try:
+                if not os.access(p, os.W_OK):
+                    unwritable.append(p)
+            except OSError:
+                pass
+    if not os.access(_FIXTURE, os.W_OK):
+        unwritable.append(_FIXTURE)
+    if not unwritable:
+        return
+    print("jobsearch: %d path(s) under the tracked fixture were left read-only by a prior "
+          "run that never reached its own restore (dev #507) — repairing before use: %s"
+          % (len(unwritable), _FIXTURE), file=sys.stderr)
+    for p in unwritable:
+        try:
+            os.chmod(p, os.stat(p).st_mode | 0o200)
+        except OSError as exc:
+            print("jobsearch: could not repair %s: %s" % (p, exc), file=sys.stderr)
+
+
+if os.path.isdir(_FIXTURE):
+    _self_heal_fixture_writability()
 
 # ⭐ SOME TESTS ASSERT THE MAINTAINER'S LAYOUT, NOT THE PRODUCT — GitHub #56.
 #
@@ -1230,6 +1305,194 @@ class _B5Profile(unittest.TestCase):
                 fh.write(json.dumps(r) + "\n")
 
 
+def scratch_profile(testcase=None):
+    """dev #444 — a throwaway copy of the tracked `tests/fixtures/profile` fixture, made
+    under `tempfile`, never the tracked tree itself. A serial suite run leaves the tracked
+    fixture clean even when a test writes into it in place and restores byte-identically
+    after — the whole point of that issue — because nothing ever diffs the MIDDLE of a run.
+    Any test that used to point CLAUDESEARCH_ROOT (or a bare `cwd=`) at `_FIXTURE`/`ROOT`
+    directly and then exercised a writer (`journal.py`, `migrate.py`, `record.py`,
+    `_atomic`/`os.replace` writes, ...) copies here first instead.
+
+    Registers cleanup on `testcase` (anything with unittest's `addCleanup`) when given;
+    otherwise the caller owns `shutil.rmtree(path, ignore_errors=True)` itself. Returns the
+    copy's root — callers set `CLAUDESEARCH_ROOT`/`CLAUDESEARCH_DATA_DIR` themselves (see
+    `scratch_env()` below), matching every other scratch-profile helper in this file
+    (`_B5Profile._profile`, `_ats_fixture_profile`, `_c1_profile`, ...) rather than mutating
+    process-wide `os.environ` for an in-process call that may not want that."""
+    d = tempfile.mkdtemp(prefix="jobsearch-test-scratch-")
+    shutil.rmtree(d)
+    shutil.copytree(_FIXTURE, d)
+    if testcase is not None:
+        testcase.addCleanup(shutil.rmtree, d, True)
+    return d
+
+
+def scratch_env(root, **extra):
+    """The env dict a subprocess needs to actually land on `root` (a `scratch_profile()`
+    copy) rather than the tracked fixture `_common.py` already points process-wide
+    `CLAUDESEARCH_ROOT` at when `USING_FIXTURE` — dev #444. `profile_root()`'s own resolution
+    order (`_root.py`) checks `CLAUDESEARCH_ROOT` before it ever looks at `cwd`, so passing
+    `cwd=root` alone to `subprocess.run` is not enough; every writer test migrated for
+    dev #444 uses this (or the equivalent inline dict) instead of `env=os.environ`."""
+    env = dict(os.environ, CLAUDESEARCH_ROOT=root,
+              CLAUDESEARCH_DATA_DIR=os.path.join(root, "data"))
+    env.update(extra)
+    return env
+
+
+def scratch_fixture_tree(testcase=None):
+    """dev #444 — a throwaway copy of the WHOLE tracked `tests/fixtures/` tree (every case
+    `make_fixture.CASES` can produce — `base` plus every frozen `migrations/pre-*` snapshot —
+    not just the one a test cares about), laid out the same way under the copy as it is under
+    `ENGINE` (`<copy>/tests/fixtures/...`). `check_fixture_generated.py` always scans every
+    case in one run, so a test exercising its hand-edit detection against a scratch copy needs
+    every case present, not only the one it plants a defect into, or every OTHER case reads
+    back as an empty store and fails on an unrelated mismatch.
+
+    Pass the returned root as `CLAUDESEARCH_FIXTURE_ENGINE_ROOT` (`make_fixture.
+    case_output_dir()`'s own override, same dev #444) to redirect a `check_fixture_generated.py`
+    subprocess here instead of the tracked tree."""
+    d = tempfile.mkdtemp(prefix="jobsearch-test-fixture-tree-")
+    shutil.rmtree(d)
+    shutil.copytree(os.path.join(ENGINE, "tests", "fixtures"),
+                    os.path.join(d, "tests", "fixtures"))
+    if testcase is not None:
+        testcase.addCleanup(shutil.rmtree, d, True)
+    return d
+
+
+def _fixture_roots():
+    """Every tracked fixture tree dev #444's tripwire protects — the live `base` profile plus
+    every frozen migration snapshot, all of it under one directory so a stray NEW file
+    anywhere in it (dev #313's own incident shape) is caught the same way a changed one is."""
+    return [os.path.join(ENGINE, "tests", "fixtures")]
+
+
+def _fixture_snapshot():
+    """sha256 of every file under `_fixture_roots()` — dev #444's tripwire baseline, taken
+    before and after the run so an end-state drift is reported even if something bypassed the
+    read-only window below (e.g. running as root, which ignores file-mode bits)."""
+    out = {}
+    for root in _fixture_roots():
+        for dirpath, _dirs, files in os.walk(root):
+            for f in files:
+                p = os.path.join(dirpath, f)
+                with open(p, "rb") as fh:
+                    out[p] = hashlib.sha256(fh.read()).hexdigest()
+    return out
+
+
+def force_tree_writable(path):
+    """dev #507 — force the owner-write bit back on for `path` and everything under it.
+
+    A scratch COPY of the tracked fixture must never silently inherit an unwritable SOURCE.
+    `shutil.copytree`'s default `copy_function` propagates the source's own permission bits
+    onto the destination (`shutil.copystat`) — so if the tracked fixture was ever left
+    write-stripped on disk (a crashed run inside `_fixture_locked_for_run()` below: a SIGKILL
+    or a dispatch hitting its cap mid-`with` skips the `finally` restore, same as any other
+    process kill — no `finally`, no `atexit`, and no signal handler catches SIGKILL), every
+    ONE OF THE DOZENS of legitimate `shutil.copytree(_FIXTURE, scratch)` call sites elsewhere
+    in this suite would silently produce an unwritable scratch copy too. `TestPurityHookStep`
+    and `TestPurityHookDecisionResolution` (`test_check_engine_purity.py`) hit this concretely:
+    `check_engine_purity.hook_step()`'s own persistent-state probe
+    (`os.makedirs(state_dir); open(probe, "w")`) then fails with a bare `OSError`, which
+    `hook_step()` reads as `no-persistent-state` — a real, structural decline — rather than as
+    what it actually is: a POISONED LOCAL WORKING TREE, unrelated to the commit under test.
+    Two of that class's tests then read `verdict != "hit"` and `skipTest`, uncited — a RED
+    `check_unfalsifiable_skips.py` never reproduces from `check_ci_parity.py`'s clone (a fresh
+    `git clone --no-local` is immune: it writes every blob's bytes fresh from the object
+    database, never carrying over a SOURCE WORKING TREE's own on-disk-only, un-tracked
+    permission mutation — git tracks the executable bit, never read/write). This is the fix:
+    every fixture-copying `setUp()` calls this immediately after `copytree`, so the class of
+    copy is unconditionally writable regardless of what state the source happened to be left
+    in — the same "force writable after copy" pattern `_fixture_locked_for_run()` already
+    proved out for its own patched `copystat`/`copymode`, generalized to a plain call site that
+    is not inside that context manager's `with` block at all."""
+    os.chmod(path, os.stat(path).st_mode | 0o200)
+    for dirpath, dirs, files in os.walk(path):
+        for name in dirs + files:
+            p = os.path.join(dirpath, name)
+            try:
+                os.chmod(p, os.stat(p).st_mode | 0o200)
+            except OSError:
+                pass
+
+
+@contextlib.contextmanager
+def _fixture_locked_for_run():
+    """dev #444's tripwire. Strips the write bit from every file AND directory under
+    `_fixture_roots()` for the duration of the `with` block — restored (original mode,
+    including any directory's own) in `finally`, even on a crash — so a test that still
+    writes into the tracked fixture in place, even one that restores byte-identically
+    afterward, fails LOUDLY and immediately with its own PermissionError, right there in its
+    traceback, instead of leaving a transient bad state that a serial run never notices and a
+    concurrent reader (a second test process, a gate loop, check_unfalsifiable_skips.py's
+    second pass, a coordinator running parity beside a dispatch) can be corrupted by.
+
+    Every writer test dev #444 found (`scripts/tests/test_binding.py`,
+    `scripts/tests/test__docx.py`) was moved onto `scratch_profile()`/`scratch_fixture_tree()`
+    before this landed — see their own dev #444 citations — so this should never fire in a
+    clean run; it is the mechanical backstop for the NEXT one, not a check any test here is
+    meant to trip on purpose.
+
+    ⭐ WITHOUT the patch below, this lock is not safe to land: dozens of OTHER, perfectly
+    legitimate tests elsewhere in this suite already do `shutil.copytree(_FIXTURE, scratch)`
+    or `shutil.copy(os.path.join(ROOT, f), ...)` to build their OWN scratch profile — the
+    sanctioned pattern, unrelated to dev #444's writers. `shutil.copy`/`copy2`/`copytree`'s
+    default `copy_function` all replicate the SOURCE file's permission bits onto the
+    destination (`shutil.copystat`/`copymode`) — so a source made read-only here makes every
+    one of those scratch COPIES read-only too, and every one of *those* tests then fails with
+    the exact same PermissionError this lock exists to produce, for a reason that has nothing
+    to do with them (measured directly: landing the raw chmod-only version of this lock
+    turned 4 real dev #444 failures into 166). `shutil.copystat`/`copymode` are patched for
+    the lock's duration to keep doing everything they normally do and then force the
+    destination's owner-write bit back on — a copy's CONTENT still comes from the source
+    exactly as before; only the destination's own writability is no longer inherited."""
+    saved = []
+    for root in _fixture_roots():
+        for dirpath, dirs, files in os.walk(root):
+            for name in files + dirs:
+                p = os.path.join(dirpath, name)
+                mode = os.stat(p).st_mode
+                saved.append((p, mode))
+                os.chmod(p, mode & ~0o222)
+        mode = os.stat(root).st_mode
+        saved.append((root, mode))
+        os.chmod(root, mode & ~0o222)
+
+    _orig_copystat = shutil.copystat
+    _orig_copymode = shutil.copymode
+
+    def _force_writable(path):
+        try:
+            st = os.stat(path)
+            os.chmod(path, st.st_mode | 0o200)
+        except OSError:
+            pass
+
+    def _copystat_then_writable(src, dst, *, follow_symlinks=True):
+        _orig_copystat(src, dst, follow_symlinks=follow_symlinks)
+        _force_writable(dst)
+
+    def _copymode_then_writable(src, dst, *, follow_symlinks=True):
+        _orig_copymode(src, dst, follow_symlinks=follow_symlinks)
+        _force_writable(dst)
+
+    shutil.copystat = _copystat_then_writable
+    shutil.copymode = _copymode_then_writable
+    try:
+        yield
+    finally:
+        shutil.copystat = _orig_copystat
+        shutil.copymode = _orig_copymode
+        for p, mode in saved:
+            try:
+                os.chmod(p, mode)
+            except OSError:
+                pass
+
+
 SKIP_BASELINE = {
     True: {   # no real profile on this machine — this is CI, always, and any bare checkout
         # 37 -> 35 (gate-keeper, dev #165 item 1/2, 2026-09-02): two of these skips are gone,
@@ -1292,11 +1555,30 @@ def _run_with_skip_accounting():
     count this file has explicitly declared as expected in this environment. A skip that is
     undeclared, or whose count moved, is treated the same as a failure — see SKIP_BASELINE above
     for why, and dev #107 for the incident this exists to close.
+
+    ⭐ dev #444 — the run itself is wrapped in `_fixture_locked_for_run()`: every tracked
+    fixture tree is read-only while `runner.run(suite)` executes, so a test that still writes
+    into it in place fails loudly, right there, instead of leaving an invisible transient
+    write a serial run never notices. A before/after `_fixture_snapshot()` diff is reported
+    too, as a second, independent signal — it would catch a write that somehow bypassed the
+    read-only bits (running as root, for instance), which the lock alone cannot.
     """
     loader = unittest.TestLoader()
     suite = loader.discover(TESTS_DIR, pattern="test_*.py", top_level_dir=TESTS_DIR)
     runner = unittest.TextTestRunner(verbosity=2)
-    result = runner.run(suite)
+    before_fixture = _fixture_snapshot()
+    with _fixture_locked_for_run():
+        result = runner.run(suite)
+    after_fixture = _fixture_snapshot()
+    if before_fixture != after_fixture:
+        changed = sorted(set(before_fixture) ^ set(after_fixture)
+                         | {p for p in before_fixture
+                            if p in after_fixture and before_fixture[p] != after_fixture[p]})
+        print("!! dev #444: THE TRACKED FIXTURE CHANGED DURING THIS RUN — %d path(s):"
+             % len(changed))
+        for p in changed:
+            print("   - " + p)
+        return False
 
     reason_counts = collections.Counter(reason for _, reason in result.skipped)
     total = result.testsRun
@@ -1411,6 +1693,13 @@ __all__ = [
     '_rs_profile',
     '_rs_journal',
     '_B5Profile',
+    'scratch_profile',
+    'scratch_env',
+    'scratch_fixture_tree',
+    '_fixture_roots',
+    '_fixture_snapshot',
+    '_fixture_locked_for_run',
+    'force_tree_writable',
     'SKIP_BASELINE',
     '_run_with_skip_accounting',
 ]

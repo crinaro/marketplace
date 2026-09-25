@@ -1011,13 +1011,23 @@ def hook_step(profile, engine, budget_s=8, migrations_verdict="current"):
         src_stat = _term_sources_stat(profile)
         thash = _terms_hash(terms)
 
-        # §2.3 step 1 — the steady state.
-        if (stamp.get("engine_version") == engine_version and stamp.get("engine_root") == engine_real
+        # §2.3 step 1 — the steady state. dev #529 — a PARTIAL stamp must never satisfy this: a
+        # partial scan records the SAME engine_version/engine_root/sources a completed one would
+        # (nothing about the PROFILE moved, only the scan itself ran out of budget), so without
+        # this guard a later call — even one with a far larger budget_s, exactly what
+        # `_hook_settled()`'s own retry uses — would silently reuse the unfinished verdict as
+        # "unchanged" forever instead of ever finishing the scan. Reproduced: a `budget_s=0` first
+        # call ("partial") followed by a `budget_s=120` retry against the SAME profile returns
+        # "unchanged", never "hit", even though the collision is still there.
+        if (stamp.get("verdict") != "partial"
+                and stamp.get("engine_version") == engine_version and stamp.get("engine_root") == engine_real
                 and stamp.get("sources") == src_stat):
             return _decline("unchanged")
 
-        # §2.3 step 2 — term set unchanged even though a source's stat moved.
-        if (stamp.get("terms_sha256") == thash and stamp.get("engine_version") == engine_version
+        # §2.3 step 2 — term set unchanged even though a source's stat moved. Same dev #529 guard:
+        # a partial scan's terms_sha256 match is not evidence the SCAN itself ever finished.
+        if (stamp.get("verdict") != "partial"
+                and stamp.get("terms_sha256") == thash and stamp.get("engine_version") == engine_version
                 and stamp.get("engine_root") == engine_real):
             new_stamp = dict(stamp)
             new_stamp["sources"] = src_stat
@@ -1184,6 +1194,25 @@ def _refuse_require_profile_if_present(argv):
         sys.exit(2)
 
 
+# ⭐⭐ dev #476 (public #117) — THE STANDALONE PATH HAD NO TIME BUDGET AT ALL.
+#
+# `hook_step()` (§2.3 above) slices its scan under `budget_s` because it runs inside a
+# SessionStart hook with a shared 30 s envelope — it MUST return promptly. `main()`'s own scan
+# loop, below, is the CLI a person or an unattended daily run invokes directly — it had no
+# equivalent. A full scan was re-timed 2026-09-22 at over 600 seconds of high-CPU work before
+# exiting cleanly (exit 0, no deadlock). A daily run watching for a shorter window than that has
+# no way to tell "still working" from "hung" — and macOS ships no `timeout` binary, so nothing
+# outside this process can cap it either. The cap has to come from inside the scan itself.
+#
+# The default below is HALF that measured 600 s worst case: generous enough that an ordinary
+# scan (seconds, not minutes, on this repo's ~130 tracked engine files) never comes close to it,
+# but low enough that the scan can self-report "incomplete" and exit before whatever external
+# process is timing it reaches the 600 s point that gets logged as a hang. It is a CLI flag,
+# not only a constant, because a slower machine or a larger engine tree is a real possibility
+# this file cannot predict in advance — `--budget-s` overrides it per invocation.
+STANDALONE_BUDGET_S = 300
+
+
 def main():
     _refuse_require_profile_if_present(sys.argv[1:])
     ap = argparse.ArgumentParser(description="Is a reusable file carrying one person's data?")
@@ -1200,6 +1229,11 @@ def main():
                     help="with --hook: print the stamp's verdict/hits/pervasive as one JSON "
                          "object on stdout (the scanner's RETURN VALUE, never the human print — "
                          "§3.3 #52).")
+    ap.add_argument("--budget-s", type=float, default=STANDALONE_BUDGET_S, dest="budget_s",
+                    help="dev #476 — time budget in seconds for the term scan below (default "
+                         "%(default)s). Exceeding it exits distinctly (3), never as CLEAN (0) — "
+                         "see the INCOMPLETE verdict this file prints when it fires. No effect "
+                         "on --hook or --structure-only, which have their own budgets.")
     args = ap.parse_args()
 
     if args.hook:
@@ -1334,10 +1368,22 @@ def main():
 
     print("  terms drawn from the PROFILE (never hard-coded here): %s"
           % ", ".join("%s=%d" % (k, len(v)) for k, v in terms.items()))
+    print("  time budget for this scan: %ss (--budget-s to change; dev #476)" % args.budget_s)
     total, dirty = 0, []
     fired = set()
     exempt_by_file = {}
-    for p in readable:
+    # ⭐⭐ dev #476 — SLICED UNDER A BUDGET, exactly like hook_step()'s §2.3 loop, and for the
+    # same reason: `readable`'s order is deterministic (it is built by iterating ENGINE, which
+    # is sorted), so `scanned` is always a stable PREFIX of it — the same file set a re-run with
+    # the same budget would scan again, never a random subset.
+    t0 = time.time()
+    partial, resume_index = False, None
+    scanned = []
+    for idx, p in enumerate(readable):
+        if time.time() - t0 > args.budget_s:
+            partial, resume_index = True, idx
+            break
+        scanned.append(p)
         exempt_sink = []
         rel, hits = scan(p, terms, exempt_sink)
         if exempt_sink:
@@ -1360,6 +1406,18 @@ def main():
             for n, kind, w, line in hits[:12]:
                 print("    %4d  [%s:%s]  %s" % (n, kind, w, line))
 
+    # ⭐⭐ dev #476 — LOUD, AND BEFORE ANY "CLEAN"-SHAPED OUTPUT. A budget-exhausted scan must be
+    # impossible to mistake for a completed one — print this the moment the loop above stops
+    # early, not folded into the final verdict line where a reader skimming for "CLEAN" could
+    # miss it.
+    if partial:
+        print("\n  !! PURITY SCAN INCOMPLETE — budget of %ss exceeded after %d of %d readable "
+              "file(s)." % (args.budget_s, resume_index, len(readable)))
+        print("     Every finding printed below is real (files actually scanned are never "
+              "under-reported).")
+        print("     But %d file(s) were NEVER SCANNED this run — raise --budget-s or re-run; a "
+              "lack of hits below is NOT a passing verdict." % (len(readable) - resume_index))
+
     # ⭐⭐ dev #342 — VISIBLE EVERY RUN, RED NEVER. The mechanism that retires a KNOWN_EXCEPTIONS
     # entry by occurrence shape must be as visible as the exceptions it replaces — the count
     # prints unconditionally, and --verbose names every site, so the trade in `_shape_exempt()`'s
@@ -1380,8 +1438,15 @@ def main():
     # the exception outlived it. An exception whose file is absent from the tree under scan is
     # simply not applicable: the throwaway trees the regression tests build contain none of
     # these paths, and judging those as stale made this gate fail against every synthetic tree.
+    # ⭐ dev #476 — and an exception whose file was NEVER REACHED because the budget ran out is
+    # equally "not applicable" this run, for the identical reason: staleness can only be judged
+    # against a file this run actually scanned. Without this, a budget cutoff could report a
+    # LIVE exception as stale purely because its file sat past `resume_index` — the same
+    # "missing thing reads as empty" shape this whole gate exists to refuse elsewhere.
+    scanned_rels = {os.path.relpath(p, ENGINE_ROOT) for p in scanned}
     applicable = [e for e in KNOWN_EXCEPTIONS
-                  if os.path.exists(os.path.join(ENGINE_ROOT, e[0]))]
+                  if os.path.exists(os.path.join(ENGINE_ROOT, e[0]))
+                  and (not partial or e[0] in scanned_rels)]
     stale = [e for e in applicable if e not in fired]
     if fired:
         print("\n  KNOWN EXCEPTIONS — suppressed here, tracked as issues, NOT resolved:")
@@ -1398,6 +1463,19 @@ def main():
 
     print("\n  %d ENGINE file(s) carrying profile data · %d marker(s)" % (len(dirty), total))
     if not dirty:
+        # ⭐⭐ dev #476 — THE FALSE-NEGATIVE THIS ISSUE EXISTS TO CLOSE. Before this fix, "no hits
+        # in what we scanned" and "no hits, full stop" printed the identical CLEAN line — the
+        # exact shape that reads a missing thing (the unscanned remainder) as an empty thing (no
+        # leak) and reports it as fact. A caller is entitled to conclude from CLEAN (exit 0) that
+        # EVERY readable engine file was checked and none matched; from INCOMPLETE (exit 3) only
+        # that the files actually scanned (named above) were checked — the rest is unknown, not
+        # clean, and must not be treated as a passing run by any script or CI step.
+        if partial:
+            print("\n  !! INCOMPLETE — budget exhausted before every file was scanned. This is")
+            print("     NOT a passing verdict: %d of %d readable file(s) were never checked."
+                  % (len(readable) - resume_index, len(readable)))
+            print("     Re-run with a larger --budget-s to get a verdict that covers the rest.")
+            return 3
         print("\n  CLEAN. Every agent spec and run prompt is portable.")
         return 0
 

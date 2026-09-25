@@ -711,6 +711,30 @@ def is_first_run_for_mailbox(root, mailbox):
                   for r in recs)
 
 
+def first_swept_at(root, mailbox, by="reconcile-ats"):
+    """dev #478 (public #115) — the WALL-CLOCK MOMENT real tracking began for this mailbox:
+    the earliest completed (`ok: true`) sweep's own `at`, or `None` when no completed sweep
+    has ever run (§5's `is_first_run_for_mailbox` reads True for every uid in that case, same
+    as here).
+
+    ⭐ Why `--ats --verify` needs THIS instead of `is_first_run_for_mailbox`: that function
+    answers 'is the mailbox first-run RIGHT NOW' — a single boolean re-evaluated every time
+    `--verify` runs, so it flips from True to False the moment the mailbox's first real sweep
+    completes and STAYS False forever after. `--ats`'s own sweep evaluates it once, before its
+    own write, which is correct (D6) — but `--verify` re-examines uids from ANY window,
+    including ones that predate that first sweep, days or weeks later. Using the NOW-boolean
+    there misclassifies every uid older than the first sweep as UNRECORDED the moment a SECOND
+    sweep exists, even though it was legitimately counted-but-not-written under the first-run
+    carve-out at the time it was actually seen. The fix is a boundary TIMESTAMP, not a
+    boolean: a uid's own mail date is compared against WHEN the first sweep ran, never against
+    whether one has run by the time `--verify` happens to be asking."""
+    recs = _journal.read(root)
+    ats = sorted(r.get("at") for r in recs
+                if r.get("event") == "swept" and r.get("mailbox") == mailbox
+                and r.get("by") == by and r.get("ok") and r.get("at"))
+    return ats[0] if ats else None
+
+
 RECORD_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "record.py")
 
 
@@ -1209,19 +1233,42 @@ def cmd_verify(args):
     for account in accounts:
         try:
             with Mailbox(account) as mb:
+                # dev #478 (public #115) — a TIMESTAMP, evaluated once per account, never a
+                # per-verify-run boolean: see first_swept_at()'s own docstring for why
+                # is_first_run_for_mailbox() (a NOW-evaluated flag) misclassifies uids that
+                # predate the mailbox's first real sweep once a second sweep exists.
+                boundary_at = first_swept_at(ROOT, account)
                 per_domain = {}
                 for d in domains:
                     uids = mb.search("from:%s newer_than:%dd" % (d, days))
                     n_recorded = n_asked = n_unrecorded = n_historical = 0
-                    first_run = is_first_run_for_mailbox(ROOT, account)
                     for uid in uids:
                         source = "ats:%s:%s" % (account, uid)
                         tag = "mail:%s:%s" % (account, uid)
                         if source in have_sources:
                             n_recorded += 1
-                        elif any(tag in (a.get("note") or "") for a in asks_all):
+                            continue
+                        if any(tag in (a.get("note") or "") for a in asks_all):
                             n_asked += 1
-                        elif first_run:
+                            continue
+                        # historical = no completed sweep has EVER run (still genuinely
+                        # first-run, same as before), OR this uid's own mail date predates
+                        # WHEN the first completed sweep actually ran — it was seen (or would
+                        # have been) under §5's first-run carve-out, never written by design,
+                        # and re-examining it after a LATER sweep exists must not relitigate
+                        # that. A date this can't parse is NOT given the benefit of the
+                        # doubt — an unparseable value stays loud (CLAUDE.md), so it falls
+                        # through to UNRECORDED rather than being silently forgiven.
+                        historical = False
+                        if boundary_at is None:
+                            historical = True
+                        else:
+                            hdr = mb.fetch_headers(uid)
+                            mail_date = parse_hdr_date(
+                                decode_header_value(hdr.get("Date"))) if hdr else None
+                            if mail_date is not None:
+                                historical = mail_date.isoformat() < boundary_at
+                        if historical:
                             n_historical += 1
                         else:
                             n_unrecorded += 1

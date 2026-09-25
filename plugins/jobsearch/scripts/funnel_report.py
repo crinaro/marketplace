@@ -530,7 +530,17 @@ def main():
         print("  Reply rate: %s" % pct(len(replied), len(sent)))
         print("")
         for o, x in sorted(sent, key=lambda t: t[1].get("date") or ""):
+            # dev #477 / public #116 — a channel-scoped touch (opp_id null, channel_id set)
+            # is a shape validate_data's exactly-one-of rule explicitly ACCEPTS (public #53):
+            # a touch anchored to a relationship rather than any one role. `o` is then `{}`
+            # (opps_by_id.get(None) misses) and company_id is None, so the company-name path
+            # resolves to None. Falling back to the channel's own label keeps the row in the
+            # report instead of crashing and silently dropping every section after it.
             name = companies.get(o.get("company_id"), {}).get("name", o.get("company_id"))
+            if name is None:
+                chan_id = x.get("channel_id")
+                name = ("via " + channels.get(chan_id, {}).get("label", chan_id)) if chan_id \
+                    else "(no opp/channel)"
             age = days_since(x.get("date"))
             print("  %-11s %-14s %-26s %s" % (
                 x.get("date") or "(none)", x.get("outcome") or "?", (x.get("to") or "")[:26], name[:26]))

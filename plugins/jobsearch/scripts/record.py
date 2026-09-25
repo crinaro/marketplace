@@ -915,6 +915,156 @@ def _person_name(person_id):
         return None
 
 
+def _plays_mod():
+    """plays.py — the ONE place ROLE_TO_PATH/PATH_TYPE_CLASS are defined (§26.2's own bridge
+    between touches' RECIPIENT_ROLES and involvements' PATH_TYPES), imported lazily the same
+    way `_plans_mod()`/`_validator_module()` are — only `_propagate_touch` pays for it."""
+    import plays as _pl
+    return _pl
+
+
+def _profile_mod():
+    """profile.py, imported lazily — only `_propagate_touch`'s next_action_owner comparison
+    needs `owner_token()`, the same lazy-import discipline as `_plays_mod()`."""
+    import profile as _pf
+    return _pf
+
+
+# ── dev #479 / public #114 — completing an outbound touch PROPAGATES ────────────────────────
+#
+# The defect: `touched`/`answered` wrote only the touch/message row and stopped — the
+# recipient's `involvements` row was never created or upserted (a person just written to could
+# still read as not-contacted, or have no row at all), and the opportunity's
+# `next_action_owner`/`next_action_date` never moved off the candidate even though the action
+# they were waiting on had just been recorded. `check_followups.py` tracked the touch
+# correctly; the role-decision surface reads `opportunities`/`involvements`, not the touch
+# store, so completed outbound work kept rendering as an open to-do. This is proposal #1 from
+# the report — the smallest of the three, and the one that closes the write path itself rather
+# than adding a second, independent detector for the gap it leaves.
+
+def _propagate_touch(opp_id, person_id, date, recipient_role=None):
+    """Runs INSIDE the caller's lock hold, best-effort, AFTER the write that recorded the
+    touch (or the reply message) has already landed and validated clean — the same shape
+    `_resolve_plan_goal`/`resolve_linked_asks_dated` use above: a failure here is loud and
+    never un-lands the primary write.
+
+    Two independent updates, each verified by its own validate-and-roll-back:
+
+      1. Upsert the (person_id, opp_id) involvement: create it if absent (never was there to
+         upsert), or set `status` to 'contacted' on an existing one. `path_type` is filled from
+         the touch's own `recipient_role` via `plays.ROLE_TO_PATH` (§26.2's existing bridge,
+         "it is simply never applied when a touch is recorded" per the report) only when the
+         row does not already carry one — reclassifying an existing 'cold'/'hiring-context'
+         path_type is the report's SECOND, separate finding and out of this dispatch's scope.
+
+      2. If this opportunity's `next_action_owner` names the candidate, the touch just
+         recorded is the action it was waiting on: clear ownership to 'me' and clear the now-
+         stale `next_action_date` alongside it, in the SAME write — never re-derive a new date,
+         only retire the one that named this now-completed action.
+
+    Returns the printable lines describing what changed (possibly empty)."""
+    if not opp_id or not person_id:
+        return []
+    lines = []
+
+    # ---- 1. involvements: create or upsert ----------------------------------------------
+    involvements = _load_involvements()
+    inv = None
+    for row in involvements:
+        if row.get("person_id") == person_id and row.get("opp_id") == opp_id:
+            inv = row
+            break
+    mapped_path = _plays_mod().ROLE_TO_PATH.get(recipient_role) if recipient_role else None
+    created = inv is None
+    inv_dirty = False
+    if inv is None:
+        inv = {"person_id": person_id, "opp_id": opp_id, "channel_id": None,
+               "path_type": mapped_path, "role": None, "status": "contacted", "note": None}
+        involvements.append(inv)
+        inv_dirty = True
+    else:
+        if inv.get("status") != "contacted":
+            inv["status"] = "contacted"
+            inv_dirty = True
+        if mapped_path and inv.get("path_type") is None:
+            inv["path_type"] = mapped_path
+            inv_dirty = True
+
+    if inv_dirty:
+        inv_path = os.path.join(DATA, "involvements.jsonl")
+        try:
+            with open(inv_path, "rb") as fh:
+                before_inv = fh.read()
+        except OSError:
+            before_inv = None
+        fd, tmp = tempfile.mkstemp(dir=DATA, prefix=".record-involvements-", suffix=".tmp")
+        landed = False
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                for r in involvements:
+                    fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, inv_path)
+            landed = True
+        except Exception as e:                                        # noqa: BLE001
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            print("  ⚠️ the write landed, but upserting the involvement failed: %s" % e)
+        if landed:
+            rc, out, err, _problems = validate()
+            if rc != 0:
+                ok = False
+                if before_inv is not None:
+                    fd2, tmp2 = tempfile.mkstemp(dir=DATA, prefix=".rollback-involvements-",
+                                                 suffix=".tmp")
+                    try:
+                        with os.fdopen(fd2, "wb") as fh:
+                            fh.write(before_inv)
+                            fh.flush()
+                            os.fsync(fh.fileno())
+                        os.replace(tmp2, inv_path)
+                        with open(inv_path, "rb") as fh:
+                            ok = fh.read() == before_inv
+                    except Exception:                                  # noqa: BLE001
+                        if os.path.exists(tmp2):
+                            os.unlink(tmp2)
+                print("  ⚠️ the write landed, but upserting the involvement left the store "
+                      "invalid and was %s."
+                      % ("rolled back" if ok else "NOT VERIFIABLY ROLLED BACK — restore "
+                         "involvements.jsonl from git"))
+                print("  " + "\n  ".join(_diagnostic_lines(rc, out, err)))
+            else:
+                lines.append("  ✦ involvement %s for %s on %s"
+                             % ("created" if created else "upserted", person_id, opp_id))
+
+    # ---- 2. opportunity: clear ownership off the candidate --------------------------------
+    owner_token = _profile_mod().owner_token()
+    opps = load("opportunities")
+    opp = find(opps, opp_id)
+    if opp is not None and opp.get("next_action_owner") == owner_token:
+        before_opp = snapshot("opportunities")
+        pre_rc, _o, _e, pre_problems = validate()
+        opp["next_action_owner"] = "me"
+        opp["next_action_date"] = None
+        save_atomic("opportunities", opps)
+        rc, out, err, problems = validate()
+        if rc != 0:
+            added = new_problems(pre_problems, problems)
+            if not (pre_rc != 0 and added == []):
+                restore("opportunities", before_opp)
+                print("  ⚠️ the write landed, but clearing next_action_owner broke the "
+                      "store; rolled back.")
+                print("  " + "\n  ".join(_diagnostic_lines(rc, out, err)))
+            else:
+                lines.append("  ✦ next_action_owner cleared off %s on %s (this touch was "
+                             "the action it was waiting on)" % (owner_token, opp_id))
+        else:
+            lines.append("  ✦ next_action_owner cleared off %s on %s (this touch was the "
+                         "action it was waiting on)" % (owner_token, opp_id))
+    return lines
+
+
 def cmd_touched(args):
     """`record.py touched <opp_id> --to contact:<person-id> --on <date> --medium <medium>
     [--role <role>]` — cell 3's own action line (design §3): a touch made OUTSIDE the normal
@@ -1072,6 +1222,10 @@ def cmd_touched(args):
                 print("  " + "\n  ".join(_diagnostic_lines(rc2, out2, err2)))
                 return 1
         print("  ✦ touch %s recorded on %s" % (new_touch_id, opp_id))
+        # dev #479 / public #114 — propagate the just-landed touch to involvements/
+        # next_action_owner/next_action_date, still inside this same lock hold.
+        for line in _propagate_touch(opp_id, person_id, date, recipient_role=args.recipient_role):
+            print(line)
     finally:
         if not args.already_locked:
             release_lock()
@@ -1101,6 +1255,12 @@ def cmd_answered(args):
     medium = args.via_medium
     if not medium or medium not in _vd.MEDIA:
         print("⛔ REFUSED — --via must be one of %s" % ", ".join(sorted(_vd.MEDIA)))
+        return 1
+    # dev #479 / public #114 — `--role` is shared with `touched` (same flag, same
+    # RECIPIENT_ROLES vocabulary) so `answered`'s own propagation below can fill an
+    # involvement's path_type through plays.ROLE_TO_PATH too; validated the same way.
+    if args.recipient_role is not None and args.recipient_role not in _vd.RECIPIENT_ROLES:
+        print("⛔ REFUSED — --role must be one of %s" % ", ".join(sorted(_vd.RECIPIENT_ROLES)))
         return 1
 
     messages0 = load("messages")
@@ -1183,6 +1343,10 @@ def cmd_answered(args):
                 print("  ⛔ REFUSED — this reply broke the store; rolled back.")
                 print("  " + "\n  ".join(_diagnostic_lines(rc, out, err)))
                 return 1
+        # dev #479 / public #114 — propagate this reply to involvements/next_action_owner/
+        # next_action_date, still inside this same lock hold.
+        for line in _propagate_touch(opp_id, person_id, date, recipient_role=args.recipient_role):
+            print(line)
     finally:
         if not args.already_locked:
             release_lock()
@@ -1402,7 +1566,9 @@ def main():
                     help="answered: the medium the reply went out on — one of "
                          "validate_data.MEDIA.")
     ap.add_argument("--role", dest="recipient_role", default=None,
-                    help="touched: one of validate_data.RECIPIENT_ROLES (optional).")
+                    help="touched/answered: one of validate_data.RECIPIENT_ROLES (optional) — "
+                         "feeds the involvement's path_type via plays.ROLE_TO_PATH when the "
+                         "recipient's involvement does not already have one (dev #479).")
     ap.add_argument("--opp", dest="opp_id", default=None,
                     help="answered: the opportunity this reply belongs to — required when "
                          "the target is a `contact:<id>` touch ref rather than a message id "

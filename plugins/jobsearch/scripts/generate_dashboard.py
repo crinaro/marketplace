@@ -69,6 +69,7 @@ import knowledge as _kn
 import precondition as _pre
 import channels_due as _cd
 import conversations as _conv_mod
+import config_keys as _ck
 # ⭐ THE ONE DEFINITION OF "CURRENT" — resume_variants.py owns union_hash (the canonicalized,
 # line-ending/trailing-space/trailing-newline-insensitive stamp `--stamp` writes onto
 # union_sha). This file used to recompute a RAW sha256 of the union's bytes, which agreed with
@@ -138,6 +139,21 @@ def _dashboard_title():
     title = template.replace("{name}", name).strip()
     # A profile with no name must not yield a title starting with a stray dash.
     return title.strip("— ").strip() or "Job Search"
+
+
+def _collapse_words_n():
+    """`config_keys.DASHBOARD_BODY_COLLAPSE_WORDS`, read the same defensive way
+    `_dashboard_title()` reads `config.json` above — an unreadable file falls back to the
+    registered default rather than crashing dashboard generation over a formatting knob."""
+    import json as _json
+    cfg = {}
+    try:
+        with open(os.path.join(_profile_root(), "config.json"), encoding="utf-8") as fh:
+            cfg = _json.load(fh)
+    except Exception:
+        pass
+    value, _prov = _ck.describe(cfg, _ck.DASHBOARD_BODY_COLLAPSE_WORDS)
+    return value
 
 def read(name: str) -> str:
     p = Path(_tree.resolve_rel(str(ROOT), name))   # canonical name; legacy root falls back
@@ -549,11 +565,19 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
     return html_out, counts
 
 
-def render_your_move(items, links=None, cap=None, more_at=None, set_name=None) -> str:
+def render_your_move(items, links=None, cap=None, more_at=None, set_name=None,
+                      store="data/opportunities.jsonl") -> str:
     """The numbered ask list (callout groups, Decide, Ready-to-send). Since the one-artifact
     collapse it takes the same cap every working set takes: items are already ordered
     soonest-first before they arrive here, so the cap trims only the tail, and the remainder is
-    counted and located rather than silently absent."""
+    counted and located rather than silently absent.
+
+    §4.3 / dev #486 (public #107 part 2): the `ym-ask` body is NON-sendable free text (a
+    `why`/derived ask line, never the draft the candidate sends) so it routes through
+    `_clause_cell` exactly like every other working-set body — clause, then `_collapse_over`'s
+    full-under-`<details>`-or-collapsed-pointer split. `store` is this call's own source file
+    for the locator; a per-item id (`item[2]`, already carried for `data-rec`) narrows it to
+    that record when present."""
     if not items:
         return '<div class="sub">Nothing is waiting on you right now.</div>'
     cap = cap if cap is not None else WORKING_SET_CAP
@@ -578,10 +602,11 @@ def render_your_move(items, links=None, cap=None, more_at=None, set_name=None) -
         jd_html = (f' <a class="ym-jd" href="{link}" target="_blank" rel="noopener">JD ↗</a>'
                    if link else '')
         rec_attr = (' data-rec="%s"' % esc("opp:%s" % opp_id)) if opp_id else ""
+        locator = ("%s · %s" % (store, opp_id)) if opp_id else store
         parts.append(
             f'<div class="ym-item"{rec_attr}><div class="ym-num">{n}</div><div>'
             f'<div class="ym-title">{md_inline(t)}{jd_html}</div>'
-            f'<div class="ym-ask">{md_inline(w)}</div></div></div>')
+            f'<div class="ym-ask">{_clause_cell(w, locator)}</div></div></div>')
     return "".join(parts) + more
 
 
@@ -1166,16 +1191,41 @@ def _flat(text):
     return re.sub(r"[*`]+", "", flat).strip()
 
 
-def _clause_cell(text):
-    """public #31, revised by #46: the row shows ONE clause of the SOURCE FIELD, and the
-    full body is on the page too — collapsed, never a click away from being absent. A bare
-    `<details>` alone would have hidden the #46 truncation behind a click rather than fixing
-    it; a clause alone drops the memo the owner still needs on a phone. Returns HTML."""
+def _collapse_over(text, n, locator):
+    """design-script-first.md §4.3 (dev #486 / public #107 part 2, revising public #31/#46) —
+    the ONE place a NON-SENDABLE free-text body decides between "full, collapsed under
+    `<details>`" and "clause + word count + locator, no full text at all". Never called for a
+    sendable body — that is the ONE exception (public #46's own ruling: the body IS the decision
+    being asked for), and `render_message_list`'s own sendable path stays its separate,
+    unconditional "always full" branch rather than routing through here at all. Returns the
+    HTML to APPEND after the clause (`_clause_cell`'s own shape) — never the clause itself, so a
+    caller that already has its own clause text keeps using it."""
+    flat = _flat(text)
+    words = flat.split()
+    if len(words) <= n:
+        if _clause(text) == flat:
+            return ""
+        return ('<details class="ws-full"><summary>full</summary>'
+                '<div class="ws-full-body">%s</div></details>' % md_inline(text))
+    # Over N: the full text is NEVER emitted — not even inside a collapsed <details> — because
+    # a reader-facing "absent from the page" is the whole point (public #46's complaint was a
+    # truncation with nowhere to go; the locator is the somewhere, per §4.3).
+    return (' <span class="ws-collapsed">%d words · <code class="fileref">%s</code></span>'
+           % (len(words), esc(locator)))
+
+
+def _clause_cell(text, locator=None):
+    """public #31, revised by #46, revised again by §4.3 (dev #486 / public #107 part 2): the
+    row shows ONE clause of the SOURCE FIELD, and the rest of the body follows the §4.3 rule —
+    full and collapsed under `<details>` when the body is at or under
+    `config_keys.DASHBOARD_BODY_COLLAPSE_WORDS`, clause + word count + `locator` when over it.
+    `locator` is the store's own `<code class="fileref">` pointer (e.g.
+    `data/asks.jsonl · ask-20260916-03`) — REQUIRED whenever the body can plausibly exceed the
+    threshold; a caller with no real locator to offer is a caller that should not be showing an
+    unbounded body at all. Returns HTML."""
     clause = _clause(text)
     cell = esc(clause)
-    if clause != _flat(text):
-        cell += ('<details class="ws-full"><summary>full</summary>'
-                 '<div class="ws-full-body">%s</div></details>' % md_inline(text))
+    cell += _collapse_over(text, _collapse_words_n(), locator or "")
     return cell
 
 
@@ -2057,7 +2107,8 @@ def render_your_move_callouts(unresolved, waiting, fulfilled, stalled_plays, lin
             '<span class="tcount">%d</span></h2>'
             '<div class="sub" style="margin:-6px 0 10px">A touch landed on or after the '
             'planned date. Clear <code>next_touch</code> or author the next one.</div>'
-            '<div class="card">%s</div>' % (len(fulfilled), render_your_move(fulfilled, links)))
+            '<div class="card">%s</div>' % (len(fulfilled), render_your_move(
+                fulfilled, links, store="data/channels.jsonl")))
     if stalled_plays:
         parts.append(
             '<h2 style="font-size:16px;margin-top:22px">🎬 Stalled plays '
@@ -2423,7 +2474,8 @@ def main():
             'logging the send), or recording the ask that owns it, removes the line by '
             'itself.</div>'
             '<div class="card">%s</div>'
-            % (len(_ready_items), render_your_move(_ready_items)))
+            % (len(_ready_items), render_your_move(_ready_items,
+                                                    store="outreach/drafts.md")))
 
     def _pre_state(filename, title):
         return _states.get((filename, title), {}).get("state")
@@ -2572,7 +2624,8 @@ def main():
     # ── configure ──────────────────────────────────────────────────────────
     cfg_rows = [ws_row("<strong>%s</strong> — %s"
                        % (md_inline(a.get("title") or a.get("id") or "?"),
-                          _clause_cell(a.get("ask"))),
+                          _clause_cell(a.get("ask"), "data/asks.jsonl · %s" % a["id"]
+                                      if a.get("id") else "data/asks.jsonl")),
                        "you", _age_days(a.get("created")), a.get("act_by") or "",
                        rec=("ask:%s" % a["id"]) if a.get("id") else None)
                 for a in system_asks]
@@ -2652,7 +2705,8 @@ def main():
 
     hand_role_rows = [ws_row("<strong>%s</strong> — %s"
                              % (md_inline(a.get("title") or a.get("id") or "?"),
-                                _clause_cell(a.get("ask"))),
+                                _clause_cell(a.get("ask"), "data/asks.jsonl · %s" % a["id"]
+                                            if a.get("id") else "data/asks.jsonl")),
                              "you", _age_days(a.get("created")), a.get("act_by") or "",
                              rec=("ask:%s" % a["id"]) if a.get("id") else None)
                       for a in role_asks]

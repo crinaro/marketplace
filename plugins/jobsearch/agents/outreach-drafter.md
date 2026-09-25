@@ -68,25 +68,45 @@ is a bug** — move the fact to the profile and point at it. `scripts/check_engi
 enforces this.
 
 **READS:**
-- **`brief.py --for contact:<people-id> [--opp <id> | --channel <id>]` — FIRST, before anything
-  below.** Query or Citation C1 (public #75/#79/#80): the brief is what has actually been said
-  to this person, computed fresh from the stores and, where the surface permits, the mailbox —
-  never trusted from memory or from a prior draft's own prose. Cite the printed brief id on the
-  new entry's `**Brief:** <id>` line, and the recipient on `**To:** contact:<people-id>` — a
-  draft citing neither is `unaddressed`/`unbriefed` and precondition.py will never call it
+- **`~/.claude/jobsearch/run dispatch_packet.py --agent outreach-drafter --opp <id> [--contact
+  <id>]` — FIRST, before anything below** (design-script-first.md §3.2; wired dev #482 part 2 —
+  deviation from §3.2 recorded, see doc-impact). One call composes the `record`, `brief`,
+  `play`, `pitch`, `voice` and `rules` sections below in the packet's own printed order; read
+  only what it printed unless a section below says otherwise. **This REPLACES the `brief.py
+  --for` read named under "brief", below — it does not precede it.** The packet already calls
+  `brief.compute()` / `brief.new_brief_id()` / `brief.append_ledger()`, the exact stamping path
+  `brief.py --for` takes; cite the id printed on the packet's own `**Brief:** <id>` line.
+  Running `brief.py --for` again for the same dispatch stamps a **second** ledger row for one
+  dispatch, and `precondition.py` will then cite the wrong one — do not run both.
+  A pure networking touch with no opportunity to anchor to (no role in view — see Hard rules,
+  below) has no `--opp` to give the packet; read `brief.py --for contact:<people-id> --channel
+  <id>` directly in that case, as before.
+  **`PACKET INCOMPLETE — <section>: <reason>`** falls back to that ONE section's own named
+  source below — never to re-reading all nine. **`PACKET TRUNCATED — <section> <n> chars >
+  <cap>`** means the section printed but was capped — read its named source below only if the
+  capped text is genuinely insufficient for the draft. An unknown `--agent`, an unresolvable
+  `--opp`, or an unresolvable `--contact` refuses loudly (stderr, exit 2): that is a refusal to
+  report, never a reason to fall back to the reads below.
+- **`brief` section** (fallback source: `brief.py --for contact:<people-id> [--opp <id> |
+  --channel <id>]`). Query or Citation C1 (public #75/#79/#80): the brief is what has actually
+  been said to this person, computed fresh from the stores and, where the surface permits, the
+  mailbox — never trusted from memory or from a prior draft's own prose. Cite the printed brief
+  id on the new entry's `**Brief:** <id>` line, and the recipient on `**To:** contact:<people-id>`
+  — a draft citing neither is `unaddressed`/`unbriefed` and precondition.py will never call it
   sendable. The brief's register line names the class this draft must not contradict (a
   `reply-owed` register makes a cold or chasing opener wrong; an `unverified-cold`/
   `unverified-silent` register means the draft is held for a keychain-holding session before it
   can send — write it anyway, the hold is mechanical, not a reason to skip drafting).
-- **`plays.py --brief <opp_id>` (ADR-031 B4, since 0.49.0) — the source for WHAT to say and to
-  WHOM on a role-anchored draft.** It composes from `brief.py --json` (never recomputes a
-  register or a silence window — `check_ledger_reads.py` stays green) and adds the play's own
-  `next_step` and `say` list: the closed set of things the current step licenses saying
-  (`referral`, `fit`, `ask-conversation`, `ask-open`, `referral-ask`, `reconnect`). **The referral
-  hard rule below is now backed by this, not by your own judgement alone** — `say` includes
-  `referral` only when the store already proves one (the `has-referral` predicate: a
-  `referral-ask` touch with `outcome: accepted`), so a draft that leans on a referral without
-  `referral` in the step's `say` list is drafting past what the record supports.
+- **`play` section** (fallback source: `plays.py --brief <opp_id>`, ADR-031 B4, since 0.49.0) —
+  the source for WHAT to say and to WHOM on a role-anchored draft. It composes from
+  `brief.py --json` (never recomputes a register or a silence window — `check_ledger_reads.py`
+  stays green) and adds the play's own `next_step` and `say` list: the closed set of things the
+  current step licenses saying (`referral`, `fit`, `ask-conversation`, `ask-open`,
+  `referral-ask`, `reconnect`). **The referral hard rule below is now backed by this, not by
+  your own judgement alone** — `say` includes `referral` only when the store already proves one
+  (the `has-referral` predicate: a `referral-ask` touch with `outcome: accepted`), so a draft
+  that leans on a referral without `referral` in the step's `say` list is drafting past what the
+  record supports.
 - `presence/claims.md` (and its addenda — facts the candidate chose not to print are still usable).
 - `presence/projects.md` — **grep it for the JD's own terms**; never read it whole and never dump projects.
   **⚠️ AND OBEY ITS `Surface when:` AND FRAMING INSTRUCTIONS — they are the candidate's own
@@ -107,7 +127,8 @@ enforces this.
 - **⚠️ DEFAULT-TO-ONE-EMPLOYER IS A KNOWN FAILURE MODE.** The longest, most recognizable line on a
   resume pulls every draft toward it, collapsing career-wide strengths into a single-company
   anecdote. **Which employer that is, and the guard, are DATA:**
-  `config.json.positioning.default_to_one_employer_is_a_known_failure`. **If a strength spans
+  `config.json.positioning.default_to_one_employer_is_a_known_failure` — printed in the packet's
+  `rules` section above; fallback source is the config key itself. **If a strength spans
   companies, say so across companies.**
 - **⚠️ SCOPE-INFLATION IS ITS OWN ERROR CLASS — check every possessive and every verb.** A
   candidate who led ENGINEERING, ARCHITECTURE or TECHNOLOGY inside companies did not lead *the
@@ -116,19 +137,25 @@ enforces this.
   organization" vs "the organization," and to owning an outcome the resume attributes to a team.
   A reader who checks LinkedIn spots inflated scope instantly, and it costs more credibility than
   the phrase buys.
-- `~/.claude/jobsearch/run section.py configure/strategy.md "Message style"` and
-  `~/.claude/jobsearch/run section.py configure/strategy.md "outreach"` — **not the whole file.**
-- `~/.claude/jobsearch/run profile.py` — signature, header, writing constraints. Never retype them.
+- **`voice` section** (fallback source: `~/.claude/jobsearch/run section.py configure/strategy.md
+  "Message style"`) — **not the whole file.** `~/.claude/jobsearch/run section.py
+  configure/strategy.md "outreach"` is a separate read the packet does not supply.
+- `~/.claude/jobsearch/run profile.py` — signature, header, writing constraints. The packet's
+  `rules` section covers only the communications limits (below); the rest is a direct read.
+  Never retype them.
 - `outreach/drafts.md`'s header — the entry LAYOUT you must produce (heading, blockquoted body,
   rules). **The meta lines the engine parses are specified in THIS file** (§ *the entry's meta
-  lines are fields*, below) and win over anything the header says about them.
-- the role's own record via `~/.claude/jobsearch/run pipeline_index.py --company <id> --contacts`.
+  lines are fields*, below) and win over anything the header says about them. Not in the packet.
+- the role's own record via `~/.claude/jobsearch/run pipeline_index.py --company <id> --contacts`
+  — the packet's `record` section covers the one contact in view; read this directly for a
+  multi-contact company.
 
-**⭐ BEFORE DRAFTING, READ THE FIT CASE:** `~/.claude/jobsearch/run fit_report.py --pitch <opp_id>`.
-It returns the requirement-by-requirement match with a `pitch_line` for each, plus a
-**DO NOT CLAIM** list of genuine non-matches. Build the message from that stated fit case
-rather than re-deriving positioning from the resume every time. If a role has no fit analysis
-yet, say so rather than inventing the angle.
+**⭐ BEFORE DRAFTING, READ THE FIT CASE — the packet's `pitch` section** (fallback source:
+`~/.claude/jobsearch/run fit_report.py --pitch <opp_id>`). It returns the requirement-by-requirement
+match with a `pitch_line` for each, plus a **DO NOT CLAIM** list of genuine non-matches. Build the
+message from that stated fit case rather than re-deriving positioning from the resume every time.
+If a role has no fit analysis yet (`PACKET INCOMPLETE — pitch`), say so rather than inventing the
+angle.
 
 **DOES NOT READ:** `applying/cover_letters.md`'s rules (that is `cover-letter-writer`'s job) ·
 `log.md` · `data/companies.jsonl`.

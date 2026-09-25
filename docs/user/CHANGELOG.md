@@ -1,6 +1,24 @@
 # Changelog
 
-Generated from fixes confirmed shipped — public reports and internal fixes alike, each recorded only after its release tag exists on the published remote. Sections are grouped by plugin, then by version. Newest first.
+Generated from fixes confirmed shipped — public reports and internal fixes alike, each verified against its release tag on the published remote; older releases after their push, the newest one by the publish that pushed it, so the section for the version you installed is in the file that came with it. Sections are grouped by plugin, then by version. Newest first.
+
+## jobsearch 0.54.0
+This release backfills your own data on first run: the 0.54.0 migration rewrites involvements.jsonl and clears next_action_owner/next_action_date on touches recorded before record.py touched/answered propagated automatically, so history opened on 0.54.0 reads as if propagation had always run. Nothing to run yourself; the summary line names anything it could not resolve.
+
+## jobsearch 0.53.0
+- Flaky: TestPurityHookDecisionResolution.test_not_my_data_dismisses_and_the_stamp_records_it fails 2 of 3 CI-shaped runs, passes alone *(tracked internally as crinaro/marketplace-dev#429)*
+- land.py cannot pass on this repo: the suite (250-370s since 0.52.0) exceeds check_ci_parity.py's 300s step default, which CI does not have *(tracked internally as crinaro/marketplace-dev#431)*
+- test_checks.py: 2 classes / 19 tests defined below the __main__ guard have never been discovered or run *(tracked internally as crinaro/marketplace-dev#405)*
+- ledger --check --since + --calibrate; AGENT CONTRACT v10 (never a background wait) *(tracked internally as crinaro/marketplace-dev PR#433)*
+- Ladder reset (builder 60/150/400, reader 20/90/150) + dev #405 citing test *(tracked internally as crinaro/marketplace-dev PR#435)*
+- gmail-multi: manifest-heal design + 9 findings incl. the cross-profile account leak shape *(tracked internally as crinaro/marketplace-dev PR#436)*
+- gmail-multi: manifest-heal + boundary design r3 — buildable, 12 findings dispositioned *(tracked internally as crinaro/marketplace-dev PR#437)*
+- Release: jobsearch 0.53.0 + gmail-multi 0.4.0 — the connector heals itself; per-profile mailbox scoping *(tracked internally as crinaro/marketplace-dev PR#438)*
+  gmail-multi now repairs its own install record at session start; jobsearch now reads only the mailboxes listed in the profile you are in — if two of your profiles list different mailboxes, each sees only its own. After upgrading, the second session start shows two check lines: whether the new hook fired, and whether mailbox scoping is enforced on this build. You read those; there is nothing to run.
+- dev #411 piece 3: the 40 real-profile-only suite skips, dispositioned (40 → 9) *(tracked internally as crinaro/marketplace-dev PR#418)*
+- Team review 2026-09-20: dev #419-#426 built and recorded, plus the #429 flake fix *(tracked internally as crinaro/marketplace-dev PR#430)*
+- dev #431: land.py --timeout passthrough, parity wall times and 900s default, hook_step tests share one scan *(tracked internally as crinaro/marketplace-dev PR#432)*
+- release-manager: 0.52.0 release record (step 8a) + changelog-row gate fix *(tracked internally as crinaro/marketplace-dev PR#417)*
 
 ## jobsearch 0.52.0
 - Purity must resolve at plugin startup on the user's machine — the engine team never points a script at a real profile (publish.py --real-profile contradicts dev #167) *(tracked internally as crinaro/marketplace-dev#411)*
@@ -211,6 +229,9 @@ Generated from fixes confirmed shipped — public reports and internal fixes ali
 - [#19](https://github.com/crinaro/careers-plugins/issues/19) — No schema field represents a pursued opportunity's post-application play-sequence stage
 - [#20](https://github.com/crinaro/careers-plugins/issues/20) — Generated dashboard renders knowledge-base and call-preparation artifacts as filename strings, not their content
 - [#21](https://github.com/crinaro/careers-plugins/issues/21) — OPEN DESIGN QUESTION: two dashboard views present the same records through two different taxonomies instead of one lifecycle-state view
+
+## gmail-multi 0.4.0
+- Release: jobsearch 0.53.0 + gmail-multi 0.4.0 — the connector heals itself; per-profile mailbox scoping *(tracked internally as crinaro/marketplace-dev PR#438)*
 
 ## gmail-multi 0.3.0
 - [#76](https://github.com/crinaro/marketplace/issues/76) — gmail-multi: a non-ASCII character in a search query aborts the whole multi-account search

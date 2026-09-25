@@ -275,12 +275,40 @@ and — swept FIRST per the hard rule — meeting artifacts. **It is NOT trusted
 §17 named the gap: no skill consulted `posture.may()`):**
 
 ```bash
-~/.claude/jobsearch/run posture.py --may linkedin
+~/.claude/jobsearch/run posture.py --may linkedin --run <id>
 ```
 
 A LinkedIn pass is unattended browser work like any other spend this posture gates — **exit
 non-zero means this posture does not permit it unattended; skip the dispatch, say so in the
-summary, and do not improvise a lighter-weight substitute.**
+summary, and do not improvise a lighter-weight substitute.** `--run <id>` is not optional here:
+it is what lets `posture.py` record a `REFUSED` verdict as a `pass … phase refused` row (#87) —
+omit it and the refusal is only a line in this run's transcript, gone the moment the session
+ends.
+
+**⭐⭐ THE ROW IS WRITTEN TWICE, AND ONLY THE SECOND COUNTS (design-script-first.md §2 item 2,
+dev #483 / public #110 part 2).** A permitted pass is not journaled by the gate check above —
+only a refusal is. So, once `posture.py --may linkedin` exits 0:
+
+1. **Write `dispatched` in the same breath as the dispatch itself** — the call immediately
+   before invoking `linkedin-runner`, never batched with anything else:
+   ```bash
+   ~/.claude/jobsearch/run journal.py --run <id> --pass linkedin --phase dispatched
+   ```
+2. **After `linkedin-runner` hands back**, translate its own five-token REACHED / UNREACHABLE /
+   NOT-ATTEMPTED report (`linkedin-runner.md` §"What you hand back") directly into the `returned`
+   row — the SAME tokens, not a summary of them:
+   ```bash
+   ~/.claude/jobsearch/run journal.py --run <id> --pass linkedin --phase returned \
+       --reached <tokens reported REACHED> --unreachable <tokens reported UNREACHABLE> \
+       --not-attempted <tokens reported NOT-ATTEMPTED>
+   ```
+   **The quota only counts a `returned` row with at least one REACHED token** — a hand-back
+   where every one of the five tokens came back UNREACHABLE or NOT-ATTEMPTED still gets a
+   `returned` row (it read *something*, even if nothing landed), it simply carries an empty
+   `--reached` and does not consume the day's budget. A pass that never returns at all (the
+   agent crashed mid-run, or ended before its own §"What you hand back" step) is a *crashed
+   pass*, never papered over with a hand-written `returned` row — `journal.py --may
+   linkedin`/`--passes` names it on its own line.
 
 **⭐⭐ THE RESPONSE SWEEP IS DRIVEN BY THE OUTREACH STATE, NOT BY UI SURFACES (2026-08-04, per the
 candidate: "if our process has me sending messages & connection requests, it should be checking

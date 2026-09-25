@@ -30,7 +30,7 @@ shows up as a one-line diff rather than a reformatted file.
 | `opportunities.jsonl` | the roles themselves, with their fit analysis |
 | `messages.jsonl` | every communication, both directions, with its full text. Since 0.36.0 an inbound message can carry `answers`, the id of the outbound message it replies to — see *Touches* below. Since 0.50.0 it can also carry `resolves`/`resolved_by`, the ATS sweep's own resolution — see *ATS receipt matching* below |
 | `people.jsonl` | every person you deal with, once each — see *People* below (since 0.44.0; before that, contacts lived nested on the role or channel) |
-| `involvements.jsonl` | how each person connects to a role or a channel — since 0.44.0, alongside `people.jsonl` |
+| `involvements.jsonl` | how each person connects to a role or a channel — since 0.44.0, alongside `people.jsonl`. **Not purely hand-set**: since 0.54.0 (dev #479), `record.py touched`/`answered` auto-upserts the recipient's involvements row (`status`, `path_type`) from the touch itself — see *Touches* below |
 | `applications.jsonl` | every application you have submitted, once each — see *Applications* below (since 0.45.0; before that, applications lived nested on the role) |
 | `cover_letters.jsonl` | the link between an application and its cover letter — since 0.45.0, alongside `applications.jsonl`, see *Cover letters* below |
 | `touches.jsonl` | every outreach touch you have made, once each — see *Touches* below (since 0.48.0; before that, touches lived nested on the role as `outreach[]`) |
@@ -142,7 +142,7 @@ The main record. Everything about one role hangs off it.
 | `jd_url` | the posting. Required as a URL **or an explicit `null`** — never simply missing |
 | `sightings` | every time this role was seen, and where |
 | `plan_id`, `plan_assigned_on` | which plan (see *Plans and plays* below) is working this role, and since when — every role has one, since 0.49.0 |
-| `next_action_date`, `next_action_owner` | when the next thing happens, and whose move it is — *which* thing is now the plan's job (see below) |
+| `next_action_date`, `next_action_owner` | when the next thing happens, and whose move it is — *which* thing is now the plan's job (see below). **Not purely hand-set**: since 0.54.0 (dev #479), recording an outbound touch as `touched`/`answered` (`record.py`) clears these off you automatically when that touch already answers what you were waiting on — see *Touches* below |
 | `research_log` | append-only role history |
 | `decision` | `{on, suggested, reason_kind, reason}`, since 0.47.0 — see *Recording why a decision diverged* below |
 | `networking_closed_on` | the date you decided to stop working the network on this role, since 0.47.0 — see *Endings* below |
@@ -377,6 +377,21 @@ One record per touch. The fields exist to make "which approach actually works?" 
 | `trigger_kind`, `trigger_ref` | what CAUSED this touch — `application`, `reply`, `elapsed` or `manual`, plus the specific application/message/date it points at. See *Triggers and sequences* below |
 | `sequence_id`, `sequence_step` | groups this touch into a multi-step play with other outreach and staged drafts under the same `sequence_id`, ordered by `sequence_step` |
 | `plan_id`, `play_step` | since 0.49.0 — which plan this touch counts toward, and which play step it satisfies (`reach-insider`, …), or the marker `unresolved` when the touch predates 0.49.0 and can't be assigned a step automatically. Only set on a touch anchored to a role (`opp_id`); a networking touch has no plan to derive one from. See *Plans and plays* above |
+
+#### Recording a touch changes more than the touch — since 0.54.0
+
+Recording an outbound touch as `touched` or `answered` (`record.py`) no longer only writes the
+touch row. It also **upserts the recipient's `involvements.jsonl` row** (`status`, `path_type`)
+from what you just recorded, and, when that touch already answers what an opportunity's
+`next_action_owner`/`next_action_date` were waiting on you for, it **clears those two fields**
+off the role in the same write. Neither field is purely hand-set any more — treat a change you
+did not make by hand to an involvement or to `next_action_owner`/`next_action_date` as this
+propagation having run, not as data corruption.
+
+**If you upgraded across this change,** the 0.54.0 migration backfilled this onto every touch you
+had already recorded before the fix existed — so your existing `involvements.jsonl` rows and
+`next_action_owner`/`next_action_date` fields may have changed retroactively the first session you
+opened on 0.54.0, to what they would have read had this propagation always run.
 
 #### The object of a touch — who or what it's about, when that's not the recipient
 

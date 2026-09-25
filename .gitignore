@@ -16,3 +16,6 @@ __pycache__/
 # Local pointers and logs — machine-specific by definition
 *.log
 .claude/settings.local.json
+
+# `claude plugin eval` writes timestamped run output here — generated, never source (dev #467).
+plugins/*/evals/results/

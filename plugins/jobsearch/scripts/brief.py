@@ -561,6 +561,28 @@ def _probe_result_class(result):
     return "other"
 
 
+def _ask_concerns_person(g, ask, person_id):
+    """dev #475 (public #118) — an ask joins `opp_id`/`channel_id`, never a person directly
+    (asks.jsonl's own field list has no `person_id`), so on a pursuit or channel that has MORE
+    THAN ONE person involved — a hiring manager and a recruiter on the same opportunity, say —
+    the ask cannot be attributed to either one specifically. `is_stale()` used to flag staleness
+    for ANY contact sharing that opp/channel the moment the ask resolved, even when it was
+    really the OTHER party's ask that closed. That is the too-broad predicate this narrows:
+    an ask counts against a contact only when that contact is the SOLE person its own scope
+    resolves to. An ambiguous, shared scope is a false-positive risk, not evidence this
+    particular contact's brief moved — so it is excluded rather than guessed at."""
+    opp_id, channel_id = ask.get("opp_id"), ask.get("channel_id")
+    if not opp_id and not channel_id:
+        return False
+    invs = g.involvements_for_opportunity(opp_id) if opp_id else g.involvements_for_channel(channel_id)
+    people = set()
+    for inv in invs:
+        p = g.resolve_person(inv.get("person_id"))
+        if p is not None:
+            people.add(p["id"])
+    return people == {person_id}
+
+
 def is_stale(root, row, today=None):
     """§3.8, D10 — staleness by DATA MOVEMENT ONLY, never clock age. `True` when the AXIS,
     `latest_in`/`latest_out` ids, or an open ask's resolution has moved since the cited row
@@ -584,9 +606,10 @@ def is_stale(root, row, today=None):
         return True
     asks = _ym._load_jsonl(root, "asks.jsonl")
     by_id = {a["id"]: a for a in asks}
+    g = _graph.Graph(os.path.join(root, "data"))
     for aid in row.get("open_asks") or []:
         a = by_id.get(aid)
-        if a and a.get("resolved_on"):
+        if a and a.get("resolved_on") and _ask_concerns_person(g, a, row["person_id"]):
             return True
     for medium in ("email", "linkedin"):
         old_probes = (row.get("evidence") or {}).get(medium, {}).get("probes") or []

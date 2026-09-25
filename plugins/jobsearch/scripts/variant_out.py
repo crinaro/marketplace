@@ -40,6 +40,12 @@ ATS-SAFE BY CONSTRUCTION, ENCODED RATHER THAN RE-DERIVED (issue #64's comments 1
     editorial judgment, never a renderer heuristic;
   - a page-count line is always printed as an ESTIMATE (`~N pages (estimate)`), never asserted
     as fact — a naive character count is not a real pager.
+  - ⭐ dev #480 / public #113 — the estimate above is computed from what was COMPOSED, so it
+    cannot see what a parsing gap dropped before composition ever ran; it hid exactly the loss
+    it exists to warn about once one existed. `content_loss_fraction()` is a second, independent
+    measurement straight against the SOURCE file's own word count, printed loudly (and returned
+    as exit code 3, not 0) whenever it crosses `CONTENT_LOSS_THRESHOLD` — so a future parsing
+    gap is still caught even when this exact one is not the last.
 
 ⭐ THE HEADER IS REFUSED, NOT BLANKED, WHEN IDENTITY IS INCOMPLETE. A declared variant begins
 at the job title; the union file's own header lives nowhere on it. This script builds the
@@ -96,6 +102,11 @@ DEFAULT_RENDER = {
     "bullet_indent_twips": 360,
     "keep_with_next_max_paragraphs": 5,
     "page_break_marker": "<!-- pagebreak -->",
+    # dev #480 / public #113 — a variant file's own internal notes (drafting context, not
+    # send-ready text) sit above this literal line; everything at or above it is excluded from
+    # composition entirely, the same exact-line-match mechanism `page_break_marker` already
+    # uses. A file with no such line renders exactly as before (nothing to strip).
+    "preamble_marker": "--- prints below this line ---",
     "chars_per_page_estimate": 3200,
     # An ascending scale, one gap per RELATIONSHIP TYPE, held constant regardless of what
     # follows (issue #64 point 4): tightest between a heading and an immediately-nested
@@ -239,30 +250,88 @@ def _norm(s):
     return " ".join((s or "").split())
 
 
-def parse_variant_blocks(text, page_break_marker):
-    """[{'type': 'heading', 'level': int, 'text': str, 'page_break': bool} |
-        {'type': 'bullet', 'indent': int, 'text': str, 'page_break': bool}], in file order.
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*")
 
-    Deliberately headings and bullets ONLY (design C.3) — a variant's summary paragraphs are
-    per-variant positioning, not a declared claim, and are not composed here; they stay in the
-    authored file for a human reader, same as `resume_variants.py` never gates them."""
+
+def _strip_markdown_emphasis(s):
+    """dev #480 / public #113 — a docx run has no inline markdown; `**text**` must not reach
+    the page as four literal asterisk characters. Strips the marker and keeps the wrapped text
+    (this renderer's paragraph model is one run per paragraph — see `_docx.py` — so a REAL bold
+    SPAN inside an otherwise-plain paragraph is not representable without a bigger change to
+    that shared model; stripping is the honest, immediately-correct fix: never print markdown
+    syntax as if it were prose)."""
+    return _BOLD_RE.sub(r"\1", s or "")
+
+
+def _strip_preamble(text, preamble_marker):
+    """dev #480 / public #113 — a variant file's own drafting notes/internal header sit above
+    `preamble_marker`'s exact line (mirrors `page_break_marker`'s exact-line-match convention).
+    Returns the text strictly AFTER the marker's first occurrence, or `text` unchanged when the
+    marker is absent or falsy — so a file with no such line renders exactly as before."""
+    if not preamble_marker:
+        return text or ""
+    lines = (text or "").splitlines()
+    for i, line in enumerate(lines):
+        if line.strip() == preamble_marker:
+            return "\n".join(lines[i + 1:])
+    return text or ""
+
+
+def parse_variant_blocks(text, page_break_marker, preamble_marker=None):
+    """[{'type': 'heading', 'level': int, 'text': str, 'page_break': bool} |
+        {'type': 'bullet', 'indent': int, 'text': str, 'page_break': bool} |
+        {'type': 'paragraph', 'text': str, 'page_break': bool}], in file order.
+
+    dev #480 / public #113 — headings and bullets were the ONLY blocks composed here; every
+    non-bullet paragraph under a heading (a role's summary line, an employer's title/date line)
+    was silently dropped, and a bullet's wrapped continuation line (indented, no `-`/`*`/`+`
+    marker of its own — the standard multi-line bullet form) matched neither regex and vanished
+    the same way. ADR-018's "summary paragraphs... are per-variant positioning and are not
+    gated" is a decision about the CONTAINMENT CHECK (`resume_variants.py --check` does not
+    require paragraph text to already live in the union) — it was never a decision that the
+    RENDERER should omit them from the printed page. A variant's own prose is exactly the text
+    a reader is meant to see; this composes it as an ordinary body paragraph.
+
+    A continuation line is any non-blank line that is neither a heading nor a bullet, appearing
+    directly after a bullet or paragraph line with no blank line between — it is appended
+    (normalized, single-spaced) onto that block's own text, never treated as new content of its
+    own. A blank line ends the current bullet/paragraph run, same as markdown's own paragraph
+    break; text encountered after a blank line (or as the first content of a section) starts a
+    new paragraph block."""
+    text = _strip_preamble(text, preamble_marker)
     blocks = []
     pending_break = False
+    run_type = None   # None | "bullet" | "paragraph" -- which block a continuation extends
     for line in (text or "").splitlines():
         if page_break_marker and line.strip() == page_break_marker:
             pending_break = True
             continue
+        if not line.strip():
+            run_type = None
+            continue
         hm = rv.HEADING_RE.match(line)
         if hm:
             blocks.append({"type": "heading", "level": len(hm.group(1)),
-                           "text": hm.group(2).strip(), "page_break": pending_break})
+                           "text": _strip_markdown_emphasis(hm.group(2).strip()),
+                           "page_break": pending_break})
             pending_break = False
+            run_type = None
             continue
         bm = rv.BULLET_INDENT_RE.match(line)
         if bm:
             blocks.append({"type": "bullet", "indent": len(bm.group(1)),
-                           "text": _norm(bm.group(2)), "page_break": pending_break})
+                           "text": _strip_markdown_emphasis(_norm(bm.group(2))),
+                           "page_break": pending_break})
             pending_break = False
+            run_type = "bullet"
+            continue
+        piece = _strip_markdown_emphasis(_norm(line))
+        if run_type in ("bullet", "paragraph") and blocks:
+            blocks[-1]["text"] = _norm(blocks[-1]["text"] + " " + piece)
+        else:
+            blocks.append({"type": "paragraph", "text": piece, "page_break": pending_break})
+            pending_break = False
+            run_type = "paragraph"
     return blocks
 
 
@@ -329,7 +398,7 @@ def compose_paragraphs(header_lines, blocks, render_cfg):
                          "space_after": space_after, "widow": True,
                          "keep_next": keep_next.get(i, False) or next_is_heading,
                          "page_break_before": b["page_break"]})
-        else:
+        elif b["type"] == "bullet":
             space_after = gaps["top_level"] if is_last_in_section else gaps["list_item"]
             depth = 1 if b["indent"] >= 2 else 0
             left = render_cfg["bullet_indent_twips"] * (depth + 1)
@@ -340,12 +409,69 @@ def compose_paragraphs(header_lines, blocks, render_cfg):
                          "indent": (left, hanging), "widow": True,
                          "keep_next": keep_next.get(i, False),
                          "page_break_before": b["page_break"]})
+        else:  # "paragraph" -- dev #480 / public #113, see parse_variant_blocks
+            space_after = gaps["top_level"] if is_last_in_section else gaps["label_to_content"]
+            paras.append({"text": b["text"], "size_half_pt": render_cfg["body_size_half_pt"],
+                         "color": render_cfg["body_color"], "space_after": space_after,
+                         "widow": True, "keep_next": keep_next.get(i, False),
+                         "page_break_before": b["page_break"]})
     return paras
 
 
 def page_estimate(paragraphs, chars_per_page):
     total = sum(len(p.get("text") or "") for p in paragraphs)
     return max(1, -(-total // max(1, chars_per_page)))     # ceil division, stdlib-only
+
+
+# ---------------------------------------------------------------- content-loss detection
+#
+# dev #480 / public #113 — fixing the parser (above) closes the specific losses this issue
+# reported, but a renderer that can go on to drop content some OTHER way and still print a
+# plausible page estimate is the dangerous shape, not just this one bug. `page_estimate` sums
+# the KEPT paragraphs' own text — it cannot see what never became a paragraph, so it hides
+# exactly the loss it exists to warn about. This is an independent second measurement, against
+# the SOURCE file text directly, so a future parsing gap is still caught even if this one is
+# not the last.
+
+CONTENT_LOSS_THRESHOLD = 0.15   # >15% of the source's own word count missing from the render
+                                # is loud, never a silently-accepted rounding gap
+
+
+def source_word_count(vtext, preamble_marker, page_break_marker):
+    """A crude, deliberately SYMMETRIC word count of the variant file's own printable text —
+    after the preamble (if any), excluding blank lines and the page-break marker's own line.
+    Markdown syntax (`#`, `-`/`*`/`+`, `**`) is left in place and counted as part of whatever
+    line it sits on, exactly as `composed_word_count` below leaves the bullet glyph in place —
+    both sides carry the same ~1-word-per-line marker overhead, so the comparison stays fair
+    without either side needing to fully re-parse the markdown."""
+    lines = _strip_preamble(vtext, preamble_marker).splitlines()
+    total = 0
+    for line in lines:
+        if page_break_marker and line.strip() == page_break_marker:
+            continue
+        total += len(line.split())
+    return total
+
+
+def composed_word_count(paragraphs, skip=0):
+    """The word count actually composed, INCLUDING the bullet glyph (see `source_word_count`'s
+    docstring for why that is the fair comparison) but excluding the first `skip` paragraphs —
+    the identity header and its blank spacer, which are never part of the source variant file
+    and would otherwise make a render look less lossy than it is."""
+    return sum(len((p.get("text") or "").split()) for p in paragraphs[skip:])
+
+
+def content_loss_fraction(vtext, paragraphs, header_lines, render_cfg):
+    """0.0..1.0 — the fraction of the source's own word count missing from what was composed,
+    or 0.0 when the source has no measurable content to lose. Never negative (a render that
+    legitimately adds words, e.g. the identity header already excluded, or a bullet glyph, is
+    not "loss")."""
+    src = source_word_count(vtext, render_cfg.get("preamble_marker"),
+                            render_cfg["page_break_marker"])
+    if src <= 0:
+        return 0.0
+    composed = composed_word_count(paragraphs, skip=len(header_lines) + 1)
+    return max(0.0, 1.0 - (composed / src))
 
 
 # ---------------------------------------------------------------- render
@@ -392,16 +518,28 @@ def render(variant_id, target=None, out_path=None, dry_run=False):
     mode = mode or s["mode"]
     render_cfg = s["render"]
 
-    blocks = parse_variant_blocks(vtext, render_cfg["page_break_marker"])
+    blocks = parse_variant_blocks(vtext, render_cfg["page_break_marker"],
+                                  render_cfg.get("preamble_marker"))
     paragraphs = compose_paragraphs(header, blocks, render_cfg)
     pages = page_estimate(paragraphs, render_cfg["chars_per_page_estimate"])
+    loss = content_loss_fraction(vtext, paragraphs, header, render_cfg)
 
     print("Variant : %s (%s)" % (variant_id, row.get("archetype")))
     print("Surface : %s (%s)" % (row.get("surface"), row.get("visibility")))
-    print("Sections: %d heading(s), %d bullet(s)"
+    print("Sections: %d heading(s), %d bullet(s), %d paragraph(s)"
           % (sum(1 for b in blocks if b["type"] == "heading"),
-             sum(1 for b in blocks if b["type"] == "bullet")))
+             sum(1 for b in blocks if b["type"] == "bullet"),
+             sum(1 for b in blocks if b["type"] == "paragraph")))
     print("Length  : ~%d pages (estimate)" % pages)
+    # dev #480 / public #113 — the estimate above is computed from what was KEPT, so it cannot
+    # by itself show what was dropped. This is the independent, second measurement: LOUD by
+    # construction, never folded quietly into the estimate line above.
+    if loss > CONTENT_LOSS_THRESHOLD:
+        print()
+        print("🛑 CONTENT LOSS DETECTED: this render keeps only about %d%% of %s's own word "
+              "count. Something did not make it into the composed document — open BOTH files "
+              "and compare before sending; do not trust the page estimate above alone."
+              % (round(100 * (1 - loss)), variant_file))
     print()
 
     if dry_run:
@@ -412,9 +550,11 @@ def render(variant_id, target=None, out_path=None, dry_run=False):
             brk = " (page break before)" if b["page_break"] else ""
             if b["type"] == "heading":
                 print("  %s%s %s%s" % ("#" * b["level"], "", b["text"], brk))
-            else:
+            elif b["type"] == "bullet":
                 print("  %s- %s%s" % ("  " * (1 if b["indent"] >= 2 else 0), b["text"], brk))
-        return 0
+            else:
+                print("  %s%s" % (b["text"], brk))
+        return 3 if loss > CONTENT_LOSS_THRESHOLD else 0
 
     if mode == "drive":
         print("Mode is `drive` — this script does NOT create the document.")
@@ -437,7 +577,11 @@ def render(variant_id, target=None, out_path=None, dry_run=False):
     print()
     print("⭐ OPEN IT AND CHECK THE PAGE COUNT before sending — the estimate above is exactly")
     print("   that, an estimate. Confirm with the candidate that THIS file is what gets attached.")
-    return 0
+    # dev #480 / public #113 — the file above is written either way (it is still the best
+    # artifact available for the candidate to go inspect), but a caller or script checking the
+    # exit code must be able to tell "wrote a complete document" from "wrote a lossy one" —
+    # returning 0 either way is exactly the silent-success shape this issue is about.
+    return 3 if loss > CONTENT_LOSS_THRESHOLD else 0
 
 
 def main():

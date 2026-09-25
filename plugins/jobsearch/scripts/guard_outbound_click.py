@@ -888,6 +888,50 @@ def read_status_history(path=None):
     return records, unreadable
 
 
+# --------------------------------------------------------------------------------------
+# design-script-first.md §8.2 (public #111) — stash THIS session's transcript path so
+# `journal.py --fold-dispatches` can find it later without re-deriving `resolve_transcript_path()`
+# itself. One line at the selftest's existing call site (below); everything else here is the
+# best-effort plumbing that line needs. Never blocks startup, never raises — same posture as
+# every other write this selftest already makes (`record_status`).
+# --------------------------------------------------------------------------------------
+
+def _import_root():
+    try:
+        import _root
+        return _root
+    except Exception:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import _root
+            return _root
+        except Exception:
+            return None
+
+
+def stash_transcript_path(path, diag_when=None):
+    """Write `path` to this profile's transcript stash (`_root.transcript_stash_path()`) when it
+    is resolvable; otherwise write nothing and record a diagnostic row instead — so a fold later
+    finding no stash file can tell "this surface never had one" from "the write silently failed"
+    by checking the diag log, never by guessing from absence alone (this repo's own "a missing
+    thing reads as an empty thing" trap, applied to a one-line stash). Best-effort: any failure
+    here is swallowed, exactly like `record_status`."""
+    root_mod = _import_root()
+    diag = _import_diag()
+    try:
+        if path and root_mod is not None:
+            stash = root_mod.transcript_stash_path()
+            os.makedirs(os.path.dirname(stash), exist_ok=True)
+            with open(stash, "w", encoding="utf-8") as fh:
+                fh.write(path)
+            if diag:
+                diag.log("transcript_stash", when=diag_when, state="ok")
+        elif diag:
+            diag.log("transcript_stash", when=diag_when, state="absent")
+    except Exception:
+        pass
+
+
 def record_status(state, source, reason, session_id=None):
     """Append one coded guard_status event, throttled: skip when the latest record already
     carries the same (state, session) — so a session contributes one record per state, not one
@@ -1098,6 +1142,7 @@ def main_selftest():
     ok_fixture, detail_fixture = _selftest_fixture()
     ok_live, detail_live = _selftest_live(payload)
     path_live, _used_fallback_live = resolve_transcript_path(payload)
+    stash_transcript_path(path_live if ok_live else None)  # §8.2 — the one line
     pending = ok_fixture and transcript_pending_creation(payload, path_live, ok_live, detail_live)
 
     # dev #111: the durable record. One coded event per session start, so "has this install

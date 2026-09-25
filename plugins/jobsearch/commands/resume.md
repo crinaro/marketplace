@@ -62,6 +62,16 @@ a page break. An explicit page break is authorable from the variant file itself,
 <!-- pagebreak -->
 ```
 
+A variant file's own drafting notes (context for a recruiter call, never send-ready text) can sit
+above a literal marker line and never reach the document:
+
+```
+--- prints below this line ---
+```
+
+Everything at or above that line is excluded entirely — the same exact-line convention as the
+page-break marker above. A file with no such line renders exactly as it did before this existed.
+
 The render settings (font, margins, colors, the spacing scale) ship with a complete, opinionated
 default — nothing to configure before the first render — and are overridable per key from the
 `render` block under `config.writing`'s own `resume_output` section; setting one value leaves
@@ -69,3 +79,12 @@ every other one at its shipped default.
 
 **Open the file and check the page count** before sending — the script prints an estimate, never
 a fact.
+
+## Content loss is loud, not silent (dev #480 / public #113)
+
+The page-count estimate is computed from what was actually composed, so it cannot by itself show
+you something that never made it into the document. `--render` runs a SECOND, independent check
+against the source file's own word count; when more than 15% of it is missing from what was
+composed, it prints a `🛑 CONTENT LOSS DETECTED` banner and **exits 3** (not 0) — in `--dry-run`
+too. Exit 3 means the file was still written (it is the best artifact available to go inspect),
+but do not treat that render as complete: open both files and compare before sending.

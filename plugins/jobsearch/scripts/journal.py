@@ -125,6 +125,8 @@ Usage:
     python3 journal.py --close-gap <gap_id>
     python3 journal.py --check          # exit 1 if an UNCOVERED gap is stale, or a run died
                                          # holding findings nobody disposed of
+    python3 journal.py --check --run <id>  # mid-run (dev #474/public #119): <id> is the
+                                         # CALLER's own run, excluded from the dead-run check
     python3 journal.py --check-coverage # on demand, needs gh+network: is every covered_by
                                          # citation still open? (#69, never run in CI)
     python3 journal.py --fired          # hook use only — see hooks.json's SessionStart entry
@@ -135,6 +137,16 @@ Usage:
                        --mailbox acct-a@example.com --result empty       # Query or Citation C1
     python3 journal.py --probe contact:<id> --thread contact:<id> --medium linkedin \
                        --result empty --read inbox,requests,invitations,degree   # D14
+    python3 journal.py --run <id> --fold-dispatches       # design-script-first.md §8.2 (#90/#111)
+    python3 journal.py --dispatches [--today] [--calibrate]
+    python3 journal.py --calibrate                        # per-agent tool_use/token quantiles
+    python3 journal.py --run <id> --pass linkedin --phase dispatched     # design-script-first.md
+    python3 journal.py --run <id> --pass linkedin --phase returned \
+                       --reached inbox --not-attempted requests,invitations,degree # §2 (#75/#87/#110)
+    python3 journal.py --run <id> --pass linkedin --phase refused --reason skipped-for-cost
+    python3 journal.py --passes [--today]                 # every pass row, '0 passes' if none
+    python3 journal.py --check [--since YYYY-MM-DD]        # dispatch totals; never refuses on
+                                                            # them until §8.3's ceiling lands
 
 Python 3.9+. Standard library only.
 """
@@ -148,11 +160,41 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _root import profile_root, is_tracked_fixture
+from _root import profile_root, is_tracked_fixture, transcript_stash_path
 
 JOURNAL = os.path.join("data", "runs.jsonl")
 EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swept", "probe",
-         "triaged")
+         "triaged", "dispatch", "pass")
+
+# design-script-first.md §2 (public #75/#87/#110) — the three phases ONE LinkedIn pass moves
+# through, written by TWO separate calls per §2 item 2 ("the row is written twice, and only the
+# second counts"): `dispatched` in the same tool call that launches the runner
+# (write-then-dispatch — a crash between the write and the launch still leaves the row, #87),
+# `returned` from the hand-back's own REACHED/UNREACHABLE/NOT-ATTEMPTED line once the runner
+# actually finishes, `refused` when the gate (browser capability or quota) never let the pass
+# start at all — never a printed line with no row behind it (#87). Any other value is refused at
+# write, loud, the same discipline `REASONS`/`PROBE_RESULT_RE` already apply to their own fields.
+PASS_PHASES = ("dispatched", "returned", "refused")
+
+# design-script-first.md §2 — V0's only LinkedIn pass kind. A tuple, not a bare string field, so
+# a second kind (were one ever added) is a vocabulary addition here, never free-text drift —
+# `REASONS`/`TRIAGE_VERDICTS`'s own "counted, not narrated" rule, applied to `kind`.
+PASS_KINDS = ("linkedin",)
+
+# design-script-first.md §8.2 (public #90/#111) — the ONE required shape for a `dispatch` row.
+# Strict parser discipline reused from `scripts/dispatch_ledger.py` (the MAINTENANCE ledger this
+# is a sibling of, never a second copy of — see §8.2's own "what this is not" section): an
+# unknown key is refused, an incomplete row is refused, both at read time (`read()` below) and
+# at write time (`record_dispatch()`).
+DISPATCH_FIELDS = ("event", "run_id", "agent", "agent_id", "model", "tokens", "tool_uses",
+                   "duration_s", "outcome", "for", "at")
+
+# §3.4's hand-back rule 6 vocabulary (DONE|PARTIAL|BLOCKED — build-list item 6, not landed on any
+# plugin agent yet), lower-cased to the maintenance ledger's own outcome words where they
+# coincide (dispatch_ledger.py's OUTCOMES: landed|partial|stopped|redone). A hand-back that does
+# not (yet) start with one of these three still gets an outcome — its own first word, lower-cased
+# — rather than an empty field: "unparseable" is LOUD, never a blank read as fine.
+OUTCOME_MAP = {"done": "landed", "partial": "partial", "blocked": "stopped"}
 
 # A reason is a CODE, not a sentence — codes can be counted, sentences cannot. An unrecognised
 # one is refused rather than stored, because a taxonomy nobody enforces becomes free text within
@@ -302,6 +344,18 @@ def read(root):
                 if rec.get("event") not in EVENTS:
                     raise JournalError("%s line %d has unknown event %r"
                                        % (JOURNAL, n, rec.get("event")))
+                if rec.get("event") == "dispatch":
+                    missing = [k for k in DISPATCH_FIELDS if k not in rec]
+                    unknown = [k for k in rec if k not in DISPATCH_FIELDS]
+                    if missing:
+                        raise JournalError(
+                            "%s line %d dispatch row missing field(s): %s"
+                            % (JOURNAL, n, ", ".join(missing)))
+                    if unknown:
+                        raise JournalError(
+                            "%s line %d dispatch row has unknown field(s): %s — this parser "
+                            "refuses what it cannot read rather than ignoring it"
+                            % (JOURNAL, n, ", ".join(unknown)))
                 out.append(rec)
     except FileNotFoundError:
         pass
@@ -424,6 +478,117 @@ def record_triaged(root, mailbox, uid, verdict, by, at=None):
     rec = {"event": "triaged", "mailbox": mailbox, "uid": str(uid), "verdict": verdict,
            "at": at, "by": by or ""}
     return append(root, rec)
+
+
+def record_dispatch(root, run_id, agent, agent_id, model, tokens, tool_uses, duration_s,
+                    outcome, for_="", at=None):
+    """⭐ design-script-first.md §8.2 (public #90/#111) — the ONE writer for a `dispatch` row.
+    Every numeric field is required and type-checked: a dispatch row nobody can trust the
+    numbers of is worse than none (this file's own "unparseable value must be LOUD" rule,
+    applied to the cost ledger the fold below builds). `agent_id` is the fold's idempotence
+    key — refused empty, the same way `record_probe` refuses an empty `subject`/`thread`."""
+    at = at or now_iso()
+    if not run_id:
+        raise JournalError("record_dispatch requires run_id")
+    if not agent:
+        raise JournalError("record_dispatch requires agent")
+    if not agent_id:
+        raise JournalError("record_dispatch requires agent_id — it is the fold's idempotence key")
+    for name, v in (("tokens", tokens), ("tool_uses", tool_uses), ("duration_s", duration_s)):
+        if isinstance(v, bool) or not isinstance(v, int) or v < 0:
+            raise JournalError("record_dispatch: %s must be an int >= 0 (got %r)" % (name, v))
+    rec = {"event": "dispatch", "run_id": run_id, "agent": agent, "agent_id": agent_id,
+           "model": model or "", "tokens": tokens, "tool_uses": tool_uses,
+           "duration_s": duration_s, "outcome": outcome or "unknown", "for": for_ or "", "at": at}
+    return append(root, rec)
+
+
+def dispatch_rows(recs, today_only=False):
+    rows = [r for r in recs if r.get("event") == "dispatch"]
+    if today_only:
+        today = now_iso()[:10]
+        rows = [r for r in rows if str(r.get("at", ""))[:10] == today]
+    return rows
+
+
+def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_attempted=None,
+                reason=None, at=None):
+    """design-script-first.md §2 (public #75/#87/#110) — the ONE writer for a `pass` row.
+    `phase` is validated against `PASS_PHASES`, `kind` against `PASS_KINDS`, `reason` against
+    `REASONS` (required for `phase="refused"`, refused otherwise — a reason on a row that is not
+    a refusal is not a reason for anything). `reached`/`unreachable`/`not_attempted` are each
+    validated against `LINKEDIN_SURFACES` when `kind == "linkedin"` when given at all: an
+    unrecognised surface token is refused at write, the same "unparseable value must be LOUD"
+    rule this whole file applies everywhere else. Every field is stored even when empty ([] is
+    written, not omitted) so a reader never has to tell 'absent' from 'empty list' apart."""
+    at = at or now_iso()
+    if not run_id:
+        raise JournalError("record_pass requires run_id")
+    if kind not in PASS_KINDS:
+        raise JournalError("record_pass kind %r is not in PASS_KINDS %r" % (kind, PASS_KINDS))
+    if phase not in PASS_PHASES:
+        raise JournalError("record_pass phase %r is not in PASS_PHASES %r" % (phase, PASS_PHASES))
+    if phase == "refused" and reason not in REASONS:
+        raise JournalError(
+            "record_pass(phase='refused') requires --reason from REASONS %r (got %r)"
+            % (sorted(REASONS), reason))
+    if phase != "refused" and reason is not None:
+        raise JournalError("record_pass: --reason is only for phase='refused' (got phase=%r)"
+                           % phase)
+    reached = list(reached) if reached is not None else []
+    unreachable = list(unreachable) if unreachable is not None else []
+    not_attempted = list(not_attempted) if not_attempted is not None else []
+    if kind == "linkedin":
+        for label, tokens in (("reached", reached), ("unreachable", unreachable),
+                              ("not_attempted", not_attempted)):
+            bad = sorted(set(tokens) - LINKEDIN_SURFACES)
+            if bad:
+                raise JournalError(
+                    "record_pass %s=%r is not in LINKEDIN_SURFACES %r"
+                    % (label, bad, sorted(LINKEDIN_SURFACES)))
+    rec = {"event": "pass", "run_id": run_id, "kind": kind, "phase": phase,
+           "reached": reached, "unreachable": unreachable, "not_attempted": not_attempted,
+           "reason": reason or "", "at": at}
+    return append(root, rec)
+
+
+def pass_rows(recs, kind=None, today_only=False):
+    rows = [r for r in recs if r.get("event") == "pass"]
+    if kind is not None:
+        rows = [r for r in rows if r.get("kind") == kind]
+    if today_only:
+        today = now_iso()[:10]
+        rows = [r for r in rows if str(r.get("at", ""))[:10] == today]
+    return rows
+
+
+def linkedin_passes_reached(recs, today=None):
+    """design-script-first.md §2 item 2 — how many of TODAY's LinkedIn passes count against the
+    quota: a `returned` row dated today whose `reached` carries at least one surface (#75 — the
+    count comes from surfaces the pass actually REACHED, never from a `dispatched` row, so a
+    browserless launch that read nothing never consumes the quota). A `dispatched` row with no
+    matching `returned` row is a crashed pass (see `crashed_passes` below) and is not counted
+    here either."""
+    today = today or now_iso()[:10]
+    return sum(1 for r in recs
+              if r.get("event") == "pass" and r.get("kind") == "linkedin"
+              and r.get("phase") == "returned" and str(r.get("at", ""))[:10] == today
+              and len(r.get("reached") or []) >= 1)
+
+
+def crashed_passes(recs):
+    """design-script-first.md §2 item 2 — every `dispatched` LinkedIn pass, in a run that has
+    ENDED, with no matching `returned` row: dispatched, but nothing proves it ever read a page.
+    Printed on its own line by `--may linkedin` / `--passes` rather than silently folded into
+    either "counted" or "not counted" — a crashed pass is neither."""
+    ended = {r.get("run_id") for r in recs if r.get("event") == "end"}
+    dispatched = {r.get("run_id") for r in recs
+                 if r.get("event") == "pass" and r.get("kind") == "linkedin"
+                 and r.get("phase") == "dispatched"}
+    returned = {r.get("run_id") for r in recs
+               if r.get("event") == "pass" and r.get("kind") == "linkedin"
+               and r.get("phase") == "returned"}
+    return sorted((dispatched & ended) - returned)
 
 
 MEDIA = ("email", "linkedin")
@@ -644,6 +809,12 @@ def pass_durations(recs):
     linkedin_run_ids = {r.get("run_id") for r in recs
                         if r.get("event") == "gap"
                         and str(r.get("scope") or "").startswith("linkedin:")}
+    # design-script-first.md §2 — a `pass … phase returned` row carries its own `run_id`
+    # directly (unlike a `probe`, which is pointwise): a second, free correlation once the
+    # `pass` event exists, no new query needed.
+    linkedin_run_ids |= {r.get("run_id") for r in recs
+                        if r.get("event") == "pass" and r.get("kind") == "linkedin"
+                        and r.get("phase") == "returned"}
     probe_ats = [d for d in (_parse_iso(r.get("at")) for r in recs
                             if r.get("event") == "probe" and r.get("medium") == "linkedin")
                 if d is not None]
@@ -661,6 +832,255 @@ def pass_durations(recs):
         out.append({"run_id": rid, "minutes": round((ed - sd).total_seconds() / 60.0, 1),
                     "start": s, "end": e})
     return sorted(out, key=lambda d: -d["minutes"])
+
+
+def _parse_transcript_ts(raw):
+    """A transcript record's own `timestamp`, which — unlike every `at` this journal writes
+    itself (always `now_iso()`, naive local time) — may carry a trailing 'Z' (UTC) that
+    `datetime.fromisoformat` only accepts from Python 3.11 (this file targets 3.9+). Stripped to
+    a naive datetime for comparison against a run's `start.at`: an approximation when the two
+    clocks disagree (local vs UTC), stated rather than silently assumed exact — the fold's own
+    idempotence (keyed on `agent_id`, not on this filter) is what keeps a borderline miss from
+    ever duplicating a row, so an imprecise boundary here costs at most one late fold, never a
+    wrong one."""
+    if not raw:
+        return None
+    s = str(raw)
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    dt = _parse_iso(s)
+    if dt is not None and dt.tzinfo is not None:
+        dt = dt.replace(tzinfo=None)
+    return dt
+
+
+def _is_agent_result(rec):
+    """Duck-typed on the §8.1 measurement (`deployment-auditor`, #82): a transcript record whose
+    `toolUseResult` carries `agentId` is an `Agent`/`Task` dispatch's return — no other tool's
+    `toolUseResult` shape carries that key. Never assumes a chain-walk to the originating
+    `tool_use`'s `name`; the key itself is the signal that was actually measured."""
+    tur = rec.get("toolUseResult")
+    return isinstance(tur, dict) and bool(tur.get("agentId"))
+
+
+def _hand_back_text(tur):
+    """(text, source) — the hand-back to read `outcome`'s first word from. `content` first (§8.1:
+    populated in 53 of 349 measured results); else the first line of `outputFile`, opened only
+    when `canReadOutputFile` (#82: `content` is `None` in 296 of 349 — the common case). `(None,
+    "none")` when neither is available — never a guess."""
+    content = tur.get("content")
+    if content:
+        if isinstance(content, str):
+            return content, "content"
+        if isinstance(content, list):
+            texts = [b.get("text", "") for b in content if isinstance(b, dict) and b.get("text")]
+            if texts:
+                return " ".join(texts), "content"
+        return str(content), "content"
+    output_file = tur.get("outputFile")
+    if output_file and tur.get("canReadOutputFile"):
+        try:
+            with open(output_file, encoding="utf-8") as fh:
+                return fh.read(), "outputFile"
+        except OSError:
+            return None, "outputFile-unreadable"
+    return None, "none"
+
+
+def _outcome_from_text(text):
+    word = (text or "").strip().split()[0] if text and text.strip() else ""
+    key = re.sub(r"[^A-Za-z]", "", word).lower()
+    if not key:
+        return "unknown"
+    return OUTCOME_MAP.get(key, key)
+
+
+def _fields_from_agent_result(rec):
+    """(fields, refusal_reason) — `fields` is the writer-ready dict (minus `event`/`run_id`/
+    `at`) for ONE `Agent` toolUseResult, or `None` with a reason when a required §8.1 field is
+    missing: 'refused loudly' rather than silently defaulted, so a malformed result never reads
+    as a free, zero-cost dispatch."""
+    tur = rec.get("toolUseResult") or {}
+    agent_id = tur.get("agentId")
+    agent = tur.get("agentType")
+    tokens = tur.get("totalTokens")
+    tool_uses = tur.get("totalToolUseCount")
+    duration_ms = tur.get("totalDurationMs")
+    missing = [k for k, v in (("agentId", agent_id), ("agentType", agent),
+                              ("totalTokens", tokens), ("totalToolUseCount", tool_uses),
+                              ("totalDurationMs", duration_ms)) if v is None]
+    if missing:
+        return None, "missing %s" % ", ".join(missing)
+    text, _source = _hand_back_text(tur)
+    prompt = tur.get("prompt") or ""
+    for_ = prompt.strip().splitlines()[0][:200] if prompt.strip() else ""
+    return {"agent": agent, "agent_id": agent_id, "model": tur.get("resolvedModel") or "",
+           "tokens": int(tokens), "tool_uses": int(tool_uses),
+           "duration_s": int(round(duration_ms / 1000.0)), "outcome": _outcome_from_text(text),
+           "for": for_}, None
+
+
+def fold_dispatches(root, run_id, transcript_path=None, at=None):
+    """design-script-first.md §8.2 (public #82/#90/#91) — the PROVEN path (the `PostToolUse`
+    hook is the unverified primary and is not built by this function). Resolves the transcript
+    from `transcript_path` when given (tests), else this session's stash
+    (`_root.transcript_stash_path()`); a surface with neither prints `no transcript on this
+    surface` and writes nothing — never a false zero read as fact. Every `Agent` result strictly
+    newer than the run's own `--start` is a candidate; idempotent on `agent_id`, so a second fold
+    over the same transcript adds nothing. Returns (written, skipped, refused) — `refused`
+    entries are printed loudly to stderr, one per malformed result, and never silently dropped."""
+    recs = read(root)
+    start_rec = next((r for r in recs if r.get("event") == "start" and r.get("run_id") == run_id),
+                     None)
+    if start_rec is None:
+        raise JournalError("--fold-dispatches --run %r: no matching --start run — get one from "
+                           "--start" % run_id)
+    start_dt = _parse_iso(start_rec.get("at"))
+
+    if transcript_path is None:
+        try:
+            with open(transcript_stash_path(), encoding="utf-8") as fh:
+                transcript_path = fh.read().strip() or None
+        except OSError:
+            transcript_path = None
+    if not transcript_path:
+        print("no transcript on this surface")
+        return 0, 0, []
+    try:
+        with open(transcript_path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except OSError as e:
+        print("no transcript on this surface (%s)" % e)
+        return 0, 0, []
+
+    already = {r.get("agent_id") for r in recs if r.get("event") == "dispatch"}
+    written, skipped, refused = 0, 0, []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or not _is_agent_result(rec):
+            continue
+        ts = _parse_transcript_ts(rec.get("timestamp"))
+        if ts is None or (start_dt is not None and ts < start_dt):
+            continue
+        fields, reason = _fields_from_agent_result(rec)
+        if fields is None:
+            hint = (rec.get("toolUseResult") or {}).get("agentId") or "?"
+            print("⛔ dispatch fold: result %s refused — %s" % (hint, reason), file=sys.stderr)
+            refused.append(hint)
+            continue
+        if fields["agent_id"] in already:
+            skipped += 1
+            continue
+        record_dispatch(root, run_id=run_id, agent=fields["agent"],
+                        agent_id=fields["agent_id"], model=fields["model"],
+                        tokens=fields["tokens"], tool_uses=fields["tool_uses"],
+                        duration_s=fields["duration_s"], outcome=fields["outcome"],
+                        for_=fields["for"], at=at or now_iso())
+        already.add(fields["agent_id"])
+        written += 1
+    print("folded %d dispatch row(s) for %s (%d already recorded, %d refused)"
+         % (written, run_id, skipped, len(refused)))
+    return written, skipped, refused
+
+
+def _percentile(sorted_vals, p):
+    """Linear-interpolation percentile over an already-sorted, non-empty list — copied from
+    `scripts/dispatch_ledger.py` (the MAINTENANCE ledger, at the marketplace repo root): that
+    module is never importable from a SHIPPED file, so the shape is duplicated, not shared, the
+    same reasoning `TRIAGE_TTL_DAYS`'s own docstring already states for `mail_client.py`."""
+    n = len(sorted_vals)
+    if n == 1:
+        return float(sorted_vals[0])
+    k = (p / 100.0) * (n - 1)
+    f = int(k)
+    c = min(f + 1, n - 1)
+    if f == c:
+        return float(sorted_vals[f])
+    d = k - f
+    return sorted_vals[f] + (sorted_vals[c] - sorted_vals[f]) * d
+
+
+def cmd_calibrate_dispatches(root):
+    rows = dispatch_rows(read(root))
+    print("DISPATCH --calibrate (per agent — token/tool_use quantiles, no recommendation)")
+    if not rows:
+        print("  no dispatch rows yet.")
+        return 0
+    by_agent = {}
+    for r in rows:
+        by_agent.setdefault(r.get("agent"), {"tokens": [], "tool_uses": []})
+        by_agent[r.get("agent")]["tokens"].append(r.get("tokens", 0))
+        by_agent[r.get("agent")]["tool_uses"].append(r.get("tool_uses", 0))
+    for agent in sorted(by_agent):
+        toks = sorted(by_agent[agent]["tokens"])
+        tus = sorted(by_agent[agent]["tool_uses"])
+        print("  %-24s n=%-4d tool_uses min=%-5d p50=%-7.1f p90=%-7.1f max=%-5d  "
+             "tokens min=%-8d p50=%-9.1f p90=%-9.1f max=%-8d"
+             % (agent, len(toks), tus[0], _percentile(tus, 50), _percentile(tus, 90), tus[-1],
+                toks[0], _percentile(toks, 50), _percentile(toks, 90), toks[-1]))
+    return 0
+
+
+def cmd_dispatches(root, today_only=False, calibrate=False):
+    rows = dispatch_rows(read(root), today_only=today_only)
+    print("DISPATCHES%s" % (" (today)" if today_only else ""))
+    if not rows:
+        print("  none.")
+    else:
+        for r in sorted(rows, key=lambda r: r.get("at", "")):
+            print("  %-19s %-22s run=%-26s tokens=%-7d tool_uses=%-4d %-8s for=%s"
+                 % (str(r.get("at", ""))[:19], r.get("agent"), r.get("run_id"),
+                    r.get("tokens", 0), r.get("tool_uses", 0), r.get("outcome"),
+                    r.get("for") or "-"))
+        by_agent, by_run = {}, {}
+        for r in rows:
+            a = by_agent.setdefault(r.get("agent"), [0, 0])
+            a[0] += r.get("tokens", 0)
+            a[1] += r.get("tool_uses", 0)
+            rn = by_run.setdefault(r.get("run_id"), [0, 0])
+            rn[0] += r.get("tokens", 0)
+            rn[1] += r.get("tool_uses", 0)
+        print("  by agent:")
+        for a in sorted(by_agent):
+            print("    %-24s tokens=%-8d tool_uses=%-5d" % (a, by_agent[a][0], by_agent[a][1]))
+        print("  by run:")
+        for rn in sorted(by_run):
+            print("    %-24s tokens=%-8d tool_uses=%-5d" % (rn, by_run[rn][0], by_run[rn][1]))
+    if calibrate:
+        print()
+        cmd_calibrate_dispatches(root)
+    return 0
+
+
+def cmd_passes(root, today_only=False):
+    """design-script-first.md §2 — every `pass` row, oldest first, plus the crashed-pass line
+    (a `dispatched` row in an ended run with no matching `returned`). `0 passes` on an empty
+    journal, exit 0 either way — this is a report, never a gate."""
+    recs = read(root)
+    rows = pass_rows(recs, today_only=today_only)
+    label = "%d passes%s" % (len(rows), " today" if today_only else "")
+    print(label if rows else "0 passes")
+    for r in sorted(rows, key=lambda r: r.get("at", "")):
+        bits = "%-19s %-8s %-10s run=%s" % (str(r.get("at", ""))[:19], r.get("kind"),
+                                            r.get("phase"), r.get("run_id"))
+        if r.get("phase") == "returned":
+            bits += (" reached=%s unreachable=%s not_attempted=%s"
+                    % (",".join(r.get("reached") or []) or "-",
+                       ",".join(r.get("unreachable") or []) or "-",
+                       ",".join(r.get("not_attempted") or []) or "-"))
+        elif r.get("phase") == "refused":
+            bits += " reason=%s" % (r.get("reason") or "-")
+        print("  %s" % bits)
+    crashed = crashed_passes(recs)
+    if crashed:
+        print("  pass dispatched, never returned (%s)" % ", ".join(crashed))
+    return 0
 
 
 def age_days(at):
@@ -789,7 +1209,11 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--start", metavar="KIND")
-    ap.add_argument("--run", metavar="ID")
+    ap.add_argument("--run", metavar="ID",
+                    help="the run this call concerns — with --note/--gap/--end/--dispose/"
+                         "--pass/--fold-dispatches, the run being written to; with --check "
+                         "(or any other read-only report), the CALLER's own still-executing "
+                         "run, excluded from the dead-run check (dev #474/public #119)")
     ap.add_argument("--note")
     ap.add_argument("--gap", metavar="SCOPE")
     ap.add_argument("--reason", choices=sorted(REASONS))
@@ -842,6 +1266,34 @@ def main():
                          "(brief.py --i-checked), not a script-run search")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--at", help="ISO timestamp; for tests and for replaying a known time")
+    ap.add_argument("--fold-dispatches", dest="fold_dispatches", action="store_true",
+                    help="with --run <id>: fold this run's Agent/Task dispatch results out of "
+                         "the session transcript into `dispatch` rows (design-script-first.md "
+                         "§8.2, public #90/#111) — idempotent on agent_id")
+    ap.add_argument("--transcript", metavar="PATH",
+                    help="with --fold-dispatches: read this transcript instead of the session's "
+                         "own stash (tests; advanced use)")
+    ap.add_argument("--dispatches", action="store_true",
+                    help="print dispatch rows, summed per agent and per run")
+    ap.add_argument("--today", action="store_true", help="with --dispatches: only today's rows")
+    ap.add_argument("--calibrate", action="store_true",
+                    help="with --dispatches (or standalone): per-agent tool_use/token quantiles "
+                         "— numbers only, no recommendation")
+    ap.add_argument("--since", metavar="YYYY-MM-DD",
+                    help="with --check: only sum dispatch rows dated on/after this date")
+    ap.add_argument("--pass", dest="pass_kind", metavar="KIND", choices=PASS_KINDS,
+                    help="with --run: record a pass event, e.g. 'linkedin' — needs --phase")
+    ap.add_argument("--phase", choices=PASS_PHASES,
+                    help="with --pass: dispatched | returned | refused")
+    ap.add_argument("--reached", metavar="SURFACES", default="",
+                    help="with --pass --phase returned: comma-separated LINKEDIN_SURFACES")
+    ap.add_argument("--unreachable", metavar="SURFACES", default="",
+                    help="with --pass --phase returned: comma-separated LINKEDIN_SURFACES")
+    ap.add_argument("--not-attempted", dest="not_attempted", metavar="SURFACES", default="",
+                    help="with --pass --phase returned: comma-separated LINKEDIN_SURFACES")
+    ap.add_argument("--passes", action="store_true",
+                    help="print every pass row by phase, oldest first (design-script-first.md "
+                         "§2) — '0 passes' on an empty journal")
     args = ap.parse_args()
 
     root = profile_root()
@@ -924,7 +1376,25 @@ def main():
                       % (d["minutes"], d["run_id"], d["start"], d["end"]))
             return 0
 
-        if args.note or args.gap or args.end or args.close_gap or args.dispose:
+        if args.fold_dispatches:
+            if not args.run:
+                raise JournalError("--fold-dispatches requires --run <id> (get one from --start)")
+            _written, _skipped, refused = fold_dispatches(root, args.run,
+                                                          transcript_path=args.transcript, at=at)
+            return 2 if refused else 0
+
+        if args.dispatches or args.calibrate:
+            if args.dispatches:
+                cmd_dispatches(root, today_only=args.today, calibrate=args.calibrate)
+            else:
+                cmd_calibrate_dispatches(root)
+            return 0
+
+        if args.passes:
+            cmd_passes(root, today_only=args.today)
+            return 0
+
+        if args.note or args.gap or args.end or args.close_gap or args.dispose or args.pass_kind:
             if args.close_gap:
                 append(root, {"event": "gap-closed", "gap_id": args.close_gap, "at": at})
                 print("closed %s" % args.close_gap)
@@ -988,10 +1458,31 @@ def main():
                 append(root, {"event": "dispose", "run_id": args.run,
                               "because": args.because or "", "at": at})
                 print("disposed %s" % args.run)
+            if args.pass_kind:
+                if not args.phase:
+                    raise JournalError("--pass requires --phase (dispatched|returned|refused)")
+                reached = [s.strip() for s in args.reached.split(",") if s.strip()]
+                unreachable = [s.strip() for s in args.unreachable.split(",") if s.strip()]
+                not_attempted = [s.strip() for s in args.not_attempted.split(",") if s.strip()]
+                record_pass(root, args.run, args.pass_kind, args.phase,
+                           reached=reached, unreachable=unreachable,
+                           not_attempted=not_attempted, reason=args.reason, at=at)
+                print("pass %s %s recorded" % (args.pass_kind, args.phase))
             return 0
 
         recs = read(root)
         dead = unfinished(recs)
+        if args.run:
+            # ⭐ dev #474 (public #119) — a run invoking `--check` (or any of the read-only
+            # reports below) WHILE it is still executing is not dead; it is the very run
+            # asking. An unmatched `start` with no `end` yet is exactly what an alive,
+            # still-in-progress session looks like from the journal's own side — there is no
+            # way to distinguish "alive, mid-run" from "actually died" without the run naming
+            # itself. `--run <id>` here IS that self-identification: it carves the caller's
+            # own id out of the dead-run set before the bare summary, `--json`,
+            # `--unfinished`, or `--check`'s own exit code ever sees it. A genuinely dead
+            # OTHER run (a different id) is unaffected.
+            dead = [d for d in dead if d["run_id"] != args.run]
         gaps = open_gaps(recs)
         uncovered, covered = split_gaps(gaps)
         fired = fired_events(recs)
@@ -1054,6 +1545,21 @@ def main():
             for d in lost:
                 print("⛔ run %s died holding %d unwritten finding(s)"
                       % (d["run_id"], len(d["notes"])), file=sys.stderr)
+            # design-script-first.md §8.2/§11 item 1 (public #90/#111) — reused shape, not the
+            # maintenance ledger's own semantics: `token_ceiling_per_run`/`_per_day` (§8.3) do
+            # not exist yet (build-list item 4), so there is no ladder to refuse against. This
+            # reports and NEVER refuses until that ceiling lands — stated here rather than
+            # silently returning green for a check that cannot yet fail.
+            drows = dispatch_rows(recs)
+            if args.since:
+                drows = [r for r in drows if str(r.get("at", "")) >= args.since]
+            print("\nDISPATCH --check%s" % (" (since %s)" % args.since if args.since else ""))
+            print("  %d dispatch row(s) · tokens %d · tool_uses %d"
+                  % (len(drows), sum(r.get("tokens", 0) for r in drows),
+                     sum(r.get("tool_uses", 0) for r in drows)))
+            print("  NOT ENFORCED: token_ceiling_per_run/token_ceiling_per_day do not exist yet "
+                  "(design-script-first.md §8.3, build-list item 4) — reporting only, never "
+                  "refusing.")
             return 1 if (stale or lost) else 0
         return 0
 

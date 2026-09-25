@@ -274,6 +274,96 @@ SEEDABLE_DEFAULTS = {
     SEARCH_POSTURES: SEARCH_POSTURES_DEFAULT,
 }
 
+# design-script-first.md §2/§12 (public #75/#76/#87/#110, decision 1/4) — LinkedIn passes are
+# the largest scheduled spend (§2's own measurement: ~100k tokens per pass) and were coupled to
+# a posture's `runs_per_day` with no ceiling of their own. This key decouples them: how many
+# LinkedIn passes that REACH a surface a posture permits per day, independent of how many times
+# the run itself fires.
+#
+# ⭐ Relative to a POSTURE dict (`search.postures.<name>`), never to the config.json ROOT — the
+# one key in this module that is NOT a single global dotted path, because a value scoped to one
+# posture cannot share a root-level key with every other posture's own value. `describe()` still
+# applies unchanged: pass the posture's OWN sub-dict as `cfg` and this bare name as `key`
+# (`_get_dotted` splits on "." and a name with none is just one `.get()` — the same mechanism,
+# not a second one). Deliberately NOT in READER_KEYS — that registry's own callers
+# (`profile.py --options`, `doctor.py`'s CONFIG CURRENCY) iterate it against the CONFIG ROOT
+# (`describe(cfg, key)` with `cfg` the whole file), which would read `cfg["linkedin_runs_per_day"]`
+# at the wrong location entirely; the same "deliberately NOT in READER_KEYS" reasoning
+# `SEARCH_POSTURE`/`SEARCH_POSTURES` above already state for a differently-shaped reason
+# (a nested TABLE, not one scalar) — this one is a scalar, but keyed per posture, so it is a
+# third shape neither precedent covers, and it stays out of the shared registry rather than
+# stretch it into meaning two different things depending on the caller.
+LINKEDIN_RUNS_PER_DAY = "linkedin_runs_per_day"
+LINKEDIN_RUNS_PER_DAY_DEFAULT = 1
+
+# In `_METADATA` (so `describe()`/`metadata()` work against a posture sub-dict) but NOT in
+# READER_KEYS (see the comment above) — the one entry in this table whose `cfg` argument, at
+# every real call site, is a posture dict rather than the config.json root.
+_METADATA[LINKEDIN_RUNS_PER_DAY] = (
+    LINKEDIN_RUNS_PER_DAY_DEFAULT, "int", (0, 20),
+    "LinkedIn passes that reach a surface this posture permits per day, independent of "
+    "runs_per_day (posture.py --may linkedin) — 0 disables LinkedIn passes on this posture "
+    "entirely")
+
+# ── dispatch_packet.py's per-section byte caps (design-script-first.md §3.2, #77) ──────────────
+# `voice` (the candidate's `configure/strategy.md` "Message style" text, verbatim) and `claims`
+# (matched `presence/claims.md` addenda) are the two sections that ride on the profile's OWN
+# prose and are unbounded as first drafted — every other section is bounded by construction
+# (a fixed set of short fields). One key per section that has its own named default; every
+# section not named here falls back to PACKET_SECTION_CAP_OTHER. Registered here, never
+# hand-duplicated in dispatch_packet.py, the same "one definition" rule every other reader key
+# in this module follows.
+PACKET_SECTION_CAP_VOICE = "dispatch_packet.section_cap.voice"
+PACKET_SECTION_CAP_VOICE_DEFAULT = 2000
+PACKET_SECTION_CAP_CLAIMS = "dispatch_packet.section_cap.claims"
+PACKET_SECTION_CAP_CLAIMS_DEFAULT = 3000
+PACKET_SECTION_CAP_OTHER = "dispatch_packet.section_cap.other"
+PACKET_SECTION_CAP_OTHER_DEFAULT = 1500
+
+READER_KEYS = READER_KEYS | frozenset({PACKET_SECTION_CAP_VOICE, PACKET_SECTION_CAP_CLAIMS,
+                                       PACKET_SECTION_CAP_OTHER})
+
+_METADATA[PACKET_SECTION_CAP_VOICE] = (
+    PACKET_SECTION_CAP_VOICE_DEFAULT, "int", (200, 20000),
+    "byte cap on the packet's `voice` section (configure/strategy.md \"Message style\", "
+    "verbatim) before dispatch_packet.py prints `PACKET TRUNCATED` (§3.2, #77)")
+_METADATA[PACKET_SECTION_CAP_CLAIMS] = (
+    PACKET_SECTION_CAP_CLAIMS_DEFAULT, "int", (200, 20000),
+    "byte cap on the packet's `claims` section (matched presence/claims.md addenda) before "
+    "dispatch_packet.py prints `PACKET TRUNCATED` (§3.2, #77)")
+_METADATA[PACKET_SECTION_CAP_OTHER] = (
+    PACKET_SECTION_CAP_OTHER_DEFAULT, "int", (200, 20000),
+    "byte cap on every other dispatch_packet.py section before `PACKET TRUNCATED` (§3.2, #77)")
+
+
+def packet_section_cap(cfg, section):
+    """(cap, provenance) for one packet `section` name — `voice`/`claims` get their own
+    registered key, everything else falls back to PACKET_SECTION_CAP_OTHER. Never a
+    hand-duplicated if/elif in dispatch_packet.py; this is the one place the mapping is
+    stated."""
+    key = {"voice": PACKET_SECTION_CAP_VOICE,
+          "claims": PACKET_SECTION_CAP_CLAIMS}.get(section, PACKET_SECTION_CAP_OTHER)
+    return describe(cfg, key)
+
+
+# ── generate_dashboard.py's body collapse over N words (design-script-first.md §4.3, dev #486 /
+# public #107 part 2) ── a NON-SENDABLE free-text body (an ask, a role decision's memo) over this
+# many words renders as its clause + word count + store locator, never the full text; a
+# SENDABLE draft body is the one exception and is never collapsed regardless of length (public
+# #46's own ruling). Root-level, in READER_KEYS — unlike LINKEDIN_RUNS_PER_DAY above this is not
+# scoped to a posture, so profile.py --options / doctor.py's CONFIG CURRENCY read it the
+# ordinary way (`describe(cfg, key)` against the config.json root).
+DASHBOARD_BODY_COLLAPSE_WORDS = "dashboard.body_collapse_words"
+DASHBOARD_BODY_COLLAPSE_WORDS_DEFAULT = 120
+
+READER_KEYS = READER_KEYS | frozenset({DASHBOARD_BODY_COLLAPSE_WORDS})
+
+_METADATA[DASHBOARD_BODY_COLLAPSE_WORDS] = (
+    DASHBOARD_BODY_COLLAPSE_WORDS_DEFAULT, "int", (20, 2000),
+    "word count above which a non-sendable dashboard body (an ask, a role decision's memo) "
+    "collapses to its clause + word count + store locator instead of rendering in full "
+    "(design-script-first.md §4.3, #486/#107) — a sendable draft body is never collapsed")
+
 
 def seed_default(dotted_key):
     """The registered default `doctor.py --fix` seeds for `dotted_key` (e.g. "search.posture")

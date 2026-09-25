@@ -123,14 +123,20 @@ tell you "12 unclassified". A guess folded quietly into a bucket cannot.
 Roughly `runs per day × agents per run`. The deterministic half — sweeps, calendar checks,
 silence detection, the dashboard — is free at every tier and carries most of the daily value.
 
-| posture | runs/day | agents/run | what you get |
-|---|---|---|---|
-| `minimal` | 1 | 0 | sweeps only |
-| `economy` | 2 | 1 | + LinkedIn — **the default** |
-| `standard` | 3 | 2 | + research |
-| `full` | 5 | 5 | + drafting |
+| posture | runs/day | agents/run | LinkedIn passes/day | what you get |
+|---|---|---|---|---|
+| `minimal` | 1 | 0 | 0 | sweeps only |
+| `economy` | 2 | 1 | 1 | + LinkedIn — **the default** |
+| `standard` | 3 | 2 | 1 | + research |
+| `full` | 5 | 5 | 2 | + drafting |
 
 Set `search.posture` in your configuration, or define your own tier.
+
+**LinkedIn passes are capped independently of runs/day.** A run above its posture's LinkedIn
+quota still does everything else — sweeps, screening, research, drafting — it just skips the
+LinkedIn pass for the rest of that day. `economy` and `standard` get one LinkedIn pass a day
+even though they run 2 or 3 times; `full` gets two even though it runs 5 times. Set
+`search.postures.<tier>.linkedin_runs_per_day` to change it for your own tier.
 
 ---
 
