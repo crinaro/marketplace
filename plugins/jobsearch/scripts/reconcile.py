@@ -776,11 +776,265 @@ def write_ats_message(subject, body, from_addr, mail_date_iso, source, scratch_d
             pass
 
 
-def write_ats_status(app_id, status, on_date, note, already_locked=False):
+def write_ats_status(app_id, status, on_date, note, current_status, already_locked=False):
+    """⭐⭐ dev #542 (public #130) — THE MONOTONE FLOOR, enforced HERE rather than only at the
+    call sites. Every ATS status write in this file goes through this one function, so a future
+    classifier change (or a new call site) cannot regress a terminal status: only
+    `applications.status_advance() == "forward"` reaches `record.py` at all.
+
+    `current_status` is a REQUIRED parameter with no default, BY CONSTRUCTION. A call site that
+    forgets it raises TypeError immediately instead of silently opting out of the floor — the
+    same "the boundary is enforced by construction, not by remembering" move `_root.py` makes
+    for the profile pointer. The call sites still ask `status_advance()` themselves, because
+    they must SURFACE the disagreement as an ask (criterion (2)); this refusal is the backstop
+    underneath them, not the reporting path."""
+    import applications as _apps_mod
+    verdict = _apps_mod.status_advance(current_status, status)
+    if verdict != "forward":
+        return False, ("refused (non-monotone — dev #542): %s is recorded %r and a "
+                       "phrase-classified %r is %s in the lifecycle; no status write was "
+                       "attempted" % (app_id, current_status, status, verdict))
     cmd = ["application-status", app_id, status, "--on", on_date, "--note", note]
     if already_locked:
         cmd += ["--already-locked"]
     return _run_record(cmd)
+
+
+# dev #542 — the evidence the corrupting write left behind, and the strict parser for it. The
+# apply paths below write `reconcile-ats <message id>; was <status> since <date>` into the
+# application's own `note`, and `record.py --note` APPENDS (never overwrites), so a note can
+# carry several marks: the LAST one describes the most recent write, which is the only one whose
+# `was` value can be compared against the status standing now.
+_ATS_PRIOR_STATUS_RE = re.compile(r"reconcile-ats\s+(\S+?);\s*was\s+(\S+)\s+since\s+(\S+)")
+
+
+def prior_status_from_note(note):
+    """The most recent `was <status> since <date>` mark in `note`, as
+    `(message_id, status, date)`, or None when there is no mark at all.
+
+    ⭐ STRICT, AND LOUD RATHER THAN CLEVER. The `status` returned is whatever the note actually
+    says — this function never maps it onto a known status and never infers one. A caller
+    comparing ranks gets None from `applications.status_rank()` for an unreadable value and must
+    SAY it could not be read (criterion (2)'s "never guess"), not quietly skip it."""
+    matches = _ATS_PRIOR_STATUS_RE.findall(note or "")
+    if not matches:
+        return None
+    mid, status, date = matches[-1]
+    return mid, status, date
+
+
+def completion_mark_state(current_status, note):
+    """⭐⭐ dev #542 item C — IS THE D1 COMPLETION MARK ACTUALLY SETTLED? Returns
+    `("settled", None)`, `("contradicted", prior_status)` or `("unreadable", offending_value)`.
+
+    THE ROOT DEFECT THIS REPLACES: the mark was UNCONDITIONAL. It recorded that a status write
+    happened, never that the classification behind it was made under a phrase config that could
+    not see `rejected` — so a config change did not invalidate a stale classification, and
+    because the corrupting write puts the mark at the FRONT of the note it writes, the very next
+    run saw the mark, skipped the message, and never looked at the `was rejected since <date>`
+    evidence sitting three words later in the same string.
+
+    So a mark does not count as settled while the status CONTRADICTS what the note itself
+    records. That makes an ordinary `--ats` run self-healing, and it converges:
+
+      1. status `acknowledged`, note `was rejected since <date>` -> contradicted -> not skipped.
+      2. the message is re-classified under the CURRENT `ats.status_phrases`.
+      3. once item D's warning has led the owner to populate the empty `rejected` class, that
+         re-classification yields `rejected`, which item A's ordering calls FORWARD from
+         `acknowledged` — the status is restored by the normal run, with no repair pass.
+      4. the restoring write appends its own `was acknowledged since <date>` mark, and
+         `prior_status_from_note` reads the LAST mark, so the note now records a prior status
+         BELOW the status standing — settled again, and the next run skips it. If the phrase
+         class is still empty, step 2 re-classifies `acknowledged`, which EQUALS the recorded
+         status, so nothing is written either. Neither branch churns.
+
+    ⭐ NEVER GUESSES. `unreadable` is returned for a prior value (or a current status) that is
+    not a status this engine knows: the mark then STANDS as settled and the caller raises an ask
+    that quotes the unreadable value back — reporting beats inferring (CLAUDE.md's unparseable-
+    value rule), and a loose parse here would be a rewrite decided by a regex."""
+    import applications as _apps_mod
+    prior = prior_status_from_note(note)
+    if prior is None:
+        # No prior status recorded at all — there is nothing to contradict, so the mark stands.
+        return "settled", None
+    _mid, prior_status, _date = prior
+    prior_rank = _apps_mod.status_rank(prior_status)
+    if prior_rank is None:
+        return "unreadable", prior_status
+    current_rank = _apps_mod.status_rank(current_status)
+    if current_rank is None:
+        return "unreadable", current_status
+    if current_rank < prior_rank:
+        return "contradicted", prior_status
+    return "settled", None
+
+
+def asymmetric_empty_phrase_classes(status_phrases):
+    """⭐ dev #542 criterion (1) — the `ats.status_phrases` classes that carry ZERO usable
+    phrases WHILE at least one sibling class carries some. Sorted; `[]` when there is no
+    asymmetry.
+
+    Zero phrases is not "matches nothing", it is "cannot compete". `classify_status_phrase`
+    calls a single-class hit NON-ambiguous, so with `rejected` empty and `acknowledged`
+    populated a rejection email that happens to open "thank you for your application" is
+    confidently classified `acknowledged` — the exact trigger the reporter identified, and
+    `init_profile.py` seeds all three classes empty, so customising one is all it takes.
+
+    ⚠️ EMPTINESS IS NOT THE DEFECT, ASYMMETRY IS. With every class empty the feature is simply
+    off: nothing is classified at all and no class is out-competed by a sibling. That is the
+    stock seeded profile, and flagging it would fire on every install forever — which is how a
+    warning stops being read (`pending_for`'s own docstring, at length). So: `[]`."""
+    if not isinstance(status_phrases, dict):
+        return []
+    empty, filled = [], []
+    for status, phrases in status_phrases.items():
+        usable = [p for p in (phrases or ()) if p and str(p).strip()]
+        (filled if usable else empty).append(status)
+    return sorted(empty) if filled else []
+
+
+def empty_phrase_classes_ask_id(empty_classes, filled_classes):
+    """One stable id per (empty set, populated set) — so the ask is written once and is not
+    duplicated on every run, but a CHANGE to the config (a class populated, another emptied) is
+    a different condition and gets its own row."""
+    key = "%s|%s" % (",".join(sorted(empty_classes)), ",".join(sorted(filled_classes)))
+    return "ask-ats-empty-phrase-classes-%s" % hashlib.sha1(
+        key.encode("utf-8")).hexdigest()[:10]
+
+
+def write_empty_phrase_classes_ask(empty_classes, filled_classes, run_date,
+                                   asks_by_id=None, already_locked=False):
+    """⭐ dev #542 criterion (1) — the asymmetry as a QUERYABLE row, not only a printed line: a
+    warning that exists solely in one run's stdout is the "fact into narrative" shape CLAUDE.md
+    names, and this one has to survive until the owner acts on it.
+
+    ⚠️ IT NEVER PROPOSES PHRASES. Suggesting wording here would put engine guesses into a user's
+    own config, and a phrase list is the thing that decides whether their rejections are read as
+    rejections. The ask names the class and the consequence; the words are the owner's."""
+    ask_id = empty_phrase_classes_ask_id(empty_classes, filled_classes)
+    if (asks_by_id or {}).get(ask_id) is not None:
+        return None
+    body = ("`ats.status_phrases` has ZERO phrases for %s while %s %s phrases. Zero phrases "
+            "does not mean 'matches nothing' — it means that class CANNOT COMPETE: a message "
+            "that belongs to it hits exactly one of the populated classes instead, which reads "
+            "as an unambiguous match and is applied as if it were right (dev #542). Add the "
+            "phrases you would actually expect for %s, in your own words — the engine will not "
+            "guess them — or remove the class if you do not want ATS mail classified that way."
+            % (", ".join(sorted(empty_classes)), ", ".join(sorted(filled_classes)),
+               "has" if len(filled_classes) == 1 else "have",
+               ", ".join(sorted(empty_classes))))
+    fields = {
+        "kind": "system", "title": "ATS status phrases: a class with no phrases",
+        "ask": body, "created": run_date[:10], "act_by": (
+            datetime.date.fromisoformat(run_date[:10]) + datetime.timedelta(days=7)
+        ).isoformat(),
+        "opp_id": None, "channel_id": None, "resolves_when": None, "resolved_on": None,
+        "resolution": None, "trigger_kind": None, "trigger_ref": None,
+        "note": "reconcile-ats-phrase-classes",
+    }
+    ok, _out = _run_record(["create", ask_id, json.dumps(fields), "--file", "asks"] +
+                           (["--already-locked"] if already_locked else []))
+    if not ok:
+        return None
+    if asks_by_id is not None:
+        asks_by_id[ask_id] = dict(fields, id=ask_id)
+    return ask_id
+
+
+def status_conflict_ask_id(app_id):
+    """One conflict ask per APPLICATION. The disagreement is about that application's status,
+    and a loop that re-classifies the same message on every run must extend nothing and
+    duplicate nothing — so the id carries no date, no week and no message id."""
+    return "ask-ats-status-conflict-%s" % app_id
+
+
+def _status_conflict_ask_fields(app_id, current_status, current_status_on, proposed, verdict,
+                                run_date, opp_id, trigger_ref, note_tag):
+    """The ask text for every shape of status disagreement — dev #542 criterion (2)'s "surfacing
+    a disagreement as an ask instead of a silent overwrite".
+
+    ⭐ NEVER GUESSES A STATUS. When `verdict` is `unknown` the text says which value could not
+    be read and quotes it back verbatim; it never substitutes a status it finds plausible."""
+    if verdict == "unreadable-note":
+        body = ("Application %s records status %r (since %s). Its own note carries an ATS "
+                "completion mark whose recorded prior status, %r, could not be read as a status "
+                "this engine knows — so whether the recorded status contradicts its own history "
+                "could not be decided, and NOTHING was written. Read the note and set the "
+                "status by hand if it is wrong."
+                % (app_id, current_status, current_status_on, proposed))
+    elif verdict == "stale-classification":
+        body = ("Application %s records status %r (since %s), but its own note records that it "
+                "was %r before an ATS run changed it — and a status does not move backwards. "
+                "Re-classifying the same message under the CURRENT `ats.status_phrases` still "
+                "produces %r, so this run could not restore the earlier value on its own and "
+                "has changed nothing. Populate the phrase class for %r — this run's output "
+                "names every class left at zero phrases — or set the status by hand."
+                % (app_id, current_status, current_status_on, proposed, current_status,
+                   proposed))
+    elif verdict == "stale-unclassifiable":
+        body = ("Application %s records status %r (since %s), but its own note records that it "
+                "was %r before an ATS run changed it — and a status does not move backwards. "
+                "Re-classifying the same message under the CURRENT `ats.status_phrases` no "
+                "longer produces a single status at all, so this run could not restore the "
+                "earlier value and has changed nothing. Set the status by hand, or fix the "
+                "phrase config so the message classifies unambiguously."
+                % (app_id, current_status, current_status_on, proposed))
+    elif verdict == "unknown":
+        body = ("Application %s records status %r (since %s) and ATS mail classifies it %r — "
+                "at least one of those is not a status this engine knows, so it could not be "
+                "read as a position in the lifecycle and NOTHING was written. Correct the "
+                "value, or tell the run which status is right."
+                % (app_id, current_status, current_status_on, proposed))
+    elif verdict == "sideways":
+        body = ("Application %s records status %r (since %s) and ATS mail classifies it %r. "
+                "Neither is later than the other in the lifecycle — they are two different "
+                "ways for the pursuit to be over — so the status was NOT changed. Confirm "
+                "which one is right."
+                % (app_id, current_status, current_status_on, proposed))
+    else:
+        body = ("Application %s records status %r (since %s), and ATS mail classifies it %r, "
+                "which is EARLIER in the lifecycle. The recorded status was kept and nothing "
+                "was overwritten (dev #542). Either the mail was misclassified — check "
+                "`ats.status_phrases` — or the recorded status is wrong; the engine cannot "
+                "know which, so it is not guessing."
+                % (app_id, current_status, current_status_on, proposed))
+    return {
+        "kind": "system", "title": "ATS status disagrees with the record"[:120], "ask": body,
+        "created": run_date[:10], "act_by": (
+            datetime.date.fromisoformat(run_date[:10]) + datetime.timedelta(days=2)
+        ).isoformat(),
+        "opp_id": opp_id, "channel_id": None, "resolves_when": None,
+        "resolved_on": None, "resolution": None,
+        "trigger_kind": "reply" if trigger_ref else None,
+        "trigger_ref": trigger_ref, "note": note_tag,
+    }
+
+
+def write_status_conflict_ask(app_id, current_status, current_status_on, proposed, verdict,
+                              run_date, opp_id=None, trigger_ref=None, note_tag=None,
+                              asks_by_id=None, already_locked=False):
+    """Create the conflict ask for `app_id` unless one is already on file. Returns its id, or
+    None when nothing was written.
+
+    Deliberately NOT routed through `write_or_extend_ask`: that function's whole identity is the
+    (sender domain, normalized subject, ISO week) digest key, and this ask has no sender and no
+    subject — it is keyed by the application whose record is in dispute. It is also deliberately
+    NOT counted against `ats.max_asks_per_run`: that cap exists so a first sweep of a busy
+    mailbox cannot bury the owner in unresolved-mail findings, and a corrupted status is neither
+    high-volume nor droppable — withholding it to next run is the silent-loss shape this whole
+    fix exists to remove."""
+    ask_id = status_conflict_ask_id(app_id)
+    if (asks_by_id or {}).get(ask_id) is not None:
+        return None
+    fields = _status_conflict_ask_fields(app_id, current_status, current_status_on, proposed,
+                                        verdict, run_date, opp_id, trigger_ref, note_tag)
+    ok, _out = _run_record(["create", ask_id, json.dumps(fields), "--file", "asks"] +
+                           (["--already-locked"] if already_locked else []))
+    if not ok:
+        return None
+    if asks_by_id is not None:
+        asks_by_id[ask_id] = dict(fields, id=ask_id)
+    return ask_id
 
 
 def write_or_extend_ask(kind, domain, subject, date_iso, note_tag, already_locked=False,
@@ -908,6 +1162,31 @@ def cmd_ats(args):
     plan_lines, asks_created, applied, proposed, withheld = [], [0], [0], [0], [0]
     history_counts = {"total": 0, "applied": 0, "recorded": 0, "unresolved": 0}
 
+    # ⭐ dev #542 criterion (1) — AN ASYMMETRICALLY EMPTY PHRASE CLASS IS LOUD, and it is the
+    # FIRST thing this run says: it is the condition under which every classification below is
+    # made, and it is what the reporter's whole incident started from. `init_profile.py` seeds
+    # `acknowledged`/`rejected`/`advanced` all empty, so a profile that customises one of them
+    # arrives here silently unable to classify the others.
+    empty_classes = asymmetric_empty_phrase_classes(status_phrases)
+    if empty_classes:
+        filled_classes = [s for s in status_phrases if s not in empty_classes]
+        plan_lines.append(
+            "  ⚠️ ats.status_phrases: %s ZERO phrases (%s populated) — a message belonging to "
+            "%s can only ever be classified as one of the others, and that reads as an "
+            "unambiguous match (dev #542)"
+            % (" and ".join(sorted(empty_classes)) + (
+                " has" if len(empty_classes) == 1 else " have"),
+               ", ".join(sorted(filled_classes)), " or ".join(sorted(empty_classes))))
+        if can_write:
+            _pid = write_empty_phrase_classes_ask(empty_classes, filled_classes, run_date,
+                                                  asks_by_id=asks_by_id,
+                                                  already_locked=args.already_locked)
+            if _pid is not None:
+                asks_created[0] += 1
+        else:
+            plan_lines.append("  would ask (empty phrase class): %s"
+                             % ", ".join(sorted(empty_classes)))
+
     # design-inbound-resolution.md §2 amendment D1 (surface pass 2026-09-14) — a message that
     # RESOLVES an application is its own idempotency mark by uid (via `source`), so a status
     # write that was refused, rolled back, or never reached because the process died between
@@ -926,14 +1205,94 @@ def cmd_ats(args):
         if app is None:
             continue
         mark = "reconcile-ats %s" % m.get("id")
+        stale_prior = None
         if mark in (app.get("note") or ""):
-            continue
+            # ⭐⭐ dev #542 item C — the mark is evidence that a write HAPPENED, not that the
+            # classification behind it is still right. See `completion_mark_state`.
+            mark_state, offending = completion_mark_state(app.get("status"), app.get("note"))
+            if mark_state == "settled":
+                continue
+            if mark_state == "unreadable":
+                if can_write:
+                    aid = write_status_conflict_ask(
+                        resolves, app.get("status"), app.get("status_on"), offending,
+                        "unreadable-note", run_date, opp_id=app.get("opp_id"),
+                        trigger_ref=m.get("id"),
+                        note_tag="reconcile-ats-conflict %s" % m.get("id"),
+                        asks_by_id=asks_by_id, already_locked=args.already_locked)
+                    if aid is not None:
+                        asks_created[0] += 1
+                        plan_lines.append("  · %s: prior status in the note is unreadable (%r) "
+                                         "— asked (%s)" % (resolves, offending, aid))
+                else:
+                    plan_lines.append("  would ask (unreadable prior status in note): %s"
+                                     % resolves)
+                continue
+            # `contradicted` — fall through and re-classify under the CURRENT phrase config.
+            stale_prior = offending
         status, ambiguous = classify_status_phrase(
             ("%s\n%s" % (m.get("subject") or "", m.get("body") or "")).lower(), status_phrases)
+
+        def _stale_ask(_verdict, _app=app, _mid=m.get("id"), _prior=stale_prior):
+            """dev #542 — a contradiction the run could NOT resolve by re-classifying. Item B
+            applied to item C's dead end: the record disagrees with its own history, the engine
+            cannot know which is right, so it reports rather than guessing — once, keyed by
+            application, so this is a signal and not churn."""
+            if not can_write:
+                plan_lines.append("  would ask (stale classification): %s records %s, its note "
+                                 "records %s" % (resolves, _app.get("status"), _prior))
+                return
+            _aid = write_status_conflict_ask(
+                resolves, _app.get("status"), _app.get("status_on"), _prior, _verdict, run_date,
+                opp_id=_app.get("opp_id"), trigger_ref=_mid,
+                note_tag="reconcile-ats-conflict %s" % _mid, asks_by_id=asks_by_id,
+                already_locked=args.already_locked)
+            if _aid is not None:
+                asks_created[0] += 1
+                plan_lines.append("  · %s: note records %s but the status reads %s and "
+                                 "re-classification cannot restore it — asked (%s)"
+                                 % (resolves, _prior, _app.get("status"), _aid))
+
         if status is None or ambiguous:
-            continue          # a phrase-0/2 (unresolved-ask) case, not an apply — no retry
+            # a phrase-0/2 (unresolved-ask) case, not an apply — no retry. But if the mark was
+            # CONTRADICTED, this is a dead end rather than a routine miss: say so.
+            if stale_prior is not None:
+                _stale_ask("stale-unclassifiable")
+            continue
         current_status, current_status_on = app.get("status"), app.get("status_on")
-        if current_status == "withdrawn" or current_status == status:
+        if current_status == "withdrawn":
+            # Pre-dev-#542 behaviour, kept: the owner's own statement that they pulled out is
+            # not in DISPUTE with an employer's later mail — both facts are true at once — so
+            # this is a silent refusal, not a disagreement to raise.
+            continue
+        # ⭐⭐ dev #542 (public #130) — LIFECYCLE ORDERING, the thing the comment above already
+        # claimed and the code did not do. `same` is the no-op it always was; anything that is
+        # not `forward` is a disagreement between the classifier and the record, and it reaches
+        # the owner as an ask instead of overwriting the record or vanishing.
+        verdict = _apps_mod.status_advance(current_status, status)
+        if verdict == "same":
+            # Convergence step 4: re-classifying a CONTRADICTED mark under a phrase config that
+            # still cannot see the earlier status reproduces the status already on file — so
+            # nothing is written (no churn), and the dead end is reported instead.
+            if stale_prior is not None:
+                _stale_ask("stale-classification")
+            continue
+        if verdict != "forward":
+            if not can_write:
+                plan_lines.append("  would ask (status conflict, %s): %s records %s, mail "
+                                 "classifies %s" % (verdict, resolves, current_status, status))
+                continue
+            aid = write_status_conflict_ask(
+                resolves, current_status, current_status_on, status, verdict, run_date,
+                opp_id=app.get("opp_id"), trigger_ref=m.get("id"),
+                note_tag="reconcile-ats-conflict %s" % m.get("id"), asks_by_id=asks_by_id,
+                already_locked=args.already_locked)
+            plan_lines.append("  · %s: %s refused (%s — dev #542): recorded %s, mail "
+                             "classifies %s%s"
+                             % (resolves, status, verdict, current_status, status,
+                                "" if aid is None else "; asked (%s)" % aid))
+            if aid is not None:
+                asks_created[0] += 1
             continue
         if (current_status_on and
                 _vd.date_part(m.get("sent_on")) < _vd.date_part(current_status_on)):
@@ -945,7 +1304,7 @@ def cmd_ats(args):
         note = "reconcile-ats %s; was %s since %s" % (m.get("id"), current_status,
                                                        current_status_on)
         ok2, out2 = write_ats_status(resolves, status, _vd.date_part(m.get("sent_on")), note,
-                                     already_locked=args.already_locked)
+                                     current_status, already_locked=args.already_locked)
         if ok2:
             applied[0] += 1
             plan_lines.append("  applied (D1 retry): %s -> %s" % (resolves, status))
@@ -1101,6 +1460,32 @@ def cmd_ats(args):
                 if historical:
                     history_counts["recorded"] += 1
                 return
+            # ⭐⭐ dev #542 — the SAME lifecycle floor as the D1 retry pass above. The reported
+            # symptom arrived through D1, but both paths wrote through the same missing guard,
+            # and a fix that only covered the reported path would leave the identical
+            # regression reachable from the mailbox on the very next release.
+            verdict = _apps_mod.status_advance(current_status, status)
+            if verdict != "forward":
+                mid, _ok, _out = _write_msg(opp_id=opp_id, resolves=result.app_id,
+                                            resolved_by=result.tier)
+                if historical:
+                    history_counts["recorded"] += 1
+                if not can_write:
+                    plan_lines.append("  would ask (status conflict, %s): %s records %s, mail "
+                                     "classifies %s"
+                                     % (verdict, result.app_id, current_status, status))
+                    return
+                aid = write_status_conflict_ask(
+                    result.app_id, current_status, current_status_on, status, verdict, run_date,
+                    opp_id=opp_id, trigger_ref=mid, note_tag=tag, asks_by_id=asks_by_id,
+                    already_locked=args.already_locked)
+                plan_lines.append("  · %s: %s refused (%s — dev #542): recorded %s, mail "
+                                 "classifies %s%s"
+                                 % (result.app_id, status, verdict, current_status, status,
+                                    "" if aid is None else "; asked (%s)" % aid))
+                if aid is not None:
+                    asks_created[0] += 1
+                return
             if not can_write:
                 plan_lines.append("  would apply: %s -> %s (tier %s)"
                                  % (result.app_id, status, result.tier))
@@ -1113,7 +1498,8 @@ def cmd_ats(args):
                 return
             note = "reconcile-ats %s; was %s since %s" % (mid, current_status, current_status_on)
             ok2, out2 = write_ats_status(result.app_id, status, _vd.date_part(mail_date_iso),
-                                         note, already_locked=args.already_locked)
+                                         note, current_status,
+                                         already_locked=args.already_locked)
             if ok2:
                 applied[0] += 1
                 if historical:

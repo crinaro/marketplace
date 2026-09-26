@@ -725,14 +725,42 @@ system's automated emails: an acknowledgment, a rejection, an advance to the nex
 | `sweep_days` | since 0.50.0 — the floor, in days, the sweep uses when it asks your mailbox to look back. Defaults to **3**; the sweep widens this automatically when it finds a coverage gap, never narrows it |
 | `max_asks_per_run` | since 0.50.0 — how many asks the sweep will write in one run before holding the rest back for the next run. Defaults to **5**. Applied resolutions (the ones confident enough to write straight to the record) are never capped — only the ones that need your decision are |
 
-`receipt_sender_domains` and `status_phrases` both start **empty** on a fresh profile. **Nothing
-in the plugin reads either of those two automatically yet — filling them in has no visible effect
-today.** They exist so your profile already carries this information, in the right shape, for the
-ATS-receipt reader this scaffolding is built for; once that reader ships, an empty
-`status_phrases.rejected` will mean "I have no way to recognize a rejection from mail," not "no
-rejections have arrived" — worth knowing now, since filling these in today is exactly what gets
-your profile ready for that day. Match strings are your own words — whatever your ATSes' actual
-subject lines say — not a fixed vocabulary the plugin ships with.
+`receipt_sender_domains` and `status_phrases` both start **empty** on a fresh profile, and **both
+are read on every run, since 0.50.0** — the deterministic ATS sweep described just below uses
+`receipt_sender_domains` to recognize which mail came from an ATS at all, and `status_phrases` to
+decide which status that mail evidences. (An earlier version of this page said nothing read them
+yet and that filling them in had no visible effect. That stopped being true in 0.50.0; it is
+corrected here.) Match strings are your own words — whatever your ATSes' actual subject lines say —
+not a fixed vocabulary the plugin ships with, and the plugin will never guess them for you.
+
+⭐ **An empty class is not a neutral setting. Fill in all three, or none.** The sweep
+says so out loud, because the in-between state is the one that quietly gets a status wrong:
+
+- **All three classes empty** — the stock, freshly-seeded state. The feature is simply **off**:
+  nothing is classified from subject lines at all. Nothing warns you about this, on purpose; a
+  warning that fires on every install forever is a warning nobody reads.
+- **Some filled, some empty** — the state to avoid. An empty class does not "match nothing"; it
+  **cannot compete.** A rejection arrives, your `rejected` list is empty, your `acknowledged` list
+  is not, and the mail hits exactly one populated class — which reads as an *unambiguous* match and
+  is applied as if it were right. So an empty `status_phrases.rejected` beside a filled
+  `acknowledged` does not mean "I have no way to recognize a rejection"; it means your rejections
+  are being **actively misclassified as acknowledgments.** The sweep now detects exactly this
+  asymmetry and writes you an ask (`ask-ats-empty-phrase-classes-…`, titled *"ATS status phrases: a
+  class with no phrases"*) naming the empty class and the consequence. **It never proposes
+  phrases** — the wording that decides whether your rejections are read as rejections is yours to
+  write, not the engine's to guess. The ask is written once per configuration, not once per run, and
+  changing your config is a different condition that gets its own row.
+
+⭐ **And the sweep will no longer move an application backwards.** Every status write
+is checked against the lifecycle order — `not-started → started → submitted → acknowledged →
+advanced`, with `rejected`, `withdrawn` and `closed` as the three endings. Only a **strictly
+forward** move is written automatically. A backwards move (a subject line reading as `acknowledged`
+against an application you already have on record as `rejected`), or a sideways one (two of the
+three endings disagreeing), is **refused and handed to you** as an ask
+(`ask-ats-status-conflict-<application id>`) rather than overwriting what your record already says.
+The engine cannot know which side is right, so it stops and asks. A first status onto an
+application that has none is still an ordinary forward write — the check exists to stop
+regressions, not to refuse a first write.
 
 **`silence_days` and `close`, unlike those two, are read today** — `check_followups.py` uses them
 to decide when a stalled application is worth proposing as `closed`, so a value you set here has

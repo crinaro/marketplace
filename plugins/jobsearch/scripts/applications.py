@@ -151,6 +151,81 @@ def live(rows):
     return [r for r in rows if r.get("status") in LIVE_APP_STATUS]
 
 
+# ⭐⭐ dev #542 (public #130) — THE ONE lifecycle ordering for `applications[].status`, and the
+# only place a rank is spelled anywhere in this engine. `reconcile.py`'s ATS write paths carried
+# a comment claiming they were "idempotent under the monotone rule" while implementing no
+# ordering at all: their guards were an equality test, a `withdrawn` special case, and a DATE
+# comparison. A date is not a lifecycle — a rejection dated Monday and an acknowledgement dated
+# Tuesday are in date order and in REVERSE lifecycle order, which is exactly how a correctly
+# hand-set `rejected` was rewritten back to `acknowledged` on every `--ats` run.
+#
+# ⭐ THE THREE `APPLICATION_ENDINGS` SHARE ONE RANK, deliberately. They are alternative ways for
+# the pursuit to be OVER, not a sequence: `closed` (we gave up on silence) is not "later" than
+# `rejected` (they said no), and neither is later than `withdrawn` (we pulled out). A classifier
+# claiming one of them against another is therefore a DISAGREEMENT to surface, never forward
+# motion to apply — see `status_advance`'s `sideways`.
+#
+# Mirrored-as-a-literal, the same convention `SUBMITTED_APP_STATUS` above already documents;
+# `TestApplicationStatusLifecycleOrderDev542` asserts this map's key set equals
+# `validate_data.APPLICATION_STATUS` exactly, so a status added there without a rank here is a
+# red suite, not a silently unrankable value.
+APPLICATION_STATUS_RANK = {
+    "not-started": 0,
+    "started": 1,
+    "submitted": 2,
+    "acknowledged": 3,
+    "advanced": 4,
+    "rejected": 5,
+    "withdrawn": 5,
+    "closed": 5,
+}
+
+# A row that carries no status at all — never `not-started`, which is a real, chosen value.
+# Nothing can be REGRESSED from an absence, so it ranks below every real status and any first
+# status written onto it counts as forward motion (the pre-dev-#542 behaviour, preserved on
+# purpose: the floor exists to stop regressions, not to refuse a first write).
+_NO_STATUS_RANK = -1
+
+
+def status_rank(status):
+    """`status`'s position in the lifecycle, or None when it is not a status this engine knows.
+
+    None/`""` -> `_NO_STATUS_RANK`. An UNRECOGNISED non-empty string -> None, and a None rank
+    is LOUD by construction at every call site (`status_advance` returns `unknown`, and the
+    write paths refuse an `unknown`): a status nobody can order must never be silently treated
+    as orderable, which is the CLAUDE.md rule about an unparseable value applied to a
+    vocabulary instead of to a field."""
+    if status is None or status == "":
+        return _NO_STATUS_RANK
+    return APPLICATION_STATUS_RANK.get(status)
+
+
+def status_advance(current, proposed):
+    """How `proposed` relates to `current` in the lifecycle — the ONE answer every write path
+    that wants to move an application's status asks. One of:
+
+      `same`      — the identical status; a no-op, never a write.
+      `forward`   — strictly later; the only verdict that may be applied automatically.
+      `backward`  — strictly earlier. dev #542's own defect: a phrase-classified
+                    `acknowledged` against a recorded `rejected`.
+      `sideways`  — equal rank, different status: two of the three endings disagreeing.
+      `unknown`   — either value is not a status this engine knows; nothing can be ordered.
+
+    Only `forward` is an automatic write. `backward`, `sideways` and `unknown` are all
+    DISAGREEMENTS between a classifier and the record — the engine cannot know which is right,
+    so they are surfaced to the owner rather than resolved (or silently dropped)."""
+    if current == proposed:
+        return "same"
+    c, p = status_rank(current), status_rank(proposed)
+    if c is None or p is None:
+        return "unknown"
+    if p > c:
+        return "forward"
+    if p < c:
+        return "backward"
+    return "sideways"
+
+
 def open_for_company(rows, opps_by_id, company_id):
     """Live applications whose opportunity belongs to `company_id` — tier 3's own "exactly
     one live application at that company" test, as a reusable join (design §3.2)."""

@@ -234,6 +234,26 @@ KNOWN_EXCEPTIONS = (
     # staleness check two sections below exists to force out.
 )
 
+
+def known_exception_for(rel, line, table=KNOWN_EXCEPTIONS):
+    """Pure. The ONE suppression predicate: an exception applies to a hit only when it names
+    that exact FILE **and** its term occurs on that exact LINE. Returns the matching entry, or
+    None.
+
+    ⭐ dev #222 — THE NARROWNESS IS THE WHOLE POINT, AND IT WAS UNTESTABLE UNTIL NOW. #222's
+    false positive (a generic mail-provider row in `scripts/mailboxes.py` colliding with a
+    profile-derived employer term) had to be suppressed without enabling the far worse failure
+    its own report names: "exempting <the name> everywhere would blind the gate to a real leak
+    of the same string elsewhere." That is a property of THIS predicate — file-scoped AND
+    line-scoped — and it lived as four inline lines inside `main()`, reachable only by running a
+    full scan against a real profile, which is precisely the thing no test here may do. Lifting
+    it out changes no behaviour and makes the property assertable offline; `main()` now calls
+    this instead of re-deriving it. Case: `TestKnownExceptionsAreLineScopedNotFileScoped`.
+    """
+    needle = (line or "").lower()
+    return next((e for e in table if e[0] == rel and e[1].lower() in needle), None)
+
+
 # Every tracked engine file. The families above remain a taxonomy and an emptiness guard; this
 # is what actually gets read.
 ENGINE = _tracked_engine_files()
@@ -1392,8 +1412,7 @@ def main():
             continue
         keep = []
         for h in hits:
-            exc = next((e for e in KNOWN_EXCEPTIONS
-                        if e[0] == rel and e[1].lower() in h[3].lower()), None)
+            exc = known_exception_for(rel, h[3])
             if exc:
                 fired.add(exc)
             else:
