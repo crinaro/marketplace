@@ -29,8 +29,6 @@ WHAT DELIBERATELY STAYS AT ROOT — each an anchor, not an oversight:
                            phase PAGES render pipeline state from here.
   CLAUDE.md, README.md,    the four #28 itself names as root's contents,
   handoff.md, log.md       plus the rulebook's install target.
-  dashboard.html           a constant 159-byte TOMBSTONE (dev #233) whose entire purpose is
-                           to be found at the OLD habit path.
   docs/                    the profile's own reference shelf (incident_archive.md), whose
                            anchors `check_rule_homes.py` resolves; nothing gained by moving.
 
@@ -104,12 +102,29 @@ LAYOUT = {
     "presence_set":          ("views/presence_set.html",          ()),
     "presence_set_url":      ("views/presence_set_url.txt",       ()),
     "presence_set_ledger":   ("views/presence_set_ledger.json",   ()),
+    # ⭐ dev #545 / public #127 — the rendered-resume output directory. `variant_out.py`'s
+    # shipped default wrote to a BARE `resumes/` at root, which no rule here accounted for, so
+    # rendering one resume made `--audit` exit 1 on the `nonexistent/` class: the engine's own
+    # default violated the engine's own layout, and a profile had to override `local_dir` in
+    # config.json to get a clean audit. The audit was right and the default was wrong — root
+    # holds ANCHORS (see the header: profile markers, external pointer targets, the four #28
+    # names), and a rendered-output directory is none of those. Adding `resumes` to ROOT_DIRS
+    # would re-open exactly the root sprawl #28 was filed over, and every future output
+    # directory would have the same claim.
+    #
+    # It belongs to PRESENCE: the claim union (`presence/claims.md`) and the declared variant
+    # pages already live there, and a rendered variant is that union, narrowed. Registering it
+    # HERE rather than special-casing it is what makes the existing machinery do the work —
+    # `path()`'s legacy fallback keeps already-rendered files findable at the old root
+    # location, and `audit()` reclassifies a root `resumes/` from UNKNOWN (hard fail, nothing
+    # self-heals it) to UNMIGRATED (advisory, the tree migration moves it).
+    "resumes":               ("presence/resumes",                 ("resumes",)),
 }
 
 # Root entries that BELONG at root (see the header for why each stays). Everything else a
 # root listing shows is either a phase dir, a legacy name awaiting migration, or unknown.
 ROOT_FILES = ("CLAUDE.md", "README.md", "config.json", "user.json", "handoff.md", "log.md",
-              "dashboard.html", "CREDENTIALS.md")   # CREDENTIALS.md: init_profile's checklist
+              "CREDENTIALS.md")   # CREDENTIALS.md: init_profile's checklist
 ROOT_DIRS = PHASE_DIRS + ("data", "docs", "archive", "views")
 
 # Files whose presence at root is a RETIRED artifact: retirement becomes a MOVE (public #28
@@ -117,6 +132,18 @@ ROOT_DIRS = PHASE_DIRS + ("data", "docs", "archive", "views")
 RETIRED_TO = {
     "focus.md":         "archive/retired-trackers/focus.md",
     "opportunities.md": "archive/retired-trackers/opportunities.md",
+    # ⭐ dev #546 / public #126 — `dashboard.html` was listed in ROOT_FILES above as a
+    # CANONICAL root entry: "a constant TOMBSTONE whose entire purpose is to be found at the
+    # OLD habit path." That made it the standing exception to item 3's own rule, and
+    # `generate_dashboard.py` rewrote it unconditionally on every run, so deleting it was
+    # futile — a retired artifact kept alive by the engine that retired it, and, for a profile
+    # created after the collapse, a note announcing the retirement of a local copy that
+    # profile never had. It is a RETIRED ARTIFACT, which is what this table is for; the
+    # generator no longer writes it, and m_0_56_0_retire_dashboard_tombstone moves the one an
+    # existing profile still carries. Listing it HERE (rather than simply dropping it from
+    # ROOT_FILES) is what keeps `audit()` calling a leftover UNMIGRATED — advisory, and the
+    # migration clears it — instead of UNKNOWN, which would trade one red gate for another.
+    "dashboard.html":   "archive/retired-trackers/dashboard.html",
 }
 
 # Worksheets that belong to applying/ wherever they were filed. The 2026-08-24 application

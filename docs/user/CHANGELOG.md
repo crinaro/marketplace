@@ -2,8 +2,16 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each verified against its release tag on the published remote; older releases after their push, the newest one by the publish that pushed it, so the section for the version you installed is in the file that came with it. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.56.0
+Two things move in your profile on the first run, and there is nothing for you to run. The rendered-resume default moves out of the profile root into presence/resumes, and the retired root dashboard.html is archived to archive/retired-trackers/ rather than deleted - it used to be regenerated on every run even though it had been retired. Your old file is kept, not thrown away.
+
+The change worth knowing about: a stale watermark could tell you 'UNCHANGED - safe to write' when it was blind to files added to the watched set after the mark was written, so a background run could have moved something underneath you and the check would still have said it was safe. It now reports four distinct answers instead of one, and names which of them means it cannot see part of your data.
+
+Also fixed: a closed role at an organisation where you also have a live role no longer flags the live one; the ATS sweep stops recommending mail domains you have already configured; the dashboard freshness check now looks at all of your stores rather than half of them, so editing a channel touch no longer reads as no change; and a hygiene check that failed on every run is green again.
+
 ## jobsearch 0.55.0
 A status you recorded by hand can no longer be overwritten backwards. The mail sweep used to re-read a resolved message on every run and could rewrite a rejection you had recorded back to an earlier status; it now refuses any write that would move an application backwards through its lifecycle, and hands you the disagreement as an ask instead of silently overwriting the record. If one of your ats.status_phrases classes is filled in while another is left empty, the sweep now says so loudly and writes an ask - an empty class beside a populated one does not mean 'unrecognised', it means mail belonging to it is misclassified as the populated one. Records already rewritten repair themselves: the next sweep notices a status sitting below what its own note records and restores it, so there is nothing for you to run. Also corrected: issue #111 was listed as fixed in 0.54.0 and only half of it shipped - the changelog now shows that retraction, and the issue is open again.
+- [#130](https://github.com/crinaro/marketplace/issues/130) — The ATS status classifier can overwrite a correct terminal rejection back to an earlier status on every reconcile run
 
 ## jobsearch 0.54.0
 This release backfills your own data on first run: the 0.54.0 migration rewrites involvements.jsonl and clears next_action_owner/next_action_date on touches recorded before record.py touched/answered propagated automatically, so history opened on 0.54.0 reads as if propagation had always run. Nothing to run yourself; the summary line names anything it could not resolve.

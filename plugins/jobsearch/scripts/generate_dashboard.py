@@ -32,9 +32,22 @@ already solved (639 KB → 224 KB measured), so the set collapses to:
                                      EXCEPT a body awaiting the owner's decision
                                      (a sendable message), which is the one kind of
                                      document the page exists to let them read.
-  dashboard.html                     the constant TOMBSTONE STUB (unchanged; the
-                                     two-copies staleness window stays closed by
-                                     construction).
+  (nothing at the profile root)       ⭐ dev #546 / public #126 — this script used to
+                                     also write a constant TOMBSTONE STUB to a root
+                                     `dashboard.html` on every run. It no longer
+                                     writes anything outside `views/`. The stub was a
+                                     transitional redirect for the old habit path
+                                     (dev #233); rewriting it unconditionally forever
+                                     made deleting it futile, kept a retired artifact
+                                     alive by the very engine that retired it, and
+                                     told every NEW profile its "local copy is
+                                     retired" when that profile never had one. The
+                                     rulebook's own rule is that retirement is a MOVE
+                                     to archive/retired-trackers/, never a note, so
+                                     the stub is now retired the way everything else
+                                     is: `_tree.RETIRED_TO` names it and
+                                     `migrate.m_0_56_0_retire_dashboard_tombstone`
+                                     moves the one a profile already has.
 
 One Artifact call per run, always to the URL in views/dashboard_artifact_url.txt —
 the oldest bookmark wins. The retired per-page URLs get a constant "moved" stub via
@@ -1510,18 +1523,13 @@ def _variant_staleness():
 # SELECTION left to compute — the publish set is the one artifact, every run.
 
 
-# The tombstone written where dashboard.html used to be — CONSTANT, carrying no state,
-# so the local-copy staleness window (public #22 / dev #233) is closed by construction.
-DASHBOARD_TOMBSTONE = """<!DOCTYPE html>
-<html lang="en"><head><meta charset="UTF-8"><title>Dashboard has moved</title></head>
-<body style="font-family:sans-serif;max-width:34em;margin:3em auto;line-height:1.5">
-<h1>This local copy is retired</h1>
-<p>The dashboard is the <strong>published artifact</strong> now — one rendering, no
-local twin to go stale (dev #233). Its URL is in <code>views/dashboard_artifact_url.txt</code>.
-The generated pages live in <code>views/</code> (public #28); regenerate with
-<code>generate_dashboard.py</code>.</p>
-</body></html>
-"""
+# ⭐ dev #546 / public #126 — DASHBOARD_TOMBSTONE lived here and was written to a root
+# `dashboard.html` on every single run. It is gone, and nothing outside `views/` is written
+# any more. The content it used to write is not lost: `migrate.py` carries the marker it
+# needs to RECOGNISE an existing stub (`_TOMBSTONE_MARKERS`) so it can tell the engine's own
+# retired stub from a file a candidate wrote themselves, and the profile's git history holds
+# the bytes. Retirement is a MOVE to archive/retired-trackers/, never a note — the rule this
+# stub was the standing exception to.
 
 
 def load_jsonl(name):
@@ -3162,12 +3170,11 @@ def main():
            "" if n_needs_total == 1 else "s", "s" if n_needs_total == 1 else "",
            router_html, "\n".join(_sections), esc(_tree.rel("network"))))
 
-    # ── The outputs: the ONE artifact and the constant tombstone. ──────────
+    # ── The output: the ONE artifact. Nothing outside views/ is written (dev #546). ──
     (ROOT / "views").mkdir(exist_ok=True)
     artifact_doc = ('<title>%s</title>\n<style>%s\n%s\n</style>\n%s'
                     % (html.escape(_title), CSS, "\n".join(_FILTER_CSS), body_inner))
     (ROOT / "views" / "dashboard_artifact.html").write_text(artifact_doc, encoding="utf-8")
-    (ROOT / "dashboard.html").write_text(DASHBOARD_TOMBSTONE, encoding="utf-8")
     # The coverage ledger (Class C) — verified against the HTML by
     # check_dashboard_coverage.py; never trusted on its own.
     _ledger = {
@@ -3183,9 +3190,8 @@ def main():
     (ROOT / "views" / "dashboard_coverage.json").write_text(
         json.dumps(_ledger, indent=1, sort_keys=True, ensure_ascii=False), encoding="utf-8")
 
-    print("Wrote views/dashboard_artifact.html (%d bytes) and the dashboard.html "
-          "tombstone (%d bytes)"
-          % (len(artifact_doc.encode("utf-8")), len(DASHBOARD_TOMBSTONE)))
+    print("Wrote views/dashboard_artifact.html (%d bytes)"
+          % len(artifact_doc.encode("utf-8")))
     print("  publish: ONE artifact — views/dashboard_artifact.html, to the URL in "
           "views/dashboard_artifact_url.txt (the router and phase pages are RETIRED — "
           "2026-08-29 collapse). If that url file is absent, check "

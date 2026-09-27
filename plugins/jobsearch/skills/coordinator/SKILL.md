@@ -247,8 +247,20 @@ body renders on the one page itself, in the outreach section's Pending drafts bl
 ## 4. DECIDE — tell the candidate where things stand
 
 **⭐ RUN `~/.claude/jobsearch/run changed.py --as coordinator` FIRST — BEFORE YOU SUMMARISE, NOT JUST
-BEFORE YOU WRITE.** If it reports STALE, re-read before saying anything about what is outstanding.
-On 2026-08-04 a session closed a long stretch of work by reporting that a reply still needed
+BEFORE YOU WRITE.** ⚠️ **Re-read before saying anything about what is outstanding whenever it does
+not answer a clean `UNCHANGED … Safe to write`** — and it has more than one way not to:
+
+| what it prints | what it means |
+|---|---|
+| `NO WATERMARK for reader …` | this reader has never marked what it saw; there is nothing to compare against |
+| `⚠️ WATERMARK UNFIT (STALE)` | the mark stopped advancing, so a `CHANGED` below is weeks of ordinary work, not proof a concurrent run wrote |
+| `⚠️ WATERMARK UNFIT (UNDATED)` | no readable timestamp, so the mark's own age is unknown |
+| **`⚠️ WATERMARK UNFIT (BLIND)`** | ⚠️ **the dangerous one** — the mark has no entry for paths now watched, so it cannot see them move and would otherwise answer `UNCHANGED` for a file that did |
+
+**Read the `WATERMARK UNFIT` banner itself, not one reason inside it.** `STALE` merely raises a
+false alarm; `BLIND` loses work, because it is the case where the reassuring answer is the wrong
+one. An unfit mark exits non-zero and refuses "safe to write" at all — re-read state, then
+`--mark --as coordinator`. On 2026-08-04 a session closed a long stretch of work by reporting that a reply still needed
 drafting; it had been sent and recorded eight hours earlier by a concurrent run, and the watermark
 had said STALE the whole time — it was never consulted, because the rule only mentioned writes.
 **A stale status report costs exactly what a stale write costs:** the candidate acts on it.

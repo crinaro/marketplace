@@ -4822,6 +4822,163 @@ def m_0_54_0_touch_propagation(profile, apply_it, _inject_fault=None, today=None
     return True, (msg + "\n" + pre_existing_note if pre_existing_note else msg)
 
 
+def m_0_56_0_resumes_to_presence(profile, apply_it):
+    """0.56.0 — dev #545 / public #127: the rendered-resume directory moves from a bare root
+    `resumes/` to `presence/resumes`, the location `_tree.LAYOUT` now declares for it.
+
+    `variant_out.py`'s shipped default wrote to root, which `_tree.py --audit` classified as
+    UNKNOWN — the `nonexistent/` class, the one finding that fails its exit code. So the
+    engine's own default tripped the engine's own layout audit the moment a resume was
+    rendered, and the only escape was overriding `local_dir` in config.json. The default was
+    the thing that was wrong: root holds ANCHORS (profile markers, external pointer targets),
+    and a rendered-output directory is none of those.
+
+    ⭐ PRESERVE, THEN TRANSFORM. Nothing is deleted and nothing is overwritten:
+      - no root `resumes/` at all is a clean no-op (a profile that never rendered one, and
+        every profile created after this ships);
+      - no `presence/resumes` yet means the whole directory MOVES, contents intact;
+      - both present means each entry moves individually and a same-name collision is LEFT
+        WHERE IT IS and named in the summary, never clobbered — a rendered resume is a
+        document the candidate may have already sent, so the safe side is obvious;
+      - an emptied root `resumes/` is removed, because an empty directory it left behind
+        would audit as UNMIGRATED forever and keep telling every session a move is pending.
+
+    SAFE: idempotent (a second run finds no root `resumes/` and does nothing) and reversible
+    by hand — the files are moved, not rewritten. `_tree.path()`'s legacy fallback means a
+    profile this has not reached yet keeps rendering to, and reading from, the old location,
+    so nothing depends on this having run.
+    """
+    old = os.path.join(profile, "resumes")
+    new = os.path.join(profile, "presence", "resumes")
+    if not os.path.isdir(old):
+        return True, ""
+
+    entries = sorted(os.listdir(old))
+    if not entries:
+        if not apply_it:
+            return True, "  would remove the empty root resumes/ (nothing to move)"
+        try:
+            os.rmdir(old)
+        except OSError as e:
+            return False, "  ⚠️ empty root resumes/ could not be removed (%s)." % e
+        return True, "  removed the empty root resumes/ — nothing was in it"
+
+    if not apply_it:
+        collisions = [n for n in entries if os.path.exists(os.path.join(new, n))]
+        note = ("" if not collisions else
+                " (%d name(s) already present at the destination would be LEFT at root: %s)"
+                % (len(collisions), ", ".join(collisions[:4])))
+        return True, ("  would move %d rendered resume(s) from resumes/ to presence/resumes/%s"
+                      % (len(entries), note))
+
+    try:
+        os.makedirs(new, exist_ok=True)
+    except OSError as e:
+        return False, ("  ⚠️ presence/resumes could not be created (%s). Root resumes/ is "
+                       "untouched." % e)
+
+    moved, left = [], []
+    for n in entries:
+        src, dst = os.path.join(old, n), os.path.join(new, n)
+        if os.path.exists(dst):
+            left.append(n)
+            continue
+        try:
+            shutil.move(src, dst)
+        except (OSError, shutil.Error) as e:
+            left.append("%s (%s)" % (n, e))
+            continue
+        moved.append(n)
+
+    removed = False
+    if not os.listdir(old):
+        try:
+            os.rmdir(old)
+            removed = True
+        except OSError:
+            pass
+
+    msg = "  moved %d rendered resume(s) to presence/resumes/" % len(moved)
+    if removed:
+        msg += "; root resumes/ removed"
+    if left:
+        msg += ("\n  ⚠️ %d LEFT at root because the destination already has that name — "
+                "compare them by hand, then delete the duplicate you do not want: %s"
+                % (len(left), ", ".join(left[:6])))
+    return True, msg
+
+
+# The two phrases the engine's OWN retired stub always carried, in every version of it that
+# ever shipped (dev #233 through 0.54.0). Used only to tell that stub apart from a
+# `dashboard.html` a candidate wrote themselves, so the summary can say which it moved — the
+# move itself is lossless either way, so recognition changes the MESSAGE, never the outcome.
+_TOMBSTONE_MARKERS = ("This local copy is retired", "Dashboard has moved")
+
+
+def m_0_56_0_retire_dashboard_tombstone(profile, apply_it):
+    """0.56.0 — dev #546 / public #126: the root `dashboard.html` tombstone is retired the way
+    the rulebook says everything is retired — a MOVE to `archive/retired-trackers/`.
+
+    `generate_dashboard.py` wrote a constant stub to that path unconditionally on every run,
+    and `_tree.py` listed it as a canonical root entry, so the file was the standing exception
+    to the profile's own retirement rule ("a MOVE to archive/retired-trackers/, never a note").
+    The effect the reporter hit: deleting it was futile, because the next scheduled run
+    recreated it. Worse, a profile created after the 2026-08-29 collapse got a note announcing
+    that its local dashboard copy was retired when it had never had one.
+
+    The generator no longer writes it (same release), so this only has to clear what is
+    already on disk — and once it has, nothing recreates it.
+
+    ⭐ PRESERVE, THEN TRANSFORM. The file is MOVED, never deleted, even when it is byte-for-byte
+    the engine's own stub: a move costs nothing, and the one thing worse than an immortal
+    tombstone is silently deleting a file a candidate wrote by hand at the same path. A
+    destination that already exists is not overwritten — the root copy is left and named, the
+    same rule m_0_56_0_resumes_to_presence follows.
+
+    SAFE: idempotent (a second run finds no root `dashboard.html`), and reversible by hand from
+    `archive/retired-trackers/`. A profile that never had the file is a clean no-op.
+    """
+    old = os.path.join(profile, "dashboard.html")
+    if not os.path.exists(old):
+        return True, ""
+
+    import _tree
+    # The destination comes from the table `audit()` classifies against, so the migration and
+    # the audit cannot disagree about where a retired root file goes (_tree.py's own rule).
+    rel_dest = _tree.RETIRED_TO["dashboard.html"]
+    new = os.path.join(profile, rel_dest)
+
+    try:
+        with open(old, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError as e:
+        return False, ("  ⚠️ root dashboard.html exists but cannot be read (%s). Left "
+                       "untouched." % e)
+    is_engine_stub = any(m in text for m in _TOMBSTONE_MARKERS)
+    what = ("the engine's own retired tombstone stub" if is_engine_stub
+            else "a root dashboard.html this profile carries that is NOT the engine's stub")
+
+    if os.path.exists(new):
+        if not apply_it:
+            return True, ("  would leave root dashboard.html alone — %s already exists"
+                          % rel_dest)
+        return True, ("  ⚠️ root dashboard.html LEFT in place: %s already exists, and this "
+                      "migration never overwrites an archived file. Compare the two and "
+                      "delete the root copy yourself once you have." % rel_dest)
+
+    if not apply_it:
+        return True, "  would move root dashboard.html to %s (%s)" % (rel_dest, what)
+
+    try:
+        os.makedirs(os.path.dirname(new), exist_ok=True)
+        shutil.move(old, new)
+    except (OSError, shutil.Error) as e:
+        return False, ("  ⚠️ root dashboard.html could not be moved to %s (%s). Left "
+                       "untouched — nothing was lost." % (rel_dest, e))
+    return True, ("  retired root dashboard.html -> %s (%s). The generator no longer writes "
+                  "it, so it will not come back." % (rel_dest, what))
+
+
 MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               ("0.17.0", m_0_17_0), ("0.18.0", m_0_18_0), ("0.19.0", m_0_19_0),
               ("0.20.0", m_0_20_0), ("0.24.0", m_0_24_0_blocked_until),
@@ -4959,7 +5116,34 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               # ⚠️ KEYED "0.54.0" — same ADR-009 verification as m_0_54_0_linkedin_quota
               # immediately above (0.53.0 is the newest published release). dev #479 /
               # public #114.
-              ("0.54.0", m_0_54_0_touch_propagation))
+              ("0.54.0", m_0_54_0_touch_propagation),
+              # ⚠️⚠️ KEYED "0.56.0", AND IT WAS KEYED "0.55.0" FIRST — the ADR-009 trap caught
+              # live, mid-dispatch, which is worth recording because it is the third time this
+              # exact shape has bitten (see m_0_34_0_dashboard_collapse's own note).
+              #
+              # These two were written and verified against a tree where 0.54.0 was the newest
+              # PUBLISHED release: `jobsearch--v0.54.0` tagged, plugin.json reading 0.54.0, and
+              # all four reporters of dev #543-#546 running 0.54.0. "0.55.0" was correct then.
+              # While the work was still on this branch, PR #557 released jobsearch 0.55.0 — and
+              # 0.55.0 shipped carrying NO migration at all. So a profile that installs it is
+              # stamped exactly "0.55.0", and pending_for()'s `ver(stamp) < ver(v)` is STRICT:
+              # a migration keyed "0.55.0" would never fire for any of them. Both were re-keyed
+              # to 0.56.0 after re-measuring (plugin.json 0.55.0, `jobsearch--v0.55.0` tagged).
+              #
+              # ⭐ THE LESSON, for whoever keys the next one: a migration key verified at the
+              # START of a dispatch is a claim with a shelf life. Re-measure the newest
+              # published release just before handing back, not only when you write the entry.
+              # Re-verify these when 0.56.0 is actually cut.
+              #
+              # Ordered after the tree migration for the same reason every later move is: it
+              # reads the post-#28 `presence/` layout m_0_32_0_tree established.
+              ("0.56.0", m_0_56_0_resumes_to_presence),
+              # Same 0.56.0 keying and the same re-key history as the migration above. ORDER is
+              # not load-bearing between these two — they touch disjoint paths (a root
+              # resumes/ directory and a root dashboard.html file) and neither reads the
+              # other's output — but the retirement runs second so every 0.56.0 root move is
+              # in one declared order rather than an accidental one.
+              ("0.56.0", m_0_56_0_retire_dashboard_tombstone))
 
 
 # ⭐⭐ dev #365 (design-connected-entities.md §26.7/§28.2) — "no record of which version added

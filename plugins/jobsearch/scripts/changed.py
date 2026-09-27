@@ -45,6 +45,11 @@ Usage:
     python3 scripts/changed.py              # has anything moved since the mark? exit 1 if yes
     python3 scripts/changed.py --verbose    # show which files, and how
 
+⭐ A MARK IS CHECKED FOR FITNESS BEFORE IT IS TRUSTED (public #122 / dev #471). A mark older than
+`MARK_MAX_AGE_DAYS`, one with no readable `at` stamp, or one whose fingerprint has no entry for a
+path since added to `WATCHED`, prints `WATERMARK UNFIT` and exits non-zero — it is not allowed to
+answer "safe to write", because the second of those is silently BLIND rather than merely stale.
+
 Python 3.9+. Standard library only.
 """
 
@@ -86,6 +91,71 @@ WATCHED = [
     "data/asks.jsonl", "data/commitments.jsonl",
     "handoff.md", "outreach/drafts.md", "applying/cover_letters.md", "log.md",
 ]
+
+
+# ⭐⭐ A MARK MUST BE FIT TO ANSWER BEFORE ITS ANSWER MEANS ANYTHING — public #122 / dev #471.
+# Two conditions, both reported live against an installed 0.52.0 and both SILENT until now:
+#
+#   AGE. A mark is written after a read and consulted before the next write, so one that has
+#   not advanced in a week is not a record of "what this reader last saw" — the reader stopped
+#   marking. Every comparison against it then reports STATE CHANGED, forever, which trains
+#   callers to ignore the one signal meant to say re-read before you write. Reported at FIFTY
+#   DAYS old with nothing anywhere warning about it.
+#
+#   KEY-SET DRIFT, and this one is worse. `WATCHED` is a hand-maintained list; a mark written
+#   before an entry was ADDED to it carries no fingerprint for that path, and the comparison
+#   below skips any path the mark does not carry. So the mark is not merely stale, it is
+#   SILENTLY BLIND to those paths — it answers UNCHANGED for a file that did move, which is the
+#   false all-clear the per-reader watermark (2026-08-03, above) exists to prevent. Reported
+#   live: three readers' marks covered 11 paths, a fourth covered 9.
+#
+# ⭐ The remedy shape, not a new snapshot: compare against the LIVE `WATCHED` list at read time.
+# A second stored copy of it would drift exactly the same way.
+MARK_MAX_AGE_DAYS = 7
+
+
+def mark_age_days(at, now=None):
+    """Whole days between a mark's `at` stamp and `now`; **None when the stamp is missing or
+    unparseable**, which the caller reports as UNDATED rather than treating as fresh — an
+    unreadable value is LOUD (CLAUDE.md), never given the benefit of the doubt."""
+    if not at:
+        return None
+    try:
+        then = datetime.datetime.fromisoformat(str(at))
+    except (TypeError, ValueError):
+        return None
+    ref = now or datetime.datetime.now()
+    return max(0, int((ref - then).total_seconds() // 86400))
+
+
+def fingerprint_drift(before, watched=None):
+    """`(unrepresented, retired)` for a stored fingerprint, against the LIVE `WATCHED` list.
+
+    `unrepresented` — watched paths the mark has **no entry for at all**, so it cannot see
+    them move. Note this is a KEY-SET question, not a value question: a path recorded as
+    absent is stored as `None` and IS represented; only a missing key is blindness.
+
+    `retired` — entries the mark carries for paths no longer watched. Harmless to the answer
+    (the comparison iterates the current list), so it is reported as context beside a real
+    unfitness, never as one by itself."""
+    watched = list(WATCHED if watched is None else watched)
+    have = set(before or {})
+    return ([rel for rel in watched if rel not in have], sorted(have - set(watched)))
+
+
+def mark_unfitness(prev, now=None, watched=None):
+    """`(reasons, age, unrepresented, retired)` — every way this mark is unfit to answer
+    "did anything move since I looked?". `reasons` is empty when it is fit."""
+    unrepresented, retired = fingerprint_drift(prev.get("files") or {}, watched)
+    age = mark_age_days(prev.get("at"), now)
+    reasons = []
+    if unrepresented:
+        reasons.append("BLIND")
+    if age is None:
+        reasons.append("UNDATED")
+    elif age >= MARK_MAX_AGE_DAYS:
+        reasons.append("STALE")
+    return reasons, age, unrepresented, retired
 
 
 def fingerprint():
@@ -133,6 +203,35 @@ def main():
         prev = json.load(fh)
     before = prev.get("files", {})
 
+    # ⭐ Is this mark fit to answer at all (public #122 / dev #471)? Deliberately SEPARATE from
+    # the NO WATERMARK branch above: "never marked", "marked but stale" and "marked but blind to
+    # some watched paths" are three different answers and must read as three.
+    unfit, age, unrepresented, retired = mark_unfitness(prev)
+    if unfit:
+        print("⚠️  WATERMARK UNFIT (%s) for reader %r — IT CANNOT ANSWER THIS QUESTION."
+              % (", ".join(unfit), args.reader))
+        print("=" * 72)
+        if "STALE" in unfit:
+            print("  STALE: the mark is %d day(s) old (threshold %d). It stopped advancing, so a"
+                  % (age, MARK_MAX_AGE_DAYS))
+            print("    CHANGED below is weeks of ordinary work, not proof a concurrent run wrote.")
+        if "UNDATED" in unfit:
+            print("  UNDATED: no readable `at` stamp (%r), so the mark's own age is unknown."
+                  % (prev.get("at"),))
+        if "BLIND" in unfit:
+            print("  BLIND: the fingerprint has NO ENTRY for %d currently watched path(s), so it"
+                  % len(unrepresented))
+            print("    cannot see them move — it would answer UNCHANGED for a file that did. The")
+            print("    mark predates a WATCHED-list change that added:")
+            for rel in unrepresented:
+                print("      %-32s not recorded in this mark" % rel)
+        if retired:
+            print("  (it also carries %d entry/entries for paths no longer watched: %s)"
+                  % (len(retired), ", ".join(retired)))
+        print("  FIX: re-read state, then `python3 scripts/changed.py --mark --as %s`."
+              % args.reader)
+        print("=" * 72)
+
     moved, appeared, vanished = [], [], []
     for rel, cur in now.items():
         old = before.get(rel, "absent")
@@ -146,6 +245,13 @@ def main():
             moved.append((rel, old, cur))
 
     if not (moved or appeared or vanished):
+        if unfit:
+            # ⚠️ NOT AN ALL-CLEAR, and saying so is the whole point of dev #471. Nothing moved
+            # among the paths this mark DOES cover — which is not the question asked.
+            print("NOTHING MOVED among the %d path(s) this mark covers — but the mark is UNFIT"
+                  % len(before))
+            print("  (above), so that is NOT 'safe to write'. Re-read and re-mark first.")
+            return 1
         print("UNCHANGED since %s (reader %r) — your read is still current. Safe to write."
               % (prev.get("at"), args.reader))
         return 0

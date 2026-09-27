@@ -187,6 +187,30 @@ import validate_data as _vd                                         # noqa: E402
 TERMINAL = _vd.TERMINAL_OPP_STATUSES
 
 
+# ⭐ WHICH ROLE, not merely which ORGANIZATION — public #121 / dev #472. Words too generic to
+# tell one role at an organization from another: a mention containing only these names no role.
+_ROLE_NOISE = frozenset({
+    "the", "and", "for", "with", "role", "roles", "position", "opening", "req",
+    "senior", "staff", "principal", "lead", "head", "chief", "director", "vp", "vice",
+    "president", "manager", "engineer", "engineering", "officer", "of", "at", "ii", "iii",
+})
+
+
+def role_tokens(title):
+    """The words of a role title that could distinguish it from ANOTHER role at the SAME
+    organization — seniority and job-family words are too common to do that, so they are
+    dropped (`_ROLE_NOISE`). Lower-cased; a title of nothing but noise yields an empty set,
+    which the caller treats as "cannot be told apart", never as "matches anything"."""
+    words = re.findall(r"[A-Za-z][A-Za-z0-9+#/.'-]*", str(title or "").lower())
+    return {w for w in words if len(w) > 1 and w not in _ROLE_NOISE}
+
+
+def _is_terminal(o):
+    """The ONE terminal test this check uses, so both passes below agree by construction."""
+    return (str(o.get("status") or "") in TERMINAL
+            or str(o.get("verdict") or "") == "pass")
+
+
 def closed_roles_named_in_prose():
     """Roles the RECORD has closed that the hand-written narrative still discusses — #60.
 
@@ -203,6 +227,23 @@ def closed_roles_named_in_prose():
 
     Conservative on purpose: only TERMINAL records count. A role that is merely quiet is a
     legitimate thing to still be writing about; one recorded `passed` or `expired` is not.
+
+    ⭐⭐ WHICH ROLE — public #121 / dev #472. This used to be `name not in prose`: a bare
+    company-name substring over the whole file, guarded only by a four-character floor. An
+    organization with BOTH a live role and a closed one therefore tripped on EVERY run — the
+    narrative was discussing the live role, and the check could not tell, because it never
+    asked which role a mention referred to. That is a confident wrong answer repeated every
+    run, on an advisory check, which is how an advisory check gets switched off.
+
+    The qualification was already in hand and unused: the opportunity's own `title`. So where
+    the organization ALSO carries a live role, a mention now counts only if it names THIS
+    role — a word from the closed role's title, in the same line, that none of the same
+    organization's live titles carries. Where the organization has no live role at all, a
+    bare mention still flags: there is no other role for the sentence to be about, which is
+    the #60 incident's own shape and stays caught.
+
+    ⛔ Not fuzzy matching, and NOT a higher length floor — the floor trades one wrong answer
+    for another (it would silence a short real name and still fire on a long incidental one).
     """
     try:
         with open(os.path.join(ROOT, "handoff.md"), encoding="utf-8") as fh:
@@ -215,14 +256,41 @@ def closed_roles_named_in_prose():
         if c.get("id") and c.get("name"):
             companies[c["id"]] = str(c["name"])
 
+    # Pass 1 — the LIVE roles per organization, and the title words they occupy. Read from
+    # the same store in the same run, so the two passes cannot disagree about what is live.
+    live_titles_by_company = {}
+    for o in rows("opportunities.jsonl"):
+        if _is_terminal(o):
+            continue
+        live_titles_by_company.setdefault(o.get("company_id"), set()).update(
+            role_tokens(o.get("title")))
+
+    lines = prose.splitlines()
     out = []
     for o in rows("opportunities.jsonl"):
+        if not _is_terminal(o):
+            continue
         status = str(o.get("status") or "")
-        if status not in TERMINAL and str(o.get("verdict") or "") != "pass":
+        cid = o.get("company_id")
+        name = companies.get(cid)
+        if not name or len(name) < 4:
             continue
-        name = companies.get(o.get("company_id"))
-        if not name or len(name) < 4 or name not in prose:
+        mentions = [ln for ln in lines if name in ln]
+        if not mentions:
             continue
+        if cid in live_titles_by_company:
+            # Ambiguous BY CONSTRUCTION: the organization's name alone cannot say which of
+            # its roles this line is about. Require a word that names the closed role and no
+            # live one — and when the titles share every distinguishing word, say nothing
+            # rather than guess (a check that cries wolf is a check somebody switches off).
+            distinguishing = role_tokens(o.get("title")) - live_titles_by_company[cid]
+            if not distinguishing:
+                continue
+            # Whole words, not substrings — "data" must not be satisfied by "database".
+            named = re.compile(r"(?<![A-Za-z0-9])(?:%s)(?![A-Za-z0-9])"
+                               % "|".join(re.escape(t) for t in sorted(distinguishing)))
+            if not any(named.search(ln.lower()) for ln in mentions):
+                continue
         out.append((name, str(o.get("title") or ""), status or "verdict:pass"))
     return out
 

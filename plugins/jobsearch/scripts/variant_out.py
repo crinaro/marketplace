@@ -79,6 +79,9 @@ from _root import profile_root
 import profile as prof
 import resume_variants as rv
 import _docx
+# dev #545 — the rendered-resume directory is a LAYOUT fact, so it comes from the one table
+# every script and the tree migration already share, never a bare string typed here.
+import _tree
 
 MODES = ("drive", "local_docx")
 # ⭐ Unlike letter_out.py, whose `drive` default is historical ("it was the original behavior.
@@ -163,7 +166,12 @@ def output_settings():
     block = w.get("resume_output") or {}
     out = dict(block)
     out.setdefault("mode", DEFAULT_MODE)
-    out.setdefault("local_dir", "resumes")
+    # dev #545 / public #127 — `presence/resumes`, not a bare root `resumes/`: the old default
+    # audited as UNKNOWN in _tree.py's root classification, so rendering one resume failed the
+    # engine's own tree audit. A profile that already OVERRODE local_dir keeps its own value;
+    # this is only the default, and _tree's legacy fallback still finds files already rendered
+    # to the old root location.
+    out.setdefault("local_dir", _tree.rel("resumes"))
     drive = cfg.get("drive", {}) or {}
     out["drive_folder_id"] = drive.get("job_search_folder_id")
     out["drive_folder_name"] = drive.get("job_search_folder_name")
@@ -179,10 +187,16 @@ def set_mode(mode):
     w = cfg.setdefault("writing", {})
     block = w.setdefault("resume_output", {})
     block["mode"] = mode
-    block.setdefault("local_dir", "resumes")
+    block.setdefault("local_dir", _tree.rel("resumes"))   # dev #545
+    # dev #545 / public #127 — this string is WRITTEN INTO THE USER'S OWN config.json by
+    # `_write_config`, so it described the pre-#127 location two lines below the line that
+    # moved it: someone reading their configuration was told the wrong place to look for a
+    # file we had just relocated. It now names `local_dir` itself, which keeps it true for a
+    # profile that overrode the default as well as for the shipped one.
     block["_why"] = ("drive = push to the job-search Drive folder (needs a Google account and "
-                     "the documents connector). local_docx = write a .docx next to the profile, "
-                     "no Google account required — the default here.")
+                     "the documents connector). local_docx = write a .docx to %s/ inside the "
+                     "profile, no Google account required — the default here."
+                     % block["local_dir"])
     _write_config(cfg)
     print("Resume output mode set to %r." % mode)
     return status()
@@ -208,7 +222,9 @@ def status():
             print("     Set the folder id, or switch to a local file:")
             print("       ~/.claude/jobsearch/run variant_out.py --set-mode local_docx")
     else:
-        print("  Writes to  : %s/" % os.path.join(profile_root(), s["local_dir"]))
+        # dev #545 — the path a write would ACTUALLY take, legacy fallback included, so this
+        # never names a directory the next render will not use.
+        print("  Writes to  : %s/" % _tree.resolve_rel(profile_root(), s["local_dir"]))
         print("  No Google account, connector or network needed.")
     print()
     print("  Switch:  ~/.claude/jobsearch/run variant_out.py --set-mode %s"
@@ -565,7 +581,12 @@ def render(variant_id, target=None, out_path=None, dry_run=False):
         print("Then READ THE DOCUMENT BACK to verify it before attaching it anywhere.")
         return 1 if not s["drive_folder_id"] else 0
 
-    out = out_path or os.path.join(root, s["local_dir"], _filename(variant_id))
+    # dev #545 — resolve_rel() honours the layout's legacy fallback, so a profile the tree
+    # migration has not reached yet keeps writing beside the resumes it already rendered at
+    # the old root location instead of silently splitting them across two directories. A
+    # local_dir the layout does not know (a profile's own override) is joined verbatim.
+    out = out_path or os.path.join(_tree.resolve_rel(root, s["local_dir"]),
+                                   _filename(variant_id))
     heading_styles = [
         ("Heading1", "heading 1", render_cfg["heading1_size_half_pt"], render_cfg["heading_color"]),
         ("Heading2", "heading 2", render_cfg["heading2_size_half_pt"], render_cfg["heading_color"]),

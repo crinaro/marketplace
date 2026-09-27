@@ -8,7 +8,7 @@ This repo is the single source of truth for the candidate's executive job search
 **⭐ THE TREE IS THE SIX PHASES the router renders (public #28):** `configure/` · `presence/` ·
 `pipeline/kb/` · `applying/` · `conversations/` · `outreach/` — plus `data/`, `views/`
 (GENERATED), `archive/`, `docs/`. **Root holds only** this rulebook, `README.md`, `config.json`,
-`user.json`, `handoff.md`, `log.md`, `dashboard.html` (tombstone).
+`user.json`, `handoff.md`, `log.md`.
 `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/_tree.py" --audit` flags anything else.
 **Retirement is a MOVE to `archive/retired-trackers/`, never a note.**
 
@@ -65,8 +65,8 @@ This repo is the single source of truth for the candidate's executive job search
   `scripts/knowledge.py` audits). **⭐ EVERY KB LINE IS TAGGED BY SOURCE** — `[CANDIDATE]` `[JD]`
   `[RESEARCH]` `[CLAUDE]` `[OPEN]`. Never blur a company's self-description, or my
   inference, with what someone said.
-- **`views/dashboard_artifact.html` + `views/presence_set.html` + `views/*_artifact.html`** — GENERATED. Never hand-edit
-  (`dashboard.html`: stub); daily-run carries the steps. **⭐ Then grep the OUTPUT for what you added.**
+- **`views/dashboard_artifact.html` + `views/presence_set.html` + `views/*_artifact.html`** — GENERATED. Never hand-edit;
+  daily-run carries the steps. **⭐ Then grep the OUTPUT for what you added.**
 - **`archive/process_archive.md`** (retired process items) · **[docs/incident_archive.md](docs/incident_archive.md)**
   (the stories behind these rules — reference only, read on demand by `search-strategist` alone).
 - **`opportunities.md` — RETIRED 2026-07-20, frozen. Do not read it, do not edit it.** The
@@ -217,7 +217,7 @@ still `false`. Ask before any comp conversation leans on that tier.
   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/profile.py"`, never retype an address, and never add one that shows up in a
   recruiting database (at least one such address is bad data and must not be re-raised as a
   coverage gap). **Coverage means every address was searched, not one call:** sweeps
-  (`mail_client.py`) search every account per run; `gmail-multi`'s tools, interactive,
+  (`scripts/mail_client.py`) search every account per run; `gmail-multi`'s tools, interactive,
   are scoped per address by `guard_mail_scope.py` (line 385) — never `account` unset or
   `all`, never one address as covering the rest. Correspondence also spans LinkedIn and
   phone, so one mailbox is a partial view. Added 2026-07-20 after wrongly accusing a subagent of fabrication. **When a

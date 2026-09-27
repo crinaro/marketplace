@@ -530,6 +530,44 @@ def derived_sender_domains(messages):
     return sorted(out)
 
 
+# ⭐⭐ ONE DEFINITION OF "DERIVED, NOT CONFIGURED" — public #120 / dev #473.
+# The `--ats` plan line that recommends adding a domain to `ats.receipt_sender_domains` was
+# built straight from `derived_domains` with NO subtraction, so it went on recommending a
+# domain the owner had already configured, run after run. `--verify` computed the same thing on
+# its own separate line (`d in derived_domains and d not in configured_domains`) and correctly
+# labelled that same domain `configured` — so the two paths disagreed with each other about the
+# same data, which is worse than one path being wrong: neither can be trusted from its output.
+#
+# Rule 20's answer, and the reason this is not a second subtraction bolted onto the hint: the
+# correct predicate ALREADY EXISTED on the `--verify` path. A third implementation would be a
+# third thing to drift. There is one predicate now and both callers use it.
+def derived_not_configured(configured_domains, derived_domains):
+    """The derived sender domains the owner has NOT already stated as policy — the ONE
+    definition, shared by `--ats`'s add-domain hint and `--verify`'s per-domain leg label.
+    Order follows `derived_domains` (itself sorted), so output is deterministic."""
+    have = {(d or "").strip().lower() for d in (configured_domains or ())}
+    return [d for d in (derived_domains or ()) if (d or "").strip().lower() not in have]
+
+
+def add_domain_hint(configured_domains, derived_domains):
+    """The `--ats` plan-line fragment recommending domains for `receipt_sender_domains`, or ""
+    when there is nothing left to recommend. A function rather than an inline expression so the
+    recommendation itself is assertable — public #120 was a wrong recommendation, and a test
+    over the predicate alone would not have caught the hint failing to call it."""
+    unstated = derived_not_configured(configured_domains, derived_domains)
+    if not unstated:
+        return ""
+    return (" — %s add it to receipt_sender_domains to make the record say so"
+            % ", ".join(unstated))
+
+
+def all_sender_domains(configured_domains, derived_domains):
+    """Every domain either §3.1 leg would identify — the mailbox search set. Written out
+    identically in `cmd_ats` and `cmd_verify` before public #120; one definition now, because a
+    declaration duplicated is a declaration that drifts."""
+    return sorted(set(configured_domains or ()) | set(derived_domains or ()))
+
+
 def _normalize_name_token(s):
     """Strip everything but alnum, casefolded — for comparing a company name against a
     domain, which carries none of a name's spaces or punctuation of its own."""
@@ -1533,17 +1571,18 @@ def cmd_ats(args):
     for account in accounts:
         since_days = lookback_days(ROOT, account, sweep_floor, by="reconcile-ats")
         first_run = is_first_run_for_mailbox(ROOT, account)
-        domains = sorted(set(configured_domains) | set(derived_domains))
+        domains = all_sender_domains(configured_domains, derived_domains)
         plan_lines.append("  %s: window %dd (floor %d, ledger says covered through %s)%s"
                           % (account, since_days, sweep_floor,
                              _journal.covered_through(_journal.read(ROOT), account,
                                                       by="reconcile-ats") or "never",
                              " — FIRST RUN: history counted, receipt-grade applied, nothing "
                              "asked" if first_run else ""))
+        # public #120 / dev #473 — the hint subtracts what is already configured, via the ONE
+        # predicate `--verify` also uses. It used to join `derived_domains` whole.
         plan_lines.append("  %s: class %d configured, %d derived%s"
                           % (account, len(configured_domains), len(derived_domains),
-                             " — %s add it to receipt_sender_domains to make the record "
-                             "say so" % ", ".join(derived_domains) if derived_domains else ""))
+                             add_domain_hint(configured_domains, derived_domains)))
 
         def search_one(acct, _since_days=since_days, _first_run=first_run):
             """D7 — catches EVERYTHING. A non-CredentialError exception is an ok:false row
@@ -1609,7 +1648,10 @@ def cmd_verify(args):
     configured_domains = list(((cfg.get("ats") or {}).get("receipt_sender_domains")) or [])
     messages_all = load("messages.jsonl")
     derived_domains = derived_sender_domains(messages_all)
-    domains = sorted(set(configured_domains) | set(derived_domains))
+    domains = all_sender_domains(configured_domains, derived_domains)
+    # public #120 / dev #473 — the same predicate the `--ats` hint uses, so the two paths
+    # cannot label the same domain differently.
+    unstated = set(derived_not_configured(configured_domains, derived_domains))
     asks_all = load("asks.jsonl")
     have_sources = {m.get("source") for m in messages_all if m.get("source")}
     days = args.days or COVERAGE_BACKFILL_MAX_DAYS
@@ -1667,8 +1709,7 @@ def cmd_verify(args):
                     if n == 0:
                         print("  %s: no traffic" % d)
                         continue
-                    leg = "derived, not configured" if d in derived_domains and d not in \
-                        configured_domains else "configured"
+                    leg = "derived, not configured" if d in unstated else "configured"
                     print("  %s (%s): %d received · %d rows · %d asked · %d historical · "
                          "%d UNRECORDED" % (d, leg, n, rec, asked, hist, unrec))
                     if unrec:

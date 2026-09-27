@@ -22,9 +22,17 @@ verbatim copy of the pre-extraction implementation and diffs its output against 
 entry with `time.localtime()` when given a bare string name — exactly what the pre-extraction
 code did, unexamined. "Fixing" that to a constant epoch here would make this module's output
 permanently UNABLE to match the pre-extraction code's own (time-stamped) bytes, which is the
-opposite of what the byte-identity plant exists to prove. Two renders emitted back-to-back in
-one process land in the same 2-second DOS-time bucket, which is what the plant actually relies
-on — never a frozen clock.
+opposite of what the byte-identity plant exists to prove.
+
+⭐ WHAT THE PLANT ACTUALLY RELIES ON (corrected 2026-09-27, dev #570). NOT on two renders
+emitted back-to-back in one process landing in the same 2-second DOS-time bucket — that is a
+likelihood, not a guarantee, and under load the two writes straddle the boundary, differ by one
+timestamp byte, and go red in CI. Determinism is supplied from OUTSIDE this module instead: a
+byte-equality comparison runs inside `tests/_common.pinned_zip_clock()`, which pins
+`time.localtime` to one REAL reading for the duration of that one assertion and reverts it in a
+`finally`. ⚠️ That is a different thing from the warning above, and the distinction is the whole
+point: a TEST pinning the clock to a real reading is how the plant is made deterministic; this
+MODULE stamping from a constant epoch is forbidden — inside `_docx.py`, never a frozen clock.
 
 ATS-SAFE BY CONSTRUCTION (public #64's own list, encoded rather than re-derived by hand):
 no `<w:tbl>` (no tables), no `<w:txbxContent>` (no text boxes), no `<w:numPr>` (no automatic

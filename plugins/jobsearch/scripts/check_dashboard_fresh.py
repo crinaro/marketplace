@@ -69,14 +69,19 @@ import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 import _tree
+# dev #544 — the canonical registry of governed stores, so the freshness inventory below is
+# DERIVED from it rather than hand-maintained beside it. Import-time cost measured at ~18ms.
+import migrate as _migrate
 ENGINE_SCRIPTS = os.path.dirname(os.path.realpath(__file__))
 
 ROOT = _profile_root()
 ARTIFACT = _tree.path(ROOT, "dashboard_artifact")
 
-# ⭐ dev #233 — dashboard.html is a constant TOMBSTONE (the local full copy is retired; a
-# stub carries no state, so the two-copies staleness window of public #22 is gone by
-# construction). The 2026-08-29 one-artifact collapse then shrank the generated set to the
+# ⭐ dev #233 — the local full dashboard copy is retired, so the two-copies staleness window
+# of public #22 is gone by construction. (It was replaced by a constant root `dashboard.html`
+# tombstone; dev #546 / public #126 retired that stub too — the generator writes nothing
+# outside views/ now, and nothing here ever compared it.) The 2026-08-29 one-artifact
+# collapse then shrank the generated set to the
 # SINGLE page below: the router and phase pages are retired (their URLs get moved-stubs
 # via pending_stubs.py), so with one page a dropped publish means the phone reader's
 # ENTIRE view is stale — this stamp is the only mechanical detector, and it is MORE
@@ -106,14 +111,76 @@ GENERATORS = ("generate_dashboard.py", "presence_set.py")
 # freshness gate that skips a source is the missing-reads-as-empty trap wearing mtimes.)
 # network.md left SOURCES with the 2026-08-29 collapse: the page no longer renders it
 # (D4 — the network is queried, not queued), so its edits cannot change the page.
-SOURCES = [
+#
+# ⭐⭐ dev #544 / public #128 — THE STORE-HALF IS DERIVED NOW, NOT DECLARED.
+# (Hyphenated deliberately. `test_mailboxes_are_read_only_everywhere` scans every engine script
+# for the IMAP flag-mutation verbs, each matched as a bare token, and the plural-with-space
+# reading of this heading collided with one of them. The guard is right, so the prose bends
+# around it — do not "fix" a collision like this by relaxing that test. Naming the tokens even
+# to explain them trips it too, which is why they are described rather than quoted here.)
+# The hand-maintained version of this list had drifted to SEVEN of the fourteen governed
+# stores missing: touches.jsonl (the one reported), plus applications, cover_letters,
+# involvements, people, plans and plays. Every one of them is reachable from a generator —
+# generate_dashboard.py's own source names cover_letters/involvements/people directly, and
+# reaches touches and applications through their purpose-built store modules — so all seven
+# edits were INVISIBLE to this gate while genuinely changing the page. That is the same
+# defect as the freshness list that skipped kb/ and call_preps/, and as `TEST_FILES` (dev
+# #122/#474/#478, 29 of 63 files missing, four recurrences): a list a human must remember to
+# extend is a list that silently stops covering things.
+#
+# So the store half is no longer a list anyone can forget to extend — it is derived from
+# `migrate.STORE_INTRODUCED`, the registry that already IS the canonical inventory of
+# governed stores (`check_fresh_scaffold.py` item 4 drives `init_profile.STORES`
+# completeness off the same table; this is that pattern, applied to the gate that needed
+# it). A store added by a future migration is a freshness source the moment it is
+# registered, with nothing to remember. Omission is impossible BY CONSTRUCTION rather than
+# merely loud, which is strictly the stronger of the two remedies.
+#
+# ⚠️ THE ASYMMETRY IS THE DESIGN, exactly as it is for the publish stamp above: a store that
+# is derived in but does not actually change the page costs ONE regeneration — idempotent and
+# cheap. A store that is left out costs an unbounded window of the candidate reading a stale
+# page as current, which is the incident this whole file exists for. So "reachable from a
+# generator" is enough to be IN; being certain it changes the rendered bytes is not required.
+SOURCE_FILES = [
     _tree.rel("drafts"), _tree.rel("cover_letters"),
     _tree.rel("claims"),
-    "data/opportunities.jsonl", "data/companies.jsonl", "data/channels.jsonl",
-    "data/messages.jsonl", "data/asks.jsonl", "data/commitments.jsonl",
-    "data/resume_variants.jsonl",
     _tree.rel("presence_rules"),        # the working set's rules tab (ADR-028)
 ]
+
+# A governed store the generated set provably does NOT render, with the reason — the explicit
+# escape hatch that keeps the derivation honest rather than absolute (network.md is the
+# precedent: it left SOURCES with the 2026-08-29 collapse because the page stopped rendering
+# it). EMPTY TODAY, and that is a measurement, not an oversight: every store in the registry
+# is reachable from generate_dashboard.py or presence_set.py. Adding an entry here is a claim
+# that must be re-established, never a way to quiet a gate.
+STORES_NOT_RENDERED = {}
+
+# A stale exclusion must not sit here unnoticed once the store it names is gone from the
+# registry — same shape, and same reason, as migrate.py's own import-time check that every
+# STORE_INTRODUCED value names a real migration: wrong at the moment it is written, loud
+# immediately, rather than a silent assertion buried in a test.
+_stale_exclusions = set(STORES_NOT_RENDERED) - set(_migrate.STORE_INTRODUCED)
+if _stale_exclusions:
+    raise AssertionError(
+        "check_dashboard_fresh.STORES_NOT_RENDERED excludes store(s) migrate.STORE_INTRODUCED "
+        "does not know: %s — an exclusion for a store that no longer exists is dead weight that "
+        "will hide the next real one" % ", ".join(sorted(_stale_exclusions)))
+del _stale_exclusions
+
+
+def store_sources():
+    """Every governed store, as a profile-relative path — the derived half of SOURCES.
+
+    Deliberately NOT version-gated against the profile's stamp: a store this profile has not
+    reached yet simply does not exist on disk, and `mtime()` reads an absent file as 0, so it
+    can never make the set look stale. Gating it would add a failure mode (a mis-stamped
+    profile silently narrowing its own freshness coverage) to buy nothing.
+    """
+    return ["data/" + s for s in sorted(_migrate.STORE_INTRODUCED)
+            if s not in STORES_NOT_RENDERED]
+
+
+SOURCES = SOURCE_FILES + store_sources()
 SOURCE_DIRS = [_tree.rel("kb"), _tree.rel("call_preps")]
 
 
@@ -138,6 +205,18 @@ def variant_sources():
     except OSError:
         pass
     return out
+
+
+def scanned_inventory():
+    """One line naming WHAT this run compared, so a green result is distinguishable from an
+    unchecked one (dev #544: the gate that reported 'current' while skipping half the stores
+    printed exactly as much on its way past them as it does when it has really looked)."""
+    n_excl = len(STORES_NOT_RENDERED)
+    return ("%d authored file(s), %d governed store(s) derived from migrate.STORE_INTRODUCED"
+            "%s, %d variant page(s), %d source dir(s)"
+            % (len(SOURCE_FILES), len(store_sources()),
+               "" if not n_excl else " (%d excluded)" % n_excl,
+               len(variant_sources()), len(SOURCE_DIRS)))
 
 
 def mtime(p):
@@ -486,6 +565,7 @@ def main():
     if not bad:
         if not absent:
             print("GENERATED SET CURRENT — no source is newer than any generated page.")
+            print("  scanned: %s" % scanned_inventory())
             print("  (Freshness is not correctness: still GREP THE OUTPUT for what you added.)")
         if args.fix:
             # --fix is always followed by the publish step in the run prompts, so a pending
@@ -509,6 +589,7 @@ def main():
 
     print("⚠️  DASHBOARD IS STALE — %d source(s) are newer than what was generated." % len(bad))
     print("=" * 72)
+    print("  scanned: %s" % scanned_inventory())
     for s, secs in sorted(bad, key=lambda x: -x[1]):
         mins = secs // 60
         print("  %-32s newer by %s" % (s, "%d min" % mins if mins else "%d sec" % secs))

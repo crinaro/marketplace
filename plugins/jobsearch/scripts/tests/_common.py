@@ -43,6 +43,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 # ⭐ THE TEST SUITE USES ITS OWN LOCK FILE. Fourteen call sites exercise real lock acquisition;
@@ -1062,7 +1063,12 @@ class _VariantOutFixture(unittest.TestCase):
         return h
 
     def _rendered_path(self, vid="v1"):
-        return os.path.join(self.tmp, "resumes", self.vo._filename(vid))
+        # dev #545 — the rendered-resume directory is a LAYOUT fact (`_tree.LAYOUT["resumes"]`,
+        # `presence/resumes` since 0.55.0), so resolve it rather than repeating the spelling
+        # here. Going through the shipped default is also what makes these cases notice if the
+        # default and the layout ever disagree again, instead of asserting a path of their own.
+        return os.path.join(_tree.resolve_rel(self.tmp, self.vo.output_settings()["local_dir"]),
+                            self.vo._filename(vid))
 
 
 def _ats_fixture_profile(tmp, receipt_domains=("example.com",),
@@ -1619,6 +1625,87 @@ def _run_with_skip_accounting():
     return result.wasSuccessful()
 
 
+# ── dev #570 — controlling the .docx zip-entry clock from OUTSIDE the shipped writer ─────────
+#
+# ⚠️ READ `_docx.py`'s module docstring BEFORE touching either helper below, then read this.
+# That docstring says "NEVER NORMALIZE THE ZIP ENTRY TIMESTAMPS … never a frozen clock", and
+# these helpers do NOT violate it. That warning is about baking a CONSTANT EPOCH into
+# `_docx.py` itself: the shipped writer's bytes would then be permanently unable to match the
+# pre-extraction implementation's own `time.localtime()`-stamped bytes, which would destroy
+# public #64's byte-identity plant (`TestDocxExtractionByteIdentity`) rather than protect it.
+# What these helpers do instead is let ONE TEST control the clock for the duration of ONE
+# assertion, from the outside:
+#   * nothing in `_docx.py` changes — the shipped writer still stamps with `time.localtime()`;
+#   * `pinned_zip_clock()` pins to the REAL current time, read at entry — never a constant
+#     epoch, so no date, filename or store row written inside the block is wrong;
+#   * the pin is reverted in a `finally`, so no other test ever observes it.
+# ⛔ Do not "simplify" this by normalizing timestamps in `_docx.py`. That is precisely the fix
+# this comment exists to prevent, and the next reader is the person it is addressed to.
+#
+# WHY IT IS NEEDED. `zipfile.ZipFile.writestr(name, data)` stamps each entry with
+# `time.localtime(time.time())[:6]` when handed a bare string name, and a DOS timestamp has
+# 2-SECOND granularity. A test that renders twice and compares whole-container bytes was
+# therefore only correct while both renders landed in the same 2-second bucket — true on an idle
+# machine, false under load. It failed in CI on PR #569 with a ONE-BYTE difference (\xee vs
+# \xef) in the local-file-header timestamp region and no difference in document content at all,
+# blocking the 0.56.0 release. The assertion's correctness depended on the renders being FAST,
+# which is not a property of the code under test.
+
+
+@contextlib.contextmanager
+def pinned_zip_clock():
+    """Make every `zipfile` entry written inside this block carry the SAME timestamp.
+
+    THE FIX for dev #570. Pins `time.localtime` to one real reading taken at entry, so two
+    renders being compared for byte-equality cannot straddle a 2-second DOS-time bucket
+    boundary however slow or loaded the machine is. Pins to NOW, never to a constant epoch —
+    see the comment block above for why that distinction is the whole point.
+    """
+    real_localtime = time.localtime
+    frozen = real_localtime()
+
+    def _pinned(*_args):
+        return frozen
+
+    time.localtime = _pinned
+    try:
+        yield frozen
+    finally:
+        time.localtime = real_localtime
+
+
+@contextlib.contextmanager
+def steppable_zip_clock(step_seconds=2):
+    """Reproduce dev #570's flake ON DEMAND — deterministically, with no waiting and no load.
+
+    Yields a clock whose `cross_bucket_boundary()` advances what `time.localtime` reports by
+    `step_seconds` (one whole DOS-time bucket). Calling it BETWEEN two renders reproduces the
+    real-world shape exactly: each render internally consistent, the bucket boundary falling in
+    the gap between them. Without `pinned_zip_clock()` the two containers then differ; with it
+    they stay identical. That pair is what converts this flake from something a run waits for
+    into something a run measures.
+
+    Inside the block `time.localtime` ignores any argument passed to it and reports the stepped
+    reading instead — deliberate, and the reason the block is kept as narrow as possible.
+    """
+    real_localtime = time.localtime
+    base = time.time()
+    state = {"offset": 0.0}
+
+    def _stepped(*_args):
+        return real_localtime(base + state["offset"])
+
+    class _SteppableClock(object):
+        def cross_bucket_boundary(self):
+            state["offset"] += step_seconds
+
+    time.localtime = _stepped
+    try:
+        yield _SteppableClock()
+    finally:
+        time.localtime = real_localtime
+
+
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 __all__ = [
@@ -1642,7 +1729,10 @@ __all__ = [
     'subprocess',
     'sys',
     'tempfile',
+    'time',
     'unittest',
+    'pinned_zip_clock',
+    'steppable_zip_clock',
     '_s',
     '_pr',
     '_er',
