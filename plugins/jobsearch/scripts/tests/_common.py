@@ -1543,7 +1543,15 @@ SKIP_BASELINE = {
         # for the same reason: real engineering the fixture-infra half of this piece did not
         # have budget for, not something to carry silently.
         "no real profile here to compare against": 6,
-        "archive not created yet": 1,
+        # dev #428 (gate-keeper, 2026-09-27): "archive not created yet" (1) retired from THIS
+        # branch — make_fixture.py's expected_docs() (--cases base) now generates
+        # docs/incident_archive.md as one of the fixture's synthetic structural additions (the
+        # same mechanism that already produces archive/README.md), with headings matching every
+        # anchor RULEBOOK.md's own "Incident history:" asides link to, each with a real "→"
+        # back-pointer that resolves. test_every_archive_entry_has_a_back_pointer now RUNS under
+        # the fixture instead of skipping. Kept below in SKIP_BASELINE[False] unchanged — a real,
+        # unmigrated profile that predates this fixture change can still legitimately lack the
+        # file.
     },
     False: {  # a real profile is present — a maintainer's own machine; dev #411 (CLAUDE.md)
               # makes this branch categorically unreachable from an engine-team run, kept

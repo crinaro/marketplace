@@ -241,6 +241,82 @@ def _has_reachable_email_target(root, person_id):
     return bool(address_set(root, person_id) or name_terms(root, person_id))
 
 
+# ── §4.3 ask 1/2 (dev #485 / public #108) — envelope scoping and automated-sender exclusion ────
+
+def _scoped_query(term):
+    """Envelope-scoped, never a full-text search of the body. A bare `mb.search(term)` (the
+    shape this replaces) is Gmail's general text search, which matches `term` anywhere a
+    message stores it — including an automated sender's OWN body copy of a recorded address,
+    or a candidate's own name inside an ATS confirmation. `from:`/`to:` restrict the match to
+    the envelope, the only place a real human correspondence with this person can be
+    evidenced. The new 0.56.0 evidence (public #108's most recent comment) is squarely this:
+    a bare-address search returned a hit count on the order of the whole mailbox, while a
+    manually-scoped equivalent found zero — the query, not a plausibility filter on top of
+    it, is the defect (dev #485's own instruction: prefer scoping the query).
+
+    `reconcile.py` already treats one `person_terms()` entry as an opaque unit when it OR's
+    several together (`"in:anywhere (%s)" % " OR ".join(terms)`, reconcile.py:1844/2002) —
+    this does the same for a single term, under `from:`/`to:` instead of `in:anywhere`. The
+    address case (`term` is always a bare address, never a compound clause — `address_set()`
+    returns plain strings) is the well-established, directly-evidenced fix. `name_terms()`'s
+    compound AND'd shape (a single-token name paired with its firm, `person_terms()`'s own
+    docstring) is scoped the same way for defense in depth, but that compound form's exact
+    behaviour under `from:`/`to:` is NOT independently verified against a live mailbox — this
+    fix cannot be proven that way (brief-485's own constraint) — so `_filter_human_hits`
+    below, not this query shape, is what ask 2 actually rests its guarantee on."""
+    return "(from:%s OR to:%s)" % (term, term)
+
+
+def _is_automated_sender(addr, configured_domains, derived_domains):
+    """§4.3 ask 2 (dev #485/public #108) — is this address an ATS receipt, a LinkedIn
+    notification, or a generic no-reply/job-board automated sender? The ATS half reuses
+    `reconcile.identify_sender_class()` — the ONE predicate `--ats`'s add-domain hint and
+    `--verify`'s per-domain label already share (public #120/dev #473) — never a second,
+    drifting domain list (rule 20). LinkedIn's own senders are `reconcile.LINKEDIN_SENDERS`,
+    the same fixed tuple `reconcile.py --harvest` already filters on (reconcile.py:2013).
+
+    Newsletter senders have no configured signal anywhere in this profile's schema — checked:
+    no `newsletter` or `job_board` key exists in `config.json`'s seeded shape
+    (`scripts/init_profile.py`) or in the registered config-key vocabulary (`config_keys.py`).
+    A hardcoded
+    newsletter sender list would be a one-off patch serving one profile's inbox (CLAUDE.md:
+    worse than no change), so the smallest honest answer is the same generic `noreply`/
+    `no-reply` local-part check `reconcile.py`'s own harvest path already applies
+    (reconcile.py:2013) for exactly this reason — it catches most newsletter and job-board
+    automated senders structurally, without naming a single one of them."""
+    a = (addr or "").strip().lower()
+    if not a or "@" not in a:
+        return False
+    local, domain = a.split("@", 1)
+    import reconcile as _reconcile
+    is_ats, _leg = _reconcile.identify_sender_class(domain, configured_domains, derived_domains)
+    if is_ats:
+        return True
+    if a in _reconcile.LINKEDIN_SENDERS:
+        return True
+    if "noreply" in local or "no-reply" in local:
+        return True
+    return False
+
+
+def _filter_human_hits(mb, uids, configured_domains, derived_domains):
+    """§4.3 ask 2 — a hit only counts as evidence of a HUMAN thread when the message's own
+    `From` address is not automated (`_is_automated_sender`, above). The query already
+    narrowed this to envelope matches (ask 1), so this is a bounded, per-hit header fetch —
+    never a mailbox-wide scan (D1 still holds)."""
+    import email.utils as _emailutils
+    out = []
+    for uid in uids:
+        msg = mb.fetch_headers(uid)
+        if msg is None:
+            continue
+        addr = _emailutils.parseaddr(msg.get("From") or "")[1]
+        if _is_automated_sender(addr, configured_domains, derived_domains):
+            continue
+        out.append(uid)
+    return out
+
+
 # ── §4.2: the mailbox probe — a `probe` row with a `medium`, never a `swept` row (D1) ─────────
 
 def run_email_probe(root, person_id, accounts=None):
@@ -253,7 +329,9 @@ def run_email_probe(root, person_id, accounts=None):
 
     Two passes per account (§4.3): the address set, then — only if the address pass is
     empty — the name-term set. An address-pass hit is `confirmed`; a name-pass-only hit is
-    `candidate`, never `confirmed`, never `confirmed-empty` (§4.1).
+    `candidate`, never `confirmed`, never `confirmed-empty` (§4.1). Every search is envelope-
+    scoped (`_scoped_query`) and every hit is filtered against automated-sender identity
+    (`_filter_human_hits`) before it is counted or written — dev #485/public #108.
 
     ⭐ C1 is the FIRST caller of `posture.py --may` in this plugin (§5.1) — a posture whose
     `unattended` list omits `sweeps` refuses before anything touches a mailbox, returning
@@ -269,6 +347,10 @@ def run_email_probe(root, person_id, accounts=None):
     accounts = accounts if accounts is not None else mail_client.configured_accounts()
     if not accounts:
         return [], NOT_CONFIGURED
+    cfg = _config(root)
+    configured_domains = list(((cfg.get("ats") or {}).get("receipt_sender_domains")) or [])
+    import reconcile as _reconcile
+    derived_domains = _reconcile.derived_sender_domains(_ym._load_jsonl(root, "messages.jsonl"))
     out = []
     for account in accounts:
         if not credentials.has_credential(account):
@@ -279,11 +361,15 @@ def run_email_probe(root, person_id, accounts=None):
             with mail_client.Mailbox(account) as mb:
                 addr_hits = []
                 for term in addresses:
-                    addr_hits.extend(mb.search(term))
+                    addr_hits.extend(mb.search(_scoped_query(term)))
+                addr_hits = _filter_human_hits(mb, addr_hits, configured_domains,
+                                               derived_domains)
                 name_hits = []
                 if not addr_hits:
                     for term in terms:
-                        name_hits.extend(mb.search(term))
+                        name_hits.extend(mb.search(_scoped_query(term)))
+                    name_hits = _filter_human_hits(mb, name_hits, configured_domains,
+                                                   derived_domains)
         except mail_client.CredentialError:
             out.append({"account": account, "state": "unreachable",
                        "reason": "credential-missing"})
@@ -528,14 +614,26 @@ def post_store_behind_mailbox(root, person_id, probe_results):
     keys on id). `probe_results` is `run_email_probe`'s own return: any `hit` means the mailbox
     holds something the store may not — this posts unconditionally on a hit (the harvest
     decides whether the store was actually behind; the finding is the queryable fact that a
-    look is owed, which is all C1 promises, §4.6)."""
+    look is owed, which is all C1 promises, §4.6).
+
+    ⭐ dev #485/public #108 ask 3 — the id carries NO date. It used to
+    (`store-behind-mailbox:<person_id>:<date>`), so the "never queue twice" dedup below only
+    ever held WITHIN one calendar day: the same unresolved contact was re-posted as a fresh
+    PENDING finding on every later run day, even after the owner had explicitly acked it —
+    the exact bug this ask reports. Keying on `person_id` alone, and checking every existing
+    id regardless of status (not `status == "pending"` alone), means an already-acked finding
+    for this contact is never re-queued while it stays unresolved — the owner's ack is a
+    durable answer, not a one-day snooze. A profile carrying acks against the OLD dated id
+    needs `m_0_57_0_probe_dedup_key` (migrate.py) to carry that fact forward BEFORE this
+    lands, or the changed key would re-queue every one of them once — the exact symptom,
+    caused by the fix (brief-485's own warning); see that migration's docstring."""
     hits = [r for r in probe_results if r.get("state") == "hit"]
     if not hits:
         return None
     total = sum(r.get("n", 0) for r in hits)
     latest = datetime.date.today().isoformat()
-    fid = "store-behind-mailbox:%s:%s" % (person_id, latest)
-    existing = {r.get("id") for r in _inbox.replay(_inbox.load()) if r.get("status") == "pending"}
+    fid = "store-behind-mailbox:%s" % person_id
+    existing = {r.get("id") for r in _inbox.replay(_inbox.load())}
     if fid in existing:
         return fid
     accounts = ", ".join(sorted({r["account"] for r in hits}))

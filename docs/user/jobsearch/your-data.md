@@ -477,6 +477,24 @@ The migration's own summary line names the one command that drains what it could
 on its own: `~/.claude/jobsearch/run brief.py --probe --held` — it walks every held draft and
 probes the mailbox for each, promoting whatever it can confirm.
 
+**0.57.0 — the probe only counts a real human reply.** Earlier versions searched for your name or
+address anywhere a message stored it — including inside an automated sender's own copy of it, or a
+job board's own confirmation text — which could match on the order of your whole mailbox. That
+produced false "store-behind-mailbox" findings, each one demanding a manual mailbox search and an
+explicit `--i-checked` attestation to clear, and — because the finding used to be re-created fresh
+every day — the same acknowledged finding for the same contact could come back and demand that all
+over again on the very next run. As of 0.57.0 a probe only counts a message where you were
+genuinely the sender or the recipient, and only when it came from what looks like a real person —
+a job board's or ATS's automated receipt, a LinkedIn notification, or a generic `noreply`-style
+address no longer counts as evidence of a human thread. And once you acknowledge that finding for a
+contact, it stays acknowledged: it does not come back on a later run as if it were new. Upgrading
+carries forward any acknowledgment you already gave under the old behavior, so nothing you already
+cleared re-queues itself because of this change.
+
+One limit worth knowing: a newsletter sent from an otherwise ordinary-looking address (not a
+`noreply` variant) can still be counted as a hit — nothing in your profile records which senders
+are newsletters, so this only catches automated senders it can recognize structurally.
+
 ### The working set — what leaves `drafts.md` and where it goes (since 0.47.0)
 
 `drafts.md` used to accumulate every draft you ever staged, sent or not — a sent or moot entry
