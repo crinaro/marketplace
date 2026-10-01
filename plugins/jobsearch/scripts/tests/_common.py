@@ -1454,7 +1454,53 @@ def _fixture_locked_for_run():
     turned 4 real dev #444 failures into 166). `shutil.copystat`/`copymode` are patched for
     the lock's duration to keep doing everything they normally do and then force the
     destination's owner-write bit back on — a copy's CONTENT still comes from the source
-    exactly as before; only the destination's own writability is no longer inherited."""
+    exactly as before; only the destination's own writability is no longer inherited.
+
+    ⭐⭐ dev #599 — SELF-HEALING AT START, NEVER ONLY RESTORE AT END. The `finally` below is
+    correct for the normal path and stays exactly as it was; the defect is that its release
+    depends on the PROCESS SURVIVING to reach it. `SIGKILL`, a harness timeout, or an OOM kill
+    all skip a `finally` — and a dispatch running this suite is killed for every one of those
+    reasons. When that happens the fixtures stay mode 555 forever: measured directly, three
+    real dispatch worktrees were left permanently undeletable this way (`git worktree remove`
+    and the owner's own `rm -rf` both refused with `Permission denied` on the exact paths this
+    lock strips). This repo already wrote down the reasoning that should have caught it —
+    `docs/traps.md` § One write-capable agent, on why a lock FILE was rejected for the
+    write-capable-agent-concurrency problem: "an interactive session has no reliable end
+    event to release one, and the first stale lock teaches everyone to bypass locks." A
+    chmod lock is a lock file by another name and has the identical flaw: durable state with
+    a non-durable release. So, before taking the lock: detect any path already missing its
+    owner-write bit (evidence a previous run's `finally` never ran) and force it back
+    writable first — idempotent, a no-op when nothing is stale — using `force_tree_writable`,
+    the same "force writable" primitive dev #507 already built for a scratch copy that
+    inherited an unwritable source. A stale lock is reported LOUDLY when found, never
+    silently healed: a silently self-healing lock would hide how often runs are being
+    killed, which is itself worth knowing. This does not weaken what the lock protects —
+    dev #444's write-during-the-run tripwire below is unchanged; only what a NEW run does
+    about a PREVIOUS run's leftover state is new."""
+    stale = []
+    for root in _fixture_roots():
+        if os.path.exists(root) and not (os.stat(root).st_mode & 0o200):
+            stale.append(root)
+        for dirpath, dirs, files in os.walk(root):
+            for name in dirs + files:
+                p = os.path.join(dirpath, name)
+                try:
+                    if not (os.stat(p).st_mode & 0o200):
+                        stale.append(p)
+                except OSError:
+                    pass
+    if stale:
+        print("⚠️  dev #599: %d fixture path(s) still locked from a previous run that did "
+              "not exit cleanly (its `finally` never ran, most likely killed — SIGKILL, a "
+              "harness timeout, or an OOM) — self-healing before continuing:" % len(stale))
+        for p in sorted(stale)[:10]:
+            print("     %s" % p)
+        if len(stale) > 10:
+            print("     ... and %d more" % (len(stale) - 10))
+        for root in _fixture_roots():
+            if os.path.exists(root):
+                force_tree_writable(root)
+
     saved = []
     for root in _fixture_roots():
         for dirpath, dirs, files in os.walk(root):
@@ -1528,21 +1574,25 @@ SKIP_BASELINE = {
         # geo/enum SHAPE instead of an ALL-CAPS placeholder); one
         # (`test_no_engine_file_carries_profile_data`) is RETIRED outright — it is dev #411
         # itself, and `TestPurityHookStep`/`TestPurityHookRetiredFlagsRefuseLoudly`/
-        # `TestPurityHookDecisionResolution` already exercise its replacement. Two remain,
-        # named rather than silently carried: `TestNoPlaceholderContactData.
-        # test_no_contact_stores_a_placeholder_address` and `TestValidateData.
-        # test_delivery_is_never_INFERRED` each need a NEW `validate_data.py` rule the
-        # design table calls for but this piece did not build — the placeholder-email rule
-        # in particular collides with the fixture's OWN synthetic `@example.com` addresses,
-        # a real design question next piece's author should not resolve by accident.
-        "asserts the OWNER's real profile content; the synthetic fixture cannot satisfy it, and "
-        "weakening the assertion would weaken a real guard": 2,
-        # `TestFixtureMirrorsTheRealProfile`'s 6 `skipTest`s (design §2.10's three "I" rows —
-        # `docs/profile_shape.json` generation plus the install-side profile-shape self-check
-        # this piece did not build) are UNCHANGED — named in the same design row, deferred
-        # for the same reason: real engineering the fixture-infra half of this piece did not
-        # have budget for, not something to carry silently.
-        "no real profile here to compare against": 6,
+        # `TestPurityHookDecisionResolution` already exercise its replacement. Eight remained,
+        # named rather than silently carried; dev #427 (gate-keeper, 2026-09-30) took 7 of them:
+        #  - `TestValidateData`'s `test_delivery_is_never_INFERRED` was never a placeholder-email
+        #    test (the citation mislabelled it): it is a delivery-provenance rule, now enforced
+        #    by `validate_data.py` over `touches` and asserted by `TestDeliveryIsNeverInferred`,
+        #    which runs against the fixture.
+        #  - `TestFixtureMirrorsTheRealProfile`'s 6 `skipTest`s are DELETED, not skipped: this
+        #    repo never reads a real profile (dev #411), so a comparison against one can never
+        #    run here. The generator's own safety property is now asserted against a SYNTHETIC
+        #    source (`TestMakeFixtureCarriesStructureOnly`); the shape-vs-a-real-profile
+        #    comparison itself belongs to an install-side self-check (design §2.10's "I" rows),
+        #    not built and out of scope.
+        # 1 -> 0 (gate-keeper, dev #427 owner decision A, 2026-09-30): the LAST of the eight.
+        # `TestNoPlaceholderContactData.test_no_contact_stores_a_placeholder_address` now RUNS
+        # against the fixture: a reserved example-domain address on a `people` row is a
+        # placeholder (`validate_data.placeholder_email_violation`), and the fixture's synthetic
+        # contacts moved to `fixture.invalid` via `make_fixture.py` (regenerated, never edited).
+        # `SKIP_BASELINE[True]` is therefore EMPTY: any skip in this suite is now undeclared and
+        # fails the run.
         # dev #428 (gate-keeper, 2026-09-27): "archive not created yet" (1) retired from THIS
         # branch — make_fixture.py's expected_docs() (--cases base) now generates
         # docs/incident_archive.md as one of the fixture's synthetic structural additions (the

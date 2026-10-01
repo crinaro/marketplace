@@ -369,8 +369,8 @@ history is permanent. It is also the better bug report: the engine is made of ru
 ## Scripts — **read the script's own docstring before changing it.** This is the index.
 
 **Run-start hygiene** (both task prompts inline these):
-`check_stale_claims.py` · `check_followups.py` · `check_sections.py` · `channels_due.py` —
-advisory, always exit 0 so they cannot wedge an unattended run.
+`check_stale_claims.py` · `check_followups.py` · `check_sections.py` · `check_sent_drafts.py` ·
+`channels_due.py` — advisory, always exit 0 so they cannot wedge an unattended run.
 `check_narrative.py` — are the `presence/projects.md` triggers and resume addenda still greppable? A
 broken one reads downstream as "no matching proof points" — same as having none.
 `validate_data.py` — **the real gate**; exits 1 on a schema/enum/reference problem.

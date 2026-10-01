@@ -118,6 +118,7 @@ hours, costing that morning's run outright.
 ~/.claude/jobsearch/run check_followups.py          # silent threads
 ~/.claude/jobsearch/run check_sections.py           # ask/commitment invariants (dev #93)
 ~/.claude/jobsearch/run check_action_claims.py      # a hand-authored ask the data already answered (#43)
+~/.claude/jobsearch/run check_sent_drafts.py        # a draft/letter already sent or submitted but still shown as pending on Your Move (advisory — retire the entry)
 ~/.claude/jobsearch/run validate_data.py            # schema · enums · referential integrity
 ~/.claude/jobsearch/run channels_due.py             # which sources are due
 ~/.claude/jobsearch/run check_rule_homes.py         # archived lessons still have a home

@@ -535,6 +535,25 @@ def new_problems(pre, post):
     return [x for x in post if x not in before]
 
 
+def introduced_row_violations(store, before_row, after_row):
+    """The introduced-only rules (validate_data.INTRODUCED_ONLY_RULES) that a write to `store`
+    NEWLY violates: `after_row` breaks them and `before_row` — the same row as it stood, or None
+    for a create — did not break THAT SAME one.
+
+    ⭐ dev #644 item 5 / dev #427. The whole-store validator only WARNS about a row that already
+    exists in such a state (so a user whose history predates a rule is never locked out of their
+    own store). This is the other half: a row being newly written, or changed INTO the state,
+    is refused here, before anything is written. A row that was already in the state and is
+    changed in some other field keeps the same message and is therefore not "introduced", so an
+    unrelated edit to an old row is accepted. Messages are label-free, so they compare equal."""
+    vd = _validator_module()
+    after = vd.row_rule_violations(store, after_row)
+    if not after:
+        return []
+    before = set(vd.row_rule_violations(store, before_row)) if before_row is not None else set()
+    return [m for m in after if m not in before]
+
+
 def dry_run_validate(store, rows):
     """Validate `rows` AS IF they were the real store, on a disposable copy of the whole data
     directory — cross-references into companies/channels/messages/asks still resolve, and the
@@ -2201,6 +2220,16 @@ def main():
         # Was the REAL store already invalid, independent of this hypothetical write? Same
         # question the real write asks — and answered the same way, by PROBLEM SET, not exit
         # code (G9): a standing problem must not stop the dry-run judging THIS change.
+        #
+        # dev #644 item 5 — the introduced-only rules are judged on the ROW here, exactly as the
+        # real write below judges them (a dry-run must predict the write, dev #143).
+        _after_row = new_row if args.op == "create" else shadow_rec
+        _introduced = introduced_row_violations(
+            args.file, None if args.op == "create" else rec, _after_row)
+        if _introduced:
+            print("  ⛔ a REAL (non-dry-run) write of this would be REFUSED (nothing is written):")
+            print("  " + "\n  ".join("- " + m for m in _introduced))
+            return 1
         pre_rc, _, _, pre_problems = validate()
         rc, out, err, problems = dry_run_validate(args.file, shadow_rows)
         if rc != 0:
@@ -2272,6 +2301,7 @@ def main():
     try:
         rows = load(args.file)          # re-read INSIDE the lock — the file may have moved
         rec = find(rows, args.rid)
+        _row_before = None
         if args.op == "create":
             if rec is not None:
                 print("  a record with id %r appeared between read and lock — aborting."
@@ -2282,11 +2312,22 @@ def main():
             if rec is None:
                 print("  record vanished between read and lock — aborting.")
                 return 1
+            _row_before = json.loads(json.dumps(rec))    # as it stood, for the check below
             try:
                 apply(rec)
             except KeyError as e:
                 print("  %s" % e)
                 return 1
+        # ⭐ dev #644 item 5 / dev #427 — INTRODUCED-ONLY RULES. Refused HERE, on the row being
+        # written or changed, before a byte lands: the whole-store validator only WARNS about
+        # rows that already exist (validate_data.INTRODUCED_ONLY_RULES), so this is the one
+        # place a new violation is stopped. Nothing is written, so there is nothing to roll back.
+        _introduced = introduced_row_violations(
+            args.file, _row_before, new_row if args.op == "create" else rec)
+        if _introduced:
+            print("  ⛔ REFUSED — this write would introduce a violation (nothing was written):")
+            print("  " + "\n  ".join("- " + m for m in _introduced))
+            return 1
         # ⭐⭐ SNAPSHOT BEFORE THE WRITE — this is what makes the rollback below possible.
         # Raw bytes, not the parsed rows: restoring exactly what was there cannot reintroduce a
         # formatting difference, and a byte-identical restore is trivially verifiable.

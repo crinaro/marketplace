@@ -36,7 +36,7 @@ shows up as a one-line diff rather than a reformatted file.
 | `touches.jsonl` | every outreach touch you have made, once each — see *Touches* below (since 0.48.0; before that, touches lived nested on the role as `outreach[]`) |
 | `asks.jsonl` | things waiting on you — a role decision or a piece of system upkeep |
 | `commitments.jsonl` | what is scheduled — calls, deadlines, follow-ups due on a date |
-| `briefs.jsonl` | since 0.46.0 — the append-only ledger of what a draft's `**Brief:**` line cites; see *What a draft now carries* below. Never edit this by hand and never read it as "the current state of a thread" — it is evidence of what a computation SAW at drafting time, not a source of state |
+| `briefs.jsonl` | since 0.46.0 — the append-only ledger of what a draft's `**Brief:**` line cites; see *What a draft now carries* and *The brief ledger* below. Never edit this by hand and never read it as "the current state of a thread" — it is evidence of what a computation SAW at drafting time, not a source of state |
 | `resume_variants.jsonl` | the declared printed-resume set — since 0.39.0 (public #26); see *Resume variants* below |
 
 ### The documents
@@ -85,10 +85,12 @@ copied twelve times.
 | `id` | a short stable slug you will see referenced elsewhere |
 | `name`, `aliases` | display name, plus other names it gets listed under |
 | `vertical` | the sector, used for tiering and search targeting |
-| `size_ownership` | e.g. public, PE-backed, employee count — context for whether the role is a fit |
+| `size` | how big the company is and who owns it — e.g. public, PE-backed, employee count. Context for whether the role is a fit; free text |
+| `hq` | where it is headquartered, as you would say it (a city, or `Remote` for a remote-first company). Free text, and `null` when you do not know |
 | `career_url` | its own careers page; setting this makes the company reviewable as its own channel |
 | `status` | `active-target` · `watching` · `passed` |
 | `research_log` | append-only notes; company-level findings go here, not on each role |
+| `note` | free text of your own about the company as a whole — a remark that is not a dated finding (those go in `research_log`) |
 
 ## Channels — where roles come from
 
@@ -103,9 +105,11 @@ roles I pursue?" is a query, not a memory exercise.
 |---|---|
 | `review_cadence` | `daily` · `weekly` · `biweekly` · `monthly` · `on-inbound` — drives the "what is due?" queue |
 | `last_reviewed` | the date it was last checked |
+| `label` | the display name you see everywhere the channel is listed (the engine keys on `id`; `label` is the name for you to read) |
 | `scope_notes` | which titles, filters and locations this channel covers |
+| `next_touch` | a relationship call or reconnect you have planned with this channel, as `{date, time, note}` — not tied to any role. Once its `date` arrives it joins the channels-due queue beside anything overdue on `review_cadence`, so a planned touch surfaces on the day without you setting a reminder elsewhere |
 | `access` | how it is reached — see below |
-| `relationship_status`, `log` | for firms and referrals: where you stand, and the thread history. Who you know there is a person, not a field on the channel — see *People* below |
+| `relationship_status`, `log` | for firms and referrals: where you stand, and the thread history — each `log` entry is a dated line, `log[].date` and `log[].note`. Who you know there is a person, not a field on the channel — see *People* below |
 | `alert_sender` | for a channel that sends alert-digest emails (a board or aggregator): the Gmail search fragment for its own From address, e.g. `from:indeed`. Absent on a channel with nothing to sweep — a recruiter, a channel you only check by hand — which is correct, not a gap |
 
 **⭐ Retiring a channel now does two things, not one.** Setting `relationship_status: retired` used
@@ -131,6 +135,7 @@ The main record. Everything about one role hangs off it.
 
 | field | what it is |
 |---|---|
+| `id` | a short stable slug — what a touch, an application or a message means by its `opp_id` |
 | `company_id` | must resolve to a company |
 | `title` | |
 | `comp` | `{min, max, period, basis}` as **typed numbers**, so it sorts and screens. `null` if genuinely undisclosed — never a guess |
@@ -140,12 +145,17 @@ The main record. Everything about one role hangs off it.
 | `verdict` | `pursue` · `pass` · `parked` · `undecided` |
 | `engagement_type` | `full-time` · `contract` — since 0.45.0; the 0.45.0 upgrade set this to `full-time` on every existing role, since that fact about a role isn't derivable from anything else on the record |
 | `jd_url` | the posting. Required as a URL **or an explicit `null`** — never simply missing |
-| `sightings` | every time this role was seen, and where |
+| `channel_id` | the channel that *represents* the role as a whole — typically the recruiting firm running the search. `null` when no single channel does. Distinct from a sighting's own `channel_id` below, which records each place the role was merely seen |
+| `sightings` | every time this role was seen, and where: one entry per sighting, `{channel_id, seen_on, snippet, source_url}` — `channel_id` is the source it turned up on, `seen_on` the date, `snippet` a short excerpt of how the listing read at the time, and `source_url` the link to that listing (see *Sourcing* below for when the link becomes mandatory) |
 | `plan_id`, `plan_assigned_on` | which plan (see *Plans and plays* below) is working this role, and since when — every role has one, since 0.49.0 |
 | `next_action_date`, `next_action_owner` | when the next thing happens, and whose move it is — *which* thing is now the plan's job (see below). **Not purely hand-set**: since 0.54.0 (dev #479), recording an outbound touch as `touched`/`answered` (`record.py`) clears these off you automatically when that touch already answers what you were waiting on — see *Touches* below |
-| `research_log` | append-only role history |
+| `blocked_until` | a precondition that makes a role yours *in name only* until someone else moves — written as `contact:<person_id> outcome:<value>`, for example waiting on a referral's reply. Your Move does not treat the role as waiting on you until the condition is met; the literal `unresolved` (or a value that will not parse) is reported loudly rather than read as "no precondition". It resolves only against touches on **this** role, never another role's |
+| `research_log` | append-only role history — each entry is a `research_log[].date` with its `research_log[].note`, plus optionally `find` (what a research step went looking for) and `result` (what it turned up). Recording the step even when it found nobody is what lets a later check tell *nobody found* apart from *nobody looked* |
+| `fit` | your match against the posting's requirements — see *Fit* below. Absent until the job description has been analysed |
 | `decision` | `{on, suggested, reason_kind, reason}`, since 0.47.0 — see *Recording why a decision diverged* below |
 | `networking_closed_on` | the date you decided to stop working the network on this role, since 0.47.0 — see *Endings* below |
+| `resume_variant` | the printed-resume variant *planned* to be sent for this role, by its `id` in `resume_variants.jsonl` (see *Resume variants* below) — distinct from the one an application actually sent, which is recorded on the application. It must name a declared, **active** variant: a retired one is refused here |
+| `note` | free text of your own about the role. The 0.49.0 upgrade moved any old free-text `next_action` here, prefixed so you can find it |
 
 ### `status` and `stage` are different questions
 
@@ -226,16 +236,32 @@ Every role you're pursuing is worked by a **plan** — what it's for, and (throu
 you're working it. `data/plans.jsonl` and `data/plays.jsonl` are the two new files this ships:
 
 - **A plan** says what you're doing — `subject_kind` (`search` / `company` / `person` /
-  `opportunity`) and `subject_id` say what it's *about*; `plan_id` on the role says which plan
-  *governs* it. `outcomes` (`role`/`contract`/`access`) matters only on a `search` plan — several
+  `opportunity`) and `subject_id` say what it's *about*; the plan's own `id` is what `plan_id` on a role names, to
+  say which plan *governs* it. `outcomes` (`role`/`contract`/`access`) matters only on a `search` plan — several
   can be active at once, e.g. a themed search alongside your main one. `goal`/`approach` are your
-  own words; nothing writes them for you.
+  own words; nothing writes them for you. `targets` is an optional override of the targets in your
+  `config.json`, meaningful only on a `search` plan — set it when a themed search should chase
+  something different from your main one.
+- **A plan names its play in `play_id`** — a play's id, the literal `manual` when you decide each
+  step yourself, or `null` when none is chosen yet. **`play_confirmed` is the switch**: while it is
+  `false` the play acts on nothing outward, and it is what `plays.py --confirm` / `--unconfirm`
+  flip. A plan also carries `resolves_when`, `resolved_on` and `resolution`, which work exactly as
+  they do on an ask (see *Asks and commitments* below): the recorded action that answers it, set
+  together with the resolution.
 - **A play** is the sequence a plan is worked by — steps, each gated on a condition the engine
   can already prove (an application submitted, an insider known, a referral in hand, silence past
   a window, …), never a rule language. The chase-after-applying sequence that used to be the
   `play_stage` field is now one of these: `plays.py`'s engine looks at what you've actually
   recorded and tells you the next step, instead of asking you to keep a position field current by
   hand.
+  A play row has an `id` (what a plan's `play_id` names) and holds `steps` — the ordered list, each gated — and `params`, the adjustable knobs
+  (see *Adjusting a play* below). It also records where it came from: `pattern` is the shipped
+  pattern it was copied from (`null` for a play you built by hand), `pattern_sha` is the version
+  of that pattern at the moment of the copy, and `pattern_reconciled_on` is the date you last
+  reconciled the copy against the shipped one. **The play is a full copy on purpose**, so an
+  improvement to the shipped pattern arrives as a difference you can review rather than a silent
+  change to your play; if you edit `steps` or `params` yourself the play counts as forked from
+  its pattern, and `plays.py --check` says so.
 
 **On upgrade,** the 0.49.0 migration adopts the shipped `referral-first` pattern into a play,
 seeds a `default-plan` (a `search` plan, `outcomes: [role]`) and assigns it to every role you
@@ -266,6 +292,19 @@ either way, so you can never silently set something the engine will never read.
 `--manual <plan_id>` to drop the play and decide each step yourself); `--confirm <plan_id>` /
 `--unconfirm <plan_id>` turn outward action on and off.
 
+**Weekly assessments.** A plan can carry `assessments` — a list with one entry per weekly look at how it is
+going. `date` is the day the entry was recorded, `as_of` is the date the assessment was computed to and `window_from` the start of the
+period it covered (the previous entry's `as_of`, or six weeks back for the first); `engine_version`
+records which plugin version computed it. `working`, `not_working` and `next_steps` are **your
+words only** — the engine never writes them, and the next assessment prints them beside the
+funnel that followed. `proposals` is the list of what the assessment suggests, each either a `parameter`
+(a setting you own; accepting it means changing that value) or a `construct` (the plan's shape
+did not play out, which is a report to the plugin's maintainers, never something the engine
+changes for you), with its `evidence`, a `status` (`proposed` · `accepted` · `declined` ·
+`reported` · `superseded`) and, once decided, `decided_on` and `decision` together. **As of this
+writing nothing in the engine writes this array yet** — the shape is declared ahead of its
+writer — so an absent or empty `assessments` is the normal state, not a fault.
+
 **People, too.** `people.jsonl` rows can carry their own `cadence` (how often you want to stay in
 touch); the same due-list logic that surfaces overdue pursuit steps surfaces people whose cadence
 has lapsed, right beside the channels-due list — a run can exist to work your network alone, with
@@ -284,13 +323,21 @@ lives on the link, never on the person).
 
 | field (on the person) | what it is |
 |---|---|
+| `id` | a stable slug, unique across everyone — what a touch's or a message's `person_id` points at |
 | `name` | a name. URLs and email addresses go in their own fields, not in here |
 | `email`, `linkedin` | structured and validated, never prose |
+| `email_status` | how you know the address is right: `verified-published` (they publish it) · `verified-received` (you have received mail from it) · `pattern-inferred` (guessed from the company's address format) · `unknown`. It tells you how far to trust the address before you write to it |
 | `title`, `cadence` | who they are professionally, and (once you set it) how often you want to stay in touch |
+| `company_id` | the company they were reached through, set only for a person reached through a role; `null` for someone known only through a channel |
+| `not_same_as` | ids of people you have reviewed and confirmed are **different** humans. Once a pair is listed, `people.py --duplicates` stops surfacing it, so a same-name pair you have already ruled on does not come back on every run |
+| `created` | when the record was made — `null` until you fill it in by hand |
+| `note` | free text of your own about them |
 
 | field (on the link to one role or channel) | what it is |
 |---|---|
-| `role`, `path_type`, `status`, `notes` | how you reached them and where it stands, **for this role or channel specifically** |
+| `person_id` | who the link is about — it must resolve to a person, and with `opp_id` or `channel_id` it is what identifies the link (a link has no `id` of its own) |
+| `opp_id`, `channel_id` | which role or channel the link is to — **exactly one is set**, never both and never neither. A person known only through a firm or a referral has `channel_id` set and no role at all |
+| `role`, `path_type`, `status`, `note` | how you reached them and where it stands, **for this role or channel specifically** |
 
 `path_type` is `warm-referral` · `recruiter` · `hiring-manager` · `hiring-context` ·
 `internal` · `cold`.
@@ -368,6 +415,9 @@ One record per touch. The fields exist to make "which approach actually works?" 
 | `opp_id` | the role this touch was about, if any. **Optional** — a channel-anchored or fully unanchored networking touch is a legal row with no role attached |
 | `medium` | a LinkedIn connection note, an InMail and a direct message get read at completely different rates. Pooling them makes any reply rate meaningless |
 | `touch_type` | a first touch and a chase have different base rates |
+| `channel_id` | the relationship the touch travelled through — a recruiting firm, a warm-network channel. `null` is correct and expected for a cold touch: it names the *relationship*, never the medium (that is `medium`) |
+| `to` | the recipient's display name as it read when you sent — required and non-empty on a sent touch. It is a label for you to read; the resolving link to the person is `person_id` |
+| `variant` | a short slug naming the style or approach you used (for example a shorter opener versus a longer one), so an approach can be scored against `outcome` later. `null` when you are not tracking one |
 | `recipient_role` | a hiring manager, a recruiter and a peer are not the same audience |
 | `campaign_id` | groups a multi-touch push so it can be evaluated as one thing |
 | `address_status` | required for email — records whether the address was verified or pattern-guessed |
@@ -377,6 +427,7 @@ One record per touch. The fields exist to make "which approach actually works?" 
 | `trigger_kind`, `trigger_ref` | what CAUSED this touch — `application`, `reply`, `elapsed` or `manual`, plus the specific application/message/date it points at. See *Triggers and sequences* below |
 | `sequence_id`, `sequence_step` | groups this touch into a multi-step play with other outreach and staged drafts under the same `sequence_id`, ordered by `sequence_step` |
 | `plan_id`, `play_step` | since 0.49.0 — which plan this touch counts toward, and which play step it satisfies (`reach-insider`, …), or the marker `unresolved` when the touch predates 0.49.0 and can't be assigned a step automatically. Only set on a touch anchored to a role (`opp_id`); a networking touch has no plan to derive one from. See *Plans and plays* above |
+| `note` | free text of your own about this touch |
 
 #### Recording a touch changes more than the touch — since 0.54.0
 
@@ -417,6 +468,37 @@ sent the same day can't be told apart by date alone, so a same-day pair is left 
 reported, not guessed — for you to link by hand with `answers` once you know which is which.
 `messages[].sent_on` and this row's `date`/`responded_on` may all carry a time
 (`YYYY-MM-DD HH:MM`) as well as a bare date, for exactly that case.
+
+### Messages — `messages.jsonl`
+
+Every communication, both directions, one row each. **Append-only**: `record.py` adds rows
+(`touched` for something you sent, `answered` for a reply, `received` for inbound mail
+identified by its sender) and nothing edits one in place, so a stored message is a record and
+never a draft that can drift.
+
+- **`direction`** is `inbound`, `outbound`, or `third-party` — something written by someone else on
+  your behalf (a referral's endorsement), which is not your own outreach and is never counted as
+  it.
+- **`body`** is the full text, and **`subject`** the subject line where the medium has one
+  (otherwise `null`). **`sent_on`** is the date, or `YYYY-MM-DD HH:MM` where the time is known.
+- **`from`** and **`to`** are the sender and recipient as the message states them — an address, or
+  a `contact:<id>` token when you record it through `record.py`. `from` is usually `null` on a
+  message you sent yourself.
+- **`source`** is required, and says where the text came from — `gmail:<account>:<uid>` for mail,
+  or `outreach/drafts.md` for something you wrote and sent yourself. A stored body with no
+  provenance is an assertion, not a record.
+- **`channel_id`** anchors a message to a relationship rather than a role — a warm intro or a
+  referral. Every message needs an anchor: an `opp_id` **or** a `channel_id`, at least one.
+- **`id`** is the message's own stable handle — what another message's `answers` points at.
+- **`person_id`** is who the message was to or from; it resolves through `people.jsonl`, the same
+  as a touch's `person_id`.
+- **`medium`** is how it travelled — a LinkedIn message, an email, an InMail — the same field, for
+  the same reason, as a touch's `medium`.
+- **`variant`** names the style or approach used, the same slug a touch's `variant` carries, so
+  an approach can be scored against outcomes.
+
+How one message points at another — `answers`, and the ATS sweep's `resolves`/`resolved_by` —
+is described under *Touches* and *ATS receipt matching*.
 
 ### What a draft now carries — `**To:**` and `**Brief:**` (since 0.46.0)
 
@@ -495,6 +577,46 @@ One limit worth knowing: a newsletter sent from an otherwise ordinary-looking ad
 `noreply` variant) can still be counted as a hit — nothing in your profile records which senders
 are newsletters, so this only catches automated senders it can recognize structurally.
 
+### The brief ledger — `briefs.jsonl`
+
+Each time `brief.py` computes a brief for a draft it appends one row here, and the draft's
+`**Brief:**` line cites that row by `id` — `brief:<timestamp with UTC offset>-<four hex digits>`.
+**The ledger is append-only, never edited by hand, and never a source of state**: a row is
+evidence of what the drafter saw at that moment. The engine recomputes everything from your
+other files every time a draft is checked, and looks up only the row a draft cites — never "the
+newest row for this person" — so a stale citation is detectable and a row is never mistaken
+for the current truth.
+
+What a row records, in the order you would read it:
+
+- **Who and where.** `person_id` is who the brief is about. `opp_id` and `channel_id` are the
+  role or channel it was scoped to — either can be `null`, because a brief can be about a person
+  alone, folded across every thread they are in. `thread` is the one role or channel the brief
+  actually read (`null` when the person has none).
+- **When.** `computed_at` is the timestamp the row was written, with its UTC offset; `today` is
+  the date the brief counted elapsed days to.
+- **What it concluded.** `axis` is the state of the conversation: `reply-owed` (their message is
+  the newest), `accepted` (a connection you sent was accepted, and this never ages out),
+  `waiting` (your last message is too recent to chase), `silence-unverified` (old enough to
+  chase, but no mailbox check covers it), `silent` (verified silent for at least
+  `chase_after_days`; see *Communications* below), or `nothing-sent`. `register` is what the
+  drafter should do about it, derived from the axis: `reply-owed`, `accepted`, `premature`
+  (waiting), `unverified-silent`, `chase` or `reconnect` (verified silence under or over
+  `no_response_after_days`), `cold` (nothing sent, and a mailbox check confirmed there is no
+  prior thread) or `unverified-cold` (nothing sent, but nothing confirms the mailbox is empty).
+  `last_word` is `theirs` or `ours` — who spoke last.
+- **The clock.** `days_since_in` is how many days of verified silence have passed since your
+  last message, counted to the mailbox coverage that was actually verified, never to today —
+  and `null` unless the axis is `silent`. `latest_in` and `latest_out` are `{id, date}` for the
+  newest inbound and outbound message (`null` if there is none).
+- **What the mailbox could confirm.** `evidence` holds, per medium (email and LinkedIn), what
+  the mailbox check found and what it probed, so an empty thread can be told apart from one
+  nobody looked at.
+- **What the brief used.** `windows` carries the two `communications` thresholds it applied,
+  each with where it came from (`in your config.json` or `default — not in your file`) so the
+  card says which numbers decided the register. `open_asks` lists the ids of any open asks
+  touching that person's role or channel. `engine` is the plugin version that computed the row.
+
 ### The working set — what leaves `drafts.md` and where it goes (since 0.47.0)
 
 `drafts.md` used to accumulate every draft you ever staged, sent or not — a sent or moot entry
@@ -569,7 +691,7 @@ ones?" is a query across every application at once, rather than a walk over ever
 | `portal_status`, `portal_confirmed_on` | what the employer's applicant portal shows, and when you last checked it |
 | `resume_variant` | the page actually **sent** with this application — distinct from the opportunity's own `resume_variant`, the page *planned* to be sent. A retired variant still resolves here, so outcomes stay attributable to what really went out even after a variant is retired |
 | `cover_letter_id` | points at this application's row in `cover_letters.jsonl`, or `null` if there is no letter for it — see *Cover letters* below |
-| `notes` | |
+| `note` | free text of your own about this application |
 | `form_answers` | what you actually answered on the application's own form (salary expectations, reason for leaving, and the like), as `{question_key, question, answer, answered_on}`. `question_key` is a shared slug, so the next form asking the same question surfaces what you answered last time instead of you re-deriving it — and if a later answer to the same question disagrees with an earlier one, that is flagged rather than silently overwritten |
 
 **The number is a handle, not a timeline** — a historical row backfilled after two newer ones
@@ -607,6 +729,7 @@ as drifted.
 | field | what it is |
 |---|---|
 | `id`, `archetype` | a stable slug, and the buyer/audience this page is written for |
+| `created`, `note` | the date the variant was declared, and a free-text remark of your own |
 | `file` | path to the variant's own markdown file |
 | `status` | `active` or `retired` (`retired` requires `retired_on`) |
 | `union_sha`, `union_reconciled_on` | a stamp of the claim union at the last reconcile, written by `resume_variants.py --stamp` |
@@ -647,7 +770,7 @@ rendered file, with no row of its own to hang a status on.
 | `doc` | the rendered file actually sent, once one exists |
 | `status` | the value stored on the row: `draft` · `sent` · `retired` — or `null` on a legacy or migration-minted row the store never assigned a status to. This is not the same as the state you see reported below |
 | `created` | when the row was created |
-| `note` | |
+| `note` | free text of your own about this letter |
 | `cover_letter`, `cover_letter_attached`, `cover_letter_doc` | the three original fields, carried over **verbatim** by the 0.45.0 upgrade for any letter that predates it — including a row where they disagree with each other (e.g. `cover_letter_attached: true` with no `cover_letter_doc`), preserved exactly as found rather than resolved or guessed at. A letter created after the upgrade uses `file`/`doc`/`status` instead and leaves these three `null` |
 
 **"Attached" is now a structural fact, not a separate flag to remember.** A letter is attached to
@@ -670,10 +793,11 @@ The one place you actually see its effect is a checkup line counting how many le
 
 ### Fit — how you match the role
 
-Optional. Absent means the job description has not been analysed yet.
+This is the role's `fit` field. Optional. Absent means the job description has not been analysed yet.
 
-Each material requirement from the posting becomes a row: the requirement in the posting's own
-words, a verdict of `aligned` · `partial` · `not-aligned` · `unknown`, and then:
+Each material requirement from the posting becomes a row in `fit.requirements[]`: the
+`requirement` in the posting's own words, a `verdict` of `aligned` · `partial` · `not-aligned` ·
+`unknown`, and then:
 
 - **`evidence`** — required when aligned or partial. A pointer to the resume sentence, project
   or note that backs the claim. An alignment claim with no citation is a gap in disguise.
@@ -682,6 +806,13 @@ words, a verdict of `aligned` · `partial` · `not-aligned` · `unknown`, and th
 - **`question_for_candidate`** — required when `unknown`. A targeted question, asked only when
   the answer would change the pitch.
 - **`landed_in`** — where your answer was filed, so the same question is never asked twice.
+- **`question_status`** — `n/a` · `open` · `answered`. Only an `open` question is put to you; once
+  it is `answered` it stops appearing anywhere you are asked.
+- **`act_by`** — the date an open question needs its answer by, when the fact that makes it
+  urgent has one (an interview slot, a deadline). Open questions sort by it, earliest first and
+  undated last, on the coordinator's list and on the dashboard's fit section — the date used to
+  live as prose inside the question, where nothing could sort it.
+- **`answered_on`** — the date you answered it.
 
 `not-aligned` rows are kept, not suppressed. They tell you where you are stretching, and a fit
 analysis that lists only matches is marketing rather than analysis.
@@ -698,9 +829,12 @@ data rather than kept up to date by hand.
 
 | field | what it is |
 |---|---|
+| `id`, `created` | the ask's stable handle (a fixed slug on a system ask, such as `system-application-endings`), and the date it was raised |
 | `kind` | `role` (about one opportunity) or `system` (tooling, a credential, a setting — for example `system-application-endings`, the one row naming every ended pursuit with no recorded ending, described under *Endings* above) — decides which group it shows in |
 | `title`, `ask` | what it is, and what is actually being asked |
-| `opp_id` | the role it concerns, if any |
+| `opp_id`, `channel_id` | the role or channel it concerns, if any |
+| `act_by` | the date by which it needs an answer, if it has one. Open asks sort by it (undated last), so the one with a real deadline leads your queue instead of hiding in prose |
+| `resolves_when` | `application` or `outreach` — the recorded action on this ask's `opp_id` that answers it. When you record that action through `record.py`, the ask is resolved in the **same write**, so it never sits open after you have already done the thing. Requires `opp_id` (a `resolves_when` that could never fire would look handled and not be). Without it the ask waits for you, or for a later check that notices the action was taken |
 | `resolved_on`, `resolution` | set together, once, when it is answered |
 | `trigger_kind`, `trigger_ref` | what CAUSED this ask, same as an outreach touch above — `trigger_kind: application` additionally requires `opp_id`, since resolving it means reading that role's own applications |
 
@@ -714,9 +848,13 @@ everything else — before this, an ask row could only ever be created by a migr
 
 | field | what it is |
 |---|---|
+| `id` | the commitment's stable handle |
 | `date` | ISO `YYYY-MM-DD`, or the literal `unresolved` if a date could not be read from its source and needs your eyes |
+| `time` | the time of day, if it has one — free text as the invite states it, so a call at a fixed hour reads as one |
 | `title`, `note` | what it is |
-| `opp_id` | the role it concerns, if any |
+| `who` | the counterparty — names, companies — kept as words on purpose: the calendar cross-check matches on **date and who together**, because a date alone is not an identity and two meetings can share a day |
+| `opp_id`, `channel_id` | the role or channel it concerns, if any |
+| `source` | where the row came from — for example an invite you recorded, or `migrated 0.25.0 from focus.md ## This Week` on a row the upgrade moved for you. Provenance for you, not something the engine acts on |
 | `status` | `scheduled` or `cancelled` — every commitment starts `scheduled`; a called-off meeting is set to `cancelled` rather than deleted or edited into a "cancelled" title |
 
 Only commitments on or after today show on your dashboard; past ones stay in the file as a
@@ -891,6 +1029,50 @@ linkless URL-bearing sighting dated on or after **2026-09-14**. The SOURCING adv
 narrowed to match: it now names only sightings dated *before* that line — a sighting recorded
 since then that is missing its link is the validator's problem to report, not the advisory's,
 because it should never have been possible to record one that way in the first place.
+
+## Communications — `config.json.communications`
+
+Two thresholds that decide when silence after your message becomes something to act on. Every
+profile already carries both; a profile that has not set one gets the default below.
+
+| key | what it is |
+|---|---|
+| `chase_after_days` | days after your last message before a thread with no reply stops reading as *waiting* (too soon to chase) and reads as *silent*. Defaults to **7**; accepted range 1–60. **Lower it** and a thread is chase-able sooner, so a follow-up is proposed earlier; **raise it** and you wait longer first. Silence still has to be *verified* against your mailbox before it counts — the number is the earliest a thread can qualify, not a promise a chase will be drafted that day |
+| `no_response_after_days` | once a thread is verified silent, the days of silence at which the suggested move stops being a **chase** (a nudge on the same thread) and becomes a **reconnect** (a fresh, warmer approach). Defaults to **14**; accepted range 1–90. **Lower it** and you move to a reconnect sooner; **raise it** and the drafter keeps chasing for longer. Read by the brief (see *The brief ledger* above), so changing it changes the `register` on every brief computed afterwards — never a row already written |
+
+Both are written in full as `communications.chase_after_days` and
+`communications.no_response_after_days`. `profile.py --options` prints each with its current
+value and whether it came from your file or the default.
+
+## Search posture — `config.json.search`
+
+How much the plugin is allowed to do on its own — your cost tier. See *Cost* in
+[How it works](how-it-works.md) for the four shipped tiers side by side.
+
+| key | what it is |
+|---|---|
+| `search.posture` | the **name** of the tier in force, one of the names defined under `search.postures`. Defaults to `economy` on a new install. **Changing it changes what every scheduled run may do**: how often it fires, how many agents it may start, whether it may research or draft unattended, whether it may touch LinkedIn. `posture.py` shows the effect (`posture.py --may drafting`, `--cron`). A name that is unset, or that is not defined in `search.postures`, permits **nothing** — the run reads the cheapest interpretation rather than guessing you meant a larger one |
+| `search.postures` | the table of tiers, keyed by name. Each tier holds `runs_per_day`, a `cron` line, `max_agents_per_run`, `max_drafts_per_run`, an `unattended` list of what it may do without you (`sweeps`, `linkedin`, `research`, `drafting`), and a `_for` note describing it. **Retune a tier** by editing its numbers, or **add your own** by adding a name with the same keys and pointing `search.posture` at it. The engine reads the numbers and the permission list, never the name. `doctor.py --fix` puts the shipped four back if the table is missing, and only ever adds |
+| `linkedin_runs_per_day` | lives **inside a tier** — `search.postures.<tier>.linkedin_runs_per_day` — not at the top of `config.json`. How many LinkedIn passes per day may actually reach a page, **independent of `runs_per_day`**: a run over its tier's quota still does everything else and only skips the LinkedIn pass. A tier that does not set it gets **1**; accepted range 0–20. **`0` switches LinkedIn passes off for that tier** (the pass is refused as skipped-for-cost and the work is queued, not lost). **Raise it** for more LinkedIn coverage at more cost — a LinkedIn pass is the most expensive thing a scheduled run does |
+
+## Dashboard — `config.json.dashboard`
+
+| key | what it is |
+|---|---|
+| `body_collapse_words` | the word count above which a long free-text body on your dashboard — an ask's text, a role decision's memo — is shown as its opening clause, its word count and where to find the full text in your data, instead of in full. Defaults to **120**; accepted range 20–2000. **Lower it** for a shorter, more scannable page; **raise it** to read more without opening the record. **A draft that is ready to send is never collapsed, however long.** Only the page changes — the record itself is never shortened |
+
+## Dispatch packet — `config.json.dispatch_packet`
+
+When the plugin hands one job to a drafting agent it first prints a single packet of what that
+agent needs. Two sections of it come straight from your own prose and are unbounded as you wrote
+them, so each has a length cap; a section over its cap is cut at the cap and followed by a
+`PACKET TRUNCATED` line naming the section and how much was dropped — never cut silently.
+
+| key | what it is |
+|---|---|
+| `section_cap.voice` | the cap on the packet's `voice` section — your *Message style* text from `configure/strategy.md`, verbatim. Defaults to **2000** characters; accepted range 200–20000. **Raise it** if a long style guide is being cut off mid-thought (the agent then sees more of how you write, at the cost of a bigger packet); **lower it** for a leaner one |
+| `section_cap.claims` | the same cap for the `claims` section — the parts of `presence/claims.md` matched to this draft. Defaults to **3000**; accepted range 200–20000. Raising it lets more of your matched background reach the agent; lowering it risks a claim being cut before the agent sees it |
+| `section_cap.other` | one cap shared by every other section of the packet, which are short by construction. Defaults to **1500**; accepted range 200–20000. You should rarely need it: a `PACKET TRUNCATED` marker on a section other than `voice` or `claims` is the sign to raise it |
 
 ---
 

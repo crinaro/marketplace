@@ -19,3 +19,11 @@ __pycache__/
 
 # `claude plugin eval` writes timestamped run output here — generated, never source (dev #467).
 plugins/*/evals/results/
+
+# Worktrees Claude Code creates for sessions and isolated subagents (dev #616).
+# ⚠️ These land INSIDE the repository, so without this line a fresh clone reads every
+# harness-made worktree as untracked and the checkout as DIRTY — which the release preflight
+# refuses outright, and which reads to any maintenance agent as "another writer holds this
+# tree". It was ignored only in .git/info/exclude — machine-local and never
+# version-controlled — until this line, so the whole workflow was author-only.
+.claude/worktrees/

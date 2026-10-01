@@ -876,11 +876,37 @@ def _smtp_send(acct, msg):
     """Send `msg` from `acct` over SMTP_SSL. Gmail saves the sent copy to
     [Gmail]/Sent Mail itself — no IMAP APPEND needed, and doing one anyway
     would double-file every message. send_message() strips Bcc headers and
-    delivers to them; recipients come from the message's own To/Cc/Bcc."""
+    delivers to them; recipients come from the message's own To/Cc/Bcc.
+
+    ⭐ EVERY OUTCOME DECLARES WHAT IS KNOWN DELIVERED (marketplace #219):
+    sent, NOT sent, or UNKNOWN, and an ambiguous outcome forbids a blind retry.
+    The stage is tracked EXPLICITLY — a flag set the moment the DATA command
+    begins, and one set when the server's 250 for it arrives — never inferred
+    from the exception's type: smtplib exposes no stage on a send_message()
+    failure, and an over-broad `except` would report a delivered message as
+    unsent (a duplicate under the user's own identity on retry).
+      before DATA         -> NOT sent (connect, DNS, TLS, login, MAIL, RCPT,
+                             including every-recipient-refused): safe to retry.
+      server rejects DATA -> NOT sent (SMTPDataError carries the server's reply).
+      DATA begun, no 250, the link dies (SMTPServerDisconnected, timeout,
+                             ConnectionError, OSError) -> UNKNOWN (RFC 5321 6.1).
+      250 received        -> delivered; a failure in the QUIT teardown is ignored.
+    The partial-refusal RuntimeError below is separate and already correct."""
     import smtplib
     pw = get_app_password(acct)
+    stage = {"data": False, "accepted": False}
+
+    class _Tracked(smtplib.SMTP_SSL):
+        def data(self, m):
+            stage["data"] = True
+            reply = super().data(m)
+            if reply[0] == 250:
+                stage["accepted"] = True
+            return reply
+
+    refused = None
     try:
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=60) as smtp:
+        with _Tracked(SMTP_HOST, SMTP_PORT, timeout=60) as smtp:
             smtp.login(acct, pw)
             refused = smtp.send_message(msg)
     except smtplib.SMTPAuthenticationError as exc:
@@ -889,6 +915,30 @@ def _smtp_send(acct, msg):
             "revoked. Regenerate at https://myaccount.google.com/apppasswords "
             "and update the credential store entry (the same one IMAP uses)."
             % (acct, exc))
+    except (smtplib.SMTPException, OSError) as exc:
+        if stage["accepted"]:
+            # The server already said 250: the message is delivered and only the
+            # connection teardown (QUIT) failed. Not an error to the caller.
+            if refused is None:
+                refused = {}
+        elif isinstance(exc, smtplib.SMTPDataError):
+            raise RuntimeError(
+                "NOT SENT from %s: the server rejected the message at DATA "
+                "(%s) — nothing was delivered, so a retry cannot duplicate it."
+                % (acct, exc))
+        elif stage["data"]:
+            raise RuntimeError(
+                "DELIVERY STATE UNKNOWN for %s: the connection failed (%s: %s) "
+                "after the DATA command began, so the server may or may not have "
+                "accepted the message. DO NOT RETRY BLINDLY — a resend can "
+                "deliver it twice. Check [Gmail]/Sent Mail for Message-ID %s "
+                "first; resend only if it is absent."
+                % (acct, type(exc).__name__, exc, msg["Message-ID"] or "(none)"))
+        else:
+            raise RuntimeError(
+                "NOT SENT from %s: SMTP failed before the DATA command "
+                "(%s: %s) — nothing was delivered, so a retry is safe."
+                % (acct, type(exc).__name__, exc))
     finally:
         del pw
     if refused:

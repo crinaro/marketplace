@@ -971,7 +971,7 @@ def _registration(hooks_path):
         return False, "guard_outbound_click.py is not wired into any PreToolUse entry"
     if not any(e.get("matcher") == want for e in click_entries):
         return False, ("PreToolUse matcher drifted from GUARDED_CLICK_TOOLS "
-                       "(check_click_guard_matcher.py has the detail)")
+                       "(hooks.json's matcher must equal GUARDED_CLICK_TOOLS joined by '|')")
     starts = (cfg.get("hooks") or {}).get("SessionStart") or []
     if not any(("guard_outbound_click.py" in (h.get("command") or "")
                 and "--selftest" in (h.get("command") or ""))
