@@ -364,6 +364,47 @@ _METADATA[DASHBOARD_BODY_COLLAPSE_WORDS] = (
     "collapses to its clause + word count + store locator instead of rendering in full "
     "(design-script-first.md §4.3, #486/#107) — a sendable draft body is never collapsed")
 
+# ── mail connector selection (dev #161, dev #524) ──────────────────────────────────────────────
+# Which mail connector jobsearch reads and drafts through. The owner's decision of 2026-10-02 was
+# SIMPLICITY: the user selects ONE, and the plugin adheres to the selection — no per-account
+# routing, no registry link, no migration. `gmail-multi` (the standalone connector plugin; the
+# sweeps' IMAP library reads the same mailboxes) is the default so every profile that predates this
+# key keeps today's behaviour with nothing to do; `claude-gmail` is the claude.ai-managed Gmail
+# connector. `guard_mail_scope.py` DENIES the unselected connector's tools (a PreToolUse hook,
+# enforced, not advised) and `mail_client.py`'s sweeps run only under `gmail-multi`.
+#
+# ⚠️ NOT `tooling.gmail_connector` — the profile already has that name, for an unrelated block
+# (create/update/delete permissions); this key lives in `communications`, which is about mail.
+# An unknown value is REFUSED (`resolve_mail_connector` raises), never coerced to the default:
+# a typo that silently selected gmail-multi would read as a choice the user never made.
+MAIL_CONNECTOR = "communications.mail_connector"
+MAIL_CONNECTOR_DEFAULT = "gmail-multi"
+MAIL_CONNECTOR_VALUES = ("gmail-multi", "claude-gmail")
+
+READER_KEYS = READER_KEYS | frozenset({MAIL_CONNECTOR})
+
+_METADATA[MAIL_CONNECTOR] = (
+    MAIL_CONNECTOR_DEFAULT, "enum", MAIL_CONNECTOR_VALUES,
+    "which mail connector jobsearch uses — gmail-multi (the standalone connector plugin, also "
+    "what the sweeps read) or claude-gmail (the claude.ai Gmail connector); the other is "
+    "denied at the tool layer (guard_mail_scope.py), and the deterministic sweeps run only "
+    "under gmail-multi (dev #161)")
+
+
+def resolve_mail_connector(cfg):
+    """The selected mail connector for a loaded `config.json` dict: one of
+    `MAIL_CONNECTOR_VALUES`. An absent key is `MAIL_CONNECTOR_DEFAULT` (every existing profile).
+    ⛔ An unknown value — wrong spelling, wrong case, not a string — raises `ValueError` naming the
+    valid values; it is never coerced to the default (dev #161)."""
+    value, _provenance = describe(cfg, MAIL_CONNECTOR)
+    if not isinstance(value, str) or value not in MAIL_CONNECTOR_VALUES:
+        raise ValueError(
+            "config.json %s is %r — not one of: %s. Set it to one of those exactly, or remove "
+            "the key to get the default (%s)."
+            % (MAIL_CONNECTOR, value, ", ".join(MAIL_CONNECTOR_VALUES), MAIL_CONNECTOR_DEFAULT))
+    return value
+
+
 
 def seed_default(dotted_key):
     """The registered default `doctor.py --fix` seeds for `dotted_key` (e.g. "search.posture")

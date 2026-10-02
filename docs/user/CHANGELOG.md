@@ -2,24 +2,10 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each verified against its release tag on the published remote; older releases after their push, the newest one by the publish that pushed it, so the section for the version you installed is in the file that came with it. Sections are grouped by plugin, then by version. Newest first.
 
-## gmail-multi 0.4.1
-gmail-multi 0.4.1 changes what a failed send tells you, and there is nothing for you to run. If the connection to the mail server was lost or timed out after the message body had begun to go out, a send, reply or forward used to fail with a bare connection error that did not say whether the message had been delivered, so retrying could deliver it twice from your own address. It now reports that delivery is UNKNOWN, asks you to look in [Gmail]/Sent Mail before trying again, and says not to retry blindly. A failure before that point (the server cannot be reached, its name cannot be looked up, the login is refused, or every recipient is refused) now says plainly that nothing was sent, so a retry is safe. The message for a send that reached only some recipients is unchanged.
-
-## gmail-multi 0.4.0
-- Release: jobsearch 0.53.0 + gmail-multi 0.4.0 — the connector heals itself; per-profile mailbox scoping *(tracked internally as crinaro/marketplace-dev PR#438)*
-
-## gmail-multi 0.3.0
-- [#76](https://github.com/crinaro/marketplace/issues/76) — gmail-multi: a non-ASCII character in a search query aborts the whole multi-account search
-- Gmail special folders are hardcoded English literals and select_all_mail silently falls back to INBOX *(tracked internally as crinaro/marketplace-dev#311)*
-
-## gmail-multi 0.2.0
-- gmail-multi should support send/reply/forward; jobsearch must enforce draft-only as policy rather than rely on the capability being absent *(tracked internally as crinaro/marketplace-dev#213)*
-
-## gmail-multi 0.1.1
-- Marketplace identifier: careers-plugins -> crinaro-marketplace, with a launcher self-heal *(tracked internally as crinaro/marketplace-dev#216)*
-
-## gmail-multi 0.1.0
-- Release: jobsearch 0.29.0 and gmail-multi 0.1.0 — connector self-install replaces the declared dependency *(tracked internally as crinaro/marketplace-dev#210)*
+## jobsearch 0.59.0
+Nothing for you to run. You can now choose which Gmail connector jobsearch uses: gmail-multi or the Gmail connector managed by claude.ai. It uses only the one you pick and says which one in its reports. If you choose nothing, it keeps using gmail-multi, as before.
+Also fixed: starting Claude in a folder that is not your job-search profile no longer leaves data/ or .jobsearch/ files behind in that folder. Before this, opening a session in any other project, including a checkout of this plugin's own source, could drop those files into it. Sessions in your profile behave exactly as before.
+Two more fixes, and still nothing for you to run. The inbox now shows every waiting item it counts: an item of a kind it has no section for appears under Other instead of being counted but hidden. The daily run's file-hygiene check now stops on time and says so, instead of running on with no output.
 
 ## jobsearch 0.58.0
 jobsearch 0.58.0 has nothing for you to run. A new or edited record whose email is a placeholder (example.com, example.org and similar reserved addresses) is now refused, so a made-up address can no longer reach a draft or a send. Existing records are flagged, not refused. Six internal check scripts that nothing called were removed; this changes nothing you use. Several checks that could pass for the wrong reason were fixed, with no change to how the plugin behaves.
@@ -287,3 +273,22 @@ This release backfills your own data on first run: the 0.54.0 migration rewrites
 - [#19](https://github.com/crinaro/careers-plugins/issues/19) — No schema field represents a pursued opportunity's post-application play-sequence stage
 - [#20](https://github.com/crinaro/careers-plugins/issues/20) — Generated dashboard renders knowledge-base and call-preparation artifacts as filename strings, not their content
 - [#21](https://github.com/crinaro/careers-plugins/issues/21) — OPEN DESIGN QUESTION: two dashboard views present the same records through two different taxonomies instead of one lifecycle-state view
+
+## gmail-multi 0.4.1
+gmail-multi 0.4.1 changes what a failed send tells you, and there is nothing for you to run. If the connection to the mail server was lost or timed out after the message body had begun to go out, a send, reply or forward used to fail with a bare connection error that did not say whether the message had been delivered, so retrying could deliver it twice from your own address. It now reports that delivery is UNKNOWN, asks you to look in [Gmail]/Sent Mail before trying again, and says not to retry blindly. A failure before that point (the server cannot be reached, its name cannot be looked up, the login is refused, or every recipient is refused) now says plainly that nothing was sent, so a retry is safe. The message for a send that reached only some recipients is unchanged.
+
+## gmail-multi 0.4.0
+- Release: jobsearch 0.53.0 + gmail-multi 0.4.0 — the connector heals itself; per-profile mailbox scoping *(tracked internally as crinaro/marketplace-dev PR#438)*
+
+## gmail-multi 0.3.0
+- [#76](https://github.com/crinaro/marketplace/issues/76) — gmail-multi: a non-ASCII character in a search query aborts the whole multi-account search
+- Gmail special folders are hardcoded English literals and select_all_mail silently falls back to INBOX *(tracked internally as crinaro/marketplace-dev#311)*
+
+## gmail-multi 0.2.0
+- gmail-multi should support send/reply/forward; jobsearch must enforce draft-only as policy rather than rely on the capability being absent *(tracked internally as crinaro/marketplace-dev#213)*
+
+## gmail-multi 0.1.1
+- Marketplace identifier: careers-plugins -> crinaro-marketplace, with a launcher self-heal *(tracked internally as crinaro/marketplace-dev#216)*
+
+## gmail-multi 0.1.0
+- Release: jobsearch 0.29.0 and gmail-multi 0.1.0 — connector self-install replaces the declared dependency *(tracked internally as crinaro/marketplace-dev#210)*

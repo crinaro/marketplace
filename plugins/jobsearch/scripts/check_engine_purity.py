@@ -667,7 +667,27 @@ def _shape_exempt(kind, w, m, line):
     return True
 
 
-def scan(path, terms, exempt_sink=None):
+class ScanBudgetExceeded(Exception):
+    """Raised by `scan()` when its `deadline` passes MID-FILE (dev #526, public #123)."""
+
+
+# dev #526 — how many terms `scan()` tries between two looks at the clock. Small enough that one
+# pathological LINE cannot outrun the budget by more than a few hundred regex passes; large
+# enough that the clock read is noise next to the regex work.
+_DEADLINE_EVERY_TERMS = 128
+
+
+def scan(path, terms, exempt_sink=None, deadline=None):
+    """Scan one file for profile terms; returns `(rel, hits)`, or `(rel, None)` for non-text.
+
+    ⭐⭐ dev #526 (public #123) — `deadline` (a `time.monotonic()` value, or None for unbounded)
+    makes the budget bind INSIDE a file. `main()`'s budget used to be checked only BETWEEN files,
+    so one file whose scan was slow (many profile terms x many lines — the cost is their
+    product, and Python re-compiles a pattern the 513th time it is seen) ran to completion no
+    matter what `--budget-s` said: a 3 s budget measured 8.4 s on a synthetic 2,500-term profile,
+    and a larger profile or file stretches that without limit. Past the deadline this raises
+    `ScanBudgetExceeded`; the caller counts the file as NEVER SCANNED, exactly like the files
+    after it. `hook_step()` and the tests call this with no deadline and are unchanged."""
     rel = os.path.relpath(path, ENGINE_ROOT)
     hits = []
     if not os.path.exists(path):
@@ -680,12 +700,19 @@ def scan(path, terms, exempt_sink=None):
             lines = fh.readlines()
     except (OSError, UnicodeDecodeError):
         return rel, None          # not text — the caller counts it as excluded, with a reason
+    tick = 0
     for n, line in enumerate(lines, 1):
+        if deadline is not None and time.monotonic() >= deadline:
+            raise ScanBudgetExceeded(rel)
         # Spans that are published identity, so a term inside one is not a finding.
         allowed = [m.span() for a in ALLOWANCES
                    for m in re.finditer(re.escape(a), line, re.IGNORECASE)]
         for kind, words in terms.items():
             for w in words:
+                    tick += 1
+                    if (deadline is not None and tick % _DEADLINE_EVERY_TERMS == 0
+                            and time.monotonic() >= deadline):
+                        raise ScanBudgetExceeded(rel)
                     # ⭐⭐ CASE-INSENSITIVE, DELIBERATELY (GitHub #19) — the second near-miss in
                     # this exact match. The first missed terms stored as regex source rather than
                     # plain text (fixed by `re.escape`, above). This one missed a term written in
@@ -1254,7 +1281,23 @@ def main():
                          "%(default)s). Exceeding it exits distinctly (3), never as CLEAN (0) — "
                          "see the INCOMPLETE verdict this file prints when it fires. No effect "
                          "on --hook or --structure-only, which have their own budgets.")
+    ap.add_argument("--advisory", action="store_true",
+                    help="dev #526 — for an UNATTENDED run-start sequence: a scan cut short by "
+                         "--budget-s still says so loudly (the CUT SHORT line) but exits 0, so "
+                         "an advisory step cannot wedge the run. Real findings still exit 1. "
+                         "Without it a cut-short scan exits 3 (dev #476).")
     args = ap.parse_args()
+    # dev #526 — the budget clock covers everything main() does from here, term derivation
+    # included, and is `time.monotonic()` (never steps backwards with the system clock).
+    t_start = time.monotonic()
+    # dev #526 — piped (a daily run's log, a harness capture) stdout is block-buffered, so a long
+    # scan printed NOTHING until it ended: the "no output for 4.5 minutes" of public #123.
+    # Line-buffer it so the header and budget lines land at once. Best-effort: a stream without
+    # `reconfigure` (a test's StringIO) is left alone.
+    try:
+        sys.stdout.reconfigure(line_buffering=True)
+    except (AttributeError, ValueError, OSError):
+        pass
 
     if args.hook:
         return _run_hook_cli(args)
@@ -1396,16 +1439,21 @@ def main():
     # same reason: `readable`'s order is deterministic (it is built by iterating ENGINE, which
     # is sorted), so `scanned` is always a stable PREFIX of it — the same file set a re-run with
     # the same budget would scan again, never a random subset.
-    t0 = time.time()
+    # dev #526 — and the deadline is handed INTO scan(), so it binds inside a file too.
+    deadline = t_start + args.budget_s
     partial, resume_index = False, None
     scanned = []
     for idx, p in enumerate(readable):
-        if time.time() - t0 > args.budget_s:
+        if time.monotonic() >= deadline:
             partial, resume_index = True, idx
             break
-        scanned.append(p)
         exempt_sink = []
-        rel, hits = scan(p, terms, exempt_sink)
+        try:
+            rel, hits = scan(p, terms, exempt_sink, deadline)
+        except ScanBudgetExceeded:
+            partial, resume_index = True, idx      # this file counts as NEVER SCANNED
+            break
+        scanned.append(p)
         if exempt_sink:
             exempt_by_file[rel] = exempt_sink
         if hits is None:
@@ -1494,6 +1542,14 @@ def main():
             print("     NOT a passing verdict: %d of %d readable file(s) were never checked."
                   % (len(readable) - resume_index, len(readable)))
             print("     Re-run with a larger --budget-s to get a verdict that covers the rest.")
+            if args.advisory:
+                # dev #526 — an advisory step in an unattended run must always exit 0 so it
+                # cannot wedge the run; the line above and these two are the loud part.
+                print("\n  ADVISORY: scan CUT SHORT at its %ss budget — exit 0 so the run goes on."
+                      % args.budget_s)
+                print("     NOT a clean verdict. Run it standalone (default budget %ss) to cover "
+                      "the rest." % STANDALONE_BUDGET_S)
+                return 0
             return 3
         print("\n  CLEAN. Every agent spec and run prompt is portable.")
         return 0

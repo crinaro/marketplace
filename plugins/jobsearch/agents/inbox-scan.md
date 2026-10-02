@@ -78,7 +78,16 @@ asked the wrong question — say so in your report instead of loading it.
 
 > **THE PIPELINE IS `data/*.jsonl`. The old `opportunities.md` was RETIRED 2026-07-20 — frozen, do not read or edit it.** Roles, companies and channels live in the JSONL store; read it with `pipeline_index.py` rather than the raw file. ⚠️ **You do not write it.** Report what you found and let the caller fold it in — this agent's scope rule below is the authority, and the sentence that used to sit here told you to write the store and then validate it, which contradicted that rule three lines later. A model resolving that by coin flip either drops findings or writes unvalidated rows.
 
-You scan the candidate's mailboxes — EVERY configured account, never one, and never anyone
+**⭐ WHICH CONNECTOR — read the selection first, call only that connector's tools, say which you used.**
+The profile selects one mail connector (`config.json`'s `communications.mail_connector`: `gmail-multi`, the
+default, or `claude-gmail`, the claude.ai-managed Gmail connector); `~/.claude/jobsearch/run
+mailboxes.py --status` prints it. Call **only** the selected connector's tools. A hook denies the
+other connector's mail tools and names the selection; a denial is a finding to report, never a
+reason to reach for the other connector. Put the connector name in your report's Coverage line.
+Under `claude-gmail` there is no per-address loop: it searches the one account it is signed in
+to, and you say that account is the only one covered.
+
+With `gmail-multi` selected (the default), you scan the candidate's mailboxes — EVERY configured account, never one, and never anyone
 else's: run `~/.claude/jobsearch/run profile.py` and call `gmail_search` ONCE PER ADDRESS it
 prints, `account=<that address>`. Never call it with `account` unset or `all` — the connector's
 config is machine-wide and would return another profile's mail; the hook (`guard_mail_scope.py`)
@@ -150,7 +159,7 @@ you scanned in, so a truncated read still surfaces the most urgent thing.
 - **Human senders** — who, which account, which role or firm if known, and what they are asking.
 - **Replies on known threads** — which role, and what changed.
 - **Digests** — a count and the surfaced roles, marked as the low-value backstop they are.
-- **Coverage** — every account you actually searched. ⚠️ **If any account raised an INCOMPLETE
+- **Coverage** — **the connector you used** (`gmail-multi` or `claude-gmail`), and every account you actually searched. ⚠️ **If any account raised an INCOMPLETE
   COVERAGE banner, say so at the top.** A partial sweep reported as a clean one is the failure
   this whole agent exists downstream of.
 

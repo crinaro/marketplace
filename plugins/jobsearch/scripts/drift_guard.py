@@ -90,7 +90,19 @@ def main():
     try:
         here = os.path.dirname(os.path.abspath(__file__))
         sys.path.insert(0, here)
-        from _root import engine_root, profile_root, is_installed_engine
+        from _root import engine_root, profile_root, is_installed_engine, is_unbound
+
+        # ⭐⭐ dev #618 — NOTHING IS BOUND, SO THIS IS NOT A JOBSEARCH SESSION, AND IT WRITES
+        # NOTHING. Resolved FIRST, before the engine note below, because `_announce_once` writes a
+        # per-session marker under `state_root()/drift/` — the incident's
+        # `.jobsearch/drift/<session>/` — and an unbound session has no state to keep. Silent by
+        # design, not by accident: this hook fires on EVERY prompt, so "say it once" cannot be
+        # kept without writing a marker, and the SessionStart hooks (`journal.py --fired`,
+        # `migrate.py --hook`) have already said, once, that nothing is bound. A guard that
+        # printed on every prompt of every non-jobsearch session would be the noise this file's
+        # own docstring warns trains a reader to ignore it.
+        if is_unbound(profile_root()):
+            _quiet_exit()
 
         eroot = engine_root()
         with open(os.path.join(eroot, ".claude-plugin", "plugin.json"),

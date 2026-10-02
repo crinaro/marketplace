@@ -23,7 +23,8 @@ Resolution order:
   3. ⭐ the REMEMBERED profile (`~/.claude/jobsearch/profile_root`) — but ONLY when this copy is
      an INSTALLED one (`is_installed_engine(engine_root())`). A maintainer-checkout copy skips
      this step outright and falls to (4) — see `profile_root()`'s own docstring, dev #259.
-  4. the CWD, returned as-is (a caller that needs data fails visibly on a missing file).
+  4. the CWD, returned as an `UnboundRoot` (dev #618): a READER fails visibly on a missing file,
+     a WRITER must check `is_unbound()` and refuse — nothing identified a profile here.
 
 ⭐⭐ WHY (3) EXISTS — AN MCP SERVER HAS NEITHER OF THE FIRST TWO (2026-08-05).
 A long-lived MCP server is spawned by the Claude runtime, not from a shell: it inherits no
@@ -264,6 +265,10 @@ def state_root(start=None):
     `checkout_scratch_dir()`'s own comment just above for why that is deliberate here, and where
     the dev #394 checkout gate for THIS fallback actually lives instead (`_diag.py`, narrowly)."""
     root = profile_root(start)
+    # ⭐ dev #618 — an UNBOUND root is never a state destination, whatever its contents look like:
+    # a stray `data/` another writer left behind must not turn the cwd into a state directory.
+    if is_unbound(root):
+        return _HOME_STATE
     if looks_like_profile(root) and not is_disposable_profile(root):
         return os.path.join(root, STATE_DIRNAME)
     return _HOME_STATE
@@ -284,8 +289,68 @@ def transcript_stash_path(start=None):
     return os.path.join(state_root(start), TRANSCRIPT_STASH_NAME)
 
 
+# ⭐⭐ dev #618 — NO PROFILE IS BOUND, SAID IN THE TYPE, NOT IN A COMMENT.
+#
+# A SessionStart hook started in a directory that is not a profile (an engine checkout, a
+# scratch repo, `~/Documents`) resolved `profile_root()` to that directory — the last-resort CWD
+# fallback below — and wrote `data/runs.jsonl` there (`journal.py --fired`, the FIRST hook of the
+# session). `data/` is one of this module's two profile markers, so from that instant the
+# directory looked like a profile: the next hooks, running in parallel, resolved it as one and
+# wrote `.jobsearch/diagnostics.log`, `.jobsearch/transcript_path` and `.jobsearch/drift/<session>/`
+# beside it. Every engine session left the primary checkout dirty, which refuses a release
+# (`publish.py`), reads to a dispatch as "this tree is claimed", and stopped the daily ingest.
+# The content was bookkeeping; the DESTINATION was the defect (the fourth instance in two days of
+# "a writer resolving its destination from where it happens to be running").
+#
+# Why a `str` subclass and not `None`: ~120 call sites treat `profile_root()` as a path. Most only
+# read (a missing file fails visibly, the property dev #87 relies on) and one — `init_profile.py`
+# — legitimately scaffolds a NEW profile at the working directory. Returning `None` would break
+# all of them in one change; returning the bare cwd (the old behaviour) is the bug. The subclass
+# changes nothing for a reader and gives a writer one question to ask: `is_unbound(root)`.
+# `os.path.join(root, ...)` returns a plain `str`, so the marker does not leak into derived paths.
+class UnboundRoot(str):
+    """The directory a resolution fell back to when NOTHING identified a profile.
+
+    Compares and joins like the cwd string it carries, so a read-only caller is untouched.
+    A caller that WRITES must check `is_unbound()` and refuse (dev #618)."""
+    bound = False
+
+
+def is_unbound(root):
+    """True when `root` came from `profile_root()`'s last-resort fallback: no
+    `CLAUDESEARCH_ROOT`, no profile marker at or above the working directory, and no remembered
+    profile for an installed copy. A writer must never create files under such a root."""
+    return isinstance(root, UnboundRoot)
+
+
+_SAID_UNBOUND = set()
+
+
+def say_unbound_once(who, where=None):
+    """⭐ dev #618 — a hook that refuses to write because nothing is bound says so, ONCE per
+    process, on stderr, and the caller still exits 0 (a hook never fails a session). Silence
+    would be trap 1's shape: "refused" and "never ran" leaving identical evidence.
+
+    ⚠️ Stated limit, from the hooks reference: stderr from a hook that exits 0 reaches the debug
+    log, not the transcript. The channel is a controller decision (group file F-C3), not this
+    function's; changing it means changing this one line."""
+    if who in _SAID_UNBOUND:
+        return
+    _SAID_UNBOUND.add(who)
+    try:
+        print("jobsearch: %s: no job-search profile is bound to %s (no CLAUDESEARCH_ROOT, no "
+              "profile at or above it) — writing nothing here."
+              % (who, where or os.getcwd()), file=sys.stderr)
+    except Exception:                                   # noqa: BLE001 — never fail a hook
+        pass
+
+
 def profile_root(start=None):
     """The USER's profile directory. Never the engine's.
+
+    ⭐⭐ dev #618 — when nothing identifies a profile this returns an `UnboundRoot` (a `str`
+    carrying the cwd, for readers), never a bare string a writer could mistake for a profile.
+    See the comment block above `UnboundRoot` for the incident and for why it is not `None`.
 
     ⭐⭐ dev #259 — THE REMEMBERED-POINTER FALLBACK IS MAINTAINER-CHECKOUT SAFE BY CONSTRUCTION.
     Two maintenance dispatches on 2026-09-09, each explicitly warned in its own brief, each ran a
@@ -364,10 +429,13 @@ def profile_root(start=None):
                 been_here = remembered_profile()
                 if been_here:
                     return been_here
-            # Still nothing. Return the CWD rather than guessing: a caller that needs data will
-            # fail visibly on a missing file, which is far better than silently reading the
-            # engine's own directory and reporting an empty pipeline as fact.
-            return os.path.abspath(start or os.getcwd())
+            # Still nothing. ⭐⭐ dev #618 — say so EXPLICITLY. The value stays the CWD so a
+            # READER still fails visibly on a missing file (and `init_profile.py` can still
+            # scaffold a first profile where the user stands), but it is an `UnboundRoot`, which
+            # every WRITER must refuse — a bare string here was indistinguishable from a real
+            # profile, and a hook that wrote through it created `data/` in an arbitrary directory,
+            # which then made that directory look like a profile to every later hook.
+            return UnboundRoot(os.path.abspath(start or os.getcwd()))
         cur = parent
 
 

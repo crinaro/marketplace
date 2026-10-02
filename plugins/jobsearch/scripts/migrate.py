@@ -5632,9 +5632,14 @@ def main():
                 # ⭐ public #52 — the rewrite above must not sit as an uncommitted diff until
                 # some later, unrelated commit happens to pick it up (or never does).
                 import _root
-                commit_migrated_paths(
-                    _root.profile_root(), ["CLAUDE.md"],
-                    "jobsearch: rulebook refreshed to %s" % engine_version())
+                # ⭐ dev #618 — never `git add`/`commit` in an UNBOUND cwd. A "refreshed" verdict
+                # already implies a profile (`refresh_if_stale` refuses a directory with no
+                # marker), so this is defence in depth against a future verdict that does not.
+                _pr = _root.profile_root()
+                if not _root.is_unbound(_pr):
+                    commit_migrated_paths(
+                        _pr, ["CLAUDE.md"],
+                        "jobsearch: rulebook refreshed to %s" % engine_version())
     except Exception as e:                     # noqa: BLE001
         diag("migrate", verdict="rulebook-error", reason=type(e).__name__)
         if not args.hook:
@@ -5646,6 +5651,14 @@ def main():
             diag("migrate", verdict="no-profile", mode="hook" if args.hook else "cli")
             if not args.hook:
                 print("No profile under the current directory — nothing to migrate.")
+            else:
+                # ⭐ dev #618 — a SessionStart hook with no profile above the cwd writes nothing
+                # into it (the profile half below never ran, and `diag` above lands in the
+                # machine log or the checkout scratch dir — `_diag.py` never resolves a state
+                # path from an unbound cwd) and says so ONCE, on stderr, exit 0. Silence would
+                # leave "refused" and "never ran" looking the same.
+                import _root
+                _root.say_unbound_once("migrate.py --hook", os.getcwd())
             return 0
 
         engine = engine_version()

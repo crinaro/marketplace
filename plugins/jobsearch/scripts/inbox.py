@@ -60,6 +60,13 @@ ACTION = {
                     "once you have told the candidate anything they need to act on."),
 }
 
+# The kinds that have a dedicated section in the default view, in display order. Every other kind
+# renders under OTHER (dev #525) — the list orders the view, it never decides what the view shows.
+KNOWN_KINDS = ("run-summary", "reply", "meeting", "ats", "alert")
+OTHER = "other"
+OTHER_ACTION = ("a kind this view has no dedicated section for — each row names its own kind. "
+                "Read it, act on it, then ack it (--ack <id>).")
+
 # ⭐⭐ WHY `run-summary` EXISTS — added 2026-08-03, and it closes a hole I opened that morning.
 #
 # The candidate: *"Did the 9am run send an update to the coordinator session? I didn't see that. There is a
@@ -194,20 +201,30 @@ def main():
         print("\n  Nothing pending — every finding has been handled.")
         return 0
 
-    for kind in ("run-summary", "reply", "meeting", "ats", "alert"):
-        group = [r for r in show if r["kind"] == kind]
+    # ⭐ dev #525 / public #124 — THE COUNT AND THE VIEW MUST AGREE, BY CONSTRUCTION.
+    # This loop used to walk a fixed list of five kinds, while the "N pending" header above counts
+    # EVERY pending row and `--post --kind` accepts free text. Any other kind (`post`, `_ack`'s
+    # neighbours, a watcher's new kind) was counted and never shown: a queue that reports work
+    # waiting and then lists none of it. So the sections are the known kinds in their fixed order
+    # followed by an `other` section that catches EVERY remaining kind (a final wildcard case —
+    # PEP 636 shape), each row labelled with its own kind. Nothing can be filtered out by kind.
+    sections = [(k, [r for r in show if r.get("kind") == k]) for k in KNOWN_KINDS]
+    other = [r for r in show if r.get("kind") not in KNOWN_KINDS]
+    sections.append((OTHER, other))
+    for kind, group in sections:
         if not group:
             continue
         print("\n" + "-" * 74)
         print("%s  (%d)" % (kind.upper(), len(group)))
-        print("  DO: %s" % ACTION.get(kind, "review it"))
+        print("  DO: %s" % (OTHER_ACTION if kind == OTHER else ACTION.get(kind, "review it")))
         print("-" * 74)
-        for r in sorted(group, key=lambda x: x["found_at"], reverse=True):
-            flag = "⚠️ " if r["urgency"] == "high" else "   "
-            mark = "" if r["status"] == "pending" else "  [handled]"
-            print("  %s%s%s" % (flag, r["summary"][:96], mark))
+        for r in sorted(group, key=lambda x: x.get("found_at") or "", reverse=True):
+            flag = "⚠️ " if r.get("urgency") == "high" else "   "
+            mark = "" if r.get("status") == "pending" else "  [handled]"
+            label = "[%s] " % (r.get("kind") or "no kind") if kind == OTHER else ""
+            print("  %s%s%s%s" % (flag, label, str(r.get("summary", ""))[:96], mark))
             if r.get("detail"):
-                print("       %s" % r["detail"][:104])
+                print("       %s" % str(r["detail"])[:104])
             print("       id: %s" % r["id"])
 
     print("\n" + "=" * 74)

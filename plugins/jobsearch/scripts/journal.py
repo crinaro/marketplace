@@ -160,7 +160,8 @@ import subprocess
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _root import profile_root, is_tracked_fixture, transcript_stash_path
+from _root import (profile_root, is_tracked_fixture, transcript_stash_path, is_unbound,
+                   say_unbound_once)
 
 JOURNAL = os.path.join("data", "runs.jsonl")
 EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swept", "probe",
@@ -315,7 +316,20 @@ def now_iso():
 # `.../tests/fixtures/...` or `.../fixtures/...` appearing in the resolved path, so a scratch
 # COPY of the fixture (no `fixtures` segment in its path — e.g. `check_shipped_package.py`'s own
 # `tmp/profile` materialization) is a different path and is correctly left writable.
+#
+# ⭐⭐ dev #618 — AND THE SAME CHOKE POINT REFUSES AN UNBOUND ROOT. `profile_root()`'s last-resort
+# fallback is the session's cwd, wrapped in `_root.UnboundRoot`; `--fired` is the first hook of
+# every session, so before this check a session opened in ANY directory (an engine checkout, a
+# scratch repo) created `data/runs.jsonl` there — and `data/` is a profile marker, so every later
+# hook then resolved that directory as a profile and wrote `.jobsearch/` beside it. Refusing here
+# covers `--fired` and every other journal write at once; a plain-`str` root (a real profile, a
+# scratch profile a test built) is untouched.
 def append(root, rec):
+    if is_unbound(root):
+        raise JournalError(
+            "no job-search profile is bound to %s (no CLAUDESEARCH_ROOT, no profile at or above "
+            "it) — journal refuses to create files there. Run from inside a profile, or pin "
+            "CLAUDESEARCH_ROOT (dev #618)" % root)
     if is_tracked_fixture(root):
         raise JournalError(
             "%s is the tracked fixture — journal refuses to write; pin CLAUDESEARCH_ROOT to a "
@@ -1191,6 +1205,13 @@ def _record_fired(root, at):
     to call `--start`. MUST NEVER block a session — every failure is swallowed and reported to
     stderr only, the same contract `ensure_connectors.py`'s SessionStart hook already keeps."""
     try:
+        # ⭐ dev #618 — nothing is bound: write nothing, say so once, exit 0 (`main()` returns 0
+        # on every `--fired` path). Checked BEFORE `append` so the message is this hook's own
+        # sentence rather than a swallowed JournalError, and so the refusal does not depend on
+        # the choke point's wording.
+        if is_unbound(root):
+            say_unbound_once("journal.py --fired", root)
+            return
         session_id, cwd = "", ""
         try:
             if not sys.stdin.isatty():

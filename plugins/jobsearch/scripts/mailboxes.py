@@ -71,6 +71,36 @@ def _provider_note(address):
     return None, None, ""
 
 
+def connector_lines():
+    """(lines, ok) — which mail connector jobsearch uses and how to switch it (dev #161). `ok` is
+    False only when the selection in config.json is not a valid value: refused, never coerced."""
+    import config_keys
+    import mail_client
+    key = config_keys.MAIL_CONNECTOR
+    try:
+        selected = mail_client.selected_connector()
+    except ValueError as exc:
+        return (["  Mail connector  : !! INVALID — %s" % exc,
+                 "                    Until it is fixed, jobsearch will not use either connector."],
+                False)
+    cfg_provenance = "in your config.json"
+    try:
+        with open(os.path.join(profile_root(), "config.json"), encoding="utf-8") as fh:
+            cfg_provenance = config_keys.describe(json.load(fh), key)[1]
+    except (OSError, ValueError):
+        cfg_provenance = "default — not in your file"
+    other = [v for v in config_keys.MAIL_CONNECTOR_VALUES if v != selected][0]
+    lines = ["  Mail connector  : %s (%s)" % (selected, cfg_provenance),
+             "                    jobsearch uses ONLY this connector; the other one's mail tools are "
+             "blocked.",
+             '                    To switch to %s, set "%s" to "%s" in config.json.'
+             % (other, key, other)]
+    if selected != mail_client.GMAIL_MULTI:
+        lines.append("                    The mailbox list below is used by gmail-multi only — the "
+                     "daily sweeps skip while you use %s." % selected)
+    return lines, True
+
+
 def status():
     data = _load()
     boxes = data.get("mailboxes", []) or []
@@ -84,6 +114,9 @@ def status():
     print("  Platform        : %s" % platform.system())
     print("  Credential store: %s" % store_name)
     print("  Service name    : %s" % cred.SERVICE)
+    connector_text, connector_ok = connector_lines()
+    for line in connector_text:
+        print(line)
     print()
 
     if not boxes:
@@ -122,7 +155,7 @@ def status():
         print("     from no mail. Never read that as 'nothing arrived'.")
     else:
         print("  All %d mailbox(es) configured and reachable." % len(boxes))
-    return 1 if problems else 0
+    return 1 if (problems or not connector_ok) else 0
 
 
 def add(address):

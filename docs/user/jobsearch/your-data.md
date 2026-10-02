@@ -1044,6 +1044,35 @@ Both are written in full as `communications.chase_after_days` and
 `communications.no_response_after_days`. `profile.py --options` prints each with its current
 value and whether it came from your file or the default.
 
+## Mail connector — `config.json.communications.mail_connector`
+
+Which Gmail connector the job search reads mail through. The search uses **one**, the one you
+pick, and nothing else.
+
+| key | what it is |
+|---|---|
+| `mail_connector` | `gmail-multi` or `claude-gmail`. **`gmail-multi`** (the default) is the plugin that installs alongside this one and searches every address you listed with `/jobsearch:mailboxes`. **`claude-gmail`** is the Gmail connector managed in claude.ai, which searches the one account you signed in to there |
+
+Written in full as `communications.mail_connector`. A profile that never set it reads `gmail-multi`, exactly what
+it did before this key existed, so nothing needed changing when it arrived.
+
+- **An unknown value is refused, not guessed at.** Set it to anything else (a typo, a connector the
+  plugin does not support) and the run stops with a message naming the two valid values. It is
+  never quietly read as the default, because that would send your search through a connector you
+  did not choose.
+- **The other connector is switched off for the search.** With one selected, the plugin blocks the
+  other one's mail tools and tells you which is selected and how to change it. This is enforced, not
+  a suggestion.
+- **With `claude-gmail`, the scheduled mail sweeps skip.** The checks that read your mail directly
+  (the alert sweep, the meeting check, the ATS and follow-up sweeps) work only through
+  `gmail-multi`. Under `claude-gmail` each one says in one line that it skipped and why, and the
+  run summary reports it as a gap, not as "nothing new".
+- **Every run says which connector it used.**
+- **One limit.** The claude.ai connector is recognised by its tool names. A different connector that
+  happens to expose a tool with the same name is treated the same way.
+
+`/jobsearch:mailboxes` shows the current selection.
+
 ## Search posture — `config.json.search`
 
 How much the plugin is allowed to do on its own — your cost tier. See *Cost* in

@@ -123,7 +123,7 @@ hours, costing that morning's run outright.
 ~/.claude/jobsearch/run channels_due.py             # which sources are due
 ~/.claude/jobsearch/run check_rule_homes.py         # archived lessons still have a home
 ~/.claude/jobsearch/run check_dashboard_fresh.py    # dashboard behind its sources, or PUBLISHED view behind the repo (dev #133)
-~/.claude/jobsearch/run check_engine_purity.py      # engine files carry no profile data
+~/.claude/jobsearch/run check_engine_purity.py --advisory --budget-s 60   # engine files carry no profile data (advisory: a scan cut short at 60 s says so and exits 0, dev #526)
 ~/.claude/jobsearch/run check_pointers.py           # every pointer resolves to real data
 ~/.claude/jobsearch/run knowledge.py                # pipeline/kb/prep joins resolve; promotion debt; kb files due
 ~/.claude/jobsearch/run archive_preps.py            # preps for calls already held move to archive/call-preps/ (a script, never a step to remember; takes the write lock itself for the seconds of the move — a refusal moves nothing and the next run retries)
@@ -207,6 +207,16 @@ worker that can). Report the split in the summary: "N probed directly, M queued 
 keychain-holding session."
 
 ## 3. GMAIL — two passes, and the order matters
+
+**⭐ ONE MAIL CONNECTOR, the selected one — and the run says which it used.** `config.json`'s
+`communications.mail_connector` is `gmail-multi` (the default) or `claude-gmail` (the claude.ai-managed Gmail
+connector); `~/.claude/jobsearch/run mailboxes.py --status` prints it. Call **only** the selected
+connector's tools, here and in every `inbox-scan` dispatch. A hook denies the other connector's
+mail tools and names the selection: a denial is reported, never routed around. Under
+`claude-gmail` the deterministic sweeps in this skill (`alert_sweep.py`, `meeting_check.py`,
+`reconcile.py --ats`, `check_followups.py`) skip with one line saying why, and **a skipped sweep is a
+gap in the run summary, never a clean zero**. The RUN SUMMARY (§13) names the connector the run
+used.
 
 **⭐ ATS status mail (rejections, receipts, interview invites) is NOT read here or by
 `inbox-scan` — it is §7a′'s `reconcile.py --ats`, in the write phase**, because resolving it
@@ -657,7 +667,9 @@ it regardless — that convergence is the design, so never silence it.
 
 ## 13. SUMMARY
 
-Top 3 focus areas · new items with comp/fit assessment · status changes · proposed drafts.
+Top 3 focus areas · new items with comp/fit assessment · status changes · proposed drafts ·
+**the mail connector this run used** (`gmail-multi` or `claude-gmail`), with any sweep that skipped
+because of it.
 **NEVER send messages, emails or applications — drafts are for approval only.** If nothing is new,
 one line, but still do UPDATE STATE and DASHBOARD.
 

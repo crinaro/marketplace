@@ -1,6 +1,6 @@
 ---
 argument-hint: "[add <address> | check]"
-description: Configure which mail accounts the job search reads, and check that each one can actually be searched.
+description: Configure which mail accounts the job search reads, check that each one can actually be searched, and show or switch which Gmail connector the search uses (gmail-multi or the claude.ai Gmail connector).
 ---
 
 # Mailboxes
@@ -17,6 +17,32 @@ Add or remove an address (`$ARGUMENTS` may name one):
 ~/.claude/jobsearch/run mailboxes.py --add you@work.com
 ~/.claude/jobsearch/run mailboxes.py --remove old@example.com
 ```
+
+## Which connector the search uses — show it, and how to switch
+
+The search reads mail through **one** Gmail connector, chosen by `config.json`'s `communications.mail_connector`:
+
+| value | what it means |
+|---|---|
+| `gmail-multi` (the default) | the `gmail-multi` plugin's tools, over the addresses listed above |
+| `claude-gmail` | the claude.ai-managed Gmail connector: one account, the one you signed in to claude.ai with |
+
+`--status` prints the current selection first, before the accounts. **Relay it in plain words**:
+"jobsearch is reading mail through <connector>". A profile that never set the key reads
+`gmail-multi`, which is how every profile behaved before the key existed.
+
+To switch, the user sets `communications.mail_connector` in `config.json` to the other value. **Do not edit
+`config.json` for them unprompted**; say which value they are asking for and make the change only
+when they say so. Any other value is refused loudly, never read as the default, and the message
+names the two valid ones.
+
+⚠️ **Choosing a connector turns the other one off for the search.** A guard denies the unselected
+connector's mail tools and says which connector is selected and how to change it, so a call that
+reaches for the wrong one fails with an explanation rather than quietly reading a mailbox the user
+did not pick. The scheduled sweeps that read mail directly (`alert_sweep.py`, `meeting_check.py`,
+`reconcile.py --ats`, `check_followups.py`) run only under `gmail-multi`; under `claude-gmail` each one
+skips with one line saying so. The addresses and app passwords on this page matter for
+`gmail-multi` only.
 
 ## What to tell the user
 

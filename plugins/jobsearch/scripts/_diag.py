@@ -73,7 +73,17 @@ def _default_log():
         if here not in sys.path:
             sys.path.insert(0, here)
         import _root
-        root = _root.state_root()
+        # ⭐⭐ dev #618 — NEVER a path derived from an UNBOUND cwd. `state_root()` already returns
+        # the machine fallback for an unbound resolution (it checks `is_unbound()` itself), but
+        # this is the one module that resolves ONCE AT IMPORT and every hook imports it at the
+        # same instant as `journal.py --fired` — before #618 the cwd had often just grown a
+        # `data/` marker by the time this line ran, so the log landed in `<cwd>/.jobsearch/`
+        # (the incident's `diagnostics.log`). State the rule here too so a future edit to
+        # `state_root()` cannot silently reopen it: an unbound session logs to the machine
+        # fallback (installed copy) or the checkout scratch dir, which are the two places this
+        # module already treats as "not any profile" — never the directory the session is in.
+        unbound = _root.is_unbound(_root.profile_root())
+        root = _root._HOME_STATE if unbound else _root.state_root()
         if root == _root._HOME_STATE and not _root.is_installed_engine(_root.engine_root()):
             root = _root.checkout_scratch_dir("state")
         return os.path.join(root, "diagnostics.log")

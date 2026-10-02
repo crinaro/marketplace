@@ -41,6 +41,16 @@ file's `include` list rather than the two copying from each other (ADR-004). So 
 divergence in `configured_accounts()` between this file and the connector is a
 contract, not drift.
 
+⭐ THIS LIBRARY RUNS ONLY WHEN `gmail-multi` IS THE SELECTED MAIL CONNECTOR (dev #161, dev #524)
+-----------------------------------------------------------------------------------------------
+`config.json` `communications.mail_connector` (config_keys.py) is `gmail-multi` (the default) or
+`claude-gmail`. This library IS gmail-multi's mailboxes, read directly, so under `claude-gmail` it
+must not read mail: `sweep_accounts()` — the one site every deterministic sweep goes through —
+prints ONE loud line saying why and returns without calling a single search, and `Mailbox`
+refuses to open a connection. A sweep never skips silently, and never writes a `swept` row for a
+mailbox it did not look at (that row would be a false coverage claim). Every sweep that does run
+prints which connector it used. An unknown selection raises `ValueError` — refused, never coerced.
+
 CREDENTIALS
 -----------
 App passwords live in the OS credential store (Keychain / PasswordVault /
@@ -127,6 +137,51 @@ def configured_accounts():
     if raw:
         return [a.strip() for a in raw.split(",") if a.strip()]
     return _accounts_from_user_json() or list(FALLBACK_ACCOUNTS)
+
+
+# --------------------------------------------------------------------------
+# ⭐ THE SELECTED MAIL CONNECTOR (dev #161, dev #524)
+# --------------------------------------------------------------------------
+
+GMAIL_MULTI = "gmail-multi"
+
+
+def selected_connector(root=None):
+    """The mail connector this profile selected: `gmail-multi` or `claude-gmail` — read from
+    `<profile root>/config.json` EVERY CALL (never cached, for the reason `configured_accounts()`
+    states). An absent file or key is the default, `gmail-multi`: every profile that predates the
+    key keeps today's behaviour. ⛔ A config.json that exists but cannot be read, or whose value
+    is not one of the two connectors, raises `ValueError` — refused loudly, never coerced to the
+    default, because a selection this module cannot read is not a selection of gmail-multi."""
+    import config_keys                       # lazy: config_keys -> check_followups -> this module
+    root = root or _profile_root()
+    path = os.path.join(root, "config.json")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except FileNotFoundError:
+        cfg = {}
+    except (OSError, ValueError) as exc:
+        raise ValueError("config.json at %s could not be read (%s: %s), so the mail connector "
+                         "selection (%s) cannot be determined — fix the file."
+                         % (path, type(exc).__name__, exc, config_keys.MAIL_CONNECTOR))
+    if not isinstance(cfg, dict):
+        raise ValueError("config.json at %s is not a JSON object, so the mail connector "
+                         "selection (%s) cannot be determined." % (path, config_keys.MAIL_CONNECTOR))
+    return config_keys.resolve_mail_connector(cfg)
+
+
+def connector_line(connector):
+    """The ONE line a sweep prints so its report states which connector it used (dev #161)."""
+    return "Mail connector: %s (selected in config.json communications.mail_connector)" % connector
+
+
+def skip_line(connector):
+    """The ONE loud line a sweep prints, instead of running, when `connector` is not gmail-multi."""
+    return ("!! MAIL SWEEP SKIPPED — your mail connector is '%s', and this sweep reads mail only "
+            "through gmail-multi. No mailbox was opened and nothing was recorded as covered. "
+            "To run it, set communications.mail_connector to \"gmail-multi\" in config.json "
+            "(/jobsearch:mailboxes shows the selection)." % connector)
 
 
 # --------------------------------------------------------------------------
@@ -236,6 +291,14 @@ def sweep_accounts(search_one, since_days, root=None, by="", accounts=None):
     `!! INCOMPLETE COVERAGE` banner logic needs no other change.
     """
     root = root or _profile_root()
+    # ⭐ dev #161 — ADHERE to the selected connector. Under anything but gmail-multi this sweep
+    # does not run: one loud line, no search_one call, and NO `swept` row (a row would claim a
+    # mailbox was covered that nobody looked at). Under gmail-multi it states the connector it used.
+    connector = selected_connector(root)
+    if connector != GMAIL_MULTI:
+        print(skip_line(connector))
+        return [], []
+    print(connector_line(connector))
     now = _dt.datetime.now().replace(microsecond=0)
     frm = (now - _dt.timedelta(days=since_days)).isoformat()
     through = now.isoformat()
@@ -260,6 +323,12 @@ def sweep_accounts(search_one, since_days, root=None, by="", accounts=None):
 # One exception type across the plugin: callers that catch CredentialError keep working whether
 # the store is Keychain, PasswordVault or secret-service.
 CredentialError = _cred.CredentialError
+
+
+class ConnectorNotSelected(CredentialError):
+    """A mailbox open was requested while the selected mail connector is not gmail-multi (dev
+    #161). A CredentialError subclass on purpose: every existing caller already turns one into a
+    loud INCOMPLETE COVERAGE line, never into a silent empty result."""
 
 
 def get_app_password(account):
@@ -342,6 +411,12 @@ class Mailbox(object):
         self._special_use = None  # resolved lazily, once per connection (dev #311)
 
     def __enter__(self):
+        connector = selected_connector()
+        if connector != GMAIL_MULTI:
+            raise ConnectorNotSelected(
+                "your mail connector is '%s', so this library does not open mailbox %s (it reads "
+                "mail only through gmail-multi). Set communications.mail_connector to "
+                "\"gmail-multi\" in config.json to use it." % (connector, self.account))
         pw = get_app_password(self.account)
         try:
             self.conn = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
