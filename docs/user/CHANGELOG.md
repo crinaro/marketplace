@@ -2,10 +2,16 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each verified against its release tag on the published remote; older releases after their push, the newest one by the publish that pushed it, so the section for the version you installed is in the file that came with it. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.60.0
+Nothing for you to run. Helper agents now report back briefly, with long detail saved to a file instead of flooding the conversation. When the desktop app's scheduling tools are missing, the coordinator and setup commands now skip those steps and say so, instead of guessing.
+Also new: a weekly check that flags when your notes or pending decisions state a figure, search scope or open question that disagrees with your saved settings. It only reports; it never edits your documents. The handoff letter now shows decisions and opportunity stages straight from your records, so it cannot repeat an out-of-date status.
+
 ## jobsearch 0.59.0
 Nothing for you to run. You can now choose which Gmail connector jobsearch uses: gmail-multi or the Gmail connector managed by claude.ai. It uses only the one you pick and says which one in its reports. If you choose nothing, it keeps using gmail-multi, as before.
 Also fixed: starting Claude in a folder that is not your job-search profile no longer leaves data/ or .jobsearch/ files behind in that folder. Before this, opening a session in any other project, including a checkout of this plugin's own source, could drop those files into it. Sessions in your profile behave exactly as before.
 Two more fixes, and still nothing for you to run. The inbox now shows every waiting item it counts: an item of a kind it has no section for appears under Other instead of being counted but hidden. The daily run's file-hygiene check now stops on time and says so, instead of running on with no output.
+- [#123](https://github.com/crinaro/marketplace/issues/123) — Advisory hygiene check can hang indefinitely with no time bound
+- [#124](https://github.com/crinaro/marketplace/issues/124) — Inbox default view's pending count disagrees with what it renders
 
 ## jobsearch 0.58.0
 jobsearch 0.58.0 has nothing for you to run. A new or edited record whose email is a placeholder (example.com, example.org and similar reserved addresses) is now refused, so a made-up address can no longer reach a draft or a send. Existing records are flagged, not refused. Six internal check scripts that nothing called were removed; this changes nothing you use. Several checks that could pass for the wrong reason were fixed, with no change to how the plugin behaves.

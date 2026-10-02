@@ -27,6 +27,12 @@ The tier declares a `cron`; the scheduler holds the one that actually fires. **C
 alone changes nothing about what you are billed.** Update the `search-daily` scheduled task's cron
 to the tier's value using `update_scheduled_task`.
 
+⚠️ **If `update_scheduled_task` is not available on this surface (anything other than the desktop
+app), SKIP this step and say so in one plain line** — for example: *"Skipped applying the tier to
+the schedule: it would have called `update_scheduled_task`, which needs the desktop app."* Do not
+fail, and never say the schedule was changed when it was not: the tier is saved in `config.json`
+but the cron that actually fires is unchanged until it is applied from the desktop app.
+
 ⚠️ **Never change a task's schedule from inside a run of that task** — it re-arms and can fire
 immediately.
 

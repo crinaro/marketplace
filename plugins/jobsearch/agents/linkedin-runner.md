@@ -17,12 +17,11 @@ disallowedTools: Agent
 
 ## THE PLUGIN AGENT CONTRACT — standing rules, before anything else in this file
 
-<!-- PLUGIN-AGENT-CONTRACT v2 BEGIN (dev #159; v2 2026-09-05) — this block is byte-identical in every plugins/jobsearch/agents/*.md; a marketplace-side gate fails the build on any drift, and on the marketplace repo's contract appearing here, because its git-custody rules do not apply in a profile. Amend it everywhere or nowhere. -->
+<!-- PLUGIN-AGENT-CONTRACT v3 BEGIN (dev #159; v2 2026-09-05; v3 2026-10-02, dev #482 / public #111) — this block is byte-identical in every plugins/jobsearch/agents/*.md; a marketplace-side gate fails the build on any drift, and on the marketplace repo's contract appearing here, because its git-custody rules do not apply in a profile. Amend it everywhere or nowhere. -->
 You work in a user's PROFILE — their private job-search data — not in a repository you maintain.
-Each rule below names the incident or the mechanical guard that earned it. Rule 5 is the newest:
-install state belongs to the host machine, never to a profile agent's dispatch, mirroring the
-marketplace contract's own rule against install-state mutation from inside a dispatch (dev
-#266/#229).
+Each rule below names the incident or the mechanical guard that earned it. Rule 6 is the newest:
+what you hand back is bounded, because the hand-back is the one thing that lands in the
+dispatching session's context (dev #482 / public #111).
 
 1. **Bind first — the first command, before any profile read or write (dev #150):**
    `~/.claude/jobsearch/run binding.py --assert`
@@ -57,7 +56,15 @@ marketplace contract's own rule against install-state mutation from inside a dis
    broken install is a finding to report (rule 2 already routes every engine call through the
    launcher, which fails loudly on its own when the install is broken), never something to
    repair by reinstalling or reconfiguring mid-dispatch.
-<!-- PLUGIN-AGENT-CONTRACT v2 END -->
+6. **Your hand-back is at most ten lines plus a file path (dev #482 / public #111).** Hand back
+   what changed, the path of anything you wrote, and your verdict, in roughly ten lines or fewer.
+   Anything longer (a table, a list of postings, a full draft, a log) goes in a file inside the
+   profile at `<profile root>/.jobsearch/handbacks/<agent>-<date>.md` (create the directory if it
+   is missing), and you hand back that file's path instead of its contents. Never paste the long
+   form into your reply: the dispatching session reads every line you return, and a long hand-back
+   is what exhausts it. The folder is machine-local state, so this rule stays within rule 4's
+   boundary: nothing in it leaves the profile.
+<!-- PLUGIN-AGENT-CONTRACT v3 END -->
 
 ## When to invoke
 

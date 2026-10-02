@@ -83,6 +83,7 @@ Run the weekly strategy review of the candidate's search. Read `CLAUDE.md` first
 ~/.claude/jobsearch/run check_followups.py            # silent threads
 ~/.claude/jobsearch/run check_action_claims.py        # a hand-authored ask the data already answered (#43)
 ~/.claude/jobsearch/run check_sections.py             # ask/commitment invariants (dev #93)
+~/.claude/jobsearch/run check_prose_drift.py          # REPORT ONLY: a floor, an open question or a search-scope premise in prose that disagrees with config.json (dev #495, #493; public #56, #78) — read its `checked N documents, M figures` line so a clean result is never an unrun one
 ~/.claude/jobsearch/run validate_data.py              # schema · enums · referential integrity
 ~/.claude/jobsearch/run resume_variants.py --check    # printed variant bullets trace to the presence/claims.md union (public #26)
 ~/.claude/jobsearch/run channels_due.py               # which sources are due
@@ -99,6 +100,12 @@ Run the weekly strategy review of the candidate's search. Read `CLAUDE.md` first
 ~/.claude/jobsearch/run compact.py --holding-lock     # retention — the last write of this window
 ~/.claude/jobsearch/run runlock.py --release          # public #68: close the window HERE, before the strategist dispatch — a decision loop is not a write and must never sit under an exclusive hold (ADR-031 stage B5 adds one)
 ```
+
+- **`check_prose_drift.py` reports; it never edits (dev #495/#493).** Each line it prints is a
+  question for the candidate at this review: the prose is stale (fix the prose), or the config key
+  is (the candidate decides; never change `config.json` yourself). A prose section that looks like
+  a duplicate can be the only surviving copy of a decision, so nothing is pruned on its say-so.
+  `NOT CHECKED:` means the check could not run; say so rather than reporting it clean.
 
 - **⭐ TWO NARROW WINDOWS, NOT ONE RUN-LONG HOLD (public #68).** The lock used to be taken as the
   third command and released only after the FINISH commit, holding it across every read-only

@@ -304,6 +304,8 @@ def main():
               "agrees with its own%s." % extra)
 
     print("\n  ⭐ NOW COMPARE WITH THE SCHEDULER — `list_scheduled_tasks`. FOUR STATES:")
+    print("     (If `list_scheduled_tasks` is not available on this surface, SKIP this comparison")
+    print("      and say so: it needs the desktop app. dev #487)")
     print("     lastRunAt newer than any FIRED      -> THE RUN NEVER STARTED. No session was")
     print("                                            created and nothing executed. (#7, #65)")
     print("     a FIRED with no START that follows  -> the SessionStart hook ran but the run's")

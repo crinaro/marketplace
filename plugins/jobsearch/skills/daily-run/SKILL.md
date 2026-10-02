@@ -503,7 +503,9 @@ applying?", "approve this outreach?" — carries `resolves_when` (`application`|
 `opp_id`: then `record.py`'s write that records the action resolves the ask in the same locked
 transaction, and no drift window exists (dev #133).** Then any newly confirmed meeting in
 `data/commitments.jsonl` (date verified from the
-.ics, never recall); rewrite `handoff.md` — the letter to the next session; append a `log.md`
+.ics, never recall); rewrite `handoff.md` — the letter to the next session — with its state taken
+from `~/.claude/jobsearch/run handoff_state.py`, embedded verbatim, and prose only for reasoning
+and next steps, pointing at record ids (coordinator skill § 6, dev #492); append a `log.md`
 entry. **All mutation belongs in this step and the four below — nothing after
 DASHBOARD may change tracked state.** Keep the window to COMMIT tight; it should be minutes.
 

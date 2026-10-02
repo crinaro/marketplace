@@ -21,6 +21,11 @@ fires, so it reports that as unverifiable rather than pretending. **You can clos
 `list_scheduled_tasks` and compare the live `cronExpression` for `search-daily` against the tier's
 declared cron.
 
+⚠️ **If `list_scheduled_tasks` is not available on this surface (anything other than the desktop
+app), SKIP this check and say so in one plain line** — for example: *"Skipped the live-cron check:
+it would have called `list_scheduled_tasks`, which needs the desktop app."* Do not fail the report,
+and never state that the cron matches or differs when you did not look.
+
 If they disagree, that is the finding that costs real money — say which one is winning, and offer
 `/jobsearch:tier` to reconcile them.
 

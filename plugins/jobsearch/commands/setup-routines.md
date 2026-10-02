@@ -24,7 +24,11 @@ Two routines, and only two:
 | `search-daily` | the tier's cron | mailbox + LinkedIn sweep, sourcing, state updates, dashboard |
 | `search-strategy-weekly` | Sunday evening | channel yield, cadence, config proposals |
 
-Use `create_scheduled_task` / `update_scheduled_task`. **Each prompt must be thin** — it declares
+Use `create_scheduled_task` / `update_scheduled_task`. ⚠️ **If these are not available on this
+surface (anything other than the desktop app), SKIP this step and say so in one plain line** — for
+example: *"Skipped creating the routines: it would have called `create_scheduled_task`, which needs
+the desktop app."* Do not fail, and never claim a routine was created or repaired when it was not.
+**Each prompt must be thin** — it declares
 where the engine is and tells the run to read its instructions from there:
 
     ENGINE=<the plugin directory>

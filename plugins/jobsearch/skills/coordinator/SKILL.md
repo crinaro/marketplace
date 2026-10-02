@@ -113,6 +113,13 @@ issue**: route it to `engine-reporter`, do not work around it by hand.
 
 Then call `list_scheduled_tasks` and **compare the two**:
 
+⚠️ **If `list_scheduled_tasks` is not available on this surface (anything other than the desktop
+app), SKIP this comparison and say so in one plain line** — for example: *"Skipped the scheduler
+comparison: it would have called `list_scheduled_tasks`, which needs the desktop app."* Do not
+fail the step, and **never report a scheduler/journal agreement or disagreement you did not
+actually check** — the script half above is still valid on its own; say that the scheduler half
+was not compared.
+
 > **A `lastRunAt` newer than the newest footprint means the run left no trace — but it does NOT
 > tell you which of two things happened, and the difference decides what to do.**
 
@@ -163,6 +170,12 @@ log at `.jobsearch/diagnostics.log` inside the profile (dev #151; profile-less s
 no personal data, so it can be pasted into an issue as-is.
 
 ## 2. Claim the notification subscription — ⚠️ ONLY THIS SESSION CAN · ONCE AT STARTUP
+
+⚠️ **If `update_scheduled_task` is not available on this surface (anything other than the desktop
+app), SKIP this step and say so in one plain line** — for example: *"Skipped the notification
+subscription: it would have called `update_scheduled_task`, which needs the desktop app."* Do not
+fail the step, and **never claim a subscription you did not make**; the queue (step 3) is the
+reliable channel either way.
 
 ```
 update_scheduled_task(taskId="search-daily", notifyOnCompletion=True)
@@ -321,6 +334,10 @@ url file's absence means two different things, and only one of them is "create":
   Do NOT create a new artifact** — that abandons the original bookmark (if it still resolves)
   serving its last snapshot forever while nothing on the profile points at it any more.
 
+⭐ **Whenever a step publishes something (an artifact or a page), put its URL in your reply** — the
+candidate reads your reply, never `views/dashboard_artifact_url.txt`, so a URL that lives only in
+that file has not been delivered.
+
 Then **grep the OUTPUT** (`views/dashboard_artifact.html` — sendable bodies render on the one
 page) for a distinctive phrase from whatever you just added.
 
@@ -380,6 +397,33 @@ at 10:51: five rounds of outreach the candidate could not see.
 
 **Run it after ANY write — a draft, a decision, a status change — not only at the end of the day.**
 A session can go quiet without warning, and unpublished work is invisible work.
+
+## 6. HAND OFF — ⭐ the letter's STATE comes from the records, never from your memory (dev #492 / public #81)
+
+When you write or rewrite `handoff.md` (the letter to the next session), render its state:
+
+```bash
+~/.claude/jobsearch/run handoff_state.py
+```
+
+It prints a **State (from records)** block between `BEGIN`/`END state-from-records` markers: open
+decisions with their current status, decisions resolved in the last two weeks and how, and each
+live opportunity's stage, recorded relationship path and latest record date.
+
+- **Embed the block verbatim.** Do not retype, trim, reword or "fix" it. If a line looks wrong, the
+  record is wrong: correct the record (inside `runlock.py --run`), then render again.
+- **Always re-render and discard any block the previous letter held.** Never carry one over. A
+  superseded decision or a corrected relationship path survives in a letter only by being copied
+  forward, and this is the step that stops the copying.
+- **Write prose only for what the stores cannot hold:** your reasoning, and the next steps. Point
+  at record ids (`ask-…`, an opportunity id) instead of restating what they say.
+- **If it exits non-zero it printed no block** (`NOT RENDERED`: no profile bound, or a store could
+  not be read). Do not fill the state in from memory. Say so in the letter in one line and report
+  the failure.
+
+**Why:** the reporter's letter called a decision open after the action had been recorded, and
+repeated a relationship path the records had corrected hours earlier. A letter is read as current
+by the next session; a second copy of state in prose is a copy that drifts.
 
 ## Standing rules for the whole session
 
