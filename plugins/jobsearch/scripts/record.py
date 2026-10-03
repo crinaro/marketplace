@@ -1652,6 +1652,10 @@ def main():
     ap.add_argument("--force", action="store_true",
                     help="Write an unknown field anyway. Almost never right — an unknown field "
                          "is invisible to every query written against the real one.")
+    ap.add_argument("--req-id", dest="req_id", default=None,
+                    help="create (opportunities): the ATS requisition id the sourced posting "
+                         "carries. Used ONLY to match an already-passed role (dev #670); "
+                         "never stored.")
     ap.add_argument("--fields", action="store_true",
                     help="Print what this store accepts, so a caller never has to guess.")
     args = ap.parse_args()
@@ -1875,6 +1879,26 @@ def main():
             print("  A record missing its required fields is one no query can rely on. "
                   "(`fields` prints what this store accepts.)")
             return 1
+        # ⭐ dev #670 / public #136 — a role you already PASSED on does not come back as a fresh
+        # lead because the sourcing run gave it a different id. The match is pipeline_index's
+        # one definition (same company_id + normalized title, or identical jd_url, or identical
+        # ATS requisition id) against its one exclusion list. The answer is OUTPUT, never a new
+        # stored field: nothing is written, and the line names the existing row. A different
+        # opening that genuinely reuses the title takes --force; reopening the old row is
+        # `set <existing-id> ...`, not a duplicate.
+        if args.file == "opportunities" and not args.force:
+            import pipeline_index as _pidx
+            _hit = _pidx.find_excluded_match(
+                rows, company_id=new_row.get("company_id"), title=new_row.get("title"),
+                jd_url=new_row.get("jd_url"), req_id=args.req_id,
+                applications=_load_or_empty("applications"))
+            if _hit:
+                print("⛔ %s" % _pidx.describe_match(*_hit))
+                print("  %r was NOT created: a role you already passed on is not a new "
+                      "decision. To bring the old one back, `set` its verdict/status; if this "
+                      "is a genuinely different opening, create it again with --force."
+                      % args.rid)
+                return 1
         desc = "create record (%d field(s): %s)" % (len(new_row), ", ".join(sorted(new_row)))
 
         def apply(r):        # unused for create; the lock section appends new_row instead

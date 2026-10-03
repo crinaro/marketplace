@@ -20,6 +20,9 @@ Usage:
     python3 scripts/pipeline_index.py --excluded     # ONLY the exclusion list
     python3 scripts/pipeline_index.py --company acme # filter by company id substring
     python3 scripts/pipeline_index.py --contacts     # include contact names
+    python3 scripts/pipeline_index.py --match --company <company_id> --title "Sr. Eng Manager"
+                                                     # is this sourced role an already-passed one
+                                                     # under a different id? (also --jd-url / --req-id)
 
 THE EXCLUSION LIST is `verdict: pass` OR `status: passed`. That definition lives here and in
 `docs/schema.md`; agents should call this script rather than re-deriving it, because an agent
@@ -31,6 +34,14 @@ was made, so a NEW sighting of an expired role is a repost and must surface as a
 not be auto-dropped as "already ruled out". Expired rows are hidden from the default (active)
 view — they are not live work — and counted separately in the footer.
 
+⭐ A PASSED ROLE STAYS PASSED UNDER A NEW ID (dev #670 / public #136). A role re-sourced with a
+different id or slug is the SAME role. `find_excluded_match()` below is the one definition of
+"is this sourced role an excluded one?" — the same `company_id` plus a normalized title
+(`normalize_title`), or an identical `jd_url`, or an identical ATS requisition id. `record.py
+create` calls it before it writes an opportunity row, and `--match` here answers it for a
+caller that has no row yet. Do not re-derive it elsewhere: a second copy of the normalization
+table is how two paths come to disagree about which roles are the same.
+
 Python 3.9+. Standard library only.
 """
 
@@ -38,6 +49,7 @@ import argparse
 import collections
 import json
 import os
+import re
 import sys
 
 import os, sys as _sys
@@ -65,6 +77,78 @@ def is_excluded(o):
     return o.get("verdict") == "pass" or o.get("status") == "passed"
 
 
+# dev #670 — job-title abbreviations, expanded to full words so "Sr. Eng Manager" and "Senior
+# Engineering Manager" compare equal. Deliberately short and fixed: the O*NET alternate-titles
+# data is a whole taxonomy (a dependency decision); this covers the abbreviations a posting
+# title actually shortens. An ambiguous one ("dev": developer or development) is left OUT —
+# a wrong expansion would merge two genuinely different roles, which costs a missed lead.
+TITLE_ABBREVIATIONS = {
+    "sr": "senior", "jr": "junior", "eng": "engineering", "engr": "engineer",
+    "mgr": "manager", "mngr": "manager", "dir": "director",
+    "vp": "vice president", "svp": "senior vice president",
+    "evp": "executive vice president", "avp": "assistant vice president",
+    "asst": "assistant", "assoc": "associate", "ops": "operations", "mktg": "marketing",
+    "&": "and",
+}
+
+
+def normalize_title(title):
+    """casefold, punctuation to spaces, abbreviations expanded, whitespace collapsed.
+
+    'Sr. Eng Manager' and 'Senior Engineering Manager' both give 'senior engineering manager'.
+    Returns '' for a missing title, and an empty result NEVER matches anything (see
+    find_excluded_match) — a blank title is not evidence two roles are the same."""
+    t = str(title or "").casefold().replace("&", " & ")
+    words = []
+    for tok in re.split(r"[^\w&]+", t):
+        if tok:
+            words.extend(TITLE_ABBREVIATIONS.get(tok, tok).split())
+    return " ".join(words)
+
+
+def find_excluded_match(opps, company_id=None, title=None, jd_url=None, req_id=None,
+                        applications=None):
+    """The excluded row a sourced role duplicates, as `(row, basis)`, or None.
+
+    A match is any of, strongest first: an identical non-empty `jd_url`; an identical ATS
+    requisition id (the excluded opportunity's own `req_id`, read from `applications`, where
+    that value lives); the same non-empty `company_id` plus an equal NON-EMPTY normalized
+    title. Only rows `is_excluded` counts — an expired or active row is never a match
+    (module docstring: a repost of an expired role must surface). `basis` names which test hit,
+    so the caller can say why. Pure: it reads only what it is handed.
+    """
+    reqs = collections.defaultdict(set)
+    for a in applications or []:
+        if a.get("opp_id") and a.get("req_id"):
+            reqs[a["opp_id"]].add(str(a["req_id"]).strip().casefold())
+    want_url = str(jd_url or "").strip()
+    want_req = str(req_id or "").strip().casefold()
+    want_title = normalize_title(title)
+    excluded = [o for o in opps if is_excluded(o)]
+    if want_url:
+        for o in excluded:
+            if str(o.get("jd_url") or "").strip() == want_url:
+                return o, "jd_url"
+    if want_req:
+        for o in excluded:
+            if want_req in reqs.get(o.get("id"), ()):
+                return o, "req_id"
+    if company_id and want_title:
+        for o in excluded:
+            if o.get("company_id") == company_id and normalize_title(o.get("title")) == want_title:
+                return o, "company + title"
+    return None
+
+
+def describe_match(row, basis):
+    """One line naming the existing row — the 'previously passed, pointing at the existing row'
+    report. Never a stored field: it is output only (dev #670)."""
+    return ("PREVIOUSLY PASSED — matches existing opportunity %r (company %s, title %r, "
+            "status %s, verdict %s) on %s."
+            % (row.get("id"), row.get("company_id") or "?", row.get("title") or "?",
+               row.get("status") or "?", row.get("verdict") or "?", basis))
+
+
 def is_expired(o):
     """Terminal without a decision: the posting vanished before the candidate ruled on it."""
     return o.get("status") == "expired"
@@ -76,6 +160,13 @@ def main():
     ap.add_argument("--excluded", action="store_true", help="Show ONLY the exclusion list.")
     ap.add_argument("--company", metavar="SUBSTR", help="Filter by company_id substring.")
     ap.add_argument("--contacts", action="store_true", help="Append contact names.")
+    ap.add_argument("--match", action="store_true",
+                    help="Is a sourced role (--company <company_id> --title, and/or --jd-url, "
+                         "--req-id) an already-passed one under a different id? dev #670.")
+    ap.add_argument("--title", metavar="TITLE", help="With --match: the sourced role's title.")
+    ap.add_argument("--jd-url", dest="jd_url", metavar="URL", help="With --match.")
+    ap.add_argument("--req-id", dest="req_id", metavar="ID",
+                    help="With --match: the ATS requisition id, when the posting carries one.")
     ap.add_argument("--person", metavar="NAME",
                     help="Everything known about one person, across every opportunity.")
     args = ap.parse_args()
@@ -86,6 +177,19 @@ def main():
     import touches as _touches                  # ADR-031 B3 — o["_touches"], never nested
     _touches.enrich_opportunities(ROOT, opps)
     companies = {c["id"]: c.get("name", c["id"]) for c in load("companies.jsonl")}
+
+    if args.match:
+        # dev #670 / public #136 — the exclusion list asked about ONE sourced role, not listed.
+        # A query: rc 0 either way, the first line is the answer.
+        if not (args.jd_url or args.req_id or (args.company and args.title)):
+            print("--match needs --company <company_id> with --title, or --jd-url, or --req-id.")
+            return 2
+        hit = find_excluded_match(opps, company_id=args.company, title=args.title,
+                                  jd_url=args.jd_url, req_id=args.req_id,
+                                  applications=load("applications.jsonl"))
+        print(describe_match(*hit) if hit else
+              "NOT EXCLUDED — no already-passed opportunity matches; this role is new.")
+        return 0
 
     if args.person:
         # "What is the whole history with this person?" — the question that was

@@ -502,6 +502,32 @@ class Mailbox(object):
 # Message helpers
 # --------------------------------------------------------------------------
 
+def header_date(msg):
+    """The message's own `Date:` header as an aware UTC datetime, or None when the header is
+    absent or unreadable (dev #671 / public #135). RFC 5322 section 3.6.1: `Date:` is the time
+    the author finished the message -- a property of the message, never of when someone looked
+    at it. `parsedate_to_datetime` yields a NAIVE value for a `-0000` zone and an aware one for
+    any other offset (and raises TypeError on 3.9, ValueError on 3.10+, for garbage), so every
+    value is normalised to UTC here and newest-of-several is always like compared with like.
+    None is returned, never a guess: the caller decides how loud to be."""
+    import email.utils
+    # Reading the header is inside the try too: under the modern email policy, Python 3.9 parses a
+    # `Date:` header on access and raises TypeError for garbage before parsedate_to_datetime is
+    # ever reached (CI caught this on PR #676; 3.10+ is lenient).
+    try:
+        raw = msg.get("Date") if msg is not None else None
+        if not raw:
+            return None
+        d = email.utils.parsedate_to_datetime(str(raw))
+    except (TypeError, ValueError, IndexError, AttributeError):
+        return None
+    if d is None:
+        return None
+    if d.tzinfo is None:
+        return d.replace(tzinfo=_dt.timezone.utc)
+    return d.astimezone(_dt.timezone.utc)
+
+
 def decode_header_value(raw):
     if not raw:
         return ""

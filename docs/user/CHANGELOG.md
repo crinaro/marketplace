@@ -2,9 +2,18 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each verified against its release tag on the published remote; older releases after their push, the newest one by the publish that pushed it, so the section for the version you installed is in the file that came with it. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.60.1
+Nothing for you to run. Scheduled runs that stopped starting after an update work again. The run helper is repaired automatically the next time Claude starts.
+Also fixed, with nothing for you to run. Drafts can no longer name a channel that does not exist. Mail checks now record the real date of a contact's latest message, not the day the check ran. A role you already passed on is no longer shown again as new under a slightly different title.
+
 ## jobsearch 0.60.0
 Nothing for you to run. Helper agents now report back briefly, with long detail saved to a file instead of flooding the conversation. When the desktop app's scheduling tools are missing, the coordinator and setup commands now skip those steps and say so, instead of guessing.
 Also new: a weekly check that flags when your notes or pending decisions state a figure, search scope or open question that disagrees with your saved settings. It only reports; it never edits your documents. The handoff letter now shows decisions and opportunity stages straight from your records, so it cannot repeat an out-of-date status.
+- [#56](https://github.com/crinaro/marketplace/issues/56) — nothing periodically checks whether a value restated in profile prose still agrees with its authoritative home, so a narrative document can contradict the configuration indefinitely and be read as fact
+- [#78](https://github.com/crinaro/marketplace/issues/78) — A premise that changes a recommendation can be carried as bare prose with no source or date, and propagate into open decisions and a drafted decline
+- [#81](https://github.com/crinaro/marketplace/issues/81) — Generated handoff prose can re-assert pipeline state that the structured records already corrected the same day
+- [#106](https://github.com/crinaro/marketplace/issues/106) — coordinator skill assumes the desktop-app surface and has no fallback when its tools are absent (CLI)
+- [#111](https://github.com/crinaro/marketplace/issues/111) — Dispatch context is rebuilt by the model on every agent call, and hand-backs are unbounded
 
 ## jobsearch 0.59.0
 Nothing for you to run. You can now choose which Gmail connector jobsearch uses: gmail-multi or the Gmail connector managed by claude.ai. It uses only the one you pick and says which one in its reports. If you choose nothing, it keeps using gmail-multi, as before.

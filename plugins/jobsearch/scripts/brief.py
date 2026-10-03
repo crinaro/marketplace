@@ -203,6 +203,25 @@ def resolve_to(root, raw):
     return person["id"], True, ""
 
 
+# ── dev #669 / public #137: a --channel must be a real channel id ─────────────────────────────────────────────
+
+def check_channel(root, channel_id):
+    """Refuse a `--channel` value that is not an `id` in the profile's `channels.jsonl`, loudly,
+    with the valid ids listed (dev #669 / public #137). A drafter passing a bare medium such as
+    `linkedin` used to get a ledger row citing a channel that does not exist. Called BEFORE
+    anything is written (the ledger row, the probe's journal rows, the inbox finding), so a
+    refusal leaves every store untouched. `None` (no `--channel`) is not checked."""
+    if not channel_id:
+        return
+    g = _graph.Graph(os.path.join(root, "data"))
+    if channel_id in g.by_id["channels"]:
+        return
+    valid = sorted(str(i) for i in g.by_id["channels"])
+    raise BriefError(
+        "--channel %r does not resolve to a channel id in channels.jsonl; valid channel ids: %s"
+        % (channel_id, ", ".join(valid) if valid else "(none -- this profile has no channels)"))
+
+
 # ── §4.3: what the probe searches ──────────────────────────────────────────────────────────────
 
 def address_set(root, person_id):
@@ -299,11 +318,16 @@ def _is_automated_sender(addr, configured_domains, derived_domains):
     return False
 
 
-def _filter_human_hits(mb, uids, configured_domains, derived_domains):
-    """§4.3 ask 2 — a hit only counts as evidence of a HUMAN thread when the message's own
+def _human_hits_dated(mb, uids, configured_domains, derived_domains):
+    """§4.3 ask 2 -- a hit only counts as evidence of a HUMAN thread when the message's own
     `From` address is not automated (`_is_automated_sender`, above). The query already
-    narrowed this to envelope matches (ask 1), so this is a bounded, per-hit header fetch —
-    never a mailbox-wide scan (D1 still holds)."""
+    narrowed this to envelope matches (ask 1), so this is a bounded, per-hit header fetch --
+    never a mailbox-wide scan (D1 still holds).
+
+    Returns `[(uid, datetime-or-None), ...]`: the same header fetch also reads each message's own
+    `Date:` (dev #671 / public #135, `mail_client.header_date`), so the caller can record when
+    the thread's newest message was SENT instead of when the probe ran. `None` = the header was
+    absent or unreadable; the caller must not substitute a clock for it."""
     import email.utils as _emailutils
     out = []
     for uid in uids:
@@ -313,8 +337,20 @@ def _filter_human_hits(mb, uids, configured_domains, derived_domains):
         addr = _emailutils.parseaddr(msg.get("From") or "")[1]
         if _is_automated_sender(addr, configured_domains, derived_domains):
             continue
-        out.append(uid)
+        out.append((uid, mail_client.header_date(msg)))
     return out
+
+
+def _filter_human_hits(mb, uids, configured_domains, derived_domains):
+    """The uids of `_human_hits_dated`, for a caller that does not need the dates."""
+    return [uid for uid, _d in _human_hits_dated(mb, uids, configured_domains, derived_domains)]
+
+
+def _newest_date(dated_hits):
+    """`YYYY-MM-DD` (UTC) of the newest message among `dated_hits`, or None when no hit carried
+    a readable `Date:` (dev #671). Never `now()`: a missing date is reported as unknown."""
+    dates = [d for _uid, d in dated_hits if d is not None]
+    return max(dates).date().isoformat() if dates else None
 
 
 # ── §4.2: the mailbox probe — a `probe` row with a `medium`, never a `swept` row (D1) ─────────
@@ -362,14 +398,14 @@ def run_email_probe(root, person_id, accounts=None):
                 addr_hits = []
                 for term in addresses:
                     addr_hits.extend(mb.search(_scoped_query(term)))
-                addr_hits = _filter_human_hits(mb, addr_hits, configured_domains,
-                                               derived_domains)
+                addr_hits = _human_hits_dated(mb, addr_hits, configured_domains,
+                                              derived_domains)
                 name_hits = []
                 if not addr_hits:
                     for term in terms:
                         name_hits.extend(mb.search(_scoped_query(term)))
-                    name_hits = _filter_human_hits(mb, name_hits, configured_domains,
-                                                   derived_domains)
+                    name_hits = _human_hits_dated(mb, name_hits, configured_domains,
+                                                  derived_domains)
         except mail_client.CredentialError:
             out.append({"account": account, "state": "unreachable",
                        "reason": "credential-missing"})
@@ -381,16 +417,19 @@ def run_email_probe(root, person_id, accounts=None):
             continue
         at = _journal.now_iso()
         thread = "contact:%s" % person_id
-        if addr_hits:
-            n = len(addr_hits)
-            _journal.record_probe(root, thread, thread, "thread:%s" % at[:10],
-                                  medium="email", mailbox=account, at=at)
-            out.append({"account": account, "state": "hit", "kind": "confirmed", "n": n})
-        elif name_hits:
-            n = len(name_hits)
-            _journal.record_probe(root, thread, thread, "thread:%s" % at[:10],
-                                  medium="email", mailbox=account, at=at)
-            out.append({"account": account, "state": "hit", "kind": "candidate", "n": n})
+        hits, kind = (addr_hits, "confirmed") if addr_hits else (name_hits, "candidate")
+        if hits:
+            # dev #671 / public #135 -- the result carries the date of the thread's NEWEST
+            # MESSAGE (its own `Date:` header), never the date this probe ran (`at`). When no
+            # hit has a readable `Date:` NO row is written (an absent row is the honest "not
+            # verified" state, §4.2) and the result says so; the probe's own clock is not a
+            # stand-in for a message date.
+            latest = _newest_date(hits)
+            if latest is not None:
+                _journal.record_probe(root, thread, thread, "thread:%s" % latest,
+                                      medium="email", mailbox=account, at=at)
+            out.append({"account": account, "state": "hit", "kind": kind, "n": len(hits),
+                       "latest": latest})
         else:
             _journal.record_probe(root, thread, thread, "empty",
                                   medium="email", mailbox=account, at=at)
@@ -631,7 +670,9 @@ def post_store_behind_mailbox(root, person_id, probe_results):
     if not hits:
         return None
     total = sum(r.get("n", 0) for r in hits)
-    latest = datetime.date.today().isoformat()
+    # dev #671 / public #135 -- the newest MESSAGE date the probe read, never today's date.
+    dated = [r["latest"] for r in hits if r.get("latest")]
+    latest = max(dated) if dated else "unknown"
     fid = "store-behind-mailbox:%s" % person_id
     existing = {r.get("id") for r in _inbox.replay(_inbox.load())}
     if fid in existing:
@@ -821,6 +862,7 @@ def print_brief(brief_id, b):
 # ── mainline commands ───────────────────────────────────────────────────────────────────────
 
 def cmd_for(root, person_token, opp_id, channel_id, i_checked, as_json, stamp=True):
+    check_channel(root, channel_id)       # before the probe, the attestation and the ledger row
     pid, ok, why = resolve_to(root, person_token)
     if not ok:
         raise BriefError(why)
@@ -846,6 +888,7 @@ def cmd_for(root, person_token, opp_id, channel_id, i_checked, as_json, stamp=Tr
 
 
 def cmd_json_for(root, person_token, opp_id, channel_id):
+    check_channel(root, channel_id)
     pid, ok, why = resolve_to(root, person_token)
     if not ok:
         raise BriefError(why)
