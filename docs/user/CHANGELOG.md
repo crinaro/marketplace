@@ -5,6 +5,10 @@ Generated from fixes confirmed shipped — public reports and internal fixes ali
 ## jobsearch 0.60.1
 Nothing for you to run. Scheduled runs that stopped starting after an update work again. The run helper is repaired automatically the next time Claude starts.
 Also fixed, with nothing for you to run. Drafts can no longer name a channel that does not exist. Mail checks now record the real date of a contact's latest message, not the day the check ran. A role you already passed on is no longer shown again as new under a slightly different title.
+- [#134](https://github.com/crinaro/marketplace/issues/134) — Generation-3 launcher resolves engine cache to the plugin-slug dir, not the install dir; 'run --where' finds no usable engine and every scheduled run dies
+- [#135](https://github.com/crinaro/marketplace/issues/135) — brief.py --probe records the probe's own date as the thread's latest-message date
+- [#136](https://github.com/crinaro/marketplace/issues/136) — Re-sourced roles evade the exclusion list when the new row gets a different id
+- [#137](https://github.com/crinaro/marketplace/issues/137) — brief.py accepts a channel_id that does not resolve, and the invalid value later fails validate_data.py
 
 ## jobsearch 0.60.0
 Nothing for you to run. Helper agents now report back briefly, with long detail saved to a file instead of flooding the conversation. When the desktop app's scheduling tools are missing, the coordinator and setup commands now skip those steps and say so, instead of guessing.
