@@ -24,7 +24,7 @@ from drifting the way the ATS keys once did), no I/O of its own.
 
 FIXED — engine constants C1 hardcodes rather than reading from config (declared here so a
 reader asking "is this configurable?" gets a documented "no, and here is why" instead of
-silence): the `--overlap` shingle length, and the four hex digits in a `brief:` id.
+silence): the `--overlap` shingle length, and the hex digits in a new `brief:` id.
 
 Python 3.9+. Standard library only.
 """
@@ -200,7 +200,7 @@ _METADATA = {
 # printed here so "is this configurable?" has a documented answer.
 FIXED = {
     "overlap_shingle_words": 8,     # brief.py --overlap's shared-run window, in words
-    "brief_id_hex_digits": 4,       # the random suffix on a `brief:<ts>-<hex>` id
+    "brief_id_hex_digits": 16,      # the random suffix on a new `brief:<ts>-<hex>` id (dev #680; old rows carry 4)
 }
 
 # ── search postures (dev #323) ──────────────────────────────────────────────────────────────

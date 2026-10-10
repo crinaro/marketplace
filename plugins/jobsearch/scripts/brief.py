@@ -73,8 +73,25 @@ import your_move as _ym
 
 LEDGER = os.path.join("data", "briefs.jsonl")
 
+# dev #687 / public #138 (owner decision R1, 2026-10-09) — the harvest command a
+# `store-behind-mailbox` finding tells the run to execute. BOTH halves go through the launcher:
+# the wrapper (`runlock.py --run`) AND the child (`reconcile.py --harvest`), because a bare
+# `python3 scripts/…` resolves no engine on an installed plugin (the cwd is the profile, not the
+# engine). The wrapper's token is what lets the child write under the lock it holds
+# (`reconcile._harvest_lock_decision`). A test EXECUTES this exact string end to end.
+HARVEST_HINT = ("~/.claude/jobsearch/run runlock.py --run harvest -- "
+                "~/.claude/jobsearch/run reconcile.py --harvest")
+
+# dev #680: the random suffix is `{4,}` hex, not `{4}`. Rows written before #680 carry 4 hex and
+# must keep resolving; new ids carry `ID_ENTROPY_BYTES * 2`. A reader that insisted on exactly 4
+# would call every new id "not a recognised id" in `verdict()`.
 BRIEF_ID_RE = re.compile(
-    r"^brief:(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})-([0-9a-f]{4})$")
+    r"^brief:(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2})-([0-9a-f]{4,})$")
+
+# dev #680: random bytes in a new brief id's suffix (`secrets.token_hex(n)` = 2n hex digits).
+# 2 bytes (16 bits) collided about 1.5 times in 10,000 five-brief batches within one second;
+# 8 bytes (64 bits) makes that negligible. A brief id needs uniqueness, not unguessability.
+ID_ENTROPY_BYTES = 8
 
 # The three readers this ledger has (§3.6) — `check_ledger_reads.py` enforces this allowlist
 # against every OTHER shipped script's source, by AST, so the set here and the set that gate
@@ -117,7 +134,15 @@ def _ledger_path(root):
 
 
 def append_ledger(root, rec):
+    """Append one ledger row. Refuses an `id` already in the ledger (dev #680): `ledger_row()`
+    returns the FIRST match, so a second row under the same id is invisible to its own author and
+    makes a valid draft resolve to another person's brief -- a false `brief-mismatch`. Entropy
+    makes that rare; this makes it impossible to store, which is the part a loud error can do."""
     p = _ledger_path(root)
+    rid = rec.get("id")
+    if rid is not None and ledger_row(root, rid) is not None:
+        raise BriefError("brief id %r is already in the ledger (%s); refusing to write a second "
+                         "row under it -- run brief.py again to draw a new id" % (rid, LEDGER))
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, sort_keys=True, ensure_ascii=False) + "\n")
@@ -157,14 +182,15 @@ def _engine_version():
 
 
 def new_brief_id(now=None):
-    """`brief:<offset-bearing ISO ts>-<4 hex>` (§3.3, D12). The offset comes from
+    """`brief:<offset-bearing ISO ts>-<16 hex>` (§3.3, D12; widened from 4 hex by dev #680, old
+    4-hex ids still resolve). The offset comes from
     `_localzone.offset_for_local` — a NAIVE local timestamp orders wrongly across a DST
     fall-back pair, which is exactly the ordering bug `computed_at` must never reproduce."""
     now = now or datetime.datetime.now()
     offset_hours = _localzone.offset_for_local(now)
     tz = datetime.timezone(datetime.timedelta(hours=offset_hours))
     ts = now.replace(microsecond=0, tzinfo=tz).isoformat()
-    return "brief:%s-%s" % (ts, secrets.token_hex(2))
+    return "brief:%s-%s" % (ts, secrets.token_hex(ID_ENTROPY_BYTES))
 
 
 # ── resolving `**To:**` / `**Brief:**` ─────────────────────────────────────────────────────────
@@ -220,6 +246,27 @@ def check_channel(root, channel_id):
     raise BriefError(
         "--channel %r does not resolve to a channel id in channels.jsonl; valid channel ids: %s"
         % (channel_id, ", ".join(valid) if valid else "(none -- this profile has no channels)"))
+
+
+# ── dev #677: an --opp must be a real opportunity id ──────────────────────────────────────────
+
+def check_opp(root, opp_id):
+    """Refuse an `--opp` value that is not an `id` in the profile's `opportunities.jsonl`,
+    loudly, with the valid ids listed (dev #677) -- the `--channel` rule of dev #669, applied to
+    its sibling flag. An unresolved `--opp` used to be written into the ledger row and only
+    `validate_data.py` noticed later. Called BEFORE anything is written (the ledger row, the
+    probe's journal rows, the inbox finding), so a refusal leaves every store untouched. `None`
+    (no `--opp`) is not checked."""
+    if not opp_id:
+        return
+    g = _graph.Graph(os.path.join(root, "data"))
+    if opp_id in g.by_id["opportunities"]:
+        return
+    valid = sorted(str(i) for i in g.by_id["opportunities"])
+    raise BriefError(
+        "--opp %r does not resolve to an opportunity id in opportunities.jsonl; valid "
+        "opportunity ids (the `id` field of opportunities.jsonl): %s"
+        % (opp_id, ", ".join(valid) if valid else "(none -- this profile has no opportunities)"))
 
 
 # ── §4.3: what the probe searches ──────────────────────────────────────────────────────────────
@@ -683,7 +730,7 @@ def post_store_behind_mailbox(root, person_id, probe_results):
         "id": fid, "kind": "store-behind-mailbox", "status": "pending",
         "summary": "store behind mailbox: contact:%s — %d thread(s), latest %s"
                    % (person_id, total, latest),
-        "detail": "accounts: %s; by: %s; reconcile.py --harvest is owed" % (accounts, by),
+        "detail": "accounts: %s; by: %s; harvest is owed: %s" % (accounts, by, HARVEST_HINT),
         "urgency": "normal", "found_at": _journal.now_iso(),
     }])
     return fid
@@ -863,6 +910,7 @@ def print_brief(brief_id, b):
 
 def cmd_for(root, person_token, opp_id, channel_id, i_checked, as_json, stamp=True):
     check_channel(root, channel_id)       # before the probe, the attestation and the ledger row
+    check_opp(root, opp_id)               # dev #677: same place, same reason
     pid, ok, why = resolve_to(root, person_token)
     if not ok:
         raise BriefError(why)
@@ -889,6 +937,7 @@ def cmd_for(root, person_token, opp_id, channel_id, i_checked, as_json, stamp=Tr
 
 def cmd_json_for(root, person_token, opp_id, channel_id):
     check_channel(root, channel_id)
+    check_opp(root, opp_id)
     pid, ok, why = resolve_to(root, person_token)
     if not ok:
         raise BriefError(why)

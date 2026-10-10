@@ -277,6 +277,27 @@ def lock_is_held():
     return r.returncode != 0
 
 
+def lock_held_by_wrapper():
+    """dev #687 / public #138 (owner decision R6, 2026-10-09) — True iff THIS process was started
+    under `runlock.py --run` AND that wrapper's lock is still the one on disk: the lock record
+    exists and its `holder` token equals this process's `CLAUDESEARCH_LOCK_HOLDER`. Stricter
+    than `lock_is_held()` on purpose: that answers "does anybody hold the lock", which is also
+    true while a FOREIGN writer holds it. A record without a `holder` (a `--take` hold) never
+    matches, and neither does an env token whose lock was since released or replaced.
+
+    Returns `(state, who)`: state is `"mine"` (the wrapper's own hold), `"foreign"` (a hold
+    this process cannot prove is its own run's) or `"free"` (no lock record). `who` names the
+    holder of a non-free state, for the refusal line."""
+    import runlock as _runlock
+    rec = _runlock.read()
+    if rec is None:
+        return "free", None
+    token = os.environ.get(_runlock.HOLDER_ENV)
+    if token and rec.get("holder") == token:
+        return "mine", rec.get("who")
+    return "foreign", rec.get("who")
+
+
 def release_lock():
     subprocess.run([sys.executable, LOCK, "--release"], capture_output=True)
 

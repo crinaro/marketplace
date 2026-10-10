@@ -223,14 +223,89 @@ def render_headline(recs, run_id, fp):
     return head
 
 
-def render_detail(recs, run_id, fp):
+def _geos(root):
+    """The geographies a wide re-scan must cover, from this profile's config (dev #489)."""
+    import json
+    try:
+        with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError):
+        cfg = {}
+    return _journal.jobsearch_geos(cfg)
+
+
+def roles_lines(recs, run_id, root=None, kind=None, at=None):
+    """dev #692 / public #140 + #489 / public #102 -- the sourcing lines, COMPUTED from this
+    run's `roles` events and gaps, never composed. Returns a list of lines (no indent):
+
+      sourcing (daily): 14 seen · 2 captured · 9 known · 2 carried · 1 role gap · 1 query truncated
+      wide re-scan: 5 re-surfaced (62 seen · 57 already known · 0 role gaps · 0 query gaps)
+      sourcing (board): 31 seen · 0 captured · 28 known · 3 carried · 0 role gaps
+      ROLES NOT ACCOUNTED (linkedin-jobsearch)
+      wide re-scan due since 2026-09-30, not run (skipped-for-cost)
+
+    "Re-surfaced" is `captured + carried` on a `window=wide` event. Per-role gaps and per-query
+    gaps stay in separate fields. `ROLES NOT ACCOUNTED` is printed for every surface that holds
+    an open `jobsearch:roles:<surface>` gap from this run (a pass returned and no ROLES block was
+    accepted, or the block was refused), so silence never reads as zero. The wide-due line prints
+    for a `daily` run whose pass produced no wide event while wide is due."""
+    lines = []
+    events = _journal.roles_events(recs, run_id=run_id)
+    for e in events:
+        seen = e.get("distinct", 0)
+        gaps_q = (e.get("query_gaps_window", 0), e.get("query_gaps_truncated", 0))
+        if e.get("surface") == "linkedin-jobsearch" and e.get("window") == "wide":
+            lines.append("wide re-scan: %d re-surfaced (%d seen · %d already known · %d role gaps "
+                         "· %d query gaps)"
+                         % (e.get("captured", 0) + e.get("carried", 0), seen, e.get("known", 0),
+                            e.get("role_gaps", 0), gaps_q[0] + gaps_q[1]))
+            continue
+        label = "board" if e.get("surface") == "board" else (e.get("window") or "daily")
+        line = ("sourcing (%s): %d seen · %d captured · %d known · %d carried · %d role gap%s"
+                % (label, seen, e.get("captured", 0), e.get("known", 0), e.get("carried", 0),
+                   e.get("role_gaps", 0), "" if e.get("role_gaps", 0) == 1 else "s"))
+        if gaps_q[1]:
+            line += " · %d query truncated" % gaps_q[1]
+        if gaps_q[0]:
+            line += " · %d query gap%s (window)" % (gaps_q[0], "" if gaps_q[0] == 1 else "s")
+        lines.append(line)
+    held = {g.get("scope") for g in _journal.open_gaps(recs, run_id=run_id)}
+    for surface in _journal.ROLES_SURFACES:
+        if _journal.ROLES_GAP_SCOPE % surface in held:
+            lines.append("ROLES NOT ACCOUNTED (%s)" % surface)
+    if kind == "daily" and root is not None:
+        now = at or _journal.now_iso()
+        w = _journal.jobsearch_window(now, recs, _geos(root))
+        wide_here = [e for e in events if e.get("surface") == "linkedin-jobsearch"
+                     and e.get("window") == "wide"]
+        if w["window"] == "wide" and not wide_here:
+            passes = [r for r in recs if r.get("event") == "pass" and r.get("run_id") == run_id
+                      and r.get("kind") == "linkedin"]
+            refused = [r for r in passes if r.get("phase") == "refused"]
+            returned = [r for r in passes if r.get("phase") == "returned"]
+            if refused:
+                why = refused[-1].get("reason") or "refused"
+            elif returned and returned[-1].get("jobsearch") not in (None, "reached"):
+                why = "job search %s" % returned[-1].get("jobsearch")
+            elif returned:
+                why = "no wide ROLES block accepted"
+            else:
+                why = "no LinkedIn pass this run"
+            lines.append("wide re-scan due since %s, not run (%s)" % (w["due_since"], why))
+        elif w["window"] == "wide" and wide_here:
+            lines.append("wide re-scan STILL DUE since %s: the pass did not cover every "
+                         "requested geography" % w["due_since"])
+    return lines
+
+
+def render_detail(recs, run_id, fp, root=None, at=None):
     start_at, as_of, _kind = _run_window(recs, run_id)
 
     def _in_window(r):
         when = r.get("at") or ""
         return start_at <= when <= as_of
 
-    lines = []
+    lines = ["  %s" % ln for ln in roles_lines(recs, run_id, root=root, kind=_kind, at=at)]
     swept = [r for r in recs if r.get("event") == "swept" and _in_window(r)]
     if swept:
         parts = ["%s ok" % r.get("mailbox") if r.get("ok")
@@ -299,7 +374,7 @@ def main():
             return 2
 
     headline = render_headline(recs, args.run, fp)
-    body = render_detail(recs, args.run, fp)
+    body = render_detail(recs, args.run, fp, root=root, at=args.at)
     text = headline
     if body:
         text += "\n" + body

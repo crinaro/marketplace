@@ -65,6 +65,25 @@ Usage (weekly audit; NOT part of the daily run):
     python3 scripts/reconcile.py --apply            # write the unambiguous medium fixes
     python3 scripts/reconcile.py --role <opp_id>
 
+⭐ HARVEST UNDER THE RUN LOCK (dev #687 / public #138). `--harvest` writes `data/messages.jsonl`
+through `record.append_message()`, one short lock hold per row. Run INSIDE `runlock.py --run` —
+the way the engine's own hint says to — it used to hardcode `already_locked=False`, so every row
+waited on the lock its own wrapper held and was refused: "harvested 0 new message(s) (N refused)",
+a store left behind the mailbox. The shipped form routes the child through the launcher too:
+
+    ~/.claude/jobsearch/run runlock.py --run harvest -- ~/.claude/jobsearch/run reconcile.py --harvest
+
+`_harvest_lock_decision()` decides ONCE, before any mailbox is opened (owner decision R6,
+2026-10-09: a claim to hold the lock is verified against the WRAPPER'S OWN TOKEN, never against
+"somebody holds it"):
+
+    the wrapper's token matches the lock record      -> write under that hold (already_locked)
+    --already-locked, and that token matches         -> the same
+    --already-locked, no lock at all                 -> REFUSED, exit 2, nothing written
+    --already-locked, a lock that is not this run's  -> REFUSED, exit 2, nothing written
+    no flag, a lock that is not this run's           -> REFUSED once, exit 1, nothing written
+    no flag, the lock is free                        -> unchanged: each row takes and releases it
+
 Python 3.9+. Standard library only.
 """
 
@@ -1727,6 +1746,33 @@ def cmd_verify(args):
     return 1 if problem else 0
 
 
+def _harvest_lock_decision(already_locked_flag):
+    """dev #687 / public #138 + owner decision R6 (2026-10-09) -> `(write_locked, rc, message)`.
+
+    Decided ONCE, before the mail loop. `write_locked` is the `already_locked` argument every
+    `record.append_message()` call gets. A non-None `rc` means REFUSED: nothing is written, and
+    `message` says why. The hold is proved against the WRAPPER'S token (`record.lock_held_by_
+    wrapper`), never against "somebody holds the lock": `--already-locked` used to be verified by
+    `lock_is_held()`, which is also true while a foreign writer holds it."""
+    import record as _record
+    state, who = _record.lock_held_by_wrapper()
+    if state == "mine":
+        return True, None, None
+    if already_locked_flag:
+        if state == "free":
+            return False, 2, ("REFUSED — --already-locked, but NOBODY holds the run lock. "
+                              "harvest NOT RUN. Run it under the wrapper: ~/.claude/jobsearch/run "
+                              "runlock.py --run harvest -- ~/.claude/jobsearch/run reconcile.py "
+                              "--harvest")
+        return False, 2, ("REFUSED — --already-locked, but the run lock is held by %r, which is "
+                          "not this run's own hold. harvest NOT RUN." % who)
+    if state == "foreign":
+        return False, 1, ("REFUSED — run lock held by %r; harvest NOT RUN. Wait for it, or run "
+                          "it under the wrapper: ~/.claude/jobsearch/run runlock.py --run "
+                          "harvest -- ~/.claude/jobsearch/run reconcile.py --harvest" % who)
+    return False, None, None
+
+
 def main():
     ap = argparse.ArgumentParser(description="Reconcile tracked state against mail + LinkedIn.")
     ap.add_argument("--all", action="store_true")
@@ -1745,7 +1791,10 @@ def main():
     ap.add_argument("--already-locked", action="store_true",
                     help="--ats: the calling run already holds the run lock. Verified, not "
                          "trusted — unheld, --ats degrades to plan-only (exit 2) rather than "
-                         "hard-refusing (design §6).")
+                         "hard-refusing (design §6). --harvest (dev #687): honoured ONLY when "
+                         "this run holds the lock under `runlock.py --run` (matched on the "
+                         "wrapper's token); with no lock, or another holder's, it REFUSES "
+                         "(exit 2).")
     ap.add_argument("--verify", action="store_true",
                     help="--ats --verify: read-only ingestion check (design §7) — queries "
                          "each mailbox for the sender class over the window independent of "
@@ -1780,6 +1829,14 @@ def main():
 
     if args.ats:
         return cmd_verify(args) if args.verify else cmd_ats(args)
+
+    # dev #687 / public #138 — decided once, up front, before any mailbox is opened (R6).
+    harvest_locked = False
+    if args.harvest:
+        harvest_locked, rc, msg = _harvest_lock_decision(args.already_locked)
+        if rc is not None:
+            print("⛔ " + msg)
+            return rc
 
     opps = load("opportunities.jsonl")
     companies = {c["id"]: c.get("name", c["id"]) for c in load("companies.jsonl")}
@@ -2037,7 +2094,7 @@ def main():
                     "source": src, "variant": None, "answers": None,
                     "resolves": None, "resolved_by": None,
                 }
-                rc, out = _record.append_message(row, already_locked=False)
+                rc, out = _record.append_message(row, already_locked=harvest_locked)
                 have.add(src)          # never re-attempt this uid, refused or not
                 if rc == 0:
                     added += 1

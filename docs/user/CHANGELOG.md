@@ -2,6 +2,11 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each verified against its release tag on the published remote; older releases after their push, the newest one by the publish that pushed it, so the section for the version you installed is in the file that came with it. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.61.0
+A run no longer quietly does less than it reports. Your posture now limits how often the search runs, not how much of what a run finds gets handled: every role a run sees is screened (pay floor, already seen or passed, title rules) or kept as its own follow-up, and research held back by a cheaper posture runs on the next run that allows it. Once a week a wider search catches older or reposted roles the daily search missed. Saving your conversation history during a locked run works again. A run you start yourself as /jobsearch:daily-run attended may do research under any posture. After one run on this version, an older version can no longer read your run journal, so don't roll back.
+LinkedIn checks waste less and claim less. A LinkedIn pass that can't finish is queued once, not again on every run. Any profile or message the LinkedIn agent already looked at is recorded, so it isn't looked at again, and the reply check works from an exact list of who to check. A sweep that could only see part of a list no longer reports a connection request as still pending; it says the check was incomplete. Accepted connections are read from your Connections list, and routine sweeps no longer visit people's profiles.
+Nothing for you to run. A brief now refuses an opportunity that doesn't exist, instead of saving a record your data check rejects later. New brief ids are long enough that two briefs written in the same second can no longer be mixed up, which could put a false hold on a valid draft.
+
 ## jobsearch 0.60.1
 Nothing for you to run. Scheduled runs that stopped starting after an update work again. The run helper is repaired automatically the next time Claude starts.
 Also fixed, with nothing for you to run. Drafts can no longer name a channel that does not exist. Mail checks now record the real date of a contact's latest message, not the day the check ran. A role you already passed on is no longer shown again as new under a slightly different title.

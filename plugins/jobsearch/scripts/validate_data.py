@@ -621,9 +621,10 @@ SHA12_RE = re.compile(r"^[0-9a-f]{12}$")
 # constants, because `your_move` imports THIS module and `brief` imports `your_move`; importing
 # either back here is the exact load-time cycle `precondition.py`'s lazy import of `brief`
 # already exists to avoid. TestBriefVocabularyMirrorsTheReader holds this identical to the
-# reader's own tuples, so the copy cannot drift silently.
+# reader's own tuples, so the copy cannot drift silently. dev #680: the suffix is 4+ hex (old
+# rows carry 4, new ids carry 16), as brief.py's own BRIEF_ID_RE.
 BRIEF_ID_RE = re.compile(
-    r"^brief:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}-[0-9a-f]{4}$")
+    r"^brief:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}-[0-9a-f]{4,}$")
 BRIEF_AXES = {"reply-owed", "accepted", "waiting", "silence-unverified", "silent",
              "nothing-sent"}
 BRIEF_REGISTERS = {"reply-owed", "accepted", "premature", "chase", "reconnect",
@@ -2283,7 +2284,7 @@ def _main():
             req(r, f, label, problems)
         if r.get("id"):
             if not BRIEF_ID_RE.match(str(r["id"])):
-                problems.append("%s: id %r is not brief:<offset-bearing ISO ts>-<4 hex>"
+                problems.append("%s: id %r is not brief:<offset-bearing ISO ts>-<4+ hex>"
                                 % (label, r["id"]))
             if r["id"] in brief_ids:
                 problems.append("%s: duplicate id" % label)

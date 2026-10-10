@@ -57,6 +57,7 @@ import argparse
 import datetime
 import json
 import os
+import secrets
 import sys
 
 import os, sys as _sys
@@ -74,6 +75,17 @@ ROOT = _profile_root()
 # than the code.
 LOCK = os.environ.get("CLAUDESEARCH_LOCK_PATH") or \
     os.path.join(ROOT, ".git", "run_lock.json")   # inside .git: never committed
+
+# ⭐⭐ dev #687 / public #138 — THE WRAPPER'S IDENTITY, SO A CHILD CAN PROVE THE LOCK IS ITS OWN.
+# `--run` writes a fresh token as `holder` in the lock record and hands the SAME token to the
+# child in this environment variable. A child that wants to write "under the lock its wrapper
+# holds" (`reconcile.py --harvest`) must match the two: a bare "some lock is held" is also the
+# state of a FOREIGN writer's lock, which is not the child's to write under (owner decision R6,
+# 2026-10-09). `--take` writes no token (its caller is a separate process that has already
+# exited), so a hold taken that way can never be claimed by a child. The env token reaches
+# grandchildren, which `getppid()` does not (`--ats` writes through `record.py` subprocesses).
+HOLDER_ENV = "CLAUDESEARCH_LOCK_HOLDER"
+
 # ⭐ 20, not 150. The lock now covers only the WRITE phase (seconds), not a whole run, so a hold
 # lasting 20 minutes means a session died holding it — not that a long run is legitimately busy.
 # The old 150 was sized for run-length holds and, on 2026-08-03, would have wedged writes from
@@ -365,11 +377,14 @@ def main():
                 print("  ⚠️ Looks STALE (> %d min) — `--steal` is probably correct." % STALE_MINUTES)
             return 1
         os.makedirs(os.path.dirname(LOCK), exist_ok=True)
+        holder = secrets.token_hex(4)
         with open(LOCK, "w", encoding="utf-8") as fh:
-            json.dump({"who": args.run, "pid": os.getpid(),
+            json.dump({"who": args.run, "pid": os.getpid(), "holder": holder,
                        "taken_at": datetime.datetime.now().isoformat(timespec="seconds")}, fh)
         try:
-            rc = subprocess.call(cmd)
+            child_env = dict(os.environ)
+            child_env[HOLDER_ENV] = holder
+            rc = subprocess.call(cmd, env=child_env)
             if rc != 0:
                 # ⭐ 2026-08-04, per the candidate: "fix the validation for the writes so it's systematic
                 # versus something that's caught by luck." The luck meant here: a write failed with

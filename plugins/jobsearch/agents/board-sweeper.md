@@ -71,8 +71,9 @@ dispatching session's context (dev #482 / public #111).
 
 **READS** `~/.claude/jobsearch/run channels_due.py` (which channels are active and due) ·
 `~/.claude/jobsearch/run route.py --channel <id>` (how to reach each one) ·
-`~/.claude/jobsearch/run pipeline_index.py --excluded` (so a declined role is never re-sourced) ·
-`~/.claude/jobsearch/run profile.py` (titles and geography to search for).
+`~/.claude/jobsearch/run profile.py` (titles and geography to search for). The pipeline
+cross-check is no longer yours: `deferred.py --add-roles` resolves every `ROLE` you list against the
+declined and active rows (dev #692).
 
 **DOES NOT READ** `presence/claims.md` · `presence/projects.md` · `configure/strategy.md` in full · `outreach/drafts.md` ·
 `applying/cover_letters.md` · `data/messages.jsonl` · `log.md`. You are finding roles, not assessing a
@@ -120,8 +121,14 @@ silent zero.
    `~/.claude/jobsearch/run geo_screen.py "<location>"` and quote its verdict line** (public #89,
    dev #355) — only its own `out:` line is grounds to drop a hit; `unknown` is reported as a gap,
    never treated as a drop.
-3. **Cross-check every hit against `pipeline_index.py --excluded`** before reporting it as new.
-   Re-surfacing a declined role costs the reviewer real time and erodes trust in the whole sweep.
+3. **List EVERY role you saw — the pipeline cross-check is the script's job now** (dev #692 /
+   public #140). You used to filter each hit against `pipeline_index.py --excluded` yourself and
+   report only the new ones, so what you dropped left no trace. Now every distinct role any search
+   showed you becomes one `ROLE` line in your `ROLES v1` block (see "Output"), and
+   `deferred.py --add-roles` resolves each to captured, already known (declined or active), carried
+   as its own queue item, or a per-role gap. Re-surfacing a declined role is still prevented, by
+   the script, and what it resolved is countable. Skip only what is not a role this sweep is for
+   (an obvious gig or volunteer listing).
 4. **Report per channel**, including the ones that yielded nothing — a zero from a channel you
    actually searched and a zero from a channel you could not reach are different facts, and the
    channel review cannot tell them apart unless you say which it was.
@@ -139,6 +146,32 @@ posting comes down — the caller that folds this report into `record.py create`
 the exact posting URL for every role, not just for the ones that end up pursued, or `record.py`
 refuses the write. Then the gaps — any channel that was due and could not be reached, with the
 reason `route.py` gave.
+
+**⭐ THE ROLES BLOCK — every role you saw, as data a script parses (dev #692 / public #140).** Put
+it in your hand-back file (rule 6) in exactly this grammar. `surface=board` and `window=none`: a
+board has no uniform posted-window filter, so you report "the most recent postings the surface
+allows" and say so with `window=none` on every QUERY. Every QUERY carries its `channel=<channel
+id>` and never `unapplied`. One `QUERY` line per channel × title × geography you ran (an
+`unreachable` QUERY, with a `journal.REASONS` code, for one you could not), one `ROLE` line per
+distinct role any of them showed (the same posting on two channels is ONE line), and `SEEN
+distinct=<n>` equal to the number of `ROLE` lines, or the whole block is refused. A title, company
+or location containing a double quote has it replaced by `'`. `deferred.py --add-roles` accepts
+the block; a pass that returns without one is filed as a gap (`ROLES NOT ACCOUNTED`).
+
+<!-- roles-grammar:begin -->
+```text
+--- ROLES v1 run=<run-id> surface=<linkedin-jobsearch|board> window=<daily|wide|none> ---
+QUERY geo=<remote|local> title="<query>" window=<r86400|r604800|none> shown=<n> total=<m|?> [unapplied] [channel=<channel_id>]
+QUERY geo=<remote|local> title="<query>" unreachable reason=<journal.REASONS code> [channel=<channel_id>]
+SEEN distinct=<n>
+ROLE url=<posting url> title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|?>
+ROLE nourl title="<t>" company="<c>" reason=<journal.REASONS code>
+--- END ROLES ---
+```
+<!-- roles-grammar:end -->
+
+`total=?` when the page does not say; `total` larger than `shown` marks a truncated read, which the
+script files as a gap, so report what you could see.
 
 **Never submit a form, never click apply, never sign in.** If a surface demands a login this
 machine does not have, that is a gap to report, not an obstacle to work around.

@@ -44,6 +44,14 @@ checks, silence detection, the dashboard) is free at every tier and carries most
 Set `search.posture` in your `config.json`, or define your own. See
 [How it works — Cost](../../docs/user/jobsearch/how-it-works.md#cost).
 
+**A posture limits how often the search runs and which model work (research, drafting) it may
+start unattended. It never limits how much of a run's findings are processed.** Under every
+posture, each role a run sees is accounted for and given a script-only minimal screen, and
+research or drafting a posture refuses is queued and drained by the next run whose posture
+permits it. A run is unattended unless started in its explicit attended form
+(`/jobsearch:daily-run attended`), which lifts the research and drafting limit but never the
+LinkedIn one.
+
 ## Getting started
 
 1. **Install the plugin.** See [INSTALL.md](INSTALL.md) — in short, add this repository as a

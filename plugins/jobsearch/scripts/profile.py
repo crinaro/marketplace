@@ -22,8 +22,21 @@ Usage:
     python3 scripts/profile.py                      # print the loaded profile summary
     python3 scripts/profile.py --screen <opp_id>    # screen one opportunity
     python3 scripts/profile.py --screen-all         # screen the whole live pipeline
+    ~/.claude/jobsearch/run profile.py --minimal-screen <opp_id>   # the rules every run applies
 
     from profile import load, screen_comp, effective_setting
+
+⭐ THE MINIMAL SCREEN RUNS UNDER EVERY POSTURE (dev #692 / public #140, owner decision of
+2026-10-08). `--minimal-screen` is the scripted, zero-token screening a captured role gets in-run
+whatever the posture says: the comp floor (`screen_comp`, unchanged), the duplicate/passed check
+(`pipeline_index.find_excluded_match`, unchanged), the geography verdict (`geo_screen.screen`,
+unchanged) and an ADVISORY title rule. It never reads `posture`: a posture limits how often the
+search runs, not how much of what a run found is processed, so a role captured under `economy`
+or `minimal` still gets screened. Only the rules that already remove a role remove it
+(`remove:comp`, `remove:geo`, `remove:passed`); the title rule is advisory and only ever says
+`review:title`. There is no mandate rule (no script implements one and no config key names one),
+so the screen prints no mandate line (owner, 2026-10-09: a line about a rule that does not exist
+is noise on every role for every installer).
 
 Python 3.9+. Standard library only.
 """
@@ -304,6 +317,86 @@ def _load_opps():
         return [json.loads(l) for l in fh if l.strip()]
 
 
+def _load_optional(name):
+    path = os.path.join(ROOT, "data", name)
+    if not os.path.exists(path):
+        return []
+    with open(path, encoding="utf-8") as fh:
+        return [json.loads(l) for l in fh if l.strip()]
+
+
+def minimal_screen(opp, profile, all_opps, applications=None):
+    """dev #692 / public #140 -- the scripted screen every captured role gets under EVERY posture.
+    Returns `(lines, verdict)`: the printable block (header, five rule lines, nothing else) and
+    the VERDICT string `keep`, `remove:<rule>[,<rule>]` or `review:<rule>[,<rule>]`.
+
+    Pure over what it is handed, and it never reads `posture` (the point of the criterion). Only
+    rules that already remove a role today can say `remove`: comp BELOW-FLOOR, geo `out`, and a
+    passed/excluded duplicate. A question the data cannot answer (a contested setting, an
+    unknown commute, no geography section) and the advisory title rule say `review`, never
+    `remove` and never a quiet `keep`. UNDISCLOSED comp is KEPT: comp is the first question to
+    ask the employer, so it cannot be screened on (`screen_comp`'s own rule)."""
+    import geo_screen as _geo
+    import pipeline_index as _pidx
+    oid = opp.get("id")
+    removes, reviews = [], []
+    lines = ["MINIMAL SCREEN %s" % oid]
+
+    verdict, detail = screen_comp(opp, profile)
+    lines.append("  comp:      %s  %s" % (verdict, detail))
+    if verdict == BELOW:
+        removes.append("comp")
+    elif verdict in (NEEDS_COMMUTE, UNRESOLVED):
+        reviews.append("comp")
+
+    others = [o for o in all_opps if o.get("id") != oid]
+    hit = _pidx.find_excluded_match(
+        others, company_id=opp.get("company_id"), title=opp.get("title"),
+        jd_url=opp.get("jd_url"), applications=applications or [])
+    if hit:
+        row, basis = hit
+        lines.append("  passed:    MATCHES %s (%s) on %s" % (row.get("id"), row.get("status"), basis))
+        removes.append("passed")
+    else:
+        lines.append("  passed:    NOT EXCLUDED")
+
+    loc = opp.get("location") or {}
+    gverdict, gline, _d = _geo.screen(loc.get("primary") or "", profile,
+                                      work_type=loc.get("type")
+                                      if loc.get("type") in ("remote", "hybrid", "onsite") else None)
+    lines.append("  geo:       %s" % gline)
+    if gverdict == _geo.OUT:
+        removes.append("geo")
+    elif gverdict == _geo.UNKNOWN:
+        reviews.append("geo")
+
+    configured = [t for t in ((profile.get("targets") or {}).get("titles") or []) if t]
+    want = _pidx.normalize_title(opp.get("title"))
+    matched = None
+    if want:
+        for t in configured:
+            nt = _pidx.normalize_title(t)
+            if nt and (" %s " % nt) in (" %s " % want):
+                matched = t
+                break
+    if matched:
+        lines.append("  title:     MATCHES %r" % matched)
+    elif not configured:
+        lines.append("  title:     NO CONFIGURED TITLES (targets.titles is empty) -- advisory")
+    else:
+        lines.append("  title:     NO CONFIGURED TITLE MATCHES -- advisory")
+        reviews.append("title")
+
+    if removes:
+        v = "remove:" + ",".join(removes)
+    elif reviews:
+        v = "review:" + ",".join(reviews)
+    else:
+        v = "keep"
+    lines.append("VERDICT %s" % v)
+    return lines, v
+
+
 def print_options(cfg):
     """States & Views V1 §15.7 — 'options should be visible in the configuration.' The whole
     adjustable surface, read from `config_keys.py` (the ONE registry `doctor.py`'s CONFIG
@@ -329,6 +422,11 @@ def main():
     ap = argparse.ArgumentParser(description="Profile loader + executable comp screen.")
     ap.add_argument("--screen", metavar="OPP_ID")
     ap.add_argument("--screen-all", action="store_true")
+    ap.add_argument("--minimal-screen", dest="minimal_screen", metavar="OPP_ID",
+                    help="dev #692 / public #140: the scripted screen every captured role gets "
+                         "under EVERY posture (comp floor, passed/duplicate, geography, advisory "
+                         "title). Read-only, zero tokens, never reads "
+                         "posture. Exit 0 on any verdict, 2 if the opportunity does not exist.")
     ap.add_argument("--options", action="store_true",
                     help="print the whole adjustable config surface, with defaults and "
                          "provenance (design-states-and-views.md §15.7)")
@@ -341,6 +439,17 @@ def main():
         # top-level section unchanged — config_keys.describe()'s dotted lookups (ats.*,
         # communications.*) read exactly the same tree either way, without a third read.
         return print_options(profile)
+
+    if args.minimal_screen:
+        all_opps = _load_opps()
+        opp = next((o for o in all_opps if o.get("id") == args.minimal_screen), None)
+        if opp is None:
+            print("No opportunity with id %r" % args.minimal_screen)
+            return 2
+        out, _verdict = minimal_screen(opp, profile, all_opps,
+                                       applications=_load_optional("applications.jsonl"))
+        print("\n".join(out))
+        return 0
 
     if args.screen or args.screen_all:
         all_opps = _load_opps()

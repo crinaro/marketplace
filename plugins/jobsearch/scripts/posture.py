@@ -16,11 +16,29 @@ and the engine reads them rather than hard-coding a cadence.
 Postures ship as DATA in `config.json` (`search.postures`), so a user can retune one or add their
 own without touching the engine. The engine reads the knobs, never the name.
 
-    python3 scripts/posture.py              # what am I allowed to do?
-    python3 scripts/posture.py --may research
-    python3 scripts/posture.py --cron       # the cron line this posture implies
+    ~/.claude/jobsearch/run posture.py              # what am I allowed to do?
+    ~/.claude/jobsearch/run posture.py --may research [--attended]
+    ~/.claude/jobsearch/run posture.py --cron       # the cron line this posture implies
 
 Advisory; always exits 0 except for an explicit --may miss (exit 1) so a run can branch on it.
+
+⭐ A POSTURE LIMITS HOW OFTEN, NEVER HOW MUCH (dev #692 / public #140, 2026-10-09)
+-------------------------------------------------------------------------------
+`unattended` lists the MODEL work a run may START without the owner present: a LinkedIn pass, a
+research agent, a drafting agent. It never limits how much of what a run already FOUND gets
+processed: capture and the minimal screen (`profile.py --minimal-screen`) run under every posture,
+`minimal` and `economy` included. What a posture refuses is queued by a SCRIPT form
+(`deferred.py --add-research` / `--add-draft` / `--add-linkedin-pass`) and drains on the first run
+whose posture permits it (`MERGEABLE_POSTURE_TOKENS` below is the vocabulary `deferred.py` merges
+into a worker's claim capabilities).
+
+⭐ A RUN IS UNATTENDED BY DEFAULT (owner decision R2, 2026-10-09). The posture rules apply unless the
+run was started with an explicit attended form (`/jobsearch:daily-run attended`, passed to scripts
+as `--attended`). Attended is NEVER inferred from the absence of a scheduler marker: Claude Code
+documents no in-session marker that tells a scheduled session from a typed one, so the default must
+be the safe one (research waits and drains later). `--attended` lifts the research/drafting gate
+only: it never grants `linkedin`, whose permission stays `may("linkedin")` (browser + quota).
+
 Python 3.9+, stdlib only.
 """
 
@@ -35,6 +53,33 @@ from _root import profile_root as _profile_root
 import config_keys as _ck
 
 ROOT = _profile_root()
+
+# dev #692 / public #140 (N1) — the ONLY posture tokens that become claim capabilities in
+# `deferred.py`: a fixed ENGINE vocabulary, not whatever a config.json happens to say. `linkedin`
+# is deliberately absent and is NEVER merged: its permission is `may("linkedin")`, which applies
+# the browser-capability check and the per-day quota on top of the plain `unattended` list, and a
+# merged plain token would skip that second gate. An unknown or colliding token is IGNORED AND
+# REPORTED (RFC 6749 §3.3's shape: a server that grants less than was asked says so), never
+# silently granted and never silently dropped.
+MERGEABLE_POSTURE_TOKENS = ("research", "drafting", "sweeps")
+
+# Every hint a refusal prints names the LAUNCHER (`~/.claude/jobsearch/run`), never
+# `python3 scripts/…`: the bare form resolves no engine on an installed plugin (N7, dev #167).
+LAUNCHER = "~/.claude/jobsearch/run"
+
+
+def queue_hint(capability, name):
+    """The one line a refusal prints to say how to queue what the posture refused — a SCRIPT
+    form where one exists (so the item carries `requires` and drains), the generic free-text
+    `--add` only for a capability with no script form. Always the launcher."""
+    if capability == "research":
+        return "Queue it:  %s deferred.py --add-research <opp_id>" % LAUNCHER
+    if capability == "drafting":
+        return "Queue it:  %s deferred.py --add-draft <opp_id>" % LAUNCHER
+    if capability == "linkedin":
+        return "Queue it:  %s deferred.py --add-linkedin-pass" % LAUNCHER
+    return ("Queue it instead:  %s deferred.py --add \"...\" --why \"posture %s\""
+            % (LAUNCHER, name))
 
 
 def load():
@@ -55,6 +100,48 @@ def load():
         return name, None, ("posture %r is not defined in config.search.postures (have: %s)"
                             % (name, ", ".join(sorted(postures)) or "none"))
     return name, postures[name], None
+
+
+def merge_tokens(p, caps, attended=False):
+    """dev #692 / public #140 (N1, R2) — `(granted, report)`: which posture tokens become claim
+    capabilities on top of the machine's `caps` (a `whoami.probe()` dict), and one line per token
+    that did not.
+
+    * a token in the ACTIVE posture's `unattended` list is granted only if it is in
+      `MERGEABLE_POSTURE_TOKENS` and is not already a key of `caps`;
+    * `linkedin` is skipped silently: it is never a merged token (its permission is
+      `may("linkedin")`, set by the caller), so there is nothing to report;
+    * an unknown token, or one colliding with a machine capability, is ignored and REPORTED;
+    * `attended=True` (the explicit attended form, R2) grants every mergeable token whatever the
+      posture says, collisions still ignored, and NEVER `linkedin`;
+    * an unreadable posture (`p is None`) grants nothing unattended and says so, failing safe the
+      way `may()` does. An attended run still gets the mergeable tokens: the owner asked."""
+    granted, report = [], []
+
+    def _grant(token):
+        if token in caps:
+            line = "posture token %r ignored: collides with machine capability" % token
+            if line not in report:
+                report.append(line)
+        elif token not in granted:
+            granted.append(token)
+
+    if p is None:
+        report.append("posture unreadable: no posture tokens merged")
+    else:
+        for token in (p.get("unattended") or []):
+            if token == "linkedin":
+                continue
+            if token not in MERGEABLE_POSTURE_TOKENS:
+                report.append("posture token %r ignored: not in the engine vocabulary (%s)"
+                              % (token, ", ".join(MERGEABLE_POSTURE_TOKENS)))
+                continue
+            _grant(token)
+    if attended:
+        for token in MERGEABLE_POSTURE_TOKENS:
+            if token not in granted:
+                _grant(token)
+    return granted, report
 
 
 def _linkedin_check(p, name, today=None):
@@ -105,6 +192,19 @@ def _record_linkedin_refusal(run_id, reason):
               file=sys.stderr)
 
 
+def _record_attended_note(run_id, capability):
+    """R2 — an attended run that went past its posture leaves a `note` row, so the run summary
+    shows it. Best-effort, loud on stderr: a journal that cannot be written (the tracked fixture)
+    must not turn a permitted attended run into a refusal."""
+    import journal as _journal
+    try:
+        _journal.append(ROOT, {"event": "note", "run_id": run_id,
+                               "text": "attended: %s permitted outside posture" % capability,
+                               "at": _journal.now_iso()})
+    except _journal.JournalError as e:
+        print("⚠️ could not journal the attended note (%s)" % e, file=sys.stderr)
+
+
 def may(capability, today=None, run_id=None):
     """True iff the ACTIVE posture permits `capability` unattended — the in-process form of
     `--may`, so a caller that must ask this before every step (design §26.8: `plays.py --all`
@@ -137,13 +237,28 @@ def main():
     ap.add_argument("--cron", action="store_true", help="Print the cron line this posture implies.")
     ap.add_argument("--run", metavar="ID",
                     help="with --may linkedin: record a refused pass under this run id (#87) — "
-                         "omit for a dry probe with no run in progress")
+                         "omit for a dry probe with no run in progress. With --may <cap> "
+                         "--attended: journal a note that the run went past its posture.")
+    ap.add_argument("--attended", action="store_true",
+                    help="dev #692 / R2: this run was started with the EXPLICIT attended form "
+                         "(/jobsearch:daily-run attended). Lifts the posture's gate on research "
+                         "and drafting (posture limits UNATTENDED work only). NEVER lifts "
+                         "linkedin, whose permission is browser + quota. A run is unattended "
+                         "unless it passes this; it is never inferred.")
     args = ap.parse_args()
 
     name, p, err = load()
 
     if err:
         # Fail SAFE, and say so loudly. An unreadable budget must not read as an unlimited one.
+        if args.may and args.attended and args.may in MERGEABLE_POSTURE_TOKENS:
+            # R2 — the owner asked for an attended run in so many words; an unreadable posture
+            # does not take that away, and says so.
+            print("OK: attended run; posture limits unattended work only (posture unreadable: "
+                  "%s)" % err)
+            if args.run:
+                _record_attended_note(args.run, args.may)
+            return 0
         if args.may:
             print("POSTURE UNKNOWN (%s) — refusing %r. Treating as MINIMAL." % (err, args.may))
             return 1
@@ -156,9 +271,17 @@ def main():
         return 0
 
     if args.may:
+        if (args.attended and args.may in MERGEABLE_POSTURE_TOKENS
+                and args.may not in (p.get("unattended") or [])):
+            # R2 — an explicit attended run is past the posture's unattended limit for the
+            # mergeable work. Journaled when a run id is given, so the summary shows it.
+            print("OK: attended run; posture limits unattended work only")
+            if args.run:
+                _record_attended_note(args.run, args.may)
+            return 0
         if args.may not in (p.get("unattended") or []):
             print("REFUSED: %r is NOT permitted unattended on posture %r" % (args.may, name))
-            print("   Queue it instead:  python3 scripts/deferred.py --add \"...\" --why \"posture %s\"" % name)
+            print("   %s" % queue_hint(args.may, name))
             return 1
         if args.may == "linkedin":
             # design-script-first.md §2 item 1 — the browser-capability gate runs BEFORE the
@@ -170,8 +293,7 @@ def main():
                 if args.run:
                     _record_linkedin_refusal(args.run, reason)
                 if reason == "skipped-for-cost":
-                    print("   Queue it instead:  python3 scripts/deferred.py --add \"...\" "
-                         "--why \"posture %s\"" % name)
+                    print("   %s" % queue_hint("linkedin", name))
             return 0 if allowed else 1
         print("OK: %r is PERMITTED unattended on posture %r" % (args.may, name))
         return 0
@@ -194,7 +316,10 @@ def main():
         print("\n  %s" % p["_for"])
     print("\n  ⭐ Deterministic sweeps are FREE at every tier and always run:")
     print("     alert_sweep · meeting_check · check_followups · channels_due · gates · dashboard")
-    print("\n  Check one:  python3 scripts/posture.py --may research")
+    print("\n  ⭐ A posture limits how OFTEN a run starts model work, never how MUCH of what it found is")
+    print("     processed: capture and the minimal screen run on every posture; research a")
+    print("     posture refuses is queued and drains on the first run that permits it.")
+    print("\n  Check one:  %s posture.py --may research" % LAUNCHER)
     return 0
 
 

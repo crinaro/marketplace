@@ -10,6 +10,13 @@ in agreement.
 artifacts, silence detection, the dashboard) are free at every tier and always run, so a lower tier
 loses timeliness, not coverage.
 
+**A tier limits how often the search runs, never how much of what it finds is processed.** Every
+role a run finds is captured and given the scripted minimal screen on every tier. What a tier does
+not permit unattended, research and drafting, is queued rather than dropped
+(`deferred.py --add-research`, `--add-draft`), and it drains on the first run whose tier permits
+it. Say so when you describe a lower tier: nothing is lost, it waits. A run is unattended unless
+the owner starts it with the explicit attended form, `/jobsearch:daily-run attended`.
+
 ## 1. Show where they are
 
 ```bash

@@ -147,6 +147,25 @@ Usage:
     python3 journal.py --passes [--today]                 # every pass row, '0 passes' if none
     python3 journal.py --check [--since YYYY-MM-DD]        # dispatch totals; never refuses on
                                                             # them until §8.3's ceiling lands
+    python3 journal.py --run <id> --pass linkedin --phase returned --reached inbox \
+                       --jobsearch reached                 # dev #692 / R4: the JOB SEARCH token
+    python3 journal.py --run <id> --pass board --phase dispatched   # dev #692 / R3: board pass
+
+## ⭐ A ROLES EVENT, AND A MISSING ONE IS LOUD (dev #692 / public #140, N5, R3, R4)
+
+`deferred.py --add-roles` accepts a pass's `ROLES v1` block and writes ONE `roles` event per
+accepted block: `surface` (`linkedin-jobsearch` | `board`), the window it searched, the count of
+distinct roles and how each resolved (`captured` / `known` / `carried` / `role_gaps`), and the
+per-query gaps in two separate fields (`query_gaps_window`, `query_gaps_truncated`). `--end` then
+asks `roles_missing()` whether a pass RETURNED with nothing accounted, and gaps it
+(`jobsearch:roles:<surface>`, `partial-results`) instead of letting the run end on "N seen, top few
+captured": a LinkedIn `pass … returned` row whose explicit `jobsearch` token reads `reached` (R4),
+or a board `pass` row the dispatching script wrote (R3, never a folded `dispatch` row, which is
+model-dependent), with no `roles` event for the run. `unreachable` and `not-attempted` trip
+nothing: no search ran, so there is nothing to account for. ⚠️ ROLLBACK RISK, STATED: an engine
+older than the release that added `roles` raises on any journal holding one (`read()` refuses an
+event outside `EVENTS`), so after one run on this version an older version cannot read this
+profile's journal. The reader here does not raise on a new event field of a known event.
 
 Python 3.9+. Standard library only.
 """
@@ -165,7 +184,19 @@ from _root import (profile_root, is_tracked_fixture, transcript_stash_path, is_u
 
 JOURNAL = os.path.join("data", "runs.jsonl")
 EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swept", "probe",
-         "triaged", "dispatch", "pass")
+         "triaged", "dispatch", "pass", "roles")
+
+# dev #692 / public #140 -- the two pass surfaces a `roles` event can account for, and the windows
+# one can carry. R5 (owner, 2026-10-09): LinkedIn's OWN UI time buckets only -- `r86400` ("Past 24
+# hours") for the daily pass, `r604800` ("Past week") for the weekly wide re-scan. There is no
+# computed window and no `r2592000`.
+ROLES_SURFACES = ("linkedin-jobsearch", "board")
+ROLES_WINDOWS = ("daily", "wide", "none")
+F_TPR_DAILY, F_TPR_WIDE = "r86400", "r604800"
+F_TPR_BUCKETS = (F_TPR_DAILY, F_TPR_WIDE)
+WIDE_EVERY_DAYS = 7
+JOBSEARCH_TOKENS = ("reached", "unreachable", "not-attempted")
+ROLES_GAP_SCOPE = "jobsearch:roles:%s"
 
 # design-script-first.md §2 (public #75/#87/#110) — the three phases ONE LinkedIn pass moves
 # through, written by TWO separate calls per §2 item 2 ("the row is written twice, and only the
@@ -180,7 +211,7 @@ PASS_PHASES = ("dispatched", "returned", "refused")
 # design-script-first.md §2 — V0's only LinkedIn pass kind. A tuple, not a bare string field, so
 # a second kind (were one ever added) is a vocabulary addition here, never free-text drift —
 # `REASONS`/`TRIAGE_VERDICTS`'s own "counted, not narrated" rule, applied to `kind`.
-PASS_KINDS = ("linkedin",)
+PASS_KINDS = ("linkedin", "board")
 
 # design-script-first.md §8.2 (public #90/#111) — the ONE required shape for a `dispatch` row.
 # Strict parser discipline reused from `scripts/dispatch_ledger.py` (the MAINTENANCE ledger this
@@ -526,7 +557,7 @@ def dispatch_rows(recs, today_only=False):
 
 
 def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_attempted=None,
-                reason=None, at=None):
+                reason=None, at=None, jobsearch=None):
     """design-script-first.md §2 (public #75/#87/#110) — the ONE writer for a `pass` row.
     `phase` is validated against `PASS_PHASES`, `kind` against `PASS_KINDS`, `reason` against
     `REASONS` (required for `phase="refused"`, refused otherwise — a reason on a row that is not
@@ -549,21 +580,151 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
     if phase != "refused" and reason is not None:
         raise JournalError("record_pass: --reason is only for phase='refused' (got phase=%r)"
                            % phase)
+    # dev #692 / public #140 (R4) -- the explicit JOB SEARCH token. A SEPARATE field, never one of
+    # the reached surface tokens: the per-day quota counts a pass that REACHED a list surface, and
+    # a pass that only ran its searches must not spend it. Only a LinkedIn `returned` row carries
+    # one; the missing-ROLES check keys on `reached`.
+    if jobsearch is not None:
+        if kind != "linkedin" or phase != "returned":
+            raise JournalError("record_pass: --jobsearch is only for a LinkedIn pass with "
+                               "phase='returned' (got kind=%r phase=%r)" % (kind, phase))
+        if jobsearch not in JOBSEARCH_TOKENS:
+            raise JournalError("record_pass jobsearch=%r is not one of %r"
+                               % (jobsearch, JOBSEARCH_TOKENS))
     reached = list(reached) if reached is not None else []
     unreachable = list(unreachable) if unreachable is not None else []
     not_attempted = list(not_attempted) if not_attempted is not None else []
     if kind == "linkedin":
         for label, tokens in (("reached", reached), ("unreachable", unreachable),
                               ("not_attempted", not_attempted)):
-            bad = sorted(set(tokens) - LINKEDIN_SURFACES)
+            bad = sorted(set(tokens) - LINKEDIN_SWEEP_SURFACES)
             if bad:
                 raise JournalError(
-                    "record_pass %s=%r is not in LINKEDIN_SURFACES %r"
-                    % (label, bad, sorted(LINKEDIN_SURFACES)))
+                    "record_pass %s=%r is not in LINKEDIN_SWEEP_SURFACES %r"
+                    % (label, bad, sorted(LINKEDIN_SWEEP_SURFACES)))
     rec = {"event": "pass", "run_id": run_id, "kind": kind, "phase": phase,
            "reached": reached, "unreachable": unreachable, "not_attempted": not_attempted,
            "reason": reason or "", "at": at}
+    if jobsearch is not None:
+        rec["jobsearch"] = jobsearch
     return append(root, rec)
+
+
+def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_gaps_window,
+                 query_gaps_truncated, distinct, captured, known, carried, role_gaps, at=None):
+    """dev #692 / public #140 -- the ONE writer of a `roles` event: one per ACCEPTED `ROLES v1`
+    block (`deferred.add_roles`). Validated at write, loud: an unknown surface or window, a
+    bucket outside `F_TPR_BUCKETS`, a negative count, or an identity that does not hold
+    (`distinct = captured + known + carried + role_gaps`) is refused, so a row that claims a
+    number it cannot account for never reaches the store. `f_tpr` is None for the board.
+    The two query-gap counts are SEPARATE fields on purpose: a per-query gap (a window not
+    applied, a query unreachable, a result truncated) moves what a wide re-scan may claim, a
+    per-role gap (a URL that could not be exposed) moves conservation, and one must never hide
+    the other."""
+    at = at or now_iso()
+    if not run_id:
+        raise JournalError("record_roles requires run_id")
+    if surface not in ROLES_SURFACES:
+        raise JournalError("record_roles surface %r is not in %r" % (surface, ROLES_SURFACES))
+    if window not in ROLES_WINDOWS:
+        raise JournalError("record_roles window %r is not in %r" % (window, ROLES_WINDOWS))
+    if f_tpr is not None and f_tpr not in F_TPR_BUCKETS:
+        raise JournalError("record_roles f_tpr %r is not one of LinkedIn's UI buckets %r "
+                           "(R5: no computed window)" % (f_tpr, F_TPR_BUCKETS))
+    counts = {"queries": queries, "query_gaps_window": query_gaps_window,
+              "query_gaps_truncated": query_gaps_truncated, "distinct": distinct,
+              "captured": captured, "known": known, "carried": carried,
+              "role_gaps": role_gaps}
+    for k, v in counts.items():
+        if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+            raise JournalError("record_roles %s=%r is not a non-negative integer" % (k, v))
+    if distinct != captured + known + carried + role_gaps:
+        raise JournalError(
+            "record_roles: distinct=%d but captured+known+carried+role_gaps=%d -- a pass's roles "
+            "are all accounted for or the event is not written"
+            % (distinct, captured + known + carried + role_gaps))
+    rec = {"event": "roles", "run_id": run_id, "surface": surface, "window": window,
+           "f_tpr": f_tpr, "queries": queries, "geos_ok": sorted(set(geos_ok or [])),
+           "query_gaps_window": query_gaps_window, "query_gaps_truncated": query_gaps_truncated,
+           "distinct": distinct, "captured": captured, "known": known, "carried": carried,
+           "role_gaps": role_gaps, "at": at}
+    return append(root, rec)
+
+
+def roles_events(recs, run_id=None, surface=None):
+    rows = [r for r in recs if r.get("event") == "roles"]
+    if run_id is not None:
+        rows = [r for r in rows if r.get("run_id") == run_id]
+    if surface is not None:
+        rows = [r for r in rows if r.get("surface") == surface]
+    return rows
+
+
+def roles_missing(recs, run_id):
+    """dev #692 / public #140 (N5, R3, R4) -> the surfaces whose pass RETURNED in this run with
+    no accepted `roles` event, in `ROLES_SURFACES` order.
+
+    * `linkedin-jobsearch`: a LinkedIn `pass … returned` row whose explicit `jobsearch` token reads
+      `reached` (R4). `unreachable` and `not-attempted` do not trip it: no search ran. A returned
+      row that carries NO token is not guessed at (an old row, or a caller that did not report):
+      it trips nothing, and daily-run is told to always pass one.
+    * `board`: a `pass` row of kind `board`, phase `dispatched` or `returned`, written by the
+      dispatching script (R3) -- never a folded `dispatch` row (`--fold-dispatches` reads a
+      transcript, which is model-dependent; a fact a run knows goes into a script-written row).
+      A `refused` board pass trips nothing."""
+    have = {r.get("surface") for r in roles_events(recs, run_id=run_id)}
+    passes = [r for r in recs if r.get("event") == "pass" and r.get("run_id") == run_id]
+    missing = []
+    if (any(r.get("kind") == "linkedin" and r.get("phase") == "returned"
+            and r.get("jobsearch") == "reached" for r in passes)
+            and "linkedin-jobsearch" not in have):
+        missing.append("linkedin-jobsearch")
+    if (any(r.get("kind") == "board" and r.get("phase") in ("dispatched", "returned")
+            for r in passes) and "board" not in have):
+        missing.append("board")
+    return missing
+
+
+def jobsearch_geos(cfg):
+    """The geographies a wide re-scan must cover, computed from config -- never self-reported by
+    the runner: `remote` always, plus `local` when `geography.commute_anchors` is non-empty."""
+    anchors = ((cfg or {}).get("geography") or {}).get("commute_anchors") or []
+    return ["remote", "local"] if anchors else ["remote"]
+
+
+def wide_satisfied_at(recs, geos):
+    """The `at` of the newest `roles` event that satisfies the weekly wide re-scan, or None.
+
+    Only a `surface == "linkedin-jobsearch"`, `window == "wide"` event can (N3): a board event, a
+    daily event, and a refused LinkedIn pass (which writes no `roles` event at all) never do. And
+    only when EVERY requested geography has a reached, non-gapped QUERY (`set(geos) <= geos_ok`,
+    N4 as narrowed by R5): a wide pass that covered `remote` and not `local` leaves wide due."""
+    want = set(geos or [])
+    sat = [r.get("at") for r in roles_events(recs, surface="linkedin-jobsearch")
+           if r.get("window") == "wide" and want <= set(r.get("geos_ok") or [])
+           and r.get("at")]
+    return max(sat) if sat else None
+
+
+def jobsearch_window(now, recs, geos):
+    """dev #692 / public #140 (489-1, R5) -> `{"window", "f_tpr", "titles", "due_since"}` for the
+    LinkedIn job search `now` (an ISO string).
+
+    WIDE when no satisfied wide pass falls in the last `WIDE_EVERY_DAYS` days: LinkedIn's "Past
+    week" bucket (`r604800`), the full title set. Otherwise DAILY: "Past 24 hours" (`r86400`), the
+    configured titles. Only these two UI buckets exist (R5): no computed window, so a day the app
+    was closed is covered by the next weekly pass, never by an invented lookback. `due_since` is
+    the date wide became due (the day after the last satisfied pass's seventh day), or `never`;
+    None while the daily window applies."""
+    sat = wide_satisfied_at(recs, geos)
+    now_dt = _parse_iso(now) or datetime.datetime.now()
+    sat_dt = _parse_iso(sat) if sat else None
+    if sat_dt is not None and (now_dt - sat_dt) < datetime.timedelta(days=WIDE_EVERY_DAYS):
+        return {"window": "daily", "f_tpr": F_TPR_DAILY, "titles": "configured",
+                "due_since": None}
+    due_since = ((sat_dt + datetime.timedelta(days=WIDE_EVERY_DAYS)).date().isoformat()
+                 if sat_dt is not None else "never")
+    return {"window": "wide", "f_tpr": F_TPR_WIDE, "titles": "all", "due_since": due_since}
 
 
 def pass_rows(recs, kind=None, today_only=False):
@@ -627,6 +788,23 @@ LINKEDIN_REPLY_SURFACES = frozenset({"inbox", "requests", "invitations", "degree
 # saved-search alerts, a distinct surface neither the inbox nor a deliberate job search reads).
 LINKEDIN_SURFACES = LINKEDIN_REPLY_SURFACES | frozenset({"notifications"})
 
+# dev #488 / public #105 (design-linkedin-reach.md §3.2) -- acceptance is read POSITIVELY from the
+# recency-sorted Connections list, never inferred from absence on Sent Invitations, so a sweep
+# reports `connections` as a sixth coverage token, and a silence proof's acceptance slot is
+# satisfied by `connections` OR the one-off `degree` visit.
+#
+# ⚠️ DEVIATION FROM DESIGN §3.2, and why: the design extends LINKEDIN_REPLY_SURFACES and
+# LINKEDIN_SURFACES themselves, but `tests/test_record.py::TestLinkedinSurfaceVocabulary` pins both
+# at four and five tokens, and that file is outside this change's declared file set. So the two
+# constants above are left exactly as they were and the wider vocabulary is a THIRD constant beside
+# them; folding it back is a one-line change plus that one test (named in the hand-back).
+LINKEDIN_SWEEP_SURFACES = LINKEDIN_SURFACES | frozenset({"connections"})
+
+# A silence proof's four SLOTS, each satisfied by any one of its tokens. The `--probe --result
+# empty --read` check below iterates this, so the shipped `--read inbox,requests,invitations,degree`
+# and the new `--read inbox,requests,invitations,connections` are both accepted.
+LINKEDIN_REPLY_SLOTS = (("inbox",), ("requests",), ("invitations",), ("connections", "degree"))
+
 # design-linkedin-runner-resilience.md §6 — the old spelling stays ACCEPTED (profiles already
 # carry gap rows written this way) but is no longer the canon a shipped file instructs: every
 # `--gap` naming it is normalized to `linkedin:requests` at write time, printed once so the
@@ -673,6 +851,25 @@ def record_probe(root, subject, thread, result, medium="linkedin", mailbox=None,
     if by:
         rec["by"] = by
     return append(root, rec)
+
+
+def record_gap(root, run_id, scope, reason, closes_when="", covered_by="", at=None):
+    """The ONE writer of a `gap` row (factored out of main()'s `--gap` branch, dev #488 /
+    public #105, so `linkedin_sweep.py record` can file a `partial-results` gap without shelling
+    out). Returns the gap id. The caller owns scope normalisation and `covered_by` citation
+    normalisation; this validates only what a stored gap must carry to be countable."""
+    at = at or now_iso()
+    if not run_id:
+        raise JournalError("record_gap requires run_id")
+    if not scope:
+        raise JournalError("record_gap requires a scope")
+    if reason not in REASONS:
+        raise JournalError("record_gap reason %r is not in REASONS %r" % (reason, sorted(REASONS)))
+    gid = "%s:%s" % (run_id, re.sub(r"[^A-Za-z0-9:._-]+", "-", scope))
+    append(root, {"event": "gap", "run_id": run_id, "gap_id": gid, "scope": scope,
+                  "reason": reason, "covered_by": covered_by or "",
+                  "closes_when": closes_when or "", "at": at})
+    return gid
 
 
 def _parse_iso(raw):
@@ -1088,6 +1285,8 @@ def cmd_passes(root, today_only=False):
                     % (",".join(r.get("reached") or []) or "-",
                        ",".join(r.get("unreachable") or []) or "-",
                        ",".join(r.get("not_attempted") or []) or "-"))
+            if r.get("jobsearch"):
+                bits += " jobsearch=%s" % r["jobsearch"]
         elif r.get("phase") == "refused":
             bits += " reason=%s" % (r.get("reason") or "-")
         print("  %s" % bits)
@@ -1279,7 +1478,8 @@ def main():
     ap.add_argument("--read", metavar="SURFACES",
                     help="with --probe --medium linkedin --result empty: comma-separated "
                          "surfaces this look actually covered. `empty` is refused unless this "
-                         "names all four of inbox,requests,invitations,degree (D14) — a look "
+                         "names inbox, requests, invitations and one of degree/connections "
+                         "(D14; dev #488 -- the acceptance slot) — a look "
                          "that skipped one is not evidence of silence, and is recorded as a "
                          "'gap' instead, with no probe row")
     ap.add_argument("--by", choices=("owner",),
@@ -1312,6 +1512,11 @@ def main():
                     help="with --pass --phase returned: comma-separated LINKEDIN_SURFACES")
     ap.add_argument("--not-attempted", dest="not_attempted", metavar="SURFACES", default="",
                     help="with --pass --phase returned: comma-separated LINKEDIN_SURFACES")
+    ap.add_argument("--jobsearch", choices=JOBSEARCH_TOKENS, default=None,
+                    help="with --pass linkedin --phase returned (dev #692, R4): did the JOB SEARCH "
+                         "capability reach LinkedIn's job search this pass? `reached` means the "
+                         "pass owes a ROLES block; `unreachable` and `not-attempted` do not. "
+                         "daily-run reports it from the runner's hand-back, always.")
     ap.add_argument("--passes", action="store_true",
                     help="print every pass row by phase, oldest first (design-script-first.md "
                          "§2) — '0 passes' on an empty journal")
@@ -1345,7 +1550,10 @@ def main():
             # joining the coverage vocabulary must not make it required for a silence proof.
             if args.medium == "linkedin" and args.result == "empty":
                 read_surfaces = {s.strip() for s in (args.read or "").split(",") if s.strip()}
-                missing = LINKEDIN_REPLY_SURFACES - read_surfaces
+                # dev #488 / public #105 -- per SLOT, not per token: the acceptance slot is
+                # satisfied by `degree` (the one-off visit) or `connections` (the list).
+                missing = ["|".join(slot) for slot in LINKEDIN_REPLY_SLOTS
+                           if not read_surfaces.intersection(slot)]
                 if missing:
                     raise JournalError(
                         "--result empty refused (D14) — --read did not name %s. A LinkedIn "
@@ -1439,11 +1647,8 @@ def main():
                           % (LINKEDIN_MESSAGE_REQUESTS_ALIAS, LINKEDIN_MESSAGE_REQUESTS_CANON))
                     scope = LINKEDIN_MESSAGE_REQUESTS_CANON
                 covered_by = normalize_citation(args.covered_by) if args.covered_by else ""
-                gid = "%s:%s" % (args.run, re.sub(r"[^A-Za-z0-9:._-]+", "-", scope))
-                append(root, {"event": "gap", "run_id": args.run, "gap_id": gid,
-                              "scope": scope, "reason": args.reason,
-                              "covered_by": covered_by,
-                              "closes_when": args.closes_when or "", "at": at})
+                gid = record_gap(root, args.run, scope, args.reason,
+                                 closes_when=args.closes_when, covered_by=covered_by, at=at)
                 print(gid)
             if args.end:
                 # design-linkedin-runner-resilience.md §4 (closes D-5) — derived at write time,
@@ -1451,6 +1656,21 @@ def main():
                 # nothing ends clean) alongside the journal-wide count (an older gap standing
                 # elsewhere stays visible in gaps_open_all and --check, never hidden by a clean
                 # --end elsewhere).
+                # dev #692 / public #140 (N5) -- a pass that RETURNED with nothing accounted is a
+                # gap, written HERE so this run's own `gaps_open` and its footprint include it.
+                # Skipped when the run already holds an open gap with that scope (the gate files
+                # one itself when it REFUSES a block).
+                for surface in roles_missing(read(root), args.run):
+                    scope = ROLES_GAP_SCOPE % surface
+                    if any(g.get("scope") == scope
+                           for g in open_gaps(read(root), run_id=args.run)):
+                        continue
+                    record_gap(root, args.run, scope, "partial-results",
+                               closes_when="the pass's ROLES block is accepted by "
+                                           "deferred.py --add-roles --surface %s" % surface,
+                               at=at)
+                    print("ROLES NOT ACCOUNTED (%s): the pass returned, no ROLES block was "
+                          "accepted — gap filed" % surface)
                 recs_before_end = read(root)
                 gaps_open_run = len(open_gaps(recs_before_end, run_id=args.run))
                 gaps_open_all = len(open_gaps(recs_before_end))
@@ -1487,7 +1707,8 @@ def main():
                 not_attempted = [s.strip() for s in args.not_attempted.split(",") if s.strip()]
                 record_pass(root, args.run, args.pass_kind, args.phase,
                            reached=reached, unreachable=unreachable,
-                           not_attempted=not_attempted, reason=args.reason, at=at)
+                           not_attempted=not_attempted, reason=args.reason, at=at,
+                           jobsearch=args.jobsearch)
                 print("pass %s %s recorded" % (args.pass_kind, args.phase))
             return 0
 

@@ -247,16 +247,41 @@ demonstrably alive and waking it is treating the wrong fault.
 
 ### When you conclude the browser is unusable, do all three
 
+<!-- pass-branch:begin -->
+**A PASS** — the gap, then the owed pass, queued by the script (fixed text, no argument, and **no
+row at all while one is already pending**; never write the queue text yourself):
+
 ```bash
 ~/.claude/jobsearch/run journal.py --run <id> --gap linkedin:<what> --reason browser-unavailable \
   --closes-when "a run with a working browser completes the sweep"
+~/.claude/jobsearch/run deferred.py --add-linkedin-pass
+```
+<!-- pass-branch:end -->
+
+<!-- non-pass-branch:begin -->
+**NOT A PASS** — the same gap, then the work that was asked for, in your own words, so another
+worker can claim exactly it:
+
+```bash
+~/.claude/jobsearch/run journal.py --run <id> --gap linkedin:<what> --reason browser-unavailable \
+  --closes-when "a run with a working browser completes the lookup"
 ~/.claude/jobsearch/run deferred.py --add "<the work>" --requires chrome
 ```
+<!-- non-pass-branch:end -->
 
 and **flag it at the top of the run summary**. The gap makes it sortable and escalating, the
 deferred entry makes it claimable, and the flag makes it visible today. ⚠️ **A skip that is only
 announced in prose is identical, from the outside, to LinkedIn having had nothing** — which is the
 failure the journal and the queue both exist to prevent.
+
+**Which branch am I in?** A **PASS** is the daily LinkedIn pass: a dispatch whose prompt carries a
+`WORKLIST` block (daily-run §4, or `/jobsearch:linkedin`). Anything else is **NOT A PASS**: a
+contact-path lookup for a named company, or any other request for the authenticated browser (the
+plugin coordinator routes "anything needing the authenticated browser" here). They queue
+differently because the owed pass is ONE standing item, while a one-off request is its own work
+(dev #481 / public #112). **The one-off degree check** (a WORKLIST holding a single `match=` line)
+is neither: it runs with the owner present, so a failure is reported to them and **nothing is
+queued**.
 
 ## Chrome extension — FALLBACK ONLY, when the in-app pane is not signed in
 
@@ -341,8 +366,8 @@ On a confirmed stall (two candidates, 4s+ apart, both visible):
    re-claim the same still-stalled pane.
 3. `~/.claude/jobsearch/run journal.py --run <id> --gap linkedin:pane --reason render-stalled`,
    plus **one `--gap linkedin:<token> --reason render-stalled` per surface this stall kept you
-   from reaching** (the five-token vocabulary below — `inbox`, `requests`, `invitations`,
-   `degree`, `notifications`).
+   from reaching** (the coverage vocabulary below — `inbox`, `requests`, `invitations`,
+   `connections`, `notifications`).
 4. **Stop every click-dependent surface for the rest of THIS pass — no click is re-issued after a confirmed stall verdict.**
    A read (`read_page`, `get_page_text`, `find`) may still be
    retried; a click may not — the DOM may have taken the click without painting, and "landed"
@@ -351,22 +376,32 @@ On a confirmed stall (two candidates, 4s+ apart, both visible):
    FALLBACK ONLY for a pane that is not SIGNED IN (below), never for a pane that stalled. Never
    run `wake_chrome.sh` for a pane fault — the pane is not wedged, and quitting the candidate's
    real Chrome fixes nothing here.
-6. `~/.claude/jobsearch/run deferred.py --add "<the work the stall blocked>" --requires chrome`
-   — queued for a session whose probe finds the pane usable again, per §5.1's own state gate.
+6. Queue what the stall blocked, for a session whose probe finds the pane usable again, per §5.1's
+   own state gate. **A pass:**
+   <!-- pass-branch:begin -->`~/.claude/jobsearch/run deferred.py --add-linkedin-pass`<!-- pass-branch:end -->
+   (the same script-built item as above; no row if one is already pending). **Not a pass:** the
+   free-text form under "When you conclude the browser is unusable" above.
 7. Release the pane lock and end the journal run as usual (§"What you hand back") — a stalled
    pass still finishes cleanly from the lock's point of view; it is the WORK that is deferred,
    not the housekeeping.
 
-**1. REPLY CHECK — driven by the outreach state, and it covers EVERY response surface.**
-For each `data/touches.jsonl` row (ADR-031 B3 — was a nested `outreach[]` row) with medium
-`linkedin-*` and `outcome` in (`awaiting`, `accepted`):
-open the person's thread via **profile → Message** and report replied / accepted / no change.
-Then, regardless of the per-person list, open the coverage vocabulary's five tokens
-(`journal.LINKEDIN_SURFACES`) — **`invitations`** (sent invitations: acceptances AND **replies
-attached to invitations**); **`requests`** (message requests — a separate surface from the
-inbox); **`inbox`** (BOTH Focused and Other tabs); **`notifications`** (the bell); and
-**`degree`** (the per-contact connection-degree check below — a read of a person's page, not a
-UI surface you "open" once).
+**1. REPLY CHECK — driven by the outreach state, and it covers EVERY response surface — and it
+works ONLY from the WORKLIST** (dev #484 / public #109, dev #488 / public #105). The dispatching
+prompt carries a `WORKLIST` block that a script built from the stored touches (every
+`data/touches.jsonl` row with medium `linkedin-*` and `outcome` in `awaiting`/`accepted`). **Open
+only the URLs it lists, and never explore.** **A routine pass never visits a person's profile:**
+the old "profile → Message" walk is retired (owner decision 2026-10-03). Acceptance is read from
+the recency-sorted **Connections** list, and the degree check is an explicit one-off the owner
+asks for (§"REPLY CHECKS: DEGREE, NOT JUST THREADS"). For each `SURFACE` line, read the list from
+the top until a row is dated at or before its `back-to`, the list ends, or you cannot go further,
+then report what you reached. A `THREAD` line is the one place a person's own thread is opened
+directly. **A WORKLIST with no `WATCH` line is still a pass:** read each list's first view and
+report it. The coverage vocabulary (`journal.LINKEDIN_SWEEP_SURFACES`) is the four LIST surfaces
+the sweep reads — **`invitations`** (sent invitations: **replies attached to invitations**, and
+which are still pending); **`requests`** (message requests — a separate surface from the inbox);
+**`inbox`** (BOTH Focused and Other tabs); **`connections`** (the Connections list, newest first:
+where an acceptance is read) — plus **`notifications`** (the bell) and **`degree`** (a one-off's
+profile visit, never part of a routine pass).
 ⭐ **A 3rd-degree recipient can REPLY TO AN INVITATION WITHOUT ACCEPTING IT** — that response
 appears on `invitations`/`requests` and NEVER in the inbox, which is exactly how a 3rd-degree
 hiring-line response (<an employer>) went unseen on 2026-08-04 while the sweep read "no new
@@ -374,8 +409,9 @@ replies." The candidate's mailbox receives NO LinkedIn notification emails, so t
 is the ONLY detector. (Per the candidate, 2026-08-04: "if our process has me sending messages &
 connection requests, it should be checking linkedin messages.")
 
-**⭐ PER-SURFACE COVERAGE IS PART OF THE REPORT — name each of the five tokens as REACHED,
-UNREACHABLE, or NOT-ATTEMPTED, every pass (public #15).** `requests` was unreachable in three
+**⭐ PER-SURFACE COVERAGE IS PART OF THE REPORT — name each token (the four list surfaces and
+`notifications`) as REACHED, UNREACHABLE, or NOT-ATTEMPTED, every pass (public #15),** as
+`SURFACE` lines of the SWEEP block below. `requests` was unreachable in three
 consecutive runs while the others stayed reachable in the same runs — so "the reply check ran"
 is NOT evidence that `requests` was covered, and inbound messages landing there are invisible
 while the gap stands. **Treat any token with a history of failing as a declared blind spot, not
@@ -394,37 +430,58 @@ drift, is why the token was unreached — see above.) Name it in the report's bl
 ⚠️ **A sub-surface silently skipped is identical, from the outside, to one read and found
 empty** — the same shape `route.py` exists to prevent for sourcing channels, and the same shape
 as the truncating Sent-Invitations list below. Never report the reply check as complete without
-saying which of the five tokens you actually reached.
+saying which tokens you actually reached.
 
-**⭐ THE PROBE — record the look, for `brief.py`'s evidence (Query or Citation C1, §4.5).**
-When a per-person thread check above finds no reply, record it as a `probe`, not silence:
-
-```bash
-~/.claude/jobsearch/run journal.py --probe contact:<people-id> --thread contact:<people-id> \
-  --medium linkedin --result empty --read inbox,requests,invitations,degree
-```
-
-**`--read` must name all four of `journal.LINKEDIN_REPLY_SURFACES` — `inbox`, `requests`,
-`invitations`, `degree` — or `--result empty` is REFUSED (D14).** `notifications` is coverage
-vocabulary only (decision 4: the bell has never been the surface a reply was found on, so it is
-never required for a silence proof) and is deliberately absent from `--read`. A look that
-skipped one of the required four (the `requests` gap is the recurring case) is not evidence of
-silence, only a look that covered all four is. When `requests` is unreachable this pass, do not
-call `--probe --result empty` for that person at all; the `--gap linkedin:requests` record above
-is the honest state instead. A person you DID find a reply from is `--result
-thread:<the reply's ISO date>`, not `empty`.
+**⭐ EVERY VIEW COMES BACK — you no longer record the look yourself (dev #484 / public #109 case
+2).** Every page or thread you open, **for any reason** (a `THREAD` line, a one-off's profile, a
+thread you opened to read a reply), is returned as a `VIEW` line in your SWEEP block. The
+dispatching session runs `linkedin_sweep.py record`, which is the ONLY thing that turns a
+hand-back into "no change": it journals what a view proves through the existing probe row, so a
+later brief cites it instead of dispatching a second look. **Do not call `journal.py --probe`
+yourself, and never write "no change" or "still pending" for a person in prose.** A `saw=message:`
+view names the date of the newest message FROM THEM; `saw=empty` is a thread with none. Silence is
+concluded by `record` alone, and only for a person every list covered (read to the person's send
+date, or listed in full): a list that showed 10 of 25 proves nothing about the other 15, and
+`record` refuses to say it did (`!! INCOMPLETE COVERAGE`, a `partial-results` gap, exit 3). Report
+what each list SHOWED, honestly: `shown=` what you could see, `total=` what the page says it
+holds (`?` when it does not say), `oldest=` the date of the last row you read (`?` when rows carry
+no date). When `requests` is unreachable this pass, still file the `--gap linkedin:requests`
+record above, and still report the SURFACE line as UNREACHABLE.
 
 **2. INBOX SCAN** — new recruiter InMail/messages not in the tracker.
 
 **3. JOB SEARCH — run BOTH every time, not just remote:**
-   - **remote US** (`f_WT=2`), posted last 24h (`f_TPR=r86400`), for each configured title.
-   - **the primary commute anchor with its stated radius** (`config.geography.commute_anchors` —
-     `~/.claude/jobsearch/run profile.py`), on-site + hybrid (`f_WT=1,3`), last 24h, same titles. **The
-     anchor is home base and a first-class priority, not a remote-search afterthought.** Also
-     include the tier-3 local-only titles from `configure/strategy.md`'s TITLE SET here.
 
-   **Skip noise:** gig "AI Trainer" listings, volunteer roles, posts open 5+ months, anything
-   already tracked or excluded.
+   **⭐ THE WINDOW, THE TITLES AND THE GEOGRAPHIES COME FROM THE `JOBSEARCH` LINE OF YOUR WORKLIST,
+   never from this file** (dev #489 / public #102). It reads `JOBSEARCH window=<daily|wide>
+   f_TPR=<r86400|r604800> titles=<configured|all> geo=<remote[,local]>`, built by a script. On an
+   ordinary day it is `window=daily f_TPR=r86400` ("Past 24 hours") with the configured titles; once
+   a week it is `window=wide f_TPR=r604800` ("Past week") with the FULL title set (`targets.titles`
+   plus the tier-3 local-only titles from `configure/strategy.md`'s TITLE SET), because a role
+   missed on its first day is otherwise never seen again. Select the window with the page's own
+   "Date posted" filter and read the URL parameter it writes. **Use only those two options.** Never
+   compute a window, never type a different `f_TPR`. If the page will not take the window you were
+   given, say so on that query's line (`unapplied`) and carry on; the script counts it as a gap.
+   - **`geo=remote`:** remote US (`f_WT=2`), for each title the line names.
+   - **`geo=local`:** the primary commute anchor with its stated radius
+     (`config.geography.commute_anchors` — `~/.claude/jobsearch/run profile.py`), on-site + hybrid
+     (`f_WT=1,3`), same titles. **The anchor is home base and a first-class priority, not a
+     remote-search afterthought.**
+
+   **⭐ EVERY ROLE YOU SEE IS ACCOUNTED FOR (dev #692 / public #140).** Do not summarise results as
+   "N seen, top few captured". Write the `ROLES v1` block (grammar under "What you hand back"): one
+   `QUERY` line per search you ran or could not run, one `ROLE` line for **every distinct role any
+   search showed you** (the same posting under two searches is ONE line), and `SEEN distinct=<n>`
+   equal to the number of `ROLE` lines. A script (`deferred.py --add-roles`) resolves each line to
+   captured, already known, carried forward as its own queue item, or a per-role gap, and refuses
+   the whole block when the count and the lines disagree. A role whose URL you cannot read is a
+   `ROLE nourl` line, never a dropped one. Copy a posting's own URL exactly; strip any `"` from a
+   title, company or location you copy into a quoted field.
+
+   **Skip noise:** gig "AI Trainer" listings, volunteer roles and posts open 5+ months are not
+   roles this search is for, so they are not listed. **A role that is already tracked or excluded
+   IS listed**: the script resolves it to `known`, so you no longer filter by your own cross-check
+   against the pipeline (that judgement moved into `deferred.py --add-roles`).
 
 **4. CONTACT PATH** — for a company, find a Talent/Recruiting/People person via people search.
 Prefer current employees. **Note mutual connections ONLY if they actually exist.**
@@ -450,12 +507,22 @@ canary tab.**
 
 ---
 
-## ⭐ REPLY CHECKS: DEGREE, NOT JUST THREADS (standing — do not wait to be asked)
+## ⭐ REPLY CHECKS: ACCEPTANCE, NOT JUST THREADS (standing — do not wait to be asked)
 
 **An acceptance is not a message.** It changes connection degree to 1st and sends nothing at all,
-so **an empty message thread is never evidence of no reply.** Always check **connection DEGREE and
-the Sent Invitations list.** Report per named contact: current degree, whether a pending invite is
-still in Sent Invitations, and any recently-added connection.
+so **an empty message thread is never evidence of no reply.** An acceptance is therefore read
+POSITIVELY from the **Connections** list, which is sorted newest first: report a `SEEN … on=connections
+state=accepted` line for each watched person you find in it, reading down to the `back-to` date. **Never
+infer an acceptance from a person's absence from Sent Invitations** — an invitation leaves that list
+when it is accepted, withdrawn or expired, so absence says nothing (dev #488 / public #105).
+
+**⭐ The degree check is a ONE-OFF, never part of a routine pass (owner decision 2026-10-03).** When
+the dispatching prompt carries a one-off WORKLIST (it holds exactly one `WATCH … match=<profile
+url>` line), open that one profile, report its connection degree as a `VIEW … kind=profile
+saw=degree:<1|2|3|pending>` line, and read whether an invitation to that person is still pending in
+`invitations`. The visit is journaled as a probe by `record --one-off`. Nothing in a routine pass
+ever opens a profile, and a one-off never queues anything: it runs with the owner present, and a
+failure is reported to them.
 
 **⚠️⚠️ SENT INVITATIONS TRUNCATES, AND THE GAP IS WIDENING — NEVER CONCLUDE FROM IT.**
 Measured: it rendered **10 of 20** on 2026-08-02 and **10 of 25** on 2026-08-04, with no
@@ -519,10 +586,78 @@ knowing which of these applies, and a reader cannot tell from the findings alone
 Then, per capability you ran: what you found, or an explicit "nothing new". ⚠️ **A capability you
 did NOT run is named as not run** — a silent omission and a genuine zero are indistinguishable,
 and this agent covers the only surface where LinkedIn replies exist. **For the REPLY CHECK, that
-resolution goes down to the surface: name each of the five tokens — `invitations`, `requests`,
-`inbox` (Focused+Other), `notifications`, `degree` — individually as REACHED, UNREACHABLE, or
-NOT-ATTEMPTED.** `requests` is a known repeat offender (public #15), and an unreached `requests`
-folded into "reply check: done" is the exact defect that issue records.
+resolution goes down to the surface: name each token — `invitations`, `requests`, `inbox`
+(Focused+Other), `connections`, `notifications` — individually as REACHED, UNREACHABLE, or
+NOT-ATTEMPTED** (a one-off adds `degree` through its `VIEW` line). `requests` is a known repeat
+offender (public #15), and an unreached `requests` folded into "reply check: done" is the exact
+defect that issue records.
+
+**⭐ THE SWEEP BLOCK — your reply-check result is a block a script parses, not prose (dev #484 /
+public #109, dev #488 / public #105).** Write it, byte for byte in this grammar, into your hand-back
+file (rule 6: the folder is `<profile root>/.jobsearch/handbacks/`), starting that file with the SAME
+first line as your reply, and hand back the file's path. Your reply stays within ten lines. The
+dispatching session runs `linkedin_sweep.py record` on the file, and **that script, not you,
+concludes "no change"**: it refuses a block it cannot read in full, any `contact:` the worklist did
+not name, and any silence conclusion for a person a partial list did not cover. A `run=` that does
+not match the dispatch is refused. `record` measures the four list surfaces; **JOB SEARCH and
+NOTIFICATIONS are not measured by it and do not gate closure of the owed pass**, so report their
+results as you always have.
+
+<!-- sweep-grammar:begin -->
+```text
+--- WORKLIST v1 run=<run-id> ---                      (what you are given; you never write one)
+SURFACE <token> url=<url> back-to=<YYYY-MM-DD|all|none> [positive-only]
+JOBSEARCH window=<daily|wide> f_TPR=<r86400|r604800> titles=<configured|all> geo=<remote[,local]> [wide-due-since=<YYYY-MM-DD|never>]
+WATCH contact:<id> since=<YYYY-MM-DD|?> medium=<linkedin-*|?> name="<display name>" [match=<profile url>]
+THREAD contact:<id> url=<messaging thread url>
+--- END WORKLIST ---
+
+--- SWEEP v1 run=<run-id> ---                         (what you hand back, in your hand-back file)
+SURFACE <token> REACHED shown=<n> total=<m|?> oldest=<YYYY-MM-DD|?>
+SURFACE <token> UNREACHABLE reason=<journal.REASONS code>
+SURFACE <token> NOT-ATTEMPTED
+SEEN contact:<id> on=<token> state=<accepted|reply|pending> date=<YYYY-MM-DD|?>
+VIEW contact:<id> kind=<thread|profile> at=<ISO time> saw=<empty|message:<YYYY-MM-DD>|degree:<1|2|3|pending>>
+--- END SWEEP ---
+```
+<!-- sweep-grammar:end -->
+
+`back-to=none` means no one is watched: read each list's first view and report it. `positive-only`
+(sent invitations) means presence is pending and absence proves nothing. `state=accepted` is read
+only on `connections`, `state=reply` only on `inbox`, `requests` or `invitations` and always with its
+date, `state=pending` only on `invitations`. `match=` appears only in a one-off. A line that
+fits none of these forms refuses the whole block, so write nothing else inside it. The `JOBSEARCH`
+line is what you are given for capability 3 (never write one); a one-off worklist has none.
+
+**⭐ THE ROLES BLOCK — what your JOB SEARCH saw, as data a script parses (dev #692 / public #140,
+dev #489 / public #102).** Write it into the SAME hand-back file, after the SWEEP block, in exactly
+this grammar. `deferred.py --add-roles` accepts it only when `SEEN distinct` equals the number of
+`ROLE` lines, and resolves every `ROLE` line to captured / known / carried / a per-role gap. Use
+`surface=linkedin-jobsearch` and the `window=` your `JOBSEARCH` line gave you; every reached
+`QUERY` carries that line's own bucket as its `window=` (`unapplied` when the page would not take
+it); a search you could not run is an `unreachable` QUERY with a `journal.REASONS` code. A title,
+company or location containing a double quote has it replaced by `'`.
+
+<!-- roles-grammar:begin -->
+```text
+--- ROLES v1 run=<run-id> surface=<linkedin-jobsearch|board> window=<daily|wide|none> ---
+QUERY geo=<remote|local> title="<query>" window=<r86400|r604800|none> shown=<n> total=<m|?> [unapplied] [channel=<channel_id>]
+QUERY geo=<remote|local> title="<query>" unreachable reason=<journal.REASONS code> [channel=<channel_id>]
+SEEN distinct=<n>
+ROLE url=<posting url> title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|?>
+ROLE nourl title="<t>" company="<c>" reason=<journal.REASONS code>
+--- END ROLES ---
+```
+<!-- roles-grammar:end -->
+
+`total=?` when the page does not say how many results it holds; `total` larger than `shown` marks a
+truncated result (the script files a gap for it, so say what you could see rather than claim a
+full read). `posted=` is the date the page shows converted to `YYYY-MM-DD`, `?` when it shows
+none. `window=none` and `channel=` are for `board-sweeper`; **a LinkedIn block has no
+`channel=`**. **Report the JOB SEARCH capability alongside the five reply tokens:** `jobsearch` is
+`reached` when at least one job search ran, `unreachable` when none could, `not-attempted` when
+you did not run it. The dispatching session records that token, and a `reached` pass with no
+accepted ROLES block is a gap.
 
 Close with anything blocked: a session that was not signed in, a page that would not render, a
 call that timed out. **`BROWSER UNAVAILABLE` is a complete, acceptable answer** and is far better

@@ -132,11 +132,44 @@ silence detection, the dashboard — is free at every tier and carries most of t
 
 Set `search.posture` in your configuration, or define your own tier.
 
+**What a posture limits, and what it does not.** A posture controls **how often** the search
+runs and **which model work** (agents) a run may start without you. It never controls **how
+much of what a run finds is processed.** Under every posture, including `minimal` and
+`economy`:
+
+- every role a run sees is accounted for, one by one. It is captured, already known, carried
+  forward as its own queued item, or recorded as a named gap. A run never ends on "12 roles
+  seen, top few captured";
+- every captured role gets a **minimal screen**, done by a script with no agent and no tokens:
+  your comp floor, whether you already passed on or applied to it, geography, and whether the
+  title matches one of yours. The title check only marks a role for your review; it never
+  removes one. A mandate rule is not scripted, and the screen says so on each role instead of
+  staying quiet.
+
+Only the **model work** is gated. Research and drafting that your posture refuses are **queued,
+not dropped**: each shows as a held item (*held by posture*) and the next run whose posture
+permits it picks it up, with nothing for you to re-request.
+
+**A run counts as unattended unless you say otherwise.** A scheduled run, or a session where you
+just type `/jobsearch:daily-run`, follows the posture. To get research by hand on a tier that
+would hold it, start the run in its attended form: `/jobsearch:daily-run attended`. The engine
+never guesses that you are at the keyboard. Attended lifts the research and drafting limit
+only. It never lets a run touch LinkedIn, which stays governed by the posture's LinkedIn quota
+and by whether a signed-in browser is available.
+
 **LinkedIn passes are capped independently of runs/day.** A run above its posture's LinkedIn
-quota still does everything else — sweeps, screening, research, drafting — it just skips the
-LinkedIn pass for the rest of that day. `economy` and `standard` get one LinkedIn pass a day
-even though they run 2 or 3 times; `full` gets two even though it runs 5 times. Set
-`search.postures.<tier>.linkedin_runs_per_day` to change it for your own tier.
+quota still does everything else its posture permits, and still accounts for and screens every
+role it finds. It just skips the LinkedIn pass for the rest of that day. `economy` and
+`standard` get one LinkedIn pass a day even though they run 2 or 3 times; `full` gets two even
+though it runs 5 times. Set `search.postures.<tier>.linkedin_runs_per_day` to change it for
+your own tier.
+
+**Once a week, that day's LinkedIn pass looks further back.** The daily pass uses LinkedIn's
+own "Past 24 hours" filter. One pass a week uses "Past week" instead, so a role missed on its
+first day is seen a second time. It is not an extra pass: it is that day's pass, inside the
+same daily quota, so it adds no cost, and on a tier whose quota is `0` it does not run. The run
+summary then says the wide look is due and was not run, and why. Roles it re-surfaces go through
+the same accounting as any other, and roles you already know about are not created twice.
 
 ---
 

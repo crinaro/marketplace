@@ -42,6 +42,17 @@ create` calls it before it writes an opportunity row, and `--match` here answers
 caller that has no row yet. Do not re-derive it elsewhere: a second copy of the normalization
 table is how two paths come to disagree about which roles are the same.
 
+⭐ ONE JOB-URL CANONICALIZATION, AND "KNOWN" COVERS ACTIVE ROWS TOO (dev #692 / public #140, N6).
+`canonical_job_url()` below is the only definition of "the same posting by URL": the roles gate
+(`deferred.py --add-roles`) uses it to decide whether a role it was shown is already in the
+pipeline, to key the carry-forward item it creates (`ref`), and `--settle` uses it to close that
+item once the role has a record. A tracking-parameter variant of a URL therefore resolves to one
+posting everywhere, and an id-less LinkedIn URL is never "canonicalized" to a guess (it returns
+None and the gate makes it a per-role gap). `find_known_match()` answers "does the pipeline already
+hold this role?" for BOTH excluded rows (a passed role stays passed) and ACTIVE rows (not excluded,
+not expired); an expired row never matches, because a repost of a vanished posting is a second
+chance that must surface (`find_excluded_match`'s own rule, unchanged).
+
 Python 3.9+. Standard library only.
 """
 
@@ -51,6 +62,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -106,6 +118,122 @@ def normalize_title(title):
     return " ".join(words)
 
 
+# dev #692 / public #140 (N6) -- tracking parameters dropped from a NON-LinkedIn job URL. Fixed and
+# short on purpose: a board's query string can BE the job's identity (an ATS `?gh_jid=` id), so
+# only keys that exist to track a click are removed -- `utm_*` by prefix, the rest by name,
+# compared case-insensitively. RFC 3986 §6 warns that dropping a query is not a generic
+# normalization; it is done here for named keys only.
+TRACKING_PARAMS = frozenset({"gclid", "fbclid", "msclkid", "trk", "trackingid", "refid", "ref",
+                             "src"})
+
+_LINKEDIN_VIEW_RE = re.compile(r"^/(?:comm/)?jobs/view/(?:[^/?#]*-)?(\d+)/?$")
+_LINKEDIN_ID_RE = re.compile(r"^\d+$")
+
+
+def canonical_job_url(url):
+    """The ONE canonical form of a job posting URL, or None when there is none to give.
+
+    * not `http`/`https`, or no host -> None (this is not a URL a posting can be matched on);
+    * a LinkedIn host (`linkedin.com` or a subdomain): the job id alone identifies the posting
+      (OURS, diverging from RFC 3986 §6's warning on purpose), taken from `/jobs/view/<id>`,
+      `/jobs/view/<slug>-<id>`, `/comm/jobs/view/<id>` or the `currentJobId=<digits>` query
+      parameter, and returned as `https://www.linkedin.com/jobs/view/<id>/`. NO id -> None: a
+      LinkedIn URL with no job id is never canonicalized to a guess (the gate makes it a
+      per-role gap);
+    * any other host: scheme and host lower-cased, fragment dropped, `TRACKING_PARAMS` and
+      `utm_*` removed, the remaining pairs sorted, one trailing `/` stripped from a non-root path.
+
+    `urlsplit()` validates nothing, so the host and scheme are checked explicitly."""
+    raw = str(url or "").strip()
+    if not raw:
+        return None
+    try:
+        parts = urllib.parse.urlsplit(raw)
+    except ValueError:
+        return None
+    scheme = (parts.scheme or "").lower()
+    host = (parts.hostname or "").lower()
+    if scheme not in ("http", "https") or not host:
+        return None
+    if host == "linkedin.com" or host.endswith(".linkedin.com"):
+        m = _LINKEDIN_VIEW_RE.match(parts.path)
+        job_id = m.group(1) if m else None
+        if not job_id:
+            for key, val in urllib.parse.parse_qsl(parts.query, keep_blank_values=True):
+                if key == "currentJobId" and _LINKEDIN_ID_RE.match(val):
+                    job_id = val
+                    break
+        return "https://www.linkedin.com/jobs/view/%s/" % job_id if job_id else None
+    pairs = [(k, v) for k, v in urllib.parse.parse_qsl(parts.query, keep_blank_values=True)
+             if k.lower() not in TRACKING_PARAMS and not k.lower().startswith("utm_")]
+    path = parts.path
+    if len(path) > 1 and path.endswith("/"):
+        path = path[:-1]
+    netloc = host + (":%d" % parts.port if parts.port else "")
+    return urllib.parse.urlunsplit((scheme, netloc, path, urllib.parse.urlencode(sorted(pairs)), ""))
+
+
+def _urls_equal(a, b):
+    """Same posting by URL: an identical non-empty string, or the same canonical form."""
+    sa, sb = str(a or "").strip(), str(b or "").strip()
+    if not sa or not sb:
+        return False
+    if sa == sb:
+        return True
+    ca, cb = canonical_job_url(sa), canonical_job_url(sb)
+    return ca is not None and ca == cb
+
+
+def normalize_company(name):
+    """casefold, punctuation to spaces, whitespace collapsed. NO suffix stripping and NO fuzzy
+    match: 'Acme Corp.' and 'acme corp' agree, 'Acme' and 'Acme Corp' do not (a wrong merge
+    costs a missed lead; a missed merge costs one more row to look at)."""
+    return " ".join(re.sub(r"[^\w]+", " ", str(name or "").casefold()).split())
+
+
+def resolve_company(name, companies):
+    """The `company_id` of the SINGLE company whose normalized `name` or `id` equals the
+    normalized `name`, else None. Zero matches or several (two companies sharing a normalized
+    name, or one's name equal to another's id) give None, and the caller then has NO company
+    basis -- it never takes the first of several."""
+    want = normalize_company(name)
+    if not want:
+        return None
+    hits = {c.get("id") for c in companies or []
+            if c.get("id") and (normalize_company(c.get("name")) == want
+                                or normalize_company(c.get("id")) == want)}
+    return next(iter(hits)) if len(hits) == 1 else None
+
+
+def find_known_match(opps, url=None, company_id=None, title=None, applications=None):
+    """The pipeline row a role seen in a pass duplicates, as `(row, basis, kind)`, or None.
+
+    `kind` is `"excluded"` (a passed / declined row -- `find_excluded_match`, unchanged) or
+    `"active"` (a row that is neither excluded nor expired). An EXPIRED row never matches: its
+    posting vanished before any decision, so a repost is a second chance that must surface
+    (module docstring). URL comparison is canonical (`canonical_job_url`) on the row's `jd_url`
+    and every `sightings[].source_url`; the company basis needs a resolved `company_id` and an
+    equal NON-EMPTY normalized title. Pure: it reads only what it is handed."""
+    hit = find_excluded_match(opps, company_id=company_id, title=title, jd_url=url,
+                              applications=applications)
+    if hit:
+        return hit[0], hit[1], "excluded"
+    active = [o for o in opps if not is_excluded(o) and not is_expired(o)]
+    if str(url or "").strip():
+        for o in active:
+            if _urls_equal(o.get("jd_url"), url):
+                return o, "jd_url", "active"
+            for s in o.get("sightings") or []:
+                if _urls_equal(s.get("source_url"), url):
+                    return o, "sighting url", "active"
+    want_title = normalize_title(title)
+    if company_id and want_title:
+        for o in active:
+            if o.get("company_id") == company_id and normalize_title(o.get("title")) == want_title:
+                return o, "company + title", "active"
+    return None
+
+
 def find_excluded_match(opps, company_id=None, title=None, jd_url=None, req_id=None,
                         applications=None):
     """The excluded row a sourced role duplicates, as `(row, basis)`, or None.
@@ -127,7 +255,9 @@ def find_excluded_match(opps, company_id=None, title=None, jd_url=None, req_id=N
     excluded = [o for o in opps if is_excluded(o)]
     if want_url:
         for o in excluded:
-            if str(o.get("jd_url") or "").strip() == want_url:
+            # dev #692 (N6): identical, OR the same canonical posting -- one definition of "the
+            # same URL" for this lookup, the roles gate and `--settle` alike.
+            if _urls_equal(o.get("jd_url"), want_url):
                 return o, "jd_url"
     if want_req:
         for o in excluded:

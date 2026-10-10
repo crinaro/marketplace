@@ -185,6 +185,14 @@ keyed the skip to THIS session's run_id in skill prose, so the next scheduled se
 run_id) re-claimed the same still-stalled pane. The withholding is data, read fresh every run,
 never a rule this file states.
 
+**⭐ The owed LinkedIn pass is listed, never claimed (dev #481 / public #112).** A failed pass
+queues ONE item (`deferred.py --add-linkedin-pass`, no row while one is pending), and `--claimable`
+prints it as `⇢ LINKEDIN PASS OWED` rather than offering it: §4's pass satisfies it every run, and
+`linkedin_sweep.py record` closes it once a pass reaches a list. Claiming it would run the pass a
+second time. **A free-text `chrome` item whose work is a LinkedIn reply/inbox/search pass** (rows
+queued before this release, by hand-written text) **is satisfied by §4's pass the same way: claim it
+before §4, `--done` it after §4's `record` exits 0 or 3, `--release` it otherwise.**
+
 **⭐ An item whose `what` starts with `brief.py --probe` (Query or Citation C1, §5.2) drains
 differently: run the `what` VERBATIM, then apply the disposition it prints** — every account
 `confirmed*` → exit 0 → `deferred.py --done <id>`; any account `unreachable`/`not-permitted`/
@@ -305,21 +313,58 @@ only a refusal is. So, once `posture.py --may linkedin` exits 0:
    ```bash
    ~/.claude/jobsearch/run journal.py --run <id> --pass linkedin --phase dispatched
    ```
-2. **After `linkedin-runner` hands back**, translate its own five-token REACHED / UNREACHABLE /
-   NOT-ATTEMPTED report (`linkedin-runner.md` §"What you hand back") directly into the `returned`
+2. **After `linkedin-runner` hands back**, translate its own per-surface REACHED / UNREACHABLE /
+   NOT-ATTEMPTED report (the `SURFACE` lines of its SWEEP block, `linkedin-runner.md` §"What you
+   hand back"; `connections` is a token like the rest) directly into the `returned`
    row — the SAME tokens, not a summary of them:
    ```bash
    ~/.claude/jobsearch/run journal.py --run <id> --pass linkedin --phase returned \
        --reached <tokens reported REACHED> --unreachable <tokens reported UNREACHABLE> \
-       --not-attempted <tokens reported NOT-ATTEMPTED>
+       --not-attempted <tokens reported NOT-ATTEMPTED> \
+       --jobsearch reached
    ```
+   **`--jobsearch` is the runner's own report on its JOB SEARCH capability, and it is always
+   passed (dev #692 / public #140, R4): `reached`, `unreachable` or `not-attempted`, exactly as
+   the runner reported it.** It is a separate token from the five reply surfaces, so
+   a pass that only searched jobs never spends the day's quota. `reached` means the pass owes a
+   `ROLES v1` block (below); `unreachable` and `not-attempted` owe none. `journal.py --end` gaps a
+   `reached` pass that has no accepted block, and the run summary prints `ROLES NOT ACCOUNTED`.
    **The quota only counts a `returned` row with at least one REACHED token** — a hand-back
-   where every one of the five tokens came back UNREACHABLE or NOT-ATTEMPTED still gets a
+   where every one of its tokens came back UNREACHABLE or NOT-ATTEMPTED still gets a
    `returned` row (it read *something*, even if nothing landed), it simply carries an empty
    `--reached` and does not consume the day's budget. A pass that never returns at all (the
    agent crashed mid-run, or ended before its own §"What you hand back" step) is a *crashed
    pass*, never papered over with a hand-written `returned` row — `journal.py --may
    linkedin`/`--passes` names it on its own line.
+
+**⭐⭐ EVERY ROLE A PASS SEES IS ACCOUNTED FOR, BY SCRIPT (dev #692 / public #140, dev #489 /
+public #102).** The JOB SEARCH result is a `ROLES v1` block in the runner's hand-back file, never a
+prose count. Right after `linkedin_sweep.py record` below, and once per returned pass:
+
+```bash
+~/.claude/jobsearch/run deferred.py --add-roles <the hand-back file's path> --run <id> --surface linkedin-jobsearch
+```
+
+Every `ROLE` line ends as **captured** (the runner already wrote the record; its opp id is printed
+with a `SCREEN` line), **known** (already in the pipeline, active or passed), **carried** (one
+`capture-role` queue item per role, `ref` the canonical URL), or a **per-role gap**. Exit **3**
+means the block was refused whole (`SEEN distinct` did not equal the `ROLE` lines, a line fitted no
+form, or there was no block): nothing was written but one `partial-results` gap, and the defect in
+the hand-back is reported, never patched by hand. In the write phase (§7) each carried role gets
+`record.py create … --already-locked` and the minimal screen, then `deferred.py --settle` closes
+the items that now have a record; whatever is not captured stays a pending row, listed by
+`--claimable` on every posture, so the run cannot end on "N seen, top few captured".
+
+**The weekly wide re-scan is the same pass, not a second one (dev #489 / public #102, R5).** The
+worklist's `JOBSEARCH` line says which window this pass runs: `window=daily f_TPR=r86400`
+("Past 24 hours") on an ordinary day, `window=wide f_TPR=r604800` ("Past week", the full title
+set) while the weekly re-scan is due. Paste it with the rest of the worklist and the runner reads
+its window from it. LinkedIn's two UI buckets are the only windows; nothing is computed. A wide
+pass counts only when every requested geography had a reached, window-applied query. A day the
+pass is refused (`minimal` posture, the quota, no browser) is not made up: wide stays due, and the
+summary prints `wide re-scan due since <date>, not run (<reason>)`. The summary lines come from
+`run_summary.py`, not from you: `sourcing (daily)`, `wide re-scan: N re-surfaced`, `ROLES NOT
+ACCOUNTED`.
 
 **⭐⭐ THE RESPONSE SWEEP IS DRIVEN BY THE OUTREACH STATE, NOT BY UI SURFACES (2026-08-04, per the
 candidate: "if our process has me sending messages & connection requests, it should be checking
@@ -331,19 +376,54 @@ that response lands on the invitations/message-requests surfaces the sweep never
 2026-08-04 — zero in 2 days despite two known acceptances), so the browser pass is the ONLY
 detector for LinkedIn events.
 
-**The sweep, every run:**
-1. Build the check-list FROM THE DATA: every `data/touches.jsonl` row (ADR-031 B3 — was a nested
-   `outreach[]` row) with medium `linkedin-*` and
-   `outcome` in (`awaiting`, `accepted`) — `~/.claude/jobsearch/run pipeline_index.py` or the JSONL.
-2. For EACH person on that list, open their thread via profile → Message (in-app message SEARCH
-   false-negatives; never use it to conclude absence) and report replied / accepted / no change.
-3. Then the four surfaces, **INBOX FIRST**: the **Focused AND Other inbox tabs**, **message
-   requests**, the notification bell, and **Sent invitations LAST — it truncates.** Measured at
+**⭐⭐ THE WORKLIST GOES IN AND THE VERDICT COMES OUT, BOTH BY SCRIPT (dev #484 / public #109, dev
+#488 / public #105).** The check-list is built from the data by a script, not by the runner:
+
+```bash
+~/.claude/jobsearch/run linkedin_sweep.py worklist --run <id>
+```
+
+**Paste its block, verbatim, into the `linkedin-runner` dispatch prompt: the runner's reply sweep
+works ONLY from that list and never explores.** It holds one `WATCH` line per open touch (every
+`data/touches.jsonl` row with medium `linkedin-*` and `outcome` in `awaiting`/`accepted`), the four
+list surfaces to read and how far back to read each, and a `THREAD` line only where a thread URL is
+on record. **A routine pass never visits a profile:** the old profile → Message walk is retired,
+because acceptance is read POSITIVELY from the recency-sorted Connections list, never inferred from
+absence on a truncated list. The runner writes its result as a SWEEP block in its hand-back file
+(`linkedin-runner.md` §"What you hand back"). **After it returns, the verdict is a script too:**
+
+```bash
+~/.claude/jobsearch/run linkedin_sweep.py record --run <id> --file <the hand-back file's path>
+```
+
+Its printed lines are the verdict, and they are the ONLY source for what you write below:
+`ACCEPTED` / `REPLIED` (act on them), `NO CHANGE` (silence, concluded only for a person every list
+covered; it also journals the look as a probe, so a later brief cites it instead of dispatching
+again), and **`!! INCOMPLETE COVERAGE` (a list showed part of what it holds; the person is NOT
+concluded, a `partial-results` gap is filed, and "still pending" is never written by you).** Exit
+**0** every person concluded · **3** some not concluded (the pass still counts) · **2** the
+hand-back was refused, nothing journaled, and the pass stays owed · **4** the pass failed (a
+reserved first line, or no list surface reached) and the owed item is queued. **`record` closes the
+owed LinkedIn pass row only when at least one list surface was REACHED.** Job search and
+notifications are not measured by it and do not gate closure; report them as before. A line it
+refuses is a defect in the hand-back to report, never to patch by hand.
+
+**The one-off degree check** (owner decision 2026-10-03): before drafting a message that is NOT a
+first connection note to a person with no LinkedIn contact on record, dispatch the runner with
+`linkedin_sweep.py worklist --run <id> --one-off contact:<id>` (it holds that person's profile URL
+and nothing else), then `linkedin_sweep.py record --run <id> --one-off contact:<id> --file <path>`.
+Its visit is journaled; a failed or garbled hand-back is reported to the owner and **never queues
+the daily pass**. A first connection note needs no one-off.
+
+**The sweep covers, in order:**
+1. **INBOX FIRST**: the **Focused AND Other inbox tabs**, then **message requests**, then
+   **Connections** (newest first), and **Sent invitations LAST — it truncates.** Measured at
    10 of 20 (08/02) and 10 of 25 (08/04): it caps near ten while the pending list grows, so the
    share it hides widens with every send. **Absence from Sent Invitations proves nothing.** A
    hiring-line reply was invisible there on 08/04 while sitting plainly in the inbox. An invitation REPLY without an accept is a first-class response — it is how a senior
    3rd-degree contact answers without connecting.
-4. Anything found goes into the run's incremental write (`outcome`, `responded_on`,
+2. The notification bell (reported, not measured by `record`).
+3. Anything `record` reports goes into the run's incremental write (`outcome`, `responded_on`,
    `messages.jsonl` with the verbatim text) — not just the summary.
 
 **⭐ The sourcing step is conditional on the active search plan's `outcomes` (ADR-031 B4, design
@@ -361,10 +441,16 @@ the JOB SEARCH capability covers both), contact-path lookup for any new appealin
 
 **If it reports BROWSER UNAVAILABLE or NOT SIGNED IN**, flag it at the top of the summary, tell the candidate to run **`/jobsearch:linkedin`** (a lapsed session is the commonest cause and they must sign in directly), **and QUEUE the work:**
 
+<!-- pass-branch:begin -->
 ```bash
-~/.claude/jobsearch/run deferred.py --add "LinkedIn pass: reply check + inbox + job search" \
-    --why "Chrome extension unreachable this run" --requires chrome
+~/.claude/jobsearch/run deferred.py --add-linkedin-pass
 ```
+<!-- pass-branch:end -->
+
+The text is built by the script and a pass already owed adds **no second row** (dev #481 / public
+#112): never write the queue text yourself, and expect the runner's own failure step to have queued
+the same item already — adding it again is harmless by construction. `record` queues it too when it
+reads a failed hand-back, and closes it once a pass reaches a list.
 
 **Do not skip the queue step.** That flag used to be prose in a run summary and nothing else — no
 later run recovered the work, and a skipped pass looked identical to one that found nothing.
@@ -373,11 +459,45 @@ fires repeatedly, run `~/.claude/jobsearch/run wake_chrome.sh` and check macOS A
 before assuming a new fault (`docs/architecture.md` §3d).
 
 **Weekly (first run on/after Monday, per `log.md`):** dispatch `board-sweeper` for the non-LinkedIn sourcing pass — boards, aggregators and employer career pages, each reached by its configured route.
+**Write the dispatch as a script row, in the same breath (dev #692 / public #140, R3):**
+`~/.claude/jobsearch/run journal.py --run <id> --pass board --phase dispatched`. The missing-ROLES
+check keys on that row, never on a folded `dispatch` row. When the sweeper hands back, run
+`~/.claude/jobsearch/run deferred.py --add-roles <hand-back file> --run <id> --surface board`, the
+same gate and the same outcomes as the LinkedIn pass above; the sweeper no longer cross-checks the
+pipeline itself.
 **Check `~/.claude/jobsearch/run channels_due.py` rather than assuming anything is due** — anchor-employer
 career pages moved to MONTHLY, and two job boards were RETIRED after a zero-yield trial. Do not
 re-add a retired channel.
 
 ## 5. RESEARCH — delegate to `opportunity-researcher`
+
+**⭐ A POSTURE LIMITS HOW OFTEN, NEVER HOW MUCH (dev #692 / public #140).** Only the RESEARCH
+agent is gated by posture. Capturing every role the run found, and screening it (§7's minimal
+screen), happens under every posture, `minimal` and `economy` included. Check the gate before
+dispatching:
+
+```bash
+~/.claude/jobsearch/run posture.py --may research
+```
+
+- **Exit 0** → dispatch `opportunity-researcher` as below, up to `max_agents_per_run`. Every new role
+  over that cap gets `~/.claude/jobsearch/run deferred.py --add-research <opp_id>`.
+- **Exit 1** → dispatch nothing, and queue each new role that needs research with
+  `~/.claude/jobsearch/run deferred.py --add-research <opp_id>`. It is a script form: fixed text,
+  `requires: research`, idempotent while one is pending. It is not a failure — §2b's `--claimable`
+  lists it under `HELD BY POSTURE` and it drains on the first run whose posture permits research.
+  Say "N research items held by posture" in the summary.
+- **A free-text research row queued before this release** (no `requires`) is `--done` once its
+  `--add-research` replacement exists; the old row cannot drain, and rewriting it is a migration.
+
+**⭐ A RUN IS UNATTENDED BY DEFAULT (owner decision R2).** The rules above apply to every run
+unless it was started with the explicit attended form, `/jobsearch:daily-run attended`. Only that
+form passes `--attended` (`posture.py --may research --attended --run <id>`, `deferred.py
+--claimable --attended`), which lifts the research and drafting gate and journals a note saying
+so. **Never infer attended** from a missing scheduler line, an `ENGINE=` marker or the time of
+day: Claude Code documents no in-session marker that tells a scheduled session from a typed one,
+and the safe reading of an unmarked run is that nobody is watching. `--attended` never lifts
+`linkedin` (§4's gate is the browser and the quota, not a posture word).
 
 For every genuinely new role, in one batch. It finds the posting on the company's own site/ATS
 (not the alert snippet), reads the full JD, and researches the company. Fold its findings into the
@@ -480,6 +600,32 @@ destroy every record in the file), and validates. **A full cycle is ~0.2s.** Ad-
 `read-all / write-all` is what forced the lock to be coarse in the first place. **`--dry-run`
 describes the change without touching anything.** (Outside a lock-holding run — an interactive
 one-off — drop the flag and record.py takes and releases the lock itself, in milliseconds.)
+
+**⭐ SCREEN EVERY ROLE CAPTURED THIS RUN, UNDER EVERY POSTURE (dev #692 / public #140).** After
+each `create` above, and for any role that came in already created, run the scripted minimal
+screen. It is zero-token, never reads posture, and covers the comp floor, the duplicate/passed
+check, geography and an advisory title rule:
+
+```bash
+~/.claude/jobsearch/run profile.py --minimal-screen <opp_id>
+```
+
+Read its last line. **`VERDICT remove:<rule>`** → record the decision, which puts the role on the
+exclusion list: `~/.claude/jobsearch/run record.py decide <opp_id> pass --why-kind other --why
+"minimal screen: <rule>" --already-locked` (the `--why` pair is required when the engine's own
+suggestion would have been `pursue`, so pass it every time), and name the rule in the run summary.
+**`VERDICT review:<rule>`**
+→ keep the role and say which rule asked for a look (an advisory title rule never removes a role).
+**`VERDICT keep`** → nothing to do.
+
+**⭐ CAPTURE WHAT THE PASSES CARRIED, THEN SETTLE (dev #692 / public #140).** `deferred.py
+--add-roles` (§4) left one `capture-role` item per role the pass saw and did not capture. Each is
+`--claimable` on every posture (no `requires`). Claim it, `record.py create … --already-locked`
+from the item's URL, screen the new role as above, then `--done` the item. Run
+`~/.claude/jobsearch/run deferred.py --settle` before the dashboard: it closes every `capture-role`
+item whose URL now has a record (a tracking-parameter variant of the URL still matches) and every
+`research-role` item whose opportunity has a `research_log`. Anything not captured stays a pending
+row and is counted in the summary.
 
 **⭐ `plays.py --all` (ADR-031 B4, design §26.8) — the due play step across every confirmed plan,
 in this same write phase.** It is a **pure selector, not a writer** — it prints which pursuits

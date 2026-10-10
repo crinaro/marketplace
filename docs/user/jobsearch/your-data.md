@@ -38,6 +38,7 @@ shows up as a one-line diff rather than a reformatted file.
 | `commitments.jsonl` | what is scheduled — calls, deadlines, follow-ups due on a date |
 | `briefs.jsonl` | since 0.46.0 — the append-only ledger of what a draft's `**Brief:**` line cites; see *What a draft now carries* and *The brief ledger* below. Never edit this by hand and never read it as "the current state of a thread" — it is evidence of what a computation SAW at drafting time, not a source of state |
 | `resume_variants.jsonl` | the declared printed-resume set — since 0.39.0 (public #26); see *Resume variants* below |
+| `pending_actions.jsonl` | work a run found but did not do, queued for the next run that can — a role to capture, research to run, a draft to write, the owed LinkedIn pass. Script-written; see *Deferred items* below |
 
 ### The documents
 
@@ -580,7 +581,7 @@ are newsletters, so this only catches automated senders it can recognize structu
 ### The brief ledger — `briefs.jsonl`
 
 Each time `brief.py` computes a brief for a draft it appends one row here, and the draft's
-`**Brief:**` line cites that row by `id` — `brief:<timestamp with UTC offset>-<four hex digits>`.
+`**Brief:**` line cites that row by `id` — `brief:<timestamp with UTC offset>-<random hex digits>` (16 on new briefs, 4 on older ones).
 **The ledger is append-only, never edited by hand, and never a source of state**: a row is
 evidence of what the drafter saw at that moment. The engine recomputes everything from your
 other files every time a draft is checked, and looks up only the row a draft cites — never "the
@@ -1080,9 +1081,49 @@ How much the plugin is allowed to do on its own — your cost tier. See *Cost* i
 
 | key | what it is |
 |---|---|
-| `search.posture` | the **name** of the tier in force, one of the names defined under `search.postures`. Defaults to `economy` on a new install. **Changing it changes what every scheduled run may do**: how often it fires, how many agents it may start, whether it may research or draft unattended, whether it may touch LinkedIn. `posture.py` shows the effect (`posture.py --may drafting`, `--cron`). A name that is unset, or that is not defined in `search.postures`, permits **nothing** — the run reads the cheapest interpretation rather than guessing you meant a larger one |
+| `search.posture` | the **name** of the tier in force, one of the names defined under `search.postures`. Defaults to `economy` on a new install. **Changing it changes what every scheduled run may do**: how often it fires, how many agents it may start, whether it may research or draft unattended, whether it may touch LinkedIn. **It does not change how much of what a run finds is processed**: every role a run sees is accounted for and minimally screened under every tier, and work a tier refuses is queued, not dropped (see *Deferred items* below). `posture.py` shows the effect (`posture.py --may drafting`, `--cron`). A name that is unset, or that is not defined in `search.postures`, permits **nothing** — the run reads the cheapest interpretation rather than guessing you meant a larger one |
 | `search.postures` | the table of tiers, keyed by name. Each tier holds `runs_per_day`, a `cron` line, `max_agents_per_run`, `max_drafts_per_run`, an `unattended` list of what it may do without you (`sweeps`, `linkedin`, `research`, `drafting`), and a `_for` note describing it. **Retune a tier** by editing its numbers, or **add your own** by adding a name with the same keys and pointing `search.posture` at it. The engine reads the numbers and the permission list, never the name. `doctor.py --fix` puts the shipped four back if the table is missing, and only ever adds |
 | `linkedin_runs_per_day` | lives **inside a tier** — `search.postures.<tier>.linkedin_runs_per_day` — not at the top of `config.json`. How many LinkedIn passes per day may actually reach a page, **independent of `runs_per_day`**: a run over its tier's quota still does everything else and only skips the LinkedIn pass. A tier that does not set it gets **1**; accepted range 0–20. **`0` switches LinkedIn passes off for that tier** (the pass is refused as skipped-for-cost and the work is queued, not lost). **Raise it** for more LinkedIn coverage at more cost — a LinkedIn pass is the most expensive thing a scheduled run does |
+
+### Attended and unattended
+
+A tier's `unattended` list is for **unattended** runs. A run is treated as unattended **unless
+you start it in an explicit attended form**, for example `/jobsearch:daily-run attended`. The
+engine never works out that you are at the keyboard from a missing scheduler marker. An attended
+run may research and draft even when its tier would hold that work. It **never** gains LinkedIn
+access that way: `linkedin` stays governed by the tier's `linkedin_runs_per_day` and by whether a
+signed-in browser is available.
+
+## Deferred items — `data/pending_actions.jsonl`
+
+When a run finds work it cannot or may not do right now, it writes one line here, so the work is
+a row, not a sentence in a summary. The next run that is able to do it picks it up. Each item
+is built by a script (`deferred.py`), which is why you rarely write one by hand. Nothing here is
+ever a send: a queued item is research, a capture or a draft that is saved and never sent, and
+the queue refuses free text that reads like a send.
+
+| field | what it is |
+|---|---|
+| `id` | the item's id |
+| `kind` | what procedure drains it: `action` (free text written with `deferred.py --add`, and the owed LinkedIn pass), `capture-role`, `research-role` or `draft-message`. The last three are new in 0.61.0, so that a role a run saw, or research a tier held, is a structured row rather than a free-text sentence |
+| `ref` | since 0.61.0, optional: what the item is *about*. For `capture-role` it is the posting's canonical URL (tracking parameters removed, a LinkedIn posting reduced to its job id). For `research-role` and `draft-message` it is the role's id. Adding the same `(kind, ref)` while one is pending writes no second row. Older rows have no `ref` and behave as before |
+| `what`, `why` | the instruction in plain words, and why it was deferred |
+| `requires` | what a worker needs to take it: `research`, `drafting`, `sweeps`, or a machine capability such as a browser. Empty means any worker under any tier |
+| `status` | `pending` until it is done |
+
+**Held by posture.** A `research-role` item requires `research`, and a `draft-message` item
+requires `drafting`. Under a tier that does not permit that work the item is **held**: it is
+listed as *held by posture* in `deferred.py --claimable`, counted in the run summary, and
+stays pending. It is not failed and not dropped. The first run whose tier (or whose attended
+form) permits the work claims it, does it, and marks it done. Only the names `research`,
+`drafting` and `sweeps` can be granted by a tier; an unknown name in a tier's `unattended`
+list is ignored and reported, never granted. `linkedin` is never granted that way. A browserless
+machine can never claim a LinkedIn item, under any tier.
+
+**Carried roles.** When a LinkedIn or board pass sees a role that is not yet captured, known or
+passed on, it becomes one `capture-role` item. The run captures it, screens it, and
+`deferred.py --settle` closes the item once the role exists in your pipeline. Whatever is not
+captured stays pending and is listed on the next run, under any tier.
 
 ## Dashboard — `config.json.dashboard`
 
