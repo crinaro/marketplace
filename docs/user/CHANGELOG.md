@@ -2,10 +2,19 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each verified against its release tag on the published remote; older releases after their push, the newest one by the publish that pushed it, so the section for the version you installed is in the file that came with it. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.61.1
+Maintenance only: nothing changes for you. The plugin's own test runner can now re-run just the tests that failed.
+
 ## jobsearch 0.61.0
 A run no longer quietly does less than it reports. Your posture now limits how often the search runs, not how much of what a run finds gets handled: every role a run sees is screened (pay floor, already seen or passed, title rules) or kept as its own follow-up, and research held back by a cheaper posture runs on the next run that allows it. Once a week a wider search catches older or reposted roles the daily search missed. Saving your conversation history during a locked run works again. A run you start yourself as /jobsearch:daily-run attended may do research under any posture. After one run on this version, an older version can no longer read your run journal, so don't roll back.
 LinkedIn checks waste less and claim less. A LinkedIn pass that can't finish is queued once, not again on every run. Any profile or message the LinkedIn agent already looked at is recorded, so it isn't looked at again, and the reply check works from an exact list of who to check. A sweep that could only see part of a list no longer reports a connection request as still pending; it says the check was incomplete. Accepted connections are read from your Connections list, and routine sweeps no longer visit people's profiles.
 Nothing for you to run. A brief now refuses an opportunity that doesn't exist, instead of saving a record your data check rejects later. New brief ids are long enough that two briefs written in the same second can no longer be mixed up, which could put a false hold on a valid draft.
+- [#102](https://github.com/crinaro/marketplace/issues/102) — No periodic wide-window re-scan of the primary job board; only a since-last-run recency window
+- [#105](https://github.com/crinaro/marketplace/issues/105) — LinkedIn connection acceptance is inferred from absence on a truncated Sent Invitations list, so accepted invites stay reported as pending indefinitely
+- [#109](https://github.com/crinaro/marketplace/issues/109) — LinkedIn cold-hold requires a full browser-agent dispatch even when a script can already prove the hold's condition
+- [#112](https://github.com/crinaro/marketplace/issues/112) — Background/scheduled runs cannot composite the Browser pane for interaction tools, and deferred.py re-queues the resulting item forever
+- [#138](https://github.com/crinaro/marketplace/issues/138) — reconcile.py --harvest refuses every row when run inside runlock.py --run, because it takes its own lock and ignores the outer one
+- [#140](https://github.com/crinaro/marketplace/issues/140) — Posture caps run DEPTH, not just frequency: a run silently drops most of the roles it finds
 
 ## jobsearch 0.60.1
 Nothing for you to run. Scheduled runs that stopped starting after an update work again. The run helper is repaired automatically the next time Claude starts.

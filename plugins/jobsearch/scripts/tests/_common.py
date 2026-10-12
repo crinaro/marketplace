@@ -1612,8 +1612,30 @@ SKIP_BASELINE = {
 }
 
 
+def _write_tests_record(path, payload):
+    """Atomically write the JSON record `check_ci_parity.py --failed` reads (dev #530). A write
+    failure is swallowed: bookkeeping must never turn a real verdict into a crash, and the reader
+    treats a missing `failed` list as unknown, never as none."""
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp, path)
+    except OSError:
+        pass
+
+
 def _run_with_skip_accounting():
     """Run the suite and turn its skip count into a first-class, reported, ENFORCED outcome.
+
+    ⭐ dev #530 — TWO INERT ENVIRONMENT VARIABLES, set only by `scripts/check_ci_parity.py` (real CI
+    never sets either): `TEST_CHECKS_RECORD=<file>` makes this write `{"failed": [TestCase ids],
+    "tests_dir": ...}` there (a stub without `failed` first, so a run killed mid-way reads as
+    "started, never finished", not as "nothing failed"); `TEST_CHECKS_SELECT=<json file>` makes it
+    run only the listed `module.Class` / `module` ids instead of discovering the whole suite. On a
+    selective run an UNDECLARED skip reason still fails the run; the skip COUNT and "expected skip
+    did not occur" checks are whole-suite facts that any subset would break, so they are not
+    enforced there (they are still printed).
 
     Returns True only when every test that ran either passed, or skipped for a reason and a
     count this file has explicitly declared as expected in this environment. A skip that is
@@ -1628,11 +1650,33 @@ def _run_with_skip_accounting():
     read-only bits (running as root, for instance), which the lock alone cannot.
     """
     loader = unittest.TestLoader()
-    suite = loader.discover(TESTS_DIR, pattern="test_*.py", top_level_dir=TESTS_DIR)
+    select_path = os.environ.get("TEST_CHECKS_SELECT")
+    record_path = os.environ.get("TEST_CHECKS_RECORD")
+    selective = bool(select_path)
+    if record_path:
+        _write_tests_record(record_path, {"tests_dir": TESTS_DIR})
+    if selective:
+        with open(select_path, encoding="utf-8") as fh:
+            select_ids = json.load(fh)
+        if TESTS_DIR not in sys.path:
+            sys.path.insert(0, TESTS_DIR)
+        suite = unittest.TestSuite([loader.loadTestsFromName(i) for i in select_ids])
+        print("SELECTIVE RUN (dev #530, TEST_CHECKS_SELECT): %d selection(s), not the whole suite"
+              % len(select_ids))
+    else:
+        suite = loader.discover(TESTS_DIR, pattern="test_*.py", top_level_dir=TESTS_DIR)
     runner = unittest.TextTestRunner(verbosity=2)
     before_fixture = _fixture_snapshot()
     with _fixture_locked_for_run():
         result = runner.run(suite)
+    if record_path:
+        failed_ids = []
+        for test, _tb in list(result.failures) + list(result.errors):
+            failed_ids.append(test.id())
+        failed_ids += [t.id() for t in result.unexpectedSuccesses]
+        _write_tests_record(record_path, {
+            "tests_dir": TESTS_DIR, "selective": selective,
+            "failed": list(dict.fromkeys(failed_ids))})
     after_fixture = _fixture_snapshot()
     if before_fixture != after_fixture:
         changed = sorted(set(before_fixture) ^ set(after_fixture)
@@ -1664,11 +1708,11 @@ def _run_with_skip_accounting():
         expected = baseline.get(reason)
         if expected is None:
             drift.append("UNDECLARED skip reason (%d occurrence(s)): %r" % (count, reason))
-        elif expected != count:
+        elif expected != count and not selective:
             drift.append("skip count drifted for %r: SKIP_BASELINE says %d, this run produced %d"
                          % (reason, expected, count))
     for reason, expected in baseline.items():
-        if expected and reason not in reason_counts:
+        if expected and reason not in reason_counts and not selective:
             drift.append("expected skip %r (%d) did not occur this run — if a test started "
                          "running instead of skipping, update SKIP_BASELINE deliberately rather "
                          "than letting this pass silently" % (reason, expected))
