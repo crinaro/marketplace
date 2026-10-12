@@ -189,6 +189,94 @@ def find_duplicates(rows):
     return out
 
 
+
+
+# ---------------------------------------------------------------------------------------------
+# GET-OR-CREATE LOOKUP (dev #686 / public #139, P1) — `record.py create --file people --reuse`.
+# ONE matcher: this module's own three normalizers and ADR-031 §3's strength rule, never a
+# second. A hit is reusable ONLY on an identical normalized LinkedIn, or an identical
+# normalized email AND an identical normalized name. An email-only hit (same inbox, different
+# name) is the shared-inbox / typo case `find_duplicates` already lists: it is returned as a
+# CANDIDATE in the exact `{"a", "b", "reason"}` shape and is never reused silently.
+# ---------------------------------------------------------------------------------------------
+
+def _follow_merge(rows_by_id, row):
+    """The survivor row a (possibly merged) row points at; the row itself when it is not
+    merged. A cycle or a dangling `merged_into` stops at the last row reachable — never loops,
+    never raises."""
+    seen = set()
+    cur = row
+    while cur is not None and cur.get("status") == "merged" and cur.get("merged_into"):
+        if cur.get("id") in seen:
+            break
+        seen.add(cur.get("id"))
+        nxt = rows_by_id.get(cur["merged_into"])
+        if nxt is None:
+            break
+        cur = nxt
+    return cur
+
+
+def find_reusable(rows, new):
+    """Look `new` (a candidate people dict: `id`, `name`, `email`, `linkedin`) up among `rows`.
+
+    Returns `{"hits": [(survivor_row, matched_on)], "candidates": [{"a","b","reason"}],
+    "contradictions": [str]}`:
+
+      hits            every existing person reusable by the strength rule, each resolved
+                      through any merge to its survivor, `matched_on` one of
+                      `id` · `linkedin` · `email+name`. Two hits on DIFFERENT survivors are
+                      the caller's refusal (a guess would merge two people).
+      candidates      weak pairs involving `new` in `find_duplicates`' own `{"a","b","reason"}`
+                      shape (same email with a different name, above all). Never a reason to
+                      reuse.
+      contradictions  an id that exists but whose stored email or LinkedIn disagrees with the
+                      candidate's: two people under one id.
+
+    Never raises on malformed rows (the normalizers' own contract)."""
+    by_id = {r.get("id"): r for r in rows if r.get("id")}
+    hits, seen = [], set()
+
+    def _hit(row, how):
+        surv = _follow_merge(by_id, row)
+        if surv is not None and (surv.get("id"), how) not in seen:
+            seen.add((surv.get("id"), how))
+            hits.append((surv, how))
+
+    contradictions = []
+    nid = new.get("id")
+    n_li = normalize_linkedin(new.get("linkedin"))
+    n_em = normalize_email(new.get("email"))
+    n_nm = normalize_name(new.get("name"))
+    if nid and nid in by_id:
+        old = by_id[nid]
+        o_li = normalize_linkedin(old.get("linkedin"))
+        o_em = normalize_email(old.get("email"))
+        if n_li and o_li and n_li != o_li:
+            contradictions.append("id %r exists with LinkedIn %s, not %s" % (nid, o_li, n_li))
+        if n_em and o_em and n_em != o_em:
+            contradictions.append("id %r exists with email %s, not %s" % (nid, o_em, n_em))
+        if not contradictions:
+            _hit(old, "id")
+    for r in rows:
+        if r.get("id") == nid:
+            continue
+        r_li = normalize_linkedin(r.get("linkedin"))
+        if n_li and r_li and n_li == r_li:
+            _hit(r, "linkedin")
+            continue
+        r_em = normalize_email(r.get("email"))
+        if n_em and r_em and n_em == r_em and n_nm and n_nm == normalize_name(r.get("name")):
+            _hit(r, "email+name")
+
+    candidates = []
+    if nid:
+        others = [r for r in rows if r.get("id") != nid]
+        candidates = [p for p in find_duplicates(others + [dict(new)])
+                      if nid in (p["a"], p["b"])]
+    return {"hits": hits, "candidates": candidates, "contradictions": contradictions}
+
+
 _TITLE_SEP_RE = re.compile(r"\s*[,\-–—|/]\s*")
 # A small, closed, role-class vocabulary (public #93) — deliberately NOT "any word after a
 # separator", because a hyphenated surname ("Mary Smith-Jones") or a genuine suffix ("Pat

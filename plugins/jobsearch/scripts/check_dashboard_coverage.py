@@ -194,6 +194,16 @@ def expected_records(root, today=None):
     for c, state, _detail in _cd.review_rows(_jsonl(root, "channels.jsonl"), today):
         if c.get("id"):
             exp["chan:%s" % c["id"]] = {"kind": "chan", "review": state}
+    # dev #686 / public #139 (E1) — the People due block. NOT "every person": only the
+    # person-only people `your_move.network_people_due` says are due (the ONE membership
+    # definition the renderer also uses), so a due person the page forgot is UNPLACED here.
+    # A person with no cadence, a fresh one, or one a pursuit carries is not expected.
+    # Not wrapped in a try: a derivation that crashes must fail the gate loudly, never
+    # shrink the expected set to nothing and read as CLEAN.
+    import your_move as _ymod
+    for person, state, _why in _ymod.network_people_due(root, today.isoformat())["due"]:
+        if person.get("id"):
+            exp["person:%s" % person["id"]] = {"kind": "person", "state": state}
     return exp
 
 

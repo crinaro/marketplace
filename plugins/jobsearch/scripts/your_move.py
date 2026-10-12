@@ -263,8 +263,11 @@ def _journal_medium(medium_value):
 
 
 def _thread_events(graph, person_id, kind, thread_id):
-    """Every event on one thread (`kind` 'opp' or 'channel', `thread_id` the record's own id)
-    touching the SURVIVOR `person_id` — sorted oldest first. One dict per event:
+    """Every event on one thread (`kind` 'opp', 'channel' or 'person', `thread_id` the
+    record's own id — for 'person', the survivor's own id) touching the SURVIVOR `person_id` —
+    sorted oldest first. dev #686 / public #139: a 'person' thread is the relationship with no
+    role and no channel — exactly the messages and touches carrying NEITHER `opp_id` NOR
+    `channel_id`. One dict per event:
     `{direction, date, medium, source, outcome, delivery}` (the last three vary by source).
 
     DEDUPLICATION (design §3.7): an outreach touch naming a `message_ref` that resolves to a
@@ -280,8 +283,10 @@ def _thread_events(graph, person_id, kind, thread_id):
     message_ids = set()
     inbound_dates = set()
     for m in graph.stores["messages"]:
-        anchor = m.get("opp_id") if kind == "opp" else m.get("channel_id")
-        if anchor != thread_id:
+        if kind == "person":
+            if m.get("opp_id") or m.get("channel_id") or thread_id != person_id:
+                continue
+        elif (m.get("opp_id") if kind == "opp" else m.get("channel_id")) != thread_id:
             continue
         if not _resolves_to(graph, m.get("person_id"), person_id):
             continue
@@ -298,6 +303,13 @@ def _thread_events(graph, person_id, kind, thread_id):
     if kind == "opp":
         for t in graph.touches_for_opportunity(thread_id):
             if _resolves_to(graph, t.get("person_id"), person_id):
+                touches.append(t)
+    elif kind == "person" and thread_id == person_id:
+        # dev #686: a touch with NO opp and NO channel is the person-only relationship. A
+        # channel-only touch stays excluded (see the scope note just below).
+        for t in graph.stores["touches"]:
+            if (not t.get("opp_id") and not t.get("channel_id")
+                    and _resolves_to(graph, t.get("person_id"), person_id)):
                 touches.append(t)
     # kind == "channel": ADR-031 B3 — touches CAN now be channel-anchored with no opp_id
     # (public #53, the network capability's basis), but design §3.7's own scope stays: a
@@ -364,7 +376,8 @@ def _parse_date(s):
 def conversation_axis(root, subject, counterpart=None, today=None, window=None):
     """`{thread_id: (axis_token, events)}` for every thread touching person `subject` (a
     `people.jsonl` id, resolved through any merge) — or exactly the one thread `counterpart`
-    names (`"opp:<id>"` / `"channel:<id>"`), narrowed before anything is computed so a caller
+    names (`"opp:<id>"` / `"channel:<id>"` / `"person:<id>"`, the last being the dev #686
+    person-only thread), narrowed before anything is computed so a caller
     that already knows its scope pays for one thread's worth of work, not the whole graph's.
 
     `today`/`window` are test seams (window otherwise has no engine-wide default — the caller
@@ -410,6 +423,19 @@ def conversation_axis(root, subject, counterpart=None, today=None, window=None):
         for t in g.stores["touches"]:
             if t.get("opp_id") and _resolves_to(g, t.get("person_id"), person_id):
                 threads.add(("opp", t["opp_id"]))
+        # dev #686 / public #139 — A THIRD THREAD KIND: the person themselves. A message or a
+        # touch carrying NEITHER opp_id NOR channel_id (a relationship with no role and no
+        # channel) opens ONE ("person", <id>) thread, so a reply to a stored inbound in it is
+        # `reply-owed` rather than falling through to `nothing-sent` -> `unverified-cold`.
+        # The thread id is `person:<id>` in the returned dict, so a person id can never
+        # collide with an opportunity's or a channel's.
+        for m in g.messages_for_person(person_id):
+            if not m.get("opp_id") and not m.get("channel_id"):
+                threads.add(("person", person_id))
+        for t in g.stores["touches"]:
+            if (not t.get("opp_id") and not t.get("channel_id")
+                    and _resolves_to(g, t.get("person_id"), person_id)):
+                threads.add(("person", person_id))
 
     if counterpart:
         kind, _sep, tid = str(counterpart).partition(":")
@@ -419,14 +445,15 @@ def conversation_axis(root, subject, counterpart=None, today=None, window=None):
     out = {}
     for kind, tid in threads:
         events = _thread_events(g, person_id, kind, tid)
+        key = ("person:%s" % tid) if kind == "person" else tid
         if not events:
-            out[tid] = ("nothing-sent", events)
+            out[key] = ("nothing-sent", events)
             continue
         newest = events[-1]
         if newest["direction"] == "inbound":
-            out[tid] = ("reply-owed", events)
+            out[key] = ("reply-owed", events)
         else:
-            out[tid] = (_outbound_axis(newest, today, window, recs, person_id), events)
+            out[key] = (_outbound_axis(newest, today, window, recs, person_id), events)
     return out
 
 
@@ -1150,6 +1177,41 @@ def classify_people(root, today=None, warm_days=180):
                        "is missing, not the touch" % warm_days))
         # else: nothing owed, nothing missing — renders nowhere (design §14).
     return out
+
+
+def network_people_due(root, today=None, warm_days=180):
+    """dev #686 / public #139 (E1) — the NETWORK VIEW's membership, the ONE definition the
+    dashboard's `People due` block renders and `check_dashboard_coverage.py` holds the page to.
+
+    Built on `classify_people` (which stays the one owner of people-due) and adds exactly one
+    rule: a person who has an `involvements` row with an `opp_id` is NOT here, because they
+    surface through their pursuit. Merges are followed on both sides (an involvement naming an
+    absorbed id counts for its survivor).
+
+    Returns `{"due": [(person, state, why)], "fresh": N}`: `due` the person-only people whose
+    state is `due` or `awaiting-intro`, sorted state then name; `fresh` the count of the
+    person-only people still within their cadence."""
+    import graph as _graph
+    g = _graph.Graph(os.path.join(root, "data"))
+    with_opp = set()
+    for inv in g.stores["involvements"]:
+        if not inv.get("opp_id"):
+            continue
+        try:
+            surv = g.resolve_person(inv.get("person_id"))
+        except _graph.MergeCycleError:
+            surv = None
+        with_opp.add((surv or {}).get("id") or inv.get("person_id"))
+    due, n_fresh = [], 0
+    for person, state, why in classify_people(root, today, warm_days):
+        if person.get("id") in with_opp:
+            continue
+        if state in ("due", "awaiting-intro"):
+            due.append((person, state, why))
+        elif state == "fresh":
+            n_fresh += 1
+    due.sort(key=lambda r: (r[1], str(r[0].get("name") or ""), str(r[0].get("id") or "")))
+    return {"due": due, "fresh": n_fresh}
 
 
 def report(root, today=None):

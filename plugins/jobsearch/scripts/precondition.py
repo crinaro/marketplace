@@ -792,11 +792,41 @@ def _sent_row_exists(root, opp_id, person_id, date):
     return False
 
 
-def plan_prune(root, filename=None, today=None):
+def _person_sent_row_exists(root, person_id, date):
+    """dev #686 / public #139 (rule 4) — True when a SENT entry to a person with no opportunity
+    and no channel is ALREADY a fact: a touch with this `person_id`, NO `opp_id` and this date,
+    or an outbound message to this person on this date. Undated never matches (refusing to
+    guess beats a false "already recorded"). `_sent_row_exists` itself is untouched, so the
+    channel path's semantics do not move."""
+    if not date or not person_id:
+        return False
+    for t in _load_jsonl_rows(root, "touches.jsonl"):
+        if (t.get("person_id") == person_id and not t.get("opp_id")
+                and str(t.get("date") or "")[:10] == date):
+            return True
+    for m in _load_jsonl_rows(root, "messages.jsonl"):
+        if (m.get("direction") == "outbound" and m.get("person_id") == person_id
+                and str(m.get("sent_on") or "")[:10] == date):
+            return True
+    return False
+
+
+def plan_prune(root, filename=None, today=None, person_anchor=False):
     """The decision core shared by `--prune` and `m_0_47_0_drafts_working_set` — computing
     what happens to drafts.md's TERMINAL entries never touches disk itself, so both callers
     apply the identical answer to "what does this tombstone relocate to" rather than two
     implementations that could drift.
+
+    ⭐ dev #686 / public #139 (rule 4) — `person_anchor`, DEFAULT FALSE. Only `cmd_prune` passes
+    True. When set, a dated SENT entry with no opp anchor and no channel anchor whose `**To:**`
+    resolves to a PERSON is drained: `deleted_only` when a person-anchored touch (or an outbound
+    message) already records the send, else a `{"anchor_kind": "person", ...}` relocation that
+    `cmd_prune` applies as `record.py touched --to contact:<id> --medium <m> --on <date>` — the
+    send IS a touch, so the fact lands where cadence reads it. An undated SENT, a MOOT entry and
+    a SENT whose `To:` resolves to nothing stay `unresolved`. `migrate.py`'s
+    `m_0_47_0_drafts_working_set` keeps the default so a FROZEN migration's output is
+    byte-identical (it maps every non-`opp` relocation to channels and would mis-file this
+    kind); `test_precondition_person_anchor.py` pins that default.
 
     An entry with a `**Status:**` line opening SENT and a matching `outreach[]`/`messages`
     row already recording the send is `deleted_only` — the fact already exists. Every other
@@ -853,6 +883,23 @@ def plan_prune(root, filename=None, today=None):
         if reason == "sent":
             dm = _STATUS_DATE_RE.search(status_text)
             date = dm.group(1) if dm else None
+            if person_anchor and not opp_id and not chan_id and person_id:
+                # dev #686 — a person-only SENT entry (see the docstring).
+                if not date:
+                    unresolved.append((title, reason,
+                                       "SENT with no date on the Status line — a touch date is "
+                                       "not invented; add `SENT YYYY-MM-DD` — left in place, "
+                                       "not dropped"))
+                elif (_person_sent_row_exists(root, person_id, date)
+                        or _sent_row_exists(root, None, person_id, date)):
+                    deleted_only.append((title, reason))
+                    remove_spans.append(m.span())
+                else:
+                    relocations.append({"anchor_kind": "person", "anchor_id": person_id,
+                                        "medium": medium_of(body), "date": date,
+                                        "title": title, "reason": reason})
+                    remove_spans.append(m.span())
+                continue
             if _sent_row_exists(root, opp_id, person_id, date):
                 deleted_only.append((title, reason))
                 remove_spans.append(m.span())
@@ -874,8 +921,9 @@ def plan_prune(root, filename=None, today=None):
             remove_spans.append(m.span())
         else:
             unresolved.append((title, reason,
-                               "no **Triggered by: opp:** and no **To:** contact resolving to "
-                               "a channel-only involvement — left in place, not dropped"))
+                               "no **Triggered by: opp:**, no **To:** contact resolving to a "
+                               "channel-only involvement, and no **To:** contact resolving to "
+                               "a person (dev #686) — left in place, not dropped"))
 
     new_text = md
     for start, end in sorted(remove_spans, reverse=True):
@@ -895,7 +943,7 @@ def cmd_prune(root, already_locked=False):
     relocation call so it writes under THAT hold rather than trying to take a second one
     (record.py's own `--already-locked` contract, the same one every other in-run caller
     uses)."""
-    plan = plan_prune(root)
+    plan = plan_prune(root, person_anchor=True)
     if plan["new_text"] is None:
         print("no %s found — nothing to prune" % FILES[0])
         return 0
@@ -908,6 +956,10 @@ def cmd_prune(root, already_locked=False):
         if r["anchor_kind"] == "opp":
             args = [sys.executable, record_py, "append", r["anchor_id"], "research_log",
                    json.dumps(r["row"])] + lock_flag
+        elif r["anchor_kind"] == "person":
+            # dev #686 — the send IS a person-anchored touch (record.py touched, no opp id).
+            args = [sys.executable, record_py, "touched", "--to", "contact:%s" % r["anchor_id"],
+                   "--medium", r["medium"], "--on", r["date"]] + lock_flag
         else:
             args = [sys.executable, record_py, "append", r["anchor_id"], "log",
                    json.dumps(r["row"]), "--file", "channels"] + lock_flag
@@ -928,8 +980,8 @@ def cmd_prune(root, already_locked=False):
         _atomic.write_text(_tree.resolve_rel(root, FILES[0]), plan["new_text"])
 
     print("PRUNE — drafts.md working set")
-    print("  %d relocated (no row existed — see research_log[]/channels[].log[])"
-         % len(plan["relocations"]))
+    print("  %d relocated (no row existed — see research_log[]/channels[].log[], or a "
+          "person-anchored touch)" % len(plan["relocations"]))
     print("  %d deleted (a row already exists — nothing lost)" % len(plan["deleted_only"]))
     if plan["unresolved"]:
         print("  %d TERMINAL entr%s left in place — no resolvable anchor:"

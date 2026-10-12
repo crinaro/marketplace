@@ -104,6 +104,19 @@ enforces this.
   `reply-owed` register makes a cold or chasing opener wrong; an `unverified-cold`/
   `unverified-silent` register means the draft is held for a keychain-holding session before it
   can send — write it anyway, the hold is mechanical, not a reason to skip drafting).
+  **Two script calls for a person with no opportunity and no channel (dev #686 / public
+  #139):** (1) a reply to someone who wrote first — on LinkedIn above all, where there is no
+  mailbox to probe — **records their message before you brief**: `~/.claude/jobsearch/run
+  record.py received --person <people-id> --medium <MEDIA> --from "<name>" --on "<YYYY-MM-DD
+  HH:MM>" --source "<thread url>" --body-file <path>`. A message that lives only on the
+  platform is not in the store, so the brief reads `nothing-sent` and the draft is held as a
+  cold opener; the *stored* inbound is the evidence, never a thread you can see. (2) When you
+  have no recipient yet (an `unaddressed` entry), do not leave it for a human:
+  `~/.claude/jobsearch/run record.py create <people-id> '<json>' --file people --reuse`
+  (an identical LinkedIn, or email **and** name, reuses the person; an email-only match is
+  refused and listed — report it), then `~/.claude/jobsearch/run brief.py --address "<the
+  entry's exact title>" --to contact:<people-id>`, which writes `**To:**` and `**Brief:**` in
+  one step. There is no separate rebrief.
 - **`play` section** (fallback source: `plays.py --brief <opp_id>`, ADR-031 B4, since 0.49.0) —
   the source for WHAT to say and to WHOM on a role-anchored draft. It composes from
   `brief.py --json` (never recomputes a register or a silence window — `check_ledger_reads.py`

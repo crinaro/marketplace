@@ -2,6 +2,9 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each verified against its release tag on the published remote; older releases after their push, the newest one by the publish that pushed it, so the section for the version you installed is in the file that came with it. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.62.0
+People you know outside any job opening are now first-class. You can record a touch or a message with someone who isn't tied to a role, a sent personal reply clears from your pending list, and a person can be linked to a role later without losing their history. Drafts that aren't ready to send still show their text on the dashboard, labelled with why. A LinkedIn reply to someone who messaged you first is judged by that conversation, not by your mailbox. The dashboard also lists the people you're due to follow up with.
+
 ## jobsearch 0.61.1
 Maintenance only: nothing changes for you. The plugin's own test runner can now re-run just the tests that failed.
 

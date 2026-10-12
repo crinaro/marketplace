@@ -472,6 +472,14 @@ FORM_ANSWER_KEYS = {"question_key", "question", "answer", "answered_on"}
 # where no contemporaneous record supports a value. Without this the validator would fail
 # against 46 legacy rows on day one and get ignored.
 COMMS_CUTOVER = "2026-08-02"
+# dev #686 / public #139 — the touch rules that were typed inline in the validator and so
+# invisible to `record.py fields --file touches`. Named once here; the validator and the
+# `fields` listing both read these, never a typed copy.
+COMMS_REQUIRED_FIELDS = ("medium", "touch_type", "recipient_role", "delivery")
+SENT_REQUIRES_FIELD = "to"            # status='sent' requires a non-empty 'to'
+SENT_REQUIRES_DATE_FIELD = "date"     # ... and an ISO 'date'
+EMAIL_MEDIUM_PREFIX = "email"         # an email-* medium requires 'address_status'
+EMAIL_REQUIRES_FIELD = "address_status"
 # dev #427 — what counts as evidence that a pre-cutover delivery value was ESTABLISHED, not
 # inferred. Substring match on the lowercased note, so "repl" covers reply/replied/auto-reply
 # (a reply is conclusive proof of delivery); "auto-reply" stays listed so the message names it.
@@ -991,11 +999,21 @@ def _main():
         # them would have deleted the touch that produced the meeting.
         # So: a message must anchor to SOMETHING — an opportunity or a channel — but not both
         # by force.
+        # ⭐ dev #686 / public #139 (2026-10-12) — A THIRD ANCHOR: THE PERSON. A message to a
+        # person about no role and no channel (a note to a peer, a reply to someone who wrote
+        # first) belongs to the RELATIONSHIP with that person. `person_id` alone anchors it iff
+        # it resolves in `people` (the same FK test every other message `person_id` already gets). Touches
+        # have always accepted this shape; this widens the message rule to match, so no row
+        # valid before is invalid now (no migration). Still refused: no anchor at all, or a
+        # `person_id` that resolves to nothing.
         if not m.get("opp_id") and not m.get("channel_id"):
-            problems.append("%s: needs an anchor — set 'opp_id' for a role-specific message, or "
-                            "'channel_id' for one that belongs to a relationship (a warm intro, "
-                            "a recruiter thread). A message anchored to nothing is unfindable."
-                            % ml)
+            _pa = m.get("person_id")
+            if not (_pa and _pa in all_person_ids):
+                problems.append("%s: needs an anchor — set 'opp_id' for a role-specific message, "
+                                "'channel_id' for one that belongs to a relationship (a warm "
+                                "intro, a recruiter thread), or a resolving 'person_id' alone "
+                                "for a message to a person about no role and no channel. A "
+                                "message anchored to nothing is unfindable." % ml)
 
         # ⭐ THIRD-PARTY is a real direction. A referral endorsement written BY someone else
         # ABOUT the candidate is neither inbound nor outbound — the candidate is cc'd, not a
@@ -2032,11 +2050,13 @@ def _main():
         # the drift this file's own comment on RETIRED_KEYS/`docs/data_model.json` already
         # names. `to` and `date` were never required or type-checked before 2026-08-02.
         if t.get("status") == "sent":
-            if not (t.get("to") or "").strip():
-                problems.append("%s: status='sent' requires a non-empty 'to'" % label)
-            if not is_when(t.get("date") or ""):
-                problems.append("%s: status='sent' requires an ISO 'date' — an undated row "
-                                "makes check_followups over-report silence" % label)
+            if not (t.get(SENT_REQUIRES_FIELD) or "").strip():
+                problems.append("%s: status='sent' requires a non-empty '%s'"
+                                % (label, SENT_REQUIRES_FIELD))
+            if not is_when(t.get(SENT_REQUIRES_DATE_FIELD) or ""):
+                problems.append("%s: status='sent' requires an ISO '%s' — an undated row "
+                                "makes check_followups over-report silence"
+                                % (label, SENT_REQUIRES_DATE_FIELD))
         elif t.get("date") is not None and not is_when(t.get("date")):
             problems.append("%s: date %r is neither an ISO date nor 'YYYY-MM-DD HH:MM'"
                             % (label, t.get("date")))
@@ -2066,13 +2086,13 @@ def _main():
             problems.append("%s: address_status=%r not in {%s}"
                             % (label, t["address_status"], ", ".join(sorted(ADDRESS_STATUS))))
         # An email medium without an address_status can't distinguish a bounce from silence.
-        if (t.get("medium") or "").startswith("email") and not t.get("address_status"):
+        if (t.get("medium") or "").startswith(EMAIL_MEDIUM_PREFIX) and not t.get(EMAIL_REQUIRES_FIELD):
             problems.append("%s: medium=%r requires 'address_status' — otherwise a bounced "
                             "pattern-inferred address is indistinguishable from a non-reply"
                             % (label, t.get("medium")))
         # From the cutover, the comms fields are required (history carries 'unknown').
         if (t.get("date") or "") >= COMMS_CUTOVER and t.get("status") == "sent":
-            for fld in ("medium", "touch_type", "recipient_role", "delivery"):
+            for fld in COMMS_REQUIRED_FIELDS:
                 if not t.get(fld):
                     problems.append("%s: '%s' is required on rows dated %s or later"
                                     % (label, fld, COMMS_CUTOVER))

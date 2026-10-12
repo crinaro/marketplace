@@ -337,8 +337,18 @@ lives on the link, never on the person).
 | field (on the link to one role or channel) | what it is |
 |---|---|
 | `person_id` | who the link is about — it must resolve to a person, and with `opp_id` or `channel_id` it is what identifies the link (a link has no `id` of its own) |
-| `opp_id`, `channel_id` | which role or channel the link is to — **exactly one is set**, never both and never neither. A person known only through a firm or a referral has `channel_id` set and no role at all |
+| `opp_id`, `channel_id` | which role or channel the link is to — **exactly one is set**, never both and never neither. A person known only through a firm or a referral has `channel_id` set and no role at all. A person you keep in touch with who is tied to neither has **no link row at all**: they exist as a person and in their touches and messages, and that is a complete record |
 | `role`, `path_type`, `status`, `note` | how you reached them and where it stands, **for this role or channel specifically** |
+
+**Linking someone to a role later — `record.py involve <person-id> --opp <opp-id>` (since
+0.62.0).** When a person you have been in touch with turns out to matter for a role, you link them
+with this one command. It writes the link row (with `--role` if you want to say what they are for
+this role) the same way recording a touch on the role would, and nothing else: the touches you
+already recorded with that person are **not** edited or re-attributed to the role, so your history
+and the role's funnel counts do not shift under you. Running it twice is harmless — an existing
+link is left alone. It refuses if the person or the role does not exist, and it never guesses: the
+engine does not link a person to a role because the dates line up. Once linked, recording a touch
+on that role to that person works as it does for anyone else. There is no channel form.
 
 `path_type` is `warm-referral` · `recruiter` · `hiring-manager` · `hiring-context` ·
 `internal` · `cold`.
@@ -349,6 +359,33 @@ lives on the link, never on the person).
 > just one.
 
 Query one person's full history with `python3 scripts/pipeline_index.py --person <name>`.
+
+**A person with no role and no channel is a full relationship (since 0.62.0).** Someone you keep
+in touch with — a former colleague, a mentor, an introduction you are cultivating — needs no
+opportunity and no channel to be tracked: you can record a message to or from them, record a touch
+with them, set their `cadence`, and have the search draft to them and prune the finished draft,
+all without inventing a role to hang it on.
+
+**Creating a person without duplicating one — `record.py create <id> --file people '<json>'
+--reuse` (since 0.62.0).** With `--reuse`, the command first looks for an existing person using
+exactly the matching rule described above: an identical LinkedIn profile URL, **or** an identical
+email address *and* an identical name. A hit means "this person is already on record": it tells
+you which person and which field matched, writes nothing, and succeeds. A match on **email alone**
+is not treated as the same person (it may be a shared inbox): the command refuses, lists that
+person as a candidate in the same form `people.py --duplicates` uses, and leaves the decision to
+you. With no match, the person is created as usual. Without `--reuse` the command behaves exactly
+as before, and a duplicate id is still refused. This is how a draft that reads `**To:**
+unaddressed` gets its recipient by script — see *What a draft now carries*, below.
+
+**The People due view on your dashboard (since 0.62.0).** Your dashboard's outreach section now
+has a **People due** block, right after the pending-drafts list. It lists the people with a
+`cadence` whose time has come (`due`, or `awaiting-intro`) **and who are not linked to any role** —
+a person who is linked to a role shows up through that role instead, so nobody appears twice. Each
+row shows their name, whether they are due or awaiting an introduction, and why (`cadence 30
+day(s); last touch 2026-08-14`). Under the list, one line counts the people on cadence who are
+still comfortably within it, so a relationship that is fine reads as fine rather than as missing.
+It is the same due-list the coordinator's `your_move` already printed; the dashboard just shows
+it. The old footer line saying the network was not on the page is gone.
 
 **What happens to your existing contacts on upgrade.** The 0.44.0 upgrade runs this migration
 automatically, the first time you open a session on that version — you don't run anything
@@ -430,6 +467,29 @@ One record per touch. The fields exist to make "which approach actually works?" 
 | `plan_id`, `play_step` | since 0.49.0 — which plan this touch counts toward, and which play step it satisfies (`reach-insider`, …), or the marker `unresolved` when the touch predates 0.49.0 and can't be assigned a step automatically. Only set on a touch anchored to a role (`opp_id`); a networking touch has no plan to derive one from. See *Plans and plays* above |
 | `note` | free text of your own about this touch |
 
+#### Recording a touch with no role — the person form of `touched` (since 0.62.0)
+
+`record.py touched` no longer needs a role. Without one it records a touch to a person alone:
+`record.py touched --to contact:<person-id> --medium <medium> [--on <date>] [--role <recipient_role>] [--touch-type <touch_type>]`.
+
+The row it writes has no `opp_id` and no `channel_id`, an `outcome` of `awaiting`, and `delivery`
+and `address_status` of `unknown`; `--touch-type` sets the `touch_type` (otherwise `unknown`). It
+checks everything before it writes anything and names the field it is unhappy with: the person
+must exist (and not be one that was merged away), the medium must be one the engine knows, `--on`
+must be a real date, and `--role` and `--touch-type` must each be a valid value. Because there is
+no role, there is no involvement to update, and the command says so rather than staying silent.
+`record.py fields --file touches` lists every field a touch needs, including the ones required
+only in some cases (a sent touch needs `to`; a touch dated on or after the 2026-08-02 cutover needs
+`touch_type`, `recipient_role` and `delivery`; an email touch needs `address_status`), so you can
+answer "what does this row need?" from that one command. The same flags work with a role too:
+`--touch-type` is valid on both forms.
+
+The weekly review's draft pruning uses this path: a draft you marked `SENT` on a date, addressed to
+someone you have on record but with no role and no channel, is moved out of `drafts.md` by
+recording (or finding) exactly this kind of touch for that date. A `SENT` entry with no date, or
+one whose recipient resolves to nobody, is left in place and reported — the engine does not invent
+a date or a recipient.
+
 #### Recording a touch changes more than the touch — since 0.54.0
 
 Recording an outbound touch as `touched` or `answered` (`record.py`) no longer only writes the
@@ -489,10 +549,17 @@ never a draft that can drift.
   or `outreach/drafts.md` for something you wrote and sent yourself. A stored body with no
   provenance is an assertion, not a record.
 - **`channel_id`** anchors a message to a relationship rather than a role — a warm intro or a
-  referral. Every message needs an anchor: an `opp_id` **or** a `channel_id`, at least one.
-- **`id`** is the message's own stable handle — what another message's `answers` points at.
+  referral. Every message needs an anchor: an `opp_id`, a `channel_id`, **or — since 0.62.0 — the
+  `person_id` alone**, at least one. A message to a person about no role and no channel (a
+  networking reply, a thank-you) is a complete record on its own, provided that `person_id`
+  resolves to a person you have on record. A message with none of the three is still refused.
+- **`id`** is the message's own stable handle — what another message's `answers` points at. An
+  inbound message's handle is made per message (its date is part of it), so two replies from the
+  same conversation are two records, not one overwriting the other.
 - **`person_id`** is who the message was to or from; it resolves through `people.jsonl`, the same
-  as a touch's `person_id`.
+  as a touch's `person_id`. When it is the message's only anchor, it must resolve **directly**: an
+  id that has since been merged into another person is refused like any dangling link, so point it
+  at the surviving person.
 - **`medium`** is how it travelled — a LinkedIn message, an email, an InMail — the same field, for
   the same reason, as a touch's `medium`.
 - **`variant`** names the style or approach used, the same slug a touch's `variant` carries, so
@@ -547,8 +614,13 @@ resolves — because a `**Contact:**` line was there all along, or because 0.44.
 
 **What that release morning actually looks like**, once the bulk pass has run:
 
-- A draft whose recipient could not be resolved reads `**To:** unaddressed` and needs you to
-  fix the hold before it can be briefed at all.
+- A draft whose recipient could not be resolved reads `**To:** unaddressed` and needs a recipient
+  before it can be briefed at all. Since 0.62.0 that is two commands rather than a hand edit:
+  `record.py create <id> --file people '<json>' --reuse` to get or create the person (see
+  *People*, above), then `brief.py --address "<the draft's title>" --to contact:<id>`, which sets
+  the draft's `**To:**` and computes and stamps its `**Brief:**` in one write and tells you the
+  draft's new state. It refuses a draft that is already sent or dropped, and one already addressed
+  to a *different* person.
 - A draft aimed at someone with no prior thread and no confirmed-empty mailbox check holds as
   `unverified-cold` — it is not sendable until either a mailbox probe confirms the mailbox is
   genuinely empty, or, for someone with no known email address at all, you attest to having

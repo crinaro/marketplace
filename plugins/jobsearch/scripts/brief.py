@@ -37,6 +37,7 @@ Usage:
     python3 brief.py --probe --held                                # probe/queue every held draft
     python3 brief.py --rebrief [--all]                             # bulk, store-only evidence
     python3 brief.py --restamp                                     # re-stamp unaddressed (#92)
+    python3 brief.py --address "<entry title>" --to contact:<id>    # address + brief in one write (#686)
 
 Python 3.9+. Standard library only.
 """
@@ -1027,6 +1028,124 @@ def cmd_probe_held(root):
 _UNVERIFIED_REGISTERS = frozenset({"unverified-cold", "unverified-silent"})
 
 
+def _line_span(body, match):
+    """`(start, end)` of the single LINE `match` sits on, newline excluded. The meta-line
+    regexes end in `\\s*$` under `re.M`, so their own `.end()` swallows the blank lines that
+    follow; replacing that span glued the next paragraph onto the line. A line edit must touch
+    its line and nothing after it."""
+    nl = body.find("\n", match.start())
+    return match.start(), (len(body) if nl == -1 else nl)
+
+
+def _to_line_edit(m, pid, brief_id=None):
+    """The `(start, end, text)` edit that makes an entry's `**To:**` line read `contact:<pid>` —
+    replacing the existing line in place (that line only), or INSERTING one straight after the
+    `## ` heading when the entry has none. `m` is a `precondition.ENTRY_RE` match. The ONE
+    `**To:**` line-writer: `restamp_unaddressed` and `address_entry` both use it (dev #686 /
+    public #139, rule 2), so there are not two line-rewriters to drift.
+
+    With `brief_id`, a `**Brief:**` line citing it is written as the line right after
+    `**To:**` (the two meta lines stay together) — used only when the entry has no
+    `**Brief:**` line of its own to replace."""
+    body = m.group(2)
+    tm = TO_RE.search(body)
+    text = "**To:** contact:%s" % pid
+    if brief_id:
+        text += "\n**Brief:** %s" % brief_id
+    if tm:
+        start, end = _line_span(body, tm)
+        return (m.start(2) + start, m.start(2) + end, text)
+    return (m.start(2), m.start(2), "\n" + text)
+
+
+def address_entry(root, title, to_token, i_checked=None):
+    """dev #686 / public #139 (rule 2) — address AND brief one open draft entry in a single
+    write: `brief.py --address "<entry title>" --to contact:<id>`.
+
+    Finds the open entry by EXACT title, resolves the id through `resolve_to` (merges
+    followed), computes and stamps a brief exactly as `--for` does (scoped by the entry's own
+    `**Triggered by:** opp:<id>` when that resolves, else unscoped), and rewrites `**To:**`
+    (inserting the line when absent) and `**Brief:**` in ONE `_atomic.write_text` of drafts.md
+    — no separate rebrief step. Refuses (BriefError, nothing written): no such entry, an
+    ambiguous title, a TERMINAL entry, or an entry whose `**To:**` already names a DIFFERENT
+    contact. The same contact again is a no-op that restamps the brief.
+
+    Returns `{"brief_id", "person_id", "state", "why"}`, where state/why are the entry's new
+    `precondition` state."""
+    path = _tree.resolve_rel(root, _pre.FILES[0])
+    try:
+        with open(path, encoding="utf-8") as fh:
+            md = fh.read()
+    except OSError:
+        raise BriefError("no %s to address an entry in" % _pre.FILES[0])
+    hits = [m for m in _pre.ENTRY_RE.finditer(md) if m.group(1).strip() == title]
+    if not hits:
+        raise BriefError("no entry titled %r in %s (the title is matched exactly)"
+                         % (title, _pre.FILES[0]))
+    if len(hits) > 1:
+        raise BriefError("%d entries are titled %r in %s — rename one first; an address must "
+                         "name exactly one" % (len(hits), title, _pre.FILES[0]))
+    m = hits[0]
+    body = m.group(2)
+    sm = _pre.STATUS_RE.search(body)
+    if sm and (_pre.SENT_RE.match(sm.group(1)) or _pre.MOOT_RE.search(sm.group(1))):
+        raise BriefError("%r is a TERMINAL entry (%s) — nothing is addressed on an entry that "
+                         "is already over; `precondition.py --prune` drains it"
+                         % (title, sm.group(1).strip()[:40]))
+    pid, ok, why = resolve_to(root, to_token)
+    if not ok:
+        raise BriefError(why)
+    cur_raw = parse_to(body)
+    if cur_raw is not None and cur_raw != UNADDRESSED:
+        cur_pid, cur_ok, _cw = resolve_to(root, cur_raw)
+        if cur_ok and cur_pid != pid:
+            raise BriefError("%r already names a different contact (%s, resolving to %s); "
+                             "re-addressing it to %s would silently redirect a draft — edit "
+                             "the **To:** line by hand if that is what you mean"
+                             % (title, cur_raw, cur_pid, pid))
+    opp_id = _pre._opp_anchor(root, body)
+    if i_checked:
+        record_owner_attestation(root, pid, i_checked)
+    else:
+        results, refusal = run_email_probe(root, pid)
+        if refusal is None:
+            post_store_behind_mailbox(root, pid, results)
+    b = compute(root, pid, opp_id, medium=_pre.medium_of(body))
+    brief_id = new_brief_id()
+    row = dict(b)
+    row["id"] = brief_id
+    row["computed_at"] = brief_id.split("brief:", 1)[1].rsplit("-", 1)[0]
+    del row["events"]
+    append_ledger(root, row)
+    bm = BRIEF_LINE_RE.search(body)
+    if bm:
+        bs, be = _line_span(body, bm)
+        edits = [_to_line_edit(m, pid),
+                 (m.start(2) + bs, m.start(2) + be, "**Brief:** %s" % brief_id)]
+    else:
+        edits = [_to_line_edit(m, pid, brief_id)]
+    new_md = md
+    for start, end, text in sorted(edits, key=lambda t: t[0], reverse=True):
+        new_md = new_md[:start] + text + new_md[end:]
+    import _atomic
+    _atomic.write_text(path, new_md)
+    state, state_why = "unknown", ""
+    for r in _pre.report(root, filenames=(_pre.FILES[0],)):
+        if r["title"] == title:
+            state, state_why = r["state"], r["why"]
+            break
+    return {"brief_id": brief_id, "person_id": pid, "state": state, "why": state_why}
+
+
+def cmd_address(root, title, to_token, i_checked):
+    if not to_token:
+        raise BriefError("--address requires --to contact:<id>")
+    r = address_entry(root, title, to_token, i_checked)
+    print("addressed %r -> contact:%s · %s" % (title[:60], r["person_id"], r["brief_id"]))
+    print("precondition: %s — %s" % (r["state"], r["why"]))
+    return 0
+
+
 def rebrief(root, probe=False, only_all=False):
     """§3.1/§7 — bulk, STORE-ONLY BY DEFAULT (`probe=False`; migration always calls it this
     way, since it runs on any surface, attended or not — §7 step 3).
@@ -1142,8 +1261,7 @@ def restamp_unaddressed(root, apply=True):
         if not pid:
             continue
         restamped += 1
-        start, end = m.start(2) + tm.start(), m.start(2) + tm.end()
-        replacements.append((start, end, "**To:** contact:%s" % pid))
+        replacements.append(_to_line_edit(m, pid))
     if replacements and apply:
         new_md = md
         for start, end, text in sorted(replacements, key=lambda t: t[0], reverse=True):
@@ -1261,6 +1379,12 @@ def main():
                     help="re-stamp `**To:** unaddressed` entries that now resolve a contact "
                          "(public #92) — re-runnable, safe to call any time")
     ap.add_argument("--all", action="store_true")
+    ap.add_argument("--address", metavar="TITLE",
+                    help="dev #686: address AND brief the open draft entry titled TITLE in one "
+                         "write — needs --to contact:<id>. Rewrites **To:** and **Brief:**; "
+                         "no separate rebrief step.")
+    ap.add_argument("--to", metavar="contact:<id>",
+                    help="--address: the recipient (a people id; merges are followed)")
     args = ap.parse_args()
 
     root = profile_root()
@@ -1273,6 +1397,8 @@ def main():
             return cmd_probe_held(root)
         if args.probe:
             return cmd_probe(root, args.probe)
+        if args.address:
+            return cmd_address(root, args.address, args.to, args.i_checked)
         if args.rebrief:
             return cmd_rebrief(root, args.all)
         if args.restamp:
@@ -1288,7 +1414,7 @@ def main():
                 return cmd_json_for(root, args.for_, args.opp, args.channel)
             return cmd_for(root, args.for_, args.opp, args.channel, args.i_checked, args.json)
         ap.error("one of --for / --thread / --overlap / --check / --probe / --rebrief / "
-                 "--restamp is required")
+                 "--restamp / --address is required")
     except BriefError as e:
         print("⛔ %s" % e, file=sys.stderr)
         return 2

@@ -969,9 +969,12 @@ _SEND_WHERE = {
 def render_message_list(set_name, kind, entries, states, filename, dims, empty_msg):
     """ONE list per file of the staged pair (public #48, stage 1): every OPEN entry — never
     a terminal one (public #29) — as a row carrying its precondition state chip, its meta
-    line, where its full text lives, and, for a SENDABLE entry, the full body inline and
-    collapsed. The body IS the decision being asked for, so it stays on the page (the
-    collapse's one exception); everything else stays an index row.
+    line, where its full text lives, and the full body inline and collapsed — for EVERY open
+    entry, not only a sendable one (dev #686 / public #139, rule 1b: a draft that is held,
+    unaddressed or queued is still a message the owner has to read to act on it, and was a
+    chip with no text). The body IS the decision being asked for, so it stays on the page (the
+    collapse's one exception); a non-sendable entry's summary names its state so it cannot be
+    mistaken for a ready one; everything else stays an index row.
 
     This replaces four surfaces that were the same entries under different headings:
     "Pending drafts" (index card + a second bodies card), "⏳ Waiting on someone else",
@@ -1034,11 +1037,13 @@ def render_message_list(set_name, kind, entries, states, filename, dims, empty_m
             # filter files it under `unknown` — MEDIA's own word for this — never a guess.
             medium_flag = (' <span class="chip action" title="the **Medium:** line names no '
                            'validate_data.MEDIA value">medium: unknown</span>')
-        body = ""
-        if st == "sendable":
-            body = ('<details class="kdoc"><summary>full text</summary>'
-                    '<div class="kdoc-body">%s</div></details>'
-                    % render_draft_entries([(title, blocks)], ""))
+        # dev #686 / public #139, rule 1b — the body renders for every open state; only the
+        # <summary> differs, naming the state the row's chip already shows. `entries` holds
+        # open entries only (terminal ones are filtered before this function).
+        summary = "full text" if st == "sendable" else "full text — %s, not sendable" % label
+        body = ('<details class="kdoc"><summary>%s</summary>'
+                '<div class="kdoc-body">%s</div></details>'
+                % (esc(summary), render_draft_entries([(title, blocks)], "")))
         out.append(
             '<div class="draft%s" data-rec="%s"%s><div class="draft-title">%s '
             '<span class="chip %s">%s</span>%s</div>'
@@ -1050,6 +1055,48 @@ def render_message_list(set_name, kind, entries, states, filename, dims, empty_m
                '<code class="fileref">%s</code>' % esc(filename), esc(title[:60]),
                md_inline(_SEND_WHERE.get(st, st)), esc(queued_note)))
     return render_filtered_list(set_name, dims, members, keys, "".join(out), "", cls="")
+
+
+def render_people_due(root, today):
+    """dev #686 / public #139 (E1) — the NETWORK VIEW: people with NO opportunity who are due.
+
+    `your_move.network_people_due` is the ONE membership definition (it wraps
+    `classify_people`, the one owner of people-due, and drops anyone a pursuit already
+    carries); this renders its rows and computes nothing of its own. Each due row is
+    `data-rec="person:<id>"`: name, the state chip, and classify_people's own `why`. One sub
+    line counts the person-only people still `fresh` within their cadence, so a relationship
+    that is not due is acknowledged rather than silently absent. Returns (html, n_listed);
+    empty HTML when there is nothing to say (no due person and no fresh one), so a profile
+    with no cadence set sees no change to its page.
+
+    Every listed person is placed in the coverage ledger as RENDERED (`people-due`), and
+    `check_dashboard_coverage.py` expects exactly this membership, so a due person the page
+    forgot is a GAP, not a silence."""
+    try:
+        net = _ym.network_people_due(str(root), today)
+    except Exception:                                        # noqa: BLE001 — never takes the page down
+        return "", 0
+    due, n_fresh = net["due"], net["fresh"]
+    if not due and not n_fresh:
+        return "", 0
+    out = []
+    for person, state, why in due:
+        key = "person:%s" % person.get("id")
+        _cover(key, "rendered", "people-due")
+        out.append('<div class="draft" data-rec="%s"><div class="draft-title">%s '
+                   '<span class="chip %s">%s</span></div><div class="sub">%s</div></div>'
+                   % (esc(key), md_inline(person.get("name") or person.get("id") or "?"),
+                      "action" if state == "due" else "waiting", esc(state), esc(why)))
+    if not out:
+        out.append('<div class="sub">No one is due.</div>')
+    if n_fresh:
+        out.append('<div class="sub">%d other relationship%s with no opportunity %s within '
+                   'cadence.</div>' % (n_fresh, "" if n_fresh == 1 else "s",
+                                       "is" if n_fresh == 1 else "are"))
+    return ('<h2 id="phase-outreach-people">👥 People due <span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">People you keep in touch with who are '
+            'not tied to a role — from each person\'s own cadence.</div>'
+            '<div class="card">%s</div>' % (len(due), "".join(out))), len(due)
 
 
 def render_knowledge_index(docs, empty_msg, where, cap=None, rec_kind=None, chip=""):
@@ -3083,6 +3130,11 @@ def main():
                (' <span class="ct2f">· %d held</span>' % n_blocked) if n_blocked else "",
                (' <span class="ct2f">· %d queued</span>' % n_queued) if n_queued else "",
                drafts_html))
+    # dev #686 / public #139 (E1) — People due, directly after the drafts list. Not counted
+    # in the router: classify_people owns the people-due number, and this block adds none.
+    _people_due_html, _n_people_due = render_people_due(ROOT, _today_iso)
+    if _people_due_html:
+        out_parts.append(_people_due_html)
     if _covers_active:
         # public #95 — the data-store side of the cascade, distinct from the markdown pane
         # above: a letter the data store says is `used`/`moot` never counts against either card
@@ -3162,9 +3214,10 @@ def main():
         'the phase name in each row jumps to its section · generated by '
         'scripts/generate_dashboard.py</div>\n'
         '%s\n%s\n'
-        '<div class="sub" style="margin-top:26px">Not on this page: the network '
+        '<div class="sub" style="margin-top:26px">Not on this page: the full network '
         '(queried in session — <code class="fileref">data/channels.jsonl</code>, '
-        '<code class="fileref">%s</code>), archives, sent and closed items, and knowledge '
+        '<code class="fileref">%s</code>; the people due this week are listed under '
+        'Outreach), archives, sent and closed items, and knowledge '
         'bodies — counts above, files in the tree.</div>'
         % (html.escape(_title), today, n_needs_total,
            "" if n_needs_total == 1 else "s", "s" if n_needs_total == 1 else "",

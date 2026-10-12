@@ -164,7 +164,11 @@ MESSAGES_WRITE_VERBS = frozenset({"touched", "answered", "received"})
 # same way.
 OPS = ("create", "set", "set-in", "append", "show", "fields",
        "decide", "application-status", "networking-closed",
-       "answered", "touched", "received", "merge-person")
+       "answered", "touched", "received", "merge-person",
+       # dev #686 / public #139 (E2) — link a person to an opportunity later, as an explicit
+       # act. An early-return verb like touched/answered/received: --dry-run proven in
+       # test_record.py's VERB_ARGS.
+       "involve")
 LOCK = os.path.join(ENGINE_SCRIPTS, "runlock.py")
 # ⭐ ENGINE, not profile — the data MODEL ships with the code; the DATA belongs to the user.
 MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
@@ -970,6 +974,98 @@ def _profile_mod():
     return _pf
 
 
+def _upsert_involvement(opp_id, person_id, recipient_role=None, create_only=False):
+    """dev #686 / public #139 (E2) — step 1 of `_propagate_touch`, factored out so `record.py
+    involve` and a touch share ONE writer. Runs INSIDE the caller's lock hold.
+
+    Creates the (person_id, opp_id) involvement if absent (`status: contacted`, `path_type`
+    from `plays.ROLE_TO_PATH`), or — unless `create_only` — sets `status` to 'contacted' on an
+    existing one. `create_only=True` is the explicit-link verb's mode: an existing link is
+    left untouched. Verified by validate-and-roll-back, byte-identical on a new problem.
+
+    Returns `(printable_lines, outcome)`, outcome one of `created` · `updated` · `exists`
+    (create_only, link already there) · `unchanged` · `failed`."""
+    lines = []
+    outcome = "unchanged"
+
+    # ---- 1. involvements: create or upsert ----------------------------------------------
+    involvements = _load_involvements()
+    inv = None
+    for row in involvements:
+        if row.get("person_id") == person_id and row.get("opp_id") == opp_id:
+            inv = row
+            break
+    mapped_path = _plays_mod().ROLE_TO_PATH.get(recipient_role) if recipient_role else None
+    created = inv is None
+    inv_dirty = False
+    if inv is None:
+        inv = {"person_id": person_id, "opp_id": opp_id, "channel_id": None,
+               "path_type": mapped_path, "role": None, "status": "contacted", "note": None}
+        involvements.append(inv)
+        inv_dirty = True
+    else:
+        if create_only:
+            return lines, "exists"
+        if inv.get("status") != "contacted":
+            inv["status"] = "contacted"
+            inv_dirty = True
+        if mapped_path and inv.get("path_type") is None:
+            inv["path_type"] = mapped_path
+            inv_dirty = True
+
+    if inv_dirty:
+        inv_path = os.path.join(DATA, "involvements.jsonl")
+        try:
+            with open(inv_path, "rb") as fh:
+                before_inv = fh.read()
+        except OSError:
+            before_inv = None
+        fd, tmp = tempfile.mkstemp(dir=DATA, prefix=".record-involvements-", suffix=".tmp")
+        landed = False
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                for r in involvements:
+                    fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, inv_path)
+            landed = True
+        except Exception as e:                                        # noqa: BLE001
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            print("  ⚠️ the write landed, but upserting the involvement failed: %s" % e)
+            outcome = "failed"
+        if landed:
+            rc, out, err, _problems = validate()
+            if rc != 0:
+                ok = False
+                if before_inv is not None:
+                    fd2, tmp2 = tempfile.mkstemp(dir=DATA, prefix=".rollback-involvements-",
+                                                 suffix=".tmp")
+                    try:
+                        with os.fdopen(fd2, "wb") as fh:
+                            fh.write(before_inv)
+                            fh.flush()
+                            os.fsync(fh.fileno())
+                        os.replace(tmp2, inv_path)
+                        with open(inv_path, "rb") as fh:
+                            ok = fh.read() == before_inv
+                    except Exception:                                  # noqa: BLE001
+                        if os.path.exists(tmp2):
+                            os.unlink(tmp2)
+                outcome = "failed"
+                print("  ⚠️ the write landed, but upserting the involvement left the store "
+                      "invalid and was %s."
+                      % ("rolled back" if ok else "NOT VERIFIABLY ROLLED BACK — restore "
+                         "involvements.jsonl from git"))
+                print("  " + "\n  ".join(_diagnostic_lines(rc, out, err)))
+            else:
+                lines.append("  ✦ involvement %s for %s on %s"
+                             % ("created" if created else "upserted", person_id, opp_id))
+                outcome = "created" if created else "updated"
+    return lines, outcome
+
+
 # ── dev #479 / public #114 — completing an outbound touch PROPAGATES ────────────────────────
 #
 # The defect: `touched`/`answered` wrote only the touch/message row and stopped — the
@@ -1005,78 +1101,7 @@ def _propagate_touch(opp_id, person_id, date, recipient_role=None):
     Returns the printable lines describing what changed (possibly empty)."""
     if not opp_id or not person_id:
         return []
-    lines = []
-
-    # ---- 1. involvements: create or upsert ----------------------------------------------
-    involvements = _load_involvements()
-    inv = None
-    for row in involvements:
-        if row.get("person_id") == person_id and row.get("opp_id") == opp_id:
-            inv = row
-            break
-    mapped_path = _plays_mod().ROLE_TO_PATH.get(recipient_role) if recipient_role else None
-    created = inv is None
-    inv_dirty = False
-    if inv is None:
-        inv = {"person_id": person_id, "opp_id": opp_id, "channel_id": None,
-               "path_type": mapped_path, "role": None, "status": "contacted", "note": None}
-        involvements.append(inv)
-        inv_dirty = True
-    else:
-        if inv.get("status") != "contacted":
-            inv["status"] = "contacted"
-            inv_dirty = True
-        if mapped_path and inv.get("path_type") is None:
-            inv["path_type"] = mapped_path
-            inv_dirty = True
-
-    if inv_dirty:
-        inv_path = os.path.join(DATA, "involvements.jsonl")
-        try:
-            with open(inv_path, "rb") as fh:
-                before_inv = fh.read()
-        except OSError:
-            before_inv = None
-        fd, tmp = tempfile.mkstemp(dir=DATA, prefix=".record-involvements-", suffix=".tmp")
-        landed = False
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                for r in involvements:
-                    fh.write(json.dumps(r, ensure_ascii=False) + "\n")
-                fh.flush()
-                os.fsync(fh.fileno())
-            os.replace(tmp, inv_path)
-            landed = True
-        except Exception as e:                                        # noqa: BLE001
-            if os.path.exists(tmp):
-                os.unlink(tmp)
-            print("  ⚠️ the write landed, but upserting the involvement failed: %s" % e)
-        if landed:
-            rc, out, err, _problems = validate()
-            if rc != 0:
-                ok = False
-                if before_inv is not None:
-                    fd2, tmp2 = tempfile.mkstemp(dir=DATA, prefix=".rollback-involvements-",
-                                                 suffix=".tmp")
-                    try:
-                        with os.fdopen(fd2, "wb") as fh:
-                            fh.write(before_inv)
-                            fh.flush()
-                            os.fsync(fh.fileno())
-                        os.replace(tmp2, inv_path)
-                        with open(inv_path, "rb") as fh:
-                            ok = fh.read() == before_inv
-                    except Exception:                                  # noqa: BLE001
-                        if os.path.exists(tmp2):
-                            os.unlink(tmp2)
-                print("  ⚠️ the write landed, but upserting the involvement left the store "
-                      "invalid and was %s."
-                      % ("rolled back" if ok else "NOT VERIFIABLY ROLLED BACK — restore "
-                         "involvements.jsonl from git"))
-                print("  " + "\n  ".join(_diagnostic_lines(rc, out, err)))
-            else:
-                lines.append("  ✦ involvement %s for %s on %s"
-                             % ("created" if created else "upserted", person_id, opp_id))
+    lines, _outcome = _upsert_involvement(opp_id, person_id, recipient_role)
 
     # ---- 2. opportunity: clear ownership off the candidate --------------------------------
     owner_token = _profile_mod().owner_token()
@@ -1105,22 +1130,37 @@ def _propagate_touch(opp_id, person_id, date, recipient_role=None):
     return lines
 
 
+TOUCHED_USAGE = ("usage: touched [<opp_id>] --to contact:<person-id> --medium <medium> "
+                 "[--on <date>] [--role <role>] [--touch-type <type>]  "
+                 "(no <opp_id> = a person-anchored touch: a relationship with no role)")
+
+
 def cmd_touched(args):
-    """`record.py touched <opp_id> --to contact:<person-id> --on <date> --medium <medium>
-    [--role <role>]` — cell 3's own action line (design §3): a touch made OUTSIDE the normal
-    draft-and-send flow (a handshake, a phone call, any medium this API does not draft for).
-    Writes a row on the top-level `touches` store (ADR-031 B3 — was: appended to the
-    opportunity's own `outreach[]`) and, for an EMAIL medium, the message row that documents it.
+    """`record.py touched [<opp_id>] --to contact:<person-id> --on <date> --medium <medium>
+    [--role <role>] [--touch-type <type>]` — cell 3's own action line (design §3): a touch made
+    OUTSIDE the normal draft-and-send flow (a handshake, a phone call, any medium this API does
+    not draft for). Writes a row on the top-level `touches` store (ADR-031 B3 — was: appended
+    to the opportunity's own `outreach[]`) and, for an EMAIL medium, the message row that
+    documents it.
+
+    ⭐ dev #686 / public #139 (rule 3) — THE `<opp_id>` IS OPTIONAL. Without one this records a
+    PERSON-ANCHORED touch: `opp_id`/`channel_id` null, owned by the person alone (a legal shape
+    since public #53; only this PATH was missing). Every field the validator will require is
+    filled here and every up-front check runs BEFORE the lock and before any write, each
+    refusal naming the field: `--to` resolves to a non-merged person, `--medium` in MEDIA,
+    `--on` an ISO date, `--role` and `--touch-type` in their enums. No opportunity means no
+    involvement to upsert; the output says so. `--touch-type` is valid on both forms (it is the
+    only otherwise-unsettable required field). `record.py fields --file touches` lists the
+    conditional requirements from the validator's own named constants.
 
     `--_inject-fault after-message` is a TEST-ONLY hook (never reachable except by passing the
     flag explicitly): after the message half lands, it exits before the touch half — so the
     half-written case and its repair are proven from OUTSIDE this function, by actually
     breaking it and re-running, the same discipline `migrate.py`'s own `_inject_fault` plants
     use rather than trusting the mechanism by reading the source."""
-    opp_id = args.rid
-    if not opp_id or args.rest:
-        print("usage: touched <opp_id> --to contact:<person-id> --on <date> --medium <medium> "
-              "[--role <role>]")
+    opp_id = args.rid or None
+    if args.rest:
+        print(TOUCHED_USAGE)
         return 2
     if not args.to_token:
         print("⛔ REFUSED — --to contact:<person-id> is required.")
@@ -1142,18 +1182,37 @@ def cmd_touched(args):
     if args.recipient_role is not None and args.recipient_role not in _vd.RECIPIENT_ROLES:
         print("⛔ REFUSED — --role must be one of %s" % ", ".join(sorted(_vd.RECIPIENT_ROLES)))
         return 1
-
-    opps0 = load("opportunities")
-    if find(opps0, opp_id) is None:
-        print("No opportunities record with id %r." % opp_id)
+    if args.touch_type is not None and args.touch_type not in _vd.TOUCH_TYPES:
+        print("⛔ REFUSED — --touch-type must be one of %s" % ", ".join(sorted(_vd.TOUCH_TYPES)))
         return 1
-    # The join validate_data.py itself enforces on every touch naming an opp_id — checked here
-    # too so a bad --to refuses BEFORE any write, not two steps later via a rollback.
-    if not any(r.get("person_id") == person_id and r.get("opp_id") == opp_id
-              for r in _load_involvements()):
-        print("⛔ REFUSED — person_id %r has no involvement on opportunity %r. Every touch "
-              "naming an opportunity must name a person actually involved in THIS pursuit — "
-              "add the involvement first, or check the --to id." % (person_id, opp_id))
+
+    if opp_id:
+        opps0 = load("opportunities")
+        if find(opps0, opp_id) is None:
+            print("No opportunities record with id %r." % opp_id)
+            return 1
+        # The join validate_data.py itself enforces on every touch naming an opp_id — checked
+        # here too so a bad --to refuses BEFORE any write, not two steps later via a rollback.
+        if not any(r.get("person_id") == person_id and r.get("opp_id") == opp_id
+                  for r in _load_involvements()):
+            print("⛔ REFUSED — person_id %r has no involvement on opportunity %r. Every touch "
+                  "naming an opportunity must name a person actually involved in THIS pursuit "
+                  "— add the involvement first (`record.py involve %s --opp %s`), or check "
+                  "the --to id." % (person_id, opp_id, person_id, opp_id))
+            return 1
+    # dev #686 — the recipient must be a real, non-merged person on EITHER form. A merged id is
+    # refused naming its survivor: a touch written to the absorbed row would be a touch on a
+    # person nobody reads any more.
+    _prow = find(_load_or_empty("people"), person_id)
+    if _prow is None:
+        print("⛔ REFUSED — --to names person_id %r, which resolves to no people record. A "
+              "touch with no person is unfindable; create the person first "
+              "(`record.py create <id> '{...}' --file people --reuse`)." % person_id)
+        return 1
+    if _prow.get("status") == "merged":
+        print("⛔ REFUSED — --to names person_id %r, which was merged into %r. Touch the "
+              "survivor: --to contact:%s" % (person_id, _prow.get("merged_into"),
+                                             _prow.get("merged_into")))
         return 1
 
     is_email = medium.startswith("email")
@@ -1176,8 +1235,10 @@ def cmd_touched(args):
                             and o.get("message_ref") == msg_id
                             for o in touches_rows)
         preview.append("touch already recorded" if already_touch
-                       else "would record a touch on %s" % opp_id)
-        print("touched: %s -> %s via %s on %s" % (opp_id, person_id, medium, date))
+                       else "would record a touch on %s"
+                       % (opp_id or "the person alone (no opportunity)"))
+        print("touched: %s -> %s via %s on %s" % (opp_id or "(no opportunity)", person_id,
+                                                  medium, date))
         print("  --dry-run: nothing written. (%s)" % "; ".join(preview))
         return 0
 
@@ -1188,7 +1249,7 @@ def cmd_touched(args):
             return 1
     else:
         try:
-            take_lock("record.py touched %s" % opp_id, wait=args.wait)
+            take_lock("record.py touched %s" % (opp_id or person_id), wait=args.wait)
         except LockError as e:
             print("  REFUSED — %s" % e)
             return 1
@@ -1249,7 +1310,8 @@ def cmd_touched(args):
             # COMMS_CUTOVER (validate_data.py) requires touch_type/recipient_role on any row
             # dated 2026-08-02 or later — "unknown" is the enum's own explicit-unknown value,
             # never a guess at which one actually applies.
-            "touch_type": "unknown", "recipient_role": args.recipient_role or "unknown",
+            "touch_type": args.touch_type or "unknown",
+            "recipient_role": args.recipient_role or "unknown",
             "address_status": "unknown", "delivery": "unknown", "message_ref": msg_id,
         })
         save_atomic("touches", touches_rows)
@@ -1261,16 +1323,93 @@ def cmd_touched(args):
                 print("  ⛔ REFUSED — the touch write broke the store; rolled back.")
                 print("  " + "\n  ".join(_diagnostic_lines(rc2, out2, err2)))
                 return 1
-        print("  ✦ touch %s recorded on %s" % (new_touch_id, opp_id))
+        print("  ✦ touch %s recorded on %s" % (new_touch_id, opp_id or person_id))
         # dev #479 / public #114 — propagate the just-landed touch to involvements/
         # next_action_owner/next_action_date, still inside this same lock hold.
+        if not opp_id:
+            print("  · no opportunity: no involvement to upsert (person-anchored touch) — "
+                  "link later with `record.py involve %s --opp <opp_id>`" % person_id)
         for line in _propagate_touch(opp_id, person_id, date, recipient_role=args.recipient_role):
             print(line)
     finally:
         if not args.already_locked:
             release_lock()
     print("touched: %s -> %s via %s on %s — written atomically, validator clean"
-         % (opp_id, person_id, medium, date))
+         % (opp_id or "(no opportunity)", person_id, medium, date))
+    return 0
+
+
+def cmd_involve(args):
+    """`record.py involve <person_id> --opp <opp_id> [--role <RECIPIENT_ROLE>]` — dev #686 /
+    public #139 (E2): link a person to an opportunity LATER, as an explicit act.
+
+    A person-anchored touch has no opportunity; when the relationship turns into a pursuit the
+    link is an `involvements` row (person -> opp), written through the SAME `_upsert_involvement`
+    a touch uses. Earlier person-anchored touches are NOT rewritten (back-filling `opp_id`
+    would rewrite history and double-count a funnel), and the link is never inferred — only
+    this verb makes it. An existing link is a no-op. After the link, `touched <opp> --to
+    contact:<id>` stops refusing for want of an involvement."""
+    person_id = args.rid
+    if not person_id or args.rest:
+        print("usage: involve <person_id> --opp <opp_id> [--role <role>]")
+        return 2
+    if not args.opp_id:
+        print("⛔ REFUSED — involve requires --opp <opp_id>: the opportunity to link %r to."
+              % person_id)
+        return 1
+    _vd = _validator_module()
+    if args.recipient_role is not None and args.recipient_role not in _vd.RECIPIENT_ROLES:
+        print("⛔ REFUSED — --role must be one of %s" % ", ".join(sorted(_vd.RECIPIENT_ROLES)))
+        return 1
+    prow = find(_load_or_empty("people"), person_id)
+    if prow is None:
+        print("⛔ REFUSED — %r resolves to no people record." % person_id)
+        return 1
+    if prow.get("status") == "merged":
+        print("⛔ REFUSED — %r was merged into %r. Link the survivor: involve %s --opp %s"
+              % (person_id, prow.get("merged_into"), prow.get("merged_into"), args.opp_id))
+        return 1
+    if find(load("opportunities"), args.opp_id) is None:
+        print("⛔ REFUSED — --opp %r resolves to no opportunities record." % args.opp_id)
+        return 1
+    if any(r.get("person_id") == person_id and r.get("opp_id") == args.opp_id
+           for r in _load_involvements()):
+        print("involve: %s is already linked to %s — nothing to do." % (person_id, args.opp_id))
+        return 0
+    if args.dry_run:
+        print("involve: %s -> %s" % (person_id, args.opp_id))
+        print("  --dry-run: nothing written. (would link the person to the opportunity)")
+        return 0
+    if args.already_locked:
+        if not lock_is_held():
+            print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
+            return 1
+    else:
+        try:
+            take_lock("record.py involve %s" % person_id, wait=args.wait)
+        except LockError as e:
+            print("  REFUSED — %s" % e)
+            return 1
+    try:
+        # Re-read INSIDE the lock: the opportunity may have vanished between the check above
+        # and the hold (the same re-read every write verb does).
+        if find(load("opportunities"), args.opp_id) is None:
+            print("  record vanished between read and lock — aborting.")
+            return 1
+        lines, outcome = _upsert_involvement(args.opp_id, person_id, args.recipient_role,
+                                             create_only=True)
+    finally:
+        if not args.already_locked:
+            release_lock()
+    for line in lines:
+        print(line)
+    if outcome == "failed":
+        return 1
+    if outcome == "exists":
+        print("involve: %s is already linked to %s — nothing to do." % (person_id, args.opp_id))
+        return 0
+    print("involve: %s -> %s — written atomically, validator clean; earlier touches by %s "
+          "are unchanged" % (person_id, args.opp_id, person_id))
     return 0
 
 
@@ -1456,7 +1595,7 @@ _TIMESTAMP_ARG_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?
 
 
 def cmd_received(args):
-    """`record.py received --opp <opp_id> | --channel <channel_id> [--person <person_id>]
+    """`record.py received --opp <opp_id> | --channel <channel_id> | --person <person_id>
     --from <addr> [--to <addr>] --on <ISO ts> --subject <text> --body-file <path>
     --source <token> [--medium email] [--resolves <app_id> --resolved-by
     req-id|url|company-single] [--already-locked]`
@@ -1464,10 +1603,12 @@ def cmd_received(args):
     design-inbound-resolution.md §2 — the ONE public writer for an INBOUND message
     (ADR-029). `id` is minted from `--source` (`in-<sha1(source)[:12]>`), deterministic, so a
     second write of the same source is idempotent by construction (see `append_message`).
+    dev #686: with `--person` alone (no --opp, no --channel) the message anchors on its person
+    and the id also folds in `--on`, so two inbounds in one thread are two messages.
     `--body-file`, never `--body`: an ATS body is thousands of characters and argv is the
     wrong place."""
     if args.rest:
-        print("usage: received --opp <opp_id> | --channel <channel_id> [--person <id>] "
+        print("usage: received --opp <opp_id> | --channel <channel_id> | --person <id> "
               "--from <addr> [--to <addr>] --on <ISO ts> --subject <text> "
               "--body-file <path> --source <token> [--medium email] "
               "[--resolves <app_id> --resolved-by req-id|url|company-single]")
@@ -1484,10 +1625,16 @@ def cmd_received(args):
         print("⛔ REFUSED — pass --opp OR --channel, never both.")
         return 1
     if not args.opp_id and not args.channel_id and not args.resolves:
-        print("⛔ REFUSED — needs an anchor: --opp <opp_id> or --channel <channel_id> "
-              "(at least one, unless --resolves derives one). A message anchored to nothing "
-              "is unfindable.")
-        return 1
+        # dev #686 / public #139 (rule 1a) — a resolving --person is the THIRD anchor: a
+        # message to/from a person about no role and no channel belongs to the relationship.
+        if not (args.person_id_arg and find(_load_or_empty("people"), args.person_id_arg)):
+            print("⛔ REFUSED — needs an anchor: --opp <opp_id>, --channel <channel_id>, or "
+                  "--person <person_id> naming an existing people record (at least one, "
+                  "unless --resolves derives one). A message anchored to nothing is "
+                  "unfindable.%s"
+                  % ((" (--person %r resolves to no people record.)" % args.person_id_arg)
+                     if args.person_id_arg else ""))
+            return 1
     if not args.body_file:
         print("⛔ REFUSED — --body-file is required — an ATS body belongs in a file, never "
               "argv.")
@@ -1532,7 +1679,17 @@ def cmd_received(args):
                   "--channel is refused alongside it.")
             return 1
 
-    mid = "in-%s" % hashlib.sha1(args.source_token.encode("utf-8")).hexdigest()[:12]
+    # dev #686 / public #139 (P3) — a PERSON-ANCHORED inbound's id is minted from the source AND
+    # the message timestamp. Two inbounds in one LinkedIn thread share one `--source` (the
+    # thread URL), so a source-only mint gave both the same id and the second was silently
+    # swallowed as "already recorded" — the person axis would then be dated by the older
+    # message. Role- and channel-anchored inbounds keep the source-only mint, which is what
+    # `reconcile.py --harvest` mints for the same mailbox uid.
+    if not opp_id and not args.channel_id:
+        mid_seed = "%s|%s" % (args.source_token, args.on_date)
+    else:
+        mid_seed = args.source_token
+    mid = "in-%s" % hashlib.sha1(mid_seed.encode("utf-8")).hexdigest()[:12]
     row = {
         "id": mid, "opp_id": opp_id, "channel_id": args.channel_id,
         "person_id": args.person_id_arg, "direction": "inbound",
@@ -1563,6 +1720,118 @@ def cmd_received(args):
     return rc
 
 
+def _touch_requirement_lines(_vd):
+    """dev #686 / public #139 (rule 3) — the CONDITIONAL touch requirements, as printable lines,
+    read from `validate_data.py`'s own NAMED constants (never a typed copy), so a caller can
+    build a valid `create --file touches` row, or run `touched`, from `fields` or `--help`
+    alone. The `required:` line above only lists the unconditional four; these are the rules
+    that used to surface one failed write at a time."""
+    return [
+        "  CONDITIONALLY REQUIRED (enforced by validate_data.py; the names below are its own "
+        "constants):",
+        "    status=sent                    requires: %s (non-empty), %s (ISO date)"
+        % (_vd.SENT_REQUIRES_FIELD, _vd.SENT_REQUIRES_DATE_FIELD),
+        "    date >= %s and status=sent  requires: %s"
+        % (_vd.COMMS_CUTOVER, ", ".join(_vd.COMMS_REQUIRED_FIELDS)),
+        "    medium %s*                  requires: %s"
+        % (_vd.EMAIL_MEDIUM_PREFIX, _vd.EMAIL_REQUIRES_FIELD),
+        "    (`record.py touched` fills every one of these; touch_type is set with "
+        "--touch-type, default 'unknown')",
+    ]
+
+
+def _help_epilog():
+    """The `--help` footer: the person-anchored `touched` form and `involve`, with the touch
+    requirements named. Fails open to a shorter footer — a broken validator import must never
+    make `--help` itself crash."""
+    lines = [
+        "touched / involve (dev #686 / public #139):",
+        "  touched <opp_id> --to contact:<person-id> --medium <MEDIA> [--on D] [--role R] "
+        "[--touch-type T]",
+        "  touched          --to contact:<person-id> --medium <MEDIA> [--on D] [--role R] "
+        "[--touch-type T]",
+        "      the second form (no opp_id) records a PERSON-ANCHORED touch: a relationship with",
+        "      a person who has no opportunity and no channel. --to, --medium and --on are",
+        "      checked before the lock and before any write.",
+        "  involve <person-id> --opp <opp_id> [--role R]",
+        "      link a person to an opportunity later; earlier person-anchored touches are "
+        "left as they were.",
+        "  create <id> '<json>' --file people --reuse",
+        "      get-or-create: an identical LinkedIn, or an identical email AND name, reuses "
+        "the existing person (nothing written);",
+        "      an email-only match is refused and listed as a candidate.",
+    ]
+    try:
+        lines.append("")
+        lines.append("touches — what a row needs:")
+        lines.extend(_touch_requirement_lines(_validator_module()))
+    except Exception:                                            # noqa: BLE001
+        pass
+    return "\n".join(lines)
+
+
+def _reuse_people(args):
+    """`create <id> '<json>' --file people --reuse` — dev #686 / public #139 (P1, rule 2).
+
+    Returns an exit code when the call is FINISHED here (reused, or refused), or None to fall
+    through to the ordinary create. The matching is `people.find_reusable` — the engine's ONE
+    people matcher (its normalizers and ADR-031 §3's strength rule): an identical normalized
+    LinkedIn, or an identical normalized email AND name. An email-only hit is REFUSED and listed
+    as a candidate in `people.py --duplicates`' own shape, never reused silently. Nothing is
+    written on a reuse or a refusal."""
+    if len(args.rest) != 1 or not args.rid:
+        print("usage: create <id> '<json object for the person>' --file people --reuse")
+        return 2
+    try:
+        payload = json.loads(args.rest[0])
+    except ValueError as e:
+        print("⛔ REFUSED — the record is not valid JSON: %s" % e)
+        return 1
+    if not isinstance(payload, dict):
+        print("⛔ REFUSED — the record must be a JSON object, got %s." % type(payload).__name__)
+        return 1
+    import people as _people
+    probe = dict(payload)
+    probe["id"] = args.rid
+    found = _people.find_reusable(_load_or_empty("people"), probe)
+    if found["contradictions"]:
+        print("⛔ REFUSED — %s. That would be two people under one id; pick a new id (nothing "
+              "written)." % "; ".join(found["contradictions"]))
+        return 1
+    survivors = {}
+    for row, how in found["hits"]:
+        survivors.setdefault(row.get("id"), []).append(how)
+    if len(survivors) > 1:
+        print("⛔ REFUSED — the candidate matches %d DIFFERENT people (%s); reusing one would be a "
+              "guess that merges two. Decide with `people.py --duplicates` and `record.py "
+              "merge-person` (nothing written)."
+              % (len(survivors), "; ".join("%s on %s" % (k, "+".join(v))
+                                           for k, v in sorted(survivors.items()))))
+        return 1
+    if survivors:
+        sid, hows = next(iter(survivors.items()))
+        print("person: %s reused (matched on %s)" % (sid, hows[0]))
+        print("  nothing written. Next: `brief.py --address \"<draft title>\" --to contact:%s`"
+              % sid)
+        return 0
+    email_only = [c for c in found["candidates"] if c["reason"].startswith("same email")]
+    if email_only:
+        print("⛔ REFUSED — an existing person shares this email but not the name; an email "
+              "alone is a shared inbox or a typo, not an identity (ADR-031 §3). Nothing "
+              "written. Candidate(s):")
+        for c in email_only:
+            print("  %s <-> %s — %s" % (c["a"], c["b"], c["reason"]))
+        print("  Same person? Use that id (its name differs on file) and edit the name if it "
+              "is wrong. Different person (a shared inbox)? Create WITHOUT --reuse and set "
+              "not_same_as on both rows.")
+        return 1
+    args.reuse_notes = ["person: %s created" % args.rid]
+    for c in found["candidates"]:
+        args.reuse_notes.append("  ℹ️ possible duplicate (advisory, not reused): %s <-> %s — %s"
+                                % (c["a"], c["b"], c["reason"]))
+    return None
+
+
 def main():
     # design-inbound-resolution.md §2 amendment D4 — asserted before ANY argument parsing or
     # store touch, for every verb (not just `received`): a surface with no resolvable profile
@@ -1574,7 +1843,9 @@ def main():
               "one, or run this from inside one." % ROOT)
         return EXIT_NO_PROFILE
 
-    ap = argparse.ArgumentParser(description="Atomic writes to the record stores.")
+    ap = argparse.ArgumentParser(description="Atomic writes to the record stores.",
+                                 epilog=(_help_epilog() if any(a in ("-h", "--help") for a in sys.argv[1:]) else None),
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     # States & Views V1 (design-states-and-views.md §13/§15.3) — three new verbs, each a
     # transaction over ONE file: `decide` and `networking-closed` on opportunities,
     # `application-status` on applications. Presented as new operations (not `set`/`set-in`)
@@ -1599,20 +1870,31 @@ def main():
                          "(default: today for touched/answered; required for "
                          "application-status is optional too, same default).")
     ap.add_argument("--to", dest="to_token", default=None,
-                    help="touched: `contact:<person-id>` — who the touch went to.")
+                    help="touched: `contact:<person-id>` — who the touch went to (required; "
+                         "the person must exist and not be merged).")
     ap.add_argument("--medium", dest="medium", default=None,
-                    help="touched: one of validate_data.MEDIA.")
+                    help="touched: one of validate_data.MEDIA (required).")
+    ap.add_argument("--touch-type", dest="touch_type", default=None,
+                    help="touched: one of validate_data.TOUCH_TYPES (optional, default "
+                         "'unknown'; the validator requires touch_type on a sent touch dated "
+                         "on/after COMMS_CUTOVER, so the verb always fills it).")
+    ap.add_argument("--reuse", action="store_true",
+                    help="create --file people: get-or-create. An identical normalized "
+                         "LinkedIn, or an identical email AND name, reuses the existing person "
+                         "and writes nothing; an email-only match is refused and listed as a "
+                         "candidate (people.py's own matcher, ADR-031 §3).")
     ap.add_argument("--via", dest="via_medium", default=None,
                     help="answered: the medium the reply went out on — one of "
                          "validate_data.MEDIA.")
     ap.add_argument("--role", dest="recipient_role", default=None,
-                    help="touched/answered: one of validate_data.RECIPIENT_ROLES (optional) — "
+                    help="touched/answered/involve: one of validate_data.RECIPIENT_ROLES (optional) — "
                          "feeds the involvement's path_type via plays.ROLE_TO_PATH when the "
                          "recipient's involvement does not already have one (dev #479).")
     ap.add_argument("--opp", dest="opp_id", default=None,
                     help="answered: the opportunity this reply belongs to — required when "
                          "the target is a `contact:<id>` touch ref rather than a message id "
-                         "(a bare message id already carries its own opp_id/channel_id).")
+                         "(a bare message id already carries its own opp_id/channel_id). "
+                         "involve: the opportunity to link the person to (required).")
     ap.add_argument("--when", dest="when_token", default=None,
                     help="set play:<id> params.<name>: the arm's predicate token — creates or "
                          "edits that arm (design §24.1). A NEW arm requires --why.")
@@ -1632,7 +1914,9 @@ def main():
                     help="received: `--channel <channel_id>` — the other half of the anchor "
                          "rule (--opp or --channel, at least one, never both).")
     ap.add_argument("--person", dest="person_id_arg", default=None,
-                    help="received: the sender's people.jsonl id, when known.")
+                    help="received: the sender's people.jsonl id, when known. With neither "
+                         "--opp nor --channel a resolving --person is itself the anchor (a "
+                         "message to/from a person about no role and no channel).")
     ap.add_argument("--from", dest="from_addr", default=None,
                     help="received: the message's From address.")
     ap.add_argument("--subject", dest="subject", default=None,
@@ -1698,6 +1982,8 @@ def main():
         args.file = "messages"
     elif args.op == "merge-person":
         args.file = "people"
+    elif args.op == "involve":
+        args.file = "opportunities"      # cmd_involve names its own stores; keeps the generic checks harmless
 
     # §15.3 point 1 — `messages` is append-only; `answered`/`touched`/`received` are its ONLY
     # writers. Refused here, before any generic single-store machinery runs, so the refusal is
@@ -1715,6 +2001,12 @@ def main():
         return cmd_answered(args)
     if args.op == "received":
         return cmd_received(args)
+    if args.op == "involve":
+        return cmd_involve(args)
+
+    if args.reuse and not (args.op == "create" and args.file == "people"):
+        print("⛔ REFUSED — --reuse applies only to `create <id> '<json>' --file people`.")
+        return 1
 
     if args.op == "fields" or args.fields:
         # ⭐ dev #143 / public #23 failure #3: this listing used to print field names and
@@ -1736,6 +2028,9 @@ def main():
             print("\n  ENUMS (allowed values):")
             for f in sorted(enums):
                 print("    %s: {%s}" % (f, ", ".join(sorted(enums[f]))))
+        if args.file == "touches":
+            print()
+            print("\n".join(_touch_requirement_lines(_vd)))
         for a, spec in sorted((m.get("arrays") or {}).items()):
             print("\n  %s[] — %s" % (a, ", ".join(sorted(spec["fields"]))))
             print("     required: %s%s" % (", ".join(spec.get("required") or []),
@@ -1749,6 +2044,11 @@ def main():
         print("\n  BANNED ALIASES (same meaning, two spellings): %s"
               % ", ".join("%s->%s" % (k, v) for k, v in sorted(ban.items())))
         return 0
+
+    if args.reuse:
+        _reuse_rc = _reuse_people(args)
+        if _reuse_rc is not None:
+            return _reuse_rc
 
     rows = load(args.file)
     rec = find(rows, args.rid)
@@ -2513,6 +2813,8 @@ def main():
         print("  written atomically · validator clean · run's lock left in place")
     else:
         print("  written atomically · validator clean · lock released")
+    for _note in getattr(args, "reuse_notes", None) or []:
+        print(_note)
     if minted:
         if args.file == "touches":
             print("  · touch id minted: %s — name it on the draft entry's own `**Touch:**` "
