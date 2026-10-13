@@ -1117,6 +1117,32 @@ Both are written in full as `communications.chase_after_days` and
 `communications.no_response_after_days`. `profile.py --options` prints each with its current
 value and whether it came from your file or the default.
 
+## Mailboxes — `user.json.mailboxes`
+
+Which Gmail addresses the job search may read. Each entry is a **reference** to an account
+that `gmail-multi` already holds, not a copy of it.
+
+| field | what it is |
+|---|---|
+| `address` | the Gmail address. It must also be registered with `gmail-multi` (`/gmail-multi:accounts`), which owns the list of accounts on your machine. An address it does not know is not searched, and you are told |
+| `kind` | optional. A short label for what the account is, for example work or personal |
+| `note` | optional. Free text for you |
+
+- **Since 0.63.0 there is no `keychain_service`.** Earlier profiles carried one on every mailbox.
+  Nothing read it, and the first session after upgrading removes it (after saving a copy of the
+  file beside it). The app password itself is in your operating system's credential store,
+  never in this file.
+- **Edit the list with `/jobsearch:mailboxes`, not by hand**, so that the registry check runs.
+  Adding an address gmail-multi does not know is refused, and nothing is written.
+- **An address missing from `gmail-multi` is never skipped silently.** The upgrade adds one ask
+  per such address, `mailbox-unregistered:<address>`, until you register or remove it; the sweeps
+  print a line for it and count it as not covered.
+- **Under `claude-gmail`** (below) this list is not consulted, because that connector reads the
+  one account you signed in to in claude.ai.
+
+[Mailboxes](mailboxes.md) explains the two lists, what the job search can and cannot reach, and
+the upgrade step by step.
+
 ## Mail connector — `config.json.communications.mail_connector`
 
 Which Gmail connector the job search reads mail through. The search uses **one**, the one you

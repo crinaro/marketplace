@@ -21,7 +21,9 @@ fallback, and `--audit` is what says, mechanically, that it has not been migrate
 
 WHAT DELIBERATELY STAYS AT ROOT — each an anchor, not an oversight:
   config.json, user.json   the profile MARKERS (`_root.py`) and the targets of external
-                           absolute-path pointers (gmail-multi's `include`). Moving them
+                           absolute-path pointers (a gmail-multi registry not yet migrated
+                           to schema 2 points at user.json; its 0.5.0 migration reads it
+                           there to fold the addresses in). Moving them
                            silently breaks profile detection for every session and orphans
                            the mail connector — the worst failure shape this repo knows.
   data/                    the machine's queryable store, the second profile marker, and

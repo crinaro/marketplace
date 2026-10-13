@@ -71,6 +71,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 import email.header
 import email.message
 import email.utils
+import html as _html
 import imaplib
 import json
 import os
@@ -94,26 +95,29 @@ DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 
 # Accounts this server searches. Emails only — never secrets.
 #
-# ⭐ THE SOURCE OF TRUTH IS THE CONNECTOR'S OWN CONFIG FILE, read at call time:
+# ⭐ THE SOURCE OF TRUTH IS THE CONNECTOR'S OWN REGISTRY, read at call time:
 #
 #     ~/.claude/gmail-multi/accounts.json        (override path: GMAIL_MULTI_CONFIG)
-#     {
-#       "accounts": ["you@example.com"],         literal addresses, and/or
-#       "include":  ["/abs/path/to/some.json"]   files whose addresses are merged in
-#     }
+#     { "schema": 2, "accounts": ["you@example.com"] }
 #
-# An `include` entry lets a CONSUMER plugin delegate rather than copy: jobsearch points an
-# include at its profile's user.json, so a mailbox added there reaches this server on the
-# next call with no second bookkeeping. Each included file may carry `"accounts": [...]`,
-# or `"mailboxes"` as either a list of {"address": ...} objects or a dict keyed by address
-# (both shapes exist in the wild). ⚠️ An include that cannot be read or parsed is a LOUD
-# error naming the path — never a silently shorter account list, because partial coverage
-# reads as "no mail" (the 2026-08-05 zero-mailboxes incident, which this design replaces).
+# This file is REGISTRY SCHEMA 2: a published interface (plugin.json `metadata.provides`) that
+# other plugins may READ and never write. Its one writer is scripts/accounts.py. There is no
+# list-of-other-files key any more: it let two lists drift apart and made this server read
+# another plugin's private file. A registry still on the old shape is migrated, once and with a
+# preserved copy, by scripts/migrate.py (SessionStart hook, and `_read_registry` below for a
+# surface with no hook). ⚠️ If that cannot complete (a file it must fold is unreadable) it is a
+# LOUD error naming the path — never a silently shorter account list, because partial coverage
+# reads as "no mail" (the 2026-08-05 zero-mailboxes incident).
 #
-# Resolution order: GMAIL_MCP_ACCOUNTS env override -> the config file -> AccountsError.
+# Resolution order: GMAIL_MCP_ACCOUNTS env override -> the registry -> AccountsError.
 # ⭐ THERE IS NO FALLBACK LIST, BY DESIGN. A hardcoded fallback made an earlier version of
 # this server person-specific, and an EMPTY fallback made "unconfigured" indistinguishable
 # from "no mail". Unconfigured raises AccountsError naming the exact fix.
+#
+# ⭐ AN UNSET `account` IS REFUSED, never resolved to "every account" (design-mail-boundary §3.4).
+# This server is machine-wide and cannot know who is calling; a call that names no account is a
+# call that has not decided what it may touch. Searching everything is a deliberate act: pass
+# `account: "all"` to gmail_search.
 #
 # HOME-anchored, not cwd- or env-anchored, because an MCP server is spawned by the Claude
 # runtime with no useful cwd and no shell environment. A durable path under ~/.claude is
@@ -138,36 +142,11 @@ UNCONFIGURED_HELP = (
 )
 
 
-def _addresses_from_obj(data):
-    """Pull addresses out of one parsed JSON object; tolerant of the two mailbox shapes.
-    Present-but-empty is legitimate (a consumer with no mailboxes yet) and returns [] —
-    require_accounts() decides loudness. Present-but-UNREADABLE never reaches here."""
-    out = []
-    if isinstance(data.get("accounts"), list):
-        out.extend(str(a).strip() for a in data["accounts"] if str(a).strip())
-    boxes = data.get("mailboxes")
-    if isinstance(boxes, list):
-        out.extend(m.get("address", "").strip() for m in boxes
-                   if isinstance(m, dict) and m.get("address", "").strip())
-    elif isinstance(boxes, dict):
-        out.extend(str(k).strip() for k in boxes.keys() if str(k).strip())
-    return out
+def _registry_path():
+    return os.environ.get("GMAIL_MULTI_CONFIG", "").strip() or CONFIG_PATH
 
 
-def _accounts_from_config_with_provenance():
-    """The ONE resolver that actually reads the config file — `_accounts_from_config()` below
-    is a thin wrapper that drops the provenance this function computes, never a second,
-    divergent read of the same file (design-manifest-heal.md § The boundary, item 2: a
-    standalone user should see exactly what their machine's config resolves to). Returns a
-    list of (address, source) pairs, source being "via accounts" for the config's own literal
-    list, or "via <include path>" for an address that arrived through one included file — the
-    same shape `gmail_accounts` prints so a union is visible rather than silent. Raises
-    AccountsError on anything unreadable, identically to the un-annotated resolver this used to
-    be — an unparseable config must be LOUD, because a swallowed error here reports 'no
-    mailboxes configured', indistinguishable from a user who has none."""
-    path = os.environ.get("GMAIL_MULTI_CONFIG", "").strip() or CONFIG_PATH
-    if not os.path.exists(path):
-        return []
+def _load_registry_file(path):
     try:
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -177,27 +156,59 @@ def _accounts_from_config_with_provenance():
     if not isinstance(data, dict):
         raise AccountsError("Config file %s must hold a JSON object, got %s."
                             % (path, type(data).__name__))
-    pairs = [(a, "via accounts") for a in _addresses_from_obj(data)]
-    for inc in data.get("include") or []:
-        inc = os.path.expanduser(str(inc))
-        try:
-            with open(inc, encoding="utf-8") as fh:
-                pairs.extend((a, "via %s" % inc) for a in _addresses_from_obj(json.load(fh)))
-        except (OSError, ValueError) as exc:
-            raise AccountsError(
-                "Config file %s includes %s, which cannot be read: %s\n"
-                "A skipped include would silently shrink coverage, so this is an error."
-                % (path, inc, exc))
+    return data
+
+
+def _read_registry():
+    """The registry as a parsed schema-2 dict, or None when the file is absent.
+
+    A file on the old shape (no `schema: 2`, or a leftover list-of-files key) is handed to
+    migrate.py, which preserves it and folds it; if that is pending the message becomes the
+    AccountsError, so the refusal is loud and names the path. A schema NEWER than this server
+    understands is refused rather than half-read."""
+    path = _registry_path()
+    if not os.path.exists(path):
+        return None
+    data = _load_registry_file(path)
+    schema = data.get("schema")
+    if schema == 2 and "include" not in data:  # retired-terms: ok
+        return data
+    if isinstance(schema, int) and not isinstance(schema, bool) and schema > 2:
+        raise AccountsError("Config file %s is registry schema %s, newer than this connector "
+                            "understands. Update the gmail-multi plugin." % (path, schema))
+    import migrate  # lazy: migrate.py imports accounts.py, which imports this module lazily
+    ok, msg = migrate.m_0_5_0_registry_v2(path)
+    if not ok:
+        raise AccountsError(msg.strip())
+    return _load_registry_file(path)
+
+
+def _accounts_from_config_with_provenance():
+    """The ONE resolver that actually reads the registry — `_accounts_from_config()` below is a
+    thin wrapper that drops the provenance this function computes, never a second, divergent
+    read of the same file (design-manifest-heal.md § The boundary, item 2: a standalone user
+    should see exactly what their machine's config resolves to). Returns a list of
+    (address, "via accounts") pairs, de-duplicated in first-seen order. Raises AccountsError on
+    anything unreadable — an unparseable registry must be LOUD, because a swallowed error here
+    reports 'no mailboxes configured', indistinguishable from a user who has none."""
+    data = _read_registry()
+    if data is None:
+        return []
+    accounts = data.get("accounts", [])
+    if not isinstance(accounts, list):
+        raise AccountsError("Config file %s: `accounts` must be a list of addresses, got %s."
+                            % (_registry_path(), type(accounts).__name__))
     seen, ordered = set(), []
-    for addr, source in pairs:
-        if addr not in seen:
+    for a in accounts:
+        addr = str(a).strip()
+        if addr and addr not in seen:
             seen.add(addr)
-            ordered.append((addr, source))
+            ordered.append((addr, "via accounts"))
     return ordered
 
 
 def _accounts_from_config():
-    """Read the connector's config file. Raises AccountsError on anything unreadable — see
+    """Read the connector's registry. Raises AccountsError on anything unreadable — see
     `_accounts_from_config_with_provenance()`, which does the actual reading; this just drops
     the source label for callers that only need the address list."""
     return [addr for addr, _source in _accounts_from_config_with_provenance()]
@@ -553,11 +564,31 @@ def attachment_parts(msg):
 # Tools
 # --------------------------------------------------------------------------
 
-def resolve_accounts(spec):
+def resolve_accounts(spec, single=False):
+    """The registered addresses `spec` names.
+
+    ⭐ AN UNSET OR EMPTY `spec` IS REFUSED (design-mail-boundary §3.4): the old behaviour
+    resolved it to the whole registry, so a caller that merely forgot `account` touched every
+    mailbox on the machine. `"all"` is the deliberate spelling, and only a search may use it
+    (`single=True` marks the tools that act on ONE mailbox: get_message, get_attachment,
+    create_draft, send, reply, forward — `all` there is refused even when the registry happens
+    to hold one account, so the call means the same thing on every machine)."""
     # ⭐ require_accounts, not configured_accounts: with zero accounts an "all" search
     # would search nothing and report "No matches" — the silent zero-mailboxes shape.
     known = require_accounts()
-    if spec in (None, "", "all"):
+    if spec is None or not str(spec).strip():
+        raise ValueError(
+            "`account` is required and was not given. Registered accounts: %s. Name one "
+            "(its address or local-part)%s."
+            % (", ".join(known),
+               "" if single else ", or pass \"all\" to search every registered account"))
+    spec = str(spec).strip()
+    if spec == "all":
+        if single:
+            raise ValueError(
+                "`account` must name exactly ONE mailbox for this tool — \"all\" is not "
+                "valid here. "
+                "Registered accounts: %s" % ", ".join(known))
         return known
     if spec in known:
         return [spec]
@@ -580,7 +611,7 @@ def tool_accounts(_args):
         provenance = {acct: "via GMAIL_MCP_ACCOUNTS" for acct in accounts}
     else:
         provenance = dict(_accounts_from_config_with_provenance())
-    lines = ["Configured accounts (searched together by default):", ""]
+    lines = ["Registered accounts (a call must name one; `all` searches every one):", ""]
     for acct in accounts:
         tag = " (%s)" % provenance[acct] if acct in provenance else ""
         try:
@@ -656,7 +687,7 @@ def tool_get_message(args):
     uid = str(args.get("uid") or "").strip()
     if not uid:
         raise ValueError("`uid` is required (from gmail_search).")
-    accounts = resolve_accounts(args.get("account"))
+    accounts = resolve_accounts(args.get("account"), single=True)
     if len(accounts) != 1:
         raise ValueError("`account` must name ONE account for this tool "
                          "(uids are per-account). Configured: %s"
@@ -687,7 +718,7 @@ def tool_get_attachment(args):
     uid = str(args.get("uid") or "").strip()
     if not uid:
         raise ValueError("`uid` is required.")
-    accounts = resolve_accounts(args.get("account"))
+    accounts = resolve_accounts(args.get("account"), single=True)
     if len(accounts) != 1:
         raise ValueError("`account` must name ONE account for this tool.")
     acct = accounts[0]
@@ -737,11 +768,15 @@ def tool_get_attachment(args):
 
 
 def _quote_original(msg):
-    """Gmail-style attribution + quoted body, so the draft reads like a reply."""
+    """The Gmail-style attribution and the original's raw body lines, unprefixed
+    and unescaped: (attribution, lines). Each MIME part dresses them in its own
+    quoting style (dev #697, public #141) -- text/plain with `> ` markers
+    (RFC 3676 4.5), text/html with a <blockquote> and no markers -- so neither
+    form is baked in here."""
     who = decode_header_value(msg.get("From"))
     when = decode_header_value(msg.get("Date"))
-    quoted = "\n".join("> " + ln for ln in body_text(msg, limit=8000).splitlines())
-    return "\n\nOn %s, %s wrote:\n%s" % (when, who, quoted)
+    lines = body_text(msg, limit=8000).splitlines()
+    return "On %s, %s wrote:" % (when, who), lines
 
 
 def _unfold_header(v):
@@ -772,17 +807,25 @@ def _reply_context(mb, uid, acct, subject, body, html_body):
     if not subject:
         osub = decode_header_value(original.get("Subject"))
         subject = osub if osub.lower().startswith("re:") else "Re: " + osub
-    quote = _quote_original(original)
-    body = body + quote
+    attribution, lines = _quote_original(original)
+    body = (body + "\n\n" + attribution + "\n"
+            + "\n".join("> " + ln for ln in lines))
     if html_body:
-        html_body = (html_body + "<br><br><blockquote>"
-                     + quote.replace("\n", "<br>") + "</blockquote>")
+        # Everything the connector places here came from the ORIGINAL message
+        # (sender, date, body), so it is escaped: a quoted email carrying markup
+        # must not become live HTML in the draft (dev #697). The caller's own
+        # html_body is the caller's HTML and passes through untouched. The
+        # attribution sits ABOVE the blockquote (WHATWG: attribution is outside it).
+        esc = _html.escape
+        html_body = (html_body + "<br><br><p>" + esc(attribution) + "</p>"
+                     + "<blockquote>" + "<br>".join(esc(ln) for ln in lines)
+                     + "</blockquote>")
     return in_reply_to, references, subject, body, html_body
 
 
 def tool_create_draft(args):
     """APPEND a draft to [Gmail]/Drafts. Structurally cannot send."""
-    accounts = resolve_accounts(args.get("account"))
+    accounts = resolve_accounts(args.get("account"), single=True)
     if len(accounts) != 1:
         raise ValueError(
             "`account` must name exactly ONE mailbox — a draft has to live "
@@ -976,7 +1019,7 @@ def _compose(acct, to, cc, bcc, subject, body, html_body=None,
 
 
 def _one_account(args):
-    accounts = resolve_accounts(args.get("account"))
+    accounts = resolve_accounts(args.get("account"), single=True)
     if len(accounts) != 1:
         raise ValueError(
             "`account` must name exactly ONE mailbox — mail is sent from "
@@ -1084,6 +1127,15 @@ def tool_forward(args):
                         ["  Original attached intact as message/rfc822."])
 
 
+# EVERY SEND NEEDS A PERSON PRESENT (owner decision O1, design-mail-boundary section 4.1).
+# Claude Code prompts on every call to a tool carrying this flag, even in acceptEdits, auto and
+# bypassPermissions, and an allow rule does not skip the prompt. Where nobody can answer
+# (dontAsk, headless, a scheduled run) the call is DENIED, not asked: that is the intended
+# behaviour. Drafting (gmail_create_draft) stays unflagged, so an unattended run can still
+# leave a reviewable draft. A client older than Claude Code v2.1.214 is INFERRED to ignore an
+# unknown _meta key and give a flagged tool ordinary permission handling.
+SEND_META = {"anthropic/requiresUserInteraction": True}
+
 TOOLS = [
     {
         "name": "gmail_accounts",
@@ -1097,10 +1149,11 @@ TOOLS = [
     {
         "name": "gmail_search",
         "description": (
-            "Search Gmail across ALL configured accounts at once using full "
-            "Gmail query syntax (in:anywhere, subject:, from:, newer_than:, "
-            "has:attachment, OR, parentheses). Defaults to every account; each "
-            "result is tagged with the mailbox it came from. If an account "
+            "Search Gmail using full Gmail query syntax (in:anywhere, subject:, "
+            "from:, newer_than:, has:attachment, OR, parentheses). `account` is "
+            "REQUIRED: name one mailbox, or pass 'all' to search every registered "
+            "account at once. A call with no account is refused, never widened to "
+            "everything. Each result is tagged with the mailbox it came from. If an account "
             "cannot be searched, the output says so loudly — a result set is "
             "never silently partial."),
         "inputSchema": {
@@ -1110,12 +1163,12 @@ TOOLS = [
                           "description": "Gmail search syntax, e.g. "
                                          "'in:anywhere from:aldergate.example newer_than:30d'"},
                 "account": {"type": "string",
-                            "description": "Email address, its local-part, or "
-                                           "'all' (default)."},
+                            "description": "Required. Email address, its local-part, or "
+                                           "'all' for every registered account."},
                 "limit": {"type": "integer",
                           "description": "Max results, newest first. Default 25."},
             },
-            "required": ["query"],
+            "required": ["query", "account"],
         },
         "handler": tool_search,
     },
@@ -1198,7 +1251,8 @@ TOOLS = [
             "This is the point of no return — sending cannot be undone. For a "
             "reviewable draft the user sends themselves, use gmail_create_draft "
             "instead. Consumers with a draft-only policy (e.g. the jobsearch "
-            "plugin) deny this tool with a PreToolUse guard."),
+            "plugin) deny this tool with a PreToolUse guard. Every send asks the "
+            "user to approve it, and is refused when nobody is present to answer."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1217,6 +1271,7 @@ TOOLS = [
             },
             "required": ["account", "to", "body"],
         },
+        "_meta": SEND_META,
         "handler": tool_send_message,
     },
     {
@@ -1227,7 +1282,8 @@ TOOLS = [
             "derives the recipient from Reply-To/From when `to` is omitted, and "
             "reply_all=true carries the original To/Cc into Cc. Sending cannot "
             "be undone — for a reviewable reply draft use gmail_create_draft "
-            "with reply_to_uid instead."),
+            "with reply_to_uid instead. Every send asks the user to approve it, "
+            "and is refused when nobody is present to answer."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1250,6 +1306,7 @@ TOOLS = [
             },
             "required": ["account", "uid", "body"],
         },
+        "_meta": SEND_META,
         "handler": tool_reply,
     },
     {
@@ -1258,7 +1315,9 @@ TOOLS = [
             "Forward an existing message by uid and SEND immediately: your "
             "optional note, the quoted original, and the intact original "
             "attached as message/rfc822 (attachments included). Subject "
-            "defaults to 'Fwd: ' + the original's. Sending cannot be undone."),
+            "defaults to 'Fwd: ' + the original's. Sending cannot be undone. Every "
+            "send asks the user to approve it, and is refused when nobody is present "
+            "to answer."),
         "inputSchema": {
             "type": "object",
             "properties": {
@@ -1276,6 +1335,7 @@ TOOLS = [
             },
             "required": ["account", "uid", "to"],
         },
+        "_meta": SEND_META,
         "handler": tool_forward,
     },
 ]

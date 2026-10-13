@@ -4,32 +4,67 @@ THIS PROFILE's own addresses. jobsearch never searches the machine's union.
 
 ⭐ WHY THIS EXISTS (design-manifest-heal.md § The boundary, item 1)
 --------------------------------------------------------------------
-`~/.claude/gmail-multi/accounts.json` is ONE FILE PER MACHINE — `m_0_29_0` appends every
-profile's `user.json` to its `include` list and never removes one, and
-`gmail_mcp_server._accounts_from_config()` unions every `accounts` literal and every include
-into one list on every call. So `resolve_accounts(None)` / `resolve_accounts("all")` return
-EVERY profile's mailboxes on that machine — two profile directories on one machine each get
-both profiles' mail from any `gmail_search` that omits `account`. The deterministic sweeps
-(`mail_client.py`) are not leaky: every sweep passes `account=<address>` per mailbox already.
-The leak is confined to the interactive MCP path, and to what the model is told to type —
-this hook is what makes "type `account=<address>`" a MECHANICAL requirement rather than a
-convention the model can forget.
+`~/.claude/gmail-multi/accounts.json` is ONE FILE PER MACHINE — it is gmail-multi's registry of
+every account on the machine, whichever profile uses it. So a `gmail_search` that omits
+`account` (or passes `all`) would reach EVERY account on that machine — two profile directories
+on one machine each get both profiles' mail. (Since gmail-multi 0.5.0 its own server refuses an
+unset `account`; this guard still narrows `all` and any address outside the profile's subset,
+because only jobsearch's hook knows the subset.) The deterministic sweeps (`mail_client.py`)
+are not leaky: every sweep passes `account=<address>` per mailbox already. The leak is confined
+to the interactive MCP path, and to what the model is told to type — this hook is what makes
+"type `account=<address>`" a MECHANICAL requirement rather than a convention the model can
+forget.
+
+⭐⭐ dev #469 — THE ALLOWED SET IS THE PROFILE'S DECLARED SUBSET THE REGISTRY HOLDS
+-----------------------------------------------------------------------------------
+The profile's `user.json` lists addresses BY REFERENCE into gmail-multi's registry
+(`mail_client.declared_accounts()` returns `(members, unregistered)`). The allowed set is
+`members`. An address the profile declares but the registry lacks is DENIED with the fix
+(`/gmail-multi:accounts`), never silently passed through and never searched.
+
+**"A profile session" means any profile this guard resolves — INCLUDING the remembered pointer**
+(`~/.claude/jobsearch/profile_root`, which an installed copy consults when nothing above the cwd is a
+profile; F2: fail toward narrowing). The consequence is deliberate and stated: on a machine where
+jobsearch is installed and enabled and a profile pointer is remembered, gmail-multi's tools are
+narrowed to that profile's declared subset EVEN WHEN THE SESSION IS NOT DOING JOB-SEARCH WORK. The
+user reaches their other accounts by starting the session where no profile resolves (a directory
+that is not under a profile, with `CLAUDESEARCH_ROOT` unset), or by disabling jobsearch for that
+session.
+
+`gmail_accounts` (the diagnostic that lists the registry's every address) is GUARDED and DENIED
+whenever a profile resolves, with a pointer to `/jobsearch:mailboxes`, which shows the declared
+subset and each address's registry state.
+
+**The registry can be in four states** (`mail_client.registry_accounts`):
+  ok       -> the rule above.
+  absent / malformed (`RegistryError`) -> DENY every guarded mailbox call with the registry's own
+           message (the server would refuse them anyway: no accounts).
+  schema 1 (`RegistryPending`, the bounded window while the two plugins update in either order) ->
+           ALLOW on the OLD rule (an exact member of the raw declared list), and say so LOUDLY:
+           the hook's JSON `systemMessage` (shown to the user — stderr of an exit-0 hook is
+           never seen by anyone) plus a durable `mail-registry-pending` diag row, once per session
+           (F1). Never silent.
 
 ## The decision, in order (never re-ordered without re-reading this docstring)
 
     payload unreadable, or tool_name absent          -> DENY  (fail closed)
-    tool_name not one of the four guarded tools      -> ALLOW (defensive; hooks.json's matcher
+    tool_name not one of the guarded tools           -> ALLOW (defensive; hooks.json's matcher
                                                          should never route anything else here)
+    `gmail_accounts`, a profile resolves             -> DENY, naming /jobsearch:mailboxes
     `tool_input` key ABSENT from the payload         -> ALLOW, + one `guard-blind` diag row
                                                          (r3, #67 — see below)
     no profile resolves from this hook's cwd         -> ALLOW, silently (nothing to scope to)
-    profile resolves, but its mailbox list is        -> DENY, naming /jobsearch:mailboxes
-      empty or unreadable
+    registry absent or malformed                     -> DENY, the registry's message
+    profile resolves, but no member address          -> DENY, naming /jobsearch:mailboxes (or, when
+      (list empty/unreadable, or all unregistered)      declared addresses are unregistered, the
+                                                         /gmail-multi:accounts fix)
     tool_input.account absent, empty, or "all"       -> DENY, printing the address list
-    tool_input.account present but not EXACTLY one   -> DENY, same message (no prefix match —
-      of the profile's own addresses                    a prefix can collide with another
+    tool_input.account declared but unregistered     -> DENY, naming /gmail-multi:accounts
+    tool_input.account present but not EXACTLY one   -> DENY, same list (no prefix match —
+      of the members                                    a prefix can collide with another
                                                          profile's address on a second domain)
-    exact member                                     -> ALLOW
+    exact member, registry ok                        -> ALLOW
+    exact member, registry schema 1 (pending)        -> ALLOW, + `systemMessage` + diag row (F1)
 
 ⭐⭐ #67 — `tool_input` DELIVERY WAS UNMEASURED, SO THIS GUARD MEASURES IT ITSELF. No code in
 this tree had ever captured an argument arriving on a gmail-multi-served tool before this file
@@ -90,20 +125,26 @@ if HERE not in sys.path:
 # script must equal "|".join(GUARDED_MAIL_SCOPE_TOOLS) exactly (check_mail_scope_guard_matcher.py
 # asserts that, in CI and inside the materialized shipped package, the same shape
 # check_mail_guard_matcher.py already holds for GUARDED_MAIL_SEND_TOOLS). The three send tools
-# are already denied outright by guard_mail_send.py; gmail_accounts reads no mailbox and is
-# deliberately NOT in this tuple — it stays allowed.
+# are already denied outright by guard_mail_send.py. ⭐ dev #469: `gmail_accounts` IS in this tuple
+# now — it reads no mailbox, but it lists the registry's EVERY address, which is exactly what a
+# profile session must not learn; it is denied whenever a profile resolves (it has no `account`).
 GUARDED_MAIL_SCOPE_TOOLS = (
     # measured plugin-served spelling: mcp__plugin_<plugin>_<server>__<tool>
     "mcp__plugin_gmail-multi_gmail-multi__gmail_search",
     "mcp__plugin_gmail-multi_gmail-multi__gmail_get_message",
     "mcp__plugin_gmail-multi_gmail-multi__gmail_get_attachment",
     "mcp__plugin_gmail-multi_gmail-multi__gmail_create_draft",
+    "mcp__plugin_gmail-multi_gmail-multi__gmail_accounts",
     # manual .mcp.json spelling of the same server
     "mcp__gmail-multi__gmail_search",
     "mcp__gmail-multi__gmail_get_message",
     "mcp__gmail-multi__gmail_get_attachment",
     "mcp__gmail-multi__gmail_create_draft",
+    "mcp__gmail-multi__gmail_accounts",
 )
+
+# the guarded tools that take NO `account` argument: denied outright in a profile session.
+ACCOUNTS_LISTING_TOOLS = tuple(t for t in GUARDED_MAIL_SCOPE_TOOLS if t.endswith("__gmail_accounts"))
 
 
 # ⭐ dev #161 — THE TWO CONNECTORS' MAIL TOOLS, by name. Single source of truth for BOTH this guard's
@@ -181,15 +222,47 @@ def _addr_list_message(accounts):
             % ", ".join(accounts))
 
 
+def _unregistered_message(address):
+    return ("%s is declared in this profile but is NOT in gmail-multi's registry, so it is not "
+            "searchable. Add it with /gmail-multi:accounts, or remove it from the profile with "
+            "/jobsearch:mailboxes." % address)
+
+
+def _no_members_message(unregistered):
+    if unregistered:
+        return ("none of this profile's mailboxes are in gmail-multi's registry (%s). Add them "
+                "with /gmail-multi:accounts, or run /jobsearch:mailboxes to see each address's "
+                "state." % ", ".join(unregistered))
+    return ("this profile has no configured mailboxes (or the list could not be read) — run "
+            "/jobsearch:mailboxes")
+
+
+ACCOUNTS_DENIED = ("gmail_accounts lists every account on this machine, and a job-search profile "
+                   "session works only with its own mailboxes. Run /jobsearch:mailboxes: it shows "
+                   "this profile's declared addresses and whether each is in gmail-multi's "
+                   "registry.")
+
+# F1 — the loud signal for the bounded mixed-version window. Carried in the hook's JSON
+# `systemMessage` (a "Warning message shown to the user"); an exit-0 hook's stderr reaches no one.
+PENDING_MESSAGE = ("gmail-multi registry not migrated yet — scoping to the profile list until it "
+                   "is. Update the gmail-multi plugin, or start a new session, to finish the "
+                   "move; until then this profile's mailbox scope rests on its own list.")
+
+
 def evaluate(payload, has_profile, accounts, connector=None, connector_error=None,
-             scope=True):
+             scope=True, unregistered=(), registry_pending=False, registry_error=None):
     """Returns (verdict, reason). verdict is one of "deny" / "allow" / "allow-blind" /
-    "deny-connector" — "allow-blind" is an ALLOW that the caller must also log (the #67 probe);
-    "deny-connector" is a deny because the tool belongs to the UNSELECTED mail connector (dev #161).
-    `accounts` is only consulted when `has_profile` is True; the caller resolves both exactly once
-    per invocation. `connector` is the profile's resolved selection (None = not enforced, e.g. no
-    profile); `connector_error` is why it could not be resolved. `scope=False` is the second hook
-    entry (`--connector`): the selection only, never the per-address scoping."""
+    "allow-pending" / "deny-connector" — "allow-blind" is an ALLOW that the caller must also log
+    (the #67 probe); "allow-pending" is an ALLOW on the OLD rule while gmail-multi's registry is
+    still schema 1, which the caller must announce (F1); "deny-connector" is a deny because the
+    tool belongs to the UNSELECTED mail connector (dev #161).
+    `accounts` is only consulted when `has_profile` is True; the caller resolves all of it exactly
+    once per invocation. dev #469: `accounts` is the profile's MEMBERS (declared AND registered),
+    `unregistered` the declared addresses the registry lacks, `registry_pending` says the registry
+    is schema 1 (then `accounts` is the raw declared list), `registry_error` is the plain-words
+    reason it is absent or malformed. `connector` is the profile's resolved selection (None = not
+    enforced, e.g. no profile); `connector_error` is why it could not be resolved. `scope=False` is
+    the second hook entry (`--connector`): the selection only, never the per-address scoping."""
     if not isinstance(payload, dict):
         return "deny", "hook payload unreadable — failing CLOSED for a mailbox-scope matcher hit"
     name = payload.get("tool_name")
@@ -203,39 +276,72 @@ def evaluate(payload, has_profile, accounts, connector=None, connector_error=Non
         return "allow", "connector entry: %s is not the unselected connector's tool" % name
     if name not in GUARDED_MAIL_SCOPE_TOOLS:
         return "allow", "tool %s is not in GUARDED_MAIL_SCOPE_TOOLS" % name
+    if name in ACCOUNTS_LISTING_TOOLS:
+        # takes no argument, so it is decided BEFORE the blind probe: there is nothing to see.
+        if not has_profile:
+            return "allow", "no profile resolves from this hook's cwd — nothing to scope to"
+        return "deny", ACCOUNTS_DENIED
     if "tool_input" not in payload:
         return "allow-blind", ("tool_input key is absent from the payload for %s — this build "
                                "cannot see the argument at all (#67)" % name)
     if not has_profile:
         return "allow", "no profile resolves from this hook's cwd — nothing to scope to"
+    if registry_error:
+        return "deny", registry_error
+    unregistered = list(unregistered or ())
     if not accounts:
-        return "deny", ("this profile has no configured mailboxes (or the list could not be "
-                        "read) — run /jobsearch:mailboxes")
+        return "deny", _no_members_message(unregistered)
     account = (payload.get("tool_input") or {}).get("account")
     if not account or account == "all":
         return "deny", _addr_list_message(accounts)
     if account not in accounts:
+        if account.lower() in {u.lower() for u in unregistered}:
+            return "deny", _unregistered_message(account)
         return "deny", _addr_list_message(accounts)
+    if registry_pending:
+        return "allow-pending", ("account %s is on this profile's own list; gmail-multi's registry "
+                                 "is still schema 1" % account)
     return "allow", "account %s is exactly one of this profile's addresses" % account
 
 
-def _resolve_profile_and_accounts():
-    """(has_profile, accounts) — has_profile is False only when NOTHING above this hook's cwd
-    looks like a profile at all; once a profile is found, any further failure reading its
-    mailbox list yields accounts=[] (which `evaluate()` DENYs, per the design's own
-    "profile resolves, list unreadable -> DENY" branch — never conflated with "no profile")."""
+def _resolve_scope():
+    """The scope facts `evaluate()` needs, resolved once: `(has_profile, accounts, extras)`, where
+    `extras` carries `unregistered`, `registry_pending` and `registry_error`. `has_profile` is False
+    only when NOTHING above this hook's cwd looks like a profile at all (a remembered pointer
+    counts as a profile — F2); once a profile is found, any further failure reading its mailbox
+    list yields accounts=[] (which `evaluate()` DENYs, per the design's own "profile resolves,
+    list unreadable -> DENY" branch — never conflated with "no profile")."""
+    extras = {"unregistered": [], "registry_pending": False, "registry_error": None}
     try:
         import _root
         root = _root.profile_root()
         if not _root.looks_like_profile(root):
-            return False, []
+            return False, [], extras
     except Exception:                                     # noqa: BLE001 — unresolved = no profile
-        return False, []
+        return False, [], extras
     try:
         import mail_client
-        return True, (mail_client.configured_accounts() or [])
     except Exception:                                     # noqa: BLE001 — profile is real; list isn't
-        return True, []
+        return True, [], extras
+    try:
+        members, unregistered = mail_client.declared_accounts()
+        extras["unregistered"] = list(unregistered)
+        return True, list(members), extras
+    except mail_client.RegistryPending as exc:
+        extras["registry_pending"] = True
+        return True, list(exc.declared), extras
+    except mail_client.RegistryError as exc:
+        extras["registry_error"] = str(exc)
+        return True, [], extras
+    except Exception:                                     # noqa: BLE001 — profile is real; list isn't
+        return True, [], extras
+
+
+def _resolve_profile_and_accounts():
+    """(has_profile, accounts) — the pre-#469 two-value view of `_resolve_scope()`, kept for any
+    caller that only needs the members."""
+    has_profile, accounts, _extras = _resolve_scope()
+    return has_profile, accounts
 
 
 def _resolve_connector():
@@ -299,6 +405,53 @@ def _record_guard_blind(payload):
             pass
 
 
+def _pending_flag_path(session_id):
+    """`<state_root>/guard_mail_scope.pending-<session_id>` — the blind probe's once-per-session
+    marker shape; None when there is no session_id (the row is then written every time: loud beats
+    silent)."""
+    sess = re.sub(r"[^A-Za-z0-9_-]", "", str(session_id or ""))[:64]
+    if not sess:
+        return None
+    try:
+        import _root
+        return os.path.join(_root.state_root(), "guard_mail_scope.pending-%s" % sess)
+    except Exception:                                     # noqa: BLE001
+        return None
+
+
+def _record_registry_pending(payload):
+    """F1's durable half: one `mail-registry-pending` diag row, once per session (the shown half is
+    the `systemMessage` `main()` prints). The row carries a tool name and a session id only — the
+    diag log may never hold a mailbox. Never raises: a diagnostic must not break a hook."""
+    session_id = None
+    tool = None
+    try:
+        if isinstance(payload, dict):
+            session_id = payload.get("session_id")
+            tool = payload.get("tool_name")
+    except Exception:                                     # noqa: BLE001
+        pass
+    flag = _pending_flag_path(session_id)
+    if flag:
+        try:
+            if os.path.exists(flag):
+                return
+        except OSError:
+            pass
+    try:
+        from _diag import log as diag
+        diag("mail-registry-pending", hook="guard_mail_scope", tool_name=tool,
+             session_id=session_id)
+    except Exception:                                     # noqa: BLE001 — never block a session
+        pass
+    if flag:
+        try:
+            os.makedirs(os.path.dirname(flag), exist_ok=True)
+            open(flag, "w", encoding="utf-8").close()
+        except OSError:
+            pass
+
+
 def selftest():
     """Prove every branch against SYNTHETIC payloads and a synthetic profile — never a real
     one. Loud, never blocking startup (the same posture guard_mail_send.py's own selftest
@@ -343,10 +496,28 @@ def selftest():
     if verdict != "deny":
         failures.append("an empty mailbox list did not deny")
 
-    verdict, _ = evaluate(
-        {"tool_name": "mcp__plugin_gmail-multi_gmail-multi__gmail_accounts"}, True, accounts)
+    accounts_tool = "mcp__plugin_gmail-multi_gmail-multi__gmail_accounts"
+    verdict, _ = evaluate({"tool_name": accounts_tool}, True, accounts)
+    if verdict != "deny":
+        failures.append("gmail_accounts did not deny in a profile session")
+    verdict, _ = evaluate({"tool_name": accounts_tool}, False, [])
     if verdict != "allow":
-        failures.append("gmail_accounts (not a guarded tool) did not allow")
+        failures.append("gmail_accounts did not allow when no profile resolves")
+
+    verdict, reason = evaluate({"tool_name": tool, "tool_input": {"account": "acct-u@example.com"}},
+                               True, accounts, unregistered=["acct-u@example.com"])
+    if verdict != "deny" or "/gmail-multi:accounts" not in reason:
+        failures.append("a declared-but-unregistered account did not deny with the fix")
+
+    verdict, _ = evaluate({"tool_name": tool, "tool_input": {"account": accounts[0]}}, True,
+                          accounts, registry_pending=True)
+    if verdict != "allow-pending":
+        failures.append("a member on a schema-1 registry did not classify as allow-pending")
+
+    verdict, _ = evaluate({"tool_name": tool, "tool_input": {"account": accounts[0]}}, True,
+                          accounts, registry_error="registry missing")
+    if verdict != "deny":
+        failures.append("an absent registry did not deny")
 
     verdict, _ = evaluate(None, True, accounts)
     if verdict != "deny":
@@ -390,23 +561,28 @@ def main():
         payload = json.load(sys.stdin)
     except Exception:                                     # noqa: BLE001
         payload = None
-    has_profile, accounts = _resolve_profile_and_accounts()
+    has_profile, accounts, extras = _resolve_scope()
     connector, connector_error = _resolve_connector() if has_profile else (None, None)
     verdict, reason = evaluate(payload, has_profile, accounts, connector=connector,
                                connector_error=connector_error,
-                               scope="--connector" not in sys.argv[1:])
+                               scope="--connector" not in sys.argv[1:], **extras)
     if verdict == "allow-blind":
         _record_guard_blind(payload)
+        return 0
+    if verdict == "allow-pending":
+        # F1 — the shown half (`systemMessage`) and the durable half (a diag row), never stderr.
+        _record_registry_pending(payload)
+        print(json.dumps({"systemMessage": PENDING_MESSAGE}))
         return 0
     if verdict == "deny-connector":
         sys.stderr.write("BLOCKED — %s\n\n[guard_mail_scope: connector selection]\n" % reason)
         return 2
     if verdict == "deny":
         sys.stderr.write(
-            "BLOCKED — gmail-multi's config is machine-wide (design-manifest-heal.md § The "
-            "boundary): every address in accounts.json and every included profile is searched "
-            "by any call that omits account. This profile scopes every mailbox call to its own "
-            "address(es).\n\n%s\n\n[guard_mail_scope: %s]\n" % (reason, reason))
+            "BLOCKED — gmail-multi's registry is machine-wide (design-mail-boundary.md): it "
+            "holds every account on this machine, whichever profile uses it. This profile scopes "
+            "every mailbox call to its own address(es) that the registry holds.\n\n%s\n\n"
+            "[guard_mail_scope: %s]\n" % (reason, reason))
         return 2
     return 0
 

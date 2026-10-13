@@ -379,16 +379,16 @@ broken one reads downstream as "no matching proof points" — same as having non
 **Deterministic sweeps** (a daily, predictable artifact is a query, not a model summary):
 - `alert_sweep.py` — board/aggregator digests, every configured mailbox.
 - `meeting_check.py` — calendar artifacts diffed against `data/commitments.jsonl`.
-- `mail_client.py` — **library only, no `mcpServers` entry**: sweeps import it, reading
-  `user.json`. Interactive `gmail_*` tools: `gmail-multi`'s own server, reading
-  `~/.claude/gmail-multi/accounts.json`, kept pointed here via `include` (`m_0_29_0`). **⭐
-  `account` defaults to `all` in the library only** — on the connector `all` is the MACHINE's
-  union of every consumer/profile; `guard_mail_scope.py` denies any call here whose `account`
-  isn't exactly this profile's own address, printing the list (`gmail_accounts` shows
-  provenance). An unreachable one still raises `!! INCOMPLETE COVERAGE` (sweeps) or
-  `AccountsError` (connector) — see above. Credentials: OS credential store only
-  (service `claudesearch-imap`), never the repo. **Claude must not handle them** — if
-  `gmail_accounts` reports `[MISSING]`, say so rather than searching one mailbox silently.
+- `mail_client.py` — **library only, no `mcpServers` entry**: sweeps import it, reading `user.json`
+  mailboxes, references into `gmail-multi`'s registry (`~/.claude/gmail-multi/accounts.json`, written
+  only by `/gmail-multi:accounts`). Interactive `gmail_*` tools: `gmail-multi`'s own server. **⭐
+  `account` defaults to `all` in the library only** — the connector refuses an unset `account`, `all`
+  is the MACHINE's registry; `guard_mail_scope.py` denies any call whose `account` isn't exactly
+  this profile's registered address, and `gmail_accounts`. Unregistered: reported,
+  never skipped. An unreachable one still raises `!! INCOMPLETE COVERAGE` (sweeps) or `AccountsError`
+  (connector) — see above. Credentials: OS credential store only (service `claudesearch-imap`),
+  never the repo. **Claude must not handle them** — if `/jobsearch:mailboxes` reports `NO CREDENTIAL`,
+  say so rather than searching one mailbox silently.
 
 **Reading and screening:**
 - `profile.py` — loads `user.json` + `config.json`. **`--screen-all` is the executable comp

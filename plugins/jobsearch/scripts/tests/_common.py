@@ -1334,6 +1334,55 @@ def scratch_profile(testcase=None):
     return d
 
 
+def scratch_registry(testcase, root=None, addresses=None, extra=()):
+    """dev #469 (1b-8) -- the ONE shared helper that gives a test profile the gmail-multi registry
+    it now needs. jobsearch no longer owns the account list: a profile's `mailboxes` are only a
+    SUBSET it declares BY REFERENCE, and every sweep, `brief` and the scope guard searches the
+    declared addresses that gmail-multi's registry also holds (`mail_client.declared_accounts()`).
+    A test profile with no registry therefore has no searchable account -- correctly, and loudly.
+
+    Writes a schema-2 registry holding the profile's OWN declared addresses (read from
+    `<root>/user.json` `mailboxes[].address`; `root` defaults to the suite's profile, which is the
+    tracked fixture when no real profile is present) plus any `extra` addresses it should hold for
+    other reasons, into a scratch directory -- never `~/.claude` -- and points
+    `GMAIL_MULTI_CONFIG` at it for the test (from `setUpClass`, pass the class: it then lasts the
+    class). `addresses=` replaces the declared list outright (for a profile whose list is set
+    another way). The previous value of `GMAIL_MULTI_CONFIG` and the
+    once-per-process loud-line memory are restored on `testcase`'s cleanup. A subprocess inherits
+    the variable through `os.environ`, which is what `scratch_env()` and a bare `dict(os.environ)`
+    both copy. Returns the registry path.
+
+    This supplies the registry a test's profile NEEDS; it must not be used to make an assertion
+    about 'no registry' pass (a test of an absent or schema-1 registry writes its own)."""
+    if addresses is None:
+        try:
+            with open(os.path.join(root or ROOT, "user.json"), encoding="utf-8") as fh:
+                boxes = json.load(fh).get("mailboxes", [])
+        except (OSError, ValueError):
+            boxes = []
+        addresses = [m["address"] for m in boxes if isinstance(m, dict) and m.get("address")]
+    # `testcase` is a TestCase instance (setUp / a test) or, from `setUpClass`, the class itself.
+    add_cleanup = (testcase.addClassCleanup if isinstance(testcase, type) else testcase.addCleanup)
+    d = tempfile.mkdtemp(prefix="jobsearch-test-registry-")
+    add_cleanup(shutil.rmtree, d, True)
+    path = os.path.join(d, "accounts.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump({"schema": 2, "accounts": list(addresses) + list(extra)}, fh)
+    saved = os.environ.get("GMAIL_MULTI_CONFIG")
+    os.environ["GMAIL_MULTI_CONFIG"] = path
+
+    def restore():
+        if saved is None:
+            os.environ.pop("GMAIL_MULTI_CONFIG", None)
+        else:
+            os.environ["GMAIL_MULTI_CONFIG"] = saved
+    add_cleanup(restore)
+    import mail_client
+    mail_client._ANNOUNCED.clear()
+    add_cleanup(mail_client._ANNOUNCED.clear)
+    return path
+
+
 def scratch_env(root, **extra):
     """The env dict a subprocess needs to actually land on `root` (a `scratch_profile()`
     copy) rather than the tracked fixture `_common.py` already points process-wide
@@ -1886,6 +1935,7 @@ __all__ = [
     '_rs_journal',
     '_B5Profile',
     'scratch_profile',
+    'scratch_registry',
     'scratch_env',
     'scratch_fixture_tree',
     '_fixture_roots',

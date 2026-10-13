@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Configure which mailboxes the job search reads. Backs the `/jobsearch:mailboxes` command.
 
-Two halves, deliberately separate:
-  THE LIST   — which addresses to search. Plain config, lives in `user.json.mailboxes`. This
-               script edits it.
+Three things, deliberately separate:
+  THE ACCOUNTS — which accounts exist on this machine. gmail-multi's REGISTRY owns them
+               (`/gmail-multi:accounts` is its one writer); this script only READS it.
+  THE LIST   — which of those this profile searches. Plain config, lives in
+               `user.json.mailboxes` as a list of addresses that REFERENCE the registry. This
+               script edits it, and refuses to add an address the registry lacks (dev #469).
   THE SECRETS— one app password per address. Lives in the OS credential store. ⭐ THIS SCRIPT
                NEVER TOUCHES ONE. It prints the command for you to run and then verifies that a
                credential appeared. See scripts/credentials.py for why.
@@ -101,6 +104,49 @@ def connector_lines():
     return lines, True
 
 
+REGISTRY_FIX = "add it with /gmail-multi:accounts"
+
+
+def registry_state():
+    """`(state, held, detail)` — how gmail-multi's registry sees this machine. `state` is one of:
+    "skip"    the registry is not consulted (the claude-gmail connector binds its own account);
+    "env"     `GMAIL_MCP_ACCOUNTS` names the accounts (gmail-multi's own override of the registry);
+    "ok"      schema 2, read — `held` is the lower-cased set of its addresses;
+    "pending" still schema 1: gmail-multi has not migrated it yet;
+    "absent"  absent or malformed. `detail` is the plain-words reason for the last two."""
+    import mail_client
+    raw = os.environ.get("GMAIL_MCP_ACCOUNTS", "").strip()
+    if raw:
+        return "env", {a.strip().lower() for a in raw.split(",") if a.strip()}, ""
+    try:
+        connector = mail_client.selected_connector()
+    except ValueError:
+        connector = mail_client.GMAIL_MULTI           # an unreadable selection narrows, not widens
+    if connector != mail_client.GMAIL_MULTI:
+        return "skip", set(), ""
+    try:
+        return "ok", {a.lower() for a in mail_client.registry_accounts()}, ""
+    except mail_client.RegistryPending as exc:
+        return "pending", set(), str(exc)
+    except mail_client.RegistryError as exc:
+        return "absent", set(), str(exc)
+
+
+def registry_label(address, state, held):
+    """(text, ok) — the line `--status` prints for one address against the registry; None when the
+    registry is not consulted. An address the registry does not hold is NEVER shown as searchable."""
+    if state == "skip":
+        return None, True
+    if state in ("ok", "env"):
+        if address.lower() in held:
+            return "in gmail-multi's registry", True
+        return "NOT IN gmail-multi's registry — %s" % REGISTRY_FIX, False
+    if state == "pending":
+        return ("registry not migrated yet — gmail-multi updates it at its next session start, "
+                "then this shows whether %s is in it" % address), False
+    return "gmail-multi's registry is unavailable — see below", False
+
+
 def status():
     data = _load()
     boxes = data.get("mailboxes", []) or []
@@ -122,16 +168,23 @@ def status():
     if not boxes:
         print("  No mailboxes configured. The search is mailbox-blind: every query will come")
         print("  back empty, which looks exactly like a quiet inbox.")
-        print("\n  Add one:  python3 scripts/mailboxes.py --add you@example.com")
+        print("\n  Register the account with gmail-multi first (/gmail-multi:accounts), then:")
+        print("  Add one:  python3 scripts/mailboxes.py --add you@example.com")
         return 1
 
+    reg_state, reg_held, reg_detail = registry_state()
     problems = 0
+    registry_problems = 0
     for m in boxes:
         addr = m.get("address", "")
         ok = cred.has_credential(addr)
         problems += 0 if ok else 1
         print("  [%s] %-38s %s" % ("OK " if ok else "!! ", addr,
                                    "credential present" if ok else "NO CREDENTIAL — not searchable"))
+        reg_text, reg_ok = registry_label(addr, reg_state, reg_held)
+        if reg_text is not None:
+            registry_problems += 0 if reg_ok else 1
+            print("       %s" % reg_text)
         if not ok:
             shell_kind, cmd, note = cred.store_command(addr)
             name, url, extra = _provider_note(addr)
@@ -149,13 +202,22 @@ def status():
             print()
 
     print()
+    if reg_detail:
+        print("  gmail-multi registry: %s" % reg_detail)
+        print()
+    if registry_problems:
+        print("  %d of %d mailbox(es) are not confirmed in gmail-multi's registry, so they are NOT "
+              "searched." % (registry_problems, len(boxes)))
+        print("  The accounts live in gmail-multi's registry, which /gmail-multi:accounts writes; "
+              "this profile only references them.")
+        print()
     if problems:
         print("  %d of %d mailbox(es) cannot be searched." % (problems, len(boxes)))
         print("  ⚠️ Until fixed, a search of those accounts returns empty — indistinguishable")
         print("     from no mail. Never read that as 'nothing arrived'.")
-    else:
+    elif not registry_problems:
         print("  All %d mailbox(es) configured and reachable." % len(boxes))
-    return 1 if (problems or not connector_ok) else 0
+    return 1 if (problems or registry_problems or not connector_ok) else 0
 
 
 def add(address):
@@ -164,9 +226,22 @@ def add(address):
     if any(m.get("address", "").lower() == address.lower() for m in boxes):
         print("%s is already configured." % address)
         return status()
+    # dev #469 — the address is a REFERENCE into gmail-multi's registry, so an address the registry
+    # lacks is refused HERE, loudly, and nothing is written. (The registry has one writer,
+    # gmail-multi's accounts.py; this script never writes it.)
+    state, held, detail = registry_state()
+    if state in ("ok", "env") and address.lower() not in held:
+        print("NOT IN gmail-multi's registry — %s is not one of the accounts gmail-multi knows, so "
+              "adding it here would reference nothing and it would never be searched." % address)
+        print("Nothing was written. First register it with gmail-multi:  /gmail-multi:accounts "
+              "(add %s), then run this again." % address)
+        return 1
+    if state in ("pending", "absent"):
+        print("Cannot confirm %s against gmail-multi's registry: %s" % (address, detail))
+        print("Nothing was written. Fix that first (/gmail-multi:accounts), then run this again.")
+        return 1
     boxes.append({"address": address,
-                  "kind": "consumer" if "@gmail." in address else "workspace",
-                  "keychain_service": cred.SERVICE})
+                  "kind": "consumer" if "@gmail." in address else "workspace"})
     _save(data)
     print("Added %s to user.json.\n" % address)
     print("⭐ It is NOT searchable yet — it still needs an app password in your credential store.")

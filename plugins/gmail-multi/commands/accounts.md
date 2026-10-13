@@ -19,10 +19,18 @@ the tool prints the command and the person runs it (see `scripts/credentials.py`
 |---|---|
 | another mailbox searched | `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/accounts.py" --add their@address` |
 | a mailbox dropped | `... --remove their@address` |
-| a consumer file's mailboxes merged in (e.g. a jobsearch profile's `user.json`) | `... --include /abs/path/to/user.json` |
 
-After any change, run `--status` again and show the user the result. The MCP server
-re-reads the config on every call — no restart needed.
+After any change, run `--status` again and show the user the result (`--status --json`
+prints the same thing for a script). The MCP server re-reads the config on every call —
+no restart needed.
+
+The list is the connector's **registry**: one file, `accounts.json`, and this command is its
+only writer. Other plugins may read it to learn which accounts exist; they choose their own
+subset by address and never edit it. Every gmail tool call must name its account: one left
+unset is refused, and `gmail_search` takes `all` to mean every registered account. If an
+older registry still lists other files to merge in, the first session start folds those
+addresses into `accounts` and keeps the original beside it as `accounts.json.v1`. Nothing
+is for you to run.
 
 **Never conclude "no accounts" from an empty search result.** The server refuses loudly
 when unconfigured; an empty result therefore means the accounts that WERE searched had

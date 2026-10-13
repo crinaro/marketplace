@@ -1399,57 +1399,30 @@ def m_0_27_0_alert_sender_backfill(profile, apply_it):
 
 
 def m_0_29_0_gmail_connector_config(profile, apply_it, home=None):
-    """0.29.0 — the Gmail MCP server moves to the standalone `gmail-multi` connector plugin
-    (marketplace ADR-004). The connector reads its OWN config, `~/.claude/gmail-multi/
-    accounts.json`, never this profile's `user.json` — it must work for people who have no
-    job-search profile at all. So the jobsearch case becomes a CONSUMER of that mechanism:
-    this migration points the connector's `include` list at this profile's `user.json`, and
-    from then on a mailbox added to the profile reaches the connector on its next tool call
-    with no second bookkeeping and no divergent copy of the address list.
+    """0.29.0 — the Gmail MCP server moved to the standalone `gmail-multi` connector plugin
+    (marketplace ADR-004). It used to point the connector's `include` list at this profile's  # retired-terms: ok
+    `user.json`, so a mailbox added to the profile reached the connector with no second copy.
 
-    ⭐ PRESERVE, THEN TRANSFORM — additive only. An existing accounts.json (a user who
-    configured the connector directly, or another profile on an agency machine) keeps every
-    entry it has; this only appends this profile's user.json to `include` if absent. It
-    NEVER copies addresses (a copy is the divergence this design exists to avoid) and NEVER
-    removes anything. Reversal is one `--drop-include`.
+    ⭐⭐ RETIRED AS A WRITER by 0.63.0 (dev #469, F7; dated 2026-10-12) — it now writes NOTHING, in
+    every registry state, and returns a one-line note. gmail-multi owns the ONE account registry
+    and its one writer is gmail-multi's own `accounts.py` (A1); `include` is gone from gmail-multi  # retired-terms: ok
+    0.5.0 (A4), so an include written here would be a dead key at best, and at worst a second
+    writer re-adding a profile reference to a file this plugin no longer owns. A profile older than
+    0.29.0 that upgrades straight to the current release therefore never touches the registry:
 
-    Idempotent: the include already present, or no user.json in this profile, is a no-op.
-    An unreadable existing accounts.json is REPORTED and left alone — clobbering another
-    consumer's config to complete a migration would be silent data loss.
+      * registry schema 2, schema 1 or ABSENT -> unchanged, byte for byte (absent stays absent)
+      * the profile's addresses reach gmail-multi through `m_0_63_0_mailbox_references`, which
+        READS the registry and raises a queryable ask per address it lacks — a decision for the
+        user (`/gmail-multi:accounts`), never a hidden write.
+
+    The function stays REGISTERED: `check_migration_keys.py` requires a published migration to stay
+    in the table, and a profile stamped below 0.29.0 still has it pending. `apply_it` and `home` are
+    accepted and ignored for the same signature's sake. Pinned by `TestM0290IsNoLongerAWriter`.
     """
-    user_json = os.path.join(profile, "user.json")
-    if not os.path.exists(user_json):
+    if not os.path.exists(os.path.join(profile, "user.json")):
         return True, ""
-    user_json = os.path.abspath(user_json)
-    base = home or os.path.expanduser("~")
-    cfg_dir = os.path.join(base, ".claude", "gmail-multi")
-    cfg = os.path.join(cfg_dir, "accounts.json")
-    data = {}
-    if os.path.exists(cfg):
-        try:
-            with open(cfg, encoding="utf-8") as fh:
-                data = json.load(fh)
-            if not isinstance(data, dict):
-                raise ValueError("top level is %s, not an object" % type(data).__name__)
-        except (OSError, ValueError) as e:
-            return False, ("  ⚠️ %s exists but cannot be read (%s). Left untouched — fix or "
-                           "remove it, then use the gmail-multi plugin's /gmail-multi:accounts "
-                           "command to include %s" % (cfg, e, user_json))
-    includes = data.setdefault("include", [])
-    if user_json in includes:
-        return True, ""
-    if not apply_it:
-        return True, ("  would point the gmail-multi connector at this profile's mailboxes: "
-                      "add %s to `include` in %s" % (user_json, cfg))
-    includes.append(user_json)
-    os.makedirs(cfg_dir, exist_ok=True)
-    tmp = cfg + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as fh:
-        json.dump(data, fh, indent=2, sort_keys=True)
-        fh.write("\n")
-    os.replace(tmp, cfg)
-    return True, ("  gmail-multi connector now reads this profile's mailboxes via include: "
-                  "%s" % cfg)
+    return True, ("  gmail-multi's registry is gmail-multi's alone to write (0.63.0): this "
+                  "profile's mailboxes are checked against it by the 0.63.0 step, not copied in.")
 
 
 def m_0_31_0_mail_client_rename(profile, apply_it):
@@ -5079,6 +5052,229 @@ def m_0_56_0_retire_dashboard_tombstone(profile, apply_it):
                   "it, so it will not come back." % (rel_dest, what))
 
 
+# ⭐⭐ KEYED "0.63.0" — 0.62.0 is the newest PUBLISHED jobsearch release (ADR-009; `jobsearch--v0.62.0`
+# is the newest tag on origin as of 2026-10-12 and plugin.json at the branch base read 0.62.0). A
+# profile that installed 0.62.0 is stamped exactly "0.62.0", and pending_for()'s strict `<` would
+# never fire a migration keyed to it. Re-verify when 0.63.0 is actually cut (dev #469).
+MAILBOX_ASK_PREFIX = "mailbox-unregistered:"
+MAILBOX_PRE_COPY = "user.json.pre-0.63.0"
+
+
+def _gmail_multi_registry_path(home=None):
+    """Where gmail-multi's registry lives — the same rule `mail_client.registry_path()` states
+    (`GMAIL_MULTI_CONFIG`, else `~/.claude/gmail-multi/accounts.json`), with `home` as the test /
+    caller override `m_0_29_0` always had."""
+    env = os.environ.get("GMAIL_MULTI_CONFIG", "").strip()
+    return env or os.path.join(home or os.path.expanduser("~"), ".claude", "gmail-multi",
+                               "accounts.json")
+
+
+def _profile_selects_claude_gmail(profile):
+    """True only when `config.json` says `communications.mail_connector` is exactly "claude-gmail"
+    (that connector binds its own account, so the registry is not consulted). Anything unreadable
+    or unrecognised is NOT "claude-gmail": the registry is consulted, which narrows, never widens."""
+    try:
+        with open(os.path.join(profile, "config.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        return (cfg.get("communications") or {}).get("mail_connector") == "claude-gmail"
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _mailbox_reference_state(profile, home=None):
+    """The 0.63.0 SUCCESS CONDITION, queried from disk (never assumed from what was just written):
+    `(registry, detail, unregistered, declared, keychain_left)`.
+
+    `registry` is one of
+      "ok"           the connector is claude-gmail, or no address is declared, or the registry reads
+                     schema 2 and holds every declared address;
+      "absent"       the registry file is not there (gmail-multi installs itself at session start);
+      "pending"      the registry is still schema 1 — gmail-multi has not migrated it;
+      "malformed"    the registry exists but cannot be read as schema 2 (`detail` says why);
+      "unregistered" the registry is fine but lacks `unregistered` (declared addresses);
+      "unreadable"   user.json itself cannot be read (`detail` says why).
+    `declared` is the profile's own address list; `keychain_left` is True while any mailbox still
+    carries `keychain_service`. The migration is done only when `registry == "ok"` and not
+    `keychain_left`."""
+    user_path = os.path.join(profile, "user.json")
+    try:
+        with open(user_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        if not isinstance(data, dict):
+            raise ValueError("top level is %s, not an object" % type(data).__name__)
+    except (OSError, ValueError) as e:
+        return "unreadable", "%s: %s" % (type(e).__name__, e), [], [], False
+    boxes = [b for b in (data.get("mailboxes") or []) if isinstance(b, dict)]
+    declared = [b["address"].strip() for b in boxes
+                if isinstance(b.get("address"), str) and b["address"].strip()]
+    keychain_left = any("keychain_service" in b for b in boxes)
+    if _profile_selects_claude_gmail(profile) or not declared:
+        return "ok", "", [], declared, keychain_left
+    import mail_client
+    path = _gmail_multi_registry_path(home)
+    if not os.path.exists(path):
+        return "absent", path, [], declared, keychain_left
+    try:
+        held = {a.lower() for a in mail_client.registry_accounts(path)}
+    except mail_client.RegistryPending as e:
+        return "pending", str(e), [], declared, keychain_left
+    except mail_client.RegistryError as e:
+        return "malformed", str(e), [], declared, keychain_left
+    unregistered = [a for a in declared if a.lower() not in held]
+    if unregistered:
+        return "unregistered", "", unregistered, declared, keychain_left
+    return "ok", "", [], declared, keychain_left
+
+
+def _read_asks_tolerant(path):
+    """(rows, error) — `error` is a plain-words reason when the file exists and cannot be read."""
+    if not os.path.exists(path):
+        return [], None
+    try:
+        return _read_jsonl(path), None
+    except (OSError, ValueError) as e:
+        return None, "%s: %s" % (type(e).__name__, e)
+
+
+def _mailbox_ask_row(address, today):
+    """F5 — one `asks.jsonl` row, kind=system, a STABLE id so a re-run replaces it by id (the
+    `check_engine_purity` ask's shape). It asks the user for a DECISION, never for mechanical work."""
+    return {"id": MAILBOX_ASK_PREFIX + address.lower(), "kind": "system",
+            "title": "%s is not in gmail-multi's registry" % address,
+            "ask": ("This profile lists %s as a mailbox, but gmail-multi does not know that "
+                    "account, so it is NOT searched (the job search would read it as no mail). "
+                    "Decide: keep it and register it with /gmail-multi:accounts, or drop it from "
+                    "this profile with /jobsearch:mailboxes. The next session start re-checks and "
+                    "closes this ask on its own once either is done." % address),
+            "created": today, "act_by": None, "opp_id": None, "channel_id": None,
+            "resolves_when": None, "resolved_on": None, "resolution": None,
+            "trigger_kind": None, "trigger_ref": None, "note": None}
+
+
+def _reconcile_mailbox_asks(profile, unregistered, declared, may_close, apply_it, today):
+    """The resolver for the `mailbox-unregistered:<addr>` rows (F5) — THIS migration, on every re-run
+    until it stamps. Adds a row for each address in `unregistered` (an already-present row is kept
+    as it is, so `created` does not reset and a row the user resolved is not reopened) and, when
+    `may_close` (the registry was read, so the answer is KNOWN), closes an OPEN row whose address is
+    now registered (`registered`) or no longer declared (`removed`).
+    Returns `(error, closed)`: `error` is a plain-words reason the file could not be handled."""
+    path = os.path.join(profile, "data", "asks.jsonl")
+    rows, err = _read_asks_tolerant(path)
+    if err:
+        return err, 0
+    want = {MAILBOX_ASK_PREFIX + a.lower(): a for a in unregistered}
+    still_declared = {a.lower() for a in declared}
+    present = {r.get("id") for r in rows}
+    out, closed, added = [], 0, 0
+    for r in rows:
+        rid = str(r.get("id") or "")
+        if (may_close and rid.startswith(MAILBOX_ASK_PREFIX) and not r.get("resolved_on")
+                and rid not in want):
+            addr = rid[len(MAILBOX_ASK_PREFIX):]
+            r = dict(r, resolved_on=today,
+                     resolution=("registered" if addr in still_declared else "removed"))
+            closed += 1
+        out.append(r)
+    for rid, addr in sorted(want.items()):
+        if rid not in present:
+            out.append(_mailbox_ask_row(addr, today))
+            added += 1
+    if (closed or added) and apply_it:
+        import _atomic
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        _atomic.write_jsonl(path, out)
+    return None, closed
+
+
+def m_0_63_0_mailbox_references(profile, apply_it, home=None):
+    """0.63.0 — the profile's mailboxes become REFERENCES into gmail-multi's registry (dev #469 /
+    public #524; design-mail-boundary.md § 3.3, § 7.2).
+
+    gmail-multi owns the ONE account registry (`~/.claude/gmail-multi/accounts.json`, schema 2).
+    `user.json` `mailboxes` stays a list of `{"address", "kind"?, "note"?}`, and the address IS the
+    reference — so `keychain_service`, a second copy of credential identity that nothing reads, is
+    dropped. This migration never WRITES the registry (gmail-multi's `accounts.py` is its one
+    writer).
+
+    ⭐ PRESERVE, THEN TRANSFORM, THEN QUERY. Before the first write, `user.json` is copied
+    byte-for-byte to `user.json.pre-0.63.0` (unless that copy exists). Then `keychain_service` is
+    dropped from each mailbox and nothing else changes. Then the success condition is RE-READ from
+    disk (`_mailbox_reference_state`), and what it finds decides the return:
+
+      * registry ABSENT        -> ⏳ pending (gmail-multi installs itself at session start; ADR-005)
+      * registry schema 1      -> ⏳ pending (gmail-multi has not migrated its registry yet)
+      * registry malformed     -> ⏳ pending, naming why
+      * some address lacks one -> ⏳ pending, and one `asks.jsonl` row per such address (F5)
+      * everything holds       -> done; any open `mailbox-unregistered:*` row is closed
+
+    ⛔ Pending is NEVER a false "0 done": it returns False, so `main()` does not stamp and the
+    migration is offered again next session — which is also what closes the ask rows once the user
+    has registered the account or dropped it. The transform is idempotent, so a re-run costs nothing.
+    Under the `claude-gmail` connector the registry is not consulted at all.
+    """
+    import datetime as _dt
+    user_path = os.path.join(profile, "user.json")
+    if not os.path.exists(user_path):
+        return True, ""
+    registry, detail, unregistered, declared, keychain_left = _mailbox_reference_state(profile, home)
+    if registry == "unreadable":
+        return False, ("  ⚠️ %s exists but cannot be read (%s). Left untouched — fix it, and this "
+                       "migration runs again next session." % (user_path, detail))
+    lines = []
+    if keychain_left and not apply_it:
+        lines.append("  would drop keychain_service from user.json mailboxes (the original is kept "
+                     "at %s)" % MAILBOX_PRE_COPY)
+    elif keychain_left:
+        with open(user_path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        holding = [b for b in (data.get("mailboxes") or [])
+                   if isinstance(b, dict) and "keychain_service" in b]
+        copy_path = os.path.join(profile, MAILBOX_PRE_COPY)
+        if not os.path.exists(copy_path):
+            try:
+                shutil.copy2(user_path, copy_path)
+            except (OSError, shutil.Error) as e:
+                return False, ("  ⚠️ user.json could not be preserved to %s (%s), so keychain_service "
+                               "was NOT dropped — nothing was changed." % (MAILBOX_PRE_COPY, e))
+        for b in holding:
+            del b["keychain_service"]
+        import _atomic
+        _atomic.write_json(user_path, data)
+        lines.append("  dropped keychain_service from %d mailbox(es) in user.json (nothing else "
+                     "changed; the original is kept at %s)" % (len(holding), MAILBOX_PRE_COPY))
+        # QUERY: the success condition is what the disk says now, not what was just written.
+        registry, detail, unregistered, declared, keychain_left = \
+            _mailbox_reference_state(profile, home)
+        if keychain_left:
+            return False, "\n".join(lines + ["  ⚠️ keychain_service is still present after the "
+                                             "write — not stamped; offered again next session."])
+
+    today = _dt.date.today().isoformat()
+    ask_err, closed = _reconcile_mailbox_asks(
+        profile, unregistered, declared, registry in ("ok", "unregistered"), apply_it, today)
+    if ask_err:
+        lines.append("  ⚠️ data/asks.jsonl cannot be read (%s), so the unregistered-mailbox ask was "
+                     "left alone." % ask_err)
+    if closed:
+        lines.append("  closed %d unregistered-mailbox ask(s): the address is registered, or gone "
+                     "from this profile" % closed)
+
+    if registry == "absent":
+        lines.append("  ⏳ 0.63.0 PENDING — gmail-multi's registry not found at %s (gmail-multi "
+                     "installs itself at session start; ADR-005). The mailboxes cannot be checked "
+                     "against it yet." % detail)
+    elif registry == "pending":
+        lines.append("  ⏳ 0.63.0 PENDING — gmail-multi has not migrated its registry yet (%s)"
+                     % detail)
+    elif registry == "malformed":
+        lines.append("  ⏳ 0.63.0 PENDING — gmail-multi's registry cannot be used: %s" % detail)
+    elif registry == "unregistered":
+        lines.append("  ⏳ 0.63.0 PENDING — not in gmail-multi's registry: %s. Each has an ask: "
+                     "register it with /gmail-multi:accounts, or drop it with /jobsearch:mailboxes."
+                     % ", ".join(unregistered))
+    return registry == "ok", "\n".join(lines)
+
+
 MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               ("0.17.0", m_0_17_0), ("0.18.0", m_0_18_0), ("0.19.0", m_0_19_0),
               ("0.20.0", m_0_20_0), ("0.24.0", m_0_24_0_blocked_until),
@@ -5254,7 +5450,11 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               # dated-id acks (a disjoint bug shape, single-token names) have already landed
               # before this one reads the log; the two never touch the same id (that migration
               # matches only 3+-part dated ids, this one's own dateless ids are 2 parts).
-              ("0.57.0", m_0_57_0_probe_dedup_key))
+              ("0.57.0", m_0_57_0_probe_dedup_key),
+              # ⚠️ KEYED "0.63.0" — see the note above m_0_63_0_mailbox_references. It runs LAST:
+              # m_0_29_0 (an older profile's pass) is a no-op now, so no earlier migration writes
+              # gmail-multi's registry, and this one only READS it.
+              ("0.63.0", m_0_63_0_mailbox_references))
 
 
 # ⭐⭐ dev #365 (design-connected-entities.md §26.7/§28.2) — "no record of which version added

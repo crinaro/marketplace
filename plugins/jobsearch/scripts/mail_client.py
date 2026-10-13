@@ -32,14 +32,23 @@ grows (send/reply/forward, marketplace #213) — is NOT part of this shared surf
 The contracts that must not drift (credential SERVICE name, config delegation) are
 gated in `gmail-multi/scripts/test_connector.py`.
 
-ACCOUNT RESOLUTION IS PROFILE-COUPLED, DELIBERATELY — AND DIFFERENT FROM THE CONNECTOR'S
-----------------------------------------------------------------------------------------
-The connector is standalone and reads its own `~/.claude/gmail-multi/accounts.json`.
-This library is jobsearch's, and jobsearch's source of truth for mailboxes is the
-profile's `user.json` (Layer 1); the profile DELEGATES to the connector via the config
-file's `include` list rather than the two copying from each other (ADR-004). So the
-divergence in `configured_accounts()` between this file and the connector is a
-contract, not drift.
+ACCOUNT RESOLUTION: THE PROFILE DECLARES A SUBSET, GMAIL-MULTI'S REGISTRY OWNS THE ACCOUNTS
+-------------------------------------------------------------------------------------------
+gmail-multi owns the ONE account registry (`~/.claude/gmail-multi/accounts.json`, schema 2,
+override path `GMAIL_MULTI_CONFIG`; a published interface of that plugin, marketplace
+ADR-004). This library is jobsearch's, and jobsearch's source of truth for WHICH of those
+accounts a profile uses is the profile's `user.json` (Layer 1): a list of addresses that
+REFERENCE the registry. The address is the reference. This module never WRITES the registry
+(gmail-multi's `accounts.py` is the one writer) and never copies an address into it.
+
+    registry_accounts()    strict schema-2 parser: `RegistryError` / `RegistryPending`
+    declared_accounts()    (members, unregistered): the profile's addresses the registry
+                           holds, and the ones it lacks
+    configured_accounts()  the MEMBERS: what every sweep and brief searches (dev #469, F3)
+
+An address the registry lacks is LOUD (one line per address, per process), never a silent
+no-op and never searched: a missing thing must not read as an empty thing. Such an address
+also gets no `swept` row, so the coverage ledger reads it as not covered by construction.
 
 ⭐ THIS LIBRARY RUNS ONLY WHEN `gmail-multi` IS THE SELECTED MAIL CONNECTOR (dev #161, dev #524)
 -----------------------------------------------------------------------------------------------
@@ -85,14 +94,17 @@ ALL_MAIL = '"[Gmail]/All Mail"'
 
 # Accounts this library searches. Emails only — never secrets.
 #
-# ⭐ THE SOURCE OF TRUTH IS `user.json` (LAYER 1), read at call time. This used to be a
-# hardcoded list, which made the engine person-specific: a second user would have had to
-# EDIT THIS SCRIPT to search their own mail. The candidate, 2026-08-02: user data is managed
-# independently, and the agents/scripts leverage it rather than embedding it.
+# ⭐ THE PROFILE DECLARES A SUBSET BY REFERENCE; GMAIL-MULTI'S REGISTRY OWNS THE ACCOUNTS (dev #469).
+# `user.json` (LAYER 1) lists the addresses this profile uses, read at call time. The registry
+# (`registry_accounts()` below) is the machine-wide list of accounts gmail-multi can reach. What a
+# profile may search is the INTERSECTION — `declared_accounts()` returns it as `members`, and
+# `configured_accounts()` is `members`.
 #
-# Resolution order: GMAIL_MCP_ACCOUNTS env override -> user.json -> the literal fallback
-# below. The fallback exists only so this module still imports if user.json is missing or
-# malformed; it is NOT the configuration.
+# Resolution order for the declared list: GMAIL_MCP_ACCOUNTS env override -> user.json -> the
+# literal fallback below. The env override is gmail-multi's own override too (it replaces the
+# registry there as well), so an address named by it is a member without a registry lookup. The
+# fallback exists only so this module still imports if user.json is missing or malformed; it is
+# NOT the configuration.
 # ⭐ EMPTY BY DESIGN (2026-08-05, pre-split sanitization). This used to hard-code the
 # original owner's two addresses. In a SHARED engine that is not merely a privacy leak,
 # it is incoherent: silently falling back to someone else's mailbox is never the
@@ -101,14 +113,19 @@ ALL_MAIL = '"[Gmail]/All Mail"'
 FALLBACK_ACCOUNTS = []
 
 
-def _accounts_from_user_json():
+def _accounts_from_user_json(root=None):
     """Read mailboxes from user.json. Returns [] on any problem — never raises, because
-    this module is imported by the MCP stdio loop and by alert_sweep/meeting_check."""
+    this module is imported by the MCP stdio loop and by alert_sweep/meeting_check.
+
+    ⛔ THIS IS THE RAW DECLARED LIST — it knows nothing about gmail-multi's registry. It exists
+    for `declared_accounts()` and for one packaging check; every other caller goes through
+    `configured_accounts()` or `declared_accounts()` (dev #469, F3 — test_mail_boundary.py
+    fails on a new raw caller)."""
     try:
         # ⭐ PROFILE root, not engine (2026-08-05). user.json belongs to the USER; under a plugin
         # install the engine directory has none, so this silently returned [] and the server
         # reported no mailboxes — indistinguishable from "you have no accounts configured".
-        path = os.path.join(_profile_root(),
+        path = os.path.join(root or _profile_root(),
                             "user.json")
         with open(path, encoding="utf-8") as fh:
             data = json.load(fh)
@@ -120,8 +137,142 @@ def _accounts_from_user_json():
         return []
 
 
+# --------------------------------------------------------------------------
+# ⭐ GMAIL-MULTI'S REGISTRY, READ-ONLY (dev #469) — a published interface of that plugin
+# --------------------------------------------------------------------------
+
+REGISTRY_SCHEMA = 2
+
+
+class RegistryError(RuntimeError):
+    """gmail-multi's registry cannot be used: the file is absent, unreadable, not a JSON object,
+    or not schema 2 with a list of address strings. The message names the path and the fix."""
+
+
+class RegistryPending(RuntimeError):
+    """The registry is still schema 1 (no `schema` key, or `schema: 1`): gmail-multi has not
+    migrated it yet. A distinct type — NOT a RegistryError — because it is a bounded window
+    (the plugins update in either order), not a broken file; callers choose their own bounded
+    behaviour for it and are always loud. `declared_accounts()` attaches the profile's declared
+    list as `.declared`, which is what the bounded old rule scopes to."""
+
+    declared = ()
+
+
+def registry_path():
+    """Where gmail-multi's registry lives: `GMAIL_MULTI_CONFIG` if set, else
+    `~/.claude/gmail-multi/accounts.json`. Resolved per call (HOME can change in a test)."""
+    env = os.environ.get("GMAIL_MULTI_CONFIG", "").strip()
+    return env or os.path.join(os.path.expanduser("~"), ".claude", "gmail-multi", "accounts.json")
+
+
+def registry_accounts(path=None):
+    """The addresses in gmail-multi's registry — a STRICT parser of schema 2 (marketplace ADR-004,
+    `plugins/gmail-multi/.claude-plugin/plugin.json` `metadata.provides`). READ-ONLY: this module
+    never writes the registry.
+
+    Raises `RegistryError` when the file is absent, unreadable, not a JSON object, carries a
+    schema other than 1 or 2, or holds an `accounts` that is not a list of non-empty strings.
+    Raises `RegistryPending` on schema 1 (no `schema` key, or `schema: 1`). Never returns a
+    guess: an unreadable registry must not read as an empty one."""
+    path = path or registry_path()
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+    except FileNotFoundError:
+        raise RegistryError("gmail-multi's registry was not found at %s. gmail-multi creates it "
+                            "when you add an account: run /gmail-multi:accounts." % path)
+    except (OSError, ValueError) as exc:
+        raise RegistryError("gmail-multi's registry at %s cannot be read (%s: %s). Fix or remove "
+                            "it, then run /gmail-multi:accounts." % (path, type(exc).__name__, exc))
+    if not isinstance(data, dict):
+        raise RegistryError("gmail-multi's registry at %s is not a JSON object (it is %s). Fix it, "
+                            "then run /gmail-multi:accounts." % (path, type(data).__name__))
+    schema = data.get("schema", 1)
+    if schema == 1 and not isinstance(schema, bool):
+        raise RegistryPending("gmail-multi's registry at %s is still schema 1 — gmail-multi has "
+                              "not migrated it yet (it does at its next session start)." % path)
+    if schema != REGISTRY_SCHEMA or isinstance(schema, bool):
+        raise RegistryError("gmail-multi's registry at %s declares schema %r; this jobsearch "
+                            "reads schema %d. Update the older of the two plugins."
+                            % (path, schema, REGISTRY_SCHEMA))
+    accounts = data.get("accounts")
+    if (not isinstance(accounts, list)
+            or not all(isinstance(a, str) and a.strip() for a in accounts)):
+        raise RegistryError("gmail-multi's registry at %s has an `accounts` that is not a list of "
+                            "addresses. Fix it, then run /gmail-multi:accounts." % path)
+    return [a.strip() for a in accounts]
+
+
+def _declared_raw(root=None):
+    """(addresses, from_env) — the profile's declared list before any registry lookup."""
+    raw = os.environ.get("GMAIL_MCP_ACCOUNTS", "").strip()
+    if raw:
+        return [a.strip() for a in raw.split(",") if a.strip()], True
+    return _accounts_from_user_json(root) or list(FALLBACK_ACCOUNTS), False
+
+
+def declared_accounts(root=None, registry=None):
+    """`(members, unregistered)`: the profile's declared addresses that gmail-multi's registry
+    holds, and the ones it lacks (case-insensitive match; order and spelling are the profile's).
+
+    Under `claude-gmail` the registry is not consulted — that connector binds its own account —
+    so the result is `(declared, [])`. So it is when `GMAIL_MCP_ACCOUNTS` names the list, because
+    gmail-multi's own server lets that variable replace the registry too.
+
+    Raises `RegistryError` / `RegistryPending` (see `registry_accounts`) when the registry cannot
+    answer: the caller decides what that means for it, and none may treat it as "no accounts"."""
+    declared, from_env = _declared_raw(root)
+    if from_env:
+        return declared, []
+    try:
+        connector = selected_connector(root)
+    except ValueError:
+        # An unreadable selection narrows, never widens: the registry is consulted. The sweep,
+        # the Mailbox opener and the scope guard each refuse an unreadable selection on their own.
+        connector = GMAIL_MULTI
+    if connector != GMAIL_MULTI:
+        return declared, []
+    try:
+        held = {a.lower() for a in registry_accounts(registry)}
+    except RegistryPending as exc:
+        exc.declared = list(declared)            # the old rule's list, for the bounded window
+        raise
+    members = [a for a in declared if a.lower() in held]
+    unregistered = [a for a in declared if a.lower() not in held]
+    return members, unregistered
+
+
+# One loud line per distinct finding per process: a sweep calls configured_accounts() more than
+# once, and a line repeated five times trains its reader to skim.
+_ANNOUNCED = set()
+
+
+def _loud(key, line):
+    if key in _ANNOUNCED:
+        return
+    _ANNOUNCED.add(key)
+    print(line, file=sys.stderr)
+
+
+def unregistered_line(address):
+    return ("!! MAILBOX NOT IN GMAIL-MULTI'S REGISTRY — %s is listed in your profile but not in "
+            "gmail-multi's registry, so it was NOT searched. Add it with /gmail-multi:accounts "
+            "(or remove it with /jobsearch:mailboxes)." % address)
+
+
 def configured_accounts():
-    """⭐ RE-READ EVERY CALL — never cache at import.
+    """⭐ THE MEMBERS: the profile's declared addresses that gmail-multi's registry holds — what
+    every sweep, `brief` and `check_followups` searches (dev #469, F3: redefined here so no caller
+    needs to change, and `test_mail_boundary.py` fails on a new raw caller of the declared list).
+
+    One loud line per unregistered address (per process), on stderr. An address the registry lacks
+    is never searched. Registry states that cannot answer are loud too, never an empty list that
+    reads as "no mail": registry ABSENT or malformed -> `[]` and one line naming the fix; registry
+    still schema 1 (`RegistryPending`, the bounded mixed-version window) -> the declared list
+    unchanged (the old rule) and one line saying so.
+
+    ⭐ RE-READ EVERY CALL — never cache at import.
 
     This module is imported once and then serves an MCP stdio loop for the life of the process.
     Caching the account list at import meant a single bad resolution at startup produced a
@@ -133,13 +284,24 @@ def configured_accounts():
     agency switching candidates via CLAUDESEARCH_ROOT does not need a restart. The cost is one
     small JSON read per tool call.
     """
-    raw = os.environ.get("GMAIL_MCP_ACCOUNTS", "").strip()
-    if raw:
-        return [a.strip() for a in raw.split(",") if a.strip()]
-    return _accounts_from_user_json() or list(FALLBACK_ACCOUNTS)
+    try:
+        members, unregistered = declared_accounts()
+    except RegistryPending as exc:
+        _loud(("pending",), "!! gmail-multi registry not migrated yet — scoping to the profile "
+              "list until it is. (%s)" % exc)
+        return list(getattr(exc, "declared", []))
+    except RegistryError as exc:
+        _loud(("registry", str(exc)),
+              "!! %s No mailbox was searched — nothing was recorded as covered." % exc)
+        return []
+    for address in unregistered:
+        _loud(("unregistered", address.lower()), unregistered_line(address))
+    return members
 
 
 # --------------------------------------------------------------------------
+
+
 # ⭐ THE SELECTED MAIL CONNECTOR (dev #161, dev #524)
 # --------------------------------------------------------------------------
 

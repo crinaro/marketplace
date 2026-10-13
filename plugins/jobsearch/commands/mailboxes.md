@@ -18,6 +18,24 @@ Add or remove an address (`$ARGUMENTS` may name one):
 ~/.claude/jobsearch/run mailboxes.py --remove old@example.com
 ```
 
+## The accounts live in gmail-multi; this profile lists the ones it uses
+
+The `gmail-multi` plugin owns the **one list of accounts on this machine** (its registry; the
+`/gmail-multi:accounts` command is the only thing that edits it). This profile's mailbox list is a
+set of addresses that **point into that registry**. So `--status` shows, under each address, one of:
+
+- `in gmail-multi's registry`: the address is searchable (given a credential, below).
+- `NOT IN gmail-multi's registry — add it with /gmail-multi:accounts`: the profile lists it, but
+  gmail-multi does not know it, so **it is not searched**. Tell the user in plain words, and send
+  them to `/gmail-multi:accounts` to add it (or `--remove` it here if they no longer want it).
+- `registry not migrated yet`: gmail-multi has an older registry it has not converted. It converts
+  at its next session start; ask the user to start a new session, then run `--status` again.
+
+`--add` **refuses** an address the registry lacks and writes nothing. Register the account with
+`/gmail-multi:accounts` first, then add it here. **Never edit gmail-multi's registry file
+yourself**, and do not run `gmail-multi`'s `accounts.py` for the user without their say-so: it is
+their account list.
+
 ## Which connector the search uses — show it, and how to switch
 
 The search reads mail through **one** Gmail connector, chosen by `config.json`'s `communications.mail_connector`:
@@ -49,7 +67,7 @@ skips with one line saying so. The addresses and app passwords on this page matt
 Run `--status` and relay what it prints. **Two separate things have to be true for an account to
 be searchable**, and the report distinguishes them:
 
-1. **The address is in `user.json`** — that is what makes it part of the search.
+1. **The address is in `user.json` and in gmail-multi's registry** — that is what makes it part of the search.
 2. **An app password is in the OS credential store** — that is what makes it reachable.
 
 ⭐ **An account with only the first is worse than one with neither**, because the search runs,
