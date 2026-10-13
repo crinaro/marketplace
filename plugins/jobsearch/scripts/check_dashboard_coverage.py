@@ -33,23 +33,41 @@ that would grow a second meaning. For every filtered list the ledger declares:
                   counts sum to `all`, and the population reconciles to the ledger's placed
                   records (rendered here + this set's counted remainder). The router's
                   pipeline "in flight" number must equal the opportunity list's own label.
-  * EXACTLY ONCE — ADVISORY this pass. `data-rec` occurrences are counted as a LIST (the
-                  old `set(...)` collapsed duplicates silently, which is why one role could
-                  render in three places and nothing said so). Today's page legitimately
-                  renders a queue row AND a subject-list row for the same record; stage 2 of
-                  public #48 turns queue rows into references, which is what makes this
-                  satisfiable. Until then it is reported, never a gap: its red is a
-                  measurement, not a wedge.
-                  ⚠️ HEADS-UP FOR WHOEVER BUILDS STAGE 2 (dev/audit 2026-09-03): this count
-                  is driven by `_REC_RE` alone, which matches `data-rec="..."` and nothing
-                  else. If a stage-2 reference renders under a different attribute (e.g. a
-                  `data-ref="..."` pointing at the subject row instead of a second
-                  `data-rec`), it is invisible to `_REC_RE` and this measurement silently
-                  undercounts — the exact "a missing thing reads as an empty thing" shape
-                  this file exists to close, in the mechanism meant to catch it. Before
-                  turning this from advisory to a gap, confirm every reference stage 2
-                  renders still carries `data-rec`, or extend `_REC_RE` (and re-derive
-                  `rec_list` accordingly) to see the new shape.
+
+⭐ ONE PRIMARY ROW PER RECORD (dev #496 / public #48, dev #540 / public #132 — the 2026-10
+   stage-2 build; design-one-dashboard-surface.md r3 §2). EXACTLY ONCE used to be ADVISORY
+   because the page legitimately rendered a queue row AND a subject-list row for one record.
+   Stage 2 made every second mention a REFERENCE row — `data-ref="<key>"` plus a link to the
+   primary's `id="rec-<h>"` — so the contract is enforceable, and four things are now GAPS:
+  * EXACTLY ONCE — no `data-rec` key occurs twice. (`_REC_RE` counts primary rows as a LIST;
+                  `_REF_RE` is its sibling for references, so a reference is never mistaken
+                  for a second primary and is never invisible — the 2026-09-03 heads-up.)
+  * LINKED      — every `data-ref` names a key that has a primary row on the page, and its row
+                  carries a link to THAT key's id; every primary's `id` is the one derived
+                  from its key (computed here independently of the renderer, on purpose); no
+                  `id` occurs twice (a draft title is not unique — the key carries an
+                  ordinal, your_move.entry_keys).
+  * ANCHOR      — every `href="#x"` resolves to an `id="x"` on the page, and every
+                  `<label for="x">` to an `id="x"` (the router's count is such a label). The
+                  base case shipped `#phase-outreach-approvals` with no section behind it.
+  * SCRIPT      — the page carries at most ONE script, the allowlisted copy-as-prompt one
+                  (OWNER REQUEST 2026-10-13), and it touches no network, storage or navigation;
+                  any other script, inline handler or `javascript:` URL is a gap.
+  * DEFAULT     — exactly one radio per filter group carries `checked`, and it is the first
+                  entry of the ledger's declared default order that has a DRAWN chip (a
+                  population that is neither empty nor the whole list), else `All`; recomputed
+                  here from the HTML rows, never from the ledger's own claim.
+
+⭐ DEGENERACY AND CROSS-CUTS (design r3 D3/D4). A chip whose row set equals `All`'s is not
+   drawn, and a dimension left with only `All` draws no bar — but the RADIO of a suppressed
+   chip stays, so a router label can still activate it. So LABEL MISSING tolerates a missing
+   chip only when an independent recount from the HTML rows proves its row set IS `All`'s, and
+   a DRAWN degenerate chip is itself a gap (DEGENERATE CHIP DRAWN). A CROSS-CUT option (the
+   ledger's `dims[dim]["cross"]`, e.g. `pursuit=your-move`) is carried in `data-<dim>-also`, not
+   in `data-<dim>`: it is counted from that attribute in COUNT and REACHABLE and left out of the
+   SUM, which is over the partition. ROUTER DISAGREES compares the router's pipeline in-flight
+   number with the opportunity rows that do NOT carry the `your-move` cross-cut, and every
+   router count that is a `<label for=…>` with the rows its radio selects.
 
 ⭐ REACHABLE (public #54 / #58 point 3 — counted is not reachable)
 --------------------------------------------------------------------
@@ -103,6 +121,7 @@ Python 3.9+. Standard library only.
 import argparse
 import collections
 import datetime
+import hashlib
 import html as _html
 import importlib
 import json
@@ -120,11 +139,19 @@ import validate_data as _vd                                         # noqa: E402
 
 LEDGER_NAME = "dashboard_coverage.json"
 _REC_RE = re.compile(r'data-rec="([^"]+)"')
+# A REFERENCE row (r3 §2): the sibling of _REC_RE, so a reference is neither a second primary
+# nor invisible. `_ID_RE` finds every id on the page; `_HREF_RE` every in-page link.
+_REF_RE = re.compile(r'data-ref="([^"]+)"')
+_ID_RE = re.compile(r'\sid="([^"]+)"')
+_HREF_RE = re.compile(r'\shref="#([^"]+)"')
+_LABEL_FOR_RE = re.compile(r'<label for="([^"]+)"')
+_RADIO_RE = re.compile(r'<input type="radio" name="([^"]+)" id="([^"]+)" class="fctl"( checked)?>')
+_ROUTER_LABEL_RE = re.compile(r'<span class="ct"><label for="([^"]+)"[^>]*>(\d+)</label></span>')
 _FULL_REC_RE = re.compile(r'data-rec="([^"]+)" data-full="1"')
 _MORE_RE = re.compile(r'data-more="([^"]+):(\d+)"')
 # A filtered list's container, a row's opening tag, and a filter label.
 _FLIST_RE = re.compile(r'<div class="[^"]*\bflist\b[^"]*" data-flist="([^"]+)">')
-_ROW_RE = re.compile(r'<(\w+)\b([^>]*?)\sdata-rec="([^"]+)"([^>]*)>')
+_ROW_RE = re.compile(r'<(\w+)\b([^>]*?)\sdata-(rec|ref)="([^"]+)"([^>]*)>')
 _DATA_ATTR_RE = re.compile(r'\sdata-([a-z][a-z0-9-]*)="([^"]*)"')
 _LABEL_RE = re.compile(r'<label for="([^"]+)" data-flabel="([^"]+)">(.*?)</label>', re.S)
 _DIV_RE = re.compile(r'<div\b|</div>')
@@ -186,14 +213,31 @@ def expected_records(root, today=None):
                 rel = "%s/%s" % (sub, name)
                 exp["prep:%s" % rel] = {"kind": "prep", "date": _kn.prep_date(name)}
     drafts_rel, covers_rel = _tree.rel("drafts"), _tree.rel("cover_letters")
-    for r in _pre.report(root):
-        kind = "draft" if r.get("file") == drafts_rel else (
-            "cover" if r.get("file") == covers_rel else None)
-        if kind and r.get("title"):
-            exp["%s:%s" % (kind, r["title"])] = {"kind": kind, "state": r.get("state")}
+    import your_move as _ymod0
+    rows = _pre.report(root)
+    # design r3 D5 - the key of a staged entry is unique: your_move.entry_keys (the title, or
+    # `<title>#n` for the nth entry of one title in one file), the SAME function the renderer
+    # calls, so two same-titled drafts are two expected records and a renderer that collapses
+    # them is UNPLACED here, not silently clean.
+    for fname, kind in ((drafts_rel, "draft"), (covers_rel, "cover")):
+        file_rows = [r for r in rows if r.get("file") == fname]
+        for r, key in zip(file_rows, _ymod0.entry_keys(kind, [r.get("title") for r in file_rows])):
+            if r.get("title"):
+                exp[key] = {"kind": kind, "state": r.get("state")}
     for c, state, _detail in _cd.review_rows(_jsonl(root, "channels.jsonl"), today):
         if c.get("id"):
             exp["chan:%s" % c["id"]] = {"kind": "chan", "review": state}
+    # dev #539/#541 (design r3 §4-5): a RELATIONSHIP channel (recruiter / referral) is not a
+    # sourcing channel - review_rows skips it - but one with a touch owed or planned is the
+    # target of the follow-up view's reference, so its primary row in the Channels list must be
+    # expected here (else the page would render a row for a record this check calls unknown).
+    # Membership is your_move.classify_channels', the one owner of touch states.
+    import your_move as _ymod1
+    for c, state, _touch, _ev in _ymod1.classify_channels(
+            _jsonl(root, "channels.jsonl"), _jsonl(root, "messages.jsonl"), today.isoformat(),
+            _jsonl(root, "involvements.jsonl")):
+        if c.get("id") and state in ("now", "scheduled"):
+            exp.setdefault("chan:%s" % c["id"], {"kind": "chan", "review": None})
     # dev #686 / public #139 (E1) — the People due block. NOT "every person": only the
     # person-only people `your_move.network_people_due` says are due (the ONE membership
     # definition the renderer also uses), so a due person the page forgot is UNPLACED here.
@@ -246,24 +290,161 @@ def _flist_regions(page):
     return out
 
 
-def _rows_in(region):
-    """[(key, {data-attr: value})] for every `[data-rec]` row in a region, in order."""
+def _rows_in(region, kinds=("rec",)):
+    """[(key, {data-attr: value})] for every `[data-rec]` row in a region, in order. With
+    `kinds=("rec", "ref")` the reference rows too, as (key, attrs, kind) triples via
+    `_rows_with_kind`."""
+    return [(k, a) for k, a, kind in _rows_with_kind(region) if kind in kinds]
+
+
+def _rows_with_kind(region):
+    """[(key, {data-attr: value}, 'rec'|'ref')] for every primary and reference row."""
     rows = []
     for m in _ROW_RE.finditer(region):
         attrs = dict((k, _html.unescape(v))
-                     for k, v in _DATA_ATTR_RE.findall(" " + m.group(2) + " " + m.group(4)))
-        rows.append((_html.unescape(m.group(3)), attrs))
+                     for k, v in _DATA_ATTR_RE.findall(" " + m.group(2) + " " + m.group(5)))
+        rows.append((_html.unescape(m.group(4)), attrs, m.group(3)))
     return rows
+
+
+def rec_id(key):
+    """The id a primary row for `key` must carry - the first 12 hex digits of sha1(key),
+    computed HERE independently of generate_dashboard.rec_id on purpose: a renderer that
+    drifted from its own checker is the defect LINKED exists to catch."""
+    return "rec-" + hashlib.sha1(str(key).encode("utf-8")).hexdigest()[:12]
 
 
 def _count_label(shown, pop):
     return "(%d)" % pop if shown == pop else "(%d shown of %d)" % (shown, pop)
 
 
+_ID_ATTR_RE = re.compile(r'\sid="([^"]*)"')
+
+
+def _tokens(attrs, dim):
+    """The cross-cut tokens a row/member carries for `dim` (`data-<dim>-also`)."""
+    return set((attrs.get(dim + "-also") or "").split())
+
+
+def _has(vals, dim, value, cross):
+    """Does a row/member (a {dim: value, dim-also: tokens} dict) carry `value` for `dim`? A
+    cross-cut value is looked up in `data-<dim>-also`, every other value in `data-<dim>`."""
+    if value in cross:
+        return value in _tokens(vals, dim)
+    return vals.get(dim) == value
+
+
+def _element_span(page, m):
+    """The HTML of the element whose opening tag is the regex match `m` (same-tag depth
+    count), so a reference row's own link can be found inside it."""
+    tag = m.group(1)
+    depth, end = 1, None
+    for t in re.finditer(r"<%s\b|</%s>" % (tag, tag), page[m.end():]):
+        depth += 1 if t.group().startswith("<%s" % tag) and not t.group().startswith("</") else -1
+        if depth == 0:
+            end = m.end() + t.end()
+            break
+    return page[m.start():end if end is not None else len(page)]
+
+
+# ⭐ SCRIPT (OWNER REQUEST 2026-10-13, "Copy as prompt"). The page was script-free by choice
+# (design r3 Prior art: the page survives being saved and mailed; every filter is CSS). The
+# owner chose ONE script: the draft rows' copy button. So the rule is an allowlist of exactly
+# that one, keyed by its marker, never "any script": a second script, an external `src`, an
+# inline `on…=` handler, a `javascript:` URL, or a network or storage API inside the allowed
+# one is a gap. The script must only copy text that is already on the page.
+_ALLOWED_SCRIPT_OPEN = '<script data-dashboard-script="copy-as-prompt">'
+_SCRIPT_OPEN_RE = re.compile(r"<script\b[^>]*>", re.I)
+_SCRIPT_BODY_RE = re.compile(r"<script\b[^>]*>(.*?)</script\s*>", re.I | re.S)
+_INLINE_HANDLER_RE = re.compile(r"<[a-z][^>]*\son[a-z]+\s*=", re.I)
+_SCRIPT_FORBIDDEN = ("fetch(", "XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource",
+                     "import(", "localStorage", "sessionStorage", "indexedDB", "document.cookie",
+                     "window.open", "location.", "postMessage", "eval(", "new Function")
+
+
+def check_scripts(page):
+    """(gaps, summary) — at most ONE script, the allowlisted copy-as-prompt one."""
+    gaps = []
+    opens = _SCRIPT_OPEN_RE.findall(page)
+    others = [o for o in opens if o != _ALLOWED_SCRIPT_OPEN]
+    for o in others:
+        gaps.append("SCRIPT — %s is not the one script this page allows (%s); the page is "
+                    "otherwise script-free" % (o[:80], _ALLOWED_SCRIPT_OPEN))
+    n_allowed = len(opens) - len(others)
+    if n_allowed > 1:
+        gaps.append("SCRIPT — the copy-as-prompt script appears %d times; exactly one is allowed"
+                    % n_allowed)
+    for body in _SCRIPT_BODY_RE.findall(page):
+        for tok in _SCRIPT_FORBIDDEN:
+            if tok in body:
+                gaps.append("SCRIPT — the page's script uses %r; it may only copy text already "
+                            "on the page (no network, no storage, no navigation)" % tok)
+    if _INLINE_HANDLER_RE.search(page):
+        gaps.append("SCRIPT — an inline event handler attribute (on…=) is on the page")
+    if re.search(r'href="\s*javascript:', page, re.I):
+        gaps.append("SCRIPT — a javascript: URL is on the page")
+    return gaps, "script: %d (allowed: the copy-as-prompt script, at most once)" % len(opens)
+
+
+def check_links(page, exp):
+    """(gaps, summary) for the page-wide contract of design r3 §2: EXACTLY ONCE, LINKED, ANCHOR
+    and unique ids. All four are gaps; none depends on the ledger (verify the artifact)."""
+    gaps = []
+    rec_list = [_html.unescape(m) for m in _REC_RE.findall(page)]
+    ref_list = [_html.unescape(m) for m in _REF_RE.findall(page)]
+    for k, n in sorted(collections.Counter(rec_list).items()):
+        if n > 1:
+            gaps.append("EXACTLY ONCE — %s renders as %d primary rows (`data-rec`); a record has "
+                        "ONE primary row and every other mention is a `data-ref` reference "
+                        "(design r3 §2)" % (k, n))
+    ids = [_html.unescape(i) for i in _ID_RE.findall(page)]
+    id_set = set(ids)
+    for i, n in sorted(collections.Counter(ids).items()):
+        if n > 1:
+            gaps.append("DUPLICATE ID — id=%r occurs %d times; an id must be unique in the "
+                        "document, and a collision here makes a reference land on the wrong "
+                        "row" % (i, n))
+    for m in _HREF_RE.finditer(page):
+        target = _html.unescape(m.group(1))
+        if target not in id_set:
+            gaps.append("ANCHOR — href=\"#%s\" resolves to no id on the page (a link to "
+                        "nothing; design r3 N)" % target)
+    for m in _LABEL_FOR_RE.finditer(page):
+        target = _html.unescape(m.group(1))
+        if target not in id_set:
+            gaps.append("LABEL TARGET UNRESOLVED — <label for=%r> names no id on the page; a "
+                        "label can only activate a control that exists" % target)
+    primary = set(rec_list)
+    n_ids = n_refs = 0
+    for m in _ROW_RE.finditer(page):
+        kind, key = m.group(3), _html.unescape(m.group(4))
+        if kind == "rec":
+            have = _ID_ATTR_RE.search(" " + m.group(2) + " " + m.group(5))
+            want = rec_id(key)
+            n_ids += 1
+            if not have:
+                gaps.append("LINKED — primary row %s carries no id; a reference cannot land on "
+                            "it (expected id=%r)" % (key, want))
+            elif _html.unescape(have.group(1)) != want:
+                gaps.append("LINKED — primary row %s has id=%r; its key hashes to %r"
+                            % (key, have.group(1), want))
+        else:
+            n_refs += 1
+            if key not in primary:
+                gaps.append("LINKED — data-ref %s names a record with no primary row on the "
+                            "page (a reference to nothing)" % key)
+            elif ('href="#%s"' % rec_id(key)) not in _element_span(page, m):
+                gaps.append("LINKED — the reference row for %s carries no link to its primary "
+                            "row (href=\"#%s\")" % (key, rec_id(key)))
+    return gaps, "links: %d primary id(s) · %d reference(s) · %d in-page id(s) checked" % (
+        n_ids, n_refs, len(id_set))
+
+
 def check_filters(page, ledger, exp, remainders, more_on_page=None):
     """(gaps, summary_lines) for MEMBERSHIP UNDER NARROWING — DIMENSION COMPLETE and
     COUNT AGREES over every filtered list the ledger declares — and for REACHABLE:
-    TRIMMED BEHIND A FILTER and UNREACHABLE UNDER FILTER (public #54)."""
+    TRIMMED BEHIND A FILTER and UNREACHABLE UNDER FILTER (public #54), plus (design r3) the
+    cross-cut, degeneracy, radio and default contracts described in the module docstring."""
     more_on_page = more_on_page or {}
     gaps, lines = [], []
     groups = ledger.get("filters")
@@ -285,13 +466,19 @@ def check_filters(page, ledger, exp, remainders, more_on_page=None):
             labels[(set_name, dim, value)] = (int(sh), int(pop), re.sub(r"<[^>]+>", "", text).strip())
         except ValueError:
             gaps.append("LABEL UNREADABLE — data-flabel=%r on label %r" % (spec, fid))
+    radios = collections.defaultdict(list)
+    for rname, rid, chk in _RADIO_RE.findall(page):
+        radios[_html.unescape(rname)].append((_html.unescape(rid), bool(chk)))
+    need_note = False
     n_dims = n_labels = 0
     for name in sorted(set(groups) & set(regions)):
         g = groups[name]
         dims = g.get("dims") or {}
         members = g.get("members") or {}
+        refs = g.get("refs") or {}
         shown_claim = list(g.get("shown") or [])
-        vocab = {}
+        shown_refs_claim = list(g.get("shown_refs") or [])
+        vocab, cross, excl = {}, {}, {}
         # DIMENSION COMPLETE, ledger side: the vocabulary IS the enum source's.
         for dim, spec in sorted(dims.items()):
             n_dims += 1
@@ -306,41 +493,68 @@ def check_filters(page, ledger, exp, remainders, more_on_page=None):
                             % (name, dim, sorted(declared), spec.get("source"),
                                sorted(resolved)))
             vocab[dim] = set(declared)
-        for key, vals in sorted(members.items()):
-            if key not in exp:
-                gaps.append("FILTER MEMBER NOT A RECORD — list %s counts %s, and no such "
-                            "record exists" % (name, key))
-            for dim in dims:
-                if vals.get(dim) not in vocab.get(dim, set()):
-                    gaps.append("MEMBER VALUE OUTSIDE VOCABULARY — list %s member %s has %s=%r"
-                                % (name, key, dim, vals.get(dim)))
+            cross[dim] = set(spec.get("cross") or [])
+            if not cross[dim] <= vocab[dim]:
+                gaps.append("CROSS-CUT OUTSIDE VOCABULARY — list %s dimension %s declares "
+                            "cross-cut %s that is not one of its values"
+                            % (name, dim, sorted(cross[dim] - vocab[dim])))
+            excl[dim] = vocab[dim] - cross[dim]
+
+        def _ledger_rows(rows, what):
+            for key, vals in sorted(rows.items()):
+                if key not in exp:
+                    gaps.append("FILTER %s NOT A RECORD — list %s counts %s, and no such "
+                                "record exists" % (what, name, key))
+                for dim in dims:
+                    if vals.get(dim) not in excl.get(dim, set()):
+                        gaps.append("MEMBER VALUE OUTSIDE VOCABULARY — list %s %s %s has "
+                                    "%s=%r" % (name, what.lower(), key, dim, vals.get(dim)))
+                    bad = _tokens(vals, dim) - cross.get(dim, set())
+                    if bad:
+                        gaps.append("MEMBER VALUE OUTSIDE VOCABULARY — list %s %s %s carries "
+                                    "cross-cut %s the dimension does not declare"
+                                    % (name, what.lower(), key, sorted(bad)))
+        _ledger_rows(members, "MEMBER")
+        _ledger_rows(refs, "REF")
         # DIMENSION COMPLETE, page side: every row, every dimension, a vocabulary value that
         # matches what the ledger claimed for it.
-        rows = _rows_in(regions[name])
-        row_keys = [k for k, _a in rows]
-        row_vals = {}
-        for key, attrs in rows:
-            if key not in members:
-                gaps.append("ROW NOT A MEMBER — list %s renders %s, which its ledger entry "
-                            "does not count" % (name, key))
+        all_rows = _rows_with_kind(regions[name])
+        row_keys = [k for k, _a, t in all_rows if t == "rec"]
+        ref_keys = [k for k, _a, t in all_rows if t == "ref"]
+        row_vals, ref_vals = {}, {}
+        for key, attrs, kind in all_rows:
+            ledger_rows, store = (members, row_vals) if kind == "rec" else (refs, ref_vals)
+            if key not in ledger_rows:
+                gaps.append("ROW NOT A MEMBER — list %s renders %s%s, which its ledger entry "
+                            "does not count" % (name, key, " (a reference)" if kind == "ref" else ""))
                 continue
-            row_vals[key] = {}
+            store[key] = {}
             for dim in dims:
                 v = attrs.get(dim)
                 if v is None:
                     gaps.append("DIMENSION MISSING — list %s row %s carries no data-%s, so it "
                                 "is visible only under `all`" % (name, key, dim))
-                elif v not in vocab.get(dim, set()):
+                elif v not in excl.get(dim, set()):
                     gaps.append("VALUE OUTSIDE VOCABULARY — list %s row %s has data-%s=%r"
                                 % (name, key, dim, v))
-                elif v != members[key].get(dim):
+                elif v != ledger_rows[key].get(dim):
                     gaps.append("ROW DISAGREES WITH LEDGER — list %s row %s has data-%s=%r; "
                                 "the ledger says %r" % (name, key, dim, v,
-                                                        members[key].get(dim)))
-                row_vals[key][dim] = v
+                                                        ledger_rows[key].get(dim)))
+                store[key][dim] = v
+                if _tokens(attrs, dim) != _tokens(ledger_rows[key], dim):
+                    gaps.append("ROW DISAGREES WITH LEDGER — list %s row %s has data-%s-also=%r;"
+                                " the ledger says %r" % (name, key, dim,
+                                                         attrs.get(dim + "-also"),
+                                                         ledger_rows[key].get(dim + "-also")))
+                if _tokens(attrs, dim):
+                    store[key][dim + "-also"] = attrs.get(dim + "-also")
         if sorted(row_keys) != sorted(shown_claim):
             gaps.append("SHOWN DISAGREES — list %s: the ledger says %d row(s) shown, the page "
                         "carries %d" % (name, len(shown_claim), len(row_keys)))
+        if sorted(ref_keys) != sorted(shown_refs_claim):
+            gaps.append("SHOWN DISAGREES — list %s: the ledger says %d reference row(s) shown, "
+                        "the page carries %d" % (name, len(shown_refs_claim), len(ref_keys)))
         k_rem = int(remainders.get(name) or 0)
         if len(members) != len(row_keys) + k_rem:
             gaps.append("POPULATION DOES NOT RECONCILE — list %s counts %d member(s) but the "
@@ -356,12 +570,18 @@ def check_filters(page, ledger, exp, remainders, more_on_page=None):
                         "reachable only if rendered, so a filtered list has no remainder "
                         "(ADR-024 REACHABLE, public #54)"
                         % (name, k_rem or k_page, k_rem, "none" if k_page is None else k_page))
-        # COUNT AGREES: every label, both numbers, against the rows and the members.
+        # COUNT AGREES: every label, both numbers, against the rows and the members. Reference
+        # rows count: a chip that advertises a reference must be able to show it.
+        n_rows_all = len(row_keys) + len(ref_keys)
+        n_pop_all = len(members) + len(refs)
+        pop_rows = list(members.values()) + list(refs.values())
+        shown_rows = list(row_vals.values()) + list(ref_vals.values())
         for dim in sorted(dims):
-            expect = {"all": (len(row_keys), len(members))}
+            cr = cross.get(dim, set())
+            expect = {"all": (n_rows_all, n_pop_all)}
             for v in vocab[dim]:
-                pop = sum(1 for m in members.values() if m.get(dim) == v)
-                sh = sum(1 for k in row_keys if row_vals.get(k, {}).get(dim) == v)
+                pop = sum(1 for m in pop_rows if _has(m, dim, v, cr))
+                sh = sum(1 for m in shown_rows if _has(m, dim, v, cr))
                 if pop:
                     expect[v] = (sh, pop)
             # REACHABLE, chip side: shown == population for every chip, from the HTML rows
@@ -373,13 +593,39 @@ def check_filters(page, ledger, exp, remainders, more_on_page=None):
                                 "member(s) and the page renders %d of them; a member with no "
                                 "row is reachable under no filter state (public #58 point 3)"
                                 % (name, dim, v, pop, sh))
+            # DEGENERACY: a value whose HTML-recounted row set IS `All`'s selects nothing
+            # `All` does not. Its chip is not drawn (its RADIO still is); drawing it is a gap.
+            degenerate = {v for v, (sh, _p) in expect.items()
+                          if v != "all" and n_rows_all and sh == n_rows_all}
+            drawn_others = [v for v in expect if v != "all" and (name, dim, v) in labels]
+            gname = "f-%s-%s" % (name, dim)
+            have_radios = {rid for rid, _c in radios.get(gname, [])}
+            for v in sorted(expect):
+                if "%s-%s" % (gname, v) not in have_radios:
+                    gaps.append("RADIO MISSING — list %s dimension %s has %d member(s) with "
+                                "value %r and no radio %s-%s; a suppressed chip keeps its "
+                                "radio so a router label can still activate it"
+                                % (name, dim, expect[v][1], v, gname, v))
             for v, (sh, pop) in sorted(expect.items()):
                 lab = labels.get((name, dim, v))
                 if lab is None:
+                    if v in degenerate:
+                        continue            # suppressed: its rows ARE `All`'s (recounted above)
+                    if v == "all" and not drawn_others and all(
+                            x in degenerate for x in expect if x != "all"):
+                        continue            # a dimension left with only `All` draws no bar
                     gaps.append("LABEL MISSING — list %s dimension %s has %d member(s) with "
                                 "value %r and no chip for it" % (name, dim, pop, v))
                     continue
                 n_labels += 1
+                if v in degenerate:
+                    gaps.append("DEGENERATE CHIP DRAWN — list %s chip %s=%s selects the very "
+                                "rows `All` does (%d of %d); a chip that narrows nothing is "
+                                "not drawn" % (name, dim, v, sh, n_rows_all))
+                if v == "all" and not drawn_others:
+                    gaps.append("DEGENERATE CHIP DRAWN — list %s dimension %s draws only "
+                                "`All`; a dimension left with only `All` is not drawn"
+                                % (name, dim))
                 l_sh, l_pop, text = lab
                 if (l_sh, l_pop) != (sh, pop):
                     gaps.append("COUNT DISAGREES — list %s chip %s=%s says %d shown of %d; the "
@@ -392,26 +638,50 @@ def check_filters(page, ledger, exp, remainders, more_on_page=None):
                 if v not in expect and (name, dim, v) in labels:
                     gaps.append("LABEL WITHOUT MEMBERS — list %s has a chip for %s=%s and no "
                                 "member carries it" % (name, dim, v))
-            sums = [sum(x[i] for v, x in expect.items() if v != "all") for i in (0, 1)]
+            # The SUM is over the PARTITION: a cross-cut option overlaps it by definition.
+            sums = [sum(x[i] for v, x in expect.items() if v != "all" and v not in cr)
+                    for i in (0, 1)]
             if tuple(sums) != expect["all"]:
                 gaps.append("COUNTS DO NOT SUM — list %s dimension %s: per-value counts sum to "
                             "%d shown of %d, `all` is %d of %d"
                             % (name, dim, sums[0], sums[1], expect["all"][0], expect["all"][1]))
-    # The router's pipeline in-flight number and the opportunity list's own label are one
-    # query in the renderer; the page must show them agreeing. ⭐ A NO-MATCH here must be
-    # LOUD, never a silent skip (dev/audit 2026-09-03) — a router row can legitimately match
-    # nothing (the pipeline phase collapsed to nothing, ZERO COLLAPSES), but it can also fail
-    # to match because a later feature reshaped the row's markup, and those two cases must not
-    # look the same: the first is nothing to check, the second is a check that just went dark.
+            # DEFAULT: exactly one checked radio, and it is the declared order's first DRAWN
+            # value (recomputed from the HTML rows), else `All`.
+            order = list((g.get("defaults") or {}).get(dim, {}).get("order") or [])
+            checked = [rid for rid, c in radios.get(gname, []) if c]
+            want = next((v for v in order if v in expect and v != "all" and v not in degenerate),
+                        "all")
+            if len(checked) != 1:
+                gaps.append("DEFAULT NOT UNIQUE — list %s dimension %s has %d checked radio(s); "
+                            "exactly one must carry `checked` (a default with nothing checked "
+                            "renders the unfiltered list with no chip selected)"
+                            % (name, dim, len(checked)))
+            elif checked[0] != "%s-%s" % (gname, want):
+                gaps.append("DEFAULT WRONG — list %s dimension %s opens on %s; the declared "
+                            "order %s resolves to %r on this page's rows"
+                            % (name, dim, checked[0][len(gname) + 1:], order or ["all"], want))
+            if order and order[0] not in expect and want != order[0]:
+                need_note = True
+    if need_note and 'class="sub fdefault"' not in page:
+        gaps.append("DEFAULT UNANNOUNCED — a filter's first default had no members and the "
+                    "page fell back, but says nowhere that it did (a default that quietly did "
+                    "not apply is the defect; design r2 §5)")
+    # The router's pipeline in-flight number and the opportunity rows it must equal. dev #494:
+    # `state` left the opportunity bar, so the comparison is against the HTML rows that do NOT
+    # carry the `your-move` cross-cut (needs-you's complement), recounted from the page.
+    # ⭐ A NO-MATCH here must be LOUD, never a silent skip (dev/audit 2026-09-03) — a router
+    # row can legitimately match nothing (the pipeline phase collapsed to nothing, ZERO
+    # COLLAPSES), but it can also fail to match because a later feature reshaped the row's
+    # markup, and those two cases must not look the same.
     m = _ROUTER_FLIGHT_RE.search(page)
     if m:
         n_router = int(m.group(1) or 0)
-        opp = groups.get("opportunities") or {}
-        n_label = sum(1 for v in (opp.get("members") or {}).values()
-                      if v.get("state") == "in-flight")
+        opp_rows = _rows_in(regions.get("opportunities", ""))
+        n_label = sum(1 for _k, a in opp_rows if "your-move" not in _tokens(a, "pursuit"))
         if n_router != n_label:
             gaps.append("ROUTER DISAGREES — the pipeline row says %d in flight; the "
-                        "opportunity list counts %d" % (n_router, n_label))
+                        "opportunity list's rows outside `Your move` number %d"
+                        % (n_router, n_label))
     elif _ROUTER_PIPELINE_ANCHOR_RE.search(page):
         gaps.append("ROUTER ROW UNRECOGNIZED — the page links #phase-pipeline but its "
                     "in-flight markup does not match the shape this check knows "
@@ -420,8 +690,30 @@ def check_filters(page, ledger, exp, remainders, more_on_page=None):
     else:
         lines.append("filters: router in-flight count NOT CHECKED — no #phase-pipeline row "
                      "on the page (the pipeline phase has collapsed to nothing)")
-    lines.append("filters: %d list(s) · %d dimension(s) · %d label(s) checked"
-                 % (len(set(groups) & set(regions)), n_dims, n_labels))
+    # A router count that is a LABEL for a filter radio promises the population that radio
+    # selects (design r3 R540): its number must equal the rows the radio shows.
+    n_router_labels = 0
+    for target, num in _ROUTER_LABEL_RE.findall(page):
+        target = _html.unescape(target)
+        hit = None
+        for gname_, g_ in groups.items():
+            for dim_ in (g_.get("dims") or {}):
+                pre = "f-%s-%s-" % (gname_, dim_)
+                if target.startswith(pre) and gname_ in regions:
+                    hit = (gname_, dim_, target[len(pre):])
+        if hit is None:
+            continue                  # LABEL TARGET UNRESOLVED (check_links) owns a bad id
+        gname_, dim_, value = hit
+        cr = set(((groups[gname_].get("dims") or {}).get(dim_) or {}).get("cross") or [])
+        rows_ = [dict(a) for _k, a, _t in _rows_with_kind(regions[gname_])]
+        n_rows = sum(1 for a in rows_ if _has(a, dim_, value, cr))
+        n_router_labels += 1
+        if int(num) != n_rows:
+            gaps.append("ROUTER DISAGREES — a router count of %s is a label for %s, which "
+                        "selects %d row(s) of list %s" % (num, target, n_rows, gname_))
+    lines.append("filters: %d list(s) · %d dimension(s) · %d label(s) checked · %d router "
+                 "label(s)" % (len(set(groups) & set(regions)), n_dims, n_labels,
+                               n_router_labels))
     return gaps, lines
 
 
@@ -460,7 +752,8 @@ def check(root, verbose=False):
     except OSError as e:
         return ["ARTIFACT UNREADABLE — %s" % e], [], []
 
-    # ⭐ A LIST, never a set: the count of each key is the EXACTLY ONCE measurement.
+    # ⭐ A LIST, never a set: the count of each key is the EXACTLY ONCE measurement
+    # (check_links turns it into a gap).
     rec_list = [_html.unescape(m) for m in _REC_RE.findall(page)]
     on_page = set(rec_list)
     full_on_page = set(_html.unescape(m) for m in _FULL_REC_RE.findall(page))
@@ -541,6 +834,10 @@ def check(root, verbose=False):
     # MEMBERSHIP UNDER NARROWING — the filtered lists.
     f_gaps, f_lines = check_filters(page, ledger, exp, remainders, more_on_page)
     gaps.extend(f_gaps)
+    l_gaps, l_line = check_links(page, exp)
+    gaps.extend(l_gaps)
+    s_gaps, _s_line = check_scripts(page)
+    gaps.extend(s_gaps)
     n_exp = len(exp)
     n_placed = n_exp - sum(1 for g in gaps if g.startswith("UNPLACED"))
     lines = ["covered %d of %d record(s) — %d rendered · %d in counted remainders · "
@@ -548,15 +845,12 @@ def check(root, verbose=False):
              % (n_placed, n_exp, counts["rendered"], counts["remainder"],
                 counts["terminal"], today.isoformat(), horizon)]
     lines.extend(f_lines)
+    lines.append(l_line)
     if verbose:
         lines.extend("  " + p for p in placements)
-    # EXACTLY ONCE — advisory until stage 2 (see the module docstring).
-    dupes = sorted((k, n) for k, n in collections.Counter(rec_list).items() if n > 1)
-    advisories = []
-    if dupes:
-        advisories.append("EXACTLY ONCE (advisory) — %d record(s) render in more than one "
-                          "place: %s" % (len(dupes), ", ".join("%s ×%d" % kn for kn in dupes)))
-    return gaps, lines, advisories
+    # EXACTLY ONCE is a GAP since design r3 (check_links); nothing is advisory any more. The
+    # third return value is kept so a caller unpacking three values keeps working.
+    return gaps, lines, []
 
 
 def main():
@@ -571,18 +865,13 @@ def main():
         print("  " + l)
     if gaps is None:
         return 0
-    if advisories:
-        print("\n  ADVISORY — measured, not enforced. Stage 2 of public #48 turns queue rows "
-              "into references to the subject row; until it lands a record legitimately "
-              "renders in its queue row AND its subject list, so this cannot be a gap yet "
-              "without wedging every page. It is printed so the number is watched, not "
-              "assumed.")
-        for a in advisories:
-            print("  - " + a)
+    for a in advisories:
+        print("  - " + a)
     if not gaps:
         print("  CLEAN — every record is rendered, counted, or terminal; nothing renders "
-              "outside its window; every filtered list is whole under every filter and "
-              "every chip shows every row it counts")
+              "outside its window; every record has ONE primary row and every reference and "
+              "link resolves; every filtered list is whole under every filter and every chip "
+              "shows every row it counts")
         return 0
     print("\n" + "=" * 72)
     print("%d GAP(S)" % len(gaps))

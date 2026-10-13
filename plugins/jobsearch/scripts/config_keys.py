@@ -198,9 +198,18 @@ _METADATA = {
 
 # Engine constants C1 hardcodes rather than reading from config — never resolved by describe(),
 # printed here so "is this configurable?" has a documented answer.
+# dev #539 / public #133 (design-one-dashboard-surface.md r3 §4): the follow-up view lists every
+# subject owing a message within this many days. The reporter asked for "2-5 days"; 5 is the
+# upper bound. DELIBERATELY not a registered key: a registered key must be seeded by a migration
+# (the `m_*_states_config_keys` precedent), and this change ships with no migration. Promoting
+# FIXED -> Key later is a registry line plus a seeding migration, and should wait for a report
+# asking. `your_move.outreach_due` reads it; `profile.py --options` prints it under FIXED.
+OUTREACH_HORIZON_DAYS = 5
+
 FIXED = {
     "overlap_shingle_words": 8,     # brief.py --overlap's shared-run window, in words
     "brief_id_hex_digits": 16,      # the random suffix on a new `brief:<ts>-<hex>` id (dev #680; old rows carry 4)
+    "outreach_horizon_days": OUTREACH_HORIZON_DAYS,  # the follow-up view's look-ahead, in days (dev #539)
 }
 
 # ── search postures (dev #323) ──────────────────────────────────────────────────────────────

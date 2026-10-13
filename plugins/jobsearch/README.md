@@ -75,9 +75,14 @@ LinkedIn one.
 - **[Your data](../../docs/user/jobsearch/your-data.md)** — every file it keeps, what the fields mean, and
   how to edit them by hand safely.
 - **[Reading what the search produces](../../docs/user/jobsearch/reading-your-files.md)** — which file
-  opens in which tool. There are two published pages: `views/dashboard_artifact.html` — a router
+  opens in which tool. There are two published pages. `views/dashboard_artifact.html` is a router
   section up top and every phase reachable by an in-page anchor, including a pending message's
-  full text on the outreach section — and `views/presence_set.html`, a review copy of your
+  full text on the outreach section; since 0.64.0 each record is shown in full in exactly one
+  list and is a linked one-line reference everywhere else, the opportunities list opens on a
+  single "Show" choice in terms of whose move it is, follow-ups are one list, and channels
+  with nothing due are one counted line. A reviewer's comment on that page is applied to the
+  draft through the session (before-and-after, your yes), never by editing the page.
+  `views/presence_set.html` is a review copy of your
   resume/claims/rules that always publishes, even with nothing declared. Plus kb files, call
   preps, drafts and letters, on the desktop, in an editor, in a browser, or on a phone.
 

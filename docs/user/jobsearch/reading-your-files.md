@@ -26,7 +26,7 @@ you before you notice.
 
 | file | what it is | format |
 |---|---|---|
-| `views/dashboard_artifact.html` | **one of two published pages.** A router section up top (one row per phase, naming the next action and a count), then every phase's own section, reached by an in-page link. Drafts, letters and knowledge files show as title + status + location, not in full, except a pending message's **full text**, which lives on this page's outreach section — the one kind of document the page exists to let you read | HTML |
+| `views/dashboard_artifact.html` | **one of two published pages.** A router section up top (one row per phase, naming the next action and a count), then every phase's own section, reached by an in-page link. **Every record is shown in full in exactly one place; anywhere else it is a one-line reference that links to that place** (since 0.64.0 — see *What is on the one page*, below). Drafts, letters and knowledge files show as title + status + location, not in full, except a pending message's **full text**, which lives on this page's outreach section — the one kind of document the page exists to let you read | HTML |
 | `views/dashboard_artifact_url.txt` | the URL of the published dashboard Artifact above — a link, not a page | plain text |
 | `views/presence_set.html` | **the other published page**, since 0.39.0 — a review copy of `presence/`: your claim union, one tab per declared resume variant, an open-items tab (drift the engine can detect but not fix on its own), and a rules tab for your own settled decisions. Always published, even with zero declared variants — see below | HTML |
 | `views/presence_set_url.txt` | the URL of the published presence-set Artifact above | plain text |
@@ -50,6 +50,78 @@ location** on the one dashboard page, its full body living once on that page's o
 the whole page republishes together every run so no section's URL can go stale while another's
 stays current. The root `dashboard.html` that the split left behind as a pointer is not part of
 this any more — it is retired; see *Two things that moved out of the profile root*, below.
+
+### What is on the one page (since 0.64.0)
+
+The dashboard is still one page at one link. What changed in 0.64.0 is that it now follows one
+rule everywhere: **a role, a draft, a channel or a person is shown in full in exactly one list —
+its own. Anywhere else it comes up, you get a one-line reference with a link to that row**, never
+a second copy that could disagree with the first. Every in-page link on the page lands on
+something that is there; the router no longer points at a section the run did not draw.
+
+- **Drafts and Opportunities come first.** Right under the router summary, before every other
+  section: the follow-up list (your drafts, in full) and then the opportunities list. A bar pinned to
+  the top of the page, **Drafts (N)** and **Opportunities (N)**, jumps to either one from anywhere
+  on the page, even while a filter is selected. N is the number of drafts or roles in that list.
+- **Opportunities.** One main choice, labelled **Show**, in terms of whose move it is: *Your move
+  — today*, *New — pursue or pass?*, *In live conversation*, *Sent — awaiting a reply*, *Not sent
+  yet — queued to apply*, *In interviews*, *Parked*, and *Ended* (the cause shows on each row). A second choice, **Whose**,
+  splits the list by who owes the next move. Rows are ordered by whose move it is, then by how
+  long since anything last happened on the role. The older state, stage and coverage choices are
+  gone from this list (the stage still shows on each row). **A choice that would show exactly the
+  same rows as *All* is not drawn**, and a group left with only *All* is not drawn at all — so on a
+  small search you see fewer buttons, not buttons that do nothing.
+- **The router's "applying" count is a button.** Click the **number** and the opportunities list
+  narrows to *Not sent yet — queued to apply*; click the **phase name** to jump down to the list.
+  The separate "applying queue" and "decide" sections are gone — the same roles are the
+  *Not sent yet* and *New* choices on the one list.
+- **Follow-ups — what to send** is one list. Drafts you have staged are shown with their full
+  text, as before. A relationship touch that is due, an application with no follow-up drafted, and a
+  person who is due each appear as a short reference row ("no draft yet — <why>") that links to the
+  channel, role or person it is about. The **When** choice opens on *Now* — drafts you can send or
+  must unblock, plus anything due in the next **5 days** — with *Waiting* and *Later* one click
+  away; **Ready to send** is a choice under **Sendability**. The three older follow-up sections
+  (ready, touches, sequences) are gone; their rows are in this list. **People due** is unchanged
+  and still the one place a person is listed in full.
+- **Channels — due.** Only channels with a review or a touch due are shown as rows. Every other
+  channel is one counted line — *N other channels: K current, R retired. Nothing due* — that names
+  the file, `data/channels.jsonl`, where they live. Ask the session *"show my channels"* for the
+  full table. The old reviews and sourcing tables are gone; no channel was dropped, they are
+  counted instead of listed.
+
+The page republishes whole every run, and a check run with it reads your files and the page
+together and fails if a record appears in full twice, a reference points at nothing, or a link on
+the page has no destination.
+
+### Correcting a draft from a comment on the page (since 0.64.0)
+
+If your published dashboard is shared inside your organization on claude.ai, a reviewer can leave
+a comment on it — say, that one phrase in a draft should read differently. **The search never
+fixes that by editing the page**, because the page is regenerated from your files and an edit to
+it would be lost on the next run. Instead, in a session, the coordinator reads the comment and
+turns it into a correction to the draft in `outreach/drafts.md`:
+
+1. It shows you a **before and after** of that draft and writes nothing yet.
+2. It applies the change only after you say yes, and only if the text being replaced occurs
+   **exactly once** in that draft — a phrase that appears twice, or not at all, is refused.
+3. It records the change on the draft as a `**Revised:**` line (date, where the comment came
+   from, old text, new text) — see *A line you may see in `outreach/drafts.md`: `**Revised:**`*, below.
+4. It regenerates and republishes the page.
+
+Applying the same correction twice is refused, not repeated. A comment it cannot apply is left
+open and the session tells you why; it is never marked resolved.
+
+**What this needs.** Claude Code version 2.1.221 or later, a session you are in (not a scheduled
+run), and a dashboard shared within an organization — comments do not exist on a private
+artifact or a bare public link. **Where any of that is missing, paste the correction into the
+session instead** (*"in the Corvid Labs draft, change 'next week' to 'this month'"*) and it goes
+through the same before-and-after and the same yes.
+
+**Or use the Copy as prompt button.** Each draft on the dashboard has a **Copy as prompt** button.
+It copies a short block that names that exact draft, even when two drafts share a title, and quotes
+its current text. Paste it into your session, replace `<describe the change here>` with what
+should change, and send it. If your browser blocks copying, the block appears selected under the
+button; press Cmd+C (Mac) or Ctrl+C. The button only copies text; nothing is sent from the page.
 
 **`views/presence_set.html` (since 0.39.0) is not that same kind of split reopened.** It exists so
 you can review what `presence/` actually looks like rendered — the claim union, every declared
@@ -172,6 +244,22 @@ form `**Medium:** <value>` — one of: `linkedin-connection-note`, `linkedin-inm
 leave it as `unknown` — the draft still sends the same — but the dashboard's medium counts and
 filters will undercount it until the line is there.
 
+## A line you may see in `outreach/drafts.md`: `**Revised:**`
+
+When a correction is applied to a draft (see *Correcting a draft from a comment*, above), the
+draft gains one line recording it:
+
+```
+**Revised:** 2026-10-14 · comment:t-4821 · "next week" → "this month"
+```
+
+It is a note about the edit, not part of the message: it is never sent, and it does not change
+whether the draft counts as ready, held or sent. (If recording a correction would change that —
+for example, removing a phrase that was holding the draft would leave the old phrase quoted on this
+line — the step refuses and says so, rather than leave the draft blocked.) The source reads `chat` when the correction came
+from you in the session rather than from a comment. Nothing needs doing about it; delete the line
+if you do not want the record.
+
 ---
 
 ## A marker you may see in `applying/cover_letters.md`
@@ -237,7 +325,8 @@ Every daily run republishes **two** claude.ai Artifacts, each at its own **stabl
 dashboard (`views/dashboard_artifact_url.txt`) and the presence review page
 (`views/presence_set_url.txt`, since 0.39.0). Open the dashboard — the router section up top
 names the next action and a count per phase, and each phase name is a link down to its own
-section on the same page. This is the one route that needs neither the desktop app nor the local
+section on the same page (a count that is a filter, like *applying*, narrows the list when you
+click the number). This is the one route that needs neither the desktop app nor the local
 folder, which makes it the practical way to check state from a phone. **A pending message's full
 text lives on this page's outreach section** — drafts and cover letters show as title + status +
 location everywhere else, and kb files render as content on their own sections too. A call prep

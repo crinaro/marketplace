@@ -688,21 +688,34 @@ def networking_in_force(opp, newest_outbound_on=None):
     return True
 
 
-def opportunity_conversation_axis(root, opp_id, today=None, window=None):
+def opportunity_conversation_scan(root, opp_id, today=None, window=None):
     """§2/§15.2 — the conversation axis for an OPPORTUNITY subject, folded over every
-    counterpart thread on it. `conversation_axis()` above is person-centred (subject = a
-    people id); this reads the SAME events from the opposite direction — one counterpart at
-    a time, through that same function, folded by `AXIS_FOLD` precedence (§2: "one thread
-    still within its window keeps the subject waiting; the subject is silent only when every
-    outstanding thread is"). Never a second derivation of what an event is.
+    counterpart thread on it, with the facts the same scan already visits. `conversation_axis()`
+    above is person-centred (subject = a people id); this reads the SAME events from the
+    opposite direction — one counterpart at a time, through that same function, folded by
+    `AXIS_FOLD` precedence (§2: "one thread still within its window keeps the subject
+    waiting; the subject is silent only when every outstanding thread is"). Never a second
+    derivation of what an event is.
 
-    Returns (token, newest_outbound_on) — the second value feeds `networking_in_force()`
-    without a second scan of the same rows."""
+    Returns a dict: `token` (the folded axis token), `newest_outbound_on` (feeds
+    `networking_in_force()` without a second scan of the same rows), and — dev #494 / public
+    #58, design-one-dashboard-surface.md r3 §3.1 — two facts the thread scan already walks and
+    used to discard: `inbound_ever` (has ANY inbound event ever arrived on ANY thread of this
+    subject; the pursuit bar's "In live conversation" needs it, because a thread whose newest
+    event is an outbound touch is `waiting` whether or not they ever answered) and
+    `newest_event_on` (the newest event of either direction, the dashboard's "days since
+    anything last happened" sort key). No new scan, no new store, no new field.
+
+    ⭐ A SEPARATE FUNCTION, NOT A THIRD RETURN VALUE. `opportunity_conversation_axis` below keeps
+    its two-tuple: `record.py` unpacks exactly two and is not this change's to edit. The old
+    function is now a one-line projection of this one, so the two cannot disagree."""
     import graph as _graph
     g = _graph.Graph(os.path.join(root, "data"))
     opp = g.by_id["opportunities"].get(opp_id)
+    none = {"token": "nothing-sent", "newest_outbound_on": None, "inbound_ever": False,
+            "newest_event_on": None}
     if opp is None:
-        return "nothing-sent", None
+        return dict(none)
 
     person_ids = set()
     for t in g.touches_for_opportunity(opp_id):
@@ -724,9 +737,9 @@ def opportunity_conversation_axis(root, opp_id, today=None, window=None):
         person_ids.add(resolved["id"] if resolved else m["person_id"])
 
     if not person_ids:
-        return "nothing-sent", None
+        return dict(none)
 
-    best_token, newest_outbound = None, None
+    best_token, newest_outbound, newest_event, inbound_ever = None, None, None, False
     for pid in person_ids:
         axes = conversation_axis(root, pid, counterpart="opp:%s" % opp_id,
                                  today=today, window=window)
@@ -734,10 +747,24 @@ def opportunity_conversation_axis(root, opp_id, today=None, window=None):
         if best_token is None or AXIS_FOLD.index(token) < AXIS_FOLD.index(best_token):
             best_token = token
         for e in events:
-            if e.get("direction") == "outbound" and e.get("date"):
-                if newest_outbound is None or str(e["date"]) > str(newest_outbound):
-                    newest_outbound = e["date"]
-    return best_token or "nothing-sent", newest_outbound
+            if e.get("direction") == "inbound":
+                inbound_ever = True
+            if e.get("date"):
+                if newest_event is None or str(e["date"]) > str(newest_event):
+                    newest_event = e["date"]
+                if e.get("direction") == "outbound":
+                    if newest_outbound is None or str(e["date"]) > str(newest_outbound):
+                        newest_outbound = e["date"]
+    return {"token": best_token or "nothing-sent", "newest_outbound_on": newest_outbound,
+            "inbound_ever": inbound_ever, "newest_event_on": newest_event}
+
+
+def opportunity_conversation_axis(root, opp_id, today=None, window=None):
+    """(token, newest_outbound_on) — `opportunity_conversation_scan()`'s first two facts, kept
+    as a two-tuple for the callers that unpack exactly two (`record.py`, `workflow_state`'s
+    older readers). The second value feeds `networking_in_force()`."""
+    scan = opportunity_conversation_scan(root, opp_id, today=today, window=window)
+    return scan["token"], scan["newest_outbound_on"]
 
 
 def triage_suggestion(opp, cfg, company=None, fit=None):
@@ -770,16 +797,159 @@ def triage_suggestion(opp, cfg, company=None, fit=None):
 def workflow_state(root, opp, apps, today=None, window=None):
     """§2 — the nine-cell state of one opportunity as a dict: `application` (the axis
     token), `conversation` (the folded axis token), `networking_closed_in_force` (bool),
-    `ended_because` (the ending, or None while live). `apps` is this opportunity's own
-    applications slice. Reads through `opportunity_conversation_axis()` for the
-    conversation half — one thread scan, reused for both the axis and the
-    networking-in-force reading (§15.3)."""
+    `ended_because` (the ending, or None while live), plus — dev #494 / public #58 — the facts
+    the same thread scan carries: `inbound_ever`, `newest_outbound_on` and `newest_event_on`
+    (`opportunity_conversation_scan`). `apps` is this opportunity's own applications slice.
+    Reads through `opportunity_conversation_scan()` for the conversation half — one thread
+    scan, reused for the axis, the networking-in-force reading (§15.3) and the pursuit
+    projection below."""
     app_axis = application_axis(opp, apps)
-    conv_axis, newest_outbound = opportunity_conversation_axis(root, opp.get("id"),
-                                                                today=today, window=window)
-    return {"application": app_axis, "conversation": conv_axis,
-            "networking_closed_in_force": networking_in_force(opp, newest_outbound),
-            "ended_because": ended_because(opp, apps)}
+    scan = opportunity_conversation_scan(root, opp.get("id"), today=today, window=window)
+    return {"application": app_axis, "conversation": scan["token"],
+            "networking_closed_in_force": networking_in_force(opp, scan["newest_outbound_on"]),
+            "ended_because": ended_because(opp, apps),
+            "inbound_ever": scan["inbound_ever"],
+            "newest_outbound_on": scan["newest_outbound_on"],
+            "newest_event_on": scan["newest_event_on"]}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE PURSUIT PROJECTION — dev #494 / public #58, dev #540 / public #132 (design-one-
+# dashboard-surface.md r3 §3.1, "kept from r2 §1"). ADR-031 §5 decision 11 named a
+# `pursuit_state()` and ADR-033 §2 reconciled it as a PROJECTION of `workflow_state()`, never
+# a second derivation; nothing built it, and the opportunities bar offered four engine
+# vocabularies (ATTENTION, OWNER, STAGES, COVERAGE) instead. This is that projection.
+#
+# THE OPTIONS, in bar order, each with the states-and-views CELLS it is the projection of
+# (design-states-and-views.md §2: 1 `new`, 2 `pursue-unapplied`, 3 `applied-no-outreach`,
+# 4 `reply-owed`, A `accepted-your-move`, 6 `awaiting-reply`, 7 `silent-decide`, 8 `ats-only`,
+# + `in-process`, plus the application axis' own `parked` and `ended`):
+#
+#   your-move       a DECLARED CROSS-CUT, not a partition cell: the roles ATTENTION says need the
+#                   candidate today (`attention_by_id`'s `needs-you`: classify_opportunities
+#                   `now` or `decide`). OURS: r2 listed cells 1,3,4,5,A,7 for it, and r3 §3.4
+#                   says its rows ARE the old `phase-pipeline-now` opportunity rows - that
+#                   membership already drives the router's pipeline number, so the chip, the
+#                   list and the router are one query (attention_by_id's own invariant).
+#   new             cell 1 - the application axis `undecided`
+#   conversation    cells 4, A and cell 6 where an inbound has EVER arrived
+#   sent            cells 3, 6 (no inbound ever), 7, 8 - an application or a touch is out
+#   not-sent        cell 2 - verdict pursue, nothing submitted: "queued to apply" (r3's label)
+#   interviews      the `in-process` application axis
+#   parked          the `parked` application axis
+#   ended           `ended_because()` is non-null (the cause stays on the row)
+#   unclassifiable  a live row whose state cannot be derived - LOUD, rendered only when
+#                   non-empty, naming the field it could not read
+#
+# Everything except `your-move` PARTITIONS the live rows: `pursuit_state` returns exactly one.
+# ⚠️ Cell 3 (applied, no outreach since) sits under `sent`, not `not-sent`: r2 grouped it with
+# "nothing sent yet", but r3 relabelled that option "queued to apply", and an application that
+# already went in is not queued. The router's `applying` count is this option's population.
+PURSUIT_CROSS_CUTS = ("your-move",)
+PURSUIT_STATES = {
+    "your-move": ("needs-you",),
+    "new": ("new",),
+    "conversation": ("reply-owed", "accepted-your-move", "awaiting-reply+inbound-ever"),
+    "sent": ("applied-no-outreach", "awaiting-reply", "silent-decide", "ats-only"),
+    "not-sent": ("pursue-unapplied",),
+    "interviews": ("in-process",),
+    "parked": ("parked",),
+    "ended": ("ended",),
+    "unclassifiable": (),
+}
+PURSUIT_PARTITION = tuple(t for t in PURSUIT_STATES if t not in PURSUIT_CROSS_CUTS)
+
+
+def entry_keys(kind, titles):
+    """[key, ...] aligned with `titles` (the `## ` titles of ONE staged file, in file order) -
+    the ONE coverage key of a staged message (dev #496 / public #48, design r3 D5).
+
+    A draft's title is not unique: two entries may legitimately share one (a follow-up and its
+    reminder), and a key made of the title alone collapsed them into one ledger record, one
+    `data-rec` and one `id` - the second was either invisible to the checker or a false
+    EXACTLY ONCE gap. The key is the title for the first occurrence (so every existing key is
+    unchanged) and `<title>#<n>` for the nth (n >= 2). The renderer and
+    `check_dashboard_coverage.expected_records` both call this, so the ledger, `data-rec`, the
+    `id="rec-..."` hash, every `data-ref` and `apply_correction.py` address one entry by one
+    key, and neither side can drift. Ordinals count ALL entries of the file in order, terminal
+    ones included, so a key does not change when an earlier twin is sent."""
+    seen, out = {}, []
+    for t in titles:
+        n = seen.get(t, 0) + 1
+        seen[t] = n
+        out.append("%s:%s" % (kind, t) if n == 1 else "%s:%s#%d" % (kind, t, n))
+    return out
+
+
+def _latest_application_date(apps):
+    dates = [str(a.get("date")) for a in (apps or []) if a.get("date")]
+    return max(dates) if dates else None
+
+
+def pursuit_state(root, opp, apps, today=None, window=None, ws=None):
+    """The ONE partition token of an opportunity, as a dict: `state` (one of
+    `PURSUIT_PARTITION`), `cell` (the states-and-views cell it came from, the row's own
+    finer chip), `ended_because` (the cause while `state == 'ended'`), `missing` (the field a
+    loud `unclassifiable` could not read, else None) and `last_activity_on` (the newest event
+    or application date - the sort key's "days since anything last happened", None when the
+    record carries none: an unknown is never invented).
+
+    A PROJECTION of `workflow_state()`, never a second derivation: `ws` may be a result the
+    caller already holds, else it is computed here. A derivation that REFUSES is
+    `unclassifiable` naming why - a record with no `status`, a `verdict` outside
+    `validate_data.VERDICTS`, or a thread scan that raised - never silently dropped and never
+    guessed into another option (design r3 §3.1; the rulebook's "an unparseable value must be
+    loud")."""
+    base = {"state": "unclassifiable", "cell": None, "ended_because": None, "missing": None,
+            "last_activity_on": None}
+    if not opp.get("status"):
+        return dict(base, missing="status")
+    if opp.get("verdict") not in _vd.VERDICTS:
+        return dict(base, missing="verdict")
+    if ws is None:
+        try:
+            ws = workflow_state(root, opp, apps, today=today, window=window)
+        except Exception as e:                              # noqa: BLE001 - loud, not fatal
+            return dict(base, missing="thread scan failed (%s)" % type(e).__name__)
+    last = max([d for d in (ws.get("newest_event_on"), _latest_application_date(apps)) if d],
+               default=None)
+    out = dict(base, missing=None, last_activity_on=last)
+    app, conv = ws["application"], ws["conversation"]
+    if app == "undecided" and has_submitted_application(apps):
+        # public #44 (Class A): the act decided. A row still reading `verdict: undecided` with
+        # a submitted application must never be offered as `New — pursue or pass?` - project
+        # it with the verdict the act implies (the one the 0.36.0 migration writes, `pursue`),
+        # so it lands where its application puts it. validate_data still names the record.
+        app = application_axis(dict(opp, verdict="pursue"), apps)
+    if app == "ended":
+        return dict(out, state="ended", cell="ended", ended_because=ws.get("ended_because"))
+    if app == "parked":
+        return dict(out, state="parked", cell="parked")
+    if app == "in-process":
+        return dict(out, state="interviews", cell="in-process")
+    # reply-owed outranks every remaining application cell: a human is waiting (§2 precedence)
+    if conv == "reply-owed":
+        return dict(out, state="conversation", cell="reply-owed")
+    if app == "undecided":
+        return dict(out, state="new", cell="new")
+    if conv == "accepted":
+        return dict(out, state="conversation", cell="accepted-your-move")
+    if app == "pursuing":
+        return dict(out, state="not-sent", cell="pursue-unapplied")
+    if app == "applied":
+        if ws.get("networking_closed_in_force"):
+            return dict(out, state="sent", cell="ats-only")
+        applied_on = _latest_application_date(
+            [a for a in (apps or []) if a.get("status") in _vd.SUBMITTED_APP_STATUS])
+        out_on = ws.get("newest_outbound_on")
+        if not out_on or (applied_on and str(out_on) < str(applied_on)):
+            return dict(out, state="sent", cell="applied-no-outreach")
+        if conv == "silent":
+            return dict(out, state="sent", cell="silent-decide")
+        if ws.get("inbound_ever"):
+            return dict(out, state="conversation", cell="awaiting-reply")
+        return dict(out, state="sent", cell="awaiting-reply")
+    return dict(out, missing="application axis %r" % app)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1212,6 +1382,105 @@ def network_people_due(root, today=None, warm_days=180):
             n_fresh += 1
     due.sort(key=lambda r: (r[1], str(r[0].get("name") or ""), str(r[0].get("id") or "")))
     return {"due": due, "fresh": n_fresh}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE FOLLOW-UP VIEW'S MEMBERSHIP - dev #539 / public #133 (design-one-dashboard-surface.md r3
+# §4). `phase-outreach-approvals` is ONE view of everything owed a message in the next
+# OUTREACH_HORIZON_DAYS: the staged drafts (primary rows, bodies always shown - person-outreach
+# 1b), plus a REFERENCE row for every other subject that owes one - a relationship touch due or
+# planned, an application with no follow-up linked, a person due. `outreach_due` is the ONE
+# owner of that membership and of its two dimensions' vocabularies; the renderer declares which
+# dimensions exist and never what their values may be (the `_CLOSED_STATUSES` lesson).
+#
+#   when         now      sendable drafts, owner-blocked drafts (NEEDS_HUMAN: yours to fix), and
+#                         every reference due on or before today + the horizon
+#                waiting  held or queued drafts - waiting on the other side or on a session
+#                later    references due beyond the horizon
+#   sendability  precondition.OPEN_STATES, plus `undrafted` - a reference has no draft yet
+#
+# OURS (r3 §4, stated so a reviewer can refuse it): the default is `when = now`, not literally
+# `sendability = sendable`, because the folded-in references are never `sendable` and a
+# sendable-only default would hide every row #539 asked to bring in. The literal "ready to send"
+# view is one click.
+OUTREACH_WHEN = ("now", "waiting", "later")
+OUTREACH_SENDABILITY = tuple(sorted(_pre.OPEN_STATES)) + ("undrafted",)
+
+
+def outreach_when_for_draft(state):
+    """`now`, or `waiting` for a draft that is HELD (waiting on the other side) or QUEUED
+    (waiting on a session with a keychain). precondition owns both sets; an owner-blocked state
+    (NEEDS_HUMAN) is `now` because it is yours to fix, and a sendable one is `now` by definition."""
+    if state in _pre.WAITS_ON_SURFACE:
+        return "waiting"
+    if state in _pre.NOT_SENDABLE and state not in _pre.NEEDS_HUMAN:
+        return "waiting"
+    return "now"
+
+
+def outreach_due(root, today=None, horizon=None, pre_rows=None, untriggered=None):
+    """{"drafts": [...], "refs": [...]} - the follow-up view's membership.
+
+    `drafts`: one dict per OPEN staged entry (`precondition.report`, terminal entries are not
+    here): `{key, file, title, state, when, sendability}`, the key from `entry_keys` (unique
+    even when a title repeats). `refs`: one dict per OTHER subject owing a message:
+    `{kind, key, label, when, sendability: 'undrafted', due, why}` for
+      * a channel relationship touch due or planned (`classify_channels` `now` / `scheduled`;
+        `fulfilled` is done) -> `chan:<id>`;
+      * an application with no follow-up linked (`untriggered`, trigger.py's own rows, once per
+        opportunity and only for a LIVE one - a terminal role owes nothing) -> `opp:<id>`;
+      * a person due (`network_people_due`, the one membership People due renders) ->
+        `person:<id>`.
+    `when` for a reference is `now` when it is due on or before `today + horizon`, else `later`.
+    `pre_rows` / `untriggered` are test and renderer seams: a caller that already ran the scan
+    passes it, so the page is not scanned twice; absent, they are computed here."""
+    today = today or datetime.date.today().isoformat()
+    horizon = config_keys.OUTREACH_HORIZON_DAYS if horizon is None else horizon
+    limit = (_parse_date(today) + datetime.timedelta(days=horizon)).isoformat()
+    import _tree
+    drafts_rel, covers_rel = _tree.rel("drafts"), _tree.rel("cover_letters")
+    rows = _pre.report(root) if pre_rows is None else pre_rows
+    drafts = []
+    file_rows = [r for r in rows if r.get("file", drafts_rel) == drafts_rel]
+    for r, key in zip(file_rows, entry_keys("draft", [r.get("title") for r in file_rows])):
+        st = r.get("state")
+        if st in _pre.OPEN_STATES:
+            drafts.append({"key": key, "file": drafts_rel, "title": r.get("title"),
+                           "state": st, "when": outreach_when_for_draft(st),
+                           "sendability": st})
+    refs = []
+    channels = _load_jsonl(root, "channels.jsonl")
+    for c, state, _touch, _ev in classify_channels(
+            channels, _load_jsonl(root, "messages.jsonl"), today,
+            _load_jsonl(root, "involvements.jsonl")):
+        if state not in ("now", "scheduled") or not c.get("id"):
+            continue
+        nt = c.get("next_touch") or {}
+        due = str(nt.get("date"))
+        note = " · ".join(str(b) for b in (nt.get("time"), nt.get("note")) if b)
+        refs.append({"kind": "chan", "key": "chan:%s" % c["id"],
+                     "label": c.get("label") or c["id"], "due": due,
+                     "when": "now" if due <= limit else "later", "sendability": "undrafted",
+                     "why": "no draft yet" + (": %s" % note if note else "")})
+    live = {o.get("id") for o in _load_jsonl(root, "opportunities.jsonl")
+            if o.get("id") and o.get("status") not in _vd.TERMINAL_OPP_STATUSES}
+    seen = set()
+    for u in (untriggered or []):
+        oid = u.get("opp_id")
+        if not oid or oid in seen or oid not in live:
+            continue
+        seen.add(oid)
+        refs.append({"kind": "opp", "key": "opp:%s" % oid,
+                     "label": u.get("title") or oid, "due": u.get("date"),
+                     "when": "now", "sendability": "undrafted",
+                     "why": "no follow-up drafted"})
+    for person, state, why in network_people_due(root, today)["due"]:
+        if person.get("id"):
+            refs.append({"kind": "person", "key": "person:%s" % person["id"],
+                         "label": person.get("name") or person["id"], "due": None,
+                         "when": "now", "sendability": "undrafted",
+                         "why": "no draft yet: %s" % why})
+    return {"drafts": drafts, "refs": refs}
 
 
 def report(root, today=None):

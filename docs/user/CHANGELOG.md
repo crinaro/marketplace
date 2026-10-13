@@ -2,28 +2,8 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each verified against its release tag on the published remote; older releases after their push, the newest one by the publish that pushed it, so the section for the version you installed is in the file that came with it. Sections are grouped by plugin, then by version. Newest first.
 
-## gmail-multi 0.5.0
-Reply drafts look right again. The quoted original no longer shows stray '>' marks inside the quote box, and anything in the original message that looks like code or a link is shown as plain text rather than becoming live in your draft.
-gmail-multi now keeps one list of your accounts, and it moves your existing setup over by itself the next time Claude starts (your old file is kept beside it). Every search or read must name which account to use, so nothing reaches across all your mailboxes by accident. Sending, replying and forwarding now always ask you first, so a scheduled or unattended run can draft but never send. gmail-multi is also safe to use on its own, without the job search plugin.
-
-## gmail-multi 0.4.1
-gmail-multi 0.4.1 changes what a failed send tells you, and there is nothing for you to run. If the connection to the mail server was lost or timed out after the message body had begun to go out, a send, reply or forward used to fail with a bare connection error that did not say whether the message had been delivered, so retrying could deliver it twice from your own address. It now reports that delivery is UNKNOWN, asks you to look in [Gmail]/Sent Mail before trying again, and says not to retry blindly. A failure before that point (the server cannot be reached, its name cannot be looked up, the login is refused, or every recipient is refused) now says plainly that nothing was sent, so a retry is safe. The message for a send that reached only some recipients is unchanged.
-
-## gmail-multi 0.4.0
-- Release: jobsearch 0.53.0 + gmail-multi 0.4.0 — the connector heals itself; per-profile mailbox scoping *(tracked internally as crinaro/marketplace-dev PR#438)*
-
-## gmail-multi 0.3.0
-- [#76](https://github.com/crinaro/marketplace/issues/76) — gmail-multi: a non-ASCII character in a search query aborts the whole multi-account search
-- Gmail special folders are hardcoded English literals and select_all_mail silently falls back to INBOX *(tracked internally as crinaro/marketplace-dev#311)*
-
-## gmail-multi 0.2.0
-- gmail-multi should support send/reply/forward; jobsearch must enforce draft-only as policy rather than rely on the capability being absent *(tracked internally as crinaro/marketplace-dev#213)*
-
-## gmail-multi 0.1.1
-- Marketplace identifier: careers-plugins -> crinaro-marketplace, with a launcher self-heal *(tracked internally as crinaro/marketplace-dev#216)*
-
-## gmail-multi 0.1.0
-- Release: jobsearch 0.29.0 and gmail-multi 0.1.0 — connector self-install replaces the declared dependency *(tracked internally as crinaro/marketplace-dev#210)*
+## jobsearch 0.64.0
+Your dashboard is reorganised around what you do every day. Drafts and Opportunities now sit at the top, with a bar that stays pinned as you scroll so either list is one tap away. Opportunities are grouped by where each role stands, in plain words, and the follow-up view shows what's due in the next few days. Each draft has a Copy as prompt button: paste it into your job-search session with your correction and it's applied for you, showing the before and after. Channel bookkeeping moves off the daily page to a one-line summary.
 
 ## jobsearch 0.63.0
 Your job search's mailboxes now point at the accounts gmail-multi already knows, instead of keeping a separate list; this is moved over by itself. If a mailbox in your search isn't one of gmail-multi's accounts, you're told plainly and asked to fix it, rather than it being skipped without a word. A job-search session can also no longer list every email account on your computer.
@@ -335,3 +315,26 @@ This release backfills your own data on first run: the 0.54.0 migration rewrites
 - [#19](https://github.com/crinaro/careers-plugins/issues/19) — No schema field represents a pursued opportunity's post-application play-sequence stage
 - [#20](https://github.com/crinaro/careers-plugins/issues/20) — Generated dashboard renders knowledge-base and call-preparation artifacts as filename strings, not their content
 - [#21](https://github.com/crinaro/careers-plugins/issues/21) — OPEN DESIGN QUESTION: two dashboard views present the same records through two different taxonomies instead of one lifecycle-state view
+
+## gmail-multi 0.5.0
+Reply drafts look right again. The quoted original no longer shows stray '>' marks inside the quote box, and anything in the original message that looks like code or a link is shown as plain text rather than becoming live in your draft.
+gmail-multi now keeps one list of your accounts, and it moves your existing setup over by itself the next time Claude starts (your old file is kept beside it). Every search or read must name which account to use, so nothing reaches across all your mailboxes by accident. Sending, replying and forwarding now always ask you first, so a scheduled or unattended run can draft but never send. gmail-multi is also safe to use on its own, without the job search plugin.
+
+## gmail-multi 0.4.1
+gmail-multi 0.4.1 changes what a failed send tells you, and there is nothing for you to run. If the connection to the mail server was lost or timed out after the message body had begun to go out, a send, reply or forward used to fail with a bare connection error that did not say whether the message had been delivered, so retrying could deliver it twice from your own address. It now reports that delivery is UNKNOWN, asks you to look in [Gmail]/Sent Mail before trying again, and says not to retry blindly. A failure before that point (the server cannot be reached, its name cannot be looked up, the login is refused, or every recipient is refused) now says plainly that nothing was sent, so a retry is safe. The message for a send that reached only some recipients is unchanged.
+
+## gmail-multi 0.4.0
+- Release: jobsearch 0.53.0 + gmail-multi 0.4.0 — the connector heals itself; per-profile mailbox scoping *(tracked internally as crinaro/marketplace-dev PR#438)*
+
+## gmail-multi 0.3.0
+- [#76](https://github.com/crinaro/marketplace/issues/76) — gmail-multi: a non-ASCII character in a search query aborts the whole multi-account search
+- Gmail special folders are hardcoded English literals and select_all_mail silently falls back to INBOX *(tracked internally as crinaro/marketplace-dev#311)*
+
+## gmail-multi 0.2.0
+- gmail-multi should support send/reply/forward; jobsearch must enforce draft-only as policy rather than rely on the capability being absent *(tracked internally as crinaro/marketplace-dev#213)*
+
+## gmail-multi 0.1.1
+- Marketplace identifier: careers-plugins -> crinaro-marketplace, with a launcher self-heal *(tracked internally as crinaro/marketplace-dev#216)*
+
+## gmail-multi 0.1.0
+- Release: jobsearch 0.29.0 and gmail-multi 0.1.0 — connector self-install replaces the declared dependency *(tracked internally as crinaro/marketplace-dev#210)*

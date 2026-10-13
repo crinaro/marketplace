@@ -113,6 +113,14 @@ alignment claim without a citation is treated as a gap wearing a disguise.
 every time they are shown. Nothing is a stored summary that was true when written and wrong
 when read.
 
+**It shows each thing once.** The dashboard is one page at one link, and every role, draft,
+channel or person is shown in full in exactly one list. Anywhere else it matters, you get a
+one-line reference that links back to that row, so two copies can never disagree. Because the
+page is generated from your data, a correction to a draft is made in the data — in a session, with a
+before-and-after and your yes — never by editing the page. Each draft's **Copy as prompt** button
+copies a ready-made request naming that draft, so you only add what should change and paste it in
+your session.
+
 **When it does not know, it says `unknown`.** A deliberate `unknown` is countable — a report can
 tell you "12 unclassified". A guess folded quietly into a bucket cannot.
 
