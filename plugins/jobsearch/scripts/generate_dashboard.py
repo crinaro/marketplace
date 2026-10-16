@@ -442,14 +442,31 @@ OPP_DIMS = (("pursuit", "your_move.PURSUIT_STATES", tuple(_ym.PURSUIT_STATES)),
             ("owner", "your_move.OWNER", _ym.OWNER))
 
 
-def pursuit_by_id(opps):
+def pursuit_by_id(opps, roles=None):
     """{opp id: your_move.pursuit_state dict} for every opportunity in `opps` that carries an
     id - the ONE map the opportunity list's `pursuit` chips, its row chips, the reading
     order and the router's `applying` count all read, so the label population and the router
     number are one query. Reads the stores through the enriched `_applications` join, never a
-    nested array."""
-    return {o["id"]: _ym.pursuit_state(str(ROOT), o, o.get("_applications") or [])
-            for o in opps if o.get("id")}
+    nested array.
+
+    ⭐ dev #713 / public #145 (owner decision 2026-10-14): a role the run is still reading is not
+    the candidate's decision ANYWHERE on the page. `pursuit_state` projects it as `new` (it is an
+    undecided role), but only the role classification knows it is unread, so a `new` role whose
+    `roles` state (`classify_opportunities`) is `triaging` is moved to the `triaging` partition
+    option here: it is counted and shown under `Triaging`, and `New` neither lists nor counts it.
+    `roles` is {opp id: role state}, derived from `opps` when the caller passes none."""
+    if roles is None:
+        roles = {o.get("id"): st for o, st, _w in _ym.classify_opportunities(opps, OWNER_TOKEN)
+                 if o.get("id")}
+    out = {}
+    for o in opps:
+        if not o.get("id"):
+            continue
+        p = _ym.pursuit_state(str(ROOT), o, o.get("_applications") or [])
+        if p.get("state") == "new" and roles.get(o["id"]) == "triaging":
+            p = dict(p, state="triaging", cell="triaging")
+        out[o["id"]] = p
+    return out
 
 
 def _days_since(iso, today=None):
@@ -478,8 +495,31 @@ def _pursuit_chip(p):
         esc(str(p.get("cell") or "")), esc(label))
 
 
+def _lean_html(o, role_state):
+    """The row-level triage line (dev #713 / public #145): a `decide` row shows the LEAN and the
+    likely-pass signals that matched; a `triaging` row names what the system has yet to do.
+    Everything comes from your_move.py (`decide_lean`, `triage_missing`) - this only renders.
+    A lean is a lean: it never removes a role, and the line says `LEAN`, not a verdict."""
+    if role_state == "decide":
+        ln = _ym.decide_lean(o)
+        if not ln:
+            return ""
+        sigs = "".join(
+            ' <span class="lean-sig" title="a likely-pass signal matched; it never removes a '
+            'role">%s</span>' % esc("%s (in %s)" % (s.get("reason") or s.get("id") or "signal",
+                                                    s.get("matched_in") or "?"))
+            for s in ln["signals"])
+        return ('<div class="opp-lean"><strong>LEAN %s</strong> · %s%s</div>'
+                % (esc(ln["lean"]), esc(ln["line"]), sigs))
+    if role_state == "triaging":
+        return ('<div class="opp-lean opp-triaging">Triaging &mdash; the system is reading '
+                'this before it asks you. Still to do: %s</div>'
+                % esc(", ".join(_ym.triage_missing(o))))
+    return ""
+
+
 def render_opportunity_list(opps, companies, attention=None, owner=None, involvements=None,
-                            pursuit=None):
+                            pursuit=None, roles=None):
     """One row per LIVE role — needs-you first, then yours, then the run's — inside a
     FILTERED LIST over OPP_DIMS, EVERY member rendered. Closed roles are not here — they
     are not opportunities.
@@ -527,6 +567,12 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
     """
     attention = attention or {}
     owner = owner if owner is not None else _ym.owner_by_id(opps, OWNER_TOKEN)
+    # dev #713 / public #145 (R4): `roles` is {opp id: your_move role state}, the same
+    # classify_opportunities the router and the callouts read; derived here when the caller
+    # passes none, never from the status and verdict fields.
+    roles = roles if roles is not None else {
+        o.get("id"): st for o, st, _w in _ym.classify_opportunities(opps, OWNER_TOKEN)
+        if o.get("id")}
     # ADR-031 B1 — involvements[], not opportunities.contacts[] any more (retired). Loaded
     # here, not passed by every caller, for the same reason `owner`'s default is derived here:
     # a caller with no opinion about it should not have to know it exists.
@@ -539,7 +585,7 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
         return '<div class="sub">No live opportunities.</div>', dict(_EMPTY_OPP_COUNTS)
     order = {"active-pursuit": 0, "needs-resolution": 1, "in-motion": 2, "backlog": 3}
     if pursuit is None:
-        pursuit = pursuit_by_id(live)
+        pursuit = pursuit_by_id(live, roles)
 
     # ADR-031 B4 (design §19) — `play_stage`/`next_action` are retired; the row's position
     # and "what's next" are now DERIVED from the play engine, every render. The shared
@@ -643,8 +689,14 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
         _key = "opp:%s" % (o.get("id") or "")
         _p = pursuit.get(o.get("id")) or {"state": "unclassifiable", "missing": "pursuit"}
         dims = {"pursuit": _p["state"], "owner": owner.get(o.get("id"))}
-        if attention.get(o.get("id")) == "needs-you":
-            dims["pursuit-also"] = "your-move"
+        # The cross-cuts (your_move.PURSUIT_CROSS_CUTS): a row carries each one it is in, space-
+        # separated. `your-move` is ATTENTION's needs-you and `decide` the role state of that name
+        # (dev #713) - a decide row is also a your-move row. `triaging` is NOT a cross-cut: it is a
+        # partition value (`pursuit_by_id`), so a triaging row is in `Triaging` and not in `New`.
+        also = [cc for cc, on in (("your-move", attention.get(o.get("id")) == "needs-you"),
+                                  ("decide", roles.get(o.get("id")) == "decide")) if on]
+        if also:
+            dims["pursuit-also"] = " ".join(also)
         if o.get("id"):
             members[_key] = dims
         rows.append((o.get("id"),
@@ -656,7 +708,7 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
             f'    <div class="opp-rail">{stage_rail(o)}</div>'
             f'  </div>'
             f'  <div class="opp-meta">{meta}</div>'
-            f'  {nxt}{body}'
+            f'  {_lean_html(o, roles.get(o.get("id")))}{nxt}{body}'
             f'</div>'))
     # REACHABLE (ADR-024, public #54): every member renders; a filtered list has no remainder.
     keys = ["opp:%s" % i for i, _h in rows if i]
@@ -1614,6 +1666,12 @@ _FILTER_VALUE_LABELS = {
     # dimension, in the user's words (NN/g: merge overlapping categories, no jargon, most
     # general first). The row's own chip reads this same table (`_pursuit_chip`).
     ("pursuit", "your-move"): "Your move — today",
+    # dev #713 / public #145 (R4): the two role groups the triage gate adds. `decide` is a cross-cut
+    # of the partition; `triaging` is a partition option of its own (a role is in it or in `New`).
+    # (not "Decide — pursue or pass": that exact heading is the deleted dev #540 SECTION, and
+    # tests assert it stays gone - a chip is not a section.)
+    ("pursuit", "decide"): "Decide — pursue/pass owed",
+    ("pursuit", "triaging"): "Triaging — the system is reading these",
     ("pursuit", "new"): "New — pursue or pass?",
     ("pursuit", "conversation"): "In live conversation",
     ("pursuit", "sent"): "Sent — awaiting a reply",
@@ -2789,6 +2847,11 @@ CSS = """
                              background: var(--chip-action-bg); border-radius:4px;
                              padding:1px 5px; }
   .opp-next-none { opacity:.55; font-style:italic; }
+  /* dev #713: the triage lean (decide rows) and the "system is reading this" line (triaging). */
+  .opp-lean { font-size:13px; margin-top:6px; }
+  .opp-triaging { opacity:.7; font-style:italic; }
+  .lean-sig { font-size:11.5px; margin-left:6px; border:1px solid var(--card-border);
+              border-radius:4px; padding:1px 5px; white-space:nowrap; }
   .opp-more > summary { cursor:pointer; font-size:12px; opacity:.6; margin-top:6px;
                         list-style:none; }
   .opp-more > summary::-webkit-details-marker { display:none; }
@@ -3162,8 +3225,13 @@ def main():
     _attention = _ym.attention_by_id(_opp_rows, OWNER_TOKEN)
     _owner = _ym.owner_by_id(_opp_rows, OWNER_TOKEN)
     n_pipe_flight = sum(1 for v in _attention.values() if v == "in-flight")
-    # ONE pursuit map for the list's chips and the router's `applying` count.
-    _pursuit = pursuit_by_id([o for o in _opp_rows if o.get("status") not in _TERMINAL])
+    # dev #713 / public #145: the role states (decide / triaging / ...), ONE classification for the
+    # router, the callouts and the pursuit map below.
+    _roles = {o.get("id"): st for o, st, _w in _ym.classify_opportunities(_opp_rows, OWNER_TOKEN)
+              if o.get("id")}
+    # ONE pursuit map for the list's chips and the router's `applying` count. A triaging role is
+    # in `Triaging`, not `New` (pursuit_by_id).
+    _pursuit = pursuit_by_id([o for o in _opp_rows if o.get("status") not in _TERMINAL], _roles)
 
     # dev #540 / public #132 — the opportunity rows that used to ride `phase-pipeline-now`
     # (role_decisions) and `phase-pipeline-decide` (decide_rows) ARE the list's `your-move`
@@ -3174,6 +3242,13 @@ def main():
     pipe_clause = (_clause(_pipe_first[0][0]) if _pipe_first
                    else ("A sourcing-channel review is due." if due_reviews_ws
                          else "No decision is owed on a role."))
+    # dev #713 / public #145: the roles the run is still reading are neither yours nor hidden -
+    # the router says how many, and the `Triaging` chip below selects them.
+    _n_triaging = sum(1 for st in _roles.values() if st == "triaging")
+    if _n_triaging:
+        pipe_clause += " %d role%s being read by the run before %s reach%s you." % (
+            _n_triaging, " is" if _n_triaging == 1 else "s are",
+            "it" if _n_triaging == 1 else "they", "es" if _n_triaging == 1 else "")
     pipe_parts = []
     if hand_role_rows:
         pipe_parts.append(
@@ -3186,7 +3261,7 @@ def main():
     pipe_parts.append(your_move_callouts_html)
     opp_list_html, opp_counts = render_opportunity_list(_opp_rows, _opp_comps,
                                                         attention=_attention, owner=_owner,
-                                                        pursuit=_pursuit)
+                                                        pursuit=_pursuit, roles=_roles)
     # ⭐ OWNER REQUEST 2026-10-13 (design r3 "Owner request 2026-10-13: order"): Opportunities
     # is one of the two lists read most, so it renders FIRST, directly under the router
     # (`_first_html`, assembled below), not inside the pipeline section. The section keeps a
@@ -3205,7 +3280,9 @@ def main():
             '<strong>Show</strong> narrows the list by what is happening with each role '
             '(your move today, new, in live conversation, sent, not sent yet, in '
             'interviews) and <strong>Whose</strong> by whose move it is; every chip shows '
-            'every row it counts.</div>'
+            'every row it counts. <strong>Your move</strong> is decisions owed plus actions '
+            'due today; <strong>Triaging</strong> is the roles the run is still reading '
+            '&mdash; they become yours (Decide) once it has.</div>'
             % (opp_counts["all"] - n_pipe_flight, n_pipe_flight)
             + stats_html + opp_list_html +
             '<div class="note"><strong>&ldquo;Not sent yet&rdquo; is the gap.</strong> '

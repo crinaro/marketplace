@@ -363,6 +363,97 @@ def render_step_funnel(ctx_or_root, as_of, window_from=None):
     return table
 
 
+# ---- Age at capture, by channel (dev #716 / public #142, design §6.5; dev #713 triage surface) ----
+#
+# How old a posting already was when we first saw it, per channel: `posted.date` (the posting date
+# the capture recorded, with its source) against the role's FIRST sighting. A channel that
+# surfaces postings a month old is a different instrument from one that surfaces them in days,
+# and a retained-search listing page is the clearest case - so the report says which.
+#
+# ⭐ AN UNKNOWN AGE IS NOT A ZERO. A role with no `posted`, or `posted.source: unknown`, or a
+# date that cannot be read, is EXCLUDED from the median and COUNTED beside it ("no posting date"):
+# averaging an invented 0 into a channel would make the worst-recorded channel look the freshest.
+# And the same refusal as every other rate in this report: below MIN_SAMPLE a channel prints its
+# n and "too few to rate", never a median over three roles.
+
+POSTED_SOURCES = ("ats-posted", "board-relative", "profile-document-date")
+
+
+def _first_sighting(opp):
+    """(seen_on ISO date, channel_id) of the role's earliest readable sighting, or (None, None).
+    Ties go to the sighting listed first."""
+    best = None
+    for s in opp.get("sightings") or []:
+        if not isinstance(s, dict) or not is_iso(str(s.get("seen_on") or "")[:10]):
+            continue
+        d = str(s["seen_on"])[:10]
+        if best is None or d < best[0]:
+            best = (d, s.get("channel_id") or "(none)")
+    return best if best else (None, None)
+
+
+def age_at_capture_by_channel(opps):
+    """{channel_id: {"n", "median", "sources": {source: n}, "ages": [days...]}} plus a
+    "_excluded" entry {"no_posting_date", "posted_after_seen", "no_sighting"} - the roles that
+    could not be measured, by reason. `n` is the number of roles measured; `median` is None
+    below MIN_SAMPLE (the refusal lives here, not in the printer, so no caller can bypass it)."""
+    by = collections.defaultdict(lambda: {"ages": [], "sources": collections.Counter()})
+    excluded = {"no_posting_date": 0, "posted_after_seen": 0, "no_sighting": 0}
+    for o in opps:
+        seen, cid = _first_sighting(o)
+        if seen is None:
+            excluded["no_sighting"] += 1
+            continue
+        p = o.get("posted")
+        if (not isinstance(p, dict) or p.get("source") not in POSTED_SOURCES
+                or not is_iso(str(p.get("date") or ""))):
+            excluded["no_posting_date"] += 1
+            continue
+        age = (_iso_to_date(seen) - _iso_to_date(str(p["date"]))).days
+        if age < 0:
+            excluded["posted_after_seen"] += 1
+            continue
+        by[cid]["ages"].append(age)
+        by[cid]["sources"][p["source"]] += 1
+    out = {}
+    for cid, d in by.items():
+        n = len(d["ages"])
+        out[cid] = {"n": n, "median": _median(d["ages"]) if n >= MIN_SAMPLE else None,
+                    "sources": dict(d["sources"]), "ages": sorted(d["ages"])}
+    out["_excluded"] = excluded
+    return out
+
+
+def render_age_at_capture(opps, channels):
+    """Print `age_at_capture_by_channel` - one line per channel, then what could not be measured.
+    Returns the computed table so a test asserts on numbers, not text."""
+    table = age_at_capture_by_channel(opps)
+    excluded = table.pop("_excluded")
+    rule("AGE AT CAPTURE - how old a posting already was when it was first seen")
+    print("  first sighting minus posting date, per channel - no median below n=%d" % MIN_SAMPLE)
+    if not table:
+        print("  No role carries a posting date yet.")
+    for cid, d in sorted(table.items(), key=lambda kv: (-kv[1]["n"], kv[0])):
+        label = (channels.get(cid) or {}).get("label", cid)
+        mix = ", ".join("%s %d" % (s, n) for s, n in sorted(d["sources"].items()))
+        if d["median"] is None:
+            figure = "n=%d - too few to rate" % d["n"]
+        else:
+            figure = "median %g days over n=%d" % (d["median"], d["n"])
+        print("  %-34s %s (%s)" % (str(label)[:34], figure, mix))
+    gaps = []
+    if excluded["no_posting_date"]:
+        gaps.append("%d with no posting date (age unknown, not zero)" % excluded["no_posting_date"])
+    if excluded["posted_after_seen"]:
+        gaps.append("%d posted after they were first seen (a date to correct)"
+                    % excluded["posted_after_seen"])
+    if excluded["no_sighting"]:
+        gaps.append("%d with no readable sighting" % excluded["no_sighting"])
+    if gaps:
+        print("  Not measured: " + "; ".join(gaps) + ".")
+    return dict(table, _excluded=excluded)
+
+
 def _today():
     """The ONE wall-clock read on the `--by step` path, and only as the CLI default for
     `--as-of` — `step_funnel()`/`render_step_funnel()` never call it (a test freezes this
@@ -426,6 +517,9 @@ def main():
     print("  markdown backfill could not recover where those roles originally came")
     print("  from. Channel yield only becomes meaningful for roles sourced after")
     print("  that date. Reported as-is rather than quietly excluded.")
+
+    # ---- 1b. Age at capture, by channel (dev #716 / public #142) ------------
+    render_age_at_capture(opps, channels)
 
     # ---- 2. Applications (ADR-031 B2 — the top-level applications/cover_letters stores,
     # joined by opp_id; never a nested array on the opportunity record) --------

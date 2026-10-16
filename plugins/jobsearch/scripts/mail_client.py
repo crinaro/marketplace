@@ -79,6 +79,7 @@ import imaplib
 import json
 import os
 import re
+import socket
 import sys
 import datetime as _dt
 
@@ -89,6 +90,15 @@ import journal as _journal
 KEYCHAIN_SERVICE = _cred.SERVICE
 IMAP_HOST = "imap.gmail.com"
 IMAP_PORT = 993
+# ⭐ dev #712 / public #146 -- NO MAILBOX CALL CAN HANG. Every IMAP socket this module opens carries
+# this bound, and it covers the connect, the TLS handshake AND every later read: `imaplib` hands the
+# value to `socket.create_connection`, which leaves it on the socket, so a server that accepts and
+# then stalls makes the next read raise instead of waiting forever. It is read at CALL time (not
+# bound as a default argument) so a test can shorten it. Without it a daily run's held probe sat on
+# one silent socket until the harness killed the whole call and every result already gathered went
+# with it. 30 s is far above a healthy Gmail round trip and well below the shortest kill the report
+# observed (50 s).
+IMAP_TIMEOUT_S = 30.0
 ALL_MAIL = '"[Gmail]/All Mail"'
 
 
@@ -550,6 +560,11 @@ def resolve_special_use_folders(conn):
     LIST response advertises (dev #311). Returns {} if LIST fails or nothing parses."""
     try:
         typ, data = conn.list()
+    except (socket.timeout, TimeoutError):
+        # dev #712 -- a stalled server is NOT "LIST failed, nothing advertised". Swallowing it let
+        # the caller go on to SELECT on a socket that had already timed out, and on Python 3.9 the
+        # second read raises an unrelated `OSError('cannot read from timed out object')`.
+        raise
     except Exception:
         return {}
     if typ != "OK" or not data:
@@ -564,6 +579,42 @@ def resolve_special_use_folders(conn):
         if SPECIAL_USE_ALL in flags:
             found[SPECIAL_USE_ALL] = name
     return found
+
+
+class MailTimeout(TimeoutError):
+    """An IMAP socket to one mailbox did not answer within `IMAP_TIMEOUT_S` (dev #712). Its text
+    contains "timed out", so `_classify_failure` files it under the existing `timeout` reason, for
+    every caller that formats `"%s: %s" % (type(exc).__name__, exc)` as `brief.py` does."""
+
+
+_UID_RE = re.compile(r"[0-9]+")
+
+
+def _decode_uids(account, raw):
+    """dev #704 / public #154 (S1) -- an IMAP uid is TEXT at this boundary.
+
+    `imaplib` hands every data item back as `bytes` (its docs: "Each data is either a bytes, or a
+    tuple"), and this method used to return `data[0].split()` -- a list of bytes. Every caller then
+    formatted a uid into a source tag with `%s`, which writes the REPR of the bytes: `gmail:a:b'101'`
+    instead of `gmail:a:101`. The wrapped shape went into stores and ids and made the same message
+    look like two. Decode once, here, and every caller holds `str`.
+
+    RFC 9051 s2.3.1.1 defines a UID as "an unsigned non-zero 32-bit value", so strict ASCII digits
+    is the whole grammar. Anything else is REFUSED loudly (a `RuntimeError`, the class `search()`
+    already raises for a non-OK response) rather than passed on to be written into a store; a
+    `str` item is accepted unchanged only when it is already digits."""
+    out = []
+    for item in (raw.split() if isinstance(raw, (bytes, bytearray, str)) else [raw]):
+        try:
+            text = item.decode("ascii") if isinstance(item, (bytes, bytearray)) else item
+        except UnicodeDecodeError:
+            text = None
+        if not isinstance(text, str) or not _UID_RE.fullmatch(text):
+            raise RuntimeError(
+                "IMAP SEARCH for %s returned a uid that is not ASCII digits: %r -- refusing to "
+                "build a source tag from it (dev #704)" % (account, item))
+        out.append(text)
+    return out
 
 
 class Mailbox(object):
@@ -581,8 +632,12 @@ class Mailbox(object):
                 "\"gmail-multi\" in config.json to use it." % (connector, self.account))
         pw = get_app_password(self.account)
         try:
-            self.conn = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT)
+            self.conn = imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT, timeout=IMAP_TIMEOUT_S)
             self.conn.login(self.account, pw)
+        except (socket.timeout, TimeoutError) as exc:
+            self._drop_connection()
+            raise MailTimeout("IMAP for %s timed out after %ss (%s: %s)"
+                              % (self.account, IMAP_TIMEOUT_S, type(exc).__name__, exc))
         except imaplib.IMAP4.error as exc:
             msg = str(exc)
             hint = ""
@@ -597,6 +652,16 @@ class Mailbox(object):
         finally:
             del pw
         return self
+
+    def _drop_connection(self):
+        """Close a half-open connection `__enter__` is about to abandon: `__exit__` never runs for
+        an `__enter__` that raised, and a socket nobody closes holds its server slot."""
+        conn, self.conn = self.conn, None
+        if conn is not None:
+            try:
+                conn.shutdown()
+            except Exception:
+                pass
 
     def __exit__(self, *exc):
         if self.conn is not None:
@@ -644,7 +709,7 @@ class Mailbox(object):
             raise RuntimeError("IMAP SEARCH failed for %s: %r" % (self.account, data))
         if not data or not data[0]:
             return []
-        return data[0].split()
+        return _decode_uids(self.account, data[0])
 
     def fetch_headers(self, uid):
         typ, data = self.conn.uid(

@@ -93,7 +93,10 @@ def _match_anchor(location_lower, anchors):
     for i, anchor in enumerate(anchors or ()):
         if not isinstance(anchor, dict):
             continue
-        names = [anchor.get("place")] + list(anchor.get("includes") or [])
+        # jobsearch 0.67.0 (dev #714, design §3.8): an `includes[]` entry is a string (today) or a
+        # `{place, minutes}` object whose `place` is the name -- matched exactly as a string is.
+        names = [anchor.get("place")] + [e.get("place") if isinstance(e, dict) else e
+                                         for e in (anchor.get("includes") or [])]
         for n in names:
             token = _token(n)
             if token and token in location_lower:

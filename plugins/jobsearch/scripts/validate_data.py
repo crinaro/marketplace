@@ -645,6 +645,200 @@ BRIEF_EVIDENCE_RE = re.compile(
     r"not-permitted\([\w.-]+\))$")
 
 
+# ── dev #704 / public #154 -- the mail source tag: ONE grammar, ONE normalizer ───────────────
+# `mail_client.Mailbox.search()` used to hand callers `bytes` uids, and every `"%s:%s:%s"` that
+# built a source tag wrote the bytes' REPR -- `gmail:acct:b'101'` -- beside the clean
+# `gmail:acct:101` the same message gets on a later run. The two keys name one message, so a
+# "do I already hold this?" check that compared them raw said no and wrote a duplicate.
+#
+# The grammar below is also DECLARED in docs/data_model.json (`source_tag`), which the validator's
+# V1 rule reads; a test pins the two to each other so they cannot drift.
+SOURCE_TAG_PATTERN = r"^(gmail|mail|ats):[^:]+:\d+$"          # the clean shape (anchored)
+SOURCE_TAG_PREFIX = r"^(gmail|mail|ats):"                      # "this value IS a mail tag"
+# The repr of a bytes uid INSIDE a mail tag. Deliberately the TAG, not the bare `b'123'`: a message
+# id minted before 0.66.0 may end in the repr (`<opp>-<person>-b'101'`), and the owner's id policy
+# (dev #704 R1) is that ids are OPAQUE -- they keep their value, nothing is re-minted -- so a bare
+# match would hold every such profile red after the migration that repaired it.
+SOURCE_TAG_WRAPPED = r"(?:gmail|mail|ats):[^:\s|]+:b'\d+'"
+SOURCE_TAG_PREFIXES = ("gmail", "mail", "ats")
+# A tag inside FREE TEXT (an ask's `note`): the account is any run of non-space, non-`:`, non-`|`.
+TAG_TOKEN_RE = re.compile(r"(?<!\w)(?:gmail|mail|ats):[^:\s|]+:(?:b'\d+'|\d+)")
+_WRAPPED_UID_RE = re.compile(r"^b'(\d+)'$")
+_TAG_RES = {}
+
+
+def normalize_uid(uid):
+    """A bare uid, with a `b'123'` wrapper stripped. Anything else is returned unchanged."""
+    if isinstance(uid, str):
+        m = _WRAPPED_UID_RE.match(uid)
+        if m:
+            return m.group(1)
+    return uid
+
+
+def normalize_source_tag(s, prefixes=SOURCE_TAG_PREFIXES):
+    """The ONE key every "do I already hold this message" check compares (D1): a value of the
+    shape `<tag>:<account>:<uid>` where `<uid>` is digits or the wrapped `b'<digits>'` is returned
+    as `<tag>:<account>:<digits>`; ANY other value is returned unchanged (a LinkedIn thread URL,
+    `record.py touched`, a path), so the function is safe to call on every `source`.
+
+    `prefixes` widens the tag word for a caller whose keys carry another (`watch.py` queues
+    `alert:`/`meet:`/`reply:` keys in `data/inbox.jsonl`); the default is the three mail tags."""
+    if not isinstance(s, str):
+        return s
+    rx = _TAG_RES.get(prefixes)
+    if rx is None:
+        rx = _TAG_RES[prefixes] = re.compile(
+            r"^(%s):([^:]+):(?:b'(\d+)'|(\d+))$" % "|".join(re.escape(p) for p in prefixes))
+    m = rx.match(s)
+    if not m:
+        return s
+    return "%s:%s:%s" % (m.group(1), m.group(2), m.group(3) or m.group(4))
+
+
+def is_mail_tag(s):
+    """True when `s` claims to be a mail source tag (clean OR wrapped) -- the gate that keeps a
+    LinkedIn thread URL or `record.py touched` out of any source comparison."""
+    return isinstance(s, str) and re.match(SOURCE_TAG_PREFIX, s) is not None
+
+
+def tags_in_text(text):
+    """The set of NORMALIZED mail tags found in free text (an ask's `note`)."""
+    if not isinstance(text, str):
+        return set()
+    return {normalize_source_tag(t) for t in TAG_TOKEN_RE.findall(text)}
+
+
+SOURCE_TAG_MODES = ("whole", "embedded")
+SOURCE_TAG_MIGRATION = "m_0_66_0_uid_text"
+
+
+def _strings_in(value):
+    """Every string in `value`, descending into dicts (values) and lists."""
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for v in value.values():
+            for x in _strings_in(v):
+                yield x
+    elif isinstance(value, (list, tuple)):
+        for v in value:
+            for x in _strings_in(v):
+                yield x
+
+
+def source_tag_spec(model):
+    """(spec, defects) -- `docs/data_model.json`'s `source_tag` block, compiled, or the reasons it
+    cannot be used. dev #704 / public #154 (V1) + R3: a rule whose declaration is missing, malformed
+    or empty must say so LOUDLY, never read as a rule with nothing to check (a missing thing reads
+    as an empty thing and gets reported as fact). `defects` is a list of sentences; `spec` is None
+    unless it is empty.
+
+    The block declares, per store, the fields that can carry a mail tag and HOW each is checked:
+      whole     the value IS a tag (or legitimately something else: `messages.source` may be a
+                path or a LinkedIn thread URL). If it starts with the mail prefix it must
+                fullmatch `pattern`.
+      embedded  the value, or any string nested in it, must contain no wrapped uid (`b'123'`):
+                message ids that embed a uid, references to them, and free text (`asks.note`)
+                into which a sweep writes a dedup tag."""
+    block = (model or {}).get("source_tag") if isinstance(model, dict) else None
+    if block is None:
+        return None, ["docs/data_model.json has no `source_tag` block"]
+    if not isinstance(block, dict):
+        return None, ["docs/data_model.json `source_tag` is not an object"]
+    defects, rx = [], {}
+    for key in ("pattern", "prefix", "wrapped"):
+        v = block.get(key)
+        if not isinstance(v, str) or not v:
+            defects.append("`source_tag.%s` is missing or not a non-empty string" % key)
+            continue
+        try:
+            rx[key] = re.compile(v)
+        except re.error as exc:
+            defects.append("`source_tag.%s` is not a valid regex (%s)" % (key, exc))
+    fields = block.get("fields")
+    stores = (model.get("stores") or {}) if isinstance(model, dict) else {}
+    declared = []
+    if not isinstance(fields, dict):
+        defects.append("`source_tag.fields` is missing or not an object")
+    else:
+        for store, flds in sorted(fields.items()):
+            if store.startswith("_"):
+                continue
+            if store not in stores:
+                defects.append("`source_tag.fields` names store %r, which docs/data_model.json "
+                               "does not declare" % store)
+                continue
+            if not isinstance(flds, dict):
+                defects.append("`source_tag.fields.%s` is not an object" % store)
+                continue
+            for fld, mode in sorted(flds.items()):
+                if fld.startswith("_"):
+                    continue
+                if mode not in SOURCE_TAG_MODES:
+                    defects.append("`source_tag.fields.%s.%s` has mode %r, not one of %s"
+                                   % (store, fld, mode, "/".join(SOURCE_TAG_MODES)))
+                elif fld not in (stores[store].get("fields") or []):
+                    defects.append("`source_tag.fields.%s.%s` names a field the store does not "
+                                   "declare" % (store, fld))
+                else:
+                    declared.append((store, fld, mode))
+        if not declared and not defects:
+            defects.append("`source_tag.fields` declares zero fields")
+    if defects:
+        return None, defects
+    return {"declared": declared, "pattern": rx["pattern"], "prefix": rx["prefix"],
+            "wrapped": rx["wrapped"]}, []
+
+
+def check_source_tags(model, problems, loader=None):
+    """dev #704 / public #154 (V1) -- refuse a wrapped uid (`b'123'`) in every declared field,
+    naming the store, the row and the field. Returns `(stores, fields, rows)` actually checked, or
+    None when the rule could not run (the reason is in `problems`, loudly -- R3).
+
+    `loader(name)` returns `(rows, errors)` like this module's `load()`; the default reads the
+    profile's own data directory. A store file that is legitimately absent (`briefs.jsonl`) is
+    skipped and not counted."""
+    spec, defects = source_tag_spec(model)
+    if spec is None:
+        for d in defects:
+            problems.append("%s -- the wrapped-uid rule (V1) is OFF, so it checks NOTHING; declare "
+                            "it in docs/data_model.json" % d)
+        return None
+    loader = loader or load
+    loaded, fields_checked = {}, 0
+    for store, fld, mode in spec["declared"]:
+        if store not in loaded:
+            loaded[store], _errs = loader("%s.jsonl" % store)
+        rows = loaded[store]
+        if rows is None:
+            continue
+        fields_checked += 1
+        for i, row in enumerate(rows, 1):
+            if not isinstance(row, dict) or fld not in row:
+                continue
+            label = "%s[%s]" % (store, row.get("id") if row.get("id") else "line %d" % i)
+            value = row[fld]
+            if mode == "whole":
+                if isinstance(value, str) and spec["prefix"].match(value) \
+                        and not spec["pattern"].fullmatch(value):
+                    problems.append(
+                        "%s: %s %r is a mail source tag that does not match %s -- a uid is "
+                        "digits, never the repr of a bytes object; repaired by migration %s, "
+                        "and a new write of this shape is refused"
+                        % (label, fld, value, spec["pattern"].pattern, SOURCE_TAG_MIGRATION))
+            else:
+                bad = next((s for s in _strings_in(value) if spec["wrapped"].search(s)), None)
+                if bad is not None:
+                    problems.append(
+                        "%s: %s carries a wrapped uid in %r -- a uid is digits, never the repr "
+                        "of a bytes object; repaired by migration %s, and a new write of this "
+                        "shape is refused" % (label, fld, bad, SOURCE_TAG_MIGRATION))
+    n_stores = len([s for s in loaded if loaded[s] is not None])
+    rows_checked = sum(len(loaded[s]) for s in loaded if loaded[s] is not None)
+    return n_stores, fields_checked, rows_checked
+
+
 def load(name):
     path = os.path.join(DATA, name)
     if not os.path.exists(path):
@@ -764,6 +958,442 @@ def check_trigger(row, label, problems, app_refs, sent_ids):
     elif tk == "elapsed" and not is_date(tr):
         problems.append("%s: trigger_kind 'elapsed' requires an ISO date trigger_ref (the day "
                         "the clock started), got %r" % (label, tr))
+
+
+# ── dev #713-#716 / public #145-#142 (sourcing-screen, jobsearch 0.67.0) ──────────────────────
+# What a sourced role stores about itself before anyone decides on it: the pay its listing showed
+# (`listed_pay`, with an explicit state so NOT CAPTURED and NONE SHOWN stay different facts), the
+# date it was posted (`posted`, with the source that earned the date), the commute estimate
+# (`location.commute_minutes`), the hard screens that were applied (`screen`) and a fit lean
+# (`lean`). Every one is OPTIONAL and an absent field has a defined meaning, so no stored row is
+# rewritten; a PRESENT field must be well-formed, and these checks refuse a malformed one. They are
+# module-level functions that APPEND to a problem list, so a test (and `record.py`, which reads the
+# same list) exercises each rule on its own.
+
+LISTED_PAY_STATES = ("employer-stated", "board-estimate", "none-shown")
+LISTED_PAY_SOURCES = ("listing-text", "ats-api", "json-ld", "board-widget", "candidate")
+PAY_INTERVALS = ("year", "month", "day", "hour")          # R2: the four units postings in scope use
+LISTED_PAY_KEYS = ("state", "ranges", "source", "captured_on")
+PAY_RANGE_KEYS = ("min", "max", "currency", "interval", "label")
+CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
+POSTED_SOURCES = ("ats-posted", "board-relative", "profile-document-date", "unknown")
+POSTED_KEYS = ("date", "source", "recorded_on")
+COMMUTE_MINUTES_KEYS = ("minutes", "anchor", "source")
+COMMUTE_MINUTES_SOURCES = ("candidate", "map-estimate", "config-place")
+SCREEN_KEYS = ("on", "verdict", "rules", "engine")
+LEAN_KEYS = ("lean", "line", "on", "signals")
+LEAN_VALUES = ("pursue", "pass", "ask")
+LEAN_SIGNAL_KEYS = ("id", "reason", "matched_in")
+SIGNAL_FIELDS = ("title", "jd", "company")
+LEAN_LINE_CAP = 200                    # deferred.ROLES_FIELD_CAP, mirrored (that module reads a queue)
+# R3: a JD read that was TRIED and failed satisfies the read. It is recorded in `fit.jd_source` as
+# `unavailable: <reason>` -- a CLOSED prefix, so a hand-typed "unavailable" or an invented reason is
+# refused instead of passing as a read. A null `jd_source` still means not tried.
+JD_UNAVAILABLE_PREFIX = "unavailable"
+JD_UNAVAILABLE_REASONS = ("login-wall", "dead-link", "no-url", "surface-cannot-read")
+JD_UNAVAILABLE_RE = re.compile(r"^unavailable: (%s)$" % "|".join(JD_UNAVAILABLE_REASONS))
+
+
+def _real_date(v):
+    """True for an ISO `YYYY-MM-DD` string that is a real calendar date."""
+    if not is_date(v):
+        return False
+    import datetime as _dt
+    try:
+        _dt.date.fromisoformat(v)
+    except ValueError:
+        return False
+    return True
+
+
+def _is_number(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _unknown_keys(obj, allowed, label, problems):
+    for k in obj:
+        if k not in allowed:
+            problems.append("%s: unknown key %r (known: %s)" % (label, k, ", ".join(allowed)))
+
+
+def check_listed_pay(lp, label, problems):
+    """`listed_pay` (design §3.1, R2): `{state, ranges?, source, captured_on}`. Refuses an unknown
+    state, source or interval; an empty `ranges` on a stated or estimated pay; ranges on a
+    none-shown pay; `min` above `max`; a range with neither figure; a currency that is not three
+    capitals; `board-estimate` from anywhere but a board's own widget; `ats-api` or `json-ld`
+    behind anything but an employer-stated pay."""
+    if not isinstance(lp, dict):
+        problems.append("%s: listed_pay must be an object (state, ranges, source, captured_on) -- "
+                        "got %s" % (label, type(lp).__name__))
+        return
+    _unknown_keys(lp, LISTED_PAY_KEYS, label + " listed_pay", problems)
+    state, source = lp.get("state"), lp.get("source")
+    if state not in LISTED_PAY_STATES:
+        problems.append("%s: listed_pay.state %r not in {%s}" % (label, state,
+                                                                 ", ".join(LISTED_PAY_STATES)))
+    if source not in LISTED_PAY_SOURCES:
+        problems.append("%s: listed_pay.source %r not in {%s}" % (label, source,
+                                                                   ", ".join(LISTED_PAY_SOURCES)))
+    if state == "board-estimate" and source in LISTED_PAY_SOURCES and source != "board-widget":
+        problems.append("%s: listed_pay.state 'board-estimate' requires source 'board-widget' "
+                        "(an estimate is the board's own panel, never the listing text) -- got %r"
+                        % (label, source))
+    if source in ("ats-api", "json-ld") and state in LISTED_PAY_STATES \
+            and state != "employer-stated":
+        problems.append("%s: listed_pay.source %r requires state 'employer-stated' -- got %r"
+                        % (label, source, state))
+    if not _real_date(lp.get("captured_on")):
+        problems.append("%s: listed_pay.captured_on not an ISO date -- %r"
+                        % (label, lp.get("captured_on")))
+    ranges = lp.get("ranges")
+    if state == "none-shown":
+        if ranges:
+            problems.append("%s: listed_pay.state 'none-shown' carries no ranges -- a listing "
+                            "that showed no pay has nothing to range over" % label)
+        return
+    if state not in LISTED_PAY_STATES:
+        return
+    if not isinstance(ranges, list) or not ranges:
+        problems.append("%s: listed_pay.ranges must be a non-empty list for state %r"
+                        % (label, state))
+        return
+    for i, rg in enumerate(ranges):
+        rl = "%s listed_pay.ranges[%d]" % (label, i)
+        if not isinstance(rg, dict):
+            problems.append("%s: must be an object (min, max, currency, interval, label)" % rl)
+            continue
+        _unknown_keys(rg, PAY_RANGE_KEYS, rl, problems)
+        mn, mx = rg.get("min"), rg.get("max")
+        for name, v in (("min", mn), ("max", mx)):
+            if v is not None and not (_is_number(v) and v > 0):
+                problems.append("%s: %s must be a positive number or null -- %r" % (rl, name, v))
+        if mn is None and mx is None:
+            problems.append("%s: min and max are both null -- a range needs at least one figure"
+                            % rl)
+        elif _is_number(mn) and _is_number(mx) and mn > mx:
+            problems.append("%s: min %s > max %s" % (rl, mn, mx))
+        if not (isinstance(rg.get("currency"), str) and CURRENCY_RE.match(rg["currency"])):
+            problems.append("%s: currency %r is not an ISO 4217 code (three capitals)"
+                            % (rl, rg.get("currency")))
+        if rg.get("interval") not in PAY_INTERVALS:
+            problems.append("%s: interval %r not in {%s}" % (rl, rg.get("interval"),
+                                                              ", ".join(PAY_INTERVALS)))
+        lb = rg.get("label")
+        if lb is not None and not (isinstance(lb, str) and lb.strip()):
+            problems.append("%s: label must be a non-empty string or null" % rl)
+
+
+def check_posted(p, label, problems):
+    """`posted` (design §3.3): `{date, source, recorded_on}`. `date` is null EXACTLY when `source`
+    is `unknown`; a source outside the closed four, a date that is not a real calendar date and a
+    missing `recorded_on` are refused."""
+    if not isinstance(p, dict):
+        problems.append("%s: posted must be an object (date, source, recorded_on) -- got %s"
+                        % (label, type(p).__name__))
+        return
+    _unknown_keys(p, POSTED_KEYS, label + " posted", problems)
+    src, date = p.get("source"), p.get("date")
+    if src not in POSTED_SOURCES:
+        problems.append("%s: posted.source %r not in {%s}" % (label, src, ", ".join(POSTED_SOURCES)))
+    elif src == "unknown" and date is not None:
+        problems.append("%s: posted.source 'unknown' carries no date -- got %r (a date has a "
+                        "source that earned it)" % (label, date))
+    elif src != "unknown" and date is None:
+        problems.append("%s: posted.date is null but posted.source is %r -- null is exactly the "
+                        "'unknown' source" % (label, src))
+    if date is not None and not _real_date(date):
+        problems.append("%s: posted.date %r is not a real ISO date" % (label, date))
+    if not _real_date(p.get("recorded_on")):
+        problems.append("%s: posted.recorded_on not an ISO date -- %r"
+                        % (label, p.get("recorded_on")))
+
+
+def check_commute_minutes(cm, label, problems):
+    """`location.commute_minutes` (design §3.5): `{minutes, anchor, source}`."""
+    if not isinstance(cm, dict):
+        problems.append("%s: location.commute_minutes must be an object (minutes, anchor, "
+                        "source) -- got %s" % (label, type(cm).__name__))
+        return
+    _unknown_keys(cm, COMMUTE_MINUTES_KEYS, label + " location.commute_minutes", problems)
+    m = cm.get("minutes")
+    if not (isinstance(m, int) and not isinstance(m, bool) and m >= 0):
+        problems.append("%s: location.commute_minutes.minutes must be a whole number of minutes "
+                        ">= 0 -- %r" % (label, m))
+    if not (isinstance(cm.get("anchor"), str) and cm["anchor"].strip()):
+        problems.append("%s: location.commute_minutes.anchor must name the anchor place" % label)
+    if cm.get("source") not in COMMUTE_MINUTES_SOURCES:
+        problems.append("%s: location.commute_minutes.source %r not in {%s}"
+                        % (label, cm.get("source"), ", ".join(COMMUTE_MINUTES_SOURCES)))
+
+
+def check_screen(sc, label, problems):
+    """`screen` (design §3.6, R5): `{on, verdict, rules, engine}` -- the screen's own output, written
+    only by `record.py screened`. Structure only: the verdict vocabulary belongs to profile.py."""
+    if not isinstance(sc, dict):
+        problems.append("%s: screen must be an object (on, verdict, rules, engine) -- got %s"
+                        % (label, type(sc).__name__))
+        return
+    _unknown_keys(sc, SCREEN_KEYS, label + " screen", problems)
+    if not _real_date(sc.get("on")):
+        problems.append("%s: screen.on not an ISO date -- %r" % (label, sc.get("on")))
+    if not (isinstance(sc.get("verdict"), str) and sc["verdict"].strip()):
+        problems.append("%s: screen.verdict must be a non-empty string" % label)
+    rules = sc.get("rules")
+    if not isinstance(rules, dict) or not rules:
+        problems.append("%s: screen.rules must be a non-empty object of rule -> result" % label)
+    else:
+        for k, v in rules.items():
+            if not (isinstance(v, str) and v.strip()):
+                problems.append("%s: screen.rules[%r] must be a non-empty string -- %r"
+                                % (label, k, v))
+    if not (isinstance(sc.get("engine"), str) and sc["engine"].strip()):
+        problems.append("%s: screen.engine must name the engine version that screened" % label)
+
+
+def check_lean(ln, label, problems):
+    """`lean` (design §3.7): `{lean, line, on, signals?}`. The line is required, non-empty, ONE
+    line and capped; each signal carries the `reason` it matched for -- a signal without one is a
+    flag nobody can read."""
+    if not isinstance(ln, dict):
+        problems.append("%s: lean must be an object (lean, line, on, signals) -- got %s"
+                        % (label, type(ln).__name__))
+        return
+    _unknown_keys(ln, LEAN_KEYS, label + " lean", problems)
+    if ln.get("lean") not in LEAN_VALUES:
+        problems.append("%s: lean.lean %r not in {%s}" % (label, ln.get("lean"),
+                                                           ", ".join(LEAN_VALUES)))
+    line = ln.get("line")
+    if not (isinstance(line, str) and line.strip()):
+        problems.append("%s: lean.line must be a non-empty string -- the one line that says why"
+                        % label)
+    elif "\n" in line or "\r" in line:
+        problems.append("%s: lean.line must be ONE line (no line breaks)" % label)
+    elif len(line) > LEAN_LINE_CAP:
+        problems.append("%s: lean.line is %d characters; the cap is %d"
+                        % (label, len(line), LEAN_LINE_CAP))
+    if not _real_date(ln.get("on")):
+        problems.append("%s: lean.on not an ISO date -- %r" % (label, ln.get("on")))
+    sigs = ln.get("signals")
+    if sigs is None:
+        return
+    if not isinstance(sigs, list):
+        problems.append("%s: lean.signals must be a list" % label)
+        return
+    for i, sg in enumerate(sigs):
+        sl = "%s lean.signals[%d]" % (label, i)
+        if not isinstance(sg, dict):
+            problems.append("%s: must be an object (id, reason, matched_in)" % sl)
+            continue
+        _unknown_keys(sg, LEAN_SIGNAL_KEYS, sl, problems)
+        if not (isinstance(sg.get("id"), str) and sg["id"].strip()):
+            problems.append("%s: id must be a non-empty string" % sl)
+        if not (isinstance(sg.get("reason"), str) and sg["reason"].strip()):
+            problems.append("%s: a signal without a reason -- a lean the candidate cannot read "
+                            "is a flag, not a lean" % sl)
+        if sg.get("matched_in") not in SIGNAL_FIELDS:
+            problems.append("%s: matched_in %r not in {%s}" % (sl, sg.get("matched_in"),
+                                                                ", ".join(SIGNAL_FIELDS)))
+
+
+def check_jd_source(jd_source, label, problems):
+    """`fit.jd_source` (R3): free text naming what was read, EXCEPT that anything beginning
+    `unavailable` is a read that was tried and failed and must be exactly `unavailable: <reason>`
+    with the reason in the closed set. A null is 'not tried' and is legal."""
+    if jd_source is None:
+        return
+    if not isinstance(jd_source, str):
+        problems.append("%s: fit.jd_source must be a string or null -- %r" % (label, jd_source))
+        return
+    if jd_source.lower().startswith(JD_UNAVAILABLE_PREFIX) and not JD_UNAVAILABLE_RE.match(jd_source):
+        problems.append("%s: fit.jd_source %r must be exactly 'unavailable: <reason>' with the "
+                        "reason one of {%s}" % (label, jd_source, ", ".join(JD_UNAVAILABLE_REASONS)))
+
+
+def check_commute_config(geography, problems):
+    """The commute tables of `config.json` `geography` (design §3.8, §9): each anchor's optional
+    `bands` -- `[{max_minutes, floor}]`, strictly ascending, the last no greater than the anchor's
+    own `max_commute_minutes` -- and any `includes[]` entry that is an object (`{place,
+    minutes}`). Appends to `problems`; returns the number of bands checked."""
+    n = 0
+    anchors = (geography or {}).get("commute_anchors") if isinstance(geography, dict) else None
+    if not isinstance(anchors, list):
+        return 0
+    for ai, anchor in enumerate(anchors):
+        al = "config geography.commute_anchors[%d]" % ai
+        if not isinstance(anchor, dict):
+            continue
+        for ii, inc in enumerate(anchor.get("includes") or []):
+            if isinstance(inc, str):
+                continue
+            il = "%s.includes[%d]" % (al, ii)
+            if not isinstance(inc, dict):
+                problems.append("%s: an includes entry is a place string or {place, minutes}" % il)
+                continue
+            _unknown_keys(inc, ("place", "minutes"), il, problems)
+            if not (isinstance(inc.get("place"), str) and inc["place"].strip()):
+                problems.append("%s: place must be a non-empty string" % il)
+            m = inc.get("minutes")
+            if not (isinstance(m, int) and not isinstance(m, bool) and m >= 0):
+                problems.append("%s: minutes must be a whole number >= 0 -- %r" % (il, m))
+        if "bands" not in anchor:
+            continue
+        bands = anchor["bands"]
+        if not isinstance(bands, list) or not bands:
+            problems.append("%s.bands must be a non-empty list of {max_minutes, floor}" % al)
+            continue
+        prev, cap = None, anchor.get("max_commute_minutes")
+        for bi, b in enumerate(bands):
+            bl = "%s.bands[%d]" % (al, bi)
+            if not isinstance(b, dict):
+                problems.append("%s: must be an object {max_minutes, floor}" % bl)
+                continue
+            _unknown_keys(b, ("max_minutes", "floor"), bl, problems)
+            mm, fl = b.get("max_minutes"), b.get("floor")
+            n += 1
+            if not (isinstance(mm, int) and not isinstance(mm, bool) and mm > 0):
+                problems.append("%s: max_minutes must be a whole number > 0 -- %r" % (bl, mm))
+                continue
+            if not (_is_number(fl) and fl > 0):
+                problems.append("%s: floor must be a positive number -- %r" % (bl, fl))
+            if prev is not None and mm <= prev:
+                problems.append("%s: max_minutes %d is not above the previous band's %d -- bands "
+                                "run strictly ascending" % (bl, mm, prev))
+            prev = mm
+        if prev is not None and isinstance(cap, int) and not isinstance(cap, bool) and prev > cap:
+            problems.append("%s.bands: the last band reaches %d minutes but the anchor's "
+                            "max_commute_minutes is %d -- a band cannot price a commute the "
+                            "anchor says is out of radius" % (al, prev, cap))
+    return n
+
+
+def check_likely_pass_signals(signals, problems):
+    """`screen.likely_pass_signals` of `config.json` (design §3.8, §9): `[{id, phrase, fields,
+    reason}]`. A signal without a `reason` is refused (a lean the candidate cannot read), as is a
+    duplicate id, an empty phrase and a field outside title / jd / company. Returns the count."""
+    if signals is None:
+        return 0
+    if not isinstance(signals, list):
+        problems.append("config screen.likely_pass_signals must be a list of {id, phrase, fields, "
+                        "reason}")
+        return 0
+    seen = set()
+    for i, sg in enumerate(signals):
+        sl = "config screen.likely_pass_signals[%d]" % i
+        if not isinstance(sg, dict):
+            problems.append("%s: must be an object {id, phrase, fields, reason}" % sl)
+            continue
+        _unknown_keys(sg, ("id", "phrase", "fields", "reason"), sl, problems)
+        sid = sg.get("id")
+        if not (isinstance(sid, str) and sid.strip()):
+            problems.append("%s: id must be a non-empty string" % sl)
+        elif sid in seen:
+            problems.append("%s: duplicate id %r" % (sl, sid))
+        seen.add(sid)
+        if not (isinstance(sg.get("phrase"), str) and sg["phrase"].strip()):
+            problems.append("%s: phrase must be a non-empty string" % sl)
+        if not (isinstance(sg.get("reason"), str) and sg["reason"].strip()):
+            problems.append("%s: a signal without a reason -- the lean it produces would be "
+                            "unreadable" % sl)
+        flds = sg.get("fields")
+        if not isinstance(flds, list) or not flds or any(f not in SIGNAL_FIELDS for f in flds):
+            problems.append("%s: fields must be a non-empty list drawn from {%s}"
+                            % (sl, ", ".join(SIGNAL_FIELDS)))
+    return len(signals)
+
+
+# ── hygiene: a standing finding, never a refusal (R7) ──────────────────────────────────────────
+# `_main()` has a non-fatal level already (`warnings`), but its heading says "rows that break an
+# introduced-only rule", which these are not. So the two hygiene checks print under a `HYGIENE`
+# heading of their own and NEVER change the exit code or the problem list `record.py` compares: a
+# legacy row without a captured pay would otherwise make every write after the upgrade fail.
+
+def _live(opp):
+    return opp.get("status") not in TERMINAL_OPP_STATUSES
+
+
+def _has_pay(opp):
+    comp = opp.get("comp")
+    if isinstance(comp, dict) and _is_number(comp.get("max")):
+        return True
+    return isinstance(opp.get("listed_pay"), dict)
+
+
+def check_pay_captured(opps):
+    """One line per LIVE opportunity with neither a `listed_pay` nor a `comp.max` (dev #715 / public
+    #143, P5): the role's pay was never captured, so the screen reports NOT CAPTURED for it and a
+    person should re-read the listing. Legacy rows appear here after the upgrade. That is the point."""
+    return ["opportunities[%s]: live, and its pay was never captured (no listed_pay, no comp.max) "
+            "-- re-read the listing, then record.py listed-pay" % o.get("id", "?")
+            for o in opps if isinstance(o, dict) and _live(o) and not _has_pay(o)]
+
+
+def _first_sighting(opp):
+    dates = [s.get("seen_on") for s in (opp.get("sightings") or []) if isinstance(s, dict)
+             and _real_date(s.get("seen_on"))]
+    return min(dates) if dates else None
+
+
+def check_triaging_stuck(opps, states, today, stuck_days):
+    """One line per opportunity the dashboard classification still calls `triaging` after
+    `stuck_days` days from its first sighting (dev #713 / public #145, R3). The surfacing rule moves
+    such a role into Decide labelled 'not yet read', so this list should be EMPTY: a non-empty one
+    means the rule has drifted, and the line names the role. `states` is `{opp id: state}` from
+    `your_move.classify_opportunities`; a role with no readable first sighting cannot be aged and
+    is named too (an age nobody can compute is not 'young')."""
+    import datetime as _dt
+    out = []
+    today_d = _dt.date.fromisoformat(today)
+    for o in opps:
+        if not isinstance(o, dict) or states.get(o.get("id")) != "triaging":
+            continue
+        first = _first_sighting(o)
+        if first is None:
+            out.append("opportunities[%s]: still `triaging` and has no readable first sighting, "
+                       "so its age cannot be computed" % o.get("id", "?"))
+            continue
+        age = (today_d - _dt.date.fromisoformat(first)).days
+        if age > stuck_days:
+            out.append("opportunities[%s]: still `triaging` after %d days (first seen %s; the "
+                       "stuck bound is %d) -- the surfacing rule should have moved it to Decide"
+                       % (o.get("id", "?"), age, first, stuck_days))
+    return out
+
+
+def triaging_states(opps, owner_token, today):
+    """`({opp id: state}, None)` from `your_move.classify_opportunities`, or `(None, why)` when the
+    classification cannot answer `triaging` (the triage gate is not part of this install). Lazy
+    import, for the same cycle reason `_ym` is imported below the vocabulary."""
+    import your_move as _ym_
+    if "triaging" not in getattr(_ym_, "ROLE_STATES", ()):
+        return None, "your_move.ROLE_STATES has no `triaging` state"
+    return {o.get("id"): st for o, st, _why in _ym_.classify_opportunities(opps, owner_token, today)}, None
+
+
+def triage_stuck_days(cfg):
+    """`(days, None)` from the registered `search.triage_stuck_days`, or `(None, why)` when
+    `config_keys` does not register it (so the check says NOT CHECKED rather than guessing a
+    default of its own)."""
+    import config_keys as _ck
+    try:
+        value, _prov = _ck.describe(cfg or {}, "search.triage_stuck_days")
+    except KeyError:
+        return None, "config_keys does not register search.triage_stuck_days"
+    return value, None
+
+
+def hygiene_lines(opps, cfg, today, owner_token, classify=None, stuck=None):
+    """The `HYGIENE` section as printable lines (an empty list when there is nothing to say).
+    `classify` / `stuck` are seams for the two lookups that depend on the triage gate being
+    installed (`triaging_states`, `triage_stuck_days`); a test passes stubs. A lookup that cannot
+    answer prints `NOT CHECKED` with its reason -- green is never an unexamined silence."""
+    out = check_pay_captured(opps)
+    states, why = (classify or triaging_states)(opps, owner_token, today)
+    days, why2 = (stuck or triage_stuck_days)(cfg)
+    if states is None or days is None:
+        out.append("check_triaging_stuck: NOT CHECKED -- %s" % (why or why2))
+    else:
+        out += check_triaging_stuck(opps, states, today, days)
+    return out
 
 
 def emit_problems(problems):
@@ -1593,6 +2223,11 @@ def _main():
                             problems.append("%s: %s[%d] unknown key %r (known: %s)"
                                             % (_l, _arr, _i, _k, ", ".join(sorted(_aspec["fields"]))))
 
+    # dev #704 / public #154 (V1 + R3) -- the wrapped-uid rule, from the model's `source_tag`
+    # block. `_source_tag_stats` is None when it could NOT run (its reason is already a problem),
+    # which the summary prints as NOT CHECKED rather than as a quiet zero.
+    _source_tag_stats = check_source_tags(_model, problems) if _model else None
+
     # ADR-031 B5 — `plans.assessments[]`, checked once the model is in hand (its field lists come
     # from data_model.json, never restated here). Nothing writes the field yet (item C of
     # design-b5-assessment.md §9); the contract is enforced from the day the field exists.
@@ -1820,6 +2455,7 @@ def _main():
             else:
                 if not is_date(fit.get("analyzed_on", "")):
                     problems.append("%s: fit.analyzed_on not ISO — %r" % (label, fit.get("analyzed_on")))
+                check_jd_source(fit.get("jd_source"), label, problems)    # R3: the closed prefix
                 reqs = fit.get("requirements")
                 if not isinstance(reqs, list) or not reqs:
                     problems.append("%s: fit.requirements must be a non-empty list" % label)
@@ -1879,10 +2515,23 @@ def _main():
                 elif mn > mx:
                     problems.append("%s: comp.min %s > comp.max %s" % (label, mn, mx))
 
+        # dev #713-#716 (sourcing-screen): the optional facts a sourced role carries. Each is
+        # optional and ABSENT has a defined meaning, so only a PRESENT value is checked.
+        if "listed_pay" in r:
+            check_listed_pay(r["listed_pay"], label, problems)
+        if "posted" in r:
+            check_posted(r["posted"], label, problems)
+        if "screen" in r:
+            check_screen(r["screen"], label, problems)
+        if "lean" in r:
+            check_lean(r["lean"], label, problems)
+
         # location shape
         loc = r.get("location", {})
         if not isinstance(loc, dict) or loc.get("type") not in LOC_TYPES:
             problems.append("%s: location.type not in {%s}" % (label, ", ".join(sorted(LOC_TYPES))))
+        if isinstance(loc, dict) and "commute_minutes" in loc:
+            check_commute_minutes(loc["commute_minutes"], label, problems)
         if isinstance(loc, dict):
             decl = loc.get("declared")
             if decl is not None and not isinstance(decl, str):
@@ -2360,6 +3009,33 @@ def _main():
     # every per-store loop above.
     check_store_introduction(problems)
 
+    # dev #713/#714 (sourcing-screen) -- the two nested config tables the screen reads, checked
+    # where the profile's other data is checked. The config sits beside `data/`; a profile with
+    # none (a fresh scaffold, a test pointing DATA at a temp dir) has nothing to check, and the
+    # summary line below says so rather than reading as a pass.
+    _cfg, _cfg_why = {}, None
+    _cfg_path = os.path.join(os.path.dirname(DATA), "config.json")
+    try:
+        with open(_cfg_path, encoding="utf-8") as _fh:
+            _cfg = json.load(_fh)
+        if not isinstance(_cfg, dict):
+            _cfg, _cfg_why = {}, "config.json is not an object"
+    except OSError:
+        _cfg_why = "no config.json beside data/"
+    except ValueError as _e:
+        _cfg_why = "config.json is not readable JSON (%s)" % _e
+    _bands_n = _signals_n = 0
+    if _cfg_why is None:
+        _bands_n = check_commute_config(_cfg.get("geography"), problems)
+        _signals_n = check_likely_pass_signals((_cfg.get("screen") or {}).get("likely_pass_signals")
+                                               if isinstance(_cfg.get("screen"), dict) else None,
+                                               problems)
+
+    # R7 -- standing findings that never refuse a write (a separate list from `problems`)
+    import datetime as _dt_main
+    _hygiene = hygiene_lines(opps, _cfg, _dt_main.date.today().isoformat(),
+                             _profile.owner_token())
+
     print("Data validation — %d companies, %d channels, %d opportunities, %d asks, "
           "%d commitments, %d resume variants, %d applications, %d cover letters, %d touches, "
           "%d plans, %d plays"
@@ -2375,6 +3051,24 @@ def _main():
         print("-" * 68)
         for w in warnings:
             print("  ~ " + w)
+    if _hygiene:
+        print("\n" + "-" * 68)
+        print("HYGIENE — %d standing finding(s); reported, never refused, exit code unchanged"
+              % len(_hygiene))
+        print("-" * 68)
+        for h in _hygiene:
+            print("  ~ " + h)
+    if _cfg_why is not None:
+        print("  Sourcing config: NOT CHECKED -- %s" % _cfg_why)
+    else:
+        print("  Sourcing config: %d commute band(s), %d likely-pass signal(s) checked"
+              % (_bands_n, _signals_n))
+    if _source_tag_stats is None:
+        print("  Source tags: NOT CHECKED -- docs/data_model.json `source_tag` could not be used "
+              "(see the problem above)")
+    else:
+        print("  Source tags: %d stores, %d fields, %d rows checked (docs/data_model.json "
+              "source_tag)" % _source_tag_stats)
     if not problems:
         print("\n  Clean. Schema, enums, types, and every cross-reference resolve.")
         return 0, []

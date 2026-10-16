@@ -93,6 +93,55 @@ The page republishes whole every run, and a check run with it reads your files a
 together and fails if a record appears in full twice, a reference points at nothing, or a link on
 the page has no destination.
 
+### Triaging versus Decide (since 0.67.0)
+
+A newly sourced role used to count as a pursue-or-pass decision the moment it was captured, whether
+or not anyone had read the posting. Now a role reaches **Decide** (the page's group *Decide —
+pursue/pass owed*) only after the system has done its reading. Until then it sits in its own group,
+**Triaging — the system is reading these**, and it is *not* on your list: nothing in that group is
+waiting on you. Both are groups you can select on the page, beside *Your move — today*. A role is in
+*Triaging* **or** in *New — pursue or pass?*, never both: *New* lists the undecided roles that have
+been read, and its count leaves out the roles still being read, which appear only under *Triaging*
+(each still shows once on the page). *Decide* is the decisions owed, and sits inside *New* (a role
+shown unread by the stuck rule below counts in both). When roles are being read, the line at the top
+of the page says how many.
+
+A role leaves Triaging for Decide when the record has all of: the job description was read (with
+where it was read from), the pay as the listing wrote it, the work setting as the listing wrote it,
+the hard screens applied, and a **lean**. A role the screen removes never reaches Decide at all.
+
+- **A lean** is the system's read of a role: `pursue`, `pass` or `ask`, plus one line. It is
+  shown on the role's card in Decide as advice. **A lean never removes a role and never decides
+  for you**; only the hard rules (a stated range below your floor, a place you have ruled out) remove.
+- **Likely-pass signals** are phrases you can list in your settings
+  ([`screen.likely_pass_signals`](your-data.md#screening--configjsonscreen)), each with a reason. When a role's title, job
+  description or company matches one, its card shows a **LEAN** line with your reason. It is
+  a reason to look closely, nothing more.
+- **A recruiter role that is old or of unknown age defaults to `ask`.** When the screen's age line
+  asks for a first move (a role from a recruiter channel older than `search.retained_search_age_days`,
+  or with no known age), its lean is `ask` and the line is that first move: "FIRST MOVE: ask the
+  recruiter what stage the search is in, before research or letters" (or, for an unknown age, "ask
+  the recruiter when the search opened"). The run states a different lean only when the job
+  description gives a reason, and says so in the line.
+- **A read that failed still ends.** If the job description could not be read (a login wall, a dead
+  link, no link at all, or a surface with no browser), the role goes to Decide with the lean `ask`
+  and the line "not read: <reason>", so you are never left waiting on a read that cannot happen.
+- **Nothing waits forever.** A role still in Triaging once `search.triage_stuck_days` days have
+  passed (default 3, counted from its first sighting) is shown to you in Decide anyway, labelled
+  "not yet read (waited K days)", with the lean `ask`. A role with no readable sighting date has
+  no age to wait out, so it is shown at once, labelled "not yet read (age unknown)". Each daily
+  run triages at most `search.triage_per_run` roles (default 10, oldest first sighting first) and
+  prints one line, for example `triaging: 4 waiting, 6 triaged this run, 0 over the stuck bound`:
+  how many are still being read, how many this run finished, and how many are past the stuck
+  limit and so reached you unread.
+- **Decide is the decisions part of the needs-you filter.** *Your move — today* (the needs-you
+  filter) shows the decisions owed plus the actions due today, and its caption says so: "decisions
+  owed plus actions due today". *Decide — pursue/pass owed* is exactly the decisions owed. Both
+  come from one definition, so their counts cannot drift apart. Triaging is in neither.
+
+**On upgrade:** every role that was waiting on your pursue-or-pass and has not been read shows as
+Triaging, and drains into Decide over the next daily runs.
+
 ### Correcting a draft from a comment on the page (since 0.64.0)
 
 If your published dashboard is shared inside your organization on claude.ai, a reviewer can leave

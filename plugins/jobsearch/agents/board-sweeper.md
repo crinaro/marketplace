@@ -154,9 +154,16 @@ allows" and say so with `window=none` on every QUERY. Every QUERY carries its `c
 id>` and never `unapplied`. One `QUERY` line per channel × title × geography you ran (an
 `unreachable` QUERY, with a `journal.REASONS` code, for one you could not), one `ROLE` line per
 distinct role any of them showed (the same posting on two channels is ONE line), and `SEEN
-distinct=<n>` equal to the number of `ROLE` lines, or the whole block is refused. A title, company
+distinct=<n>` equal to the number of `ROLE` lines. A title, company
 or location containing a double quote has it replaced by `'`. `deferred.py --add-roles` accepts
 the block; a pass that returns without one is filed as a gap (`ROLES NOT ACCOUNTED`).
+
+**Check your own block before you hand it back (dev #707 / public #151).** Run
+`~/.claude/jobsearch/run deferred.py --add-roles <your hand-back file> --run <the run id you were given> --surface board --check`.
+It writes nothing: it prints every faulty line with its line number and the rule it broke, then a
+`verdict:` line. Fix every line it names and run it again until the verdict is `verdict: clean`.
+A faulty line no longer refuses the block, but the role on it is not recorded and the line is filed
+as a gap, so a fault you leave in is a role this pass loses.
 
 <!-- roles-grammar:begin -->
 ```text
@@ -164,7 +171,7 @@ the block; a pass that returns without one is filed as a gap (`ROLES NOT ACCOUNT
 QUERY geo=<remote|local> title="<query>" window=<r86400|r604800|none> shown=<n> total=<m|?> [unapplied] [channel=<channel_id>]
 QUERY geo=<remote|local> title="<query>" unreachable reason=<journal.REASONS code> [channel=<channel_id>]
 SEEN distinct=<n>
-ROLE url=<posting url> title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|?>
+ROLE url=<posting url> title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|ats:YYYY-MM-DD|<n>d|?> pay=<pay|?> setting="<verbatim|none stated|?>"
 ROLE nourl title="<t>" company="<c>" reason=<journal.REASONS code>
 --- END ROLES ---
 ```
@@ -172,6 +179,25 @@ ROLE nourl title="<t>" company="<c>" reason=<journal.REASONS code>
 
 `total=?` when the page does not say; `total` larger than `shown` marks a truncated read, which the
 script files as a gap, so report what you could see.
+
+**⭐ THE THREE SLOTS ON EVERY `ROLE url=` LINE (dev #715 / public #143, dev #716 / public #142).**
+Read them off the result card or the listing, and copy what the page shows. A slot you did not
+read is `?`, which the script stores as *not captured*; it is never the same as the listing showing
+nothing.
+- **`pay=`** is `none` only when you read the listing and it shows no pay at all. Otherwise
+  `stated:<range>` for the employer's own figure, or `estimate:<range>` for a board's estimate
+  panel, which is a different fact and is never written as `stated:`. A `<range>` is
+  `<min>-<max>/<unit>/<CUR>`, or `<min>+/<unit>/<CUR>` for an open-ended one: whole numbers with no
+  separators, the unit `yr`, `mo`, `day` or `hr` exactly as the posting prices it, and the
+  three-letter currency code (`stated:120000-150000/yr/USD`; several ranges are `;`-separated).
+  **Never code a monthly, daily or hourly figure as `/yr`, and never convert one**: write the
+  figure and the unit the posting gave, and the screen sends it to a person.
+- **`posted=`** is `YYYY-MM-DD` for a date the board shows, `<n>d` for a shown age ("12 days ago"
+  is `12d`), `?` for neither. Use `ats:YYYY-MM-DD` **only** for a JSON-LD `datePosted` or an ATS
+  API's posted date, never for `updated_at` or an "updated" stamp, which an edit resets.
+- **`setting="..."`** is the posting's own work-setting words, verbatim (`"Hybrid, 3 days in
+  office"`), `none stated` when you read the listing and it states none, `?` when you did not read
+  it. Replace any `"` with `'`.
 
 **Never submit a form, never click apply, never sign in.** If a surface demands a login this
 machine does not have, that is a gap to report, not an obstacle to work around.

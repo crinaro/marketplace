@@ -1092,45 +1092,88 @@ def _ats_fixture_profile(tmp, receipt_domains=("example.com",),
     return tmp
 
 
-class _FakeAtsMailbox(object):
-    """A `Mailbox` stand-in keyed by account -> {uid: (headers_dict, body_text)}. Raises
-    `CredentialError` for an account named in `FAIL_ACCOUNTS`, mirroring a revoked app
-    password — the same shape `_fake_mailbox` in `TestSweepAccountsWiredIntoTheFourCallers`
-    already establishes for the other four sweep callers, extended here with real
-    header/body content since this sweep actually reads the mail."""
+class _ImapConnStub(object):
+    """⭐ dev #704 / public #154 — a stand-in for the `imaplib.IMAP4_SSL` connection, so the REAL
+    `mail_client.Mailbox` methods run over it and every uid they see arrives as `bytes`, exactly as
+    `imaplib` returns it ("Each data is either a bytes, or a tuple").
+
+    The fakes this file used to carry replaced `Mailbox` itself and returned `str` uids from
+    `search()`. The real `search()` returned bytes, which a caller formatted into `gmail:a:b'101'`;
+    a fake that returns the clean shape can never see that. Nothing the stub does is asserted by
+    shape: `uid("FETCH", ...)` raises unless it is handed a digits-only `str` -- what
+    `imaplib.IMAP4._command` encodes (`if isinstance(arg, str): arg = bytes(arg, self._encoding)`,
+    imaplib.py in CPython 3.9-3.14) -- so a caller that passes a wrapped uid fails here, loudly.
+
+    `store` maps uid (str) -> (headers dict, body text)."""
+
+    ALL_MAIL = b'(\\HasNoChildren \\All) "/" "[Gmail]/All Mail"'
+
+    def __init__(self, store, log=None):
+        self.store = store
+        self.fetched = log if log is not None else []
+
+    def list(self):
+        return "OK", [self.ALL_MAIL]
+
+    def select(self, name, readonly=False):
+        return "OK", [b"%d" % len(self.store)]
+
+    def _raw(self, uid, with_body):
+        import email.message
+        headers, body = self.store[uid]
+        m = email.message.EmailMessage()
+        for k, v in headers.items():
+            m[k] = v
+        if with_body:
+            m.set_content(body)
+        return bytes(m)
+
+    def uid(self, command, *args):
+        if command == "SEARCH":
+            return "OK", [b" ".join(u.encode("ascii") for u in self.store)]
+        if command == "FETCH":
+            uid, spec = args[0], args[1]
+            if not (isinstance(uid, str) and uid.isascii() and uid.isdigit()):
+                raise AssertionError("the stub IMAP server was handed a uid that is not a "
+                                     "digits-only str: %r" % (uid,))
+            self.fetched.append(uid)
+            if uid not in self.store:
+                return "OK", [None]
+            raw = self._raw(uid, with_body="HEADER.FIELDS" not in spec)
+            return "OK", [(b"1 (UID %s BODY[] {%d}" % (uid.encode(), len(raw)), raw), b")"]
+        raise AssertionError("unexpected IMAP command %r" % (command,))
+
+
+import mail_client as _mail_client_for_fakes   # noqa: E402  (HERE is on sys.path above)
+
+
+class _FakeAtsMailbox(_mail_client_for_fakes.Mailbox):
+    """A `Mailbox` keyed by account -> {uid: (headers_dict, body_text)}. Raises `CredentialError`
+    for an account named in `FAIL_ACCOUNTS`, mirroring a revoked app password -- the same shape
+    `_fake_mailbox` in `TestSweepAccountsWiredIntoTheFourCallers` already establishes for the
+    other four sweep callers, extended here with real header/body content since this sweep
+    actually reads the mail.
+
+    ⭐ dev #704 / public #154 -- this IS the real `Mailbox` (its `search`, `fetch_headers` and
+    `fetch_full` run unchanged) over an `_ImapConnStub`, so uids come back as the decoded text
+    `search()` now returns, and anything that goes wrong in the decode shows up in every sweep
+    test, not only in a unit test of `search()`. Only the login is skipped."""
     STORE = {}
     FAIL_ACCOUNTS = frozenset()
     _CredentialError = None
+    FETCH_LOG = None            # a list a test sets on its own subclass to see which uids were READ
 
     def __init__(self, account):
-        self.account = account
+        super(_FakeAtsMailbox, self).__init__(account)
         if account in self.FAIL_ACCOUNTS:
             raise self._CredentialError("stub: app password revoked for %s" % account)
+        self.conn = _ImapConnStub(self.STORE.setdefault(account, {}), log=self.FETCH_LOG)
 
     def __enter__(self):
         return self
 
     def __exit__(self, *exc):
         return False
-
-    def search(self, query):
-        return list(self.STORE.get(self.account, {}).keys())
-
-    def _msg(self, uid, with_body):
-        import email.message
-        headers, body = self.STORE[self.account][uid]
-        m = email.message.EmailMessage()
-        for k, v in headers.items():
-            m[k] = v
-        if with_body:
-            m.set_content(body)
-        return m
-
-    def fetch_headers(self, uid):
-        return self._msg(uid, with_body=False)
-
-    def fetch_full(self, uid):
-        return self._msg(uid, with_body=True)
 
 
 class _AtsSweepProfile(unittest.TestCase):
@@ -1928,6 +1971,7 @@ __all__ = [
     '_VariantOutFixture',
     '_ats_fixture_profile',
     '_FakeAtsMailbox',
+    '_ImapConnStub',
     '_AtsSweepProfile',
     '_write_cascade_profile',
     '_rs_git',

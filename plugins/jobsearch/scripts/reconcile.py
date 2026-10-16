@@ -50,6 +50,11 @@ WHAT IT REPORTS
     exchange, or a LinkedIn notification, with that person.
   * **UNRECORDED REPLY** — the row says `awaiting`/`sent`, but a message FROM that contact arrived
     after we wrote to them. This is the one that costs real opportunities.
+  * **POSSIBLE CROSS-MEDIUM REPLY** — a message from that contact arrived on ANOTHER medium than
+    the touch was sent on (an email after a LinkedIn note). Lower confidence, its own section,
+    never counted as an UNRECORDED REPLY. Mail from an automated sender (an ATS receipt domain in
+    `ats.receipt_sender_domains`, a LinkedIn notification address, a no-reply address) is never a
+    reply and never medium evidence, on either line (`is_automated_sender`).
   * **UNRECORDED ACCEPTANCE** — LinkedIn says an invitation was accepted; the row does not.
   * **NO TRACE** — nothing found. Reported explicitly rather than silently skipped, because a
     zero is only meaningful when you can see it was looked for.
@@ -293,8 +298,16 @@ def parse_hdr_date(s):
         return None
 
 
-def classify(hits, name, row_date):
-    """What do these messages tell us? -> (medium, replied_after, accepted, notes)"""
+def classify(hits, name, row_date, *, automated):
+    """What do these messages tell us? -> (medium, replied_after, accepted)
+
+    ⭐ dev #708 / public #150 (A1) -- `automated(addr) -> bool` is REQUIRED (keyword-only, no
+    default, so a caller that forgets it fails loudly rather than quietly counting robots). It is
+    `is_automated_sender` bound to the profile's `ats.receipt_sender_domains`. A message from a sender
+    it flags is skipped ENTIRELY: not reply evidence (an ATS acknowledgement whose signature names
+    the recipient used to resolve a touch as a reply), and not medium evidence either (so it can never
+    produce a MEDIUM EVIDENCE fix for an unknown-medium touch). The LinkedIn branch is unchanged --
+    LinkedIn's own notification senders are exactly what it reads."""
     medium = None
     replied_after = []
     accepted = False
@@ -323,6 +336,9 @@ def classify(hits, name, row_date):
                 if d and row_date and d >= row_date:
                     replied_after.append(h)
             continue
+        # dev #708 (A1) -- an automated sender (ATS receipt, no-reply) is not a person answering.
+        if automated(parseaddr(frm)[1]):
+            continue
         # A direct (non-LinkedIn) message mentioning this person = an email exchange.
         if last and last in low_frm:
             direct_email = True
@@ -337,6 +353,40 @@ def classify(hits, name, row_date):
     elif linkedin_msg:
         medium = "linkedin"
     return medium, replied_after, accepted
+
+
+def touch_medium_family(medium):
+    """dev #708 / public #150 (A2) -- the coarse family of a touch's `medium`: `email` for any value
+    starting `email` (`email-cold`, `email-reply`), `linkedin` for any starting `linkedin`
+    (`linkedin-connection-note`, `linkedin-inmail`, `linkedin-message`); None for everything else
+    (`phone`, `sms`, `other`, `unknown`, absent) -- a touch with no family keeps today's behaviour,
+    because nothing says a reply on another medium is a different thread."""
+    m = (medium or "").lower()
+    if m.startswith("email"):
+        return "email"
+    if m.startswith("linkedin"):
+        return "linkedin"
+    return None
+
+
+def hit_medium_family(hit):
+    """The family of a mailbox hit: `linkedin` when it came from one of LinkedIn's own notification
+    senders (`LINKEDIN_SENDERS`, matched on the parsed address, never a substring), else `email`."""
+    return "linkedin" if parseaddr((hit.get("from") or "").lower())[1].strip() in LINKEDIN_SENDERS \
+        else "email"
+
+
+def split_replies_by_medium(touch_medium, replied):
+    """`(same_medium, cross_medium)` -- dev #708 (A2). A reply on the medium the touch was sent on is
+    a reply; one on ANOTHER medium is only POSSIBLY a reply (a person can answer a LinkedIn note by
+    email, but it may be a separate thread), so it is reported on its own, lower-confidence line and
+    never under UNRECORDED REPLY. A touch with no family has no cross-medium."""
+    fam = touch_medium_family(touch_medium)
+    if fam is None:
+        return list(replied), []
+    same = [h for h in replied if hit_medium_family(h) == fam]
+    cross = [h for h in replied if hit_medium_family(h) != fam]
+    return same, cross
 
 
 def row_date(r):
@@ -535,6 +585,64 @@ def identify_sender_class(from_domain, configured_domains, derived_domains):
         if d and fd == d:
             return True, "derived"
     return False, None
+
+
+def is_automated_sender(addr, configured_domains, derived_domains):
+    """§4.3 ask 2 (dev #485/public #108), MOVED here from `brief._is_automated_sender` and kept as
+    the ONE predicate (dev #708 / public #150, A1; contract rule 20: no second sender list) -- is this
+    address an ATS receipt, a LinkedIn notification, or a generic no-reply/job-board automated sender?
+
+    Three halves, all reused rather than restated: the ATS half is `identify_sender_class()` -- the ONE
+    predicate `--ats`'s add-domain hint and `--verify`'s per-domain label already share (public
+    #120/dev #473), whose configured leg is `ats.receipt_sender_domains` (matched as the domain or a
+    subdomain); LinkedIn's own senders are `LINKEDIN_SENDERS`, the fixed tuple `--harvest` filters on;
+    and a `noreply`/`no-reply` local part. Newsletter senders have no configured signal anywhere in a
+    profile's schema, so a hardcoded newsletter list would be a one-off patch serving one inbox
+    (CLAUDE.md: worse than no change); the generic local-part check catches most of them
+    structurally without naming one.
+
+    Used by `classify()` (a message from a sender this flags is never reply evidence, never medium
+    evidence) and, through `brief._is_automated_sender`, by the mailbox probe (§4.3)."""
+    a = (addr or "").strip().lower()
+    if not a or "@" not in a:
+        return False
+    local, domain = a.split("@", 1)
+    is_ats, _leg = identify_sender_class(domain, configured_domains, derived_domains)
+    if is_ats:
+        return True
+    if a in LINKEDIN_SENDERS:
+        return True
+    if "noreply" in local or "no-reply" in local:
+        return True
+    return False
+
+
+def sender_domain_sets(cfg, messages):
+    """`(configured_domains, derived_domains)` -- the two inputs `identify_sender_class()` and
+    `is_automated_sender()` take, computed ONE way for every caller (`--ats`, `--verify` and the
+    weekly audit): `ats.receipt_sender_domains` from the config, and the From domain of every stored
+    message that carries `resolves`."""
+    configured = list(((cfg.get("ats") or {}).get("receipt_sender_domains")) or [])
+    return configured, derived_sender_domains(messages)
+
+
+def held_source_keys(messages):
+    """dev #704 / public #154 (D1) -- the NORMALIZED `source` of every stored message row: the
+    one set every "do I already hold this message" check below compares against (the harvest, the
+    `--ats` sweep and `--verify`). A stored `gmail:a:b'101'` and a fresh `gmail:a:101` are the same
+    message, so both sides pass through `validate_data.normalize_source_tag()`; a value that is not
+    a mail tag (a LinkedIn thread URL, `record.py touched`) comes through unchanged."""
+    return {_vd.normalize_source_tag(m.get("source")) for m in messages if m.get("source")}
+
+
+def tag_already_asked(tag, asks):
+    """dev #704 / public #154 (D1) -- True when some ask's `note` already carries the mail tag
+    `tag`, on the NORMALIZED key. This used to be `tag in note`, a substring test: blind to a
+    wrapped `mail:a:b'101'` already in a note, and wrong the other way for `mail:a:10` inside
+    `mail:a:101`. Evaluated against the asks as they stand NOW (an ask extended earlier in this
+    run counts)."""
+    want = _vd.normalize_source_tag(tag)
+    return any(want in _vd.tags_in_text(a.get("note")) for a in asks)
 
 
 def derived_sender_domains(messages):
@@ -1195,9 +1303,8 @@ def cmd_ats(args):
         a["_company_id"] = opp.get("company_id")
 
     messages_all = load("messages.jsonl")
-    have_sources = {m.get("source") for m in messages_all if m.get("source")}
-    configured_domains = list(((cfg.get("ats") or {}).get("receipt_sender_domains")) or [])
-    derived_domains = derived_sender_domains(messages_all)
+    have_sources = held_source_keys(messages_all)
+    configured_domains, derived_domains = sender_domain_sets(cfg, messages_all)
     sp = (cfg.get("ats") or {}).get("status_phrases")
     status_phrases = sp if isinstance(sp, dict) else {}
 
@@ -1370,10 +1477,10 @@ def cmd_ats(args):
 
     def process_candidate(mb, account, uid, since_days, first_run):
         source = "ats:%s:%s" % (account, uid)
-        if source in have_sources:
+        if _vd.normalize_source_tag(source) in have_sources:
             return
         tag = "mail:%s:%s" % (account, uid)
-        if any(tag in (a.get("note") or "") for a in asks_all):
+        if tag_already_asked(tag, asks_all):
             return
         hdr = mb.fetch_headers(uid)
         if hdr is None:
@@ -1431,7 +1538,7 @@ def cmd_ats(args):
         result = resolve_application(subject, body, from_domain, live_apps, companies_map)
         status, ambiguous = classify_status_phrase(("%s\n%s" % (subject, body)).lower(),
                                                     status_phrases)
-        have_sources.add(source)          # never re-process this uid, whatever happens below
+        have_sources.add(_vd.normalize_source_tag(source))   # never re-process this uid, whatever happens below
         if historical:
             history_counts["total"] += 1
 
@@ -1664,15 +1771,14 @@ def cmd_verify(args):
     UNVERIFIED (the SILENCE UNVERIFIED banner's own shape), never 'no traffic', and the run
     exits non-zero."""
     cfg = _read_config(ROOT)
-    configured_domains = list(((cfg.get("ats") or {}).get("receipt_sender_domains")) or [])
     messages_all = load("messages.jsonl")
-    derived_domains = derived_sender_domains(messages_all)
+    configured_domains, derived_domains = sender_domain_sets(cfg, messages_all)
     domains = all_sender_domains(configured_domains, derived_domains)
     # public #120 / dev #473 — the same predicate the `--ats` hint uses, so the two paths
     # cannot label the same domain differently.
     unstated = set(derived_not_configured(configured_domains, derived_domains))
     asks_all = load("asks.jsonl")
-    have_sources = {m.get("source") for m in messages_all if m.get("source")}
+    have_sources = held_source_keys(messages_all)
     days = args.days or COVERAGE_BACKFILL_MAX_DAYS
 
     problem = False
@@ -1692,10 +1798,10 @@ def cmd_verify(args):
                     for uid in uids:
                         source = "ats:%s:%s" % (account, uid)
                         tag = "mail:%s:%s" % (account, uid)
-                        if source in have_sources:
+                        if _vd.normalize_source_tag(source) in have_sources:
                             n_recorded += 1
                             continue
-                        if any(tag in (a.get("note") or "") for a in asks_all):
+                        if tag_already_asked(tag, asks_all):
                             n_asked += 1
                             continue
                         # historical = no completed sweep has EVER run (still genuinely
@@ -1868,8 +1974,17 @@ def main():
     print("Tracked state is a TRANSCRIPTION of what happened in email and LinkedIn. The source")
     print("can be re-read; the transcription can be incomplete, stale, or lossy.\n")
 
-    findings = {"medium": [], "reply": [], "accepted": [], "none": [], "ambiguous": []}
+    findings = {"medium": [], "reply": [], "cross_medium": [], "accepted": [], "none": [],
+                "ambiguous": []}
     sess = Session()
+
+    # dev #708 / public #150 (A1) -- ONE sender predicate, built from the same two domain sets
+    # (`sender_domain_sets`) the `--ats` and `--verify` paths use, never recomputed another way.
+    _configured_domains, _derived_domains = sender_domain_sets(_read_config(ROOT),
+                                                               load("messages.jsonl"))
+
+    def automated(addr):
+        return is_automated_sender(addr, _configured_domains, _derived_domains)
 
     # dev #334 — open every account's connection through the shared coverage-ledger site
     # instead of Session's own former constructor loop. `since_days`: reconcile's own query
@@ -1917,8 +2032,8 @@ def main():
             # Medium is a property of how this PERSON is reached, so it is inferred from every
             # message. Reply and acceptance are properties of THIS ROW, so they see only what
             # was attributed to it.
-            medium, _all_replied, _all_accepted = classify(hits, name, rd)
-            _m, replied, accepted = classify(mine, name, rd)
+            medium, _all_replied, _all_accepted = classify(hits, name, rd, automated=automated)
+            _m, replied, accepted = classify(mine, name, rd, automated=automated)
 
             # ⚠️ An invitation ACCEPTANCE answers a connection request, not an email or an
             # InMail. Reported against a row of another medium it is noise by construction —
@@ -1939,9 +2054,13 @@ def main():
             # must be recorded — but it is NOT a substantive answer, so `outcome` correctly
             # stays `awaiting` and the thread keeps aging. Keying only on `outcome` made that
             # legitimate state permanently indistinguishable from a missed reply.
-            if replied and r.get("outcome") in ("awaiting", None) \
+            same_medium, cross_medium = split_replies_by_medium(r.get("medium"), replied)
+            if same_medium and r.get("outcome") in ("awaiting", None) \
                     and not r.get("responded_on"):
-                findings["reply"].append((o, idx, r, label, replied))
+                findings["reply"].append((o, idx, r, label, same_medium))
+            if cross_medium and r.get("outcome") in ("awaiting", None) \
+                    and not r.get("responded_on"):
+                findings["cross_medium"].append((o, idx, r, label, cross_medium))
             if accepted and r.get("outcome") == "awaiting" and not r.get("responded_on"):
                 findings["accepted"].append((o, idx, r, label))
 
@@ -1953,6 +2072,18 @@ def main():
         print("  changes what the candidate should DO, so it needs a human read, not a silent field flip.\n")
         for o, idx, r, label, replied in findings["reply"]:
             print("  • %s  (sent %s)" % (label, r.get("date")))
+            for h in replied[:3]:
+                print("      %s | %s" % ((h["date"] or "?")[:31], (h["subject"] or "")[:64]))
+            print()
+
+    if findings["cross_medium"]:
+        print("-" * 78)
+        print("POSSIBLE CROSS-MEDIUM REPLY — a message from them on another medium after this touch")
+        print("-" * 78)
+        print("  Lower confidence: a person can answer a LinkedIn note by email, but this may be a")
+        print("  separate thread. Read it before recording anything.\n")
+        for o, idx, r, label, replied in findings["cross_medium"]:
+            print("  • %s  (sent %s, %s)" % (label, r.get("date"), r.get("medium")))
             for h in replied[:3]:
                 print("      %s | %s" % ((h["date"] or "?")[:31], (h["subject"] or "")[:64]))
             print()
@@ -2045,7 +2176,7 @@ def main():
     # source of truth) so a uid already recorded is skipped before the write is even attempted.
     if args.harvest:
         import record as _record
-        have = {m.get("source") for m in load("messages.jsonl")}
+        have = held_source_keys(load("messages.jsonl"))
         added, refused = 0, 0
         print("\n" + "-" * 78)
         print("HARVEST — writing the actual messages into data/messages.jsonl")
@@ -2058,7 +2189,7 @@ def main():
                 continue
             for acct, uid in sess.search_uids("in:anywhere (%s)" % " OR ".join(terms), limit=12):
                 src = "gmail:%s:%s" % (acct, uid)
-                if src in have:
+                if _vd.normalize_source_tag(src) in have:
                     continue
                 msg = sess.fetch_full(acct, uid)
                 if msg is None:
@@ -2095,7 +2226,7 @@ def main():
                     "resolves": None, "resolved_by": None,
                 }
                 rc, out = _record.append_message(row, already_locked=harvest_locked)
-                have.add(src)          # never re-attempt this uid, refused or not
+                have.add(_vd.normalize_source_tag(src))   # never re-attempt this uid, refused or not
                 if rc == 0:
                     added += 1
                 else:

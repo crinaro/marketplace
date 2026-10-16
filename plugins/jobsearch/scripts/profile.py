@@ -34,7 +34,13 @@ unchanged) and an ADVISORY title rule. It never reads `posture`: a posture limit
 search runs, not how much of what a run found is processed, so a role captured under `economy`
 or `minimal` still gets screened. Only the rules that already remove a role remove it
 (`remove:comp`, `remove:geo`, `remove:passed`); the title rule is advisory and only ever says
-`review:title`. There is no mandate rule (no script implements one and no config key names one),
+`review:title`. jobsearch 0.67.0 (dev #713-#716 / public #142-#145) adds, all in this file and
+all still without a removal beyond the three above: the age line and the retained-search flag
+(`review:age`), the NOT-CAPTURED and PAY-UNCOMPARABLE comp verdicts (`review:comp`; a role whose
+pay nobody recorded is no longer the same quiet KEEP as one whose listing showed none), commute
+bands (`resolve_floor`; a profile with no bands is screened exactly as before) and the likely-pass
+signal matcher (`match_signals`, a lean and never a removal). `screen_rules` computes the screen
+as data and `minimal_screen` prints it. There is no mandate rule (no script implements one and no config key names one),
 so the screen prints no mandate line (owner, 2026-10-09: a line about a rule that does not exist
 is noise on every role for every installer).
 
@@ -75,6 +81,20 @@ NEEDS_COMMUTE = "NEEDS-COMMUTE-CHECK"
 # because the pick selects which comp floor applies. Same family as NEEDS-COMMUTE-CHECK:
 # an answer exists, it just has to come from the employer instead of an inference.
 UNRESOLVED = "UNRESOLVED-SETTING"
+# jobsearch 0.67.0 (dev #715 / public #143; design-sourcing-screen.md §5.1) -- two more verdicts.
+# NOT-CAPTURED: nothing was ever recorded about this role's pay (no `listed_pay`, no `comp.max`),
+# so "the listing showed no pay" and "nobody looked" are no longer the same quiet KEEP. It is a
+# `review:comp` -- re-read the listing before surfacing -- and never a removal. PAY-UNCOMPARABLE:
+# pay WAS recorded but cannot honestly be set against a floor (a non-annual interval, a currency
+# other than the profile's, no profile currency set, or a board's own estimate below the floor).
+# Also `review:comp`; no conversion is ever attempted, because a guessed conversion that removes a
+# role is the defect class this verdict exists to prevent.
+NOT_CAPTURED = "NOT-CAPTURED"
+PAY_UNCOMPARABLE = "PAY-UNCOMPARABLE"
+
+# R2 -- the pay-slot grammar's interval abbreviations (`<min>-<max>/<yr|mo|day|hr>/<CUR>`) and the
+# stored `interval` each one means. Only `year` is ever compared with a floor.
+PAY_INTERVAL_ABBR = {"yr": "year", "mo": "month", "day": "day", "hr": "hour"}
 
 # public #84 — the statuses `--screen-all` actually screens. `backlog` was missing from this
 # tuple: newly sourced roles accumulate there and the screen never looked at them at all, with
@@ -235,19 +255,119 @@ def effective_setting(location, profile, commute_ok=None):
     return "local-onsite" if commute_ok else "relocation"
 
 
-def within_commute(location, profile):
-    """True / False / None(unknown). Text matching, deliberately conservative."""
+def _entry_name(entry):
+    """The place name of one `commute_anchors[].includes[]` entry: a string (the shape every
+    profile carries) or a `{place, minutes}` object (0.67.0, design §3.8). None for anything else
+    -- skipped by the matcher, never crashed on."""
+    if isinstance(entry, dict):
+        entry = entry.get("place")
+    return entry if isinstance(entry, str) else None
+
+
+def _match_commute(location, profile):
+    """`(anchor, matched_entry)` for the first commute anchor whose `place` or any `includes[]`
+    name appears in the location text, else `(None, None)`. THE one text match: `within_commute`
+    and the band resolver both read it, so they cannot disagree about which anchor a role is in."""
     hay = " ".join(str(location.get(k) or "") for k in ("primary", "note")).lower()
     if not hay.strip():
-        return None
+        return None, None
     for anchor in profile["geography"]["commute_anchors"]:
-        names = [anchor["place"]] + list(anchor.get("includes", []))
-        for n in names:
+        entries = [anchor["place"]] + list(anchor.get("includes", []))
+        for e in entries:
+            n = _entry_name(e)
+            if n is None:
+                continue
             # match on the distinctive part ("<the commute anchor>", "<a nearby metro>", "<a nearby metro>")
             token = n.split(",")[0].strip().lower()
             if token and token in hay:
-                return True
+                return anchor, e
+    return None, None
+
+
+def within_commute(location, profile):
+    """True / False / None(unknown). Text matching, deliberately conservative."""
+    anchor, _entry = _match_commute(location, profile)
+    if anchor is not None:
+        return True
     return None  # unknown, NOT False — never infer "relocation" from silence
+
+
+def _commute_minutes(location, entry):
+    """The commute minutes a role carries, or None (unknown). In order (design §5.4 step 2):
+    `location.commute_minutes.minutes`, else the `minutes` of the `includes` OBJECT entry whose
+    place matched. Only a positive int counts; anything else (a string, 0, a bool) is unknown --
+    never read as a number it is not."""
+    cm = location.get("commute_minutes")
+    if isinstance(cm, dict):
+        m = cm.get("minutes")
+        if isinstance(m, int) and not isinstance(m, bool) and m > 0:
+            return m
+    if isinstance(entry, dict):
+        m = entry.get("minutes")
+        if isinstance(m, int) and not isinstance(m, bool) and m > 0:
+            return m
+    return None
+
+
+def resolve_floor(location, profile, commute_ok=None):
+    """Which floor a location is screened against: `{setting, floor, band, hold, detail}`.
+
+    jobsearch 0.67.0 (dev #714 / public #144; design §5.4). `setting` is `effective_setting()`'s
+    answer, UNCHANGED, and `floor` is None -- the caller reads the tier's own floor -- in every case
+    but one: the matched commute anchor DECLARES `bands` (`[{max_minutes, floor}]`, ascending), the
+    role is onsite or hybrid, and the commute minutes fall inside a band. Then `floor` is that
+    band's floor and `band` names it.
+
+      * No anchor declares bands, or `commute_ok` was passed explicitly -> today's answer, line for
+        line (criterion B4; proved against goldens taken before this edit).
+      * Bands declared, onsite or hybrid, minutes UNKNOWN -> `hold="minutes"`: the screen says
+        NEEDS-COMMUTE-CHECK. NEVER a guessed band (B2).
+      * Minutes beyond the last band -> onsite is `relocation`, hybrid is the `hybrid` tier.
+      * `hybrid` and `compensation.hybrid_inside_radius` is `"hybrid-tier"` -> today's `hybrid`
+        tier; `"band"` (the default) prices it by the commute like an onsite role (B3).
+      * Bands (or the key) present but UNREADABLE -> `hold="config"` with the reasons: loud, never
+        an empty table and never a removal.
+    """
+    import config_keys as _ck
+    out = {"setting": effective_setting(location, profile, commute_ok), "floor": None,
+           "band": None, "hold": None, "detail": None}
+    ltype = location.get("type") if isinstance(location, dict) else None
+    if commute_ok is not None or ltype not in ("onsite", "hybrid"):
+        return out
+    anchor, entry = _match_commute(location, profile)
+    if anchor is None:
+        return out                      # hybrid: outside every anchor -> hybrid tier (today's)
+    if ltype == "hybrid":
+        mode, _prov = _ck.describe(profile, _ck.COMPENSATION_HYBRID_INSIDE_RADIUS)
+        if mode not in _ck.COMPENSATION_HYBRID_INSIDE_RADIUS_VALUES:
+            out["hold"] = "config"
+            out["detail"] = ("compensation.hybrid_inside_radius is %r -- not one of: %s"
+                             % (mode, ", ".join(_ck.COMPENSATION_HYBRID_INSIDE_RADIUS_VALUES)))
+            return out
+        if mode == "hybrid-tier":
+            return out
+    bands, problems = _ck.commute_bands(anchor)
+    if problems:
+        out["hold"] = "config"
+        out["detail"] = ("anchor %r declares bands that cannot be read: %s"
+                         % (anchor.get("place"), "; ".join(problems)))
+        return out
+    if not bands:
+        return out                      # this anchor declares none -> today's
+    minutes = _commute_minutes(location, entry)
+    if minutes is None:
+        out["hold"] = "minutes"
+        out["detail"] = ("bands are declared on anchor %r; record location.commute_minutes -- a "
+                         "band is never guessed" % anchor.get("place"))
+        return out
+    for max_minutes, floor in bands:
+        if minutes <= max_minutes:
+            out["setting"] = "local-onsite" if ltype == "onsite" else "hybrid"
+            out["floor"] = floor
+            out["band"] = {"max_minutes": max_minutes, "floor": floor, "minutes": minutes}
+            return out
+    out["setting"] = "relocation" if ltype == "onsite" else "hybrid"
+    return out
 
 
 def screen_comp(opp, profile, commute_ok=None):
@@ -278,7 +398,13 @@ def screen_comp(opp, profile, commute_ok=None):
             "and must not quietly drop out."
             % (" (verbatim: %r)" % declared if declared else ""))
 
-    setting = effective_setting(loc, profile, commute_ok)
+    resolved = resolve_floor(loc, profile, commute_ok)
+    setting = resolved["setting"]
+
+    if resolved["hold"]:
+        return NEEDS_COMMUTE, (
+            "location.type=%r at %r — %s. Ask/check before applying any floor."
+            % (loc.get("type"), loc.get("primary"), resolved["detail"]))
 
     if setting is None:
         return NEEDS_COMMUTE, (
@@ -287,12 +413,21 @@ def screen_comp(opp, profile, commute_ok=None):
             % (loc.get("type"), loc.get("primary")))
 
     tier = tiers(profile)[setting]
-    floor = tier["floor"]
+    floor = resolved["floor"] if resolved["floor"] is not None else tier["floor"]
+    label = setting
+    if resolved["band"]:
+        label = "%s band (%d min, within %d)" % (setting, resolved["band"]["minutes"],
+                                                 resolved["band"]["max_minutes"])
 
-    if not comp or comp.get("max") is None:
-        return UNDISCLOSED, (
-            "no stated band — KEEP (comp is the first question; it cannot be screened on). "
-            "Applicable tier would be %s (floor $%sK base)." % (setting, floor // 1000))
+    if comp and comp.get("max") is not None:
+        pass                              # §5.2 step 1: the candidate's own figure screens, as before
+    elif isinstance(opp.get("listed_pay"), dict):
+        return _screen_listed_pay(opp["listed_pay"], opp, profile, label, floor)
+    else:
+        return NOT_CAPTURED, (
+            "no pay was ever recorded for this role (no listed_pay, no comp figure) — that is NOT "
+            "the same as the listing showing none. RE-READ THE LISTING before surfacing it. "
+            "Applicable tier would be %s (floor $%sK base)." % (label, floor // 1000))
 
     top = comp["max"]
     basis = (comp.get("basis") or "base").lower()
@@ -303,12 +438,153 @@ def screen_comp(opp, profile, commute_ok=None):
 
     if top >= floor:
         return CLEARS, ("top of band $%sK >= %s floor $%sK.%s"
-                        % (int(top) // 1000, setting, floor // 1000, note))
+                        % (int(top) // 1000, label, floor // 1000, note))
     gap = floor - top
     return BELOW, (
         "top of band $%sK is $%sK BELOW the %s floor ($%sK). Profile says REMOVE unless "
         "the candidate explicitly opts in (standout-quality exception).%s"
-        % (int(top) // 1000, int(gap) // 1000, setting, floor // 1000, note))
+        % (int(top) // 1000, int(gap) // 1000, label, floor // 1000, note))
+
+
+def parse_pay_ranges(text):
+    """Parse the ROLES pay slot's range list: `<range>[;<range>...]` with
+    `<range>` := `<min>-<max>/<yr|mo|day|hr>/<CUR>` | `<min>+/<yr|mo|day|hr>/<CUR>` (integers, no
+    separators; design §4.1, R2). Returns a list of `{min, max, currency, interval, label}` dicts
+    (`label` None: the grammar carries none). STRICT: anything it cannot read raises `ValueError`
+    naming the piece -- a figure is never guessed and never silently dropped."""
+    if not isinstance(text, str) or not text.strip():
+        raise ValueError("a pay range list is empty")
+    out = []
+    for piece in text.split(";"):
+        parts = piece.strip().split("/")
+        if len(parts) != 3:
+            raise ValueError("pay range %r is not <min>-<max>/<yr|mo|day|hr>/<CUR>" % piece)
+        amount, unit, cur = parts
+        if unit not in PAY_INTERVAL_ABBR:
+            raise ValueError("pay range %r: interval %r is not one of %s"
+                             % (piece, unit, "/".join(PAY_INTERVAL_ABBR)))
+        if len(cur) != 3 or not cur.isalpha() or not cur.isascii():
+            raise ValueError("pay range %r: currency %r is not a three-letter code" % (piece, cur))
+        if amount.endswith("+"):
+            lo, hi = amount[:-1], None
+        elif "-" in amount:
+            lo, hi = amount.split("-", 1)
+        else:
+            raise ValueError("pay range %r: amount %r is neither <min>-<max> nor <min>+"
+                             % (piece, amount))
+        for n in (lo, hi):
+            if n is not None and not (n.isdigit() and n.isascii()):
+                raise ValueError("pay range %r: %r is not a plain integer" % (piece, n))
+        lo_i, hi_i = int(lo), (int(hi) if hi is not None else None)
+        if hi_i is not None and lo_i > hi_i:
+            raise ValueError("pay range %r: min %d is above max %d" % (piece, lo_i, hi_i))
+        out.append({"min": lo_i, "max": hi_i, "currency": cur.upper(),
+                    "interval": PAY_INTERVAL_ABBR[unit], "label": None})
+    return out
+
+
+def _range_text(r):
+    lo, hi = r.get("min"), r.get("max")
+    amount = ("%s-%s" % (format(lo, ","), format(hi, ",")) if lo is not None and hi is not None
+              else "%s+" % format(lo, ",") if hi is None else "up to %s" % format(hi, ","))
+    return "%s %s/%s" % (amount, r.get("currency"), r.get("interval"))
+
+
+def _num(v):
+    return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
+
+
+def _label_matches(label, loc, profile):
+    """True when a range's own `label` (the posting's verbatim name for a location-specific
+    range) names the role's matched commute anchor or its `location.primary` (case-insensitive
+    substring, design §5.3)."""
+    if not isinstance(label, str) or not label.strip():
+        return False
+    lab = label.lower()
+    names = []
+    anchor, _e = _match_commute(loc, profile)
+    if anchor is not None:
+        names.append(anchor.get("place"))
+    names.append(loc.get("primary"))
+    for n in names:
+        if not isinstance(n, str):
+            continue
+        for tok in (n.strip().lower(), n.split(",")[0].strip().lower()):
+            if tok and tok in lab:
+                return True
+    return False
+
+
+def _screen_listed_pay(lp, opp, profile, label, floor):
+    """`screen_comp`'s §5.3: one `listed_pay` object against `floor` (the tier or band already
+    chosen). Returns `(verdict, detail)`.
+
+    REMOVE must be certain. So: no profile currency -> PAY-UNCOMPARABLE (R1); a non-annual interval
+    or another currency -> PAY-UNCOMPARABLE, never converted (R2); a board's estimate NEVER says
+    BELOW-FLOOR; several employer-stated ranges remove only when EVERY selected range's top is below
+    the floor, and a range whose label names this role's anchor or place is screened alone."""
+    import config_keys as _ck
+    state = lp.get("state")
+    if state == "none-shown":
+        return UNDISCLOSED, (
+            "the listing showed NO pay (recorded none-shown, not merely uncaptured) — KEEP (comp is "
+            "the first question; it cannot be screened on). Applicable tier would be %s (floor "
+            "$%sK base)." % (label, floor // 1000))
+    ranges = [r for r in (lp.get("ranges") or []) if isinstance(r, dict)]
+    if state not in ("employer-stated", "board-estimate") or not ranges or any(
+            _num(r.get("min")) is None and _num(r.get("max")) is None for r in ranges):
+        return NOT_CAPTURED, (
+            "listed_pay is recorded but carries no readable range (state %r) — treated as NOT "
+            "captured, never as a figure. RE-READ THE LISTING before surfacing it." % state)
+    loc = opp.get("location") or {}
+    selected = [r for r in ranges if _label_matches(r.get("label"), loc, profile)] or ranges
+    shown = "; ".join(_range_text(r) for r in selected)
+    try:
+        currency = _ck.resolve_currency(profile)
+    except ValueError as e:
+        return PAY_UNCOMPARABLE, "listed pay %s cannot be compared: %s" % (shown, e)
+    if currency is None:
+        return PAY_UNCOMPARABLE, (
+            "listed pay %s cannot be compared — set compensation.currency to compare listed pay "
+            "(the profile's currency is unset, so no figure is ever read as below a floor)." % shown)
+    for r in selected:
+        if r.get("interval") != "year":
+            return PAY_UNCOMPARABLE, (
+                "listed pay %s is per %s, not per year — not converted (hours or days per year is "
+                "a guess, and a guessed conversion that removes is the defect class). KEEP for "
+                "review; ask the employer for the annual figure." % (shown, r.get("interval")))
+        if str(r.get("currency") or "").upper() != currency:
+            return PAY_UNCOMPARABLE, (
+                "listed pay %s is in %s, the profile's currency is %s — not converted. KEEP for "
+                "review." % (shown, r.get("currency"), currency))
+
+    def reach(r):                       # the best this range can be known to pay
+        return _num(r.get("max")) if _num(r.get("max")) is not None else _num(r.get("min"))
+
+    clearing = [r for r in selected if reach(r) is not None and reach(r) >= floor
+                and (_num(r.get("max")) is not None or _num(r.get("min")) >= floor)]
+    estimate = state == "board-estimate"
+    if clearing:
+        best = max(clearing, key=reach)
+        return CLEARS, ("top of listed pay %s%s >= %s floor $%sK."
+                        % (_range_text(best), " (board estimate)" if estimate else "", label,
+                           floor // 1000))
+    if estimate:
+        return PAY_UNCOMPARABLE, (
+            "board estimate %s is below the %s floor ($%sK) — an estimate is not the employer's "
+            "figure, so it never removes. Ask the employer." % (shown, label, floor // 1000))
+    open_ended = [r for r in selected if _num(r.get("max")) is None]
+    if open_ended:
+        r = open_ended[0]
+        return UNDISCLOSED, (
+            "open-ended range from %s; the top is not stated — KEEP. Applicable tier would be %s "
+            "(floor $%sK base)." % (format(_num(r.get("min")), ","), label, floor // 1000))
+    best = max(selected, key=reach)
+    return BELOW, (
+        "employer-stated top %s (source %s) is $%sK BELOW the %s floor ($%sK). Profile says REMOVE "
+        "unless the candidate explicitly opts in (record.py decide)."
+        % (_range_text(best), lp.get("source") or "unrecorded", int(floor - reach(best)) // 1000,
+           label, floor // 1000))
 
 
 def _load_opps():
@@ -325,51 +601,10 @@ def _load_optional(name):
         return [json.loads(l) for l in fh if l.strip()]
 
 
-def minimal_screen(opp, profile, all_opps, applications=None):
-    """dev #692 / public #140 -- the scripted screen every captured role gets under EVERY posture.
-    Returns `(lines, verdict)`: the printable block (header, five rule lines, nothing else) and
-    the VERDICT string `keep`, `remove:<rule>[,<rule>]` or `review:<rule>[,<rule>]`.
-
-    Pure over what it is handed, and it never reads `posture` (the point of the criterion). Only
-    rules that already remove a role today can say `remove`: comp BELOW-FLOOR, geo `out`, and a
-    passed/excluded duplicate. A question the data cannot answer (a contested setting, an
-    unknown commute, no geography section) and the advisory title rule say `review`, never
-    `remove` and never a quiet `keep`. UNDISCLOSED comp is KEPT: comp is the first question to
-    ask the employer, so it cannot be screened on (`screen_comp`'s own rule)."""
-    import geo_screen as _geo
+def _title_rule(opp, profile):
+    """`(token, text, review)` for the advisory title rule: MATCHES / NO-MATCH /
+    NO-CONFIGURED-TITLES. Only ever a `review`, never a removal."""
     import pipeline_index as _pidx
-    oid = opp.get("id")
-    removes, reviews = [], []
-    lines = ["MINIMAL SCREEN %s" % oid]
-
-    verdict, detail = screen_comp(opp, profile)
-    lines.append("  comp:      %s  %s" % (verdict, detail))
-    if verdict == BELOW:
-        removes.append("comp")
-    elif verdict in (NEEDS_COMMUTE, UNRESOLVED):
-        reviews.append("comp")
-
-    others = [o for o in all_opps if o.get("id") != oid]
-    hit = _pidx.find_excluded_match(
-        others, company_id=opp.get("company_id"), title=opp.get("title"),
-        jd_url=opp.get("jd_url"), applications=applications or [])
-    if hit:
-        row, basis = hit
-        lines.append("  passed:    MATCHES %s (%s) on %s" % (row.get("id"), row.get("status"), basis))
-        removes.append("passed")
-    else:
-        lines.append("  passed:    NOT EXCLUDED")
-
-    loc = opp.get("location") or {}
-    gverdict, gline, _d = _geo.screen(loc.get("primary") or "", profile,
-                                      work_type=loc.get("type")
-                                      if loc.get("type") in ("remote", "hybrid", "onsite") else None)
-    lines.append("  geo:       %s" % gline)
-    if gverdict == _geo.OUT:
-        removes.append("geo")
-    elif gverdict == _geo.UNKNOWN:
-        reviews.append("geo")
-
     configured = [t for t in ((profile.get("targets") or {}).get("titles") or []) if t]
     want = _pidx.normalize_title(opp.get("title"))
     matched = None
@@ -380,12 +615,154 @@ def minimal_screen(opp, profile, all_opps, applications=None):
                 matched = t
                 break
     if matched:
-        lines.append("  title:     MATCHES %r" % matched)
-    elif not configured:
-        lines.append("  title:     NO CONFIGURED TITLES (targets.titles is empty) -- advisory")
+        return "MATCHES", "MATCHES %r" % matched, False
+    if not configured:
+        return ("NO-CONFIGURED-TITLES",
+                "NO CONFIGURED TITLES (targets.titles is empty) -- advisory", False)
+    return "NO-MATCH", "NO CONFIGURED TITLE MATCHES -- advisory", True
+
+
+def posting_age(opp, today=None):
+    """`(days, source, date)` of a role's posting, or `(None, None, None)` when the age is unknown
+    (design §3.3, §6.1). Unknown is: no `posted`, `source: unknown`, a date that does not parse, or
+    one in the future -- a negative age is a data fault and is never shown as a number."""
+    import datetime as _dt
+    posted = opp.get("posted")
+    if not isinstance(posted, dict) or posted.get("source") in (None, "unknown"):
+        return None, None, None
+    try:
+        when = _dt.date.fromisoformat(str(posted.get("date")))
+    except ValueError:
+        return None, None, None
+    days = ((today or _dt.date.today()) - when).days
+    if days < 0:
+        return None, None, None
+    return days, posted.get("source"), when.isoformat()
+
+
+def _from_recruiter(opp, channels):
+    """True when the role's `channel_id` resolves to a channel of `type: recruiter` (design §6.2).
+    Not a distinction between retained and contingent firms: the store does not carry one, and the
+    first move is the same question either way."""
+    cid = opp.get("channel_id")
+    return bool(cid) and any(isinstance(c, dict) and c.get("id") == cid
+                             and c.get("type") == "recruiter" for c in (channels or []))
+
+
+# The two first moves the age rule asks of a recruiter role (design §6.2), one copy: `_age_rule`
+# prints them in the age line and `age_flag_first_move` hands them to the triage lean, so the line
+# the candidate reads on the screen and the line on the Decide card cannot drift apart.
+AGE_FIRST_MOVE_OVER = ("ask the recruiter what stage the search is in, before research or "
+                       "letters")
+AGE_FIRST_MOVE_UNKNOWN = "ask the recruiter when the search opened"
+
+
+def age_flag_first_move(screen):
+    """The first-move text when a STORED `screen` carries the age flag, else None (dev #716 /
+    public #142; design §6.2). The flag is the age rule's two `review:age` outcomes for a recruiter
+    role: `OVER-THRESHOLD` (older than `search.retained_search_age_days`) and an `UNKNOWN` age (the
+    verdict then names `age` among its review rules, which a non-recruiter role's UNKNOWN never
+    does). An unreadable threshold (`UNREADABLE-THRESHOLD`) is a config fault, not an age flag.
+    Read from the stored screen, so the triage lean needs no profile, channel or date of its own."""
+    if not isinstance(screen, dict):
+        return None
+    rules = screen.get("rules") if isinstance(screen.get("rules"), dict) else {}
+    token = rules.get("age")
+    verdict = screen.get("verdict")
+    reviewed = (isinstance(verdict, str) and verdict.startswith("review:")
+                and "age" in verdict[len("review:"):].split(","))
+    if token == "OVER-THRESHOLD" and reviewed:
+        return AGE_FIRST_MOVE_OVER
+    if token == "UNKNOWN" and reviewed:
+        return AGE_FIRST_MOVE_UNKNOWN
+    return None
+
+
+def _age_rule(opp, profile, channels, today):
+    """`(token, text, review)` for the posting-age rule (dev #716 / public #142; design §6).
+
+    The line always reports the age. Age NEVER changes the verdict except for a role from a
+    recruiter channel: older than `search.retained_search_age_days` (default 35) it reads
+    `OVER <n>d -- FIRST MOVE: ask the recruiter what stage the search is in, before research or
+    letters` and adds `review:age`; an UNKNOWN age on a recruiter role says to ask when the
+    search opened, also `review:age`. Never a removal."""
+    import config_keys as _ck
+    days, source, date = posting_age(opp, today)
+    shown = "UNKNOWN" if days is None else "%dd (%s %s)" % (days, source, date)
+    token = "UNKNOWN" if days is None else "OK"
+    if not _from_recruiter(opp, channels):
+        return token, shown, False
+    try:
+        limit = _ck.resolve_int(profile, _ck.SEARCH_RETAINED_SEARCH_AGE_DAYS)
+    except ValueError as e:
+        return "UNREADABLE-THRESHOLD", "%s -- %s" % (shown, e), True
+    if days is None:
+        return token, "UNKNOWN -- %s" % AGE_FIRST_MOVE_UNKNOWN, True
+    if days > limit:
+        return ("OVER-THRESHOLD",
+                "%s OVER %dd -- FIRST MOVE: %s" % (shown, limit, AGE_FIRST_MOVE_OVER), True)
+    return token, shown, False
+
+
+def screen_rules(opp, profile, all_opps, applications=None, channels=None, today=None):
+    """The minimal screen as STRUCTURED rules: `{"rules", "detail", "verdict"}`.
+
+    jobsearch 0.67.0 (R5, dev #713 / public #145): `record.py screened` stores what this returns,
+    so a stored verdict is computed here, never transcribed by a model; `minimal_screen` below is
+    only a printer over it. `rules` maps rule name -> a short token (comp: the screen_comp verdict;
+    passed: MATCHES / NOT-EXCLUDED; geo: the geo_screen verdict; title: MATCHES / NO-MATCH /
+    NO-CONFIGURED-TITLES; age: UNKNOWN / OK / OVER-THRESHOLD), `detail` the text each prints after
+    its label, `verdict` `keep`, `remove:<rule>[,<rule>]` or `review:<rule>[,<rule>]`.
+
+    Pure over what it is handed, and it never reads `posture`. Only rules that already remove a
+    role can say `remove`: comp BELOW-FLOOR, geo `out`, a passed/excluded duplicate. A question the
+    data cannot answer (a contested setting, an unknown commute, NOT-CAPTURED or PAY-UNCOMPARABLE
+    pay, no geography section, a recruiter role's age) and the advisory title rule say `review`,
+    never `remove` and never a quiet `keep`. UNDISCLOSED comp (recorded none-shown) is KEPT."""
+    import geo_screen as _geo
+    import pipeline_index as _pidx
+    oid = opp.get("id")
+    removes, reviews = [], []
+    rules, detail = {}, {}
+
+    verdict, text = screen_comp(opp, profile)
+    rules["comp"], detail["comp"] = verdict, text
+    if verdict == BELOW:
+        removes.append("comp")
+    elif verdict in (NEEDS_COMMUTE, UNRESOLVED, NOT_CAPTURED, PAY_UNCOMPARABLE):
+        reviews.append("comp")
+
+    others = [o for o in all_opps if o.get("id") != oid]
+    hit = _pidx.find_excluded_match(
+        others, company_id=opp.get("company_id"), title=opp.get("title"),
+        jd_url=opp.get("jd_url"), applications=applications or [])
+    if hit:
+        row, basis = hit
+        rules["passed"] = "MATCHES"
+        detail["passed"] = "MATCHES %s (%s) on %s" % (row.get("id"), row.get("status"), basis)
+        removes.append("passed")
     else:
-        lines.append("  title:     NO CONFIGURED TITLE MATCHES -- advisory")
+        rules["passed"], detail["passed"] = "NOT-EXCLUDED", "NOT EXCLUDED"
+
+    loc = opp.get("location") or {}
+    gverdict, gline, _d = _geo.screen(loc.get("primary") or "", profile,
+                                      work_type=loc.get("type")
+                                      if loc.get("type") in ("remote", "hybrid", "onsite") else None)
+    rules["geo"], detail["geo"] = gverdict, gline
+    if gverdict == _geo.OUT:
+        removes.append("geo")
+    elif gverdict == _geo.UNKNOWN:
+        reviews.append("geo")
+
+    token, text, review = _title_rule(opp, profile)
+    rules["title"], detail["title"] = token, text
+    if review:
         reviews.append("title")
+
+    token, text, review = _age_rule(opp, profile, channels, today)
+    rules["age"], detail["age"] = token, text
+    if review:
+        reviews.append("age")
 
     if removes:
         v = "remove:" + ",".join(removes)
@@ -393,8 +770,84 @@ def minimal_screen(opp, profile, all_opps, applications=None):
         v = "review:" + ",".join(reviews)
     else:
         v = "keep"
-    lines.append("VERDICT %s" % v)
-    return lines, v
+    return {"rules": rules, "detail": detail, "verdict": v}
+
+
+def minimal_screen(opp, profile, all_opps, applications=None, channels=None, today=None):
+    """dev #692 / public #140 -- the scripted screen every captured role gets under EVERY posture.
+    Returns `(lines, verdict)`: the printable block (the header, then SIX rule lines -- comp,
+    passed, geo, title, age, VERDICT -- and nothing else) and the VERDICT string `keep`,
+    `remove:<rule>[,<rule>]` or `review:<rule>[,<rule>]`.
+
+    A thin printer over `screen_rules` (R5): the rules, the verdict and the text of each line are
+    computed there. `age` joined the block in 0.67.0 (dev #716 / public #142); before that it was
+    header, four rules and the VERDICT. Pure over what it is handed, and it never reads `posture`
+    (the point of the criterion)."""
+    r = screen_rules(opp, profile, all_opps, applications, channels, today)
+    d = r["detail"]
+    lines = ["MINIMAL SCREEN %s" % opp.get("id"),
+             "  comp:      %s  %s" % (r["rules"]["comp"], d["comp"]),
+             "  passed:    %s" % d["passed"],
+             "  geo:       %s" % d["geo"],
+             "  title:     %s" % d["title"],
+             "  age:       %s" % d["age"],
+             "VERDICT %s" % r["verdict"]]
+    return lines, r["verdict"]
+
+
+def _squash(text):
+    """Lower-cased, whitespace-collapsed -- the one normalisation a phrase match compares in."""
+    return " ".join(str(text or "").lower().split())
+
+
+def _contains_phrase(haystack, phrase):
+    """Whole-phrase containment on `_squash`ed text: the phrase must start and end on a word
+    boundary, so 'sales' matches 'head of sales' and not 'wholesales'. A PHRASE, never a
+    pattern -- nothing here compiles user text."""
+    h, p = _squash(haystack), _squash(phrase)
+    if not p:
+        return False
+    start = h.find(p)
+    while start != -1:
+        before_ok = start == 0 or not (h[start - 1].isalnum() or h[start - 1] == "_")
+        end = start + len(p)
+        after_ok = end == len(h) or not (h[end].isalnum() or h[end] == "_")
+        if before_ok and after_ok:
+            return True
+        start = h.find(p, start + 1)
+    return False
+
+
+def match_signals(opp, company, jd_text, signals):
+    """The likely-pass signals a role matches, for the LEAN on its Decide card (dev #713 / public
+    #145 T2; design §7.2). Returns `[{"id", "reason", "matched_in"}]` in the order the signals are
+    declared; `matched_in` is the first of the signal's own `fields` that matched.
+
+    A case-insensitive WHOLE-PHRASE match of each `phrase` against the fields it names: `title`
+    (the opportunity's), `jd` (the text the run read, passed in), `company` (the companies row's
+    `name`, `vertical`, `size`, `hq`, `note`). Phrases, not regular expressions (OURS: a
+    user-authored pattern is a parse-refusal surface and a backtracking risk). A match NEVER
+    removes a role and never touches the screen verdict -- it is a reason to look.
+
+    `signals` that fail `config_keys.validate_likely_pass_signals` raise `ValueError` listing the
+    problems: an unreadable list is loud, never an empty one."""
+    import config_keys as _ck
+    problems = _ck.validate_likely_pass_signals(signals)
+    if problems:
+        raise ValueError("screen.likely_pass_signals cannot be read: %s" % "; ".join(problems))
+    fields = {
+        "title": opp.get("title") or "",
+        "jd": jd_text or "",
+        "company": " ".join(str(company.get(k)) for k in ("name", "vertical", "size", "hq", "note")
+                            if isinstance(company, dict) and company.get(k)) if company else "",
+    }
+    hits = []
+    for s in signals or []:
+        for f in s["fields"]:
+            if _contains_phrase(fields.get(f, ""), s["phrase"]):
+                hits.append({"id": s["id"], "reason": s["reason"], "matched_in": f})
+                break
+    return hits
 
 
 def print_options(cfg):
@@ -447,7 +900,8 @@ def main():
             print("No opportunity with id %r" % args.minimal_screen)
             return 2
         out, _verdict = minimal_screen(opp, profile, all_opps,
-                                       applications=_load_optional("applications.jsonl"))
+                                       applications=_load_optional("applications.jsonl"),
+                                       channels=_load_optional("channels.jsonl"))
         print("\n".join(out))
         return 0
 
@@ -492,6 +946,10 @@ def main():
         print("  is what mis-scored <an employer> on 2026-07-22.")
         print("  UNRESOLVED-SETTING is a question FOR THE EMPLOYER, never a silent pick —")
         print("  the posting declared two settings, and the pick would select the comp floor.")
+        print("  NOT-CAPTURED means nobody recorded this role's pay -- NOT that the listing showed")
+        print("  none. PAY-UNCOMPARABLE means pay was recorded but cannot honestly be set against")
+        print("  a floor (not annual, another currency, no compensation.currency set). Both are")
+        print("  reviews, never removals.")
         return 0
 
     print("THREE-LAYER MODEL")

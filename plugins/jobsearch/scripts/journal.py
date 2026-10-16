@@ -978,7 +978,10 @@ def triaged_uids(recs, mailbox, by=None, as_of=None, ttl_days=TRIAGE_TTL_DAYS):
             continue
         uid = r.get("uid")
         if uid:
-            out.add(str(uid))
+            # dev #704 / public #154 (D1) — a uid stored before 0.66.0 is the REPR of a bytes
+            # object ("b'101'"); the fresh uid a sweep now holds is "101". Same message.
+            import validate_data as _vd
+            out.add(str(_vd.normalize_uid(str(uid))))
     return out
 
 

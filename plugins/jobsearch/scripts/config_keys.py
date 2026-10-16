@@ -414,6 +414,238 @@ def resolve_mail_connector(cfg):
     return value
 
 
+# ── sourcing-screen (jobsearch 0.67.0; design-sourcing-screen.md §3.8, R1, R3) ───────────────
+# dev #713/#714/#715/#716 (public #145/#144/#143/#142). Five SCALAR keys join the registry, and
+# two NESTED tables are registered as named constants beside `SEARCH_POSTURES` (group finding 3:
+# a nested table is deliberately kept out of READER_KEYS, which prints one adjustable value per
+# key; folding a table in would print it twice in doctor.py's CONFIG CURRENCY).
+
+# R1 (owner decision 2026-10-14) — the profile's currency is an ISO 4217 code the CANDIDATE sets
+# once. NOT SEEDED, on purpose: "$" is ambiguous, so any seeded value would be a guess, and a guess
+# is exactly what turns a foreign-currency listing into a wrongly REMOVED role. While it is
+# absent every `listed_pay` range screens PAY-UNCOMPARABLE (profile.py), never BELOW-FLOOR; the
+# migration files ONE ask (`set-compensation-currency`) so the absence is a visible question.
+COMPENSATION_CURRENCY = "compensation.currency"
+COMPENSATION_CURRENCY_DEFAULT = None
+
+# §5.4 / B3 — how a HYBRID role inside the commute radius is priced when its anchor declares
+# `bands`. "band" (default): by the commute, like an onsite role; "hybrid-tier": today's
+# behaviour, the out-of-area hybrid floor. Consulted ONLY when bands are declared (B4).
+COMPENSATION_HYBRID_INSIDE_RADIUS = "compensation.hybrid_inside_radius"
+COMPENSATION_HYBRID_INSIDE_RADIUS_DEFAULT = "band"
+COMPENSATION_HYBRID_INSIDE_RADIUS_VALUES = ("band", "hybrid-tier")
+
+# §6.2/6.3 — days after which a role from a recruiter channel is flagged "ask the recruiter what
+# stage the search is in". OURS: no published threshold exists (prior art: searched, found nothing);
+# 35 sits inside the issue's 4-6 week window and at the early end of the 4-8 week shortlist figure
+# the acceptance file records as supporting, not documented.
+SEARCH_RETAINED_SEARCH_AGE_DAYS = "search.retained_search_age_days"
+SEARCH_RETAINED_SEARCH_AGE_DAYS_DEFAULT = 35
+
+# R3 — the triage gate always exits, is bounded, and is measured. Roles the daily run's triage step
+# takes per run (oldest capture first), and the days after which a role still `triaging` surfaces to
+# the candidate as "not yet read (waited K days)" with the lean `ask`.
+SEARCH_TRIAGE_PER_RUN = "search.triage_per_run"
+SEARCH_TRIAGE_PER_RUN_DEFAULT = 10
+SEARCH_TRIAGE_STUCK_DAYS = "search.triage_stuck_days"
+SEARCH_TRIAGE_STUCK_DAYS_DEFAULT = 3
+
+READER_KEYS = READER_KEYS | frozenset({COMPENSATION_CURRENCY, COMPENSATION_HYBRID_INSIDE_RADIUS,
+                                       SEARCH_RETAINED_SEARCH_AGE_DAYS, SEARCH_TRIAGE_PER_RUN,
+                                       SEARCH_TRIAGE_STUCK_DAYS})
+
+_METADATA[COMPENSATION_CURRENCY] = (
+    COMPENSATION_CURRENCY_DEFAULT, "iso4217", ("an ISO 4217 three-letter code, e.g. USD",),
+    "the currency every figure in this profile is in; a listed pay range is compared to your "
+    "floors only when it is in this currency. Unset (the default) means no listed range can be "
+    "compared, so each screens PAY-UNCOMPARABLE and none is ever removed (dev #715)")
+_METADATA[COMPENSATION_HYBRID_INSIDE_RADIUS] = (
+    COMPENSATION_HYBRID_INSIDE_RADIUS_DEFAULT, "enum", COMPENSATION_HYBRID_INSIDE_RADIUS_VALUES,
+    "how a hybrid role inside a commute anchor that declares bands is priced: 'band' (by the "
+    "commute, like an onsite role) or 'hybrid-tier' (the out-of-area hybrid floor, as before). "
+    "Read only when an anchor declares bands (dev #714)")
+_METADATA[SEARCH_RETAINED_SEARCH_AGE_DAYS] = (
+    SEARCH_RETAINED_SEARCH_AGE_DAYS_DEFAULT, "int", (14, 120),
+    "days after which a role from a recruiter channel is flagged: ask the recruiter what stage "
+    "the search is in before research or letters (dev #716)")
+_METADATA[SEARCH_TRIAGE_PER_RUN] = (
+    SEARCH_TRIAGE_PER_RUN_DEFAULT, "int", (1, 50),
+    "roles the daily run's triage step reads per run, oldest capture first; the rest wait and "
+    "the step prints how many (dev #713)")
+_METADATA[SEARCH_TRIAGE_STUCK_DAYS] = (
+    SEARCH_TRIAGE_STUCK_DAYS_DEFAULT, "int", (1, 14),
+    "days a role may stay 'triaging' before it surfaces to you as 'not yet read (waited K "
+    "days)' with the lean 'ask' (dev #713)")
+
+# What `migrate.m_0_67_0_sourcing_screen_config_keys` seeds where absent: (section, key, default)
+# — one place, so the migration and the registry cannot name two different sets. The currency is
+# NOT here (R1): it is a decision, filed as an ask, never a default.
+SOURCING_SCREEN_SEEDED = (
+    ("compensation", "hybrid_inside_radius", COMPENSATION_HYBRID_INSIDE_RADIUS_DEFAULT),
+    ("search", "retained_search_age_days", SEARCH_RETAINED_SEARCH_AGE_DAYS_DEFAULT),
+    ("search", "triage_per_run", SEARCH_TRIAGE_PER_RUN_DEFAULT),
+    ("search", "triage_stuck_days", SEARCH_TRIAGE_STUCK_DAYS_DEFAULT),
+)
+SOURCING_SCREEN_UNSEEDED = (COMPENSATION_CURRENCY,)
+
+
+def validate_currency(value):
+    """The normalised (upper-case) ISO 4217 code for `value`, or `ValueError`. Strict: three ASCII
+    letters and nothing else — a symbol ("$"), a word ("dollars") or a lower-case typo is refused,
+    never coerced to a guess. (Membership in the ISO list is NOT checked: no stdlib list exists and
+    a hand-copied one drifts; the shape is what a comparison needs, since two codes are compared
+    for equality only.)"""
+    if (not isinstance(value, str) or len(value) != 3
+            or not all("A" <= c <= "Z" or "a" <= c <= "z" for c in value)):
+        raise ValueError("%s is %r -- not an ISO 4217 three-letter code (e.g. USD). A symbol such "
+                         "as '$' is ambiguous, so it is never accepted." % (COMPENSATION_CURRENCY, value))
+    return value.upper()
+
+
+def resolve_currency(cfg):
+    """The profile's currency code for a loaded `config.json` dict, or None while the key is
+    absent (R1: unseeded). A present-but-malformed value raises `ValueError` -- never read as
+    absent, never coerced (the `resolve_mail_connector` discipline)."""
+    value, _provenance = describe(cfg, COMPENSATION_CURRENCY)
+    if value is None:
+        return None
+    return validate_currency(value)
+
+
+def resolve_int(cfg, key):
+    """The integer value of a registered `kind == "int"` key: the configured value when it is a
+    real int within the key's bounds, the registered default when the key is absent. A value
+    present but not an int (a bool is not one), or outside the bounds, raises `ValueError` naming
+    the key and the legal range -- a sourcing-screen reader treats that as a loud `review`, never
+    as the default, because a typo that silently fell back would read as a choice the candidate
+    never made."""
+    value, _provenance = describe(cfg, key)
+    default, kind, bounds, _why = metadata(key)
+    if kind != "int":
+        raise KeyError("%r is not an int key" % key)
+    lo, hi = bounds
+    if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+        raise ValueError("config.json %s is %r -- not an integer in %d-%d. Set one, or remove the "
+                         "key to get the default (%d)." % (key, value, lo, hi, default))
+    return value
+
+
+# Nested tables, registered as NAMED CONSTANTS (group finding 3), each with a validator that
+# returns a list of plain-words problems ([] = valid). A reader that cannot trust a table treats
+# it as LOUD (NEEDS-COMMUTE-CHECK / no signals reported), never as an empty table.
+#
+# `geography.commute_anchors[].bands` -- #714 B1: `[{max_minutes:int, floor:int}]`, ascending, the
+# last `max_minutes <=` the anchor's own `max_commute_minutes`. Absent (or `[]`) = the anchor
+# declares no bands = today's floors, line for line (B4).
+# `geography.commute_anchors[].includes[]` -- each entry a string (today) or `{place, minutes}`
+# (the minutes from the candidate's home to that place, used when a role names the place but
+# carries no `location.commute_minutes` of its own, §5.4 step 2).
+GEOGRAPHY_COMMUTE_BANDS = "geography.commute_anchors[].bands"
+GEOGRAPHY_COMMUTE_INCLUDES = "geography.commute_anchors[].includes[]"
+
+# `screen.likely_pass_signals` -- #713 T2: `[{id, phrase, fields:[title|jd|company], reason}]`.
+# A match is a LEAN, shown on the Decide card with its reason, and NEVER removes a role.
+SCREEN_LIKELY_PASS_SIGNALS = "screen.likely_pass_signals"
+SCREEN_SIGNAL_FIELDS = ("title", "jd", "company")
+
+
+def _is_pos_int(v):
+    return isinstance(v, int) and not isinstance(v, bool) and v > 0
+
+
+def validate_commute_bands(anchor):
+    """Problems with one anchor's `bands` ([] when valid or undeclared)."""
+    bands = anchor.get("bands") if isinstance(anchor, dict) else None
+    if bands is None or bands == []:
+        return []
+    if not isinstance(bands, list):
+        return ["bands must be a list of {max_minutes, floor}, got %s" % type(bands).__name__]
+    problems, prev = [], 0
+    for i, b in enumerate(bands):
+        if not isinstance(b, dict) or set(b) != {"max_minutes", "floor"}:
+            problems.append("bands[%d] must be exactly {max_minutes, floor}" % i)
+            continue
+        if not _is_pos_int(b["max_minutes"]) or not _is_pos_int(b["floor"]):
+            problems.append("bands[%d]: max_minutes and floor must be positive integers" % i)
+            continue
+        if b["max_minutes"] <= prev:
+            problems.append("bands[%d]: max_minutes %d is not above the previous band's %d "
+                            "(bands run in ascending order)" % (i, b["max_minutes"], prev))
+        prev = max(prev, b["max_minutes"])
+    ceiling = anchor.get("max_commute_minutes")
+    if not problems and _is_pos_int(ceiling) and prev > ceiling:
+        problems.append("the last band reaches %d minutes, beyond the anchor's own "
+                        "max_commute_minutes %d" % (prev, ceiling))
+    return problems
+
+
+def commute_bands(anchor):
+    """`([(max_minutes, floor), ...], problems)` for one anchor: the bands in ascending order when
+    valid; `([], [])` when it declares none; `([], problems)` when it declares some it cannot
+    read (the caller must treat that as loud, not as 'no bands')."""
+    problems = validate_commute_bands(anchor)
+    if problems:
+        return [], problems
+    bands = anchor.get("bands") if isinstance(anchor, dict) else None
+    return [(b["max_minutes"], b["floor"]) for b in (bands or [])], []
+
+
+def validate_commute_includes(anchor):
+    """Problems with one anchor's `includes[]` ([] when valid or undeclared): each entry a
+    non-empty string, or `{place, minutes}` with a non-empty place and positive integer minutes."""
+    inc = anchor.get("includes") if isinstance(anchor, dict) else None
+    if inc is None:
+        return []
+    if not isinstance(inc, list):
+        return ["includes must be a list, got %s" % type(inc).__name__]
+    problems = []
+    for i, e in enumerate(inc):
+        if isinstance(e, str):
+            if not e.strip():
+                problems.append("includes[%d] is an empty string" % i)
+        elif isinstance(e, dict):
+            if (set(e) != {"place", "minutes"} or not isinstance(e["place"], str)
+                    or not e["place"].strip() or not _is_pos_int(e["minutes"])):
+                problems.append("includes[%d] must be a string or {place, minutes} with a "
+                                "positive integer minutes" % i)
+        else:
+            problems.append("includes[%d] must be a string or {place, minutes}" % i)
+    return problems
+
+
+def validate_likely_pass_signals(signals):
+    """Problems with `screen.likely_pass_signals` ([] when valid, absent or empty): each signal
+    `{id, phrase, fields, reason}` with a unique non-empty id, a non-empty phrase (a PHRASE, never a
+    regular expression: OURS, design 7.2), at least one field of title/jd/company, and a reason --
+    a signal without a reason is refused, since the reason is what the Decide card shows."""
+    if signals is None or signals == []:
+        return []
+    if not isinstance(signals, list):
+        return ["%s must be a list" % SCREEN_LIKELY_PASS_SIGNALS]
+    problems, seen = [], set()
+    for i, s in enumerate(signals):
+        if not isinstance(s, dict) or set(s) != {"id", "phrase", "fields", "reason"}:
+            problems.append("signal[%d] must be exactly {id, phrase, fields, reason}" % i)
+            continue
+        sid = s["id"]
+        if not isinstance(sid, str) or not sid.strip():
+            problems.append("signal[%d]: id must be a non-empty string" % i)
+        elif sid in seen:
+            problems.append("signal[%d]: duplicate id %r" % (i, sid))
+        else:
+            seen.add(sid)
+        if not isinstance(s["phrase"], str) or not s["phrase"].strip():
+            problems.append("signal[%d]: phrase must be a non-empty string" % i)
+        f = s["fields"]
+        if (not isinstance(f, list) or not f
+                or any(x not in SCREEN_SIGNAL_FIELDS for x in f)):
+            problems.append("signal[%d]: fields must be a non-empty list drawn from %s"
+                            % (i, "/".join(SCREEN_SIGNAL_FIELDS)))
+        if not isinstance(s["reason"], str) or not s["reason"].strip():
+            problems.append("signal[%d]: a signal without a reason is refused (the reason is "
+                            "what the Decide card shows)" % i)
+    return problems
+
 
 def seed_default(dotted_key):
     """The registered default `doctor.py --fix` seeds for `dotted_key` (e.g. "search.posture")

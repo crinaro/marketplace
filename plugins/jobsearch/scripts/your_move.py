@@ -23,7 +23,11 @@ renders exactly what `classify_opportunities` / `classify_channels` say.
     now          owner is the candidate, status is live, no unfired trigger, and the date is
                  today or in the past (or absent).
     decide       owner is the candidate, status is `backlog`, verdict is `undecided`, no
-                 unfired trigger — REGARDLESS of next_action_date. See below.
+                 unfired trigger — REGARDLESS of next_action_date, and the system has already
+                 triaged the role (`triage_missing` is empty) or has waited too long to. See below.
+    triaging     the same backlog + undecided row, but the system has not finished reading it
+                 (dev #713 / public #145). SYSTEM-OWNED: not in NEEDS_YOU_ROLE_STATES, so the
+                 candidate is never asked pursue-or-pass on a role nobody has read. See below.
 
 ## ⭐ `decide` — a decision owed is not an action scheduled (dev #142 / public #24)
 
@@ -40,6 +44,28 @@ undecided` (pursue/pass still owed → `decide`, shown with its act-by date as a
 a reveal date) versus `verdict: parked` (a decided "not now" → stays off the surface, which
 is what keeps #79's clutter out). `blocked_until` keeps its full precedence here: an
 undecided row genuinely gated on another party is `waiting`/`unresolved`, never `decide`.
+
+## ⭐ `triaging` — a role is the candidate's decision only once the system has read it (dev #713 / public #145)
+
+A role used to reach `decide` the moment it was captured, so the candidate was asked pursue-or-pass
+on roles nobody had read: no JD read, no pay as written, no work setting, no screen, no lean.
+`triage_missing()` is the ONE definition of what a role still lacks; non-empty means the role is
+`triaging` and system-owned. It is DERIVED, never stored (design-sourcing-screen.md §7.1): on
+upgrade every existing undecided backlog role lacking a field simply reads `triaging` and drains
+through the daily run's triage step (`--triage-queue` below), which takes at most
+`search.triage_per_run` roles per run, oldest first.
+
+⭐ THE GATE ALWAYS EXITS (design R3). A gate that can wait forever is a role the candidate never
+sees. Two bounds, both applied HERE and nowhere else:
+
+  * a read that was TRIED AND FAILED satisfies `jd-read` — `fit.jd_source` is `unavailable:
+    <reason>` for a closed set of reasons (`TRIAGE_UNAVAILABLE_REASONS`). The role goes to
+    `decide` with the lean defaulted to `ask` and the line `not read: <reason>`. A null
+    `jd_source` still means NOT TRIED.
+  * a role still `triaging` after `search.triage_stuck_days` days surfaces in `decide` as
+    `not yet read (waited K days)` with the lean `ask`. The age runs from the role's FIRST
+    SIGHTING. A role with no readable sighting date has no age to wait out, so it surfaces
+    at once (`age unknown`) — an unknown age is never invented as zero.
 
 ## The `blocked_until` field
 
@@ -70,6 +96,12 @@ Usage:
     python3 your_move.py            # human-readable: every role and channel, with its state
     python3 your_move.py --json
     python3 your_move.py --check    # exit 1 on an unresolved / unreadable blocked_until
+    python3 your_move.py --triage-queue [--per-run N]
+                                    # JSON: the roles this run's triage step reads next (at most
+                                    # search.triage_per_run, oldest first) and the waiting counts
+    python3 your_move.py --triage-report --batch ID,ID
+                                    # AFTER the reads: prints `triaging: N waiting, M triaged
+                                    # this run, K over the stuck bound`
 
 Python 3.9+. Standard library only.
 """
@@ -106,7 +138,7 @@ PreconditionError = _pre.PreconditionError
 # through the rules below; see validate_data.TERMINAL_OPP_STATUSES for what has ended.
 LIVE_OPP_STATUSES = {"active-pursuit", "needs-resolution"}
 
-ROLE_STATES = ("unresolved", "waiting", "scheduled", "now", "decide")
+ROLE_STATES = ("unresolved", "waiting", "scheduled", "now", "decide", "triaging")
 CHANNEL_STATES = ("now", "scheduled", "fulfilled")
 
 # ⭐ ATTENTION — the router's two counts, as a per-row value (public #48, stage 1). The
@@ -125,14 +157,18 @@ CHANNEL_STATES = ("now", "scheduled", "fulfilled")
 # in-flight  ⇔ every other LIVE role (not terminal): waiting on the other side,
 #              scheduled, owned by the run, or a decided backlog row.
 ATTENTION = ("needs-you", "in-flight")
+#
+# `triaging` (dev #713 / public #145) is deliberately in NEITHER count: it is system-owned, so a
+# role the run is still reading is in flight, and "needs you" never includes it.
 NEEDS_YOU_ROLE_STATES = frozenset({"now", "decide"})
 
 
-def attention_by_id(opps, owner_token, today=None):
+def attention_by_id(opps, owner_token, today=None, stuck_days=None):
     """{opp id: ATTENTION value} for every LIVE opportunity — the one definition the
     dashboard's state filter and its router in-flight count both read, so the label
     population and the router number cannot disagree."""
-    needs = {o.get("id") for o, st, _w in classify_opportunities(opps, owner_token, today)
+    needs = {o.get("id") for o, st, _w in classify_opportunities(opps, owner_token, today,
+                                                                 stuck_days)
              if st in NEEDS_YOU_ROLE_STATES and o.get("id")}
     out = {}
     for o in opps:
@@ -831,7 +867,18 @@ def workflow_state(root, opp, apps, today=None, window=None):
 #                   says its rows ARE the old `phase-pipeline-now` opportunity rows - that
 #                   membership already drives the router's pipeline number, so the chip, the
 #                   list and the router are one query (attention_by_id's own invariant).
-#   new             cell 1 - the application axis `undecided`
+#   decide          a DECLARED CROSS-CUT (dev #713 / public #145, design R4): the roles
+#                   `classify_opportunities` puts in `decide` — a pursue/pass owed — i.e.
+#                   `decide_ids`, the ONE definition. `your-move` is `decide_ids` plus the `now`
+#                   roles, and a test proves both against the rendered page.
+#   triaging        a PARTITION option (same issue; owner decision 2026-10-14: unread roles leave
+#                   the decision list until read): the roles the system is still reading,
+#                   `triaging_ids`. System-owned: in neither `your-move` nor `decide`, and NOT in
+#                   `new` - `pursuit_state` still projects such a role as `new` (it is an
+#                   undecided role), and the dashboard's `pursuit_by_id` moves it to `triaging`
+#                   because only the role classification knows it is unread. A role is in `new`
+#                   or in `triaging`, never both.
+#   new             cell 1 - the application axis `undecided`, READ (not `triaging`)
 #   conversation    cells 4, A and cell 6 where an inbound has EVER arrived
 #   sent            cells 3, 6 (no inbound ever), 7, 8 - an application or a touch is out
 #   not-sent        cell 2 - verdict pursue, nothing submitted: "queued to apply" (r3's label)
@@ -841,13 +888,15 @@ def workflow_state(root, opp, apps, today=None, window=None):
 #   unclassifiable  a live row whose state cannot be derived - LOUD, rendered only when
 #                   non-empty, naming the field it could not read
 #
-# Everything except `your-move` PARTITIONS the live rows: `pursuit_state` returns exactly one.
+# Everything except the cross-cuts PARTITIONS the live rows: `pursuit_state` returns exactly one.
 # ⚠️ Cell 3 (applied, no outreach since) sits under `sent`, not `not-sent`: r2 grouped it with
 # "nothing sent yet", but r3 relabelled that option "queued to apply", and an application that
 # already went in is not queued. The router's `applying` count is this option's population.
-PURSUIT_CROSS_CUTS = ("your-move",)
+PURSUIT_CROSS_CUTS = ("your-move", "decide")
 PURSUIT_STATES = {
     "your-move": ("needs-you",),
+    "decide": ("decide",),
+    "triaging": ("triaging",),
     "new": ("new",),
     "conversation": ("reply-owed", "accepted-your-move", "awaiting-reply+inbound-ever"),
     "sent": ("applied-no-outreach", "awaiting-reply", "silent-decide", "ats-only"),
@@ -888,7 +937,8 @@ def _latest_application_date(apps):
 
 def pursuit_state(root, opp, apps, today=None, window=None, ws=None):
     """The ONE partition token of an opportunity, as a dict: `state` (one of
-    `PURSUIT_PARTITION`), `cell` (the states-and-views cell it came from, the row's own
+    `PURSUIT_PARTITION` except `triaging`, which needs the role classification and is assigned by
+    the dashboard's `pursuit_by_id`, never here), `cell` (the states-and-views cell it came from, the row's own
     finer chip), `ended_because` (the cause while `state == 'ended'`), `missing` (the field a
     loud `unclassifiable` could not read, else None) and `last_activity_on` (the newest event
     or application date - the sort key's "days since anything last happened", None when the
@@ -1132,14 +1182,221 @@ def invisible_reason(o, owner_token):
             "'undecided')" % (st, " / ".join(sorted(LIVE_OPP_STATUSES))))
 
 
-def classify_opportunities(opps, owner_token, today=None):
+# ─────────────────────────────────────────────────────────────────────────────
+# THE TRIAGE GATE — dev #713 / public #145 (design-sourcing-screen.md §7.1, R3).
+# See the module docstring's `triaging` section for the rule; this is its one implementation.
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Why a JD read was TRIED AND FAILED (R3). A closed set: the validator (validate_data.py) checks
+# the same prefix, and an unlisted reason does NOT satisfy `jd-read` here — an unreadable value is
+# loud (the role keeps waiting, then surfaces as stuck), never silently accepted.
+TRIAGE_UNAVAILABLE_PREFIX = "unavailable:"
+TRIAGE_UNAVAILABLE_REASONS = ("login-wall", "dead-link", "no-url", "surface-cannot-read")
+# What a lean may say. `ask` is the default when the system could not form one.
+TRIAGE_LEANS = ("pursue", "pass", "ask")
+# Everything a role must carry before the candidate is asked about it, in the order the triage
+# step fills them. These are `triage_missing()`'s tokens.
+TRIAGE_FIELDS = ("jd-read", "pay-as-written", "setting-as-written", "screen", "lean")
+
+# The two bounds (R3). Read by their dotted `config.json` path, with the registered default and
+# range, so this module works on a profile whose file predates the keys (the 0.67.0 migration seeds
+# them). An out-of-range or non-integer value falls back to the default here, and doctor.py's
+# CONFIG CURRENCY is what names it — this reader never raises into a dashboard render.
+TRIAGE_STUCK_DAYS_KEY = "search.triage_stuck_days"
+TRIAGE_STUCK_DAYS_DEFAULT = 3
+TRIAGE_STUCK_DAYS_BOUNDS = (1, 14)
+TRIAGE_PER_RUN_KEY = "search.triage_per_run"
+TRIAGE_PER_RUN_DEFAULT = 10
+TRIAGE_PER_RUN_BOUNDS = (1, 50)
+
+
+def _triage_setting(key, default, bounds, cfg=None):
+    if cfg is None:
+        try:
+            cfg = _profile.config()
+        except (OSError, ValueError, KeyError):
+            cfg = {}
+    node = cfg
+    for part in key.split("."):
+        node = node.get(part) if isinstance(node, dict) else None
+    if isinstance(node, bool) or not isinstance(node, int):
+        return default
+    return node if bounds[0] <= node <= bounds[1] else default
+
+
+def triage_stuck_days(cfg=None):
+    """Days a role may stay `triaging` before it surfaces in Decide as not yet read."""
+    return _triage_setting(TRIAGE_STUCK_DAYS_KEY, TRIAGE_STUCK_DAYS_DEFAULT,
+                           TRIAGE_STUCK_DAYS_BOUNDS, cfg)
+
+
+def triage_per_run(cfg=None):
+    """At most this many roles are read by one run's triage step."""
+    return _triage_setting(TRIAGE_PER_RUN_KEY, TRIAGE_PER_RUN_DEFAULT,
+                           TRIAGE_PER_RUN_BOUNDS, cfg)
+
+
+def jd_unavailable_reason(opp):
+    """The closed reason a JD read was tried and failed, or None. `fit.jd_source` null (or any
+    other string) is NOT this: null means not tried, and an `unavailable:` value whose reason is
+    not in `TRIAGE_UNAVAILABLE_REASONS` is unreadable, so it returns None too."""
+    fit = opp.get("fit")
+    src = fit.get("jd_source") if isinstance(fit, dict) else None
+    if not isinstance(src, str) or not src.startswith(TRIAGE_UNAVAILABLE_PREFIX):
+        return None
+    reason = src[len(TRIAGE_UNAVAILABLE_PREFIX):].strip()
+    return reason if reason in TRIAGE_UNAVAILABLE_REASONS else None
+
+
+def _recorded_lean(opp):
+    """The stored `lean` object when it is well-formed, else None: a `lean` in
+    `TRIAGE_LEANS` and a non-empty one-line `line` (design §3.7)."""
+    ln = opp.get("lean")
+    if (isinstance(ln, dict) and ln.get("lean") in TRIAGE_LEANS
+            and isinstance(ln.get("line"), str) and ln["line"].strip()):
+        return ln
+    return None
+
+
+def triage_missing(opp):
+    """[token, ...] naming each thing this role still lacks before it is the candidate's
+    decision — the ONE definition of the triage gate (dev #713 / public #145, design §7.1).
+    Empty means triaged. Tokens are `TRIAGE_FIELDS`, in that order.
+
+      jd-read             `fit.analyzed_on` and `fit.jd_source`, or a read that was tried and
+                          failed (`unavailable: <reason>`, R3)
+      pay-as-written      `listed_pay` (even `none-shown`), or the candidate's own `comp.max`
+      setting-as-written  `location.declared`, the posting's verbatim text (`none stated` counts)
+      screen              the stored hard-screen result (`screen.verdict`)
+      lean                a well-formed `lean`; WAIVED when the read is unavailable, because the
+                          lean then defaults to `ask` (`decide_lean`)
+
+    A stale screen is not re-derived here: staleness needs an edit timestamp the store does
+    not carry, and a second derivation is how Decide and needs-you drifted apart."""
+    missing = []
+    reason = jd_unavailable_reason(opp)
+    fit = opp.get("fit") if isinstance(opp.get("fit"), dict) else {}
+    src = fit.get("jd_source")
+    read = bool(fit.get("analyzed_on")) and isinstance(src, str) and bool(src.strip()) \
+        and not src.startswith(TRIAGE_UNAVAILABLE_PREFIX)
+    if not (read or reason):
+        missing.append("jd-read")
+    lp, comp = opp.get("listed_pay"), opp.get("comp")
+    if not ((isinstance(lp, dict) and lp.get("state"))
+            or (isinstance(comp, dict) and comp.get("max") is not None)):
+        missing.append("pay-as-written")
+    loc = opp.get("location")
+    declared = loc.get("declared") if isinstance(loc, dict) else None
+    if not (isinstance(declared, str) and declared.strip()):
+        missing.append("setting-as-written")
+    scr = opp.get("screen")
+    if not (isinstance(scr, dict) and scr.get("verdict")):
+        missing.append("screen")
+    if not (_recorded_lean(opp) or reason):
+        missing.append("lean")
+    return missing
+
+
+def _iso_day(v):
+    try:
+        return datetime.date.fromisoformat(str(v)[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def first_seen(opp):
+    """ISO date of the role's first sighting (the earliest readable `sightings[].seen_on`), or
+    None. The triage clock and the oldest-first drain order both run from here."""
+    days = [d for d in (_iso_day(s.get("seen_on")) for s in (opp.get("sightings") or [])
+                        if isinstance(s, dict)) if d]
+    return min(days).isoformat() if days else None
+
+
+def triage_waited_days(opp, today):
+    """Whole days since the first sighting, or None when there is no readable sighting date or
+    it lies in the future — an unknown age is never invented as zero."""
+    seen, now = _iso_day(first_seen(opp)), _iso_day(today)
+    if seen is None or now is None:
+        return None
+    n = (now - seen).days
+    return n if n >= 0 else None
+
+
+def triage_is_stuck(opp, today, stuck_days):
+    """Has this untriaged role waited past the bound? An UNKNOWN age counts as stuck: a gate
+    that cannot measure its own wait must not be able to hold a role forever."""
+    waited = triage_waited_days(opp, today)
+    return waited is None or waited >= stuck_days
+
+
+def _stuck_line(opp, today):
+    """The Decide label for a role that surfaced without being fully triaged: why there is no
+    real lean. A read that was tried and failed says so; otherwise it is the wait."""
+    reason = jd_unavailable_reason(opp)
+    if reason:
+        return "not read: %s" % reason
+    waited = triage_waited_days(opp, today)
+    return ("not yet read (waited %d days)" % waited if waited is not None
+            else "not yet read (age unknown)")
+
+
+def age_first_move_line(opp):
+    """`FIRST MOVE: <text>` when the role's STORED screen carries the age flag (an over-age or
+    unknown-age recruiter role, dev #716 / public #142, design §6.2), else None. One text with the
+    screen's own age line (`profile.age_flag_first_move`)."""
+    text = _profile.age_flag_first_move(opp.get("screen"))
+    return "FIRST MOVE: %s" % text if text else None
+
+
+def decide_lean(opp, today=None, stuck_days=None):
+    """The lean the Decide card shows for `opp`: {"lean", "line", "signals", "source"} or None.
+    `source` says where it came from:
+
+      recorded     the role is fully triaged and the triage step wrote the lean (with any
+                   matched likely-pass `signals`)
+      unavailable  fully triaged around a read that was tried and failed: `ask`, `not read:
+                   <reason>` (R3). When the stored screen also carries the age flag (an over-age
+                   or unknown-age recruiter role, design §6.2) the line adds `FIRST MOVE: <text>`;
+                   the default for an age-flagged role is `ask` whichever way the lean is reached
+                   (`record.py lean` with no `--lean` writes it, dev #716)
+      stuck        NOT fully triaged but past the bound: `ask`, `not yet read (waited K days)`;
+                   a stored lean on a half-triaged role is not trusted over the label
+
+    None for a role still inside the bound. A lean NEVER removes a role."""
+    today = today or datetime.date.today().isoformat()
+    if triage_missing(opp):
+        stuck_days = triage_stuck_days() if stuck_days is None else stuck_days
+        if triage_is_stuck(opp, today, stuck_days):
+            return {"lean": "ask", "line": _stuck_line(opp, today), "signals": [],
+                    "source": "stuck"}
+        return None
+    rec = _recorded_lean(opp)
+    if rec:
+        sigs = rec.get("signals")
+        return {"lean": rec["lean"], "line": rec["line"].strip(),
+                "signals": [x for x in sigs if isinstance(x, dict)] if isinstance(sigs, list)
+                else [], "source": "recorded"}
+    line = _stuck_line(opp, today)
+    first_move = age_first_move_line(opp)
+    if first_move:
+        line = "%s; %s" % (line, first_move)
+    return {"lean": "ask", "line": line, "signals": [], "source": "unavailable"}
+
+
+def classify_opportunities(opps, owner_token, today=None, stuck_days=None):
     """[(opp, state, why)] for every opportunity `is_your_move_candidate` admits — the ONE
     definition of Your Move role-group membership. `generate_dashboard.py` consumes this;
     it must never re-derive the filter itself.
 
     A `backlog`+`undecided` row lands in `decide` regardless of its date (dev #142 — the
     date is a deadline on a decision already owed, not a reveal date), unless an unfired or
-    unreadable `blocked_until` outranks it exactly as it would for a live row."""
+    unreadable `blocked_until` outranks it exactly as it would for a live row.
+
+    ⭐ dev #713 / public #145 — it lands in `decide` only once the system has triaged it
+    (`triage_missing` empty). Until then it is `triaging`, system-owned and not "needs you",
+    UNLESS it has waited `stuck_days` (default `search.triage_stuck_days`) from its first
+    sighting: then it surfaces in `decide` as `not yet read (waited K days)` (R3 — the gate
+    always exits). `stuck_days` is resolved once per call, not per row."""
     today = today or datetime.date.today().isoformat()
     out = []
     for o in opps:
@@ -1148,11 +1405,93 @@ def classify_opportunities(opps, owner_token, today=None):
         state, why = role_state(o, today)
         if o.get("status") == "backlog" and state in ("scheduled", "now"):
             d = o.get("next_action_date")
-            state = "decide"
-            why = ("verdict is 'undecided' — a pursue/pass decision is owed%s"
-                   % (" (act by %s)" % d if d else ""))
+            act = " (act by %s)" % d if d else ""
+            missing = triage_missing(o)
+            if not missing:
+                state = "decide"
+                why = "verdict is 'undecided' — a pursue/pass decision is owed%s" % act
+            else:
+                if stuck_days is None:
+                    stuck_days = triage_stuck_days()
+                if triage_is_stuck(o, today, stuck_days):
+                    state = "decide"
+                    why = ("verdict is 'undecided' — a pursue/pass decision is owed%s; %s, "
+                           "lean: ask" % (act, _stuck_line(o, today)))
+                else:
+                    state = "triaging"
+                    why = "the system is still reading this role — missing: %s" % ", ".join(missing)
         out.append((o, state, why))
     return out
+
+
+def decide_ids(opps, owner_token, today=None, stuck_days=None):
+    """{opp id} the candidate owes a pursue/pass decision on — the ONE definition of the Decide
+    group (dev #713 / public #145, design R4). The dashboard's Decide group and its needs-you
+    filter (`decide_ids` plus the `now` roles) both render exactly this set, and a test proves
+    it against the rendered page."""
+    return {o["id"] for o, st, _w in classify_opportunities(opps, owner_token, today, stuck_days)
+            if st == "decide" and o.get("id")}
+
+
+def triaging_ids(opps, owner_token, today=None, stuck_days=None):
+    """{opp id} the system is still reading — the `triaging` group, owned by nobody's queue."""
+    return {o["id"] for o, st, _w in classify_opportunities(opps, owner_token, today, stuck_days)
+            if st == "triaging" and o.get("id")}
+
+
+def _untriaged(opps, owner_token, today, stuck_days):
+    """[(opp, state)] for every role the triage step should read: `triaging`, and `decide`
+    rows that surfaced only by the stuck rule (still missing fields). Oldest first sighting
+    first, an unknown age before any known one (it is the one most likely to be starved),
+    then id for a stable order."""
+    rows = [(o, st) for o, st, _w in classify_opportunities(opps, owner_token, today, stuck_days)
+            if st in ("triaging", "decide") and triage_missing(o)]
+    rows.sort(key=lambda r: (first_seen(r[0]) or "", str(r[0].get("id") or "")))
+    return rows
+
+
+def triage_queue(opps, owner_token, today=None, per_run=None, stuck_days=None):
+    """What one run's triage step does next, as a dict: `cap` (roles this run may read),
+    `waiting` (roles in `triaging`), `over_stuck_bound` (roles surfaced in Decide by the stuck
+    rule and still unread) and `batch` — at most `cap` rows `{id, title, state, missing,
+    first_seen, waited_days}`, oldest capture first. The cap is the bound that makes the drain
+    finite (R3): a backlog of any size empties in ceil(waiting / cap) runs."""
+    today = today or datetime.date.today().isoformat()
+    stuck_days = triage_stuck_days() if stuck_days is None else stuck_days
+    cap = triage_per_run() if per_run is None else per_run
+    rows = _untriaged(opps, owner_token, today, stuck_days)
+    return {
+        "cap": cap,
+        "waiting": sum(1 for _o, st in rows if st == "triaging"),
+        "over_stuck_bound": sum(1 for _o, st in rows if st == "decide"),
+        "batch": [{"id": o.get("id"), "title": o.get("title"), "state": st,
+                   "missing": triage_missing(o), "first_seen": first_seen(o),
+                   "waited_days": triage_waited_days(o, today)}
+                  for o, st in rows[:cap]],
+    }
+
+
+def triage_line(waiting, triaged, over):
+    """The one line the triage step prints (design R3): the measure of the drain."""
+    return ("triaging: %d waiting, %d triaged this run, %d over the stuck bound"
+            % (waiting, triaged, over))
+
+
+def triage_report(opps, owner_token, batch_ids, today=None, stuck_days=None):
+    """The counts behind `triage_line`, measured AFTER the run's reads: `waiting` roles still
+    `triaging`, `triaged` of this run's `batch_ids` that no longer lack anything (or left the
+    queue because the screen removed them), `over_stuck_bound` roles in Decide by the stuck
+    rule and still unread. Returns {"waiting", "triaged", "over_stuck_bound", "line"}."""
+    today = today or datetime.date.today().isoformat()
+    stuck_days = triage_stuck_days() if stuck_days is None else stuck_days
+    rows = _untriaged(opps, owner_token, today, stuck_days)
+    still = {o.get("id") for o, _st in rows}
+    waiting = sum(1 for _o, st in rows if st == "triaging")
+    over = sum(1 for _o, st in rows if st == "decide")
+    known = {o.get("id") for o in opps}
+    triaged = sum(1 for b in dict.fromkeys(batch_ids) if b in known and b not in still)
+    return {"waiting": waiting, "triaged": triaged, "over_stuck_bound": over,
+            "line": triage_line(waiting, triaged, over)}
 
 
 def derive_channel_last_touch(channel, messages, involvements=()):
@@ -1526,15 +1865,52 @@ def report(root, today=None):
     }
 
 
+def _triage_cli(root, args):
+    """`--triage-queue` / `--triage-report` (dev #713). Reads the profile at `root`, writes
+    nothing. Always exits 0 on a readable profile: the queue is information for the run, not
+    a gate that can wedge it. A bad `--per-run` or a `--triage-report` without `--batch` is a
+    usage error (2), because a silent default there would print a drain measure of nothing."""
+    if args.per_run is not None and not (TRIAGE_PER_RUN_BOUNDS[0] <= args.per_run
+                                         <= TRIAGE_PER_RUN_BOUNDS[1]):
+        print("--per-run must be %d-%d, got %d" % (TRIAGE_PER_RUN_BOUNDS + (args.per_run,)),
+              file=sys.stderr)
+        return 2
+    if args.triage_report and not args.batch.strip():
+        print("--triage-report needs --batch ID,ID (the ids --triage-queue handed this run)",
+              file=sys.stderr)
+        return 2
+    opps = _load_jsonl(root, "opportunities.jsonl")
+    _touches.enrich_opportunities(root, opps)
+    _apps.enrich_opportunities(root, opps)
+    owner = _profile.owner_token()
+    if args.triage_queue:
+        print(json.dumps(triage_queue(opps, owner, per_run=args.per_run), indent=1))
+        return 0
+    ids = [i.strip() for i in args.batch.split(",") if i.strip()]
+    print(triage_report(opps, owner, ids)["line"])
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--check", action="store_true",
                     help="exit 1 if any role's blocked_until is unresolved or unreadable")
+    ap.add_argument("--triage-queue", action="store_true",
+                    help="print, as JSON, the next batch of roles the daily run's triage step "
+                         "reads (dev #713): at most --per-run, oldest first sighting first")
+    ap.add_argument("--triage-report", action="store_true",
+                    help="print the one-line drain measure after the reads; needs --batch")
+    ap.add_argument("--per-run", type=int, default=None, metavar="N",
+                    help="--triage-queue: override search.triage_per_run for this call")
+    ap.add_argument("--batch", default="", metavar="ID,ID",
+                    help="--triage-report: the ids --triage-queue handed this run")
     args = ap.parse_args()
 
     root = profile_root()
+    if args.triage_queue or args.triage_report:
+        return _triage_cli(root, args)
     data = report(root)
 
     if args.json:
@@ -1542,7 +1918,7 @@ def main():
     else:
         print("YOUR MOVE — role and channel group membership\n")
         marks = {"now": "🎯", "scheduled": "🗓️ ", "waiting": "⏳", "unresolved": "🚧",
-                 "decide": "🔎"}
+                 "decide": "🔎", "triaging": "📖"}
         for r in data["roles"]:
             print("  %s %-10s %s" % (marks[r["state"]], r["state"],
                                      (r["title"] or r["id"] or "?")[:60]))

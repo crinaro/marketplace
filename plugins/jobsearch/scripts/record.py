@@ -75,11 +75,17 @@ check_action_claims.py remains the detection backstop for them.
 
 Usage:
     python3 scripts/record.py create <opp_id> '{"company_id":"...","title":"...", ...}'
+    python3 scripts/record.py create <opp_id> '{...}' --from-item <capture-role item id>
+                                              # + the sweep's parsed pay, posted, setting
     python3 scripts/record.py set <opp_id> stage screening
     python3 scripts/record.py set <opp_id> next_action_owner <candidate>   # e.g. your own name, lowercased
     python3 scripts/record.py set-in <opp_id> outreach contact_id=jane-doe outcome replied
     python3 scripts/record.py append <opp_id> research_log '{"date":"2026-08-04","note":"..."}'
     python3 scripts/record.py show <opp_id>
+    python3 scripts/record.py screened <opp_id>            # store the minimal screen it computes
+    python3 scripts/record.py lean <opp_id> --lean pursue|pass|ask --line "<one line>" [--jd-file P]
+    python3 scripts/record.py listed-pay <opp_id> --none-shown | --stated R[;R] | --estimate R[;R]
+    python3 scripts/record.py posted <opp_id> --document-date D | --shown-age N | --ats-date D | --unknown
     ... --file companies|channels to address the other stores. --dry-run to preview.
     ... --already-locked when the calling run already holds the run lock (see above).
 
@@ -168,7 +174,15 @@ OPS = ("create", "set", "set-in", "append", "show", "fields",
        # dev #686 / public #139 (E2) — link a person to an opportunity later, as an explicit
        # act. An early-return verb like touched/answered/received: --dry-run proven in
        # test_record.py's VERB_ARGS.
-       "involve")
+       "involve",
+       # jobsearch 0.67.0 (dev #713-#716 / public #142-#145) -- the four SOURCING-SCREEN verbs. Each
+       # writes one top-level field of ONE opportunity through the ordinary lock / validate /
+       # rollback path below (they are branches of the shared mutation chain, not early returns),
+       # and each stores what a SCRIPT computed -- never a value a model typed in:
+       # `screened` re-runs profile.screen_rules; `lean` runs the signal matcher; `listed-pay`
+       # parses the pay-slot grammar; `posted` computes a board-relative date from a shown age.
+       "screened", "lean", "listed-pay", "posted")
+SOURCING_OPS = ("screened", "lean", "listed-pay", "posted")
 LOCK = os.path.join(ENGINE_SCRIPTS, "runlock.py")
 # ⭐ ENGINE, not profile — the data MODEL ships with the code; the DATA belongs to the user.
 MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
@@ -1543,6 +1557,20 @@ def cmd_answered(args):
 # calls this function IN-PROCESS instead of keeping a second copy of the append+validate+
 # rollback dance (§2's own words: "one inbound writer path and one rollback").
 
+def _stored_source_twin(row, stored):
+    """The id of a stored message whose NORMALIZED mail-tag `source` equals `row`'s, else None
+    (dev #704 / public #154, D1). `None` for a row whose source is not a mail tag."""
+    _vd = _validator_module()
+    src = row.get("source")
+    if not _vd.is_mail_tag(src):
+        return None
+    key = _vd.normalize_source_tag(src)
+    for m in stored:
+        if m.get("id") != row.get("id") and _vd.normalize_source_tag(m.get("source")) == key:
+            return m.get("id")
+    return None
+
+
 def append_message(row, already_locked=False, wait=DEFAULT_WAIT):
     """Append `row` (a full messages.jsonl dict, `id` already minted by the caller
     deterministically) under the lock, validator-run, rolled back byte-identical on a new
@@ -1553,13 +1581,26 @@ def append_message(row, already_locked=False, wait=DEFAULT_WAIT):
     means the SAME source mints the SAME id) is a no-op, not a duplicate and not a re-validate
     — this is what makes a re-swept uid safe (design §5).
 
+    ⭐ dev #704 / public #154 (D1) — ALSO idempotent by SOURCE, for a mail tag. The ATS and
+    `received` ids are a hash of the source (`in-<sha1(source)[:12]>`), so a stored row whose
+    source was written wrapped (`gmail:a:b'101'`) and a fresh write of the same message with the
+    clean source (`gmail:a:101`) mint DIFFERENT ids, and the id check alone admitted the
+    duplicate. A row whose `source` is a mail tag is therefore also a no-op when a stored row's
+    NORMALIZED source equals its own; the message names the stored id. Gated on the mail-tag
+    prefix, because LinkedIn thread URLs legitimately repeat across rows (dev #686 P3).
+
     Returns `(returncode, message)`: 0 with the store landed (or already there) clean, 1
     refused or rolled back. Locking mirrors every other write here: `already_locked=True`
     VERIFIES `lock_is_held()` rather than trusting the caller; the plain path takes and
     releases its own short-lived hold."""
     mid = row.get("id")
-    if any(m.get("id") == mid for m in load("messages")):
+    _stored = load("messages")
+    if any(m.get("id") == mid for m in _stored):
         return 0, "  · message %s already recorded — nothing further to do" % mid
+    _twin = _stored_source_twin(row, _stored)
+    if _twin is not None:
+        return 0, ("  · message %s already recorded as %s (same source) — nothing further to do"
+                   % (mid, _twin))
 
     if already_locked:
         if not lock_is_held():
@@ -1574,6 +1615,10 @@ def append_message(row, already_locked=False, wait=DEFAULT_WAIT):
         messages = load("messages")
         if any(m.get("id") == mid for m in messages):
             return 0, "  · message %s already recorded — nothing further to do" % mid
+        _twin = _stored_source_twin(row, messages)
+        if _twin is not None:
+            return 0, ("  · message %s already recorded as %s (same source) — nothing further "
+                       "to do" % (mid, _twin))
         before = snapshot("messages")
         pre_rc, _, _, pre_problems = validate()
         messages.append(row)
@@ -1760,6 +1805,18 @@ def _help_epilog():
         "      get-or-create: an identical LinkedIn, or an identical email AND name, reuses "
         "the existing person (nothing written);",
         "      an email-only match is refused and listed as a candidate.",
+        "",
+        "sourcing screen (dev #713-#716 / public #142-#145) -- each stores what a script computed:",
+        "  create <id> '<json>' --from-item <capture-role item id>",
+        "      copies the pay, posting date and setting the sweep's ROLE line carried "
+        "(listed_pay, posted, location.declared)",
+        "      onto the new role; a slot the sweep did not read stays absent.",
+        "  screened <opp_id> [--on D]                 re-run the minimal screen and store it",
+        "  lean <opp_id> --lean pursue|pass|ask --line \"<one line>\" [--jd-file P] [--on D]",
+        "  listed-pay <opp_id> --none-shown | --stated R[;R] | --estimate R[;R] [--pay-source S]",
+        "      R is <min>-<max>/<yr|mo|day|hr>/<CUR> or <min>+/<unit>/<CUR>",
+        "  posted <opp_id> --document-date D | --ats-date D | --board-date D | --shown-age N | "
+        "--unknown",
     ]
     try:
         lines.append("")
@@ -1830,6 +1887,260 @@ def _reuse_people(args):
         args.reuse_notes.append("  ℹ️ possible duplicate (advisory, not reused): %s <-> %s — %s"
                                 % (c["a"], c["b"], c["reason"]))
     return None
+
+
+class _Refused(Exception):
+    """A sourcing-screen verb refused its input before the lock; `main()` prints `⛔ REFUSED — `
+    plus the message and exits 1. Nothing has been written when this is raised."""
+
+
+class _Usage(Exception):
+    """Wrong arguments for a sourcing-screen verb; `main()` prints the message and exits 2."""
+
+
+_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+LEAN_VALUES = ("pursue", "pass", "ask")
+# `listed_pay.source` per state (design §3.1): a board's estimate can only come from the board's
+# own widget; an ATS API / JSON-LD read can only be the employer's own figure.
+PAY_SOURCES_STATED = ("listing-text", "ats-api", "json-ld", "candidate")
+PAY_SOURCES_NONE_SHOWN = ("listing-text", "candidate")
+
+
+def _engine_version():
+    """The plugin version this engine ships as, read from its own plugin.json -- stamped into a
+    stored `screen` so a later reader knows which rules computed it. "0.0.0" if unreadable."""
+    try:
+        with open(os.path.join(os.path.dirname(ENGINE_SCRIPTS), ".claude-plugin", "plugin.json"),
+                  encoding="utf-8") as fh:
+            return json.load(fh).get("version") or "0.0.0"
+    except (OSError, ValueError):
+        return "0.0.0"
+
+
+def _run_date(args):
+    """The date a sourcing-screen write takes: `--on` (an ISO date) or today. Refuses a malformed
+    one -- a date is never coerced."""
+    if args.on_date is None:
+        return datetime.date.today()
+    if not _ISO_DATE.match(args.on_date):
+        raise _Refused("--on must be an ISO date (YYYY-MM-DD), got %r" % args.on_date)
+    try:
+        return datetime.date.fromisoformat(args.on_date)
+    except ValueError:
+        raise _Refused("--on %r is not a calendar date" % args.on_date)
+
+
+def copy_capture_item_facts(new_row, item_id):
+    """`(copied, error)` -- `create --from-item <deferred id>` (dev #715 / public #143, dev #716 /
+    public #142; design §2). Copy what `deferred.py --add-roles` PARSED from the sweep's ROLE line,
+    held on the `capture-role` item's `role` object, onto the opportunity being created:
+    `role.listed_pay` -> `listed_pay`, `role.posted` -> `posted`, `role.location_declared` ->
+    `location.declared`. The shapes are the ones `record.py listed-pay` / `posted` store, so the
+    model never re-types a value a script already parsed, and a captured role does not screen
+    NOT-CAPTURED for a pay its own sweep read.
+
+    A slot the sweep did not read (`?`) is `None` on the item and is NOT copied: the field stays
+    ABSENT (NOT CAPTURED / age unknown), never `none-shown` and never an invented date. A field the
+    payload already carries must agree with the item (one fact, stated once): a different value is
+    an `error`, never a silent overwrite. An item with no `role` object (queued before 0.67.0)
+    copies nothing and is not an error. `new_row` is mutated in place; `copied` names the fields."""
+    import deferred as _deferred
+    try:
+        items = {r.get("id"): r for r in _deferred.replay(_deferred.load())}
+    except (OSError, ValueError) as e:
+        return [], "the deferred queue cannot be read (%s)" % e
+    item = items.get(item_id)
+    if item is None:
+        return [], ("no deferred item %r (`deferred.py --claimable` lists the pending ones)"
+                    % item_id)
+    if item.get("kind") != _deferred.KIND_CAPTURE:
+        return [], ("deferred item %r is a %r item; --from-item takes a %r item"
+                    % (item_id, item.get("kind"), _deferred.KIND_CAPTURE))
+    role = item.get("role")
+    if not isinstance(role, dict):
+        return [], None
+    wanted = []
+    if role.get("listed_pay") is not None:
+        wanted.append(("listed_pay", role["listed_pay"]))
+    if role.get("posted") is not None:
+        wanted.append(("posted", role["posted"]))
+    declared = role.get("location_declared")
+    copied = []
+    for field, value in wanted:
+        if field in new_row and new_row[field] != value:
+            return [], ("the JSON carries %s=%s but deferred item %r says %s. One value, stated "
+                        "once." % (field, json.dumps(new_row[field]), item_id, json.dumps(value)))
+        if field not in new_row:
+            new_row[field] = value
+            copied.append(field)
+    if declared is not None:
+        loc = new_row.get("location")
+        if loc is not None and not isinstance(loc, dict):
+            return [], "the JSON's location is not an object; cannot add location.declared"
+        have = (loc or {}).get("declared")
+        if have is not None and have != declared:
+            return [], ("the JSON carries location.declared=%s but deferred item %r says %s. One "
+                        "value, stated once." % (json.dumps(have), item_id, json.dumps(declared)))
+        if have is None:
+            new_row["location"] = dict(loc or {}, declared=declared)
+            copied.append("location.declared")
+    return copied, None
+
+
+def _sourcing_mutation(args, rec):
+    """`(desc, apply)` for one of `SOURCING_OPS` against the opportunity `rec` (dev #713-#716 /
+    public #142-#145; design §3.1, §3.3, §3.6, §3.7). `apply(row)` sets ONE top-level field; the
+    shared write path in `main()` does the lock, the introduced-only rules, the validator and the
+    rollback. Raises `_Refused` / `_Usage` before anything is written.
+
+    What each stores is COMPUTED here, from the stored row and the profile, never transcribed:
+
+      screened     `{on, verdict, rules, engine}` from `profile.screen_rules`, evaluated INSIDE
+                   `apply` against the row as re-read under the lock.
+      lean         `{lean, line, on, signals}`. `line` is required, one line, at most
+                   `deferred.ROLES_FIELD_CAP` characters (refused, never truncated). `signals` is
+                   what `profile.match_signals` finds in the title, the company row and (when
+                   `--jd-file` is given) the JD text. An unreadable `screen.likely_pass_signals`
+                   list REFUSES the write: a lean stored with `signals: []` because the list could
+                   not be read would claim nothing matched.
+      listed-pay   `{state, [ranges], source, captured_on}` from `--none-shown`, `--stated` or
+                   `--estimate`; ranges parse through `profile.parse_pay_ranges`, strictly.
+      posted       `{date, source, recorded_on}`; `--shown-age N` computes `run date - N`
+                   (`board-relative`), `--document-date` is the only writer of
+                   `profile-document-date`.
+    """
+    import profile as _pf
+    op = args.op
+    if args.rest:
+        raise _Usage("usage: %s <opp_id> %s" % (op, {
+            "screened": "[--on D]",
+            "lean": "--lean pursue|pass|ask --line \"<one line>\" [--jd-file PATH] [--on D]  "
+                    "(--lean may be omitted on an age-flagged recruiter role: ask)",
+            "listed-pay": "--none-shown | --stated R[;R] | --estimate R[;R] [--pay-source S] "
+                          "[--on D]",
+            "posted": "--document-date D | --shown-age N | --ats-date D | --board-date D | "
+                      "--unknown [--on D]"}[op]))
+    on = _run_date(args)
+    on_iso = on.isoformat()
+
+    if op == "screened":
+        engine = _engine_version()
+
+        def apply(r):
+            profile = _pf.load()
+            result = _pf.screen_rules(r, profile, load("opportunities"),
+                                      applications=_load_or_empty("applications"),
+                                      channels=_load_or_empty("channels"), today=on)
+            r["screen"] = {"on": on_iso, "verdict": result["verdict"],
+                           "rules": dict(result["rules"]), "engine": engine}
+        return "screened (the minimal screen, re-run and stored; on %s)" % on_iso, apply
+
+    if op == "lean":
+        lean_choice, line = args.lean_choice, args.line_text
+        # ⭐ dev #716 / public #142 (design §6.2): an over-age retained-search role (or a recruiter
+        # role of unknown age) defaults to `ask` with the age line's first move as its line. A
+        # DEFAULT is what `--lean` omitted means -- an explicit `--lean` is the run's own reading of
+        # the JD and is stored as given. Read from the STORED screen (`screened` runs first).
+        if lean_choice is None:
+            first_move = _pf.age_flag_first_move(rec.get("screen"))
+            if first_move:
+                lean_choice = "ask"
+                if line is None or not line.strip():
+                    line = "FIRST MOVE: %s" % first_move
+        if lean_choice not in LEAN_VALUES:
+            raise _Refused("--lean must be one of %s" % ", ".join(LEAN_VALUES))
+        args.lean_choice, args.line_text = lean_choice, line
+        if line is None or not line.strip():
+            raise _Refused("--line is required: one line saying why (the lean without a reason "
+                           "is a verdict nobody can check)")
+        import deferred as _deferred
+        if "\n" in line or "\r" in line:
+            raise _Refused("--line must be a single line")
+        if len(line) > _deferred.ROLES_FIELD_CAP:
+            raise _Refused("--line is %d characters; the cap is %d (shorten it -- it is never "
+                           "truncated for you)" % (len(line), _deferred.ROLES_FIELD_CAP))
+        jd_text = ""
+        if args.jd_file:
+            try:
+                with open(args.jd_file, encoding="utf-8") as fh:
+                    jd_text = fh.read()
+            except OSError as e:
+                raise _Refused("--jd-file %r cannot be read: %s" % (args.jd_file, e))
+        try:
+            signals = (_pf.config().get("screen") or {}).get("likely_pass_signals")
+        except (OSError, ValueError) as e:
+            raise _Refused("config.json cannot be read, so likely-pass signals cannot be "
+                           "matched: %s" % e)
+        company = next((c for c in _load_or_empty("companies")
+                        if c.get("id") == rec.get("company_id")), None)
+        try:
+            hits = _pf.match_signals(rec, company, jd_text, signals or [])
+        except ValueError as e:
+            raise _Refused(str(e))
+        lean_obj = {"lean": args.lean_choice, "line": line.strip(), "on": on_iso, "signals": hits}
+
+        def apply(r):
+            r["lean"] = lean_obj
+        return ("lean %s (%d likely-pass signal(s) matched)" % (args.lean_choice, len(hits)),
+                apply)
+
+    if op == "listed-pay":
+        modes = [m for m, v in (("none-shown", args.none_shown), ("stated", args.stated),
+                                ("estimate", args.estimate)) if v]
+        if len(modes) != 1:
+            raise _Usage("listed-pay takes exactly one of --none-shown, --stated, --estimate")
+        mode = modes[0]
+        if mode == "none-shown":
+            sources, state = PAY_SOURCES_NONE_SHOWN, "none-shown"
+        elif mode == "stated":
+            sources, state = PAY_SOURCES_STATED, "employer-stated"
+        else:
+            sources, state = ("board-widget",), "board-estimate"
+        source = args.pay_source or sources[0]
+        if source not in sources:
+            raise _Refused("--pay-source %r is not valid for %s (allowed: %s)"
+                           % (source, state, ", ".join(sources)))
+        obj = {"state": state, "source": source, "captured_on": on_iso}
+        if mode != "none-shown":
+            try:
+                obj = {"state": state, "ranges": _pf.parse_pay_ranges(
+                    args.stated if mode == "stated" else args.estimate),
+                    "source": source, "captured_on": on_iso}
+            except ValueError as e:
+                raise _Refused(str(e))
+
+        def apply(r):
+            r["listed_pay"] = obj
+        return "listed-pay %s (source %s)" % (state, source), apply
+
+    # posted
+    picks = [(k, v) for k, v in (("profile-document-date", args.document_date),
+                                 ("ats-posted", args.ats_date),
+                                 ("board-relative", args.board_date),
+                                 ("board-relative:age", args.shown_age),
+                                 ("unknown", True if args.unknown else None))
+             if v is not None]
+    if len(picks) != 1:
+        raise _Usage("posted takes exactly one of --document-date, --ats-date, --board-date, "
+                     "--shown-age, --unknown")
+    source, value = picks[0]
+    if source == "unknown":
+        obj = {"date": None, "source": "unknown", "recorded_on": on_iso}
+    elif source == "board-relative:age":
+        if not (isinstance(value, str) and value.isdigit() and int(value) < 3650):
+            raise _Refused("--shown-age must be a whole number of days, got %r" % value)
+        obj = {"date": (on - datetime.timedelta(days=int(value))).isoformat(),
+               "source": "board-relative", "recorded_on": on_iso}
+    else:
+        try:
+            datetime.date.fromisoformat(value)
+        except ValueError:
+            raise _Refused("the posting date must be an ISO date (YYYY-MM-DD), got %r" % value)
+        obj = {"date": value, "source": source, "recorded_on": on_iso}
+
+    def apply(r):
+        r["posted"] = obj
+    return "posted %s (%s)" % (obj["date"], obj["source"]), apply
 
 
 def main():
@@ -1963,11 +2274,50 @@ def main():
                          "never stored.")
     ap.add_argument("--fields", action="store_true",
                     help="Print what this store accepts, so a caller never has to guess.")
+    ap.add_argument("--from-item", dest="from_item", default=None,
+                    help="create (opportunities): a `capture-role` deferred item id. Copies the "
+                         "pay, posting date and work setting `deferred.py --add-roles` parsed from "
+                         "the sweep's ROLE line (listed_pay, posted, location.declared) onto the new "
+                         "role. A slot the sweep did not read stays absent; a value the JSON also "
+                         "carries must agree with the item.")
+    # jobsearch 0.67.0 sourcing-screen verbs (SOURCING_OPS) -- each flag belongs to one verb.
+    ap.add_argument("--lean", dest="lean_choice", default=None,
+                    help="lean: pursue | pass | ask (required, except on a role whose stored screen "
+                         "carries the age flag -- over-age or unknown-age recruiter role -- where "
+                         "omitting it records `ask` with the age line's first move).")
+    ap.add_argument("--line", dest="line_text", default=None,
+                    help="lean: the one-line reason (required, one line, capped).")
+    ap.add_argument("--jd-file", dest="jd_file", default=None,
+                    help="lean: a file holding the JD text the run read; the likely-pass "
+                         "signals are matched against it as well as the title and company.")
+    ap.add_argument("--none-shown", dest="none_shown", action="store_true",
+                    help="listed-pay: the listing showed NO pay (recorded, so it is not "
+                         "'never captured').")
+    ap.add_argument("--stated", dest="stated", default=None,
+                    help="listed-pay: the EMPLOYER's range(s), <min>-<max>/<yr|mo|day|hr>/<CUR> "
+                         "or <min>+/<unit>/<CUR>, separated by ';'.")
+    ap.add_argument("--estimate", dest="estimate", default=None,
+                    help="listed-pay: a BOARD's own estimate (never the employer's figure; it "
+                         "can never remove a role), same range grammar.")
+    ap.add_argument("--pay-source", dest="pay_source", default=None,
+                    help="listed-pay: where the figure was read (default listing-text).")
+    ap.add_argument("--document-date", dest="document_date", default=None,
+                    help="posted: the date a recruiter's spec document carries "
+                         "(source profile-document-date -- this flag is its only writer).")
+    ap.add_argument("--ats-date", dest="ats_date", default=None,
+                    help="posted: a JSON-LD datePosted or ATS API date (source ats-posted).")
+    ap.add_argument("--board-date", dest="board_date", default=None,
+                    help="posted: a bare date a board shows (source board-relative).")
+    ap.add_argument("--shown-age", dest="shown_age", default=None,
+                    help="posted: the age a board shows, in days; the date is COMPUTED from "
+                         "the run date by this script (source board-relative).")
+    ap.add_argument("--unknown", dest="unknown", action="store_true",
+                    help="posted: record that the age is unknown (source unknown).")
     args = ap.parse_args()
 
     # These three verbs each own exactly one store — --file is never the caller's to pick for
     # them (a mistaken --file would silently target the wrong record and never be diagnosed).
-    if args.op in ("decide", "networking-closed"):
+    if args.op in ("decide", "networking-closed") + SOURCING_OPS:
         args.file = "opportunities"
     elif args.op == "application-status":
         args.file = "applications"
@@ -2093,6 +2443,18 @@ def main():
             print("⛔ REFUSED — the record must be a JSON object, got %s."
                   % type(new_row).__name__)
             return 1
+        # ⭐ dev #715 / public #143, dev #716 / public #142 -- the facts the sweep's ROLE line
+        # carried ride the capture-role item onto the opportunity, by a script, not by a model
+        # re-typing them (copy_capture_item_facts' docstring).
+        _from_item_copied = []
+        if args.from_item:
+            if args.file != "opportunities":
+                print("⛔ REFUSED — --from-item applies only to `create ... --file opportunities`.")
+                return 1
+            _from_item_copied, _item_err = copy_capture_item_facts(new_row, args.from_item)
+            if _item_err:
+                print("⛔ REFUSED — --from-item: %s" % _item_err)
+                return 1
         # ADR-031 B2 — `applications` is now a top-level store whose own id is minted the SAME
         # way app_id always was (<opp_id>-aN), but the id is no longer known until the record
         # exists: `create auto '{"opp_id": ..., ...}' --file applications` mints it here, from
@@ -2221,6 +2583,10 @@ def main():
                       % args.rid)
                 return 1
         desc = "create record (%d field(s): %s)" % (len(new_row), ", ".join(sorted(new_row)))
+        if args.from_item:
+            desc += (" -- copied from %s: %s" % (args.from_item, ", ".join(_from_item_copied))
+                     if _from_item_copied else
+                     " -- %s carried no pay, posting date or setting to copy" % args.from_item)
 
         def apply(r):        # unused for create; the lock section appends new_row instead
             raise AssertionError("create does not mutate an existing record")
@@ -2517,6 +2883,19 @@ def main():
         def apply(r):
             r["status"] = "merged"
             r["merged_into"] = args.into_id
+
+    elif args.op in SOURCING_OPS:
+        # dev #713-#716 / public #142-#145 -- see `_sourcing_mutation`: it computes the value and
+        # returns (desc, apply); everything after this chain (dry-run through the validator, the
+        # lock, the introduced-only rules, rollback) is the shared path every other verb takes.
+        try:
+            desc, apply = _sourcing_mutation(args, rec)
+        except _Usage as e:
+            print(str(e))
+            return 2
+        except _Refused as e:
+            print("⛔ REFUSED — %s" % e)
+            return 1
 
     else:  # networking-closed
         # §3b/§15.1 — refuses on UNVERIFIED silence unless the owner says they looked personally.

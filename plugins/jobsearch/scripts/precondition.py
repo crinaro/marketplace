@@ -639,7 +639,8 @@ def _load_jsonl_rows(root, name):
 
 
 def _opp_anchor(root, body):
-    """The opportunity id a `**Triggered by: opp:<id>**` line names, but ONLY when that id
+    """The opportunity id a `**Triggered by:** opp:<id>` line names (the bold closes straight
+    after the colon, as `trigger.TRIGGER_FIELD_RE` requires; dev #705), but ONLY when that id
     actually resolves in `opportunities.jsonl` — an id that does not resolve is exactly as
     unusable as no anchor at all, and must not be guessed over. `trigger.py` is imported
     LAZILY: it imports `precondition` at its own top level, so a top-level import here would

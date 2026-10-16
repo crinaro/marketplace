@@ -140,7 +140,11 @@ The main record. Everything about one role hangs off it.
 | `company_id` | must resolve to a company |
 | `title` | |
 | `comp` | `{min, max, period, basis}` as **typed numbers**, so it sorts and screens. `null` if genuinely undisclosed — never a guess |
-| `location` | `{type, primary, remote, declared}` — see *contested settings* below |
+| `location` | `{type, primary, remote, declared}` — see *contested settings* below. Since 0.67.0 `declared` also holds the work setting *as the posting wrote it* on every role that reaches your decision, and a role may carry `commute_minutes` — see *Listed pay, posting age, the screen and the lean* below |
+| `listed_pay` | since 0.67.0 — the pay the **listing** showed, with whether the employer stated it, a board estimated it, or none was shown. Absent means *not captured* — see *Listed pay, posting age, the screen and the lean* below |
+| `posted` | since 0.67.0 — when the role was posted, and how we know. Absent means the age is unknown |
+| `screen` | since 0.67.0 — the hard screens the engine applied to the role, and their verdict, written by the script that ran them |
+| `lean` | since 0.67.0 — the system's read of the role (`pursue` · `pass` · `ask`) with a one-line reason. A lean is advice; it never removes a role |
 | `status` | what you are **doing** about it |
 | `stage` | where it **is** in the funnel |
 | `verdict` | `pursue` · `pass` · `parked` · `undecided` |
@@ -190,6 +194,96 @@ below. The same "don't ask what the record already proves" rule applies to `verd
 still reading `undecided` once an application is on record becomes `pursue` automatically — the
 act of applying was the decision, and you are never asked pursue-or-pass on a role you already
 applied to.
+
+### Listed pay, posting age, the screen and the lean — since 0.67.0
+
+Four fields on a role record exist so that "the listing showed no pay" and "nobody read the
+listing" stop looking the same. **Every one is optional, and a role without it means the fact was
+not recorded** — so no existing role was rewritten by the upgrade.
+
+**`listed_pay` — the pay as the listing showed it.**
+
+| part | what it is |
+|---|---|
+| `state` | `employer-stated` (the employer wrote a range) · `board-estimate` (the board computed one; not the employer's word) · `none-shown` (the listing was read and showed no pay) |
+| `ranges` | one or more `{min, max, currency, interval, label}`. `currency` is an ISO code such as `USD`. `interval` is `year` · `month` · `day` · `hour`. `max` may be empty for an open-ended "$X and up" range. `label` is the posting's own wording when a range is for one location. A `none-shown` role has no ranges |
+| `source` | where it was read: the listing text, an ATS or structured-data read, a board's own estimate panel, or `candidate` when you recorded it by hand |
+| `captured_on` | the date it was read |
+
+**A role with no `listed_pay` at all is *NOT CAPTURED*: nobody has recorded what the listing
+showed. That is not the same as `none-shown`, and the screen treats them differently** (below).
+Your own `comp` figure, if the role has one, still comes first: it may come from a conversation
+rather than a listing, and it is what an older role carries.
+
+**`posted` — the posting date.** `{date, source, recorded_on}`. `source` is `ats-posted` (the
+employer's own publication date, the strongest) · `board-relative` (a board said "12 days ago", or
+gave a date; the script works out the date, never the model — the weaker source) ·
+`profile-document-date` (a recruiter's own spec document was dated; recorded by hand) · `unknown`.
+Absent means the same as `unknown`: the age is not known. A board's "N days ago" is recorded as
+exactly that kind of source, not as if it were the employer's date.
+
+**What the screen now says.** The minimal screen every captured role gets (comp floor,
+passed/duplicate, geography, title) reports these comp verdicts. `NOT-CAPTURED` and
+`PAY-UNCOMPARABLE` are new in 0.67.0, `UNDISCLOSED` now means only *none shown*, and
+`NEEDS-COMMUTE-CHECK` is an old verdict with a new cause:
+
+| verdict | meaning | what the screen does |
+|---|---|---|
+| `CLEARS` | the top of the stated range is at or above the floor that applies | keeps the role |
+| `BELOW-FLOOR` | an **employer-stated** range, or your own `comp` figure, whose top is below the applicable floor | **removes** the role, and says why. Where a role lists several ranges, the screen removes only when every range's top is below the floor, or screens the one range labelled for the role's location. You can override a removal with `record.py decide` |
+| `UNDISCLOSED` | **none shown**: the listing was read and showed no pay, or the range is open-ended and its start is below the floor | keeps the role. Pay is the first question to ask, so it cannot be screened on |
+| `NOT-CAPTURED` | nobody recorded what pay the listing showed, and the role has no `comp` figure either | **review**, not keep: "re-read the listing before surfacing it" |
+| `PAY-UNCOMPARABLE` | a figure exists but cannot be fairly compared: it is not annual (hourly, daily or monthly pay is never converted), it is in a currency other than yours, you have not set `compensation.currency`, or it is a board's estimate that falls below the floor | **review**; it never removes |
+| `NEEDS-COMMUTE-CHECK` | an existing verdict. It means the screen cannot tell a commute from a move. **New cause since 0.67.0:** you declared commute-time bands (below) and this role's commute minutes are not known — the screen never guesses a band | **review** |
+| `UNRESOLVED-SETTING` | the posting declares two settings at once (see above) | **review**: the question goes to the employer |
+
+**"None shown" is `UNDISCLOSED`, and only that.** The screen's wording for "the listing showed
+nothing" is `UNDISCLOSED`; the screen reads it as *none shown*, and keeps the role. A role nobody
+has checked is `NOT-CAPTURED`, which asks for a re-read. A board's estimate is never grounds to
+remove a role, because it is not the employer's word.
+
+**What changed on upgrade, without any file being rewritten.** A live role with no `comp` figure
+and no `listed_pay` used to screen `UNDISCLOSED` and be kept without a second look. It now screens
+`NOT-CAPTURED` and is flagged for review. The role records are the same; the screen reads them
+differently, because those roles were never shown to have listed no pay. The data check
+(`validate_data.py`, which a run starts with) lists every live role whose pay was never captured
+under a `HYGIENE` heading, so the count is visible and shrinks as roles are read; it reports them
+and never refuses a run. `record.py listed-pay <role> --none-shown` closes one that really showed
+no pay.
+
+**The age line.** The minimal screen now also prints an `age` line: for example
+`age: 41d (ats-posted 2026-09-04)`, or `age: UNKNOWN` when no posting date is recorded. Age alone
+never changes the verdict. The exception is a role that came through a **recruiter** channel (a
+search firm is a recruiter channel): when its age is over `search.retained_search_age_days`, the
+line reads, for example, `age: 41d (ats-posted 2026-09-04) OVER 35d -- FIRST MOVE: ask the
+recruiter what stage the search is in, before research or letters`, and the verdict becomes
+`review:age`. When its age is unknown, the line reads `age: UNKNOWN -- ask the recruiter when the
+search opened` and the verdict is also `review:age`. If `search.retained_search_age_days` holds a
+value outside 14 to 120 the line says so and the verdict is `review:age` too, never the default.
+It never removes the role, and it fires for any recruiter, because the store does not tell a
+retained search from a contingent one and the first move is the same question. `funnel_report.py` also prints an *age at
+capture* table per channel: how old roles were when first seen, with the mix of date sources, and
+"too few to rate" until a channel has enough roles.
+
+**`screen` and `lean` — what the system did before the role became yours to decide.**
+`screen` is `{on, verdict, rules, engine}`: the result of the hard screens, written by
+`record.py screened`, which re-runs the screen itself and stores what the screen computed (the
+printed block is made from the same result, so the two cannot differ). A model never
+types a verdict in. `lean` is `{lean, line, on, signals}`: `pursue`, `pass` or `ask`, a one-line
+reason, and any likely-pass signals that matched (below). **A lean is shown on the role's
+card as advice and never removes or decides anything.** When the age line asks for a first move
+(a recruiter role over the age limit, or of unknown age), the lean defaults to `ask` and its line
+is that first move; the run states a different lean only when the job description gives a reason. A role in `triaging` is described in
+[Reading what the search produces](reading-your-files.md#triaging-versus-decide-since-0670).
+
+**Roles that already existed.** Triage state is *derived*, never stored. After upgrading, a role
+that was waiting on your pursue-or-pass but has no recorded job-description read, pay as written,
+work setting as written, screen and lean shows as `triaging` until the daily run has triaged it.
+Nothing was moved; the derivation does it.
+
+**Commute time on a role.** A role may carry `location.commute_minutes`: `{minutes, anchor,
+source}`, where `source` is `candidate`, `map-estimate` or `config-place`. Absent means the minutes
+are unknown. It matters only if you declared bands (see *Geography* below).
 
 ### Endings — since 0.47.0
 
@@ -554,9 +648,11 @@ never a draft that can drift.
 - **`from`** and **`to`** are the sender and recipient as the message states them — an address, or
   a `contact:<id>` token when you record it through `record.py`. `from` is usually `null` on a
   message you sent yourself.
-- **`source`** is required, and says where the text came from — `gmail:<account>:<uid>` for mail,
-  or `outreach/drafts.md` for something you wrote and sent yourself. A stored body with no
-  provenance is an assertion, not a record.
+- **`source`** is required, and says where the text came from — `gmail:<account>:<uid>` for mail
+  (`ats:<account>:<uid>` is the same shape, written by the ATS sweep, which also leaves
+  `mail:<account>:<uid>` markers in the notes it writes), or `outreach/drafts.md` for something you wrote and sent
+  yourself. A stored body with no provenance is an assertion, not a record. **Since 0.66.0 the
+  `<uid>` is digits and nothing else** (see *A mail tag is always the same shape* below).
 - **`channel_id`** anchors a message to a relationship rather than a role — a warm intro or a
   referral. Every message needs an anchor: an `opp_id`, a `channel_id`, **or — since 0.62.0 — the
   `person_id` alone**, at least one. A message to a person about no role and no channel (a
@@ -576,6 +672,69 @@ never a draft that can drift.
 
 How one message points at another — `answers`, and the ATS sweep's `resolves`/`resolved_by` —
 is described under *Touches* and *ATS receipt matching*.
+
+#### A mail tag is always the same shape (since 0.66.0)
+
+Every record that points at a stored email does it with a tag of one shape,
+`<gmail|mail|ats>:<account>:<uid>`, where `<uid>` is the mailbox's own message number: digits only,
+for example `gmail:work:4217`. A tag is the engine's memory that it has already seen a message, so
+the same message must always spell the same way.
+
+Before 0.66.0 that was not so. A defect in how the mailbox's message numbers were read could write
+`gmail:work:b'4217'` — the number wrapped in Python's byte-string notation — instead of
+`gmail:work:4217`. Two things followed: the weekly harvest and the ATS sweep did not recognise a
+stored `b'4217'` row as the message they had just found, so they stored it a second time; and the
+duplicate rows each carried their own links (a touch's `message_ref`, an ask's `trigger_ref`, a
+brief's `latest_in`). **From 0.66.0 on:**
+
+- the number is read as text at the mailbox boundary, so a new wrapped tag cannot be written;
+- the validator **refuses** a wrapped tag in any field that carries one (`messages.source` and
+  `id`/`answers`, `commitments.source`, `asks.trigger_ref` and `note`, `touches.message_ref` and
+  `trigger_ref`, `briefs.evidence`, `latest_in` and `latest_out`), naming the file, the row and the
+  field. A `source` that is not a mail tag at all (`outreach/drafts.md`, a LinkedIn thread link)
+  is untouched;
+- "have I already stored this message?" compares the tags after stripping the wrapper, so a stored
+  `b'4217'` row and a fresh `4217` for the same email count as the same message.
+
+**Upgrading to 0.66.0 repairs your existing files once, automatically, the first session you open
+on that version** (the `m_0_66_0_uid_text` migration). It first copies each file it will change to
+`data/<file>.jsonl.pre-0.66.0` (a copy from an earlier partial run is never overwritten), then
+rewrites every wrapped tag to the plain form. Where a wrapped row and a plain row turn out to be
+the same email, they are **merged into one**: the row whose tag was already plain survives, a field
+it lacks is filled from the other, and where both hold different values the survivor's is kept and
+the migration's report names the disagreement. Every link that pointed at the dropped row —
+a touch, an ask, a brief, an ATS completion mark in an application's or ask's note — is moved to the
+survivor. The migration then re-reads your files and reports *done* only if no wrapped tag, no
+duplicate and no dangling link remains; otherwise it reports *pending* and says which, and leaves
+the copies in place. Running it again changes nothing. A message row whose own `id` merely contained
+the old wrapped number keeps that `id` — an id is only a handle, and nothing re-derives it.
+**To undo it,** restore *all* the `.pre-0.66.0` copies together; restoring one file alone leaves
+links pointing at ids that no longer exist, and anything written after the upgrade is lost.
+Downgrading the engine to 0.65.x without restoring brings the old defect back.
+
+Two places are deliberately **not** rewritten. The run journal's record of which alert-digest emails
+were already triaged is an append-only log; it is read with the wrapper stripped instead. And the
+`key` that `watch.py` gives each alert in `data/inbox.jsonl` (`alert:<account>:<uid>`, the key that
+stops one alert being queued twice) is likewise normalised **when read**, so an older queue entry
+with a wrapped number still suppresses its fresh, plain twin; no inbox row is edited.
+
+#### What the weekly audit calls a reply (since 0.66.0)
+
+`reconcile.py --all`, the weekly audit, looks for mail from someone you contacted that arrived
+after your touch and that you have not recorded. Two rules decide what it reports:
+
+- **Automated mail is never a reply.** A message from one of your configured ATS receipt domains
+  (`config.json.ats.receipt_sender_domains`, see *ATS receipt matching*), or from a `noreply` or
+  other automated sender, is not eligible to resolve a touch. An application acknowledgement that
+  happens to quote the recruiter's name used to produce an *UNRECORDED REPLY* line for a touch to
+  that recruiter; it no longer does. It also no longer counts as evidence of which medium the
+  conversation is on.
+- **A reply on a different medium is reported, but as a lower-confidence finding.** If your touch
+  was a LinkedIn note and the mail from that person came by email, it is listed under its own
+  heading, *POSSIBLE CROSS-MEDIUM REPLY*, with a reminder to read it before recording anything: a
+  person can answer a LinkedIn note by email, but it may equally be a separate thread. It is
+  counted separately and never added into the *UNRECORDED REPLY* count. A reply on the same medium
+  is reported exactly as before.
 
 ### What a draft now carries — `**To:**` and `**Brief:**` (since 0.46.0)
 
@@ -734,13 +893,28 @@ still under review**: nothing sent, nothing moot. `precondition.py --prune` (and
   send, the draft's paragraph is just removed — the fact it recorded is already on the record
   elsewhere, so keeping the draft too would be the same fact twice.
 - **Otherwise it is relocated**, never dropped: to the named role's `research_log[]` (in
-  `data/opportunities.jsonl`) when the entry names one via `**Triggered by: opp:<id>**`, or to
+  `data/opportunities.jsonl`) when the entry names one via `**Triggered by:** opp:<id>` (the field name in bold, then the
+  value), or to
   `data/channels.jsonl`'s `log[]` when the entry addresses only a channel-anchored person with no
   role attached. Either way, the entry's own title and status line become the note on that new
   row, dated from the entry's own `SENT <date>` where it has one, otherwise today.
 - **An entry naming neither an opportunity nor a channel-resolvable contact is left exactly where
   it is**, reported as `unresolved` — the one thing this will not do automatically is guess a
   home for it.
+
+**Checking that a pending entry has not already gone out.** `check_sent_drafts.py` compares what
+is still in `drafts.md` and `cover_letters.md` against what the record says was sent (a sent touch,
+or an application that has been submitted or has moved on). Since 0.66.0 it matches **only inside the same piece of work**:
+an entry that declares an opportunity (`**Triggered by:** opp:<id>`) is compared with sends on that
+opportunity only; an entry that declares none is compared with sends to the one company its heading
+names, if exactly one is named. The same person on a *different* role, or another role at the same
+employer with a similar title, is never a match — that guess used to tell you to retire a draft
+that was still live work. An entry that names neither an opportunity nor a company is listed as
+*not checked*, with the line to add to anchor it. A match no longer says "retire": it names the
+opportunity and says to **verify against it before changing the entry**. The half-sent case — a
+connection request is out and the follow-up is waiting on acceptance — still reports as before, and
+the right response is still to say so in the heading and leave it. The check only reads; it always
+exits clean.
 
 **The header above your first entry is now generated, not something you (or an earlier session)
 wrote by hand.** It carries an HTML comment marking it as generated and explains the meta-line
@@ -1083,6 +1257,8 @@ you (since 0.50.0, public #89).
 | `relocation.open` | whether a metro that is neither a commute anchor nor an affirmative destination (below) still screens as workable. Defaults to **false** — silence is never read as "open to relocating anywhere" |
 | `relocation.affirmative_destinations` | metros you have explicitly said yes to, regardless of `relocation.open` |
 | `commute_anchors` | places you can actually commute to, each with its own `max_commute_minutes` |
+| `commute_anchors[].bands` | since 0.67.0, optional — pay floors that depend on how long the commute is, for an anchor: a list of `{max_minutes, floor}` in ascending order, the last `max_minutes` no larger than that anchor's `max_commute_minutes`. For example a role 20 minutes away can be held to a lower floor than one 50 minutes away. **An anchor with no `bands` behaves exactly as before.** See *Commute bands* below |
+| `commute_anchors[].includes` | the nearby places that count as inside the anchor. Each entry is a name, or since 0.67.0 `{place, minutes}` so the commute time to that place is known. A bare name leaves the minutes unknown |
 
 Screening one location produces exactly one of six verdicts, each citing the specific key that
 decided it: `remote`, `commute` (names a commute anchor), `affirmative` (names an affirmative
@@ -1098,6 +1274,48 @@ rename.** `init_profile.py` used to scaffold this section as `geography.relocati
 shape documented above instead — two spellings of one meaning, with nothing ever reading the
 scaffolded names. `m_0_50_0_geography_keys` rewrites a profile still carrying the old names into
 the shape above; nothing is dropped in the process.
+
+### Commute bands — since 0.67.0
+
+A pay floor that is the same for a 15-minute commute and a 50-minute one removes the near role
+against a number meant for a move. Declaring `bands` on an anchor lets the floor depend on the
+minutes. The screen picks the band as follows:
+
+- **No anchor declares `bands`:** nothing changes. Every floor is the one it has always been.
+- **The role is onsite or hybrid, an anchor with `bands` matches, and the commute minutes are
+  known** (from the role's own `location.commute_minutes`, or from the `minutes` on a matching
+  `includes` entry): the first band whose `max_minutes` is at or above the commute decides the
+  floor. Beyond the last band, an onsite role is screened as a relocation and a hybrid role as the
+  hybrid tier, as before.
+- **The minutes are not known:** the verdict is `NEEDS-COMMUTE-CHECK`, with the reason that bands
+  are declared and the minutes must be recorded. The screen never guesses a band, and never
+  defaults to relocation.
+- **A hybrid role inside the commute radius** is held to the band, not to the out-of-area hybrid
+  floor, unless you set `compensation.hybrid_inside_radius` to `hybrid-tier` (below).
+
+## Compensation — `config.json.compensation`
+
+The pay floors a role is screened against. The floors themselves (`compensation.tiers`, one per
+work setting) are yours to set; this section lists the keys added in 0.67.0.
+
+| key | what it is |
+|---|---|
+| `compensation.currency` | since 0.67.0 — the currency your floors and your own `comp` figures are in, as a three-letter ISO code such as `USD`. **Not set by the upgrade, and asked once** (below). Until it is set, any pay the listing showed screens `PAY-UNCOMPARABLE` ("set compensation.currency to compare listed pay") and nothing is removed on it, because "$" does not say which currency. Once set, a listed range in the same currency is compared against the floor, and a range in any other currency screens `PAY-UNCOMPARABLE`. Your own `comp` figure is unaffected |
+| `compensation.hybrid_inside_radius` | since 0.67.0 — `band` (the default) or `hybrid-tier`. Only consulted when an anchor declares `bands`. `band` screens a hybrid role inside your commute radius against the commute band, like an onsite role; `hybrid-tier` keeps screening it against the hybrid floor, for a profile that prices hybrid separately. The upgrade sets `band` where the key is absent and never overwrites a value you have |
+
+**The one ask.** `compensation.currency` is the only thing the upgrade asks of you. If the key is
+absent, the upgrade files **one** ask in `asks.jsonl` (`kind: system`, id
+`set-compensation-currency`) asking you to set it. A second filing replaces that row by its id
+rather than adding another. Set the key, then resolve the ask; if the upgrade step runs again and
+finds the key present, it closes an ask that is still open. Nothing else about the upgrade needs
+you. Before the upgrade seeds the other keys it keeps a copy of your file as
+`config.json.pre-0.67.0` beside it, and it never overwrites a value you already have.
+
+## Screening — `config.json.screen`
+
+| key | what it is |
+|---|---|
+| `screen.likely_pass_signals` | since 0.67.0, optional — a list of `{id, phrase, fields, reason}`. `phrase` is plain words, matched case-insensitively as a whole phrase (not a pattern). `fields` is any of `title`, `jd` (the job-description text the run read) and `company` (the company record's name, vertical, size, headquarters and note). `reason` is what you would say in a word. A match is shown as a **LEAN** with its reason on the role's card, **and never removes the role or changes the screen's verdict**: only the hard rules remove. Absent means no signals |
 
 ## Sourcing — `config.json.sourcing`
 
@@ -1215,6 +1433,16 @@ How much the plugin is allowed to do on its own — your cost tier. See *Cost* i
 | `search.postures` | the table of tiers, keyed by name. Each tier holds `runs_per_day`, a `cron` line, `max_agents_per_run`, `max_drafts_per_run`, an `unattended` list of what it may do without you (`sweeps`, `linkedin`, `research`, `drafting`), and a `_for` note describing it. **Retune a tier** by editing its numbers, or **add your own** by adding a name with the same keys and pointing `search.posture` at it. The engine reads the numbers and the permission list, never the name. `doctor.py --fix` puts the shipped four back if the table is missing, and only ever adds |
 | `linkedin_runs_per_day` | lives **inside a tier** — `search.postures.<tier>.linkedin_runs_per_day` — not at the top of `config.json`. How many LinkedIn passes per day may actually reach a page, **independent of `runs_per_day`**: a run over its tier's quota still does everything else and only skips the LinkedIn pass. A tier that does not set it gets **1**; accepted range 0–20. **`0` switches LinkedIn passes off for that tier** (the pass is refused as skipped-for-cost and the work is queued, not lost). **Raise it** for more LinkedIn coverage at more cost — a LinkedIn pass is the most expensive thing a scheduled run does |
 
+### Settings added in 0.67.0 (all under `config.json.search`)
+
+The upgrade seeds each of these where it is absent and never overwrites a value you already have.
+
+| key | what it is |
+|---|---|
+| `search.retained_search_age_days` | how many days old a role from a recruiter channel may be before the screen flags it and recommends asking the recruiter what stage the search is in. A whole number from 14 to 120; defaults to **35**. The default is our choice inside the 4 to 6 week window a retained search usually takes to a first shortlist, picked at the early end because a wrong flag costs one question and a late one costs research and letters for a closed search |
+| `search.triage_per_run` | how many waiting roles one daily run reads and triages, oldest first. A whole number from 1 to 50; defaults to **10**. The run prints `triaging: N waiting, M triaged this run, K over the stuck bound` |
+| `search.triage_stuck_days` | how many days a role may sit in `triaging` before it is shown to you anyway, labelled "not yet read (waited K days)", with the lean `ask`. A whole number from 1 to 14; defaults to **3**. Counted from the role's first sighting |
+
 ### Attended and unattended
 
 A tier's `unattended` list is for **unattended** runs. A run is treated as unattended **unless
@@ -1254,6 +1482,21 @@ machine can never claim a LinkedIn item, under any tier.
 passed on, it becomes one `capture-role` item. The run captures it, screens it, and
 `deferred.py --settle` closes the item once the role exists in your pipeline. Whatever is not
 captured stays pending and is listed on the next run, under any tier.
+
+**What a sweep hands back about each role (since 0.67.0).** Besides title, company, location and
+link, each role line now carries three slots a screen needs: `posted` (the posting date; an `ats:`
+prefix marks the employer's own date, a bare date or a shown age such as `12d` is a board's, and `?`
+means not read), `pay` (`none` when the listing showed none, `stated:` or `estimate:` followed by
+the range such as `120000-150000/yr/USD`, or `?` when it was not read) and `setting` (the work setting in the posting's words, `none stated`, or
+`?`). **`?` is stored as nothing at all, which reads as not captured, never as `none`.** `pay` and
+`setting` must be present on every line: a sweep that leaves them out is a gap in that run, not a
+quiet blank. A script, not a model, parses each slot and keeps the result on the queued
+capture item (as `listed_pay`, `posted` and `location_declared`, in the shapes a role stores).
+When the run opens the role from that item, `record.py create … --from-item <the item's id>` copies
+those three onto the new role, so a pay the sweep read is on the role without anyone retyping it
+(a slot the sweep marked `?` is left off, so it still reads as not captured). A role created
+without `--from-item` carries none of them; the run's triage step then records whatever the role
+still lacks (`record.py listed-pay`, `record.py posted`, the work setting in `location.declared`).
 
 ## Dashboard — `config.json.dashboard`
 
@@ -1336,11 +1579,27 @@ diagnostics log (a record of what the last few runs actually did — used to tel
 happened" apart from "something failed silently") and a small set of internal drift markers used
 to detect when your profile has fallen behind the installed plugin version.
 
-**You do not need to open it, and there is nothing there worth reading.** Every value it stores
-is a timestamp, an event name, a version number, or a count — never a company, a contact, a
-message, a comp figure, or any other fact about your search. The code that writes to it only
-accepts values shaped like short codes and discards anything that looks like free text, so this
-holds even if a bug elsewhere tried to write something it shouldn't.
+**You do not need to open it, and there is nothing there worth reading — with one exception,
+described next.** Every value the diagnostics log and the drift markers store is a timestamp, an
+event name, a version number, or a count — never a company, a contact, a message, a comp figure, or
+any other fact about your search. The code that writes to them only accepts values shaped like short
+codes and discards anything that looks like free text, so this holds even if a bug elsewhere tried
+to write something it shouldn't.
+
+**The exception: `handbacks/`.** The folder also holds the long reports your search's helper agents
+hand back, each in its own file, so that a long report is a file you can open rather than a wall of
+text in the conversation. One of them is kept for a reason of its own: when a job-search pass or a
+board sweep hands back its list of roles and the daily run finds a problem in it, the run keeps
+a byte-for-byte copy at `.jobsearch/handbacks/roles-<run>-<surface>.md` (the run's id, and
+`linkedin-jobsearch` or `board`). It is kept when the whole report is refused, and also when some
+lines are accepted and others are not. A bad line costs only that line: every role on a good line is
+still recorded, and each bad line is listed as a gap in the run's journal with its line number and
+the rule it broke. The kept copy is the whole report as the helper wrote it, so you can fix the
+lines and re-run it. **Unlike the rest of this folder, these files do name roles and companies**,
+because that is what a list of roles is. They stay on your machine, in the same git-ignored folder.
+
+Before a report is accepted, `deferred.py --add-roles <file> --run <id> --surface <s> --check` reads
+it the same way and prints each faulty line and a one-line verdict without writing anything.
 
 **It is not committed to git.** The same upgrade that created the folder added `.jobsearch/` to
 your profile's `.gitignore` automatically — this state is specific to the machine it runs on,

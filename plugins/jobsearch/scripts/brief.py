@@ -34,7 +34,7 @@ Usage:
     python3 brief.py --check                                       # every open draft's verdict
     python3 brief.py --json --for contact:<id>
     python3 brief.py --probe contact:<id>                          # mailbox probe alone
-    python3 brief.py --probe --held                                # probe/queue every held draft
+    python3 brief.py --probe --held [--deadline-s N]               # probe/queue every held draft
     python3 brief.py --rebrief [--all]                             # bulk, store-only evidence
     python3 brief.py --restamp                                     # re-stamp unaddressed (#92)
     python3 brief.py --address "<entry title>" --to contact:<id>    # address + brief in one write (#686)
@@ -49,6 +49,7 @@ import os
 import re
 import secrets
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
@@ -160,6 +161,109 @@ def read_ledger(root):
                     out.append(json.loads(line))
     except (OSError, ValueError):
         pass
+    return out
+
+
+def read_ledger_strict(root):
+    """Every ledger row, or `BriefError` naming the first line that does not parse (dev #704).
+
+    `read_ledger()` above swallows a bad line and returns what it could read, which is right for
+    a reader that only wants evidence and WRONG for a migration: preserving and then rewriting a
+    ledger it could not fully read would drop that line. An absent ledger is legal (it is created
+    lazily by the first brief) and reads as no rows."""
+    p = _ledger_path(root)
+    if not os.path.exists(p):
+        return []
+    out = []
+    try:
+        with open(p, encoding="utf-8") as fh:
+            for n, line in enumerate(fh, 1):
+                if not line.strip():
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except ValueError as exc:
+                    raise BriefError("%s line %d is not valid JSON (%s)" % (LEDGER, n, exc))
+    except OSError as exc:
+        raise BriefError("%s cannot be read (%s)" % (LEDGER, exc))
+    return out
+
+
+# dev #704 / public #154 (M1) -- the ledger fields that can carry a message id or a mail tag, as
+# docs/data_model.json `source_tag.fields.briefs` declares them (a test pins the two together).
+LEDGER_MESSAGE_FIELDS = ("evidence", "latest_in", "latest_out")
+
+
+def _remap_value(value, id_map, fix_text):
+    """`value` with every string that EQUALS a mapped id replaced by its survivor, then `fix_text`
+    applied to every string. Recurses through dicts and lists; any other value is returned as is."""
+    if isinstance(value, str):
+        return fix_text(id_map.get(value, value))
+    if isinstance(value, dict):
+        return {k: _remap_value(v, id_map, fix_text) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_remap_value(v, id_map, fix_text) for v in value]
+    return value
+
+
+def remap_message_refs(root, id_map, fix_text, preserve_suffix=".pre-0.66.0", apply_it=True):
+    """Rewrite the message references in the ledger -- the ONLY way the migration touches
+    `briefs.jsonl`, because `check_ledger_reads.py` allows only `LEDGER_READERS` to open it.
+    Returns `(rows_changed, preserved_path)`.
+
+    `id_map` is `{dropped message id: survivor id}` (dev #704 M1: ids are OPAQUE -- only a row merged
+    away is remapped, nothing is re-minted); `fix_text(str) -> str` repairs a wrapped mail tag in
+    free text. Both are applied to the three fields in `LEDGER_MESSAGE_FIELDS`: a mapped id inside
+    `latest_in`/`latest_out` (`{"id": ..., "date": ...}`) or an `evidence` string equal to one, and
+    `fix_text` on every string in them.
+
+    ⭐ A deliberate exception to 'a brief is a stamped row': `brief.py --check` compares a stored
+    `latest_in.id` with a freshly computed one, so a brief that cited a message merged into another
+    would read stale forever if left unmapped.
+
+    PRESERVE, THEN TRANSFORM: before the first write the ledger is copied byte for byte to
+    `briefs.jsonl<preserve_suffix>` -- never overwriting a copy already there, which is the true
+    original from an earlier partial run. A line that does not parse raises `BriefError` before
+    anything is written. Rows that do not change keep their original line byte for byte. With
+    `apply_it=False` nothing is written and the count says what WOULD change (the migration's
+    success check re-reads the ledger this way)."""
+    p = _ledger_path(root)
+    rows = read_ledger_strict(root)
+    if not rows:
+        return 0, None
+    with open(p, encoding="utf-8") as fh:
+        raw_lines = [l.rstrip("\n") for l in fh if l.strip()]
+    new_lines, changed = [], 0
+    for raw, row in zip(raw_lines, rows):
+        new = dict(row)
+        for f in LEDGER_MESSAGE_FIELDS:
+            if f in new:
+                new[f] = _remap_value(new[f], id_map, fix_text)
+        if new != row:
+            changed += 1
+            new_lines.append(json.dumps(new, sort_keys=True, ensure_ascii=False))
+        else:
+            new_lines.append(raw)
+    if not changed or not apply_it:
+        return changed, None
+    copy = p + preserve_suffix
+    if not os.path.exists(copy):
+        import shutil
+        shutil.copy2(p, copy)
+    import _atomic
+    _atomic.write_text(p, "\n".join(new_lines) + "\n")
+    return changed, copy
+
+
+def ledger_message_ids(root):
+    """`[(row id, field, message id)]` for every `latest_in`/`latest_out` reference in the ledger
+    (strict read) -- what the migration's before/after comparison resolves against `messages`."""
+    out = []
+    for r in read_ledger_strict(root):
+        for f in ("latest_in", "latest_out"):
+            ref = (r.get(f) or {})
+            if isinstance(ref, dict) and ref.get("id"):
+                out.append((r.get("id"), f, ref["id"]))
     return out
 
 
@@ -335,35 +439,14 @@ def _scoped_query(term):
 
 
 def _is_automated_sender(addr, configured_domains, derived_domains):
-    """§4.3 ask 2 (dev #485/public #108) — is this address an ATS receipt, a LinkedIn
-    notification, or a generic no-reply/job-board automated sender? The ATS half reuses
-    `reconcile.identify_sender_class()` — the ONE predicate `--ats`'s add-domain hint and
-    `--verify`'s per-domain label already share (public #120/dev #473) — never a second,
-    drifting domain list (rule 20). LinkedIn's own senders are `reconcile.LINKEDIN_SENDERS`,
-    the same fixed tuple `reconcile.py --harvest` already filters on (reconcile.py:2013).
-
-    Newsletter senders have no configured signal anywhere in this profile's schema — checked:
-    no `newsletter` or `job_board` key exists in `config.json`'s seeded shape
-    (`scripts/init_profile.py`) or in the registered config-key vocabulary (`config_keys.py`).
-    A hardcoded
-    newsletter sender list would be a one-off patch serving one profile's inbox (CLAUDE.md:
-    worse than no change), so the smallest honest answer is the same generic `noreply`/
-    `no-reply` local-part check `reconcile.py`'s own harvest path already applies
-    (reconcile.py:2013) for exactly this reason — it catches most newsletter and job-board
-    automated senders structurally, without naming a single one of them."""
-    a = (addr or "").strip().lower()
-    if not a or "@" not in a:
-        return False
-    local, domain = a.split("@", 1)
+    """§4.3 ask 2 (dev #485/public #108) -- is this address an ATS receipt, a LinkedIn notification,
+    or a generic no-reply/job-board automated sender? Since dev #708 / public #150 (A1) the body
+    lives in ONE place, `reconcile.is_automated_sender()`, because the weekly reconcile audit's
+    reply path needs the same answer and two predicates would drift (contract rule 20). This stays
+    as the one-line delegate the probe and its tests have always called. `reconcile` is imported
+    lazily: it imports a great deal, and the probe is the rare caller."""
     import reconcile as _reconcile
-    is_ats, _leg = _reconcile.identify_sender_class(domain, configured_domains, derived_domains)
-    if is_ats:
-        return True
-    if a in _reconcile.LINKEDIN_SENDERS:
-        return True
-    if "noreply" in local or "no-reply" in local:
-        return True
-    return False
+    return _reconcile.is_automated_sender(addr, configured_domains, derived_domains)
 
 
 def _human_hits_dated(mb, uids, configured_domains, derived_domains):
@@ -979,10 +1062,68 @@ def cmd_probe(root, person_token):
     return code
 
 
-def cmd_probe_held(root):
+# ⭐ dev #712 / public #146 -- `--probe --held` is a batch of per-person network probes, and a
+# batch killed from OUTSIDE loses every result it held back. The deadline below is the batch's
+# own, so it stops BEFORE the outside kill and says what it left undone.
+#
+# WHERE THE NUMBER COMES FROM (docs/groups/daily-run-losses.md, "A finding on B1"): daily-run
+# §2c gave this call no time limit, so the only bound was the harness's 120 s Bash default
+# (Claude Code env-vars docs, BASH_DEFAULT_TIMEOUT_MS). The reporter's journal shows the call
+# killed at 50 s, 90 s and over 100 s -- the shortest observed kill is 50 s. 40 s is below it;
+# §2c now gives the call a 90 s timeout, which is above 40 s and below 120 s.
+HELD_PROBE_DEADLINE_S = 40.0
+HELD_PROBE_GAP_SCOPE = "email:held-probe"
+_clock = time.monotonic                       # a test substitutes this; production never does
+
+
+def _held_probe_run_id(root):
+    """The run a deadline gap is filed against: the newest started-and-not-ended run in the
+    journal (the daily run `--start`s itself before §2c), else a fresh `held-probe-<stamp>` id
+    so the gap still lands somewhere countable instead of failing the probe's own write."""
+    try:
+        open_runs = _journal.unfinished(_journal.read(root))
+    except Exception:                                  # noqa: BLE001 -- never wedge the probe
+        open_runs = []
+    if open_runs:
+        return open_runs[-1]["run_id"]
+    return _journal.new_run_id("held-probe", _journal.now_iso())
+
+
+def _file_held_probe_gap(root, probed, remaining, deadline_s):
+    """ONE gap for the whole cut-short batch (never one per person), skipped when this scope is
+    already open -- a second cut-short call before the first is closed does not stack a second."""
+    if any(g.get("scope") == HELD_PROBE_GAP_SCOPE
+           for g in _journal.open_gaps(_journal.read(root))):
+        return None
+    return _journal.record_gap(
+        root, _held_probe_run_id(root), HELD_PROBE_GAP_SCOPE, "timeout",
+        closes_when="a run's brief.py --probe --held probes the %d held draft(s) this call did "
+                    "not reach (%d probed before its %gs deadline)" % (remaining, probed, deadline_s))
+
+
+def _close_held_probe_gaps(root):
+    """A held probe that reached EVERYONE satisfies every open deadline gap's `closes_when`."""
+    for g in _journal.open_gaps(_journal.read(root)):
+        if g.get("scope") == HELD_PROBE_GAP_SCOPE:
+            _journal.append(root, {"event": "gap-closed", "gap_id": g["gap_id"],
+                                   "at": _journal.now_iso()})
+
+
+def cmd_probe_held(root, deadline_s=HELD_PROBE_DEADLINE_S):
     """§3.1/§5.2, daily-run §2c — probe (or queue) every draft currently `unverified-cold`.
     Re-derives holds through `verdict()`, the same function `precondition.py` uses, over every
-    OPEN entry — never a private re-implementation of the states."""
+    OPEN entry — never a private re-implementation of the states.
+
+    dev #712 / public #146 -- BOUNDED, and a kill loses nothing already done:
+      - people are probed in sorted order (a stable order, so "the remaining N" names the same
+        people on the next call);
+      - each person's result is posted (`post_store_behind_mailbox`) the moment that person is
+        probed, never held to the end;
+      - `deadline_s` is checked before each person: past it, the rest are NOT attempted and ONE
+        journal gap says how many were probed and how many remain. A batch that finishes inside
+        the deadline files no gap, and closes any earlier one;
+      - reachability (configured accounts + credentials) is read ONCE per call, not per person;
+      - the last line states probed / queued / not reached."""
     held_people = set()
     for filename in _pre.FILES:
         path = _tree.resolve_rel(root, filename)
@@ -1002,24 +1143,33 @@ def cmd_probe_held(root):
     if not held_people:
         print("No held drafts to probe.")
         return 0
-    probed, queued = 0, 0
-    for pid in sorted(held_people):
-        addresses = address_set(root, pid)
-        terms = name_terms(root, pid)
-        if not (addresses or terms):
-            continue
-        accounts = mail_client.configured_accounts()
-        reachable = accounts and all(credentials.has_credential(a) for a in accounts)
+    accounts = mail_client.configured_accounts()                  # once per call (dev #712)
+    reachable = bool(accounts) and all(credentials.has_credential(a) for a in accounts)
+    started = _clock()
+    probed, queued, not_reached = 0, 0, 0
+    todo = [pid for pid in sorted(held_people)                    # sorted: a stable order
+            if address_set(root, pid) or name_terms(root, pid)]
+    for i, pid in enumerate(todo):
         if reachable:
-            results, refusal = run_email_probe(root, pid)
+            if _clock() - started >= deadline_s:
+                not_reached = len(todo) - i
+                break
+            results, refusal = run_email_probe(root, pid, accounts=accounts)
             if refusal is None:
-                post_store_behind_mailbox(root, pid, results)
+                post_store_behind_mailbox(root, pid, results)     # posted NOW, not at the end
                 probed += 1
         else:
             if queue_probe_if_needed(root, pid):
                 queued += 1
-    print("Probed %d held draft(s) directly, queued %d for a keychain-holding session."
-         % (probed, queued))
+    if not_reached:
+        _file_held_probe_gap(root, probed, not_reached, deadline_s)
+    elif reachable:
+        _close_held_probe_gaps(root)
+    print("Probed %d held draft(s) directly, queued %d for a keychain-holding session, "
+          "%d not reached%s."
+          % (probed, queued, not_reached,
+             " (the %gs deadline passed; one journal gap names them)" % deadline_s
+             if not_reached else ""))
     return 0
 
 
@@ -1374,6 +1524,13 @@ def main():
     # consumes an ordinary value when one is there.
     ap.add_argument("--probe", nargs="?", const=True, default=None, metavar="contact:<id>")
     ap.add_argument("--held", action="store_true")
+    ap.add_argument("--deadline-s", dest="deadline_s", type=float,
+                    default=HELD_PROBE_DEADLINE_S, metavar="SECONDS",
+                    help="--probe --held only (dev #712): stop starting new probes after this "
+                         "many seconds and file ONE gap for the rest. Default %gs: below the "
+                         "shortest observed kill of the call (50 s); daily-run §2c gives the "
+                         "call a 90 s timeout. Results already probed are kept."
+                         % HELD_PROBE_DEADLINE_S)
     ap.add_argument("--rebrief", action="store_true")
     ap.add_argument("--restamp", action="store_true",
                     help="re-stamp `**To:** unaddressed` entries that now resolve a contact "
@@ -1393,8 +1550,10 @@ def main():
             # `--probe` with no value and no `--held` is not a form anything documents — say
             # so plainly rather than handing a bare `True` to `cmd_probe`'s contact-token path.
             ap.error("--probe requires a value (contact:<id>) unless paired with --held")
+        if args.deadline_s <= 0:
+            ap.error("--deadline-s must be greater than 0")
         if args.probe and args.held:
-            return cmd_probe_held(root)
+            return cmd_probe_held(root, args.deadline_s)
         if args.probe:
             return cmd_probe(root, args.probe)
         if args.address:

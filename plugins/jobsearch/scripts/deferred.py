@@ -63,6 +63,8 @@ Usage:
     ~/.claude/jobsearch/run deferred.py --claimable [--attended]
     ~/.claude/jobsearch/run deferred.py --add-roles <hand-back file> --run <id> --surface board
                                                                   # or linkedin-jobsearch
+    ~/.claude/jobsearch/run deferred.py --add-roles <hand-back file> --run <id> --surface board --check
+                                                                  # dry run: faults + verdict, writes nothing
     ~/.claude/jobsearch/run deferred.py --settle              # close items the stores show done
     ~/.claude/jobsearch/run deferred.py --done <id>
 
@@ -70,10 +72,45 @@ Usage:
 `--add-roles` is the gate on a LinkedIn job-search or board-sweeper pass report. The report is a
 `ROLES v1` block (`ROLES_GRAMMAR`, fenced byte-equal in both agent files), never a prose count: each
 `ROLE` line ends up captured, known (already in the pipeline, active or passed), carried (one
-`capture-role` item, `ref` the canonical URL) or a per-role gap, and the block is refused whole when
-`SEEN distinct` does not equal its ROLE lines. "N seen, top few captured" cannot be written any
-more, because the rest are rows. A pass that returns with NO accepted block is a gap
+`capture-role` item, `ref` the canonical URL) or a per-role gap. "N seen, top few captured" cannot
+be written any more, because the rest are rows. A pass that returns with NO accepted block is a gap
 (`journal.py --end`, `ROLES NOT ACCOUNTED`).
+
+⭐ A CAPTURED ROLE CARRIES ITS PAY, ITS POSTING DATE AND ITS WORK SETTING (dev #715 / public #143,
+dev #716 / public #142; jobsearch 0.67.0). A `ROLE` line ends in three slots a screen needs and the
+sweep used to drop: `posted=` (a date, an `ats:` date, a shown age `<n>d`, or `?`), `pay=` (`none`,
+`stated:<range>[;<range>]`, `estimate:<range>[;<range>]`, or `?`) and `setting="<verbatim>"`. The
+`pay=` and `setting=` slots are REQUIRED: a line without them is a line fault, because an optional
+slot would let a forgetful sweep produce silent NOT CAPTURED rows. `--add-roles` parses them itself
+(`parse_pay_slot`, `parse_posted_slot`, never a model) and the `capture-role` item it queues carries
+the result as `role` = `{listed_pay, posted, location_declared, slots}` in the shapes the
+opportunity stores. They reach the opportunity only when the role is created with
+`record.py create <opp_id> '<json>' --from-item <that item's id>`, which copies `listed_pay`,
+`posted` and `location.declared` across (`record.py copy_capture_item_facts`); a create without
+`--from-item` copies nothing, and the screen then reads NOT CAPTURED. `?` in any slot means NOT READ
+and is stored as ABSENT, never as "none". A non-annual figure is carried as written (`interval` month, day, hour);
+the screen routes it to review and nothing here converts it to a year.
+
+⭐ A LINE FAULT NEVER DISCARDS A VALID ROLE; A HAND-BACK CAN BE CHECKED FIRST (dev #707 / public
+#151). A hand-back with 277 roles and one malformed QUERY line used to be refused whole, and the
+hand-back was lost with the dispatch. Now only a STRUCTURAL fault (no block, two blocks, a bad
+header, a run or surface that is not this call's, no END line) refuses a block. Every other fault
+-- a line that fits no form, a QUERY or ROLE that breaks a rule, a duplicate posting, a SEEN count
+that disagrees with the ROLE lines or the largest QUERY -- is a `partial-results` gap of its own
+(scope `jobsearch:roles-line:<surface>:<line>`, naming the line, its text and the rule) and every
+ROLE that parsed is recorded. The exit code says which happened:
+
+    0  clean                  every line parsed
+    4  accepted, line faults  every valid role recorded; each faulty line is a gap
+    3  refused                a structural fault: one gap, nothing else written
+    2  usage                  a missing --run/--surface, an unreadable file, --check without --add-roles
+
+Whenever the call refuses or records any fault, the raw hand-back is copied byte for byte to
+`<profile root>/.jobsearch/handbacks/roles-<run>-<surface>.md` (the PROFILE root, never the engine)
+and the message and the gap name it. `--check` is the same parse with nothing written: it prints
+each fault with its line number and rule and a one-line `verdict:` (`clean`, `N line faults`,
+`refused: <why>`), and exits with the code the real call would. The dispatcher runs it on a
+hand-back before accepting it, and the agents that write the block run it on their own first.
 
 Python 3.9+. Standard library only.
 """
@@ -139,13 +176,44 @@ ROLES_GRAMMAR = """\
 QUERY geo=<remote|local> title="<query>" window=<r86400|r604800|none> shown=<n> total=<m|?> [unapplied] [channel=<channel_id>]
 QUERY geo=<remote|local> title="<query>" unreachable reason=<journal.REASONS code> [channel=<channel_id>]
 SEEN distinct=<n>
-ROLE url=<posting url> title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|?>
+ROLE url=<posting url> title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|ats:YYYY-MM-DD|<n>d|?> pay=<pay|?> setting="<verbatim|none stated|?>"
 ROLE nourl title="<t>" company="<c>" reason=<journal.REASONS code>
 --- END ROLES ---"""
 
+# dev #715 / public #143, dev #716 / public #142 (sourcing-screen, jobsearch 0.67.0) -- the ROLE line
+# carries the three facts a screen needs and the sweep used to drop. The slots are REQUIRED: an
+# optional slot would let a forgetful sweep produce silent NOT CAPTURED rows (design §4.1).
+#   pay=none | stated:<range>[;<range>...] | estimate:<range>[;<range>...] | ?
+#       <range> := <min>-<max>/<yr|mo|day|hr>/<CUR> | <min>+/<yr|mo|day|hr>/<CUR>
+#       (integers, no separators, a three-letter upper-case ISO currency code)
+#       `stated` = the EMPLOYER's figure, `estimate` = a board's own estimate panel, `none` = the
+#       listing showed no pay, `?` = not read (stored as ABSENT -- NOT CAPTURED -- never as none).
+#   posted=YYYY-MM-DD (a date a board showed: stored `board-relative`, the weaker source) |
+#          ats:YYYY-MM-DD (a JSON-LD `datePosted` or an ATS API date: stored `ats-posted`) |
+#          <n>d (a shown age: the script stores run date - n as `board-relative`) | ?
+#   setting="<the posting's own work-setting text, verbatim>" | none stated | ? (not read: absent)
+# Pay intervals are the four postings in scope use. A non-annual interval is carried as written and
+# the screen routes it to review; the agents must NEVER code an hourly, daily or monthly figure
+# as /yr (R2): a guessed conversion that removes is the defect class this slot exists to end.
+PAY_INTERVALS = {"yr": "year", "mo": "month", "day": "day", "hr": "hour"}
+PAY_STATES = {"stated": "employer-stated", "estimate": "board-estimate"}
+PAY_SOURCES = {"employer-stated": "listing-text", "board-estimate": "board-widget",
+               "none-shown": "listing-text"}
+SETTING_NONE_STATED = "none stated"
+POSTED_MAX_AGE_DAYS = 3650      # an `<n>d` older than ten years is a typo, not a posting age
+
 KIND_CAPTURE = "capture-role"
 ROLES_FIELD_CAP = 200
-ROLES_EXIT_OK, ROLES_EXIT_USAGE, ROLES_EXIT_REFUSED = 0, 2, 3
+# dev #707 / public #151 -- `--add-roles` and `--add-roles --check` answer with ONE of these:
+#   0  clean            every line parsed; everything was recorded (or, with --check, would be)
+#   4  accepted, with   the valid roles were recorded; each faulty line is a gap of its own and
+#      line faults      the raw hand-back is kept (nothing valid is ever discarded for a bad line)
+#   3  refused          a STRUCTURAL fault (no block, two blocks, a bad header, a run or surface
+#                       that is not this call's, no END line): one gap, nothing else written
+#   2  usage            a missing --run/--surface, or an unreadable hand-back file
+ROLES_EXIT_OK, ROLES_EXIT_USAGE, ROLES_EXIT_REFUSED, ROLES_EXIT_FAULTS = 0, 2, 3, 4
+ROLES_LINE_GAP_SCOPE = "jobsearch:roles-line:%s:%s"     # (surface, line number | block:<check>)
+ROLES_HANDBACK_DIR = (".jobsearch", "handbacks")         # under the PROFILE root, never the engine
 
 # A queue id is typed by hand into --claim, so four bytes (eight hex digits), not brief.py's
 # eight (dev #680): 2**32 per second is far beyond any add rate this queue sees.
@@ -307,7 +375,7 @@ def queue_item(what, why="", requires=()):
     return _append_item(what, why, requires)
 
 
-def _append_item(what, why="", requires=(), kind="action", ref=None):
+def _append_item(what, why="", requires=(), kind="action", ref=None, role=None):
     """dev #692 / public #140 (N2) -- the ONE private writer of a new queue row, and the only
     place a row reaches the queue WITHOUT passing `FORBIDDEN`. Its callers are pinned by
     `test_send_filter.py` (a source scan): `queue_item` (which checks the filter first),
@@ -316,7 +384,11 @@ def _append_item(what, why="", requires=(), kind="action", ref=None):
 
     `kind` is `action` for free text and the engine form's own kind otherwise; `ref` (optional,
     omitted from the row when None, so legacy rows are unchanged) is the canonical URL or opp id
-    the item stands for, which is what makes the engine forms idempotent on `(kind, ref)`."""
+    the item stands for, which is what makes the engine forms idempotent on `(kind, ref)`.
+
+    `role` (dev #715 / public #143, dev #716 / public #142; only a `capture-role` item passes one)
+    is the SCRIPT-parsed pay, posting date and work setting of the ROLE line (`role_payload`),
+    omitted when None, so every legacy row and every other kind is unchanged."""
     now = datetime.datetime.now()
     # dev #481 / public #112 -- the timestamp prefix keeps ids sortable; the random suffix is what
     # stops two adds inside one second (two controllers, or a runner and daily-run in the same
@@ -329,6 +401,8 @@ def _append_item(what, why="", requires=(), kind="action", ref=None):
           "claimed_by": None, "claimed_at": None, "done_at": None}
     if ref is not None:
         rec["ref"] = ref
+    if role is not None:
+        rec["role"] = role
     with open(QUEUE, "a", encoding="utf-8") as fh:          # append-only, like the inbox
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return rec
@@ -468,9 +542,16 @@ _QUERY_UNREACHABLE = re.compile(
     r"^QUERY geo=(?P<geo>remote|local) title=" + _Q + r" unreachable reason=(?P<reason>[a-z-]+)"
     r"(?: channel=(?P<channel>\S+))?$")
 _SEEN_DISTINCT = re.compile(r"^SEEN distinct=(?P<n>\d+)$")
+# The ROLE line's `pay=` and `setting=` are matched OPTIONALLY here so that a line without them is a
+# line fault with a rule that NAMES the missing slot (see `_role_slot_faults`), not the generic
+# "not a line of the ROLES grammar". The slots are required: the fault is raised, never defaulted.
 _ROLE_URL = re.compile(
     r'^ROLE url=(?P<url>\S+) title="(?P<title>[^"]*)" company="(?P<company>[^"]*)" '
-    r'location="(?P<location>[^"]*)" posted=(?P<posted>\d{4}-\d{2}-\d{2}|\?)$')
+    r'location="(?P<location>[^"]*)" posted=(?P<posted>\S+)'
+    r'(?: pay=(?P<pay>\S+))?(?: setting="(?P<setting>[^"]*)")?$')
+_PAY_RANGE = re.compile(
+    r'^(?P<min>\d+)(?:-(?P<max>\d+)|(?P<open>\+))/(?P<unit>[a-z]+)/(?P<cur>[A-Za-z]{3})$')
+_POSTED_AGE = re.compile(r'^(?P<n>\d{1,4})d$')
 _ROLE_NOURL = re.compile(
     r'^ROLE nourl title="(?P<title>[^"]*)" company="(?P<company>[^"]*)" '
     r'reason=(?P<reason>[a-z-]+)$')
@@ -485,10 +566,142 @@ def _clip(s):
     return " ".join(str(s or "").split())[:ROLES_FIELD_CAP]
 
 
+def parse_pay_slot(slot):
+    """`(listed_pay, None)` or `(None, why)` for the `pay=` slot of a ROLE line (dev #715 / public
+    #143). `listed_pay` is `None` for `?` (not read: the stored field is ABSENT, which means NOT
+    CAPTURED -- never `none`), else `{"state", "ranges"?, "source"}` WITHOUT `captured_on` (the run
+    date is known only to `add_roles`). The stored states are the three `validate_data` checks:
+    `employer-stated` (`stated:`), `board-estimate` (`estimate:`), `none-shown` (`none`).
+
+    Every refusal names the rule: a pay that fits no form is never guessed at, and a figure is
+    never converted (an hourly range stays `interval: hour`; the screen sends it to review)."""
+    if slot == "?":
+        return None, None
+    if slot == "none":
+        return {"state": "none-shown", "source": PAY_SOURCES["none-shown"]}, None
+    word, sep, body = slot.partition(":")
+    if not sep or word not in PAY_STATES:
+        return None, ("pay=%s is not `none`, `?`, `stated:<range>[;<range>...]` or "
+                      "`estimate:<range>[;<range>...]`" % slot)
+    ranges = []
+    for piece in body.split(";"):
+        rm = _PAY_RANGE.match(piece)
+        if not rm:
+            return None, ("pay range %r is not `<min>-<max>/<yr|mo|day|hr>/<CUR>` or "
+                          "`<min>+/<yr|mo|day|hr>/<CUR>` (whole numbers, no separators)" % piece)
+        unit = rm.group("unit")
+        if unit not in PAY_INTERVALS:
+            return None, ("pay range %r has interval %r: use yr, mo, day or hr, and never code a "
+                          "non-annual figure as /yr" % (piece, unit))
+        lo = int(rm.group("min"))
+        hi = None if rm.group("open") else int(rm.group("max"))
+        if lo <= 0 or (hi is not None and hi <= 0):
+            return None, "pay range %r has a figure that is not a positive whole number" % piece
+        if hi is not None and lo > hi:
+            return None, "pay range %r has min above max" % piece
+        ranges.append({"min": lo, "max": hi, "currency": rm.group("cur").upper(),
+                       "interval": PAY_INTERVALS[unit], "label": None})
+    state = PAY_STATES[word]
+    return {"state": state, "ranges": ranges, "source": PAY_SOURCES[state]}, None
+
+
+def parse_posted_slot(slot):
+    """`(kind, value, None)` or `(None, None, why)` for the `posted=` slot: kind `unknown` (`?`),
+    `board-relative` (a bare `YYYY-MM-DD`), `ats-posted` (`ats:YYYY-MM-DD`) or `age` (`<n>d`, a
+    shown age the script turns into a date against the run date). A date must be a real calendar
+    date. `ats:` is for a JSON-LD `datePosted` or an ATS API date only (the agent prose says so);
+    the script cannot tell, which is why it is the agent's prefix to earn."""
+    if slot == "?":
+        return "unknown", None, None
+    m = _POSTED_AGE.match(slot)
+    if m:
+        n = int(m.group("n"))
+        if n > POSTED_MAX_AGE_DAYS:
+            return None, None, "posted=%s is a shown age above %d days" % (slot, POSTED_MAX_AGE_DAYS)
+        return "age", n, None
+    kind, date_text = "board-relative", slot
+    if slot.startswith("ats:"):
+        kind, date_text = "ats-posted", slot[4:]
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", date_text):
+        return None, None, "posted=%s is not YYYY-MM-DD, ats:YYYY-MM-DD, <n>d or ?" % slot
+    try:
+        datetime.date.fromisoformat(date_text)
+    except ValueError:
+        return None, None, "posted=%s is not a real calendar date" % slot
+    return kind, date_text, None
+
+
+def _role_slots(rm):
+    """`(slots, None)` or `(None, why)` for a ROLE url line that matched `_ROLE_URL`: `slots` is
+    the parsed `pay`, `posted`, `setting` and the three verbatim, or `why` names the first rule
+    broken. The two new slots are REQUIRED (dev #715 / public #143): a line without them is a line
+    fault, never a role with the slot defaulted."""
+    missing = [n for n in ("pay", "setting") if rm.group(n) is None]
+    if missing:
+        return None, ("a ROLE line carries the required `pay=` and `setting=` slots "
+                      "(pay=none|stated:<range>|estimate:<range>|? and "
+                      "setting=\"<verbatim|none stated|?>\"); this line has no %s"
+                      % " or ".join("`%s=`" % n for n in missing))
+    pay, why = parse_pay_slot(rm.group("pay"))
+    if why:
+        return None, why
+    kind, value, why = parse_posted_slot(rm.group("posted"))
+    if why:
+        return None, why
+    setting = _clip(rm.group("setting"))
+    if not setting:
+        return None, ("setting=\"\" is empty: write the posting's own text, `none stated` when it "
+                      "states none, or `?` when you did not read it")
+    return {"pay": pay, "posted": (kind, value), "setting": setting,
+            "slots": {"pay": rm.group("pay"), "posted": rm.group("posted"),
+                      "setting": rm.group("setting")}}, None
+
+
+def role_payload(r, run_date):
+    """The `role` object a `capture-role` queue item carries (dev #715 / public #143, dev #716 /
+    public #142, design §2): what `--add-roles` STORES of a ROLE line's three new slots, in the
+    shapes the opportunity will hold, so `record.py` copies them and no model re-types a value the
+    script already parsed.
+
+      listed_pay         the `opportunities.listed_pay` object (state, ranges, source, captured_on),
+                         or None when `pay=?` (not read: the opportunity field is left ABSENT)
+      posted             the `opportunities.posted` object (date, source, recorded_on), or None for
+                         `posted=?` (age unknown = absent). `<n>d` is `run date - n`, computed here
+                         and never by the model
+      location_declared  the `location.declared` text: the posting's own words, the literal
+                         `none stated`, or None for `setting="?"` (not read)
+      slots              the three slots verbatim, for the audit trail
+    """
+    lp = dict(r["pay"], captured_on=run_date) if r.get("pay") else None
+    posted = None
+    kind, value = r.get("posted_parsed") or ("unknown", None)
+    if kind == "age":
+        d = datetime.date.fromisoformat(run_date) - datetime.timedelta(days=value)
+        posted = {"date": d.isoformat(), "source": "board-relative", "recorded_on": run_date}
+    elif kind in ("board-relative", "ats-posted"):
+        posted = {"date": value, "source": kind, "recorded_on": run_date}
+    setting = r.get("setting")
+    return {"listed_pay": lp, "posted": posted,
+            "location_declared": None if setting in (None, "?") else setting,
+            "slots": r.get("slots") or {}}
+
+
 def parse_roles(text, run_id, surface):
-    """`{"header", "queries", "distinct", "roles"}` from the one `ROLES v1` block in `text`.
-    Strict and all-or-nothing, like `linkedin_sweep.parse_sweep`: raises `RolesRefused` naming the
-    first problem. Prose outside the block is ignored -- the block is the contract."""
+    """`{"header", "queries", "distinct", "listed", "roles", "faults"}` from the one `ROLES v1`
+    block in `text`. Prose outside the block is ignored -- the block is the contract.
+
+    ⭐ TWO KINDS OF FAULT (dev #707 / public #151). A STRUCTURAL fault -- no block, two blocks, a
+    bad header, a run or surface that is not this call's, no END line -- raises `RolesRefused`
+    naming the first problem: without a valid header and END nothing says which lines belong to
+    the block. Every other fault is a LINE fault and is RETURNED in `faults`, never raised: a line
+    that fits no form, a QUERY or ROLE that breaks a per-line rule, a second posting of the same
+    URL, and the block-level count checks (SEEN against the ROLE lines, SEEN against the largest
+    QUERY shown, a missing SEEN or QUERY) evaluated over the lines that parsed. One stray line
+    used to refuse a pass's whole block and lose every valid role in it; now each valid ROLE is
+    kept and each fault is reported on its own. A fault is `{"line": n | None, "text": the line |
+    None, "scope_key": str, "rule": why}`; `line` is `None` for a block-level count check.
+    `distinct` is the number the block's SEEN line stated (`None` when it has none); `listed` is
+    how many ROLE lines were accepted, the number the roles event records."""
     import journal as _journal
     from pipeline_index import canonical_job_url
     lines = text.splitlines()
@@ -522,8 +735,16 @@ def parse_roles(text, run_id, surface):
     except StopIteration:
         raise RolesRefused("the ROLES block has no `%s` line" % _ROLES_END)
 
+    faults = []
+
+    def fault(n, raw, rule):
+        faults.append({"line": n, "text": _clip(raw), "scope_key": str(n), "rule": rule})
+
+    def block_fault(key, rule):
+        faults.append({"line": None, "text": None, "scope_key": "block:" + key, "rule": rule})
+
     expected_bucket = _journal.F_TPR_WIDE if window == "wide" else _journal.F_TPR_DAILY
-    queries, roles, distinct, seen_lines = [], [], None, 0
+    queries, roles, distinct, role_lines = [], [], None, 0
     for i in range(begins[0] + 1, end):
         raw = lines[i].strip()
         if not raw:
@@ -534,20 +755,23 @@ def parse_roles(text, run_id, surface):
             total = None if qm.group("total") == "?" else int(qm.group("total"))
             shown = int(qm.group("shown"))
             if total is not None and shown > total:
-                raise RolesRefused("line %d: shown=%d exceeds total=%d: %r" % (n, shown, total, raw))
+                fault(n, raw, "shown=%d exceeds total=%d" % (shown, total))
+                continue
             q = {"geo": qm.group("geo"), "title": qm.group("title"), "status": "reached",
                  "window": qm.group("win"), "shown": shown, "total": total,
                  "unapplied": bool(qm.group("unapplied")), "channel": qm.group("channel")}
             if surface == "board":
                 if q["window"] != "none" or not q["channel"] or q["unapplied"]:
-                    raise RolesRefused("line %d: a board QUERY has window=none, a channel= and no "
-                                       "`unapplied`: %r" % (n, raw))
+                    fault(n, raw, "a board QUERY has window=none, a channel= and no `unapplied`")
+                    continue
             else:
                 if q["channel"]:
-                    raise RolesRefused("line %d: a LinkedIn QUERY has no channel=: %r" % (n, raw))
+                    fault(n, raw, "a LinkedIn QUERY has no channel=")
+                    continue
                 if q["window"] == "none":
-                    raise RolesRefused("line %d: a LinkedIn QUERY needs a bucket window "
-                                       "(r86400 or r604800), got none: %r" % (n, raw))
+                    fault(n, raw, "a LinkedIn QUERY needs a bucket window (r86400 or r604800), "
+                                  "got none")
+                    continue
             q["window_gap"] = q["unapplied"] or (surface == "linkedin-jobsearch"
                                                  and q["window"] != expected_bucket)
             q["truncated"] = total is not None and total > shown
@@ -556,12 +780,14 @@ def parse_roles(text, run_id, surface):
         qm = _QUERY_UNREACHABLE.match(raw)
         if qm:
             if qm.group("reason") not in _journal.REASONS:
-                raise RolesRefused("line %d: reason=%s is not a journal.REASONS code: %r"
-                                   % (n, qm.group("reason"), raw))
+                fault(n, raw, "reason=%s is not a journal.REASONS code" % qm.group("reason"))
+                continue
             if surface == "board" and not qm.group("channel"):
-                raise RolesRefused("line %d: a board QUERY carries a channel=: %r" % (n, raw))
+                fault(n, raw, "a board QUERY carries a channel=")
+                continue
             if surface == "linkedin-jobsearch" and qm.group("channel"):
-                raise RolesRefused("line %d: a LinkedIn QUERY has no channel=: %r" % (n, raw))
+                fault(n, raw, "a LinkedIn QUERY has no channel=")
+                continue
             queries.append({"geo": qm.group("geo"), "title": qm.group("title"),
                             "status": "unreachable", "reason": qm.group("reason"),
                             "channel": qm.group("channel"), "window_gap": True,
@@ -569,48 +795,64 @@ def parse_roles(text, run_id, surface):
             continue
         qm = _SEEN_DISTINCT.match(raw)
         if qm:
-            seen_lines += 1
+            if distinct is not None:
+                fault(n, raw, "a second `SEEN distinct=` line (the first one counts)")
+                continue
             distinct = int(qm.group("n"))
             continue
         rm = _ROLE_URL.match(raw)
         if rm:
+            role_lines += 1
+            slots, why = _role_slots(rm)
+            if why:
+                fault(n, raw, why)
+                continue
             roles.append({"url": rm.group("url"), "title": rm.group("title"),
                           "company": rm.group("company"), "location": rm.group("location"),
-                          "posted": rm.group("posted"), "line": n})
+                          "posted": rm.group("posted"), "line": n,
+                          "pay": slots["pay"], "posted_parsed": slots["posted"],
+                          "setting": slots["setting"], "slots": slots["slots"]})
             continue
         rm = _ROLE_NOURL.match(raw)
         if rm:
+            role_lines += 1
             if rm.group("reason") not in _journal.REASONS:
-                raise RolesRefused("line %d: reason=%s is not a journal.REASONS code: %r"
-                                   % (n, rm.group("reason"), raw))
+                fault(n, raw, "reason=%s is not a journal.REASONS code" % rm.group("reason"))
+                continue
             roles.append({"url": None, "title": rm.group("title"), "company": rm.group("company"),
                           "location": "?", "posted": "?", "reason": rm.group("reason"), "line": n})
             continue
-        raise RolesRefused("line %d is not a line of the ROLES grammar: %r" % (n, raw))
+        if raw.startswith("ROLE"):
+            role_lines += 1              # the agent meant a ROLE here: SEEN counted it, so do we
+        fault(n, raw, "not a line of the ROLES grammar")
 
-    if seen_lines != 1:
-        raise RolesRefused("the block needs exactly one `SEEN distinct=<n>` line, found %d" % seen_lines)
-    if not queries:
-        raise RolesRefused("the block has no QUERY line: a pass that searched reports what it "
-                           "searched (a query it could not run is an `unreachable` QUERY)")
-    if distinct != len(roles):
-        raise RolesRefused("SEEN distinct=%d but the block lists %d ROLE line(s): seen must equal "
-                           "accounted, in both directions" % (distinct, len(roles)))
-    shown_max = max([q["shown"] for q in queries if q["status"] == "reached"] or [0])
-    if distinct < shown_max:
-        raise RolesRefused("SEEN distinct=%d is below the largest QUERY shown=%d: a query cannot "
-                           "show more roles than the pass saw" % (distinct, shown_max))
-    canon_seen = {}
+    canon_seen, kept = {}, []
     for r in roles:
         c = canonical_job_url(r["url"]) if r["url"] else None
         r["canonical"] = c
+        if c and c in canon_seen:
+            fault(r["line"], lines[r["line"] - 1], "the same posting as line %d (%s): list a role "
+                  "once" % (canon_seen[c], c))
+            continue
         if c:
-            if c in canon_seen:
-                raise RolesRefused("lines %d and %d are the same posting (%s): list a role once"
-                                   % (canon_seen[c], r["line"], c))
             canon_seen[c] = r["line"]
+        kept.append(r)
+    faults.sort(key=lambda f: f["line"])
+    # block-level count checks, over the lines that PARSED: a fault, never a refusal
+    if distinct is None:
+        block_fault("seen", "the block has no `SEEN distinct=<n>` line")
+    elif distinct != role_lines:
+        block_fault("seen-vs-roles", "SEEN distinct=%d but the block lists %d ROLE line(s): seen "
+                    "must equal accounted, in both directions" % (distinct, role_lines))
+    if not queries:
+        block_fault("query", "the block has no QUERY line that parsed: a pass that searched "
+                    "reports what it searched (a query it could not run is an `unreachable` QUERY)")
+    shown_max = max([q["shown"] for q in queries if q["status"] == "reached"] or [0])
+    if distinct is not None and distinct < shown_max:
+        block_fault("seen-vs-shown", "SEEN distinct=%d is below the largest QUERY shown=%d: a "
+                    "query cannot show more roles than the pass saw" % (distinct, shown_max))
     return {"header": {"window": window, "surface": surface}, "queries": queries,
-            "distinct": distinct, "roles": roles}
+            "distinct": distinct, "listed": len(kept), "roles": kept, "faults": faults}
 
 
 def _role_key(company, title):
@@ -647,10 +889,49 @@ def _file_gap(run_id, scope, reason, closes_when, out):
         return None
 
 
-def add_roles(text, run_id, surface, out=print):
+def _handback_rel(run_id, surface):
+    """The profile-relative path of the kept hand-back for `(run, surface)`. Keyed by both, so a
+    re-run of the same call overwrites its own copy and never another pass's."""
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", str(run_id))[:80].strip("-") or "run"
+    return "/".join(ROLES_HANDBACK_DIR + ("roles-%s-%s.md" % (safe, surface),))
+
+
+def _keep_handback(text, run_id, surface, out):
+    """dev #707 / public #151 (D2) -- copy the raw hand-back under the PROFILE root, byte for byte,
+    so a refused or faulty block is never lost with the dispatch that wrote it. Returns the
+    absolute path, or `None` (reported, never swallowed) when it cannot be written."""
+    path = os.path.join(ROOT, *_handback_rel(run_id, surface).split("/"))
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="") as fh:
+            fh.write(text)
+    except OSError as e:
+        out("⚠️ could not keep a copy of the hand-back at %s (%s)" % (path, e))
+        return None
+    return path
+
+
+def _describe_fault(f):
+    if f["line"] is None:
+        return "BLOCK FAULT: %s" % f["rule"]
+    return "LINE FAULT  line %d: %s -- %r" % (f["line"], f["rule"], f["text"])
+
+
+def add_roles(text, run_id, surface, out=print, check=False):
     """dev #692 / public #140 (692-2a/b, N5, N6) -- the gate on a pass report. Returns the exit
-    code: 0 accepted, 3 refused (ONE `partial-results` gap `jobsearch:roles:<surface>`, nothing
-    else written).
+    code: 0 clean, 4 accepted with line faults (dev #707 / public #151), 3 refused (ONE
+    `partial-results` gap `jobsearch:roles:<surface>`, nothing else written).
+
+    ⭐ A LINE FAULT NEVER DISCARDS A VALID ROLE (dev #707 / public #151). Only a STRUCTURAL fault
+    refuses the block (see `parse_roles`). Every other fault -- a stray line, a QUERY or ROLE that
+    breaks a rule, a duplicate posting, a SEEN count that disagrees with the lines -- becomes a
+    `partial-results` gap of its own (`jobsearch:roles-line:<surface>:<line|block:<check>>`, naming
+    the line, the line's text and the rule) while every ROLE that parsed is resolved exactly as
+    below. Whenever the call refuses or records any fault, the raw hand-back is copied to
+    `<profile root>/.jobsearch/handbacks/roles-<run>-<surface>.md` and the message names it.
+    `check=True` (`--check`) runs the SAME parse, prints every fault and a one-line verdict
+    (`clean`, `N line faults`, `refused: <why>`), writes NOTHING, and returns the same code the
+    real call would.
 
     An accepted block resolves EVERY `ROLE` line to exactly one outcome (never a prose count):
 
@@ -663,22 +944,40 @@ def add_roles(text, run_id, surface, out=print):
       * carried -- anything else, including an EXPIRED row's repost: ONE `capture-role` item,
         `ref` the canonical URL, idempotent on `(kind, ref)`.
 
-    then asserts the identity `distinct = captured + known + carried + role_gaps` and writes ONE
-    `roles` event. Query-level gaps (unreachable, window not applied, truncated) are filed and
-    counted in their own fields. Re-running the same block writes no new row: the queue is
-    idempotent, a gap is filed once per run, and an identical `roles` event is not repeated."""
+    then asserts the identity `distinct = captured + known + carried + role_gaps` (over the ROLE
+    lines accepted) and writes ONE `roles` event. Query-level gaps (unreachable, window not
+    applied, truncated) are filed and counted in their own fields. Re-running the same block writes
+    no new row: the queue is idempotent, a gap is filed once per run, and an identical `roles`
+    event is not repeated."""
     import journal as _journal
     from pipeline_index import (find_known_match, resolve_company, normalize_company)
     gap_scope = _journal.ROLES_GAP_SCOPE % surface
+    rel = _handback_rel(run_id, surface)
     try:
         parsed = parse_roles(text, run_id, surface)
     except RolesRefused as e:
+        if check:
+            out("verdict: refused: %s" % e)
+            return ROLES_EXIT_REFUSED
+        kept = _keep_handback(text, run_id, surface, out)
         out("⛔ REFUSED — %s. Nothing was recorded except a `partial-results` gap (%s)."
             % (e, gap_scope))
+        if kept:
+            out("   The raw hand-back is kept at %s" % kept)
         _file_gap(run_id, gap_scope, "partial-results",
-                  "the pass's ROLES block is accepted by deferred.py --add-roles --surface %s"
-                  % surface, out)
+                  "the pass's ROLES block is accepted by deferred.py --add-roles --surface %s%s"
+                  % (surface, (" (raw hand-back kept at %s)" % rel) if kept else ""), out)
         return ROLES_EXIT_REFUSED
+
+    faults = parsed["faults"]
+    if check:
+        for f in faults:
+            out(_describe_fault(f))
+        if faults:
+            out("verdict: %d line fault%s" % (len(faults), "" if len(faults) == 1 else "s"))
+            return ROLES_EXIT_FAULTS
+        out("verdict: clean")
+        return ROLES_EXIT_OK
 
     opps = _load_store("opportunities.jsonl")
     companies = _load_store("companies.jsonl")
@@ -732,7 +1031,7 @@ def add_roles(text, run_id, surface, out=print):
         what = ("Capture role: %s at %s (%s), seen %s pass: %s"
                 % (title, company, loc or "?", pass_label, canon))
         item = _append_item(what, "seen in a pass; not yet captured", (), kind=KIND_CAPTURE,
-                            ref=canon)
+                            ref=canon, role=role_payload(r, run_date))
         rows.append(item)
         out("CARRIED     %s (queued %s)" % (canon, item["id"]))
 
@@ -768,9 +1067,36 @@ def add_roles(text, run_id, surface, out=print):
             _file_gap(run_id, scope, "partial-results",
                       "a narrower query shows every result", out)
 
+    # dev #707 / public #151 -- a line fault is a gap of its own; the roles above are already in
+    kept = _keep_handback(text, run_id, surface, out) if faults else None
+    fault_scopes = set()
+    for f in faults:
+        scope = ROLES_LINE_GAP_SCOPE % (surface, f["scope_key"])
+        fault_scopes.add(scope)
+        out(_describe_fault(f))
+        what = ("line %d %r broke: %s" % (f["line"], f["text"], f["rule"])
+                if f["line"] is not None else "block check broke: %s" % f["rule"])
+        _file_gap(run_id, scope, "partial-results",
+                  "%s -- fixed when a corrected hand-back for this run is accepted by deferred.py "
+                  "--add-roles --surface %s%s" % (what, surface,
+                                                   (" (raw hand-back kept at %s)" % rel)
+                                                   if kept else ""), out)
+    # a corrected re-submission closes the line gaps it no longer has
+    prefix = ROLES_LINE_GAP_SCOPE % (surface, "")
+    for g in _journal.open_gaps(_journal.read(ROOT), run_id=run_id):
+        sc = str(g.get("scope", ""))
+        if sc.startswith(prefix) and sc not in fault_scopes:
+            try:
+                _journal.append(ROOT, {"event": "gap-closed", "gap_id": g["gap_id"],
+                                       "at": _journal.now_iso()})
+                out("GAP CLOSED %s (the corrected hand-back no longer has this fault)" % sc)
+            except _journal.JournalError as e:
+                out("⚠️ could not close the gap %s (%s)" % (sc, e))
+
+    listed = parsed["listed"]
     ident = counts["captured"] + counts["known"] + counts["carried"] + counts["role_gaps"]
-    if ident != parsed["distinct"]:                        # cannot happen; asserted anyway
-        out("⛔ the roles identity does not hold (%d != %d); nothing recorded" % (ident, parsed["distinct"]))
+    if ident != listed:                                    # cannot happen; asserted anyway
+        out("⛔ the roles identity does not hold (%d != %d); nothing recorded" % (ident, listed))
         return ROLES_EXIT_REFUSED
     f_tpr = None
     if surface == "linkedin-jobsearch":
@@ -778,7 +1104,7 @@ def add_roles(text, run_id, surface, out=print):
     event = dict(run_id=run_id, surface=surface, window=window, f_tpr=f_tpr,
                  queries=len(parsed["queries"]), geos_ok=sorted(geos_ok),
                  query_gaps_window=gaps_window, query_gaps_truncated=gaps_trunc,
-                 distinct=parsed["distinct"], captured=counts["captured"], known=counts["known"],
+                 distinct=listed, captured=counts["captured"], known=counts["known"],
                  carried=counts["carried"], role_gaps=counts["role_gaps"])
     same = [e for e in _journal.roles_events(recs, run_id=run_id, surface=surface)
             if all(e.get(k) == v for k, v in event.items())]
@@ -791,10 +1117,18 @@ def add_roles(text, run_id, surface, out=print):
             out("⚠️ could not journal the roles event (%s)" % e)
     out("ROLES RECORDED run=%s surface=%s window=%s: %d seen = %d captured + %d known + %d carried "
         "+ %d role gap(s) · %d query gap(s) (window) · %d truncated"
-        % (run_id, surface, window, parsed["distinct"], counts["captured"], counts["known"],
+        % (run_id, surface, window, listed, counts["captured"], counts["known"],
            counts["carried"], counts["role_gaps"], gaps_window, gaps_trunc))
     for oid in screen_ids:
         out("SCREEN      ~/.claude/jobsearch/run profile.py --minimal-screen %s" % oid)
+    if faults:
+        out("⚠️ ACCEPTED WITH %d LINE FAULT(S): every valid role above was recorded; each faulty "
+            "line is a `partial-results` gap (scope %s*). Exit %d."
+            % (len(faults), prefix, ROLES_EXIT_FAULTS))
+        if kept:
+            out("   The raw hand-back is kept at %s -- fix the lines in it and run --add-roles "
+                "again (idempotent), or leave the gaps." % kept)
+        return ROLES_EXIT_FAULTS
     return ROLES_EXIT_OK
 
 
@@ -913,10 +1247,22 @@ def main():
                     help="The gate on a pass report (dev #692 / public #140): FILE is the pass's "
                          "hand-back holding a `ROLES v1` block; needs --run and --surface. Every "
                          "ROLE line resolves to captured / known / carried (one capture-role item "
-                         "per role) / a per-role gap, or the whole block is refused (exit 3, one "
-                         "partial-results gap, nothing else written). Idempotent.")
+                         "per role) / a per-role gap. A faulty LINE never discards a valid role: "
+                         "it becomes a gap of its own and the call exits 4 (accepted with line "
+                         "faults). Only a STRUCTURAL fault (no block, two blocks, a bad header, a "
+                         "run or surface that is not this call's, no END line) refuses the block "
+                         "(exit 3, one partial-results gap, nothing else written). Exit 0 is "
+                         "clean. A refusal or any line fault keeps the raw hand-back under the "
+                         "profile's .jobsearch/handbacks/. Idempotent.")
     ap.add_argument("--surface", choices=("linkedin-jobsearch", "board"),
                     help="With --add-roles: the surface the block belongs to.")
+    ap.add_argument("--check", action="store_true",
+                    help="With --add-roles (dev #707 / public #151): parse the hand-back with the "
+                         "SAME code, print every faulty line with its line number and the rule it "
+                         "broke, then one verdict line (`verdict: clean`, `verdict: N line "
+                         "faults` or `verdict: refused: <why>`). Writes nothing to any store or "
+                         "folder. Exit 0 clean, 4 line faults, 3 refused: the real call's codes. "
+                         "Run it on a hand-back before accepting it.")
     ap.add_argument("--settle", action="store_true",
                     help="Close the script-built items the stores already show done: a "
                          "capture-role item whose URL now has an opportunity, a research-role "
@@ -956,6 +1302,10 @@ def main():
                   % (rec["id"], rec.get("queued_at")))
         return 0
 
+    if args.check and not args.add_roles:
+        print("⛔ --check goes with --add-roles <file> --run <id> --surface <s>")
+        return ROLES_EXIT_USAGE
+
     if args.add_roles:
         if not (args.run and args.surface):
             print("⛔ --add-roles needs --run <id> and --surface <linkedin-jobsearch|board>")
@@ -966,7 +1316,7 @@ def main():
         except (OSError, UnicodeDecodeError) as e:
             print("⛔ cannot read the hand-back %s: %s" % (args.add_roles, e))
             return ROLES_EXIT_USAGE
-        return add_roles(text, args.run, args.surface)
+        return add_roles(text, args.run, args.surface, check=args.check)
 
     if args.settle:
         settle()

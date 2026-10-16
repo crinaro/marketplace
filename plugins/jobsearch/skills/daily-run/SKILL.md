@@ -204,7 +204,7 @@ disposition is the authority, not a re-run.
 ## 2c. ⭐ PROBE HELD DRAFTS — Query or Citation C1 (new step)
 
 ```bash
-~/.claude/jobsearch/run brief.py --probe --held
+~/.claude/jobsearch/run brief.py --probe --held --deadline-s 40
 ```
 
 Every draft currently held `unverified-cold` (mailbox not yet checked on ANY surface) gets
@@ -212,7 +212,18 @@ probed directly here, on a surface that can reach a mailbox — this IS that sur
 runs. On one that cannot (no keychain), it queues one deferred row per person instead
 (`brief.py --probe contact:<id>`, deduplicated on `what` — §2b above is what drains those on a
 worker that can). Report the split in the summary: "N probed directly, M queued for a
-keychain-holding session."
+keychain-holding session, K not reached."
+
+**⭐ The call is bounded, and a kill loses nothing already done (dev #712 / public #146).**
+**Give this Bash call a timeout of 90 seconds (`timeout: 90000`).** `--deadline-s 40` is the
+call's own deadline, deliberately below that timeout and below the shortest kill ever observed
+on it (50 s): the call stops starting new probes at 40 s instead of being killed mid-batch. People
+are probed in a stable (sorted) order; **each person's result is posted the moment that person is
+probed**, so even a hard kill keeps everyone already done. If the deadline passes first, the
+remaining people are not attempted and ONE journal gap (`email:held-probe`, reason `timeout`)
+names how many were probed and how many remain; the next run's `--probe --held` reaches them and
+closes the gap. **The call's last line states `Probed N … queued M … K not reached`: put exactly
+those three numbers in the summary, and treat K above zero as an open gap, never as "all clear".**
 
 ## 3. GMAIL — two passes, and the order matters
 
@@ -341,17 +352,27 @@ only a refusal is. So, once `posture.py --may linkedin` exits 0:
 public #102).** The JOB SEARCH result is a `ROLES v1` block in the runner's hand-back file, never a
 prose count. Right after `linkedin_sweep.py record` below, and once per returned pass:
 
+**Check it first, then accept it (dev #707 / public #151).** `--check` parses the hand-back with the
+same code, prints every faulty line with its line number and the rule it broke, then a `verdict:`
+line, and writes nothing:
+
 ```bash
+~/.claude/jobsearch/run deferred.py --add-roles <the hand-back file's path> --run <id> --surface linkedin-jobsearch --check
 ~/.claude/jobsearch/run deferred.py --add-roles <the hand-back file's path> --run <id> --surface linkedin-jobsearch
 ```
 
 Every `ROLE` line ends as **captured** (the runner already wrote the record; its opp id is printed
 with a `SCREEN` line), **known** (already in the pipeline, active or passed), **carried** (one
-`capture-role` queue item per role, `ref` the canonical URL), or a **per-role gap**. Exit **3**
-means the block was refused whole (`SEEN distinct` did not equal the `ROLE` lines, a line fitted no
-form, or there was no block): nothing was written but one `partial-results` gap, and the defect in
-the hand-back is reported, never patched by hand. In the write phase (§7) each carried role gets
-`record.py create … --already-locked` and the minimal screen, then `deferred.py --settle` closes
+`capture-role` queue item per role, `ref` the canonical URL), or a **per-role gap**. The exit code
+says which of three things happened, on `--check` and on the real call alike: **0** clean; **4**
+accepted with line faults (every valid role was recorded, and each faulty line, or a `SEEN` count
+that disagrees with the lines, is a `partial-results` gap of its own: a line fault never discards
+a valid role); **3** refused whole, only for a structural fault (no block, two blocks, a bad
+header, a `run=` or `surface=` that is not this call's, no `END` line): nothing was written but one
+`partial-results` gap. On 3 or 4 the raw hand-back is kept at
+`<profile root>/.jobsearch/handbacks/roles-<run>-<surface>.md` and the output names it; the defect
+in the hand-back is reported, never patched by hand. In the write phase (§7) each carried role gets
+`record.py create … --from-item <item id> --already-locked` and the minimal screen, then `deferred.py --settle` closes
 the items that now have a record; whatever is not captured stays a pending row, listed by
 `--claimable` on every posture, so the run cannot end on "N seen, top few captured".
 
@@ -462,9 +483,9 @@ before assuming a new fault (`docs/architecture.md` §3d).
 **Write the dispatch as a script row, in the same breath (dev #692 / public #140, R3):**
 `~/.claude/jobsearch/run journal.py --run <id> --pass board --phase dispatched`. The missing-ROLES
 check keys on that row, never on a folded `dispatch` row. When the sweeper hands back, run
-`~/.claude/jobsearch/run deferred.py --add-roles <hand-back file> --run <id> --surface board`, the
-same gate and the same outcomes as the LinkedIn pass above; the sweeper no longer cross-checks the
-pipeline itself.
+`~/.claude/jobsearch/run deferred.py --add-roles <hand-back file> --run <id> --surface board --check`
+and then the same call without `--check`, the same gate, the same outcomes and the same exit codes
+as the LinkedIn pass above; the sweeper no longer cross-checks the pipeline itself.
 **Check `~/.claude/jobsearch/run channels_due.py` rather than assuming anything is due** — anchor-employer
 career pages moved to MONTHLY, and two job boards were RETIRED after a zero-yield trial. Do not
 re-add a retired channel.
@@ -620,12 +641,84 @@ suggestion would have been `pursue`, so pass it every time), and name the rule i
 
 **⭐ CAPTURE WHAT THE PASSES CARRIED, THEN SETTLE (dev #692 / public #140).** `deferred.py
 --add-roles` (§4) left one `capture-role` item per role the pass saw and did not capture. Each is
-`--claimable` on every posture (no `requires`). Claim it, `record.py create … --already-locked`
-from the item's URL, screen the new role as above, then `--done` the item. Run
+`--claimable` on every posture (no `requires`). Claim it, `record.py create … --from-item <the
+item's id> --already-locked` from the item's URL, screen the new role as above, then `--done` the
+item. **`--from-item` is what carries the sweep's pay, posting date and work setting onto the new
+role** (it copies the item's parsed `listed_pay`, `posted` and `location.declared`; a slot the
+sweep marked `?` stays absent). A create without it copies nothing. Run
 `~/.claude/jobsearch/run deferred.py --settle` before the dashboard: it closes every `capture-role`
 item whose URL now has a record (a tracking-parameter variant of the URL still matches) and every
 `research-role` item whose opportunity has a `research_log`. Anything not captured stays a pending
 row and is counted in the summary.
+
+**⭐ TRIAGE BEFORE THE CANDIDATE IS ASKED (dev #713 / public #145).** A captured role becomes the
+candidate's pursue/pass decision only once the system has READ it. Until it carries a recorded JD
+read, pay and work setting as written, a stored screen and a lean, the dashboard labels it
+`triaging` and it is in no needs-you count. This step reads the next batch; it is a bounded step,
+never a sweep of the whole backlog:
+
+```bash
+~/.claude/jobsearch/run your_move.py --triage-queue
+```
+
+It prints JSON: `cap` (`search.triage_per_run`, default 10), `waiting` (roles still `triaging`),
+`over_stuck_bound` and `batch` — **at most `cap` roles, oldest first sighting first**, each with
+the fields it still `missing`. **Take that batch and no more**: the cap is what bounds the cost of
+the step (one JD read per role), and a backlog larger than the cap drains over the next runs.
+For each role in the batch, in order:
+
+1. **Read the JD** (`jd_url`, else a sighting's `source_url`). Record it on the role's `fit`:
+   `record.py show <opp_id>` first, then `record.py set <opp_id> fit '<that object, existing
+   requirements[] kept, with analyzed_on = today and jd_source = what you actually read>'
+   --already-locked`.
+   - **A read that fails is still a read, and says why**: `jd_source` = `unavailable: <reason>`,
+     the reason exactly one of `login-wall` · `dead-link` · `no-url` · `surface-cannot-read`. The
+     role then goes to Decide with the lean defaulted to `ask` and the line `not read: <reason>`.
+     A null `jd_source` means NOT TRIED, never "failed".
+   - **A JD that needs an authenticated browser, on a surface that has none** (a headless run
+     without `--chrome`, a cloud run): do NOT mark it unavailable yet, and do NOT type a free-text
+     `deferred.py --add` for it (free text is for the send filter's denylist, never for an
+     engine step). Leave the role `triaging` and name it in the summary: the next run on a
+     surface with the browser is offered the same role again by `--triage-queue`, because
+     `triage_missing` still lists `jd-read`. Mark `surface-cannot-read` only once the role has
+     waited past `search.triage_stuck_days`. **NOT BUILT:** a `requires: chrome` item the
+     `--claimable` path would show a browser worker needs an engine-built form in `deferred.py`
+     (a fixed template over one validated opportunity id, like `--add-research`); until that
+     form exists the retry above is the whole mechanism, and it is bounded by the same stuck
+     rule.
+2. **Pay and work setting as written.** The sweep's `pay=` and `setting=` slots reach the role only
+   through `create … --from-item` (above); a role the runner captured in-pass, or created without
+   `--from-item`, has neither. If either is still absent, record what the JD says. A listing that shows
+   no pay is `record.py listed-pay <opp_id> --none-shown --already-locked`, never a way of saying
+   "not read". The setting goes in `location.declared`, verbatim, or the literal `none stated`.
+3. **Screen it**: `record.py screened <opp_id> --already-locked` re-runs the scripted minimal
+   screen (above) and stores its result. A `remove:` verdict follows the removal path above; that
+   role never reaches Decide.
+4. **Lean**: `record.py lean <opp_id> --lean pursue|pass|ask --line "<one line>" --jd-file <the JD
+   text you read> --already-locked`. The script matches the profile's likely-pass signals against
+   the title, the JD and the company, and stores the matches beside your lean. **A signal is a
+   LEAN, never a removal**: only a hard rule removes a role.
+   **An age-flagged recruiter role defaults to `ask`** (dev #716 / public #142). When the
+   stored screen (the screen step above) carries `review:age` (a retained-search role older than
+   `search.retained_search_age_days`, or a recruiter role whose age is unknown), its screen line
+   reads `FIRST MOVE: ask the recruiter …`; leave `--lean` and `--line` off and the script records
+   `ask` with that first move as the line. Pass `--lean` only when the JD gives you a reason to
+   lean the other way, and say it in `--line`.
+
+Then measure the drain. Put this one line in the run summary, verbatim:
+
+```bash
+~/.claude/jobsearch/run your_move.py --triage-report --batch <id>,<id>,...
+# triaging: N waiting, M triaged this run, K over the stuck bound
+```
+
+`N` is what is still being read, `M` how many of this run's batch the step finished, `K` how many
+roles have waited past `search.triage_stuck_days` (default 3) from their first sighting and so
+reached the candidate in Decide labelled `not yet read (waited K days)`, lean `ask`. **A nonzero
+`K` is the step failing, not finishing: say in the summary which reads failed and why** (the
+first runs after the 0.67.0 upgrade also count the roles captured before it, which are already
+older than the bound and drain oldest first). The gate
+always exits; this line is how a run proves it is not exiting by timeout.
 
 **⭐ `plays.py --all` (ADR-031 B4, design §26.8) — the due play step across every confirmed plan,
 in this same write phase.** It is a **pure selector, not a writer** — it prints which pursuits

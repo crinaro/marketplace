@@ -27,7 +27,11 @@
     "networking_closed_on",
     "plan_id",
     "plan_assigned_on",
-    "note"
+    "note",
+    "listed_pay",
+    "posted",
+    "screen",
+    "lean"
    ],
    "required": [
     "id",
@@ -499,6 +503,35 @@
     "evidence"
    ],
    "arrays": {}
+  }
+ },
+ "source_tag": {
+  "_note": "dev #704 / public #154 (V1). A mail source tag is `<tag>:<account>:<digits>` where <tag> is gmail, mail or ats. A uid is DIGITS: before 0.66.0 `mail_client.Mailbox.search()` handed callers bytes and every `%s` wrote the repr (`gmail:a:b'101'`), which made one message look like two. `pattern` is the clean shape, `prefix` says 'this value claims to be a mail tag', `wrapped` finds the repr of a bytes uid INSIDE a mail tag (never a bare `b'123'`: a message id minted before 0.66.0 may end in the repr, and ids are opaque, so they keep their value and are never refused for it). `fields` lists, per store, every field that can carry a tag and HOW it is checked. `whole`: the value IS a tag, or legitimately something else (`messages.source` may be a path or a LinkedIn thread URL), so only a value that starts with `prefix` must fullmatch `pattern`. `embedded`: the value, or any string nested in it, must contain no `wrapped` match: references to message ids (the fields validate_data.py resolves against messages: `messages.answers`, `touches.message_ref`, and `trigger_ref` of kind reply on touches and asks), and free text a sweep writes a dedup tag into (`asks.note`). validate_data.py reads this block and FAILS LOUDLY when it is absent, malformed or declares zero fields; a test derives the message-reference fields from the validator itself and fails if one is neither declared here nor named there with a reason. Repaired in existing profiles by migration m_0_66_0_uid_text. The run journal (`runs.jsonl`) and `inbox.jsonl` are not governed stores and are not listed: their uids are normalized when READ (journal.triaged_uids, watch.existing_keys).",
+  "pattern": "^(gmail|mail|ats):[^:]+:\\d+$",
+  "prefix": "^(gmail|mail|ats):",
+  "wrapped": "(?:gmail|mail|ats):[^:\\s|]+:b'\\d+'",
+  "fields": {
+   "messages": {
+    "source": "whole",
+    "id": "embedded",
+    "answers": "embedded"
+   },
+   "commitments": {
+    "source": "whole"
+   },
+   "asks": {
+    "trigger_ref": "embedded",
+    "note": "embedded"
+   },
+   "touches": {
+    "message_ref": "embedded",
+    "trigger_ref": "embedded"
+   },
+   "briefs": {
+    "evidence": "embedded",
+    "latest_in": "embedded",
+    "latest_out": "embedded"
+   }
   }
  },
  "banned_aliases": {

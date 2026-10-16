@@ -76,15 +76,30 @@ def load(name):
         return [json.loads(l) for l in fh if l.strip()]
 
 
+# dev #704 / public #154 (R2) — the queue's `key` is `<kind>:<account>:<uid>`. Before 0.66.0 the uid
+# was the repr of a bytes object (`alert:a:b'101'`); today it is `101`. `data/inbox.jsonl` is an
+# append-only queue the coordinator drains, so it is NOT rewritten by the migration: the old keys
+# are normalized when they are READ, and a fresh key is normalized the same way before it is
+# compared.
+KEY_KINDS = ("alert", "meet", "reply")
+
+
+def normalize_key(key):
+    import validate_data as _vd
+    return _vd.normalize_source_tag(key, prefixes=KEY_KINDS)
+
+
 def existing_keys():
-    """Every finding already queued, so a 2-hourly sweep doesn't re-report the same thing."""
+    """Every finding already queued, so a 2-hourly sweep doesn't re-report the same thing. Keys
+    are compared NORMALIZED (dev #704): a stored `alert:a:b'101'` and a fresh `alert:a:101` are the
+    same finding."""
     keys = set()
     if os.path.exists(INBOX):
         with open(INBOX, encoding="utf-8") as fh:
             for l in fh:
                 if l.strip():
                     try:
-                        keys.add(json.loads(l).get("key"))
+                        keys.add(normalize_key(json.loads(l).get("key")))
                     except ValueError:
                         pass
     return keys
@@ -166,6 +181,7 @@ def main():
     findings = []
 
     def add(kind, key, summary, detail=None, opp_id=None, urgency="normal"):
+        key = normalize_key(key)
         if key in seen:
             return
         seen.add(key)
