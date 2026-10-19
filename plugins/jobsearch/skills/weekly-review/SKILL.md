@@ -83,7 +83,7 @@ Run the weekly strategy review of the candidate's search. Read `CLAUDE.md` first
 ~/.claude/jobsearch/run check_followups.py            # silent threads
 ~/.claude/jobsearch/run check_action_claims.py        # a hand-authored ask the data already answered (#43)
 ~/.claude/jobsearch/run check_sections.py             # ask/commitment invariants (dev #93)
-~/.claude/jobsearch/run check_prose_drift.py          # REPORT ONLY: a floor, an open question or a search-scope premise in prose that disagrees with config.json (dev #495, #493; public #56, #78) — read its `checked N documents, M figures` line so a clean result is never an unrun one
+~/.claude/jobsearch/run check_prose_drift.py          # REPORT ONLY: a floor, an open question or a search-scope premise in prose that disagrees with config.json (dev #495, #493; public #56, #78). It scans `strategy.md`, `handoff.md`, `drafts.md`, the installed rulebook (the profile's `CLAUDE.md`; dev #706 / public #152) and every open ask — read its `scope:` and `checked N documents, M figures` lines so a clean result is never an unrun one
 ~/.claude/jobsearch/run validate_data.py              # schema · enums · referential integrity
 ~/.claude/jobsearch/run resume_variants.py --check    # printed variant bullets trace to the presence/claims.md union (public #26)
 ~/.claude/jobsearch/run channels_due.py               # which sources are due

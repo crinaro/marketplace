@@ -134,6 +134,20 @@ the hard screens applied, and a **lean**. A role the screen removes never reache
   prints one line, for example `triaging: 4 waiting, 6 triaged this run, 0 over the stuck bound`:
   how many are still being read, how many this run finished, and how many are past the stuck
   limit and so reached you unread.
+- **A title below your floor leans by pay, and is never removed (since 0.69.0).** If you set
+  [`screen.title_floor`](your-data.md#screening--configjsonscreen) and a role's title reads below
+  it, the card in Decide shows a computed lean: **pursue**, "title below your floor (<floor>), but
+  pay is within your range", when the listed pay clears your floor; **ask**, "title below your
+  floor (<floor>); check pay before deciding", when pay is not known or cannot be compared. When the
+  pay itself is below your floor the pay rule has already removed the role and the title adds
+  nothing. Phrases you list for the title field of `screen.likely_pass_signals` (the mandate) show
+  as a **LEAN to pass** with your reason, titled `OFF-MANDATE`. In both cases the role stays on the
+  page for you to decide.
+- **A job description only a browser can read waits for a browser session (since 0.69.0).** If the
+  posting needs a signed-in browser and this run has none, the role stays in Triaging and a
+  `read-jd` item is queued for a session that does. You will see it under *needs another
+  environment* in `deferred.py --claimable`. Once it has waited past `search.triage_stuck_days` the
+  role goes to Decide with the lean `ask` and the line "not read: surface-cannot-read".
 - **Decide is the decisions part of the needs-you filter.** *Your move — today* (the needs-you
   filter) shows the decisions owed plus the actions due today, and its caption says so: "decisions
   owed plus actions due today". *Decide — pursue/pass owed* is exactly the decisions owed. Both
@@ -141,6 +155,33 @@ the hard screens applied, and a **lean**. A role the screen removes never reache
 
 **On upgrade:** every role that was waiting on your pursue-or-pass and has not been read shows as
 Triaging, and drains into Decide over the next daily runs.
+
+### A sweep that was held, and the counts under it (since 0.69.0)
+
+When a LinkedIn or board sweep reports that its page was not showing what was asked (a filter
+dropped, a parameter you never set, an unapplied date window, a cut-short list), the roles that only
+those queries showed are **held** instead of captured. You see it in three places:
+
+- **The run summary's roles line** gains the count and the reasons, for example `... · 2 quarantined
+  (filter-dropped ×1, truncated ×1)`.
+- **A second line says how each query read**, for example `query reads (board): 12 reached · 10
+  clean · 1 filters unread · 1 degraded (truncated ×1) · 2 total unknown`. *Filters unread* and
+  *total unknown* mean the sweep could not tell; those are counted and never hold a role. A run
+  from before 0.69.0 prints no such line, which is not the same as reaching nothing.
+- **`deferred.py --claimable`** lists held items under *QUARANTINED*. The pass's own output
+  (`deferred.py --add-roles`) prints `QUARANTINED <url> (q=…: <reasons>)` per held role and a closing
+  `HELD N role(s) (quarantined) from degraded queries: …` line.
+
+**How a held role is released.** A later sweep that sees it through a clean query releases it
+automatically (the line reads `RELEASED`), and it is then captured like any other. Or release it
+yourself: `~/.claude/jobsearch/run deferred.py --unquarantine <item id>`. Nothing is dropped or
+deleted while it is held.
+
+**The all-clean flag.** `check_runs.py` prints `BOARD SWEEP READS ALL-CLEAN` when the last 7 board
+passes in a row each reported every reached query clean. These are the sweep's own reports of what a
+page showed, and nothing here can verify them. A sweep that never looks at the page would report
+exactly that pattern, so the flag asks you to open one board's results page and compare it with its
+query line before trusting the streak. It is advice, and nothing is blocked.
 
 ### Correcting a draft from a comment on the page (since 0.64.0)
 

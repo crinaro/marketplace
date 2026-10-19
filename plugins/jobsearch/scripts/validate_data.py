@@ -980,7 +980,13 @@ POSTED_SOURCES = ("ats-posted", "board-relative", "profile-document-date", "unkn
 POSTED_KEYS = ("date", "source", "recorded_on")
 COMMUTE_MINUTES_KEYS = ("minutes", "anchor", "source")
 COMMUTE_MINUTES_SOURCES = ("candidate", "map-estimate", "config-place")
-SCREEN_KEYS = ("on", "verdict", "rules", "engine")
+SCREEN_KEYS = ("on", "verdict", "rules", "engine", "title_keys")
+# dev #722 / public #156 (jobsearch 0.69.0): the title rule's tokens, a CLOSED set. 0.68.0 and earlier
+# stored three; the floor and the mandate add BELOW-FLOOR and OFF-MANDATE, and an unreadable key is a
+# visible UNREADABLE-TITLE-KEYS. A token outside the set is a stored screen nothing here can read.
+SCREEN_TITLE_TOKENS = ("MATCHES", "NO-MATCH", "NO-CONFIGURED-TITLES", "BELOW-FLOOR", "OFF-MANDATE",
+                       "UNREADABLE-TITLE-KEYS")
+
 LEAN_KEYS = ("lean", "line", "on", "signals")
 LEAN_VALUES = ("pursue", "pass", "ask")
 LEAN_SIGNAL_KEYS = ("id", "reason", "matched_in")
@@ -1148,6 +1154,48 @@ def check_screen(sc, label, problems):
                                 % (label, k, v))
     if not (isinstance(sc.get("engine"), str) and sc["engine"].strip()):
         problems.append("%s: screen.engine must name the engine version that screened" % label)
+    if isinstance(rules, dict) and "title" in rules and isinstance(rules["title"], str) \
+            and rules["title"].strip() and rules["title"] not in SCREEN_TITLE_TOKENS:
+        problems.append("%s: screen.rules['title'] %r not in {%s}"
+                        % (label, rules["title"], ", ".join(SCREEN_TITLE_TOKENS)))
+    if "title_keys" in sc and not (isinstance(sc["title_keys"], str) and sc["title_keys"].strip()):
+        problems.append("%s: screen.title_keys must be a non-empty string (the hash of the title "
+                        "keys the screen was computed under) -- %r" % (label, sc["title_keys"]))
+
+
+def check_passed_from(r, label, problems):
+    """`passed_from` (dev #722 / public #156, §5): `{status, stage}` -- where a `decide pass` found
+    the role, kept so a later `decide pursue|park` can restore it. It exists ONLY on a role whose
+    `status` is `passed` (a restored or never-passed row must not carry a stale way back), its
+    `status` must be a NON-terminal opportunity status and its `stage` one of the stages."""
+    pf = r["passed_from"]
+    if r.get("status") != "passed":
+        problems.append("%s: passed_from on a role whose status is %r -- it belongs only to "
+                        "status 'passed' (a restore removes it)" % (label, r.get("status")))
+    if not isinstance(pf, dict):
+        problems.append("%s: passed_from must be an object (status, stage) -- got %s"
+                        % (label, type(pf).__name__))
+        return
+    _unknown_keys(pf, ("status", "stage"), label + " passed_from", problems)
+    if pf.get("status") not in OPP_STATUS or pf.get("status") in TERMINAL_OPP_STATUSES:
+        problems.append("%s: passed_from.status %r must be a non-terminal status in {%s}"
+                        % (label, pf.get("status"),
+                           ", ".join(sorted(OPP_STATUS - TERMINAL_OPP_STATUSES))))
+    if pf.get("stage") not in STAGES:
+        problems.append("%s: passed_from.stage %r not in {%s}"
+                        % (label, pf.get("stage"), ", ".join(sorted(STAGES))))
+
+
+def check_title_floor(screen_cfg, problems):
+    """`screen.title_floor` of `config.json` (dev #722 / public #156): absent or null, or exactly one
+    level of `config_keys.SENIORITY_LEVELS`. Returns 1 when a floor is set. The validator is
+    `config_keys.validate_title_floor`'s, one copy."""
+    if not isinstance(screen_cfg, dict) or screen_cfg.get("title_floor") is None:
+        return 0
+    import config_keys as _ck
+    for why in _ck.validate_title_floor(screen_cfg.get("title_floor")):
+        problems.append("config %s" % why)
+    return 1
 
 
 def check_lean(ln, label, problems):
@@ -2523,6 +2571,8 @@ def _main():
             check_posted(r["posted"], label, problems)
         if "screen" in r:
             check_screen(r["screen"], label, problems)
+        if "passed_from" in r:
+            check_passed_from(r, label, problems)
         if "lean" in r:
             check_lean(r["lean"], label, problems)
 
@@ -3030,6 +3080,7 @@ def _main():
         _signals_n = check_likely_pass_signals((_cfg.get("screen") or {}).get("likely_pass_signals")
                                                if isinstance(_cfg.get("screen"), dict) else None,
                                                problems)
+        check_title_floor(_cfg.get("screen"), problems)
 
     # R7 -- standing findings that never refuse a write (a separate list from `problems`)
     import datetime as _dt_main

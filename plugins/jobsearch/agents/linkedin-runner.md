@@ -641,10 +641,10 @@ company or location containing a double quote has it replaced by `'`.
 <!-- roles-grammar:begin -->
 ```text
 --- ROLES v1 run=<run-id> surface=<linkedin-jobsearch|board> window=<daily|wide|none> ---
-QUERY geo=<remote|local> title="<query>" window=<r86400|r604800|none> shown=<n> total=<m|?> [unapplied] [channel=<channel_id>]
+QUERY geo=<remote|local> title="<query>" window=<r86400|r604800|none> shown=<n> total=<m|m+|?> dropped=<none|?|<filter>[,<filter>...]> added=<none|?|<filter>[,<filter>...]> [unapplied] [channel=<channel_id>]
 QUERY geo=<remote|local> title="<query>" unreachable reason=<journal.REASONS code> [channel=<channel_id>]
 SEEN distinct=<n>
-ROLE url=<posting url> title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|ats:YYYY-MM-DD|<n>d|?> pay=<pay|?> setting="<verbatim|none stated|?>"
+ROLE url=<posting url> q=<k>[,<k>...] title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|ats:YYYY-MM-DD|<n>d|?> pay=<pay|?> setting="<verbatim|none stated|?>"
 ROLE nourl title="<t>" company="<c>" reason=<journal.REASONS code>
 --- END ROLES ---
 ```
@@ -652,7 +652,34 @@ ROLE nourl title="<t>" company="<c>" reason=<journal.REASONS code>
 
 `total=?` when the page does not say how many results it holds; `total` larger than `shown` marks a
 truncated result (the script files a gap for it, so say what you could see rather than claim a
-full read).
+full read). **`total=<m>+` is a lower bound**: a "99+" badge is `total=99+`, never `total=99`.
+
+**⭐ SAY WHAT THE PAGE DID NOT DO: `dropped=` AND `added=` ON EVERY REACHED `QUERY` (dev #722 /
+public #156).** After each search, compare what you ASKED for (`f_WT`, the window you were given,
+the titles) with what the page APPLIED, reading its filter chips or the URL it wrote, and report
+the difference as data. A `<filter>` is one of `worktype`, `location`, `date`, `pay`,
+`seniority`, `jobtype`, `other`.
+- **`dropped=`** names a filter you asked for that the page did not apply (a remote search that
+  came back with on-site results is `dropped=worktype`). **`added=`** names a filter the page
+  applied that you did not ask for (a salary band inserted into the search is `added=pay`).
+- **On LinkedIn a window the page would not take is `unapplied`, never `dropped=date`**: one
+  spelling per fact, and `dropped=date` on this surface is a line fault.
+- `none` means you compared and found no difference. `?` means you could not tell. **Write `?`
+  rather than `none` when you did not look: `none` is a claim.** Several filters are
+  `,`-separated; `none` and `?` stand alone.
+- **A role found only by queries that dropped or added a filter, were `unapplied`, or were
+  truncated is held aside (quarantined) by the script, not carried.** A later clean sighting or the
+  owner releases it; `?` never holds a role (it is filed as a gap and counted).
+- **Do not capture in the pass from a query you report as degraded** (step 3's in-pass capture):
+  list the role on its `ROLE` line and let the script hold it. A role you have already captured
+  cannot be held, so the script only counts it (`CAPTURED (DEGRADED QUERY …)`). Nothing enforces
+  this: it is your instruction to follow.
+
+**⭐ `q=` ON EVERY `ROLE url=` LINE (dev #722 / public #156).** `q=<k>[,<k>...]` lists the 1-based
+position, in this block, of **every** `QUERY` line that showed the role (count the reached and
+the `unreachable` lines alike, top to bottom). A role is listed once even when several searches
+showed it, so list them all: a role one clean search showed is not held back by a degraded one. An
+`unreachable` QUERY showed no roles and cannot be named.
 
 **⭐ THE THREE SLOTS ON EVERY `ROLE url=` LINE (dev #715 / public #143, dev #716 / public #142).**
 Read them off the result card or the listing, and copy what the page shows. A slot you did not

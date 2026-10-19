@@ -143,10 +143,11 @@ The main record. Everything about one role hangs off it.
 | `location` | `{type, primary, remote, declared}` — see *contested settings* below. Since 0.67.0 `declared` also holds the work setting *as the posting wrote it* on every role that reaches your decision, and a role may carry `commute_minutes` — see *Listed pay, posting age, the screen and the lean* below |
 | `listed_pay` | since 0.67.0 — the pay the **listing** showed, with whether the employer stated it, a board estimated it, or none was shown. Absent means *not captured* — see *Listed pay, posting age, the screen and the lean* below |
 | `posted` | since 0.67.0 — when the role was posted, and how we know. Absent means the age is unknown |
-| `screen` | since 0.67.0 — the hard screens the engine applied to the role, and their verdict, written by the script that ran them |
+| `screen` | since 0.67.0 — the hard screens the engine applied to the role, and their verdict, written by the script that ran them. Since 0.69.0 it also carries `title_keys`, a short fingerprint of the title settings it was computed under (see *The title floor and the mandate* below) |
 | `lean` | since 0.67.0 — the system's read of the role (`pursue` · `pass` · `ask`) with a one-line reason. A lean is advice; it never removes a role |
 | `status` | what you are **doing** about it |
 | `stage` | where it **is** in the funnel |
+| `passed_from` | since 0.69.0, only on a role whose `status` is `passed` — `{status, stage}`, where the role stood when you passed on it, kept so that `pursue` or `park` can put it back. See *A pass on a backlog role is final* below. Absent on every other role |
 | `verdict` | `pursue` · `pass` · `parked` · `undecided` |
 | `engagement_type` | `full-time` · `contract` — since 0.45.0; the 0.45.0 upgrade set this to `full-time` on every existing role, since that fact about a role isn't derivable from anything else on the record |
 | `jd_url` | the posting. Required as a URL **or an explicit `null`** — never simply missing |
@@ -172,6 +173,28 @@ This is the one thing people mix up, so it is worth stating plainly:
 They are orthogonal and you want both. A live pursuit waiting on a recruiter is
 `status: active-pursuit`, `stage: contacted`. A role you have shelved is `status: backlog`,
 `verdict: parked`, `stage: sourced`.
+
+### A pass on a backlog role is final — since 0.69.0
+
+Passing on a role you had only sourced (`record.py decide <role> pass`) now ends it in the same
+write: `status: passed`, `stage: closed`, and `passed_from` holds the status and stage it had, for
+example `{"status": "backlog", "stage": "sourced"}`. Before 0.69.0 the pass was recorded as
+`verdict: pass` but the role stayed `status: backlog`, so the rest of the system still saw a live
+backlog role. A pass on a role you are already pursuing is unchanged.
+
+**Changing your mind.** `record.py decide <role> pursue` or `park` on a `passed` role that has a
+`passed_from` puts `status` and `stage` back as they were and removes `passed_from`. A `passed`
+role with no `passed_from` (passed some other way) is not guessed at: it is left as it is.
+
+**Roles you had already passed.** The 0.69.0 upgrade runs the migration
+`m_0_69_0_passed_backlog_terminal` once. Every role with `verdict: pass` that was still at
+`status: backlog` becomes `passed` at `closed`, with `passed_from` recording what it was. Before it
+writes anything it copies `data/opportunities.jsonl` to `data/opportunities.jsonl.pre-0.69.0` (and
+never over a copy that is already there). It reads the file strictly and, if one line cannot be
+read, changes nothing and reports itself pending, to run again next session. Afterwards it re-reads
+the file to confirm no passed role is left at `backlog`. Running it again changes nothing, and a
+profile with no such role gets no output. To undo it, restore the `.pre-0.69.0` copy; that is only
+safe for roles you have not touched since.
 
 ### Three values that exist to stop a guess
 
@@ -275,6 +298,59 @@ card as advice and never removes or decides anything.** When the age line asks f
 (a recruiter role over the age limit, or of unknown age), the lean defaults to `ask` and its line
 is that first move; the run states a different lean only when the job description gives a reason. A role in `triaging` is described in
 [Reading what the search produces](reading-your-files.md#triaging-versus-decide-since-0670).
+
+**The title floor and the mandate — since 0.69.0.** Two optional settings keep titles that are
+plainly not yours from piling up undecided. **Neither one removes a role.** Only the hard rules
+(a stated range below your floor, a place you ruled out, a role you already passed on) remove; a
+title is weak evidence, because a larger company gives a lower title for the same scope, and pay is
+the real test.
+
+- **`screen.title_floor`** names the lowest seniority you will consider. Its value is exactly one
+  of these levels, lowest first: `intern`, `entry`, `associate`, `senior`, `lead`, `manager`,
+  `director`, `vp`, `executive`. The engine reads a title against a fixed list of everyday words
+  (for example `junior`, `senior`, `principal`, `manager`, `director`, `vice president`, `chief`),
+  takes the highest level any of them gives, and flags the role when that level is below your floor.
+  It is a heuristic and reads loosely ("Associate Director" reads `director`). **A title the list
+  cannot read has no level and is never flagged.** Absent means no floor, and the screen prints
+  exactly what it printed before.
+- **The mandate** is the same `screen.likely_pass_signals` list you already have, with `fields`
+  set to `["title"]`: phrases for work you do not do. A title that matches one, and does not match
+  one of your `targets.titles`, is flagged `OFF-MANDATE` and shown as a **lean to pass** carrying
+  your reason. No separate key exists for it.
+
+The screen's title line then reads `BELOW-FLOOR (reads <level>, below your floor <floor>) --
+advisory: pay decides, nothing is removed` or `OFF-MANDATE (<id>: <reason>) -- advisory: a lean to
+pass, nothing is removed`. `BELOW-FLOOR` wins if both apply.
+
+**What a below-floor title leans, by pay.** The lean is worked out by the engine from the pay
+verdict the same screen already stored, never chosen by a model:
+
+| pay verdict | lean | line shown on the card |
+|---|---|---|
+| `CLEARS` | `pursue` | `title below your floor (<floor>), but pay is within your range` |
+| `BELOW-FLOOR` | none from the title | the pay rule already removes the role; the title adds nothing |
+| anything else (`NOT-CAPTURED`, `UNDISCLOSED`, `PAY-UNCOMPARABLE`, `NEEDS-COMMUTE-CHECK`, `UNRESOLVED-SETTING`) | `ask` | `title below your floor (<floor>); check pay before deciding` |
+
+It is stored as a signal with id `title-floor` beside any signals that matched. A lean you or the
+run state explicitly with `record.py lean --lean` still wins; the computed signal is attached
+either way.
+
+**The one-time re-screen.** A stored screen records `title_keys`, a fingerprint of
+`screen.title_floor`, your `targets.titles` and the title-field signals. When the fingerprint no
+longer matches today's settings, or the screen has none and a floor is now set, the role counts as
+missing its screen and goes through the ordinary triage step again, within the usual
+`search.triage_per_run` cap. So setting a floor re-screens the existing pile over the next daily
+runs, once, and changing the floor or those phrases later does it again. With no floor set, an old
+screen with no fingerprint is left alone. To see the size of it before and after:
+
+```
+~/.claude/jobsearch/run profile.py --title-scope-count
+undecided: 40, flagged below floor: 12, off-mandate: 3, re-screen pending: 40
+```
+
+(numbers illustrative). It counts your undecided backlog roles, how many read below the floor or
+off-mandate under today's settings, and how many have a stored screen waiting to be redone. It
+reads only; it changes nothing.
 
 **Roles that already existed.** Triage state is *derived*, never stored. After upgrading, a role
 that was waiting on your pursue-or-pass but has no recorded job-description read, pay as written,
@@ -1315,7 +1391,8 @@ you. Before the upgrade seeds the other keys it keeps a copy of your file as
 
 | key | what it is |
 |---|---|
-| `screen.likely_pass_signals` | since 0.67.0, optional — a list of `{id, phrase, fields, reason}`. `phrase` is plain words, matched case-insensitively as a whole phrase (not a pattern). `fields` is any of `title`, `jd` (the job-description text the run read) and `company` (the company record's name, vertical, size, headquarters and note). `reason` is what you would say in a word. A match is shown as a **LEAN** with its reason on the role's card, **and never removes the role or changes the screen's verdict**: only the hard rules remove. Absent means no signals |
+| `screen.likely_pass_signals` | since 0.67.0, optional — a list of `{id, phrase, fields, reason}`. `phrase` is plain words, matched case-insensitively as a whole phrase (not a pattern). `fields` is any of `title`, `jd` (the job-description text the run read) and `company` (the company record's name, vertical, size, headquarters and note). `reason` is what you would say in a word. A match is shown as a **LEAN** with its reason on the role's card, **and never removes the role or changes the screen's verdict**: only the hard rules remove. Absent means no signals. Since 0.69.0, a signal whose `fields` is `["title"]` is the *mandate*: a title match not covered by one of your `targets.titles` shows `OFF-MANDATE` and leans pass — see *The title floor and the mandate* above |
+| `screen.title_floor` | since 0.69.0, optional — one of `intern` · `entry` · `associate` · `senior` · `lead` · `manager` · `director` · `vp` · `executive`, lowest first. A title that reads below it is flagged `BELOW-FLOOR` and leans by pay; **it never removes the role**. Anything else (a different spelling, a list, a number) is refused with the levels named. Absent or `null` means no floor. Not added for you by an upgrade |
 
 ## Sourcing — `config.json.sourcing`
 
@@ -1463,11 +1540,13 @@ the queue refuses free text that reads like a send.
 | field | what it is |
 |---|---|
 | `id` | the item's id |
-| `kind` | what procedure drains it: `action` (free text written with `deferred.py --add`, and the owed LinkedIn pass), `capture-role`, `research-role` or `draft-message`. The last three are new in 0.61.0, so that a role a run saw, or research a tier held, is a structured row rather than a free-text sentence |
+| `kind` | what procedure drains it: `action` (free text written with `deferred.py --add`, and the owed LinkedIn pass), `capture-role`, `research-role`, `draft-message` or, since 0.69.0, `read-jd`. The `capture-role`, `research-role` and `draft-message` kinds are new in 0.61.0, so that a role a run saw, or research a tier held, is a structured row rather than a free-text sentence |
 | `ref` | since 0.61.0, optional: what the item is *about*. For `capture-role` it is the posting's canonical URL (tracking parameters removed, a LinkedIn posting reduced to its job id). For `research-role` and `draft-message` it is the role's id. Adding the same `(kind, ref)` while one is pending writes no second row. Older rows have no `ref` and behave as before |
 | `what`, `why` | the instruction in plain words, and why it was deferred |
 | `requires` | what a worker needs to take it: `research`, `drafting`, `sweeps`, or a machine capability such as a browser. Empty means any worker under any tier |
 | `status` | `pending` until it is done |
+| `quarantine` | since 0.69.0, only on a `capture-role` item queued from a degraded sweep: `{run_id, because, queries}` — the run that saw the role, why it is held (one or more of `filter-dropped`, `param-added`, `window-unapplied`, `truncated`, `query-unparsed`), and which of that sweep's queries showed it. While present, no worker is served the item. Absent on every other item and once released. A release is a separate appended row of kind `_unquarantine`, never a rewrite of the item |
+| `queued_run` | since 0.69.0, only on a `read-jd` item: the run that queued it, so that run is never handed back the job it could not do |
 
 **Held by posture.** A `research-role` item requires `research`, and a `draft-message` item
 requires `drafting`. Under a tier that does not permit that work the item is **held**: it is
@@ -1482,6 +1561,47 @@ machine can never claim a LinkedIn item, under any tier.
 passed on, it becomes one `capture-role` item. The run captures it, screens it, and
 `deferred.py --settle` closes the item once the role exists in your pipeline. Whatever is not
 captured stays pending and is listed on the next run, under any tier.
+
+**A degraded sweep is held, not captured (since 0.69.0).** A sweep can come back looking clean while
+the page it read was not showing what was asked: a filter the run set was dropped, one it never set
+was added (an injected pay band, say), the date window was not applied, or the result list was cut
+short ("99+" results, fewer shown). Roles from such a page are not safe to capture as if the sweep
+had been whole. So each query line in a sweep's hand-back now says `dropped=` (filters it asked for
+that the page did not apply), `added=` (filters the page applied that it did not ask for) and
+`total=` (a lower bound is written `<m>+`), and every role line says `q=`, which queries showed it.
+A role is **held (quarantined)** when every query that showed it reported a degradation. One clean
+query that also showed it is enough to vouch for it.
+
+- **Only a positive report holds a role.** A named dropped or added filter, `unapplied`, or a
+  truncated list. `dropped=?`, `added=?` (the sweep could not read the filter state) and a total it
+  could not read are counted and filed as a gap for that query, and they never hold a role.
+- **A held role** is still written as one `capture-role` item, with the `quarantine` field above.
+  `deferred.py --claimable` shows it under *QUARANTINED* (with a count by reason) and no worker is
+  served it. `--claim` on it refuses with the reason.
+- **A held role is released** in one of two ways: a later sweep sees it through a clean query (the
+  run says `RELEASED` and appends the release), or you run
+  `~/.claude/jobsearch/run deferred.py --unquarantine <item id>`. A claim never releases it.
+- **The run's accounting.** The pass's `roles` event now reads `distinct = captured + known +
+  carried + quarantined + role_gaps`, and the end-of-pass lines say how many were held and why,
+  for example `HELD 2 role(s) (quarantined) from degraded queries: filter-dropped x1 · truncated x1`.
+  See *Reading what the search produces* for the summary line.
+- **What this does not do.** Whether a page dropped a filter is the sweeping agent's own report of
+  what it saw. No script can check that against the page, so this catches a sweep that reports
+  honestly, not one that does not look. That is why the counts are kept and shown (see the
+  all-clean flag in *Reading what the search produces*). A role the pass already captured while it
+  was still sweeping, before its hand-back was checked, cannot be held after the fact; it is
+  counted and the line says `DEGRADED QUERY`.
+
+**A job description only a browser can read (since 0.69.0).** When the triage step meets a posting
+it cannot read on a surface with no browser (a sign-in wall, a headless or cloud run), it queues one
+`read-jd` item for that role with `deferred.py --add-jd-read <role id> --run <run id>`. It is
+one per role (asking twice adds nothing), needs the machine capability `chrome`, and is served only
+to a worker that has a browser and did not itself queue it. That worker reads the posting and
+records it on the role's `fit`. The role stays in *Triaging* meanwhile. If no browser-holding
+worker has done it once the item has waited more than `search.triage_stuck_days` days,
+`deferred.py --settle` records `fit.jd_source` as `unavailable: surface-cannot-read` on the role
+and it goes to Decide with the lean `ask`. That value cannot be written by hand earlier: the
+record script refuses it unless such an item exists and has waited past the bound.
 
 **What a sweep hands back about each role (since 0.67.0).** Besides title, company, location and
 link, each role line now carries three slots a screen needs: `posted` (the posting date; an `ats:`
@@ -1600,6 +1720,18 @@ because that is what a list of roles is. They stay on your machine, in the same 
 
 Before a report is accepted, `deferred.py --add-roles <file> --run <id> --surface <s> --check` reads
 it the same way and prints each faulty line and a one-line verdict without writing anything.
+
+**One more small file: `coverage_check.json`.** A coverage gap can be marked as already explained
+by a filed issue (`journal.py --gap … --covered-by "public #58" --covered-reason "…"`), and that
+citation hides the gap from the routine check. `journal.py --check-coverage` asks GitHub whether each
+cited issue is still open and writes the answers to `.jobsearch/coverage_check.json`, one entry per
+citation: `OPEN`, `CLOSED` or `MISSING`, and the date it was checked. It stores no issue titles, only
+the citation, the verdict and the date. The routine `journal.py --check` reads this file without
+touching the network: a gap whose citation was last known closed or missing is counted as open
+again, with the reason shown, and a citation that has never been checked is reported as
+`unverified` in the count line. If the file is missing, nothing has been checked yet and every
+citation reads as unverified; if it cannot be read, the check says so and treats them the same way.
+You can delete it at any time; the next `--check-coverage` writes it again.
 
 **It is not committed to git.** The same upgrade that created the folder added `.jobsearch/` to
 your profile's `.gitignore` automatically — this state is specific to the machine it runs on,

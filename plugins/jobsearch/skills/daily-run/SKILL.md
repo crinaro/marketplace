@@ -157,8 +157,11 @@ those are what cost opportunities when they sit.**
 ## 2b. ⭐ DRAIN THE *REQUEST* QUEUE — work asked of this laptop (added 2026-08-05)
 
 ```bash
-~/.claude/jobsearch/run deferred.py --claimable
+~/.claude/jobsearch/run deferred.py --claimable --run <this run's id>
 ```
+
+(`--run` is this run's own id, so a `read-jd` item THIS run queues later in the triage step, because
+it had no browser, is never offered back to it: dev #723.)
 
 **`inbox.py` above carries findings TO the owner. THIS carries requests FROM the owner to this laptop, and it was WRITE-ONLY until today.** The run
 prompt called `deferred.py --add` and nothing ever called `--claim`/`--done`, so every request
@@ -647,9 +650,18 @@ item. **`--from-item` is what carries the sweep's pay, posting date and work set
 role** (it copies the item's parsed `listed_pay`, `posted` and `location.declared`; a slot the
 sweep marked `?` stays absent). A create without it copies nothing. Run
 `~/.claude/jobsearch/run deferred.py --settle` before the dashboard: it closes every `capture-role`
-item whose URL now has a record (a tracking-parameter variant of the URL still matches) and every
-`research-role` item whose opportunity has a `research_log`. Anything not captured stays a pending
-row and is counted in the summary.
+item whose URL now has a record (a tracking-parameter variant of the URL still matches), every
+`research-role` item whose opportunity has a `research_log` and every `read-jd` item whose role has
+been read (a still-unread one past `search.triage_stuck_days` records `surface-cannot-read` first,
+through `record.py`; pass `--already-locked` to `--settle` inside this write phase). Anything not
+captured stays a pending row and is counted in the summary.
+
+**A role held from a degraded sweep is not claimable** (dev #722 / public #156). `--add-roles`
+holds a role every query of which dropped or added a filter, was `unapplied` or was truncated as a
+`capture-role` item with a `quarantine` field. `--claimable` lists it under `QUARANTINED` and
+`--claim` refuses it; do not capture it. A clean sighting in a later pass releases it, or the
+owner does (`deferred.py --unquarantine <id>`). Say the held count and its codes in the summary
+(`run_summary.py` prints them).
 
 **⭐ TRIAGE BEFORE THE CANDIDATE IS ASKED (dev #713 / public #145).** A captured role becomes the
 candidate's pursue/pass decision only once the system has READ it. Until it carries a recorded JD
@@ -676,16 +688,19 @@ For each role in the batch, in order:
      role then goes to Decide with the lean defaulted to `ask` and the line `not read: <reason>`.
      A null `jd_source` means NOT TRIED, never "failed".
    - **A JD that needs an authenticated browser, on a surface that has none** (a headless run
-     without `--chrome`, a cloud run): do NOT mark it unavailable yet, and do NOT type a free-text
+     without `--chrome`, a cloud run) (dev #723): queue it, never type a free-text
      `deferred.py --add` for it (free text is for the send filter's denylist, never for an
-     engine step). Leave the role `triaging` and name it in the summary: the next run on a
-     surface with the browser is offered the same role again by `--triage-queue`, because
-     `triage_missing` still lists `jd-read`. Mark `surface-cannot-read` only once the role has
-     waited past `search.triage_stuck_days`. **NOT BUILT:** a `requires: chrome` item the
-     `--claimable` path would show a browser worker needs an engine-built form in `deferred.py`
-     (a fixed template over one validated opportunity id, like `--add-research`); until that
-     form exists the retry above is the whole mechanism, and it is bounded by the same stuck
-     rule.
+     engine step):
+     `~/.claude/jobsearch/run deferred.py --add-jd-read <opp_id> --run <run id>`. Leave the role
+     `triaging`. A browser-holding worker claims the item (the claimable step above:
+     `--claimable --run <this run's id>` never serves it back to the run that queued it), and
+     `deferred.py --settle` records `surface-cannot-read` once the item has waited past
+     `search.triage_stuck_days`. **Never record that reason by hand before then; `record.py`
+     refuses it.** A worker that CLAIMS a `read-jd` item first checks it really has a browser
+     (`list_connected_browsers`; `whoami.py`'s `chrome` only says the extension is configured, not
+     that this session was launched with it). No browser: `deferred.py --release <id>` and record
+     nothing. A browser: read the JD, `record.py set <opp_id> fit '<…jd_source = what you read, or
+     unavailable: login-wall…>' --already-locked` as in the read step above, then `deferred.py --done <id>`.
 2. **Pay and work setting as written.** The sweep's `pay=` and `setting=` slots reach the role only
    through `create … --from-item` (above); a role the runner captured in-pass, or created without
    `--from-item`, has neither. If either is still absent, record what the JD says. A listing that shows
@@ -704,6 +719,15 @@ For each role in the batch, in order:
    reads `FIRST MOVE: ask the recruiter …`; leave `--lean` and `--line` off and the script records
    `ask` with that first move as the line. Pass `--lean` only when the JD gives you a reason to
    lean the other way, and say it in `--line`.
+   **A title below `screen.title_floor` leans by pay and never removes** (dev #722 / public #156,
+   jobsearch 0.69.0). When the stored screen's title rule reads `BELOW-FLOOR`, leave `--lean` and
+   `--line` off and the script records the lean the pay implies: `pursue` ("title below your
+   floor (<level>), but pay is within your range") when the comp rule clears, `ask` ("... check pay
+   before deciding") for any other comp verdict, beside a `title-floor` hit on the Decide card.
+   Pass `--lean` only when the JD gives you a reason to lean the other way. A role the floor
+   or the title keys newly cover is offered back by `--triage-queue` as missing `screen` (its
+   stored screen was computed under other title keys): run `record.py screened` again, and it keeps
+   the lean you recorded and adds the hit.
 
 Then measure the drain. Put this one line in the run summary, verbatim:
 
@@ -937,10 +961,16 @@ machine disagrees with, because the machine is what generates the claim:
 
 This prints the run's own footprint — files changed, mailboxes swept, probes, gaps opened — as a
 GENERATED headline (`CHANGED: …` or `NO CHANGE: …`) and posts it to the coordinator queue.
-**`--annotate` adds context UNDER the headline; it can never change what the headline says** — an
-annotation that contradicts the machine-measured footprint (e.g. "nothing new" over a real diff)
-is REFUSED outright rather than silently posted, exactly the shape #85's bad summary would have
-hit. **Do this even on a quiet run** — "nothing new" is information, and its absence is
+**`--annotate` adds context UNDER the headline; it can never change what the headline says.**
+Both the annotation and this run's own journal notes (`journal.py --note`) are checked against the
+footprint at post time (dev #703 / public #155), and they are treated differently on purpose. An
+`--annotate` that contradicts the machine-measured footprint (e.g. "nothing new" over a real diff)
+is REFUSED outright (exit 2, nothing posted, the phrase named), exactly the shape #85's bad summary
+would have hit: reword it and post again. A journal note that contradicts the footprint (a note
+reading "Quiet run." over a run that changed files) cannot be un-written, so it is WITHHELD instead:
+the summary still posts, the note is replaced in the detail by `note withheld: it claimed '<phrase>'
+but the footprint shows <N> changed file(s)`, and the script says so on stderr, so an unattended run
+never loses its summary. **Do this even on a quiet run** — "nothing new" is information, and its absence is
 indistinguishable from a run that never fired. **Writing state is not the same as telling the
 candidate:** one run booked a call and sourced three roles while `notifyOnCompletion` was
 unclaimed and the run queued nothing, so none of it reached their view.

@@ -60,14 +60,37 @@ except Exception:                                  # pragma: no cover - both opt
 LOG_ENTRY = re.compile(r"^##\s*(\d{4}-\d{2}-\d{2})\b(.*)$", re.M)
 
 
+# ⭐ dev #703 / public #155 (low severity) — THE CUTOFF IS A DATE, STATED HERE, NOT GUESSED.
+# `journal.py --end` first wrote a `footprint` field in jobsearch 0.50.0 (public #85), released
+# 2026-09-15. An `end` event recorded before that day has no footprint because the field did not
+# exist, which is a fact about the profile's history and not a finding about any run; one red
+# line per such event buried the ones that mean something. An `end` on or after the cutoff with no
+# footprint is still red: the computation failed, or an older engine copy wrote it. An `end` with
+# no readable `at` is red too, because "cannot tell" must never be read as "legacy".
+FOOTPRINT_FIELD_SINCE = "2026-09-15"
+
+
+def _is_legacy_end(rec):
+    at = str(rec.get("at") or "")
+    return bool(re.match(r"^\d{4}-\d{2}-\d{2}", at)) and at[:10] < FOOTPRINT_FIELD_SINCE
+
+
 def missing_end_footprint(recs):
-    """⭐ public #85 — every `end` event with NO `footprint` field at all: either the run
-    predates this feature, or `journal.py --end`'s own footprint computation failed (it prints
-    a warning to stderr but never blocks `--end` — see that file). Either way the run's
-    footprint was never durably recorded, which is exactly the hole #85 reported: a real run
-    that left no verifiable trace of whether it persisted."""
+    """⭐ public #85 — every `end` event with NO `footprint` field at all, recorded ON OR AFTER
+    `FOOTPRINT_FIELD_SINCE`: `journal.py --end`'s own footprint computation failed (it prints a
+    warning to stderr but never blocks `--end` — see that file). The run's footprint was never
+    durably recorded, which is exactly the hole #85 reported: a real run that left no verifiable
+    trace of whether it persisted. Events from before the field existed are NOT listed here; see
+    `legacy_end_count()` (dev #703)."""
     return [r.get("run_id") for r in recs
-           if r.get("event") == "end" and "footprint" not in r]
+           if r.get("event") == "end" and "footprint" not in r and not _is_legacy_end(r)]
+
+
+def legacy_end_count(recs):
+    """dev #703 / public #155 — how many `end` events carry no footprint because they were
+    recorded before the field existed. Counted, not listed."""
+    return sum(1 for r in recs
+               if r.get("event") == "end" and "footprint" not in r and _is_legacy_end(r))
 
 
 def summary_disagreements(root):
@@ -127,6 +150,39 @@ def guard_blind_rows(path=None):
         return []
     rows.sort(key=lambda r: r.get("at") or "", reverse=True)
     return rows
+
+
+ALL_CLEAN_STREAK = 7
+
+
+def all_clean_board_streak(recs):
+    """dev #722 / public #156 (R4) -> how many of the NEWEST board passes in a row read ALL-CLEAN: a
+    `roles` event for `surface=board` whose `q_clean` equals every reached query (`q_reached`) with
+    nothing unread and nothing degraded. One pass is one run (the newest event per run_id), oldest
+    to newest by `at`; the count stops at the first pass that is not all-clean, and at the first
+    event that has no query-read counts at all (written before 0.69.0: no evidence either way).
+
+    ⭐ WHY THIS IS A FLAG AND NOT A GATE. `dropped=`/`added=`/`total=` are the sweep's own report
+    of what a rendered page showed. Nothing here can tell a filter a page dropped from a `none` a
+    sweep wrote without looking. What a sweep that NEVER looks produces is exactly this pattern --
+    every query clean, week after week -- so the pattern is counted and shown, and a person decides
+    whether the boards were really that well-behaved. SHAPE, not enforced; advisory, like the rest
+    of this script."""
+    latest = {}
+    for e in recs:
+        if e.get("event") == "roles" and e.get("surface") == "board" and e.get("run_id"):
+            prev = latest.get(e["run_id"])
+            if prev is None or (e.get("at") or "") >= (prev.get("at") or ""):
+                latest[e["run_id"]] = e
+    streak = 0
+    for e in sorted(latest.values(), key=lambda x: x.get("at") or "", reverse=True):
+        reached = e.get("q_reached")
+        if (reached and e.get("q_clean") == reached and not e.get("q_unread")
+                and not e.get("q_degraded_queries")):
+            streak += 1
+        else:
+            break
+    return streak
 
 
 def footprints(root):
@@ -203,6 +259,9 @@ def footprints(root):
                            key=lambda r: r.get("at") or "", reverse=True)
         except Exception:
             starts, fired, recs = [], [], []
+    streak = all_clean_board_streak(recs)
+    out["board_all_clean_streak"] = streak
+    out["board_all_clean_flag"] = streak >= ALL_CLEAN_STREAK
     out["run_starts"] = [{"run_id": r.get("run_id"), "at": r.get("at"), "kind": r.get("kind")}
                          for r in starts[:10]]
     out["last_start"] = starts[0].get("at") if starts else None
@@ -216,6 +275,7 @@ def footprints(root):
     # posted run-summary whose own headline contradicts its own stored footprint.
     end_events = [r for r in recs if r.get("event") == "end"]
     out["end_missing_footprint"] = missing_end_footprint(end_events)[:10]
+    out["end_legacy_no_footprint"] = legacy_end_count(end_events)
     disagreements, uncheckable = summary_disagreements(root)
     out["summary_disagreements"] = disagreements[:10]
     out["summary_uncheckable"] = uncheckable
@@ -265,6 +325,14 @@ def main():
         if not fp["inbox_posts"]:
             print("    (none)")
 
+    if fp.get("board_all_clean_flag"):
+        print("\n  ⚠️ BOARD SWEEP READS ALL-CLEAN: the last %d board passes in a row reported every "
+              "reached query clean (dropped=none, added=none, nothing truncated). That is what a "
+              "sweep that never looks the page over would also report -- the report is the "
+              "sweep's own, nothing here can verify it. Look at one board's results page against "
+              "its QUERY line before trusting the streak (dev #722 / public #156)."
+              % fp["board_all_clean_streak"])
+
     print("\n  last journalled FIRED (SessionStart hook): %s"
           % (fp.get("last_fired") or "none recorded"))
     for f2 in fp.get("session_fires", [])[:3]:
@@ -300,8 +368,13 @@ def main():
     if not missing and not disagreements:
         extra = (" (%d legacy row(s) not checkable — no run_id/footprint)"
                 % fp["summary_uncheckable"]) if fp.get("summary_uncheckable") else ""
-        print("    clean — every `end` event carries a footprint, and every posted run-summary "
+        print("    clean — every `end` event since the field existed carries a footprint, and "
+              "every posted run-summary "
               "agrees with its own%s." % extra)
+    if fp.get("end_legacy_no_footprint"):
+        print("    %d legacy `end` event(s) recorded before %s have no footprint field (it did "
+              "not exist yet) — counted, not flagged (dev #703)."
+              % (fp["end_legacy_no_footprint"], FOOTPRINT_FIELD_SINCE))
 
     print("\n  ⭐ NOW COMPARE WITH THE SCHEDULER — `list_scheduled_tasks`. FOUR STATES:")
     print("     (If `list_scheduled_tasks` is not available on this surface, SKIP this comparison")

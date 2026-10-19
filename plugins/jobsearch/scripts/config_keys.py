@@ -548,6 +548,51 @@ GEOGRAPHY_COMMUTE_INCLUDES = "geography.commute_anchors[].includes[]"
 SCREEN_LIKELY_PASS_SIGNALS = "screen.likely_pass_signals"
 SCREEN_SIGNAL_FIELDS = ("title", "jd", "company")
 
+# `screen.title_floor` -- dev #722 / public #156 (jobsearch 0.69.0, part b): ONE level token from the
+# closed engine ladder below, or absent/null. A title the ladder reads as BELOW the floor is a LEAN
+# (owner decision R1, 2026-10-16: a below-floor title NEVER removes, because a larger company gives
+# a lower title for the same scope, so pay is the real test); the lean depends on the comp verdict
+# (`profile.title_floor_lean`). ABSENT MEANS THE SCREEN IS BYTE-IDENTICAL TO 0.68.0: the key is NOT
+# seeded by any migration, because absent has a defined meaning (like `likely_pass_signals`), and it
+# is not in READER_KEYS, which prints one adjustable scalar with a default.
+# The "mandate" (out-of-scope FUNCTION phrases) is NOT a key: it is `screen.likely_pass_signals`
+# with `fields:["title"]` (R1: a pass lean, so a second key with the same shape would be the
+# parallel mechanism contract rule 20 forbids).
+SCREEN_TITLE_FLOOR = "screen.title_floor"
+
+# The ladder: OURS, closed, generic English job-title words (no personal data), lowest rank first.
+# `(level, (phrase, ...))`: a title's level is the HIGHEST rank any phrase matched, phrases matched
+# whole-phrase and case-insensitively, LONGEST FIRST on non-overlapping spans (so "vice president"
+# is consumed before "president" and "general manager" before "manager"). A title no phrase reads
+# has NO level, and no level is never below the floor: no evidence is not evidence.
+# It is a heuristic and says so: "Associate Director" reads director, "Account Manager" reads
+# manager, "Staff Accountant" reads lead. That over-breadth is why a match only ever leans.
+SENIORITY_LADDER = (
+    ("intern", ("intern", "internship", "co-op")),
+    ("entry", ("junior", "jr", "entry level", "entry-level", "graduate", "trainee", "apprentice")),
+    ("associate", ("associate", "assistant", "coordinator")),
+    ("senior", ("senior", "sr")),
+    ("lead", ("lead", "principal", "staff")),
+    ("manager", ("manager",)),
+    ("director", ("director", "head of")),
+    ("vp", ("vice president", "vp", "svp", "evp")),
+    ("executive", ("chief", "president", "general manager", "ceo", "cto", "cfo", "coo", "cmo",
+                   "cio")),
+)
+SENIORITY_LEVELS = tuple(level for level, _phrases in SENIORITY_LADDER)
+
+
+def validate_title_floor(value):
+    """Problems with `screen.title_floor` ([] when valid or absent/null): a string that is exactly
+    one of `SENIORITY_LEVELS`. Strict -- "Senior", " senior", a list, a number and an unknown level
+    are all refused with the levels named, never coerced to a guess."""
+    if value is None:
+        return []
+    if not isinstance(value, str) or value not in SENIORITY_LEVELS:
+        return ["%s is %r -- not one of %s" % (SCREEN_TITLE_FLOOR, value,
+                                               ", ".join(SENIORITY_LEVELS))]
+    return []
+
 
 def _is_pos_int(v):
     return isinstance(v, int) and not isinstance(v, bool) and v > 0

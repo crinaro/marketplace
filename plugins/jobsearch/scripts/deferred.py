@@ -60,12 +60,15 @@ Usage:
     ~/.claude/jobsearch/run deferred.py --add-linkedin-pass   # the owed LinkedIn pass (no text argument)
     ~/.claude/jobsearch/run deferred.py --add-research <opp_id>   # research a posture held
     ~/.claude/jobsearch/run deferred.py --add-draft <opp_id>      # a draft a posture held
+    ~/.claude/jobsearch/run deferred.py --add-jd-read <opp_id> --run <run id>
+                                                                  # a JD only a browser can read
     ~/.claude/jobsearch/run deferred.py --claimable [--attended]
     ~/.claude/jobsearch/run deferred.py --add-roles <hand-back file> --run <id> --surface board
                                                                   # or linkedin-jobsearch
     ~/.claude/jobsearch/run deferred.py --add-roles <hand-back file> --run <id> --surface board --check
                                                                   # dry run: faults + verdict, writes nothing
     ~/.claude/jobsearch/run deferred.py --settle              # close items the stores show done
+    ~/.claude/jobsearch/run deferred.py --unquarantine <id>   # release a role held from a degraded sweep
     ~/.claude/jobsearch/run deferred.py --done <id>
 
 ⭐ EVERY ROLE A PASS SEES IS ACCOUNTED FOR (dev #692 / public #140, #489 / public #102).
@@ -90,6 +93,34 @@ opportunity stores. They reach the opportunity only when the role is created wit
 `--from-item` copies nothing, and the screen then reads NOT CAPTURED. `?` in any slot means NOT READ
 and is stored as ABSENT, never as "none". A non-annual figure is carried as written (`interval` month, day, hour);
 the screen routes it to review and nothing here converts it to a year.
+
+⭐ A JD ONLY A BROWSER CAN READ IS HANDED TO A BROWSER (dev #723; jobsearch 0.69.0). When the triage
+step meets a JD it cannot read on its own surface (an authenticated page, on a surface with no
+browser), `--add-jd-read <opp_id> --run <run id>` queues ONE `read-jd` item for that role
+(`ref` the opportunity id, `requires: [chrome]`, idempotent on `(kind, ref)`, and never served to the
+run that queued it: that run could not read it). A browser-holding worker claims it through the
+ordinary `--claimable` path and records the read through `record.py`. `--settle` writes
+`fit.jd_source = "unavailable: surface-cannot-read"` THROUGH `record.py` once the item has waited
+past `search.triage_stuck_days`; `record.py` refuses that value before then
+(`introduced_row_violations`), so it cannot be written by hand early.
+
+⭐ A DEGRADED SWEEP IS QUARANTINED, NEVER CAPTURED AS A CLEAN SET (dev #722 / public #156;
+jobsearch 0.69.0). A reached `QUERY` now says what the page did NOT do (`dropped=`, `added=`,
+`total=<m>+` for a lower bound) and every `ROLE url=` line says which queries showed it (`q=`). A
+role every one of whose queries reported a degradation -- a named dropped or added filter,
+`unapplied`, a truncated read -- is QUARANTINED: its `capture-role` item is queued with a
+`quarantine` field and `--claimable` / `--claim` do not serve it. ONLY a positively reported
+degradation quarantines (owner decision R3): `dropped=?`, `added=?` and a reached `total=?` page
+file the query gap and are counted, and never hold a role. A later CLEAN sighting releases the
+role (an append-only `_unquarantine` record), or `--unquarantine <id>`. The identity is
+`distinct = captured + known + carried + quarantined + role_gaps`, refused by
+`journal.record_roles` when it does not hold. ⚠️ SHAPE, NOT ENFORCED (R4): `dropped=`, `added=` and
+`total=` are the sweep's own report of what a rendered page showed; no script here can tell a
+dropped filter from a `none` written without looking. The tests prove the instruction and the
+parser are there, never that an agent obeys it, and an acceptance replay of a real degraded board
+page is not possible in CI. The defence is COUNTED, not enforced: the `roles` event carries
+`q_clean` / `q_unread` / `q_total_unknown` / `q_degraded`, `run_summary.py` prints them, and
+`check_runs.py` flags 7 consecutive all-clean board passes.
 
 ⭐ A LINE FAULT NEVER DISCARDS A VALID ROLE; A HAND-BACK CAN BE CHECKED FIRST (dev #707 / public
 #151). A hand-back with 277 roles and one malformed QUERY line used to be refused whole, and the
@@ -165,6 +196,17 @@ DRAFT_WHY = "drafting is posture-gated"
 DRAFT_REQUIRES = ("drafting",)
 OPP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 
+# dev #723 (jobsearch 0.69.0) -- the engine-built JD-read item. Same shape as the two above: the `what`
+# is a TEMPLATE over one validated opportunity id, `requires` is the MACHINE capability `chrome` (not a
+# posture token, so `held_by_posture` is false and a browserless worker sees it under "needs another
+# environment"), and the claiming worker acts on the `kind`, never on the `what`.
+KIND_JD_READ = "read-jd"
+JD_READ_WHAT = ("Read the JD for %s in a signed-in browser and record it on the role's fit "
+                "(record.py set <id> fit ...); a login wall is recorded as unavailable: login-wall.")
+JD_READ_WHY = "the JD needs a browser this surface does not have"
+JD_READ_REQUIRES = ("chrome",)
+SURFACE_CANNOT_READ = "unavailable: surface-cannot-read"
+
 # ⭐ THE ROLES GRAMMAR (dev #692 / public #140, N7) -- byte-equal to the fenced copy between
 # `<!-- roles-grammar:begin -->` and `<!-- roles-grammar:end -->` in BOTH
 # plugins/jobsearch/agents/linkedin-runner.md and plugins/jobsearch/agents/board-sweeper.md. Edit
@@ -173,10 +215,10 @@ OPP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 # ("Past week"); there is no computed window.
 ROLES_GRAMMAR = """\
 --- ROLES v1 run=<run-id> surface=<linkedin-jobsearch|board> window=<daily|wide|none> ---
-QUERY geo=<remote|local> title="<query>" window=<r86400|r604800|none> shown=<n> total=<m|?> [unapplied] [channel=<channel_id>]
+QUERY geo=<remote|local> title="<query>" window=<r86400|r604800|none> shown=<n> total=<m|m+|?> dropped=<none|?|<filter>[,<filter>...]> added=<none|?|<filter>[,<filter>...]> [unapplied] [channel=<channel_id>]
 QUERY geo=<remote|local> title="<query>" unreachable reason=<journal.REASONS code> [channel=<channel_id>]
 SEEN distinct=<n>
-ROLE url=<posting url> title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|ats:YYYY-MM-DD|<n>d|?> pay=<pay|?> setting="<verbatim|none stated|?>"
+ROLE url=<posting url> q=<k>[,<k>...] title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|ats:YYYY-MM-DD|<n>d|?> pay=<pay|?> setting="<verbatim|none stated|?>"
 ROLE nourl title="<t>" company="<c>" reason=<journal.REASONS code>
 --- END ROLES ---"""
 
@@ -195,6 +237,44 @@ ROLE nourl title="<t>" company="<c>" reason=<journal.REASONS code>
 # Pay intervals are the four postings in scope use. A non-annual interval is carried as written and
 # the screen routes it to review; the agents must NEVER code an hourly, daily or monthly figure
 # as /yr (R2): a guessed conversion that removes is the defect class this slot exists to end.
+# dev #722 / public #156 (sourcing-scope, jobsearch 0.69.0, part a) -- A DEGRADED SWEEP IS
+# QUARANTINED, NEVER CAPTURED AS A CLEAN SET. Three new REQUIRED slots, under the unchanged
+# `ROLES v1` header (the 0.67.0 precedent: an optional slot would let a forgetful sweep produce
+# silent clean-looking rows):
+#   dropped=none | ? | <filter>[,<filter>...]   a filter the run ASKED for that the page did not apply
+#   added=none   | ? | <filter>[,<filter>...]   a filter the page applied that the run did NOT ask for
+#       <filter> := a member of QUERY_FILTERS (closed vocabulary). `none` = the sweep compared and
+#       found no difference. `?` = it could not tell (a search-box route with no readable filter
+#       state). `none` never combines with a token.
+#   total=<m>+     a LOWER BOUND ("99+" badge): never an exact count. (Elasticsearch's `gte`.)
+#   q=<k>[,<k>...] on a ROLE url line: the 1-based ordinals of the QUERY lines in this block (reached
+#       AND unreachable, in block order, a faulted QUERY line keeps its ordinal) that showed the
+#       role. A role is listed once even when several queries showed it, so q= lists EVERY query.
+# On linkedin-jobsearch `dropped=date` is a line fault: the window is said with `unapplied`. On a
+# board `unapplied` stays forbidden and `dropped=date` is how a board says it.
+#
+# ⭐ WHAT QUARANTINES (owner decision R3, 2026-10-16 -- Option A): ONLY a POSITIVELY REPORTED
+# degradation. A reached query is DEGRADED when it reports `dropped=<filter>` (filter-dropped),
+# `added=<filter>` (param-added), `unapplied` or a LinkedIn bucket that is not the run's
+# (window-unapplied), or a truncated result set (truncated: an exact total above shown, or a lower
+# bound `<m>+` with shown below m). `dropped=?` / `added=?` (filters-unread) and a reached query
+# with `total=?` and a page (total-unknown) file the QUERY GAP ONLY and are COUNTED: they NEVER
+# quarantine. A role is quarantined when EVERY query in its q= is degraded (or its QUERY line did
+# not parse: `query-unparsed`); one clean query that showed it vouches for it.
+#
+# ⭐ SHAPE, NOT ENFORCED (R4). Everything above is the sweep's SELF-REPORT of what it observed:
+# `dropped=`, `added=` and `total=` are read off a rendered page by a model, and nothing in this
+# script can tell a filter the page dropped from a `none` the sweep wrote without looking. What the
+# tests prove is that the instruction and the parser are there, not that an agent obeys it. The
+# defence is COUNTED, not enforced: the `roles` event carries q_clean / q_unread / q_total_unknown /
+# q_degraded, `run_summary.py` prints them, and `check_runs.py` flags 7 consecutive all-clean board
+# passes (a sweep that never actually looks would produce exactly that). An acceptance replay of a
+# real degraded board page is not possible in CI.
+QUERY_FILTERS = ("worktype", "location", "date", "pay", "seniority", "jobtype", "other")
+DEGRADED_CODES = ("filter-dropped", "param-added", "window-unapplied", "truncated",
+                  "query-unparsed")                       # these QUARANTINE
+UNREAD_CODES = ("filters-unread", "total-unknown")        # these file the query gap ONLY (R3)
+KIND_UNQUARANTINE = "_unquarantine"
 PAY_INTERVALS = {"yr": "year", "mo": "month", "day": "day", "hr": "hour"}
 PAY_STATES = {"stated": "employer-stated", "estimate": "board-estimate"}
 PAY_SOURCES = {"employer-stated": "listing-text", "board-estimate": "board-widget",
@@ -220,10 +300,14 @@ ROLES_HANDBACK_DIR = (".jobsearch", "handbacks")         # under the PROFILE roo
 QUEUE_ID_ENTROPY_BYTES = 4
 
 
-def load():
-    if not os.path.exists(QUEUE):
+def load(path=None):
+    """Every raw row of the queue (`path` defaults to this profile's `data/pending_actions.jsonl`).
+    A line that is not JSON raises ValueError: callers that must not treat a broken queue as an empty
+    one (`record.py`'s surface-cannot-read gate, dev #723) rely on that."""
+    path = path or QUEUE
+    if not os.path.exists(path):
         return []
-    with open(QUEUE, encoding="utf-8") as fh:
+    with open(path, encoding="utf-8") as fh:
         return [json.loads(l) for l in fh if l.strip()]
 
 
@@ -257,7 +341,12 @@ def replay(rows):
             state[rid] = dict(state[rid], claimed_by=None, claimed_at=None)
         elif kind == "_withheld" and rid in state:
             state[rid] = dict(state[rid], withheld_because=r.get("because"))
-        elif kind not in ("_done", "_claim", "_release", "_withheld"):
+        elif kind == KIND_UNQUARANTINE and rid in state:
+            # dev #722 / public #156 -- a quarantine is released by NEW EVIDENCE (a clean
+            # sighting) or by the owner, never by a claim: `_withheld` is a property of the
+            # surface and a claim clears it; quarantine is a property of the evidence for one role.
+            state[rid] = dict(state[rid], quarantine=None)
+        elif kind not in ("_done", "_claim", "_release", "_withheld", KIND_UNQUARANTINE):
             state[rid] = r
     return list(state.values())
 
@@ -351,6 +440,19 @@ def _record_withheld(rid, reason, now):
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
 
 
+def _append_unquarantine(rid, because, now=None):
+    """dev #722 / public #156 -- release one quarantined `capture-role` item: an APPEND-ONLY record
+    (`replay` folds it onto `quarantine = None`), never a rewrite. `because` is the new evidence,
+    `clean sighting run=<id>` or `owner`. Not the `_withheld` shape's clearing rule: a claim never
+    clears a quarantine (see `replay`)."""
+    now = now or datetime.datetime.now()
+    rec = {"id": rid, "kind": KIND_UNQUARANTINE, "because": because,
+           "at": now.isoformat(timespec="seconds")}
+    with open(QUEUE, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return rec
+
+
 class DeferredRefused(ValueError):
     """`--add` refused the text — it reads like a send (FORBIDDEN)."""
 
@@ -375,7 +477,8 @@ def queue_item(what, why="", requires=()):
     return _append_item(what, why, requires)
 
 
-def _append_item(what, why="", requires=(), kind="action", ref=None, role=None):
+def _append_item(what, why="", requires=(), kind="action", ref=None, role=None,
+                 quarantine=None, queued_run=None):
     """dev #692 / public #140 (N2) -- the ONE private writer of a new queue row, and the only
     place a row reaches the queue WITHOUT passing `FORBIDDEN`. Its callers are pinned by
     `test_send_filter.py` (a source scan): `queue_item` (which checks the filter first),
@@ -388,7 +491,12 @@ def _append_item(what, why="", requires=(), kind="action", ref=None, role=None):
 
     `role` (dev #715 / public #143, dev #716 / public #142; only a `capture-role` item passes one)
     is the SCRIPT-parsed pay, posting date and work setting of the ROLE line (`role_payload`),
-    omitted when None, so every legacy row and every other kind is unchanged."""
+    omitted when None, so every legacy row and every other kind is unchanged.
+
+    `quarantine` (dev #722 / public #156; only a `capture-role` item from a degraded sweep passes
+    one) is `{run_id, because: [code...], queries: [k...]}`; `queued_run` (dev #723; only a
+    `read-jd` item passes one) is the run that queued it, so that run is never served the item it
+    could not finish. Both are omitted when None."""
     now = datetime.datetime.now()
     # dev #481 / public #112 -- the timestamp prefix keeps ids sortable; the random suffix is what
     # stops two adds inside one second (two controllers, or a runner and daily-run in the same
@@ -403,6 +511,10 @@ def _append_item(what, why="", requires=(), kind="action", ref=None, role=None):
         rec["ref"] = ref
     if role is not None:
         rec["role"] = role
+    if quarantine is not None:
+        rec["quarantine"] = quarantine
+    if queued_run is not None:
+        rec["queued_run"] = queued_run
     with open(QUEUE, "a", encoding="utf-8") as fh:          # append-only, like the inbox
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return rec
@@ -460,6 +572,59 @@ def queue_draft(opp_id, rows=None):
         return hit, False
     return _append_item(DRAFT_WHAT % opp_id, DRAFT_WHY, DRAFT_REQUIRES,
                         kind=KIND_DRAFT, ref=opp_id), True
+
+
+def _opportunity_row(opp_id):
+    path = os.path.join(ROOT, "data", "opportunities.jsonl")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if line.strip():
+                    row = json.loads(line)
+                    if row.get("id") == opp_id:
+                        return row
+    except (OSError, ValueError):
+        return None
+    return None
+
+
+def queue_jd_read(opp_id, run_id=None, rows=None):
+    """dev #723 -- queue the JD read a surface could not do, as a script form: kind `read-jd`, `ref`
+    the opportunity id, `requires: [chrome]`. Returns `(row, added)`; raises `DeferredRefused` for an
+    id that is not a real opportunity.
+
+      * a role that no longer lists `jd-read` in `your_move.triage_missing` has been read (or a read
+        was tried and failed): nothing is queued and `(None, False)` comes back;
+      * idempotent on `(kind, ref)` among pending rows (`_pending_by_ref`): a second call is a no-op;
+      * `run_id` is stored as `queued_run`, so `--claimable --run <id>` never serves the item to the
+        run that could not read it (the same-run guard, design finding F3).
+
+    Engine-built: skips `FORBIDDEN` by construction. A sibling of `queue_research`, not an extension
+    of it: that one is a posture-gated model step, this one a machine-gated browser step."""
+    _checked_opp_id(opp_id)
+    import your_move as _ym
+    opp = _opportunity_row(opp_id)
+    if opp is not None and "jd-read" not in _ym.triage_missing(opp):
+        return None, False
+    hit = _pending_by_ref(KIND_JD_READ, opp_id, rows)
+    if hit:
+        return hit, False
+    return _append_item(JD_READ_WHAT % opp_id, JD_READ_WHY, JD_READ_REQUIRES, kind=KIND_JD_READ,
+                        ref=opp_id, queued_run=run_id), True
+
+
+def jd_read_waited_past_bound(item, stuck_days, now=None):
+    """True when a `read-jd` item has waited MORE THAN `stuck_days` days (dev #723, SS-C3): the one
+    definition of 'the bound has passed', used by `settle` to write `surface-cannot-read` and by
+    `record.py`'s gate to refuse writing it earlier, so the two can never disagree. An item whose
+    `queued_at` cannot be read has waited for no known time: False, never a guess."""
+    at = item.get("queued_at")
+    try:
+        queued = datetime.datetime.fromisoformat(at)
+    except (TypeError, ValueError):
+        return False
+    waited = ((now or datetime.datetime.now()) - queued).total_seconds() / 86400.0
+    return waited > stuck_days
 
 
 def _record_refusal_gap(run_id, what):
@@ -534,9 +699,13 @@ _Q = r'"(?P<title>[^"]*)"'
 _ROLES_BEGIN = re.compile(r"^--- ROLES v1 run=(?P<run>\S+) surface=(?P<surface>\S+) "
                           r"window=(?P<window>\S+) ---$")
 _ROLES_END = "--- END ROLES ---"
+# dev #722 / public #156 -- `total=`, `dropped=` and `added=` are matched LOOSELY here and judged in
+# `parse_roles`, so a missing slot or a token outside the vocabulary is a fault whose rule NAMES it,
+# not the generic "not a line of the ROLES grammar".
 _QUERY_REACHED = re.compile(
     r"^QUERY geo=(?P<geo>remote|local) title=" + _Q + r" window=(?P<win>r86400|r604800|none) "
-    r"shown=(?P<shown>\d+) total=(?P<total>\d+|\?)(?P<unapplied> unapplied)?"
+    r"shown=(?P<shown>\d+) total=(?P<total>\S+)(?: dropped=(?P<dropped>\S+))?"
+    r"(?: added=(?P<added>\S+))?(?P<unapplied> unapplied)?"
     r"(?: channel=(?P<channel>\S+))?$")
 _QUERY_UNREACHABLE = re.compile(
     r"^QUERY geo=(?P<geo>remote|local) title=" + _Q + r" unreachable reason=(?P<reason>[a-z-]+)"
@@ -546,7 +715,7 @@ _SEEN_DISTINCT = re.compile(r"^SEEN distinct=(?P<n>\d+)$")
 # line fault with a rule that NAMES the missing slot (see `_role_slot_faults`), not the generic
 # "not a line of the ROLES grammar". The slots are required: the fault is raised, never defaulted.
 _ROLE_URL = re.compile(
-    r'^ROLE url=(?P<url>\S+) title="(?P<title>[^"]*)" company="(?P<company>[^"]*)" '
+    r'^ROLE url=(?P<url>\S+)(?: q=(?P<q>\S+))? title="(?P<title>[^"]*)" company="(?P<company>[^"]*)" '
     r'location="(?P<location>[^"]*)" posted=(?P<posted>\S+)'
     r'(?: pay=(?P<pay>\S+))?(?: setting="(?P<setting>[^"]*)")?$')
 _PAY_RANGE = re.compile(
@@ -631,11 +800,93 @@ def parse_posted_slot(slot):
     return kind, date_text, None
 
 
+def parse_q_slot(slot):
+    """`(ordinals, None)` or `(None, why)` for a ROLE line's `q=<k>[,<k>...]` (dev #722 / public
+    #156): positive whole numbers, each at most once. Whether an ordinal EXISTS, and whether it
+    names an unreachable query, is judged against the block's QUERY lines in `parse_roles`."""
+    ks = []
+    for piece in slot.split(","):
+        if not re.match(r"^[1-9]\d{0,3}$", piece):
+            return None, ("q=%s is not a comma-separated list of 1-based QUERY line ordinals "
+                          "(%r is not one)" % (slot, piece))
+        k = int(piece)
+        if k in ks:
+            return None, "q=%s repeats ordinal %d: list each QUERY once" % (slot, k)
+        ks.append(k)
+    return ks, None
+
+
+def parse_filter_slot(name, slot):
+    """`(filters, unread, None)` or `(None, None, why)` for a QUERY's `dropped=` / `added=`
+    (dev #722 / public #156). `filters` is the list of named `QUERY_FILTERS` tokens (empty for
+    `none` and for `?`), `unread` is True for `?`. `none` and `?` stand alone; a token outside the
+    closed vocabulary, a repeat, or an empty member is refused with the vocabulary named."""
+    if slot is None:
+        return None, None, ("a reached QUERY carries the required `dropped=` and `added=` slots "
+                            "(none|?|<filter>[,<filter>...] from %s); this line has no `%s=`"
+                            % ("/".join(QUERY_FILTERS), name))
+    if slot == "none":
+        return [], False, None
+    if slot == "?":
+        return [], True, None
+    seen = []
+    for piece in slot.split(","):
+        if piece in ("none", "?"):
+            return None, None, ("%s=%s combines `%s` with a filter: `none` and `?` stand alone"
+                                % (name, slot, piece))
+        if piece not in QUERY_FILTERS:
+            return None, None, ("%s=%s: %r is not one of %s" % (name, slot, piece,
+                                                                 ", ".join(QUERY_FILTERS)))
+        if piece in seen:
+            return None, None, "%s=%s names %s twice" % (name, slot, piece)
+        seen.append(piece)
+    return seen, False, None
+
+
+def parse_total_slot(slot):
+    """`(total, lower_bound, None)` or `(None, None, why)` for a QUERY's `total=` (dev #722 /
+    public #156): `<m>` exact, `<m>+` a LOWER BOUND (a "99+" badge), `?` unknown (`total` None)."""
+    if slot == "?":
+        return None, False, None
+    m = re.match(r"^(\d+)(\+?)$", slot)
+    if not m:
+        return None, None, "total=%s is not <m>, <m>+ (a lower bound) or ?" % slot
+    return int(m.group(1)), bool(m.group(2)), None
+
+
+def query_degradation(q):
+    """`(degraded, unread)` -- two sorted code lists for a REACHED query (dev #722 / public #156,
+    R3). `degraded` (DEGRADED_CODES) QUARANTINES the roles only this query showed; `unread`
+    (UNREAD_CODES) files the query gap and is COUNTED, never quarantines.
+
+    SHAPE, not enforced (R4): the inputs are the sweep's own report of what the page showed."""
+    degraded, unread = [], []
+    if q["window_gap"]:
+        degraded.append("window-unapplied")
+    if q["dropped"]:
+        degraded.append("filter-dropped")
+    if q["added"]:
+        degraded.append("param-added")
+    if q["truncated"]:
+        degraded.append("truncated")
+    if q["dropped_unread"] or q["added_unread"]:
+        unread.append("filters-unread")
+    if q["total"] is None and q["shown"] > 0:
+        unread.append("total-unknown")
+    return sorted(degraded), sorted(unread)
+
+
 def _role_slots(rm):
     """`(slots, None)` or `(None, why)` for a ROLE url line that matched `_ROLE_URL`: `slots` is
     the parsed `pay`, `posted`, `setting` and the three verbatim, or `why` names the first rule
     broken. The two new slots are REQUIRED (dev #715 / public #143): a line without them is a line
     fault, never a role with the slot defaulted."""
+    if rm.group("q") is None:
+        return None, ("a ROLE url line carries the required `q=<k>[,<k>...]` slot naming the QUERY "
+                      "line(s) that showed it (1-based, in block order); this line has no `q=`")
+    qs, why = parse_q_slot(rm.group("q"))
+    if why:
+        return None, why
     missing = [n for n in ("pay", "setting") if rm.group(n) is None]
     if missing:
         return None, ("a ROLE line carries the required `pay=` and `setting=` slots "
@@ -652,7 +903,7 @@ def _role_slots(rm):
     if not setting:
         return None, ("setting=\"\" is empty: write the posting's own text, `none stated` when it "
                       "states none, or `?` when you did not read it")
-    return {"pay": pay, "posted": (kind, value), "setting": setting,
+    return {"pay": pay, "posted": (kind, value), "setting": setting, "q": qs,
             "slots": {"pay": rm.group("pay"), "posted": rm.group("posted"),
                       "setting": rm.group("setting")}}, None
 
@@ -745,21 +996,42 @@ def parse_roles(text, run_id, surface):
 
     expected_bucket = _journal.F_TPR_WIDE if window == "wide" else _journal.F_TPR_DAILY
     queries, roles, distinct, role_lines = [], [], None, 0
+    qord, ordinals = 0, {}      # dev #722 / public #156: a ROLE's q= counts EVERY QUERY line
     for i in range(begins[0] + 1, end):
         raw = lines[i].strip()
         if not raw:
             continue
         n = i + 1
+        if raw.startswith("QUERY"):
+            qord += 1           # a faulted QUERY line keeps its ordinal, so its roles can be held
         qm = _QUERY_REACHED.match(raw)
         if qm:
-            total = None if qm.group("total") == "?" else int(qm.group("total"))
+            total, lower, why = parse_total_slot(qm.group("total"))
+            if why:
+                fault(n, raw, why)
+                continue
+            dropped, dropped_unread, why = parse_filter_slot("dropped", qm.group("dropped"))
+            if why:
+                fault(n, raw, why)
+                continue
+            added, added_unread, why = parse_filter_slot("added", qm.group("added"))
+            if why:
+                fault(n, raw, why)
+                continue
             shown = int(qm.group("shown"))
-            if total is not None and shown > total:
+            if total is not None and not lower and shown > total:
                 fault(n, raw, "shown=%d exceeds total=%d" % (shown, total))
                 continue
             q = {"geo": qm.group("geo"), "title": qm.group("title"), "status": "reached",
                  "window": qm.group("win"), "shown": shown, "total": total,
-                 "unapplied": bool(qm.group("unapplied")), "channel": qm.group("channel")}
+                 "total_lower_bound": lower, "dropped": dropped, "added": added,
+                 "dropped_unread": dropped_unread, "added_unread": added_unread,
+                 "unapplied": bool(qm.group("unapplied")), "channel": qm.group("channel"),
+                 "ordinal": qord}
+            if surface == "linkedin-jobsearch" and "date" in dropped:
+                fault(n, raw, "on linkedin-jobsearch a window the page did not apply is "
+                              "`unapplied`, not dropped=date (one spelling per fact)")
+                continue
             if surface == "board":
                 if q["window"] != "none" or not q["channel"] or q["unapplied"]:
                     fault(n, raw, "a board QUERY has window=none, a channel= and no `unapplied`")
@@ -774,8 +1046,12 @@ def parse_roles(text, run_id, surface):
                     continue
             q["window_gap"] = q["unapplied"] or (surface == "linkedin-jobsearch"
                                                  and q["window"] != expected_bucket)
-            q["truncated"] = total is not None and total > shown
+            # truncated: an exact total above shown, or a LOWER BOUND the sweep did not reach
+            q["truncated"] = (total is not None and
+                              (shown < total if lower else total > shown))
+            q["degraded"], q["unread"] = query_degradation(q)
             queries.append(q)
+            ordinals[qord] = q
             continue
         qm = _QUERY_UNREACHABLE.match(raw)
         if qm:
@@ -788,10 +1064,12 @@ def parse_roles(text, run_id, surface):
             if surface == "linkedin-jobsearch" and qm.group("channel"):
                 fault(n, raw, "a LinkedIn QUERY has no channel=")
                 continue
-            queries.append({"geo": qm.group("geo"), "title": qm.group("title"),
-                            "status": "unreachable", "reason": qm.group("reason"),
-                            "channel": qm.group("channel"), "window_gap": True,
-                            "truncated": False})
+            q = {"geo": qm.group("geo"), "title": qm.group("title"),
+                 "status": "unreachable", "reason": qm.group("reason"),
+                 "channel": qm.group("channel"), "window_gap": True,
+                 "truncated": False, "degraded": [], "unread": [], "ordinal": qord}
+            queries.append(q)
+            ordinals[qord] = q
             continue
         qm = _SEEN_DISTINCT.match(raw)
         if qm:
@@ -811,7 +1089,8 @@ def parse_roles(text, run_id, surface):
                           "company": rm.group("company"), "location": rm.group("location"),
                           "posted": rm.group("posted"), "line": n,
                           "pay": slots["pay"], "posted_parsed": slots["posted"],
-                          "setting": slots["setting"], "slots": slots["slots"]})
+                          "setting": slots["setting"], "slots": slots["slots"],
+                          "q": slots["q"]})
             continue
         rm = _ROLE_NOURL.match(raw)
         if rm:
@@ -825,6 +1104,40 @@ def parse_roles(text, run_id, surface):
         if raw.startswith("ROLE"):
             role_lines += 1              # the agent meant a ROLE here: SEEN counted it, so do we
         fault(n, raw, "not a line of the ROLES grammar")
+
+    # dev #722 / public #156 -- each ROLE url line's q= is judged against the block's QUERY lines
+    # now that all of them have been seen: an ordinal out of range or naming an UNREACHABLE query
+    # (it showed no roles) is a line fault for that ROLE; one naming a QUERY line that did not
+    # parse is allowed and counts as DEGRADED (`query-unparsed`), so a broken line can never make
+    # its roles look clean. A role is QUARANTINED when EVERY query that showed it is degraded.
+    vetted = []
+    for r in roles:
+        if r["url"] is None:
+            vetted.append(r)
+            continue
+        bad = None
+        for k in r["q"]:
+            if k > qord:
+                bad = "q=%d is out of range: the block has %d QUERY line(s)" % (k, qord)
+            elif k in ordinals and ordinals[k]["status"] == "unreachable":
+                bad = "q=%d names an unreachable QUERY, which showed no roles" % k
+            if bad:
+                break
+        if bad:
+            fault(r["line"], lines[r["line"] - 1], bad)
+            continue
+        codes, all_degraded = set(), True
+        for k in r["q"]:
+            q = ordinals.get(k)
+            if q is None:
+                codes.add("query-unparsed")
+            elif q["degraded"]:
+                codes.update(q["degraded"])
+            else:
+                all_degraded = False
+        r["quarantine_codes"] = sorted(codes) if all_degraded else None
+        vetted.append(r)
+    roles = vetted
 
     canon_seen, kept = {}, []
     for r in roles:
@@ -941,11 +1254,14 @@ def add_roles(text, run_id, surface, out=print, check=False):
       * captured -- matches an ACTIVE row whose earliest sighting is this run's date (the runner
         captured it in-pass; its opp id is printed so the write phase screens it);
       * known -- matches any other ACTIVE row;
+      * quarantined (dev #722 / public #156) -- not known or captured, and EVERY query in its `q=`
+        reported a degradation: ONE `capture-role` item carrying a `quarantine` field that no
+        worker is served (a clean re-sighting releases it);
       * carried -- anything else, including an EXPIRED row's repost: ONE `capture-role` item,
         `ref` the canonical URL, idempotent on `(kind, ref)`.
 
-    then asserts the identity `distinct = captured + known + carried + role_gaps` (over the ROLE
-    lines accepted) and writes ONE `roles` event. Query-level gaps (unreachable, window not
+    then asserts the identity `distinct = captured + known + carried + quarantined + role_gaps`
+    (over the ROLE lines accepted) and writes ONE `roles` event. Query-level gaps (unreachable, window not
     applied, truncated) are filed and counted in their own fields. Re-running the same block writes
     no new row: the queue is idempotent, a gap is filed once per run, and an identical `roles`
     event is not repeated."""
@@ -988,8 +1304,9 @@ def add_roles(text, run_id, surface, out=print, check=False):
     window = parsed["header"]["window"]
     pass_label = "board" if surface == "board" else window
     rows = replay(load())
-    counts = {"captured": 0, "known": 0, "carried": 0, "role_gaps": 0}
+    counts = {"captured": 0, "known": 0, "carried": 0, "quarantined": 0, "role_gaps": 0}
     resolved_keys, screen_ids = set(), []
+    quarantine_reasons, captured_degraded = {}, 0
 
     for r in parsed["roles"]:
         title, company, loc = _clip(r["title"]), _clip(r["company"]), _clip(r["location"])
@@ -1017,14 +1334,55 @@ def add_roles(text, run_id, surface, out=print, check=False):
             if kind == "active" and _earliest_seen(row) == run_date:
                 counts["captured"] += 1
                 screen_ids.append(row.get("id"))
-                out("CAPTURED    %s (%s) -- the pass captured it this run" % (row.get("id"), basis))
+                # §3.8 (PARTIAL, named): the runner captured this in-pass, before this script saw
+                # the block, so quarantine cannot reach it. It is COUNTED and said, not prevented.
+                if r.get("quarantine_codes"):
+                    captured_degraded += 1
+                    out("CAPTURED    %s (%s) -- the pass captured it this run (DEGRADED QUERY: %s)"
+                        % (row.get("id"), basis, ", ".join(r["quarantine_codes"])))
+                else:
+                    out("CAPTURED    %s (%s) -- the pass captured it this run"
+                        % (row.get("id"), basis))
             else:
                 counts["known"] += 1
                 out("KNOWN       %s (%s, %s)" % (row.get("id"), basis,
                                                  "passed" if kind == "excluded" else "active"))
             continue
-        counts["carried"] += 1
         pending = _pending_by_ref(KIND_CAPTURE, canon, rows)
+        qcodes = r.get("quarantine_codes")
+        held = bool(pending and pending.get("quarantine"))
+        if qcodes and pending and not held:
+            # an earlier CLEAN sighting vouched for this item: a degraded one does not undo it
+            counts["carried"] += 1
+            out("CARRIED     %s (already pending %s, kept clean: a clean query vouched for it)"
+                % (canon, pending["id"]))
+            continue
+        if qcodes:
+            # dev #722 / public #156 -- every query that showed this role is DEGRADED: hold it.
+            counts["quarantined"] += 1
+            for code in qcodes:
+                quarantine_reasons[code] = quarantine_reasons.get(code, 0) + 1
+            qks = ",".join(str(k) for k in r["q"])
+            if held:
+                out("QUARANTINED %s (q=%s: %s) already held as %s"
+                    % (canon, qks, ", ".join(qcodes), pending["id"]))
+                continue
+            what = ("Capture role: %s at %s (%s), seen %s pass: %s"
+                    % (title, company, loc or "?", pass_label, canon))
+            item = _append_item(what, "seen in a pass; not yet captured", (), kind=KIND_CAPTURE,
+                                ref=canon, role=role_payload(r, run_date),
+                                quarantine={"run_id": run_id, "because": list(qcodes),
+                                            "queries": list(r["q"])})
+            rows.append(item)
+            out("QUARANTINED %s (q=%s: %s) queued %s" % (canon, qks, ", ".join(qcodes), item["id"]))
+            continue
+        counts["carried"] += 1
+        if held:
+            # a CLEAN sighting is new evidence: release exactly this role
+            _append_unquarantine(pending["id"], "clean sighting run=%s" % run_id)
+            pending["quarantine"] = None
+            out("RELEASED    %s (%s) -- a clean query showed it" % (canon, pending["id"]))
+            continue
         if pending:
             out("CARRIED     %s (already pending %s)" % (canon, pending["id"]))
             continue
@@ -1048,12 +1406,30 @@ def add_roles(text, run_id, surface, out=print, check=False):
             except _journal.JournalError as e:
                 out("⚠️ could not close the gap %s (%s)" % (g["scope"], e))
 
-    geos_ok, gaps_window, gaps_trunc = set(), 0, 0
+    geos_ok, gaps_window, gaps_trunc, gaps_filters = set(), 0, 0, 0
+    # dev #722 / public #156 (R4) -- the per-query READ counts. Every reached query is exactly one of
+    # clean (dropped=none, added=none, nothing degraded), unread (`?` on a filter slot, nothing
+    # degraded) or degraded; `total=?` over a page is counted APART (it can sit under any of the
+    # three). SHAPE, not enforced: these are counts of what the sweep SAID.
+    q_reached = q_clean = q_unread = q_total_unknown = q_degraded_queries = 0
+    q_degraded = {}
     for q in parsed["queries"]:
         scope = "jobsearch:query:%s:%s%s" % (surface, q["geo"],
                                               (":" + q["channel"]) if q.get("channel") else "")
         if q["status"] == "reached" and not q["window_gap"]:
             geos_ok.add(q["geo"])
+        if q["status"] == "reached":
+            q_reached += 1
+            if "total-unknown" in q["unread"]:
+                q_total_unknown += 1
+            if q["degraded"]:
+                q_degraded_queries += 1
+                for code in q["degraded"]:
+                    q_degraded[code] = q_degraded.get(code, 0) + 1
+            elif "filters-unread" in q["unread"]:
+                q_unread += 1
+            else:
+                q_clean += 1
         if q["window_gap"]:
             gaps_window += 1
             reason = q.get("reason") or "partial-results"
@@ -1063,9 +1439,29 @@ def add_roles(text, run_id, surface, out=print, check=False):
             _file_gap(run_id, scope, reason, "the next pass applies its window on this query", out)
         elif q["truncated"]:
             gaps_trunc += 1
-            out("QUERY TRUNCATED %s: shown %d of %d" % (scope, q["shown"], q["total"]))
+            out("QUERY TRUNCATED %s: shown %d of %s%s" % (scope, q["shown"], q["total"],
+                                                          "+" if q.get("total_lower_bound") else ""))
             _file_gap(run_id, scope, "partial-results",
                       "a narrower query shows every result", out)
+        if q["status"] == "reached" and (q["dropped"] or q["added"] or q["dropped_unread"]
+                                         or q["added_unread"]):
+            gaps_filters += 1
+            if q["dropped"] or q["added"]:
+                named = [x for x in (
+                    ("dropped=%s" % ",".join(q["dropped"])) if q["dropped"] else "",
+                    ("added=%s" % ",".join(q["added"])) if q["added"] else "") if x]
+                out("QUERY FILTERS %s: %s (its roles are quarantined unless a clean query also "
+                    "showed them)" % (scope, "; ".join(named)))
+            else:
+                out("QUERY FILTERS %s: filters unread (dropped/added = ?): a gap, never a "
+                    "quarantine" % scope)
+            _file_gap(run_id, scope, "partial-results",
+                      "the next pass applies the requested filters on this query", out)
+        if q["status"] == "reached" and "total-unknown" in q["unread"]:
+            out("QUERY TOTAL UNKNOWN %s: shown %d, total not read (counted; never a quarantine)"
+                % (scope, q["shown"]))
+            _file_gap(run_id, scope, "partial-results",
+                      "the next pass reads the result count on this query", out)
 
     # dev #707 / public #151 -- a line fault is a gap of its own; the roles above are already in
     kept = _keep_handback(text, run_id, surface, out) if faults else None
@@ -1094,7 +1490,8 @@ def add_roles(text, run_id, surface, out=print, check=False):
                 out("⚠️ could not close the gap %s (%s)" % (sc, e))
 
     listed = parsed["listed"]
-    ident = counts["captured"] + counts["known"] + counts["carried"] + counts["role_gaps"]
+    ident = (counts["captured"] + counts["known"] + counts["carried"] + counts["quarantined"]
+             + counts["role_gaps"])
     if ident != listed:                                    # cannot happen; asserted anyway
         out("⛔ the roles identity does not hold (%d != %d); nothing recorded" % (ident, listed))
         return ROLES_EXIT_REFUSED
@@ -1105,7 +1502,12 @@ def add_roles(text, run_id, surface, out=print, check=False):
                  queries=len(parsed["queries"]), geos_ok=sorted(geos_ok),
                  query_gaps_window=gaps_window, query_gaps_truncated=gaps_trunc,
                  distinct=listed, captured=counts["captured"], known=counts["known"],
-                 carried=counts["carried"], role_gaps=counts["role_gaps"])
+                 carried=counts["carried"], role_gaps=counts["role_gaps"],
+                 quarantined=counts["quarantined"], quarantine_reasons=quarantine_reasons,
+                 query_gaps_filters=gaps_filters, captured_degraded=captured_degraded,
+                 q_reached=q_reached, q_clean=q_clean, q_unread=q_unread,
+                 q_total_unknown=q_total_unknown, q_degraded=q_degraded,
+                 q_degraded_queries=q_degraded_queries)
     same = [e for e in _journal.roles_events(recs, run_id=run_id, surface=surface)
             if all(e.get(k) == v for k, v in event.items())]
     if same:
@@ -1116,9 +1518,18 @@ def add_roles(text, run_id, surface, out=print, check=False):
         except _journal.JournalError as e:
             out("⚠️ could not journal the roles event (%s)" % e)
     out("ROLES RECORDED run=%s surface=%s window=%s: %d seen = %d captured + %d known + %d carried "
-        "+ %d role gap(s) · %d query gap(s) (window) · %d truncated"
+        "+ %d role gap(s) + %d quarantined · %d query gap(s) (window) · %d truncated"
         % (run_id, surface, window, listed, counts["captured"], counts["known"],
-           counts["carried"], counts["role_gaps"], gaps_window, gaps_trunc))
+           counts["carried"], counts["role_gaps"], counts["quarantined"], gaps_window, gaps_trunc))
+    out("QUERY READS %d reached: %d clean · %d filters unread · %d degraded%s · %d total unknown"
+        % (q_reached, q_clean, q_unread, q_degraded_queries,
+           (" (%s)" % ", ".join("%s x%d" % (c, n) for c, n in sorted(q_degraded.items())))
+           if q_degraded else "", q_total_unknown))
+    if counts["quarantined"]:
+        out("HELD %d role(s) (quarantined) from degraded queries: %s -- not captured until a clean "
+            "pass sees them, or deferred.py --unquarantine <id>"
+            % (counts["quarantined"], " · ".join("%s x%d" % (c, n) for c, n
+                                                   in sorted(quarantine_reasons.items()))))
     for oid in screen_ids:
         out("SCREEN      ~/.claude/jobsearch/run profile.py --minimal-screen %s" % oid)
     if faults:
@@ -1132,17 +1543,57 @@ def add_roles(text, run_id, surface, out=print, check=False):
     return ROLES_EXIT_OK
 
 
-def settle(out=print):
+CANNOT_READ_REQUIREMENT = {
+    "requirement": "Read the job description", "verdict": "unknown", "evidence": None,
+    "pitch_line": None,
+    "question_for_candidate": ("No surface that ran could read this JD: read it yourself before "
+                               "deciding."),
+    "question_status": "open", "answered_on": None, "landed_in": None, "act_by": None}
+
+
+def _write_cannot_read(opp, now, already_locked, out):
+    """dev #723 -- record `fit.jd_source = "unavailable: surface-cannot-read"` on `opp` THROUGH
+    `record.py set` (one writer of `opportunities.jsonl`: the lock, the validator, the rollback and
+    the surface-cannot-read gate all apply; this script never opens the store for writing). The rest of
+    `fit` is kept and `analyzed_on` is set; a role that never had a `fit` gets one open question
+    (the validator wants a non-empty `requirements`), so the candidate sees why it is unread. A
+    subprocess on this interpreter: `record.py` exposes no in-process dispatch. True when it wrote."""
+    import subprocess
+    fit = dict(opp.get("fit") or {})
+    fit["jd_source"] = SURFACE_CANNOT_READ
+    fit["analyzed_on"] = now.date().isoformat()
+    if not fit.get("requirements"):
+        fit["requirements"] = [dict(CANNOT_READ_REQUIREMENT)]
+    cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "record.py"),
+           "set", str(opp.get("id")), "fit", json.dumps(fit)]
+    if already_locked:
+        cmd.append("--already-locked")
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        out("⚠️ could not record surface-cannot-read on %s (record.py exit %d): %s"
+            % (opp.get("id"), r.returncode, " ".join((r.stdout + r.stderr).split())[-300:]))
+        return False
+    return True
+
+
+def settle(out=print, now=None, already_locked=False):
     """dev #692 / public #140 -- close the script-built items the stores already show done, so
     a carried role that has been captured stops being listed as owed. Returns the closed ids.
 
     * a `capture-role` item whose `ref` is the canonical URL of any `jd_url` or
       `sightings[].source_url` in `opportunities` (canonical on both sides, N6: a tracking-
       parameter variant of the URL still closes it);
-    * a `research-role` item whose opportunity has a non-empty `research_log`.
+    * a `research-role` item whose opportunity has a non-empty `research_log`;
+    * a `read-jd` item (dev #723) whose opportunity no longer lists `jd-read` in
+      `your_move.triage_missing`: someone read it. One that is STILL unread and has waited MORE THAN
+      `search.triage_stuck_days` days (`jd_read_waited_past_bound`) is the case no worker with a browser
+      came for: it records `fit.jd_source = "unavailable: surface-cannot-read"` through `record.py`
+      (`_write_cannot_read`; `already_locked` is passed through, for a call inside a run's write
+      phase) and then closes. Before the bound it does nothing.
 
     A per-role gap closes in `add_roles` itself, the moment a later block resolves the role."""
     from pipeline_index import canonical_job_url
+    import your_move as _ym
     opps = _load_store("opportunities.jsonl")
     by_id = {o.get("id"): o for o in opps}
     urls = set()
@@ -1151,7 +1602,7 @@ def settle(out=print):
             c = canonical_job_url(u) if u else None
             if c:
                 urls.add(c)
-    now = datetime.datetime.now()
+    now = now or datetime.datetime.now()
     closed = []
     for r in replay(load()):
         if r.get("status") != "pending":
@@ -1161,6 +1612,15 @@ def settle(out=print):
             done = (canonical_job_url(r["ref"]) or r["ref"]) in urls
         elif r.get("kind") == KIND_RESEARCH and r.get("ref"):
             done = bool((by_id.get(r["ref"]) or {}).get("research_log"))
+        elif r.get("kind") == KIND_JD_READ and r.get("ref"):
+            opp = by_id.get(r["ref"])
+            if opp is not None and "jd-read" not in _ym.triage_missing(opp):
+                done = True
+            elif opp is not None and jd_read_waited_past_bound(r, _ym.triage_stuck_days(), now):
+                done = _write_cannot_read(opp, now, already_locked, out)
+                if done:
+                    out("CANNOT READ %s: no worker with a browser read it within %d days; recorded "
+                        "%s" % (r["ref"], _ym.triage_stuck_days(), SURFACE_CANNOT_READ))
         if done:
             with open(QUEUE, "a", encoding="utf-8") as fh:
                 fh.write(json.dumps({"id": r["id"], "kind": "_done",
@@ -1243,6 +1703,10 @@ def main():
     ap.add_argument("--add-draft", dest="add_draft", metavar="OPP_ID",
                     help="The draft twin of --add-research: requires `drafting`. The item asks "
                          "for a DRAFT; a send is never queued.")
+    ap.add_argument("--add-jd-read", dest="add_jd_read", metavar="OPP_ID",
+                    help="Queue the JD read this surface could not do (dev #723): fixed text, "
+                         "requires `chrome`, idempotent while one is pending, nothing queued for a "
+                         "role already read. With --run, the item is never served to that run.")
     ap.add_argument("--add-roles", dest="add_roles", metavar="FILE",
                     help="The gate on a pass report (dev #692 / public #140): FILE is the pass's "
                          "hand-back holding a `ROLES v1` block; needs --run and --surface. Every "
@@ -1266,7 +1730,13 @@ def main():
     ap.add_argument("--settle", action="store_true",
                     help="Close the script-built items the stores already show done: a "
                          "capture-role item whose URL now has an opportunity, a research-role "
-                         "item whose opportunity has a research_log (dev #692).")
+                         "item whose opportunity has a research_log (dev #692), a read-jd item "
+                         "whose role was read; one still unread past search.triage_stuck_days "
+                         "records surface-cannot-read through record.py first (dev #723).")
+    ap.add_argument("--already-locked", dest="already_locked", action="store_true",
+                    help="With --settle: the calling run already holds the run lock, so the "
+                         "record.py write that records surface-cannot-read passes "
+                         "--already-locked (dev #723).")
     ap.add_argument("--attended", action="store_true",
                     help="This run was started with the EXPLICIT attended form (owner decision "
                          "R2): claims may use the research/drafting tokens regardless of the "
@@ -1275,11 +1745,19 @@ def main():
     ap.add_argument("--run", metavar="ID", default=None,
                     help="With --add: the run this call belongs to. A REFUSED add then leaves a "
                          "`deferred:refused` gap in the run's journal, so a refused carry-forward "
-                         "is never lost silently (dev #692).")
+                         "is never lost silently (dev #692). With --add-jd-read: the run that "
+                         "queued the item. With --claimable / --claim: this run's id, so an item "
+                         "THIS run queued (a read-jd item it could not finish) is not served back "
+                         "to it (dev #723).")
     ap.add_argument("--why", metavar="WHY", default="")
     ap.add_argument("--requires", metavar="CAPS", default="",
                     help="Comma-separated capabilities this work NEEDS (e.g. chrome,keychain). "
                          "Routing depends on it: a worker claims only what it can finish.")
+    ap.add_argument("--unquarantine", metavar="ID",
+                    help="Release one QUARANTINED capture-role item (dev #722 / public #156): a "
+                         "role every query of which reported a degradation is held and never "
+                         "served by --claimable or --claim. A later CLEAN sighting releases it "
+                         "on its own; this is the owner's release. Append-only.")
     ap.add_argument("--claimable", action="store_true",
                     help="Show only what THIS worker can actually execute.")
     ap.add_argument("--claim", metavar="ID", help="Lease an item for this worker.")
@@ -1319,7 +1797,35 @@ def main():
         return add_roles(text, args.run, args.surface, check=args.check)
 
     if args.settle:
-        settle()
+        settle(already_locked=args.already_locked)
+        return 0
+
+    if args.add_jd_read:
+        try:
+            rec, added = queue_jd_read(args.add_jd_read, args.run, rows)
+        except DeferredRefused as e:
+            print("⛔ %s" % e)
+            return 2
+        if rec is None:
+            print("= nothing queued: %s already has its JD read recorded" % args.add_jd_read)
+        elif added:
+            print("Queued %s [requires: %s]:\n  %s"
+                  % (rec["id"], ", ".join(rec["requires"]), rec["what"]))
+        else:
+            print("= already pending %s (queued %s) -- adding again writes no second row"
+                  % (rec["id"], rec.get("queued_at")))
+        return 0
+
+    if args.unquarantine:
+        cur = {r["id"]: r for r in rows}.get(args.unquarantine)
+        if not cur:
+            print("No such item: %s" % args.unquarantine)
+            return 1
+        if not cur.get("quarantine"):
+            print("= %s is not quarantined; nothing to release" % args.unquarantine)
+            return 0
+        _append_unquarantine(args.unquarantine, "owner", now)
+        print("Released %s from quarantine (owner)" % args.unquarantine)
         return 0
 
     if args.add_research or args.add_draft:
@@ -1377,6 +1883,18 @@ def main():
                 print("⛔ %s is the owed LinkedIn pass -- it is never claimed. daily-run's pass "
                       "satisfies it and `linkedin_sweep.py record` closes it." % rid)
                 return 1
+            if args.run and cur.get("queued_run") == args.run:
+                print("⛔ %s was queued by this run (%s): the run that could not do it does not "
+                      "claim it back. Leave it for a later run on a surface that can."
+                      % (rid, args.run))
+                return 1
+            if cur.get("quarantine"):
+                qn = cur["quarantine"]
+                print("⛔ QUARANTINED (%s) from run %s: %s was seen only through degraded queries, "
+                      "so it is not served. A clean pass that sees it releases it, or "
+                      "`deferred.py --unquarantine %s`."
+                      % (", ".join(qn.get("because") or []), qn.get("run_id"), rid, rid))
+                return 1
             if not can_run(cur, caps):
                 need = ", ".join(cur.get("requires") or [])
                 if held_by_posture(cur, caps):
@@ -1432,7 +1950,13 @@ def main():
     # appended for it on every listing while the pane is stalled would grow the raw queue
     # without a pass having failed again.
     owed_ids = {r["id"] for r in pending_linkedin_passes(rows)}
-    claim_pool = [r for r in pending if r["id"] not in owed_ids]
+    # dev #722 / public #156 -- a QUARANTINED item (a role seen only through degraded queries) is
+    # served to no worker: it leaves the pool here, before capability and pane checks, and is
+    # listed apart so a held role is visible rather than missing.
+    quarantined = [r for r in pending if r.get("quarantine") and r["id"] not in owed_ids]
+    # dev #723 -- an item THIS run queued (`--run <id>`) is not served back to it either.
+    claim_pool = [r for r in pending if r["id"] not in owed_ids and not r.get("quarantine")
+                  and not (args.run and r.get("queued_run") == args.run)]
     withheld_now = {}
     for r in claim_pool:
         if "chrome" in (r.get("requires") or []) and can_run(r, caps):
@@ -1444,7 +1968,8 @@ def main():
     if args.claimable and withheld_now:
         rows = replay(load())
         pending = [r for r in rows if r.get("status") == "pending"]
-        claim_pool = [r for r in pending if r["id"] not in owed_ids]
+        claim_pool = [r for r in pending if r["id"] not in owed_ids and not r.get("quarantine")
+                      and not (args.run and r.get("queued_run") == args.run)]
 
     def _is_withheld(r):
         return r["id"] in withheld_now
@@ -1466,6 +1991,17 @@ def main():
           "%d need another environment · %d done"
           % (len(pending), len(mine), len(withheld), len(held), len(blocked),
              len(rows) - len(pending)))
+    if quarantined:
+        by_code = {}
+        for r in quarantined:
+            for code in (r["quarantine"].get("because") or []):
+                by_code[code] = by_code.get(code, 0) + 1
+        print("\n  ⏸ QUARANTINED -- %d item(s) seen only through degraded queries, served to no "
+              "worker (%s). A clean pass that sees the role releases it, or "
+              "`deferred.py --unquarantine <id>`."
+              % (len(quarantined), " · ".join("%s x%d" % (c, n) for c, n in sorted(by_code.items()))))
+        for r in quarantined:
+            print("     %-52s %s" % ((r.get("what") or "")[:52], r["id"]))
     if held:
         needs = sorted({t for r in held for t in _missing(r, caps)})
         print("\n  ⏸ HELD BY POSTURE (%s): %s -- %d item(s). Not failed: they drain on the first "
@@ -1505,6 +2041,9 @@ def main():
         # an item this same run just counted as claimable, once the pane has recovered.
         if r["id"] in withheld_now:
             print("      WITHHELD: %s" % withheld_now[r["id"]])
+        if r.get("quarantine"):
+            print("      QUARANTINED: %s (run %s) -- not served" % (
+                ", ".join(r["quarantine"].get("because") or []), r["quarantine"].get("run_id")))
         if claim_is_live(r, now):
             print("      CLAIMED by %s at %s" % (r.get("claimed_by"), r.get("claimed_at")))
         print("      queued %s · id %s" % (r.get("queued_at"), r.get("id")))

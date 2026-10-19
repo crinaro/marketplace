@@ -31,7 +31,8 @@
     "listed_pay",
     "posted",
     "screen",
-    "lean"
+    "lean",
+    "passed_from"
    ],
    "required": [
     "id",

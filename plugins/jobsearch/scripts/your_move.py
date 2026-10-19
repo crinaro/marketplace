@@ -1258,7 +1258,27 @@ def _recorded_lean(opp):
     return None
 
 
-def triage_missing(opp):
+_TITLE_PROFILE_CACHE = {"key": None, "profile": None}
+
+
+def _title_profile():
+    """The merged profile `profile.title_keys` hashes (config + user, as `profile.load()`), cached on
+    the two files' size and mtime so a dashboard render that asks per role reads them once. None
+    when it cannot be read: an unreadable profile must never make every stored screen look stale."""
+    try:
+        key = tuple((st.st_mtime_ns, st.st_size) for st in
+                    (os.stat(_profile.CONFIG_PATH), os.stat(_profile.USER_PATH)))
+    except OSError:
+        return None
+    if _TITLE_PROFILE_CACHE["key"] != key:
+        try:
+            _TITLE_PROFILE_CACHE.update(key=key, profile=_profile.load())
+        except (OSError, ValueError):
+            return None
+    return _TITLE_PROFILE_CACHE["profile"]
+
+
+def triage_missing(opp, title_profile=None):
     """[token, ...] naming each thing this role still lacks before it is the candidate's
     decision — the ONE definition of the triage gate (dev #713 / public #145, design §7.1).
     Empty means triaged. Tokens are `TRIAGE_FIELDS`, in that order.
@@ -1267,12 +1287,18 @@ def triage_missing(opp):
                           failed (`unavailable: <reason>`, R3)
       pay-as-written      `listed_pay` (even `none-shown`), or the candidate's own `comp.max`
       setting-as-written  `location.declared`, the posting's verbatim text (`none stated` counts)
-      screen              the stored hard-screen result (`screen.verdict`)
+      screen              the stored hard-screen result (`screen.verdict`), computed under TODAY'S
+                          title keys (dev #722 / public #156, R2: a stored screen whose
+                          `title_keys` is not today's hash, or has none once a
+                          `screen.title_floor` is set, is re-screened -- once, through this path)
       lean                a well-formed `lean`; WAIVED when the read is unavailable, because the
                           lean then defaults to `ask` (`decide_lean`)
 
-    A stale screen is not re-derived here: staleness needs an edit timestamp the store does
-    not carry, and a second derivation is how Decide and needs-you drifted apart."""
+    A stale screen is otherwise not re-derived here: staleness needs an edit timestamp the store
+    does not carry, and a second derivation is how Decide and needs-you drifted apart. The one
+    staleness this DOES read is the title keys' (`profile.screen_is_title_stale`), because it is a
+    hash the screen stored about itself, not an edit time. `title_profile` is the merged profile to
+    hash against (default: the one on disk)."""
     missing = []
     reason = jd_unavailable_reason(opp)
     fit = opp.get("fit") if isinstance(opp.get("fit"), dict) else {}
@@ -1292,6 +1318,10 @@ def triage_missing(opp):
     scr = opp.get("screen")
     if not (isinstance(scr, dict) and scr.get("verdict")):
         missing.append("screen")
+    else:
+        tp = title_profile if title_profile is not None else _title_profile()
+        if tp is not None and _profile.screen_is_title_stale(scr, tp):
+            missing.append("screen")
     if not (_recorded_lean(opp) or reason):
         missing.append("lean")
     return missing

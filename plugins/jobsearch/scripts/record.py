@@ -586,11 +586,63 @@ def introduced_row_violations(store, before_row, after_row):
     changed in some other field keeps the same message and is therefore not "introduced", so an
     unrelated edit to an old row is accepted. Messages are label-free, so they compare equal."""
     vd = _validator_module()
+    gate = _cannot_read_violations(store, before_row, after_row)
     after = vd.row_rule_violations(store, after_row)
     if not after:
-        return []
+        return gate
     before = set(vd.row_rule_violations(store, before_row)) if before_row is not None else set()
-    return [m for m in after if m not in before]
+    return gate + [m for m in after if m not in before]
+
+
+SURFACE_CANNOT_READ = "unavailable: surface-cannot-read"
+
+
+def _cannot_read_violations(store, before_row, after_row):
+    """dev #723 (jobsearch 0.69.0, design R5) -- `fit.jd_source = "unavailable: surface-cannot-read"`
+    is refused unless a `read-jd` item for this role, pending or done, has waited MORE THAN
+    `search.triage_stuck_days` days. It lives HERE because `introduced_row_violations` is the one
+    row-level choke point every write op (`set`, `set-in`, `create`, `append`) and `--dry-run`
+    already passes through, so no op can bypass it. 'Surface cannot read' is a claim about every
+    surface, and one run on one surface cannot make it: it is the outcome of an item that waited for a
+    browser-holding worker and none came (`deferred.py --settle` writes it, through this script).
+
+    The queue is read through `deferred.py`'s own reader (`load` / `replay`, pointed at THIS store's
+    data directory). A queue that cannot be read is NOT treated as an empty one: the write is refused
+    with `NOT CHECKED: deferred store unreadable`, never silently allowed.
+
+    WHEN IT FIRES: the row after the write carries the value AND this write touched its `fit`
+    (a new row, a `set fit`, a `set-in` on `fit.requirements`, and an `append` to it, which writes
+    the dotted key `fit.requirements` itself -- a quirk this does not fix, and that counts as
+    touching fit). A write that leaves every `fit*` key alone is not this rule's business, so a role
+    a 0.68.0 run marked by hand (the skill then allowed it after the bound) is never locked out of
+    `decide` or any other edit; only an edit of its `fit` is held to the bound."""
+    if store != "opportunities" or not isinstance(after_row, dict):
+        return []
+    fit = after_row.get("fit")
+    if not (isinstance(fit, dict) and fit.get("jd_source") == SURFACE_CANNOT_READ):
+        return []
+    if isinstance(before_row, dict):
+        keys = {k for k in set(before_row) | set(after_row) if k == "fit" or k.startswith("fit.")}
+        if all(before_row.get(k) == after_row.get(k) for k in keys):
+            return []                               # this write did not touch fit
+    oid = after_row.get("id")
+    try:
+        import deferred as _deferred
+        import your_move as _ym
+        items = [r for r in _deferred.replay(
+                    _deferred.load(os.path.join(DATA, "pending_actions.jsonl")))
+                 if r.get("kind") == _deferred.KIND_JD_READ and r.get("ref") == oid]
+        bound = _ym.triage_stuck_days()
+    except (OSError, ValueError) as e:
+        return ["NOT CHECKED: deferred store unreadable (%s), so fit.jd_source %r cannot be "
+                "allowed" % (e, SURFACE_CANNOT_READ)]
+    if any(_deferred.jd_read_waited_past_bound(i, bound) for i in items):
+        return []
+    return ["fit.jd_source %r needs a `read-jd` item for this role that has waited more than "
+            "search.triage_stuck_days (%d) days, and %s: queue one with `deferred.py --add-jd-read "
+            "%s --run <run id>`; `deferred.py --settle` records this once the bound has passed"
+            % (SURFACE_CANNOT_READ, bound,
+               ("the oldest has not waited that long" if items else "there is none"), oid)]
 
 
 def dry_run_validate(store, rows):
@@ -2015,7 +2067,9 @@ def _sourcing_mutation(args, rec):
         raise _Usage("usage: %s <opp_id> %s" % (op, {
             "screened": "[--on D]",
             "lean": "--lean pursue|pass|ask --line \"<one line>\" [--jd-file PATH] [--on D]  "
-                    "(--lean may be omitted on an age-flagged recruiter role: ask)",
+                    "(--lean may be omitted on an age-flagged recruiter role: ask, and on a "
+                    "role whose title is below screen.title_floor: pursue when pay clears, "
+                    "otherwise ask)",
             "listed-pay": "--none-shown | --stated R[;R] | --estimate R[;R] [--pay-source S] "
                           "[--on D]",
             "posted": "--document-date D | --shown-age N | --ats-date D | --board-date D | "
@@ -2032,7 +2086,21 @@ def _sourcing_mutation(args, rec):
                                       applications=_load_or_empty("applications"),
                                       channels=_load_or_empty("channels"), today=on)
             r["screen"] = {"on": on_iso, "verdict": result["verdict"],
-                           "rules": dict(result["rules"]), "engine": engine}
+                           "rules": dict(result["rules"]), "engine": engine,
+                           "title_keys": _pf.title_keys(profile)}
+            # dev #722 / public #156 (R1, R2): a re-screen that finds the title BELOW the floor
+            # attaches the computed lean hit to a lean the run already recorded -- the hit only,
+            # never the choice (an explicit lean wins) -- and drops a title-floor hit the
+            # screen no longer supports. A role with no lean yet gets it from `lean`.
+            ln = r.get("lean")
+            if isinstance(ln, dict):
+                kept = [h for h in (ln.get("signals") or [])
+                        if not (isinstance(h, dict) and h.get("id") == _pf.TITLE_FLOOR_LEAN_ID)]
+                tf = _pf.title_floor_lean(r["screen"], profile)
+                if tf:
+                    kept.append(tf[2])
+                if kept != (ln.get("signals") or []):
+                    ln["signals"] = kept
         return "screened (the minimal screen, re-run and stored; on %s)" % on_iso, apply
 
     if op == "lean":
@@ -2041,12 +2109,25 @@ def _sourcing_mutation(args, rec):
         # role of unknown age) defaults to `ask` with the age line's first move as its line. A
         # DEFAULT is what `--lean` omitted means -- an explicit `--lean` is the run's own reading of
         # the JD and is stored as given. Read from the STORED screen (`screened` runs first).
+        # ⭐ dev #722 / public #156 (owner decision R1): a BELOW-FLOOR title never removes; the lean
+        # it implies is COMPUTED from the stored screen's comp verdict (`profile.title_floor_lean`),
+        # stored as a hit beside the signal hits, and is the DEFAULT when `--lean` is omitted. An
+        # explicit `--lean` still wins (the 0.67.0 rule). The age flag, when both apply, defaults first.
+        try:
+            title_lean = _pf.title_floor_lean(rec.get("screen"), _pf.load())
+        except (OSError, ValueError) as e:
+            raise _Refused("the profile cannot be read, so the title floor's lean cannot be "
+                           "computed: %s" % e)
         if lean_choice is None:
             first_move = _pf.age_flag_first_move(rec.get("screen"))
             if first_move:
                 lean_choice = "ask"
                 if line is None or not line.strip():
                     line = "FIRST MOVE: %s" % first_move
+            elif title_lean:
+                lean_choice = title_lean[0]
+                if line is None or not line.strip():
+                    line = title_lean[1]
         if lean_choice not in LEAN_VALUES:
             raise _Refused("--lean must be one of %s" % ", ".join(LEAN_VALUES))
         args.lean_choice, args.line_text = lean_choice, line
@@ -2077,6 +2158,8 @@ def _sourcing_mutation(args, rec):
             hits = _pf.match_signals(rec, company, jd_text, signals or [])
         except ValueError as e:
             raise _Refused(str(e))
+        if title_lean:
+            hits = hits + [title_lean[2]]
         lean_obj = {"lean": args.lean_choice, "line": line.strip(), "on": on_iso, "signals": hits}
 
         def apply(r):
@@ -2819,6 +2902,20 @@ def main():
         def apply(r):
             r["verdict"] = new_verdict
             r["decision"] = decision_obj
+            # ⭐ dev #722 / public #156 (jobsearch 0.69.0, §5): a decided pass on a BACKLOG role is
+            # terminal in the SAME write -- `status: passed`, `stage: closed` (the validator
+            # requires passed at closed), the way back kept in `passed_from` so a later
+            # `decide pursue|park` restores it. Before this, `verdict: pass` left the row
+            # `status: backlog`: excluded but not terminal, so the rest of the engine still saw a
+            # live backlog role. A pass on any other status (a live pursuit) is unchanged and out of
+            # scope; a `passed` row with no `passed_from` (passed some other way) is not guessed at.
+            if new_verdict == "pass" and r.get("status") == "backlog":
+                r["passed_from"] = {"status": "backlog", "stage": r.get("stage")}
+                r["status"], r["stage"] = "passed", "closed"
+            elif (new_verdict in ("pursue", "parked") and r.get("status") == "passed"
+                    and isinstance(r.get("passed_from"), dict)):
+                back = r.pop("passed_from")
+                r["status"], r["stage"] = back.get("status"), back.get("stage")
 
     elif args.op == "application-status":
         # §3c — `status` + `status_on` in ONE transaction. `closed` presupposes a submission

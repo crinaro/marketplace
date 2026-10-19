@@ -25,10 +25,30 @@ recorded it confirmed, "not open to relocation" carried into a decline while
              key, so a reader can check it, not recalled from an earlier conversation.
 
 WHAT IT SCANS (declared and printed, never inferred): the profile's `strategy.md`, `handoff.md`,
-`drafts.md`, and every OPEN ask. Deliberately NOT scanned: `log.md` and `archive/` (history is
-stale by nature), `claims.md`/`projects.md` (the candidate's proof points). A figure-or-open-
-question comparison (1, 2) runs on every scanned document; the scope comparison (3) runs only on
-open asks and `drafts.md`, because that is what #493 reports.
+`drafts.md`, `CLAUDE.md` (the INSTALLED rulebook: `install_rulebook.py` copies the engine's
+`RULEBOOK.md` there, and a session reads it as fact at start-up; dev #706 / public #152), and every
+OPEN ask. Deliberately NOT scanned: `log.md` and `archive/` (history is stale by nature),
+`claims.md`/`projects.md` (the candidate's proof points). A figure-or-open-question comparison
+(1, 2) runs on every scanned document; the scope comparison (3) runs only on open asks and
+`drafts.md`, because that is what #493 reports. The printed `scope:` line names every document
+the scan covers, present or not, so a missing `CLAUDE.md` reads as missing, not as clean.
+Comparison 2 reads one LINE at a time, so an open-question sentence wrapped across two lines is
+not seen in a document; the engine-side check below reads across a wrap.
+
+⭐ THE ENGINE-SIDE CHECK (dev #706 / public #152): `--engine-rulebook`. The scan above reads a
+PROFILE's copy; this reads the engine's own `RULEBOOK.md` (the template every profile's CLAUDE.md
+is copied from) and FAILS, exit 1, when a line asserts a VALUE for a config key. A rulebook is
+shipped to every profile, so a value it states ("the relocation tier's `basis_confirmed` is still
+`false`") is true for nobody in particular and read as current by everybody, and goes stale the
+moment one profile changes. The key set is every key `config_keys.py` registers (`READER_KEYS`)
+plus the keys this file already compares (`SCOPE_PREMISES`' `geography.*` keys and
+`compensation.tiers[].basis_confirmed`). ⚠️ `basis_confirmed` is NOT a `config_keys.py` key (that
+registry describes the scalar adjustable surface; `compensation.tiers` is absent from it on
+purpose), so the registry alone would have passed the very line #706 reported. The rulebook may
+NAME a key, or the command that prints it; it may not state what the key holds. This mode is the
+one exception to "exit 0 always" below: it checks the repo, not a user's profile, so there is no
+unattended run to wedge. It prints how many lines and keys it covered, and an unreadable
+rulebook is `NOT CHECKED` with exit 1.
 
 ⭐ A CLEAN RESULT IS NEVER EMPTY. The last line always reads `checked N documents, M figures; ...`.
 A scan that found no documents, or no config to compare against, prints `NOT CHECKED: <why>` —
@@ -44,6 +64,8 @@ a contradiction (a default is not a recorded value); it is simply not compared.
 Usage:
     check_prose_drift.py                 # the profile, or the synthetic fixture when there is none
     check_prose_drift.py --root PATH     # an explicit profile root (a test's temp profile)
+    check_prose_drift.py --engine-rulebook [PATH]
+                                         # ENGINE check: exit 1 if RULEBOOK.md states a config value
 
 Python 3.9+. Standard library only.
 """
@@ -125,6 +147,101 @@ SCOPE_PREMISES = (
      re.compile(_NEG + r"\bopen to (?:EU|Europe\w*)\b", re.I),
      {"geography.eu_ok": True}),
 )
+
+
+# dev #706 / public #152: the profile's copy of the engine's RULEBOOK.md. It stays at the profile
+# root (`_tree.py` lists CLAUDE.md among the root anchors), so no layout lookup is needed.
+INSTALLED_RULEBOOK = "CLAUDE.md"
+# What `scan()` covers, printed as a declaration rather than read back from whatever existed.
+SCAN_SCOPE = ("strategy.md", "handoff.md", "drafts.md",
+              "CLAUDE.md (the installed rulebook)", "open asks")
+
+# ── the engine-side check: a shipped rulebook states no config value (dev #706) ─────────────
+ENGINE_RULEBOOK = os.path.join(os.path.dirname(HERE), "RULEBOOK.md")
+# The one key the drift check compares that `config_keys.py` does not register: it lives in
+# `compensation.tiers[]`, a table, not a scalar. Spelled once here, by its full path and its leaf.
+_TIER_BASIS_KEY = "compensation.tiers[].basis_confirmed"
+
+_SP = r"(?:[ \t]+|[ \t]*\n[ \t]*)"          # a space, or ONE line wrap (never a blank line)
+_COPULA = r"(?:is|are|was|were|equals?|reads?|set to|now|currently|still)"
+_CONNECT = (r"(?:[ \t]*(?:==|=|:)[ \t]*|" + _SP + _COPULA + r"(?:" + _SP + _COPULA + r")*" + _SP
+            + r")")
+# A literal value: a boolean/null, a number, or a quoted string. A bare word is not one, so
+# "`ats.close` is one of ..." and "`remote_ok` is a boolean" name the key without asserting.
+_VALUE = (r"(?:`?(?:true|false|null|none)`?(?![\w])|`?-?\d[\d,]*(?:\.\d+)?`?(?![\w])"
+          r"|\"[^\"\n]+\"|`[^`\n]+`)")
+
+
+def asserted_keys():
+    """{token: key} for every config key a rulebook line must not state a value for: each key
+    `config_keys.py` registers, the `geography.*` keys `SCOPE_PREMISES` compares, and the tier
+    `basis_confirmed` field. A token is the dotted path, plus the leaf when it is an identifier
+    (it holds an underscore) so `remote_ok` and `basis_confirmed` are caught without their prefix."""
+    keys = set(_ck.READER_KEYS)
+    for _name, _rx, asserts in SCOPE_PREMISES:
+        keys.update(asserts)
+    keys.add(_TIER_BASIS_KEY)
+    tokens = {}
+    for k in sorted(keys):
+        tokens[k] = k
+        leaf = k.split(".")[-1]
+        if "_" in leaf:
+            tokens.setdefault(leaf, k)
+    return tokens
+
+
+class RulebookAssertion(object):
+    """One rulebook line that states what a config key holds: line, key, the offending text."""
+
+    def __init__(self, line, key, text):
+        self.line, self.key, self.text = line, key, text
+
+    def render(self, doc="RULEBOOK.md"):
+        return ("%s:%d: [rulebook-asserts-value] `%s` -- the rulebook ships to every profile and "
+                "must name the key, not state its value: %r" % (doc, self.line, self.key,
+                                                                " ".join(self.text.split())))
+
+
+def rulebook_assertions(text):
+    """Every place `text` states a VALUE for a config key (see `asserted_keys`). Reads across a
+    single line wrap, because the sentence #706 reported was wrapped between `is` and `still false`.
+    Returns [RulebookAssertion]. Never reads a file or a profile."""
+    tokens = asserted_keys()
+    alt = "|".join(re.escape(t) for t in sorted(tokens, key=len, reverse=True))
+    rx = re.compile(r"(?<![\w.])(?P<tok>%s)(?![\w])[`\"']?%s(?P<val>%s)" % (alt, _CONNECT, _VALUE),
+                    re.I)
+    out = []
+    for m in rx.finditer(text):
+        out.append(RulebookAssertion(text.count("\n", 0, m.start()) + 1,
+                                     tokens.get(m.group("tok"), m.group("tok")), m.group(0)))
+    return out
+
+
+def check_engine_rulebook(path=None):
+    """(assertions, lines, n_keys, not_checked) for the engine's rulebook at `path`."""
+    path = path or ENGINE_RULEBOOK
+    try:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+    except OSError as exc:
+        return [], 0, 0, "%s unreadable (%s)" % (path, exc)
+    tokens = asserted_keys()
+    if not text.strip():
+        return [], 0, len(set(tokens.values())), "%s is empty" % path
+    return rulebook_assertions(text), text.count("\n") + 1, len(set(tokens.values())), None
+
+
+def _engine_main(path):
+    found, lines, n_keys, not_checked = check_engine_rulebook(path)
+    print("ENGINE RULEBOOK vs CONFIG KEYS (fails on a stated config value)")
+    if not_checked:
+        print("  NOT CHECKED: %s" % not_checked)
+        return 1
+    print("  scanned: %s, %d lines, against %d config keys" % (path or ENGINE_RULEBOOK, lines, n_keys))
+    for a in found:
+        print("  %s" % a.render())
+    print("  %d assertion(s)" % len(found))
+    return 1 if found else 0
 
 
 class Finding(object):
@@ -299,7 +416,8 @@ def scan(root):
 
     files = (("strategy", _tree.path(root, "strategy"), False),
              ("handoff.md", os.path.join(root, "handoff.md"), False),
-             ("drafts", _tree.path(root, "drafts"), True))
+             ("drafts", _tree.path(root, "drafts"), True),
+             (INSTALLED_RULEBOOK, os.path.join(root, INSTALLED_RULEBOOK), False))
     for label, path, scope in files:
         lines = _read_lines(path)
         name = os.path.relpath(path, root) if lines is not None else label
@@ -345,7 +463,12 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--root", help="an explicit profile root (default: the profile, or the "
                                    "synthetic fixture when there is none)")
+    ap.add_argument("--engine-rulebook", nargs="?", const="", metavar="PATH",
+                    help="the ENGINE check (dev #706): read the shipped RULEBOOK.md (or PATH) and "
+                         "exit 1 if a line states the value of a config key. Reads no profile.")
     args = ap.parse_args(argv)
+    if args.engine_rulebook is not None:
+        return _engine_main(args.engine_rulebook or None)
     try:
         root = args.root or _pof()
         findings, counts, scanned, not_checked = scan(root)
@@ -354,6 +477,7 @@ def main(argv=None):
               % (type(exc).__name__, exc))
         return 0
     print("PROSE vs CONFIG DRIFT (advisory, report only; nothing is edited)")
+    print("  scope:   %s" % ", ".join(SCAN_SCOPE))
     print("  scanned: %s" % (", ".join(scanned) if scanned else "nothing"))
     for why in not_checked:
         print("  NOT CHECKED: %s" % why)

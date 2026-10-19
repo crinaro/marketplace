@@ -62,6 +62,14 @@ uses for the identical reason (CI has neither `gh` nor network), and for the sam
 wired into CI. A `covered_by` naming a CLOSED or nonexistent issue is reported, loud, as stale
 coverage — the same "cannot quietly outlive its defect" property `KNOWN_EXCEPTIONS` already has.
 
+⭐ dev #711 / public #147 — A CITATION IS CHECKED WHEN WRITTEN AND RE-CHECKED WHEN READ. `--gap
+--covered-by` now requires `--covered-reason` (why the cited issue covers THIS gap's scope), stored
+beside the citation, and echoes the cited issue's title and state, or says NOT VERIFIED when `gh`
+cannot answer. `--check-coverage` keeps its verdicts (open / closed / missing, with the date) in
+`.jobsearch/coverage_check.json`; the routine, offline `--check` reads that file, DEGRADES a gap
+whose citation was last known closed or missing to open (with the reason), and counts a citation
+never checked, or a gap written before the reason existed, as "unverified" in the count line.
+
 **#72 — a run that dies mid-flight is reported as an unresolved failure by `--check` forever**,
 even after a human reviews its stranded notes and finds nothing worth writing. `--dispose --run
 <id> [--because TEXT]` records exactly that outcome. The run is still reported as having died —
@@ -100,6 +108,12 @@ computes the SAME shape independently, earlier in the run (before the commit, so
 the run's real diff rather than a post-commit clean tree) — the two calls measure two different
 moments on purpose and are not expected to agree in value; `check_runs.py` reads both.
 
+⭐ dev #703 / public #155 — THE `start` EVENT NOW CARRIES `start_sha`: the profile's HEAD when the
+run began (`head_sha()`), so `footprint()` can add the paths the run COMMITTED mid-way
+(`git diff --name-only <start_sha> HEAD`) instead of reading a clean tree as a quiet run. The
+field is optional and new-events-only; it is omitted (never null) when git cannot be asked, and a
+`start` without it is the "not measured" case. No row is rewritten, so this is not a migration.
+
 **Why an interval and not a timestamp:** sweeps are windowed (`watch --since <hours>`,
 `alert_sweep --days 1`), so *"swept at T"* is not *"covered through T"* — a scheduler outage
 leaves a hole a later sweep does not backfill unless something widens the window over it.
@@ -117,7 +131,9 @@ Usage:
     python3 journal.py --run <id> --gap linkedin:replies --reason browser-unavailable \
                        --closes-when "a run with chrome completes the sweep"
     python3 journal.py --run <id> --gap slack:digest --reason skipped-for-cost \
-                       --covered-by "public #58"          # a KNOWN, filed limitation (#69)
+                       --covered-by "public #58" \
+                       --covered-reason "the surface was never wired, which #58 tracks"
+                       # a KNOWN, filed limitation (#69); the reason is required (dev #711)
     python3 journal.py --run <id> --end
     python3 journal.py --run <id> --dispose --because "reviewed, nothing actionable"  # (#72)
     python3 journal.py --unfinished     # runs that started and never ended, with their notes
@@ -128,7 +144,8 @@ Usage:
     python3 journal.py --check --run <id>  # mid-run (dev #474/public #119): <id> is the
                                          # CALLER's own run, excluded from the dead-run check
     python3 journal.py --check-coverage # on demand, needs gh+network: is every covered_by
-                                         # citation still open? (#69, never run in CI)
+                                         # citation still open? (#69, never run in CI). Keeps its
+                                         # verdicts in .jobsearch/coverage_check.json for --check
     python3 journal.py --fired          # hook use only — see hooks.json's SessionStart entry
     python3 journal.py --probe opp:<id> --thread contact:<id> --result empty      # (dev #321)
     python3 journal.py --probe opp:<id> --thread contact:<id> \
@@ -156,7 +173,13 @@ Usage:
 `deferred.py --add-roles` accepts a pass's `ROLES v1` block and writes ONE `roles` event per
 accepted block: `surface` (`linkedin-jobsearch` | `board`), the window it searched, the count of
 distinct roles and how each resolved (`captured` / `known` / `carried` / `role_gaps`), and the
-per-query gaps in two separate fields (`query_gaps_window`, `query_gaps_truncated`). `--end` then
+per-query gaps in two separate fields (`query_gaps_window`, `query_gaps_truncated`). ⭐ dev #722 /
+public #156 (jobsearch 0.69.0): a role every query of which reported a DEGRADATION is held, not
+carried -- `quarantined` joins the identity (`distinct = captured + known + carried + quarantined +
+role_gaps`, refused by `record_roles` when it does not hold) with `quarantine_reasons`
+(`{code: roles}`), and the event counts how each REACHED query read: `q_reached = q_clean +
+q_unread + q_degraded_queries`, `q_total_unknown` (counted apart), `q_degraded` (`{code: queries}`).
+Those counts are the sweep's SELF-REPORT (SHAPE, not enforced). `--end` then
 asks `roles_missing()` whether a pass RETURNED with nothing accounted, and gaps it
 (`jobsearch:roles:<surface>`, `partial-results`) instead of letting the run end on "N seen, top few
 captured": a LinkedIn `pass … returned` row whose explicit `jobsearch` token reads `reached` (R4),
@@ -180,7 +203,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import (profile_root, is_tracked_fixture, transcript_stash_path, is_unbound,
-                   say_unbound_once)
+                   say_unbound_once, STATE_DIRNAME)
 
 JOURNAL = os.path.join("data", "runs.jsonl")
 EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swept", "probe",
@@ -268,6 +291,19 @@ STALE_DAYS = 3
 CITATION_RE = re.compile(r"^\s*(dev|github|marketplace|public)\s*#\s*([1-9]\d*)\s*$",
                          re.IGNORECASE)
 
+# ⭐ dev #711 / public #147 — bounds on the reason a `covered_by` must carry. Not a quality check
+# (nothing here can judge one): the floor refuses "ok"/"n/a", the ceiling keeps it a reason and
+# not a paragraph. Counted after whitespace is collapsed.
+COVERED_REASON_MIN, COVERED_REASON_MAX = 12, 240
+
+# ⭐ dev #711 / public #147 — where `--check-coverage` leaves its verdicts so the routine, offline
+# `--check` can read them. Per-profile engine state, gitignored with the rest of `.jobsearch/`
+# (declared in docs/user/jobsearch/your-data.md). Verdict + date only: no issue titles, so the
+# folder's "nothing about your search" promise holds.
+COVERAGE_CACHE = os.path.join(STATE_DIRNAME, "coverage_check.json")
+COVERAGE_STATES = ("OPEN", "CLOSED", "MISSING")
+_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
 # ⭐ public #99 — the per-uid TRIAGE disposition an alert-digest sweep writes so a LATER run can
 # skip a uid it already surfaced instead of re-fetching and re-screening it every day it still
 # falls inside the search window. This copies the ATS sweep's own per-uid idempotency discipline
@@ -316,6 +352,19 @@ def normalize_citation(raw):
     return "%s #%s" % (m.group(1).lower(), m.group(2))
 
 
+def head_sha(root):
+    """dev #703 -- `git rev-parse HEAD` in the profile, or None when git cannot answer (not a
+    repository, no commits yet, no git on PATH, a timeout). None is "could not ask", which the
+    caller records as an ABSENT field rather than a guess."""
+    try:
+        r = subprocess.run(["git", "-C", root, "rev-parse", "--verify", "-q", "HEAD"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    sha = (r.stdout or "").strip()
+    return sha if r.returncode == 0 and re.match(r"^[0-9a-f]{7,64}$", sha) else None
+
+
 def path(root):
     return os.path.join(root, JOURNAL)
 
@@ -355,7 +404,9 @@ def now_iso():
 # hook then resolved that directory as a profile and wrote `.jobsearch/` beside it. Refusing here
 # covers `--fired` and every other journal write at once; a plain-`str` root (a real profile, a
 # scratch profile a test built) is untouched.
-def append(root, rec):
+def _refuse_if_unwritable(root):
+    """The two write refusals every journal write shares (dev #618, dev #313): no profile bound,
+    or the tracked fixture. Factored out so the coverage cache (dev #711) obeys the same rule."""
     if is_unbound(root):
         raise JournalError(
             "no job-search profile is bound to %s (no CLAUDESEARCH_ROOT, no profile at or above "
@@ -365,6 +416,10 @@ def append(root, rec):
         raise JournalError(
             "%s is the tracked fixture — journal refuses to write; pin CLAUDESEARCH_ROOT to a "
             "scratch copy" % root)
+
+
+def append(root, rec):
+    _refuse_if_unwritable(root)
     p = path(root)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "a", encoding="utf-8") as fh:
@@ -611,16 +666,30 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
 
 
 def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_gaps_window,
-                 query_gaps_truncated, distinct, captured, known, carried, role_gaps, at=None):
+                 query_gaps_truncated, distinct, captured, known, carried, role_gaps, at=None,
+                 quarantined=0, quarantine_reasons=None, query_gaps_filters=0,
+                 captured_degraded=0, q_reached=0, q_clean=0, q_unread=0, q_total_unknown=0,
+                 q_degraded=None, q_degraded_queries=0):
     """dev #692 / public #140 -- the ONE writer of a `roles` event: one per ACCEPTED `ROLES v1`
     block (`deferred.add_roles`). Validated at write, loud: an unknown surface or window, a
     bucket outside `F_TPR_BUCKETS`, a negative count, or an identity that does not hold
-    (`distinct = captured + known + carried + role_gaps`) is refused, so a row that claims a
-    number it cannot account for never reaches the store. `f_tpr` is None for the board.
+    (`distinct = captured + known + carried + quarantined + role_gaps`, dev #722 / public #156) is
+    refused, so a row that claims a number it cannot account for never reaches the store. `f_tpr`
+    is None for the board.
     The two query-gap counts are SEPARATE fields on purpose: a per-query gap (a window not
     applied, a query unreachable, a result truncated) moves what a wide re-scan may claim, a
     per-role gap (a URL that could not be exposed) moves conservation, and one must never hide
-    the other."""
+    the other.
+
+    ⭐ dev #722 / public #156 -- the QUARANTINE and READ counts. `quarantined` (roles held because
+    every query that showed them reported a degradation) is a term of the identity;
+    `quarantine_reasons` is `{code: roles}` over `deferred.DEGRADED_CODES` (a role with two codes
+    counts once under each). The query-read counts (R4) say how each REACHED query read, and are a
+    partition: `q_reached = q_clean + q_unread + q_degraded_queries`, refused when it does not hold;
+    `q_total_unknown` is counted apart (it can sit under any of the three) and `q_degraded` is
+    `{code: queries}`. They are the sweep's SELF-REPORT (SHAPE, not enforced): they make a sweep
+    that never looks countable (`check_runs.py`), they cannot prove it looked. An event written
+    before 0.69.0 lacks every one of these fields and readers use `.get(k, 0)`."""
     at = at or now_iso()
     if not run_id:
         raise JournalError("record_roles requires run_id")
@@ -634,20 +703,40 @@ def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_g
     counts = {"queries": queries, "query_gaps_window": query_gaps_window,
               "query_gaps_truncated": query_gaps_truncated, "distinct": distinct,
               "captured": captured, "known": known, "carried": carried,
-              "role_gaps": role_gaps}
+              "role_gaps": role_gaps, "quarantined": quarantined,
+              "query_gaps_filters": query_gaps_filters, "captured_degraded": captured_degraded,
+              "q_reached": q_reached, "q_clean": q_clean, "q_unread": q_unread,
+              "q_total_unknown": q_total_unknown, "q_degraded_queries": q_degraded_queries}
     for k, v in counts.items():
         if not isinstance(v, int) or isinstance(v, bool) or v < 0:
             raise JournalError("record_roles %s=%r is not a non-negative integer" % (k, v))
-    if distinct != captured + known + carried + role_gaps:
+    accounted = captured + known + carried + quarantined + role_gaps
+    if distinct != accounted:
         raise JournalError(
-            "record_roles: distinct=%d but captured+known+carried+role_gaps=%d -- a pass's roles "
-            "are all accounted for or the event is not written"
-            % (distinct, captured + known + carried + role_gaps))
+            "record_roles: distinct=%d but captured+known+carried+quarantined+role_gaps=%d -- a "
+            "pass's roles are all accounted for or the event is not written"
+            % (distinct, accounted))
+    quarantine_reasons = dict(quarantine_reasons or {})
+    q_degraded = dict(q_degraded or {})
+    for name, table in (("quarantine_reasons", quarantine_reasons), ("q_degraded", q_degraded)):
+        for code, n in table.items():
+            if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+                raise JournalError("record_roles %s[%r]=%r is not a non-negative integer"
+                                   % (name, code, n))
+    if q_reached != q_clean + q_unread + q_degraded_queries:
+        raise JournalError(
+            "record_roles: q_reached=%d but q_clean+q_unread+q_degraded_queries=%d -- every "
+            "reached query reads as exactly one of clean, unread or degraded"
+            % (q_reached, q_clean + q_unread + q_degraded_queries))
     rec = {"event": "roles", "run_id": run_id, "surface": surface, "window": window,
            "f_tpr": f_tpr, "queries": queries, "geos_ok": sorted(set(geos_ok or [])),
            "query_gaps_window": query_gaps_window, "query_gaps_truncated": query_gaps_truncated,
            "distinct": distinct, "captured": captured, "known": known, "carried": carried,
-           "role_gaps": role_gaps, "at": at}
+           "role_gaps": role_gaps, "quarantined": quarantined,
+           "quarantine_reasons": quarantine_reasons, "query_gaps_filters": query_gaps_filters,
+           "captured_degraded": captured_degraded, "q_reached": q_reached, "q_clean": q_clean,
+           "q_unread": q_unread, "q_total_unknown": q_total_unknown, "q_degraded": q_degraded,
+           "q_degraded_queries": q_degraded_queries, "at": at}
     return append(root, rec)
 
 
@@ -853,12 +942,29 @@ def record_probe(root, subject, thread, result, medium="linkedin", mailbox=None,
     return append(root, rec)
 
 
-def record_gap(root, run_id, scope, reason, closes_when="", covered_by="", at=None):
+def record_gap(root, run_id, scope, reason, closes_when="", covered_by="", at=None,
+               covered_reason=""):
     """The ONE writer of a `gap` row (factored out of main()'s `--gap` branch, dev #488 /
     public #105, so `linkedin_sweep.py record` can file a `partial-results` gap without shelling
     out). Returns the gap id. The caller owns scope normalisation and `covered_by` citation
-    normalisation; this validates only what a stored gap must carry to be countable."""
+    normalisation; this validates only what a stored gap must carry to be countable.
+
+    ⭐ dev #711 / public #147 — a `covered_by` SUPPRESSES the gap, so it must say why the cited
+    issue covers THIS gap's scope: `covered_reason`, required with `covered_by`, stored beside it.
+    A reason with no citation is refused too (it would be a claim about nothing). Rows written
+    before this field existed carry no reason; they stay valid and read as unverified."""
     at = at or now_iso()
+    covered_reason = " ".join((covered_reason or "").split())
+    if covered_by:
+        if not (COVERED_REASON_MIN <= len(covered_reason) <= COVERED_REASON_MAX):
+            raise JournalError(
+                "--covered-by needs --covered-reason: %d-%d characters saying why %s covers THIS "
+                "gap's scope (got %d). A citation hides the gap from --check, so it has to say "
+                "what it is vouching for (dev #711)."
+                % (COVERED_REASON_MIN, COVERED_REASON_MAX, covered_by, len(covered_reason)))
+    elif covered_reason:
+        raise JournalError("--covered-reason without --covered-by: a reason for a citation "
+                           "that does not exist")
     if not run_id:
         raise JournalError("record_gap requires run_id")
     if not scope:
@@ -868,6 +974,7 @@ def record_gap(root, run_id, scope, reason, closes_when="", covered_by="", at=No
     gid = "%s:%s" % (run_id, re.sub(r"[^A-Za-z0-9:._-]+", "-", scope))
     append(root, {"event": "gap", "run_id": run_id, "gap_id": gid, "scope": scope,
                   "reason": reason, "covered_by": covered_by or "",
+                  "covered_reason": covered_reason,
                   "closes_when": closes_when or "", "at": at})
     return gid
 
@@ -1376,28 +1483,138 @@ def _private_repo():
         return None
 
 
-def issue_state(citation):
-    """LIVE, IMPURE, NEVER CALLED IN CI. Returns 'OPEN', 'CLOSED', 'MISSING' (the repo resolved
-    but the issue did not), or None — unverifiable from here, which covers "no `gh` on PATH",
-    "no network", and "a dev/github/marketplace citation asked from an installed copy with no
-    private remote" alike. `evaluate_coverage()` above is what gives that None a name."""
+def issue_lookup(citation):
+    """LIVE, IMPURE, NEVER CALLED IN CI. Returns `(state, title)`: state is 'OPEN', 'CLOSED',
+    'MISSING' (the repo resolved but the issue did not), or None -- unverifiable from here, which
+    covers "no `gh` on PATH", "no network", and "a dev/github/marketplace citation asked from an
+    installed copy with no private remote" alike. `evaluate_coverage()` above is what gives that
+    None a name. `title` is the issue's title when GitHub answered, else None (dev #711: the
+    write-time echo prints it so a wrong citation is visible to the person typing it)."""
     kind, num = _split_citation(citation)
     if not num.isdigit():
-        return None
+        return None, None
     repo = _public_repo() if kind == "public" else _private_repo()
     if not repo:
-        return None
+        return None, None
     try:
-        out = subprocess.run(["gh", "issue", "view", num, "--repo", repo, "--json", "state"],
-                             capture_output=True, text=True, timeout=15)
-    except (FileNotFoundError, OSError):
-        return None
+        out = subprocess.run(["gh", "issue", "view", num, "--repo", repo, "--json",
+                              "state,title"], capture_output=True, text=True, timeout=15)
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None, None
     if out.returncode != 0:
-        return "MISSING" if "could not resolve" in (out.stderr or "").lower() else None
+        return ("MISSING" if "could not resolve" in (out.stderr or "").lower() else None), None
     try:
-        return str(json.loads(out.stdout or "{}").get("state") or "").upper() or None
+        data = json.loads(out.stdout or "{}")
     except ValueError:
-        return None
+        return None, None
+    state = str(data.get("state") or "").upper() or None
+    title = " ".join(str(data.get("title") or "").split())[:120] or None
+    return state, title
+
+
+def issue_state(citation):
+    """The state half of `issue_lookup()`; the one impure call `evaluate_coverage()` makes."""
+    return issue_lookup(citation)[0]
+
+
+# ⭐⭐ dev #711 / public #147 -- A COVERAGE CITATION IS CHECKED WHEN WRITTEN AND RE-CHECKED WHEN
+# READ. `covered_by` hides a gap from `--check` whether or not the cited issue covers it, and
+# `--check-coverage` (the only thing that asks GitHub) was never run by anything routine, so a
+# citation could outlive its issue for as long as nobody remembered to ask. The split stays the
+# one `evaluate_coverage` already has (the network half is on demand, never in CI); what is new
+# is that its ANSWER is kept, so the routine, offline `--check` can use it:
+#
+#   write time   record_gap requires a reason; the CLI echoes the cited issue's title and state
+#                (or says NOT VERIFIED) so a wrong number is visible to whoever typed it.
+#   --check-coverage   leaves `<profile>/.jobsearch/coverage_check.json`: per citation, the last
+#                      definite verdict (OPEN / CLOSED / MISSING) and its date.
+#   --check, and every other report   reads that file with NO network. A gap whose citation was
+#                      last known CLOSED or MISSING is DEGRADED -- counted as open, with the
+#                      reason, never left suppressed. A citation with no verdict, or a gap with no
+#                      stored reason (written before this field existed), is "unverified": still
+#                      covered, but said so in the count line instead of passing as verified.
+#
+# Not modelled, stated rather than silent: an OPEN verdict is not aged. A verdict from months ago
+# still reads "OPEN, as of <date>"; the date is printed so the reader can judge it.
+
+def coverage_cache_path(root):
+    return os.path.join(root, COVERAGE_CACHE)
+
+
+def read_coverage_cache(root):
+    """(verdicts, problem). `verdicts` is {citation: {"state", "at"}}; `problem` is None, or a
+    sentence saying why the file could not be used. An ABSENT file is not a problem (nothing has
+    been checked yet: every citation reads as unverified). A present-but-unreadable one is: it is
+    returned as `({}, reason)` so the caller can say so out loud instead of quietly treating a
+    corrupt cache as an empty one."""
+    p = coverage_cache_path(root)
+    try:
+        with open(p, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except FileNotFoundError:
+        return {}, None
+    except (OSError, ValueError) as e:
+        return {}, "%s is not readable (%s)" % (COVERAGE_CACHE, e)
+    verdicts = raw.get("verdicts") if isinstance(raw, dict) else None
+    if not isinstance(verdicts, dict):
+        return {}, "%s has no 'verdicts' object" % COVERAGE_CACHE
+    for citation, v in verdicts.items():
+        if not (isinstance(v, dict) and v.get("state") in COVERAGE_STATES
+                and isinstance(v.get("at"), str) and _DATE_RE.match(v["at"])):
+            return {}, ("%s entry %r is not {state: OPEN|CLOSED|MISSING, at: YYYY-MM-DD}"
+                        % (COVERAGE_CACHE, citation))
+    return verdicts, None
+
+
+def write_coverage_cache(root, verdicts, checked_at):
+    """Atomically write the cache (temp file + rename). Same refusals as the journal itself:
+    no unbound directory, never the tracked fixture. Returns the path written."""
+    _refuse_if_unwritable(root)
+    p = coverage_cache_path(root)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = "%s.tmp-%d" % (p, os.getpid())
+    with open(tmp, "w", encoding="utf-8") as fh:
+        json.dump({"checked_at": checked_at, "verdicts": verdicts}, fh, indent=1, sort_keys=True)
+        fh.write("\n")
+    os.replace(tmp, p)
+    return p
+
+
+def apply_coverage_cache(covered, verdicts):
+    """PURE. Split the `covered` gaps (from `split_gaps`) by what is known about their citation:
+
+        (still_covered, degraded, unverified)
+
+    `degraded`: the citation was last known CLOSED or MISSING -- each is a COPY of the gap with
+    `degraded_because` set, to be counted as open. `unverified` is a subset of `still_covered`:
+    the citation has no verdict yet, or the gap has no stored `covered_reason` (a row from before
+    dev #711). CLOSED/MISSING wins over a missing reason: a closed issue covers nothing."""
+    still, degraded, unverified = [], [], []
+    for g in covered:
+        v = verdicts.get(g.get("covered_by"))
+        if v and v["state"] in ("CLOSED", "MISSING"):
+            degraded.append(dict(g, degraded_because=(
+                "%s was %s as of %s" % (g.get("covered_by"), v["state"], v["at"]))))
+            continue
+        still.append(g)
+        if not v or not g.get("covered_reason"):
+            unverified.append(g)
+    return still, degraded, unverified
+
+
+def coverage_echo(citation, lookup=None):
+    """Lines the write-time `--gap --covered-by` prints so the citation can be eyeballed: the
+    cited issue's title and state, or NOT VERIFIED. `lookup` is injectable for tests."""
+    state, title = (lookup or issue_lookup)(citation)
+    if state is None:
+        return ["  covered by %s: NOT VERIFIED (no gh, no network, or no reachable repo) -- the "
+                "reason is stored, but nobody has seen that this issue exists" % citation]
+    lines = ["  covered by %s: %s%s" % (citation, state, " -- %s" % title if title else "")]
+    if state in ("CLOSED", "MISSING"):
+        lines.append("  !! %s is %s: it covers nothing now. Check the number; "
+                     "`--check-coverage` will list this gap as stale."
+                     % (citation, "closed" if state == "CLOSED" else "not a real issue"))
+    return lines
 
 
 def _record_fired(root, at):
@@ -1438,6 +1655,10 @@ def main():
                          "(or any other read-only report), the CALLER's own still-executing "
                          "run, excluded from the dead-run check (dev #474/public #119)")
     ap.add_argument("--note")
+    ap.add_argument("--covered-reason", dest="covered_reason", metavar="TEXT",
+                    help="with --covered-by (required there, dev #711): %d-%d characters saying "
+                         "why the cited issue covers THIS gap's scope"
+                         % (COVERED_REASON_MIN, COVERED_REASON_MAX))
     ap.add_argument("--gap", metavar="SCOPE")
     ap.add_argument("--reason", choices=sorted(REASONS))
     ap.add_argument("--closes-when", dest="closes_when")
@@ -1571,13 +1792,26 @@ def main():
 
         if args.start:
             rid = new_run_id(args.start, at)
-            append(root, {"event": "start", "run_id": rid, "kind": args.start, "at": at})
+            rec = {"event": "start", "run_id": rid, "kind": args.start, "at": at}
+            # dev #703 / public #155: the HEAD this run began on, so run_summary.footprint()
+            # can count what the run COMMITTED. Omitted (never null) when git cannot be asked:
+            # a `start` without it is the "not measured" case, same as every older `start`.
+            sha = head_sha(root)
+            if sha:
+                rec["start_sha"] = sha
+            append(root, rec)
             print(rid)
             return 0
 
         if args.check_coverage:
             gaps = open_gaps(read(root))
-            verified_open, stale, unverifiable = evaluate_coverage(gaps, issue_state)
+            seen = {}
+
+            def _recording_state(citation):
+                seen[citation] = issue_state(citation)
+                return seen[citation]
+
+            verified_open, stale, unverifiable = evaluate_coverage(gaps, _recording_state)
             print("COVERAGE CHECK — live lookup against each covered_by citation\n")
             for citation, gap_ids in verified_open:
                 print("  OK      %-16s covers %d gap(s), still open" % (citation, len(gap_ids)))
@@ -1592,6 +1826,24 @@ def main():
                           % (citation, len(gap_ids), ", ".join(gap_ids)))
             if not (verified_open or stale or unverifiable):
                 print("  No covered gaps open. Nothing to verify.")
+            # dev #711 / public #147 -- keep the answers, so the routine offline `--check` can
+            # use them. Only DEFINITE verdicts are stored; an unverifiable lookup leaves that
+            # citation's previous verdict (and its date) as it was. A citation no open gap cites
+            # any more is dropped.
+            old, problem = read_coverage_cache(root)
+            cited = {g.get("covered_by") for g in gaps if g.get("covered_by")}
+            verdicts = {c: v for c, v in old.items() if c in cited}
+            day = at[:10] if _DATE_RE.match(at[:10]) else now_iso()[:10]
+            for citation, state in seen.items():
+                if state in COVERAGE_STATES:
+                    verdicts[citation] = {"state": state, "at": day}
+            try:
+                written = write_coverage_cache(root, verdicts, day)
+                print("\n  verdicts kept for the offline --check: %s (%d citation(s))"
+                      % (written, len(verdicts)))
+            except (JournalError, OSError) as e:
+                print("\n  coverage cache NOT written (%s) -- the routine --check will read "
+                      "these citations as unverified" % e)
             return 1 if stale else 0
 
         if args.pass_durations:
@@ -1651,8 +1903,14 @@ def main():
                     scope = LINKEDIN_MESSAGE_REQUESTS_CANON
                 covered_by = normalize_citation(args.covered_by) if args.covered_by else ""
                 gid = record_gap(root, args.run, scope, args.reason,
-                                 closes_when=args.closes_when, covered_by=covered_by, at=at)
+                                 closes_when=args.closes_when, covered_by=covered_by, at=at,
+                                 covered_reason=args.covered_reason or "")
                 print(gid)
+                if covered_by:
+                    # dev #711 / public #147 -- the citation is eyeballed WHEN WRITTEN: the
+                    # cited issue's title and state, or NOT VERIFIED when gh cannot answer.
+                    for ln in coverage_echo(covered_by):
+                        print(ln)
             if args.end:
                 # design-linkedin-runner-resilience.md §4 (closes D-5) — derived at write time,
                 # never a new --end argument: THIS run's own open gaps (a pass that opened
@@ -1730,11 +1988,20 @@ def main():
             dead = [d for d in dead if d["run_id"] != args.run]
         gaps = open_gaps(recs)
         uncovered, covered = split_gaps(gaps)
+        # ⭐ dev #711 / public #147 -- the OFFLINE half of re-checking a citation: the last
+        # `--check-coverage` verdicts, read from disk, no network. A gap whose citation was last
+        # known CLOSED/MISSING is DEGRADED to open (counted with the uncovered, with its reason);
+        # a citation never checked, or a gap with no stored reason, is reported as unverified.
+        verdicts, cache_problem = read_coverage_cache(root)
+        covered, degraded, unverified = apply_coverage_cache(covered, verdicts)
+        uncovered = sorted(uncovered + degraded, key=lambda g: g.get("at") or "")
         fired = fired_events(recs)
 
         if args.json:
             print(json.dumps({"unfinished": dead, "open_gaps": gaps,
                               "uncovered_gaps": uncovered, "covered_gaps": covered,
+                              "degraded_gaps": degraded, "unverified_gaps": unverified,
+                              "coverage_cache_problem": cache_problem,
                               "fired": fired[-20:]}, indent=1))
         elif args.open_gaps:
             print("OPEN COVERAGE GAPS — oldest first\n")
@@ -1743,6 +2010,9 @@ def main():
                                              g.get("reason")))
                 print("        %s · closes when: %s" % (g.get("gap_id"),
                                                         g.get("closes_when") or "unstated"))
+                if g.get("degraded_because"):
+                    print("        DEGRADED to open: %s, so it no longer suppresses this gap"
+                          % g["degraded_because"])
             if not uncovered:
                 print("  None. Every sweep that started has been completed, closed, or is "
                       "covered below.")
@@ -1750,9 +2020,15 @@ def main():
                 print("\nCOVERED — a filed issue already explains these; not counted as open "
                       "(public #69)\n")
                 for g in covered:
-                    print("  [%2dd] %s  (%s)  covered by %s"
+                    print("  [%2dd] %s  (%s)  covered by %s%s"
                           % (age_days(g.get("at", "")), g.get("scope"), g.get("reason"),
-                             g.get("covered_by")))
+                             g.get("covered_by"),
+                             "  [unverified]" if g in unverified else ""))
+                    if g.get("covered_reason"):
+                        print("        why: %s" % g["covered_reason"])
+            if cache_problem:
+                print("\n  ⚠️ coverage cache unusable: %s -- every citation reads as unverified"
+                      % cache_problem)
         elif args.unfinished:
             print("RUNS THAT STARTED AND NEVER ENDED\n")
             for d in dead:
@@ -1767,8 +2043,15 @@ def main():
             lost_now = [d for d in dead if d["notes"] and not d.get("disposed")]
             print("RUN JOURNAL\n")
             print("  %d run(s) died mid-flight (%d unresolved) · %d open coverage gap(s) "
-                  "(%d covered) · %d session(s) fired"
-                  % (len(dead), len(lost_now), len(uncovered), len(covered), len(fired)))
+                  "(%d covered, %d unverified, %d degraded to open) · %d session(s) fired"
+                  % (len(dead), len(lost_now), len(uncovered), len(covered), len(unverified),
+                     len(degraded), len(fired)))
+            for g in degraded:
+                print("     ⚠️ %s: %s -- counted open, not suppressed"
+                      % (g.get("scope"), g["degraded_because"]))
+            if cache_problem:
+                print("     ⚠️ coverage cache unusable: %s -- every citation reads as unverified"
+                      % cache_problem)
             if dead:
                 print("\n  ⭐ A run that started and never ended did NOT necessarily do nothing —")
                 print("     its notes below are work that would otherwise have been lost.")
@@ -1784,8 +2067,10 @@ def main():
             stale = [g for g in uncovered if age_days(g.get("at", "")) >= STALE_DAYS]
             lost = [d for d in dead if d["notes"] and not d.get("disposed")]
             for g in stale:
-                print("⛔ coverage gap %r open %d days (%s)"
-                      % (g.get("scope"), age_days(g.get("at", "")), g.get("reason")),
+                print("⛔ coverage gap %r open %d days (%s)%s"
+                      % (g.get("scope"), age_days(g.get("at", "")), g.get("reason"),
+                         " -- coverage degraded: %s" % g["degraded_because"]
+                         if g.get("degraded_because") else ""),
                       file=sys.stderr)
             for d in lost:
                 print("⛔ run %s died holding %d unwritten finding(s)"

@@ -30,6 +30,45 @@ an `end` event with no `footprint` field at all (the computation failed, or the 
 feature) is its own loud finding, separate from a `--post` whose OWN headline disagreed with its
 OWN stored footprint.
 
+⭐ dev #703 / public #155 — THE POSTED TEXT IS CHECKED WHOLE, AT POST TIME. `--annotate` was
+already refused when it contradicted the footprint (public #85), but the detail also carries the
+run's own journal `note` rows (`journal.py --note`, append-only), and a note beginning "Quiet
+run." was stored beside a footprint that showed writes — `check_runs.py` then went red on it at
+the next session start, after the contradiction was already durable. `--post` now runs the SAME
+`disagrees()` over the text `check_runs.py` will later read (headline + detail, annotation
+included), and the two sources are treated DIFFERENTLY on purpose:
+
+  * An `--annotate` text that disagrees is REFUSED (exit 2, nothing posted, the phrase and the
+    text named): the caller can reword it and post again.
+  * A JOURNAL NOTE that disagrees is WITHHELD, and the post goes ahead (exit 0). A note already
+    in the journal cannot be un-written, so refusing the post would leave a run that wrote
+    "Quiet run." unable to post its summary at all — and an unattended run would lose the summary
+    entirely, where §14 of the daily-run skill requires one even on a quiet run. The headline is
+    still generated from the footprint; the contradicting note is replaced in the detail by
+    `note withheld: it claimed '<phrase>' but the footprint shows <N> changed file(s)`, and a line
+    naming the phrase goes to stderr. The stored row therefore never carries the contradiction.
+
+`disagrees()` knows that marker (it strips it before scanning), because the marker quotes the very
+phrase it withheld: without that, `check_runs.py` would flag every row this script posts with a
+withheld note. A row stored BEFORE this change, with the contradiction in its detail, is still
+flagged by `check_runs.py` as it always was. One definition: there is no second phrase list here
+and none in `check_runs.py`.
+
+⭐ dev #703 — THE FOOTPRINT ALSO COUNTS WHAT THE RUN COMMITTED. `files` is `git diff --stat
+HEAD`: only what is still uncommitted. A run that commits mid-way (to settle a tree before a
+sync, say) would understate its own change to the point of calling itself quiet. `journal.py
+--start` therefore records the HEAD it started on (`start_sha`, a new optional field on new
+`start` events only) and the footprint adds `committed`: `git diff --name-only <start_sha> HEAD`.
+`None` means NOT MEASURED, never "nothing committed": a run started before this field existed,
+a start sha git cannot resolve (history rewritten), or no git at all. The detail line then says
+`committed: not measured (no start sha)`, and the rest of the footprint is measured exactly as
+before. Two stated limits: (1) the journal file itself (`data/runs.jsonl`) is not counted, since
+`--start` writes it, so counting it would make every run that ever commits "changed" by
+construction; (2) the range is a plain commit range, so a `git pull` mid-run that brings in
+OTHER sessions' commits counts too. That over-states, which fails safe: a quiet claim is
+refused when in doubt. Untracked files are not listed by git diff; they still count through
+`tree_dirty`.
+
 Usage:
     python3 run_summary.py --run <id>                       # print the generated summary
     python3 run_summary.py --run <id> --post                # ...and post it to the inbox
@@ -120,10 +159,41 @@ def _run_window(recs, run_id, at=None):
     return start_at, as_of, starts[0].get("kind")
 
 
+_SHA_RE = re.compile(r"^[0-9a-f]{7,64}$")
+
+
+def _start_sha(recs, run_id):
+    """The HEAD `journal.py --start` recorded for this run, or None (an older `start` event, or
+    git could not be asked at the time). A malformed value is None too: a start sha is data read
+    back from a file, and it is handed to git, so it must look like a sha or it is not used."""
+    for r in recs:
+        if r.get("event") == "start" and r.get("run_id") == run_id:
+            sha = r.get("start_sha")
+            return sha if isinstance(sha, str) and _SHA_RE.match(sha) else None
+    return None
+
+
+def committed_paths(root, start_sha):
+    """dev #703 / public #155 — the paths this run committed: `git diff --name-only <start_sha>
+    HEAD`, minus the journal file (see the module docstring for both limits). None means NOT
+    MEASURED — no start sha, or git cannot resolve it — and is never an empty list: an
+    unmeasured value must not read as "nothing was committed"."""
+    if not start_sha:
+        return None
+    out = _git(root, "diff", "--name-only", "-z", start_sha, "HEAD", "--")
+    if out is None:
+        return None
+    journal = _journal.JOURNAL.replace(os.sep, "/")
+    return sorted(p for p in out.split("\0") if p and p != journal)
+
+
 def footprint(root, run_id, recs=None, at=None):
     """⭐⭐ THE ONE SHAPE — see the module docstring. Returns a JSON-safe dict:
 
-        files          [changed filename, ...]   — from `git diff --stat HEAD`
+        files          [changed filename, ...]   — from `git diff --stat HEAD` (uncommitted)
+        committed      [path, ...] or None        — dev #703: paths committed since the run's
+                                                      recorded `start_sha`; None = NOT MEASURED
+                                                      (no usable start sha), never "none"
         insertions     int
         deletions      int
         tree_dirty     int or None                — `git status --porcelain` line count;
@@ -157,6 +227,7 @@ def footprint(root, run_id, recs=None, at=None):
 
     return {
         "files": files,
+        "committed": committed_paths(root, _start_sha(recs, run_id)),
         "insertions": insertions,
         "deletions": deletions,
         "tree_dirty": _tree_dirty_count(porcelain),
@@ -170,26 +241,56 @@ def footprint(root, run_id, recs=None, at=None):
 
 def changed(fp):
     """Is there anything to report? `swept_ok` (a sweep that ran and found nothing) never
-    counts — only a FAILURE or something actually found does. `tree_dirty is None` (git could
+    counts — only a FAILURE or something actually found does. Paths the run COMMITTED count
+    (dev #703): a mid-run commit leaves a clean tree and must not read as quiet. `tree_dirty is None` (git could
     not be asked) counts as changed: an unverifiable tree must never be reported as clean."""
     if fp.get("tree_dirty") is None:
         return True
     return bool(fp.get("tree_dirty") or fp.get("notes") or fp.get("probes")
-                or fp.get("swept_failed") or fp.get("gaps_open"))
+                or fp.get("swept_failed") or fp.get("gaps_open")
+                or fp.get("committed"))             # dev #703: None (unmeasured) and [] are falsy
+
+
+# dev #703 / public #155 — the visible stand-in for a journal note that contradicted the footprint.
+# It quotes the phrase it withheld, so `disagrees()` must not read the quote as a claim.
+_WITHHELD_RE = re.compile(
+    r"note withheld: it claimed '(?:%s)' but the footprint shows \d+ changed file\(s\)"
+    % "|".join(re.escape(p) for p in NO_CHANGE_PHRASES))
+
+
+def withheld_marker(phrase, fp):
+    """The marker text that replaces a contradicting journal note (dev #703 / public #155)."""
+    n = len(set(fp.get("files") or []) | set(fp.get("committed") or []))
+    return "note withheld: it claimed '%s' but the footprint shows %d changed file(s)" % (phrase, n)
 
 
 def disagrees(text, fp):
     """(bool, phrase) — does `text` claim "no change" (one of NO_CHANGE_PHRASES) while `fp`
     shows the claim is false? The check_stale_claims.py shape: absence of a phrase is never
     itself a finding, and a footprint that genuinely shows nothing makes the same phrase TRUE,
-    never flagged (public #85 plant: "the same with an empty footprint ... is correct, green")."""
-    low = (text or "").lower()
+    never flagged (public #85 plant: "the same with an empty footprint ... is correct, green").
+    A `withheld_marker()` quotes the phrase it replaced and is not itself a claim (dev #703)."""
+    low = _WITHHELD_RE.sub("", (text or "").lower())
     if not changed(fp):
         return False, None
     for phrase in NO_CHANGE_PHRASES:
         if phrase in low:
             return True, phrase
     return False, None
+
+
+def withheld_notes(recs, run_id, fp):
+    """[(note_text, phrase)] — this run's journal notes whose text disagrees with `fp`, by the one
+    `disagrees()`. Full note text is checked (not just the 80 characters the detail shows): a
+    phrase past the cut-off would still be a claim in the journal."""
+    out = []
+    for n in recs:
+        if n.get("event") == "note" and n.get("run_id") == run_id:
+            text = str(n.get("text") or "")
+            bad, phrase = disagrees(text, fp)
+            if bad:
+                out.append((text, phrase))
+    return out
 
 
 def _fmt_when(at):
@@ -213,6 +314,8 @@ def render_headline(recs, run_id, fp):
                     "%d probe(s) · %d gap(s) open"
                     % (label, when, len(fp["files"]), fp["insertions"], fp["deletions"],
                        fp["swept_ok"], swept_total, fp["probes"], len(fp["gaps_open"])))
+            if fp.get("committed"):
+                head += " · %d path(s) committed this run" % len(fp["committed"])
     else:
         head = ("%s %s — NO CHANGE: tree clean · swept %d/%d · %d probe(s) · %d gap(s)"
                 % (label, when, fp["swept_ok"], swept_total, fp["probes"], len(fp["gaps_open"])))
@@ -232,6 +335,35 @@ def _geos(root):
     except (OSError, ValueError):
         cfg = {}
     return _journal.jobsearch_geos(cfg)
+
+
+def _quarantine_clause(e):
+    """dev #722 / public #156 -- ` · N quarantined (truncated ×a, filter-dropped ×b)` for a `roles`
+    event that held any role, else the empty string. COMPUTED from the event's own counts. An event
+    written before 0.69.0 has no `quarantined` field and prints nothing."""
+    n = e.get("quarantined", 0)
+    if not n:
+        return ""
+    reasons = e.get("quarantine_reasons") or {}
+    why = ", ".join("%s ×%d" % (code, reasons[code]) for code in sorted(reasons))
+    return " · %d quarantined%s" % (n, (" (%s)" % why) if why else "")
+
+
+def _query_reads_line(e, label=None):
+    """dev #722 / public #156 (R4) -- how each REACHED query read, from the event's own counts:
+    `query reads (board): 12 reached · 10 clean · 1 filters unread · 1 degraded (truncated ×1) · 2
+    total unknown`. Empty for an event written before 0.69.0 (no `q_reached`), which is not the
+    same as a pass that reached nothing. SHAPE, not enforced: these count what the sweep SAID, so a
+    sweep that never looks reads all-clean here, and `check_runs.py` flags a week of that."""
+    if "q_reached" not in e:
+        return None
+    degraded = e.get("q_degraded") or {}
+    why = (" (%s)" % ", ".join("%s ×%d" % (c, degraded[c]) for c in sorted(degraded))
+           if degraded else "")
+    return ("query reads%s: %d reached · %d clean · %d filters unread · %d degraded%s · %d total "
+            "unknown" % ((" (%s)" % label) if label else " (wide)", e.get("q_reached", 0),
+                         e.get("q_clean", 0), e.get("q_unread", 0), e.get("q_degraded_queries", 0),
+                         why, e.get("q_total_unknown", 0)))
 
 
 def roles_lines(recs, run_id, root=None, kind=None, at=None):
@@ -254,21 +386,29 @@ def roles_lines(recs, run_id, root=None, kind=None, at=None):
     for e in events:
         seen = e.get("distinct", 0)
         gaps_q = (e.get("query_gaps_window", 0), e.get("query_gaps_truncated", 0))
+        quarantine = _quarantine_clause(e)
         if e.get("surface") == "linkedin-jobsearch" and e.get("window") == "wide":
             lines.append("wide re-scan: %d re-surfaced (%d seen · %d already known · %d role gaps "
-                         "· %d query gaps)"
+                         "· %d query gaps%s)"
                          % (e.get("captured", 0) + e.get("carried", 0), seen, e.get("known", 0),
-                            e.get("role_gaps", 0), gaps_q[0] + gaps_q[1]))
+                            e.get("role_gaps", 0), gaps_q[0] + gaps_q[1], quarantine))
+            reads = _query_reads_line(e)
+            if reads:
+                lines.append(reads)
             continue
         label = "board" if e.get("surface") == "board" else (e.get("window") or "daily")
         line = ("sourcing (%s): %d seen · %d captured · %d known · %d carried · %d role gap%s"
                 % (label, seen, e.get("captured", 0), e.get("known", 0), e.get("carried", 0),
                    e.get("role_gaps", 0), "" if e.get("role_gaps", 0) == 1 else "s"))
+        line += quarantine
         if gaps_q[1]:
             line += " · %d query truncated" % gaps_q[1]
         if gaps_q[0]:
             line += " · %d query gap%s (window)" % (gaps_q[0], "" if gaps_q[0] == 1 else "s")
         lines.append(line)
+        reads = _query_reads_line(e, label)
+        if reads:
+            lines.append(reads)
     held = {g.get("scope") for g in _journal.open_gaps(recs, run_id=run_id)}
     for surface in _journal.ROLES_SURFACES:
         if _journal.ROLES_GAP_SCOPE % surface in held:
@@ -323,11 +463,48 @@ def render_detail(recs, run_id, fp, root=None, at=None):
                                   for g in gaps))
     notes = [r for r in recs if r.get("event") == "note" and r.get("run_id") == run_id]
     if notes:
-        lines.append("  notes  : %s"
-                     % " · ".join(str(n.get("text") or "")[:80] for n in notes))
+        def _note(n):
+            text = str(n.get("text") or "")
+            bad, phrase = disagrees(text, fp)       # dev #703: a contradicting note is withheld
+            return withheld_marker(phrase, fp) if bad else text[:80]
+        lines.append("  notes  : %s" % " · ".join(_note(n) for n in notes))
     if fp.get("files"):
         lines.append("  files  : %s" % ", ".join(fp["files"]))
+    committed = fp.get("committed")
+    if committed is None:
+        lines.append("  committed: not measured (no start sha)")
+    elif committed:
+        lines.append("  committed: %s" % ", ".join(committed))
     return "\n".join(lines)
+
+
+def first_disagreement(text, fp):
+    """(bool, phrase, line) — `disagrees()` over the whole text, plus the first line it came from
+    (found by calling `disagrees()` per line, so there is still one definition of a
+    contradiction and no second phrase scan here)."""
+    bad, phrase = disagrees(text, fp)
+    if not bad:
+        return False, None, None
+    for ln in (text or "").splitlines():
+        if disagrees(ln, fp)[0]:
+            return True, phrase, ln.strip()
+    return True, phrase, None
+
+
+def _quote_claim(phrase, line):
+    return "%r in: %s" % (phrase, line if line else "(text spans lines)")
+
+
+def refusal_message(phrase, line, fp, annotated):
+    where = ("the --annotate text" if annotated else "a line of the generated detail")
+    return ("⛔ %s refused — %s says %s, but this run's own footprint shows real change "
+            "(%s). Nothing was posted: a stored summary that contradicts its own footprint is "
+            "what check_runs.py goes red on at the next session start. "
+            "%s" % ("--annotate" if annotated else "--post", where, _quote_claim(phrase, line),
+                    {k: v for k, v in fp.items() if v not in (0, [], None)} or fp,
+                    "Reword the annotation without the claim." if annotated else
+                    "The footprint above is the true summary; report the refusal in the run's "
+                    "final message rather than retyping the claim."))
 
 
 def main():
@@ -366,20 +543,38 @@ def main():
         print("OK — the posted text's change/no-change claim agrees with the footprint.")
         return 0
 
-    if args.annotate is not None:
-        bad, phrase = disagrees(args.annotate, fp)
-        if bad:
-            print("⛔ --annotate refused — %r contradicts the footprint (%s); the headline "
-                  "cannot be overridden by annotation" % (phrase, fp), file=sys.stderr)
-            return 2
-
     headline = render_headline(recs, args.run, fp)
     body = render_detail(recs, args.run, fp, root=root, at=args.at)
-    text = headline
-    if body:
-        text += "\n" + body
+    detail = body
     if args.annotate:
-        text += "\n  note: %s" % args.annotate
+        detail = (detail + "\n" if detail else "") + "  note: %s" % args.annotate
+    text = headline
+    if detail:
+        text += "\n" + detail
+
+    # ⭐ dev #703 / public #155 — the SAME `disagrees()` `check_runs.py` runs later, over the SAME
+    # text it will read later (`summary + detail`). The two sources are handled differently:
+    #   * a contradicting `--annotate` is REFUSED (exit 2, nothing posted) whether or not it is
+    #     being posted (public #85) — the caller can reword it;
+    #   * a contradicting JOURNAL NOTE cannot be un-written, so refusing would leave the run with
+    #     no summary at all. `render_detail()` has already replaced it with a visible marker; we
+    #     say so on stderr and the post goes ahead, so the stored row never carries it.
+    bad, phrase, line = first_disagreement(text, fp)
+    if bad:
+        from_annotate = bool(args.annotate) and disagrees(args.annotate, fp)[0]
+        if from_annotate:
+            phrase, line = disagrees(args.annotate, fp)[1], args.annotate
+        if args.post or from_annotate:
+            print(refusal_message(phrase, line, fp, annotated=from_annotate),
+                  file=sys.stderr)
+            return 2
+        print("⚠️ --post would be REFUSED: %s" % _quote_claim(phrase, line), file=sys.stderr)
+
+    for _text, w_phrase in withheld_notes(recs, args.run, fp):
+        print("⚠️ note withheld: a journal note of this run claimed %r but the footprint shows "
+              "real change; the summary carries a marker in its place." % w_phrase,
+              file=sys.stderr)
+
     print(text)
 
     if args.post:
@@ -388,9 +583,6 @@ def main():
                                                   # than duplicating it (inbox.replay(), public
                                                   # #85 plant: "--post twice for one run -> one
                                                   # row"), because inbox.py folds by `id`.
-        detail = body
-        if args.annotate:
-            detail = (detail + "\n" if detail else "") + "  note: %s" % args.annotate
         urgency = args.urgency or ("high" if (fp["swept_failed"] or fp["gaps_open"])
                                    else "normal")
         now = datetime.datetime.now()

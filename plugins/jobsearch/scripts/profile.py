@@ -40,9 +40,12 @@ all still without a removal beyond the three above: the age line and the retaine
 pay nobody recorded is no longer the same quiet KEEP as one whose listing showed none), commute
 bands (`resolve_floor`; a profile with no bands is screened exactly as before) and the likely-pass
 signal matcher (`match_signals`, a lean and never a removal). `screen_rules` computes the screen
-as data and `minimal_screen` prints it. There is no mandate rule (no script implements one and no config key names one),
-so the screen prints no mandate line (owner, 2026-10-09: a line about a rule that does not exist
-is noise on every role for every installer).
+as data and `minimal_screen` prints it. There is still no separate mandate RULE LINE (owner, 2026-10-09: a line about a rule
+that does not exist is noise on every role for every installer). jobsearch 0.69.0 (dev #722 /
+public #156) adds, inside the one title line and still without a removal: `screen.title_floor`
+(`BELOW-FLOOR`, whose lean follows the comp verdict, owner decision R1) and the title-field
+`screen.likely_pass_signals` (`OFF-MANDATE`, the mandate). With neither configured the screen
+prints exactly what 0.68.0 printed.
 
 Python 3.9+. Standard library only.
 """
@@ -601,9 +604,170 @@ def _load_optional(name):
         return [json.loads(l) for l in fh if l.strip()]
 
 
+TITLE_FLOOR_LEAN_ID = "title-floor"      # the computed lean hit's id (dev #722 / public #156)
+
+
+def title_level(title):
+    """The seniority level the closed ladder reads in `title`, or None when no phrase matches
+    (dev #722 / public #156; `config_keys.SENIORITY_LADDER`). Phrases are matched whole-phrase,
+    case-insensitively, LONGEST FIRST on NON-OVERLAPPING spans, so "vice president" is consumed
+    before "president" and "general manager" before "manager"; the level is the HIGHEST rank any
+    phrase matched. No match is None, and None is never below a floor."""
+    import config_keys as _ck
+    h = _squash(title)
+    if not h:
+        return None
+    phrases = sorted(((p, rank) for rank, (_lvl, ps) in enumerate(_ck.SENIORITY_LADDER)
+                      for p in ps), key=lambda pr: (-len(pr[0]), pr[0]))
+    taken, best = [], None
+    for phrase, rank in phrases:
+        p = _squash(phrase)
+        start = h.find(p)
+        while start != -1:
+            end = start + len(p)
+            before_ok = start == 0 or not (h[start - 1].isalnum() or h[start - 1] == "_")
+            after_ok = end == len(h) or not (h[end].isalnum() or h[end] == "_")
+            if before_ok and after_ok and not any(start < e and s < end for s, e in taken):
+                taken.append((start, end))
+                best = rank if best is None else max(best, rank)
+            start = h.find(p, start + 1)
+    return None if best is None else _ck.SENIORITY_LEVELS[best]
+
+
+def _screen_cfg(profile):
+    node = (profile or {}).get("screen")
+    return node if isinstance(node, dict) else {}
+
+
+def title_signals(profile):
+    """The title-field `screen.likely_pass_signals` (the MANDATE, owner decision R1: out-of-scope
+    function phrases are a pass LEAN, never a removal) as signals restricted to the title field.
+    Raises ValueError when the list cannot be read -- an unreadable list is loud, never empty."""
+    import config_keys as _ck
+    signals = _screen_cfg(profile).get("likely_pass_signals")
+    problems = _ck.validate_likely_pass_signals(signals)
+    if problems:
+        raise ValueError("screen.likely_pass_signals cannot be read: %s" % "; ".join(problems))
+    return [dict(s, fields=["title"]) for s in (signals or []) if "title" in s["fields"]]
+
+
+def title_keys(profile):
+    """A short hash of everything the title rule reads (dev #722 / public #156, R2):
+    `screen.title_floor`, `targets.titles` and the title-field `likely_pass_signals` (id and
+    phrase). `record.py screened` stores it on the screen; `your_move.triage_missing` asks for a
+    re-screen when the stored hash is not today's. An unreadable signal list hashes as itself, so
+    fixing it also re-screens."""
+    import hashlib
+    try:
+        sigs = [[s["id"], s["phrase"]] for s in title_signals(profile)]
+    except ValueError as e:
+        sigs = ["unreadable", str(e)]
+    floor = _screen_cfg(profile).get("title_floor")
+    titles = [t for t in ((profile or {}).get("targets") or {}).get("titles") or [] if t]
+    raw = json.dumps({"floor": floor, "titles": titles, "signals": sigs}, sort_keys=True,
+                     ensure_ascii=False)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def screen_is_title_stale(screen, profile):
+    """True when a STORED screen was computed under different title keys than today's (dev #722 /
+    public #156, R2): its `title_keys` is not `title_keys(profile)`, or it has none and a
+    `screen.title_floor` is now set (a screen stored by 0.68.0 or earlier). With no floor set, an
+    absent hash is NOT stale: nothing the old screen could have missed has been asked of it. A
+    screen that is not an object is not this function's question (`triage_missing` already asks
+    for it). `your_move.triage_missing` reads this, so the pile screened before the keys existed
+    drains through the normal triage path, at the per-run cap, with no bulk pass."""
+    if not isinstance(screen, dict):
+        return False
+    stored = screen.get("title_keys")
+    if stored is None:
+        return _screen_cfg(profile).get("title_floor") is not None
+    return stored != title_keys(profile)
+
+
+def title_scope_count(opps, profile):
+    """`{undecided, below_floor, off_mandate, rescreen_pending}` over the undecided backlog roles
+    (dev #722 / public #156, R2's measure): `undecided` is `status: backlog` with verdict
+    `undecided`; `below_floor` / `off_mandate` count the ones whose TITLE reads that way under
+    today's keys (computed live from the title, never from a stored screen, so it is the size of
+    the problem before any role is re-screened); `rescreen_pending` counts those with a stored
+    screen whose title keys are stale. Read-only. Run before and after on the fixture; on a real
+    profile only the owner's own session reads it, never a dispatch."""
+    import config_keys as _ck
+    floor = _screen_cfg(profile).get("title_floor")
+    problems = _ck.validate_title_floor(floor)
+    try:
+        signals = title_signals(profile)
+    except ValueError:
+        signals = []
+    configured = [t for t in ((profile or {}).get("targets") or {}).get("titles") or [] if t]
+    out = {"undecided": 0, "below_floor": 0, "off_mandate": 0, "rescreen_pending": 0}
+    for o in opps:
+        if o.get("status") != "backlog" or o.get("verdict") != "undecided":
+            continue
+        out["undecided"] += 1
+        if screen_is_title_stale(o.get("screen"), profile):
+            out["rescreen_pending"] += 1
+        if floor is not None and not problems:
+            level = title_level(o.get("title"))
+            if level is not None and (_ck.SENIORITY_LEVELS.index(level)
+                                      < _ck.SENIORITY_LEVELS.index(floor)):
+                out["below_floor"] += 1
+                continue
+        if signals and not _matches_target(o, configured) and match_signals(
+                o, None, "", signals):
+            out["off_mandate"] += 1
+    return out
+
+
+def _matches_target(opp, configured):
+    import pipeline_index as _pidx
+    want = _pidx.normalize_title(opp.get("title"))
+    return bool(want) and any(
+        (" %s " % _pidx.normalize_title(t)) in (" %s " % want)
+        for t in configured if _pidx.normalize_title(t))
+
+
+def title_floor_lean(screen, profile):
+    """`(lean, line, hit)` or None: the lean a STORED screen's BELOW-FLOOR title implies (owner
+    decision R1, 2026-10-16). A below-floor title NEVER removes -- a larger company gives a lower
+    title for the same scope -- so pay decides, read from the comp rule's stored verdict:
+
+      comp CLEARS         -> pursue, "title below your floor (<level>), but pay is within your range"
+      comp BELOW-FLOOR    -> None: the comp rule already removes; the title adds nothing
+      any other comp      -> ask, "title below your floor (<level>); check pay before deciding"
+
+    `hit` is the computed signal `record.py lean` stores beside the matched signals, in the shape
+    they have (`id`, `reason`, `matched_in`). None when the screen did not flag the title."""
+    rules = screen.get("rules") if isinstance(screen, dict) else None
+    if not isinstance(rules, dict) or rules.get("title") != "BELOW-FLOOR":
+        return None
+    floor = _screen_cfg(profile).get("title_floor")
+    if rules.get("comp") == BELOW or not isinstance(floor, str) or not floor:
+        return None
+    if rules.get("comp") == CLEARS:
+        lean, line = "pursue", "title below your floor (%s), but pay is within your range" % floor
+    else:
+        lean, line = "ask", "title below your floor (%s); check pay before deciding" % floor
+    return lean, line, {"id": TITLE_FLOOR_LEAN_ID, "reason": line, "matched_in": "title"}
+
+
 def _title_rule(opp, profile):
-    """`(token, text, review)` for the advisory title rule: MATCHES / NO-MATCH /
-    NO-CONFIGURED-TITLES. Only ever a `review`, never a removal."""
+    """`(token, text, review)` for the advisory title rule: BELOW-FLOOR / OFF-MANDATE / MATCHES /
+    NO-MATCH / NO-CONFIGURED-TITLES (/ UNREADABLE-TITLE-KEYS). Only ever a `review`, never a
+    removal.
+
+    dev #722 / public #156 (jobsearch 0.69.0): `screen.title_floor` and the title-field
+    `screen.likely_pass_signals` (the mandate) add two tokens. PRECEDENCE: BELOW-FLOOR >
+    OFF-MANDATE > MATCHES / NO-MATCH / NO-CONFIGURED-TITLES. Neither removes: the verdict stays
+    `review:title` and the LEAN each implies is computed from the stored screen at `record.py lean`
+    time (`title_floor_lean`; a signal match through `match_signals`). A seniority level the
+    ladder cannot read is never below the floor. The floor is not skipped when the title matches a
+    configured target (seniority is orthogonal to function); the mandate IS skipped then, because
+    a configured target is in mandate by definition. With neither key configured this is exactly
+    the 0.68.0 rule. A key that cannot be read is a visible `UNREADABLE-TITLE-KEYS` review, never a
+    silent skip."""
+    import config_keys as _ck
     import pipeline_index as _pidx
     configured = [t for t in ((profile.get("targets") or {}).get("titles") or []) if t]
     want = _pidx.normalize_title(opp.get("title"))
@@ -614,6 +778,29 @@ def _title_rule(opp, profile):
             if nt and (" %s " % nt) in (" %s " % want):
                 matched = t
                 break
+    floor = _screen_cfg(profile).get("title_floor")
+    floor_problems = _ck.validate_title_floor(floor)
+    try:
+        signals = title_signals(profile)
+        signal_problem = None
+    except ValueError as e:
+        signals, signal_problem = [], str(e)
+    if floor_problems or signal_problem:
+        return ("UNREADABLE-TITLE-KEYS", "UNREADABLE -- %s" % "; ".join(
+            floor_problems + ([signal_problem] if signal_problem else [])), True)
+    if floor is not None:
+        level = title_level(opp.get("title"))
+        if level is not None and (_ck.SENIORITY_LEVELS.index(level)
+                                  < _ck.SENIORITY_LEVELS.index(floor)):
+            return ("BELOW-FLOOR",
+                    "BELOW-FLOOR (reads %s, below your floor %s) -- advisory: pay decides, "
+                    "nothing is removed" % (level, floor), True)
+    if signals and not matched:
+        hits = match_signals(opp, None, "", signals)
+        if hits:
+            return ("OFF-MANDATE",
+                    "OFF-MANDATE (%s) -- advisory: a lean to pass, nothing is removed"
+                    % "; ".join("%s: %s" % (h["id"], h["reason"]) for h in hits), True)
     if matched:
         return "MATCHES", "MATCHES %r" % matched, False
     if not configured:
@@ -875,6 +1062,11 @@ def main():
     ap = argparse.ArgumentParser(description="Profile loader + executable comp screen.")
     ap.add_argument("--screen", metavar="OPP_ID")
     ap.add_argument("--screen-all", action="store_true")
+    ap.add_argument("--title-scope-count", dest="title_scope_count", action="store_true",
+                    help="dev #722 / public #156 (R2): print `undecided: N, flagged below floor: "
+                         "F, off-mandate: M, re-screen pending: P` over the undecided backlog "
+                         "under today's screen.title_floor / title-field likely_pass_signals. "
+                         "Read-only; the measure to take before and after the keys are set.")
     ap.add_argument("--minimal-screen", dest="minimal_screen", metavar="OPP_ID",
                     help="dev #692 / public #140: the scripted screen every captured role gets "
                          "under EVERY posture (comp floor, passed/duplicate, geography, advisory "
@@ -892,6 +1084,12 @@ def main():
         # top-level section unchanged — config_keys.describe()'s dotted lookups (ats.*,
         # communications.*) read exactly the same tree either way, without a third read.
         return print_options(profile)
+
+    if args.title_scope_count:
+        c = title_scope_count(_load_opps(), profile)
+        print("undecided: %d, flagged below floor: %d, off-mandate: %d, re-screen pending: %d"
+              % (c["undecided"], c["below_floor"], c["off_mandate"], c["rescreen_pending"]))
+        return 0
 
     if args.minimal_screen:
         all_opps = _load_opps()

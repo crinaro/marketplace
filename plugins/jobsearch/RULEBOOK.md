@@ -155,8 +155,8 @@ before they were centralized — a value stated twice is a value that disagrees 
    lists capabilities confirmed absent. Naming a limit makes everything before it more credible;
    stretching one loses the room.
 
-**⚠️ One open question lives in the data, not here:** the relocation tier's `basis_confirmed` is
-still `false`. Ask before any comp conversation leans on that tier.
+**⚠️ Tier basis confirmation lives in the data:** `compensation.tiers[].basis_confirmed`;
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/profile.py"` flags an unconfirmed tier. Ask before a comp conversation leans on one.
 
 ## Hard rules
 - **SCAN FOR MEETING ARTIFACTS AND HUMAN SENDERS *FIRST*, BEFORE ANY NAMED PRIORITY LIST.** Added 2026-07-21 after the 2PM Gmail scan missed a **confirmed interview booked for the next morning** (<an employer>, Wed 7/22 9:00am) that had arrived *inside* its window, and reported "no new recruiter/human contact." **Two causes worth generalising: (1) a numbered priority list in a scan brief reads as permission to ignore everything not on it** — so the sweep for `subject:(Invitation OR "Appointment booked" OR "Updated invitation")` and for any non-automated human sender must come FIRST and unconditionally; **(2) a thread's SUBJECT LINE can be weeks stale while its newest message schedules something tomorrow** — this one read "Re: Appointment booked: ... @ Wed Jul 15" and contained the 7/22 booking. **Never judge a thread's freshness by its subject.** Corollary: the commitments store is only as good as the scan feeding it — a stale This Week tab is the *symptom*; a scan that skipped an artifact type is the *cause*.
