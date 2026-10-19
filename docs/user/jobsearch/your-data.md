@@ -1733,6 +1733,20 @@ again, with the reason shown, and a citation that has never been checked is repo
 citation reads as unverified; if it cannot be read, the check says so and treats them the same way.
 You can delete it at any time; the next `--check-coverage` writes it again.
 
+**Two more small files: `purity-check.json` and `purity-progress.json`.** At the start of a
+session the plugin checks that its own files do not contain text from your profile (a name, an
+employer, a contact), because those files are meant to work unchanged for anyone. `purity-check.json`
+is the verdict of the last complete check. `purity-progress.json` is how a check that runs out of
+its few seconds of session-start time carries on where it stopped on the next run instead of
+starting over: for each of the plugin's own files it keeps a fingerprint of the file as it was
+checked, and which lines matched. A file whose fingerprint has not changed is not read again, so a
+check that cannot finish in one session still finishes within a few, and a later check only reads
+what changed. The progress file is thrown away and the check starts from the beginning
+whenever the plugin is updated or the names it looks for change, so an old "clean" answer is never
+reused for a question it was not asked. Neither file contains a name, an employer or any text from
+your profile or from the plugin's files: a match is recorded only as a file, a line number and a
+position in the list. You can delete either at any time; the next check writes it again.
+
 **It is not committed to git.** The same upgrade that created the folder added `.jobsearch/` to
 your profile's `.gitignore` automatically — this state is specific to the machine it runs on,
 and committing it would just add churn to every commit for no benefit.

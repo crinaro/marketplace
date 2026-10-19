@@ -671,10 +671,102 @@ class ScanBudgetExceeded(Exception):
     """Raised by `scan()` when its `deadline` passes MID-FILE (dev #526, public #123)."""
 
 
-# dev #526 — how many terms `scan()` tries between two looks at the clock. Small enough that one
-# pathological LINE cannot outrun the budget by more than a few hundred regex passes; large
-# enough that the clock read is noise next to the regex work.
+# dev #526 — how many CANDIDATE terms `scan()` tries between two looks at the clock. Small
+# enough that one pathological LINE cannot outrun the budget by more than a few hundred regex
+# passes; large enough that the clock read is noise next to the regex work.
 _DEADLINE_EVERY_TERMS = 128
+
+
+# ⭐⭐ dev #709 (public #149) — THE SCAN IS CHEAP BECAUSE IT NEVER ASKS A TERM THAT CANNOT MATCH.
+#
+# The old inner loop was `for line: for kind: for term: re.finditer(<pattern built from term>)`.
+# Every term was compiled from source text on every line (Python's own compile cache holds a few
+# hundred patterns, so a profile with thousands of terms missed it every time) and searched on
+# every line. Measured on this plugin's tracked files with a SYNTHESIZED 3,000-term list: the
+# per-term loop costs about one microsecond per (term, line), over 157,000 lines, so 5+ minutes
+# of CPU for a CLEAN verdict. `STANDALONE_BUDGET_S` (300) and `hook_step()`'s 8 s slice could
+# neither of them finish it: the issue measured 97 of 138 files and 9 of 138.
+#
+# The two fixes that were tried first, in this order, and why neither is the answer:
+#   * ONE COMBINED ALTERNATION per kind (`(?:a|b|c|...)`) compiles once and is exactly right, but
+#     `re` has no trie: it tries every alternative at every position. Measured on the same
+#     157,601 lines, a 3,000-alternative pattern took 39.6 s, 8x better than the loop and still
+#     over the hook's 8 s for ONE file set. It is correct and not enough.
+#   * A per-term compile cache fixes the compile half only; the search half is the product.
+#
+# What is done instead: every term has a FIRST ALPHANUMERIC RUN (`[^\W_]+`, the very character
+# class the boundary lookarounds below are built from). A term can only match at a position whose
+# boundary lookbehind holds, so that first run must appear in the line as a WHOLE run, compared
+# case-insensitively. So a line is cut into its runs once, each run is looked up in a dict from
+# folded first-run to term positions, and ONLY the terms that found their first run on that line
+# have their (lazily compiled, compiled once) pattern run. The pattern is still the old, exact
+# one: this index decides which terms get asked, never what a match is, so every hit, every
+# exemption and every ordering is identical to the per-term loop (TestScanIndexIsExact proves it
+# line for line against a copy of the old loop). A term with no alphanumeric character at all is
+# always asked. The fold below is `lower()` plus the pairs `re` itself treats as equal under
+# IGNORECASE; a case this fold does not know would be a MISSED hit, which is why the differential
+# test carries non-ASCII terms.
+_RUN_RE = re.compile(r"[^\W_]+")
+_FOLD_MAP = {
+    0x130: "i", 0x131: "i", 0x17f: "s", 0x212a: "k",               # the four ASCII-adjacent ones
+    0xb5: "μ", 0x345: "ι", 0x1fbe: "ι", 0x3d0: "β", 0x3f5: "ε",
+    0x3d1: "θ", 0x3f0: "κ", 0x3d6: "π", 0x3f1: "ρ", 0x3c2: "σ",
+    0x3d5: "φ", 0x1e9b: "ṡ", 0xfb06: "ﬅ", 0x1fd3: "ΐ", 0x1fe3: "ΰ",
+}
+
+
+def _fold(s):
+    """Case-fold `s` the way `re.IGNORECASE` compares characters, for the run index only."""
+    if s.isascii():
+        return s.lower()
+    return s.translate(_FOLD_MAP).lower().translate(_FOLD_MAP)
+
+
+class _CompiledTerms:
+    """One scan's term set, compiled ONCE: per kind, the terms in their original order, a dict
+    from folded first run to term positions, and the (lazy) patterns. Also the published-identity
+    allowance patterns, compiled once."""
+
+    def __init__(self, terms):
+        self.kinds = []
+        for kind, words in terms.items():
+            words = list(words)
+            index, always = {}, []
+            for pos, w in enumerate(words):
+                m = _RUN_RE.search(_fold(w))
+                if m is None:
+                    always.append(pos)          # no alphanumeric character: always asked
+                else:
+                    index.setdefault(m.group(0), []).append(pos)
+            self.kinds.append((kind, words, index, always, [None] * len(words)))
+        self.allow = [re.compile(re.escape(a), re.IGNORECASE) for a in ALLOWANCES]
+        self.compiles = len(self.allow)
+
+    def pattern(self, kind_slot, pos):
+        pats = self.kinds[kind_slot][4]
+        p = pats[pos]
+        if p is None:
+            # ⭐ IDENTIFIER-AWARE, NOT JUST WORD-BOUNDARY (GitHub #45) and CASE-INSENSITIVE
+            # (GitHub #19): see the long comment at the match site in `scan()`.
+            p = pats[pos] = re.compile(r"(?<![^\W_])%s(?![^\W_])"
+                                       % re.escape(self.kinds[kind_slot][1][pos]),
+                                       re.IGNORECASE)
+            self.compiles += 1
+        return p
+
+
+_COMPILED_CACHE = {}
+
+
+def _compiled_terms(terms):
+    """The `_CompiledTerms` for `terms`, built once per distinct term set (and allowance set)."""
+    key = (tuple((k, tuple(v)) for k, v in terms.items()), tuple(ALLOWANCES))
+    ct = _COMPILED_CACHE.get(key)
+    if ct is None:
+        if len(_COMPILED_CACHE) >= 4:
+            _COMPILED_CACHE.clear()
+        ct = _COMPILED_CACHE[key] = _CompiledTerms(terms)
+    return ct
 
 
 def scan(path, terms, exempt_sink=None, deadline=None):
@@ -683,11 +775,14 @@ def scan(path, terms, exempt_sink=None, deadline=None):
     ⭐⭐ dev #526 (public #123) — `deadline` (a `time.monotonic()` value, or None for unbounded)
     makes the budget bind INSIDE a file. `main()`'s budget used to be checked only BETWEEN files,
     so one file whose scan was slow (many profile terms x many lines — the cost is their
-    product, and Python re-compiles a pattern the 513th time it is seen) ran to completion no
-    matter what `--budget-s` said: a 3 s budget measured 8.4 s on a synthetic 2,500-term profile,
-    and a larger profile or file stretches that without limit. Past the deadline this raises
-    `ScanBudgetExceeded`; the caller counts the file as NEVER SCANNED, exactly like the files
-    after it. `hook_step()` and the tests call this with no deadline and are unchanged."""
+    product) ran to completion no matter what `--budget-s` said: a 3 s budget measured 8.4 s on a
+    synthetic 2,500-term profile, and a larger profile or file stretches that without limit. Past
+    the deadline this raises `ScanBudgetExceeded`; the caller counts the file as NEVER SCANNED,
+    exactly like the files after it. `hook_step()` and the tests call this with no deadline and
+    are unchanged.
+
+    ⭐⭐ dev #709 (public #149) — the term set is compiled once and each line is asked only the
+    terms whose first alphanumeric run it contains; see the comment above `_RUN_RE`."""
     rel = os.path.relpath(path, ENGINE_ROOT)
     hits = []
     if not os.path.exists(path):
@@ -700,68 +795,264 @@ def scan(path, terms, exempt_sink=None, deadline=None):
             lines = fh.readlines()
     except (OSError, UnicodeDecodeError):
         return rel, None          # not text — the caller counts it as excluded, with a reason
+    ct = _compiled_terms(terms)
     tick = 0
     for n, line in enumerate(lines, 1):
         if deadline is not None and time.monotonic() >= deadline:
             raise ScanBudgetExceeded(rel)
-        # Spans that are published identity, so a term inside one is not a finding.
-        allowed = [m.span() for a in ALLOWANCES
-                   for m in re.finditer(re.escape(a), line, re.IGNORECASE)]
-        for kind, words in terms.items():
-            for w in words:
-                    tick += 1
-                    if (deadline is not None and tick % _DEADLINE_EVERY_TERMS == 0
-                            and time.monotonic() >= deadline):
-                        raise ScanBudgetExceeded(rel)
-                    # ⭐⭐ CASE-INSENSITIVE, DELIBERATELY (GitHub #19) — the second near-miss in
-                    # this exact match. The first missed terms stored as regex source rather than
-                    # plain text (fixed by `re.escape`, above). This one missed a term written in
-                    # ANY OTHER CASE than the one it happened to be derived in — `_profile_terms()`
-                    # takes a name exactly as `user.json` capitalises it, so an UPPERCASED source
-                    # tag elsewhere in the engine (RULEBOOK.md's own knowledge-base convention
-                    # line names its source with one) never matched, and the scan of that exact
-                    # file reported CLEAN. `re.IGNORECASE` is the general fix — a term can appear
-                    # in mixed case too, which no small set of explicit case variants (Title /
-                    # UPPER / lower) would cover, and generating one is just re-deriving what the
-                    # flag already does. This gate certifies a repository safe to publish; a case
-                    # it cannot see is a leak it certifies clean.
-                    # ⭐ IDENTIFIER-AWARE, NOT JUST WORD-BOUNDARY — GitHub #45.
-                    #
-                    # `\b` treats `_` as a word character, so `\bname\b` does NOT match
-                    # `..._requires_<owner>` or `NEEDS_<OWNER>_HEADER`. Both sat in
-                    # tracked files while this gate reported CLEAN, because it was matching
-                    # VALUES and a name had been baked into an IDENTIFIER. Requiring a
-                    # non-alphanumeric neighbour instead treats `_`, `-`, `.` and `/` as the
-                    # separators they are, while still refusing to fire inside a longer word.
-                    # ⭐ dev #342 — this separator-aware match is what makes `_shape_exempt()`'s
-                    # own join test meaningful: it reuses the exact same neighbour-character
-                    # definition to tell "joined" from "unjoined". Loosen one without the other
-                    # and the two stop agreeing on what a boundary is.
-                    # dev #411 T5 — Unicode-aware boundary: `(?<![^\W_])...(?![^\W_])` treats
-                    # any Unicode letter/digit as a boundary-breaking neighbour (not just
-                    # A-Za-z0-9), so `Über` cannot match inside `Überprüfung`, while `_` stays
-                    # a separator (matches `[^\W_]`'s own exclusion) so dev #45's joined-
-                    # identifier shape keeps firing. Same character class `_shape_exempt()`'s
-                    # own join test already uses via `str.isalnum()` (Unicode-aware itself), so
-                    # the two stay in agreement about what a boundary is.
-                    for m in re.finditer(r"(?<![^\W_])%s(?![^\W_])" % re.escape(w),
-                                         line, re.IGNORECASE):
-                        if any(s <= m.start() and m.end() <= e for s, e in allowed):
-                            continue      # inside the published publisher identity
-                        # dev #411 T2 — a single-token term under 6 characters must match in
-                        # Title-case or UPPER to fire; a lowercase/mixed occurrence (e.g. `max`
-                        # mid-sentence) no longer counts as a hit, for ANY kind including
-                        # `name` (unlike `_shape_exempt()`, which leaves `name` strict).
-                        text = m.group(0)
-                        if len(w) < 6 and " " not in w and not (text.istitle() or text.isupper()):
-                            continue
-                        if _shape_exempt(kind, w, m, line):
-                            if exempt_sink is not None:
-                                exempt_sink.append((n, kind, w, line.strip()[:110]))
-                            continue      # dev #342 — exempt by shape, never by term
-                        hits.append((n, kind, w, line.strip()[:110]))
-                        break
+        runs = set(_RUN_RE.findall(_fold(line)))
+        per_kind = None
+        for slot, (kind, words, index, always, _pats) in enumerate(ct.kinds):
+            cand = list(always)
+            for r in runs:
+                found = index.get(r)
+                if found:
+                    cand.extend(found)
+            if cand:
+                if per_kind is None:
+                    per_kind = []
+                per_kind.append((slot, sorted(cand) if len(cand) > 1 else cand))
+        if per_kind is None:
+            continue
+        # Spans that are published identity, so a term inside one is not a finding. Computed only
+        # for a line that has a candidate at all.
+        allowed = [m.span() for a in ct.allow for m in a.finditer(line)]
+        for slot, cand in per_kind:
+            kind, words = ct.kinds[slot][0], ct.kinds[slot][1]
+            for pos in cand:
+                w = words[pos]
+                tick += 1
+                if (deadline is not None and tick % _DEADLINE_EVERY_TERMS == 0
+                        and time.monotonic() >= deadline):
+                    raise ScanBudgetExceeded(rel)
+                # ⭐⭐ CASE-INSENSITIVE, DELIBERATELY (GitHub #19) — the second near-miss in
+                # this exact match. The first missed terms stored as regex source rather than
+                # plain text (fixed by `re.escape`, in `_CompiledTerms.pattern`). This one
+                # missed a term written in ANY OTHER CASE than the one it happened to be derived
+                # in — `_profile_terms()` takes a name exactly as `user.json` capitalises it, so
+                # an UPPERCASED source tag elsewhere in the engine (RULEBOOK.md's own
+                # knowledge-base convention line names its source with one) never matched, and
+                # the scan of that exact file reported CLEAN. `re.IGNORECASE` is the general fix
+                # — a term can appear in mixed case too, which no small set of explicit case
+                # variants (Title / UPPER / lower) would cover, and generating one is just
+                # re-deriving what the flag already does. This gate certifies a repository safe
+                # to publish; a case it cannot see is a leak it certifies clean.
+                # ⭐ IDENTIFIER-AWARE, NOT JUST WORD-BOUNDARY — GitHub #45.
+                #
+                # `\b` treats `_` as a word character, so `\bname\b` does NOT match
+                # `..._requires_<owner>` or `NEEDS_<OWNER>_HEADER`. Both sat in
+                # tracked files while this gate reported CLEAN, because it was matching
+                # VALUES and a name had been baked into an IDENTIFIER. Requiring a
+                # non-alphanumeric neighbour instead treats `_`, `-`, `.` and `/` as the
+                # separators they are, while still refusing to fire inside a longer word.
+                # ⭐ dev #342 — this separator-aware match is what makes `_shape_exempt()`'s
+                # own join test meaningful: it reuses the exact same neighbour-character
+                # definition to tell "joined" from "unjoined". Loosen one without the other
+                # and the two stop agreeing on what a boundary is.
+                # dev #411 T5 — Unicode-aware boundary: `(?<![^\W_])...(?![^\W_])` treats
+                # any Unicode letter/digit as a boundary-breaking neighbour (not just
+                # A-Za-z0-9), so `Über` cannot match inside `Überprüfung`, while `_` stays
+                # a separator (matches `[^\W_]`'s own exclusion) so dev #45's joined-
+                # identifier shape keeps firing. Same character class `_shape_exempt()`'s
+                # own join test already uses via `str.isalnum()` (Unicode-aware itself), so
+                # the two stay in agreement about what a boundary is.
+                for m in ct.pattern(slot, pos).finditer(line):
+                    if any(s <= m.start() and m.end() <= e for s, e in allowed):
+                        continue      # inside the published publisher identity
+                    # dev #411 T2 — a single-token term under 6 characters must match in
+                    # Title-case or UPPER to fire; a lowercase/mixed occurrence (e.g. `max`
+                    # mid-sentence) no longer counts as a hit, for ANY kind including
+                    # `name` (unlike `_shape_exempt()`, which leaves `name` strict).
+                    text = m.group(0)
+                    if len(w) < 6 and " " not in w and not (text.istitle() or text.isupper()):
+                        continue
+                    if _shape_exempt(kind, w, m, line):
+                        if exempt_sink is not None:
+                            exempt_sink.append((n, kind, w, line.strip()[:110]))
+                        continue      # dev #342 — exempt by shape, never by term
+                    hits.append((n, kind, w, line.strip()[:110]))
+                    break
     return rel, hits
+
+
+# ══════════════════════════════════════════════════════════════════════════════════════════
+# dev #709 (public #149) — THE PROGRESS FILE: a scan that is cut short resumes, and one that is
+# complete is not repeated for files that did not change.
+#
+# `hook_step()` slices its scan under `budget_s` because it runs inside a SessionStart hook. It
+# used to begin at file zero on EVERY session, so a slice that covered 9 of 138 files covered the
+# SAME 9 files every time and the scan could never finish ("resumes next session" was printed and
+# was not true). The record below is what makes it true: one entry per engine file, keyed by the
+# file's CONTENT HASH, holding that file's hits and exempt matches for the term set the file was
+# scanned under. A run reuses an entry whose hash still matches and spends its budget on the
+# files that have none, and `min_new=1` guarantees it scans at least one of those, so the covered
+# count rises on every run and N slices complete the scan.
+#
+# ⚠️ AN ENTRY IS ONLY EVER REUSED UNDER THE SAME KEY (`_progress_key()`): the scanner's own source,
+# the engine version, the published-identity allowances and the term set. Change any of them and
+# the whole file is discarded and the scan restarts: a progress file that survived a changed term
+# list would report CLEAN for a leak it had never looked for. An unreadable or malformed file is
+# the same as an absent one.
+#
+# ⭐ The file names no term. A hit is `[line, kind, term_index, text_sha256]` where `term_index`
+# points into the SORTED term list of its kind, exactly as the stamp's pervasive fold already
+# does; the term list's hash is part of the key, so an index is never read against a different
+# list. The text of the matched line is never stored either (it is re-read from the unchanged
+# file when a caller needs it).
+# ══════════════════════════════════════════════════════════════════════════════════════════
+PROGRESS_REL = os.path.join(".jobsearch", "purity-progress.json")
+PROGRESS_VERSION = 1
+
+
+def _file_sha256(path):
+    """sha256 of a file's bytes, or None when it cannot be read."""
+    try:
+        h = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def _scanner_sha():
+    """sha256 of THIS script's source: a change to how matching or exemption works invalidates
+    every cached verdict. If the source cannot be read, a random value is returned so that no
+    progress file ever matches: a scanner that cannot identify itself must not reuse a verdict."""
+    sha = _file_sha256(os.path.abspath(__file__))
+    return sha or "unidentified-%s" % os.urandom(8).hex()
+
+
+def _progress_key(engine_version, terms):
+    blob = json.dumps({"progress": PROGRESS_VERSION, "scanner": _scanner_sha(),
+                       "engine_version": engine_version, "terms": _terms_hash(terms),
+                       "allowances": list(ALLOWANCES)}, sort_keys=True)
+    return _sha256_text(blob)
+
+
+def _load_progress(path, key):
+    """The cached per-file records if `path` holds a well-formed progress file for exactly `key`;
+    otherwise `{}`, which is a scan from the start."""
+    obj = _read_json(path)
+    if (isinstance(obj, dict) and obj.get("version") == PROGRESS_VERSION
+            and obj.get("key") == key and isinstance(obj.get("files"), dict)):
+        return obj["files"]
+    return {}
+
+
+def _save_progress(path, key, records, complete):
+    """Best-effort and atomic: a profile that cannot persist state just rescans next time."""
+    try:
+        _write_json_atomic(path, {"version": PROGRESS_VERSION, "key": key,
+                                  "complete": bool(complete), "written": _now_iso(),
+                                  "files": records})
+        return True
+    except OSError:
+        return False
+
+
+class _IncrementalResult:
+    """What `_scan_incremental()` produced: `records` (rel -> record) for every COVERED file, in
+    scan order, plus how the run went."""
+
+    def __init__(self, terms):
+        self.terms = terms
+        self.records = {}
+        self.order = []             # (path, rel_key) of covered files, in order
+        self.uncovered = []         # paths neither reused nor scanned this run
+        self.scanned_now = 0
+        self.reused = 0
+        self.budget_hit = False
+
+    @property
+    def partial(self):
+        return bool(self.uncovered)
+
+
+def _hit_rows(path, terms, hits):
+    """`[line, kind, term_index, text_sha256]` rows for scan()'s `(n, kind, w, text)` hits."""
+    if not hits:
+        return []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except (OSError, UnicodeDecodeError):
+        lines = []
+    sorted_terms = {}
+    out = []
+    for n, kind, w, _text in hits:
+        st = sorted_terms.get(kind)
+        if st is None:
+            st = sorted_terms[kind] = sorted(terms.get(kind, []))
+        raw = lines[n - 1] if 0 < n <= len(lines) else ""
+        out.append([n, kind, st.index(w) if w in st else -1, _sha256_text(raw)])
+    return out
+
+
+def _scan_incremental(files, base, terms, cached, over_budget=None, min_new=0,
+                      need_exempt=False, deadline=None):
+    """Cover `files` (absolute paths under `base`) for `terms`, reusing `cached` records whose
+    content hash still matches and scanning the rest while `over_budget()` is false. After the
+    budget runs out the remaining files are still checked against `cached` (a hash is cheap) but
+    never scanned. `min_new` files are scanned regardless of the budget, which is what lets a
+    budget smaller than one file still make progress. `need_exempt` requires the record to carry
+    its shape-exempt matches (the standalone report prints them); a hook-made record does not, and
+    is rescanned for that caller. `deadline` is handed into `scan()` so it binds inside a file."""
+    res = _IncrementalResult(terms)
+    for path in files:
+        rel_key = os.path.relpath(path, base)
+        sha = _file_sha256(path)
+        rec = cached.get(rel_key)
+        if (sha is not None and isinstance(rec, dict) and rec.get("sha") == sha
+                and (not need_exempt or rec.get("exempt") is not None)):
+            res.records[rel_key] = rec
+            res.order.append((path, rel_key))
+            res.reused += 1
+            continue
+        if res.budget_hit or (res.scanned_now >= min_new and over_budget is not None
+                              and over_budget()):
+            res.budget_hit = True
+            res.uncovered.append(path)
+            continue
+        sink = [] if need_exempt else None
+        try:
+            if need_exempt or deadline is not None:
+                rel, hs = scan(path, terms, sink, deadline)
+            else:
+                rel, hs = scan(path, terms)
+        except ScanBudgetExceeded:
+            res.budget_hit = True
+            res.uncovered.append(path)
+            continue
+        res.scanned_now += 1
+        if hs is None:
+            rec = {"sha": sha, "text": False, "path": rel, "hits": [], "exempt": []}
+        else:
+            rec = {"sha": sha, "text": True, "path": rel, "hits": _hit_rows(path, terms, hs),
+                   "exempt": (_hit_rows(path, terms, sink) if need_exempt else None)}
+        if sha is not None:
+            res.records[rel_key] = rec
+        res.order.append((path, rel_key))
+    return res
+
+
+def _materialize(path, terms, rows):
+    """Back from stored rows to `(line, kind, term, stripped_text)` for display and exceptions."""
+    if not rows:
+        return []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+    except (OSError, UnicodeDecodeError):
+        lines = []
+    out = []
+    for n, kind, idx, _sha in rows:
+        st = sorted(terms.get(kind, []))
+        w = st[idx] if 0 <= idx < len(st) else "?"
+        text = lines[n - 1].strip()[:110] if 0 < n <= len(lines) else ""
+        out.append((n, kind, w, text))
+    return out
 
 
 # ══════════════════════════════════════════════════════════════════════════════════════════
@@ -1084,25 +1375,36 @@ def hook_step(profile, engine, budget_s=8, migrations_verdict="current"):
 
         # §2.3 step 3 — the scan itself, sliced under budget_s (best-effort: a whole-file pass
         # is atomic here rather than mid-file, which keeps a hit's line count honest).
+        #
+        # ⭐⭐ dev #709 (public #149) — A SLICE RESUMES, IT DOES NOT RESTART. Every run used to
+        # begin at file zero, so a budget that covered 9 of 138 files covered the same 9 every
+        # session and the scan never finished. The per-file record in the progress file (see
+        # `_scan_incremental()`) is reused when the file's content hash is unchanged, and
+        # `min_new=1` makes every run scan at least one file that has no record, so the covered
+        # count rises on every run and a bounded sequence of runs reaches a complete verdict.
         t0 = time.time()
         files = _engine_files_for(engine)
-        hits_raw, resume_from, partial = [], None, False
-        for i, f in enumerate(files):
-            if time.time() - t0 > budget_s:
-                resume_from, partial = i, True
-                break
-            rel, hs = scan(f, terms)
-            if hs is None:
+        progress_path = os.path.join(state_dir, os.path.basename(PROGRESS_REL))
+        progress_key = _progress_key(engine_version, terms)
+        res = _scan_incremental(files, engine, terms, _load_progress(progress_path, progress_key),
+                                over_budget=lambda: time.time() - t0 > budget_s, min_new=1)
+        partial = res.partial
+        covered = len(res.order)
+        resume_from = files.index(res.uncovered[0]) if partial else None
+        _save_progress(progress_path, progress_key, res.records, complete=not partial)
+        hits_raw = []
+        for path, rel_key in res.order:
+            rec = res.records.get(rel_key)
+            if not rec or not rec.get("text"):
                 continue
-            for n, kind, w, _line in hs:
-                snippet_line = ""
-                try:
-                    with open(f, encoding="utf-8") as fh:
-                        snippet_line = fh.readlines()[n - 1]
-                except Exception:
-                    pass
-                hits_raw.append({"path": rel, "line": n, "kind": kind, "term": w,
-                                 "text_sha256": _sha256_text(snippet_line)})
+            sorted_terms = {}
+            for n, kind, idx, text_sha in rec["hits"]:
+                st = sorted_terms.get(kind)
+                if st is None:
+                    st = sorted_terms[kind] = sorted(terms.get(kind, []))
+                hits_raw.append({"path": rec["path"], "line": n, "kind": kind,
+                                 "term": st[idx] if 0 <= idx < len(st) else "?",
+                                 "text_sha256": text_sha})
 
         kept, pervasive = _pervasive_fold(hits_raw, terms)
 
@@ -1128,7 +1430,7 @@ def hook_step(profile, engine, budget_s=8, migrations_verdict="current"):
         new_stamp = {
             "engine_version": engine_version, "engine_root": engine_real, "sources": src_stat,
             "terms_sha256": thash, "scanned_at": _now_iso(),
-            "files_total": len(files), "files_scanned": len(files) - (1 if partial else 0),
+            "files_total": len(files), "files_scanned": covered,
             "resume_from": resume_from, "verdict": verdict, "hits": open_hits,
             "pervasive": pervasive, "dismissed": dismissed, "report": stamp.get("report"),
         }
@@ -1142,7 +1444,7 @@ def hook_step(profile, engine, budget_s=8, migrations_verdict="current"):
         elif verdict == "partial":
             lines.append("jobsearch: purity scan incomplete (%d of %d engine files) — resumes "
                          "next session where this profile's state persists"
-                         % (resume_from or 0, len(files)))
+                         % (covered, len(files)))
 
         try:
             from _diag import log as _dlog
@@ -1436,28 +1738,36 @@ def main():
     fired = set()
     exempt_by_file = {}
     # ⭐⭐ dev #476 — SLICED UNDER A BUDGET, exactly like hook_step()'s §2.3 loop, and for the
-    # same reason: `readable`'s order is deterministic (it is built by iterating ENGINE, which
-    # is sorted), so `scanned` is always a stable PREFIX of it — the same file set a re-run with
-    # the same budget would scan again, never a random subset.
-    # dev #526 — and the deadline is handed INTO scan(), so it binds inside a file too.
+    # same reason. dev #526 — and the deadline is handed INTO scan(), so it binds inside a file
+    # too. ⭐ dev #709 (public #149) — and a file whose content hash matches its record in the
+    # progress file (written by an earlier run of this scan or of the SessionStart hook, under
+    # the same scanner, engine version and term list) is not read again; see `_scan_incremental`.
     deadline = t_start + args.budget_s
-    partial, resume_index = False, None
-    scanned = []
-    for idx, p in enumerate(readable):
-        if time.monotonic() >= deadline:
-            partial, resume_index = True, idx
-            break
-        exempt_sink = []
-        try:
-            rel, hits = scan(p, terms, exempt_sink, deadline)
-        except ScanBudgetExceeded:
-            partial, resume_index = True, idx      # this file counts as NEVER SCANNED
-            break
-        scanned.append(p)
-        if exempt_sink:
-            exempt_by_file[rel] = exempt_sink
-        if hits is None:
+    progress_path = None
+    cached = {}
+    progress_key = _progress_key(_engine_version_of(ENGINE_ROOT), terms)
+    if _looks_like_profile(ROOT):
+        progress_path = os.path.join(ROOT, PROGRESS_REL)
+        cached = _load_progress(progress_path, progress_key)
+    t_scan = time.monotonic()
+    res = _scan_incremental(readable, ENGINE_ROOT, terms, cached,
+                            over_budget=lambda: time.monotonic() >= deadline,
+                            need_exempt=True, deadline=deadline)
+    scan_s = time.monotonic() - t_scan
+    partial = res.partial
+    resume_index = len(res.order)        # files covered; the rest were NEVER SCANNED
+    if progress_path is not None:
+        _save_progress(progress_path, progress_key, res.records, complete=not partial)
+    scanned = [p for p, _k in res.order]
+    for p, rel_key in res.order:
+        rec = res.records.get(rel_key)
+        if not rec or not rec.get("text"):
             continue
+        rel = rec["path"]
+        ex = _materialize(p, terms, rec.get("exempt"))
+        if ex:
+            exempt_by_file[rel] = ex
+        hits = _materialize(p, terms, rec["hits"])
         keep = []
         for h in hits:
             exc = known_exception_for(rel, h[3])
@@ -1472,6 +1782,10 @@ def main():
             print("\n  %s" % rel)
             for n, kind, w, line in hits[:12]:
                 print("    %4d  [%s:%s]  %s" % (n, kind, w, line))
+    # ⭐ dev #709 — THE TIME IS PRINTED, every run, so "the default run completes" is a number a
+    # reader can see and a log can keep rather than a claim.
+    print("  scan took %.1fs: %d file(s) read, %d unchanged since the last complete scan "
+          "(progress file; dev #709)" % (scan_s, res.scanned_now, res.reused))
 
     # ⭐⭐ dev #476 — LOUD, AND BEFORE ANY "CLEAN"-SHAPED OUTPUT. A budget-exhausted scan must be
     # impossible to mistake for a completed one — print this the moment the loop above stops
