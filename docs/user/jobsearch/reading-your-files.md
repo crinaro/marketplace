@@ -183,6 +183,38 @@ page showed, and nothing here can verify them. A sweep that never looks at the p
 exactly that pattern, so the flag asks you to open one board's results page and compare it with its
 query line before trusting the streak. It is advice, and nothing is blocked.
 
+### A role's place, a flag on it, and a folded row (since 0.70.0)
+
+Three things in `opportunities.jsonl` and in the screen's printed lines are new, and each is there to
+say how a place was known.
+
+- **`inferred` on a role's location.** Some postings state no work setting. When one gives a
+  concrete place anyway (a line such as `Riverton, ST`), the role is recorded as `onsite` with
+  `location.setting_source: inferred`, and the screen line for it ends *(onsite inferred: the posting
+  stated no setting)*. Read it as "assumed onsite from the place", not "the posting said onsite". The
+  assumption is safe to act on only because a role far enough away is as impractical hybrid as onsite.
+  If you correct the setting, the role keeps a record of the correction
+  (`location.inference_overturned`, with what it was, what it became and the date) and the flag goes.
+  A role with no setting and no readable place has no `type` at all and is kept for review.
+- **`duplicate_of` on a row.** When one requisition was recorded twice, the duplicate row can be folded
+  into the one that stands for the role with `record.py link-sibling <duplicate> --into <kept row>`. The folded row names
+  the kept one in `duplicate_of`, its listings move onto the kept row as sightings, and it drops out of
+  the undecided list and out of matching. Nothing is deleted, so it is still there to read. A screen
+  of a not-yet-folded second listing prints `DUPLICATE of <row>` on its *passed* line and repeats the
+  kept row's verdict.
+- **`location` on a sighting.** Each sighting may say where that listing placed the role, so a role
+  listed in several cities shows every place it was seen. The role is screened at its most favourable
+  place. A sighting marked `split_to` was moved to another row when a wrong merge was undone, and no
+  longer counts for this one.
+
+The summary line printed after several roles are screened looks like this, with made-up numbers:
+`MINIMAL SCREEN SUMMARY 12 screened · keep 5 · remove 4 (geo 3, comp 1, passed 0) · review 3 ·
+commute: outside 3, near 2, unresolvable 1`. A role counted *outside* was removed as too far from
+every commute anchor; *near* needs a commute estimate from you; *unresolvable* means the place text
+could not be read as a place. If the shipped place table is missing you will see `PLACE TABLE MISSING
+... distance not checked`, which means no distance was measured at all. How the distance is worked out
+is in [Your data](your-data.md#where-a-role-is-and-when-it-is-too-far--since-0700).
+
 ### Correcting a draft from a comment on the page (since 0.64.0)
 
 If your published dashboard is shared inside your organization on claude.ai, a reviewer can leave

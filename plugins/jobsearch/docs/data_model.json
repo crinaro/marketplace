@@ -32,7 +32,9 @@
     "posted",
     "screen",
     "lean",
-    "passed_from"
+    "passed_from",
+    "duplicate_of",
+    "distinct_from"
    ],
    "required": [
     "id",
@@ -48,7 +50,9 @@
       "channel_id",
       "seen_on",
       "snippet",
-      "source_url"
+      "source_url",
+      "location",
+      "split_to"
      ],
      "required": [
       "channel_id",

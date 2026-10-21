@@ -119,8 +119,9 @@ silent zero.
    postures the profile asks for: remote, and in-radius on-site/hybrid. Filter to the most recent
    postings the surface allows. **Before dropping any hit for geography, run
    `~/.claude/jobsearch/run geo_screen.py "<location>"` and quote its verdict line** (public #89,
-   dev #355) — only its own `out:` line is grounds to drop a hit; `unknown` is reported as a gap,
-   never treated as a drop.
+   dev #355) — only its own `out:` or `outside-radius:` line (the seven verdicts are `remote`,
+   `commute`, `affirmative`, `relocation-ok`, `outside-radius`, `out`, `unknown`) is grounds to
+   drop a hit; `unknown` is reported as a gap, never treated as a drop.
 3. **List EVERY role you saw — the pipeline cross-check is the script's job now** (dev #692 /
    public #140). You used to filter each hit against `pipeline_index.py --excluded` yourself and
    report only the new ones, so what you dropped left no trace. Now every distinct role any search

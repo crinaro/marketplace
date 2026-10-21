@@ -980,7 +980,7 @@ POSTED_SOURCES = ("ats-posted", "board-relative", "profile-document-date", "unkn
 POSTED_KEYS = ("date", "source", "recorded_on")
 COMMUTE_MINUTES_KEYS = ("minutes", "anchor", "source")
 COMMUTE_MINUTES_SOURCES = ("candidate", "map-estimate", "config-place")
-SCREEN_KEYS = ("on", "verdict", "rules", "engine", "title_keys")
+SCREEN_KEYS = ("on", "verdict", "rules", "engine", "title_keys", "setting_source")
 # dev #722 / public #156 (jobsearch 0.69.0): the title rule's tokens, a CLOSED set. 0.68.0 and earlier
 # stored three; the floor and the mandate add BELOW-FLOOR and OFF-MANDATE, and an unreadable key is a
 # visible UNREADABLE-TITLE-KEYS. A token outside the set is a stored screen nothing here can read.
@@ -1161,6 +1161,118 @@ def check_screen(sc, label, problems):
     if "title_keys" in sc and not (isinstance(sc["title_keys"], str) and sc["title_keys"].strip()):
         problems.append("%s: screen.title_keys must be a non-empty string (the hash of the title "
                         "keys the screen was computed under) -- %r" % (label, sc["title_keys"]))
+    if "setting_source" in sc and sc["setting_source"] != "inferred":
+        problems.append("%s: screen.setting_source must be 'inferred' (it is present only when the "
+                        "role was screened as onsite on an inference) -- %r"
+                        % (label, sc["setting_source"]))
+
+
+def check_location_provenance(loc, label, problems):
+    """The two optional `location` keys jobsearch 0.70.0 added (dev #727 / public #159, design R3:
+    keys INSIDE `location` are validated here only -- `record.py check_field` guards top-level and
+    array fields).
+
+      setting_source          `"inferred"` -- the capture script inferred `onsite` because the
+                              sweep read no setting (`declared == "none stated"`) at a concrete place.
+                              Absent means the setting was STATED. Only with `type: onsite`, only
+                              with `declared: "none stated"`, never with `inference_overturned`.
+      inference_overturned    `{was, to, on}` -- written by the overturn of an inferred setting
+                              (`record.py set <id> location '<json>'`): `was` is `onsite`, `to` a
+                              location type, `on` an ISO date. Absent means never overturned.
+    """
+    if not isinstance(loc, dict):
+        return
+    if "setting_source" in loc:
+        if loc["setting_source"] != "inferred":
+            problems.append("%s: location.setting_source must be 'inferred' (absent means the "
+                            "setting was stated) -- %r" % (label, loc["setting_source"]))
+        elif loc.get("type") != "onsite":
+            problems.append("%s: location.setting_source 'inferred' with type %r -- only an "
+                            "inferred ONSITE exists; an overturn removes the flag"
+                            % (label, loc.get("type")))
+        if loc.get("declared") != "none stated":
+            problems.append("%s: location.setting_source 'inferred' needs location.declared == "
+                            "'none stated' (the sweep read no setting); got %r"
+                            % (label, loc.get("declared")))
+        if "inference_overturned" in loc:
+            problems.append("%s: location.setting_source and location.inference_overturned are both "
+                            "present -- an overturned inference no longer carries the flag" % label)
+    if "inference_overturned" in loc:
+        io = loc["inference_overturned"]
+        if not isinstance(io, dict) or set(io) != {"was", "to", "on"}:
+            problems.append("%s: location.inference_overturned must be exactly {was, to, on} -- %r"
+                            % (label, io))
+            return
+        if io["was"] != "onsite":
+            problems.append("%s: location.inference_overturned.was must be 'onsite' (the only "
+                            "setting the script infers) -- %r" % (label, io["was"]))
+        if io["to"] not in LOC_TYPES:
+            problems.append("%s: location.inference_overturned.to %r not in {%s}"
+                            % (label, io["to"], ", ".join(sorted(LOC_TYPES))))
+        if not _real_date(io["on"]):
+            problems.append("%s: location.inference_overturned.on not an ISO date -- %r"
+                            % (label, io["on"]))
+
+
+def check_sibling_links(r, label, ids, by_id, problems):
+    """The three optional fields jobsearch 0.70.0 added for one requisition listed at several places
+    (dev #728 / public #158, design-location-screen.md §5 and R3). Each is optional and ABSENT has a
+    defined meaning, so only a PRESENT value is checked.
+
+      duplicate_of          an opportunity id: this row was FOLDED into that one by hand
+                            (`record.py link-sibling`). It resolves, is not itself, and the target is
+                            not folded (a chain would hide the canonical row). A folded row carries
+                            no decision and no application: it stands for a listing the canonical row
+                            now lists.
+      distinct_from         a list of opportunity ids this row was recorded as DIFFERENT from (a false
+                            merge undone, or a `create --force` over a match): each resolves and none
+                            is itself. The matching rule never re-merges a named pair.
+      sightings[].location  a non-empty string: where that listing placed the role, verbatim.
+      sightings[].split_to  an opportunity id: this listing was split away to that row (the undo of a
+                            false merge); it resolves and is not this row.
+    """
+    oid = r.get("id")
+    if "duplicate_of" in r:
+        d = r["duplicate_of"]
+        if not isinstance(d, str) or not d.strip():
+            problems.append("%s: duplicate_of must be an opportunity id -- %r" % (label, d))
+        elif d == oid:
+            problems.append("%s: duplicate_of names the row itself" % label)
+        elif d not in ids:
+            problems.append("%s: duplicate_of %r does not resolve to an opportunity" % (label, d))
+        elif by_id.get(d, {}).get("duplicate_of"):
+            problems.append("%s: duplicate_of %r is itself folded into %r -- point at the canonical "
+                            "row, never a chain" % (label, d, by_id[d]["duplicate_of"]))
+        if r.get("verdict") not in (None, "undecided"):
+            problems.append("%s: a folded row (duplicate_of) carries no decision, but its verdict is "
+                            "%r -- decide the canonical row" % (label, r.get("verdict")))
+    if "distinct_from" in r:
+        df = r["distinct_from"]
+        if not isinstance(df, list) or not all(isinstance(x, str) and x.strip() for x in df):
+            problems.append("%s: distinct_from must be a list of opportunity ids -- %r" % (label, df))
+        else:
+            for x in df:
+                if x == oid:
+                    problems.append("%s: distinct_from names the row itself" % label)
+                elif x not in ids:
+                    problems.append("%s: distinct_from %r does not resolve to an opportunity"
+                                    % (label, x))
+    for i, sg in enumerate(r.get("sightings") or []):
+        if not isinstance(sg, dict):
+            continue
+        if "location" in sg and not (isinstance(sg["location"], str) and sg["location"].strip()):
+            problems.append("%s: sighting[%d].location must be a non-empty string -- %r"
+                            % (label, i, sg["location"]))
+        if "split_to" in sg:
+            st = sg["split_to"]
+            if not isinstance(st, str) or not st.strip():
+                problems.append("%s: sighting[%d].split_to must be an opportunity id -- %r"
+                                % (label, i, st))
+            elif st == oid:
+                problems.append("%s: sighting[%d].split_to names the row itself" % (label, i))
+            elif st not in ids:
+                problems.append("%s: sighting[%d].split_to %r does not resolve to an opportunity"
+                                % (label, i, st))
 
 
 def check_passed_from(r, label, problems):
@@ -2376,6 +2488,8 @@ def _main():
     # opp id -> plan_id, populated below as each opportunity is validated — read back by the
     # touches loop's own plan_id/play_step check (design §21's re-planned-pursuit warning).
     r_opp_plan_id_by_id = {}
+    _all_opp_ids = {x.get("id") for x in opps if x.get("id")}
+    _opp_by_id = {x.get("id"): x for x in opps if x.get("id")}
     for r in opps:
         oid = r.get("id", "?")
         label = "opportunities[%s]" % oid
@@ -2573,13 +2687,22 @@ def _main():
             check_screen(r["screen"], label, problems)
         if "passed_from" in r:
             check_passed_from(r, label, problems)
+        check_sibling_links(r, label, _all_opp_ids, _opp_by_id, problems)
         if "lean" in r:
             check_lean(r["lean"], label, problems)
 
         # location shape
         loc = r.get("location", {})
-        if not isinstance(loc, dict) or loc.get("type") not in LOC_TYPES:
-            problems.append("%s: location.type not in {%s}" % (label, ", ".join(sorted(LOC_TYPES))))
+        # dev #727 / public #159 (jobsearch 0.70.0): `location.type` may be ABSENT only when the
+        # sweep read no setting (`declared == "none stated"`) and no place was readable, so the
+        # script had nothing to infer; the screen then asks. Every other row still names a type.
+        _type_absent_ok = (isinstance(loc, dict) and "type" not in loc
+                           and loc.get("declared") == "none stated")
+        if not isinstance(loc, dict) or (loc.get("type") not in LOC_TYPES and not _type_absent_ok):
+            problems.append("%s: location.type not in {%s} (it may be absent only when "
+                            "location.declared is 'none stated')"
+                            % (label, ", ".join(sorted(LOC_TYPES))))
+        check_location_provenance(loc, label, problems)
         if isinstance(loc, dict) and "commute_minutes" in loc:
             check_commute_minutes(loc["commute_minutes"], label, problems)
         if isinstance(loc, dict):

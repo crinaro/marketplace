@@ -140,7 +140,7 @@ The main record. Everything about one role hangs off it.
 | `company_id` | must resolve to a company |
 | `title` | |
 | `comp` | `{min, max, period, basis}` as **typed numbers**, so it sorts and screens. `null` if genuinely undisclosed — never a guess |
-| `location` | `{type, primary, remote, declared}` — see *contested settings* below. Since 0.67.0 `declared` also holds the work setting *as the posting wrote it* on every role that reaches your decision, and a role may carry `commute_minutes` — see *Listed pay, posting age, the screen and the lean* below |
+| `location` | `{type, primary, remote, declared}` — see *contested settings* below. Since 0.70.0 `type` may be left out when the posting stated no setting and no place could be read, and `setting_source: inferred` marks an `onsite` the system filled in from a concrete place — see *Where a role is, and when it is too far* below. Since 0.67.0 `declared` also holds the work setting *as the posting wrote it* on every role that reaches your decision, and a role may carry `commute_minutes` — see *Listed pay, posting age, the screen and the lean* below |
 | `listed_pay` | since 0.67.0 — the pay the **listing** showed, with whether the employer stated it, a board estimated it, or none was shown. Absent means *not captured* — see *Listed pay, posting age, the screen and the lean* below |
 | `posted` | since 0.67.0 — when the role was posted, and how we know. Absent means the age is unknown |
 | `screen` | since 0.67.0 — the hard screens the engine applied to the role, and their verdict, written by the script that ran them. Since 0.69.0 it also carries `title_keys`, a short fingerprint of the title settings it was computed under (see *The title floor and the mandate* below) |
@@ -149,10 +149,12 @@ The main record. Everything about one role hangs off it.
 | `stage` | where it **is** in the funnel |
 | `passed_from` | since 0.69.0, only on a role whose `status` is `passed` — `{status, stage}`, where the role stood when you passed on it, kept so that `pursue` or `park` can put it back. See *A pass on a backlog role is final* below. Absent on every other role |
 | `verdict` | `pursue` · `pass` · `parked` · `undecided` |
+| `duplicate_of` | since 0.70.0, only on a row you folded into another with `record.py link-sibling` — the id of the row that stands for the same requisition. A folded row carries no decision of its own and leaves the undecided list. Absent on every other role |
+| `distinct_from` | since 0.70.0, optional — ids of rows you recorded as a *different* role (a merge you undid, or a role you created anyway with `--force`), so the matcher never joins that pair again |
 | `engagement_type` | `full-time` · `contract` — since 0.45.0; the 0.45.0 upgrade set this to `full-time` on every existing role, since that fact about a role isn't derivable from anything else on the record |
 | `jd_url` | the posting. Required as a URL **or an explicit `null`** — never simply missing |
 | `channel_id` | the channel that *represents* the role as a whole — typically the recruiting firm running the search. `null` when no single channel does. Distinct from a sighting's own `channel_id` below, which records each place the role was merely seen |
-| `sightings` | every time this role was seen, and where: one entry per sighting, `{channel_id, seen_on, snippet, source_url}` — `channel_id` is the source it turned up on, `seen_on` the date, `snippet` a short excerpt of how the listing read at the time, and `source_url` the link to that listing (see *Sourcing* below for when the link becomes mandatory) |
+| `sightings` | every time this role was seen, and where: one entry per sighting, `{channel_id, seen_on, snippet, source_url}` — `channel_id` is the source it turned up on, `seen_on` the date, `snippet` a short excerpt of how the listing read at the time, and `source_url` the link to that listing (see *Sourcing* below for when the link becomes mandatory). Since 0.70.0 a sighting may also carry `location` (the place that listing put the role at, as written) and `split_to` (the id of the row that listing was split away to, after an undone merge — a split sighting no longer counts as evidence for this row) |
 | `plan_id`, `plan_assigned_on` | which plan (see *Plans and plays* below) is working this role, and since when — every role has one, since 0.49.0 |
 | `next_action_date`, `next_action_owner` | when the next thing happens, and whose move it is — *which* thing is now the plan's job (see below). **Not purely hand-set**: since 0.54.0 (dev #479), recording an outbound touch as `touched`/`answered` (`record.py`) clears these off you automatically when that touch already answers what you were waiting on — see *Touches* below |
 | `blocked_until` | a precondition that makes a role yours *in name only* until someone else moves — written as `contact:<person_id> outcome:<value>`, for example waiting on a referral's reply. Your Move does not treat the role as waiting on you until the condition is met; the literal `unresolved` (or a value that will not parse) is reported loudly rather than read as "no precondition". It resolves only against touches on **this** role, never another role's |
@@ -1332,14 +1334,19 @@ you (since 0.50.0, public #89).
 | `remote_ok` | whether a fully-remote posting screens as usable at all. Defaults to **true** |
 | `relocation.open` | whether a metro that is neither a commute anchor nor an affirmative destination (below) still screens as workable. Defaults to **false** — silence is never read as "open to relocating anywhere" |
 | `relocation.affirmative_destinations` | metros you have explicitly said yes to, regardless of `relocation.open` |
+| `relocation.keep_outside_radius` | since 0.70.0 — whether an onsite role that is *provably* too far from every commute anchor (and names none of your affirmative destinations) is kept when `relocation.open` is true. Defaults to **false**: such a role is removed as `outside-radius`. Set it to **true** to get the earlier behaviour back. The 0.70.0 upgrade writes `false` into your `config.json` if the key is absent and never changes a value already there; the original is kept as `config.json.pre-0.70.0` |
 | `commute_anchors` | places you can actually commute to, each with its own `max_commute_minutes` |
 | `commute_anchors[].bands` | since 0.67.0, optional — pay floors that depend on how long the commute is, for an anchor: a list of `{max_minutes, floor}` in ascending order, the last `max_minutes` no larger than that anchor's `max_commute_minutes`. For example a role 20 minutes away can be held to a lower floor than one 50 minutes away. **An anchor with no `bands` behaves exactly as before.** See *Commute bands* below |
+| `commute_anchors[].radius_miles` | since 0.70.0, optional — a straight-line radius, a number from 1 to 300. A place within it counts as inside the anchor; a place beyond it is provably outside. Without it the bound is derived from `max_commute_minutes` (or, when that is absent, the last band's minutes) |
+| `commute_anchors[].lat`, `.lon` | since 0.70.0, optional, given together — the anchor's coordinates, used instead of looking its `place` up in the shipped place table |
 | `commute_anchors[].includes` | the nearby places that count as inside the anchor. Each entry is a name, or since 0.67.0 `{place, minutes}` so the commute time to that place is known. A bare name leaves the minutes unknown |
 
-Screening one location produces exactly one of six verdicts, each citing the specific key that
-decided it: `remote`, `commute` (names a commute anchor), `affirmative` (names an affirmative
-destination), `relocation-ok` (`relocation.open` is true and nothing more specific matched),
-`out` (`relocation.open` is false and nothing matched — the one verdict that ends a role's
+Screening one location produces exactly one of seven verdicts, each citing the specific key that
+decided it: `remote`, `commute` (names a commute anchor, or since 0.70.0 lies within an anchor's
+`radius_miles`), `affirmative` (names an affirmative destination), `relocation-ok`
+(`relocation.open` is true and nothing more specific matched, or `relocation.keep_outside_radius` is
+true for a role that is far), `outside-radius` (since 0.70.0, see below), `out`
+(`relocation.open` is false and nothing matched — the one verdict that ends a role's
 consideration, reached only through an explicit or default-but-registered key, never through
 silence), or `unknown` (your `config.json` has no `geography` section at all — different from an
 unset key, which always has a registered default).
@@ -1350,6 +1357,50 @@ rename.** `init_profile.py` used to scaffold this section as `geography.relocati
 shape documented above instead — two spellings of one meaning, with nothing ever reading the
 scaffolded names. `m_0_50_0_geography_keys` rewrites a profile still carrying the old names into
 the shape above; nothing is dropped in the process.
+
+### Where a role is, and when it is too far — since 0.70.0
+
+Until 0.70.0 the screen could only tell that a role's place was *named* by one of your commute
+anchors. A role in a city you never mentioned could not be called far, so a profile that screened
+dozens of roles might remove none of them. Now the engine works out a distance.
+
+- **The place table.** The plugin ships a table of US places with their coordinates, built from the
+  US Census Bureau's public-domain Gazetteer (`places/us_places.csv.gz`, about 32,000 places). It is
+  read from the plugin itself: no network, and nothing from your profile is sent anywhere. A place
+  written like `Springfield, ST` or `Springfield, State name`, optionally with a ZIP, is looked up;
+  a text it cannot read as a place (no comma, `remote`, `hybrid`, an unknown town) is reported as
+  *unresolvable*, never guessed. If the table file is missing the screen says `PLACE TABLE MISSING:
+  distance not checked`, counted on its own and never confused with an unknown place.
+- **What counts as far.** A role is `outside-radius` only when it is beyond *every* anchor's reach:
+  the anchor's `radius_miles` if you set one, otherwise a generous upper bound from its
+  `max_commute_minutes` (minutes times 75 mph, plus 15 miles for the size of a city; a 45-minute
+  anchor gives about 71 miles). An anchor the engine cannot locate or bound makes the role *near*,
+  never *outside*. A *near* role stays on your list with its distance printed and a request for a
+  commute estimate.
+- **What is removed.** An onsite role proven far, that names none of your
+  `affirmative_destinations`, is removed as `outside-radius` when `relocation.open` is true and
+  `relocation.keep_outside_radius` is false. With `keep_outside_radius` set to true it is kept as
+  `relocation-ok`. With `relocation.open` false it is `out`, as before. Every line says which key
+  decided it.
+- **A setting the posting never stated.** When a posting states no setting but gives a concrete
+  place, the role is recorded as `onsite` with `location.setting_source: inferred`, and the screen
+  line ends *(onsite inferred: the posting stated no setting)*. If you later correct the setting
+  (`record.py set <role> location '<json>'`), the change is remembered in `location.inference_overturned`
+  as `{was, to, on}`. A role with no setting and no readable place has no `type` and is kept for
+  review rather than removed.
+- **One role at several places.** A requisition listed in several cities is one row, not several:
+  each listing is a sighting with its own `location`, and the role is screened at its most
+  favourable place, so it is `outside-radius` only if every listing is. A listing of a role you
+  already passed on that is *nearer* than anywhere it was listed before is shown as `NEARER LISTING`
+  instead of being closed. The matcher joins rows on company plus title only, so two genuinely
+  different openings with the same title at one company can be joined; `record.py unlink-sibling`
+  undoes that. Rows from before 0.70.0 are never folded automatically: `record.py link-sibling
+  <duplicate> --into <kept row>` folds one by hand (nothing is deleted; the row gets `duplicate_of`
+  and leaves the undecided list).
+- **Reading the result.** `profile.py --minimal-screen` with several role ids prints a block per role
+  and then one summary line: how many were screened, kept, removed (and by which rule), left for
+  review, and the commute split (`outside`, `near`, `unresolvable`). `profile.py --options` prints
+  each anchor's bound and whether the place table is present.
 
 ### Commute bands — since 0.67.0
 

@@ -181,7 +181,11 @@ OPS = ("create", "set", "set-in", "append", "show", "fields",
        # and each stores what a SCRIPT computed -- never a value a model typed in:
        # `screened` re-runs profile.screen_rules; `lean` runs the signal matcher; `listed-pay`
        # parses the pay-slot grammar; `posted` computes a board-relative date from a shown age.
-       "screened", "lean", "listed-pay", "posted")
+       "screened", "lean", "listed-pay", "posted",
+       # jobsearch 0.70.0 (dev #728 / public #158) -- fold a duplicate row into its canonical one,
+       # and undo a false merge. Both are branches of the shared mutation chain (one locked write
+       # touching two rows of ONE store), so --dry-run, the validator and the rollback all apply.
+       "link-sibling", "unlink-sibling")
 SOURCING_OPS = ("screened", "lean", "listed-pay", "posted")
 LOCK = os.path.join(ENGINE_SCRIPTS, "runlock.py")
 # ⭐ ENGINE, not profile — the data MODEL ships with the code; the DATA belongs to the user.
@@ -1982,7 +1986,154 @@ def _run_date(args):
         raise _Refused("--on %r is not a calendar date" % args.on_date)
 
 
-def copy_capture_item_facts(new_row, item_id):
+def _known_match_for(rows, new_row, extra_urls=()):
+    """The pipeline row a role being created duplicates, as `(row, basis, kind)`, or None
+    (dev #728 / public #158): by URL first (the row's `jd_url`, its sightings, the item's own URL),
+    then by company + title -- `pipeline_index.find_known_match`, the one matcher."""
+    import pipeline_index as _pidx
+    apps = _load_or_empty("applications")
+    urls = [new_row.get("jd_url")] + [s.get("source_url") for s in (new_row.get("sightings") or [])
+                                       if isinstance(s, dict)] + list(extra_urls)
+    for u in urls:
+        if u:
+            hit = _pidx.find_known_match(rows, url=u, applications=apps)
+            if hit:
+                return hit
+    return _pidx.find_known_match(rows, company_id=new_row.get("company_id"),
+                                  title=new_row.get("title"), applications=apps)
+
+
+def _append_sightings(row_id, sightings, already_locked=False, wait=None):
+    """Append each sighting to `row_id` THROUGH `record.py append` (the one writer: the lock, the
+    validator and the rollback all apply) -- a subprocess on this interpreter, `record.py` having no
+    in-process dispatch. Returns None, or the reason one failed (the ones before it stay: each is
+    its own validated write)."""
+    for sg in sightings:
+        cmd = [sys.executable, os.path.abspath(__file__), "append", row_id, "sightings",
+               json.dumps(sg)]
+        if already_locked:
+            cmd.append("--already-locked")
+        if wait is not None:
+            cmd += ["--wait", str(wait)]
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if r.returncode != 0:
+            return "record.py append to %s exited %d: %s" % (
+                row_id, r.returncode, " ".join((r.stdout + r.stderr).split())[-300:])
+    return None
+
+
+def _link_from_item(args, new_row, rows, match, item):
+    """The `create --from-item` branch that finds the role ALREADY in the pipeline (dev #728 /
+    public #158; design §5.3, R8): link the item's listing and its siblings onto that row instead of
+    creating a second one. Returns the exit code. Prints `LINKED <item> -> <row id> (<basis>)`, or
+    `NEARER LISTING of passed <id>: <place> (<state>)` and links nothing."""
+    import pipeline_index as _pidx
+    row, basis, kind = match
+    item = item or {}
+    own_loc = (new_row.get("location") or {}).get("primary") if isinstance(
+        new_row.get("location"), dict) else None
+    listings = [(item.get("ref") or new_row.get("jd_url"), own_loc)]
+    listings += [(s.get("url"), s.get("location")) for s in (item.get("siblings") or [])]
+    if kind == "excluded":
+        # R8: a nearer listing of a role you PASSED on surfaces; it is not auto-closed.
+        try:
+            import profile as _pf
+            nearer, place, state = _pf.nearer_listing(
+                _pidx.listing_places(row), [loc for _u, loc in listings], _pf.load())
+        except (OSError, ValueError, KeyError):
+            nearer, place, state = False, None, None
+        if nearer:
+            print("NEARER LISTING of passed %s: %s (%s)" % (row.get("id"), place, state))
+            print("  %r was NOT created or linked, and %s stays claimable: this listing is closer than "
+                  "anywhere %s was listed. To decide it fresh, create it again with --force (the "
+                  "pair is recorded in distinct_from)." % (args.rid, args.from_item, row.get("id")))
+            return 1
+    sg0 = next((s for s in (new_row.get("sightings") or []) if isinstance(s, dict)), None)
+    if sg0 is None or not sg0.get("channel_id") or not sg0.get("seen_on"):
+        print("⛔ REFUSED — linking %s onto %s needs the JSON's sightings[0] (channel_id, seen_on) to "
+              "attribute the listing; none was given." % (args.from_item, row.get("id")))
+        return 1
+    have = {s.get("source_url") for s in (row.get("sightings") or []) if isinstance(s, dict)}
+    have.add(row.get("jd_url"))
+    todo = []
+    for url, loc in listings:
+        if not url or url in have or any(_pidx._urls_equal(url, h) for h in have if h):
+            continue
+        todo.append(dict({"channel_id": sg0["channel_id"], "seen_on": sg0["seen_on"],
+                          "source_url": url}, **({"location": loc} if loc else {})))
+        have.add(url)
+    print("%s: link listing(s) onto %s (%s)" % (args.rid, row.get("id"), basis))
+    if args.dry_run:
+        print("  --dry-run: nothing written. Would append %d sighting(s) to %s and close %s as "
+              "linked:%s." % (len(todo), row.get("id"), args.from_item, row.get("id")))
+        return 0
+    err = _append_sightings(row.get("id"), todo, already_locked=args.already_locked, wait=args.wait)
+    if err:
+        print("⛔ REFUSED — %s. %s stays claimable." % (err, args.from_item))
+        return 1
+    import deferred as _deferred_mod
+    _deferred_mod.close_item(args.from_item, "linked:%s" % row.get("id"))
+    print("LINKED %s -> %s (%s)" % (args.from_item, row.get("id"), basis))
+    return 0
+
+
+def location_replace(old, new, rid):
+    """`(location, error)` -- `record.py set <id> location '<json>'` on an opportunity (dev #727 /
+    public #159, design-location-screen.md §4.3 as amended by R5). `set` replaces the WHOLE
+    `location` object, so this compares the stored object with the replacement:
+
+      * the stored location is `setting_source: inferred` (the script inferred onsite at capture):
+          - the replacement OMITS `setting_source` and CHANGES the type -> the setting was
+            overturned: the same write adds `location.inference_overturned =
+            {was: <old type>, to: <new type>, on: <today>}`;
+          - it OMITS `setting_source` and keeps the type (onsite) -> the setting is now STATED: the
+            flag is simply gone, nothing is recorded;
+          - it KEEPS `setting_source` and changes the type -> REFUSED: the flag cannot outlive the
+            inference it describes;
+          - it carries no `type` -> REFUSED: an overturn names the setting it lands on.
+      * a stored location that is not inferred: a replacement carrying `setting_source` is REFUSED
+        (provenance is written by the capture script, never typed), and so is an
+        `inference_overturned` that is not the stored one. A stored `inference_overturned` the
+        replacement omits is CARRIED FORWARD: a whole-object replace must not erase the record that
+        a guess was once overturned.
+
+    No dotted `location.type` path exists (R5). Returns `(new location, None)` or `(None, why)`;
+    every refusal names this exact command."""
+    cmd = "`record.py set %s location '<json>'`" % (rid or "<id>")
+    if not isinstance(new, dict):
+        return new, None
+    old = old if isinstance(old, dict) else {}
+    out = dict(new)
+    if old.get("setting_source") == "inferred":
+        if "type" not in new:
+            return None, ("the stored location.type was INFERRED (onsite); the replacement names no "
+                          "type. Replace the whole object with the setting the posting states, "
+                          "without setting_source: %s." % cmd)
+        if "setting_source" in new:
+            if new.get("type") != old.get("type"):
+                return None, ("location.setting_source is 'inferred' but the type changes from %s to "
+                              "%s: the flag cannot outlive the inference. Overturn it by replacing "
+                              "the whole object WITHOUT setting_source: %s."
+                              % (old.get("type"), new.get("type"), cmd))
+            return out, None
+        if new.get("type") != old.get("type"):
+            out["inference_overturned"] = {"was": old.get("type"), "to": new.get("type"),
+                                           "on": datetime.date.today().isoformat()}
+        return out, None
+    if "setting_source" in new:
+        return None, ("location.setting_source is written only by the capture script when it "
+                      "infers a setting (`create --from-item`); this location was not inferred, so "
+                      "it is not typed by hand. Replace the object without it: %s." % cmd)
+    if new.get("inference_overturned") != old.get("inference_overturned"):
+        if "inference_overturned" in new:
+            return None, ("location.inference_overturned is written only by the overturn of an "
+                          "inferred setting, never typed: %s without it." % cmd)
+    if "inference_overturned" in old and "inference_overturned" not in new:
+        out["inference_overturned"] = old["inference_overturned"]
+    return out, None
+
+
+def copy_capture_item_facts(new_row, item_id, rid=None):
     """`(copied, error)` -- `create --from-item <deferred id>` (dev #715 / public #143, dev #716 /
     public #142; design §2). Copy what `deferred.py --add-roles` PARSED from the sweep's ROLE line,
     held on the `capture-role` item's `role` object, onto the opportunity being created:
@@ -1990,6 +2141,25 @@ def copy_capture_item_facts(new_row, item_id):
     `location.declared`. The shapes are the ones `record.py listed-pay` / `posted` store, so the
     model never re-types a value a script already parsed, and a captured role does not screen
     NOT-CAPTURED for a pay its own sweep read.
+
+    ⭐ jobsearch 0.70.0 (dev #727 / public #159; design-location-screen.md §4): `role.location_listed`
+    (the ROLE line's `location=` text, verbatim) is copied to `location.primary`, and a posting whose
+    setting the sweep read as `none stated` at a CONCRETE PLACE (`places.parse_place` reads it) is
+    recorded as `location.type: onsite` with `location.setting_source: inferred`. This is the one
+    place a captured row is born, so the inference is a recorded rule, not a type the model picked
+    and nobody noted. It is OURS (the publisher convention reserves `TELECOMMUTE` for remote work
+    and has no value for hybrid, so an unmarked posting may be hybrid; at a place proven outside every
+    commute radius hybrid is as infeasible as onsite, which is why a removal on an inference is safe).
+      * `none stated` + a place -> `type: onsite`, `setting_source: inferred`.
+      * `none stated` + no place (or no text) -> `type` stays ABSENT; the screen asks (NEEDS-REVIEW).
+      * `none stated` + a `location.type` in the JSON -> REFUSED: the sweep read no setting, so a type
+        the model chose would be an unflagged guess. Omit it; or create the row, then replace the
+        location with the JD's wording (`record.py set <id> location '<json>'`, which records the
+        overturn).
+      * `?` (not read) or a verbatim setting -> as before: the JSON states the type, nothing is
+        inferred, and `unresolved` is never touched.
+      * A `location.primary` in the JSON that differs from `location_listed` is refused (one value,
+        stated once). An item queued before 0.70.0 has no `location_listed`; the JSON's is used.
 
     A slot the sweep did not read (`?`) is `None` on the item and is NOT copied: the field stays
     ABSENT (NOT CAPTURED / age unknown), never `none-shown` and never an invented date. A field the
@@ -2017,6 +2187,7 @@ def copy_capture_item_facts(new_row, item_id):
     if role.get("posted") is not None:
         wanted.append(("posted", role["posted"]))
     declared = role.get("location_declared")
+    listed = role.get("location_listed")
     copied = []
     for field, value in wanted:
         if field in new_row and new_row[field] != value:
@@ -2036,6 +2207,35 @@ def copy_capture_item_facts(new_row, item_id):
         if have is None:
             new_row["location"] = dict(loc or {}, declared=declared)
             copied.append("location.declared")
+    if listed is not None:
+        loc = new_row.get("location")
+        if loc is not None and not isinstance(loc, dict):
+            return [], "the JSON's location is not an object; cannot add location.primary"
+        have = (loc or {}).get("primary")
+        if have is not None and have != listed:
+            return [], ("the JSON carries location.primary=%s but deferred item %r says %s. One "
+                        "value, stated once: omit location.primary and the script copies it."
+                        % (json.dumps(have), item_id, json.dumps(listed)))
+        if have is None:
+            new_row["location"] = dict(loc or {}, primary=listed)
+            copied.append("location.primary")
+    if declared == _deferred.SETTING_NONE_STATED:
+        import places as _places
+        loc = new_row.get("location")
+        loc = loc if isinstance(loc, dict) else {}
+        if "type" in loc:
+            return [], ("the sweep read no setting on this posting (setting=\"none stated\"), so "
+                        "location.type=%s would be a guess nobody can tell from a stated setting. "
+                        "Omit location.type and the script infers it from the place (recorded as "
+                        "location.setting_source: inferred); or create the row without it and then "
+                        "replace the location with the JD's wording: `record.py set %s location "
+                        "'<the whole location object, without setting_source>'` -- that write "
+                        "records the overturn."
+                        % (json.dumps(loc["type"]), rid or "<id>"))
+        if _places.parse_place(loc.get("primary")):
+            new_row["location"] = dict(loc, type="onsite", setting_source="inferred")
+            new_row["location"].setdefault("remote", False)
+            copied.append("location.type (inferred onsite)")
     return copied, None
 
 
@@ -2088,6 +2288,10 @@ def _sourcing_mutation(args, rec):
             r["screen"] = {"on": on_iso, "verdict": result["verdict"],
                            "rules": dict(result["rules"]), "engine": engine,
                            "title_keys": _pf.title_keys(profile)}
+            if result.get("setting_source"):
+                # dev #727 / public #159: the role was screened as onsite on an INFERENCE; the
+                # stored result says so, so a later reader never mistakes it for a stated setting.
+                r["screen"]["setting_source"] = result["setting_source"]
             # dev #722 / public #156 (R1, R2): a re-screen that finds the title BELOW the floor
             # attaches the computed lean hit to a lean the run already recorded -- the hit only,
             # never the choice (an explicit lean wins) -- and drops a title-floor hit the
@@ -2296,6 +2500,9 @@ def main():
                     help="create --file opportunities: which search plan sourced this role, "
                          "when more than one active search plan sources role/contract "
                          "(design §26.5) — required only in that ambiguous case.")
+    ap.add_argument("--url", dest="listing_url", default=None,
+                    help="unlink-sibling: the listing's source_url on the canonical row to split "
+                         "away (dev #728 / public #158).")
     ap.add_argument("--into", dest="into_id", default=None,
                     help="merge-person: the SURVIVOR person id. The record named by <rid> "
                          "(the duplicate) gets status=merged, merged_into=<--into>, in one "
@@ -2360,9 +2567,12 @@ def main():
     ap.add_argument("--from-item", dest="from_item", default=None,
                     help="create (opportunities): a `capture-role` deferred item id. Copies the "
                          "pay, posting date and work setting `deferred.py --add-roles` parsed from "
-                         "the sweep's ROLE line (listed_pay, posted, location.declared) onto the new "
-                         "role. A slot the sweep did not read stays absent; a value the JSON also "
-                         "carries must agree with the item.")
+                         "the sweep's ROLE line (listed_pay, posted, location.declared, "
+                         "location.primary) onto the new role. A slot the sweep did not read stays "
+                         "absent; a value the JSON also carries must agree with the item. When the "
+                         "sweep read setting=\"none stated\" at a concrete place, the script sets "
+                         "location.type onsite and location.setting_source inferred (omit "
+                         "location.type; giving one is refused).")
     # jobsearch 0.67.0 sourcing-screen verbs (SOURCING_OPS) -- each flag belongs to one verb.
     ap.add_argument("--lean", dest="lean_choice", default=None,
                     help="lean: pursue | pass | ask (required, except on a role whose stored screen "
@@ -2503,6 +2713,10 @@ def main():
 
     # ---- build the mutation, describing it before touching anything -------------
     new_row = None
+    # dev #728: a verb that writes a SECOND row of the same store (link-sibling, unlink-sibling)
+    # reaches it through this holder, so the dry-run mutates its shadow copy and the real write the
+    # rows it re-read under the lock -- never the other way round.
+    _apply_rows = [None]
     # 0.41.0 — app_ids this write mints (see mint_app_id). Reported after the write lands, so
     # a caller learns the handle its trigger should name without re-reading the store.
     minted = []
@@ -2534,7 +2748,8 @@ def main():
             if args.file != "opportunities":
                 print("⛔ REFUSED — --from-item applies only to `create ... --file opportunities`.")
                 return 1
-            _from_item_copied, _item_err = copy_capture_item_facts(new_row, args.from_item)
+            _from_item_copied, _item_err = copy_capture_item_facts(new_row, args.from_item,
+                                                                    rid=args.rid)
             if _item_err:
                 print("⛔ REFUSED — --from-item: %s" % _item_err)
                 return 1
@@ -2645,6 +2860,55 @@ def main():
             print("  A record missing its required fields is one no query can rely on. "
                   "(`fields` prints what this store accepts.)")
             return 1
+        # ⭐ dev #728 / public #158 (jobsearch 0.70.0; design-location-screen.md §5.3) -- ONE
+        # REQUISITION LISTED AT SEVERAL PLACES IS ONE DECISION. The backstop of the capture-time
+        # grouping in `deferred.py --add-roles`: a role being created that the pipeline already holds
+        # (an ACTIVE row too -- #136 only ever looked at passed ones) is
+        #   * with --from-item: LINKED -- the item's listing and its siblings become sightings of the
+        #     existing row (active or passed), the item closes as `linked:<row id>`, exit 0; but a
+        #     listing of a PASSED row strictly nearer than every place that row was listed at is
+        #     printed `NEARER LISTING` and is NOT linked or closed (R8): it can become a fresh
+        #     decision with --force;
+        #   * without it: refused with an `append <id> sightings` hint (an active row), or by #136
+        #     below (a passed one), exactly as before;
+        #   * with --force: created, and the pair is recorded in `distinct_from` so the matching rule
+        #     never re-merges it.
+        _link_match = None
+        _item = None
+        if args.file == "opportunities":
+            import deferred as _deferred_mod
+            if args.from_item:
+                _item = _deferred_mod.load_capture_item(args.from_item)
+            _link_match = _known_match_for(rows, new_row, [(_item or {}).get("ref")]
+                                           if _item else [])
+        if _link_match and args.from_item and not args.force:
+            return _link_from_item(args, new_row, rows, _link_match, _item)
+        if _link_match and _link_match[2] == "active" and not args.force:
+            _lrow, _lbasis, _lkind = _link_match
+            print("⛔ %r was NOT created: it is the SAME ROLE as the active opportunity %r (%s; "
+                  "company %s, title %r, status %s) -- one requisition listed more than once is one "
+                  "decision." % (args.rid, _lrow.get("id"), _lbasis, _lrow.get("company_id") or "?",
+                                 _lrow.get("title") or "?", _lrow.get("status") or "?"))
+            print("  Add the listing to it: `record.py append %s sightings '<json>'` (give the "
+                  "sighting a `location`). If this is a genuinely different opening, create it "
+                  "again with --force (the pair is recorded in distinct_from)." % _lrow.get("id"))
+            return 1
+        if _item:
+            # A new row born from an item that carried sibling listings keeps them as sightings.
+            _sg0 = next((s for s in (new_row.get("sightings") or []) if isinstance(s, dict)), None)
+            if _sg0 and _item.get("siblings"):
+                for _sib in _item["siblings"]:
+                    if not any(s.get("source_url") == _sib.get("url")
+                               for s in new_row["sightings"] if isinstance(s, dict)):
+                        new_row["sightings"].append(dict(
+                            {"channel_id": _sg0.get("channel_id"), "seen_on": _sg0.get("seen_on"),
+                             "source_url": _sib.get("url")},
+                            **({"location": _sib["location"]} if _sib.get("location") else {})))
+        if _link_match and args.force:
+            _dist = list(new_row.get("distinct_from") or [])
+            if _link_match[0].get("id") not in _dist:
+                _dist.append(_link_match[0].get("id"))
+            new_row["distinct_from"] = _dist
         # ⭐ dev #670 / public #136 — a role you already PASSED on does not come back as a fresh
         # lead because the sourcing run gave it a different id. The match is pipeline_index's
         # one definition (same company_id + normalized title, or identical jd_url, or identical
@@ -2758,9 +3022,28 @@ def main():
             print("  invisible to every query written against the real one.")
             return 1
         desc = "set %s = %r" % (field, val)
+        if args.file == "opportunities" and field == "location" and isinstance(val, dict):
+            # dev #727 / public #159 (R5): the whole-object replace of an INFERRED location records
+            # the overturn, or refuses a replacement that would leave the flag lying.
+            _loc_new, _loc_err = location_replace(rec.get("location"), val, args.rid)
+            if _loc_err:
+                print("⛔ REFUSED — %s" % _loc_err)
+                return 1
+            if "inference_overturned" in _loc_new and "inference_overturned" not in val:
+                _was = (rec.get("location") or {}).get("inference_overturned")
+                desc += (" -- records the overturn of the inferred setting (%s -> %s)"
+                         % (_loc_new["inference_overturned"]["was"],
+                            _loc_new["inference_overturned"]["to"]) if _was is None
+                         else " -- keeps the recorded overturn of the inferred setting")
 
-        def apply(r):
-            r[field] = val
+            def apply(r):
+                new_loc, err = location_replace(r.get("location"), val, args.rid)
+                if err:
+                    raise KeyError(err)
+                r[field] = new_loc
+        else:
+            def apply(r):
+                r[field] = val
 
     elif args.op == "append":
         if len(args.rest) != 2:
@@ -2981,6 +3264,127 @@ def main():
             r["status"] = "merged"
             r["merged_into"] = args.into_id
 
+    elif args.op == "link-sibling":
+        # dev #728 / public #158 (design-location-screen.md §5.4): FOLD a pre-0.70.0 duplicate row
+        # into the row that already stands for the requisition, by hand. ONE locked write: the
+        # duplicate's listings become sightings of the canonical row, and the duplicate gets
+        # `duplicate_of`. Nothing is deleted. No migration does this for existing rows: the matcher can
+        # false-merge, and a stored row may carry notes, people or channel history only a human can
+        # weigh.
+        if args.file != "opportunities" or args.rest:
+            print("usage: link-sibling <duplicate-id> --into <canonical-id>   (opportunities)")
+            return 2
+        if not args.into_id:
+            print("⛔ REFUSED — link-sibling requires --into <canonical-id>.")
+            return 1
+        canon0 = find(rows, args.into_id)
+        why = None
+        if args.into_id == args.rid:
+            why = "a row cannot be folded into itself"
+        elif canon0 is None:
+            why = "no opportunity with id %r (--into)" % args.into_id
+        elif rec.get("duplicate_of"):
+            why = "%r is already folded into %r" % (args.rid, rec["duplicate_of"])
+        elif canon0.get("duplicate_of"):
+            why = ("%r is itself folded into %r: fold into the canonical row, never a chain"
+                   % (args.into_id, canon0["duplicate_of"]))
+        elif rec.get("verdict") not in (None, "undecided"):
+            why = ("%r carries a decision (verdict %s): a folded row stands for no decision. Decide "
+                   "the canonical row, or `set` this row's verdict back to undecided first"
+                   % (args.rid, rec.get("verdict")))
+        elif any(a.get("opp_id") == args.rid for a in _load_or_empty("applications")):
+            why = "%r has an application: it is a decision made by acting, not a duplicate" % args.rid
+        elif (args.into_id in (rec.get("distinct_from") or [])
+              or args.rid in (canon0.get("distinct_from") or [])):
+            why = ("%r and %r were recorded as DIFFERENT (distinct_from); undo that first if they "
+                   "are one requisition after all" % (args.rid, args.into_id))
+        if why:
+            print("⛔ REFUSED — %s." % why)
+            return 1
+        desc = "link-sibling into %s (folds this row; its listings become sightings of %s)" % (
+            args.into_id, args.into_id)
+
+        def apply(r):
+            import pipeline_index as _pidx
+            canon = find(_apply_rows[0] or rows, args.into_id)
+            if canon is None:
+                raise KeyError("no opportunity with id %r (--into)" % args.into_id)
+            have = {s.get("source_url") for s in (canon.get("sightings") or []) if s.get("source_url")}
+            primary = (r.get("location") or {}).get("primary") if isinstance(r.get("location"), dict) \
+                else None
+            incoming = []
+            for sg in (r.get("sightings") or []):
+                if isinstance(sg, dict):
+                    incoming.append(dict(sg, **({"location": primary} if primary and "location" not in sg
+                                                else {})))
+            channel = r.get("channel_id") or next((s.get("channel_id") for s in incoming), None)
+            if r.get("jd_url") and r["jd_url"] not in have and not any(
+                    s.get("source_url") == r["jd_url"] for s in incoming) and channel:
+                incoming.append({"channel_id": channel,
+                                 "seen_on": _pidx.first_seen(r) or datetime.date.today().isoformat(),
+                                 "source_url": r["jd_url"],
+                                 **({"location": primary} if primary else {})})
+            for sg in incoming:
+                if sg.get("source_url") and sg["source_url"] in have:
+                    continue
+                canon.setdefault("sightings", []).append(sg)
+                if sg.get("source_url"):
+                    have.add(sg["source_url"])
+            r["duplicate_of"] = args.into_id
+
+    elif args.op == "unlink-sibling":
+        # dev #728 / public #158 (design §5.5): UNDO a false merge. Nothing is deleted. The canonical
+        # row's sighting for `--url` is stamped `split_to: <row>`; <row> (which must already exist:
+        # a folded legacy row, or a row made with `create --force`) gets the canonical row in its
+        # `distinct_from` and, if it was folded into this one, loses `duplicate_of`. The matching
+        # rule reads both stamps, so the pair never re-merges.
+        if args.file != "opportunities" or args.rest:
+            print("usage: unlink-sibling <canonical-id> --url <source_url> --to <row-id>   (opportunities)")
+            return 2
+        if not args.listing_url or not args.to_token:
+            print("⛔ REFUSED — unlink-sibling requires --url <the listing's source_url> and "
+                  "--to <the row that listing belongs to>.")
+            return 1
+        import pipeline_index as _pidx
+        target0 = find(rows, args.to_token)
+        sg0 = next((s for s in (rec.get("sightings") or []) if isinstance(s, dict)
+                    and _pidx._urls_equal(s.get("source_url"), args.listing_url)), None)
+        why = None
+        if args.to_token == args.rid:
+            why = "a listing cannot be split to the row it is already on"
+        elif target0 is None:
+            why = ("no opportunity with id %r (--to). Create it first (`record.py create <id> '<json>' "
+                   "--force`, which records distinct_from), or fold-undo a legacy row that exists"
+                   % args.to_token)
+        elif sg0 is None:
+            why = "%r has no sighting with source_url %s" % (args.rid, args.listing_url)
+        elif sg0.get("split_to"):
+            why = "that sighting was already split to %r" % sg0["split_to"]
+        elif target0.get("duplicate_of") not in (None, args.rid):
+            why = ("%r is folded into %r, not into %r: unlink it from there"
+                   % (args.to_token, target0["duplicate_of"], args.rid))
+        if why:
+            print("⛔ REFUSED — %s." % why)
+            return 1
+        desc = "unlink-sibling: split %s to %s (nothing deleted)" % (args.listing_url, args.to_token)
+
+        def apply(r):
+            import pipeline_index as _pidx2
+            target = find(_apply_rows[0] or rows, args.to_token)
+            if target is None:
+                raise KeyError("no opportunity with id %r (--to)" % args.to_token)
+            sg = next((s for s in (r.get("sightings") or []) if isinstance(s, dict)
+                       and _pidx2._urls_equal(s.get("source_url"), args.listing_url)), None)
+            if sg is None:
+                raise KeyError("%r has no sighting with source_url %s" % (r.get("id"), args.listing_url))
+            sg["split_to"] = args.to_token
+            if target.get("duplicate_of") == r.get("id"):
+                del target["duplicate_of"]
+            df = list(target.get("distinct_from") or [])
+            if r.get("id") not in df:
+                df.append(r.get("id"))
+            target["distinct_from"] = df
+
     elif args.op in SOURCING_OPS:
         # dev #713-#716 / public #142-#145 -- see `_sourcing_mutation`: it computes the value and
         # returns (desc, apply); everything after this chain (dry-run through the validator, the
@@ -3033,6 +3437,7 @@ def main():
             shadow_rows.append(new_row)
         else:
             shadow_rec = find(shadow_rows, args.rid)
+            _apply_rows[0] = shadow_rows
             try:
                 apply(shadow_rec)
             except KeyError as e:
@@ -3134,6 +3539,7 @@ def main():
                 print("  record vanished between read and lock — aborting.")
                 return 1
             _row_before = json.loads(json.dumps(rec))    # as it stood, for the check below
+            _apply_rows[0] = rows
             try:
                 apply(rec)
             except KeyError as e:

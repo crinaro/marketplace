@@ -53,6 +53,15 @@ hold this role?" for BOTH excluded rows (a passed role stays passed) and ACTIVE 
 not expired); an expired row never matches, because a repost of a vanished posting is a second
 chance that must surface (`find_excluded_match`'s own rule, unchanged).
 
+⭐ ONE REQUISITION LISTED AT SEVERAL PLACES IS ONE DECISION (dev #728 / public #158, jobsearch
+0.70.0; docs/design-location-screen.md §5). A sibling listing is a `sightings[]` entry carrying a
+`location`, on the row that already stands for the requisition -- never a second undecided row. The
+helpers below are the ONE definition of it: `listing_places` (where a row is listed), `siblings` and
+`earlier_sibling` (the matching rule: the same company and the same non-empty normalized title, minus
+the vetoes a human recorded), `possible_sibling` (a near miss: never merged, only printed), and
+`is_folded` (a legacy duplicate row folded into its canonical one by hand). `find_known_match` reads
+them so a listing resolves to the canonical row by URL or by company + title.
+
 Python 3.9+. Standard library only.
 """
 
@@ -218,13 +227,15 @@ def find_known_match(opps, url=None, company_id=None, title=None, applications=N
                               applications=applications)
     if hit:
         return hit[0], hit[1], "excluded"
-    active = [o for o in opps if not is_excluded(o) and not is_expired(o)]
+    # dev #728: a FOLDED row (duplicate_of) never answers -- its listings now live on the canonical
+    # row -- and a sighting stamped `split_to` no longer evidences this row (the undo of a false merge).
+    active = [o for o in opps if not is_excluded(o) and not is_expired(o) and not is_folded(o)]
     if str(url or "").strip():
         for o in active:
             if _urls_equal(o.get("jd_url"), url):
                 return o, "jd_url", "active"
             for s in o.get("sightings") or []:
-                if _urls_equal(s.get("source_url"), url):
+                if not s.get("split_to") and _urls_equal(s.get("source_url"), url):
                     return o, "sighting url", "active"
     want_title = normalize_title(title)
     if company_id and want_title:
@@ -252,13 +263,19 @@ def find_excluded_match(opps, company_id=None, title=None, jd_url=None, req_id=N
     want_url = str(jd_url or "").strip()
     want_req = str(req_id or "").strip().casefold()
     want_title = normalize_title(title)
-    excluded = [o for o in opps if is_excluded(o)]
+    excluded = [o for o in opps if is_excluded(o) and not is_folded(o)]
     if want_url:
         for o in excluded:
             # dev #692 (N6): identical, OR the same canonical posting -- one definition of "the
             # same URL" for this lookup, the roles gate and `--settle` alike.
             if _urls_equal(o.get("jd_url"), want_url):
                 return o, "jd_url"
+        # dev #728: a listing linked onto a PASSED row (a sibling sighting) is the same posting by
+        # URL, so a re-run resolves it by URL and does not link it a second time.
+        for o in excluded:
+            for s in o.get("sightings") or []:
+                if not s.get("split_to") and _urls_equal(s.get("source_url"), want_url):
+                    return o, "sighting url"
     if want_req:
         for o in excluded:
             if want_req in reqs.get(o.get("id"), ()):
@@ -268,6 +285,93 @@ def find_excluded_match(opps, company_id=None, title=None, jd_url=None, req_id=N
             if o.get("company_id") == company_id and normalize_title(o.get("title")) == want_title:
                 return o, "company + title"
     return None
+
+
+def is_folded(o):
+    """True for a row folded into another by hand (`record.py link-sibling`): it carries
+    `duplicate_of`, stands for no decision of its own, and is left out of the undecided lists and of
+    every match. The one definition (dev #728); `is_excluded` is unchanged and a folded row is never
+    `passed` (a passed duplicate would make the canonical row match it and screen `remove:passed`)."""
+    return bool(o.get("duplicate_of"))
+
+
+def first_seen(o):
+    """The earliest `sightings[].seen_on` of a row, or "" when it has none -- the order two siblings
+    are told apart in (the earlier is the canonical one; ties broken by id)."""
+    dates = [str(s.get("seen_on"))[:10] for s in (o.get("sightings") or [])
+             if isinstance(s, dict) and s.get("seen_on")]
+    return min(dates) if dates else ""
+
+
+def listing_places(o):
+    """Every place a row is listed at, verbatim, in order: `location.primary`, then each
+    `sightings[].location` that was not split away (`split_to`). Duplicates are dropped."""
+    out = []
+    loc = o.get("location")
+    texts = [loc.get("primary") if isinstance(loc, dict) else None]
+    texts += [s.get("location") for s in (o.get("sightings") or [])
+              if isinstance(s, dict) and not s.get("split_to")]
+    for t in texts:
+        if isinstance(t, str) and t.strip() and t.strip() not in out:
+            out.append(t.strip())
+    return out
+
+
+def siblings(a, b):
+    """True when two ROWS are one requisition by the matching rule (dev #728; design §5.2): the same
+    non-empty `company_id` and the same non-empty normalized title -- and neither names the other in
+    `distinct_from` (a false merge somebody undid, or a `create --force` over a match). No fuzzy
+    match and no suffix stripping (`normalize_company`'s stated policy): two genuinely separate
+    openings with one title at one company WILL merge, and the undo is `record.py unlink-sibling`.
+    The ATS requisition-id veto is NOT implemented: no stored field carries one (`--req-id` is
+    never stored), so there is nothing to compare."""
+    if not a.get("company_id") or a.get("company_id") != b.get("company_id"):
+        return False
+    ta = normalize_title(a.get("title"))
+    if not ta or ta != normalize_title(b.get("title")):
+        return False
+    if b.get("id") in (a.get("distinct_from") or []) or a.get("id") in (b.get("distinct_from") or []):
+        return False
+    return True
+
+
+def earlier_sibling(row, rows):
+    """The EARLIEST other row that is the same requisition as `row` and is still a live, unfolded
+    canonical candidate (neither excluded nor expired nor folded), provided it is EARLIER than `row`
+    (by first `seen_on`, ties by id); else None. A row that is itself excluded, expired or folded has
+    no earlier sibling here (it is not a duplicate decision). Because the canonical row is the
+    earliest of its group it has no earlier sibling itself, so asking for ITS verdict cannot recurse."""
+    if is_excluded(row) or is_expired(row) or is_folded(row):
+        return None
+    mine = (first_seen(row) or "9999-99-99", str(row.get("id")))
+    cands = [o for o in rows if o is not row and o.get("id") != row.get("id")
+             and not is_excluded(o) and not is_expired(o) and not is_folded(o) and siblings(row, o)
+             and (first_seen(o) or "9999-99-99", str(o.get("id"))) < mine]
+    return min(cands, key=lambda o: (first_seen(o) or "9999-99-99", str(o.get("id")))) if cands else None
+
+
+def strip_trailing_place(title):
+    """`title` without a trailing segment `places.parse_place` reads as a place ("Analyst - Austin, TX"
+    -> "Analyst"; "Analyst (Austin, TX)" -> "Analyst"), else the title unchanged."""
+    import places as _places
+    text = str(title or "")
+    for sep in (" - ", " \u2013 ", " \u2014 ", " | ", " ("):
+        i = text.rfind(sep)
+        if i > 0 and _places.parse_place(text[i + len(sep):].rstrip(") ")):
+            return text[:i]
+    return text
+
+
+def possible_sibling(a_title, b_title):
+    """True for a NEAR MISS: titles that differ, but are equal once a trailing place is removed from
+    each. Record linkage's clerical-review rule (dev #728): printed as `POSSIBLE SIBLING`, counted,
+    NEVER merged."""
+    na, nb = normalize_title(a_title), normalize_title(b_title)
+    if not na or not nb or na == nb:
+        return False
+    return (normalize_title(strip_trailing_place(a_title)) != ""
+            and normalize_title(strip_trailing_place(a_title))
+            == normalize_title(strip_trailing_place(b_title)))
 
 
 def describe_match(row, basis):

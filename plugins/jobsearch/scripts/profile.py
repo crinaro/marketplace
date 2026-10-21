@@ -58,6 +58,9 @@ import sys
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_or_fixture as _profile_or_fixture
+# dev #729 / public #157 (jobsearch 0.70.0): `places.py` is the distance half of the commute answer
+# (place text -> coordinates -> miles, from the shipped table); `commute_outcome` below decides.
+import places as _places
 
 # ⭐ FIXTURE FALLBACK, LIKE EVERY OTHER GATE — and NOT a try/except that returns 0.
 #
@@ -220,7 +223,7 @@ def tiers(profile):
     return {t["setting"]: t for t in profile["compensation"]["tiers"]}
 
 
-def effective_setting(location, profile, commute_ok=None):
+def effective_setting(location, profile, commute_ok=None, table=None):
     """Map an opportunity's `location` object to a COMP TIER name.
 
     This is the function that exists because of the <an employer> error. The mapping is NOT
@@ -237,9 +240,14 @@ def effective_setting(location, profile, commute_ok=None):
                                                        location.declared holds its verbatim
                                                        wording. Never pick a tier.)
 
-    `commute_ok`: pass True/False if you already know. Otherwise it is inferred from
-    the location string against profile geography anchors, and an unrecognized place
-    returns None rather than guessing — the whole point is to stop silent guessing.
+    `commute_ok`: pass True/False if you already know. Otherwise it is read from
+    `commute_outcome()` against the profile's geography anchors, and an unrecognized place returns
+    None rather than guessing — the whole point is to stop silent guessing.
+
+    jobsearch 0.70.0 (dev #729 / public #157): the "onsite + outside the radius" arm is REACHABLE.
+    It was documented from 0.4 and unreachable until `within_commute` could answer False, which it
+    does only when a place is PROVEN beyond every anchor (`commute_outcome`, state `outside`).
+    `table` is a place table to use instead of the shipped one (tests inject a synthesized one).
     """
     if not isinstance(location, dict):
         return None
@@ -252,7 +260,7 @@ def effective_setting(location, profile, commute_ok=None):
         return None
 
     if commute_ok is None:
-        commute_ok = within_commute(location, profile)
+        commute_ok = within_commute(location, profile, table)
     if commute_ok is None:
         return None
     return "local-onsite" if commute_ok else "relocation"
@@ -267,15 +275,25 @@ def _entry_name(entry):
     return entry if isinstance(entry, str) else None
 
 
+def _commute_anchors(profile):
+    """The `geography.commute_anchors[]` OBJECTS of a loaded profile. A non-object entry is skipped,
+    never crashed on: a malformed anchor is a data problem for `validate_data.py` or a migration."""
+    geo = profile.get("geography") if isinstance(profile, dict) else None
+    anchors = geo.get("commute_anchors") if isinstance(geo, dict) else None
+    return [a for a in anchors if isinstance(a, dict)] if isinstance(anchors, list) else []
+
+
 def _match_commute(location, profile):
     """`(anchor, matched_entry)` for the first commute anchor whose `place` or any `includes[]`
-    name appears in the location text, else `(None, None)`. THE one text match: `within_commute`
-    and the band resolver both read it, so they cannot disagree about which anchor a role is in."""
+    name appears in the location text, else `(None, None)`. THE one TEXT match: `commute_outcome`
+    runs it first (state `inside`), so the comp rule, the band resolver and the geography rule
+    cannot disagree about which anchor a role is in."""
     hay = " ".join(str(location.get(k) or "") for k in ("primary", "note")).lower()
     if not hay.strip():
         return None, None
-    for anchor in profile["geography"]["commute_anchors"]:
-        entries = [anchor["place"]] + list(anchor.get("includes", []))
+    for anchor in _commute_anchors(profile):
+        inc = anchor.get("includes")
+        entries = [anchor.get("place")] + (list(inc) if isinstance(inc, list) else [])
         for e in entries:
             n = _entry_name(e)
             if n is None:
@@ -287,12 +305,192 @@ def _match_commute(location, profile):
     return None, None
 
 
-def within_commute(location, profile):
-    """True / False / None(unknown). Text matching, deliberately conservative."""
-    anchor, _entry = _match_commute(location, profile)
+# dev #729 / public #157 -- the states `commute_outcome` answers, MOST favourable first. A role
+# listed at several places takes the most favourable one (design §5.6); `outside` is last because a
+# role is outside only when EVERY listing is.
+COMMUTE_STATES = ("inside", "inside-radius", "near", "unresolvable", "outside")
+_STATE_RANK = {s: i for i, s in enumerate(COMMUTE_STATES)}
+_HOLD_RANK = 3.5        # a held answer sorts between `near` and `unresolvable`: it says "not checked"
+
+
+def _place_text(city_norm, region):
+    return "%s, %s" % (city_norm.title(), region)
+
+
+def _outcome(state, **kw):
+    out = {"state": state, "anchor": None, "entry": None, "miles": None, "place": None,
+           "via": None, "hold": None, "detail": None, "bound": None}
+    out.update(kw)
+    return out
+
+
+def _unlocated_note(unlocated):
+    if not unlocated:
+        return ""
+    return ("; anchor %s could not be located (give it lat and lon, or a place in the table)"
+            % ", ".join(repr(a.get("place")) for a in unlocated))
+
+
+def _place_outcome(label, coord, anchors, tbl):
+    """The outcome of ONE parsed place with known coordinates against the anchors (design §3.1,
+    §3.3, R7). `outside` is a PROOF: every anchor located and bounded, and every distance beyond
+    its bound. An anchor that is unlocated or unbounded can never be proved far from, so it makes
+    the answer `near`, never `outside`."""
+    import config_keys as _ck
+    located, unlocated = [], []
+    for a in anchors:
+        ac = _places.anchor_coords(a, tbl)
+        if ac is None:
+            unlocated.append(a)
+        else:
+            located.append((a, _places.haversine_miles(coord, ac)))
+    if not located:
+        return _outcome("unresolvable", place=label, via="table",
+                        detail="no commute anchor has coordinates, so the distance from %s "
+                               "cannot be measured%s" % (label, _unlocated_note(unlocated)))
+    located.sort(key=lambda t: t[1])
+    nearest, miles = located[0]
+    for a, d in located:
+        r = a.get("radius_miles")
+        if r is not None and d <= r:
+            return _outcome("inside-radius", anchor=a, entry=a.get("place"), miles=d, place=label,
+                            via="table", bound=float(r),
+                            detail="%s is ~%d mi from %s, within its radius_miles %s"
+                                   % (label, round(d), a.get("place"), r))
+    bounds = [_ck.outer_bound_miles(a)[0] for a, _d in located]
+    provable = not unlocated and all(b is not None for b in bounds)
+    if provable and all(d > b for (a, d), b in zip(located, bounds)):
+        nearest_bound = bounds[0]
+        return _outcome("outside", anchor=nearest, miles=miles, place=label, via="table",
+                        bound=nearest_bound,
+                        detail="%s is ~%d mi from %s (beyond %d mi)"
+                               % (label, round(miles), nearest.get("place"), round(nearest_bound)))
+    why = _unlocated_note(unlocated)
+    if not why and any(b is None for b in bounds):
+        why = "; an anchor declares no radius_miles, max_commute_minutes or bands, so no distance is far"
+    return _outcome("near", anchor=nearest, miles=miles, place=label, via="table",
+                    detail="%s is ~%d mi from %s: record location.commute_minutes%s"
+                           % (label, round(miles), nearest.get("place"), why))
+
+
+def _listing_outcome(loc, profile, anchors, table):
+    """`commute_outcome` for ONE listing (a `location` object, or just `{"primary": text}`)."""
+    anchor, entry = _match_commute(loc, profile)
+    text = loc.get("primary")
     if anchor is not None:
+        return _outcome("inside", anchor=anchor, entry=entry, place=text, via="text")
+    parsed = _places.parse_place(text)
+    if parsed is None:
+        detail = (("%r is not a place the table knows" % text)
+                  if isinstance(text, str) and text.strip() else "no place is recorded for this role")
+        return _outcome("unresolvable", place=text, detail=detail)
+    import config_keys as _ck
+    bad = ["anchor %r: %s" % (a.get("place"), "; ".join(p)) for a in anchors
+           for p in [_ck.validate_anchor_geo(a)] if p]
+    if bad:
+        return _outcome("held", place=text, hold="config",
+                        detail="a commute anchor's distance keys cannot be read -- %s" % " | ".join(bad))
+    tbl, problem = _places.resolve_table(table)
+    if tbl is None:
+        return _outcome("held", place=text, hold="place-table",
+                        detail="PLACE TABLE MISSING (%s): distance not checked (%s)"
+                               % (_places.table_path(), problem))
+    results = []
+    for city, region in parsed:
+        label = _place_text(city, region)
+        coord = _places.coords(city, region, tbl)
+        if coord is None:
+            results.append(_outcome("unresolvable", place=label, via="table",
+                                    detail="%s is not a place the table knows" % label))
+        elif not anchors:
+            results.append(_outcome("unresolvable", place=label, via="table",
+                                    detail="the profile declares no commute anchor to measure "
+                                           "%s against" % label))
+        else:
+            results.append(_place_outcome(label, coord, anchors, tbl))
+    return _best(results)
+
+
+def _best(results):
+    """The MOST favourable of several outcomes (design §5.6): `inside` over `inside-radius` over
+    `near` over a held answer over `unresolvable` over `outside`; among equals, the nearer place."""
+    def key(o):
+        rank = _HOLD_RANK if o["state"] == "held" else _STATE_RANK[o["state"]]
+        return (rank, o["miles"] if o["miles"] is not None else 0.0)
+    return min(results, key=key)
+
+
+def commute_outcome(location, profile, table=None, also=()):
+    """The ONE answer to "how does this role's place relate to the commute?" (dev #729 / public #157,
+    design-location-screen.md §3.1, R1, R4, R7). Returns `{state, anchor, entry, miles, place, via,
+    hold, detail, bound}`, where `state` is:
+
+      inside         a commute anchor's `place` or `includes[]` name appears in the location text
+                     (`via: "text"`, as `within_commute` always did). `anchor` and `entry` are set.
+      inside-radius  the place parses, the table locates it, and it is within the `radius_miles` of
+                     an anchor that CONFIGURES one. `anchor` is set.
+      outside        the place parses and is located, and for EVERY anchor, the anchor is located
+                     AND bounded (`config_keys.outer_bound_miles`) AND the distance exceeds the
+                     bound. A PROOF, never a guess: no road beats the great circle and no commute
+                     averages 75 mph. R7: one anchor that cannot be located or bounded makes the
+                     answer `near`, never `outside`.
+      near           parsed and located, but neither inside nor provably outside. `miles` is the
+                     distance to the nearest located anchor; the role needs a commute estimate.
+      unresolvable   the text is not a place the table knows, or no anchor has coordinates.
+      held           the answer could not be computed: `hold` is `"place-table"` (the shipped table
+                     is missing, unreadable or empty -- NEVER folded into `unresolvable`, which
+                     would claim a role is somewhere unknown when nobody looked) or `"config"` (an
+                     anchor's radius_miles / lat / lon is unreadable: loud, never read as absent).
+
+    `also` is extra place texts the SAME role is listed at (a sibling listing of one requisition,
+    dev #728), as is `location["listed_at"]`; the most favourable listing wins, so a role is
+    `outside` only when every listing is. `place` names the listing that decided it.
+    `table` is a place table to use instead of the shipped one (`places.make_table`).
+
+    `within_commute`, `effective_setting`, `resolve_floor` and `geo_screen` all read this function,
+    so the comp rule and the geography rule cannot disagree about a role."""
+    anchors = _commute_anchors(profile)
+    listings = [location if isinstance(location, dict) else {}]
+    # `listed_at` is the transient key `screen_rules` adds for a role listed at several places
+    # (dev #728 / public #158): the same list as `also`, carried inside the location it travels with.
+    extra = list(also) + list(listings[0].get("listed_at") or [])
+    listings += [{"primary": t} for t in extra if isinstance(t, str) and t.strip()]
+    return _best([_listing_outcome(loc, profile, anchors, table) for loc in listings])
+
+
+def nearer_listing(previous, new, profile, table=None):
+    """`(nearer, place, state)` -- is a NEW listing of a role strictly more favourable than the places
+    it was already listed at (dev #728 / public #158, R8)? `previous` and `new` are lists of place
+    texts. `nearer` is True only when the new listings' best commute state is `inside`,
+    `inside-radius` or `near` while the previous ones' best is `outside`, `unresolvable` or held: a
+    listing the candidate could actually take, of a role they passed on because the only place they
+    knew was too far. `place` and `state` name the deciding new listing. Anything else is False: the
+    new listing is linked to the existing row as a plain sibling."""
+    prev = [t for t in previous if isinstance(t, str) and t.strip()]
+    cur = [t for t in new if isinstance(t, str) and t.strip()]
+    if not cur:
+        return False, None, None
+    before = commute_outcome({"primary": prev[0] if prev else ""}, profile, table, also=prev[1:])
+    after = commute_outcome({"primary": cur[0]}, profile, table, also=cur[1:])
+    good = ("inside", "inside-radius", "near")
+    was_far = before["state"] in ("outside", "unresolvable", "held")
+    return (after["state"] in good and was_far), after["place"], after["state"]
+
+
+def within_commute(location, profile, table=None):
+    """True / False / None(unknown), read from `commute_outcome`.
+
+    True when the role is `inside` an anchor by name or `inside-radius`. **False only when the
+    role is PROVEN outside every anchor** (dev #729 / public #157: until 0.70.0 this never returned
+    False, so "onsite + outside the radius" was documented and unreachable). None for everything
+    else -- `near`, `unresolvable`, `held` -- because an unknown commute is a question, never
+    "relocation by default"."""
+    state = commute_outcome(location, profile, table)["state"]
+    if state in ("inside", "inside-radius"):
         return True
-    return None  # unknown, NOT False — never infer "relocation" from silence
+    if state == "outside":
+        return False
+    return None
 
 
 def _commute_minutes(location, entry):
@@ -312,8 +510,9 @@ def _commute_minutes(location, entry):
     return None
 
 
-def resolve_floor(location, profile, commute_ok=None):
-    """Which floor a location is screened against: `{setting, floor, band, hold, detail}`.
+def resolve_floor(location, profile, commute_ok=None, table=None):
+    """Which floor a location is screened against: `{setting, floor, band, hold, detail, commute,
+    anchor}`.
 
     jobsearch 0.67.0 (dev #714 / public #144; design §5.4). `setting` is `effective_setting()`'s
     answer, UNCHANGED, and `floor` is None -- the caller reads the tier's own floor -- in every case
@@ -330,16 +529,32 @@ def resolve_floor(location, profile, commute_ok=None):
         tier; `"band"` (the default) prices it by the commute like an onsite role (B3).
       * Bands (or the key) present but UNREADABLE -> `hold="config"` with the reasons: loud, never
         an empty table and never a removal.
+
+    jobsearch 0.70.0 (dev #729 / public #157, design R4): the anchor and the matched `includes`
+    entry come from `commute_outcome` -- the ONE function that decides a role's anchor -- so a role
+    that is `inside-radius` (no anchor NAMED in its text, but within a configured `radius_miles`)
+    gets the same band logic as one that names its anchor. It never gets a band without
+    `location.commute_minutes`: with bands declared and no minutes it holds (`hold="minutes"`),
+    because a distance is not a commute time. An onsite role whose distance could not be computed
+    (`hold="place-table"`, `hold="config"`) holds with the reason. `commute` is the outcome (None
+    when the type is not onsite or hybrid, or `commute_ok` was passed), `anchor` the anchor it
+    resolved (None otherwise).
     """
     import config_keys as _ck
-    out = {"setting": effective_setting(location, profile, commute_ok), "floor": None,
-           "band": None, "hold": None, "detail": None}
+    out = {"setting": effective_setting(location, profile, commute_ok, table), "floor": None,
+           "band": None, "hold": None, "detail": None, "commute": None, "anchor": None}
     ltype = location.get("type") if isinstance(location, dict) else None
     if commute_ok is not None or ltype not in ("onsite", "hybrid"):
         return out
-    anchor, entry = _match_commute(location, profile)
-    if anchor is None:
+    oc = commute_outcome(location, profile, table)
+    out["commute"] = oc
+    if ltype == "onsite" and oc["hold"]:
+        out["hold"], out["detail"] = oc["hold"], oc["detail"]
+        return out
+    if oc["state"] not in ("inside", "inside-radius"):
         return out                      # hybrid: outside every anchor -> hybrid tier (today's)
+    anchor, entry = oc["anchor"], oc["entry"]
+    out["anchor"] = anchor
     if ltype == "hybrid":
         mode, _prov = _ck.describe(profile, _ck.COMPENSATION_HYBRID_INSIDE_RADIUS)
         if mode not in _ck.COMPENSATION_HYBRID_INSIDE_RADIUS_VALUES:
@@ -373,7 +588,38 @@ def resolve_floor(location, profile, commute_ok=None):
     return out
 
 
-def screen_comp(opp, profile, commute_ok=None):
+# dev #727 / public #159 (jobsearch 0.70.0): a role whose `location.setting_source` is `inferred` was
+# recorded onsite by the capture script because the sweep read NO setting at a concrete place. Every
+# screen line computed on that inference says so, so a removal on it is never mistaken for one made
+# on a stated setting.
+INFERRED_NOTE = " (onsite inferred: the posting stated no setting)"
+
+
+def is_inferred(opp_or_location):
+    """True when the `location` (or the opportunity carrying it) is `setting_source: inferred`."""
+    loc = opp_or_location.get("location") if isinstance(opp_or_location, dict) \
+        and "location" in opp_or_location else opp_or_location
+    return isinstance(loc, dict) and loc.get("setting_source") == "inferred"
+
+
+def screen_comp(opp, profile, commute_ok=None, table=None):
+    """Screen one opportunity's comp against the applicable tier. Returns `(verdict, detail)`; a
+    role screened as onsite on an INFERENCE (`location.setting_source`, dev #727 / public #159)
+    carries `INFERRED_NOTE` at the end of its detail, whatever the verdict.
+
+    See `_screen_comp` for the rules themselves."""
+    verdict, detail = _screen_comp(opp, profile, commute_ok, table)
+    loc = opp.get("location") if isinstance(opp.get("location"), dict) else {}
+    if loc.get("listed_at") and loc.get("type") in ("onsite", "hybrid") and commute_ok is None:
+        # dev #728 / public #158 (design §5.6): the role is listed at several places and the MOST
+        # FAVOURABLE one decided; the detail says which.
+        detail += " [decided by the listing at %s]" % commute_outcome(loc, profile, table)["place"]
+    if is_inferred(opp) and verdict != UNRESOLVED:
+        detail += INFERRED_NOTE
+    return verdict, detail
+
+
+def _screen_comp(opp, profile, commute_ok=None, table=None):
     """Screen one opportunity's comp against the applicable tier.
 
     Returns (verdict, detail). Verdicts: CLEARS / BELOW-FLOOR / UNDISCLOSED /
@@ -401,7 +647,18 @@ def screen_comp(opp, profile, commute_ok=None):
             "and must not quietly drop out."
             % (" (verbatim: %r)" % declared if declared else ""))
 
-    resolved = resolve_floor(loc, profile, commute_ok)
+    # dev #727 / public #159 (LS-B3): the sweep read NO setting and no place could be read from the
+    # card, so the capture script had nothing to infer and left `location.type` ABSENT. That is a
+    # question for the candidate, not a floor: never an inference fired on nothing.
+    if isinstance(loc, dict) and "type" not in loc and loc.get("declared") == "none stated":
+        return NEEDS_COMMUTE, (
+            "no setting stated and no place: the sweep read no work setting on this posting "
+            "(declared 'none stated') and location.primary %r is not a place the place table "
+            "reads, so location.type is absent. Read the posting, then record its setting with "
+            "`record.py set %s location '<json>'`. Ask/check before applying any floor."
+            % (loc.get("primary"), opp.get("id") or "<id>"))
+
+    resolved = resolve_floor(loc, profile, commute_ok, table)
     setting = resolved["setting"]
 
     if resolved["hold"]:
@@ -410,10 +667,16 @@ def screen_comp(opp, profile, commute_ok=None):
             % (loc.get("type"), loc.get("primary"), resolved["detail"]))
 
     if setting is None:
+        # dev #729 / public #157: an onsite role the commute resolver could not place says WHY
+        # after the unchanged sentence -- `near` carries its distance, `unresolvable` says the
+        # text is not a place the table knows. The sentence itself is the 0.67.0 text, byte for byte.
+        oc = resolved.get("commute")
+        has_place = isinstance(loc.get("primary"), str) and bool(loc["primary"].strip())
+        why = (" (%s)" % oc["detail"]) if oc and oc.get("detail") and has_place else ""
         return NEEDS_COMMUTE, (
             "location.type=%r at %r — cannot tell whether this is a commute or a MOVE. "
-            "Ask/check before applying any floor. Never assume 'onsite' means relocation."
-            % (loc.get("type"), loc.get("primary")))
+            "Ask/check before applying any floor. Never assume 'onsite' means relocation.%s"
+            % (loc.get("type"), loc.get("primary"), why))
 
     tier = tiers(profile)[setting]
     floor = resolved["floor"] if resolved["floor"] is not None else tier["floor"]
@@ -425,7 +688,8 @@ def screen_comp(opp, profile, commute_ok=None):
     if comp and comp.get("max") is not None:
         pass                              # §5.2 step 1: the candidate's own figure screens, as before
     elif isinstance(opp.get("listed_pay"), dict):
-        return _screen_listed_pay(opp["listed_pay"], opp, profile, label, floor)
+        return _screen_listed_pay(opp["listed_pay"], opp, profile, label, floor,
+                                  resolved.get("anchor"))
     else:
         return NOT_CAPTURED, (
             "no pay was ever recorded for this role (no listed_pay, no comp figure) — that is NOT "
@@ -497,15 +761,14 @@ def _num(v):
     return v if isinstance(v, (int, float)) and not isinstance(v, bool) else None
 
 
-def _label_matches(label, loc, profile):
+def _label_matches(label, loc, anchor):
     """True when a range's own `label` (the posting's verbatim name for a location-specific
-    range) names the role's matched commute anchor or its `location.primary` (case-insensitive
-    substring, design §5.3)."""
+    range) names the role's matched commute anchor (`anchor`, as `commute_outcome` resolved it, or
+    None) or its `location.primary` (case-insensitive substring, design §5.3)."""
     if not isinstance(label, str) or not label.strip():
         return False
     lab = label.lower()
     names = []
-    anchor, _e = _match_commute(loc, profile)
     if anchor is not None:
         names.append(anchor.get("place"))
     names.append(loc.get("primary"))
@@ -518,7 +781,7 @@ def _label_matches(label, loc, profile):
     return False
 
 
-def _screen_listed_pay(lp, opp, profile, label, floor):
+def _screen_listed_pay(lp, opp, profile, label, floor, anchor=None):
     """`screen_comp`'s §5.3: one `listed_pay` object against `floor` (the tier or band already
     chosen). Returns `(verdict, detail)`.
 
@@ -540,7 +803,7 @@ def _screen_listed_pay(lp, opp, profile, label, floor):
             "listed_pay is recorded but carries no readable range (state %r) — treated as NOT "
             "captured, never as a figure. RE-READ THE LISTING before surfacing it." % state)
     loc = opp.get("location") or {}
-    selected = [r for r in ranges if _label_matches(r.get("label"), loc, profile)] or ranges
+    selected = [r for r in ranges if _label_matches(r.get("label"), loc, anchor)] or ranges
     shown = "; ".join(_range_text(r) for r in selected)
     try:
         currency = _ck.resolve_currency(profile)
@@ -891,8 +1154,9 @@ def _age_rule(opp, profile, channels, today):
     return token, shown, False
 
 
-def screen_rules(opp, profile, all_opps, applications=None, channels=None, today=None):
-    """The minimal screen as STRUCTURED rules: `{"rules", "detail", "verdict"}`.
+def screen_rules(opp, profile, all_opps, applications=None, channels=None, today=None,
+                 table=None):
+    """The minimal screen as STRUCTURED rules: `{"rules", "detail", "verdict", "commute"}`.
 
     jobsearch 0.67.0 (R5, dev #713 / public #145): `record.py screened` stores what this returns,
     so a stored verdict is computed here, never transcribed by a model; `minimal_screen` below is
@@ -905,14 +1169,31 @@ def screen_rules(opp, profile, all_opps, applications=None, channels=None, today
     role can say `remove`: comp BELOW-FLOOR, geo `out`, a passed/excluded duplicate. A question the
     data cannot answer (a contested setting, an unknown commute, NOT-CAPTURED or PAY-UNCOMPARABLE
     pay, no geography section, a recruiter role's age) and the advisory title rule say `review`,
-    never `remove` and never a quiet `keep`. UNDISCLOSED comp (recorded none-shown) is KEPT."""
+    never `remove` and never a quiet `keep`. UNDISCLOSED comp (recorded none-shown) is KEPT.
+
+    jobsearch 0.70.0 (dev #729 / public #157): the geo rule can now say `outside-radius`, a REMOVAL
+    -- an onsite role proven beyond every commute anchor that names no affirmative destination and
+    is not kept by `geography.relocation.keep_outside_radius`. `commute` is the role's commute
+    state (`commute_outcome`: inside, inside-radius, near, unresolvable, outside, or the hold
+    `place-table` / `config`) for an onsite role, else None; the summary line counts it. It is not
+    stored (`record.py screened` stores `rules` and `verdict`). `table` is a place table to use
+    instead of the shipped one (tests inject a synthesized one)."""
     import geo_screen as _geo
     import pipeline_index as _pidx
     oid = opp.get("id")
     removes, reviews = [], []
     rules, detail = {}, {}
 
-    verdict, text = screen_comp(opp, profile)
+    # dev #728 / public #158 (design §5.6): one requisition listed at several places is screened at
+    # its MOST FAVOURABLE place. The other places ride in `location.listed_at` (a transient key, never
+    # stored), where `commute_outcome` and the geography rule read them.
+    primary_text = ((opp.get("location") or {}).get("primary") or "") if isinstance(
+        opp.get("location"), dict) else ""
+    extra_places = [p for p in _pidx.listing_places(opp) if p != primary_text.strip()]
+    if extra_places and isinstance(opp.get("location"), dict):
+        opp = dict(opp, location=dict(opp["location"], listed_at=extra_places))
+
+    verdict, text = screen_comp(opp, profile, table=table)
     rules["comp"], detail["comp"] = verdict, text
     if verdict == BELOW:
         removes.append("comp")
@@ -931,12 +1212,43 @@ def screen_rules(opp, profile, all_opps, applications=None, channels=None, today
     else:
         rules["passed"], detail["passed"] = "NOT-EXCLUDED", "NOT EXCLUDED"
 
+    # dev #728 / public #158 (design §5.4, LS-C2): a row that is another listing of an EARLIER, live,
+    # unfolded row (same company + title, not vetoed) is a DUPLICATE: the screen says so, names the
+    # one-verb fold, and its VERDICT is the canonical row's own, inherited. The canonical row is the
+    # earliest of its group, so it has no earlier sibling and asking for its verdict cannot recurse.
+    inherited = None
+    if not hit:
+        canonical = _pidx.earlier_sibling(opp, all_opps)
+        if canonical is not None:
+            canon_screen = screen_rules(canonical, profile, all_opps, applications, channels, today,
+                                        table)
+            inherited = canon_screen["verdict"]
+            rules["passed"] = "DUPLICATE"
+            detail["passed"] = ("DUPLICATE of %s on company + title; its verdict: %s; fold with "
+                                "record.py link-sibling %s --into %s"
+                                % (canonical.get("id"), inherited, oid, canonical.get("id")))
+
     loc = opp.get("location") or {}
+    ltype = loc.get("type")
+    # The stated type goes to the geography rule as given, so a `relocation` or `unresolved` role is
+    # never taken for an onsite one (the CLI infers onsite only from a bare place, R6); a role with
+    # NO type is the CLI's own case, and gets the same inference.
     gverdict, gline, _d = _geo.screen(loc.get("primary") or "", profile,
-                                      work_type=loc.get("type")
-                                      if loc.get("type") in ("remote", "hybrid", "onsite") else None)
+                                      work_type=ltype if ltype in (
+                                          "remote", "hybrid", "onsite", "relocation",
+                                          "unresolved") else None,
+                                      table=table, loc_obj=loc)
+    inferred = is_inferred(loc)
+    typeless = "type" not in loc and loc.get("declared") == "none stated"
+    if inferred:
+        gline += INFERRED_NOTE
+    if typeless and gverdict == _geo.OUT:
+        # LS-B3: no setting and no place -- the geography rule has nothing to judge, so a text it
+        # cannot read must not become a removal. Kept for review, the way the comp rule keeps it.
+        gline += " -- no setting and no place were stated: kept for review, not removed"
+        reviews.append("geo")
     rules["geo"], detail["geo"] = gverdict, gline
-    if gverdict == _geo.OUT:
+    if gverdict in (_geo.OUT, _geo.OUTSIDE_RADIUS) and not typeless:
         removes.append("geo")
     elif gverdict == _geo.UNKNOWN:
         reviews.append("geo")
@@ -951,16 +1263,35 @@ def screen_rules(opp, profile, all_opps, applications=None, channels=None, today
     if review:
         reviews.append("age")
 
-    if removes:
+    if inherited is not None:
+        v = inherited
+    elif removes:
         v = "remove:" + ",".join(removes)
     elif reviews:
         v = "review:" + ",".join(reviews)
     else:
         v = "keep"
-    return {"rules": rules, "detail": detail, "verdict": v}
+    commute = None
+    if ltype == "onsite":
+        oc = commute_outcome(loc, profile, table)
+        commute = oc["hold"] or oc["state"]
+    return {"rules": rules, "detail": detail, "verdict": v, "commute": commute,
+            "setting_source": "inferred" if inferred else None}
 
 
-def minimal_screen(opp, profile, all_opps, applications=None, channels=None, today=None):
+def _screen_block(opp, r):
+    d = r["detail"]
+    return ["MINIMAL SCREEN %s" % opp.get("id"),
+            "  comp:      %s  %s" % (r["rules"]["comp"], d["comp"]),
+            "  passed:    %s" % d["passed"],
+            "  geo:       %s" % d["geo"],
+            "  title:     %s" % d["title"],
+            "  age:       %s" % d["age"],
+            "VERDICT %s" % r["verdict"]]
+
+
+def minimal_screen(opp, profile, all_opps, applications=None, channels=None, today=None,
+                   table=None):
     """dev #692 / public #140 -- the scripted screen every captured role gets under EVERY posture.
     Returns `(lines, verdict)`: the printable block (the header, then SIX rule lines -- comp,
     passed, geo, title, age, VERDICT -- and nothing else) and the VERDICT string `keep`,
@@ -970,16 +1301,59 @@ def minimal_screen(opp, profile, all_opps, applications=None, channels=None, tod
     computed there. `age` joined the block in 0.67.0 (dev #716 / public #142); before that it was
     header, four rules and the VERDICT. Pure over what it is handed, and it never reads `posture`
     (the point of the criterion)."""
-    r = screen_rules(opp, profile, all_opps, applications, channels, today)
-    d = r["detail"]
-    lines = ["MINIMAL SCREEN %s" % opp.get("id"),
-             "  comp:      %s  %s" % (r["rules"]["comp"], d["comp"]),
-             "  passed:    %s" % d["passed"],
-             "  geo:       %s" % d["geo"],
-             "  title:     %s" % d["title"],
-             "  age:       %s" % d["age"],
-             "VERDICT %s" % r["verdict"]]
-    return lines, r["verdict"]
+    r = screen_rules(opp, profile, all_opps, applications, channels, today, table)
+    return _screen_block(opp, r), r["verdict"]
+
+
+# dev #729 / public #157 -- the run-level lines. `--minimal-screen` over several ids and
+# `--screen-all` end with the commute split, so "75 screened, 0 removed" can never again be a number
+# nobody can read behind: a far role is `outside`, one that needs a commute estimate is `near`, a
+# text the table does not know is `unresolvable`, and a table that could not be read at all is its
+# OWN count and its own line (it is never folded into `unresolvable`).
+COMMUTE_COUNT_KEYS = ("outside", "near", "unresolvable", "place-table", "config")
+
+
+def commute_counts(states):
+    """`{outside, near, unresolvable, place-table, config}` counts over commute states (None, and
+    the inside states, are not counted: they raise no question)."""
+    counts = {k: 0 for k in COMMUTE_COUNT_KEYS}
+    for st in states:
+        if st in counts:
+            counts[st] += 1
+    return counts
+
+
+def commute_text(counts):
+    parts = ["outside %d" % counts["outside"], "near %d" % counts["near"],
+             "unresolvable %d" % counts["unresolvable"]]
+    if counts["place-table"]:
+        parts.append("place table missing %d" % counts["place-table"])
+    if counts["config"]:
+        parts.append("anchor config unreadable %d" % counts["config"])
+    return "commute: " + ", ".join(parts)
+
+
+def place_table_missing_line():
+    return "PLACE TABLE MISSING (%s): distance not checked" % _places.table_path()
+
+
+def screen_summary(results):
+    """The ONE summary line over several `screen_rules` results, then the PLACE TABLE MISSING line
+    once when any role could not be measured: `MINIMAL SCREEN SUMMARY n screened · keep k · remove r
+    (geo g, comp c, passed p) · review v · commute: outside o, near m, unresolvable u`."""
+    n = len(results)
+    keep = sum(1 for r in results if r["verdict"] == "keep")
+    removed = [r for r in results if r["verdict"].startswith("remove:")]
+    review = sum(1 for r in results if r["verdict"].startswith("review:"))
+    by = {rule: sum(1 for r in removed if rule in r["verdict"][len("remove:"):].split(","))
+          for rule in ("geo", "comp", "passed")}
+    counts = commute_counts(r.get("commute") for r in results)
+    lines = ["MINIMAL SCREEN SUMMARY %d screened · keep %d · remove %d (geo %d, comp %d, passed %d)"
+             " · review %d · %s" % (n, keep, len(removed), by["geo"], by["comp"], by["passed"],
+                                    review, commute_text(counts))]
+    if counts["place-table"]:
+        lines.append(place_table_missing_line())
+    return lines
 
 
 def _squash(text):
@@ -1055,6 +1429,24 @@ def print_options(cfg):
     print("\nFIXED BY THE ENGINE — a change here is a report, not a setting")
     for name, value in sorted(_ck.FIXED.items()):
         print("  %-40s %r" % (name, value))
+    # dev #729 / public #157: what "far" means for THIS profile, so the answer to "why was nothing
+    # (or everything) removed as outside-radius" is printed, not inferred.
+    print("\nCOMMUTE DISTANCE — a role is outside-radius only when it is beyond EVERY anchor's bound")
+    anchors = _commute_anchors(cfg)
+    bounded = 0
+    for a in anchors:
+        bound, how = _ck.outer_bound_miles(a)
+        problems = _ck.validate_anchor_geo(a)
+        bounded += bound is not None
+        shown = ("%d mi (%s)" % (round(bound), how)) if bound is not None else "no bound (%s)" % how
+        print("  %-40s %s%s" % (a.get("place"), shown,
+                                "  UNREADABLE: " + "; ".join(problems) if problems else ""))
+    if not anchors or not bounded:
+        print("  no anchor contributes a bound: every parsed place is `near` and none is ever "
+              "removed as outside-radius. Set geography.commute_anchors[].max_commute_minutes or "
+              "radius_miles.")
+    print("  place table: %s (%s)" % (_places.table_path(),
+          "present" if os.path.isfile(_places.table_path()) else "MISSING -- distance is not checked"))
     return 0
 
 
@@ -1067,11 +1459,14 @@ def main():
                          "F, off-mandate: M, re-screen pending: P` over the undecided backlog "
                          "under today's screen.title_floor / title-field likely_pass_signals. "
                          "Read-only; the measure to take before and after the keys are set.")
-    ap.add_argument("--minimal-screen", dest="minimal_screen", metavar="OPP_ID",
+    ap.add_argument("--minimal-screen", dest="minimal_screen", metavar="OPP_ID", nargs="+",
                     help="dev #692 / public #140: the scripted screen every captured role gets "
                          "under EVERY posture (comp floor, passed/duplicate, geography, advisory "
                          "title). Read-only, zero tokens, never reads "
-                         "posture. Exit 0 on any verdict, 2 if the opportunity does not exist.")
+                         "posture. Exit 0 on any verdict, 2 if an opportunity does not exist. "
+                         "Several ids (dev #729 / public #157) print each block and then ONE "
+                         "summary line: screened, keep, remove (by rule), review, and the commute "
+                         "split (outside, near, unresolvable).")
     ap.add_argument("--options", action="store_true",
                     help="print the whole adjustable config surface, with defaults and "
                          "provenance (design-states-and-views.md §15.7)")
@@ -1093,15 +1488,22 @@ def main():
 
     if args.minimal_screen:
         all_opps = _load_opps()
-        opp = next((o for o in all_opps if o.get("id") == args.minimal_screen), None)
-        if opp is None:
-            print("No opportunity with id %r" % args.minimal_screen)
-            return 2
-        out, _verdict = minimal_screen(opp, profile, all_opps,
-                                       applications=_load_optional("applications.jsonl"),
-                                       channels=_load_optional("channels.jsonl"))
-        print("\n".join(out))
-        return 0
+        apps, chans = _load_optional("applications.jsonl"), _load_optional("channels.jsonl")
+        results, missing = [], False
+        for oid in args.minimal_screen:
+            opp = next((o for o in all_opps if o.get("id") == oid), None)
+            if opp is None:
+                print("No opportunity with id %r" % oid)
+                missing = True
+                continue
+            r = screen_rules(opp, profile, all_opps, applications=apps, channels=chans)
+            results.append(r)
+            print("\n".join(_screen_block(opp, r)))
+        if len(args.minimal_screen) > 1 and results:
+            print("\n".join(screen_summary(results)))
+        elif results and results[0].get("commute") == "place-table":
+            print(place_table_missing_line())
+        return 2 if missing else 0
 
     if args.screen or args.screen_all:
         all_opps = _load_opps()
@@ -1113,26 +1515,44 @@ def main():
                 return 1
         elif args.screen_all:
             screened = set(SCREEN_ALL_STATUSES)
-            opps = [o for o in all_opps if o.get("status") in screened]
+            import pipeline_index as _pidx_f
+            # dev #728 / public #158: a row folded into another (duplicate_of) is another listing of
+            # a requisition already screened as the canonical row; it is counted, not screened twice.
+            opps = [o for o in all_opps if o.get("status") in screened
+                    and not _pidx_f.is_folded(o)]
             # ⭐ public #84 — COVERAGE, NOT SILENCE. Every status this run did NOT screen, and
             # how many rows sat in it, computed from what is actually on disk (never a
             # hardcoded enum that could itself drift from the data) — so an exclusion is a
             # printed fact, not a fact nobody stated.
             for o in all_opps:
                 st = o.get("status")
-                if st not in screened:
+                if _pidx_f.is_folded(o) and st in screened:
+                    excluded_counts["folded (duplicate_of)"] = (
+                        excluded_counts.get("folded (duplicate_of)", 0) + 1)
+                elif st not in screened:
                     excluded_counts[st] = excluded_counts.get(st, 0) + 1
 
         print("Comp screen — %d opportunit%s" % (len(opps), "y" if len(opps) == 1 else "ies"))
         print("=" * 78)
         counts = {}
+        commute_states = []
         for o in sorted(opps, key=lambda x: x["id"]):
             verdict, detail = screen_comp(o, profile)
             counts[verdict] = counts.get(verdict, 0) + 1
             print("  %-20s %s" % (verdict, o["id"][:52]))
             print("  %-20s %s" % ("", detail))
+            oloc = o.get("location") or {}
+            if oloc.get("type") == "onsite":
+                oc = commute_outcome(oloc, profile)
+                commute_states.append(oc["hold"] or oc["state"])
         print("\n" + "=" * 78)
         print("  " + " · ".join("%s=%d" % (k, v) for k, v in sorted(counts.items())))
+        ccounts = commute_counts(commute_states)
+        print("  " + commute_text(ccounts))
+        inferred_n = sum(1 for o in opps if is_inferred(o))
+        print("  onsite inferred (the posting stated no setting): %d" % inferred_n)
+        if ccounts["place-table"]:
+            print("  " + place_table_missing_line())
         if args.screen_all:
             if excluded_counts:
                 print("  NOT screened (status excluded from --screen-all): " +

@@ -671,6 +671,30 @@ class ScanBudgetExceeded(Exception):
     """Raised by `scan()` when its `deadline` passes MID-FILE (dev #526, public #123)."""
 
 
+# ⭐ dev #729 / public #157 (jobsearch 0.70.0, design-location-screen.md R1) -- A DELIBERATE, NAMED
+# EXCLUSION, NOT A BLIND SPOT. The shipped place table `places/us_places.csv.gz` is the US Census
+# Gazetteer places file: tens of thousands of PUBLIC place names. It is outside every
+# `ENGINE_FAMILIES` glob, and as a gzip file it is already counted "not readable as UTF-8 text";
+# this entry makes the reason a declared fact rather than a side effect of the file's encoding, so
+# it holds if the table is ever shipped as plain text, and it is scoped to the PATH, never to a
+# string. The reason is the whole justification: a public place name is not personal data, and the
+# user's own city appearing in a gazetteer is expected. Everything else is scanned as before -- the
+# same city written in a doc, a script or a fixture is still a finding.
+NAMED_EXCLUSIONS = (
+    ("places/*.csv.gz",
+     "the shipped US Census place table (public place names): a city in a gazetteer is not "
+     "personal data, even when it is the user's own"),
+)
+
+
+def named_exclusion_for(rel):
+    """Pure. The `NAMED_EXCLUSIONS` entry that covers `rel` (a path relative to the engine root),
+    or None. Path-scoped by construction: only a file under `places/` and ending `.csv.gz`."""
+    import fnmatch
+    rel = rel.replace(os.sep, "/")
+    return next((e for e in NAMED_EXCLUSIONS if fnmatch.fnmatchcase(rel, e[0])), None)
+
+
 # dev #526 — how many CANDIDATE terms `scan()` tries between two looks at the clock. Small
 # enough that one pathological LINE cannot outrun the budget by more than a few hundred regex
 # passes; large enough that the clock read is noise next to the regex work.
@@ -785,6 +809,8 @@ def scan(path, terms, exempt_sink=None, deadline=None):
     terms whose first alphanumeric run it contains; see the comment above `_RUN_RE`."""
     rel = os.path.relpath(path, ENGINE_ROOT)
     hits = []
+    if named_exclusion_for(rel):
+        return rel, None          # a NAMED exclusion (see NAMED_EXCLUSIONS): counted, never scanned
     if not os.path.exists(path):
         # A profile need not contain every optional file. This crashed CI on a fixture with no
         # CLAUDE.md while passing locally, because the local pointer resolved a real profile that

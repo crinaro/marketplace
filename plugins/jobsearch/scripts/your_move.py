@@ -129,6 +129,10 @@ import config_keys                                                   # noqa: E40
 # safe at module top level, unlike the lazy `import your_move` precondition.py/watch.py do.
 import applications as _apps                                         # noqa: E402
 import touches as _touches                                           # noqa: E402
+# dev #728 / public #158 (design-location-screen.md §5.4): `is_folded` is the ONE definition of a
+# row folded into another by hand; membership below reads it rather than restating `duplicate_of`.
+# pipeline_index imports only `_root`, so this adds no import cycle.
+import pipeline_index as _pidx                                       # noqa: E402
 
 # Re-exported so a caller (validate_data.py) needs exactly one import to validate the field.
 PreconditionError = _pre.PreconditionError
@@ -1154,6 +1158,10 @@ def is_your_move_candidate(o, owner_token):
     applications known" answer rather than a crash."""
     if o.get("next_action_owner") != owner_token:
         return False
+    if _pidx.is_folded(o):
+        # dev #728 / public #158: a folded duplicate stands for no decision of its own -- its
+        # listings live on the canonical row, which is the one that asks pursue-or-pass.
+        return False
     return (o.get("status") in LIVE_OPP_STATUSES
             or (o.get("status") == "backlog" and o.get("verdict") == "undecided"
                 and not has_submitted_application(o.get("_applications"))))
@@ -1170,6 +1178,9 @@ def invisible_reason(o, owner_token):
     if is_your_move_candidate(o, owner_token):
         return None
     st = o.get("status")
+    if _pidx.is_folded(o):
+        return ("folded into %s (duplicate_of): the canonical row carries the decision, so this "
+                "one never surfaces on Your Move" % (o.get("duplicate_of"),))
     if st == "backlog" and o.get("verdict") == "undecided":
         return ("status 'backlog' with verdict 'undecided' but a submitted application on "
                 "the record — the act decided; set verdict to 'pursue' (the row still "

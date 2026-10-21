@@ -86,10 +86,12 @@ sweep used to drop: `posted=` (a date, an `ats:` date, a shown age `<n>d`, or `?
 `pay=` and `setting=` slots are REQUIRED: a line without them is a line fault, because an optional
 slot would let a forgetful sweep produce silent NOT CAPTURED rows. `--add-roles` parses them itself
 (`parse_pay_slot`, `parse_posted_slot`, never a model) and the `capture-role` item it queues carries
-the result as `role` = `{listed_pay, posted, location_declared, slots}` in the shapes the
-opportunity stores. They reach the opportunity only when the role is created with
+the result as `role` = `{listed_pay, posted, location_declared, location_listed, slots}` in the
+shapes the opportunity stores. They reach the opportunity only when the role is created with
 `record.py create <opp_id> '<json>' --from-item <that item's id>`, which copies `listed_pay`,
-`posted` and `location.declared` across (`record.py copy_capture_item_facts`); a create without
+`posted`, `location.declared` and `location.primary` across (`record.py copy_capture_item_facts`),
+and infers `location.type: onsite` (`setting_source: inferred`) for a posting whose setting the
+sweep read as `none stated` at a concrete place (dev #727 / public #159); a create without
 `--from-item` copies nothing, and the screen then reads NOT CAPTURED. `?` in any slot means NOT READ
 and is stored as ABSENT, never as "none". A non-annual figure is carried as written (`interval` month, day, hour);
 the screen routes it to review and nothing here converts it to a year.
@@ -275,6 +277,7 @@ DEGRADED_CODES = ("filter-dropped", "param-added", "window-unapplied", "truncate
                   "query-unparsed")                       # these QUARANTINE
 UNREAD_CODES = ("filters-unread", "total-unknown")        # these file the query gap ONLY (R3)
 KIND_UNQUARANTINE = "_unquarantine"
+KIND_SIBLING = "_sibling"       # dev #728 / public #158 -- a sibling listing joined to a queued item
 PAY_INTERVALS = {"yr": "year", "mo": "month", "day": "day", "hr": "hour"}
 PAY_STATES = {"stated": "employer-stated", "estimate": "board-estimate"}
 PAY_SOURCES = {"employer-stated": "listing-text", "board-estimate": "board-widget",
@@ -334,6 +337,17 @@ def replay(rows):
         kind = r.get("kind")
         if kind == "_done" and rid in state:
             state[rid] = dict(state[rid], status="done", done_at=r.get("done_at"))
+            if r.get("closed_as"):
+                # dev #728: `linked:<row id>` -- the item became a listing of an existing row
+                state[rid]["closed_as"] = r["closed_as"]
+        elif kind == KIND_SIBLING and rid in state:
+            # dev #728 / public #158 -- one requisition listed at several places is ONE item: a
+            # sibling listing is an APPEND record (`{url, location}`) folded onto `siblings`, in
+            # order, never a second item, and never twice for one URL.
+            sibs = list(state[rid].get("siblings") or [])
+            if r.get("url") and not any(s.get("url") == r["url"] for s in sibs):
+                sibs.append({"url": r["url"], "location": r.get("location")})
+            state[rid] = dict(state[rid], siblings=sibs)
         elif kind == "_claim" and rid in state:
             state[rid] = dict(state[rid], claimed_by=r.get("claimed_by"),
                               claimed_at=r.get("claimed_at"), withheld_because=None)
@@ -346,7 +360,8 @@ def replay(rows):
             # sighting) or by the owner, never by a claim: `_withheld` is a property of the
             # surface and a claim clears it; quarantine is a property of the evidence for one role.
             state[rid] = dict(state[rid], quarantine=None)
-        elif kind not in ("_done", "_claim", "_release", "_withheld", KIND_UNQUARANTINE):
+        elif kind not in ("_done", "_claim", "_release", "_withheld", KIND_UNQUARANTINE,
+                          KIND_SIBLING):
             state[rid] = r
     return list(state.values())
 
@@ -453,6 +468,39 @@ def _append_unquarantine(rid, because, now=None):
     return rec
 
 
+def _append_sibling(rid, url, location, now=None):
+    """dev #728 / public #158 -- join one sibling listing (`url`, `location`) to the queued
+    `capture-role` item `rid`: an APPEND-ONLY record that `replay` folds onto `siblings`, the shape
+    `_append_unquarantine` has. `--add-roles` prints `SIBLING <url> (<location>) -> <item id>`."""
+    now = now or datetime.datetime.now()
+    rec = {"id": rid, "kind": KIND_SIBLING, "url": url, "location": location,
+           "at": now.isoformat(timespec="seconds")}
+    with open(QUEUE, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return rec
+
+
+def close_item(rid, closed_as, now=None):
+    """dev #728 / public #158 -- close one queue item as `closed_as` (`linked:<opportunity id>`): the
+    `_done` record every close is, plus WHY it closed, so a capture item that became a listing of an
+    existing row is not mistaken for one that became a row of its own."""
+    now = now or datetime.datetime.now()
+    rec = {"id": rid, "kind": "_done", "done_at": now.isoformat(timespec="seconds"),
+           "closed_as": closed_as}
+    with open(QUEUE, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return rec
+
+
+def load_capture_item(item_id):
+    """The replayed `capture-role` item `item_id` (any status), or None."""
+    try:
+        return next((r for r in replay(load()) if r.get("id") == item_id
+                     and r.get("kind") == KIND_CAPTURE), None)
+    except (OSError, ValueError):
+        return None
+
+
 class DeferredRefused(ValueError):
     """`--add` refused the text — it reads like a send (FORBIDDEN)."""
 
@@ -518,6 +566,32 @@ def _append_item(what, why="", requires=(), kind="action", ref=None, role=None,
     with open(QUEUE, "a", encoding="utf-8") as fh:          # append-only, like the inbox
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return rec
+
+
+def _pending_by_key(kind, key, rows=None, exclude_ref=None):
+    """The replayed pending row of `kind` whose `role.role_key` is `key` -- the same requisition
+    (company + title) as a role being resolved, under a different URL (dev #728 / public #158)."""
+    rows = replay(load()) if rows is None else rows
+    for r in rows:
+        if (r.get("kind") == kind and r.get("status") == "pending" and r.get("ref") != exclude_ref
+                and isinstance(r.get("role"), dict) and r["role"].get("role_key") == key):
+            return r
+    return None
+
+
+def _link_listing(row_id, sighting, already_locked=False):
+    """Add one sibling listing to an EXISTING row through `record.py append <id> sightings` (the one
+    writer of `opportunities.jsonl`: the lock, the validator and the rollback all apply; this script
+    never opens the store for writing). A subprocess on this interpreter. Returns None, or why not."""
+    import subprocess
+    cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "record.py"),
+           "append", str(row_id), "sightings", json.dumps(sighting)]
+    if already_locked:
+        cmd.append("--already-locked")
+    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    if r.returncode != 0:
+        return "record.py exit %d: %s" % (r.returncode, " ".join((r.stdout + r.stderr).split())[-300:])
+    return None
 
 
 def _pending_by_ref(kind, ref, rows=None):
@@ -921,6 +995,11 @@ def role_payload(r, run_date):
                          and never by the model
       location_declared  the `location.declared` text: the posting's own words, the literal
                          `none stated`, or None for `setting="?"` (not read)
+      role_key           the normalized company + title (`_role_key`): what a sibling listing of the
+                         same requisition is matched on (dev #728 / public #158)
+      location_listed    the ROLE line's `location=` text, verbatim (dev #727 / public #159), or
+                         None for `location="?"`. `record.py create --from-item` copies it to
+                         `location.primary` and reads the onsite inference off it
       slots              the three slots verbatim, for the audit trail
     """
     lp = dict(r["pay"], captured_on=run_date) if r.get("pay") else None
@@ -932,8 +1011,11 @@ def role_payload(r, run_date):
     elif kind in ("board-relative", "ats-posted"):
         posted = {"date": value, "source": kind, "recorded_on": run_date}
     setting = r.get("setting")
+    listed = _clip(r.get("location"))
     return {"listed_pay": lp, "posted": posted,
             "location_declared": None if setting in (None, "?") else setting,
+            "location_listed": None if listed in ("", "?") else listed,
+            "role_key": _role_key(_clip(r.get("company")), _clip(r.get("title"))),
             "slots": r.get("slots") or {}}
 
 
@@ -1230,7 +1312,7 @@ def _describe_fault(f):
     return "LINE FAULT  line %d: %s -- %r" % (f["line"], f["rule"], f["text"])
 
 
-def add_roles(text, run_id, surface, out=print, check=False):
+def add_roles(text, run_id, surface, out=print, check=False, already_locked=False):
     """dev #692 / public #140 (692-2a/b, N5, N6) -- the gate on a pass report. Returns the exit
     code: 0 clean, 4 accepted with line faults (dev #707 / public #151), 3 refused (ONE
     `partial-results` gap `jobsearch:roles:<surface>`, nothing else written).
@@ -1305,6 +1387,7 @@ def add_roles(text, run_id, surface, out=print, check=False):
     pass_label = "board" if surface == "board" else window
     rows = replay(load())
     counts = {"captured": 0, "known": 0, "carried": 0, "quarantined": 0, "role_gaps": 0}
+    siblings = possible = 0          # dev #728 / public #158 -- subsets of known/carried, not buckets
     resolved_keys, screen_ids = set(), []
     quarantine_reasons, captured_degraded = {}, 0
 
@@ -1329,6 +1412,43 @@ def add_roles(text, run_id, surface, out=print, check=False):
         hit = find_known_match(opps, url=canon, company_id=company_id, title=title,
                                applications=apps)
         resolved_keys.add(key)
+        # ⭐ dev #728 / public #158 -- ONE REQUISITION LISTED AT SEVERAL PLACES IS ONE DECISION. A
+        # role that matches an existing row on company + title (its URL is not on the row) is another
+        # LISTING of it: added as a sighting carrying its location, through record.py, whether the
+        # row is active or passed -- unless it is strictly NEARER than every place a PASSED row was
+        # listed at (R8), which is printed and carried as a fresh capture item instead.
+        listing_note = ""
+        if hit and hit[1] == "company + title":
+            lrow, _lb, lkind = hit
+            nearer = False
+            if lkind == "excluded" and loc not in ("", "?"):
+                try:
+                    import pipeline_index as _pidx_l
+                    import profile as _pf
+                    nearer, near_place, near_state = _pf.nearer_listing(
+                        _pidx_l.listing_places(lrow), [loc], _pf.load())
+                except (OSError, ValueError, KeyError):
+                    nearer = False
+            if nearer:
+                out("NEARER LISTING of passed %s: %s (%s)" % (lrow.get("id"), near_place, near_state))
+                hit = None            # not auto-closed: carried below, so it can become a decision
+            else:
+                qs = [parsed["queries"][k - 1] for k in (r.get("q") or [])
+                      if 0 < k <= len(parsed["queries"])]
+                channel = (next((q.get("channel") for q in qs if q.get("channel")), None)
+                           or lrow.get("channel_id")
+                           or next((s.get("channel_id") for s in (lrow.get("sightings") or [])
+                                    if s.get("channel_id")), None))
+                if channel:
+                    sg = {"channel_id": channel, "seen_on": run_date, "source_url": canon}
+                    if loc not in ("", "?"):
+                        sg["location"] = loc
+                    why = _link_listing(lrow.get("id"), sg, already_locked)
+                    if why is None:
+                        listing_note = " +listing %s" % (loc if loc not in ("", "?") else "(no place)")
+                        siblings += 1
+                    else:
+                        out("⚠️ could not add the listing %s to %s (%s)" % (canon, lrow.get("id"), why))
         if hit:
             row, basis, kind = hit
             if kind == "active" and _earliest_seen(row) == run_date:
@@ -1338,17 +1458,43 @@ def add_roles(text, run_id, surface, out=print, check=False):
                 # the block, so quarantine cannot reach it. It is COUNTED and said, not prevented.
                 if r.get("quarantine_codes"):
                     captured_degraded += 1
-                    out("CAPTURED    %s (%s) -- the pass captured it this run (DEGRADED QUERY: %s)"
-                        % (row.get("id"), basis, ", ".join(r["quarantine_codes"])))
+                    out("CAPTURED    %s (%s) -- the pass captured it this run (DEGRADED QUERY: %s)%s"
+                        % (row.get("id"), basis, ", ".join(r["quarantine_codes"]), listing_note))
                 else:
-                    out("CAPTURED    %s (%s) -- the pass captured it this run"
-                        % (row.get("id"), basis))
+                    out("CAPTURED    %s (%s) -- the pass captured it this run%s"
+                        % (row.get("id"), basis, listing_note))
             else:
                 counts["known"] += 1
-                out("KNOWN       %s (%s, %s)" % (row.get("id"), basis,
-                                                 "passed" if kind == "excluded" else "active"))
+                out("KNOWN       %s (%s, %s)%s" % (row.get("id"), basis,
+                                                   "passed" if kind == "excluded" else "active",
+                                                   listing_note))
             continue
+        # a NEAR MISS (titles equal once a trailing place is removed) is printed, counted and NEVER
+        # merged: record linkage's clerical-review rule (design §5.2)
+        if company_id:
+            import pipeline_index as _pidx_p
+            near_miss = next((o for o in opps if o.get("company_id") == company_id
+                              and not _pidx_p.is_folded(o)
+                              and _pidx_p.possible_sibling(title, o.get("title"))), None)
+            if near_miss is not None:
+                possible += 1
+                out("POSSIBLE SIBLING %s ~ %s" % (canon, near_miss.get("id")))
         pending = _pending_by_ref(KIND_CAPTURE, canon, rows)
+        if pending is None:
+            # the SAME requisition already queued under another URL: this listing joins THAT item
+            # (a sibling of a quarantined item stays with it); no second item is made
+            sib = _pending_by_key(KIND_CAPTURE, key, rows, exclude_ref=canon)
+            if sib is not None:
+                counts["carried"] += 1
+                if any(s.get("url") == canon for s in (sib.get("siblings") or [])):
+                    out("CARRIED     %s (already a sibling listing of %s)" % (canon, sib["id"]))
+                else:
+                    _append_sibling(sib["id"], canon, None if loc in ("", "?") else loc)
+                    sib["siblings"] = list(sib.get("siblings") or []) + [
+                        {"url": canon, "location": None if loc in ("", "?") else loc}]
+                    siblings += 1
+                    out("SIBLING     %s (%s) -> %s" % (canon, loc or "?", sib["id"]))
+                continue
         qcodes = r.get("quarantine_codes")
         held = bool(pending and pending.get("quarantine"))
         if qcodes and pending and not held:
@@ -1519,8 +1665,11 @@ def add_roles(text, run_id, surface, out=print, check=False):
             out("⚠️ could not journal the roles event (%s)" % e)
     out("ROLES RECORDED run=%s surface=%s window=%s: %d seen = %d captured + %d known + %d carried "
         "+ %d role gap(s) + %d quarantined · %d query gap(s) (window) · %d truncated"
+        "%s"
         % (run_id, surface, window, listed, counts["captured"], counts["known"],
-           counts["carried"], counts["role_gaps"], counts["quarantined"], gaps_window, gaps_trunc))
+           counts["carried"], counts["role_gaps"], counts["quarantined"], gaps_window, gaps_trunc,
+           (" · %d sibling listing(s) linked · %d possible sibling(s)" % (siblings, possible))
+           if (siblings or possible) else ""))
     out("QUERY READS %d reached: %d clean · %d filters unread · %d degraded%s · %d total unknown"
         % (q_reached, q_clean, q_unread, q_degraded_queries,
            (" (%s)" % ", ".join("%s x%d" % (c, n) for c, n in sorted(q_degraded.items())))
@@ -1530,8 +1679,12 @@ def add_roles(text, run_id, surface, out=print, check=False):
             "pass sees them, or deferred.py --unquarantine <id>"
             % (counts["quarantined"], " · ".join("%s x%d" % (c, n) for c, n
                                                    in sorted(quarantine_reasons.items()))))
-    for oid in screen_ids:
-        out("SCREEN      ~/.claude/jobsearch/run profile.py --minimal-screen %s" % oid)
+    if screen_ids:
+        # dev #729 / public #157: ONE command naming every captured id, so the screen ends with its
+        # own summary line (screened, keep, remove by rule, review, the commute split) instead of a
+        # tally the model keeps by hand ("75 screened, 0 removed" was a number nobody could read).
+        out("SCREEN      ~/.claude/jobsearch/run profile.py --minimal-screen %s"
+            % " ".join(str(oid) for oid in screen_ids))
     if faults:
         out("⚠️ ACCEPTED WITH %d LINE FAULT(S): every valid role above was recorded; each faulty "
             "line is a `partial-results` gap (scope %s*). Exit %d."
@@ -1734,9 +1887,10 @@ def main():
                          "whose role was read; one still unread past search.triage_stuck_days "
                          "records surface-cannot-read through record.py first (dev #723).")
     ap.add_argument("--already-locked", dest="already_locked", action="store_true",
-                    help="With --settle: the calling run already holds the run lock, so the "
-                         "record.py write that records surface-cannot-read passes "
-                         "--already-locked (dev #723).")
+                    help="With --settle or --add-roles: the calling run already holds the run "
+                         "lock, so the record.py write that records surface-cannot-read (dev #723) "
+                         "or adds a sibling listing to an existing row (dev #728) passes "
+                         "--already-locked.")
     ap.add_argument("--attended", action="store_true",
                     help="This run was started with the EXPLICIT attended form (owner decision "
                          "R2): claims may use the research/drafting tokens regardless of the "
@@ -1794,7 +1948,8 @@ def main():
         except (OSError, UnicodeDecodeError) as e:
             print("⛔ cannot read the hand-back %s: %s" % (args.add_roles, e))
             return ROLES_EXIT_USAGE
-        return add_roles(text, args.run, args.surface, check=args.check)
+        return add_roles(text, args.run, args.surface, check=args.check,
+                         already_locked=args.already_locked)
 
     if args.settle:
         settle(already_locked=args.already_locked)

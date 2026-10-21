@@ -206,10 +206,24 @@ _METADATA = {
 # asking. `your_move.outreach_due` reads it; `profile.py --options` prints it under FIXED.
 OUTREACH_HORIZON_DAYS = 5
 
+# dev #729 / public #157 (jobsearch 0.70.0, design-location-screen.md §3.3): the two constants that
+# turn a straight-line distance into a PROOF that a commute is impossible. OURS, deliberately
+# generous, deliberately not keys (a user who could tune them would tune the proof into a guess):
+#   - no road is shorter than the great circle, and no commute averages more than
+#     MAX_COMMUTE_MPH door to door, so an anchor allowing `max_commute_minutes` can never reach
+#     further than `minutes * MAX_COMMUTE_MPH / 60` miles;
+#   - a city centroid sits within CENTROID_MARGIN_MILES of most of its own area.
+# A place further than that sum from an anchor is provably outside it; one nearer but still beyond
+# a real commute stays `near`, a review that prints its distance, and is never removed.
+MAX_COMMUTE_MPH = 75
+CENTROID_MARGIN_MILES = 15
+
 FIXED = {
     "overlap_shingle_words": 8,     # brief.py --overlap's shared-run window, in words
     "brief_id_hex_digits": 16,      # the random suffix on a new `brief:<ts>-<hex>` id (dev #680; old rows carry 4)
     "outreach_horizon_days": OUTREACH_HORIZON_DAYS,  # the follow-up view's look-ahead, in days (dev #539)
+    "max_commute_mph": MAX_COMMUTE_MPH,               # the fastest door-to-door commute the distance proof allows (dev #729)
+    "centroid_margin_miles": CENTROID_MARGIN_MILES,   # how far from a city centroid its area is taken to reach (dev #729)
 }
 
 # ── search postures (dev #323) ──────────────────────────────────────────────────────────────
@@ -488,6 +502,43 @@ SOURCING_SCREEN_SEEDED = (
 )
 SOURCING_SCREEN_UNSEEDED = (COMPENSATION_CURRENCY,)
 
+# ── the location screen (dev #729 / public #157; jobsearch 0.70.0; design-location-screen.md R2) ──
+# Owner decision of 2026-10-19 (OD-2, option a). A far onsite role -- one PROVEN beyond every commute
+# anchor (`profile.commute_outcome`, state `outside`) -- is REMOVED (`remove:geo`, the geo verdict
+# `outside-radius`) even when `geography.relocation.open` is true, unless it names an affirmative
+# relocation destination or THIS key is true. `open` keeps its meaning for everything else; with
+# `open` false a far role is `out`, as before. Every removal line names this key, so a user who
+# wants the old behaviour has a one-key way back. A registered scalar is seeded by a migration so
+# the owner's file shows it: `migrate.m_0_70_0_location_screen_config_keys`.
+GEOGRAPHY_KEEP_OUTSIDE_RADIUS = "geography.relocation.keep_outside_radius"
+GEOGRAPHY_KEEP_OUTSIDE_RADIUS_DEFAULT = False
+
+READER_KEYS = READER_KEYS | frozenset({GEOGRAPHY_KEEP_OUTSIDE_RADIUS})
+
+_METADATA[GEOGRAPHY_KEEP_OUTSIDE_RADIUS] = (
+    GEOGRAPHY_KEEP_OUTSIDE_RADIUS_DEFAULT, "bool", ("True", "False"),
+    "whether an onsite role PROVEN beyond every commute anchor (a straight-line distance no "
+    "commute can cover) is kept when geography.relocation.open is true and it names no "
+    "affirmative destination. False (the default) removes it as outside-radius; True keeps it "
+    "for the relocation floor (dev #729)")
+
+# What `migrate.m_0_70_0_location_screen_config_keys` seeds where absent: (path to the section, key,
+# default) -- one place, so the migration and the registry cannot name two different sets.
+LOCATION_SCREEN_SEEDED = (
+    (("geography", "relocation"), "keep_outside_radius", GEOGRAPHY_KEEP_OUTSIDE_RADIUS_DEFAULT),
+)
+
+# Per-anchor nested keys (validated like `bands`, registered as named constants, NOT seeded -- their
+# absence has a defined meaning: the anchor's coordinates come from the place table and its bound is
+# derived from its minutes):
+#   geography.commute_anchors[].radius_miles -- a number, 1 to 300: the anchor's own straight-line
+#       radius. A place within it is `inside-radius`; a place beyond it is provably `outside`.
+#   geography.commute_anchors[].lat / .lon -- numbers in range; they override the table lookup for
+#       that anchor's coordinates (design-location-screen.md OD-1 option 4's half).
+GEOGRAPHY_COMMUTE_RADIUS_MILES = "geography.commute_anchors[].radius_miles"
+GEOGRAPHY_COMMUTE_LATLON = "geography.commute_anchors[].lat/.lon"
+RADIUS_MILES_RANGE = (1, 300)
+
 
 def validate_currency(value):
     """The normalised (upper-case) ISO 4217 code for `value`, or `ValueError`. Strict: three ASCII
@@ -656,6 +707,54 @@ def validate_commute_includes(anchor):
         else:
             problems.append("includes[%d] must be a string or {place, minutes}" % i)
     return problems
+
+
+def _is_number(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v
+
+
+def validate_anchor_geo(anchor):
+    """Problems with one anchor's `radius_miles` / `lat` / `lon` ([] when valid or undeclared). An
+    unreadable value is LOUD (the screen holds, `hold="config"`), never read as absent: a typo in a
+    radius that silently fell back to the derived bound would be a choice the candidate never made."""
+    if not isinstance(anchor, dict):
+        return []
+    problems = []
+    if anchor.get("radius_miles") is not None:
+        r, (lo, hi) = anchor["radius_miles"], RADIUS_MILES_RANGE
+        if not _is_number(r) or not lo <= r <= hi:
+            problems.append("radius_miles must be a number from %d to %d, got %r" % (lo, hi, r))
+    lat, lon = anchor.get("lat"), anchor.get("lon")
+    if (lat is None) != (lon is None):
+        problems.append("lat and lon must be given together")
+    elif lat is not None:
+        if not _is_number(lat) or not -90 <= lat <= 90:
+            problems.append("lat must be a number from -90 to 90, got %r" % (lat,))
+        if not _is_number(lon) or not -180 <= lon <= 180:
+            problems.append("lon must be a number from -180 to 180, got %r" % (lon,))
+    return problems
+
+
+def outer_bound_miles(anchor):
+    """`(miles, how)` for one anchor: the straight-line distance beyond which a place is PROVABLY
+    outside it, or `(None, why)` when the anchor contributes no bound (design §3.3).
+
+    `radius_miles` when the anchor configures it; otherwise `max_minutes * MAX_COMMUTE_MPH / 60 +
+    CENTROID_MARGIN_MILES`, where `max_minutes` is the anchor's `max_commute_minutes` or, when that
+    is absent, its last band's `max_minutes`. A 45-minute anchor gives 71.25 miles. An anchor with
+    neither a radius, minutes nor bands has NO bound; the caller must not call a place outside it."""
+    if not isinstance(anchor, dict):
+        return None, "not an anchor object"
+    if anchor.get("radius_miles") is not None and not validate_anchor_geo(
+            {"radius_miles": anchor["radius_miles"]}):
+        return float(anchor["radius_miles"]), "radius_miles"
+    minutes = anchor.get("max_commute_minutes")
+    if not _is_number(minutes) or minutes <= 0:
+        bands, problems = commute_bands(anchor)
+        minutes = bands[-1][0] if bands and not problems else None
+    if minutes is None:
+        return None, "it declares no radius_miles, max_commute_minutes or bands"
+    return minutes * MAX_COMMUTE_MPH / 60.0 + CENTROID_MARGIN_MILES, "max_commute_minutes"
 
 
 def validate_likely_pass_signals(signals):

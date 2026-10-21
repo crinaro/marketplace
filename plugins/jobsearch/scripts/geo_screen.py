@@ -21,7 +21,7 @@ there was nothing FOR the triage step to consult even if it had tried. `m_0_50_0
 live ones ONCE, so `profile.py --options`, `--list` below, and this screen's own reads cannot
 drift into three different spellings again.
 
-## THE CONTRACT — six verdicts, EACH CITING THE CONFIG KEY IT CAME FROM
+## THE CONTRACT — seven verdicts, EACH CITING THE CONFIG KEY IT CAME FROM
 
     remote          the posting is remote (--type remote, or "remote" in the location text) —
                     cites `geography.remote_ok`
@@ -32,9 +32,20 @@ drift into three different spellings again.
     affirmative     the location names one of `geography.relocation.affirmative_destinations` —
                     cites that key (public #89's own list)
     relocation-ok   not a commute anchor, not an affirmative destination, but
-                    `geography.relocation.open` is true — cites that key
+                    `geography.relocation.open` is true — cites that key. Also: an onsite role
+                    PROVEN far (see `outside-radius`) that `geography.relocation.keep_outside_radius`
+                    keeps — cites that key
+    outside-radius  an ONSITE role whose place resolves, through the shipped place table, to a
+                    distance no commute from ANY anchor can cover (`profile.commute_outcome`, state
+                    `outside`), that names no affirmative destination, while
+                    `geography.relocation.open` is true and
+                    `geography.relocation.keep_outside_radius` is false. A DISMISSAL, like `out`
+                    (jobsearch 0.70.0, dev #729 / public #157: until then a role in a city nobody
+                    had named could never be called far, and a profile that screened 75 roles
+                    removed none). Cites `geography.relocation.keep_outside_radius`.
     out             `geography.relocation.open` is false (whether set or the registered
-                    default) and nothing above matched — cites that key. NEVER printed from
+                    default) and nothing above matched — cites that key. A far onsite role is `out`
+                    too when relocation is closed (the closed key outranks the opt-in). NEVER printed from
                     silence: this is the one verdict that ends a role's consideration, so it is
                     reached only through an explicit or DEFAULT-BUT-REGISTERED key, never
                     because something could not be read.
@@ -43,6 +54,13 @@ drift into three different spellings again.
                     non-zero and is never silently read as "out" — `profile.py`'s own rule for
                     a key it cannot find ("never infer relocation from silence") applied here to
                     the whole section.
+
+⭐ ONE RULE, TWO ENTRY POINTS (dev #729 / public #157, design R6). This CLI with no `--type` and
+`profile.screen_rules` apply the SAME inference: a concrete place the place table can read (`City,
+ST`), with no `remote` or `hybrid` token, is screened as ONSITE -- the way the daily run's digest
+triage meets a bare location -- so it can print `outside-radius`; both entry points read
+`profile.commute_outcome`, and `test_binding.TestGeoScreenVerdicts` runs both on the same places. A
+role the profile types `relocation` or `unresolved` is never inferred onsite.
 
 Usage:
     python3 scripts/geo_screen.py "Austin, TX"                    # screen one location
@@ -68,12 +86,14 @@ import sys
 import os as _os, sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))
 import config_keys as _ck
+import places as _places
 import profile as _profile
 
 REMOTE = "remote"
 COMMUTE = "commute"
 AFFIRMATIVE = "affirmative"
 RELOCATION_OK = "relocation-ok"
+OUTSIDE_RADIUS = "outside-radius"
 OUT = "out"
 UNKNOWN = "unknown"
 
@@ -115,12 +135,40 @@ def _match_destination(location_lower, destinations):
     return None, None
 
 
-def screen(location, cfg, work_type=None):
+def screen(location, cfg, work_type=None, table=None, loc_obj=None):
+    """(verdict, line, detail_dict) -- see `_screen`. A role LISTED AT SEVERAL PLACES (`loc_obj` carries
+    `listed_at`, the places beyond `location.primary`; dev #728 / public #158, design §5.6) is judged
+    at its MOST FAVOURABLE place: the text paths read every place (the location text becomes
+    `"<primary> ; <other> ; ..."`), the distance path asks `profile.commute_outcome`, which takes the
+    most favourable listing. The geo order is remote > commute > affirmative > relocation-ok >
+    outside-radius > out. The line names the listing that decided it when the role has several."""
+    extra = [t for t in ((loc_obj or {}).get("listed_at") or []) if isinstance(t, str) and t.strip()]
+    joined = " ; ".join([str(location or "")] + extra) if extra else location
+    verdict, line, detail = _screen(joined, cfg, work_type, table, loc_obj)
+    if extra and verdict in (COMMUTE, OUTSIDE_RADIUS, RELOCATION_OK, OUT, AFFIRMATIVE):
+        onsite = work_type == "onsite" or (work_type is None
+                                           and _places.parse_place(joined) is not None)
+        if onsite and isinstance(cfg.get("geography"), dict):
+            place = _profile.commute_outcome(loc_obj, cfg, table)["place"]
+            if place:
+                line += " [decided by the listing at %s]" % place
+                detail = dict(detail, listing=place)
+    return verdict, line, detail
+
+
+def _screen(location, cfg, work_type=None, table=None, loc_obj=None):
     """(verdict, line, detail_dict) for ONE location against a loaded config.json `cfg`.
 
     `line` is the single citable sentence — see the module docstring's ⭐ note. `detail_dict`
     carries the structured citation (`key`, `value`, `provenance`) plus whatever else is useful
-    to a caller that wants more than the one line (the --json surface below)."""
+    to a caller that wants more than the one line (the --json surface below).
+
+    `work_type` is the posting's own stated arrangement. `onsite` screens the place through
+    `profile.commute_outcome` (the one resolver, so this rule and the comp rule cannot disagree);
+    `None` INFERS onsite from a concrete parseable place with no remote or hybrid token (R6);
+    `hybrid`, `relocation` and `unresolved` keep the text-only logic below. `loc_obj` is the role's
+    whole `location` object when the caller has it (its `note` and `commute_minutes` are read by
+    the same resolver); `table` is a place table to use instead of the shipped one."""
     geo = cfg.get("geography")
     if not isinstance(geo, dict):
         return (UNKNOWN,
@@ -143,7 +191,25 @@ def screen(location, cfg, work_type=None):
                 {"key": key, "value": value, "provenance": provenance})
 
     anchors, anchors_prov = _ck.describe(cfg, _ck.GEOGRAPHY_COMMUTE_ANCHORS)
-    idx, anchor, matched_name = _match_anchor(loc_lower, anchors)
+    onsite = work_type == "onsite" or (work_type is None and _places.parse_place(location) is not None)
+    outcome = None
+    if onsite:
+        # jobsearch 0.70.0 (dev #729 / public #157): the ONE resolver, not a second text matcher.
+        outcome = _profile.commute_outcome(loc_obj if isinstance(loc_obj, dict) and loc_obj
+                                           else {"primary": location}, cfg, table)
+        anchor = outcome["anchor"] if outcome["state"] in ("inside", "inside-radius") else None
+        idx = next((i for i, a in enumerate(anchors or ()) if a is anchor), None)
+        matched_name = _profile._entry_name(outcome["entry"]) if anchor is not None else None
+    else:
+        idx, anchor, matched_name = _match_anchor(loc_lower, anchors)
+    if anchor is not None and outcome is not None and outcome["state"] == "inside-radius":
+        key = "%s[%d].radius_miles" % (_ck.GEOGRAPHY_COMMUTE_ANCHORS, idx)
+        return (COMMUTE,
+                "commute: %r — %s=%r (~%d mi from anchor %r, within its radius)."
+                % (location, key, anchor.get("radius_miles"), round(outcome["miles"]),
+                   anchor.get("place")),
+                {"key": key, "value": anchor.get("radius_miles"), "provenance": anchors_prov,
+                 "anchor": anchor.get("place"), "miles": outcome["miles"]})
     if anchor is not None:
         minutes = anchor.get("max_commute_minutes")
         key = "%s[%d].max_commute_minutes" % (_ck.GEOGRAPHY_COMMUTE_ANCHORS, idx)
@@ -164,6 +230,25 @@ def screen(location, cfg, work_type=None):
 
     value, provenance = _ck.describe(cfg, _ck.GEOGRAPHY_RELOCATION_OPEN)
     key = _ck.GEOGRAPHY_RELOCATION_OPEN
+    if value and outcome is not None and outcome["state"] == "outside":
+        # A role PROVEN far (design §3.2). `relocation.open` is true, so the old answer was to keep
+        # it; the owner's decision of 2026-10-19 is that open alone does not keep a role nobody
+        # named, and the opt-in is its own key. Every line below names that key.
+        keep_key = _ck.GEOGRAPHY_KEEP_OUTSIDE_RADIUS
+        keep, keep_prov = _ck.describe(cfg, keep_key)
+        cite = {"key": keep_key, "value": keep, "provenance": keep_prov,
+                "anchor": outcome["anchor"].get("place"), "miles": outcome["miles"],
+                "bound": outcome["bound"]}
+        far = "~%d mi from %s (beyond %d mi)" % (round(outcome["miles"]),
+                                                 outcome["anchor"].get("place"), round(outcome["bound"]))
+        if keep is True:
+            return (RELOCATION_OK,
+                    "relocation-ok: %r — %s=%r (%s): %s, but outside-radius roles are kept."
+                    % (location, keep_key, keep, keep_prov, far), cite)
+        return (OUTSIDE_RADIUS,
+                "outside-radius: %r — %s, farther than any commute from it can reach; not a "
+                "commute anchor, not an affirmative destination. Keep it with %s=true (now %r, %s)."
+                % (location, far, keep_key, keep, keep_prov), cite)
     if value:
         return (RELOCATION_OK,
                 "relocation-ok: %r — %s=%r (%s): not a commute anchor, not an affirmative "

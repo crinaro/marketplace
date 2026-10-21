@@ -264,12 +264,17 @@ your own geography reasoning from recall:**
 ~/.claude/jobsearch/run geo_screen.py "<the row's location, verbatim>" --type remote
 ```
 
-Six verdicts, each citing the config key it came from: `remote`, `commute`, `affirmative`,
-`relocation-ok`, `out`, `unknown`. **Only `out` is a dismissal.** `unknown` (the profile's
-`geography` section is missing entirely) is NEVER read as `out` — surface it in the run summary
-as a gap needing the owner's config, and keep the row. Paste the script's own printed line (the
-`out: ...` sentence, citing `geography.relocation.open`) into the digest-triage note as the
-reason — never a paraphrase, never "not a relocation destination" typed from memory.
+Seven verdicts, each citing the config key it came from: `remote`, `commute`, `affirmative`,
+`relocation-ok`, `outside-radius`, `out`, `unknown`. **`out` and `outside-radius` are the two
+dismissals.** `outside-radius` (jobsearch 0.70.0, dev #729 / public #157) is a place the shipped
+place table puts further from every commute anchor than any commute could reach, while relocation
+is open and nothing named keeps it; a bare `City, ST` with no `--type` is screened as onsite, the
+same way the minimal screen screens it. `unknown` (the profile's `geography` section is missing
+entirely) is NEVER read as `out` — surface it in the run summary as a gap needing the owner's
+config, and keep the row. Paste the script's own printed line (the `out: ...` or
+`outside-radius: ...` sentence, citing `geography.relocation.open` or
+`geography.relocation.keep_outside_radius`) into the digest-triage note as the reason — never a
+paraphrase, never "not a relocation destination" typed from memory.
 
 **b. ⭐ WRITE IT DOWN NOW — the JSON is the OPERATING STORE.** The daily run does not re-derive
 state from the mailbox; it reads `data/*.jsonl` and writes changes **immediately**:
@@ -378,6 +383,21 @@ in the hand-back is reported, never patched by hand. In the write phase (§7) ea
 `record.py create … --from-item <item id> --already-locked` and the minimal screen, then `deferred.py --settle` closes
 the items that now have a record; whatever is not captured stays a pending row, listed by
 `--claimable` on every posture, so the run cannot end on "N seen, top few captured".
+
+**One requisition listed once per city is ONE decision (dev #728 / public #158, jobsearch 0.70.0).**
+Several `ROLE` lines with the same company and title under different URLs are one role: the first is
+the item (or the row it already has), and each other is a **sibling listing**, printed
+`SIBLING <url> (<place>) -> <item id>` (joined to the queued item) or `KNOWN <id> (company + title,
+active|passed) +listing <place>` (a sighting carrying that place, added to the row, passed rows
+included). Count them from the `ROLES RECORDED` line (`N sibling listing(s) linked`); never create a
+row per city. `POSSIBLE SIBLING <url> ~ <id>` is a near miss (the titles match once a trailing place
+is dropped): it is NEVER merged, only worth a look. **`NEARER LISTING of passed <id>: <place>
+(<state>)`** means this listing is closer than anywhere the PASSED role was listed, so it is NOT
+linked and its item stays claimable: read it as a fresh decision (`record.py create … --force`
+records the pair as different). A role is screened at its most favourable listed place. A
+pre-0.70.0 duplicate row screens `DUPLICATE of <id> …; fold with record.py link-sibling <dup> --into
+<id>`: fold it by hand, and undo a false merge with `record.py unlink-sibling <id> --url <the
+listing's URL> --to <the row it belongs to>` (nothing is deleted either way).
 
 **The weekly wide re-scan is the same pass, not a second one (dev #489 / public #102, R5).** The
 worklist's `JOBSEARCH` line says which window this pass runs: `window=daily f_TPR=r86400`
@@ -631,10 +651,17 @@ screen. It is zero-token, never reads posture, and covers the comp floor, the du
 check, geography and an advisory title rule:
 
 ```bash
-~/.claude/jobsearch/run profile.py --minimal-screen <opp_id>
+~/.claude/jobsearch/run profile.py --minimal-screen <opp_id> [<opp_id> ...]
 ```
 
-Read its last line. **`VERDICT remove:<rule>`** → record the decision, which puts the role on the
+Name every role captured this run in ONE call: each role prints its block, and with several ids
+the last line is a summary (`MINIMAL SCREEN SUMMARY n screened · keep · remove (geo, comp, passed)
+· review · commute: outside, near, unresolvable`) — quote that line in the run summary instead of
+tallying by hand (dev #729 / public #157: a tally kept by hand said "75 screened, 0 removed"). A
+`PLACE TABLE MISSING (...)` line means the distance was NOT checked for those roles: report it as
+a gap, never as a clean screen.
+
+Read each block's `VERDICT` line. **`VERDICT remove:<rule>`** → record the decision, which puts the role on the
 exclusion list: `~/.claude/jobsearch/run record.py decide <opp_id> pass --why-kind other --why
 "minimal screen: <rule>" --already-locked` (the `--why` pair is required when the engine's own
 suggestion would have been `pursue`, so pass it every time), and name the rule in the run summary.
@@ -647,8 +674,16 @@ suggestion would have been `pursue`, so pass it every time), and name the rule i
 `--claimable` on every posture (no `requires`). Claim it, `record.py create … --from-item <the
 item's id> --already-locked` from the item's URL, screen the new role as above, then `--done` the
 item. **`--from-item` is what carries the sweep's pay, posting date and work setting onto the new
-role** (it copies the item's parsed `listed_pay`, `posted` and `location.declared`; a slot the
-sweep marked `?` stays absent). A create without it copies nothing. Run
+role** (it copies the item's parsed `listed_pay`, `posted`, `location.declared` and the card's
+`location.primary`; a slot the sweep marked `?` stays absent). **Omit `location.primary` from the
+JSON** (the script copies the card's text; a different one is refused, one value stated once), and
+**when the item's setting is `none stated`, omit `location.type` too**: at a concrete place the
+script records `onsite` with `location.setting_source: inferred` (jobsearch 0.70.0, dev #727 /
+public #159), and with no readable place it leaves the type absent and the screen asks. A type you
+give beside `none stated` is refused: it would be a guess nobody could tell from a stated setting.
+Once you read the JD and it states a setting, replace the whole location with it: `record.py set
+<opp_id> location '<json>'` (no `setting_source`); the write records the overturn. A create
+without it copies nothing. Run
 `~/.claude/jobsearch/run deferred.py --settle` before the dashboard: it closes every `capture-role`
 item whose URL now has a record (a tracking-parameter variant of the URL still matches), every
 `research-role` item whose opportunity has a `research_log` and every `read-jd` item whose role has
