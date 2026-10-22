@@ -220,7 +220,7 @@ def end_of_run(root):
     declared `local-only`). Exit 1: it did not — a failed push is **NOT PERSISTED**, and an
     `undeclared`/`mismatch`/`error` state leaves the run **COMMIT-ONLY**, said out loud. The
     caller copies this output into the run summary verbatim: a run that persisted off-machine
-    and one that did not are otherwise identical afterwards, which is gap G8's whole point.
+    and one that did not are otherwise identical afterwards, which is the whole point of the NOT PERSISTED line.
     """
     verdict, mode, state, notes = resolve(root)
 

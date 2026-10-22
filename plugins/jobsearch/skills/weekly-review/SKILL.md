@@ -245,12 +245,12 @@ tombstone lands in `research_log[]`, nothing is dropped without a row somewhere.
 line ran nowhere unattended, MOOT_DERIVED was a report only, never a cascade — this is what
 makes it one.
 
-Append the review summary to `log.md` → regenerate the dashboard AND the presence working set
-(`~/.claude/jobsearch/run check_dashboard_fresh.py --fix` writes both; then
-`~/.claude/jobsearch/run presence_set.py --check`) → **grep the OUTPUT for what you added** →
-publish BOTH via the Artifact tool — `views/dashboard_artifact.html` to the URL in
-`views/dashboard_artifact_url.txt`, `views/presence_set.html` to the URL in
-`views/presence_set_url.txt` (ADR-028; create-and-write-the-url-file on first publish, recover
+Append the review summary to `log.md` → regenerate the dashboard
+(`~/.claude/jobsearch/run check_dashboard_fresh.py --fix`; then
+`~/.claude/jobsearch/run presence_set.py --check`, the round trip of the resume and public-profile
+reviews, which are panes now and not a published page) → **grep the OUTPUT for what you added** →
+publish the dashboard via the Artifact tool — `views/dashboard_artifact.html` to the URL in
+`views/dashboard_artifact_url.txt` (create-and-write-the-url-file on first publish, recover
 never mint on `url-missing`) — **on a version conflict, regenerate and publish again, never
 `force`; after a successful publish, `~/.claude/jobsearch/run check_dashboard_fresh.py
 --stamp-published` so a dropped publish cannot stay silent (dev #133)** → commit (explicit paths) →

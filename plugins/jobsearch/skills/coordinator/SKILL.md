@@ -169,47 +169,41 @@ two threads where neither has the whole picture.
 log at `.jobsearch/diagnostics.log` inside the profile (dev #151; profile-less sessions fall back to `~/.claude/jobsearch/diagnostics.log`) — record what the machinery decided; that log carries
 no personal data, so it can be pasted into an issue as-is.
 
-## 2. Claim the notification subscription — ⚠️ ONLY THIS SESSION CAN · ONCE AT STARTUP
+## 2. Arm the background-run watcher — ⚠️ ONLY THE COORDINATOR · ONCE AT STARTUP
 
-⚠️ **If `update_scheduled_task` is not available on this surface (anything other than the desktop
-app), SKIP this step and say so in one plain line** — for example: *"Skipped the notification
-subscription: it would have called `update_scheduled_task`, which needs the desktop app."* Do not
-fail the step, and **never claim a subscription you did not make**; the queue (step 3) is the
-reliable channel either way.
+⚠️ **If the tool `mcp__jobsearch__jobsearch_watch` is not in your tool list, the plugin's mod is not
+loaded in this session, so SKIP this step and say so in one plain line** — for example: *"Skipped the
+background-run watcher: the plugin's mod is not loaded here (mods off, `--safe-mode`, a managed-mods-only
+policy, or a Claude Code older than the mods API), so nothing will wake this session when a background run
+queues work."* Do not fail the step, and **never claim a watcher you did not arm**; the queue (step 3) is
+the reliable channel either way.
 
 ```
-update_scheduled_task(taskId="search-daily", notifyOnCompletion=True)
+mcp__jobsearch__jobsearch_watch
 ```
 
-**Claim it once, at startup. The old rule — re-issue this as the last action of EVERY turn — is
-WITHDRAWN (public #18, 2026-08-17), for three reasons that outweigh the window it shrank:**
+Call it once, with no arguments. It arms a one-minute timer inside the mod (zero model tokens) that watches
+`data/inbox.jsonl`; when a background run queues MORE pending items than the last look, the mod starts ONE
+turn in this session: *"A background run queued N new item(s) (K urgent). Drain the queue."* Step 3 then does
+the work, unchanged. It replaces the old scheduled-task subscription claim (jobsearch 0.71.0), which
+had one subscriber slot that kept being cleared and could not be verified.
 
-1. **The re-claim is unverifiable.** This session cannot observe whether a notification was ever
-   delivered, so a per-turn re-claim can never be confirmed to have done anything — and under the
-   every-turn regime a background run was observed completing with NO notification arriving at
-   all; the run was discovered through the queue and git history, the channels that actually work.
-2. **The miss it guards against is already covered.** The durable queue is drained at the top of
-   every turn (step 3, and that rule stays absolute). A cleared slot costs the nudge, never the
-   finding.
-3. **The call is user-visible.** On a long session it spent the candidate's attention every single
-   turn, purchasing an unconfirmable benefit with the one resource this session exists to protect.
+**Rules of the watcher:**
 
-**Re-claim ONLY on an observable signal:** the queue drain (step 3) or `check_runs.py` (step 1b)
-shows a background run COMPLETED since your last turn and no completion notification reached this
-session for it. That is direct evidence the slot was cleared or delivery failed — re-claim then,
-once, and note it in one line. (The slot genuinely does get cleared — five re-claims were needed
-across 2026-08-03/04, which is why the per-turn rule was tried — but an unconditional mandate kept
-paying the cost after the benefit had proven unmeasurable.)
+1. **Only you call it.** `daily-run` and `weekly-review` never do. An armed watcher in a scheduled run's own
+   session would wake that session on its own inbox write and drain the queue inside the run.
+2. **Once per session.** Calling it again answers `already armed` and changes nothing. A reload of the mod
+   (`/reload-plugins`) disarms it; if the tool is present and the answer was `already armed` you are armed, and
+   after a reload you call it again.
+3. **After you interrupt a turn, a wake-up is held until your next message** (the platform refuses a prompt
+   submitted after an interruption); the mod retries it once from the turn that ends. Nothing is lost: the
+   rows are in the queue.
+4. **It never replaces the queue.** The mod polls once a minute, only where mods are on, and it can be refused.
+   **Drain the queue at the top of every turn (step 3) whether or not you armed it.**
 
-**A scheduled run is refused outright** ("...it ends when the run does"), and **a shell hook cannot
-do it either** — a hook runs a shell command, which cannot make this MCP call nor bind it to this
-session. Idle gaps between turns are uncoverable by anything model-driven, under any re-claim
-cadence.
-
-**⭐ The push is a bonus, never the guarantee. The QUEUE is the reliable channel** — a notification
-can be lost, the queue cannot. Drain it (step 3) every turn; treat any live nudge as a
-nice-to-have on top of it. A rule that spends attention every turn to harden the bonus channel has
-the priorities inverted.
+**⭐ The wake-up is a bonus, never the guarantee. The QUEUE is the reliable channel** — a wake-up can be late
+or absent, the queue cannot. A rule that spends attention every turn to harden the bonus channel has the
+priorities inverted, which is why this is armed once and never re-armed per turn.
 
 ## 3. DRAIN the queue — ⭐ AT THE TOP OF EVERY TURN, NOT ONLY AT STARTUP
 
@@ -227,11 +221,13 @@ all morning never showed it — because draining happened only at startup, and t
 started that session the day before. **The item was durably queued the entire time and simply
 nobody looked.**
 
-**The push channel cannot cover this and never will.** `notifyOnCompletion` has ONE subscriber
-slot, it keeps getting cleared, and **a scheduled run cannot deliver into a live session at all** —
-`send_message` is explicitly unavailable in unattended sessions and cannot target one either. So
-the queue is not a fallback for the push; **the push is a bonus on top of the queue**, and the
-queue is only as good as how often it is read. Reading it every turn is the whole fix.
+**The wake-up cannot cover this alone and never will.** The mod's watcher (step 2) exists only where mods
+are on, polls once a minute, and is refused after an interruption until your next message. Whether a
+scheduled run can deliver into a live session at all is **UNVERIFIED** (probe P-4 in `docs/deployment.md`:
+the vendor docs describe `SendMessage` as available from Claude Code 2.1.224 and do not exclude unattended
+sessions, so the earlier claim that it is "explicitly unavailable" there is withdrawn) — and this engine does
+not depend on either answer. So the queue is not a fallback for the wake-up; **the wake-up is a bonus on top
+of the queue**, and the queue is only as good as how often it is read. Reading it every turn is the whole fix.
 
 If it prints nothing, say nothing — a quiet queue is normal and does not need narrating.
 
@@ -342,23 +338,19 @@ that file has not been delivered.
 Then **grep the OUTPUT** (`views/dashboard_artifact.html` — sendable bodies render on the one
 page) for a distinctive phrase from whatever you just added.
 
-**And the SECOND page (ADR-028, 0.39.0): `views/presence_set.html`** — the presence working set:
-the claim union, one tab per active declared variant, the open items, the standing rules
-(`presence/rules.md`). The same `--fix` regenerates it. Publish it to the URL in
-`views/presence_set_url.txt` under the same two rules: `--publish-state` naming it as *first
-publish pending* (no stamp, no url file) means create the artifact and write that url file in
-the same step; `url-missing` means RECOVER via the Artifact tool's `list` action, never mint a
-new one. It publishes on a profile with zero variants exactly as on five — never skip it because
-"nothing is declared". Then `~/.claude/jobsearch/run presence_set.py --check` (the round trip:
-every source paragraph must be in the rendered pane) and grep ITS output for a phrase from any
-presence file you touched.
+**There is no second page any more (jobsearch 0.71.0).** The presence working set is RETIRED as a
+published artifact: the review of the claim union, every variant, the open items and the standing rules
+(`presence/rules.md`) opens as a pane from `/jobsearch:review-resume` and `/jobsearch:review-linkedin`
+(text wherever a pane cannot be drawn), and the dashboard is cut to drafts to review, opportunities to
+pursue and applications to finish — status is `/jobsearch:status`. Never publish `views/presence_set.html`
+(the migration removes it); if `pending_stubs.py` lists the old presence URL, drain it like any retired
+URL: the stub it publishes says the page is retired and names both review commands. After touching a
+presence file, run `~/.claude/jobsearch/run presence_set.py --check` (the round trip: every source
+paragraph must be in the rendered review) and grep ITS output for a phrase from what you touched.
 
-**⭐ Check `--publish-state` before publishing either page (public #107 §4.1): publish each page
-whose verdict is not `unchanged — skip`; never read a page you are not publishing.** The presence
-page changes only when a presence file does, so most rounds it is byte-identical to its own
-stamp — that round it is neither opened nor republished. One `--stamp-published` still covers
-every published page in one call — it stays unconditional, so a page you skipped has its
-existing stamp simply re-affirmed.
+**⭐ Check `--publish-state` before publishing (public #107 §4.1): publish the dashboard only when
+its verdict is not `unchanged — skip`; never read a page you are not publishing.** One
+`--stamp-published` covers the published page in one call and stays unconditional.
 
 **Drain pending stubs while you hold the tool.** If `~/.claude/jobsearch/run pending_stubs.py
 --check` reports rows, each is a RETIRED page URL still serving its last snapshot. **Read the

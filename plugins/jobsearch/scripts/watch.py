@@ -21,8 +21,8 @@ sessions rewriting `data/*.jsonl`, `log.md` and git is what clobbers. So the spl
     COORDINATOR (the interactive      the ONLY writer. Drains the queue, decides, updates the
     session, or a daily run)          JSON, commits.
 
-**A queue file beats a message**, which matters because `send_message` is explicitly unavailable
-in scheduled-task runs and cannot deliver to them either. A file also survives session death, can
+**A queue file beats a message**, which matters because whether a scheduled-task run can `SendMessage`
+a live session is UNVERIFIED (probe P-4, `docs/deployment.md`) and the engine does not depend on it. A file also survives session death, can
 be drained hours later, and is idempotent — findings are keyed, so running every two hours does
 not produce ten copies of the same alert.
 

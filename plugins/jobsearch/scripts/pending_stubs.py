@@ -146,14 +146,35 @@ def surviving_dashboard_url(root):
     return None
 
 
-def stub_html(root):
+# jobsearch 0.71.0 (dev #750): the presence artifact is RETIRED, and its stub says so and names where the
+# reviews went - it does NOT point at the dashboard, which never held them. Constant, like the stub above:
+# it carries no state, so it can never go stale. The %s is the review-now dashboard's URL when known.
+PRESENCE_STUB_TEMPLATE = """<title>This page is retired</title>
+<body style="font-family:sans-serif;max-width:34em;margin:3em auto;line-height:1.5">
+<h1>This page is retired</h1>
+<p>The resume and public-profile reviews are not a published page any more (jobsearch 0.71.0). Run
+<strong>/jobsearch:review-resume</strong> or <strong>/jobsearch:review-linkedin</strong> in your session
+instead: each opens a review of that layer, with its open items and the standing rules.</p>
+<p>%s</p>
+</body>
+"""
+
+# page name -> the template its stub uses; any page not listed gets the dashboard-moved stub.
+STUB_TEMPLATES = {"presence_set": PRESENCE_STUB_TEMPLATE}
+
+
+def stub_html(root, page=None):
     url = surviving_dashboard_url(root)
     if url:
         pointer = ('Bookmark the one page instead: <a href="%s">%s</a>.' % (url, url))
     else:
         pointer = ("Its URL lives in this profile's views/dashboard_artifact_url.txt "
                    "after the first publish.")
-    return MOVED_STUB_TEMPLATE % pointer
+    template = STUB_TEMPLATES.get(page, MOVED_STUB_TEMPLATE)
+    if template is PRESENCE_STUB_TEMPLATE:
+        pointer = ('The dashboard that remains lists what needs a decision today: <a href="%s">%s</a>.'
+                   % (url, url)) if url else ""
+    return template % pointer
 
 
 def _find(rows, page):
@@ -216,7 +237,7 @@ def cmd_stub_html(root, page):
         return 1
     out = os.path.join(root, "views", "moved_stub.html")
     os.makedirs(os.path.dirname(out), exist_ok=True)
-    _atomic.write_text(out, stub_html(root))
+    _atomic.write_text(out, stub_html(root, page))
     print("Wrote %s" % os.path.relpath(out, root))
     print("Publish it with the Artifact tool to: %s" % (row.get("url") or
           "(row has no parseable url — resolve the 'unresolved' state first)"))

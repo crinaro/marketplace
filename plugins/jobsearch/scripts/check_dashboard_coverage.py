@@ -10,7 +10,16 @@ COVERAGE: every record in the row-backed stores is, on the generated page, exact
                   (`data-more="<set>:<K>"`), so the reader knows it exists and where;
   * TERMINAL    — it has ENDED (a terminal opportunity status, a resolved ask, a commitment
                   whose date has passed, a sent or moot staged message) and the page says so
-                  by omission.
+                  by omission;
+  * ELSEWHERE:<home> — (jobsearch 0.71.0, dev #750, amending this contract) the page no longer
+                  renders it BY DESIGN: the dashboard is cut to drafts to review, opportunities to
+                  pursue and applications to finish, and everything else lives in a named home -
+                  `panel` (scripts/panel.py's `elsewhere` object) or a review pane. A record
+                  ledgered ELSEWHERE is only honest if its home really carries it, so this check
+                  runs `panel.py --json --sections elsewhere` (and reads `presence_set.py --json`
+                  for a review home) against the SAME profile and REFUSES an ELSEWHERE record whose
+                  id its named home does not carry. That refusal is P3's "reachable" test: nothing a
+                  reader relied on the page for is silently dropped.
 Anything in none of those is a record the page LOST — silently, which is the shape of the
 defect this closes: a renderer's private "closed" set dropped every backlog row (most of
 the pipeline on the profile measured) with nothing on the page or in any count to say so.
@@ -138,6 +147,13 @@ import precondition as _pre                                         # noqa: E402
 import validate_data as _vd                                         # noqa: E402
 
 LEDGER_NAME = "dashboard_coverage.json"
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+# Where each record kind lives when its disposition is `elsewhere:panel`: the key of the home's
+# `elsewhere` object that must list its id. A kind not in this table CANNOT be ledgered elsewhere.
+PANEL_LISTS = {"opp": "in_flight", "ask": "asks", "commit": "week", "chan": "channels_due",
+               "prep": "kb_index"}
+ELSEWHERE_HOMES = ("panel", "review-resume", "review-linkedin")
 _REC_RE = re.compile(r'data-rec="([^"]+)"')
 # A REFERENCE row (r3 §2): the sibling of _REC_RE, so a reference is neither a second primary
 # nor invisible. `_ID_RE` finds every id on the page; `_HREF_RE` every in-page link.
@@ -249,6 +265,47 @@ def expected_records(root, today=None):
         if person.get("id"):
             exp["person:%s" % person["id"]] = {"kind": "person", "state": state}
     return exp
+
+
+def load_home(root, home, today):
+    """(doc, problem): the JSON a named home publishes, from the owning script run against `root`
+    (a subprocess, so a module-level root can never disagree with the profile being checked). An
+    unreadable home is a PROBLEM, never an empty carry."""
+    import subprocess
+    if home == "panel":
+        argv = [sys.executable, os.path.join(HERE, "panel.py"), "--json", "--full",
+                "--sections", "elsewhere", "--today", today.isoformat()]
+    elif home in ("review-resume", "review-linkedin"):
+        argv = [sys.executable, os.path.join(HERE, "presence_set.py"), "--json", "--surface",
+                "print" if home == "review-resume" else "public-profile"]
+    else:
+        return None, "unknown home %r (known: %s)" % (home, ", ".join(ELSEWHERE_HOMES))
+    env = dict(os.environ, CLAUDESEARCH_ROOT=root)
+    try:
+        r = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True, timeout=180)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, "%s could not be run (%s)" % (os.path.basename(argv[1]), e)
+    try:
+        doc = json.loads(r.stdout)
+    except ValueError:
+        return None, "%s printed something that is not JSON (exit %d): %s" % (
+            os.path.basename(argv[1]), r.returncode, (r.stdout + r.stderr).strip()[:160])
+    if r.returncode != 0 or (isinstance(doc, dict) and "error" in doc):
+        return None, "%s exited %d: %s" % (os.path.basename(argv[1]), r.returncode,
+                                           json.dumps(doc)[:160])
+    return doc, None
+
+
+def home_carries(home, doc, key):
+    """True when the home's JSON lists the record `key`. The id is whatever follows the first colon."""
+    kind, _sep, rid = key.partition(":")
+    if home == "panel":
+        section = (doc.get("elsewhere") or {})
+        if isinstance(section, dict) and "error" in section:
+            return False
+        lst = PANEL_LISTS.get(kind)
+        return bool(lst) and any(str(r.get("id")) == rid for r in (section.get(lst) or []))
+    return kind == "variant" and any(str(v.get("id")) == rid for v in (doc.get("variants") or []))
 
 
 def _is_terminal(meta, terminal, today):
@@ -763,7 +820,8 @@ def check(root, verbose=False):
 
     exp = expected_records(root, today)
     gaps, placements = [], []
-    counts = {"rendered": 0, "remainder": 0, "terminal": 0}
+    counts = {"rendered": 0, "remainder": 0, "terminal": 0, "elsewhere": 0}
+    elsewhere_keys = []
     remainder_members = {}
     for key, meta in sorted(exp.items()):
         entry = records.get(key)
@@ -785,8 +843,27 @@ def check(root, verbose=False):
             if not _is_terminal(meta, terminal, today):
                 gaps.append("CLAIMED TERMINAL, NOT TERMINAL — %s (%s) has not ended, so "
                             "omitting it hides a live record" % (key, json.dumps(meta)))
+        elif disp == "elsewhere":
+            counts["elsewhere"] += 1
+            if _is_terminal(meta, terminal, today):
+                gaps.append("ELSEWHERE, BUT TERMINAL — %s has ended; it is omitted, not relocated"
+                            % key)
+            elsewhere_keys.append((key, where))
         else:
             gaps.append("UNKNOWN DISPOSITION — %s: %r" % (key, disp))
+    # ELSEWHERE reachability: each named home must really carry the record.
+    homes = {}
+    for key, home in elsewhere_keys:
+        if home not in homes:
+            homes[home] = load_home(root, home, today)
+        doc, problem = homes[home]
+        if problem:
+            gaps.append("ELSEWHERE HOME UNREADABLE — %s is ledgered elsewhere:%s but %s"
+                        % (key, home, problem))
+        elif not home_carries(home, doc, key):
+            gaps.append("ELSEWHERE, NOT AT HOME — %s is ledgered elsewhere:%s but %s's own JSON does "
+                        "not carry it: the page dropped it and no other surface took it"
+                        % (key, home, home))
     # A set's K counts everything it trimmed; a record trimmed here but rendered in another
     # set is RENDERED (the strongest placement wins), so K may exceed the records whose final
     # placement is this remainder — never the reverse. The page's K must equal the ledger's.
@@ -841,9 +918,9 @@ def check(root, verbose=False):
     n_exp = len(exp)
     n_placed = n_exp - sum(1 for g in gaps if g.startswith("UNPLACED"))
     lines = ["covered %d of %d record(s) — %d rendered · %d in counted remainders · "
-             "%d terminal (generated %s, prep window %d days)"
+             "%d terminal · %d elsewhere (generated %s, prep window %d days)"
              % (n_placed, n_exp, counts["rendered"], counts["remainder"],
-                counts["terminal"], today.isoformat(), horizon)]
+                counts["terminal"], counts["elsewhere"], today.isoformat(), horizon)]
     lines.extend(f_lines)
     lines.append(l_line)
     if verbose:

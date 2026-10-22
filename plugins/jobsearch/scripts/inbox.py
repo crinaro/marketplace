@@ -13,9 +13,8 @@ session the candidate is actually working in. The split that makes that safe:
 This is the coordinator half. It never touches the mailbox — it reads the queue the watcher
 already built, so draining it is instant and costs nothing.
 
-**Why a queue rather than a message:** `send_message` is explicitly unavailable in
-scheduled-task runs and cannot deliver to them, so a worker literally cannot message a session.
-A file is also better: it survives session death, can be drained hours later, and is keyed so
+**Why a queue rather than a message:** whether a scheduled-task run can `SendMessage` a live session is
+UNVERIFIED (probe P-4, `docs/deployment.md`), and the engine does not depend on it. A file is better anyway: it survives session death, can be drained hours later, and is keyed so
 the same finding is never queued twice.
 
 Usage:
@@ -73,7 +72,7 @@ OTHER_ACTION = ("a kind this view has no dedicated section for — each row name
 # bunch of information in the 9am session I didn't see in the coordinator view."* Both channels
 # were silent, for two different reasons:
 #
-#   PUSH  `notifyOnCompletion` had never been claimed — no subscriber, so no notification.
+#   PUSH  no wake-up had been armed (the subscription claim of the day) — no subscriber, so no notification.
 #   PULL  this queue had **zero** records from that run.
 #
 # The PULL half is the one I broke. Before the lock redesign, a run that collided with the candidate's

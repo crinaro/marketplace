@@ -11,8 +11,9 @@ from the dependent sessions so it runs its processes?"*
 ## The answer to "which session do I talk to"
 
 **The COORDINATOR — the long-running session you open at the start of the week.** You never talk
-to a scheduled run; they are unattended and cannot receive a message (the platform blocks
-`send_message` both to and from them). This script is what that session runs first.
+to a scheduled run; they are unattended, and the engine does not rely on a message reaching them
+(whether a run can `SendMessage` a live session is UNVERIFIED, probe P-4). This script is what that
+session runs first.
 
 ## The flow
 
@@ -20,8 +21,8 @@ to a scheduled run; they are unattended and cannot receive a message (the platfo
     │  Runs this at start. Does NOT hold the write lock. Drains the queue. Decides.     │
     │  Decides. It is the ONLY session you interact with.                               │
     └──────────────────────────────────────────────────────────────────────────────────┘
-              ▲ notification per run                        │ drains
-              │ (notifyOnCompletion)                        ▼
+              ▲ wake-up per queued batch                    │ drains
+              │ (the mod's jobsearch_watch)                 ▼
     ┌─ search-daily ── every 2h, 7am-4pm ──────────┐   ┌─ data/inbox.jsonl ────────────┐
     │  READ phase  -> UNLOCKED, runs alongside     │──▶│  append-only findings queue    │
     │                 your open session             │   │  keyed: never duplicated      │
@@ -35,25 +36,25 @@ to a scheduled run; they are unattended and cannot receive a message (the platfo
 
 ## How the coordinator gets UPDATES — the honest mechanics
 
-There are exactly two channels, and only one of them is a push:
+There are exactly two channels, and only one of them is a wake-up:
 
-1. **PUSH — `notifyOnCompletion`.** A scheduled task notifies **the session that subscribed to
-   it**, each time it finishes. `update_scheduled_task(taskId="search-daily",
-   notifyOnCompletion=True)` **replaces any prior subscriber**, so only ever one session is
-   notified. That is the only real push available.
+1. **WAKE-UP — the plugin's mod.** `hooks/register.ts` watches `data/inbox.jsonl` once a minute (zero
+   model tokens) and, when a background run queues more pending items than the last look, starts ONE
+   turn in the session that armed it: *"A background run queued N new item(s). Drain the queue."* The
+   coordinator arms it once at startup by calling the `jobsearch_watch` tool (SKILL step 2). It replaces
+   the old scheduled-task subscription claim (jobsearch 0.71.0).
 
-   **⚠️ ONLY A REGULAR SESSION CAN CLAIM IT — a scheduled run cannot.** Verified 2026-08-02:
-   attempting it from inside a scheduled run is refused outright, *"Can't subscribe a
-   scheduled-task run session to completion notifications — it ends when the run does."* So
-   **The candidate must run this from THEIR interactive session**; no automation can set it up for them, and
-   it must be re-claimed whenever they start a fresh coordinator session.
+   **⚠️ ONLY THE COORDINATOR ARMS IT, AND ONLY WHERE MODS ARE ON.** A scheduled run's own session must
+   not (it would wake itself on its own inbox write); where mods are off (`disableAllHooks`, a
+   managed-mods-only policy, an old Claude Code, `--safe-mode`) the tool does not exist and the
+   coordinator says so in one line. After an interrupt a wake-up is held until the user's next message.
 
 2. **PULL — `data/inbox.jsonl`.** Everything a background run found. This is the durable half:
-   it survives a closed app, a dead session, and a missed notification, and findings are keyed so
-   nothing is ever queued twice. **A notification can be lost; the queue cannot.**
+   it survives a closed app, a dead session, and a missed wake-up, and findings are keyed so
+   nothing is ever queued twice. **A wake-up can be lost; the queue cannot.**
 
-**There is no message-passing between sessions here.** `send_message` cannot reach or come from a
-scheduled run. So state moves through FILES — the queue, `data/*.jsonl`, and `handoff.md`, the
+**This engine does not depend on message-passing between sessions.** Whether a scheduled run can
+`SendMessage` a live session is UNVERIFIED (probe P-4, `docs/deployment.md`). So state moves through FILES — the queue, `data/*.jsonl`, and `handoff.md`, the
 session-handoff letter. That is a feature: a file is inspectable, replayable, and does not depend on any
 session still being alive.
 
@@ -370,23 +371,22 @@ def main():
                           "❌ STALE — regenerate (check_applying_fresh.py --fix)"))
 
     rule("HOW UPDATES REACH YOU")
-    print("  PUSH  notifyOnCompletion — a scheduled run notifies THE SUBSCRIBING SESSION when it")
-    print("        finishes. ⚠️ CLAIM IT NOW, from THIS session — ask me to run:")
-    print("            update_scheduled_task(taskId='search-daily', notifyOnCompletion=True)")
-    print("        If update_scheduled_task is not available on this surface (anything other")
-    print("        than the desktop app), SKIP this step and say so in one plain line — it needs")
-    print("        the desktop app — and never claim a subscription that was not made.")
-    print("        ONLY A REGULAR SESSION CAN — a scheduled run is refused ('it ends when the")
-    print("        run does'), so no automation can set this up for you. Re-claim it each time")
-    print("        you start a new coordinator session; it replaces any prior subscriber.")
+    print("  WAKE  the plugin's mod watches data/inbox.jsonl and starts one turn in the session")
+    print("        that armed it. ⚠️ ARM IT NOW, from THIS session, once: call the tool")
+    print("            mcp__jobsearch__jobsearch_watch")
+    print("        If that tool is not in your tool list the mod is not loaded here (mods off,")
+    print("        --safe-mode, a managed-mods-only policy, an old Claude Code): SKIP this step,")
+    print("        say so in one plain line, and never claim a watcher that was not armed.")
+    print("        ONLY THE COORDINATOR ARMS IT — a scheduled run's own session must not.")
     print("  PULL  data/inbox.jsonl — the durable half. Survives a closed app, a dead session,")
-    print("        and a missed notification. A notification can be lost; the queue cannot.")
+    print("        and a missed wake-up. A wake-up can be lost; the queue cannot.")
     print("  STALE python3 scripts/changed.py — 'did the data move under me?'. ⚠️ A SESSION IS")
     print("        TURN-DRIVEN: it cannot wake itself or poll. This answers when ASKED, so the")
-    print("        convention is CHECK BEFORE YOU WRITE. A notification says a run finished; it")
+    print("        convention is CHECK BEFORE YOU WRITE. A wake-up says a run queued work; it")
     print("        does not tell your session the ground it is reasoning from has moved.")
-    print("\n  There is NO session-to-session messaging: `send_message` cannot reach or come from")
-    print("  a scheduled run. State moves through files, which is why it is replayable.")
+    print("\n  This engine does not depend on session-to-session messaging (whether a scheduled run can")
+    print("  SendMessage a live session is UNVERIFIED, probe P-4). State moves through files, which is")
+    print("  why it is replayable.")
     return 0
 
 

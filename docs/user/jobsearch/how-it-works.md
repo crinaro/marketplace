@@ -183,9 +183,24 @@ the same accounting as any other, and roles you already know about are not creat
 
 ## What needs a desktop
 
-LinkedIn has no API. Reaching it needs a real, signed-in browser on a desktop — it cannot run
-from a phone or from the cloud, and it is roughly half of the outreach funnel. Everything else
-(mailbox, screening, reports, drafting) runs anywhere.
+The search runs **on your own machine**. Supported places to run it:
+
+- the **Claude Code tab of the Desktop app**, in your profile directory;
+- a **scheduled task in the Desktop app**, which is how the daily and weekly background runs happen;
+- the **`claude` command-line interface in a terminal**, which includes Linux;
+- a **phone or another browser driving one of those through Remote Control**, as a remote: the
+  session still runs on your machine.
+
+**Not supported:** `claude -p` (headless) and the Agent SDK, and Claude Code on the web or any cloud
+session. This is a statement of what the plugin is built and tested for, not a block: nothing stops
+you starting it there and nothing will warn you, but a cloud session also does not install the
+plugins your repository declares. Whether the `/jobsearch:status` command works when typed from a
+phone over Remote Control has **not been verified**, so do not rely on it.
+
+LinkedIn is the part that needs more than a machine. It has no API, so reaching it needs a real,
+signed-in browser on a desktop (macOS); it cannot run from a phone on its own or from the cloud, and
+it is roughly half of the outreach funnel. The mailbox, screening, reports and drafting need only
+one of the supported places above.
 
 ---
 

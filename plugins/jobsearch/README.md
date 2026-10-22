@@ -24,10 +24,25 @@ and a CI gate enforces that.
 |---|---|
 | **Claude Code** | any subscription tier — see *Budget* below |
 | **A desktop (macOS)** | **required for LinkedIn.** LinkedIn has no API; it needs a real signed-in browser. This is the one thing that cannot run from a phone or the cloud, and it is roughly half the outreach funnel |
+| **Your own machine** | see *Where this runs*, below |
 | **An email account** | IMAP with an app password, stored in your own OS keychain |
 | **Python 3.9+** | standard library only, no packages to install |
 
 **The engine never handles a credential.** You place them; it uses what your OS already holds.
+
+## Where this runs
+
+jobsearch runs **on your own machine**, in the Claude Code Desktop app or in the `claude` command-line
+interface in a terminal (Linux is fine through the command line). A background run is a scheduled task in
+the Desktop app. A phone can drive a session on your machine through Remote Control, as a remote.
+
+**Not supported:** `claude -p` and the Agent SDK, and Claude Code on the web or any cloud session. Nothing
+stops you starting the plugin there, and nothing will warn you; it is simply not a place the engine is
+built or tested for, and a cloud session does not install the plugins your repository declares in the
+first place. The status pane, the review panes and the Run buttons need the Desktop app or the terminal;
+the Run buttons are drawn only in the Desktop app. **Not yet verified:** whether the `/jobsearch:status`
+command works when typed from a phone, and whether a scheduled run can message a live session (the engine
+does not depend on either).
 
 ## Budget — pick a tier that matches your subscription
 
@@ -75,16 +90,18 @@ LinkedIn one.
 - **[Your data](../../docs/user/jobsearch/your-data.md)** — every file it keeps, what the fields mean, and
   how to edit them by hand safely.
 - **[Reading what the search produces](../../docs/user/jobsearch/reading-your-files.md)** — which file
-  opens in which tool. There are two published pages. `views/dashboard_artifact.html` is a router
-  section up top and every phase reachable by an in-page anchor, including a pending message's
-  full text on the outreach section; since 0.64.0 each record is shown in full in exactly one
-  list and is a linked one-line reference everywhere else, the opportunities list opens on a
-  single "Show" choice in terms of whose move it is, follow-ups are one list, and channels
-  with nothing due are one counted line. A reviewer's comment on that page is applied to the
-  draft through the session (before-and-after, your yes), never by editing the page.
-  `views/presence_set.html` is a review copy of your
-  resume/claims/rules that always publishes, even with nothing declared. Plus kb files, call
-  preps, drafts and letters, on the desktop, in an editor, in a browser, or on a phone.
+  opens in which tool. There is **one published page**, `views/dashboard_artifact.html`, and since
+  0.71.0 it holds only what is waiting on a decision from you: drafts to review (a pending message in
+  full), opportunities to pursue, and applications to finish with their cover letters. Each record is
+  shown in full in exactly one list and is a linked one-line reference elsewhere. A reviewer's comment
+  on that page is applied to the draft through the session (before-and-after, your yes), never by
+  editing the page. Where the rest went: **`/jobsearch:status`** shows where things stand (what needs
+  you, the inbox, the lock, the last and next background run, what is in flight, the week, channels and
+  open asks), and **`/jobsearch:review-resume`** and **`/jobsearch:review-linkedin`** review your resume
+  and public-profile text (the second published page was retired in 0.71.0). With the plugin's mod on,
+  `/jobsearch:status` is a pane and a one-line band under the prompt; with mods off, or anywhere a pane
+  cannot be drawn, the same content prints as text. Plus kb files, call preps, drafts and letters, on
+  the desktop or in an editor.
 
 The one idea worth carrying into everything else: **datasets are JSON, documents are markdown.**
 If it gets counted, sorted or joined it is data; if you read and edit it in full it is a

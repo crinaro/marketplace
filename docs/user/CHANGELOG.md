@@ -2,8 +2,14 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each verified against its release tag on the published remote; older releases after their push, the newest one by the publish that pushed it, so the section for the version you installed is in the file that came with it. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.71.0
+Your job search now has its own panel inside Claude. In the Desktop Code tab and in a terminal, a status band and panel show what needs you, act-by dates, your inbox, and when the daily and weekly runs last ran and run next, without spending any of your Claude usage. Buttons start the daily or weekly run on the spot, and you're told when a background run has queued something for you. The published dashboard now shows only what needs your review: current drafts, roles worth pursuing, and applications to finish. The separate presence page is gone; /jobsearch:review-resume and /jobsearch:review-linkedin bring those reviews up when you want them, and your old page is cleaned up for you with nothing lost. The plugin also says plainly where it runs: Claude Desktop and Claude Code in a terminal on your own machine. Headless and cloud sessions aren't supported.
+
 ## jobsearch 0.70.0
 Where a role is now decides whether you see it. The plugin ships a public US Census list of places, so a role whose office is far beyond every place you said you'd commute from is removed as too far, instead of sitting in your list undecided — unless it is somewhere you've said you would move to, or you turn on geography.relocation.keep_outside_radius to keep far roles for review (existing setups gain that setting switched off, with a copy of your settings kept). A posting that names a city but never says remote, hybrid or onsite is now screened as onsite and marked as a guess, which you can correct when the job description says otherwise. One job advertised in several cities is now one decision: the listings are linked to a single role, judged by the place that suits you best, and a nearer listing of a role you already passed on is pointed out rather than quietly closed.
+- [#157](https://github.com/crinaro/marketplace/issues/157) — The minimal screen keeps an onsite role whose location is unrecognized, so a role far outside the commute radius stays undecided indefinitely
+- [#158](https://github.com/crinaro/marketplace/issues/158) — Capture creates one opportunity per job URL, so one posting listed in several cities becomes several new rows with no company-plus-title collapse
+- [#159](https://github.com/crinaro/marketplace/issues/159) — A captured role with a location but no remote, hybrid or onsite label is kept as undecided instead of being treated as presumptively onsite
 
 ## jobsearch 0.69.1
 The check that looks for your personal details accidentally left in the plugin's own files now finishes. It used to run out of time partway through, so it never gave a full answer; it is now fast enough to scan everything in well under a second, skips files that haven't changed since its last complete scan, and if it is ever cut short it picks up where it stopped next time instead of starting over.
@@ -33,12 +39,21 @@ Your mail records are cleaned up and harder to fool. A fault in how message numb
 
 ## jobsearch 0.64.0
 Your dashboard is reorganised around what you do every day. Drafts and Opportunities now sit at the top, with a bar that stays pinned as you scroll so either list is one tap away. Opportunities are grouped by where each role stands, in plain words, and the follow-up view shows what's due in the next few days. Each draft has a Copy as prompt button: paste it into your job-search session with your correction and it's applied for you, showing the before and after. Channel bookkeeping moves off the daily page to a one-line summary.
+- [#48](https://github.com/crinaro/marketplace/issues/48) — The generated dashboard is a complete unfiltered inventory, not a today-oriented, navigable decision surface
+- [#58](https://github.com/crinaro/marketplace/issues/58) — the opportunities surface presents three overlapping filter dimensions in engine vocabulary, one of them degenerate, and none of them expresses the question the user actually opens the page to ask
+- [#87](https://github.com/crinaro/marketplace/issues/87) — Artifact comments are readable, but nothing writes a reviewer's correction back into the draft store — the in-chat revise loop has no equivalent on a published surface
+- [#131](https://github.com/crinaro/marketplace/issues/131) — Dashboard's Sourcing/channel sections duplicate markdown data with little added value; the dashboard should stay activity-focused
+- [#132](https://github.com/crinaro/marketplace/issues/132) — The top router's phases each build separate sections instead of filtering the existing lists they duplicate
+- [#133](https://github.com/crinaro/marketplace/issues/133) — Consolidate outreach follow-up sections into the Drafts drill-down, defaulted to a 2-5 day sendable view
 
 ## jobsearch 0.63.0
 Your job search's mailboxes now point at the accounts gmail-multi already knows, instead of keeping a separate list; this is moved over by itself. If a mailbox in your search isn't one of gmail-multi's accounts, you're told plainly and asked to fix it, rather than it being skipped without a word. A job-search session can also no longer list every email account on your computer.
+- [#125](https://github.com/crinaro/marketplace/issues/125) — Mail access is hard-wired to one connector, and the connector's own config has to reach into a profile to find its mailboxes
+- [#141](https://github.com/crinaro/marketplace/issues/141) — gmail-multi: reply drafts show literal ">" quote markers inside the HTML blockquote (quote string reused across plain + HTML parts)
 
 ## jobsearch 0.62.0
 People you know outside any job opening are now first-class. You can record a touch or a message with someone who isn't tied to a role, a sent personal reply clears from your pending list, and a person can be linked to a role later without losing their history. Drafts that aren't ready to send still show their text on the dashboard, labelled with why. A LinkedIn reply to someone who messaged you first is judged by that conversation, not by your mailbox. The dashboard also lists the people you're due to follow up with.
+- [#139](https://github.com/crinaro/marketplace/issues/139) — Person-only network outreach (no opportunity, no channel) is a second-class draft: body hidden, touch needs a role, prune refuses it
 
 ## jobsearch 0.61.1
 Maintenance only: nothing changes for you. The plugin's own test runner can now re-run just the tests that failed.

@@ -519,7 +519,7 @@ def _lean_html(o, role_state):
 
 
 def render_opportunity_list(opps, companies, attention=None, owner=None, involvements=None,
-                            pursuit=None, roles=None):
+                            pursuit=None, roles=None, set_name="opportunities"):
     """One row per LIVE role — needs-you first, then yours, then the run's — inside a
     FILTERED LIST over OPP_DIMS, EVERY member rendered. Closed roles are not here — they
     are not opportunities.
@@ -580,7 +580,7 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
     live = [o for o in opps if o.get("status") not in _TERMINAL]
     for o in opps:
         if o.get("status") in _TERMINAL and o.get("id"):
-            _cover("opp:%s" % o["id"], "terminal", "opportunities")
+            _cover("opp:%s" % o["id"], "terminal", set_name)
     if not live:
         return '<div class="sub">No live opportunities.</div>', dict(_EMPTY_OPP_COUNTS)
     order = {"active-pursuit": 0, "needs-resolution": 1, "in-motion": 2, "backlog": 3}
@@ -712,8 +712,8 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
             f'</div>'))
     # REACHABLE (ADR-024, public #54): every member renders; a filtered list has no remainder.
     keys = ["opp:%s" % i for i, _h in rows if i]
-    _cover_set("opportunities", keys, [])
-    html_out = render_filtered_list("opportunities", OPP_DIMS, members, keys,
+    _cover_set(set_name, keys, [])
+    html_out = render_filtered_list(set_name, OPP_DIMS, members, keys,
                                     "".join(h for _i, h in rows), "", cls="card opp-list")
     return html_out, counts
 
@@ -1335,6 +1335,22 @@ def render_message_list(set_name, kind, entries, states, filename, dims, empty_m
             d["when"] = rf["when"]
         if "medium" in dim_names:
             d["medium"] = "unknown"
+        if rf.get("primary"):
+            # jobsearch 0.71.0 (dev #750): the subject's own row is no longer on this page (a channel
+            # or an in-flight role lives in the jobsearch panel), so this row IS its primary row here -
+            # `data-rec`, placed RENDERED in this list - and points at the panel instead of a link to
+            # nothing. "Touches due" are primary Drafts-to-review rows (design section 4).
+            members[rf["key"]] = d
+            keys.append(rf["key"])
+            _cover(rf["key"], "rendered", set_name)
+            ref_rows.append(
+                '<div class="draft draft-ref"%s%s><div class="draft-title">%s '
+                '<span class="chip action">no draft yet</span></div>'
+                '<div class="sub">%s%s · its full row is in the jobsearch panel '
+                '(<code>/jobsearch:status</code>)</div></div>'
+                % (_rec_attrs(rf["key"]), _dim_attrs(d), md_inline(rf["label"]), esc(rf["why"]),
+                   (" · due %s" % esc(str(rf["due"]))) if rf.get("due") else ""))
+            continue
         ref_members[rf["key"]] = d
         go = {"chan": "the channel ↓", "opp": "the role ↓", "person": "the person ↓"}.get(
             rf["kind"], "the full row ↓")
@@ -1596,7 +1612,10 @@ def _clause_cell(text, locator=None):
 # membership, and one check must not grow a second meaning.
 # ─────────────────────────────────────────────────────────────────────────────
 COVERAGE = {"records": {}, "remainders": {}}
-_DISP_RANK = {"rendered": 3, "remainder": 2, "terminal": 1}
+# `elsewhere` (jobsearch 0.71.0, amending ADR-024): the record is not on this page BY DESIGN and lives
+# in a named home (`where` is the home: panel, review-resume or review-linkedin). It ranks lowest, so a
+# record that is rendered, counted in a remainder or terminal keeps that placement.
+_DISP_RANK = {"rendered": 3, "remainder": 2, "terminal": 1, "elsewhere": 0}
 
 
 def _cover(key, disposition, where):
@@ -1980,18 +1999,19 @@ def render_router_rows(phase_summaries):
     return "".join(out)
 
 
-JUMP_TARGETS = (("Drafts", "phase-outreach-approvals"), ("Opportunities", "phase-pipeline-roles"))
+JUMP_TARGETS = (("Drafts", "phase-outreach-approvals"), ("Opportunities", "phase-pipeline-roles"),
+                ("Applications", "phase-applying-finish"))
 
 
-def render_jump_bar(n_drafts, n_opps):
-    """The pinned jump bar (OWNER REQUEST 2026-10-13): exactly two entries, `Drafts (N)` and
-    `Opportunities (N)`, each an in-page link to its list's heading. Pinned by CSS `position:
-    sticky` only - no script - and offset by the viewer's top safe area. A count of None means
-    the list is not on the page: the entry is then an unlinked muted label, never a link to
-    nothing (ANCHOR). The headings it lands on sit outside every filtered row set, so a link
-    lands on a visible target whatever chip is checked."""
+def render_jump_bar(n_drafts, n_opps, n_apply=None):
+    """The pinned jump bar (OWNER REQUEST 2026-10-13, three entries since jobsearch 0.71.0):
+    `Drafts (N)`, `Opportunities (N)` and `Applications (N)`, each an in-page link to its list's
+    heading. Pinned by CSS `position: sticky` only - no script - and offset by the viewer's top
+    safe area. A count of None means the list is not on the page: the entry is then an unlinked
+    muted label, never a link to nothing (ANCHOR). The headings it lands on sit outside every
+    filtered row set, so a link lands on a visible target whatever chip is checked."""
     out = ['<nav class="jumpbar" aria-label="Jump to the lists read most">']
-    for (label, sid), n in zip(JUMP_TARGETS, (n_drafts, n_opps)):
+    for (label, sid), n in zip(JUMP_TARGETS, (n_drafts, n_opps, n_apply)):
         if n is None:
             out.append('<span class="jump off">%s (0)</span>' % label)
         else:
@@ -2915,64 +2935,53 @@ CSS = """
 """ + _CSS_ROUTER
 
 
+REVIEW_NOW = (
+    # (section id, router/jump label, icon)
+    ("phase-outreach-approvals", "Drafts to review", "✉️"),
+    ("phase-pipeline-roles", "Opportunities to pursue", "🎯"),
+    ("phase-applying-finish", "Applications to finish", "📝"),
+)
+
+# The homes a record can live in once the page no longer renders it (design §4, amending ADR-024):
+# `panel` is scripts/panel.py's `elsewhere` object; the two review homes are presence_set.py's panes.
+ELSEWHERE_HOMES = ("panel", "review-resume", "review-linkedin")
+
+
+def render_review_router(rows):
+    """The top of the page since jobsearch 0.71.0: THREE anchors and a clause each, nothing else.
+    The counts that used to ride the six-phase router moved to the band and the status pane
+    (scripts/panel.py), because status is not what this page is for. A row whose list is not on the
+    page is a muted label with no anchor, so the router never links to nothing (ANCHOR)."""
+    out = ['<div class="router">']
+    for icon, label, sid, n, clause in rows:
+        if n:
+            out.append('<div class="rrow"><a class="ph" href="#%s">%s %s</a>'
+                       '<span class="nx">%s</span></div>' % (sid, icon, esc(label), md_inline(clause)))
+        else:
+            out.append('<div class="rrow zero"><span class="ph">%s %s</span>'
+                       '<span class="nx">%s</span></div>' % (icon, esc(label), md_inline(clause)))
+    out.append("</div>")
+    return "".join(out)
+
+
 def main():
-    # `net = read(...network...)` left with the Network tab (2026-08-29): the network is
-    # queried, not queued (D4) — it never contributed a count, and its firm/alumni tables
-    # were the page's only remaining markdown-table parse. Its location is named in the
-    # page footer; the data stays fully queryable in session.
     drafts = parse_drafts(read(_tree.rel("drafts")))
-    # Cover letters are a distinct artifact from outreach drafts (added 2026-07-21,
-    # per the candidate: the "why is this job a great fit" message was missing entirely).
+    # Cover letters are a distinct artifact from outreach drafts (added 2026-07-21).
     covers = [c for c in parse_cover_letters(read(_tree.rel("cover_letters")))]
 
-    # ⭐⭐ focus.md IS RETIRED AS A SOURCE OF STATE — dev #93 (public #21). Every surface
-    # below reads a store; the hand tail lives in data/asks.jsonl, commitments in
-    # data/commitments.jsonl. (See the dev #93 narrative in this file's history.)
+    # ⭐⭐ focus.md IS RETIRED AS A SOURCE OF STATE — dev #93 (public #21). Every surface below reads
+    # a store.
     _all_asks = load_jsonl("asks.jsonl")
-    role_asks = _ym.open_asks(_all_asks, kind="role")
-    system_asks = _ym.open_asks(_all_asks, kind="system")
-
-    # SOURCED PIPELINE — data/*.jsonl (cutover 2026-07-20); the stats strip's numbers.
-    _sh2, live_rows, closed_rows, _status_idx2, comp_idx2, _jd_idx = opps_from_jsonl()
-
-    def clears_comp(comp_text):
-        c = comp_text.lower()
-        return any(k in c for k in ("clears", "clear the", "comfortably clear", "exceeds"))
-
-    clearing_count = sum(1 for r in live_rows
-                          if comp_idx2 is not None and comp_idx2 < len(r)
-                          and clears_comp(r[comp_idx2]))
-    stats_html = (
-        '<div class="stats-row">'
-        f'<div class="stat"><strong>{len(live_rows)}</strong> active</div>'
-        f'<div class="stat"><strong>{clearing_count}</strong> clear comp floor</div>'
-        f'<div class="stat"><strong>{len(closed_rows)}</strong> passed / closed</div>'
-        f'<div class="stat"><strong>{len(live_rows) + len(closed_rows)}</strong> total sourced</div>'
-        '</div>'
-    )
-
     _opp_rows = load_jsonl("opportunities.jsonl")
     _opp_comps = {c["id"]: c for c in load_jsonl("companies.jsonl")}
-    ym_links = {o["id"]: best_link(o) for o in _opp_rows if o.get("id")}
-
-    # Membership is your_move.py's alone (#79); this file only renders what it says.
-    role_decisions = your_move_roles_from_jsonl()
-    channel_touches = your_move_channels_from_jsonl()
-    decide_rows = your_move_decides_from_jsonl()
-    _unresolved_rows, _waiting_rows, _fulfilled_rows, _play_rows = your_move_callouts()
-    your_move_callouts_html = render_your_move_callouts(_unresolved_rows, _waiting_rows,
-                                                         _fulfilled_rows, _play_rows,
-                                                         ym_links)
 
     # ── Preconditions over the staged-message pair (issues #6/#13, dev #169, public #29).
-    # Same grouping rules as ever: NOT_SENDABLE and TERMINAL are precondition.py's to own.
     _DRAFTS_REL, _COVERS_REL = _tree.rel("drafts"), _tree.rel("cover_letters")
     try:
         import precondition as _pre
         _pre_rows = _pre.report(str(ROOT))
         # dev #496 / public #48, design r3 D5 - the state row of an entry is keyed by its UNIQUE
-        # key (your_move.entry_keys: the title, `#n` for a repeated one), file by file in order,
-        # never by title alone, so two same-titled entries keep their own states and rows.
+        # key (your_move.entry_keys), file by file in order, never by title alone.
         _states = {}
         for _f in dict.fromkeys(r.get("file", _DRAFTS_REL) for r in _pre_rows):
             _fr = [r for r in _pre_rows if r.get("file", _DRAFTS_REL) == _f]
@@ -2989,12 +2998,6 @@ def main():
         _needs_human = frozenset()
         _waits_on_surface = frozenset()
 
-    # dev #154's derived "Ready to send - staged, no ask on file" queue line (`phase-outreach-
-    # ready`) is GONE (dev #539 / public #133, r3 §4): its rows are `sendable` drafts that no ask
-    # covers - a strict subset of the follow-up view's default (`when = now`), where the same
-    # draft renders once as a primary row with its body. `your_move.ready_staged_without_ask`
-    # stays, for the one derived "no ask covers this" fact; this page no longer renders it.
-
     def _pre_state(filename, key):
         return _states.get((filename, key), {}).get("state")
 
@@ -3010,23 +3013,15 @@ def main():
     _drafts_active = [d for d, _k in _dpairs]
     _drafts_active_keys = [k for _d, k in _dpairs]
     _sendable = [d for d, k in _dpairs if _pre_state(_DRAFTS_REL, k) not in _not_sendable]
-    # ⭐ public #37 — NOT_SENDABLE is two things. `blocked` waits on the other side (in
-    # flight, muted); `unreadable`/`unresolved` wait on the OWNER, because nobody can say
-    # what the hold is. They used to sit under "waiting on someone else" looking handled.
-    # precondition.NEEDS_HUMAN owns the split; this only counts by it — since public #48
-    # stage 1 the three groups are ONE list with a sendability filter, and an unreadable
-    # hold is a loud row in it rather than a section of its own.
-    # ⭐ Query or Citation C1 (§3.5, D8, plant 10) — WAITS_ON_SURFACE is a THIRD group: a
-    # queued draft is neither owner-blocked nor other-side-held. Excluded from BOTH `_blocked`
-    # and `_unreadable` — rendering it in either is the exact public #37 failure recreated for
-    # a state neither dict names.
+    # ⭐ public #37 — NOT_SENDABLE is two things: `blocked` waits on the other side, `unreadable`/
+    # `unresolved` wait on the OWNER. ⭐ Query or Citation C1 — WAITS_ON_SURFACE is a THIRD group.
     _blocked = [d for d, k in _dpairs
                 if _pre_state(_DRAFTS_REL, k) in _not_sendable
                 and _pre_state(_DRAFTS_REL, k) not in _needs_human
                 and _pre_state(_DRAFTS_REL, k) not in _waits_on_surface]
     _unreadable = [d for d, k in _dpairs if _pre_state(_DRAFTS_REL, k) in _needs_human]
     _queued = [d for d, k in _dpairs
-              if _pre_state(_DRAFTS_REL, k) in _waits_on_surface]
+               if _pre_state(_DRAFTS_REL, k) in _waits_on_surface]
     n_blocked = len(_blocked)
     n_queued = len(_queued)
 
@@ -3046,11 +3041,7 @@ def main():
                                       keys=_covers_active_keys)
     n_covers_held = len(_covers_held)
 
-    # public #95 — the terminal-transition cascade's data-store half (design-inbound-
-    # resolution.md §8's own stated remainder: "cover_letters.status has no terminal value
-    # on an ending" — the markdown pane above is #377's own MOOT_DERIVED already; this is
-    # the `data/cover_letters.jsonl` row itself, which #377 never touched). Advisory only —
-    # never blocks rendering; a broken resolver here must not take the whole page down.
+    # public #95 — the terminal-transition cascade's data-store half. Advisory only.
     try:
         _ended_ctx = _ym.build_ended_context(str(ROOT))
         _letter_rows, _cl_errs, _cl_present = _apps.load_cover_letters(str(ROOT))
@@ -3060,45 +3051,6 @@ def main():
                              if _ym.letter_state(_l, _ended_ctx)[0] == "used")
     except Exception:
         n_letters_moot = n_letters_used = 0
-    n_unreadable = len(_unreadable) + len(_covers_unreadable)
-
-    # dev #148 — sourcing strategy, via channels_due.py's one definition
-    # (review_rows / channel_yield — the single-owner rule).
-    _src_active, _src_retired, n_sourcing_due = sourcing_view()
-
-    # public #20 (amended by the collapse): call preps render IN FULL on this page —
-    # bounded by upcoming-call volume, and the one knowledge type someone reads on a
-    # phone the night before. Company kb stays an INDEX (its bodies are not awaiting a
-    # decision; inlining them is the measured 328 KB of the old 639 KB page).
-    _preps, _kbs = knowledge_docs()
-    # ⭐ THE PREP WINDOW (dev/audit 2026-09-02, build item 7). "Bounded by upcoming-call
-    # volume" was a claim, not a bound: every file in conversations/ rendered in full,
-    # and preps for calls already held — the bulk of a phone page, by bytes — were still
-    # there because the archive step lived in a skill as a line the model was told to
-    # follow after the call, and was not followed. The bound is now MECHANICAL: a prep
-    # renders in full only for a call inside conversations.py's PREP-OWED horizon
-    # [today, today + HORIZON_DAYS]; a past prep is an index row until archive_preps.py
-    # (the hygiene step and the 0.36.0 migration) moves it; a prep beyond the horizon or
-    # with an undated filename is an index row too, the undated one loudly.
-    # The window is knowledge.prep_window's (public #48 stage 1 moved the if-chain that
-    # lived here into the module that owns prep_date), and the three index sections are
-    # ONE filtered index over knowledge.PREP_WINDOWS.
-    _today_d = datetime.date.today()
-    _preps_now, _preps_index = [], []
-    for _p in _preps:
-        _w = _kn.prep_window(os.path.basename(_p[1]), _today_d, _conv_mod.HORIZON_DAYS)
-        if _w == "now":
-            _preps_now.append(_p)
-        else:
-            _preps_index.append((_p[0], _p[1], _p[2], _w))
-    # Undated first (loud), then held calls newest-first as knowledge_docs orders them,
-    # then the far-off ones — so the cap trims the quietest tail.
-    _preps_index.sort(key=lambda t: {"undated": 0, "past": 1, "later": 2}[t[3]])
-    preps_full_html = render_knowledge_docs(_preps_now, "No call preps on file.")
-    preps_index_html = render_prep_index(_preps_index, _conv_mod.HORIZON_DAYS)
-    kbs_html = render_knowledge_index(
-        _kbs, "No company knowledge files yet.",
-        "read in the file tree — knowledge bodies are not published (the collapse)")
 
     # ── Trigger-derived outreach numbers — every one from its owning module. ──
     import trigger as _trig
@@ -3110,521 +3062,87 @@ def main():
                               if s["state"] == "waiting")
         _untrig_rows = _trep["untriggered"]
     except Exception as _e:
-        # ⚠️ A failed scan must NEVER read as "nothing owed" — that is the missing-reads-
-        # as-empty trap. Zero counts with a loud line on the page and in the console.
+        # ⚠️ A failed scan must NEVER read as "nothing owed" — that is the missing-reads-as-empty trap.
         print("  !! WARNING: trigger scan failed (%s) — the outreach row cannot count "
               "sequences or unlinked applications; run trigger.py --check" % _e)
         _trep, _n_unblocked, _n_waiting_seqs, _untrig_rows = None, 0, 0, []
-    _submitted, _human, _nothing = application_tables()
-    # dev #539 / public #133 - the follow-up view's membership, from its ONE owner. The drafts
-    # are classified `now`/`waiting` here and the other subjects owing a message are its
-    # reference rows; a trigger scan that failed contributes no untriggered rows (the page says
-    # so, loudly, below), never a silent zero.
+    # dev #539 / public #133 - the follow-up view's membership, from its ONE owner.
     _od = _ym.outreach_due(str(ROOT), pre_rows=_pre_rows, untriggered=_untrig_rows)
     _od_whens = {d["key"]: d["when"] for d in _od["drafts"]}
-    _touch_due = {r["key"].split(":", 1)[1]: r["due"] for r in _od["refs"]
-                  if r["kind"] == "chan"}
+
+    _today_iso = datetime.date.today().isoformat()
 
     # ─────────────────────────────────────────────────────────────────────────
-    # THE PHASE SECTIONS — each built as (needs rows, in-flight rows, extra panels),
-    # every count a query. A phase at zero gets a muted router row and NO section.
+    # ⭐ THE REVIEW-NOW PAGE (jobsearch 0.71.0, dev #750 part 2; design §4, owner decision C).
+    # Three sections and nothing else: current DRAFTS to review (people due promoted into it),
+    # OPPORTUNITIES to pursue (a decision is owed), APPLICATIONS to finish (pursuing, not yet sent,
+    # plus their cover letters). Status moved to the panel (scripts/panel.py: band + pane +
+    # /jobsearch:status) and the presence artifact's reviews to /jobsearch:review-resume and
+    # /jobsearch:review-linkedin. EVERY RECORD THE PAGE NO LONGER RENDERS IS LEDGERED `elsewhere`
+    # WITH ITS HOME, and check_dashboard_coverage.py refuses an ELSEWHERE record whose home's JSON
+    # does not carry its id - so nothing is dropped silently (P3).
     # ─────────────────────────────────────────────────────────────────────────
-    _summaries = []           # (phase, n_needs, n_flight, clause, has_section)
-    _sections = []
 
-    def _emit(phase, n_needs, n_flight, clause, sub_bits, parts, extra=None):
-        inner = "\n  ".join(p for p in parts if p)
-        has = bool(inner.strip())
-        _summaries.append((phase, n_needs, n_flight, clause, has, extra or {}))
-        if not has:
-            return
-        subs = " · ".join('<a href="#%s">%s</a>' % (sid, esc(lbl))
-                          for lbl, sid in sub_bits if lbl)
-        flight_note = (' <span class="ct2f">· %d in flight</span>' % n_flight) if n_flight else ""
-        _sections.append(
-            '<section class="phase" id="phase-%s">\n'
-            '<h2 class="phase-h">%s %s <span class="tcount">%d</span>%s</h2>\n'
-            '%s\n  %s\n</section>'
-            % (phase, _PHASE_ICON[phase], phase, n_needs, flight_note,
-               ('<div class="subcounts">needs you: %s</div>' % subs) if subs else "",
-               inner))
-
-    # ── configure ──────────────────────────────────────────────────────────
-    cfg_rows = [ws_row("<strong>%s</strong> — %s"
-                       % (md_inline(a.get("title") or a.get("id") or "?"),
-                          _clause_cell(a.get("ask"), "data/asks.jsonl · %s" % a["id"]
-                                      if a.get("id") else "data/asks.jsonl")),
-                       "you", _age_days(a.get("created")), a.get("act_by") or "",
-                       rec=("ask:%s" % a["id"]) if a.get("id") else None)
-                for a in system_asks]
-    # Resolved asks have ENDED — the ledger says so, so the coverage check can tell an
-    # expelled row from a lost one.
+    # Records that have ENDED say so by omission, as before.
     for _a in _all_asks:
         if _a.get("resolved_on") and _a.get("id"):
             _cover("ask:%s" % _a["id"], "terminal", "asks")
-    cfg_clause = (_clause(system_asks[0].get("title")) if system_asks
-                  else "Nothing needs a settings decision.")
-    cfg_parts = []
-    if cfg_rows:
-        cfg_parts.append(
-            '<h2 id="phase-configure-asks">⚙️ System &amp; tooling — needs you '
-            '<span class="tcount">%d</span></h2>'
-            '<div class="sub" style="margin:-6px 0 10px">Decisions about the tracker, '
-            'scripts, credentials, or tooling that only you can make. Each stays until it '
-            'is done.</div>'
-            '<div class="card">%s</div>'
-            % (len(cfg_rows), render_ws(cfg_rows, "`data/asks.jsonl`", "",
-                                        set_name="configure-asks")))
-    _emit("configure", len(cfg_rows), 0, cfg_clause,
-          [("settings decisions", "phase-configure-asks")] if cfg_rows else [], cfg_parts)
-
-    # ── presence ───────────────────────────────────────────────────────────
-    n_var, n_stale, _stale_variants = _variant_staleness()
-    if n_var == 0:
-        pres_clause, pres_rows = "No resume variants declared yet.", []
-    elif n_stale:
-        pres_clause = ("Reconcile %s against presence/claims.md — the claim union moved."
-                       % ", ".join(v.get("id", "?") for v in _stale_variants[:3]))
-        pres_rows = [ws_row("<strong>%s</strong> — reconcile against presence/claims.md"
-                            % esc(v.get("id") or "?"), "you")
-                     for v in _stale_variants]
-    else:
-        pres_clause = "%d variant%s reconciled — steady." % (n_var,
-                                                             "" if n_var == 1 else "s")
-        pres_rows = []
-    pres_parts = []
-    if pres_rows:
-        pres_parts.append(
-            '<h2 id="phase-presence-stale">🪞 Variants out of step with the claim union '
-            '<span class="tcount">%d</span></h2>'
-            '<div class="card">%s</div>'
-            % (len(pres_rows),
-               render_ws(pres_rows, "`data/resume_variants.jsonl`", "")))
-    _emit("presence", len(pres_rows), 0, pres_clause,
-          [("stale variants", "phase-presence-stale")] if pres_rows else [], pres_parts)
-
-    # ── pipeline ───────────────────────────────────────────────────────────
-    hand_role_rows = [ws_row("<strong>%s</strong> — %s"
-                             % (md_inline(a.get("title") or a.get("id") or "?"),
-                                _clause_cell(a.get("ask"), "data/asks.jsonl · %s" % a["id"]
-                                            if a.get("id") else "data/asks.jsonl")),
-                             "you", _age_days(a.get("created")), a.get("act_by") or "",
-                             rec=("ask:%s" % a["id"]) if a.get("id") else None)
-                      for a in role_asks]
-    due_reviews_ws = [ws_row("<strong>%s</strong> — channel review due"
-                             % esc(label), route, "", "now")
-                      for (label, _scope, route, _cad, _lr, _dh, _y, st, _cid) in _src_active
-                      if st == "due"]
-
-    # ⭐ public #48, stage 1 — "in flight" is the `state` filter on the opportunity list,
-    # not a section. your_move.attention_by_id is the ONE map both the list's labels and
-    # this router count read, so the "N in flight" number and the "In flight (N)" chip
-    # are the same query; the `⏳ In flight — not yours to do` table that rendered every
-    # such role a second time is gone. dev #494/#540 - the chip is now `Your move`
-    # (the complement of in-flight), and the list's `data-pursuit-also` is this same map.
-    _attention = _ym.attention_by_id(_opp_rows, OWNER_TOKEN)
-    _owner = _ym.owner_by_id(_opp_rows, OWNER_TOKEN)
-    n_pipe_flight = sum(1 for v in _attention.values() if v == "in-flight")
-    # dev #713 / public #145: the role states (decide / triaging / ...), ONE classification for the
-    # router, the callouts and the pursuit map below.
-    _roles = {o.get("id"): st for o, st, _w in _ym.classify_opportunities(_opp_rows, OWNER_TOKEN)
-              if o.get("id")}
-    # ONE pursuit map for the list's chips and the router's `applying` count. A triaging role is
-    # in `Triaging`, not `New` (pursuit_by_id).
-    _pursuit = pursuit_by_id([o for o in _opp_rows if o.get("status") not in _TERMINAL], _roles)
-
-    # dev #540 / public #132 — the opportunity rows that used to ride `phase-pipeline-now`
-    # (role_decisions) and `phase-pipeline-decide` (decide_rows) ARE the list's `your-move`
-    # option now; the section keeps only the ask rows (a different record kind).
-    n_pipe_needs = (len(role_decisions) + len(decide_rows) + len(hand_role_rows)
-                    + len(due_reviews_ws))
-    _pipe_first = role_decisions + decide_rows
-    pipe_clause = (_clause(_pipe_first[0][0]) if _pipe_first
-                   else ("A sourcing-channel review is due." if due_reviews_ws
-                         else "No decision is owed on a role."))
-    # dev #713 / public #145: the roles the run is still reading are neither yours nor hidden -
-    # the router says how many, and the `Triaging` chip below selects them.
-    _n_triaging = sum(1 for st in _roles.values() if st == "triaging")
-    if _n_triaging:
-        pipe_clause += " %d role%s being read by the run before %s reach%s you." % (
-            _n_triaging, " is" if _n_triaging == 1 else "s are",
-            "it" if _n_triaging == 1 else "they", "es" if _n_triaging == 1 else "")
-    pipe_parts = []
-    if hand_role_rows:
-        pipe_parts.append(
-            '<h2 id="phase-pipeline-asks">❓ Asks — the run needs a decision from you '
-            '<span class="tcount">%d</span></h2>'
-            '<div class="card">%s</div>'
-            % (len(hand_role_rows),
-               render_ws(hand_role_rows, "`data/asks.jsonl`",
-                         "Nothing is waiting on you right now.", set_name="pipeline-asks")))
-    pipe_parts.append(your_move_callouts_html)
-    opp_list_html, opp_counts = render_opportunity_list(_opp_rows, _opp_comps,
-                                                        attention=_attention, owner=_owner,
-                                                        pursuit=_pursuit, roles=_roles)
-    # ⭐ OWNER REQUEST 2026-10-13 (design r3 "Owner request 2026-10-13: order"): Opportunities
-    # is one of the two lists read most, so it renders FIRST, directly under the router
-    # (`_first_html`, assembled below), not inside the pipeline section. The section keeps a
-    # one-line pointer so `#phase-pipeline` and its sub-links still land somewhere true.
-    _first_opps = ""
-    if opp_counts["all"]:
-        pipe_parts.append(
-            '<div class="sub moved">🎯 <a href="#phase-pipeline-roles">Opportunities</a> '
-            '(%d) are at the top of the page, under the summary.</div>' % opp_counts["all"])
-        _first_opps = (
-            '<h2 id="phase-pipeline-roles">🎯 Opportunities — where each role stands '
-            '<span class="tcount">%d</span><span class="ct2f">· %d in flight</span></h2>'
-            '<div class="sub" style="margin:-6px 0 10px"><strong>What lives here:</strong> '
-            'every live role, once — needs-you first, then yours, then the run&rsquo;s. '
-            'The bar under each title is the pipeline stage it has actually reached; '
-            '<strong>Show</strong> narrows the list by what is happening with each role '
-            '(your move today, new, in live conversation, sent, not sent yet, in '
-            'interviews) and <strong>Whose</strong> by whose move it is; every chip shows '
-            'every row it counts. <strong>Your move</strong> is decisions owed plus actions '
-            'due today; <strong>Triaging</strong> is the roles the run is still reading '
-            '&mdash; they become yours (Decide) once it has.</div>'
-            % (opp_counts["all"] - n_pipe_flight, n_pipe_flight)
-            + stats_html + opp_list_html +
-            '<div class="note"><strong>&ldquo;Not sent yet&rdquo; is the gap.</strong> '
-            'A role you are pursuing with no application out is queued to apply; a role '
-            'applied to, or in play through a person, is covered.</div>')
-    # dev #541 / public #131 (S541): ONE unfiltered list of the channels with a review or a touch
-    # due, and a counted line for the rest - not three sections over one record kind.
-    _known_chans = {r[8] for r in _src_active} | {r[3] for r in _src_retired}
-    _rel_chans = [c for c in load_jsonl("channels.jsonl")
-                  if c.get("id") in _touch_due and c["id"] not in _known_chans]
-    _chan_html, _n_chan_rows = render_channels_list(_src_active, _src_retired, _touch_due,
-                                                    _rel_chans)
-    if _chan_html:
-        pipe_parts.append(
-            '<h2 id="phase-pipeline-channels">🧭 Channels: due '
-            '<span class="tcount">%d</span></h2>'
-            '<div class="card">%s</div>' % (_n_chan_rows, _chan_html))
-    if _kbs:
-        pipe_parts.append(
-            '<h2 id="phase-pipeline-kb">🏢 Company knowledge base '
-            '<span class="tcount">%d</span></h2>'
-            '<div class="card">%s</div>' % (len(_kbs), kbs_html))
-    pipe_subs = []
-    if role_decisions or decide_rows:
-        pipe_subs.append(("role decisions", "phase-pipeline-roles"))
-    if hand_role_rows:
-        pipe_subs.append(("asks", "phase-pipeline-asks"))
-    if due_reviews_ws:
-        pipe_subs.append(("channel reviews", "phase-pipeline-channels"))
-    # The pipeline COUNT is a label for the `your-move` radio (design r3 §3.2) - but a label
-    # promises the population its radio selects (check_dashboard_coverage: ROUTER DISAGREES),
-    # and this headline also counts the ask rows and the channel reviews due, which are not
-    # opportunity rows. So the label is offered only where the number IS that option's
-    # population: the radio exists only when the option has members, and the counts agree.
-    _opp_led = (COVERAGE["filters"].get("opportunities") or {}).get("members") or {}
-    _n_yours = sum(1 for m in _opp_led.values() if "your-move" in _also(m, "pursuit"))
-    _emit("pipeline", n_pipe_needs, n_pipe_flight, pipe_clause, pipe_subs, pipe_parts,
-          {"ct_for": _fid("opportunities", "pursuit", "your-move")}
-          if (_n_yours and _n_yours == n_pipe_needs) else None)
-
-    # ── applying ───────────────────────────────────────────────────────────
-    # dev #540 / public #132 (R540): `phase-applying-queue` is GONE - it re-rendered every
-    # queued role a second time (5 of 5 on a measured profile), the EXACTLY ONCE defect. The
-    # queue is the opportunity list under `Not sent yet`, and the router's count is a label
-    # that checks that radio. The count is that option's population - the AXIS wins where
-    # applying.queue() would have said otherwise (an interviewing-stage role with no
-    # submitted application is queued there and `In interviews` here: an interview is the
-    # more urgent truth - findings.jsonl #131). The "submitted / nothing sent" sub-lines
-    # moved into the router clause below, counts unchanged.
-    n_not_sent = sum(1 for p in _pursuit.values() if p.get("state") == "not-sent")
-    if n_not_sent:
-        apply_clause = ("Nothing sent on %d queued role%s — work the queue in session "
-                        "(views/applying.md)." % (n_not_sent, "" if n_not_sent == 1 else "s"))
-        if _submitted:
-            apply_clause += (" %d application%s submitted and awaiting a response."
-                             % (len(_submitted), "" if len(_submitted) == 1 else "s"))
-        if _nothing:
-            apply_clause += (" %d live role%s carried with nothing sent — the real gap."
-                             % (len(_nothing), "" if len(_nothing) == 1 else "s"))
-    else:
-        apply_clause = "Nothing queued to apply."
-    _emit("applying", n_not_sent, len(_submitted), apply_clause, [], [],
-          {"ct_for": _fid("opportunities", "pursuit", "not-sent"),
-           "href": "#phase-pipeline-roles"} if (n_not_sent and opp_counts["all"]) else
-          ({"href": "#phase-pipeline-roles"} if opp_counts["all"] else None))
-
-    # ── conversations ──────────────────────────────────────────────────────
-    _today_iso = datetime.date.today().isoformat()
     _commits = load_jsonl("commitments.jsonl")
-    # A commitment whose date has passed, OR that was called off (public #50's `status:
-    # cancelled`), has ENDED for this page — placed as terminal so the coverage check can
-    # tell "held"/"cancelled" from "lost". Unplaceable dates stay loud below.
     for _c in _commits:
         _cd = str(_c.get("date") or "")
         _c_cancelled = str(_c.get("status") or "") == "cancelled"
         if _c.get("id") and (_c_cancelled or (_vd.is_date(_cd) and _cd < _today_iso)):
             _cover("commit:%s" % _c["id"], "terminal", "conversations")
-    # Commitment states — unplaceable dates AND preps owed — come from conversations.py's
-    # one resolver (which itself resolves prep existence through knowledge.prep_hits, the
-    # dev #153 single predicate). A second derivation here would disagree with it later,
-    # the same reason the applying count reads the one pursuit map (pursuit_by_id).
-    import conversations as _conversations
-    conv_needs = []
-    conv_owed = []
+    for _o in _opp_rows:
+        if _o.get("status") in _TERMINAL and _o.get("id"):
+            _cover("opp:%s" % _o["id"], "terminal", "opportunities")
 
-    def _placed_future(r):
-        # An unplaceable date is an UNKNOWN, never a pass — and never an in-flight row
-        # either. The old lexical compare let a non-ISO date string that happened to sort
-        # above today ("next Tuesday" >= "2026-…") render as an ordinary scheduled
-        # commitment while the needs-you list was simultaneously calling it unreadable.
-        #
-        # public #50: a `status: cancelled` commitment is terminal regardless of date — it
-        # was called off, not merely dated in the past, and belongs on no upcoming list.
-        if str(r.get("status") or "") == "cancelled":
-            return False
-        try:
-            return datetime.date.fromisoformat(str(r.get("date"))) >= \
-                datetime.date.fromisoformat(_today_iso)
-        except ValueError:
-            return False
+    # The role classification and the ONE pursuit map (dev #713, #494/#540).
+    _live = [o for o in _opp_rows if o.get("status") not in _TERMINAL]
+    _attention = _ym.attention_by_id(_opp_rows, OWNER_TOKEN)
+    _owner = _ym.owner_by_id(_opp_rows, OWNER_TOKEN)
+    _roles = {o.get("id"): st for o, st, _w in _ym.classify_opportunities(_opp_rows, OWNER_TOKEN)
+              if o.get("id")}
+    _pursuit = pursuit_by_id(_live, _roles)
+    _new_opps = [o for o in _live if (_pursuit.get(o.get("id")) or {}).get("state") == "new"]
+    _unsent_opps = [o for o in _live if (_pursuit.get(o.get("id")) or {}).get("state") == "not-sent"]
 
-    # dev #496 / public #48, EXACTLY ONCE (design r3 §2): a commitment with a prep owed is a
-    # row in the week list (its PRIMARY row - every future commitment is one) AND, until now, a
-    # second `data-rec` row under "Preps owed". The owed row is a REFERENCE to the week row
-    # whenever the week list carries the commitment, so the contract is satisfiable on a page
-    # with a prep owed. (The five conversations sections otherwise stay as they are.)
-    _flight_ids = {c.get("id") for c in _commits if c.get("id") and _placed_future(c)}
-    try:
-        _conv_rows = _conversations.report(str(ROOT))
-    except Exception as _e:
-        # ⚠️ A failed scan must NEVER read as "no prep owed" — that is the missing-reads-
-        # as-empty trap. Zero counts with a loud line on the console, and the
-        # unresolved-date marker still derives from the store directly below.
-        print("  !! WARNING: conversations scan failed (%s) — the conversations row "
-              "cannot count preps owed; run conversations.py" % _e)
-        _conv_rows = None
-    if _conv_rows is None:
-        for c in _commits:
-            if str(c.get("status") or "") == "cancelled":
-                continue        # public #50: called off, never a needs-you row
-            if str(c.get("date")) == "unresolved":
-                # The migration marker: an unreadable date is an UNKNOWN, never a pass.
-                conv_needs.append(ws_row(
-                    "<strong>⚠️ %s</strong> — date is the migration marker "
-                    "<code>unresolved</code>: verify the real date (invite "
-                    "<code>.ics</code>, never recall) and set it on the record"
-                    % md_inline(c.get("title") or c.get("id") or "?"),
-                    "you", "", "unresolved", loud=True,
-                    rec=("commit:%s" % c["id"]) if c.get("id") else None))
-    else:
-        for r in _conv_rows:
-            if r["state"].endswith("-date"):
-                # Unplaceable: the migration marker, or a date nobody can read — an
-                # UNKNOWN, never a pass.
-                conv_needs.append(ws_row(
-                    "<strong>⚠️ %s</strong> — %s"
-                    % (md_inline(r.get("title") or r.get("id") or "?"), esc(r["why"])),
-                    "you", "", r.get("date") or "unresolved", loud=True,
-                    rec=("commit:%s" % r["id"]) if r.get("id") else None))
-            elif r["state"] in _conversations.NEEDS_YOU:
-                _due = r.get("date") or ""
-                if r.get("time"):
-                    _due += " %s" % r["time"]
-                _is_ref = bool(r.get("id")) and r["id"] in _flight_ids
-                conv_owed.append(ws_row(
-                    "<strong>⛔ %s</strong> — %s"
-                    % (md_inline(r.get("title") or r.get("id") or "?"), esc(r["why"])),
-                    r.get("who") or "you", "", _due, loud=True,
-                    rec=("commit:%s" % r["id"]) if (r.get("id") and not _is_ref) else None,
-                    ref=("commit:%s" % r["id"]) if _is_ref else None))
-    conv_flight = []
+    # A follow-up row whose subject is NOT rendered on this page (a channel, a role in flight) is a
+    # PRIMARY row of the Drafts list (render_message_list `primary`); one whose subject IS on the page
+    # (a role under Opportunities / Applications) stays a reference with a link to it.
+    _page_opp_keys = set("opp:%s" % o.get("id") for o in _new_opps + _unsent_opps)
+    _od_refs = [dict(r, primary=(r["kind"] in ("chan", "opp") and r["key"] not in _page_opp_keys))
+                for r in _od["refs"]]
 
-    # The week list's one dimension (public #48, stage 1): the commitment's prep state,
-    # conversations.report's own word inside the horizon and conversations.BEYOND_HORIZON
-    # past it — that module owns both. When the scan failed there is no state to declare,
-    # so the list renders unfiltered rather than with an invented value.
-    _conv_state = {r["id"]: r["state"] for r in (_conv_rows or []) if r.get("id")}
-    for c in sorted((r for r in _commits if _placed_future(r)),
-                    key=lambda r: (str(r.get("date")), str(r.get("time") or ""))):
-        due = str(c.get("date"))
-        if c.get("time"):
-            due += " %s" % c["time"]
-        conv_flight.append(ws_row("<strong>%s</strong>"
-                                  % md_inline(c.get("title") or c.get("id") or "?"),
-                                  c.get("who") or "", "", due,
-                                  rec=("commit:%s" % c["id"]) if c.get("id") else None,
-                                  dims={"prep": _conv_state.get(c.get("id"),
-                                                                _conv_mod.BEYOND_HORIZON)}))
-    if _conv_rows is None:
-        # ⚠️ Mirrors the trigger-scan-failure idiom below (out_clause / the "Trigger scan
-        # failed" note) — the same defect, the same fix. A failed scan must never present
-        # as "Nothing scheduled" or a quiet zero; the clause itself must say UNKNOWN.
-        conv_clause = ("⛔ conversations scan failed — prep-owed counts are UNKNOWN, not "
-                       "zero; run conversations.py")
-    else:
-        conv_clause = ("%s — %s" % (_clause(re.sub(r"<[^>]+>", "",
-                                                   conv_flight[0]["item"])),
-                                    conv_flight[0]["due"])
-                       if conv_flight else "Nothing scheduled.")
-        if conv_owed:
-            conv_clause = ("%d prep%s owed (call-prep) · %s"
-                           % (len(conv_owed), "" if len(conv_owed) == 1 else "s", conv_clause))
-    conv_parts = []
-    if _conv_rows is None:
-        # dev/audit 2026-08-29, item 2 — the S5 phone reader never sees stdout, so the
-        # WARNING printed above (conversations scan failed) must ALSO land on the page,
-        # in this section, or a scan failure renders as an ordinary (not-visibly-broken)
-        # page with a possibly-wrong quiet-zero preps-owed count. This banner must appear
-        # regardless of whether conv_owed happens to be empty — it is the thing that
-        # distinguishes "scan failed, cannot know" from "zero owed".
-        conv_parts.append(
-            '<div class="note">⛔ <strong>Conversations scan failed</strong> — prep-owed '
-            'counts on this page are UNKNOWN, not zero (conversations.report() raised). '
-            'Run <code>conversations.py</code> to see the full traceback, fix it, and '
-            'regenerate before trusting a zero here.</div>')
-    if conv_owed:
-        conv_parts.append(
-            '<h2 id="phase-conversations-owed">⛔ Preps owed — before the call '
+    # ── Opportunities to pursue: the roles where a decision is owed ────────
+    _first_opps, opp_counts = "", dict(_EMPTY_OPP_COUNTS)
+    if _new_opps:
+        opp_list_html, opp_counts = render_opportunity_list(
+            _new_opps, _opp_comps, attention=_attention, owner=_owner, pursuit=_pursuit,
+            roles=_roles)
+        _first_opps = (
+            '<h2 id="phase-pipeline-roles">🎯 Opportunities to pursue '
             '<span class="tcount">%d</span></h2>'
-            '<div class="sub" style="margin:-6px 0 10px">Writing happens in session — the '
-            '<code>call-prep</code> skill drains every row here; a row stands until '
-            '<code>conversations.py</code> reports the note complete (a partial, '
-            'records-only note never satisfies the predicate).</div>'
-            '<div class="card">%s</div>'
-            % (len(conv_owed), render_ws(conv_owed, "`views/conversations.md`", "",
-                                         set_name="conversations-owed")))
-    if conv_needs:
-        conv_parts.append(
-            '<h2 id="phase-conversations-unresolved">⚠️ Commitments with unresolved '
-            'dates <span class="tcount">%d</span></h2>'
-            '<div class="card">%s</div>'
-            % (len(conv_needs), render_ws(conv_needs, "`data/commitments.jsonl`", "",
-                                          set_name="conversations-unresolved")))
-    if conv_flight:
-        conv_parts.append(
-            '<h2 id="phase-conversations-week">📅 This week — calls &amp; deadlines '
-            '<span class="tcount">%d</span></h2>'
-            '<div class="card">%s</div>'
-            '<div class="note"><strong>Meeting times are verified from the invite&rsquo;s '
-            '<code>.ics</code>, not from recall.</strong> A calendar receipt only proves '
-            'what was booked when it was sent — confirm anything that may have been '
-            'rescheduled (<code>parse_ics.py</code>).</div>'
-            % (len(conv_flight),
-               render_ws(conv_flight, "`data/commitments.jsonl`", "",
-                         set_name="conversations-week",
-                         dims=None if _conv_rows is None else WEEK_DIMS)))
-    if _preps_now:
-        conv_parts.append(
-            '<h2 id="phase-conversations-preps">📞 Call preps — in full '
-            '<span class="tcount">%d</span></h2>'
-            '<div class="sub" style="margin:-6px 0 10px">The one knowledge type that '
-            'renders in full here (public #20: a prep must be readable the night before, '
-            'anywhere) — bounded to calls inside the next %d days.</div>'
-            '<div class="card">%s</div>'
-            % (len(_preps_now), _conv_mod.HORIZON_DAYS, preps_full_html))
-    if preps_index_html:
-        conv_parts.append(
-            '<h2 id="phase-conversations-preps-index">📁 Other call preps — index only '
-            '<span class="tcount">%d</span></h2>'
-            '<div class="sub" style="margin:-6px 0 10px">Held calls, calls beyond the '
-            'horizon, and any note nothing can date. Bodies stay in the file tree.</div>'
-            '<div class="card prep-past">%s</div>'
-            % (len(_preps_index), preps_index_html))
-    _emit("conversations", len(conv_needs) + len(conv_owed), len(conv_flight), conv_clause,
-          ([("preps owed", "phase-conversations-owed")] if conv_owed else [])
-          + ([("unresolved dates", "phase-conversations-unresolved")] if conv_needs else []),
-          conv_parts)
+            '<div class="sub" style="margin:-6px 0 10px">Roles where a <strong>decision is '
+            'owed</strong>: pursue or pass. A role the run is still reading is not here until it '
+            'has finished; a role you are pursuing is under Applications to finish; everything '
+            'in flight lives in the jobsearch status pane (<code>/jobsearch:status</code>).</div>'
+            % opp_counts["all"] + opp_list_html)
 
-    # ── outreach ───────────────────────────────────────────────────────────
-    n_approvals = len(_sendable) + len(_covers_ready)
-    n_touch = len(channel_touches)
-    n_untrig = len(_untrig_rows)
-    # public #37 — an unreadable hold needs the OWNER, so it counts as needs-you.
-    n_out_needs = n_approvals + _n_unblocked + n_untrig + n_touch + n_unreadable
-    n_out_flight = n_blocked + n_covers_held + _n_waiting_seqs
-    if _trep is None:
-        out_clause = ("⛔ trigger scan failed — sequence and follow-up counts are "
-                      "UNKNOWN, not zero; run trigger.py --check")
-    else:
-        bits = []
-        if n_unreadable:
-            bits.append("%d hold%s nobody can read — rewrite the Blocked until: line"
-                        % (n_unreadable, "" if n_unreadable == 1 else "s"))
-        if n_approvals:
-            bits.append("%d message%s await%s approval"
-                        % (n_approvals, "" if n_approvals == 1 else "s",
-                           "s" if n_approvals == 1 else ""))
-        if _n_unblocked:
-            bits.append("%d sequence%s unblocked"
-                        % (_n_unblocked, "" if _n_unblocked == 1 else "s"))
-        if n_untrig:
-            bits.append("%d application%s with no follow-up linked"
-                        % (n_untrig, "" if n_untrig == 1 else "s"))
-        if n_touch:
-            bits.append("%d relationship follow-up%s due"
-                        % (n_touch, "" if n_touch == 1 else "s"))
-        out_clause = (bits[0] + "." if bits else "Nothing staged or owed.")
-    out_parts = []
-    # ⭐ dev #539 / public #133 (design r3 §4) - `phase-outreach-approvals` is the ONE follow-up
-    # view. Its primary rows are the staged drafts (bodies always shown - person-outreach 1b),
-    # and every OTHER subject owing a message - a relationship touch due or planned, an
-    # application with no follow-up linked, a person due - is a REFERENCE row in it with the
-    # same filter attributes and a link to its own primary row (the channel, the role, the
-    # person). `phase-outreach-ready`, `-touches` and `-seq` are GONE: their rows are `sendable`
-    # drafts (a subset of the default view) or references now, and every one is still counted
-    # (the router row) and reachable. The trigger-scan-failure notice STAYS a notice at the top:
-    # "counts UNKNOWN, not zero" is the one thing those sections said that is not a row.
-    # (public #48, stage 1 - ONE list filtered by sendability and medium, not four headings;
-    # public #37 - an unreadable hold is a loud `action` row.)
-    _trig_note = ('<div class="note">⛔ <strong>Trigger scan failed</strong> — sequence and '
-                  'follow-up counts on this page are UNKNOWN, not zero. Run '
-                  '<code>trigger.py --check</code>.</div>') if _trep is None else ""
-    _view = bool(_drafts_active or _od["refs"])
-    # ⭐ OWNER REQUEST 2026-10-13: the follow-up view (the Drafts list) renders FIRST, directly
-    # under the router, with the trigger notice at its top; the outreach section keeps a pointer.
-    _first_drafts = ""
-    if not _view and _trig_note:
-        out_parts.append(_trig_note)
-    if _view:
-        out_parts.append(
-            '<div class="sub moved">✉️ <a href="#phase-outreach-approvals">Follow-ups: what to '
-            'send</a> (%d draft%s) are at the top of the page, under the summary.</div>'
-            % (len(_drafts_active), "" if len(_drafts_active) == 1 else "s"))
-        seq_bits = []
-        if _trep is not None and _n_unblocked:
-            seq_bits.append("%d sequence%s unblocked — the next step is sendable"
-                            % (_n_unblocked, "" if _n_unblocked == 1 else "s"))
-        if _trep is not None and _n_waiting_seqs:
-            seq_bits.append("%d waiting on a trigger" % _n_waiting_seqs)
-        n_now = (sum(1 for d in _od["drafts"] if d["when"] == "now")
-                 + sum(1 for r in _od["refs"] if r["when"] == "now"))
-        _first_drafts = _trig_note + (
-            '<h2 id="phase-outreach-approvals">✉️ Follow-ups: what to send '
-            '<span class="tcount">%d</span>%s%s</h2>'
-            '<div class="sub" style="margin:-6px 0 10px">Nothing is ever sent without your '
-            'explicit approval. The full text of every message you have staged is right here '
-            '— read it on this page, never off a transcript. A row marked <em>no draft yet</em> '
-            'is someone who owes a message in the next %d days: it links to the channel, role '
-            'or person it is about. Held messages wait on the other side and move to ready by '
-            'themselves; a hold nobody can read waits on YOU; a queued one waits on a session '
-            'with a keychain (Query or Citation C1).%s</div>'
-            '<div class="card">%s</div>'
-            % (n_now,
-               (' <span class="ct2f">· %d held</span>' % n_blocked) if n_blocked else "",
-               (' <span class="ct2f">· %d queued</span>' % n_queued) if n_queued else "",
-               _ck.OUTREACH_HORIZON_DAYS,
-               (" " + esc("; ".join(seq_bits)) + " (trigger.py owns the derivation).")
-               if seq_bits else "",
-               render_message_list("drafts", "draft", _drafts_active, _states, _DRAFTS_REL,
-                                   DRAFT_DIMS, "No pending drafts.", keys=_drafts_active_keys,
-                                   whens=_od_whens, refs=_od["refs"])))
-    # dev #686 / public #139 (E1) — People due, directly after the follow-up view. Not counted
-    # in the router: classify_people owns the people-due number, and this block adds none.
-    _people_due_html, _n_people_due = render_people_due(ROOT, _today_iso)
-    if _people_due_html:
-        out_parts.append(_people_due_html)
+    # ── Applications to finish: pursuing, nothing sent, plus their cover letters ──
+    _first_apply, n_apply = "", 0
+    _apply_parts = []
+    if _unsent_opps:
+        todo_html, todo_counts = render_opportunity_list(
+            _unsent_opps, _opp_comps, attention=_attention, owner=_owner, pursuit=_pursuit,
+            roles=_roles, set_name="applying-finish")
+        n_apply += todo_counts["all"]
+        _apply_parts.append(todo_html +
+                            '<div class="note"><strong>&ldquo;Not sent yet&rdquo; is the gap.'
+                            '</strong> A role you are pursuing with no application out is queued '
+                            'to apply.</div>')
     if _covers_active:
-        # public #95 — the data-store side of the cascade, distinct from the markdown pane
-        # above: a letter the data store says is `used`/`moot` never counts against either card
-        # (`data/cover_letters.jsonl` is the record of what actually happened; the markdown
-        # pane is the working draft), so this is reported once, plainly, rather than folded
-        # into a count that would otherwise double a row the markdown side already excludes.
+        # public #95 — the data-store side of the cascade, reported once, plainly.
         _cascade_note = ""
         if n_letters_moot or n_letters_used:
             _bits = []
@@ -3634,9 +3152,10 @@ def main():
                 _bits.append("%d moot (its pursuit has ended)" % n_letters_moot)
             _cascade_note = ('<div class="sub" style="margin:6px 0 0">data/cover_letters.'
                              'jsonl: %s — public #95</div>' % "; ".join(_bits))
-        out_parts.append(
-            '<h2 id="phase-outreach-covers">📄 Cover letters — for applications you submit '
-            'yourself <span class="tcount">%d</span>%s</h2>'
+        n_apply += len(_covers_ready) + len(_covers_unreadable)
+        _apply_parts.append(
+            '<h3 id="phase-outreach-covers">📄 Cover letters — for applications you submit '
+            'yourself <span class="tcount">%d</span>%s</h3>'
             '<div class="sub" style="margin:-6px 0 10px">Every claim traces to the claim '
             'union (presence/claims.md). You paste and submit these yourself — nothing is '
             'applied on your behalf. A held letter waits on a precondition; do not submit it '
@@ -3645,83 +3164,144 @@ def main():
             % (len(_covers_ready) + len(_covers_unreadable),
                (' <span class="ct2f">· %d held</span>' % n_covers_held) if n_covers_held else "",
                covers_html, _cascade_note))
-    # dev #496 / public #48, ANCHOR (design r3 §2, N): a router sub-link is emitted ONLY for a
-    # section that was emitted. This list used to name `#phase-outreach-approvals`
-    # unconditionally, so a profile with no staged draft shipped a link to nothing (measured on
-    # the base case and person-outreach).
-    out_subs = []
-    if _view:
-        out_subs.append(("follow-ups", "phase-outreach-approvals"))
-    elif _covers_active:
-        out_subs.append(("cover letters", "phase-outreach-covers"))
-    if _unreadable and _view:
-        out_subs.append(("unreadable holds", "phase-outreach-approvals"))
-    elif _covers_unreadable and _covers_active:
-        out_subs.append(("unreadable holds", "phase-outreach-covers"))
-    if _people_due_html:
-        out_subs.append(("people due", "phase-outreach-people"))
-    _emit("outreach", n_out_needs, n_out_flight, out_clause, out_subs, out_parts)
+    if _apply_parts:
+        _first_apply = (
+            '<h2 id="phase-applying-finish">📝 Applications to finish '
+            '<span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">Roles you are pursuing that have no '
+            'application out yet, and the cover letters you will paste into them.</div>'
+            % n_apply + "".join(_apply_parts))
+
+    # ── Drafts to review: the follow-up view, with people due promoted into it ──
+    _trig_note = ('<div class="note">⛔ <strong>Trigger scan failed</strong> — sequence and '
+                  'follow-up counts on this page are UNKNOWN, not zero. Run '
+                  '<code>trigger.py --check</code>.</div>') if _trep is None else ""
+    _view = bool(_drafts_active or _od_refs)
+    _people_due_html, _n_people_due = render_people_due(ROOT, _today_iso)
+    _first_drafts = ""
+    if _view or _people_due_html or _trig_note:
+        seq_bits = []
+        if _trep is not None and _n_unblocked:
+            seq_bits.append("%d sequence%s unblocked — the next step is sendable"
+                            % (_n_unblocked, "" if _n_unblocked == 1 else "s"))
+        if _trep is not None and _n_waiting_seqs:
+            seq_bits.append("%d waiting on a trigger" % _n_waiting_seqs)
+        n_now = (sum(1 for d in _od["drafts"] if d["when"] == "now")
+                 + sum(1 for r in _od["refs"] if r["when"] == "now"))
+        _drafts_body = (render_message_list("drafts", "draft", _drafts_active, _states,
+                                            _DRAFTS_REL, DRAFT_DIMS, "No pending drafts.",
+                                            keys=_drafts_active_keys, whens=_od_whens,
+                                            refs=_od_refs)
+                        if _view else '<div class="sub">No pending drafts.</div>')
+        _first_drafts = _trig_note + (
+            '<h2 id="phase-outreach-approvals">✉️ Drafts to review '
+            '<span class="tcount">%d</span>%s%s</h2>'
+            '<div class="sub" style="margin:-6px 0 10px">Nothing is ever sent without your '
+            'explicit approval. The full text of every message you have staged is right here '
+            '— read it on this page, never off a transcript. A row marked <em>no draft yet</em> '
+            'is someone who owes a message in the next %d days: it links to the channel, role '
+            'or person it is about. Held messages wait on the other side and move to ready by '
+            'themselves; a hold nobody can read waits on YOU; a queued one waits on a session '
+            'with a keychain (Query or Citation C1).%s</div>'
+            '<div class="card">%s</div>'
+            % (n_now + _n_people_due,
+               (' <span class="ct2f">· %d held</span>' % n_blocked) if n_blocked else "",
+               (' <span class="ct2f">· %d queued</span>' % n_queued) if n_queued else "",
+               _ck.OUTREACH_HORIZON_DAYS,
+               (" " + esc("; ".join(seq_bits)) + " (trigger.py owns the derivation).")
+               if seq_bits else "",
+               _drafts_body)) + _people_due_html
+
+    # ── LEDGER: everything the page no longer renders lives ELSEWHERE, with its home ──
+    for o in _live:
+        if o.get("id") and "opp:%s" % o["id"] not in _page_opp_keys:
+            _cover("opp:%s" % o["id"], "elsewhere", "panel")
+    for a in _all_asks:
+        if a.get("id") and not a.get("resolved_on"):
+            _cover("ask:%s" % a["id"], "elsewhere", "panel")
+    for c in _commits:
+        if c.get("id"):
+            _cover("commit:%s" % c["id"], "elsewhere", "panel")
+    for ch in load_jsonl("channels.jsonl"):
+        if ch.get("id"):
+            _cover("chan:%s" % ch["id"], "elsewhere", "panel")
+    _preps, _kbs = knowledge_docs()
+    for _p in _preps:
+        _cover("prep:%s" % _p[1], "elsewhere", "panel")
 
     # ── Assemble the ONE page. ─────────────────────────────────────────────
-    # %-d is a glibc/BSD strftime extension; on Windows it raises ValueError and kills the
-    # dashboard at the last step. Build the day number by hand (same fix as parse_ics.py).
+    # %-d is a glibc/BSD strftime extension; on Windows it raises ValueError and kills the dashboard
+    # at the last step. Build the day number by hand (same fix as parse_ics.py).
     _t = datetime.date.today()
     today = "%s %d, %d" % (_t.strftime("%B"), _t.day, _t.year)
     _title = _dashboard_title()
 
-    n_needs_total = sum(s[1] for s in _summaries)
-    router_html = render_router_rows(_summaries)
-    # ⭐ OWNER REQUEST 2026-10-13 - "drafts & opportunities are the items you look at most... I
-    # have to scroll way down to look at the drafts". Both lists render FIRST, directly under
-    # the router and ahead of every phase section, and a pinned jump bar (CSS `position:
-    # sticky`, no script) links each by its count. Each count is the PRIMARY rows its list
-    # renders (`data-rec="draft:…"` / `data-rec="opp:…"`), never a reference row; a list that is
-    # not on the page is a plain, unlinked label, so the bar never links to nothing (ANCHOR).
+    n_drafts_primary = len(_drafts_active)
+    router_html = render_review_router([
+        ("✉️", "Drafts to review", "phase-outreach-approvals",
+         1 if _first_drafts else 0,
+         ("%d staged message%s to read and approve." % (n_drafts_primary,
+                                                         "" if n_drafts_primary == 1 else "s"))
+         if _first_drafts else "Nothing staged."),
+        ("🎯", "Opportunities to pursue", "phase-pipeline-roles", 1 if _first_opps else 0,
+         ("%d role%s where a decision is owed." % (opp_counts["all"],
+                                                    "" if opp_counts["all"] == 1 else "s"))
+         if _first_opps else "No decision is owed on a role."),
+        ("📝", "Applications to finish", "phase-applying-finish", 1 if _first_apply else 0,
+         ("%d item%s to finish." % (n_apply, "" if n_apply == 1 else "s"))
+         if _first_apply else "Nothing queued to apply."),
+    ])
+    # The pinned jump bar (OWNER REQUEST 2026-10-13): one entry per list, each count the PRIMARY
+    # rows that list renders (`data-rec="draft:…"` / `data-rec="opp:…"`), never a reference row;
+    # a list that is not on the page is a plain, unlinked label, so the bar never links to nothing.
     _first_html = ""
-    if _first_drafts or _first_opps:
-        _first_html = ('<section class="first" id="first-lists">\n%s\n%s\n</section>'
-                       % (_first_drafts, _first_opps))
-    jump_html = render_jump_bar(len(_drafts_active) if _first_drafts else None,
-                                opp_counts["all"] if _first_opps else None)
+    if _first_drafts or _first_opps or _first_apply:
+        _first_html = ('<section class="first" id="first-lists">\n%s\n%s\n%s\n</section>'
+                       % (_first_drafts, _first_opps, _first_apply))
+    jump_html = render_jump_bar(n_drafts_primary if _first_drafts else None,
+                                opp_counts["all"] if _first_opps else None,
+                                n_apply if _first_apply else None)
 
     body_inner = (
         '%s\n'
         '<h1>%s</h1>\n'
-        # ⭐ The generated-date line stays PROMINENT: for the dashboard-only reader it is
-        # the ONLY staleness signal there is (deployment.md, the S5 read leg).
-        '<div class="updated">Generated <strong>%s</strong> · %d item%s need%s you · '
-        'the phase name in each row jumps to its section · generated by '
-        'scripts/generate_dashboard.py</div>\n'
-        '%s\n%s\n%s\n'
-        '<div class="sub" style="margin-top:26px">Not on this page: the full network '
-        '(queried in session — <code class="fileref">data/channels.jsonl</code>, '
-        '<code class="fileref">%s</code>; the people due this week are listed under '
-        'Outreach), archives, sent and closed items, and knowledge '
-        'bodies — counts above, files in the tree.</div>'
-        % (jump_html, html.escape(_title), today, n_needs_total,
-           "" if n_needs_total == 1 else "s", "s" if n_needs_total == 1 else "",
-           router_html, _first_html, "\n".join(_sections), esc(_tree.rel("network"))))
+        # ⭐ The generated-date line stays PROMINENT: for the dashboard-only reader it is the ONLY
+        # staleness signal there is (deployment.md, the S5 read leg).
+        '<div class="updated">Generated <strong>%s</strong> · the page of what needs a decision '
+        'or a finish today · status lives in the jobsearch panel (<code>/jobsearch:status</code>) '
+        '· generated by scripts/generate_dashboard.py</div>\n'
+        '%s\n%s\n'
+        '<div class="sub" style="margin-top:26px">Not on this page: status and everything in '
+        'flight (the jobsearch panel and <code>/jobsearch:status</code>), the resume and '
+        'public-profile reviews (<code>/jobsearch:review-resume</code>, '
+        '<code>/jobsearch:review-linkedin</code>), the full network (queried in session — '
+        '<code class="fileref">data/channels.jsonl</code>, <code class="fileref">%s</code>), '
+        'archives, sent and closed items, and knowledge bodies.</div>'
+        % (jump_html, html.escape(_title), today, router_html, _first_html,
+           esc(_tree.rel("network"))))
 
     # ── The output: the ONE artifact. Nothing outside views/ is written (dev #546). ──
     (ROOT / "views").mkdir(exist_ok=True)
-    # The page's ONE script, and only when a draft row carries its button (OWNER REQUEST
-    # 2026-10-13, "Copy as prompt"); a page with no draft stays script-free.
+    # The page's ONE script, and only when a draft row carries its button (OWNER REQUEST 2026-10-13,
+    # "Copy as prompt"); a page with no draft stays script-free.
     if 'class="cap-btn"' in body_inner:
         body_inner += "\n" + COPY_SCRIPT
     artifact_doc = ('<title>%s</title>\n<style>%s\n%s\n</style>\n%s'
                     % (html.escape(_title), CSS, "\n".join(_FILTER_CSS), body_inner))
     (ROOT / "views" / "dashboard_artifact.html").write_text(artifact_doc, encoding="utf-8")
-    # The coverage ledger (Class C) — verified against the HTML by
-    # check_dashboard_coverage.py; never trusted on its own.
+    # The coverage ledger (Class C) — verified against the HTML by check_dashboard_coverage.py;
+    # never trusted on its own.
     _ledger = {
         "generated_on": _t.isoformat(),
         "window": {"today": _t.isoformat(), "prep_horizon_days": _conv_mod.HORIZON_DAYS},
         "terminal_statuses": sorted(_TERMINAL),
         "records": COVERAGE["records"],
         "remainders": COVERAGE["remainders"],
-        # public #48, stage 1 — every filtered list: its dimensions (each with the enum
-        # that owns its vocabulary), every member's values, and what was shown.
+        # public #48, stage 1 — every filtered list: its dimensions (each with the enum that owns
+        # its vocabulary), every member's values, and what was shown.
         "filters": COVERAGE["filters"],
+        # jobsearch 0.71.0 - the homes an `elsewhere` record may name.
+        "elsewhere_homes": list(ELSEWHERE_HOMES),
     }
     (ROOT / "views" / "dashboard_coverage.json").write_text(
         json.dumps(_ledger, indent=1, sort_keys=True, ensure_ascii=False), encoding="utf-8")
@@ -3729,13 +3309,13 @@ def main():
     print("Wrote views/dashboard_artifact.html (%d bytes)"
           % len(artifact_doc.encode("utf-8")))
     print("  publish: ONE artifact — views/dashboard_artifact.html, to the URL in "
-          "views/dashboard_artifact_url.txt (the router and phase pages are RETIRED — "
-          "2026-08-29 collapse). If that url file is absent, check "
+          "views/dashboard_artifact_url.txt. If that url file is absent, check "
           "check_dashboard_fresh.py --publish-state FIRST: never-published (no stamp "
           "either) means create it on first publish; url-missing (a stamp already exists) "
           "means RECOVER the URL via the Artifact tool's list action, never mint a new one")
-    print("  " + " · ".join("%s %d/%d" % (sm[0], sm[1], sm[2]) for sm in _summaries)
-          + "  (needs-you/in-flight per phase)")
+    print("  review-now: drafts %d · opportunities %d · applications to finish %d  "
+          "(everything else is ELSEWHERE in the ledger: the panel, /jobsearch:status)"
+          % (n_drafts_primary, opp_counts["all"], n_apply))
     try:
         import pending_stubs as _stubs
         _pend = [r for r in _stubs.load_rows(str(ROOT))

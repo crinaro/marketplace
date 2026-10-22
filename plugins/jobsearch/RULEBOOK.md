@@ -55,7 +55,7 @@ This repo is the single source of truth for the candidate's executive job search
   `resolved_on`+`resolution`; `check_sections.py` enforces the invariants.
 - **`handoff.md`** — the session-handoff letter.
 - **`log.md`** — append-only. Never edit past entries.
-- **`presence/rules.md`** — authored; the working set's rules tab (ADR-028). Migration seeds it once; extend it yourself.
+- **`presence/rules.md`** — authored; the review panes' rules tab (ADR-028). Migration seeds it once; extend it yourself.
 - **`outreach/drafts.md`** (pending outreach) · **`applying/cover_letters.md`** (pending letters). **⭐ BODIES MUST
   BE `> `-BLOCKQUOTED OR THEY PUBLISH EMPTY** — that shipped once, and only the candidate noticed. Entry
   format: each file's header.
@@ -65,7 +65,7 @@ This repo is the single source of truth for the candidate's executive job search
   `scripts/knowledge.py` audits). **⭐ EVERY KB LINE IS TAGGED BY SOURCE** — `[CANDIDATE]` `[JD]`
   `[RESEARCH]` `[CLAUDE]` `[OPEN]`. Never blur a company's self-description, or my
   inference, with what someone said.
-- **`views/dashboard_artifact.html` + `views/presence_set.html` + `views/*_artifact.html`** — GENERATED. Never hand-edit;
+- **`views/dashboard_artifact.html` + `views/*_artifact.html`** — GENERATED. Never hand-edit;
   daily-run carries the steps. **⭐ Then grep the OUTPUT for what you added.**
 - **`archive/process_archive.md`** (retired process items) · **[docs/incident_archive.md](docs/incident_archive.md)**
   (the stories behind these rules — reference only, read on demand by `search-strategist` alone).
@@ -425,11 +425,10 @@ each, and the known limits. Read it before changing how the jobs fit together.
 
 ## ⭐ THE PROCESS FLOW — in one paragraph
 
-**the candidate talks to ONE session: the COORDINATOR, which they start themselves — `/coordinator`** in any session, any device. **Deliberately not scheduled:** a scheduled version was built and removed 2026-08-02 because it gained no asynchrony (a scheduled run can be neither notified nor messaged) and **lost the one thing only a session opened directly can do — claim `notifyOnCompletion`.** Rationale: `docs/architecture.md`. **`search-daily` runs per `posture.py --cron`** and **⭐ RUNS ITS READ PHASE UNLOCKED, ALONGSIDE AN OPEN SESSION** (mailbox, browser, research: reads never conflict). **The lock covers the WRITE only** — `changed.py` → `--take --wait 120` → edits + commit → `--release`. Holding it for a whole run or a whole session is the 2026-08-03 bug that cost a scheduled run; see §3e.
+**the candidate talks to ONE session: the COORDINATOR, which they start themselves — `/coordinator`** in any session, any device. **Deliberately not scheduled:** a scheduled version was built and removed 2026-08-02 because it gained no asynchrony and **lost the one thing only a session opened directly can do — arm the mod's watcher (`jobsearch_watch`).** Rationale: `docs/architecture.md`. **`search-daily` runs per `posture.py --cron`** and **⭐ RUNS ITS READ PHASE UNLOCKED, ALONGSIDE AN OPEN SESSION** (mailbox, browser, research: reads never conflict). **The lock covers the WRITE only** — `changed.py` → `--take --wait 120` → edits + commit → `--release`. Holding it for a whole run or a whole session is the 2026-08-03 bug that cost a scheduled run; see §3e.
 **`search-strategy-weekly` runs weekly** and, if refused, reports SKIPPED rather than
 downgrading — a silently degraded audit is worse than none. **Updates reach the coordinator by
-PULL (`scripts/inbox.py`, durable) and PUSH (`notifyOnCompletion`, which only a REGULAR session
-can claim, so the candidate re-claims it each session).** There is no session-to-session messaging.
+PULL (`scripts/inbox.py`, durable) and WAKE-UP (the mod starts one turn in the coordinator when a run queues work; only the coordinator arms it, and only where mods are on).**
 
 ## ⭐ WHY IT CANNOT CLOBBER — the mechanics
 
@@ -463,8 +462,8 @@ how a wrong fact gets laundered into a confident report.
 ## End-of-session checklist
 
 **The task prompts carry the ordered steps** — the `jobsearch:daily-run` skill and
-the `jobsearch:weekly-review` skill. In short: update state → regenerate the dashboard and presence set → **grep the
-OUTPUT for what you just added** → publish both via the Artifact tool (each
-`_url.txt` as `url`: `views/dashboard_artifact_url.txt`, `views/presence_set_url.txt`) → commit → **push with `~/.claude/jobsearch/run push.sh`** → **release the
+the `jobsearch:weekly-review` skill. In short: update state → regenerate the dashboard → **grep the
+OUTPUT for what you just added** → publish it via the Artifact tool (its
+`_url.txt` as `url`: `views/dashboard_artifact_url.txt`) → commit → **push with `~/.claude/jobsearch/run push.sh`** → **release the
 run lock**. Save any pending draft in FULL to `outreach/drafts.md` and any pending letter to
 `applying/cover_letters.md` — the candidate reads full text off the published dashboard, not the transcript.

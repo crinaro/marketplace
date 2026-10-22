@@ -24,16 +24,25 @@ Add this repository as a marketplace in Claude Code, then install the plugin fro
 repo change, and nothing should edit `~/.claude/plugins/known_marketplaces.json` by hand.
 
 ⭐ **That gets you a `directory` source, which is valid on exactly one machine.** It is the right
-thing for developing the plugin and the wrong thing for using it from a clone, a container, or the
-web app — where the symptom is `Unknown command` for a correctly-spelled skill, with no error. For
-anything but this machine, declare the marketplace as a **`github` source in your own repo's
-`.claude/settings.json`** — see [Install](../../README.md#install). A marketplace declared from a
-**private** repository additionally needs per-environment authentication before a cloud session
-can reach it.
+thing for developing the plugin and the wrong thing for using it from another clone on another
+*local* machine, where the symptom is `Unknown command` for a correctly-spelled skill, with no error.
+For another local machine, declare the marketplace as a **`github` source in your own repo's
+`.claude/settings.json`** — see [Install](../../README.md#install). A **private** repository
+additionally needs authentication on that machine.
 
-**Where this plugin can and cannot run** — in short, LinkedIn needs a signed-in desktop browser
-and everything else travels. See
+**Where this plugin runs.** On your own machine only: the Claude Code Desktop app (including its
+scheduled tasks) or `claude` interactively in a terminal on any operating system, with a phone able to
+drive such a session through Remote Control. **Not supported:** `claude -p` and the Agent SDK, and Claude
+Code on the web or any cloud session. Nothing refuses to start there; it is unsupported by
+documentation. A cloud session does not install the plugins a repository declares, so declaring the
+marketplace for one does not make it work, and a "container" install is not a supported route. LinkedIn
+additionally needs a signed-in desktop browser. See the README's *Where this runs* and
 [How it works — What needs a desktop](../../docs/user/jobsearch/how-it-works.md#what-needs-a-desktop).
+
+**Mods.** The status pane and the review panes come from the plugin's mod, which needs Claude Code 2.1.287 (CLI)
+or 2.1.286 (Desktop) or later. Without it (an older version, `disableAllHooks`, or an organisation that allows
+only managed mods) everything still works: `/jobsearch:status`, `/jobsearch:review-resume` and
+`/jobsearch:review-linkedin` print as text.
 
 ## Install the rulebook into your profile
 

@@ -1,5 +1,22 @@
 #!/usr/bin/env python3
-"""The presence WORKING SET — the second always-published STATE artifact (ADR-028, public #62).
+"""The presence WORKING SET — a review of the resume layer and the public-profile layer (ADR-028, public #62).
+
+⭐⭐ jobsearch 0.71.0 (dev #750, owner decision C): THE PUBLISHED PAGE IS RETIRED. This script no longer
+writes `views/presence_set.html`, its ledger or its URL file (the migration `m_0_71_0_retire_presence_artifact`
+removes the old ones and queues a "retired" stub for the URL). The review it carried now opens as a mod pane
+from `/jobsearch:review-resume` and `/jobsearch:review-linkedin`, and as TEXT everywhere a pane cannot be
+drawn:
+
+    presence_set.py --json --surface print|public-profile    the review model the pane draws
+    presence_set.py --text --surface print|public-profile    the same review as plain text
+    presence_set.py --check [--page P --ledger L]            the round trip (below)
+    presence_set.py --json                                   the ledger, written to stdout only
+
+`build()` keeps rendering the page IN MEMORY, because `--check` verifies the renderer's own output against the
+sources - rules 3 to 7 below and the union-title guarantee still hold, now for the pane's content. ADR-028's
+seven rules are the rules for the review pane; only its PUBLICATION is superseded.
+
+(The text below is the pre-0.71.0 description of the artifact and is kept for the rules it states.)
 
 ⭐ THE DEFECT THIS CLOSES. The engine published one artifact — the dashboard — and nothing for
 `presence/`: the claim union, every declared resume variant, the standing rules. That layer
@@ -801,27 +818,123 @@ def build(root, today=None):
     return doc, ledger
 
 
-def write(root):
-    doc, ledger = build(root)
-    page = os.path.join(root, _tree.rel(PAGE_KEY))
-    os.makedirs(os.path.dirname(page), exist_ok=True)
-    with open(page, "w", encoding="utf-8") as fh:
-        fh.write(doc)
-    with open(os.path.join(root, _tree.rel(LEDGER_KEY)), "w", encoding="utf-8") as fh:
-        json.dump(ledger, fh, indent=1, sort_keys=True, ensure_ascii=False)
-    n = len(ledger["variants"]["active"])
-    print("Wrote %s (%d bytes) and %s" % (_tree.rel(PAGE_KEY), len(doc.encode("utf-8")),
-                                          _tree.rel(LEDGER_KEY)))
-    print("  tabs: union (%s) · %d variant%s · open items (%d) · rules%s"
-          % ("your resume" if n == 0 else "the superset", n, "" if n == 1 else "s",
-             len(ledger["open_items"]),
-             "" if any(p["key"] == "rules" and p["exists"] for p in ledger["panes"])
-             else " (no %s yet)" % _tree.rel("presence_rules")))
-    print("  publish: the SECOND artifact — %s, to the URL in %s (create it and write "
-          "that url file in the same step on first publish; never mint a second URL for a "
-          "page that has one). Then: presence_set.py --check, and grep the OUTPUT."
-          % (_tree.rel(PAGE_KEY), _tree.rel(URL_KEY)))
-    return 0
+# ── the review (jobsearch 0.71.0): what the mod's pane and the text commands show ──────────────
+
+REVIEW_SURFACES = ("print", "public-profile")
+_BLOCKISH_RE = re.compile(r"^\s*(#{1,6}\s|[-*+]\s|\d{1,9}[.)]\s|>|\||```|~~~)")
+
+
+def para_chunks(text):
+    """The source split into the paragraphs a renderer shows (ADR-028 rule 7): a blank line ends a
+    paragraph; adjacent non-blank lines of a plain paragraph join with a SPACE (so a merge is VISIBLE
+    in the preview instead of hidden); a heading, list, quote, table or fence keeps its own lines."""
+    out = []
+    for chunk in re.split(r"\n\s*\n", text or ""):
+        lines = [l for l in chunk.split("\n") if l.strip()]
+        if not lines:
+            continue
+        if _BLOCKISH_RE.match(lines[0]):
+            out.append("\n".join(l.rstrip() for l in lines))
+        else:
+            out.append(" ".join(l.strip() for l in lines))
+    return out
+
+
+def review_model(root, surface, today=None):
+    """The review of one surface as plain data - the object `hooks/panel.tsx` draws and
+    `render_review_text()` prints. Pure: reads sources, writes nothing.
+
+        surface, title, union {title, paragraphs[]}, variants[] {id, title, state, paragraphs[],
+        strip {cap, count, as_of, note}, note}, open_items[] {id, category, text, variant},
+        unplaced[], rules {markdown}
+
+    A variant belongs to the pane of the `surface` its row declares; a row that declares none (or one
+    surfaces.py does not carry) is `unplaced` and shows in BOTH panes, so it can never be reviewed
+    nowhere. Caps and counts live in `strip`, OUTSIDE the preview (rules 1 and 6)."""
+    if surface not in REVIEW_SURFACES:
+        raise ValueError("surface must be one of %s, got %r" % (", ".join(REVIEW_SURFACES), surface))
+    rep = _rv.report(root)
+    rows, _errs, _present = _rv.load_store(root)
+    vrows = classify_variants(root, rep, rows)
+    n_active = sum(1 for vr in vrows if vr["rec"].get("status") != "retired")
+    upath = _tree.path(root, "claims")
+    utext = read_source(upath)
+    _mode, utitle, usub = union_title(n_active)
+    cap, as_of = _surf.cap(surface)               # (cap_chars_or_None, as_of_or_None)
+    variants, unplaced, files = [], [], {}
+    panes_blocks = {_rel(root, upath): parse_blocks(utext or "")}
+    for vr in vrows:
+        rec, rr, vid = vr["rec"], vr["rr"], vr["vid"]
+        declared = rec.get("surface")
+        placed = declared in _surf.names()
+        if not placed:
+            unplaced.append(vid)
+        if placed and declared != surface:
+            continue
+        entry = {"id": vid, "title": vr["label"], "state": "active", "paragraphs": [], "note": "",
+                 "strip": {"cap": cap, "count": None, "as_of": as_of, "note": ""}}
+        if not vr["renders"]:
+            entry["state"] = "retired" if vr["cause"] == "retired" else "absent"
+            entry["note"] = "%s: %s" % (vr["cause_label"], vr["why"])
+            entry["strip"]["note"] = entry["note"]
+        else:
+            vpath = os.path.join(root, rec["file"])
+            vtext = read_source(vpath) or ""
+            files[_rel(root, vpath)] = vid
+            panes_blocks[_rel(root, vpath)] = parse_blocks(vtext)
+            entry["paragraphs"] = para_chunks(vtext)
+            entry["strip"]["count"] = len(vtext)
+            if cap is None:
+                entry["strip"]["note"] = "no character cap is recorded for this surface"
+            elif len(vtext) > cap:
+                entry["strip"]["note"] = "OVER the %d-character cap by %d" % (cap, len(vtext) - cap)
+            if not placed:
+                entry["note"] = ("unplaced - no surface declared" if declared is None
+                                 else "unplaced - %r not declared in surfaces.py" % declared)
+        variants.append(entry)
+    items = []
+    derived = derive_open_items(root, rep, panes_blocks)
+    for it in (i for name in CATEGORY_NAMES for i in derived[name]):
+        vid = None
+        for rel, v in files.items():
+            if rel in it.get("where", ""):
+                vid = v
+        if vid is None:
+            m = re.match(r"(?:reconcile|containment):([^:]+)", it["key"])
+            vid = m.group(1) if m else None
+        if vid is not None and vid not in {v["id"] for v in variants}:
+            continue                                   # belongs to the other surface's pane
+        items.append({"id": it["key"], "category": it["category"], "text": it["text"], "variant": vid})
+    rtext = read_source(_tree.path(root, "presence_rules"))
+    return {"surface": surface, "title": "Resume" if surface == "print" else "Public profile",
+            "union": {"title": utitle, "subtitle": usub, "paragraphs": para_chunks(utext)},
+            "variants": variants, "open_items": items, "unplaced": unplaced,
+            "rules": {"markdown": rtext or ""}}
+
+
+def render_review_text(model):
+    """The review as plain text - what `/jobsearch:review-resume` and `/jobsearch:review-linkedin`
+    print where a pane cannot be drawn. Every key of the model has its section here."""
+    L = ["%s - review (%s)" % (model["title"], model["surface"]), "",
+         model["union"]["title"], "  " + model["union"]["subtitle"]]
+    for p in model["union"]["paragraphs"]:
+        L.append("  | " + p.replace("\n", "\n  | "))
+    for v in model["variants"]:
+        L += ["", "Variant %s (%s)%s" % (v["id"], v["state"], " - " + v["note"] if v["note"] else "")]
+        s = v["strip"]
+        L.append("  strip: " + ("limit %d, used %s%s - %s" % (s["cap"], s["count"],
+                 " (as of %s)" % s["as_of"] if s["as_of"] else "", s["note"] or "within the cap")
+                 if s["cap"] is not None else (s["note"] or "no character cap is recorded")))
+        for p in v["paragraphs"]:
+            L.append("  | " + p.replace("\n", "\n  | "))
+    L += ["", "Open items (%d)" % len(model["open_items"])]
+    for it in model["open_items"] or [{"category": "-", "text": "none open"}]:
+        L.append("  - [%s] %s" % (it["category"], it["text"]))
+    if model["unplaced"]:
+        L += ["", "Unplaced variants (shown in both panes): %s" % ", ".join(model["unplaced"])]
+    L += ["", "Rules", "  " + (model["rules"]["markdown"].strip().replace("\n", "\n  ")
+                                or "no rules file")]
+    return "\n".join(L) + "\n"
 
 
 # ── the round trip ─────────────────────────────────────────────────────────────────────────
@@ -864,23 +977,29 @@ def page_text(fragment):
     return _norm(html.unescape(re.sub(r"<[^>]+>", " ", frag)))
 
 
-def check(root):
-    page = os.path.join(root, _tree.rel(PAGE_KEY))
-    ledger_path = os.path.join(root, _tree.rel(LEDGER_KEY))
-    if not os.path.exists(page):
-        print("NOT CHECKED — %s has not been generated yet (run presence_set.py)."
-              % _tree.rel(PAGE_KEY))
-        return 0
-    try:
-        with open(ledger_path, encoding="utf-8") as fh:
-            ledger = json.load(fh)
-    except (OSError, ValueError):
-        print("⛔ ARTIFACT WITHOUT A LEDGER — %s exists but %s is missing or "
-              "unreadable; regenerate (presence_set.py)." % (_tree.rel(PAGE_KEY),
-                                                              _tree.rel(LEDGER_KEY)))
-        return 1
-    with open(page, encoding="utf-8") as fh:
-        doc = fh.read()
+def check(root, page=None, ledger_path=None):
+    """The round trip. With no `page` it verifies the renderer's OWN output, built now from the sources
+    (jobsearch 0.71.0: there is no page file any more, so reading one would check nothing and print
+    NOT CHECKED forever). With `page` it verifies THAT file against `ledger_path` (default: the retired
+    ledger path) - how a saved page, or a test's planted defect, is checked."""
+    if page is None:
+        doc, ledger = build(root)
+        page_name = "the in-memory render"
+    else:
+        page_name = page
+        ledger_path = ledger_path or os.path.join(root, _tree.rel(LEDGER_KEY))
+        if not os.path.exists(page):
+            print("NOT CHECKED — %s does not exist." % page)
+            return 0
+        try:
+            with open(ledger_path, encoding="utf-8") as fh:
+                ledger = json.load(fh)
+        except (OSError, ValueError):
+            print("⛔ ARTIFACT WITHOUT A LEDGER — %s exists but %s is missing or "
+                  "unreadable; regenerate (presence_set.py)." % (page, ledger_path))
+            return 1
+        with open(page, encoding="utf-8") as fh:
+            doc = fh.read()
     problems = []
     fresh_doc, fresh = build(root)                   # the sources as they are NOW
 
@@ -1049,17 +1168,35 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true",
-                    help="round-trip the generated page against its sources; exit 1 on drift")
-    ap.add_argument("--json", action="store_true", help="print the ledger; write nothing")
+                    help="round-trip the render against its sources; exit 1 on drift")
+    ap.add_argument("--page", help="with --check: verify THIS saved page file instead of the render")
+    ap.add_argument("--ledger", help="with --check --page: the ledger that page was generated with")
+    ap.add_argument("--json", action="store_true",
+                    help="print the review model (with --surface) or the ledger (without); write nothing")
+    ap.add_argument("--text", action="store_true", help="print the review as plain text (needs --surface)")
+    ap.add_argument("--surface", choices=REVIEW_SURFACES, help="the surface a review is for")
     args = ap.parse_args()
     root = _profile_root()
     if args.check:
-        return check(root)
+        return check(root, page=args.page, ledger_path=args.ledger)
+    if (args.json or args.text) and args.surface:
+        model = review_model(root, args.surface)
+        if args.json:
+            print(json.dumps(model, ensure_ascii=False))
+        else:
+            sys.stdout.write(render_review_text(model))
+        return 0
+    if args.text:
+        print("presence_set.py: --text needs --surface print|public-profile", file=sys.stderr)
+        return 2
     if args.json:
         _doc, ledger = build(root)
         print(json.dumps(ledger, indent=1, sort_keys=True, ensure_ascii=False))
         return 0
-    return write(root)
+    print("presence_set.py no longer writes a page (jobsearch 0.71.0, the presence artifact is retired).")
+    print("  Review: /jobsearch:review-resume | /jobsearch:review-linkedin   (text: --text --surface S)")
+    print("  Verify: presence_set.py --check")
+    return 0
 
 
 if __name__ == "__main__":

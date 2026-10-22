@@ -11,10 +11,11 @@ updated?"*
 **turn-driven**: it cannot wake itself, poll, or watch a file. So "the session knows" can only
 mean one of two things:
 
-  **(a) something DELIVERS A TURN to it** — `notifyOnCompletion` on a scheduled task. That is a
-      genuine wake, and the only one available. **But only a REGULAR session can claim it** (a
-      scheduled run is refused: *"it ends when the run does"*), so the candidate claims it directly, and
-      re-claims it each time they open a new coordinator session.
+  **(a) something DELIVERS A TURN to it** — the plugin's mod (`hooks/register.ts`, jobsearch 0.71.0)
+      watches `data/inbox.jsonl` and starts one turn in the session that armed it (the
+      `jobsearch_watch` tool, called once by the coordinator's startup step). That is a genuine wake,
+      but it exists only where mods are on, and **only the coordinator arms it**: a scheduled run's own
+      session must not, or it would wake itself on its own inbox write.
 
   **(b) it CHECKS at the start of a turn** — which needs something to compare against. That is
       this script.
