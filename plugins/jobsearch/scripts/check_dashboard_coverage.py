@@ -111,6 +111,15 @@ does not add up (check_engine_purity's "scanned N of M", copied on purpose).
 whether the page is behind its sources or the published view behind the repo. Membership is
 a different question with a different remedy, and one check must not grow a second meaning.
 
+## The warm-path line (dev #751, jobsearch 0.72.0)
+
+Every role card on the page whose role has a DERIVED warm-path next action (`warm_path.derive`, which
+this check calls itself, over the same stores, on the ledger's own date) must carry exactly one
+`<div class="opp-warm" data-warm="<state>">` whose state is that action's state. A card without it, a
+card showing a different state, and a card showing the line for a role that has no action are all gaps.
+The line is not a record (it adds no `data-rec`), so it is held to the derivation here rather than to the
+ledger. Plant: omit the line in `generate_dashboard.py` and this check goes red.
+
 ## Absence reads as itself
 
 No artifact and no ledger: nothing has been generated yet → `NOT CHECKED`, exit 0 (a new
@@ -774,6 +783,58 @@ def check_filters(page, ledger, exp, remainders, more_on_page=None):
     return gaps, lines
 
 
+_WARM_RE = re.compile(r'<div class="opp-warm" data-warm="([a-z-]+)"')
+_OPP_CARD_RE = re.compile(r'\bclass="(?:[^"]*\s)?opp(?:\s[^"]*)?"')
+
+
+def check_warm_path(page, root, today):
+    """`(gaps, line)`: hold every role card to the warm-path action `warm_path.derive` computes for its
+    role (see the docstring section). Recomputed HERE, independently of the renderer, on purpose."""
+    import profile as _profile
+    import config_keys as _ck
+    import warm_path as _wp
+    try:
+        lookup_days = _ck.resolve_int(_profile.config(), _ck.SEARCH_WARM_LOOKUP_DAYS)
+        actions = _wp.derive(root, today=today.isoformat(), lookup_days=lookup_days)
+    except Exception as e:                                           # noqa: BLE001 - a gap, never a pass
+        return ["WARM PATH NOT CHECKABLE — warm_path.derive failed (%s: %s); an uncheckable line is a "
+                "gap, never a pass" % (type(e).__name__, e)], "warm path: NOT CHECKED"
+    expected = {}
+    for a in actions:
+        for oid in a["opp_ids"]:
+            expected[oid] = a
+    gaps, cards, with_line = [], 0, 0
+    for m in _ROW_RE.finditer(page):
+        if m.group(3) != "rec":
+            continue
+        key = _html.unescape(m.group(4))
+        # a ROLE CARD only (`class="opp"`): the same record also appears as a Drafts follow-up row
+        # (`class="draft ..."`, key `opp:<id>`), which is a draft's row and carries no warm-path line
+        if not key.startswith("opp:") or not _OPP_CARD_RE.search(m.group(2)):
+            continue
+        cards += 1
+        oid = key[len("opp:"):]
+        span = _element_span(page, m)
+        lines = _WARM_RE.findall(span)
+        want = expected.get(oid)
+        if want is None:
+            if lines:
+                gaps.append("WARM PATH WITHOUT AN ACTION — %s shows a warm-path line but warm_path.py "
+                            "derives none for it" % key)
+            continue
+        if not lines:
+            gaps.append("WARM PATH MISSING — %s has a derived next action (%s, %s) but its card "
+                        "carries no warm-path line" % (key, want["kind"], want["state"]))
+        elif len(lines) > 1:
+            gaps.append("WARM PATH TWICE — %s's card carries %d warm-path lines" % (key, len(lines)))
+        elif lines[0] != want["state"]:
+            gaps.append("WARM PATH WRONG STATE — %s's card says %r but warm_path.py derives %r"
+                        % (key, lines[0], want["state"]))
+        else:
+            with_line += 1
+    return gaps, "warm path: %d of %d role card(s) carry their derived next action" % (with_line, cards)
+
+
 def check(root, verbose=False):
     """(gaps, summary_lines, advisories). Empty gaps means the contract holds; advisories
     are measurements that do not fail the check (EXACTLY ONCE, until stage 2)."""
@@ -915,6 +976,8 @@ def check(root, verbose=False):
     gaps.extend(l_gaps)
     s_gaps, _s_line = check_scripts(page)
     gaps.extend(s_gaps)
+    w_gaps, w_line = check_warm_path(page, root, today)
+    gaps.extend(w_gaps)
     n_exp = len(exp)
     n_placed = n_exp - sum(1 for g in gaps if g.startswith("UNPLACED"))
     lines = ["covered %d of %d record(s) — %d rendered · %d in counted remainders · "
@@ -923,6 +986,7 @@ def check(root, verbose=False):
                 counts["terminal"], counts["elsewhere"], today.isoformat(), horizon)]
     lines.extend(f_lines)
     lines.append(l_line)
+    lines.append(w_line)
     if verbose:
         lines.extend("  " + p for p in placements)
     # EXACTLY ONCE is a GAP since design r3 (check_links); nothing is advisory any more. The

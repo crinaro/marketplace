@@ -1015,6 +1015,44 @@ def title_floor_lean(screen, profile):
     return lean, line, {"id": TITLE_FLOOR_LEAN_ID, "reason": line, "matched_in": "title"}
 
 
+def _matching_target(title, configured):
+    """The first configured `targets.titles` entry whose normalized words sit inside the normalized
+    `title`, or None. THE ONE DEFINITION of "this title matches": `_title_rule` (the screen's
+    MATCHES / NO-MATCH) and `title_matches` (the feed poller's selection) both call it, so selection
+    and screen cannot disagree about what a match is (dev #751, design §3.5)."""
+    import pipeline_index as _pidx
+    want = _pidx.normalize_title(title)
+    if not want:
+        return None
+    for t in configured:
+        nt = _pidx.normalize_title(t)
+        if nt and (" %s " % nt) in (" %s " % want):
+            return t
+    return None
+
+
+def title_matches(title, profile):
+    """`True` / `False` / `None`: does `title` match a configured `targets.titles` entry, by the
+    SAME matcher the screen's title rule uses (`_matching_target`)?
+
+    `None` -- not a False -- when the answer cannot be given: no `targets.titles` configured, or the
+    title keys (`screen.title_floor`, the title-field `likely_pass_signals`) cannot be read, which is
+    the state in which `_title_rule` itself reports UNREADABLE-TITLE-KEYS. The feed poller refuses its
+    whole pass on `None`: capturing every opening at every company is not a safe default (dev #751,
+    design §3.5). Floor and mandate are NOT applied here; they are the screen's, after capture."""
+    import config_keys as _ck
+    configured = [t for t in (((profile or {}).get("targets") or {}).get("titles") or []) if t]
+    if not configured:
+        return None
+    if _ck.validate_title_floor(_screen_cfg(profile).get("title_floor")):
+        return None
+    try:
+        title_signals(profile)
+    except ValueError:
+        return None
+    return _matching_target(title, configured) is not None
+
+
 def _title_rule(opp, profile):
     """`(token, text, review)` for the advisory title rule: BELOW-FLOOR / OFF-MANDATE / MATCHES /
     NO-MATCH / NO-CONFIGURED-TITLES (/ UNREADABLE-TITLE-KEYS). Only ever a `review`, never a
@@ -1033,14 +1071,7 @@ def _title_rule(opp, profile):
     import config_keys as _ck
     import pipeline_index as _pidx
     configured = [t for t in ((profile.get("targets") or {}).get("titles") or []) if t]
-    want = _pidx.normalize_title(opp.get("title"))
-    matched = None
-    if want:
-        for t in configured:
-            nt = _pidx.normalize_title(t)
-            if nt and (" %s " % nt) in (" %s " % want):
-                matched = t
-                break
+    matched = _matching_target(opp.get("title"), configured)
     floor = _screen_cfg(profile).get("title_floor")
     floor_problems = _ck.validate_title_floor(floor)
     try:

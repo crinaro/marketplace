@@ -502,6 +502,38 @@ Degrading gracefully was never the problem; forgetting was. **Expect this to fir
 fires repeatedly, run `~/.claude/jobsearch/run wake_chrome.sh` and check macOS Automation access for the app
 before assuming a new fault (`docs/architecture.md` §3d).
 
+**COMPANY FEEDS: EVERY DAY, UNDER EVERY POSTURE, BEFORE THE BOARD PASS (dev #751; jobsearch 0.72.0).**
+A tracked company whose own URLs name a Greenhouse, Lever or Ashby board carries `companies[].ats`, and
+its public job list is read by a script, not a browser turn:
+
+```bash
+~/.claude/jobsearch/run feed_poll.py --run <id>      # run it with a Bash timeout of 300000 ms
+```
+
+It makes one read-only GET per slugged company (never a POST, 1 s apart per host, no credentials,
+`If-None-Match`), keeps the postings that match a configured `targets.titles`, and resolves each through
+the SAME per-role code `--add-roles` uses: a posting already in the pipeline is known and writes nothing,
+a new one becomes one `capture-role` item carrying its channel, which §7's claim -> `record.py create
+--from-item` -> `profile.py --minimal-screen` path captures and screens exactly as it does a board role.
+It costs no tokens and reads no mail. **It has an internal deadline** (`feed_poll.DEADLINE_S`, 240 s, under
+the 300 s Bash timeout above), so a stalled network ends in a written `feeds` event, not a killed process.
+Run it in the read phase, unlocked: its own `record.py` calls take the lock they need.
+
+- **Exit 0** every feed covered. **Exit 4** at least one NOT COVERED: the line `FEED NOT COVERED <company>
+  <vendor>:<slug> <code>` names it and the summary's `feeds:` line counts it. A feed that did not return
+  the documented list is **never read as "0 roles"**: nothing was captured from it, its page was not
+  stamped reviewed, and `channels_due.py` lists that page for the browser (DUE) so the sweep below still
+  covers it. A HOST-level failure (`egress-blocked`, `tls-untrusted`, `unreachable`, `budget-exhausted`:
+  this machine cannot reach the vendor, or the poll ran out of time) does NOT make every page due daily:
+  those companies keep their normal cadence, and ONE `jobsearch:feeds:host:<host>` gap says why.
+- **Exit 3** `FEEDS NOT RUN: no readable title keys`: `targets.titles` is empty or its keys cannot be
+  read. Say so; capturing every opening at every company is not a safe default.
+- **A page the feed covered today is not in the board worklist** (`channels_due.py` prints it under COVERED
+  BY FEED). Workday and every company with no slug stay browser-routed. `feed_poll.py --status` lists the
+  slugs, each company's last outcome, any `ATS AMBIGUOUS` the candidate must settle with `record.py ats`,
+  and every unlinked company-site channel.
+- **Quote the `feeds:` line** from `run_summary.py` in the summary (§13).
+
 **Weekly (first run on/after Monday, per `log.md`):** dispatch `board-sweeper` for the non-LinkedIn sourcing pass — boards, aggregators and employer career pages, each reached by its configured route.
 **Write the dispatch as a script row, in the same breath (dev #692 / public #140, R3):**
 `~/.claude/jobsearch/run journal.py --run <id> --pass board --phase dispatched`. The missing-ROLES
@@ -571,12 +603,35 @@ the `**Medium:**` line, never `**Status:**` prose**). A one-line summary elsewhe
 `applying/cover_letters.md` via **`cover-letter-writer`** — a different artifact with different length,
 constraints and failure mode.
 
-**⭐ WARM-PATH ON EVERY APPLICATION.** An ATS application is NOT done until an inside-human touch
-is attempted OR explicitly ruled out. The evidence: 11 ATS applications produced 9 auto-acks, 1
+**⭐ THE WARM PATH: EVERY ROLE THAT PASSES SCREENING, ONE NEXT ACTION (dev #751; jobsearch 0.72.0).** This
+replaces the old per-application paragraph ("warm-path on every application"), so there is ONE rule, in one
+script, with one test. The evidence stays the rationale: 11 ATS applications produced 9 auto-acks, 1
 rejection and ZERO human contact, while warm outreach replied at 50% and produced every advancing
-conversation. So for each role applied to, have `linkedin-runner` run a contact-path lookup and,
-if a real path exists, draft the touch; if none exists, say so in the row. **Never fabricate a
-connection.** This is per-application, not weekly.
+conversation. A role is not "done" until an inside-human touch is attempted OR explicitly ruled out, and the
+script says which:
+
+```bash
+~/.claude/jobsearch/run warm_path.py                 # every action, one line each
+~/.claude/jobsearch/run warm_path.py --opp <opp_id>  # the action covering one role
+```
+
+Each action is a `referral-ask` or an `hm-note` to the best-placed KNOWN person (the people store: a
+person at the company, ranked by their involvement's path type), or a `lookup` when nobody is known (an
+explicit "no known person", never a blank). It is **derived, never stored**, one per (company, person) so a
+relationship is asked once, not once per requisition, and its `state` is the only thing to act on:
+- **`draft-owed`** (a role is `verdict: pursue`, or an application is submitted): dispatch
+  `outreach-drafter` with that one line as its input. Under a posture that withholds drafting queue it with
+  `~/.claude/jobsearch/run deferred.py --add-draft <opp_id>` (unchanged). **A draft is saved for the
+  candidate to send; nothing here sends.**
+- **`ready`** (every role still undecided): shown on the card, drafted after the pursue decision. **Do not
+  draft for an undecided role.**
+- **`drafted` / `touched`**: already worked (an open draft to that person, or a sent touch to them on this
+  role or within 180 days). **Never a second ask.**
+- **`lookup-owed`**: the dashboard card carries a link the CANDIDATE opens (only when a LinkedIn company URL
+  is already on record). They record who they found (a `people` row and `record.py involve`) or
+  `record.py warm-lookup <company_id> --none-found`; a `looked-none` company stays quiet for
+  `search.warm_lookup_days` (90). **No LinkedIn step is automated.** `linkedin-runner`'s contact-path read is
+  unchanged and is not part of this derivation; never fabricate a connection.
 
 ---
 
@@ -681,6 +736,9 @@ JSON** (the script copies the card's text; a different one is refused, one value
 script records `onsite` with `location.setting_source: inferred` (jobsearch 0.70.0, dev #727 /
 public #159), and with no readable place it leaves the type absent and the screen asks. A type you
 give beside `none stated` is refused: it would be a guess nobody could tell from a stated setting.
+**A company-feed item** (`source: feed:<vendor>`, dev #751) **names the career-page channel it came
+from: omit `sightings[0].channel_id`** and the script copies it; a different channel is refused (one
+value, stated once), so what each feed yields stays measurable.
 Once you read the JD and it states a setting, replace the whole location with it: `record.py set
 <opp_id> location '<json>'` (no `setting_source`); the write records the overturn. A create
 without it copies nothing. Run

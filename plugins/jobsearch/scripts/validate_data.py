@@ -27,6 +27,8 @@ import profile as _profile
 # import validate_data and is therefore imported LAZILY, inside `_main()`, to avoid the cycle),
 # so it is safe as a normal top-level import.
 import plans as _plans
+# dev #751 -- the ONE definition of an `ats` object's shape, shared with `record.py ats`.
+import ats_slug as _ats_slug
 # ADR-027 — the one surface vocabulary (also imported by resume_variants.py, presence_set.py);
 # zero dependencies of its own, so no cycle risk as a normal top-level import.
 import surfaces as _surfaces
@@ -593,7 +595,10 @@ FIT_Q_STATUS = {"n/a", "open", "answered"}
 # existing data that carries it. Renamed (issue #35) from a value spelling out one specific
 # candidate's own name literally: zero live records used that value, so this was a rename with
 # no data to migrate, not a schema change.
-ACCESS = set(_route.REQUIREMENTS) | set(_route.LEGACY) | {"manual-candidate"}
+ACCESS = set(_route.REQUIREMENTS) | set(_route.LEGACY)
+# dev #751 (design D5, F3): `manual-candidate` was a hand-kept extra HERE while `route.py` did not know
+# it, so a channel carrying it passed validation and then raised `RouteError` in `route.py --check`.
+# `route.REQUIREMENTS` carries it now; the derivation above is the whole definition.
 # ---- Asks and commitments (dev #93 / public #21) ----------------------------------------
 # The hand-authored tail of Your Move and the This Week schedule were the last state living in
 # focus.md prose, where a hand-written copy of a record went stale beside the generated row.
@@ -1296,6 +1301,47 @@ def check_passed_from(r, label, problems):
     if pf.get("stage") not in STAGES:
         problems.append("%s: passed_from.stage %r not in {%s}"
                         % (label, pf.get("stage"), ", ".join(sorted(STAGES))))
+
+
+WARM_LOOKUP_RESULT = "none-found"
+
+
+def check_feed_links(companies, channels):
+    """dev #751 (design §3.1) -- the join between a company and its career-page channel, and the
+    three invariants that keep a feed writable. Returns a list of problems.
+
+      * `channels[].company_id` is legal ONLY on `type: company-site`, and must resolve to a company;
+      * at most ONE company-site channel per `company_id`;
+      * every company whose `ats` is an OBJECT has exactly ONE linked company-site channel (a feed
+        sighting's `channel_id` must resolve, and `route.py` / `channels_due.py` key on the link).
+
+    A company with `ats: null` (declined) or no `ats` needs no channel."""
+    problems = []
+    by_id = {c.get("id"): c for c in companies}
+    linked = {}
+    for ch in channels:
+        if "company_id" not in ch:
+            continue
+        label = "channels[%s]" % ch.get("id", "?")
+        cid = ch.get("company_id")
+        if ch.get("type") != "company-site":
+            problems.append("%s: company_id is legal only on type 'company-site' (this one is %r)"
+                            % (label, ch.get("type")))
+            continue
+        if not isinstance(cid, str) or cid not in by_id:
+            problems.append("%s: company_id %r does not resolve to a company" % (label, cid))
+            continue
+        linked.setdefault(cid, []).append(ch.get("id"))
+    for cid, ids in sorted(linked.items()):
+        if len(ids) > 1:
+            problems.append("companies[%s]: %d company-site channels link to it (%s); a company has "
+                            "at most one career-page channel" % (cid, len(ids), ", ".join(map(str, ids))))
+    for c in companies:
+        if isinstance(c.get("ats"), dict) and len(linked.get(c.get("id"), [])) != 1:
+            problems.append("companies[%s]: has an `ats` feed but %d linked company-site channel(s) "
+                            "(exactly one is required: a feed's sightings are written to it)"
+                            % (c.get("id", "?"), len(linked.get(c.get("id"), []))))
+    return problems
 
 
 def check_title_floor(screen_cfg, problems):
@@ -2409,6 +2455,16 @@ def _main():
         for entry in r.get("research_log", []):
             if not is_date(entry.get("date", "")):
                 problems.append("%s: research_log date not ISO — %r" % (label, entry.get("date")))
+        # dev #751 -- `ats`: absent = not discovered; null = the candidate declined a feed; an object
+        # = poll this company's public board. A malformed object is refused here and at the write.
+        if r.get("ats") is not None:
+            problems += _ats_slug.check_ats(r["ats"], "%s.ats" % label)
+        if "warm_lookup" in r:
+            _wl = r.get("warm_lookup")
+            if (not isinstance(_wl, dict) or set(_wl) != {"on", "result"}
+                    or not is_date(_wl.get("on")) or _wl.get("result") != WARM_LOOKUP_RESULT):
+                problems.append("%s: warm_lookup must be {on: <ISO date>, result: %r}, got %r"
+                                % (label, WARM_LOOKUP_RESULT, _wl))
 
     # ---- channels ----
     for r in channels:
@@ -2450,6 +2506,8 @@ def _main():
         for e in r.get("log", []):
             if not is_date(e.get("date", "")):
                 problems.append("%s: log date not ISO — %r" % (label, e.get("date")))
+
+    problems += check_feed_links(companies, channels)
 
     # ---- messages[].channel_id — the FK half of public #63 ----------------------------------
     # Since ADR-031 B1/B3 a message joins by `person_id` (required to resolve when set) and

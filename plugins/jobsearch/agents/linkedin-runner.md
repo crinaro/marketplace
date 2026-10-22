@@ -485,6 +485,11 @@ record above, and still report the SURFACE line as UNREACHABLE.
 
 **4. CONTACT PATH** — for a company, find a Talent/Recruiting/People person via people search.
 Prefer current employees. **Note mutual connections ONLY if they actually exist.**
+**This lookup is a READ, and it is unchanged (dev #751).** The warm path (`warm_path.py`) does not call
+it and does not automate any LinkedIn step: when no one is known at a company it prints a link the
+CANDIDATE opens. If the candidate asks you for a company's contact path, you report what you read; you
+never connect, message, endorse or follow, and what you find becomes a `people` row only through
+`record.py` (User Agreement §8.2; `guard_outbound_click.py` backstops the clicks).
 
 **5. NOTIFICATIONS SCAN** (the `notifications` token) — `linkedin.com/notifications/`, reading
 through its sections (job search updates, top picks, saved-search alerts). **This is a distinct

@@ -97,6 +97,94 @@ Nothing below sends anything or commits anything without you.
 
 ---
 
+## Finding roles beyond the boards (since 0.72.0)
+
+Three additions widen where roles come from. None of them sends anything or applies to anything.
+
+### Company feeds
+
+Many companies publish their openings through Greenhouse, Lever or Ashby. Each of those publishes a plain
+public list of a company's open roles for exactly this purpose. When a company you track uses one, the daily
+run reads that list with a script (no browser, no tokens, no mail) before the board pass, every day, under
+every posture.
+
+**A slug** is the board's short name in its address: in `jobs.lever.co/acme-example` the slug is
+`acme-example`. It is never guessed. It is read, as text only, off a link you or the research step already
+attached to that company: its `career_url`, a role's `jd_url`, or a sighting's link. A sender domain in a
+receipt email never identifies an employer, so mail is not used. Workday and every company with no such link
+stay on the browser route. The result is `companies.ats` (see *Companies* in [Your data](your-data.md)).
+
+For each company with a slug, the run makes one read-only `GET` of the vendor's public list. It never posts
+anything and never submits an application. It keeps the postings whose title matches one of your
+`targets.titles`, and hands each through the same code a board sweep uses: a role you already have writes
+nothing, a new one is captured and screened exactly like a board role. A feed that does not return the
+documented list is **never read as "no roles"**: the page is listed for your browser review instead, and a
+failure of the machine to reach the vendor is reported once as a gap rather than turning every careers page
+into a daily visit. The poll has its own deadline, so a stalled network ends in a written summary, not a
+hung run.
+
+Check or correct what it knows:
+
+```
+feed_poll.py --status                      # slugs, each company's last outcome, ambiguities, unlinked pages
+record.py ats <company_id> --url <URL>     # set the board from a careers or posting address you give
+record.py ats <company_id> --none          # decline a feed for this company; nothing rewrites it
+record.py ats <company_id> --clear         # remove the entry so discovery may run again
+```
+
+`--status` also prints `ATS AMBIGUOUS` when one company's links name two different boards. Settle it with
+`record.py ats <company_id> --url <the right board>`.
+
+**The four hosts.** Reading a feed means web requests to `boards-api.greenhouse.io`, `api.lever.co`,
+`api.eu.lever.co` and `api.ashbyhq.com`, and to nothing else. They are a requirement, not a preference: if
+Claude Code's command sandbox is on and a host is not allowed, a scheduled run would wait on a prompt that
+nobody is there to answer. The upgrade to 0.72.0 adds the four to `sandbox.network.allowedDomains` in your
+profile project's `.claude/settings.json` (what else it does is under *What the 0.72.0 upgrade writes* in
+[Your data](your-data.md)). If the sandbox ignores that entry, which the vendor documents as the case when an
+administrator requires the sandbox, the hosts must be allowed in that administrator's settings. Until then
+the feed reports `egress-blocked` or `unreachable` with one gap per host, and the browser sweep keeps covering
+those careers pages as before. Nothing is lost; it is slower and costs more.
+
+### The warm path on each role card
+
+Referrals are the evidenced lever: warm outreach to a person at the company produces far more conversations
+than a cold application. So every role that passes screening and is not passed on shows one line,
+`Warm path:`, naming the single next action toward an inside person. It is worked out from your own people,
+touches, drafts and applications each time, never stored, so it cannot go stale. One person at one company is
+asked once, not once per opening there.
+
+| line says | meaning |
+|---|---|
+| referral ask to *person* (after you decide) | someone you know there is not the hiring manager; the draft waits until you decide to pursue the role |
+| note to the hiring manager *person* (after you decide) | the person you know is the hiring manager |
+| ... (draft owed) | you decided to pursue (or applied), so a draft is owed to that person |
+| ... (draft ready for you to send) | a draft already exists in your drafts file |
+| ... (asked *date*) | you already reached out to that person recently or about this role: no second ask |
+| no one known: look up on LinkedIn, then record who you found | nobody known; the link appears only when a LinkedIn company address is already on record, and you open it yourself |
+| looked *date*, none found | you recorded that you looked; quiet for `search.warm_lookup_days` (90 by default) |
+
+Record who you found as a people entry and `record.py involve`, or `record.py warm-lookup <company_id>
+--none-found`. **Nothing here is ever sent.** The engine does not open LinkedIn for this, read it, or contact
+anyone; a draft is written for you to send, as every draft is.
+
+### Curated boards and newsletters
+
+Some boards forbid automated access in their terms (Wellfound, Y Combinator's Work at a Startup, Welcome to
+the Jungle). They are channels you add yourself with `access: manual-candidate`: **you open it**. The engine
+never visits them. If the board sends alert emails, put the sender in the channel's `alert_sender` and those
+emails are swept like any other. A niche newsletter is an `alert-email` channel the same way, one channel per
+newsletter so you can see which one produces roles. Ready-to-paste rows are under *Curated boards and niche
+newsletters are channel rows* in the plugin's `schema.md`. Add them only if you want them; the upgrade adds
+none.
+
+### What it will not do
+
+No auto-apply, no automated LinkedIn action, no bought contact lists, no tricks aimed at a screening model, no
+service that applies or reaches out in your name. Each of these breaks a site's terms, puts other people's
+data in your profile, or sends something you have not seen, and the plugin never sends anything for you.
+
+---
+
 ## The rules it holds itself to
 
 **It never sends.** Not email, not LinkedIn messages, not applications. Drafts are staged for

@@ -185,7 +185,11 @@ OPS = ("create", "set", "set-in", "append", "show", "fields",
        # jobsearch 0.70.0 (dev #728 / public #158) -- fold a duplicate row into its canonical one,
        # and undo a false merge. Both are branches of the shared mutation chain (one locked write
        # touching two rows of ONE store), so --dry-run, the validator and the rollback all apply.
-       "link-sibling", "unlink-sibling")
+       "link-sibling", "unlink-sibling",
+       # jobsearch 0.72.0 (dev #751, sourcing-feeds) -- the company-feed verbs. Early-return verbs
+       # like `involve`: each writes the COMPANIES store (and `ats` also the CHANNELS store, in one
+       # locked, validated, rollback-verified transaction), so --dry-run is proven in test_record.py.
+       "ats", "warm-lookup")
 SOURCING_OPS = ("screened", "lean", "listed-pay", "posted")
 LOCK = os.path.join(ENGINE_SCRIPTS, "runlock.py")
 # ⭐ ENGINE, not profile — the data MODEL ships with the code; the DATA belongs to the user.
@@ -1483,6 +1487,180 @@ def cmd_involve(args):
     return 0
 
 
+def _company_feed_write(args, label, edit):
+    """dev #751 -- ONE locked, validated, rollback-verified write of the COMPANIES store, and the
+    CHANNELS store when `edit` changed it. `edit(company, channels, opportunities)` mutates in place
+    and returns `(description_lines, channels_changed)` or raises `_Refused`; nothing has been
+    written when it does. Returns the exit code.
+
+    The stores are snapshotted, written atomically, and the validator is run; a write that
+    INTRODUCES a problem (a set comparison against the problems before it, `new_problems`) restores
+    both stores byte for byte and says so. `--dry-run` runs `edit` on deep copies and also applies the
+    two feed invariants (`validate_data.check_feed_links`) to the result, so it predicts the write
+    without touching a store. Refusals happen BEFORE the lock."""
+    cid = args.rid
+    if not cid or args.rest:
+        print("usage: %s" % label)
+        return 2
+    _vd = _validator_module()
+    try:
+        companies = load("companies")
+        channels = _load_or_empty("channels")
+        opps = _load_or_empty("opportunities")
+    except (OSError, ValueError) as e:
+        print("⛔ REFUSED — a store cannot be read (%s); nothing written." % e)
+        return 1
+    if find(companies, cid) is None:
+        print("⛔ REFUSED — %r resolves to no companies record." % cid)
+        return 1
+    shadow_c, shadow_ch = json.loads(json.dumps(companies)), json.loads(json.dumps(channels))
+    try:
+        lines, ch_changed = edit(find(shadow_c, cid), shadow_ch, opps)
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+    problems = _vd.check_feed_links(shadow_c, shadow_ch)
+    if problems:
+        print("⛔ REFUSED — the result would break the feed invariants (nothing written):")
+        print("  " + "\n  ".join("- " + p for p in problems))
+        return 1
+    if shadow_c == companies and not ch_changed:
+        for line in lines:
+            print(line)
+        print("%s: nothing to change." % cid)
+        return 0
+    if args.dry_run:
+        for line in lines:
+            print(line)
+        print("  --dry-run: nothing written.")
+        return 0
+    if args.already_locked:
+        if not lock_is_held():
+            print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
+            return 1
+    else:
+        try:
+            take_lock("record.py %s %s" % (label.split()[0], cid), wait=args.wait)
+        except LockError as e:
+            print("  REFUSED — %s" % e)
+            return 1
+    try:
+        # re-read INSIDE the lock, and re-run the edit on what is really there
+        companies = load("companies")
+        channels = _load_or_empty("channels")
+        try:
+            lines, ch_changed = edit(find(companies, cid), channels, opps)
+        except _Refused as e:
+            print("⛔ REFUSED — %s" % e)
+            return 1
+        snap_c, snap_ch = snapshot("companies"), snapshot("channels")
+        pre_problems = validate()[3]
+        save_atomic("companies", companies)
+        if ch_changed:
+            save_atomic("channels", channels)
+        rc, out, err, post_problems = validate()
+        added = new_problems(pre_problems, post_problems)
+        if rc != 0 and (added is None or added):
+            ok_c = restore("companies", snap_c)
+            ok_ch = restore("channels", snap_ch) if (ch_changed and snap_ch is not None) else True
+            print("⛔ the write left the stores invalid and was %s."
+                  % ("ROLLED BACK (byte-identical)" if ok_c and ok_ch
+                     else "NOT VERIFIABLY ROLLED BACK — restore companies.jsonl and channels.jsonl "
+                          "from git"))
+            print("  " + "\n  ".join(added if added else _diagnostic_lines(rc, out, err)))
+            return 1
+    finally:
+        if not args.already_locked:
+            release_lock()
+    for line in lines:
+        print(line)
+    return 0
+
+
+def cmd_ats(args):
+    """`record.py ats <company_id> --url <careers or posting URL> | --none | --clear | --discover`
+    -- dev #751 (sourcing-feeds, design §3.2). The candidate's verbs over `companies[].ats`:
+
+      --url U       parse the URL (a string parse, never a fetch) and write `ats` with `source:
+                    candidate`; a URL `ats_slug.parse` returns None for is REFUSED. Links or creates
+                    the company's career-page channel in the same write.
+      --none        `ats: null` -- decline a feed for this company; discovery never rewrites it.
+      --clear       remove the key, so discovery may run again. The channel link is left alone.
+      --discover    the engine's own path (`feed_poll.py`): parse the slug off the company's
+                    `career_url` and its opportunities' `jd_url` / sighting `source_url`s. Writes only
+                    an UNAMBIGUOUS result and never over an existing `ats` key; two distinct boards
+                    print `ATS AMBIGUOUS` and write nothing.
+    One mode per call; a refusal leaves both stores byte-identical."""
+    import ats_slug as _ats
+    modes = [m for m, on in (("--url", args.listing_url), ("--none", args.ats_none),
+                             ("--clear", args.ats_clear), ("--discover", args.ats_discover)) if on]
+    label = "ats <company_id> --url <url> | --none | --clear | --discover"
+    if len(modes) != 1:
+        print("⛔ REFUSED — ats takes exactly one of --url, --none, --clear, --discover "
+              "(got %s)." % (", ".join(modes) or "none"))
+        return 2
+    mode = modes[0]
+    today = datetime.date.today().isoformat()
+    if mode == "--url":
+        triple = _ats.parse(args.listing_url)
+        if triple is None:
+            print("⛔ REFUSED — %r names no board this engine can poll. The forms are "
+                  "jobs.lever.co/<site>, jobs.eu.lever.co/<site>, jobs.ashbyhq.com/<name> and "
+                  "boards.greenhouse.io/<token> (Workday and every other ATS stay on the "
+                  "browser); nothing written." % args.listing_url)
+            return 1
+
+    def edit(company, channels, opps):
+        if mode == "--none":
+            company["ats"] = None
+            return ["%s: ats declined (null) -- discovery will not rewrite it" % company["id"]], False
+        if mode == "--clear":
+            company.pop("ats", None)
+            return ["%s: ats key removed" % company["id"]], False
+        if mode == "--discover":
+            if "ats" in company:
+                return ["ATS SKIPPED %s: already has an `ats` key (%s)"
+                        % (company["id"], "declined" if company["ats"] is None else "set")], False
+            d = _ats.discover(company, opps)
+            if d.ambiguous:
+                return ["ATS AMBIGUOUS %s: %s" % (company["id"], " | ".join(
+                    "%s:%s" % (t[0], t[1]) for t in d.ambiguous))], False
+            if d.found is None:
+                return ["ATS NONE %s: no board URL on its career_url or postings" % company["id"]], False
+            ch_id, how = _ats.apply_discovery(company, channels, d.found, d.source, today)
+            return ["ATS %s %s:%s (%s) -> channel %s [%s]"
+                    % (company["id"], d.found[0], d.found[1], d.source, ch_id, how)], how != "exists"
+        ch_id, how = _ats.apply_discovery(company, channels, triple, "candidate", today)
+        return ["ATS %s %s:%s (candidate) -> channel %s [%s]"
+                % (company["id"], triple[0], triple[1], ch_id, how)], how != "exists"
+
+    return _company_feed_write(args, label, edit)
+
+
+def cmd_warm_lookup(args):
+    """`record.py warm-lookup <company_id> --none-found [--on D]` -- dev #751 (design §4.2): the ONE
+    stored fact of the warm path. "I looked for a person at this company and found nobody" has no other
+    home (every other state is derived from the people, touches, drafts and applications stores).
+    Writes `companies[].warm_lookup = {on, result: "none-found"}`; a person who WAS found is recorded
+    with the existing verbs (a people row with `company_id`, then `record.py involve`)."""
+    if not args.none_found:
+        print("⛔ REFUSED — warm-lookup records only that you looked and found nobody: pass "
+              "--none-found. A person you DID find goes in with a people row and `record.py "
+              "involve <person> --opp <opp>`.")
+        return 2
+    try:
+        on = _run_date(args).isoformat()
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+
+    def edit(company, channels, opps):
+        company["warm_lookup"] = {"on": on, "result": "none-found"}
+        return ["%s: warm lookup recorded -- looked on %s, found nobody" % (company["id"], on)], False
+
+    return _company_feed_write(args, "warm-lookup <company_id> --none-found [--on D]", edit)
+
+
 def cmd_answered(args):
     """`record.py answered <inbound-message-id | contact:<person-id>> --on <date> --via
     <medium> [--opp <opp_id>]` — cell 4's own action line (design §3/§15.3): records that the
@@ -2178,9 +2356,27 @@ def copy_capture_item_facts(new_row, item_id, rid=None):
     if item.get("kind") != _deferred.KIND_CAPTURE:
         return [], ("deferred item %r is a %r item; --from-item takes a %r item"
                     % (item_id, item.get("kind"), _deferred.KIND_CAPTURE))
+    copied = []
+    # dev #751 (B7) -- a FEED item names the company-site channel it came from. It is copied into
+    # sightings[0] when the JSON leaves it out, and a different channel the model supplies is
+    # REFUSED: the channel is a recorded fact, so feed yield is measurable.
+    feed_channel = item.get("channel_id")
+    if feed_channel:
+        sgs = new_row.get("sightings")
+        first = sgs[0] if isinstance(sgs, list) and sgs and isinstance(sgs[0], dict) else None
+        if first is not None:
+            have_ch = first.get("channel_id")
+            if have_ch and have_ch != feed_channel:
+                return [], ("the JSON's sightings[0].channel_id is %s but deferred item %r came from "
+                            "channel %s (a company feed). One value, stated once: omit "
+                            "sightings[0].channel_id and the script copies it."
+                            % (json.dumps(have_ch), item_id, json.dumps(feed_channel)))
+            if not have_ch:
+                first["channel_id"] = feed_channel
+                copied.append("sightings[0].channel_id")
     role = item.get("role")
     if not isinstance(role, dict):
-        return [], None
+        return copied, None
     wanted = []
     if role.get("listed_pay") is not None:
         wanted.append(("listed_pay", role["listed_pay"]))
@@ -2188,7 +2384,6 @@ def copy_capture_item_facts(new_row, item_id, rid=None):
         wanted.append(("posted", role["posted"]))
     declared = role.get("location_declared")
     listed = role.get("location_listed")
-    copied = []
     for field, value in wanted:
         if field in new_row and new_row[field] != value:
             return [], ("the JSON carries %s=%s but deferred item %r says %s. One value, stated "
@@ -2606,6 +2801,19 @@ def main():
                          "the run date by this script (source board-relative).")
     ap.add_argument("--unknown", dest="unknown", action="store_true",
                     help="posted: record that the age is unknown (source unknown).")
+    # jobsearch 0.72.0 (dev #751) company-feed verbs.
+    ap.add_argument("--none", dest="ats_none", action="store_true",
+                    help="ats: DECLINE a feed for this company (`ats: null`); discovery never "
+                         "rewrites it.")
+    ap.add_argument("--clear", dest="ats_clear", action="store_true",
+                    help="ats: remove the `ats` key so discovery may run again.")
+    ap.add_argument("--discover", dest="ats_discover", action="store_true",
+                    help="ats: parse the slug off the company's own career_url / jd_url / sighting "
+                         "URLs (never a fetch). Writes only an unambiguous result, and never over "
+                         "an existing `ats` key (a declined `null` included).")
+    ap.add_argument("--none-found", dest="none_found", action="store_true",
+                    help="warm-lookup: record that you looked for a person at this company and "
+                         "found nobody (with --on, default today).")
     args = ap.parse_args()
 
     # These three verbs each own exactly one store — --file is never the caller's to pick for
@@ -2627,6 +2835,8 @@ def main():
         args.file = "people"
     elif args.op == "involve":
         args.file = "opportunities"      # cmd_involve names its own stores; keeps the generic checks harmless
+    elif args.op in ("ats", "warm-lookup"):
+        args.file = "companies"          # dev #751: cmd_ats / cmd_warm_lookup name their own stores
 
     # §15.3 point 1 — `messages` is append-only; `answered`/`touched`/`received` are its ONLY
     # writers. Refused here, before any generic single-store machinery runs, so the refusal is
@@ -2646,6 +2856,10 @@ def main():
         return cmd_received(args)
     if args.op == "involve":
         return cmd_involve(args)
+    if args.op == "ats":
+        return cmd_ats(args)
+    if args.op == "warm-lookup":
+        return cmd_warm_lookup(args)
 
     if args.reuse and not (args.op == "create" and args.file == "people"):
         print("⛔ REFUSED — --reuse applies only to `create <id> '<json>' --file people`.")

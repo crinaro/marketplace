@@ -522,6 +522,22 @@ _METADATA[GEOGRAPHY_KEEP_OUTSIDE_RADIUS] = (
     "affirmative destination. False (the default) removes it as outside-radius; True keeps it "
     "for the relocation floor (dev #729)")
 
+# ── the warm path (dev #751; jobsearch 0.72.0; design-sourcing-feeds.md §4.1) ─────────────────────
+# Days a company stays `looked-none` after the candidate recorded "I looked for a person here and found
+# nobody" (`record.py warm-lookup`): inside the window the role shows "looked <date>, none found"; after
+# it the lookup is owed again, because people change jobs. OURS: no published figure exists (prior art:
+# searched, found nothing); 90 is a quarter. NOT seeded by a migration: absent has a defined meaning (the
+# default), like `search.retained_search_age_days`' sibling keys that carry a default in the registry.
+SEARCH_WARM_LOOKUP_DAYS = "search.warm_lookup_days"
+SEARCH_WARM_LOOKUP_DAYS_DEFAULT = 90
+
+READER_KEYS = READER_KEYS | frozenset({SEARCH_WARM_LOOKUP_DAYS})
+
+_METADATA[SEARCH_WARM_LOOKUP_DAYS] = (
+    SEARCH_WARM_LOOKUP_DAYS_DEFAULT, "int", (7, 365),
+    "days a company reads 'looked, none found' after you record that you looked for a person there "
+    "and found nobody (record.py warm-lookup); after that the lookup is owed again (dev #751)")
+
 # What `migrate.m_0_70_0_location_screen_config_keys` seeds where absent: (path to the section, key,
 # default) -- one place, so the migration and the registry cannot name two different sets.
 LOCATION_SCREEN_SEEDED = (

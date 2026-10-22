@@ -165,6 +165,62 @@ def now_channel_plans(chans, root, today_iso):
     return out
 
 
+def load_companies():
+    path = os.path.join(DATA, "companies.jsonl")
+    if not os.path.exists(path):
+        return []
+    return [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
+
+
+def feed_review(chans, companies, recs, today):
+    """dev #751 (design §3.7 as amended by review B1): `{channel_id: (state, text)}` for every
+    company-site channel linked to a company that polls a feed. `state` is
+
+      covered   TODAY's `feeds` event polled the company and did not list it as not covered: the feed
+                IS this channel's review (`feed_poll.py` stamped `last_reviewed`), so it is not listed
+                for the browser;
+      due       the feed failed with a BOARD code (404, not the documented shape, redirect, odd
+                status) and no browser review has stamped the channel since the streak began: listed
+                DUE regardless of cadence -- this is the fallback #751's 'a failing feed is loud'
+                requires;
+      cadence   everything else, and the reason is in `text`: no `feeds` event yet today, a HOST or
+                BUDGET failure (the machine cannot reach the vendor: a monthly page must not become a
+                daily browser visit), or a streak a browser review has already answered.
+
+    Pure over what it is handed: today's events and the journal's streak helper come from `recs`."""
+    import journal as _journal
+    by_company = {c.get("id"): c for c in companies}
+    linked = [ch for ch in chans if ch.get("type") == "company-site" and ch.get("company_id")
+              and isinstance((by_company.get(ch.get("company_id")) or {}).get("ats"), dict)]
+    events = _journal.feeds_events(recs, on=today.isoformat())
+    if not events:
+        return {ch["id"]: ("cadence", "no feed poll yet today") for ch in linked}
+    failed = events[-1].get("companies_not_covered") or {}
+    polled = {c.get("id") for c in companies
+              if isinstance(c.get("ats"), dict) and c.get("status") != "passed"}
+    out = {}
+    for ch in linked:
+        cid = ch["company_id"]
+        if cid in failed:
+            code = failed[cid]
+            if code in _journal.FEED_BOARD_CODES:
+                since = _journal.feed_board_failure_since(recs, cid)
+                lr = as_date(ch.get("last_reviewed"))
+                if since and lr is not None and lr >= datetime.date.fromisoformat(since):
+                    out[ch["id"]] = ("cadence", "feed failed (%s) but the page was reviewed since "
+                                     "%s" % (code, since))
+                else:
+                    out[ch["id"]] = ("due", "feed not covered: %s" % code)
+            else:
+                out[ch["id"]] = ("cadence", "feed not covered (%s: the machine or the poll's own "
+                                 "budget, not this board)" % code)
+        elif cid in polled:
+            out[ch["id"]] = ("covered", "covered by the %s feed" % by_company[cid]["ats"].get("vendor"))
+        else:
+            out[ch["id"]] = ("cadence", "not polled today")
+    return out
+
+
 def channel_yield(opps, since=None):
     """{channel_id: {"sightings": n, "pursued": n}} from opportunities' sightings[] —
     a QUERY of the records, never a hand-derived summary. `since` (datetime.date) windows
@@ -250,6 +306,37 @@ def main():
                   "NOT being scheduled. Add it to CADENCE_DAYS."
                   % (c["id"], c.get("review_cadence")))
 
+    # dev #751 -- company feeds. A channel the feed covered TODAY is not listed for the browser (the
+    # feed is its review); one whose feed failed with a BOARD code is listed DUE whatever its
+    # cadence; a host/budget failure keeps the cadence. A `manual-candidate` channel is never in the
+    # board worklist: it is a task for the candidate, printed apart below.
+    import journal as _journal
+    try:
+        _recs = _journal.read(ROOT)
+    except _journal.JournalError as _e:
+        print("  !! WARNING: the journal cannot be read (%s) -- feed coverage is UNKNOWN, so no "
+              "channel is dropped from the queue on a feed's word." % _e)
+        _recs = []
+    _feed = feed_review(chans, load_companies(), _recs, today)
+    covered_by_feed = [c for c in chans if _feed.get(c.get("id"), ("",))[0] == "covered"
+                       and c.get("relationship_status") != "retired"]
+    cov_ids = {c["id"] for c in covered_by_feed}
+    due = [(c, why) for c, why in due if c["id"] not in cov_ids]
+    upcoming = [(c, dd) for c, dd in upcoming if c["id"] not in cov_ids]
+    for c in chans:
+        st = _feed.get(c.get("id"))
+        if st and st[0] == "due" and c.get("relationship_status") != "retired":
+            if any(cc["id"] == c["id"] for cc, _w in due):
+                due = [(cc, ("DUE (%s); %s" % (st[1], w)) if cc["id"] == c["id"] else w)
+                       for cc, w in due]
+            else:
+                due.append((c, "DUE (%s)" % st[1]))
+            upcoming = [(cc, dd) for cc, dd in upcoming if cc["id"] != c["id"]]
+    candidate_tasks = [(c, w) for c, w in due if c.get("access") == "manual-candidate"]
+    due = [(c, w) for c, w in due if c.get("access") != "manual-candidate"]
+    upcoming_manual = [(c, dd) for c, dd in upcoming if c.get("access") == "manual-candidate"]
+    upcoming = [(c, dd) for c, dd in upcoming if c.get("access") != "manual-candidate"]
+
     # public #98 — fold in your_move.py's own 'now' group for channel `next_touch` plans.
     # Never a second computation of the fulfilment rule: `now_channel_plans` only reads
     # `your_move.classify_channels`'s answer. A channel review_rows() already put in `due`
@@ -278,6 +365,19 @@ def main():
                 print("      %s" % c["scope_notes"][:80])
     else:
         print("  Nothing due. All active-search channels are current.")
+
+    if covered_by_feed:
+        print("\nCOVERED BY FEED — the feed is this page's review today; no browser visit:")
+        for c in covered_by_feed:
+            print("  ✓ %-24s %s" % (c["label"][:24], _feed[c["id"]][1]))
+
+    if candidate_tasks or upcoming_manual:
+        print("\nFOR YOU TO OPEN — sites whose terms forbid automated access (never the board "
+              "worklist):")
+        for c, w in candidate_tasks:
+            print("  ☞ %-24s %s" % (c["label"][:24], w))
+        for c, dd in upcoming_manual:
+            print("  ○ %-24s next %s" % (c["label"][:24], dd.isoformat()))
 
     if upcoming:
         print("\nUPCOMING:")

@@ -526,7 +526,7 @@ def queue_item(what, why="", requires=()):
 
 
 def _append_item(what, why="", requires=(), kind="action", ref=None, role=None,
-                 quarantine=None, queued_run=None):
+                 quarantine=None, queued_run=None, channel_id=None, source=None):
     """dev #692 / public #140 (N2) -- the ONE private writer of a new queue row, and the only
     place a row reaches the queue WITHOUT passing `FORBIDDEN`. Its callers are pinned by
     `test_send_filter.py` (a source scan): `queue_item` (which checks the filter first),
@@ -544,7 +544,13 @@ def _append_item(what, why="", requires=(), kind="action", ref=None, role=None,
     `quarantine` (dev #722 / public #156; only a `capture-role` item from a degraded sweep passes
     one) is `{run_id, because: [code...], queries: [k...]}`; `queued_run` (dev #723; only a
     `read-jd` item passes one) is the run that queued it, so that run is never served the item it
-    could not finish. Both are omitted when None."""
+    could not finish. Both are omitted when None.
+
+    `channel_id` and `source` (dev #751, B7; only a FEED `capture-role` item passes them) are the
+    linked company-site channel the posting came from and `feed:<vendor>`. `record.py create
+    --from-item` copies the channel into `sightings[0]` and refuses a different one the model
+    supplies, so a feed role's channel is a recorded fact, not a thing a model typed. Omitted when
+    None, so every other item is unchanged."""
     now = datetime.datetime.now()
     # dev #481 / public #112 -- the timestamp prefix keeps ids sortable; the random suffix is what
     # stops two adds inside one second (two controllers, or a runner and daily-run in the same
@@ -563,6 +569,10 @@ def _append_item(what, why="", requires=(), kind="action", ref=None, role=None,
         rec["quarantine"] = quarantine
     if queued_run is not None:
         rec["queued_run"] = queued_run
+    if channel_id is not None:
+        rec["channel_id"] = channel_id
+    if source is not None:
+        rec["source"] = source
     with open(QUEUE, "a", encoding="utf-8") as fh:          # append-only, like the inbox
         fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
     return rec
@@ -1312,86 +1322,40 @@ def _describe_fault(f):
     return "LINE FAULT  line %d: %s -- %r" % (f["line"], f["rule"], f["text"])
 
 
-def add_roles(text, run_id, surface, out=print, check=False, already_locked=False):
-    """dev #692 / public #140 (692-2a/b, N5, N6) -- the gate on a pass report. Returns the exit
-    code: 0 clean, 4 accepted with line faults (dev #707 / public #151), 3 refused (ONE
-    `partial-results` gap `jobsearch:roles:<surface>`, nothing else written).
+def _resolve_roles(roles, run_id, surface, queries, run_date, pass_label, opps, companies, apps,
+                   recs, rows, out, already_locked=False):
+    """dev #751 (design §3.5, B8) -- resolve each parsed role to exactly ONE outcome. This is the
+    per-role half of `add_roles`, split out so the company feed poller (`feed_poll.py`,
+    `surface="feed"`) resolves a posting through the SAME code a sweep does: no second de-duplication.
+    `add_roles` keeps its behaviour byte for byte (its existing tests are the proof).
 
-    ⭐ A LINE FAULT NEVER DISCARDS A VALID ROLE (dev #707 / public #151). Only a STRUCTURAL fault
-    refuses the block (see `parse_roles`). Every other fault -- a stray line, a QUERY or ROLE that
-    breaks a rule, a duplicate posting, a SEEN count that disagrees with the lines -- becomes a
-    `partial-results` gap of its own (`jobsearch:roles-line:<surface>:<line|block:<check>>`, naming
-    the line, the line's text and the rule) while every ROLE that parsed is resolved exactly as
-    below. Whenever the call refuses or records any fault, the raw hand-back is copied to
-    `<profile root>/.jobsearch/handbacks/roles-<run>-<surface>.md` and the message names it.
-    `check=True` (`--check`) runs the SAME parse, prints every fault and a one-line verdict
-    (`clean`, `N line faults`, `refused: <why>`), writes NOTHING, and returns the same code the
-    real call would.
+    `roles` are the dicts `parse_roles` builds (url, title, company, location, canonical, the three
+    slots, `q`); a feed builds the same dicts. THE CHANNEL INPUT (B8): a role dict may carry
+    `channel_id` (and `source`, e.g. `feed:lever`); a feed role MUST, and it is used (1) as the
+    channel of a sibling listing linked onto a known row and (2) carried on the `capture-role` item it
+    queues (B7), so `record.py create --from-item` records the sighting's channel instead of
+    trusting a model to name it. `queries` is the QUERY list the `q=` ordinals index (empty for a
+    feed, whose roles carry no `q`).
 
-    An accepted block resolves EVERY `ROLE` line to exactly one outcome (never a prose count):
+    THE FEED DE-DUP PREDICATE (B8): a posting is KNOWN when its canonical URL equals a live row's
+    `jd_url` or any of its sightings' `source_url` -- `pipeline_index.find_known_match`, URL first.
+    That is a hit with basis `jd_url` / `sighting url`: counted `known`, NOTHING written, whichever
+    channel the sighting names (the URL is the identity; a different channel for the same URL does
+    not count), so a daily re-poll writes nothing. A role matching only on company + title is another
+    LISTING of a known requisition and appends a sighting, guarded by `feed_sighting_needed`.
 
-      * a role gap -- `ROLE nourl`, or a URL with no canonical form (a LinkedIn URL with no job id
-        is never guessed at);
-      * known (passed) -- matches an EXCLUDED row (`find_known_match`, so a passed role stays passed);
-      * captured -- matches an ACTIVE row whose earliest sighting is this run's date (the runner
-        captured it in-pass; its opp id is printed so the write phase screens it);
-      * known -- matches any other ACTIVE row;
-      * quarantined (dev #722 / public #156) -- not known or captured, and EVERY query in its `q=`
-        reported a degradation: ONE `capture-role` item carrying a `quarantine` field that no
-        worker is served (a clean re-sighting releases it);
-      * carried -- anything else, including an EXPIRED row's repost: ONE `capture-role` item,
-        `ref` the canonical URL, idempotent on `(kind, ref)`.
-
-    then asserts the identity `distinct = captured + known + carried + quarantined + role_gaps`
-    (over the ROLE lines accepted) and writes ONE `roles` event. Query-level gaps (unreachable, window not
-    applied, truncated) are filed and counted in their own fields. Re-running the same block writes
-    no new row: the queue is idempotent, a gap is filed once per run, and an identical `roles`
-    event is not repeated."""
+    Returns the state `add_roles` reports from: counts (captured / known / carried / quarantined /
+    role_gaps), siblings, possible, resolved_keys, screen_ids, quarantine_reasons, captured_degraded.
+    `quarantined` is always 0 for a feed (a feed is a complete listing, so no role is held degraded),
+    and the feeds event asserts it."""
     import journal as _journal
-    from pipeline_index import (find_known_match, resolve_company, normalize_company)
-    gap_scope = _journal.ROLES_GAP_SCOPE % surface
-    rel = _handback_rel(run_id, surface)
-    try:
-        parsed = parse_roles(text, run_id, surface)
-    except RolesRefused as e:
-        if check:
-            out("verdict: refused: %s" % e)
-            return ROLES_EXIT_REFUSED
-        kept = _keep_handback(text, run_id, surface, out)
-        out("⛔ REFUSED — %s. Nothing was recorded except a `partial-results` gap (%s)."
-            % (e, gap_scope))
-        if kept:
-            out("   The raw hand-back is kept at %s" % kept)
-        _file_gap(run_id, gap_scope, "partial-results",
-                  "the pass's ROLES block is accepted by deferred.py --add-roles --surface %s%s"
-                  % (surface, (" (raw hand-back kept at %s)" % rel) if kept else ""), out)
-        return ROLES_EXIT_REFUSED
-
-    faults = parsed["faults"]
-    if check:
-        for f in faults:
-            out(_describe_fault(f))
-        if faults:
-            out("verdict: %d line fault%s" % (len(faults), "" if len(faults) == 1 else "s"))
-            return ROLES_EXIT_FAULTS
-        out("verdict: clean")
-        return ROLES_EXIT_OK
-
-    opps = _load_store("opportunities.jsonl")
-    companies = _load_store("companies.jsonl")
-    apps = _load_store("applications.jsonl")
-    recs = _journal.read(ROOT)
-    starts = [r for r in recs if r.get("event") == "start" and r.get("run_id") == run_id]
-    run_date = str(starts[0].get("at"))[:10] if starts else datetime.date.today().isoformat()
-    window = parsed["header"]["window"]
-    pass_label = "board" if surface == "board" else window
-    rows = replay(load())
+    from pipeline_index import (find_known_match, resolve_company)
     counts = {"captured": 0, "known": 0, "carried": 0, "quarantined": 0, "role_gaps": 0}
     siblings = possible = 0          # dev #728 / public #158 -- subsets of known/carried, not buckets
     resolved_keys, screen_ids = set(), []
     quarantine_reasons, captured_degraded = {}, 0
 
-    for r in parsed["roles"]:
+    for r in roles:
         title, company, loc = _clip(r["title"]), _clip(r["company"]), _clip(r["location"])
         key = _role_key(company, title)
         if r["canonical"] is None:
@@ -1433,13 +1397,14 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
                 out("NEARER LISTING of passed %s: %s (%s)" % (lrow.get("id"), near_place, near_state))
                 hit = None            # not auto-closed: carried below, so it can become a decision
             else:
-                qs = [parsed["queries"][k - 1] for k in (r.get("q") or [])
-                      if 0 < k <= len(parsed["queries"])]
-                channel = (next((q.get("channel") for q in qs if q.get("channel")), None)
+                qs = [queries[k - 1] for k in (r.get("q") or [])
+                      if 0 < k <= len(queries)]
+                channel = (r.get("channel_id")          # a feed role names its own (dev #751)
+                           or next((q.get("channel") for q in qs if q.get("channel")), None)
                            or lrow.get("channel_id")
                            or next((s.get("channel_id") for s in (lrow.get("sightings") or [])
                                     if s.get("channel_id")), None))
-                if channel:
+                if channel and (surface != "feed" or feed_sighting_needed(lrow, canon)):
                     sg = {"channel_id": channel, "seen_on": run_date, "source_url": canon}
                     if loc not in ("", "?"):
                         sg["location"] = loc
@@ -1535,9 +1500,104 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
         what = ("Capture role: %s at %s (%s), seen %s pass: %s"
                 % (title, company, loc or "?", pass_label, canon))
         item = _append_item(what, "seen in a pass; not yet captured", (), kind=KIND_CAPTURE,
-                            ref=canon, role=role_payload(r, run_date))
+                            ref=canon, role=role_payload(r, run_date),
+                            channel_id=r.get("channel_id"), source=r.get("source"))
         rows.append(item)
         out("CARRIED     %s (queued %s)" % (canon, item["id"]))
+    return {"counts": counts, "siblings": siblings, "possible": possible,
+            "resolved_keys": resolved_keys, "screen_ids": screen_ids,
+            "quarantine_reasons": quarantine_reasons, "captured_degraded": captured_degraded}
+
+
+def feed_sighting_needed(row, url):
+    """dev #751 (B8) -- the de-dup predicate for a feed sighting: True only when `url` is NOT already
+    the row's `jd_url` or the `source_url` of one of its sightings (compared canonically, as
+    `record.py`'s `_link_from_item` compares: its `have` test). A split-off sighting no longer
+    evidences the row, as in `find_known_match`."""
+    import pipeline_index as _pidx
+    have = [row.get("jd_url")] + [s.get("source_url") for s in (row.get("sightings") or [])
+                                  if isinstance(s, dict) and not s.get("split_to")]
+    return not any(h and _pidx._urls_equal(url, h) for h in have)
+
+
+def add_roles(text, run_id, surface, out=print, check=False, already_locked=False):
+    """dev #692 / public #140 (692-2a/b, N5, N6) -- the gate on a pass report. Returns the exit
+    code: 0 clean, 4 accepted with line faults (dev #707 / public #151), 3 refused (ONE
+    `partial-results` gap `jobsearch:roles:<surface>`, nothing else written).
+
+    ⭐ A LINE FAULT NEVER DISCARDS A VALID ROLE (dev #707 / public #151). Only a STRUCTURAL fault
+    refuses the block (see `parse_roles`). Every other fault -- a stray line, a QUERY or ROLE that
+    breaks a rule, a duplicate posting, a SEEN count that disagrees with the lines -- becomes a
+    `partial-results` gap of its own (`jobsearch:roles-line:<surface>:<line|block:<check>>`, naming
+    the line, the line's text and the rule) while every ROLE that parsed is resolved exactly as
+    below. Whenever the call refuses or records any fault, the raw hand-back is copied to
+    `<profile root>/.jobsearch/handbacks/roles-<run>-<surface>.md` and the message names it.
+    `check=True` (`--check`) runs the SAME parse, prints every fault and a one-line verdict
+    (`clean`, `N line faults`, `refused: <why>`), writes NOTHING, and returns the same code the
+    real call would.
+
+    An accepted block resolves EVERY `ROLE` line to exactly one outcome (never a prose count):
+
+      * a role gap -- `ROLE nourl`, or a URL with no canonical form (a LinkedIn URL with no job id
+        is never guessed at);
+      * known (passed) -- matches an EXCLUDED row (`find_known_match`, so a passed role stays passed);
+      * captured -- matches an ACTIVE row whose earliest sighting is this run's date (the runner
+        captured it in-pass; its opp id is printed so the write phase screens it);
+      * known -- matches any other ACTIVE row;
+      * quarantined (dev #722 / public #156) -- not known or captured, and EVERY query in its `q=`
+        reported a degradation: ONE `capture-role` item carrying a `quarantine` field that no
+        worker is served (a clean re-sighting releases it);
+      * carried -- anything else, including an EXPIRED row's repost: ONE `capture-role` item,
+        `ref` the canonical URL, idempotent on `(kind, ref)`.
+
+    then asserts the identity `distinct = captured + known + carried + quarantined + role_gaps`
+    (over the ROLE lines accepted) and writes ONE `roles` event. Query-level gaps (unreachable, window not
+    applied, truncated) are filed and counted in their own fields. Re-running the same block writes
+    no new row: the queue is idempotent, a gap is filed once per run, and an identical `roles`
+    event is not repeated."""
+    import journal as _journal
+    gap_scope = _journal.ROLES_GAP_SCOPE % surface
+    rel = _handback_rel(run_id, surface)
+    try:
+        parsed = parse_roles(text, run_id, surface)
+    except RolesRefused as e:
+        if check:
+            out("verdict: refused: %s" % e)
+            return ROLES_EXIT_REFUSED
+        kept = _keep_handback(text, run_id, surface, out)
+        out("⛔ REFUSED — %s. Nothing was recorded except a `partial-results` gap (%s)."
+            % (e, gap_scope))
+        if kept:
+            out("   The raw hand-back is kept at %s" % kept)
+        _file_gap(run_id, gap_scope, "partial-results",
+                  "the pass's ROLES block is accepted by deferred.py --add-roles --surface %s%s"
+                  % (surface, (" (raw hand-back kept at %s)" % rel) if kept else ""), out)
+        return ROLES_EXIT_REFUSED
+
+    faults = parsed["faults"]
+    if check:
+        for f in faults:
+            out(_describe_fault(f))
+        if faults:
+            out("verdict: %d line fault%s" % (len(faults), "" if len(faults) == 1 else "s"))
+            return ROLES_EXIT_FAULTS
+        out("verdict: clean")
+        return ROLES_EXIT_OK
+
+    opps = _load_store("opportunities.jsonl")
+    companies = _load_store("companies.jsonl")
+    apps = _load_store("applications.jsonl")
+    recs = _journal.read(ROOT)
+    starts = [r for r in recs if r.get("event") == "start" and r.get("run_id") == run_id]
+    run_date = str(starts[0].get("at"))[:10] if starts else datetime.date.today().isoformat()
+    window = parsed["header"]["window"]
+    pass_label = "board" if surface == "board" else window
+    rows = replay(load())
+    res = _resolve_roles(parsed["roles"], run_id, surface, parsed["queries"], run_date, pass_label,
+                         opps, companies, apps, recs, rows, out, already_locked)
+    counts, siblings, possible = res["counts"], res["siblings"], res["possible"]
+    resolved_keys, screen_ids = res["resolved_keys"], res["screen_ids"]
+    quarantine_reasons, captured_degraded = res["quarantine_reasons"], res["captured_degraded"]
 
     # a role a later block resolves closes its open per-role gap (closes_when: captured)
     closed = {g.get("gap_id") for g in recs if g.get("event") == "gap-closed"}

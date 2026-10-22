@@ -366,6 +366,28 @@ def _query_reads_line(e, label=None):
                          why, e.get("q_total_unknown", 0)))
 
 
+def feeds_line(e):
+    """dev #751 -- the company-feed line, COMPUTED from a `feeds` event's own counts and never composed:
+
+      feeds: 12 polled · 11 covered (7 unchanged) · NOT COVERED 1 (not-found ×1) · 4 selected -> 1 captured · 1 known · 2 carried · 0 role gaps
+
+    A not-covered count of zero is printed as such and a not-covered feed is NEVER read as "0 roles":
+    the failure codes and, when a host was marked down, the host and its code are on the line. An
+    event that polled nothing says `0 polled` (no tracked company carries a slug), not silence."""
+    nc = e.get("not_covered", 0)
+    why = e.get("failures") or {}
+    line = ("feeds: %d polled · %d covered (%d unchanged) · NOT COVERED %d%s · %d selected -> %d captured "
+            "· %d known · %d carried · %d role gap%s"
+            % (e.get("polled", 0), e.get("covered", 0), e.get("unchanged", 0), nc,
+               (" (%s)" % ", ".join("%s ×%d" % (c, why[c]) for c in sorted(why))) if why else "",
+               e.get("selected", 0), e.get("captured", 0), e.get("known", 0), e.get("carried", 0),
+               e.get("role_gaps", 0), "" if e.get("role_gaps", 0) == 1 else "s"))
+    hosts = e.get("hosts_down") or {}
+    if hosts:
+        line += " · host down: %s" % ", ".join("%s (%s)" % (h, hosts[h]) for h in sorted(hosts))
+    return line
+
+
 def roles_lines(recs, run_id, root=None, kind=None, at=None):
     """dev #692 / public #140 + #489 / public #102 -- the sourcing lines, COMPUTED from this
     run's `roles` events and gaps, never composed. Returns a list of lines (no indent):
@@ -409,6 +431,8 @@ def roles_lines(recs, run_id, root=None, kind=None, at=None):
         reads = _query_reads_line(e, label)
         if reads:
             lines.append(reads)
+    for e in _journal.feeds_events(recs, run_id=run_id):
+        lines.append(feeds_line(e))
     held = {g.get("scope") for g in _journal.open_gaps(recs, run_id=run_id)}
     for surface in _journal.ROLES_SURFACES:
         if _journal.ROLES_GAP_SCOPE % surface in held:

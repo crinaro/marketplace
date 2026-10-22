@@ -104,7 +104,9 @@
     "size",
     "note",
     "research_log",
-    "hq"
+    "hq",
+    "ats",
+    "warm_lookup"
    ],
    "required": [
     "id",
@@ -126,7 +128,9 @@
     "relationship_status",
     "log",
     "next_touch",
-    "access"
+    "access",
+    "alert_sender",
+    "company_id"
    ],
    "required": [
     "id",

@@ -207,7 +207,43 @@ from _root import (profile_root, is_tracked_fixture, transcript_stash_path, is_u
 
 JOURNAL = os.path.join("data", "runs.jsonl")
 EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swept", "probe",
-         "triaged", "dispatch", "pass", "roles")
+         "triaged", "dispatch", "pass", "roles", "feeds")
+
+# dev #751 (sourcing-feeds; design §3.6 as amended by review B1/B3/B6) -- the company feed poller's
+# failure vocabulary, CLOSED and validated by `record_feeds`: a code, not a sentence, each mapped to
+# the existing `REASONS` code a gap carries (`REASONS` itself is unchanged, so no reader of it
+# changes). A feed that did not return the documented list is NOT COVERED, never zero roles.
+#
+# The codes split in two, and the split is load-bearing (B1):
+#   BOARD codes   -- one board is wrong (404, a body that is not the documented shape, a redirect, an
+#                    odd status). The company's career-page channel is listed DUE for the browser
+#                    regardless of cadence, until one browser review stamps `last_reviewed`.
+#   HOST codes    -- the machine or the host failed (egress refused by a sandbox or firewall, a TLS
+#                    chain the host does not trust, DNS/connect failure, a timeout or rate limit on
+#                    the host's FIRST request, or the poller's own deadline). Not a fact about any
+#                    one company, so the channel keeps its NORMAL cadence: a machine that cannot
+#                    reach a vendor must not turn a monthly browser visit into a daily one for every
+#                    slugged company.
+FEED_FAILURES = {
+    "not-found": "upstream-error",          # 404
+    "auth-required": "upstream-error",      # 401 / 403 once the host has answered (design U1)
+    "http-error": "upstream-error",         # any other non-2xx, non-304
+    "redirected": "upstream-error",         # a cross-host redirect is not followed
+    "unparseable": "upstream-error",        # a 200 that is not the documented shape
+    "rate-limited": "rate-limited",         # 429/503 not resolved by one capped wait
+    "timeout": "timeout",
+    "unreachable": "surface-unreachable",   # DNS, connect or generic transport failure
+    "egress-blocked": "surface-unreachable",  # a sandbox/proxy refused the host (B1)
+    "tls-untrusted": "surface-unreachable",   # certificate verification failed (B1)
+    "budget-exhausted": "timeout",          # the poller's own deadline expired before this board (B3)
+}
+FEED_BOARD_CODES = ("not-found", "auth-required", "http-error", "redirected", "unparseable")
+FEED_HOST_CODES = tuple(c for c in FEED_FAILURES if c not in FEED_BOARD_CODES)
+FEED_COMPANY_GAP_SCOPE = "jobsearch:feed:%s"
+FEED_HOST_GAP_SCOPE = "jobsearch:feeds:host:%s"
+FEEDS_COUNT_FIELDS = ("polled", "covered", "unchanged", "not_covered", "postings", "unlisted",
+                      "selected", "captured", "known", "carried", "role_gaps", "quarantined",
+                      "sightings_added", "discovered", "ambiguous")
 
 # dev #692 / public #140 -- the two pass surfaces a `roles` event can account for, and the windows
 # one can carry. R5 (owner, 2026-10-09): LinkedIn's OWN UI time buckets only -- `r86400` ("Past 24
@@ -738,6 +774,120 @@ def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_g
            "q_unread": q_unread, "q_total_unknown": q_total_unknown, "q_degraded": q_degraded,
            "q_degraded_queries": q_degraded_queries, "at": at}
     return append(root, rec)
+
+
+def record_feeds(root, run_id, polled, covered, unchanged, not_covered, failures,
+                 companies_not_covered, postings, unlisted, selected, captured, known, carried,
+                 role_gaps, sightings_added=0, discovered=0, ambiguous=0, quarantined=0,
+                 hosts_down=None, at=None):
+    """dev #751 -- the ONE writer of a `feeds` event: one per `feed_poll.py --run`. Validated at
+    write, loud: a row that claims a number it cannot account for never reaches the store.
+
+      polled     = covered + not_covered         (every company the poll was asked about; a company the
+                                                  deadline did not reach, or on a host marked down, is
+                                                  NOT COVERED, never silently absent)
+      unchanged <= covered                       (a 304 counts as covered: nothing changed)
+      not_covered = sum(failures.values()) = len(companies_not_covered)
+      selected   = captured + known + carried + role_gaps (+ quarantined, asserted 0: a feed is a
+                                                  complete listing, so no role is held degraded)
+
+    `failures` is `{code: companies}` over `FEED_FAILURES`; `companies_not_covered` is
+    `{company_id: code}` (a dict, not the bare list the design first sketched: `channels_due.py` has
+    to tell a BOARD failure from a HOST failure per company, B1); `hosts_down` is `{host: code}`, the
+    hosts the poller stopped sending requests to for this run. ⚠️ ROLLBACK RISK, as for `roles`: an
+    engine older than 0.72.0 refuses a journal holding a `feeds` row."""
+    at = at or now_iso()
+    if not run_id:
+        raise JournalError("record_feeds requires run_id")
+    counts = dict(polled=polled, covered=covered, unchanged=unchanged, not_covered=not_covered,
+                  postings=postings, unlisted=unlisted, selected=selected, captured=captured,
+                  known=known, carried=carried, role_gaps=role_gaps, quarantined=quarantined,
+                  sightings_added=sightings_added, discovered=discovered, ambiguous=ambiguous)
+    for k, v in counts.items():
+        if not isinstance(v, int) or isinstance(v, bool) or v < 0:
+            raise JournalError("record_feeds %s=%r is not a non-negative integer" % (k, v))
+    if polled != covered + not_covered:
+        raise JournalError("record_feeds: polled=%d but covered+not_covered=%d -- every company "
+                           "polled is covered or not covered, never neither"
+                           % (polled, covered + not_covered))
+    if unchanged > covered:
+        raise JournalError("record_feeds: unchanged=%d exceeds covered=%d -- a 304 is a covered "
+                           "feed, so it cannot outnumber them" % (unchanged, covered))
+    failures = dict(failures or {})
+    companies_not_covered = dict(companies_not_covered or {})
+    for code, n in failures.items():
+        if code not in FEED_FAILURES:
+            raise JournalError("record_feeds failure code %r is not in FEED_FAILURES %r"
+                               % (code, sorted(FEED_FAILURES)))
+        if not isinstance(n, int) or isinstance(n, bool) or n < 0:
+            raise JournalError("record_feeds failures[%r]=%r is not a non-negative integer"
+                               % (code, n))
+    for cid, code in companies_not_covered.items():
+        if code not in FEED_FAILURES:
+            raise JournalError("record_feeds: company %r has failure code %r, not in FEED_FAILURES"
+                               % (cid, code))
+    if sum(failures.values()) != not_covered or len(companies_not_covered) != not_covered:
+        raise JournalError(
+            "record_feeds: not_covered=%d but sum(failures)=%d and companies_not_covered=%d -- every "
+            "not-covered feed has a code and a name" % (not_covered, sum(failures.values()),
+                                                         len(companies_not_covered)))
+    by_code = {}
+    for code in companies_not_covered.values():
+        by_code[code] = by_code.get(code, 0) + 1
+    if by_code != {c: n for c, n in failures.items() if n}:
+        raise JournalError("record_feeds: failures %r disagrees with the per-company codes %r"
+                           % (failures, by_code))
+    if quarantined != 0:
+        raise JournalError("record_feeds: quarantined=%d but a feed is a complete listing and "
+                           "holds no role as degraded (must be 0)" % quarantined)
+    if selected != captured + known + carried + role_gaps + quarantined:
+        raise JournalError(
+            "record_feeds: selected=%d but captured+known+carried+role_gaps=%d -- every selected "
+            "posting resolves to exactly one outcome"
+            % (selected, captured + known + carried + role_gaps + quarantined))
+    hosts_down = dict(hosts_down or {})
+    for host, code in hosts_down.items():
+        if code not in FEED_HOST_CODES:
+            raise JournalError("record_feeds: host %r down with %r, which is not a HOST code %r"
+                               % (host, code, FEED_HOST_CODES))
+    rec = {"event": "feeds", "run_id": run_id, "polled": polled, "covered": covered,
+           "unchanged": unchanged, "not_covered": not_covered,
+           "failures": {c: n for c, n in sorted(failures.items()) if n},
+           "companies_not_covered": dict(sorted(companies_not_covered.items())),
+           "hosts_down": dict(sorted(hosts_down.items())), "postings": postings,
+           "unlisted": unlisted, "selected": selected, "captured": captured, "known": known,
+           "carried": carried, "role_gaps": role_gaps, "quarantined": quarantined,
+           "sightings_added": sightings_added, "discovered": discovered, "ambiguous": ambiguous,
+           "at": at}
+    return append(root, rec)
+
+
+def feeds_events(recs, run_id=None, on=None):
+    """Every `feeds` event, oldest first; `run_id` narrows to one run, `on` (an ISO date) to the
+    events written that day -- how `channels_due.py` reads "this run" without a run id."""
+    rows = [r for r in recs if r.get("event") == "feeds"]
+    if run_id is not None:
+        rows = [r for r in rows if r.get("run_id") == run_id]
+    if on is not None:
+        rows = [r for r in rows if str(r.get("at") or "")[:10] == str(on)[:10]]
+    return sorted(rows, key=lambda r: r.get("at") or "")
+
+
+def feed_board_failure_since(recs, company_id, today=None):
+    """The ISO date a company's CURRENT run of consecutive BOARD failures began, or None when its
+    latest feed outcome is not a board failure (B1): the streak runs back through `feeds` events
+    that name the company with a `FEED_BOARD_CODES` code and stops at the first event that covered
+    it, held it to a host/budget code, or did not name it as failed. `channels_due.py` lists a
+    channel DUE only while its `last_reviewed` is older than this date, so one browser review ends
+    the daily pull instead of every day of a streak repeating it."""
+    since = None
+    for ev in reversed(feeds_events(recs)):
+        code = (ev.get("companies_not_covered") or {}).get(company_id)
+        if code in FEED_BOARD_CODES:
+            since = str(ev.get("at") or "")[:10]
+        else:
+            break
+    return since
 
 
 def roles_events(recs, run_id=None, surface=None):

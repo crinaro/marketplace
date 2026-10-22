@@ -105,6 +105,16 @@ preferred for most work, and site plugins are arriving now on top of that. **A m
 into prose is a mechanism that cannot change without editing every file that mentions it**, and
 this one already had to change once.
 
+**Two routes are NOT yours (dev #751).** A career-page channel linked to a company that carries a
+company feed prints `feed:<vendor>` first (`route.py` lists the browser mechanisms after it). That is
+`feed_poll.py`'s route, run by the daily run before you: **never act on a `feed:` entry**, and a page
+the feed covered today is not in your worklist at all (`channels_due.py` prints it under COVERED BY
+FEED). You reach such a page only when `channels_due.py` lists it DUE because its feed was not covered,
+and then through the next browser mechanism on the line. A channel whose requirement is
+`manual-candidate` (Wellfound, YC Work at a Startup, Welcome to the Jungle: sites whose terms forbid
+automated access) prints `candidate: you open it` and no mechanism: **never open it**; the candidate
+does, and `channels_due.py` lists it apart under FOR YOU TO OPEN, not in your worklist.
+
 ⚠️ **If `route.py` refuses, STOP and report it.** An unreadable route is not a reason to guess:
 guessing produces a sweep that silently covered less than it claims, which is the one failure
 this whole plugin is organised against. A channel you could not reach is a REPORTED GAP, never a

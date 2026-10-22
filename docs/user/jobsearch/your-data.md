@@ -92,6 +92,8 @@ copied twelve times.
 | `status` | `active-target` · `watching` · `passed` |
 | `research_log` | append-only notes; company-level findings go here, not on each role |
 | `note` | free text of your own about the company as a whole — a remark that is not a dated finding (those go in `research_log`) |
+| `ats` | since 0.72.0 — the company's public job-board feed, so the daily run can read its openings with a script instead of a browser turn. Three states: **absent** (no feed found yet), **`null`** (you declined a feed for this company; nothing rewrites it) and **an object** `{vendor, slug, region, source, since}`. `vendor` is `greenhouse`, `lever` or `ashby`; `slug` is the board's short name; `region` (`global` or `eu`) is required for Lever only; `source` says how it was found (`career-url`, `posting-url` or `candidate`). Set it, decline it or clear it with `record.py ats` (see *Company feeds* in [How it works](how-it-works.md)) |
+| `warm_lookup` | since 0.72.0 — `{on, result}` where `result` is always `none-found`: you looked for a person at this company and found nobody. It is the one stored fact of the warm path; everything else a role card shows about it is worked out from your people, touches, drafts and applications. Absent means you have not looked. Written by `record.py warm-lookup <company_id> --none-found` |
 
 ## Channels — where roles come from
 
@@ -112,6 +114,7 @@ roles I pursue?" is a query, not a memory exercise.
 | `access` | how it is reached — see below |
 | `relationship_status`, `log` | for firms and referrals: where you stand, and the thread history — each `log` entry is a dated line, `log[].date` and `log[].note`. Who you know there is a person, not a field on the channel — see *People* below |
 | `alert_sender` | for a channel that sends alert-digest emails (a board or aggregator): the Gmail search fragment for its own From address, e.g. `from:indeed`. Absent on a channel with nothing to sweep — a recruiter, a channel you only check by hand — which is correct, not a gap |
+| `company_id` | since 0.72.0 — on a `company-site` channel only: the company whose careers page this channel is. It must name a company you track, a company has at most one such channel, and a company with an `ats` feed must have exactly one (the feed's roles are recorded against it). A company-site channel without it is just an unlinked careers page; `feed_poll.py --status` lists those |
 
 **⭐ Retiring a channel now does two things, not one.** Setting `relationship_status: retired` used
 to only drop the channel from the review queue (`channels_due.py` — "what needs reviewing"). Since
@@ -126,7 +129,7 @@ entry whether you meant it to or not.
 - `public` — no login, reliable
 - `login-chrome` — needs your signed-in desktop browser (this is LinkedIn)
 - `public-bot-limited` — searchable by hand, but automation gets blocked
-- `manual-candidate` — you review it yourself
+- `manual-candidate` — you review it yourself: a site whose terms forbid automated access. The engine never visits it; the review list shows it under **for you to open**, and only its alert email (if you set `alert_sender`) is read. Since 0.72.0 the sourcing routes know this value too
 - `human` — a recruiter or a referral
 - `n/a`
 
@@ -1570,6 +1573,19 @@ The upgrade seeds each of these where it is absent and never overwrites a value 
 | `search.retained_search_age_days` | how many days old a role from a recruiter channel may be before the screen flags it and recommends asking the recruiter what stage the search is in. A whole number from 14 to 120; defaults to **35**. The default is our choice inside the 4 to 6 week window a retained search usually takes to a first shortlist, picked at the early end because a wrong flag costs one question and a late one costs research and letters for a closed search |
 | `search.triage_per_run` | how many waiting roles one daily run reads and triages, oldest first. A whole number from 1 to 50; defaults to **10**. The run prints `triaging: N waiting, M triaged this run, K over the stuck bound` |
 | `search.triage_stuck_days` | how many days a role may sit in `triaging` before it is shown to you anyway, labelled "not yet read (waited K days)", with the lean `ask`. A whole number from 1 to 14; defaults to **3**. Counted from the role's first sighting |
+
+### Setting added in 0.72.0
+
+| key | what it is |
+|---|---|
+| `search.warm_lookup_days` | how many days a company reads "looked, none found" on a role card after you record that you looked for a person there and found nobody (`record.py warm-lookup`). After that the lookup is owed again, because people change jobs. A whole number from 7 to 365; defaults to **90**. Not seeded by the upgrade: absent means the default |
+
+### What the 0.72.0 upgrade writes
+
+The upgrade is automatic and keeps the originals first. It does two independent things; either one that cannot be sure of itself says so, writes nothing, and tries again next session:
+
+- **Company feeds.** For each company you track (not one marked `passed`) that has no `ats` key, it reads the company's own `career_url`, and the `jd_url` and sighting links of its roles. When they name exactly one Greenhouse, Lever or Ashby board, it writes `companies.ats` and links the company's careers-page channel (`channels.company_id`), creating that channel if there is none. It only reads strings and fetches nothing. Two different boards for one company are written nowhere and reported as `ATS AMBIGUOUS` for you to settle. Before the first write, `data/companies.jsonl` and `data/channels.jsonl` are copied to `*.pre-0.72.0`; if the result does not re-read cleanly the copies are put back. A company with `ats: null` is never touched. The upgrade writes no `warm_lookup` and no `search.warm_lookup_days`: those exist only when you record or set them.
+- **The four feed hosts.** The feed reader makes web requests to `boards-api.greenhouse.io`, `api.lever.co`, `api.eu.lever.co` and `api.ashbyhq.com`. The upgrade adds exactly those four to `sandbox.network.allowedDomains` in your **profile project's** `.claude/settings.json`, after saving a timestamped copy of that file. It leaves every other entry and setting alone, does not repeat hosts already listed, and never touches your global `~/.claude/settings.json`. A settings file it cannot parse is left exactly as it was, and the step waits.
 
 ### Attended and unattended
 

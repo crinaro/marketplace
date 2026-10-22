@@ -84,6 +84,7 @@ import precondition as _pre
 import channels_due as _cd
 import conversations as _conv_mod
 import config_keys as _ck
+import warm_path as _warm_path                                   # dev #751: the warm-path next action
 # ⭐ THE ONE DEFINITION OF "CURRENT" — resume_variants.py owns union_hash (the canonicalized,
 # line-ending/trailing-space/trailing-newline-insensitive stamp `--stamp` writes onto
 # union_sha). This file used to recompute a RAW sha256 of the union's bytes, which agreed with
@@ -495,6 +496,42 @@ def _pursuit_chip(p):
         esc(str(p.get("cell") or "")), esc(label))
 
 
+WARM_PATH_NOTES = {
+    "ready": "after you decide",
+    "draft-owed": "draft owed",
+    "drafted": "draft ready for you to send",
+    "touched": None,           # "asked <date>"
+    "lookup-owed": None,       # a link / a search to open
+    "looked-none": None,       # "looked <date>, none found"
+}
+
+
+def _warm_html(a):
+    """dev #751 (W3) -- ONE line on a role card: the warm-path next action `warm_path.py` derived for it,
+    never composed here. `data-warm` carries the state so `check_dashboard_coverage.py` can hold the page
+    to it (a derived action whose card lacks the line, or shows a different state, is a gap). A lookup is a
+    LINK the candidate opens, only when a LinkedIn company URL is already on record; nothing here sends,
+    connects or messages anyone."""
+    if not a:
+        return ""
+    who = esc(a.get("person_name") or a.get("person_id") or "")
+    kind = {"referral-ask": "referral ask to", "hm-note": "note to the hiring manager"}.get(a["kind"], "")
+    st = a["state"]
+    if st == "lookup-owed":
+        if a.get("linkedin_url"):
+            text = ('no one known: <a href="%s" target="_blank" rel="noopener">look up on LinkedIn '
+                    '&#8599;</a>, then record who you found' % esc(a["linkedin_url"]))
+        else:
+            text = "no one known: search LinkedIn for people there, then record who you found"
+    elif st == "looked-none":
+        text = "looked %s, none found" % esc(a.get("on") or "?")
+    elif st == "touched":
+        text = "%s %s (asked %s)" % (kind, who, esc(a.get("on") or "?"))
+    else:
+        text = "%s %s (%s)" % (kind, who, WARM_PATH_NOTES[st])
+    return '<div class="opp-warm" data-warm="%s">Warm path: %s</div>' % (esc(st), text)
+
+
 def _lean_html(o, role_state):
     """The row-level triage line (dev #713 / public #145): a `decide` row shows the LEAN and the
     likely-pass signals that matched; a `triaging` row names what the system has yet to do.
@@ -519,7 +556,7 @@ def _lean_html(o, role_state):
 
 
 def render_opportunity_list(opps, companies, attention=None, owner=None, involvements=None,
-                            pursuit=None, roles=None, set_name="opportunities"):
+                            pursuit=None, roles=None, set_name="opportunities", warm=None):
     """One row per LIVE role — needs-you first, then yours, then the run's — inside a
     FILTERED LIST over OPP_DIMS, EVERY member rendered. Closed roles are not here — they
     are not opportunities.
@@ -561,6 +598,10 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
     from the fields by this file. Each row's `data-pursuit` is its ONE partition token and
     `data-pursuit-also="your-move"` marks the cross-cut (ATTENTION's needs-you): a row can be
     both `New` and `Your move`, which one radio value could not say.
+
+    ⭐ dev #751 -- `warm` is `{opp id: warm_path action}` (`warm_path.derive`, keyed by every role an
+    action covers): each card carries ONE `Warm path:` line, rendered by `_warm_html`, and the coverage check
+    recomputes the actions and holds the card to them.
 
     Returns (html, counts): html is the whole filtered list — controls, the `.flist` of
     rows, and the remainder line OUTSIDE it (never hidden by any filter state).
@@ -708,7 +749,7 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
             f'    <div class="opp-rail">{stage_rail(o)}</div>'
             f'  </div>'
             f'  <div class="opp-meta">{meta}</div>'
-            f'  {_lean_html(o, roles.get(o.get("id")))}{nxt}{body}'
+            f'  {_lean_html(o, roles.get(o.get("id")))}{nxt}{_warm_html((warm or {}).get(o.get("id")))}{body}'
             f'</div>'))
     # REACHABLE (ADR-024, public #54): every member renders; a filtered list has no remainder.
     keys = ["opp:%s" % i for i, _h in rows if i]
@@ -2855,6 +2896,8 @@ CSS = """
   .opp-jd-none { color:inherit; opacity:.4; font-weight:450; border-style:dashed; }
   .opp-meta { font-size:12.5px; opacity:.66; margin-top:2px; }
   .opp-next { font-size:13px; margin-top:7px; }
+  .opp-warm { font-size:12.5px; margin-top:5px; opacity:.85; }
+  .opp-warm a { text-decoration:underline; }
   .opp-arrow { opacity:.5; margin-right:4px; }
   .opp-owner { font-size:11.5px; opacity:.6; margin-left:6px; white-space:nowrap;
                display:inline-block; }
@@ -3114,12 +3157,25 @@ def main():
     _od_refs = [dict(r, primary=(r["kind"] in ("chan", "opp") and r["key"] not in _page_opp_keys))
                 for r in _od["refs"]]
 
+    # dev #751 -- the warm-path next action per role, DERIVED by warm_path.py (no stored copy). A failed
+    # derivation must NEVER read as "nobody to ask": it is said on the page and in the log.
+    _warm_by_opp, _warm_failed = {}, None
+    try:
+        _cfg_lookup = _ck.resolve_int(_profile.config(), _ck.SEARCH_WARM_LOOKUP_DAYS)
+        for _a in _warm_path.derive(str(ROOT), today=_today_iso, lookup_days=_cfg_lookup):
+            for _oid in _a["opp_ids"]:
+                _warm_by_opp[_oid] = _a
+    except Exception as _e:                                          # noqa: BLE001 - said, never swallowed
+        _warm_failed = "%s: %s" % (type(_e).__name__, _e)
+        print("  !! WARNING: the warm-path derivation failed (%s) - the cards carry no warm-path line"
+              % _warm_failed)
+
     # ── Opportunities to pursue: the roles where a decision is owed ────────
     _first_opps, opp_counts = "", dict(_EMPTY_OPP_COUNTS)
     if _new_opps:
         opp_list_html, opp_counts = render_opportunity_list(
             _new_opps, _opp_comps, attention=_attention, owner=_owner, pursuit=_pursuit,
-            roles=_roles)
+            roles=_roles, warm=_warm_by_opp)
         _first_opps = (
             '<h2 id="phase-pipeline-roles">🎯 Opportunities to pursue '
             '<span class="tcount">%d</span></h2>'
@@ -3135,7 +3191,7 @@ def main():
     if _unsent_opps:
         todo_html, todo_counts = render_opportunity_list(
             _unsent_opps, _opp_comps, attention=_attention, owner=_owner, pursuit=_pursuit,
-            roles=_roles, set_name="applying-finish")
+            roles=_roles, set_name="applying-finish", warm=_warm_by_opp)
         n_apply += todo_counts["all"]
         _apply_parts.append(todo_html +
                             '<div class="note"><strong>&ldquo;Not sent yet&rdquo; is the gap.'

@@ -42,12 +42,22 @@ REQUIREMENTS (what the channel needs) — the parseable values of `access`:
     login         needs a signed-in session
     human         a person, not a surface. There is no mechanism; this is relationship work.
     n/a           not swept at all (an email-driven channel)
+    manual-candidate  a site whose terms forbid automated access (Wellfound, YC Work at a Startup,
+                  Welcome to the Jungle). The CANDIDATE opens it; the engine never visits it and
+                  never hands it to a browser. Its alert email is still swept (`alert_sender`).
+                  dev #751: this value was validated by `validate_data.py` but unknown here, so a
+                  profile carrying it failed `route.py --check`.
 
 MECHANISMS (how we reach it) — the values of `config.sourcing.route_preference`:
 
     plugin        a dedicated site plugin, named per channel in `config.sourcing.plugins`
     browser       Claude's in-app Browser pane
     chrome        the Chrome extension
+
+A company-site channel linked (`company_id`) to a company that carries an `ats` feed prints
+`feed:<vendor>` FIRST (dev #751): `feed_poll.py` reviews that page every day, and the browser
+mechanisms after it are the FALLBACK `channels_due.py` lists only when the feed was not covered.
+`feed:` is not one of MECHANISMS, so `board-sweeper` never acts on it.
 
 Usage:
     route.py --channel indeed                       # ordered mechanisms for one channel
@@ -71,8 +81,10 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
 
-REQUIREMENTS = ("public", "bot-limited", "login", "human", "n/a")
+REQUIREMENTS = ("public", "bot-limited", "login", "human", "n/a", "manual-candidate")
 MECHANISMS = ("plugin", "browser", "chrome")
+# Requirements with NO mechanism: not a surface the engine reaches (dev #751 adds manual-candidate).
+NOT_BROWSABLE = ("human", "n/a", "manual-candidate")
 
 # The default order, used when the profile does not state one. In-app pane first because it is
 # in-process and needs no second application running; Chrome last because it depends on a real
@@ -124,16 +136,18 @@ def preference(cfg):
     return list(raw)
 
 
-def route(requirement, pref, channel_id, cfg):
+def route(requirement, pref, channel_id, cfg, feed=None):
     """Ordered mechanisms to TRY for this channel, most preferred first.
 
-    `human` and `n/a` return an empty list on purpose — they are not browsable surfaces, and
-    handing back a browser for a recruiter relationship would invite exactly the wrong action.
+    `human`, `n/a` and `manual-candidate` return an empty list on purpose — they are not browsable
+    surfaces, and handing back a browser for a recruiter relationship (or for a site whose terms
+    forbid automation) would invite exactly the wrong action. `feed` (a vendor name, from
+    `feed_vendors`) puts `feed:<vendor>` first (dev #751).
     """
-    if requirement in ("human", "n/a"):
+    if requirement in NOT_BROWSABLE:
         return []
     plugins = (cfg.get("sourcing") or {}).get("plugins") or {}
-    out = []
+    out = ["feed:%s" % feed] if feed else []
     for mech in pref:
         if mech == "plugin":
             # Only offer a plugin route when THIS channel actually has one named.
@@ -162,6 +176,25 @@ def load(root):
     except FileNotFoundError:
         raise RouteError("no data/channels.jsonl at %s" % root)
     return cfg, rows
+
+
+def feed_vendors(root, rows):
+    """`{channel_id: vendor}` for every company-site channel linked (`company_id`) to a company that
+    carries an `ats` feed object (dev #751). A company with `ats: null` (declined) or none has no
+    entry, so Workday and every unslugged company stay browser-routed. An unreadable companies store
+    is NOT silently empty: it raises `RouteError`, so a feed route is never lost without a word."""
+    cpath = os.path.join(root, "data", "companies.jsonl")
+    try:
+        with open(cpath, encoding="utf-8") as fh:
+            companies = [json.loads(l) for l in fh if l.strip()]
+    except FileNotFoundError:
+        return {}
+    except ValueError as e:
+        raise RouteError("data/companies.jsonl is unreadable (%s) — feed routes cannot be resolved" % e)
+    vendor = {c.get("id"): (c.get("ats") or {}).get("vendor") for c in companies
+              if isinstance(c.get("ats"), dict) and (c["ats"] or {}).get("vendor")}
+    return {r.get("id"): vendor[r.get("company_id")] for _n, r in rows
+            if r.get("type") == "company-site" and r.get("company_id") in vendor}
 
 
 def save(root, cfg):
@@ -248,6 +281,7 @@ def main():
     try:
         cfg, rows = load(root)
         pref = preference(cfg)
+        feeds = feed_vendors(root, rows)
     except RouteError as e:
         print("!! ROUTE CONFIGURATION UNREADABLE: %s" % e)
         print("   Nothing can be swept until this is fixed. Do NOT fall back to a guess.")
@@ -262,7 +296,7 @@ def main():
             problems.append((cid, lineno, str(e)))
             continue
         resolved.append((cid, row.get("type"), req, legacy,
-                         route(req, pref, cid, cfg)))
+                         route(req, pref, cid, cfg, feed=feeds.get(row.get("id")))))
 
     if args.channel:
         hit = [r for r in resolved if r[0] == args.channel]
@@ -278,7 +312,10 @@ def main():
         cid, ctype, req, legacy, mechs = hit[0]
         print("channel      %s  (%s)" % (cid, ctype))
         print("requirement  %s%s" % (req, "   [legacy value — run migrate.py]" if legacy else ""))
-        if not mechs:
+        if req == "manual-candidate":
+            print("route        candidate: you open it — the engine never visits this site "
+                  "(its terms forbid automated access); its alert email is still swept.")
+        elif not mechs:
             print("route        NONE — this is not a browsable surface.")
         else:
             print("route        try in order: %s" % " -> ".join(mechs))
@@ -293,7 +330,9 @@ def main():
         if not args.all and req in ("human", "n/a"):
             continue
         print("  %-24s %-14s %-12s %s%s" % (
-            cid, ctype or "-", req, " -> ".join(mechs) or "(not browsable)",
+            cid, ctype or "-", req,
+            " -> ".join(mechs) or ("candidate: you open it" if req == "manual-candidate"
+                                   else "(not browsable)"),
             "  [legacy]" if legacy else ""))
 
     if problems:

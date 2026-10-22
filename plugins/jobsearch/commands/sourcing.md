@@ -21,6 +21,28 @@ Ask about one channel:
 ~/.claude/jobsearch/run route.py --channel indeed
 ```
 
+## Feeds
+
+Companies whose own links name a Greenhouse, Lever or Ashby board are read by a script, not a browser
+(`companies[].ats`). Show what is slugged, each company's last outcome, any board the candidate must settle,
+and every company careers page not yet linked to a company:
+
+```bash
+~/.claude/jobsearch/run feed_poll.py --status
+```
+
+Read-only; it fetches nothing. Settle an `ATS AMBIGUOUS` line, or decline or clear a feed, with
+`record.py ats <company_id> --url <address> | --none | --clear`. A page a feed covered today is not in the
+browser worklist; one it could not read is. The feed needs four hosts allowed (`boards-api.greenhouse.io`,
+`api.lever.co`, `api.eu.lever.co`, `api.ashbyhq.com`), which the 0.72.0 upgrade adds to the profile
+project's sandbox settings.
+
+**`manual-candidate` channels.** A board whose terms forbid automated access (Wellfound, Work at a Startup,
+Welcome to the Jungle) is a channel with `access: manual-candidate`. `route.py` prints `candidate: you open
+it` and no mechanism for it, and `channels_due.py` lists it under FOR YOU TO OPEN, never to a browser. Only
+its alert email, if the channel sets `alert_sender`, is swept. Do not change a channel to `manual-candidate`
+to make it skip a route that failed: it states what the site requires.
+
 ## Change the order mechanisms are tried
 
 `$ARGUMENTS` may already name one. Valid mechanisms: `plugin`, `browser`, `chrome`.

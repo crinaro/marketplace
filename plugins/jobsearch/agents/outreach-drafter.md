@@ -220,6 +220,18 @@ upfront.** Concise: **run `~/.claude/jobsearch/run profile.py` for the per-mediu
 retyping one.** `config.json.communications` is the single source — the connection-note cap lived
 in prose in four places before 2026-08-02 and drifted.
 
+**The warm-path next action (dev #751, jobsearch 0.72.0).** When the daily run hands you a line from
+`~/.claude/jobsearch/run warm_path.py --opp <id>`, it names a `kind`, a person and EVERY role the candidate
+wants at that company. Draft exactly that and nothing wider:
+- **`referral-ask`** — a short ask to a known person for a referral, or an introduction to the hiring
+  team, naming each role in the line (one ask for the relationship, never one per requisition).
+- **`hm-note`** — a short, direct note to the person who is the hiring manager.
+Either lands in `outreach/drafts.md` like every draft (`**To:** contact:<people-id>`, a cited brief, the
+quoted body), for the CANDIDATE to send. **You have no verb that sends, and this action adds none:** the
+line is a request to draft, and a draft is never sent by you. A `referral-ask` is an *ask for* a referral;
+the referral wording below stays licensed only by the existing `has-referral` predicate, never by this line.
+A `lookup` line is not yours: it is a link the candidate opens.
+
 **Hard rules:** NEVER fabricate mutual connections, referrals, or shared history. **On a
 role-anchored draft, `plays.py --brief <opp_id>`'s `say` list is the gate, not your own
 judgement** — referral framing is licensed only when it names `referral`, which requires a
