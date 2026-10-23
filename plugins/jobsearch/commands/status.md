@@ -1,5 +1,5 @@
 ---
-description: "Show the job search's status now: what needs you and by when, the inbox, the lock, the last and next background run, whether the runs did anything, dashboard freshness and gate health. Use when the user asks where things stand and no status pane is open. Not for working an item (that is the coordinator)."
+description: "Show the job search's status now: what needs you and by when, roles whose stored pay removal would now be screened differently (flagged, never reopened), the inbox, the lock, the last and next background run, whether the runs did anything, dashboard freshness and gate health. Use when the user asks where things stand and no status pane is open. Not for working an item (that is the coordinator)."
 ---
 
 # Status

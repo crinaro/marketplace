@@ -2044,7 +2044,7 @@ JUMP_TARGETS = (("Drafts", "phase-outreach-approvals"), ("Opportunities", "phase
                 ("Applications", "phase-applying-finish"))
 
 
-def render_jump_bar(n_drafts, n_opps, n_apply=None):
+def render_jump_bar(n_drafts, n_opps, n_apply=None, n_flags=None):
     """The pinned jump bar (OWNER REQUEST 2026-10-13, three entries since jobsearch 0.71.0):
     `Drafts (N)`, `Opportunities (N)` and `Applications (N)`, each an in-page link to its list's
     heading. Pinned by CSS `position: sticky` only - no script - and offset by the viewer's top
@@ -2057,6 +2057,9 @@ def render_jump_bar(n_drafts, n_opps, n_apply=None):
             out.append('<span class="jump off">%s (0)</span>' % label)
         else:
             out.append('<a class="jump" href="#%s">%s (%d)</a>' % (sid, label, n))
+    if n_flags is not None:
+        # dev #761: a fourth entry exists ONLY when the conditional section does (no "(0)" label).
+        out.append('<a class="jump" href="#%s">Reconsider (%d)</a>' % (RESCREEN_SECTION, n_flags))
     out.append("</nav>")
     return "".join(out)
 
@@ -2975,6 +2978,12 @@ CSS = """
   .ws-full summary { font-size: 12px; opacity: .7; cursor: pointer; }
   .ws-full-body { margin-top: 6px; font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
   .prep-past { opacity: .8; }
+  /* dev #761 -- a flagged role: a stored comp removal 0.73.0 would not repeat. */
+  .rsflag { border-bottom: 1px solid var(--divider); padding: 8px 0; }
+  .rsflag:last-child { border-bottom: none; }
+  .rsflag .rs-title { font-weight: 600; }
+  .rsflag .rs-line { font-size: 13px; margin: 3px 0; }
+  .rsflag .rs-act { font-size: 12.5px; margin: 3px 0; color: var(--muted2); }
 """ + _CSS_ROUTER
 
 
@@ -2988,6 +2997,60 @@ REVIEW_NOW = (
 # The homes a record can live in once the page no longer renders it (design §4, amending ADR-024):
 # `panel` is scripts/panel.py's `elsewhere` object; the two review homes are presence_set.py's panes.
 ELSEWHERE_HOMES = ("panel", "review-resume", "review-linkedin")
+
+
+RESCREEN_SECTION = "phase-rescreen-flags"
+
+
+def render_rescreen_flags(flags, unreadable, failed, companies):
+    """The fourth, CONDITIONAL section of the review-now page (jobsearch 0.74.0, dev #761; owner decision
+    2026-10-23: FLAG, NEVER REOPEN): the roles whose stored comp removal 0.73.0 would not repeat, each ONCE,
+    with the old verdict, the new one and why, and the one-step action the candidate takes. Returns
+    `(html, n)`; `("", 0)` when there is nothing to say.
+
+    ⭐ A flag entry is NOT an opportunity row. A removed role is `passed`, a TERMINAL status, and
+    `check_dashboard_coverage.py`'s SCOPE refuses a terminal opportunity rendered as a row (`data-rec`),
+    so a flag carries `data-flag="rescreen:<id>"` -- which that check's row, reference and ledger scans do
+    not read -- and the role stays ledgered `terminal`. The page never silently exempts a terminal row.
+    ⛔ Nothing here writes: the page draws what `profile.comp_rescreen_flags` decided; only the candidate's
+    own `record.py decide` / `record.py screened` ends a flag.
+
+    `failed` (an exception text) and `unreadable` (ids whose re-run raised) are SAID on the page: a
+    flag that could not be computed must never read as no flag."""
+    if not flags and not unreadable and not failed:
+        return "", 0
+    parts = []
+    for f in flags:
+        co = (companies.get(f.get("company_id")) or {}).get("name") or f.get("company_id") or "?"
+        parts.append(
+            '<div class="rsflag" data-flag="%s">'
+            '<div class="rs-title">%s: %s <span class="sub">(%s)</span></div>'
+            '<div class="rs-line">Stored verdict <code>%s</code>; jobsearch 0.73.0 would give '
+            '<code>%s</code> (%s).</div>'
+            '<div class="rs-line sub">Why: %s</div>'
+            '<div class="rs-act">To reopen: <code>%s</code></div></div>'
+            % (html.escape("rescreen:%s" % f["id"], quote=True), esc(co), esc(f.get("title") or ""),
+               esc(f.get("status") or ""), esc(f.get("old_verdict") or ""), esc(f.get("new_verdict") or ""),
+               esc(f.get("new_comp") or ""), esc(f.get("why") or ""), esc(f.get("action") or "")))
+    notes = []
+    if failed:
+        notes.append('<div class="note">&#9940; <strong>The re-screen check failed</strong> (%s): whether '
+                     'any removed role would now be screened differently is UNKNOWN, not zero.</div>'
+                     % esc(failed))
+    if unreadable:
+        notes.append('<div class="note">&#9940; <strong>Not checked:</strong> %d role%s could not be '
+                     're-screened (%s).</div>'
+                     % (len(unreadable), "" if len(unreadable) == 1 else "s",
+                        esc(", ".join(str(u) for u in unreadable))))
+    n = len(flags)
+    return (
+        '<h2 id="%s">&#8617;&#65039; Roles to reconsider <span class="tcount">%d</span></h2>'
+        '<div class="sub" style="margin:-6px 0 10px">A stored <strong>comp removal</strong> that '
+        'jobsearch 0.73.0 would not repeat. <strong>Nothing was changed</strong>: these roles are as '
+        'you left them, and only you reopen one (<code>record.py decide</code>) or dismiss it '
+        '(<code>record.py screened</code>); either one ends its flag.</div>%s%s'
+        % (RESCREEN_SECTION, n, "".join(notes),
+           '<div class="card">%s</div>' % "".join(parts) if parts else "")), n
 
 
 def render_review_router(rows):
@@ -3228,8 +3291,20 @@ def main():
             'application out yet, and the cover letters you will paste into them.</div>'
             % n_apply + "".join(_apply_parts))
 
+    # ── Roles to reconsider (dev #761): a stored comp removal 0.73.0 would not repeat. CONDITIONAL --
+    # the section exists only when there is something to say -- and READ-ONLY: it flags, it never reopens.
+    _rescreen, _rescreen_failed = {"flags": [], "unreadable": []}, None
+    try:
+        _rescreen = _profile.comp_rescreen_flags(_opp_rows, _profile.load())
+    except Exception as _e:                                          # noqa: BLE001 - said, never swallowed
+        _rescreen_failed = "%s: %s" % (type(_e).__name__, _e)
+        print("  !! WARNING: the re-screen flag check failed (%s) - the page says so instead of "
+              "listing roles to reconsider" % _rescreen_failed)
+    _first_flags, n_flags = render_rescreen_flags(_rescreen["flags"], _rescreen["unreadable"],
+                                                  _rescreen_failed, _opp_comps)
+
     # ── Drafts to review: the follow-up view, with people due promoted into it ──
-    _trig_note = ('<div class="note">⛔ <strong>Trigger scan failed</strong> — sequence and '
+    _trig_note =('<div class="note">⛔ <strong>Trigger scan failed</strong> — sequence and '
                   'follow-up counts on this page are UNKNOWN, not zero. Run '
                   '<code>trigger.py --check</code>.</div>') if _trep is None else ""
     _view = bool(_drafts_active or _od_refs)
@@ -3306,17 +3381,23 @@ def main():
         ("📝", "Applications to finish", "phase-applying-finish", 1 if _first_apply else 0,
          ("%d item%s to finish." % (n_apply, "" if n_apply == 1 else "s"))
          if _first_apply else "Nothing queued to apply."),
-    ])
+    ] + ([("&#8617;&#65039;", "Roles to reconsider", RESCREEN_SECTION, 1,
+           "%d removed role%s jobsearch 0.73.0 would not repeat; nothing was changed."
+           % (n_flags, "" if n_flags == 1 else "s")
+           if n_flags else "The re-screen check could not run; see the section.")]
+         if _first_flags else []))
     # The pinned jump bar (OWNER REQUEST 2026-10-13): one entry per list, each count the PRIMARY
     # rows that list renders (`data-rec="draft:…"` / `data-rec="opp:…"`), never a reference row;
     # a list that is not on the page is a plain, unlinked label, so the bar never links to nothing.
     _first_html = ""
-    if _first_drafts or _first_opps or _first_apply:
-        _first_html = ('<section class="first" id="first-lists">\n%s\n%s\n%s\n</section>'
-                       % (_first_drafts, _first_opps, _first_apply))
+    if _first_drafts or _first_opps or _first_apply or _first_flags:
+        _first_html = ('<section class="first" id="first-lists">\n%s\n</section>'
+                       % "\n".join([_first_drafts, _first_opps, _first_apply]
+                                   + ([_first_flags] if _first_flags else [])))
     jump_html = render_jump_bar(n_drafts_primary if _first_drafts else None,
                                 opp_counts["all"] if _first_opps else None,
-                                n_apply if _first_apply else None)
+                                n_apply if _first_apply else None,
+                                n_flags if _first_flags else None)
 
     body_inner = (
         '%s\n'

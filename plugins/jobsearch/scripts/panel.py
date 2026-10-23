@@ -25,6 +25,11 @@ draw nothing, so one profile's data never appears in an unrelated directory's se
 THE CONTRACT (both renderers and `check_dashboard_coverage.py`'s ELSEWHERE test read these keys):
 
     needs_you[]   {kind, id, title, act_by}   roles waiting on you, open JD-fit questions, open asks
+    rescreen_flags  {count, unreadable[], items[]}   roles whose stored comp removal jobsearch 0.73.0
+                  would not repeat (dev #761); each item {id, title, status, old_verdict, new_verdict,
+                  why, action}. FLAG, NEVER REOPEN (owner decision 2026-10-23): nothing here changes a
+                  row; the candidate's own `record.py decide` / `record.py screened` ends the flag.
+                  `unreadable[]` are roles whose re-run raised: said, never dropped.
     inbox         {unacked, urgent}           pending rows of data/inbox.jsonl (acks replayed)
     lock          {held, by, since, stale}    the write lock, read not taken
     runs          {last_at, last_task, next_at, next_task}
@@ -56,7 +61,7 @@ if HERE not in sys.path:
 
 TASKS = {"daily": "search-daily", "weekly": "search-strategy-weekly"}
 
-FAST_KEYS = ("needs_you", "inbox", "lock", "runs", "runs_effect", "tasks")
+FAST_KEYS = ("needs_you", "rescreen_flags", "inbox", "lock", "runs", "runs_effect", "tasks")
 FULL_ONLY_KEYS = ("dashboard", "gates", "elsewhere")
 ELSEWHERE_KEYS = ("in_flight", "channels_due", "week", "preps_owed", "asks", "kb_index")
 
@@ -65,6 +70,7 @@ ELSEWHERE_KEYS = ("in_flight", "channels_due", "week", "preps_owed", "asks", "kb
 # fails the build.
 LABELS = {
     "needs_you": "Needs you",
+    "rescreen_flags": "Roles to reconsider",
     "inbox": "Inbox",
     "lock": "Write lock",
     "runs": "Runs",
@@ -176,6 +182,24 @@ def sec_needs_you(root, today):
                     "act_by": a.get("act_by") or None})
     out.sort(key=lambda r: (r["act_by"] or "9999-99-99", r["kind"], str(r["id"])))
     return out
+
+
+def sec_rescreen_flags(root, today):
+    """dev #761 (jobsearch 0.74.0): the roles `profile.comp_rescreen_flags` reports -- a stored comp
+    removal that 0.73.0 would not repeat, on a role triage never reaches (decided or removed). READ-ONLY:
+    it composes that one detector and writes nothing; the engine never reopens a row on its own. The
+    flag leaves when the candidate runs `record.py screened <id>` or re-decides the role."""
+    import profile as _profile
+    names = _company_names(root)
+    out = _profile.comp_rescreen_flags(_jsonl(root, "opportunities.jsonl"), _profile.load())
+    items = []
+    for f in out["flags"]:
+
+        items.append({"id": f["id"], "status": f["status"],
+                      "title": "%s: %s" % (names.get(f.get("company_id"), "?"), f.get("title") or ""),
+                      "old_verdict": f["old_verdict"], "new_verdict": f["new_verdict"],
+                      "why": f["why"], "action": f["action"]})
+    return {"count": len(items), "unreadable": list(out["unreadable"]), "items": items}
 
 
 def sec_inbox(root, today):
@@ -406,6 +430,8 @@ def collect(root, full=True, today=None, now=None, only=None):
     obj = {}
     if wanted("needs_you"):
         obj["needs_you"] = _safe(sec_needs_you, root, today)
+    if wanted("rescreen_flags"):
+        obj["rescreen_flags"] = _safe(sec_rescreen_flags, root, today)
     if wanted("inbox"):
         obj["inbox"] = _safe(sec_inbox, root, today)
     if wanted("lock"):
@@ -436,6 +462,11 @@ def band_line(obj):
         parts.append("%d need you%s" % (len(ny), " (next by %s)" % dated[0] if dated else ""))
     elif ny is not None:
         parts.append("needs-you NOT CHECKED")
+    rf = obj.get("rescreen_flags")
+    if isinstance(rf, dict) and rf.get("count"):
+        parts.append("%d to reconsider" % rf["count"])
+    elif isinstance(rf, dict) and "error" in rf:
+        parts.append("reconsider NOT CHECKED")
     ib = obj.get("inbox")
     if isinstance(ib, dict) and "unacked" in ib:
         parts.append("inbox %d%s" % (ib["unacked"], " (%d urgent)" % ib["urgent"] if ib["urgent"] else ""))
@@ -471,6 +502,24 @@ def render_text(obj):
     else:
         for r in ny:
             add("  - [%s] %s %s: %s" % (r.get("act_by") or "no date", r["kind"], r.get("id"), r.get("title")))
+    rf = obj.get("rescreen_flags")
+    add("%s:" % LABELS["rescreen_flags"])
+    if _na(rf):
+        add("  " + _na(rf))
+    elif not rf["count"] and not rf["unreadable"]:
+        add("  none: no stored comp removal would be screened differently today")
+    else:
+        if rf["count"]:
+            add("  %d role%s a stored comp removal that jobsearch 0.73.0 would not repeat. Nothing was "
+                "changed: only you reopen or dismiss them." % (rf["count"], " has" if rf["count"] == 1
+                                                                 else "s have"))
+        if rf["unreadable"]:
+            add("  NOT CHECKED: %d role(s) could not be re-screened: %s"
+                % (len(rf["unreadable"]), ", ".join(map(str, rf["unreadable"]))))
+        for r in rf["items"]:
+            add("  - %s (%s): was %s, now %s. %s" % (r["title"], r["id"], r["old_verdict"],
+                                                    r["new_verdict"], r["why"]))
+            add("      to reopen: %s" % r["action"])
     ib = obj.get("inbox")
     add("%s: %s" % (LABELS["inbox"], _na(ib) or "%d pending, %d urgent" % (ib["unacked"], ib["urgent"])))
     lk = obj.get("lock")

@@ -52,6 +52,10 @@ whose current decision is pursue + comp-acceptable is KEPT; `comp_accepted`), th
 `compensation.non_employee`, never the annual tiers; `BELOW-ENGAGEMENT-FLOOR` is a review) and a
 `PAY-UNCOMPARABLE` for a `comp` in a unit or basis the annual BASE floor cannot be set against.
 `comp_keys` / `screen_is_comp_stale` report a stored comp verdict computed without those inputs.
+jobsearch 0.74.0 (dev #761) adds `comp_rescreen_flags`: of the roles whose stored `remove:comp`
+is stale, the DECIDED or REMOVED ones (which triage never reaches) that today's `screen_comp` would
+not remove. They are FLAGGED in the status panel and the review-now page and NEVER reopened by the
+engine; the candidate's own `record.py decide` / `record.py screened` ends the flag.
 
 Python 3.9+. Standard library only.
 """
@@ -113,6 +117,10 @@ PAY_UNCOMPARABLE = "PAY-UNCOMPARABLE"
 # rate under the floor is a negotiating position, not a disqualifier.
 BELOW_ACCEPTED = "BELOW-FLOOR-ACCEPTED"
 BELOW_ENGAGEMENT = "BELOW-ENGAGEMENT-FLOOR"
+# The comp verdicts `screen_rules` reads as `review:comp` (a question the data cannot answer, or a
+# rate under a non-employee floor); every other non-BELOW-FLOOR verdict is a quiet keep. ONE tuple, read
+# by `screen_rules` and by `comp_rescreen_flags` (dev #761), so the two can never disagree about it.
+COMP_REVIEW_TOKENS = (NEEDS_COMMUTE, UNRESOLVED, NOT_CAPTURED, PAY_UNCOMPARABLE, BELOW_ENGAGEMENT)
 # The two sentences a BELOW-FLOOR / BELOW-FLOOR-ACCEPTED detail ends with (after the figures, which
 # are byte-identical in both). REMOVE_SENTENCE names the one decision shape that counts (A4).
 REMOVE_SENTENCE = (
@@ -1305,6 +1313,128 @@ def comp_scope_count(opps, profile):
     return out
 
 
+def _iso_date(v):
+    """The `datetime.date` an ISO `YYYY-MM-DD` (or longer ISO timestamp) names, else None."""
+    import datetime
+    try:
+        return datetime.date.fromisoformat(str(v)[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def _stored_removals(screen):
+    """The rules a STORED screen removed the role on: `remove:comp,geo` gives `["comp", "geo"]`;
+    any other verdict (`keep`, `review:...`, none) gives `[]`."""
+    verdict = screen.get("verdict") if isinstance(screen, dict) else None
+    if not isinstance(verdict, str) or not verdict.startswith("remove:"):
+        return []
+    return [r.strip() for r in verdict.split(":", 1)[1].split(",") if r.strip()]
+
+
+def _decided_after_screen(opp, screen):
+    """True when the candidate RE-DECIDED the role after the stored screen ran (dev #761, F2): the
+    row's current verdict is `pursue` or `parked` (a reversal of a removal, or a decision made over
+    one) and `decision.on` is a later day than `screen.on`. Reads only those stored fields. A
+    verdict of `pass` is NOT a re-decision: it is the removal itself, which `record.py decide pass`
+    records and the daily run writes (`minimal screen: <rule>`). A date that cannot be read on either
+    side is not "after": the flag stands, because a flag changes nothing and a missed one is silent.
+    Same-day is not "after" either (the screen and the decision cannot be told apart by order)."""
+    if opp.get("verdict") not in ("pursue", "parked"):
+        return False
+    dec = opp.get("decision")
+    decided = _iso_date(dec.get("on")) if isinstance(dec, dict) else None
+    screened = _iso_date(screen.get("on"))
+    return decided is not None and screened is not None and decided > screened
+
+
+def comp_reopen_action(opp):
+    """The one-step action text a flagged role carries (dev #761, F3c): the verbs the candidate
+    runs, with the role's id filled in. NOTHING here is run by the engine.
+
+      status `passed`, `passed_from` set   `record.py decide <id> pursue|park`, then `record.py screened <id>`
+      status `passed`, no `passed_from`    `decide` cannot restore it (it never guesses the way back),
+                                           so the status and stage are set by hand first
+      any other status                     nothing to reopen; `record.py screened <id>` alone stores
+                                           the verdict today's screen gives and ends the flag"""
+    oid = opp.get("id")
+    if opp.get("status") == "passed":
+        if isinstance(opp.get("passed_from"), dict):
+            return ("record.py decide %s pursue|park (add --why-kind and --why when it asks for "
+                    "them), then record.py screened %s" % (oid, oid))
+        return ("this role was passed with no way back recorded (no passed_from), so decide cannot "
+                "restore it: set its status and stage first (record.py set %s status <status>, "
+                "record.py set %s stage <stage>), then record.py decide %s pursue|park, then "
+                "record.py screened %s" % (oid, oid, oid, oid))
+    return ("nothing to reopen: record.py screened %s stores the verdict today's screen gives" % oid)
+
+
+def comp_rescreen_flags(opps, profile):
+    """`{"flags": [...], "unreadable": [id, ...]}`: the roles a stored comp REMOVAL which jobsearch
+    0.73.0 would not repeat (dev #761, owner decision 2026-10-23: FLAG, NEVER REOPEN).
+
+    DETERMINISTIC and READ-ONLY. It builds on what 0.73.0 already has -- `screen_is_comp_stale` picks
+    the candidates (the same rows `comp_scope_count` / `profile.py --comp-scope-count` counts), and
+    the read-only `screen_comp` re-run gives today's token -- and adds no second detector. A role is
+    flagged when ALL of these hold:
+
+      * it carries a stored screen whose verdict is exactly `remove:comp` (a role the screen also
+        removed on geography or a duplicate stays removed whatever the comp rule now says);
+      * that screen is comp-stale (`screen_is_comp_stale`);
+      * today's `screen_comp` token is not BELOW-FLOOR (so the stored verdict would differ);
+      * it is NOT an undecided backlog role (the triage path re-screens those at its per-run cap),
+        and not `expired` (the posting is gone, nothing to reopen), but it IS a decided, removed
+        (`passed`) or otherwise closed one, which triage never reaches;
+      * the candidate did NOT re-decide it after the screen (`_decided_after_screen`, F2).
+
+    Each flag carries the old verdict (the stored one), the new (what today's comp token makes of
+    it), why (the `screen_comp` detail line) and the action text (`comp_reopen_action`). A role whose
+    re-run raises is listed in `unreadable`, never dropped: a flag the engine could not compute must
+    not read as no flag.
+
+    ⛔ THE ENGINE NEVER CHANGES A ROW ON ITS OWN. This function, `panel.py` and `generate_dashboard.py`
+    write no `status`, `stage`, `verdict`, `decision` or `screen`; only the candidate's own
+    `record.py decide` / `record.py screened` do. The rule is the repository's, and this is its first
+    statement for REOPENING: R8 (`docs/design-location-screen.md` §R8, `record.py` and `deferred.py`:
+    a nearer listing of a passed row is surfaced, "do not auto-close"), `docs/design-sourcing-screen.md`
+    (a likely-pass signal never auto-dispositions), `reconcile.py` (outcome changes are never
+    auto-applied), the daily-run skill (only a hard rule removes a role, through a recorded
+    `decide`), and the owner decision of 2026-10-23 on #761.
+
+    The flag STOPS when the candidate acts: `record.py screened <id>` stores today's `comp_keys`, so
+    the screen is no longer stale (this is also the dismissal, which therefore needs no stored field);
+    `record.py decide <id> pursue|park` makes the row re-decided after the screen."""
+    flags, unreadable = [], []
+    for o in opps:
+        sc = o.get("screen")
+        if not isinstance(sc, dict) or not sc.get("verdict"):
+            continue
+        if _stored_removals(sc) != ["comp"]:
+            continue
+        if o.get("status") == "expired":
+            continue
+        if o.get("status") == "backlog" and o.get("verdict") == "undecided":
+            continue
+        if not screen_is_comp_stale(sc, o, profile):
+            continue
+        if _decided_after_screen(o, sc):
+            continue
+        try:
+            token, detail = screen_comp(o, profile)
+        except Exception:                                    # noqa: BLE001 - listed, never dropped
+            unreadable.append(o.get("id"))
+            continue
+        if token == BELOW:
+            continue
+        flags.append({
+            "id": o.get("id"), "title": o.get("title"), "company_id": o.get("company_id"),
+            "status": o.get("status"), "verdict": o.get("verdict"),
+            "old_verdict": sc.get("verdict"), "old_on": sc.get("on"), "old_engine": sc.get("engine"),
+            "new_comp": token,
+            "new_verdict": "review:comp" if token in COMP_REVIEW_TOKENS else "keep",
+            "why": detail, "action": comp_reopen_action(o)})
+    return {"flags": flags, "unreadable": unreadable}
+
+
 def _matches_target(opp, configured):
     import pipeline_index as _pidx
     want = _pidx.normalize_title(opp.get("title"))
@@ -1558,7 +1688,7 @@ def screen_rules(opp, profile, all_opps, applications=None, channels=None, today
     # BELOW-ENGAGEMENT-FLOOR (dev #740) is a review and never a removal.
     if verdict == BELOW:
         removes.append("comp")
-    elif verdict in (NEEDS_COMMUTE, UNRESOLVED, NOT_CAPTURED, PAY_UNCOMPARABLE, BELOW_ENGAGEMENT):
+    elif verdict in COMP_REVIEW_TOKENS:
         reviews.append("comp")
 
     others = [o for o in all_opps if o.get("id") != oid]
@@ -1825,8 +1955,10 @@ def main():
                     help="dev #739 / #740 (jobsearch 0.73.0, R2): print `stored screens: N, comp "
                          "re-screen pending: P` over every role carrying a stored screen -- the "
                          "ones whose stored comp verdict was computed without the engagement and "
-                         "decision inputs 0.73.0 reads. Read-only; the measure to take before and "
-                         "after the re-screens drain.")
+                         "decision inputs 0.73.0 reads -- and, since dev #761, how many of those 0.73.0 "
+                         "would screen DIFFERENTLY (a decided or removed role triage never reaches), "
+                         "each listed with its one-step action. Read-only; the measure to take "
+                         "before and after the re-screens drain.")
     ap.add_argument("--minimal-screen", dest="minimal_screen", metavar="OPP_ID", nargs="+",
                     help="dev #692 / public #140: the scripted screen every captured role gets "
                          "under EVERY posture (comp floor, passed/duplicate, geography, advisory "
@@ -1855,8 +1987,19 @@ def main():
         return 0
 
     if args.comp_scope_count:
-        c = comp_scope_count(_load_opps(), profile)
-        print("stored screens: %d, comp re-screen pending: %d" % (c["screened"], c["rescreen_pending"]))
+        opps = _load_opps()
+        c = comp_scope_count(opps, profile)
+        f = comp_rescreen_flags(opps, profile)
+        # dev #761: the roles among the pending ones that 0.73.0 would screen DIFFERENTLY, which no
+        # triage run reaches (decided or removed); `unreadable` is said, never folded into zero.
+        line = ("stored screens: %d, comp re-screen pending: %d, would screen differently (flagged): %d"
+                % (c["screened"], c["rescreen_pending"], len(f["flags"])))
+        if f["unreadable"]:
+            line += ", NOT CHECKED: %d (%s)" % (len(f["unreadable"]), ", ".join(map(str, f["unreadable"])))
+        print(line)
+        for fl in f["flags"]:
+            print("  %s: %s -> %s (%s); %s" % (fl["id"], fl["old_verdict"], fl["new_verdict"],
+                                               fl["new_comp"], fl["action"]))
         return 0
 
     if args.minimal_screen:

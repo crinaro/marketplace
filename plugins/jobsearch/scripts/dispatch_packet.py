@@ -28,9 +28,9 @@ LOUD MARKERS, NEVER A SILENT GAP (#77, #88)
 A section this packet cannot fill (no fit analysis yet, no play adopted, an unreadable strategy
 heading, an unexpected error building the section) prints `PACKET INCOMPLETE — <section>:
 <reason>` in the section's own place — never an empty section, which a reader cannot tell apart
-from "there was nothing to say." A section whose composed text is over its configured byte cap
+from "there was nothing to say." A section whose composed text is over its configured character cap
 (`config_keys.packet_section_cap()`, provenance-tracked, defaults voice 2000 / claims 3000 /
-every other section 1500 — #77) prints its first `<cap>` bytes and then `PACKET TRUNCATED —
+every other section 1500 — #77) prints its first `<cap>` characters and then `PACKET TRUNCATED —
 <section> <n> chars > <cap>`. An unknown `--agent`, an unresolvable `--opp`, or an unresolvable
 `--contact` refuses loudly (stderr, exit 2) rather than printing a packet for the wrong thing.
 

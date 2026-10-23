@@ -84,6 +84,13 @@ you open with `/jobsearch:status`. It needs a terminal or the Desktop app on you
 `/jobsearch:status` prints the same content as plain text, from the same script. The pane draws
 nothing in a directory that is not a job-search profile.
 
+The pane's sections, in order: *Needs you*, **Roles to reconsider**, *Inbox*, *Write lock*, *Runs*
+and whether they did anything, and then (in the full view) the dashboard, gate health and *Elsewhere*.
+*Roles to reconsider* lists roles whose stored pay removal today's rule would not repeat, each with
+its old verdict, its new verdict, why, and the command that reopens it; it reads "none" when there
+are none, and the band shows "N to reconsider" only when there are some. It only reads: nothing is
+reopened for you (see *The pay re-screen* in [Your data](your-data.md)).
+
 **On a phone.** The dashboard Artifact still opens there, with its three lists. The status pane
 and the review panes are not drawn on a phone. Whether `/jobsearch:status` typed from a phone
 works over Remote Control has not been tested, so do not rely on it. One loss is real: a call
@@ -114,7 +121,14 @@ something that is on the page.
 
 - **A bar pinned to the top of the page** has three entries, **Drafts to review (N)**,
   **Opportunities to pursue (N)** and **Applications to finish (N)**, and jumps to a list from
-  anywhere on the page. A list with nothing in it shows its entry greyed, with no link.
+  anywhere on the page. A list with nothing in it shows its entry greyed, with no link. A fourth
+  entry, **Reconsider (N)**, appears only when a role is flagged (below).
+- **Roles to reconsider** (since 0.74.0) is a fourth section that exists only when there is
+  something to say. Each entry shows a removed or decided role, the verdict stored on it, the
+  verdict today's pay rule would give, why, and the command to reopen it
+  (`record.py decide <id> pursue|park`) or to dismiss it (`record.py screened <id>`). The page
+  changes nothing itself. If the check could not run, or could not read a role, the section says so
+  rather than disappearing.
 - **Drafts to review** shows each staged message with its full text and a **Copy as prompt**
   button (see below). A touch that is due, an application with no follow-up drafted, and a person
   who is due each appear as a short row ("no draft yet, <why>") that links to the channel, role or

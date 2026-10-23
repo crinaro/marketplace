@@ -368,13 +368,33 @@ with:
 
 ```
 ~/.claude/jobsearch/run profile.py --comp-scope-count
-stored screens: 212, comp re-screen pending: 9
+stored screens: 212, comp re-screen pending: 9, would screen differently (flagged): 2
+  opp-0042: remove:comp -> keep (CLEARS); <the command to run, below>
 ```
 
 (numbers illustrative). The count covers every status, since a wrongly removed role is exactly the
-one it must not skip. To refresh one, run `record.py screened <id>`; a follow-up will make that
-automatic. Setting `compensation.non_employee`, or a role's `engagement_type`, makes its screen stale
-the same way.
+one it must not skip. The last number, and the lines under it, are the roles worth a second look:
+a role whose stored screen **removed it on pay alone** (`remove:comp`) and that today's pay rule
+would not remove. Setting `compensation.non_employee`, or a role's `engagement_type`, makes a screen
+stale the same way.
+
+**Nothing is reopened for you.** The engine never changes a role's status, stage or decision on its
+own. A flagged role is shown to you, in the status pane under *Roles to reconsider* and on the
+review-now page (see [Reading your files](reading-your-files.md)), with the old verdict, the new
+one, why, and the command that reopens it. You end a flag in one of two ways:
+
+- **Reopen it:** `record.py decide <id> pursue` (or `park`), and then `record.py screened <id>`. A
+  role that was passed and has no recorded way back (`passed_from`) cannot be restored by `decide`;
+  the flag then names the status and stage to set first.
+- **Dismiss it:** `record.py screened <id>` alone. It stores the verdict today's rule gives, so the
+  role stops being stale and the flag goes. There is no separate dismissal and nothing extra is
+  stored.
+
+Two limits to know. A role you decided on a **later day** than its screen is not flagged, because
+you have already made a decision since; a decision and a screen on the **same day** cannot be told
+apart by order, so that role stays flagged. And a role you passed for some other reason, but whose
+stored removal reads `remove:comp`, stays flagged until you run `record.py screened <id>`. A role
+whose re-screen could not be computed is listed as *not checked*, never dropped.
 
 (numbers illustrative). It counts your undecided backlog roles, how many read below the floor or
 off-mandate under today's settings, and how many have a stored screen waiting to be redone. It

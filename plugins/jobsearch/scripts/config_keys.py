@@ -328,7 +328,7 @@ _METADATA[LINKEDIN_RUNS_PER_DAY] = (
     "runs_per_day (posture.py --may linkedin) — 0 disables LinkedIn passes on this posture "
     "entirely")
 
-# ── dispatch_packet.py's per-section byte caps (design-script-first.md §3.2, #77) ──────────────
+# ── dispatch_packet.py's per-section character caps (design-script-first.md §3.2, #77) ──────────────
 # `voice` (the candidate's `configure/strategy.md` "Message style" text, verbatim) and `claims`
 # (matched `presence/claims.md` addenda) are the two sections that ride on the profile's OWN
 # prose and are unbounded as first drafted — every other section is bounded by construction
@@ -348,15 +348,15 @@ READER_KEYS = READER_KEYS | frozenset({PACKET_SECTION_CAP_VOICE, PACKET_SECTION_
 
 _METADATA[PACKET_SECTION_CAP_VOICE] = (
     PACKET_SECTION_CAP_VOICE_DEFAULT, "int", (200, 20000),
-    "byte cap on the packet's `voice` section (configure/strategy.md \"Message style\", "
+    "character cap on the packet's `voice` section (configure/strategy.md \"Message style\", "
     "verbatim) before dispatch_packet.py prints `PACKET TRUNCATED` (§3.2, #77)")
 _METADATA[PACKET_SECTION_CAP_CLAIMS] = (
     PACKET_SECTION_CAP_CLAIMS_DEFAULT, "int", (200, 20000),
-    "byte cap on the packet's `claims` section (matched presence/claims.md addenda) before "
+    "character cap on the packet's `claims` section (matched presence/claims.md addenda) before "
     "dispatch_packet.py prints `PACKET TRUNCATED` (§3.2, #77)")
 _METADATA[PACKET_SECTION_CAP_OTHER] = (
     PACKET_SECTION_CAP_OTHER_DEFAULT, "int", (200, 20000),
-    "byte cap on every other dispatch_packet.py section before `PACKET TRUNCATED` (§3.2, #77)")
+    "character cap on every other dispatch_packet.py section before `PACKET TRUNCATED` (§3.2, #77)")
 
 
 def packet_section_cap(cfg, section):

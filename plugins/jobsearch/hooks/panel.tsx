@@ -69,6 +69,25 @@ export function needsYouLines(snap: any): string[] {
   return ny.map((r: any) => '[' + (r.act_by || 'no date') + '] ' + r.kind + ': ' + r.title)
 }
 
+// dev #761: roles whose stored comp removal jobsearch 0.73.0 would not repeat. The pane only DRAWS
+// what scripts/panel.py decided: it flags, it never reopens, and the one-step action is text the
+// person runs themselves (record.py decide, then record.py screened).
+export function rescreenLines(snap: any): string[] {
+  const rf = snap && snap.rescreen_flags
+  if (notChecked(rf)) return [notChecked(rf) as string]
+  if (!rf || !Array.isArray(rf.items)) return ['NOT CHECKED (no data yet)']
+  const out: string[] = []
+  if (rf.count) out.push(rf.count + ' (nothing was changed; only you reopen or dismiss)')
+  if (Array.isArray(rf.unreadable) && rf.unreadable.length) {
+    out.push('NOT CHECKED: ' + rf.unreadable.length + ' could not be re-screened: ' + rf.unreadable.join(', '))
+  }
+  for (const r of rf.items.slice(0, 12)) {
+    out.push(r.title + ' (' + r.id + '): was ' + r.old_verdict + ', now ' + r.new_verdict + '. ' + r.why)
+    out.push('  to reopen: ' + r.action)
+  }
+  return out
+}
+
 export function systemLines(snap: any): string[] {
   const out: string[] = []
   const ib = snap && snap.inbox
@@ -129,6 +148,7 @@ export function statusTree(els: Els, snap: any, canRun: boolean, note: string, h
     children: [
       txt(els, (snap && snap.band) || 'jobsearch', { bold: true }),
       section(els, 'Needs you', needsYouLines(snap), 'nothing is waiting on you'),
+      section(els, 'Roles to reconsider', rescreenLines(snap), 'none: no stored comp removal would be screened differently today'),
       section(els, 'System', systemLines(snap), 'no data'),
       section(els, 'In flight', elsewhereLines(snap, 'in_flight'), 'nothing in flight'),
       section(els, 'This week', elsewhereLines(snap, 'week').concat(

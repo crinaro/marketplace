@@ -759,6 +759,24 @@ def _live_role(rid, title, **kw):
     return r
 
 
+def _removed_fractional_role(rid, title="Fractional CTO", **kw):
+    """dev #761: a role a 0.72.0 screen REMOVED on comp, as the daily run records it -- `decide pass`
+    set `status: passed` / `stage: closed` and kept the way back in `passed_from`; the stored screen is
+    the legacy `remove:comp` (no `comp_keys`). Fractional by title and stated engagement, so
+    jobsearch 0.73.0 measures it in its own unit instead of against the annual tiers. Every value
+    is invented; `company_id` defaults to the synthetic dashboard profile's `c1`."""
+    row = _live_role(
+        rid, title, status="passed", stage="closed", verdict="pass", engagement_type="fractional",
+        comp={"min": 40000, "max": 50000, "period": "year", "basis": "base"},
+        passed_from={"status": "backlog", "stage": "sourced"},
+        decision={"on": "2026-10-01", "suggested": "pass", "reason_kind": "other",
+                  "reason": "minimal screen: comp"},
+        screen={"on": "2026-10-01", "verdict": "remove:comp", "engine": "0.72.0",
+                "rules": {"comp": "BELOW-FLOOR", "title": "MATCHES"}, "title_keys": "0a1b2c3d4e5f"})
+    row.update(kw)
+    return row
+
+
 @contextlib.contextmanager
 def _root_env(prof):
     """Query or Citation C1 — `mail_client.configured_accounts()` (and therefore
@@ -1955,6 +1973,7 @@ __all__ = [
     '_audit_page',
     '_audit_ledger',
     '_live_role',
+    '_removed_fractional_role',
     '_root_env',
     '_stamp_brief',
     '_raw',

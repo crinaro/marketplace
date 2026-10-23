@@ -810,8 +810,11 @@ For each role in the batch, in order:
    screen carries `comp_keys`, so a decision recorded afterwards, an engagement edit or a change to
    the non-employee block makes it stale, and a role whose stored screen is stale is offered back by
    `--triage-queue` as missing `screen` (a backlog role the candidate has not yet decided drains
-   through that queue at its per-run cap). `profile.py --comp-scope-count` prints how many stored
-   screens are stale; for a role already decided, run `record.py screened <opp_id>` yourself.
+   through that queue at its per-run cap). A role already decided, or removed by an earlier screen,
+   is not in that queue: since 0.74.0 the engine FLAGS one whose stored `remove:comp` it would not
+   repeat (`profile.py --comp-scope-count`, the status pane, the review-now page). **This run does
+   not re-screen, reopen or re-decide such a role**; only the candidate does, with `record.py
+   decide` or `record.py screened`. Do not run `screened` on a decided role to clear a flag.
 4. **Lean**: `record.py lean <opp_id> --lean pursue|pass|ask --line "<one line>" --jd-file <the JD
    text you read> --already-locked`. The script matches the profile's likely-pass signals against
    the title, the JD and the company, and stores the matches beside your lean. **A signal is a
