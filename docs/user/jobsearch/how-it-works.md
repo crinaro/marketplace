@@ -85,7 +85,11 @@ Nothing below sends anything or commits anything without you.
 
 4. **Screen.** Roles are checked against the floors you set — compensation, geography, work
    setting. Something below your floor does not silently vanish; it is marked, and you can see
-   why.
+   why. A role you accept at that pay (`decide <id> pursue --why-kind comp-acceptable`) shows as
+   accepted and is never removed; reversing the decision brings the removal back. Fractional,
+   interim, advisory and contract roles are measured against your separate non-employee pay floors
+   when you have set them, never the annual ones; without them they are marked for your review,
+   not removed. A pay quoted by the hour or day is never removed against an annual floor.
 
 5. **Surface.** What needs a human decision is collected: replies waiting, applications with no
    acknowledgement, conversations that have gone quiet, questions the assistant needs answered
@@ -237,7 +241,7 @@ much of what a run finds is processed.** Under every posture, including `minimal
   forward as its own queued item, or recorded as a named gap. A run never ends on "12 roles
   seen, top few captured";
 - every captured role gets a **minimal screen**, done by a script with no agent and no tokens:
-  your comp floor, whether you already passed on or applied to it, geography, and whether the
+  your comp floor (annual floors for employment, your non-employee floors for fractional, interim, advisory and contract roles; a role whose pay you accepted is kept), whether you already passed on or applied to it, geography, and whether the
   title matches one of yours. The title check only marks a role for your review; it never
   removes one. A mandate rule is not scripted, and the screen says so on each role instead of
   staying quiet.

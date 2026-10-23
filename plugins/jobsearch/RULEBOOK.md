@@ -150,7 +150,8 @@ before they were centralized — a value stated twice is a value that disagrees 
    unrecognized onsite location returns **NEEDS-COMMUTE-CHECK, never relocation-by-default.**
 2. **Undisclosed comp is KEPT, never screened** — comp is the first question, not a filter. But a
    band whose **TOP** is below the applicable floor is **REMOVED, not merely flagged**, unless the
-   candidate explicitly opts in. `--screen-all` is the arbiter; do not re-derive a tier from prose.
+   candidate accepts it (`decide <id> pursue --why-kind comp-acceptable`). Fractional, interim, advisory and
+   contract roles use `compensation.non_employee`, never removal. `--screen-all` is the arbiter; never re-derive a tier.
 3. **A stated boundary is data, not a gap to write around.** `config.positioning.scope_boundaries`
    lists capabilities confirmed absent. Naming a limit makes everything before it more credible;
    stretching one loses the room.

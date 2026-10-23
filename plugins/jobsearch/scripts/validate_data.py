@@ -32,6 +32,8 @@ import ats_slug as _ats_slug
 # ADR-027 — the one surface vocabulary (also imported by resume_variants.py, presence_set.py);
 # zero dependencies of its own, so no cycle risk as a normal top-level import.
 import surfaces as _surfaces
+# dev #740 -- the engagement vocabulary lives in the leaf `config_keys` (profile.py reads it too).
+import config_keys as _config_keys
 # ⚠️ `your_move` is imported BELOW the vocabulary block, not here — see the note above
 # `def load`. It reads this module's TERMINAL_OPP_STATUSES at import time, so a top-of-file
 # import would hand it a half-initialised module whenever validate_data is imported first.
@@ -289,7 +291,9 @@ APPLICATION_STATUS = {"not-started", "started", "submitted", "acknowledged",
 # ADR-031 B2 (design §1/§9, §16 item 3) — a fact about the OPPORTUNITY, not the plan: one
 # vocabulary per fact is the rule, shared with the future plans.outcomes. `consulting` was the
 # pre-Part-3 wording; amended to `contract`, one word, before anything shipped.
-ENGAGEMENT_TYPES = {"full-time", "contract"}
+# jobsearch 0.73.0 (dev #740 / public #160) widens it: fractional, interim and advisory route the pay
+# away from the annual tiers (profile.engagement). The ONE list is config_keys.ENGAGEMENT_TYPES.
+ENGAGEMENT_TYPES = set(_config_keys.ENGAGEMENT_TYPES)
 # ADR-031 B2 (design §1) — `cover_letters`, "resume_variants' twin": a status with a terminal
 # value, same shape as VARIANT_STATUS. `retired` is TERMINAL, same contract as a resolved ask
 # and a retired resume variant. Nullable: a row the 0.45.0 migration preserves verbatim from a
@@ -985,7 +989,8 @@ POSTED_SOURCES = ("ats-posted", "board-relative", "profile-document-date", "unkn
 POSTED_KEYS = ("date", "source", "recorded_on")
 COMMUTE_MINUTES_KEYS = ("minutes", "anchor", "source")
 COMMUTE_MINUTES_SOURCES = ("candidate", "map-estimate", "config-place")
-SCREEN_KEYS = ("on", "verdict", "rules", "engine", "title_keys", "setting_source")
+SCREEN_KEYS = ("on", "verdict", "rules", "engine", "title_keys", "setting_source", "comp_keys",
+               "engagement_source")
 # dev #722 / public #156 (jobsearch 0.69.0): the title rule's tokens, a CLOSED set. 0.68.0 and earlier
 # stored three; the floor and the mandate add BELOW-FLOOR and OFF-MANDATE, and an unreadable key is a
 # visible UNREADABLE-TITLE-KEYS. A token outside the set is a stored screen nothing here can read.
@@ -1170,6 +1175,14 @@ def check_screen(sc, label, problems):
         problems.append("%s: screen.setting_source must be 'inferred' (it is present only when the "
                         "role was screened as onsite on an inference) -- %r"
                         % (label, sc["setting_source"]))
+    # dev #739 / #740 (0.73.0): the sibling of title_keys, and the twin of setting_source.
+    if "comp_keys" in sc and not (isinstance(sc["comp_keys"], str) and sc["comp_keys"].strip()):
+        problems.append("%s: screen.comp_keys must be a non-empty string (the hash of the comp "
+                        "inputs the screen was computed under) -- %r" % (label, sc["comp_keys"]))
+    if "engagement_source" in sc and sc["engagement_source"] != "inferred":
+        problems.append("%s: screen.engagement_source must be 'inferred' (it is present only when the "
+                        "pay was routed on an engagement inferred from the title) -- %r"
+                        % (label, sc["engagement_source"]))
 
 
 def check_location_provenance(loc, label, problems):
@@ -1354,6 +1367,49 @@ def check_title_floor(screen_cfg, problems):
     for why in _ck.validate_title_floor(screen_cfg.get("title_floor")):
         problems.append("config %s" % why)
     return 1
+
+
+def check_non_employee_comp(compensation, problems):
+    """`compensation.non_employee` of `config.json` (dev #740 / public #160, E4): absent or null, or
+    exactly `{floors: {<unit>: <positive int>}, note?}`. Returns 1 when a block is set. The validator
+    is `config_keys.validate_non_employee`'s, one copy: a block the screen cannot read is refused
+    here, loudly, never read as absent."""
+    import config_keys as _ck
+    if not isinstance(compensation, dict) or compensation.get("non_employee") is None:
+        return 0
+    for why in _ck.validate_non_employee(compensation.get("non_employee")):
+        problems.append("config %s" % why)
+    return 1
+
+
+def check_company_fields(c, label, problems):
+    """The four optional company fields `data_model.json` has declared since jobsearch 0.73.0
+    (dev #757), typed as `schema.md` documents them. The data model carries no types for any store,
+    so the types are enforced HERE:
+
+      career_url      absent, null, or a non-empty string (`ats_slug.discover` reads it)
+      domain          absent, null, or a non-empty string
+      aliases         absent, or a list of non-empty strings. A bare STRING is refused: `ats_slug`
+                      iterates it, and a string iterates character by character
+      size_ownership  absent, or a non-empty string
+
+    A refusal names the `record.py set` command that writes the field in the right shape."""
+    cid = c.get("id", "?")
+    for f in ("career_url", "domain"):
+        if f in c and c[f] is not None and not (isinstance(c[f], str) and c[f].strip()):
+            problems.append("%s: %s must be a non-empty string or null -- %r (fix: record.py set %s %s "
+                            "<value> --file companies)" % (label, f, c[f], cid, f))
+    if "aliases" in c:
+        al = c["aliases"]
+        if not (isinstance(al, list) and all(isinstance(a, str) and a.strip() for a in al)):
+            problems.append("%s: aliases must be a list of non-empty strings, e.g. [\"Example "
+                            "Holdings\"] -- %r (fix: record.py set %s aliases '[\"<name>\"]' "
+                            "--file companies)" % (label, al, cid))
+    if "size_ownership" in c:
+        so = c["size_ownership"]
+        if not (isinstance(so, str) and so.strip()):
+            problems.append("%s: size_ownership must be a non-empty string -- %r (fix: record.py set "
+                            "%s size_ownership \"<text>\" --file companies)" % (label, so, cid))
 
 
 def check_lean(ln, label, problems):
@@ -2459,6 +2515,7 @@ def _main():
         # = poll this company's public board. A malformed object is refused here and at the write.
         if r.get("ats") is not None:
             problems += _ats_slug.check_ats(r["ats"], "%s.ats" % label)
+        check_company_fields(r, label, problems)      # dev #757 -- the four fields 0.73.0 declares
         if "warm_lookup" in r:
             _wl = r.get("warm_lookup")
             if (not isinstance(_wl, dict) or set(_wl) != {"on", "result"}
@@ -3262,6 +3319,7 @@ def _main():
                                                if isinstance(_cfg.get("screen"), dict) else None,
                                                problems)
         check_title_floor(_cfg.get("screen"), problems)
+        check_non_employee_comp(_cfg.get("compensation"), problems)
 
     # R7 -- standing findings that never refuse a write (a separate list from `problems`)
     import datetime as _dt_main

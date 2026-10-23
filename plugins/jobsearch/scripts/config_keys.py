@@ -665,6 +665,86 @@ def _is_pos_int(v):
     return isinstance(v, int) and not isinstance(v, bool) and v > 0
 
 
+# ── engagement type and the non-employee pay block (dev #740 / public #160; jobsearch 0.73.0) ──
+# design-comp-and-company-data.md §4. A role's `engagement_type` decides which pay floors it can be
+# measured against: the profile's tiers are ANNUAL BASE salary, so a fractional, interim, advisory or
+# contract engagement priced per hour, day or month is not comparable to them, and a comparison that
+# removes a role on a unit mismatch is the defect class (R2, never convert).
+#
+#   ENGAGEMENT_TYPES            the closed value set (`validate_data.ENGAGEMENT_TYPES` reads THIS).
+#                               `full-time` and `contract` pre-date 0.73.0; `fractional`, `interim` and
+#                               `advisory` are OURS (no published vocabulary has them -- Google's
+#                               `employmentType`, Ashby's and Lever's carry none of the three).
+#   ENGAGEMENT_TITLE_PHRASES    OURS, closed, whole-phrase and case-insensitive: the title words that
+#                               INFER a non-employee type when no `engagement_type` is recorded. The
+#                               order is the precedence when several types match. `consultant` and a
+#                               bare `advisory` are left out ON PURPOSE: both are routine in employee
+#                               titles ("Senior Consultant", "Director, Advisory Services").
+#   compensation.non_employee   the profile's machine-readable pay floors for those engagements, one
+#                               per unit: `{"floors": {"hour": 210, "day": 1500}, "note": "..."}`.
+#                               NOT SEEDED (R1: any value would be a guess) and kept out of
+#                               READER_KEYS, which prints one scalar per key.
+ENGAGEMENT_EMPLOYEE = "full-time"
+ENGAGEMENT_NON_EMPLOYEE = ("fractional", "interim", "advisory", "contract")
+ENGAGEMENT_TYPES = (ENGAGEMENT_EMPLOYEE,) + ENGAGEMENT_NON_EMPLOYEE
+ENGAGEMENT_TITLE_PHRASES = (
+    ("fractional", ("fractional", "vcio", "vcto", "vciso", "vcfo", "virtual cio", "virtual cto",
+                    "virtual ciso", "virtual cfo")),
+    ("interim", ("interim",)),
+    ("advisory", ("advisor", "adviser", "advisory board")),
+    ("contract", ("contract", "contractor", "contract-to-hire")),
+)
+COMPENSATION_NON_EMPLOYEE = "compensation.non_employee"
+NON_EMPLOYEE_UNITS = ("year", "month", "day", "hour")      # == profile.PAY_INTERVAL_ABBR's values
+
+
+def engagement_vocab_hash():
+    """A short hash of the engagement vocabulary (the values and every title phrase). The stored-screen
+    staleness hash includes it (`profile.comp_keys`), so a release that adds a phrase re-screens the
+    roles it could newly cover -- with no version number for a maintainer to forget to bump."""
+    import hashlib
+    import json
+    raw = json.dumps([list(ENGAGEMENT_TYPES), [[t, list(ps)] for t, ps in ENGAGEMENT_TITLE_PHRASES]],
+                     sort_keys=True)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def validate_non_employee(block):
+    """Problems with `compensation.non_employee` ([] when valid or absent/None). Strict: an object
+    whose only keys are `floors` (required) and `note` (an optional string, never read by the screen);
+    `floors` is a non-empty object whose keys are units from `NON_EMPLOYEE_UNITS` and whose values are
+    positive integers. Anything else is a named problem -- the screen treats an unreadable block as
+    LOUD (PAY-UNCOMPARABLE naming it), never as an absent one."""
+    if block is None:
+        return []
+    if not isinstance(block, dict):
+        return ["%s must be an object {floors: {<unit>: <int>}, note?}, got %s"
+                % (COMPENSATION_NON_EMPLOYEE, type(block).__name__)]
+    problems = []
+    for k in sorted(block):
+        if k not in ("floors", "note"):
+            problems.append("%s has an unknown key %r (only floors and note are read)"
+                            % (COMPENSATION_NON_EMPLOYEE, k))
+    if "note" in block and not isinstance(block["note"], str):
+        problems.append("%s.note must be a string" % COMPENSATION_NON_EMPLOYEE)
+    floors = block.get("floors")
+    if "floors" not in block:
+        problems.append("%s.floors is required: {<unit>: <int>} with units from %s"
+                        % (COMPENSATION_NON_EMPLOYEE, "/".join(NON_EMPLOYEE_UNITS)))
+    elif not isinstance(floors, dict) or not floors:
+        problems.append("%s.floors must be a non-empty object {<unit>: <int>}"
+                        % COMPENSATION_NON_EMPLOYEE)
+    else:
+        for unit in sorted(floors):
+            if unit not in NON_EMPLOYEE_UNITS:
+                problems.append("%s.floors has an unknown unit %r (one of %s)"
+                                % (COMPENSATION_NON_EMPLOYEE, unit, "/".join(NON_EMPLOYEE_UNITS)))
+            elif not _is_pos_int(floors[unit]):
+                problems.append("%s.floors[%r] must be a positive integer, got %r"
+                                % (COMPENSATION_NON_EMPLOYEE, unit, floors[unit]))
+    return problems
+
+
 def validate_commute_bands(anchor):
     """Problems with one anchor's `bands` ([] when valid or undeclared)."""
     bands = anchor.get("bands") if isinstance(anchor, dict) else None

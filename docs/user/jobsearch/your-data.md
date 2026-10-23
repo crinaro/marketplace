@@ -84,11 +84,13 @@ copied twelve times.
 | field | what it is |
 |---|---|
 | `id` | a short stable slug you will see referenced elsewhere |
-| `name`, `aliases` | display name, plus other names it gets listed under |
+| `name`, `aliases` | display name, plus other names it gets listed under. `aliases` is a list of non-empty strings; since 0.73.0 `record.py set` can write it, and the validator refuses a bare string |
 | `vertical` | the sector, used for tiering and search targeting |
 | `size` | how big the company is and who owns it — e.g. public, PE-backed, employee count. Context for whether the role is a fit; free text |
 | `hq` | where it is headquartered, as you would say it (a city, or `Remote` for a remote-first company). Free text, and `null` when you do not know |
-| `career_url` | its own careers page; setting this makes the company reviewable as its own channel |
+| `domain` | since 0.73.0 declared — the company's primary web domain, a non-empty string, or `null` when unknown |
+| `size_ownership` | since 0.73.0 declared — free text on ownership and scale, e.g. "public, large" or "PE-backed". A non-empty string. No script reads it yet; it is context for you. `size` (above) is the separate field the mandate matcher reads |
+| `career_url` | its own careers page; setting this makes the company reviewable as its own channel. Since 0.73.0 declared, so `record.py set` can write it: a non-empty string or `null` |
 | `status` | `active-target` · `watching` · `passed` |
 | `research_log` | append-only notes; company-level findings go here, not on each role |
 | `note` | free text of your own about the company as a whole — a remark that is not a dated finding (those go in `research_log`) |
@@ -146,7 +148,7 @@ The main record. Everything about one role hangs off it.
 | `location` | `{type, primary, remote, declared}` — see *contested settings* below. Since 0.70.0 `type` may be left out when the posting stated no setting and no place could be read, and `setting_source: inferred` marks an `onsite` the system filled in from a concrete place — see *Where a role is, and when it is too far* below. Since 0.67.0 `declared` also holds the work setting *as the posting wrote it* on every role that reaches your decision, and a role may carry `commute_minutes` — see *Listed pay, posting age, the screen and the lean* below |
 | `listed_pay` | since 0.67.0 — the pay the **listing** showed, with whether the employer stated it, a board estimated it, or none was shown. Absent means *not captured* — see *Listed pay, posting age, the screen and the lean* below |
 | `posted` | since 0.67.0 — when the role was posted, and how we know. Absent means the age is unknown |
-| `screen` | since 0.67.0 — the hard screens the engine applied to the role, and their verdict, written by the script that ran them. Since 0.69.0 it also carries `title_keys`, a short fingerprint of the title settings it was computed under (see *The title floor and the mandate* below) |
+| `screen` | since 0.67.0 — the hard screens the engine applied to the role, and their verdict, written by the script that ran them. Since 0.69.0 it also carries `title_keys`, a short fingerprint of the title settings it was computed under (see *The title floor and the mandate* below). Since 0.73.0 it also carries `comp_keys`, a fingerprint of the pay inputs it ran under, and `engagement_source: inferred` when the pay was routed on an engagement read from the title (see *The pay re-screen* below) |
 | `lean` | since 0.67.0 — the system's read of the role (`pursue` · `pass` · `ask`) with a one-line reason. A lean is advice; it never removes a role |
 | `status` | what you are **doing** about it |
 | `stage` | where it **is** in the funnel |
@@ -154,7 +156,7 @@ The main record. Everything about one role hangs off it.
 | `verdict` | `pursue` · `pass` · `parked` · `undecided` |
 | `duplicate_of` | since 0.70.0, only on a row you folded into another with `record.py link-sibling` — the id of the row that stands for the same requisition. A folded row carries no decision of its own and leaves the undecided list. Absent on every other role |
 | `distinct_from` | since 0.70.0, optional — ids of rows you recorded as a *different* role (a merge you undid, or a role you created anyway with `--force`), so the matcher never joins that pair again |
-| `engagement_type` | `full-time` · `contract` — since 0.45.0; the 0.45.0 upgrade set this to `full-time` on every existing role, since that fact about a role isn't derivable from anything else on the record |
+| `engagement_type` | `full-time` · `contract` · `fractional` · `interim` · `advisory` — since 0.45.0 (the last three since 0.73.0); the 0.45.0 upgrade set this to `full-time` on every existing role, since that fact about a role isn't derivable from anything else on the record. Since 0.73.0 the pay screen reads it. **A value you recorded always wins**, `full-time` included: a role titled "Fractional CTO" with `full-time` stored is screened against your annual floors. With no value recorded, a closed list of title words infers one (fractional, vCIO/vCTO and similar, interim, advisor, contract) and the screen line says it was inferred. A value outside the list screens `PAY-UNCOMPARABLE`. Older roles may need it set: `record.py set <id> engagement_type <value>` |
 | `jd_url` | the posting. Required as a URL **or an explicit `null`** — never simply missing |
 | `channel_id` | the channel that *represents* the role as a whole — typically the recruiting firm running the search. `null` when no single channel does. Distinct from a sighting's own `channel_id` below, which records each place the role was merely seen |
 | `sightings` | every time this role was seen, and where: one entry per sighting, `{channel_id, seen_on, snippet, source_url}` — `channel_id` is the source it turned up on, `seen_on` the date, `snippet` a short excerpt of how the listing read at the time, and `source_url` the link to that listing (see *Sourcing* below for when the link becomes mandatory). Since 0.70.0 a sighting may also carry `location` (the place that listing put the role at, as written) and `split_to` (the id of the row that listing was split away to, after an undone merge — a split sighting no longer counts as evidence for this row) |
@@ -258,10 +260,12 @@ passed/duplicate, geography, title) reports these comp verdicts. `NOT-CAPTURED` 
 | verdict | meaning | what the screen does |
 |---|---|---|
 | `CLEARS` | the top of the stated range is at or above the floor that applies | keeps the role |
-| `BELOW-FLOOR` | an **employer-stated** range, or your own `comp` figure, whose top is below the applicable floor | **removes** the role, and says why. Where a role lists several ranges, the screen removes only when every range's top is below the floor, or screens the one range labelled for the role's location. You can override a removal with `record.py decide` |
+| `BELOW-FLOOR` | an **employer-stated** range, or your own `comp` figure, whose top is below the applicable floor | **removes** the role, and says why. Where a role lists several ranges, the screen removes only when every range's top is below the floor, or screens the one range labelled for the role's location. A removal is lifted only by one decision: `record.py decide <id> pursue --why-kind comp-acceptable --why "..."`. That role then shows `BELOW-FLOOR-ACCEPTED` and is never removed. Reversing it, or deciding again with another `--why-kind`, brings the removal back |
+| `BELOW-FLOOR-ACCEPTED` | since 0.73.0 — the role would be `BELOW-FLOOR`, and your current decision is `pursue` with `--why-kind comp-acceptable` | **keeps** the role, with the posting's own figures and your decision named. Never removes |
+| `BELOW-ENGAGEMENT-FLOOR` | since 0.73.0 — a fractional, interim, advisory or contract role whose top, in its own unit (hour, day, month, year), is below your `compensation.non_employee` floor for that same unit | **review**; it never removes. Non-employee pay is priced per scope, so a low rate is a negotiating position |
 | `UNDISCLOSED` | **none shown**: the listing was read and showed no pay, or the range is open-ended and its start is below the floor | keeps the role. Pay is the first question to ask, so it cannot be screened on |
 | `NOT-CAPTURED` | nobody recorded what pay the listing showed, and the role has no `comp` figure either | **review**, not keep: "re-read the listing before surfacing it" |
-| `PAY-UNCOMPARABLE` | a figure exists but cannot be fairly compared: it is not annual (hourly, daily or monthly pay is never converted), it is in a currency other than yours, you have not set `compensation.currency`, or it is a board's estimate that falls below the floor | **review**; it never removes |
+| `PAY-UNCOMPARABLE` | a figure exists but cannot be fairly compared: it is not annual (hourly, daily or monthly pay is never converted), it is in a currency other than yours, you have not set `compensation.currency`, or it is a board's estimate that falls below the floor. Since 0.73.0 it also covers a `comp` figure stated per hour, day or month, or on a basis other than base or total (a different pay basis never removes); a fractional, interim, advisory or contract role when no `compensation.non_employee` block is configured, or none for its unit; and an `engagement_type` outside the list | **review**; it never removes |
 | `NEEDS-COMMUTE-CHECK` | an existing verdict. It means the screen cannot tell a commute from a move. **New cause since 0.67.0:** you declared commute-time bands (below) and this role's commute minutes are not known — the screen never guesses a band | **review** |
 | `UNRESOLVED-SETTING` | the posting declares two settings at once (see above) | **review**: the question goes to the employer |
 
@@ -334,6 +338,7 @@ verdict the same screen already stored, never chosen by a model:
 |---|---|---|
 | `CLEARS` | `pursue` | `title below your floor (<floor>), but pay is within your range` |
 | `BELOW-FLOOR` | none from the title | the pay rule already removes the role; the title adds nothing |
+| `BELOW-FLOOR-ACCEPTED` | `pursue` | `title below your floor (<floor>), and you accepted the pay` |
 | anything else (`NOT-CAPTURED`, `UNDISCLOSED`, `PAY-UNCOMPARABLE`, `NEEDS-COMMUTE-CHECK`, `UNRESOLVED-SETTING`) | `ask` | `title below your floor (<floor>); check pay before deciding` |
 
 It is stored as a signal with id `title-floor` beside any signals that matched. A lean you or the
@@ -352,6 +357,24 @@ screen with no fingerprint is left alone. To see the size of it before and after
 ~/.claude/jobsearch/run profile.py --title-scope-count
 undecided: 40, flagged below floor: 12, off-mandate: 3, re-screen pending: 40
 ```
+
+**The pay re-screen — since 0.73.0.** A stored screen also records `comp_keys`, a fingerprint of the
+pay inputs: the engagement vocabulary, `compensation.non_employee`, the role's engagement, its `comp`
+period and basis, and whether your current decision accepts the pay. A screen computed without those
+inputs is stale where it could matter. A stale screen on an **undecided** role re-screens
+automatically through the ordinary triage step, within the `search.triage_per_run` cap. Roles you
+already decided, or that an earlier screen already removed, do not drain on their own. Count them
+with:
+
+```
+~/.claude/jobsearch/run profile.py --comp-scope-count
+stored screens: 212, comp re-screen pending: 9
+```
+
+(numbers illustrative). The count covers every status, since a wrongly removed role is exactly the
+one it must not skip. To refresh one, run `record.py screened <id>`; a follow-up will make that
+automatic. Setting `compensation.non_employee`, or a role's `engagement_type`, makes its screen stale
+the same way.
 
 (numbers illustrative). It counts your undecided backlog roles, how many read below the floor or
 off-mandate under today's settings, and how many have a stored screen waiting to be redone. It
@@ -1431,6 +1454,7 @@ work setting) are yours to set; this section lists the keys added in 0.67.0.
 | key | what it is |
 |---|---|
 | `compensation.currency` | since 0.67.0 — the currency your floors and your own `comp` figures are in, as a three-letter ISO code such as `USD`. **Not set by the upgrade, and asked once** (below). Until it is set, any pay the listing showed screens `PAY-UNCOMPARABLE` ("set compensation.currency to compare listed pay") and nothing is removed on it, because "$" does not say which currency. Once set, a listed range in the same currency is compared against the floor, and a range in any other currency screens `PAY-UNCOMPARABLE`. Your own `comp` figure is unaffected |
+| `compensation.non_employee` | since 0.73.0, optional — the pay floors for fractional, interim, advisory and contract roles: `{"floors": {"day": 1500, "hour": 200}, "note": "..."}`. Units are `year`, `month`, `day` or `hour`; each value is a positive whole number in your `compensation.currency`. A figure is compared only with the floor in its own unit and is never converted. Not set by the upgrade (any value would be a guess). Without it, these roles get a `PAY-UNCOMPARABLE` review verdict that names this key, never a removal |
 | `compensation.hybrid_inside_radius` | since 0.67.0 — `band` (the default) or `hybrid-tier`. Only consulted when an anchor declares `bands`. `band` screens a hybrid role inside your commute radius against the commute band, like an onsite role; `hybrid-tier` keeps screening it against the hybrid floor, for a profile that prices hybrid separately. The upgrade sets `band` where the key is absent and never overwrites a value you have |
 
 **The one ask.** `compensation.currency` is the only thing the upgrade asks of you. If the key is

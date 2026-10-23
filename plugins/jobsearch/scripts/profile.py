@@ -45,7 +45,13 @@ that does not exist is noise on every role for every installer). jobsearch 0.69.
 public #156) adds, inside the one title line and still without a removal: `screen.title_floor`
 (`BELOW-FLOOR`, whose lean follows the comp verdict, owner decision R1) and the title-field
 `screen.likely_pass_signals` (`OFF-MANDATE`, the mandate). With neither configured the screen
-prints exactly what 0.68.0 printed.
+prints exactly what 0.68.0 printed. jobsearch 0.73.0 (dev #739 / public #161, dev #740 / public #160)
+adds to the comp rule alone, still without a new removal: `BELOW-FLOOR-ACCEPTED` (a BELOW-FLOOR role
+whose current decision is pursue + comp-acceptable is KEPT; `comp_accepted`), the engagement routing
+(`engagement`: a fractional, interim, advisory or contract role is measured against
+`compensation.non_employee`, never the annual tiers; `BELOW-ENGAGEMENT-FLOOR` is a review) and a
+`PAY-UNCOMPARABLE` for a `comp` in a unit or basis the annual BASE floor cannot be set against.
+`comp_keys` / `screen_is_comp_stale` report a stored comp verdict computed without those inputs.
 
 Python 3.9+. Standard library only.
 """
@@ -97,6 +103,29 @@ UNRESOLVED = "UNRESOLVED-SETTING"
 # role is the defect class this verdict exists to prevent.
 NOT_CAPTURED = "NOT-CAPTURED"
 PAY_UNCOMPARABLE = "PAY-UNCOMPARABLE"
+# jobsearch 0.73.0 (design-comp-and-company-data.md) -- two more verdicts, both NEVER a removal.
+# BELOW-FLOOR-ACCEPTED (dev #739 / public #161): the role WOULD be BELOW-FLOOR, and the candidate's
+# CURRENT decision is `pursue` with `reason_kind: comp-acceptable` (`comp_accepted`). The detail keeps
+# the posting's own figures and floor; the verdict KEEPS the role (title lean: pursue).
+# BELOW-ENGAGEMENT-FLOOR (dev #740 / public #160): a non-employee engagement (fractional, interim,
+# advisory, contract) whose pay, in its own unit and the profile's currency, is below the same-unit
+# floor in `compensation.non_employee.floors`. A review: non-employee pay is priced per scope, so a
+# rate under the floor is a negotiating position, not a disqualifier.
+BELOW_ACCEPTED = "BELOW-FLOOR-ACCEPTED"
+BELOW_ENGAGEMENT = "BELOW-ENGAGEMENT-FLOOR"
+# The two sentences a BELOW-FLOOR / BELOW-FLOOR-ACCEPTED detail ends with (after the figures, which
+# are byte-identical in both). REMOVE_SENTENCE names the one decision shape that counts (A4).
+REMOVE_SENTENCE = (
+    "Profile says REMOVE unless you accept this pay: record.py decide %s pursue --why-kind "
+    "comp-acceptable --why \"<why>\". Only that shape counts; a later decide with another "
+    "--why-kind, or a verdict other than pursue, withdraws it.")
+ACCEPTED_SENTENCE = (
+    "ACCEPTED below the floor by your decision of %s (pursue, comp-acceptable: %s) -- KEEP, not "
+    "removed; the figures are the posting's, unchanged.")
+# dev #740 (E1), the 0.70.0 INFERRED_NOTE's twin: every screen line computed on a title inference says so.
+ENGAGEMENT_INFERRED_NOTE = (
+    " (engagement inferred from the title: %s; no engagement_type is recorded -- set it with "
+    "`record.py set %s engagement_type <value>` to state it)")
 
 # R2 -- the pay-slot grammar's interval abbreviations (`<min>-<max>/<yr|mo|day|hr>/<CUR>`) and the
 # stored `interval` each one means. Only `year` is ever compared with a floor.
@@ -602,13 +631,67 @@ def is_inferred(opp_or_location):
     return isinstance(loc, dict) and loc.get("setting_source") == "inferred"
 
 
-def screen_comp(opp, profile, commute_ok=None, table=None):
+def comp_accepted(opp):
+    """True when the role's CURRENT decision accepts its pay (dev #739 / public #161): the row's own
+    `verdict` is `pursue` and its `decision.reason_kind` is `comp-acceptable`. Read-only, from the row
+    the screen is already handed. `record.py decide` overwrites `verdict` and `decision` together, so
+    "current" holds by construction: a later decide with another `--why-kind` (superseded), or with a
+    verdict other than `pursue` (reversed), makes this False and the plain BELOW-FLOOR returns."""
+    dec = opp.get("decision")
+    return (opp.get("verdict") == "pursue" and isinstance(dec, dict)
+            and dec.get("reason_kind") == "comp-acceptable")
+
+
+def title_engagement(title):
+    """The non-employee engagement type the closed title vocabulary reads in `title`, or None
+    (dev #740 / public #160; `config_keys.ENGAGEMENT_TITLE_PHRASES`). Whole-phrase, case-insensitive;
+    when several types match, the first in the vocabulary's order wins."""
+    import config_keys as _ck
+    for etype, phrases in _ck.ENGAGEMENT_TITLE_PHRASES:
+        if any(_contains_phrase(title, ph) for ph in phrases):
+            return etype
+    return None
+
+
+def engagement(opp):
+    """`(type, source)` -- how the screen routes a role's pay (dev #740 / public #160, E1).
+
+    PRECEDENCE (controller decision R1, 2026-10-22): an explicitly STATED `engagement_type` always
+    wins, `full-time` included -- #740's own wording is "an explicit field when present, otherwise the
+    title", and it gives the candidate an override (set `full-time` on a role whose title says
+    "Fractional" and it screens as employment).
+
+      stated, a readable value   -> (that value, "stated")
+      stated, not a readable one -> (the value, "unreadable"): the screen says PAY-UNCOMPARABLE naming
+                                    it, never the annual floor (strict, loud)
+      not stated, title marker   -> (the inferred type, "inferred"): flagged on every screen line
+      otherwise                  -> (None, None): the employee path, 0.72.0's behaviour exactly."""
+    import config_keys as _ck
+    stated = opp.get("engagement_type")
+    if isinstance(stated, str) and stated in _ck.ENGAGEMENT_TYPES:
+        return stated, "stated"
+    if stated is not None:
+        return stated, "unreadable"
+    inferred = title_engagement(opp.get("title"))
+    if inferred:
+        return inferred, "inferred"
+    return None, None
+
+
+def screen_comp(opp, profile, commute_ok=None, table=None, honour_decision=True):
     """Screen one opportunity's comp against the applicable tier. Returns `(verdict, detail)`; a
     role screened as onsite on an INFERENCE (`location.setting_source`, dev #727 / public #159)
-    carries `INFERRED_NOTE` at the end of its detail, whatever the verdict.
+    carries `INFERRED_NOTE` at the end of its detail, whatever the verdict, and a role routed by an
+    ENGAGEMENT inferred from its title (dev #740 / public #160) carries `ENGAGEMENT_INFERRED_NOTE`.
+
+    `honour_decision` (dev #739 / public #161): True (the default; every screen) reads the row's own
+    current decision, so a BELOW-FLOOR role the candidate accepted (`comp_accepted`) is
+    BELOW-FLOOR-ACCEPTED. `your_move.triage_suggestion` passes False: the engine's own suggestion
+    must not feed the candidate's acceptance back into itself, or a re-decide would freeze
+    `decision.suggested` at something other than `pass`.
 
     See `_screen_comp` for the rules themselves."""
-    verdict, detail = _screen_comp(opp, profile, commute_ok, table)
+    verdict, detail = _screen_comp(opp, profile, commute_ok, table, honour_decision)
     loc = opp.get("location") if isinstance(opp.get("location"), dict) else {}
     if loc.get("listed_at") and loc.get("type") in ("onsite", "hybrid") and commute_ok is None:
         # dev #728 / public #158 (design §5.6): the role is listed at several places and the MOST
@@ -616,19 +699,172 @@ def screen_comp(opp, profile, commute_ok=None, table=None):
         detail += " [decided by the listing at %s]" % commute_outcome(loc, profile, table)["place"]
     if is_inferred(opp) and verdict != UNRESOLVED:
         detail += INFERRED_NOTE
+    etype, esource = engagement(opp)
+    if esource == "inferred":
+        detail += ENGAGEMENT_INFERRED_NOTE % (etype, opp.get("id") or "<id>")
     return verdict, detail
 
 
-def _screen_comp(opp, profile, commute_ok=None, table=None):
+def _below(figures, opp, note, honour_decision):
+    """The ONE place a BELOW result is built, so the two BELOW sites (`comp.max` and `listed_pay`)
+    cannot drift (dev #739 / public #161). `figures` is the sentence that names the band, its
+    source/basis, the gap and the floor; `note` the `comp.max` path's total-basis warning (or "").
+    Not accepted (or `honour_decision` False) -> BELOW-FLOOR and the sentence that names the decision
+    that would lift it. Accepted -> BELOW-FLOOR-ACCEPTED with the SAME figures."""
+    if honour_decision and comp_accepted(opp):
+        dec = opp["decision"]
+        reason = " ".join(str(dec.get("reason") or "no reason recorded").split())
+        return BELOW_ACCEPTED, "%s %s%s" % (
+            figures, ACCEPTED_SENTENCE % (dec.get("on") or "an earlier date", reason), note)
+    return BELOW, "%s %s%s" % (figures, REMOVE_SENTENCE % (opp.get("id") or "<id>"), note)
+
+
+def _amount(n):
+    return format(n, ",")
+
+
+def _screen_non_employee(opp, profile, etype, source):
+    """`(verdict, detail)` for a role routed to a non-employee engagement (dev #740 / public #160,
+    E2/E3; design §4.4). The annual base tiers are never consulted: a day rate set against an annual
+    salary floor is the mismatch that removed fractional roles in 0.69.1.
+
+      1. the figure: `comp.max` in its own `comp.period` (an absent or unreadable period is NOT assumed
+         annual), else `listed_pay` through the 0.67.0 rules for state, selection and open-ended
+         ranges; nothing recorded is NOT-CAPTURED, `none-shown` UNDISCLOSED
+      2. `compensation.non_employee` absent -> PAY-UNCOMPARABLE naming the key to set; unreadable ->
+         PAY-UNCOMPARABLE naming the problems
+      3. `listed_pay` in a currency other than the profile's (or the profile's unset) -> PAY-UNCOMPARABLE
+      4. no floor in the figure's unit -> PAY-UNCOMPARABLE, never converted
+      5. at or above the same-unit floor -> CLEARS; below -> BELOW-ENGAGEMENT-FLOOR
+
+    NEVER a removal: non-employee pay is priced per scope, so a rate under the floor is a negotiating
+    position, not a disqualifier (design D8)."""
+    import config_keys as _ck
+    who = "%s engagement (%s)" % (etype, source)
+    comp = opp.get("comp") if isinstance(opp.get("comp"), dict) else None
+    lp = opp.get("listed_pay") if isinstance(opp.get("listed_pay"), dict) else None
+    entries = []                      # (reach, unit, shown, has_max)
+    selected, estimate = [], False
+    if comp and comp.get("max") is not None:
+        top = _num(comp["max"])
+        period = comp.get("period")
+        unit = period.strip().lower() if isinstance(period, str) else None
+        shown = "%s per %s" % (_amount(top), unit) if top is not None and unit else "%r" % comp.get("max")
+        if top is None:
+            return PAY_UNCOMPARABLE, ("%s: comp.max %r is not a number -- not compared."
+                                      % (who, comp.get("max")))
+        if unit not in _ck.NON_EMPLOYEE_UNITS:
+            return PAY_UNCOMPARABLE, (
+                "%s: comp %s has no readable unit (comp.period is %r; one of %s) -- a non-employee "
+                "figure is never assumed annual, and never converted. Record comp.period."
+                % (who, _amount(top), period, "/".join(_ck.NON_EMPLOYEE_UNITS)))
+        entries.append((top, unit, shown, True))
+    elif lp is not None:
+        state = lp.get("state")
+        if state == "none-shown":
+            return UNDISCLOSED, ("%s: the listing showed NO pay (recorded none-shown, not merely "
+                                 "uncaptured) -- KEEP; it cannot be screened on." % who)
+        ranges = [r for r in (lp.get("ranges") or []) if isinstance(r, dict)]
+        if state not in ("employer-stated", "board-estimate") or not ranges or any(
+                _num(r.get("min")) is None and _num(r.get("max")) is None for r in ranges):
+            return NOT_CAPTURED, (
+                "%s: listed_pay is recorded but carries no readable range (state %r) -- treated as "
+                "NOT captured, never as a figure. RE-READ THE LISTING before surfacing it."
+                % (who, state))
+        loc = opp.get("location") or {}
+        selected = [r for r in ranges if _label_matches(r.get("label"), loc, None)] or ranges
+        estimate = state == "board-estimate"
+        for r in selected:
+            reach = _num(r.get("max")) if _num(r.get("max")) is not None else _num(r.get("min"))
+            entries.append((reach, r.get("interval"), _range_text(r), _num(r.get("max")) is not None))
+    else:
+        return NOT_CAPTURED, (
+            "%s: no pay was ever recorded for this role (no listed_pay, no comp figure) -- that is NOT "
+            "the same as the listing showing none. RE-READ THE LISTING before surfacing it." % who)
+
+    shown_all = "; ".join(e[2] for e in entries)
+    block = (profile.get("compensation") or {}).get("non_employee") if isinstance(
+        profile.get("compensation"), dict) else None
+    if block is None:
+        return PAY_UNCOMPARABLE, (
+            "%s: pay %s is not measured against the annual base tiers; set "
+            "compensation.non_employee.floors to compare (shape: {\"floors\": {\"day\": <int>, ...}}). "
+            "KEEP for review -- a non-employee engagement is never removed on an annual floor."
+            % (who, shown_all))
+    problems = _ck.validate_non_employee(block)
+    if problems:
+        return PAY_UNCOMPARABLE, ("%s: pay %s cannot be compared -- %s. KEEP for review."
+                                  % (who, shown_all, "; ".join(problems)))
+    floors = block["floors"]
+    if lp is not None and not (comp and comp.get("max") is not None):
+        try:
+            currency = _ck.resolve_currency(profile)
+        except ValueError as e:
+            return PAY_UNCOMPARABLE, "%s: listed pay %s cannot be compared: %s" % (who, shown_all, e)
+        if currency is None:
+            return PAY_UNCOMPARABLE, (
+                "%s: listed pay %s cannot be compared -- set compensation.currency to compare listed "
+                "pay (the profile's currency is unset, so no figure is ever read as below a floor)."
+                % (who, shown_all))
+        for r in selected:
+            if str(r.get("currency") or "").upper() != currency:
+                return PAY_UNCOMPARABLE, (
+                    "%s: listed pay %s is in %s, the profile's currency is %s -- not converted. KEEP "
+                    "for review." % (who, shown_all, r.get("currency"), currency))
+    for _reach, unit, shown, _has_max in entries:
+        if unit not in floors:
+            return PAY_UNCOMPARABLE, (
+                "%s: stated per %s; your non-employee floors are per %s -- not converted (a guessed "
+                "conversion that removes is the defect class). KEEP for review."
+                % (who, unit or "an unstated unit", ", ".join(sorted(floors))))
+    clearing = [e for e in entries if e[0] is not None and e[0] >= floors[e[1]]]
+    if clearing:
+        best = max(clearing, key=lambda e: e[0])
+        return CLEARS, ("%s: top of pay %s%s >= your non-employee %s floor %s."
+                        % (who, best[2], " (board estimate)" if estimate else "", best[1],
+                           _amount(floors[best[1]])))
+    if estimate:
+        return PAY_UNCOMPARABLE, (
+            "%s: board estimate %s is below your non-employee floor -- an estimate is not the "
+            "employer's figure, so it is never read as below a floor. Ask the employer."
+            % (who, shown_all))
+    open_ended = [e for e in entries if not e[3]]
+    if open_ended:
+        return UNDISCLOSED, ("%s: open-ended range %s; the top is not stated -- KEEP." %
+                             (who, open_ended[0][2]))
+    best = max(entries, key=lambda e: e[0])
+    return BELOW_ENGAGEMENT, (
+        "%s: top of pay %s is %s BELOW your non-employee %s floor (%s). A review, never a removal: "
+        "non-employee pay is priced per scope." % (
+            who, best[2], _amount(floors[best[1]] - best[0]), best[1], _amount(floors[best[1]])))
+
+
+def _screen_comp(opp, profile, commute_ok=None, table=None, honour_decision=True):
     """Screen one opportunity's comp against the applicable tier.
 
-    Returns (verdict, detail). Verdicts: CLEARS / BELOW-FLOOR / UNDISCLOSED /
-    NEEDS-COMMUTE-CHECK / UNRESOLVED-SETTING.
+    Returns (verdict, detail). Verdicts: CLEARS / BELOW-FLOOR / BELOW-FLOOR-ACCEPTED /
+    BELOW-ENGAGEMENT-FLOOR / UNDISCLOSED / NEEDS-COMMUTE-CHECK / UNRESOLVED-SETTING / NOT-CAPTURED /
+    PAY-UNCOMPARABLE.
 
     Screening is applied to the TOP of the stated band (profile's below_floor rule),
     and an undisclosed band is explicitly KEPT — comp is the first question to ask,
     so it cannot be screened on.
+
+    jobsearch 0.73.0 (dev #740 / public #160): a role whose engagement is not employment is routed
+    BEFORE the location holds (`engagement`, `_screen_non_employee`) -- the non-employee floors are not
+    keyed by setting, so a contested setting does not block them -- and the annual tiers below never
+    see it. An unreadable stated `engagement_type` is PAY-UNCOMPARABLE naming it.
     """
+    import config_keys as _ck
+    etype, esource = engagement(opp)
+    if esource == "unreadable":
+        return PAY_UNCOMPARABLE, (
+            "engagement_type %r is not a value this engine reads (%s) -- the pay is not measured "
+            "against the annual base tiers. KEEP for review; correct it with `record.py set %s "
+            "engagement_type <value>`." % (etype, ", ".join(_ck.ENGAGEMENT_TYPES),
+                                           opp.get("id") or "<id>"))
+    if etype in _ck.ENGAGEMENT_NON_EMPLOYEE:
+        return _screen_non_employee(opp, profile, etype, esource)
     comp = opp.get("comp")
     loc = opp.get("location") or {}
 
@@ -689,7 +925,7 @@ def _screen_comp(opp, profile, commute_ok=None, table=None):
         pass                              # §5.2 step 1: the candidate's own figure screens, as before
     elif isinstance(opp.get("listed_pay"), dict):
         return _screen_listed_pay(opp["listed_pay"], opp, profile, label, floor,
-                                  resolved.get("anchor"))
+                                  resolved.get("anchor"), honour_decision)
     else:
         return NOT_CAPTURED, (
             "no pay was ever recorded for this role (no listed_pay, no comp figure) — that is NOT "
@@ -697,7 +933,24 @@ def _screen_comp(opp, profile, commute_ok=None, table=None):
             "Applicable tier would be %s (floor $%sK base)." % (label, floor // 1000))
 
     top = comp["max"]
-    basis = (comp.get("basis") or "base").lower()
+    # dev #740 / public #160 (E3): the floor is an ANNUAL BASE figure. A band stated per hour, day or
+    # month, or on a basis other than base/total (the reporter's `contract`), is a different quantity,
+    # and an annotation alone left it BELOW-FLOOR and REMOVE. It is PAY-UNCOMPARABLE now (a review),
+    # never converted. A `total` basis keeps its note and verdict: a total-comp top below a base floor
+    # puts the base top below it too, so a removal on it stays certain.
+    period = comp.get("period")
+    if period is not None and str(period).strip().lower() != "year":
+        return PAY_UNCOMPARABLE, (
+            "comp %s is per %s, not per year -- not converted (hours or days per year is a guess, and "
+            "a guessed conversion that removes is the defect class). Applicable tier would be %s "
+            "(floor $%sK base). KEEP for review; ask the employer for the annual figure."
+            % (top, period, label, floor // 1000))
+    basis = str(comp.get("basis") or "base").lower()
+    if basis not in ("base", "total"):
+        return PAY_UNCOMPARABLE, (
+            "comp is stated as %r; the floor is annual BASE -- not comparable, not converted. "
+            "Applicable tier would be %s (floor $%sK base). KEEP for review; ask what the base is."
+            % (basis, label, floor // 1000))
     note = ""
     if basis != "base":
         note = (" ⚠️ band is stated as %r, but the floor is BASE — compare like with like "
@@ -707,10 +960,9 @@ def _screen_comp(opp, profile, commute_ok=None, table=None):
         return CLEARS, ("top of band $%sK >= %s floor $%sK.%s"
                         % (int(top) // 1000, label, floor // 1000, note))
     gap = floor - top
-    return BELOW, (
-        "top of band $%sK is $%sK BELOW the %s floor ($%sK). Profile says REMOVE unless "
-        "the candidate explicitly opts in (standout-quality exception).%s"
-        % (int(top) // 1000, int(gap) // 1000, label, floor // 1000, note))
+    return _below(
+        "top of band $%sK is $%sK BELOW the %s floor ($%sK)."
+        % (int(top) // 1000, int(gap) // 1000, label, floor // 1000), opp, note, honour_decision)
 
 
 def parse_pay_ranges(text):
@@ -781,7 +1033,7 @@ def _label_matches(label, loc, anchor):
     return False
 
 
-def _screen_listed_pay(lp, opp, profile, label, floor, anchor=None):
+def _screen_listed_pay(lp, opp, profile, label, floor, anchor=None, honour_decision=True):
     """`screen_comp`'s §5.3: one `listed_pay` object against `floor` (the tier or band already
     chosen). Returns `(verdict, detail)`.
 
@@ -846,11 +1098,10 @@ def _screen_listed_pay(lp, opp, profile, label, floor, anchor=None):
             "open-ended range from %s; the top is not stated — KEEP. Applicable tier would be %s "
             "(floor $%sK base)." % (format(_num(r.get("min")), ","), label, floor // 1000))
     best = max(selected, key=reach)
-    return BELOW, (
-        "employer-stated top %s (source %s) is $%sK BELOW the %s floor ($%sK). Profile says REMOVE "
-        "unless the candidate explicitly opts in (record.py decide)."
+    return _below(
+        "employer-stated top %s (source %s) is $%sK BELOW the %s floor ($%sK)."
         % (_range_text(best), lp.get("source") or "unrecorded", int(floor - reach(best)) // 1000,
-           label, floor // 1000))
+           label, floor // 1000), opp, "", honour_decision)
 
 
 def _load_opps():
@@ -983,6 +1234,77 @@ def title_scope_count(opps, profile):
     return out
 
 
+def comp_keys(opp, profile):
+    """A short hash of everything the comp screen reads that a stored screen could not have known
+    (dev #739 / public #161 and dev #740 / public #160; design R2, the SIBLING of `title_keys`):
+
+      * the engagement vocabulary (`config_keys.engagement_vocab_hash`: the values and every phrase)
+      * `compensation.non_employee` (the profile's non-employee floors, as written)
+      * the role's own routing: `engagement(opp)` -- the stated type or the title's inference
+      * the role's `comp.period` and `comp.basis` (the E3 downgrade reads both)
+      * `comp_accepted(opp)` -- whether the CURRENT decision is pursue + comp-acceptable
+
+    `record.py screened` stores it as `screen.comp_keys`; `screen_is_comp_stale` compares it. It is a
+    sibling hash, not folded into `title_keys`, so storing it does not make every screen already
+    on disk stale."""
+    import hashlib
+    import config_keys as _ck
+    comp = opp.get("comp") if isinstance(opp.get("comp"), dict) else {}
+    cfg_comp = (profile or {}).get("compensation")
+    block = cfg_comp.get("non_employee") if isinstance(cfg_comp, dict) else None
+    raw = json.dumps({"vocab": _ck.engagement_vocab_hash(), "block": block,
+                      "engagement": list(engagement(opp)), "period": comp.get("period"),
+                      "basis": comp.get("basis"), "accepted": comp_accepted(opp)},
+                     sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+
+
+def screen_is_comp_stale(screen, opp, profile):
+    """True when a STORED screen was computed without the comp inputs 0.73.0 reads, or under other
+    ones (dev #739 / #740; design R2). Its `comp_keys` is not today's hash for this role, OR it has
+    none (stored by 0.72.0 or earlier) and THIS role has an input the old screen could not have read:
+    a non-employee or unreadable engagement, a `comp.period` other than year or a `comp.basis` other
+    than base/total on a stated figure, or a current comp-acceptable pursue on a stored BELOW-FLOOR.
+    An absent hash on a role with none of those is NOT stale: nothing the old screen could have
+    missed was asked of it, so the pile screened before the keys existed drains only where it must.
+    A screen that is not an object is not this function's question (`triage_missing` asks for it).
+    `your_move.triage_missing` reads this, so a wrong stored `remove:comp` drains through the normal
+    triage path at its per-run cap, with no bulk pass."""
+    import config_keys as _ck
+    if not isinstance(screen, dict):
+        return False
+    stored = screen.get("comp_keys")
+    if stored is not None:
+        return stored != comp_keys(opp, profile)
+    etype, esource = engagement(opp)
+    if esource == "unreadable" or etype in _ck.ENGAGEMENT_NON_EMPLOYEE:
+        return True
+    comp = opp.get("comp") if isinstance(opp.get("comp"), dict) else {}
+    if comp.get("max") is not None:
+        period, basis = comp.get("period"), comp.get("basis")
+        if period is not None and str(period).strip().lower() != "year":
+            return True
+        if basis is not None and str(basis).lower() not in ("base", "total"):
+            return True
+    rules = screen.get("rules") if isinstance(screen.get("rules"), dict) else {}
+    return comp_accepted(opp) and rules.get("comp") == BELOW
+
+
+def comp_scope_count(opps, profile):
+    """`{screened, rescreen_pending}` over every role carrying a stored screen (dev #739 / #740,
+    design R2's measure): `rescreen_pending` counts those `screen_is_comp_stale` reports. Read-only,
+    computed live, and run over EVERY status: a role the old screen wrongly removed has left the
+    live pipeline, and it is exactly the one this count must not skip."""
+    out = {"screened": 0, "rescreen_pending": 0}
+    for o in opps:
+        sc = o.get("screen")
+        if isinstance(sc, dict) and sc.get("verdict"):
+            out["screened"] += 1
+            if screen_is_comp_stale(sc, o, profile):
+                out["rescreen_pending"] += 1
+    return out
+
+
 def _matches_target(opp, configured):
     import pipeline_index as _pidx
     want = _pidx.normalize_title(opp.get("title"))
@@ -998,6 +1320,8 @@ def title_floor_lean(screen, profile):
 
       comp CLEARS         -> pursue, "title below your floor (<level>), but pay is within your range"
       comp BELOW-FLOOR    -> None: the comp rule already removes; the title adds nothing
+      comp BELOW-FLOOR-ACCEPTED -> pursue, "title below your floor (<level>), and you accepted the
+                             pay" (dev #739: the candidate's own decision has settled pay)
       any other comp      -> ask, "title below your floor (<level>); check pay before deciding"
 
     `hit` is the computed signal `record.py lean` stores beside the matched signals, in the shape
@@ -1010,6 +1334,10 @@ def title_floor_lean(screen, profile):
         return None
     if rules.get("comp") == CLEARS:
         lean, line = "pursue", "title below your floor (%s), but pay is within your range" % floor
+    elif rules.get("comp") == BELOW_ACCEPTED:
+        # dev #739 / public #161: the candidate accepted the pay below the floor, so pay has been
+        # decided; the lean is the same as for pay that clears, and the line says why.
+        lean, line = "pursue", "title below your floor (%s), and you accepted the pay" % floor
     else:
         lean, line = "ask", "title below your floor (%s); check pay before deciding" % floor
     return lean, line, {"id": TITLE_FLOOR_LEAN_ID, "reason": line, "matched_in": "title"}
@@ -1226,9 +1554,11 @@ def screen_rules(opp, profile, all_opps, applications=None, channels=None, today
 
     verdict, text = screen_comp(opp, profile, table=table)
     rules["comp"], detail["comp"] = verdict, text
+    # BELOW-FLOOR-ACCEPTED (dev #739) is neither list: the candidate's own decision keeps the role.
+    # BELOW-ENGAGEMENT-FLOOR (dev #740) is a review and never a removal.
     if verdict == BELOW:
         removes.append("comp")
-    elif verdict in (NEEDS_COMMUTE, UNRESOLVED, NOT_CAPTURED, PAY_UNCOMPARABLE):
+    elif verdict in (NEEDS_COMMUTE, UNRESOLVED, NOT_CAPTURED, PAY_UNCOMPARABLE, BELOW_ENGAGEMENT):
         reviews.append("comp")
 
     others = [o for o in all_opps if o.get("id") != oid]
@@ -1307,7 +1637,8 @@ def screen_rules(opp, profile, all_opps, applications=None, channels=None, today
         oc = commute_outcome(loc, profile, table)
         commute = oc["hold"] or oc["state"]
     return {"rules": rules, "detail": detail, "verdict": v, "commute": commute,
-            "setting_source": "inferred" if inferred else None}
+            "setting_source": "inferred" if inferred else None,
+            "engagement_source": "inferred" if engagement(opp)[1] == "inferred" else None}
 
 
 def _screen_block(opp, r):
@@ -1490,6 +1821,12 @@ def main():
                          "F, off-mandate: M, re-screen pending: P` over the undecided backlog "
                          "under today's screen.title_floor / title-field likely_pass_signals. "
                          "Read-only; the measure to take before and after the keys are set.")
+    ap.add_argument("--comp-scope-count", dest="comp_scope_count", action="store_true",
+                    help="dev #739 / #740 (jobsearch 0.73.0, R2): print `stored screens: N, comp "
+                         "re-screen pending: P` over every role carrying a stored screen -- the "
+                         "ones whose stored comp verdict was computed without the engagement and "
+                         "decision inputs 0.73.0 reads. Read-only; the measure to take before and "
+                         "after the re-screens drain.")
     ap.add_argument("--minimal-screen", dest="minimal_screen", metavar="OPP_ID", nargs="+",
                     help="dev #692 / public #140: the scripted screen every captured role gets "
                          "under EVERY posture (comp floor, passed/duplicate, geography, advisory "
@@ -1515,6 +1852,11 @@ def main():
         c = title_scope_count(_load_opps(), profile)
         print("undecided: %d, flagged below floor: %d, off-mandate: %d, re-screen pending: %d"
               % (c["undecided"], c["below_floor"], c["off_mandate"], c["rescreen_pending"]))
+        return 0
+
+    if args.comp_scope_count:
+        c = comp_scope_count(_load_opps(), profile)
+        print("stored screens: %d, comp re-screen pending: %d" % (c["screened"], c["rescreen_pending"]))
         return 0
 
     if args.minimal_screen:
@@ -1582,6 +1924,8 @@ def main():
         print("  " + commute_text(ccounts))
         inferred_n = sum(1 for o in opps if is_inferred(o))
         print("  onsite inferred (the posting stated no setting): %d" % inferred_n)
+        engagement_n = sum(1 for o in opps if engagement(o)[1] == "inferred")
+        print("  engagement inferred from the title: %d" % engagement_n)
         if ccounts["place-table"]:
             print("  " + place_table_missing_line())
         if args.screen_all:
@@ -1590,7 +1934,10 @@ def main():
                      " · ".join("%s=%d" % (k, v) for k, v in sorted(excluded_counts.items())))
             else:
                 print("  NOT screened: none — every status present in the pipeline was covered.")
-        print("\n  Reminder: BELOW-FLOOR is a REMOVE unless the candidate explicitly opts in.")
+        print("\n  Reminder: BELOW-FLOOR is a REMOVE unless you accept the pay (record.py decide <id>")
+        print("  pursue --why-kind comp-acceptable --why ...); BELOW-FLOOR-ACCEPTED is that")
+        print("  acceptance, kept. BELOW-ENGAGEMENT-FLOOR: a non-employee rate below your")
+        print("  compensation.non_employee floor in the same unit -- a review, never a removal.")
         print("  NEEDS-COMMUTE-CHECK is never 'relocation by default' — that assumption")
         print("  is what mis-scored <an employer> on 2026-07-22.")
         print("  UNRESOLVED-SETTING is a question FOR THE EMPLOYER, never a silent pick —")

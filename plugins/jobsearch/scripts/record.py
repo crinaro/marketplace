@@ -2482,7 +2482,14 @@ def _sourcing_mutation(args, rec):
                                       channels=_load_or_empty("channels"), today=on)
             r["screen"] = {"on": on_iso, "verdict": result["verdict"],
                            "rules": dict(result["rules"]), "engine": engine,
-                           "title_keys": _pf.title_keys(profile)}
+                           "title_keys": _pf.title_keys(profile),
+                           # dev #739 / #740 (0.73.0, R2): the sibling hash of the comp inputs, so
+                           # a later decision or engagement edit makes this screen stale.
+                           "comp_keys": _pf.comp_keys(r, profile)}
+            if result.get("engagement_source"):
+                # dev #740 / public #160: the pay was routed on an engagement INFERRED from the
+                # title; the stored result says so, as it does for an inferred setting.
+                r["screen"]["engagement_source"] = result["engagement_source"]
             if result.get("setting_source"):
                 # dev #727 / public #159: the role was screened as onsite on an INFERENCE; the
                 # stored result says so, so a later reader never mistakes it for a stated setting.

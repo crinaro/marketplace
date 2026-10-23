@@ -801,7 +801,17 @@ For each role in the batch, in order:
    "not read". The setting goes in `location.declared`, verbatim, or the literal `none stated`.
 3. **Screen it**: `record.py screened <opp_id> --already-locked` re-runs the scripted minimal
    screen (above) and stores its result. A `remove:` verdict follows the removal path above; that
-   role never reaches Decide.
+   role never reaches Decide. **The comp rule reads two more things since jobsearch 0.73.0** (dev #739
+   / public #161, dev #740 / public #160): the candidate's CURRENT decision (a `pursue` with
+   `--why-kind comp-acceptable` turns `BELOW-FLOOR` into `BELOW-FLOOR-ACCEPTED`, a keep) and the
+   role's engagement (a fractional, interim, advisory or contract role is measured against
+   `compensation.non_employee`, never the annual tiers, and its worst verdict is a review). **This
+   run does not re-run `screened` after a `decide`**: `decide` writes the decision and nothing else. The stored
+   screen carries `comp_keys`, so a decision recorded afterwards, an engagement edit or a change to
+   the non-employee block makes it stale, and a role whose stored screen is stale is offered back by
+   `--triage-queue` as missing `screen` (a backlog role the candidate has not yet decided drains
+   through that queue at its per-run cap). `profile.py --comp-scope-count` prints how many stored
+   screens are stale; for a role already decided, run `record.py screened <opp_id>` yourself.
 4. **Lean**: `record.py lean <opp_id> --lean pursue|pass|ask --line "<one line>" --jd-file <the JD
    text you read> --already-locked`. The script matches the profile's likely-pass signals against
    the title, the JD and the company, and stores the matches beside your lean. **A signal is a

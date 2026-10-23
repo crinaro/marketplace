@@ -813,7 +813,10 @@ def triage_suggestion(opp, cfg, company=None, fit=None):
     Returns (suggestion, missing): suggestion is `'pursue'` | `'pass'` | `None`; `missing`
     names the input a `None` suggestion is waiting on (`profile.screen_comp()`'s own verdict,
     or `'fit-misjudged'` when CLEARS but neither company nor fit supports pursuing)."""
-    tag, _detail = _profile.screen_comp(opp, cfg)
+    # dev #739 / public #161: DECISION-BLIND. The candidate's own acceptance of a below-floor pay is
+    # the one thing this suggestion must not read, or a re-decide would feed the previous decision
+    # back in and freeze `decision.suggested` at something other than `pass`.
+    tag, _detail = _profile.screen_comp(opp, cfg, honour_decision=False)
     if tag == _profile.BELOW:
         return "pass", None
     if tag in (_profile.UNDISCLOSED, _profile.UNRESOLVED, _profile.NEEDS_COMMUTE):
@@ -1301,14 +1304,19 @@ def triage_missing(opp, title_profile=None):
       screen              the stored hard-screen result (`screen.verdict`), computed under TODAY'S
                           title keys (dev #722 / public #156, R2: a stored screen whose
                           `title_keys` is not today's hash, or has none once a
-                          `screen.title_floor` is set, is re-screened -- once, through this path)
+                          `screen.title_floor` is set, is re-screened -- once, through this path;
+                          dev #739 / #740, 0.73.0: the same for the comp inputs, `screen.comp_keys`
+                          -- the engagement vocabulary, `compensation.non_employee`, the role's
+                          engagement, `comp.period` / `comp.basis` and its current comp decision --
+                          see `profile.screen_is_comp_stale`)
       lean                a well-formed `lean`; WAIVED when the read is unavailable, because the
                           lean then defaults to `ask` (`decide_lean`)
 
     A stale screen is otherwise not re-derived here: staleness needs an edit timestamp the store
     does not carry, and a second derivation is how Decide and needs-you drifted apart. The one
-    staleness this DOES read is the title keys' (`profile.screen_is_title_stale`), because it is a
-    hash the screen stored about itself, not an edit time. `title_profile` is the merged profile to
+    staleness this DOES read is the title keys' (`profile.screen_is_title_stale`) and the comp keys'
+    (`profile.screen_is_comp_stale`), because each is a hash the screen stored about itself, not an
+    edit time. `title_profile` is the merged profile to
     hash against (default: the one on disk)."""
     missing = []
     reason = jd_unavailable_reason(opp)
@@ -1331,7 +1339,8 @@ def triage_missing(opp, title_profile=None):
         missing.append("screen")
     else:
         tp = title_profile if title_profile is not None else _title_profile()
-        if tp is not None and _profile.screen_is_title_stale(scr, tp):
+        if tp is not None and (_profile.screen_is_title_stale(scr, tp)
+                               or _profile.screen_is_comp_stale(scr, opp, tp)):
             missing.append("screen")
     if not (_recorded_lean(opp) or reason):
         missing.append("lean")

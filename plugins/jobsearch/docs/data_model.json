@@ -106,7 +106,11 @@
     "research_log",
     "hq",
     "ats",
-    "warm_lookup"
+    "warm_lookup",
+    "career_url",
+    "domain",
+    "aliases",
+    "size_ownership"
    ],
    "required": [
     "id",
