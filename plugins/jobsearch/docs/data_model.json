@@ -110,7 +110,8 @@
     "career_url",
     "domain",
     "aliases",
-    "size_ownership"
+    "size_ownership",
+    "backed_by"
    ],
    "required": [
     "id",
@@ -134,7 +135,9 @@
     "next_touch",
     "access",
     "alert_sender",
-    "company_id"
+    "company_id",
+    "portfolio_of",
+    "board_hosts"
    ],
    "required": [
     "id",

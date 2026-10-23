@@ -177,9 +177,46 @@ Some boards forbid automated access in their terms (Wellfound, Y Combinator's Wo
 the Jungle). They are channels you add yourself with `access: manual-candidate`: **you open it**. The engine
 never visits them. If the board sends alert emails, put the sender in the channel's `alert_sender` and those
 emails are swept like any other. A niche newsletter is an `alert-email` channel the same way, one channel per
-newsletter so you can see which one produces roles. Ready-to-paste rows are under *Curated boards and niche
-newsletters are channel rows* in the plugin's `schema.md`. Add them only if you want them; the upgrade adds
-none.
+newsletter so you can see which one produces roles. Add them only if you want them; the upgrade adds none.
+The two rows for a firm's portfolio board are in *Portfolio boards* below.
+
+### Portfolio boards
+
+Some investment firms, such as Vista Equity Partners and Francisco Partners, publish one job board that lists
+roles across every company they back. Both of those boards run on a platform whose terms of use forbid
+crawling or scraping, by hand-built or automated means. So a portfolio board is a **manual-candidate**
+channel: **you open it**, and the plugin never reads it, polls it or sends a browser to it.
+
+**Add one as a channel.** Paste these two rows, one into `companies.jsonl` (the firm is an ordinary company)
+and one into `channels.jsonl`, and fill the placeholders. `portfolio_of` names the firm's company id and
+`board_hosts` lists the board's own host, which the plugin must never open. `alert_sender` is optional and
+only matters if the board sends alert emails.
+
+```jsonl
+{"id": "<firm-id>", "name": "<Firm Name>", "vertical": "other", "status": "watching", "size_ownership": "investment firm", "research_log": []}
+{"id": "portfolio:<firm-id>", "label": "<Firm Name> portfolio jobs", "type": "job-board", "access": "manual-candidate", "review_cadence": "weekly", "last_reviewed": null, "portfolio_of": "<firm-id>", "board_hosts": ["<the board's host>"], "alert_sender": "from:<the From address of one alert email from this board>", "scope_notes": "you open it at <the board's URL>; the engine never visits (its terms forbid automated access)"}
+```
+
+**Record a role you saw there.** Use the company's own posting address, never the board's:
+
+```bash
+python3 scripts/record.py board-sighting portfolio:<firm-id> --company "<name as the board shows it>" --title "<title>" --url <the company's own posting URL>
+```
+
+The verb creates or matches the company and records the role so the daily run triages it like any other. It
+never fetches the address, and it refuses one on the board's host. If the board only links to a page on
+itself, open that page and find where the employer posts the role. A role whose every address is on the board
+is never read by a run: it shows "not read: manual-board".
+
+**See what a board produced.** `python3 scripts/portfolio_boards.py` prints, per board, the companies and
+roles it produced and whether the board is covered. A board is covered only while your last review is inside
+its `review_cadence`. A board you have not reviewed is reported as not covered, never as zero roles. It
+fetches nothing and writes nothing.
+
+**People you know at the firm.** If you know someone at a firm that backs a company, and nobody usable is
+known at the company itself, the role card's `Warm path:` line offers a `backer-intro`: an ask that person for
+an introduction into the company. It ranks below any person you know at the company, and a draft is written
+for you to send, never sent. A backing you know of but never saw on a board goes in the company's `backed_by`.
 
 ### What it will not do
 

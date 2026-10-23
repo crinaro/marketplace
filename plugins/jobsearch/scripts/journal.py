@@ -890,6 +890,68 @@ def feed_board_failure_since(recs, company_id, today=None):
     return since
 
 
+def feed_company_state(recs, company):
+    """dev #765 (design B5) -- what the LAST `feeds` event says about ONE company's own feed, as a dict
+    `{state, vendor, code, kind, poll, reason}`. It is the one reader `portfolio_boards.py` uses, and it
+    exists because the event does not store who was covered: it stores a COUNT of covered companies and a
+    map of the NOT-covered ones (`record_feeds`). "Covered" is therefore never read off absence alone. A
+    company is covered only when the event could have polled it AND did not list it as failed:
+
+      state          meaning
+      no-feed        the company has no `ats` key: browser-routed, no feed to cover
+      declined       `ats: null`: the candidate declined a feed
+      not-checked    an `ats` feed exists but the last poll proves nothing about it. `reason` says why:
+                     no `feeds` event at all · the company is `passed` (never polled) · its `ats.since`
+                     is not before the poll's date (attached the day of, or after, the poll: it may not
+                     have been in it) · `ats.since` unreadable
+      not-covered    the last poll listed it with `code`; `kind` is `board` (this board is wrong:
+                     `FEED_BOARD_CODES`) or `host` (the machine or the poll's own budget, not this board)
+      covered        polled, and not listed as failed
+
+    The poll used is the LATEST `feeds` event overall, and `poll` is its ISO date, so a stale poll is
+    shown with its age rather than hidden. Pure: reads only `recs` and `company`."""
+    ats = company.get("ats") if isinstance(company, dict) else None
+    out = {"state": None, "vendor": None, "code": None, "kind": None, "poll": None, "reason": None}
+    if not isinstance(company, dict) or "ats" not in company:
+        out["state"] = "no-feed"
+        return out
+    if ats is None:
+        out["state"] = "declined"
+        return out
+    out["vendor"] = ats.get("vendor") if isinstance(ats, dict) else None
+    events = feeds_events(recs or [])
+    if not events:
+        out.update(state="not-checked", reason="no feeds event recorded: the feed has not been polled")
+        return out
+    ev = events[-1]
+    poll = str(ev.get("at") or "")[:10]
+    out["poll"] = poll or None
+    cid = company.get("id")
+    failed = ev.get("companies_not_covered") or {}
+    if cid in failed:
+        code = failed[cid]
+        out.update(state="not-covered", code=code,
+                   kind="board" if code in FEED_BOARD_CODES else "host")
+        return out
+    if company.get("status") == "passed":
+        out.update(state="not-checked", reason="the company is passed, so its feed is not polled")
+        return out
+    since = ats.get("since") if isinstance(ats, dict) else None
+    try:
+        attached, polled_on = datetime.date.fromisoformat(str(since)), datetime.date.fromisoformat(poll)
+    except ValueError:
+        out.update(state="not-checked", reason="ats.since %r or the poll date %r is unreadable"
+                   % (since, poll))
+        return out
+    if attached >= polled_on:
+        out.update(state="not-checked",
+                   reason="the feed was attached %s, not before the last poll (%s), so that poll may "
+                          "not have included it" % (attached.isoformat(), poll))
+        return out
+    out["state"] = "covered"
+    return out
+
+
 def roles_events(recs, run_id=None, surface=None):
     rows = [r for r in recs if r.get("event") == "roles"]
     if run_id is not None:

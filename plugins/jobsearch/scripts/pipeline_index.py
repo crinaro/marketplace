@@ -200,18 +200,26 @@ def normalize_company(name):
     return " ".join(re.sub(r"[^\w]+", " ", str(name or "").casefold()).split())
 
 
+def company_candidates(name, companies):
+    """The sorted ids of EVERY company whose normalized `name` or `id` equals the normalized `name`
+    (dev #765). `resolve_company` is the one-hit view of this list; a caller that must tell "nothing
+    matches" (create it) from "several match" (ask which) reads the list itself, so the two never
+    use different matching rules."""
+    want = normalize_company(name)
+    if not want:
+        return []
+    return sorted({c.get("id") for c in companies or []
+                   if c.get("id") and (normalize_company(c.get("name")) == want
+                                       or normalize_company(c.get("id")) == want)})
+
+
 def resolve_company(name, companies):
     """The `company_id` of the SINGLE company whose normalized `name` or `id` equals the
     normalized `name`, else None. Zero matches or several (two companies sharing a normalized
     name, or one's name equal to another's id) give None, and the caller then has NO company
     basis -- it never takes the first of several."""
-    want = normalize_company(name)
-    if not want:
-        return None
-    hits = {c.get("id") for c in companies or []
-            if c.get("id") and (normalize_company(c.get("name")) == want
-                                or normalize_company(c.get("id")) == want)}
-    return next(iter(hits)) if len(hits) == 1 else None
+    hits = company_candidates(name, companies)
+    return hits[0] if len(hits) == 1 else None
 
 
 def find_known_match(opps, url=None, company_id=None, title=None, applications=None):

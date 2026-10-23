@@ -86,6 +86,9 @@ Usage:
     python3 scripts/record.py lean <opp_id> --lean pursue|pass|ask --line "<one line>" [--jd-file P]
     python3 scripts/record.py listed-pay <opp_id> --none-shown | --stated R[;R] | --estimate R[;R]
     python3 scripts/record.py posted <opp_id> --document-date D | --shown-age N | --ats-date D | --unknown
+    python3 scripts/record.py board-sighting <channel_id> --company "<name>" --title "<title>" --url <posting URL>
+                                              # one role seen on a job board (dev #765): the company is matched or
+                                              # created, the role created or given a sighting, in ONE write
     ... --file companies|channels to address the other stores. --dry-run to preview.
     ... --already-locked when the calling run already holds the run lock (see above).
 
@@ -189,7 +192,11 @@ OPS = ("create", "set", "set-in", "append", "show", "fields",
        # jobsearch 0.72.0 (dev #751, sourcing-feeds) -- the company-feed verbs. Early-return verbs
        # like `involve`: each writes the COMPANIES store (and `ats` also the CHANNELS store, in one
        # locked, validated, rollback-verified transaction), so --dry-run is proven in test_record.py.
-       "ats", "warm-lookup")
+       "ats", "warm-lookup",
+       # jobsearch 0.75.0 (dev #765) -- record ONE role seen on a job board. An early-return verb writing
+       # COMPANIES (when it creates one) and OPPORTUNITIES in one locked, validated, rollback-verified
+       # transaction, so --dry-run is proven in test_record.py.
+       "board-sighting")
 SOURCING_OPS = ("screened", "lean", "listed-pay", "posted")
 LOCK = os.path.join(ENGINE_SCRIPTS, "runlock.py")
 # ⭐ ENGINE, not profile — the data MODEL ships with the code; the DATA belongs to the user.
@@ -594,7 +601,8 @@ def introduced_row_violations(store, before_row, after_row):
     changed in some other field keeps the same message and is therefore not "introduced", so an
     unrelated edit to an old row is accepted. Messages are label-free, so they compare equal."""
     vd = _validator_module()
-    gate = _cannot_read_violations(store, before_row, after_row)
+    gate = (_cannot_read_violations(store, before_row, after_row)
+            + _manual_board_violations(store, before_row, after_row))
     after = vd.row_rule_violations(store, after_row)
     if not after:
         return gate
@@ -603,6 +611,45 @@ def introduced_row_violations(store, before_row, after_row):
 
 
 SURFACE_CANNOT_READ = "unavailable: surface-cannot-read"
+MANUAL_BOARD = "unavailable: manual-board"
+
+
+def _manual_board_violations(store, before_row, after_row):
+    """dev #765 (design-portfolio-boards.md, review B1) -- a JD cannot be recorded as READ when every
+    address the role carries is on a `manual-candidate` channel's `board_hosts`: those sites' terms
+    forbid automated access (ADR-037), so the run must not have opened them. The role records
+    `fit.jd_source = "unavailable: manual-board"` instead. Lives here for the reason
+    `_cannot_read_violations` does: `introduced_row_violations` is the one choke point every write op and
+    `--dry-run` passes through.
+
+    WHEN IT FIRES: the row after the write carries a `fit.jd_source` that claims a read (a non-empty
+    string not beginning `unavailable`), this write touched `fit`, and `board_hosts.jd_read_plan` finds
+    NO readable address (`url` None) while at least one is on a board host. A role that also carries an
+    address OFF every board host is not held: the read could have used it. A role whose `fit` this write
+    leaves alone is never held, so an old row is not locked out of `decide` or any other edit. A channels
+    store that cannot be read is NOT treated as one with no boards: the write is refused with
+    `NOT CHECKED`."""
+    if store != "opportunities" or not isinstance(after_row, dict):
+        return []
+    fit = after_row.get("fit")
+    src = fit.get("jd_source") if isinstance(fit, dict) else None
+    if not (isinstance(src, str) and src.strip()) or src.startswith("unavailable"):
+        return []
+    if isinstance(before_row, dict):
+        keys = {k for k in set(before_row) | set(after_row) if k == "fit" or k.startswith("fit.")}
+        if all(before_row.get(k) == after_row.get(k) for k in keys):
+            return []                                   # this write did not touch fit
+    try:
+        import board_hosts as _bh
+        plan = _bh.jd_read_plan(after_row, _load_or_empty("channels"))
+    except (OSError, ValueError) as e:
+        return ["NOT CHECKED: the channels store is unreadable (%s), so a JD read cannot be allowed" % e]
+    if plan["url"] is None and plan["blocked"]:
+        b = plan["blocked"][0]
+        return ["fit.jd_source %r claims a read, but every address this role carries is on the manual-candidate "
+                "board %r (host %s), which the engine never opens (ADR-037): record `%s` instead"
+                % (src, b["channel_id"], b["host"], MANUAL_BOARD)]
+    return []
 
 
 def _cannot_read_violations(store, before_row, after_row):
@@ -653,7 +700,7 @@ def _cannot_read_violations(store, before_row, after_row):
                ("the oldest has not waited that long" if items else "there is none"), oid)]
 
 
-def dry_run_validate(store, rows):
+def dry_run_validate(store, rows, extra=None):
     """Validate `rows` AS IF they were the real store, on a disposable copy of the whole data
     directory — cross-references into companies/channels/messages/asks still resolve, and the
     real files are never opened for writing. Returns the same (rc, stdout, stderr) shape as
@@ -701,9 +748,12 @@ def dry_run_validate(store, rows):
             src = os.path.join(DATA, name)
             if name.endswith(".jsonl") and os.path.isfile(src):
                 shutil.copy2(src, os.path.join(shadow_data, name))
-        with open(os.path.join(shadow_data, STORES[store]), "w", encoding="utf-8") as fh:
-            for r in rows:
-                fh.write(json.dumps(r, ensure_ascii=False) + "\n")
+        # `extra` ({store: rows}, dev #765): a verb that writes a SECOND store in the same transaction
+        # (board-sighting writes companies and opportunities) shadows that store as well.
+        for shadowed, shadow_rows in [(store, rows)] + sorted((extra or {}).items()):
+            with open(os.path.join(shadow_data, STORES[shadowed]), "w", encoding="utf-8") as fh:
+                for r in shadow_rows:
+                    fh.write(json.dumps(r, ensure_ascii=False) + "\n")
         return validate(data_dir=shadow_data)
 
 
@@ -1661,6 +1711,263 @@ def cmd_warm_lookup(args):
     return _company_feed_write(args, "warm-lookup <company_id> --none-found [--on D]", edit)
 
 
+BOARD_SIGHTING_USAGE = ("board-sighting <channel_id> --company \"<name as the board shows it>\" "
+                        "--title \"<title>\" --url <the posting's OWN URL> [--company-id <id>] "
+                        "[--vertical <enum>] [--seen-on YYYY-MM-DD] [--plan <plan_id>] [--dry-run] "
+                        "[--already-locked]")
+
+
+def _slug(text, limit=60):
+    """A lower-case id fragment: runs of anything but a-z/0-9 become one `-`, trimmed, capped."""
+    return re.sub(r"[^a-z0-9]+", "-", str(text or "").casefold()).strip("-")[:limit].strip("-")
+
+
+def _board_sighting_plan(args, channels, companies, opps, applications, seen_on):
+    """dev #765 (design-portfolio-boards.md section 4) -- decide what ONE role seen on a board needs, from
+    the lists it is handed, and mutate none of them. Raises `_Refused` (nothing written) or returns
+
+        {"company_id", "new_company": row | None, "opp_id", "new_opp": row | None,
+         "sighting": {...} | None, "noop": bool, "company_how", "role_how"}
+
+    It adds NO matching rule of its own: the company is `pipeline_index.company_candidates` (one hit is
+    matched, several refuse and list the ids, none creates), and the role is `find_known_match` (an active
+    match gets the sighting appended, an excluded one refuses, none creates). The board's own URLs are
+    refused (`board_hosts.blocked_channel`): the engine never opens a manual-candidate site, and a role
+    whose only address is the board's cannot be read."""
+    import board_hosts as _bh
+    import pipeline_index as _pidx
+    _vd = _validator_module()
+    chan = find(channels, args.rid)
+    if chan is None:
+        raise _Refused("%r resolves to no channels record." % args.rid)
+    if chan.get("type") != "job-board":
+        raise _Refused("%r is a %r channel; a board sighting is recorded against a `job-board` channel."
+                       % (args.rid, chan.get("type")))
+    url = (args.listing_url or "").strip()
+    if _bh.host_of(url) is None:
+        raise _Refused("--url must be the posting's own http(s) address (got %r)." % args.listing_url)
+    blocked = _bh.blocked_channel(url, channels)
+    if blocked is not None:
+        raise _Refused("--url %r is on the board itself (%s, host %s): the engine never opens a "
+                       "manual-candidate site, and a role whose only address is the board's cannot be "
+                       "read. Give the posting's OWN outbound address instead (the employer's career "
+                       "site or ATS page the board links to)."
+                       % (url, blocked.get("id"), _bh.host_of(url)))
+    title = (args.title_text or "").strip()
+    sighting = {"channel_id": args.rid, "seen_on": seen_on, "source_url": url}
+    # ---- the company ----
+    new_company = None
+    if args.company_id_arg:
+        company = find(companies, args.company_id_arg)
+        if company is None:
+            raise _Refused("--company-id %r resolves to no companies record." % args.company_id_arg)
+        company_id, company_how = company["id"], "matched"
+    else:
+        hits = _pidx.company_candidates(args.company_name, companies)
+        if len(hits) > 1:
+            raise _Refused("--company %r matches %d companies (%s); pass --company-id to say which."
+                           % (args.company_name, len(hits), ", ".join(hits)))
+        if hits:
+            company_id, company_how = hits[0], "matched"
+        else:
+            if args.vertical_arg is None:
+                raise _Refused("--company %r matches no company, so one would be created, and `vertical` is "
+                               "required for it: pass --vertical <%s> (`other` would be a guess)."
+                               % (args.company_name, "|".join(sorted(_vd.VERTICALS))))
+            if args.vertical_arg not in _vd.VERTICALS:
+                raise _Refused("--vertical %r is not one of {%s}" % (args.vertical_arg,
+                                                                    ", ".join(sorted(_vd.VERTICALS))))
+            company_id = _slug(args.company_name)
+            if not company_id:
+                raise _Refused("--company %r has no letters or digits to make an id from; pass "
+                               "--company-id for an existing company." % args.company_name)
+            if find(companies, company_id) is not None:
+                raise _Refused("the id %r (made from --company %r) is already a company that the name did "
+                               "not match; pass --company-id %s if it is the same company."
+                               % (company_id, args.company_name, company_id))
+            new_company = {"id": company_id, "name": args.company_name.strip(),
+                           "vertical": args.vertical_arg, "status": "watching", "research_log": []}
+            company_how = "created"
+    # ---- the role ----
+    hit = _pidx.find_known_match(opps, url=url, company_id=company_id, title=title,
+                                 applications=applications)
+    if hit and hit[2] == "excluded":
+        raise _Refused(_pidx.describe_match(hit[0], hit[1]) + " Nothing was recorded: a role you already "
+                       "passed on is not a new sighting.")
+    if hit:
+        row = hit[0]
+        dup = any(isinstance(s, dict) and s.get("channel_id") == args.rid and s.get("seen_on") == seen_on
+                  and _pidx._urls_equal(s.get("source_url"), url) for s in row.get("sightings") or [])
+        return {"company_id": company_id, "new_company": new_company, "company_how": company_how,
+                "opp_id": row["id"], "new_opp": None, "sighting": None if dup else sighting,
+                "noop": dup and new_company is None, "role_how": "already recorded" if dup else
+                "sighting appended (%s)" % hit[1]}
+    plan_id, plan_err = _new_opportunity_plan(args.plan_id)
+    if plan_err or not plan_id:
+        raise _Refused(plan_err or "no active search plan sources role/contract, so this role has no "
+                       "plan_id; add one, or pass --plan <plan_id>.")
+    base = _slug("%s-%s" % (company_id, title)) or _slug(company_id) or "role"
+    opp_id, n = base, 1
+    taken = {o.get("id") for o in opps}
+    while opp_id in taken:
+        n += 1
+        opp_id = "%s-%d" % (base, n)
+    new_opp = {"id": opp_id, "company_id": company_id, "title": title, "status": "backlog",
+               "stage": "sourced", "verdict": "undecided", "jd_url": url,
+               "location": {"declared": "none stated"}, "sightings": [sighting],
+               # the candidate owns the pursue/pass decision; `your_move.classify_opportunities` holds the
+               # role in `triaging` (system-owned) until the daily run's triage step has read it
+               "next_action_owner": _profile_mod().owner_token(),
+               "plan_id": plan_id, "plan_assigned_on": datetime.date.today().isoformat()}
+    return {"company_id": company_id, "new_company": new_company, "company_how": company_how,
+            "opp_id": opp_id, "new_opp": new_opp, "sighting": None, "noop": False,
+            "role_how": "created"}
+
+
+def _apply_board_sighting(plan, companies, opps):
+    """Apply `plan` to the lists `_board_sighting_plan` was planned against (in place)."""
+    if plan["new_company"] is not None:
+        companies.append(plan["new_company"])
+    if plan["new_opp"] is not None:
+        opps.append(plan["new_opp"])
+    elif plan["sighting"] is not None:
+        find(opps, plan["opp_id"]).setdefault("sightings", []).append(plan["sighting"])
+
+
+def cmd_board_sighting(args):
+    """`record.py board-sighting <channel_id> --company NAME --title TITLE --url POSTING_URL ...` -- dev #765
+    (design-portfolio-boards.md section 4). Record ONE role the candidate saw on a job board.
+
+    The company is matched, created or refused as ambiguous; the role either gets a sighting appended or is
+    created in the 0.70.0 triaging shape (`backlog` / `sourced` / `undecided`, `jd_url` the posting's own
+    address, `location.declared: none stated`, pay and posting date absent = NOT CAPTURED), so the
+    daily run's triage reads it before the candidate is asked. A company created and a role created land in
+    ONE locked, validated, rollback-verified write, or neither does. The firm link is not written: the
+    sighting's `channel_id` is the board and the board's `portfolio_of` is the firm, derived by
+    `portfolio_boards.backers_of`. This verb never fetches `--url`, and refuses one on a board host.
+    A refusal leaves every store byte-identical."""
+    label = "usage: " + BOARD_SIGHTING_USAGE
+    if not args.rid or args.rest:
+        print(label)
+        return 2
+    missing = [f for f, v in (("--title", args.title_text), ("--url", args.listing_url),
+                              ("--company or --company-id", args.company_name or args.company_id_arg)) if not v]
+    if missing:
+        print("⛔ REFUSED — %s required.\n%s" % (", ".join(missing), label))
+        return 2
+    try:
+        seen_on = _run_date_value(args.seen_on, "--seen-on")
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+    try:
+        channels, companies, opps = (_load_or_empty("channels"), load("companies"), load("opportunities"))
+        applications = _load_or_empty("applications")
+    except (OSError, ValueError) as e:
+        print("⛔ REFUSED — a store cannot be read (%s); nothing written." % e)
+        return 1
+    shadow_co, shadow_op = json.loads(json.dumps(companies)), json.loads(json.dumps(opps))
+    try:
+        plan = _board_sighting_plan(args, channels, shadow_co, shadow_op, applications, seen_on)
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+    summary = ("board-sighting %s: company %s (%s), role %s (%s)"
+               % (args.rid, plan["company_id"], plan["company_how"], plan["opp_id"], plan["role_how"]))
+    if plan["noop"]:
+        print(summary)
+        print("  nothing to change.")
+        return 0
+    _apply_board_sighting(plan, shadow_co, shadow_op)
+    if args.dry_run:
+        print(summary)
+        row_after = find(shadow_op, plan["opp_id"])
+        introduced = introduced_row_violations(
+            "opportunities", None if plan["new_opp"] is not None else find(opps, plan["opp_id"]), row_after)
+        if introduced:
+            print("  ⛔ a REAL (non-dry-run) write of this would be REFUSED (nothing is written):")
+            print("  " + "\n  ".join("- " + m for m in introduced))
+            return 1
+        pre_rc, _, _, pre_problems = validate()
+        rc, out, err, problems = dry_run_validate("opportunities", shadow_op, extra={"companies": shadow_co})
+        added = new_problems(pre_problems, problems) if rc != 0 else []
+        if rc != 0 and (added is None or added):
+            print("  ⛔ a REAL (non-dry-run) write of this would be REFUSED and rolled back.")
+            print("  " + "\n  ".join(added if added else _diagnostic_lines(rc, out, err)))
+            return 1
+        print("  --dry-run: nothing written.")
+        print("  ✅ dry-run validated clean against the same validator a real write runs.")
+        return 0
+    if args.already_locked:
+        if not lock_is_held():
+            print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
+            return 1
+    else:
+        try:
+            take_lock("record.py board-sighting %s" % args.rid, wait=args.wait)
+        except LockError as e:
+            print("  REFUSED — %s" % e)
+            return 1
+    try:
+        # re-read INSIDE the lock, and re-plan on what is really there
+        channels, companies, opps = (_load_or_empty("channels"), load("companies"), load("opportunities"))
+        applications = _load_or_empty("applications")
+        try:
+            plan = _board_sighting_plan(args, channels, companies, opps, applications, seen_on)
+        except _Refused as e:
+            print("⛔ REFUSED — %s" % e)
+            return 1
+        if plan["noop"]:
+            print(summary)
+            print("  nothing to change.")
+            return 0
+        before_row = None if plan["new_opp"] is not None else json.loads(json.dumps(find(opps, plan["opp_id"])))
+        _apply_board_sighting(plan, companies, opps)
+        introduced = introduced_row_violations("opportunities", before_row, find(opps, plan["opp_id"]))
+        if introduced:
+            print("⛔ REFUSED — " + "; ".join(introduced))
+            return 1
+        snap_c, snap_o = snapshot("companies"), snapshot("opportunities")
+        pre_problems = validate()[3]
+        if plan["new_company"] is not None:
+            save_atomic("companies", companies)
+        save_atomic("opportunities", opps)
+        rc, out, err, post_problems = validate()
+        added = new_problems(pre_problems, post_problems)
+        if rc != 0 and (added is None or added):
+            ok_o = restore("opportunities", snap_o)
+            ok_c = restore("companies", snap_c) if plan["new_company"] is not None else True
+            print("⛔ the write left the stores invalid and was %s."
+                  % ("ROLLED BACK (byte-identical)" if ok_o and ok_c
+                     else "NOT VERIFIABLY ROLLED BACK — restore companies.jsonl and opportunities.jsonl "
+                          "from git"))
+            print("  " + "\n  ".join(added if added else _diagnostic_lines(rc, out, err)))
+            return 1
+    finally:
+        if not args.already_locked:
+            release_lock()
+    print(summary)
+    import portfolio_boards as _pb
+    firms = _pb.backers_of(plan["company_id"], companies, channels, opps)
+    print("  backed by: %s" % (", ".join("%s (%s)" % (f["firm_id"], f["via"]) for f in firms)
+                               if firms else "no firm is linked (this board is not a portfolio board, or "
+                                             "no backing is stated)"))
+    return 0
+
+
+def _run_date_value(value, flag):
+    """An ISO date from `value` (default: today); refuses a malformed one, never coerces it."""
+    if value is None:
+        return datetime.date.today().isoformat()
+    if not _ISO_DATE.match(value):
+        raise _Refused("%s must be an ISO date (YYYY-MM-DD), got %r" % (flag, value))
+    try:
+        datetime.date.fromisoformat(value)
+    except ValueError:
+        raise _Refused("%s %r is not a calendar date" % (flag, value))
+    return value
+
+
 def cmd_answered(args):
     """`record.py answered <inbound-message-id | contact:<person-id>> --on <date> --via
     <medium> [--opp <opp_id>]` — cell 4's own action line (design §3/§15.3): records that the
@@ -2198,6 +2505,28 @@ def _append_sightings(row_id, sightings, already_locked=False, wait=None):
             return "record.py append to %s exited %d: %s" % (
                 row_id, r.returncode, " ".join((r.stdout + r.stderr).split())[-300:])
     return None
+
+
+def _new_opportunity_plan(explicit_id):
+    """`(plan_id | None, error | None)` for a freshly created opportunity (ADR-031 B4, design §17,
+    §26.5): the one active search plan sourcing role/contract, or the `--plan` the caller named. The error
+    is set only when a plan is named that cannot serve, or more than one could (the refusal names every
+    candidate); with no active sourcing plan at all both are None and the required-field check refuses
+    the missing `plan_id` the way it refuses any other. Shared by `create` and `board-sighting`."""
+    _plans_rows, _e, _present = _plans_mod().load(ROOT)
+    _cfg_for_plan = {}
+    try:
+        import profile as _profile_for_plan
+        _cfg_for_plan = _profile_for_plan.config()
+    except Exception:                                           # noqa: BLE001 — advisory only
+        pass
+    resolved, err = _plans_mod().resolve_sourcing_plan(_plans_rows, _cfg_for_plan,
+                                                       explicit_id=explicit_id)
+    if resolved:
+        return resolved, None
+    if explicit_id or len(_plans_mod().sourcing_candidates(_plans_rows)) > 1:
+        return None, err or "no search plan could be resolved for this role (pass --plan <plan_id>)"
+    return None, None
 
 
 def _link_from_item(args, new_row, rows, match, item):
@@ -2821,6 +3150,19 @@ def main():
     ap.add_argument("--none-found", dest="none_found", action="store_true",
                     help="warm-lookup: record that you looked for a person at this company and "
                          "found nobody (with --on, default today).")
+    # jobsearch 0.75.0 (dev #765) board-sighting flags (`--url` and `--plan` are the existing ones).
+    ap.add_argument("--company", dest="company_name", default=None,
+                    help="board-sighting: the company's name as the board shows it (matched against "
+                         "the companies store by pipeline_index.company_candidates).")
+    ap.add_argument("--company-id", dest="company_id_arg", default=None,
+                    help="board-sighting: an existing companies id, when --company is ambiguous.")
+    ap.add_argument("--title", dest="title_text", default=None,
+                    help="board-sighting: the role's title as the board shows it.")
+    ap.add_argument("--vertical", dest="vertical_arg", default=None,
+                    help="board-sighting: required only when the company is NOT yet tracked and so is "
+                         "created (one of validate_data.VERTICALS).")
+    ap.add_argument("--seen-on", dest="seen_on", default=None,
+                    help="board-sighting: the ISO date you saw the role (default: today).")
     args = ap.parse_args()
 
     # These three verbs each own exactly one store — --file is never the caller's to pick for
@@ -2844,6 +3186,8 @@ def main():
         args.file = "opportunities"      # cmd_involve names its own stores; keeps the generic checks harmless
     elif args.op in ("ats", "warm-lookup"):
         args.file = "companies"          # dev #751: cmd_ats / cmd_warm_lookup name their own stores
+    elif args.op == "board-sighting":
+        args.file = "opportunities"      # dev #765: cmd_board_sighting names its own stores
 
     # §15.3 point 1 — `messages` is append-only; `answered`/`touched`/`received` are its ONLY
     # writers. Refused here, before any generic single-store machinery runs, so the refusal is
@@ -2867,6 +3211,8 @@ def main():
         return cmd_ats(args)
     if args.op == "warm-lookup":
         return cmd_warm_lookup(args)
+    if args.op == "board-sighting":
+        return cmd_board_sighting(args)
 
     if args.reuse and not (args.op == "create" and args.file == "people"):
         print("⛔ REFUSED — --reuse applies only to `create <id> '<json>' --file people`.")
@@ -3015,19 +3361,11 @@ def main():
         # unless the payload already names one. With more than one candidate, `--plan` is
         # required — the refusal names every candidate (§26.5).
         if args.file == "opportunities" and not new_row.get("plan_id"):
-            _plans_rows, _e, _present = _plans_mod().load(ROOT)
-            _cfg_for_plan = {}
-            try:
-                import profile as _profile_for_plan
-                _cfg_for_plan = _profile_for_plan.config()
-            except Exception:                                   # noqa: BLE001 — advisory only
-                pass
-            _resolved_plan, _plan_err = _plans_mod().resolve_sourcing_plan(
-                _plans_rows, _cfg_for_plan, explicit_id=args.plan_id)
+            _resolved_plan, _plan_err = _new_opportunity_plan(args.plan_id)
             if _resolved_plan:
                 new_row["plan_id"] = _resolved_plan
                 new_row["plan_assigned_on"] = datetime.date.today().isoformat()
-            elif args.plan_id or len(_plans_mod().sourcing_candidates(_plans_rows)) > 1:
+            elif _plan_err:
                 print("⛔ REFUSED — %s" % _plan_err)
                 return 1
             # else: no active sourcing plan at all — plan_id stays unset; the required-field

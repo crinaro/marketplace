@@ -18,6 +18,10 @@ holds is "the candidate looked and found nobody": `companies[].warm_lookup` (`re
               hm-note        that person IS the hiring manager (their best involvement path_type): a short
                              direct note
               lookup         nobody is known at the company
+              backer-intro   nobody usable is known at the company, but a person is known at a firm that
+                             BACKS it (dev #765): ask that person for an introduction into the company,
+                             naming every role. The action carries `via` (the firm's company id). It is
+                             the lowest-ranked route and never a peer of a direct one.
 
     state     (first match wins)
               touched        a SENT touch to that person names one of these roles, or any sent touch to them is
@@ -31,6 +35,17 @@ holds is "the candidate looked and found nobody": `companies[].warm_lookup` (`re
                              drafts.md with asks for roles the candidate may pass on)
               looked-none    kind lookup, and `companies[].warm_lookup.on` is within `search.warm_lookup_days`
               lookup-owed    kind lookup otherwise
+
+⭐ THE FIRM ROUTE (dev #765; design-portfolio-boards.md section 6). `portfolio_boards.backers_of` names the firms
+that back a company (derived from board sightings, plus a backing the candidate stated): this script never
+re-derives that link. A person whose `company_id` is such a firm becomes a candidate whose rank is their
+ordinary rank PLUS `BACKER_PENALTY`, a constant larger than `NO_INVOLVEMENT_RANK`, so EVERY person known at
+the company itself outranks EVERY person at a backer, and the firm route is chosen only when nobody usable
+is known at the company. It replaces the `lookup` action for that role and does not add to it.
+`warm_lookup: none-found` does not suppress it (that is exactly when this route helps). A firm contact who
+could open doors at two portfolio companies yields two actions, one per company: each is its own ask. A
+`backer-intro` is an ask for an INTRODUCTION; it never claims the firm endorses the candidate or that an
+introduction exists, and the referral wording stays licensed only by `has-referral` (below).
 
 ⭐ ONE ACTION PER (COMPANY, PERSON). Two eligible roles whose best person is the same yield ONE action whose
 `opp_ids` lists both: a relationship is asked once, not once per requisition. A role whose best person is
@@ -73,12 +88,13 @@ from _root import profile_root as _profile_root
 
 ROOT = _profile_root()
 
-KINDS = ("referral-ask", "hm-note", "lookup")
+KINDS = ("referral-ask", "hm-note", "lookup", "backer-intro")
 STATES = ("ready", "draft-owed", "drafted", "touched", "lookup-owed", "looked-none")
 PATH_RANK = {"warm-referral": 0, "internal": 0, "hiring-manager": 1, "hiring-context": 2}
 NOT_WARM = ("recruiter", "cold")
 OTHER_ROLE_PENALTY = 10         # a sibling-role involvement ranks below any involvement on this role
 NO_INVOLVEMENT_RANK = 30
+BACKER_PENALTY = 100            # dev #765: > NO_INVOLVEMENT_RANK, so a backer ranks below any direct person
 WARM_DAYS = 180                 # your_move.classify_people's existing window
 LINKEDIN_COMPANY_RE = re.compile(r"linkedin\.com/company/([A-Za-z0-9_%.\-]+)", re.I)
 TO_RE = re.compile(r"^\*\*To:\*\*\s*contact:(\S+)", re.M | re.I)
@@ -146,7 +162,8 @@ def derive(root=None, today=None, warm_days=WARM_DAYS, lookup_days=90):
     order (company, then first opp id). Each is
 
         {opp_ids: [...], company_id, kind, person_id | None, person_name | None, state, why,
-         on | None (the touch / lookup date for `touched` / `looked-none`), linkedin_url | None}
+         on | None (the touch / lookup date for `touched` / `looked-none`), linkedin_url | None,
+         via | None (the backing firm's company id, only on a `backer-intro`)}
 
     Read-only over the stores under `root`."""
     import graph as _graph
@@ -156,7 +173,9 @@ def derive(root=None, today=None, warm_days=WARM_DAYS, lookup_days=90):
     g = _graph.Graph(data)
     opps = [o for o in _load(os.path.join(data, "opportunities.jsonl")) if eligible(o)]
     companies = {c.get("id"): c for c in _load(os.path.join(data, "companies.jsonl"))}
-    apps = _load(os.path.join(data, "applications.jsonl"))
+    channels = _load(os.path.join(data, "channels.jsonl"))
+    import portfolio_boards as _pb
+    apps =_load(os.path.join(data, "applications.jsonl"))
     import validate_data as _vd
     applied = {a.get("opp_id") for a in apps if a.get("status") in _vd.SUBMITTED_APP_STATUS}
     all_opps = _load(os.path.join(data, "opportunities.jsonl"))
@@ -187,8 +206,12 @@ def derive(root=None, today=None, warm_days=WARM_DAYS, lookup_days=90):
         return best
 
     def ranked_candidates(opp):
-        """[(rank, -inbound ordinal, id, person row, best path_type)] for one role, best first."""
+        """[(rank, -inbound ordinal, id, person row, best path_type, via firm id | None)] for one role,
+        best first. A person known at the role's company ranks by involvement; a person known at a firm
+        that backs the company (`portfolio_boards.backers_of`, dev #765) ranks the same way PLUS
+        `BACKER_PENALTY`."""
         cid = opp.get("company_id")
+        firms = {b["firm_id"] for b in _pb.backers_of(cid, list(companies.values()), channels, all_opps)}
         out = []
         for p in g.stores["people"]:
             p = survivor(p.get("id"))
@@ -196,8 +219,11 @@ def derive(root=None, today=None, warm_days=WARM_DAYS, lookup_days=90):
                 continue
             invs = g.involvements_for_person(p["id"])
             at_company = [i for i in invs if opp_company.get(i.get("opp_id")) == cid]
+            via = None
             if p.get("company_id") != cid and not at_company:
-                continue
+                if p.get("company_id") not in firms:
+                    continue
+                via = p.get("company_id")
             usable = [(0 if i.get("opp_id") == opp.get("id") else OTHER_ROLE_PENALTY)
                       + PATH_RANK[i.get("path_type")] for i in at_company if i.get("path_type") in PATH_RANK]
             if at_company and not usable and all(i.get("path_type") in NOT_WARM for i in at_company):
@@ -209,8 +235,10 @@ def derive(root=None, today=None, warm_days=WARM_DAYS, lookup_days=90):
                 if pt in PATH_RANK and (0 if i.get("opp_id") == opp.get("id") else OTHER_ROLE_PENALTY) \
                         + PATH_RANK[pt] == rank:
                     best = pt
+            if via:
+                rank += BACKER_PENALTY
             inb = inbound_date(p["id"])
-            out.append((rank, -(inb.toordinal() if inb else 0), p["id"], p, best))
+            out.append((rank, -(inb.toordinal() if inb else 0), p["id"], p, best, via))
         return sorted(out, key=lambda r: (r[0], r[1], r[2]))
 
     groups = {}                          # (company_id, person_id | None) -> [opp ids, in order]
@@ -220,7 +248,7 @@ def derive(root=None, today=None, warm_days=WARM_DAYS, lookup_days=90):
         key = (o.get("company_id"), cands[0][3]["id"] if cands else None)
         groups.setdefault(key, []).append(o["id"])
         if cands:
-            chosen[key] = (cands[0][3], cands[0][4])
+            chosen[key] = (cands[0][3], cands[0][4], cands[0][5])
     by_id = {o["id"]: o for o in opps}
 
     actions = []
@@ -229,7 +257,7 @@ def derive(root=None, today=None, warm_days=WARM_DAYS, lookup_days=90):
         cname = company.get("name") or company_id or "this company"
         roles = ", ".join("%s (%s)" % (by_id[i].get("title") or i, i) for i in opp_ids)
         act = {"opp_ids": opp_ids, "company_id": company_id, "person_id": person_id,
-               "person_name": None, "on": None, "linkedin_url": None}
+               "person_name": None, "on": None, "linkedin_url": None, "via": None}
         if person_id is None:
             wl = company.get("warm_lookup") if isinstance(company.get("warm_lookup"), dict) else None
             looked = _date((wl or {}).get("on"))
@@ -250,8 +278,12 @@ def derive(root=None, today=None, warm_days=WARM_DAYS, lookup_days=90):
                               % (cname, where, company_id))
             actions.append(act)
             continue
-        person, best = chosen[(company_id, person_id)]
-        act["kind"] = "hm-note" if best == "hiring-manager" else "referral-ask"
+        person, best, via = chosen[(company_id, person_id)]
+        if via:
+            act["kind"], act["via"] = "backer-intro", via
+        else:
+            act["kind"] = "hm-note" if best == "hiring-manager" else "referral-ask"
+        vname = (companies.get(via) or {}).get("name") or via
         pname = person.get("name") or person_id
         act["person_name"] = pname
         touches = [t for t in g.touches_for_person(person_id) if t.get("status") == "sent"]
@@ -269,14 +301,22 @@ def derive(root=None, today=None, warm_days=WARM_DAYS, lookup_days=90):
                 pname, drafts_to_resolved[person_id][0])
         elif any(by_id[i].get("verdict") == "pursue" or i in applied for i in opp_ids):
             act["state"] = "draft-owed"
-            act["why"] = "%s for %s at %s: a draft is owed (`outreach-drafter`; nothing is sent)" % (
-                "a note to the hiring manager" if act["kind"] == "hm-note" else "a referral ask",
-                pname, cname)
+            if via:
+                act["why"] = ("an introduction ask to %s at %s, into %s: a draft is owed "
+                              "(`outreach-drafter`; nothing is sent)" % (pname, vname, cname))
+            else:
+                act["why"] = "%s for %s at %s: a draft is owed (`outreach-drafter`; nothing is sent)" % (
+                    "a note to the hiring manager" if act["kind"] == "hm-note" else "a referral ask",
+                    pname, cname)
         else:
             act["state"] = "ready"
-            act["why"] = "%s is %s at %s; the draft waits for your pursue/pass decision on %s" % (
-                pname, "the hiring manager" if act["kind"] == "hm-note" else "a known contact",
-                cname, roles)
+            if via:
+                act["why"] = ("%s is a known contact at %s, which backs %s; the draft waits for your "
+                              "pursue/pass decision on %s" % (pname, vname, cname, roles))
+            else:
+                act["why"] = "%s is %s at %s; the draft waits for your pursue/pass decision on %s" % (
+                    pname, "the hiring manager" if act["kind"] == "hm-note" else "a known contact",
+                    cname, roles)
         actions.append(act)
     return actions
 

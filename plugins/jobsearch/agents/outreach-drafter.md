@@ -226,7 +226,11 @@ wants at that company. Draft exactly that and nothing wider:
 - **`referral-ask`** — a short ask to a known person for a referral, or an introduction to the hiring
   team, naming each role in the line (one ask for the relationship, never one per requisition).
 - **`hm-note`** — a short, direct note to the person who is the hiring manager.
-Either lands in `outreach/drafts.md` like every draft (`**To:** contact:<people-id>`, a cited brief, the
+- **`backer-intro`** (dev #765, jobsearch 0.75.0) — the person is at a firm that BACKS the company (the line names
+  the firm; `--json` carries its id as `via`), and nobody usable is known at the company itself. Draft a short ask for an
+  *introduction* into the company, naming each role in the line. Never say the firm endorses the
+  candidate, that the person knows the hiring team, or that an introduction already exists.
+Any of the three lands in `outreach/drafts.md` like every draft (`**To:** contact:<people-id>`, a cited brief, the
 quoted body), for the CANDIDATE to send. **You have no verb that sends, and this action adds none:** the
 line is a request to draft, and a draft is never sent by you. A `referral-ask` is an *ask for* a referral;
 the referral wording below stays licensed only by the existing `has-referral` predicate, never by this line.

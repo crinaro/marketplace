@@ -515,7 +515,8 @@ def _warm_html(a):
     if not a:
         return ""
     who = esc(a.get("person_name") or a.get("person_id") or "")
-    kind = {"referral-ask": "referral ask to", "hm-note": "note to the hiring manager"}.get(a["kind"], "")
+    kind = {"referral-ask": "referral ask to", "hm-note": "note to the hiring manager",
+            "backer-intro": "introduction ask to"}.get(a["kind"], "")
     st = a["state"]
     if st == "lookup-owed":
         if a.get("linkedin_url"):

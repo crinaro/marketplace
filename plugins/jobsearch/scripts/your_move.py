@@ -1205,7 +1205,7 @@ def invisible_reason(o, owner_token):
 # the same prefix, and an unlisted reason does NOT satisfy `jd-read` here — an unreadable value is
 # loud (the role keeps waiting, then surfaces as stuck), never silently accepted.
 TRIAGE_UNAVAILABLE_PREFIX = "unavailable:"
-TRIAGE_UNAVAILABLE_REASONS = ("login-wall", "dead-link", "no-url", "surface-cannot-read")
+TRIAGE_UNAVAILABLE_REASONS = ("login-wall", "dead-link", "no-url", "surface-cannot-read", "manual-board")
 # What a lean may say. `ask` is the default when the system could not form one.
 TRIAGE_LEANS = ("pursue", "pass", "ask")
 # Everything a role must carry before the candidate is asked about it, in the order the triage
@@ -1500,12 +1500,20 @@ def _untriaged(opps, owner_token, today, stuck_days):
     return rows
 
 
-def triage_queue(opps, owner_token, today=None, per_run=None, stuck_days=None):
+def triage_queue(opps, owner_token, today=None, per_run=None, stuck_days=None, channels=None):
     """What one run's triage step does next, as a dict: `cap` (roles this run may read),
     `waiting` (roles in `triaging`), `over_stuck_bound` (roles surfaced in Decide by the stuck
     rule and still unread) and `batch` — at most `cap` rows `{id, title, state, missing,
-    first_seen, waited_days}`, oldest capture first. The cap is the bound that makes the drain
-    finite (R3): a backlog of any size empties in ceil(waiting / cap) runs."""
+    first_seen, waited_days, jd_read}`, oldest capture first. The cap is the bound that makes the drain
+    finite (R3): a backlog of any size empties in ceil(waiting / cap) runs.
+
+    ⭐ `jd_read` (dev #765, design B1) is `board_hosts.jd_read_plan`'s answer for the role: `url` is the
+    first address the JD may be read from, and `blocked` lists every address that is on a
+    `manual-candidate` channel's `board_hosts`. A role whose `url` is None and whose `blocked` is
+    non-empty is NEVER opened: the run records `fit.jd_source = "unavailable: manual-board"`. `channels`
+    is the channel store's rows (default: none, so no URL is blocked -- a caller that cannot read the
+    store says so by passing nothing, and the daily-run skill passes the CLI, which always reads it)."""
+    import board_hosts as _bh
     today = today or datetime.date.today().isoformat()
     stuck_days = triage_stuck_days() if stuck_days is None else stuck_days
     cap = triage_per_run() if per_run is None else per_run
@@ -1516,7 +1524,8 @@ def triage_queue(opps, owner_token, today=None, per_run=None, stuck_days=None):
         "over_stuck_bound": sum(1 for _o, st in rows if st == "decide"),
         "batch": [{"id": o.get("id"), "title": o.get("title"), "state": st,
                    "missing": triage_missing(o), "first_seen": first_seen(o),
-                   "waited_days": triage_waited_days(o, today)}
+                   "waited_days": triage_waited_days(o, today),
+                   "jd_read": _bh.jd_read_plan(o, channels or [])}
                   for o, st in rows[:cap]],
     }
 
@@ -1934,7 +1943,8 @@ def _triage_cli(root, args):
     _apps.enrich_opportunities(root, opps)
     owner = _profile.owner_token()
     if args.triage_queue:
-        print(json.dumps(triage_queue(opps, owner, per_run=args.per_run), indent=1))
+        print(json.dumps(triage_queue(opps, owner, per_run=args.per_run,
+                                      channels=_load_jsonl(root, "channels.jsonl")), indent=1))
         return 0
     ids = [i.strip() for i in args.batch.split(",") if i.strip()]
     print(triage_report(opps, owner, ids)["line"])

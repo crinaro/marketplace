@@ -1006,7 +1006,9 @@ LEAN_LINE_CAP = 200                    # deferred.ROLES_FIELD_CAP, mirrored (tha
 # `unavailable: <reason>` -- a CLOSED prefix, so a hand-typed "unavailable" or an invented reason is
 # refused instead of passing as a read. A null `jd_source` still means not tried.
 JD_UNAVAILABLE_PREFIX = "unavailable"
-JD_UNAVAILABLE_REASONS = ("login-wall", "dead-link", "no-url", "surface-cannot-read")
+# dev #765: `manual-board` -- the only address the role carries is on a `manual-candidate` channel's
+# `board_hosts`, a site whose terms forbid automated access, so the read was REFUSED rather than tried.
+JD_UNAVAILABLE_REASONS = ("login-wall", "dead-link", "no-url", "surface-cannot-read", "manual-board")
 JD_UNAVAILABLE_RE = re.compile(r"^unavailable: (%s)$" % "|".join(JD_UNAVAILABLE_REASONS))
 
 
@@ -1354,6 +1356,87 @@ def check_feed_links(companies, channels):
             problems.append("companies[%s]: has an `ats` feed but %d linked company-site channel(s) "
                             "(exactly one is required: a feed's sightings are written to it)"
                             % (c.get("id", "?"), len(linked.get(c.get("id"), []))))
+    return problems
+
+
+PORTFOLIO_CALENDAR_CADENCES = ("daily", "weekly", "biweekly", "monthly")
+
+
+def check_portfolio_links(companies, channels):
+    """dev #765 (design-portfolio-boards.md section 3.4, with the review's B1) -- the three optional fields a
+    portfolio board adds, and the rules that keep them readable. Returns a list of problems. Both
+    `channels[].portfolio_of` and `companies[].backed_by` may be absent (every pre-0.75.0 row is valid).
+
+      P1  `portfolio_of`  absent, or a non-empty string
+      P2                  an id present in `companies`
+      P3                  only on `type: job-board` AND `access: manual-candidate` (ADR-037's line as a
+                          check: a `public` or `login` portfolio board would route to a browser and
+                          automate a site whose terms forbid it)
+      P4                  needs a calendar `review_cadence` (daily, weekly, biweekly, monthly): the board is
+                          COVERED only while the candidate's review is inside its cadence, so a board with no
+                          calendar could never be covered
+      P5                  needs `board_hosts` (the hosts the engine must never open, see board_hosts.py)
+      H1  `board_hosts`   absent, or a non-empty list of distinct bare host names
+      H2                  only on a channel whose `access` is `manual-candidate`
+      B1  `backed_by`     absent, or a non-empty list of non-empty strings (a bare string iterates character
+                          by character, the `aliases` lesson)
+      B2                  each id resolves in `companies`, none is the row's own id, no repeats
+
+    Not checked on purpose: chains or cycles (A backed by B, B backed by A). Nothing reads `backers_of`
+    transitively, so a cycle has no consequence to guard."""
+    import board_hosts as _bh
+    problems = []
+    ids = {c.get("id") for c in companies}
+    for ch in channels:
+        label = "channels[%s]" % ch.get("id", "?")
+        if "board_hosts" in ch:
+            hosts = ch["board_hosts"]
+            if not (isinstance(hosts, list) and hosts and all(_bh.valid_host(h) for h in hosts)):
+                problems.append("%s: board_hosts must be a non-empty list of bare lower-case host names "
+                                "(e.g. [\"jobs.example.org\"], no scheme, path or port) -- %r"
+                                % (label, hosts))
+            elif len(set(hosts)) != len(hosts):
+                problems.append("%s: board_hosts repeats a host -- %r" % (label, hosts))
+            if ch.get("access") != _bh.MANUAL_ACCESS:
+                problems.append("%s: board_hosts is legal only where access is 'manual-candidate' (this one "
+                                "is %r): it names the sites the engine must never open"
+                                % (label, ch.get("access")))
+        if "portfolio_of" not in ch:
+            continue
+        firm = ch["portfolio_of"]
+        if not (isinstance(firm, str) and firm.strip()):
+            problems.append("%s: portfolio_of must be a non-empty company id -- %r" % (label, firm))
+        elif firm not in ids:
+            problems.append("%s: portfolio_of %r does not resolve to a company (create the firm's company "
+                            "row first)" % (label, firm))
+        if ch.get("type") != "job-board" or ch.get("access") != "manual-candidate":
+            problems.append("%s: portfolio_of is legal only on type 'job-board' with access 'manual-candidate' "
+                            "(this one is %r / %r): a portfolio board's terms forbid automated access "
+                            "(ADR-037)" % (label, ch.get("type"), ch.get("access")))
+        if ch.get("review_cadence") not in PORTFOLIO_CALENDAR_CADENCES:
+            problems.append("%s: a portfolio board needs a calendar review_cadence (%s), got %r: it is covered "
+                            "only while your review is inside its cadence"
+                            % (label, ", ".join(PORTFOLIO_CALENDAR_CADENCES), ch.get("review_cadence")))
+        if "board_hosts" not in ch:
+            problems.append("%s: a portfolio board needs board_hosts: the host(s) of the board, which the "
+                            "engine must never open" % label)
+    for c in companies:
+        if "backed_by" not in c:
+            continue
+        label = "companies[%s]" % c.get("id", "?")
+        bb = c["backed_by"]
+        if not (isinstance(bb, list) and bb and all(isinstance(b, str) and b.strip() for b in bb)):
+            problems.append("%s: backed_by must be a non-empty list of company ids, e.g. [\"<firm-id>\"] -- "
+                            "%r (fix: record.py set %s backed_by '[\"<firm-id>\"]' --file companies)"
+                            % (label, bb, c.get("id", "?")))
+            continue
+        for b in bb:
+            if b not in ids:
+                problems.append("%s: backed_by %r does not resolve to a company" % (label, b))
+            elif b == c.get("id"):
+                problems.append("%s: backed_by names the company itself" % label)
+        if len(set(bb)) != len(bb):
+            problems.append("%s: backed_by repeats an id -- %r" % (label, bb))
     return problems
 
 
@@ -2565,6 +2648,7 @@ def _main():
                 problems.append("%s: log date not ISO — %r" % (label, e.get("date")))
 
     problems += check_feed_links(companies, channels)
+    problems += check_portfolio_links(companies, channels)     # dev #765
 
     # ---- messages[].channel_id — the FK half of public #63 ----------------------------------
     # Since ADR-031 B1/B3 a message joins by `person_id` (required to resolve when set) and

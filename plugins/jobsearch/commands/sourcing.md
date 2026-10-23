@@ -43,6 +43,13 @@ it` and no mechanism for it, and `channels_due.py` lists it under FOR YOU TO OPE
 its alert email, if the channel sets `alert_sender`, is swept. Do not change a channel to `manual-candidate`
 to make it skip a route that failed: it states what the site requires.
 
+**Portfolio boards (0.75.0).** An investment firm's job board is a `manual-candidate` channel too, with
+`portfolio_of` (the firm's company id) and `board_hosts` (the board's own hosts, which no run may open). Record
+a role the candidate saw there with `record.py board-sighting <channel_id> --company ... --title ... --url
+<the company's own posting URL>`; a `--url` on one of the board's hosts is refused. `portfolio_boards.py`
+reports what each board produced and whether it is covered; it fetches nothing. A role whose every address is
+on a board host is recorded `unavailable: manual-board`, never read.
+
 ## Change the order mechanisms are tried
 
 `$ARGUMENTS` may already name one. Valid mechanisms: `plugin`, `browser`, `chrome`.

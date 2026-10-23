@@ -2,6 +2,9 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each verified against its release tag on the published remote; older releases after their push, the newest one by the publish that pushed it, so the section for the version you installed is in the file that came with it. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.75.0
+You can now follow private-equity and venture firms' portfolio job boards, the single pages where a firm lists open roles across all its portfolio companies. Add a firm's board as a channel and the plugin reminds you to review it on a schedule. The plugin never reads these boards itself: the common hosting platforms forbid automated reading, so you open them. When you find a role there, record it with the company's own job link (record.py board-sighting). The role is linked to its portfolio company and to the backing firm, and portfolio_boards.py shows what each board has produced and whether its review is current. If you know people at the firm, they now count as a warm path into its portfolio companies, through an introduction request drafted for you to send yourself.
+
 ## jobsearch 0.74.0
 Roles that an older version of the plugin screened wrongly are now brought back to your attention. If a role was removed for pay, or one you'd already decided on would now be screened differently under the fixes in 0.73.0, it shows once in your status panel under "Roles to reconsider" and on your review page. Each entry shows what the old screen said, what it would say now and why, and gives you a one-step command to reopen or re-screen it. Nothing is reopened or changed for you, and once you act on a role or re-screen it, the flag goes away. The plugin also now checks that its own lists of what it stores match what the guides describe.
 

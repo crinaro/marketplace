@@ -196,6 +196,10 @@ the hard screens applied, and a **lean**. A role the screen removes never reache
   `read-jd` item is queued for a session that does. You will see it under *needs another
   environment* in `deferred.py --claimable`. Once it has waited past `search.triage_stuck_days` the
   role reaches your list with the lean `ask` and the line "not read: surface-cannot-read".
+- **A role whose only addresses are on a board you open yourself is never read by the run (since 0.75.0).** When every
+  address a role carries is on a `manual-candidate` board's `board_hosts` (a portfolio board, say), the run does
+  not open it and the role shows "not read: manual-board" with the lean `ask`. Open the posting yourself, or
+  record the company's own posting address; the plugin never visits that board.
 
 **On upgrade:** every role that was waiting on your pursue-or-pass and has not been read is still
 being read, and drains into your list over the next daily runs.

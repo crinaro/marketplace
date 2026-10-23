@@ -617,7 +617,11 @@ script says which:
 
 Each action is a `referral-ask` or an `hm-note` to the best-placed KNOWN person (the people store: a
 person at the company, ranked by their involvement's path type), or a `lookup` when nobody is known (an
-explicit "no known person", never a blank). It is **derived, never stored**, one per (company, person) so a
+explicit "no known person", never a blank). **A `backer-intro` (jobsearch 0.75.0, dev #765) is the lowest
+rung:** nobody usable is known at the company, but a person is known at a firm that BACKS it (the action's
+`via` names the firm; the link comes from a portfolio board's sightings or the candidate's `backed_by`,
+read through `portfolio_boards.backers_of`). It is an ask for an *introduction* into the company, never a
+referral and never an endorsement claim, and a direct person always outranks it. It is **derived, never stored**, one per (company, person) so a
 relationship is asked once, not once per requisition, and its `state` is the only thing to act on:
 - **`draft-owed`** (a role is `verdict: pursue`, or an application is submitted): dispatch
   `outreach-drafter` with that one line as its input. Under a posture that withholds drafting queue it with
@@ -772,12 +776,18 @@ the fields it still `missing`. **Take that batch and no more**: the cap is what 
 the step (one JD read per role), and a backlog larger than the cap drains over the next runs.
 For each role in the batch, in order:
 
-1. **Read the JD** (`jd_url`, else a sighting's `source_url`). Record it on the role's `fit`:
+1. **Read the JD** from the batch row's `jd_read.url` (the role's `jd_url`, else a sighting's `source_url`,
+   skipping any address on a manual-candidate board). **⛔ Never open an address in `jd_read.blocked`**
+   (jobsearch 0.75.0, dev #765): those are on a `manual-candidate` channel's `board_hosts`, sites whose terms
+   forbid automated access (ADR-037), and a portfolio board's own job pages are among them. When `jd_read.url`
+   is null and `blocked` is not empty, fetch and browse nothing and record
+   `fit.jd_source` = `unavailable: manual-board` (below); `record.py` refuses to record a role as READ when
+   every address it carries is blocked. Record the read on the role's `fit`:
    `record.py show <opp_id>` first, then `record.py set <opp_id> fit '<that object, existing
    requirements[] kept, with analyzed_on = today and jd_source = what you actually read>'
    --already-locked`.
    - **A read that fails is still a read, and says why**: `jd_source` = `unavailable: <reason>`,
-     the reason exactly one of `login-wall` · `dead-link` · `no-url` · `surface-cannot-read`. The
+     the reason exactly one of `login-wall` · `dead-link` · `no-url` · `surface-cannot-read` · `manual-board`. The
      role then goes to Decide with the lean defaulted to `ask` and the line `not read: <reason>`.
      A null `jd_source` means NOT TRIED, never "failed".
    - **A JD that needs an authenticated browser, on a surface that has none** (a headless run
