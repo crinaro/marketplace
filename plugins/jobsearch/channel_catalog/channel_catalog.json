@@ -1,0 +1,346 @@
+{
+  "channel_catalog": 1,
+  "entries": [
+    {
+      "access": "manual-candidate",
+      "added_in": "0.76.0",
+      "board_hosts": [
+        "vistaequitypartners.getro.com"
+      ],
+      "board_url": "https://vistaequitypartners.getro.com/jobs",
+      "channel_id": "portfolio:vista-equity-partners",
+      "default_on": false,
+      "evidence": "DOCUMENTED",
+      "firm": {
+        "domain": "vistaequitypartners.com",
+        "id": "vista-equity-partners",
+        "name": "Vista Equity Partners"
+      },
+      "id": "vista-equity-partners",
+      "kind": "portfolio",
+      "label": "Vista Equity Partners portfolio jobs",
+      "retired": null,
+      "review_cadence": "weekly",
+      "scope_notes": "you open it; the engine never visits (its terms forbid automated access)",
+      "shipped_templates": [
+        {
+          "path": "docs/user/jobsearch/how-it-works.md",
+          "projection": {
+            "access": "manual-candidate",
+            "board_hosts": [
+              "vistaequitypartners.getro.com"
+            ],
+            "board_url": null,
+            "label": "Vista Equity Partners portfolio jobs",
+            "type": "job-board"
+          },
+          "row_id": "portfolio:<firm-id>",
+          "sha": "28a1c7704e59",
+          "substitute": {
+            "<Firm Name>": "Vista Equity Partners",
+            "<firm-id>": "vista-equity-partners",
+            "<the board's host>": "vistaequitypartners.getro.com"
+          },
+          "tag": "jobsearch--v0.75.0"
+        }
+      ],
+      "verified_by": "https://www.vistaequitypartners.com/careers/",
+      "verified_note": "The operator's careers page links this exact address (Explore Portfolio Jobs; read in the 0.75.0 prior art and by the design stage). One adversarial reviewer's fetch of that page returned HTTP 403 on 2026-10-23, so a re-read is not reproducible from every network. The board host is a Getro subdomain (DNS CNAME only; no Getro-hosted page was opened).",
+      "verified_on": "2026-10-23"
+    },
+    {
+      "access": "manual-candidate",
+      "added_in": "0.76.0",
+      "board_hosts": [
+        "careers.franciscopartners.com"
+      ],
+      "board_url": "https://careers.franciscopartners.com/jobs",
+      "channel_id": "portfolio:francisco-partners",
+      "default_on": false,
+      "evidence": "OWNER-DIRECTED",
+      "firm": {
+        "domain": "franciscopartners.com",
+        "id": "francisco-partners",
+        "name": "Francisco Partners"
+      },
+      "id": "francisco-partners",
+      "kind": "portfolio",
+      "label": "Francisco Partners portfolio jobs",
+      "retired": null,
+      "review_cadence": "weekly",
+      "scope_notes": "you open it; the engine never visits (its terms forbid automated access)",
+      "shipped_templates": [
+        {
+          "path": "docs/user/jobsearch/how-it-works.md",
+          "projection": {
+            "access": "manual-candidate",
+            "board_hosts": [
+              "careers.franciscopartners.com"
+            ],
+            "board_url": null,
+            "label": "Francisco Partners portfolio jobs",
+            "type": "job-board"
+          },
+          "row_id": "portfolio:<firm-id>",
+          "sha": "bf2a01b913b4",
+          "substitute": {
+            "<Firm Name>": "Francisco Partners",
+            "<firm-id>": "francisco-partners",
+            "<the board's host>": "careers.franciscopartners.com"
+          },
+          "tag": "jobsearch--v0.75.0"
+        }
+      ],
+      "verified_by": "https://www.franciscopartners.com/",
+      "verified_note": "The operator's site footer (Careers with our portfolio companies) links the /companies path of this host, not /jobs. The shipped board_url (/jobs, same host) is the address the owner named on #769; no agent opened the Getro-hosted board to confirm it (ADR-037). board_hosts covers both paths.",
+      "verified_on": "2026-10-23"
+    },
+    {
+      "access": "manual-candidate",
+      "added_in": "0.76.0",
+      "board_hosts": [
+        "wellfound.com"
+      ],
+      "board_url": "https://wellfound.com/jobs",
+      "channel_id": "wellfound",
+      "default_on": false,
+      "evidence": "DOCUMENTED",
+      "id": "wellfound",
+      "kind": "curated",
+      "label": "Wellfound",
+      "retired": null,
+      "review_cadence": "weekly",
+      "scope_notes": "you open it; the engine never visits (its terms forbid automated access)",
+      "shipped_templates": [
+        {
+          "path": "plugins/jobsearch/docs/schema.md",
+          "projection": {
+            "access": "manual-candidate",
+            "board_hosts": null,
+            "board_url": null,
+            "label": "Wellfound",
+            "type": "job-board"
+          },
+          "row_id": "wellfound",
+          "sha": "306490f5c869",
+          "tag": "jobsearch--v0.72.0"
+        }
+      ],
+      "verified_by": "https://wellfound.com/about",
+      "verified_on": "2026-10-23"
+    },
+    {
+      "access": "manual-candidate",
+      "added_in": "0.76.0",
+      "board_hosts": [
+        "welcometothejungle.com",
+        "otta.com"
+      ],
+      "board_url": "https://www.welcometothejungle.com/en",
+      "channel_id": "welcome-to-the-jungle",
+      "default_on": false,
+      "evidence": "DOCUMENTED",
+      "id": "welcome-to-the-jungle",
+      "kind": "curated",
+      "label": "Welcome to the Jungle",
+      "retired": null,
+      "review_cadence": "weekly",
+      "scope_notes": "you open it; the engine never visits (its terms forbid automated access)",
+      "shipped_templates": [
+        {
+          "path": "plugins/jobsearch/docs/schema.md",
+          "projection": {
+            "access": "manual-candidate",
+            "board_hosts": null,
+            "board_url": null,
+            "label": "Welcome to the Jungle",
+            "type": "job-board"
+          },
+          "row_id": "welcome-to-the-jungle",
+          "sha": "c4a3301a3ddd",
+          "tag": "jobsearch--v0.72.0"
+        }
+      ],
+      "verified_by": "https://solutions.welcometothejungle.com/en/otta-is-now-welcome-to-the-jungle",
+      "verified_note": "The second host is listed because the operator page says this service is the evolution of the former Otta; the two names resolve to one address (INFERRED). A wrong extra host only makes the engine refuse to open a host, so it fails safe. A deeper jobs path is not verified; the candidate root is shipped.",
+      "verified_on": "2026-10-23"
+    },
+    {
+      "access": "manual-candidate",
+      "added_in": "0.76.0",
+      "board_hosts": [
+        "workatastartup.com",
+        "ycombinator.com"
+      ],
+      "board_url": "https://www.workatastartup.com/jobs",
+      "channel_id": "yc-work-at-a-startup",
+      "default_on": false,
+      "evidence": "DOCUMENTED",
+      "id": "yc-work-at-a-startup",
+      "kind": "curated",
+      "label": "YC Work at a Startup",
+      "retired": null,
+      "review_cadence": "weekly",
+      "scope_notes": "you open it; the engine never visits (its terms forbid automated access)",
+      "shipped_templates": [
+        {
+          "path": "plugins/jobsearch/docs/schema.md",
+          "projection": {
+            "access": "manual-candidate",
+            "board_hosts": null,
+            "board_url": null,
+            "label": "YC Work at a Startup",
+            "type": "job-board"
+          },
+          "row_id": "yc-work-at-a-startup",
+          "sha": "49bf773e7a65",
+          "tag": "jobsearch--v0.72.0"
+        }
+      ],
+      "verified_by": "https://www.ycombinator.com/jobs",
+      "verified_note": "The second host is listed because the site-wide terms that make this board manual-candidate cover it too: a posting address there is refused by board-sighting, and the candidate records the employer's own posting instead.",
+      "verified_on": "2026-10-23"
+    },
+    {
+      "absence_reads_as": "on",
+      "access": "login",
+      "added_in": "0.76.0",
+      "channel_id": "linkedin-jobsearch",
+      "default_on": false,
+      "evidence": "DOCUMENTED",
+      "id": "linkedin-jobs",
+      "kind": "swept-board",
+      "label": "LinkedIn job search",
+      "query_by": "linkedin_sweep.jobsearch_line",
+      "query_template": null,
+      "retired": null,
+      "review_cadence": "daily",
+      "route_by": "linkedin-runner",
+      "scope_notes": "the LinkedIn runner reads the job search in your signed-in browser; the engine takes no LinkedIn action",
+      "terms": {
+        "adr": "ADR-037",
+        "read_on": "2026-10-24",
+        "ruling": "owner-carve-out",
+        "url": "https://www.linkedin.com/legal/user-agreement"
+      },
+      "type": "job-board",
+      "verified_by": "https://www.linkedin.com/legal/user-agreement",
+      "verified_note": "This entry DESCRIBES today's linkedin-runner reads and adds no LinkedIn read and no action. LinkedIn's User Agreement (effective 2025-11-03) section 8.2 items 2 and 13 ban software that scrapes the Services and bots or unauthorized automated methods; ADR-037 does not rule on the existing runner (finding F2) and the owner's carve-out (2026-10-24, #774) leaves its reads as they are. LinkedIn actions are never automated.",
+      "verified_on": "2026-10-24"
+    },
+    {
+      "access": "n/a",
+      "added_in": "0.76.0",
+      "alert_sender": "from:linkedin",
+      "channel_id": "linkedin-job-alerts",
+      "default_on": true,
+      "evidence": "PREVIOUSLY-SHIPPED",
+      "id": "linkedin-job-alerts",
+      "kind": "alert-sender",
+      "label": "LinkedIn job alert emails",
+      "retired": null,
+      "review_cadence": "on-inbound",
+      "scope_notes": "your own mailbox is searched for this sender; no LinkedIn page is opened",
+      "shipped_in": {
+        "path": "plugins/jobsearch/scripts/alert_sweep.py",
+        "ref": "0ea6c62"
+      },
+      "type": "alert-email",
+      "verified_by": "https://www.linkedin.com/legal/user-agreement",
+      "verified_note": "The engine itself searched the user's mailbox with this exact fragment from the first commit (0ea6c62, 2026-08-05) until dev #147 moved the senders onto channel rows; shipped_in names that file and the shape gate (G11) finds the fragment in it. This does NOT claim the operator's current From address still contains the word: that was not re-read and is UNDETERMINED. Probe: the operator's own job-alert help page.",
+      "verified_on": "2026-10-24"
+    },
+    {
+      "access": "n/a",
+      "added_in": "0.76.0",
+      "alert_sender": "from:dice",
+      "channel_id": "dice",
+      "default_on": true,
+      "evidence": "PREVIOUSLY-SHIPPED",
+      "id": "dice",
+      "kind": "alert-sender",
+      "label": "Dice job alert emails",
+      "retired": null,
+      "review_cadence": "on-inbound",
+      "scope_notes": "your own mailbox is searched for this sender; no Dice page is opened",
+      "shipped_in": {
+        "path": "plugins/jobsearch/scripts/alert_sweep.py",
+        "ref": "0ea6c62"
+      },
+      "type": "alert-email",
+      "verified_by": "https://www.dice.com/about/terms-and-conditions",
+      "verified_note": "The engine itself searched the user's mailbox with this exact fragment from the first commit (0ea6c62, 2026-08-05) until dev #147 moved the senders onto channel rows; shipped_in names that file and the shape gate (G11) finds the fragment in it. This does NOT claim the operator's current From address still contains the word: that was not re-read and is UNDETERMINED. Probe: the operator's own job-alert help page.",
+      "verified_on": "2026-10-24"
+    },
+    {
+      "access": "bot-limited",
+      "added_in": "0.76.0",
+      "channel_id": "indeed",
+      "default_on": true,
+      "default_on_ruling": "owner decision D1, 2026-10-24 (#774): the Indeed browser sweep is on for a new install; a profile that already holds an indeed row keeps it as it is (D2)",
+      "evidence": "DOCUMENTED",
+      "id": "indeed",
+      "kind": "swept-board",
+      "label": "Indeed",
+      "query_by": "board-sweeper",
+      "query_template": null,
+      "retired": null,
+      "review_cadence": "daily",
+      "route_by": "board-sweeper",
+      "scope_notes": "board-sweeper reads Indeed in your signed-in browser for your titles; it takes no action there. Stop it with: record.py source off indeed",
+      "terms": {
+        "adr": "ADR-037",
+        "read_on": "2026-10-24",
+        "ruling": "owner-carve-out",
+        "url": "https://www.indeed.com/legal"
+      },
+      "type": "job-board",
+      "verified_by": "https://www.indeed.com/legal",
+      "verified_note": "The browser sweep of Indeed, as board-sweeper already runs it for a profile that holds an indeed row. Indeed's site rules (indeed.com/legal, updated 2026-09-29, section D.21) forbid automated systems including AI or Agentic AI from accessing the Site, and conditionally permit crawling as outlined in its robots.txt; whether that allowance covers an assistant reading on a job seeker's behalf is UNDETERMINED. The owner carved the sweep out of ADR-037 on 2026-10-24 (D1 on #774; the dated line is in ADR-037). The alert sender is a SEPARATE entry (indeed-alerts), so turning the sweep off never stops the alert emails. No Indeed page was opened by a maintenance agent; the terms address is the one the design's prior art already read.",
+      "verified_on": "2026-10-24"
+    },
+    {
+      "access": "n/a",
+      "added_in": "0.76.0",
+      "alert_sender": "from:indeed",
+      "channel_id": "indeed-alerts",
+      "default_on": true,
+      "evidence": "PREVIOUSLY-SHIPPED",
+      "id": "indeed-alerts",
+      "kind": "alert-sender",
+      "label": "Indeed job alert emails",
+      "retired": null,
+      "review_cadence": "on-inbound",
+      "scope_notes": "your own mailbox is searched for this sender; no Indeed page is opened",
+      "shipped_in": {
+        "path": "plugins/jobsearch/scripts/alert_sweep.py",
+        "ref": "0ea6c62"
+      },
+      "type": "alert-email",
+      "verified_by": "https://www.indeed.com/legal",
+      "verified_note": "The engine itself searched the user's mailbox with this exact fragment from the first commit (0ea6c62, 2026-08-05) until dev #147 moved the senders onto channel rows; shipped_in names that file and the shape gate (G11) finds the fragment in it. This does NOT claim the operator's current From address still contains the word: that was not re-read and is UNDETERMINED. Probe: the operator's own job-alert help page.",
+      "verified_on": "2026-10-24"
+    },
+    {
+      "access": "public",
+      "added_in": "0.76.0",
+      "config_key": "sourcing.feeds.enabled",
+      "default_on": true,
+      "evidence": "DOCUMENTED",
+      "id": "company-feeds",
+      "kind": "feed-policy",
+      "label": "Company job-board feeds",
+      "retired": null,
+      "vendors": [
+        "greenhouse",
+        "lever",
+        "ashby",
+        "workday"
+      ],
+      "verified_by": "https://docs.greenhouse.io/job-board.html",
+      "verified_note": "The 0.72.0 poller as one switch: GET on the vendors' documented public job-board APIs (Greenhouse, Lever, Ashby), for companies the profile already tracks. Workday (dev #775, 0.76.0) is NOT a documented API: it is read from the sitemap its tenant's robots.txt advertises plus the employer's own JobPosting JSON-LD, under the five conditions of ADR-037's 2026-10-24 line (OBSERVED; Workday documents only the JSON-LD syndication). Read for 0.72.0 (docs/design-sourcing-feeds.md section 1) and for Workday on 2026-10-24 (docs/design-workday-feed.md); not re-read for the other three vendors for 0.76.0.",
+      "verified_on": "2026-10-24"
+    }
+  ],
+  "revision": 3
+}

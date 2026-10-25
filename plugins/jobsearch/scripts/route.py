@@ -320,6 +320,15 @@ def main():
         else:
             print("route        try in order: %s" % " -> ".join(mechs))
             print("             Report which one you actually used.")
+        row = next((r for _n, r in rows if r.get("id") == args.channel), {})
+        if row.get("query_template"):
+            # dev #774: the stored template is FILLED here, from the profile as it stands today (never frozen at opt-in)
+            try:
+                import profile as _profile
+                import sources as _sources
+                print("QUERY        %s" % _sources.fill_query(row["query_template"], _profile.load(), cfg))
+            except Exception as e:                           # noqa: BLE001 -- loud, not fatal
+                print("QUERY        NOT CHECKED (%s)" % e)
         return 0
 
     print("SOURCING ROUTES — requirement is the channel's; mechanism is this machine's")

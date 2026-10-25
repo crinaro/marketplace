@@ -127,6 +127,52 @@ export type StatusHandlers = {
   refresh: () => any
   runDaily: () => any
   runWeekly: () => any
+  // dev #774: turn one job source on or off. register.ts runs `record.py source <on|off> <id>` and nothing else; this
+  // file only draws the button and says which way it turns.
+  toggleSource?: (id: string, on: boolean) => any
+}
+
+// dev #774: the Sources block. One row per job source (scripts/panel.py's `elsewhere.sources`, which is
+// `sources.report`): its title, kind and state, and ONE button that turns it the other way. The pane decides nothing:
+// whether a source is on comes from the script, and the write is the script's.
+export function sourceRows(snap: any): any[] | null {
+  const el = snap && snap.elsewhere
+  if (!el || notChecked(el)) return null
+  const s = el.sources
+  if (!Array.isArray(s)) return null
+  return s
+}
+
+export function sourcesSection(els: Els, snap: any, h: StatusHandlers): any {
+  const el = snap && snap.elsewhere
+  const rows = sourceRows(snap)
+  if (el && notChecked(el.sources)) {
+    return section(els, 'Sources', [notChecked(el.sources) as string], '')
+  }
+  if (rows === null) return section(els, 'Sources', ['not computed yet'], '')
+  if (!rows.length) return section(els, 'Sources', [], 'no job source is set up yet')
+  const lines = rows.slice(0, 20).map((r: any) => {
+    const label = String(r.title || r.id) + '  [' + r.kind + ']  ' + (r.on ? 'on' : String(r.state))
+    return els.Box({
+      key: 'source-row-' + r.id,
+      flexDirection: 'row',
+      columnGap: 2,
+      children: [
+        txt(els, label),
+        h.toggleSource
+          ? els.Button({
+              key: 'source-' + r.id,
+              label: r.on ? 'Turn off' : 'Turn on',
+              onPress: () => (h.toggleSource as any)(String(r.id), !r.on),
+            })
+          : txt(els, ' '),
+      ],
+    })
+  })
+  return els.Box({
+    flexDirection: 'column',
+    children: [txt(els, 'Sources', { bold: true }), els.Box({ flexDirection: 'column', paddingLeft: 2, children: lines })],
+  })
 }
 
 // `canRun`: the Run buttons exist only where the Desktop app's scheduler does (surface 'desktop').
@@ -155,6 +201,7 @@ export function statusTree(els: Els, snap: any, canRun: boolean, note: string, h
         snap && snap.elsewhere && Array.isArray(snap.elsewhere.preps_owed) && snap.elsewhere.preps_owed.length
           ? ['preps owed: ' + snap.elsewhere.preps_owed.length] : []), 'no calls this week'),
       section(els, 'Channels due', elsewhereLines(snap, 'channels_due'), 'none due'),
+      sourcesSection(els, snap, h),
       section(els, 'Open asks', elsewhereLines(snap, 'asks'), 'none open'),
       els.Box({
         flexDirection: 'row',

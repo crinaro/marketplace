@@ -89,6 +89,12 @@ Usage:
     python3 scripts/record.py board-sighting <channel_id> --company "<name>" --title "<title>" --url <posting URL>
                                               # one role seen on a job board (dev #765): the company is matched or
                                               # created, the role created or given a sighting, in ONE write
+    python3 scripts/record.py channel-catalog add <entry> | --kind portfolio|curated|swept-board|alert-sender [--attach <channel_id>]
+    python3 scripts/record.py channel-catalog take|keep <channel_id>
+    python3 scripts/record.py source on|off <id> [--anyway]      # turn ANY job source on or off (dev #774): a board, an
+    python3 scripts/record.py source list | keep-mine <id>       # alert sender, the LinkedIn job search, `company-feeds`
+                                              # turn shipped catalog boards on (nothing is on by default), and settle
+                                              # a board you edited that the catalog also changed (dev #769)
     ... --file companies|channels to address the other stores. --dry-run to preview.
     ... --already-locked when the calling run already holds the run lock (see above).
 
@@ -196,7 +202,17 @@ OPS = ("create", "set", "set-in", "append", "show", "fields",
        # jobsearch 0.75.0 (dev #765) -- record ONE role seen on a job board. An early-return verb writing
        # COMPANIES (when it creates one) and OPPORTUNITIES in one locked, validated, rollback-verified
        # transaction, so --dry-run is proven in test_record.py.
-       "board-sighting")
+       "board-sighting",
+       # jobsearch 0.76.0 (dev #769) -- turn shipped channel-catalog boards on (`add`) and settle a
+       # disagreement with the catalog (`take` / `keep`). An early-return verb writing CHANNELS (and
+       # COMPANIES / ASKS when they change) in one locked, validated, rollback-verified transaction, so
+       # --dry-run is proven in test_record.py.
+       "channel-catalog",
+       # jobsearch 0.76.0 (dev #774) -- turn any job source on or off (`source on|off`), list them (`list`) and
+       # resolve an adoption question (`keep-mine`). An early-return verb writing CHANNELS (and COMPANIES / ASKS /
+       # config.json when they change) in one locked, validated, rollback-verified transaction, so --dry-run is
+       # proven in test_record_source.py.
+       "source")
 SOURCING_OPS = ("screened", "lean", "listed-pay", "posted")
 LOCK = os.path.join(ENGINE_SCRIPTS, "runlock.py")
 # ⭐ ENGINE, not profile — the data MODEL ships with the code; the DATA belongs to the user.
@@ -1655,9 +1671,9 @@ def cmd_ats(args):
         triple = _ats.parse(args.listing_url)
         if triple is None:
             print("⛔ REFUSED — %r names no board this engine can poll. The forms are "
-                  "jobs.lever.co/<site>, jobs.eu.lever.co/<site>, jobs.ashbyhq.com/<name> and "
-                  "boards.greenhouse.io/<token> (Workday and every other ATS stay on the "
-                  "browser); nothing written." % args.listing_url)
+                  "jobs.lever.co/<site>, jobs.eu.lever.co/<site>, jobs.ashbyhq.com/<name>, "
+                  "boards.greenhouse.io/<token> and <tenant>.wd<N>.myworkdayjobs.com/<site> "
+                  "(every other ATS stays on the browser); nothing written." % args.listing_url)
             return 1
 
     def edit(company, channels, opps):
@@ -1952,6 +1968,383 @@ def cmd_board_sighting(args):
     print("  backed by: %s" % (", ".join("%s (%s)" % (f["firm_id"], f["via"]) for f in firms)
                                if firms else "no firm is linked (this board is not a portfolio board, or "
                                              "no backing is stated)"))
+    return 0
+
+
+CHANNEL_CATALOG_USAGE = ("channel-catalog add <entry> | --kind portfolio|curated|swept-board|alert-sender [--attach <channel_id>] "
+                         "[--firm <company_id>] [--on YYYY-MM-DD] [--dry-run] [--already-locked]\n"
+                         "       channel-catalog take <channel_id> | keep <channel_id> [--on YYYY-MM-DD] "
+                         "[--dry-run] [--already-locked]")
+
+
+def cmd_channel_catalog(args):
+    """`record.py channel-catalog add|take|keep ...` -- dev #769 (design-channel-catalog.md section 5; jobsearch
+    0.76.0). Turn shipped catalog boards on, and settle a disagreement between a board you edited and the catalog.
+
+    `add` COPIES an entry into `channels.jsonl` (plus the firm's `companies` row for a portfolio entry) and stamps
+    the row (`channel_catalog.py` owns the planning; the stamp is the `plays.py --adopt` mechanism). NOTHING IS ON
+    BY DEFAULT: this verb is the only way a catalog board reaches a profile. A board the user already holds (same
+    channel id, or overlapping `board_hosts`) is refused with the `--attach` form, never duplicated, and a row with
+    no stamp is never written (except by `--attach`, the user's own command naming it). `take` / `keep` resolve a
+    conflict the SessionStart reconcile asked about, and refuse a row stamped by a NEWER catalog revision.
+
+    The whole call is ONE locked, validated, rollback-verified write across the stores it touches (channels, and
+    companies / asks when they change), or none. Exit 0 when everything requested is on, 2 when any entry was
+    skipped (or the arguments are wrong), 1 when the write was refused (nothing written). A refusal leaves every
+    store byte-identical."""
+    label = "usage: " + CHANNEL_CATALOG_USAGE
+    verb = args.rid
+    if verb not in ("add", "take", "keep"):
+        print(label)
+        return 2
+    import channel_catalog as _cc
+    try:
+        today = _run_date_value(args.on_date, "--on")
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+    try:
+        catalog = _cc.load_catalog()
+    except _cc.CatalogError as e:
+        print("⛔ REFUSED — %s; nothing written." % e)
+        return 1
+    entries = _cc.by_id(catalog)
+    if verb == "add":
+        if bool(args.rest) == bool(args.cc_kind) or len(args.rest) > 1:
+            print(label)
+            return 2
+        if args.rest and args.rest[0] not in entries:
+            print("⛔ REFUSED — %r is not a channel catalog entry (have: %s)."
+                  % (args.rest[0], ", ".join(sorted(entries))))
+            return 1
+        ids = list(args.rest) if args.rest else [e["id"] for e in catalog["entries"] if e["kind"] == args.cc_kind]
+        if args.cc_kind and (args.cc_attach or args.cc_firm):
+            print("⛔ REFUSED — --attach and --firm name ONE board or ONE company; use them with a single "
+                  "entry, not --kind.")
+            return 1
+    else:
+        if len(args.rest) != 1 or args.cc_kind or args.cc_attach or args.cc_firm:
+            print(label)
+            return 2
+    try:
+        stores = {"channels": load("channels"), "companies": _load_or_empty("companies"),
+                  "asks": _load_or_empty("asks")}
+    except (OSError, ValueError) as e:
+        print("⛔ REFUSED — a store cannot be read (%s); nothing written." % e)
+        return 1
+
+    def build(rows):
+        """Mutate `rows` (a {store: list} copy) and return (changed stores, printable lines, exit code)."""
+        if verb == "add":
+            results = _cc.plan_add(catalog, ids, rows["channels"], rows["companies"], today,
+                                   attach=args.cc_attach, firm_arg=args.cc_firm)
+            lines, skipped = [], False
+            for res in results:
+                lines.append("  %s: %s" % (res["entry"], res["why"]))
+                if res["status"] in ("write", "attach") and res["row"].get("board_url"):
+                    lines.append("      open it at %s" % res["row"].get("board_url"))
+                if res["status"] == "skipped":
+                    skipped = True
+            _cc.apply_add(results, rows["channels"], rows["companies"])
+            changed = []
+            if any(r["status"] in ("write", "attach") for r in results):
+                changed = ["channels"] + (["companies"] if any(r["new_firm"] for r in results) else [])
+            # an adoption ask (dev #774) that this `--attach` answers is resolved in the SAME write
+            for r in results:
+                if r["status"] == "attach":
+                    for a in rows["asks"]:
+                        if a.get("id") == _cc.ADOPT_ASK_PREFIX + r["channel_id"] and not a.get("resolved_on"):
+                            a["resolved_on"], a["resolution"] = today, "attached"
+                            if "asks" not in changed:
+                                changed.append("asks")
+            return changed, lines, (2 if skipped else 0)
+        new_row, new_asks, summary = _cc.plan_resolve(catalog, rows["channels"], rows["asks"], args.rest[0], verb, today)
+        idx = next(i for i, r in enumerate(rows["channels"]) if r.get("id") == args.rest[0])
+        rows["channels"][idx] = new_row
+        asks_changed = new_asks != rows["asks"]
+        rows["asks"] = new_asks
+        return ["channels"] + (["asks"] if asks_changed else []), ["  " + summary], 0
+
+    shadow = json.loads(json.dumps(stores))
+    try:
+        changed, lines, rc = build(shadow)
+    except _cc.Refused as e:
+        print("⛔ REFUSED — %s" % e.args[0])
+        return 1
+    head = "channel-catalog %s (catalog revision %d)" % (verb, catalog["revision"])
+    if not changed:
+        print(head)
+        print("\n".join(lines))
+        print("  nothing to change.")
+        return rc
+    if args.dry_run:
+        print(head)
+        print("\n".join(lines))
+        pre_problems = validate()[3]
+        rc_v, out, err, problems = dry_run_validate(
+            "channels", shadow["channels"], extra={k: shadow[k] for k in ("companies", "asks") if k in changed})
+        added = new_problems(pre_problems, problems) if rc_v != 0 else []
+        if rc_v != 0 and (added is None or added):
+            print("  ⛔ a REAL (non-dry-run) write of this would be REFUSED and rolled back.")
+            print("  " + "\n  ".join(added if added else _diagnostic_lines(rc_v, out, err)))
+            return 1
+        print("  --dry-run: nothing written.")
+        print("  ✅ dry-run validated clean against the same validator a real write runs.")
+        return 0
+    if args.already_locked:
+        if not lock_is_held():
+            print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
+            return 1
+    else:
+        try:
+            take_lock("record.py channel-catalog %s" % verb, wait=args.wait)
+        except LockError as e:
+            print("  REFUSED — %s" % e)
+            return 1
+    try:
+        # re-read INSIDE the lock, and re-plan on what is really there
+        live = {"channels": load("channels"), "companies": _load_or_empty("companies"),
+                "asks": _load_or_empty("asks")}
+        try:
+            changed, lines, rc = build(live)
+        except _cc.Refused as e:
+            print("⛔ REFUSED — %s" % e.args[0])
+            return 1
+        if not changed:
+            print(head)
+            print("\n".join(lines))
+            print("  nothing to change.")
+            return rc
+        snaps = {s: snapshot(s) for s in changed}
+        pre_problems = validate()[3]
+        for s in ("companies", "channels", "asks"):          # the firm row first: portfolio_of must resolve
+            if s in changed:
+                save_atomic(s, live[s])
+        rc_v, out, err, post_problems = validate()
+        added = new_problems(pre_problems, post_problems)
+        if rc_v != 0 and (added is None or added):
+            ok = all(restore(s, snaps[s]) for s in changed)
+            print("⛔ the write left the stores invalid and was %s."
+                  % ("ROLLED BACK (byte-identical)" if ok
+                     else "NOT VERIFIABLY ROLLED BACK — restore %s from git"
+                          % ", ".join(STORES[s] for s in changed)))
+            print("  " + "\n  ".join(added if added else _diagnostic_lines(rc_v, out, err)))
+            return 1
+    finally:
+        if not args.already_locked:
+            release_lock()
+    print(head)
+    print("\n".join(lines))
+    return rc
+
+
+SOURCE_USAGE = ("source on <id> [--anyway] [--dry-run] | source off <id> [--dry-run]\n"
+                "       source list | source keep-mine <id>   [--on YYYY-MM-DD] [--already-locked]")
+
+
+def _config_path():
+    return os.path.join(ROOT, "config.json")
+
+
+def _read_config_strict():
+    """config.json as a dict, or raises ValueError/OSError. An unreadable config is never an empty one."""
+    with open(_config_path(), encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    if not isinstance(cfg, dict):
+        raise ValueError("config.json is not a JSON object")
+    return cfg
+
+
+def _remote_mode():
+    try:
+        return ((_read_config_strict().get("sync") or {}).get("mode")) == "remote"
+    except (OSError, ValueError):
+        return False
+
+
+def cmd_source(args):
+    """`record.py source on|off <id>`, `source list`, `source keep-mine <id>` -- dev #774 (design-source-catalog.md
+    section 7.2; jobsearch 0.76.0). THE ONLY WRITER of a source's on/off state: the text path, the
+    /jobsearch:sourcing command and the mod's panel button all run exactly this.
+
+    `<id>` is a channel row (stamped or yours), a catalog entry (turn it on: the copy-and-stamp `channel-catalog add`),
+    or `company-feeds`. OFF sets `relationship_status: retired` -- the one bit every reader already honours -- and
+    stores what it found in the declared `prior_relationship_status` (R2) so ON puts it back exactly; `company-feeds`
+    writes `sourcing.feeds.enabled`. A recruiter, referral, company-site or unknown id is REFUSED, naming the right verb.
+
+    ONE locked, validated, rollback-verified write across the stores it touches (channels, companies, asks, and
+    config.json), or none. Exit 0: done, or already in that state (a no-op). 2: refused (nothing written). 1: the write
+    failed validation and was rolled back. `--dry-run` prints and writes nothing. In a `remote` profile it says that a
+    machine on an engine older than 0.76.0 cannot see the switch, and that the change reaches other machines only
+    after the next end-of-run commit and push (review B1)."""
+    label = "usage: " + SOURCE_USAGE
+    verb = args.rid
+    if verb not in ("on", "off", "list", "keep-mine"):
+        print(label)
+        return 2
+    import channel_catalog as _cc
+    try:
+        today = _run_date_value(args.on_date, "--on")
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 2
+    if verb == "list":
+        if args.rest:
+            print(label)
+            return 2
+        import sources as _sources
+        try:
+            sys.stdout.write(_sources.render_text(_sources.report(ROOT, datetime.date.fromisoformat(today))))
+        except _sources.SourcesError as e:
+            print("NOT CHECKED: %s" % e)
+            return 1
+        return 0
+    if len(args.rest) != 1 or (verb != "on" and args.src_anyway):
+        print(label)
+        return 2
+    ident = args.rest[0]
+    catalog = None
+    try:
+        catalog = _cc.load_catalog()
+    except _cc.CatalogError as e:
+        print("  NOT CHECKED: %s -- a source you already hold can still be turned on or off; a catalog entry cannot "
+              "be turned on until it is readable." % e)
+    try:
+        stores = {"channels": load("channels"), "companies": _load_or_empty("companies"), "asks": _load_or_empty("asks")}
+        config = _read_config_strict()
+    except (OSError, ValueError) as e:
+        print("⛔ REFUSED — a store cannot be read (%s); nothing written." % e)
+        return 2
+
+    def build(rows, cfg):
+        """(changed store names, printable lines, plan or None, noop?) -- raises `_cc.Refused`."""
+        if verb == "keep-mine":
+            new_asks = _cc.plan_keep_mine(rows["asks"], ident, today)
+            rows["asks"] = new_asks
+            return ["asks"], ["  %s: the catalog question is resolved; the row is exactly as it was" % ident], None
+        plan = _cc.plan_source_toggle(catalog, rows["channels"], rows["companies"], cfg, ident, verb == "on", today,
+                                      anyway=args.src_anyway)
+        rows["channels"], rows["companies"] = plan["channels"], plan["companies"]
+        cfg.clear()
+        cfg.update(plan["config"])
+        # an adoption ask this turn-on answers is resolved in the same write (`--attach` does the same)
+        return list(plan["changed"]), list(plan["lines"]), plan
+
+    shadow, shadow_cfg = json.loads(json.dumps(stores)), json.loads(json.dumps(config))
+    try:
+        changed, lines, plan = build(shadow, shadow_cfg)
+    except _cc.Refused as e:
+        print("⛔ REFUSED — %s" % e.args[0])
+        return 2
+
+    def extras(plan_, cfg_):
+        out = []
+        row = plan_["row"] if plan_ else None
+        if verb == "on" and row is not None:
+            if row.get("board_url"):
+                out.append("      open it at %s" % row["board_url"])
+            if row.get("query_template"):
+                try:
+                    import profile as _profile
+                    import sources as _sources
+                    out.append("      this will search: %s" % _sources.fill_query(row["query_template"], _profile.load(), cfg_))
+                except Exception as exc:                              # noqa: BLE001 -- loud, not fatal
+                    out.append("      this will search: NOT CHECKED (%s)" % exc)
+        if _remote_mode() and not (plan_ and plan_["noop"]):
+            if verb == "off":
+                out.append("  NOTE (remote profile): a machine still on a jobsearch engine older than 0.76.0 cannot see this "
+                           "switch and keeps running this source until it upgrades.")
+            if verb in ("on", "off"):
+                out.append("  NOTE (remote profile): this change reaches your other machines only after the next end-of-run "
+                           "commit and push; it takes effect elsewhere after the next run.")
+        return out
+
+    head = "source %s %s" % (verb, ident)
+    if plan is not None and plan["noop"]:
+        print(head)
+        print("\n".join(lines))
+        print("  nothing to change.")
+        return 0
+    if args.dry_run:
+        print(head)
+        print("\n".join(lines + extras(plan, shadow_cfg)))
+        changed_stores = [s for s in changed if s in ("channels", "companies", "asks")]
+        if changed_stores:
+            pre_problems = validate()[3]
+            rc_v, out, err, problems = dry_run_validate(
+                "channels", shadow["channels"], extra={k: shadow[k] for k in ("companies", "asks") if k in changed})
+            added = new_problems(pre_problems, problems) if rc_v != 0 else []
+            if rc_v != 0 and (added is None or added):
+                print("  ⛔ a REAL (non-dry-run) write of this would be REFUSED and rolled back.")
+                print("  " + "\n  ".join(added if added else _diagnostic_lines(rc_v, out, err)))
+                return 1
+        print("  --dry-run: nothing written.")
+        return 0
+    if args.already_locked:
+        if not lock_is_held():
+            print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
+            return 2
+    else:
+        try:
+            take_lock("record.py source %s" % verb, wait=args.wait)
+        except LockError as e:
+            print("  REFUSED — %s" % e)
+            return 2
+    try:
+        live = {"channels": load("channels"), "companies": _load_or_empty("companies"), "asks": _load_or_empty("asks")}
+        try:
+            live_cfg = _read_config_strict()
+            changed, lines, plan = build(live, live_cfg)
+        except _cc.Refused as e:
+            print("⛔ REFUSED — %s" % e.args[0])
+            return 2
+        except (OSError, ValueError) as e:
+            print("⛔ REFUSED — config.json cannot be read (%s); nothing written." % e)
+            return 2
+        if plan is not None and plan["noop"]:
+            print(head)
+            print("\n".join(lines))
+            print("  nothing to change.")
+            return 0
+        snaps = {s: snapshot(s) for s in changed if s in STORES}
+        cfg_before = None
+        if "config" in changed:
+            with open(_config_path(), "rb") as fh:
+                cfg_before = fh.read()
+        pre_problems = validate()[3]
+        for s in ("companies", "channels", "asks"):          # the firm row first: portfolio_of must resolve
+            if s in changed:
+                save_atomic(s, live[s])
+        if "config" in changed:
+            import _atomic
+            _atomic.write_json(_config_path(), live_cfg)
+        rc_v, out, err, post_problems = validate()
+        added = new_problems(pre_problems, post_problems)
+        verified = True
+        if "config" in changed:
+            import config_keys as _ck
+            try:
+                now_on, _problem = _ck.feeds_enabled(_read_config_strict())
+                verified = (now_on == (verb == "on"))
+            except (OSError, ValueError):
+                verified = False
+        if (rc_v != 0 and (added is None or added)) or not verified:
+            ok = all(restore(s, snaps[s]) for s in snaps)
+            if cfg_before is not None:
+                try:
+                    with open(_config_path(), "wb") as fh:
+                        fh.write(cfg_before)
+                except OSError:
+                    ok = False
+            print("⛔ the write left the stores invalid and was %s."
+                  % ("ROLLED BACK (byte-identical)" if ok else "NOT VERIFIABLY ROLLED BACK — restore from git"))
+            print("  " + "\n  ".join(added if added else _diagnostic_lines(rc_v, out, err)))
+            return 1
+    finally:
+        if not args.already_locked:
+            release_lock()
+    print(head)
+    print("\n".join(lines + extras(plan, live_cfg)))
     return 0
 
 
@@ -3163,6 +3556,19 @@ def main():
                          "created (one of validate_data.VERTICALS).")
     ap.add_argument("--seen-on", dest="seen_on", default=None,
                     help="board-sighting: the ISO date you saw the role (default: today).")
+    # jobsearch 0.76.0 (dev #769) channel-catalog flags (`--on` and `--dry-run` are the existing ones).
+    ap.add_argument("--kind", dest="cc_kind", default=None,
+                    choices=("portfolio", "curated", "swept-board", "alert-sender"),
+                    help="channel-catalog add: turn on every non-retired entry of one kind in one write.")
+    ap.add_argument("--attach", dest="cc_attach", default=None,
+                    help="channel-catalog add <entry>: tie an EXISTING channel you already hold to the entry "
+                         "(fills only its absent managed fields) instead of creating a second row for one board.")
+    ap.add_argument("--anyway", dest="src_anyway", action="store_true",
+                    help="source on <id>: turn on a source whose catalog entry the catalog retired (the row then counts "
+                         "as edited).")
+    ap.add_argument("--firm", dest="cc_firm", default=None,
+                    help="channel-catalog add <portfolio entry>: the companies id to use as the firm when the "
+                         "firm's name matches several companies you track.")
     args = ap.parse_args()
 
     # These three verbs each own exactly one store — --file is never the caller's to pick for
@@ -3188,6 +3594,10 @@ def main():
         args.file = "companies"          # dev #751: cmd_ats / cmd_warm_lookup name their own stores
     elif args.op == "board-sighting":
         args.file = "opportunities"      # dev #765: cmd_board_sighting names its own stores
+    elif args.op == "channel-catalog":
+        args.file = "channels"           # dev #769: cmd_channel_catalog names its own stores
+    elif args.op == "source":
+        args.file = "channels"           # dev #774: cmd_source names its own stores
 
     # §15.3 point 1 — `messages` is append-only; `answered`/`touched`/`received` are its ONLY
     # writers. Refused here, before any generic single-store machinery runs, so the refusal is
@@ -3213,6 +3623,10 @@ def main():
         return cmd_warm_lookup(args)
     if args.op == "board-sighting":
         return cmd_board_sighting(args)
+    if args.op == "channel-catalog":
+        return cmd_channel_catalog(args)
+    if args.op == "source":
+        return cmd_source(args)
 
     if args.reuse and not (args.op == "create" and args.file == "people"):
         print("⛔ REFUSED — --reuse applies only to `create <id> '<json>' --file people`.")

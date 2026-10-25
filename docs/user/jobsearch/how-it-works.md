@@ -107,7 +107,7 @@ Three additions widen where roles come from. None of them sends anything or appl
 
 ### Company feeds
 
-Many companies publish their openings through Greenhouse, Lever or Ashby. Each of those publishes a plain
+Many companies publish their openings through Greenhouse, Lever, Ashby or Workday. The first three publish a plain
 public list of a company's open roles for exactly this purpose. When a company you track uses one, the daily
 run reads that list with a script (no browser, no tokens, no mail) before the board pass, every day, under
 every posture.
@@ -115,8 +115,9 @@ every posture.
 **A slug** is the board's short name in its address: in `jobs.lever.co/acme-example` the slug is
 `acme-example`. It is never guessed. It is read, as text only, off a link you or the research step already
 attached to that company: its `career_url`, a role's `jd_url`, or a sighting's link. A sender domain in a
-receipt email never identifies an employer, so mail is not used. Workday and every company with no such link
-stay on the browser route. The result is `companies.ats` (see *Companies* in [Your data](your-data.md)).
+receipt email never identifies an employer, so mail is not used. A company with no such link
+stays on the browser route. (Workday is read differently, from a company's address of the form
+`<company>.wd5.myworkdayjobs.com/<site>`; see *Workday career sites* in *Your sources* below.) The result is `companies.ats` (see *Companies* in [Your data](your-data.md)).
 
 For each company with a slug, the run makes one read-only `GET` of the vendor's public list. It never posts
 anything and never submits an application. It keeps the postings whose title matches one of your
@@ -171,14 +172,105 @@ Record who you found as a people entry and `record.py involve`, or `record.py wa
 --none-found`. **Nothing here is ever sent.** The engine does not open LinkedIn for this, read it, or contact
 anyone; a draft is written for you to send, as every draft is.
 
+### Your sources
+
+Every job source the search uses is listed in one place, from your own files, and each one has an on/off
+switch. Print the list any time (it changes nothing):
+
+```
+python3 scripts/record.py source list
+```
+
+(`/jobsearch:sourcing` shows the same view.) For each source it gives the kind, whether it is **on**, whether
+it came from the plugin's shipped catalog or is yours, and whether it is covered. Anything it cannot know prints
+`NOT CHECKED`, never `0`. The kinds are:
+
+| kind | what it is | example |
+|---|---|---|
+| browser-read board | a board Claude reads in your signed-in browser | the Indeed sweep, the LinkedIn job search |
+| alert-email sender | the job-alert emails a board sends you, swept from your mail | LinkedIn, Dice and Indeed alerts |
+| company feeds | the one switch for every company's own job list (see *Company feeds* above) | all of them together |
+| curated board | a board whose terms forbid automated access; **you** open it | see *Curated boards and newsletters* |
+| portfolio board | an investment firm's job board; **you** open it | see *Portfolio boards* |
+
+**Turn one on or off.** `python3 scripts/record.py source on <id>` and `source off <id>`, where `<id>` is the
+name `source list` shows (for example `indeed`, `company-feeds`). Turning a source off keeps the row and what
+it was, so turning it on again puts it back exactly. It never deletes anything, and it changes nothing about the
+roles already found. A recruiter, a referral or one of your own company careers pages is not a source in this
+sense and is refused with the right command to use.
+
+**What is on for a new install.** When a profile is created: company feeds, the LinkedIn, Dice and Indeed alert
+emails, and the Indeed browser sweep are on. The LinkedIn job search, the curated boards and the portfolio
+boards are off until you turn them on. **An existing install is never changed**: the 0.76.0 upgrade turns
+nothing on and nothing off. It only recognises hand-made board rows that match a shipped one (see *What the
+0.76.0 upgrade writes* in [Your data](your-data.md)).
+
+**The Indeed browser sweep runs in your browser.** Because it is on for a new install, the first session tells
+you once, in plain words: Claude opens Indeed in your signed-in browser pane and reads the listings that match
+the titles in your profile. It never applies, messages or posts. Turn it off at any time with
+`python3 scripts/record.py source off indeed`; `source on indeed --dry-run` shows the search it would run.
+
+**Catalog updates.** A catalog update arrives with a plugin update and applies at the next session start to
+rows you have not edited. One you edited is left alone, and if you and the catalog both changed it you get a
+question (`channel-catalog take <id>` or `keep <id>`). A hand-made row that is *nearly* a shipped one gets one
+question too: answer with `channel-catalog add <entry> --attach <channel_id>` or `source keep-mine <channel_id>`.
+
+#### Workday career sites
+
+A company on Workday has no public job list. The plugin reads the site's own published list of job pages
+(its sitemap) and the standard job data the employer embeds in each page, only where the site's `robots.txt`
+allows it, and only pages it has not seen. It never calls Workday's internal data interface. To set one up,
+give the company's careers address with `record.py ats <company_id> --url <address>`. Because this is read
+from the shape Workday sites are observed to have, not from a documented interface, the coverage `--status`
+reports is deliberately modest:
+
+- `covered (sitemap window; completeness assumed)`: the site's list showed fewer than 100 jobs and was read. The
+  list is **assumed** to contain every open job; that is not proven. A run does not claim more.
+- `not covered: sitemap-capped`: the list is at its 100-job limit, so jobs may be missing. The browser review
+  covers the company.
+- `not covered: locale-mismatch`: the address you gave is in a different language from the site's job pages.
+  Give the address in the pages' own language.
+
+Other `not covered` codes (for example `robots-disallowed`, `blocked`) mean the same thing: this company is
+listed for your browser review instead, never read as "no jobs". A Workday job page carries no pay field, so a
+pay figure found in the description text is marked as read from the description. The one-time sandbox entry
+`*.myworkdayjobs.com` is added by the 0.76.0 upgrade; whether the command sandbox honours it is not yet
+confirmed, and until it does a sandboxed scheduled run may report these companies as not covered.
+
 ### Curated boards and newsletters
 
 Some boards forbid automated access in their terms (Wellfound, Y Combinator's Work at a Startup, Welcome to
-the Jungle). They are channels you add yourself with `access: manual-candidate`: **you open it**. The engine
-never visits them. If the board sends alert emails, put the sender in the channel's `alert_sender` and those
-emails are swept like any other. A niche newsletter is an `alert-email` channel the same way, one channel per
-newsletter so you can see which one produces roles. Add them only if you want them; the upgrade adds none.
-The two rows for a firm's portfolio board are in *Portfolio boards* below.
+the Jungle). They are channels with `access: manual-candidate`: **you open it**. The engine never visits them.
+
+**Turn on a catalog entry.** The plugin ships a short catalog of these boards, checked once centrally so you
+do not have to research each one. **None of these boards is on until you say so.** Turn on one entry, or every
+curated entry in one write:
+
+```bash
+python3 scripts/record.py channel-catalog add wellfound
+python3 scripts/record.py channel-catalog add --kind curated
+```
+
+The curated entries are `wellfound`, `welcome-to-the-jungle` and `yc-work-at-a-startup`. Add `--dry-run` to
+preview the rows first. `python3 scripts/record.py source list` shows every entry and whether it is on, and
+`/jobsearch:sourcing` suggests the entries that match what your profile already says (it only suggests, and
+writes nothing). A board you already hold by hand is never duplicated: the refusal prints the `--attach
+<channel_id>` form, which ties your existing row to the catalog so catalog updates reach it.
+
+**Turn one off.** `python3 scripts/record.py source off <channel_id>`. A turned-off channel is never touched by a
+catalog update, and `source on <channel_id>` restores it.
+
+**Updates.** A catalog update arrives with a plugin update and applies at the next session start. A board you
+have not edited is updated, and the session start prints a "channel catalog - N boards updated" block naming
+each change. A board you edited is left alone. If you and the catalog both changed it, you get an ask, and you
+settle it with `python3 scripts/record.py channel-catalog take <channel_id>` (use the catalog's values) or
+`keep <channel_id>` (keep yours). Rows you wrote by hand carry no catalog stamp and are never changed.
+
+**The manual path.** You can still add any board yourself as a channel with `access: manual-candidate`. If the
+board sends alert emails, put the sender in the channel's `alert_sender` and those emails are swept like any
+other. A niche newsletter is an `alert-email` channel the same way, one channel per newsletter so you can see
+which one produces roles. Add them only if you want them; the upgrade adds none. The two rows for a firm's
+portfolio board are in *Portfolio boards* below.
 
 ### Portfolio boards
 
@@ -187,10 +279,26 @@ roles across every company they back. Both of those boards run on a platform who
 crawling or scraping, by hand-built or automated means. So a portfolio board is a **manual-candidate**
 channel: **you open it**, and the plugin never reads it, polls it or sends a browser to it.
 
-**Add one as a channel.** Paste these two rows, one into `companies.jsonl` (the firm is an ordinary company)
-and one into `channels.jsonl`, and fill the placeholders. `portfolio_of` names the firm's company id and
-`board_hosts` lists the board's own host, which the plugin must never open. `alert_sender` is optional and
-only matters if the board sends alert emails.
+**Turn on a catalog entry.** The catalog lists two firms' boards: `vista-equity-partners` (Vista Equity
+Partners, `https://vistaequitypartners.getro.com/jobs`) and `francisco-partners` (Francisco Partners,
+`https://careers.franciscopartners.com/jobs`). **Neither is on until you say so.** Turning one on writes the
+firm's company row and the board's channel row, linked by `portfolio_of`, in one step:
+
+```bash
+python3 scripts/record.py channel-catalog add vista-equity-partners
+python3 scripts/record.py channel-catalog add --kind portfolio
+```
+
+`--dry-run` previews the rows. If you already track the firm under a different company id, pass `--firm
+<company_id>`; if you already hold the board by hand, use the `--attach <channel_id>` form the refusal prints.
+You open the board yourself, and the plugin never reads it. Turning one off, how updates arrive, and how
+`take` and `keep` settle a disagreement are described under *Curated boards and newsletters* above and work the
+same way here. The catalog stamp on each row is explained in [Your data](your-data.md).
+
+**Add one by hand.** For a firm that is not in the catalog, paste these two rows, one into `companies.jsonl`
+(the firm is an ordinary company) and one into `channels.jsonl`, and fill the placeholders. `portfolio_of`
+names the firm's company id and `board_hosts` lists the board's own host, which the plugin must never open.
+`alert_sender` is optional and only matters if the board sends alert emails.
 
 ```jsonl
 {"id": "<firm-id>", "name": "<Firm Name>", "vertical": "other", "status": "watching", "size_ownership": "investment firm", "research_log": []}

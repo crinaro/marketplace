@@ -265,6 +265,21 @@ def main():
         n_sys = sum(1 for a in open_asks if a.get("kind") == "system")
         print("\n  Your Move carries %d open ask(s) (%d system/tooling) — see the dashboard."
               % (len(open_asks), n_sys))
+    # dev #774 (owner decision D1, SC17): tell a new user ONCE about a source that is on for them by an owner carve-out
+    # (the Indeed browser sweep). `init_profile.py` wrote the notice as an ask `source-notice:<entry>`; it is printed here
+    # and RESOLVED in the same step, so the next session does not print it again.
+    _notices = [a for a in open_asks if str(a.get("id") or "").startswith("source-notice:")]
+    for _a in _notices:
+        print("\n  ⭐ NEW — %s" % (_a.get("title") or _a.get("id")))
+        for _line in str(_a.get("ask") or "").splitlines():
+            print("      %s" % _line)
+        _done = True
+        for _field, _value in (("resolved_on", datetime.date.today().isoformat()), ("resolution", "shown")):
+            _r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "record.py"), "set", _a["id"], _field, _value,
+                                 "--file", "asks"], capture_output=True, text=True)
+            _done = _done and _r.returncode == 0
+        if not _done:
+            print("      (could not mark this notice as shown, so it will print again next session)")
 
     # ---- 3b. open QUESTIONS from the JD fit analysis ---------------------------
     # ⭐⭐ ADDED 2026-08-03. The candidate: "does the coordinator know to suggest a draft a nudge to

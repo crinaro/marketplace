@@ -982,7 +982,8 @@ def check_trigger(row, label, problems, app_refs, sent_ids):
 LISTED_PAY_STATES = ("employer-stated", "board-estimate", "none-shown")
 LISTED_PAY_SOURCES = ("listing-text", "ats-api", "json-ld", "board-widget", "candidate")
 PAY_INTERVALS = ("year", "month", "day", "hour")          # R2: the four units postings in scope use
-LISTED_PAY_KEYS = ("state", "ranges", "source", "captured_on")
+LISTED_PAY_KEYS = ("state", "ranges", "source", "captured_on", "inferred_from")
+INFERRED_FROM = ("description",)             # dev #775: how a figure was READ, not what the listing showed
 PAY_RANGE_KEYS = ("min", "max", "currency", "interval", "label")
 CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
 POSTED_SOURCES = ("ats-posted", "board-relative", "profile-document-date", "unknown")
@@ -1060,6 +1061,16 @@ def check_listed_pay(lp, label, problems):
             and state != "employer-stated":
         problems.append("%s: listed_pay.source %r requires state 'employer-stated' -- got %r"
                         % (label, source, state))
+    if "inferred_from" in lp:
+        # dev #775 (design-workday-feed.md 6.4): a marker, not a new state. Legal only on a figure the
+        # reader took from listing text (`employer-stated` + `listing-text`): a Workday JobPosting carries
+        # no `baseSalary`, so the figure is read out of the description and says so.
+        if lp["inferred_from"] not in INFERRED_FROM:
+            problems.append("%s: listed_pay.inferred_from %r not in {%s}"
+                            % (label, lp["inferred_from"], ", ".join(INFERRED_FROM)))
+        elif state != "employer-stated" or source != "listing-text":
+            problems.append("%s: listed_pay.inferred_from is legal only with state 'employer-stated' "
+                            "and source 'listing-text' -- got %r and %r" % (label, state, source))
     if not _real_date(lp.get("captured_on")):
         problems.append("%s: listed_pay.captured_on not an ISO date -- %r"
                         % (label, lp.get("captured_on")))
@@ -1437,6 +1448,75 @@ def check_portfolio_links(companies, channels):
                 problems.append("%s: backed_by names the company itself" % label)
         if len(set(bb)) != len(bb):
             problems.append("%s: backed_by repeats an id -- %r" % (label, bb))
+    return problems
+
+
+def check_channel_catalog_fields(channels):
+    """dev #769 (design-channel-catalog.md section 4, jobsearch 0.76.0) -- the five optional channel fields the
+    channel catalog adds, and the rules that keep them readable. Every pre-0.76.0 row is valid (all absent).
+
+      C1  `board_url`   absent, or an `https` address with a host, no user-info and no port: the address the
+                        candidate opens. Legal only where `access` is `manual-candidate` (the engine never opens
+                        it), and it needs `board_hosts` covering its host, so a board the candidate is sent to
+                        is a board the engine is forbidden to open
+      C2  the stamp     `channel_catalog_entry` / `_sha` / `_on` / `_rev`: all four present or all four absent,
+                        each well formed (`channel_catalog.stamp_problems` is the one definition)
+
+      C3  `query_template` (dev #774) absent, or a non-empty string on a `job-board` / `aggregator` channel whose
+                        placeholders are all in the closed vocabulary {titles} {geo} {seniority}
+      C4  `prior_relationship_status` (dev #774, R2) absent, or exactly {"had": false} / {"had": true, "value":
+                        <string|null>}: what `record.py source off` found, so `source on` can put it back. The strict
+                        reader is `channel_catalog.read_prior`; the free-text `log` is never parsed for it
+
+    Not checked on purpose: that the entry id names an entry in the CURRENT catalog. An entry the catalog no
+    longer lists is a reconcile state (`orphaned`), not a data error, and this validator stays a function of the
+    profile alone."""
+    import board_hosts as _bh
+    import channel_catalog as _cc
+    from urllib.parse import urlsplit
+    problems = []
+    for ch in channels:
+        label = "channels[%s]" % ch.get("id", "?")
+        for why in _cc.stamp_problems(ch):
+            problems.append("%s: %s" % (label, why))
+        for why in _cc.prior_problems(ch):
+            problems.append("%s: %s" % (label, why))
+        if "query_template" in ch:
+            qt = ch["query_template"]
+            if ch.get("type") not in ("job-board", "aggregator"):
+                problems.append("%s: query_template is legal only on a job-board or aggregator channel (this one is "
+                                "%r)" % (label, ch.get("type")))
+            elif not (isinstance(qt, str) and qt.strip()):
+                problems.append("%s: query_template must be a non-empty string -- %r" % (label, qt))
+            else:
+                import re as _re
+                bad = sorted({p for p in _re.findall(r"\{([^{}]*)\}", qt) if p not in ("titles", "geo", "seniority")})
+                if bad:
+                    problems.append("%s: query_template uses a placeholder outside {titles} {geo} {seniority}: %s"
+                                    % (label, ", ".join(bad)))
+        if "board_url" not in ch:
+            continue
+        url = ch["board_url"]
+        host = None
+        try:
+            parts = urlsplit(url) if isinstance(url, str) else None
+            if parts is not None and parts.scheme == "https" and parts.hostname:
+                if not (parts.username or parts.password or parts.port):
+                    host = parts.hostname.lower()
+        except ValueError:
+            host = None
+        if host is None:
+            problems.append("%s: board_url must be an https address with a host, no user-info and no port "
+                            "-- %r" % (label, url))
+            continue
+        if ch.get("access") != _bh.MANUAL_ACCESS:
+            problems.append("%s: board_url is legal only where access is 'manual-candidate' (this one is %r): "
+                            "it is the address the candidate opens, on a site the engine must never open"
+                            % (label, ch.get("access")))
+        hosts = ch.get("board_hosts")
+        if not (isinstance(hosts, list) and any(isinstance(h, str) and _bh.host_matches(host, h) for h in hosts)):
+            problems.append("%s: board_url's host %r is not covered by board_hosts %r: the engine would be "
+                            "free to open the address the candidate is sent to" % (label, host, hosts))
     return problems
 
 
@@ -2649,6 +2729,7 @@ def _main():
 
     problems += check_feed_links(companies, channels)
     problems += check_portfolio_links(companies, channels)     # dev #765
+    problems += check_channel_catalog_fields(channels)         # dev #769
 
     # ---- messages[].channel_id — the FK half of public #63 ----------------------------------
     # Since ADR-031 B1/B3 a message joins by `person_id` (required to resolve when set) and

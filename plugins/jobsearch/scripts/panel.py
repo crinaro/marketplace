@@ -36,7 +36,10 @@ THE CONTRACT (both renderers and `check_dashboard_coverage.py`'s ELSEWHERE test 
     runs_effect   {verdict, detail}           did the background runs do anything
     dashboard     {state, as_of}              published dashboard vs the repo           (full only)
     gates[]       {name, ok}                  the ORIENT gates                           (full only)
-    elsewhere     {in_flight[], channels_due[], week[], preps_owed[], asks[], kb_index[]}   (full only)
+    elsewhere     {in_flight[], channels_due[], week[], preps_owed[], asks[], kb_index[], sources[]}   (full only)
+                  `sources[]` {id, title, kind, on, state} is `sources.report`'s rows (dev #774): the ONE composer the
+                  text view and the mod's Sources block share. A button in the mod runs `record.py source on|off <id>`;
+                  THIS script writes nothing.
     tasks         {daily, weekly}             the scheduled-task ids the Run buttons start
     band          one line for the status band
 
@@ -63,7 +66,7 @@ TASKS = {"daily": "search-daily", "weekly": "search-strategy-weekly"}
 
 FAST_KEYS = ("needs_you", "rescreen_flags", "inbox", "lock", "runs", "runs_effect", "tasks")
 FULL_ONLY_KEYS = ("dashboard", "gates", "elsewhere")
-ELSEWHERE_KEYS = ("in_flight", "channels_due", "week", "preps_owed", "asks", "kb_index")
+ELSEWHERE_KEYS = ("in_flight", "channels_due", "week", "preps_owed", "asks", "kb_index", "sources")
 
 # The text renderer's label for every top-level key. test_panel.py asserts that EVERY key of
 # `--json --full` has its label in `--text`, so a section added to one renderer and not the other
@@ -409,6 +412,14 @@ def sec_elsewhere(root, today):
     for r in knowledge.report(root):
         out["kb_index"].append({"id": r.get("file"), "path": r.get("file"), "kind": r.get("kind"),
                                 "state": r.get("state")})
+    # dev #774 -- every job source, from the one composer (`sources.report`). A failure is said, never an empty list.
+    try:
+        import sources as _sources
+        rep = _sources.report(root, today)
+        out["sources"] = [{"id": r["id"], "title": r["label"], "kind": r["kind"], "on": bool(r["on"]), "state": r["state"]}
+                          for r in rep["sources"]]
+    except Exception as e:                                       # noqa: BLE001 - loud, not fatal
+        out["sources"] = {"error": "%s: %s" % (type(e).__name__, str(e)[:160])}
     return out
 
 
@@ -558,8 +569,18 @@ def render_text(obj):
             add("  " + _na(el))
         else:
             titles = {"in_flight": "In flight", "week": "This week", "channels_due": "Channels due",
-                      "preps_owed": "Preps owed", "asks": "Open asks", "kb_index": "Knowledge index"}
+                      "preps_owed": "Preps owed", "asks": "Open asks", "kb_index": "Knowledge index",
+                      "sources": "Sources"}
             for k in ELSEWHERE_KEYS:
+                if _na(el[k]):
+                    add("  %s: %s" % (titles[k], _na(el[k])))
+                    continue
+                if k == "sources":
+                    add("  %s (%d):" % (titles[k], len(el[k])))
+                    for r in el[k][:12]:
+                        add("    - %s [%s] %s" % (r.get("title") or r.get("id"), r.get("kind"),
+                                                   "on" if r.get("on") else r.get("state")))
+                    continue
                 add("  %s (%d):" % (titles[k], len(el[k])))
                 rows = [r for r in el[k] if not (k == "channels_due" and r.get("state") != "due")]
                 for r in rows[:12]:

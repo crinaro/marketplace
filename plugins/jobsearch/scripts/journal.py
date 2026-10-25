@@ -236,8 +236,24 @@ FEED_FAILURES = {
     "egress-blocked": "surface-unreachable",  # a sandbox/proxy refused the host (B1)
     "tls-untrusted": "surface-unreachable",   # certificate verification failed (B1)
     "budget-exhausted": "timeout",          # the poller's own deadline expired before this board (B3)
+    # dev #775 (jobsearch 0.76.0, design-workday-feed.md 5.2 + ruling R2): the Workday vendor's board codes. All map to the
+    # existing `upstream-error` reason (REASONS is unchanged) and all are BOARD codes (FEED_HOST_CODES is unchanged), so a
+    # company they name is listed DUE for the browser until one browser review stamps it.
+    "robots-unavailable": "upstream-error",     # robots.txt is not a 200 text/plain that parses (422 = no such tenant)
+    "robots-disallowed": "upstream-error",      # /<site>/, the sitemap path or a job path is disallowed by robots.txt
+    "sitemap-not-advertised": "upstream-error",  # not exactly one `Sitemap:` line naming this site's sitemap
+    "blocked": "upstream-error",                # a block page (cf-mitigated: challenge, HTML where XML/text was due) or a 403
+    "sitemap-malformed": "upstream-error",      # a sitemap that is not the strict 0.9 shape, or carries DOCTYPE/ENTITY
+    "sitemap-empty": "upstream-error",          # a well-formed sitemap with zero <loc>
+    "sitemap-capped": "upstream-error",         # the window is at the cap: completeness is not claimed (R3)
+    "sitemap-window-gap": "upstream-error",     # the window does not overlap the last run's: roles may have passed through
+    "no-jsonld": "upstream-error",              # a new job page with no JobPosting JSON-LD (or one that redirected away)
+    "locale-mismatch": "upstream-error",        # the candidate's URL locale differs from the pages' inLanguage (R2)
 }
-FEED_BOARD_CODES = ("not-found", "auth-required", "http-error", "redirected", "unparseable")
+FEED_BOARD_CODES = ("not-found", "auth-required", "http-error", "redirected", "unparseable",
+                    "robots-unavailable", "robots-disallowed", "sitemap-not-advertised", "blocked",
+                    "sitemap-malformed", "sitemap-empty", "sitemap-capped", "sitemap-window-gap",
+                    "no-jsonld", "locale-mismatch")
 FEED_HOST_CODES = tuple(c for c in FEED_FAILURES if c not in FEED_BOARD_CODES)
 FEED_COMPANY_GAP_SCOPE = "jobsearch:feed:%s"
 FEED_HOST_GAP_SCOPE = "jobsearch:feeds:host:%s"
@@ -779,7 +795,7 @@ def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_g
 def record_feeds(root, run_id, polled, covered, unchanged, not_covered, failures,
                  companies_not_covered, postings, unlisted, selected, captured, known, carried,
                  role_gaps, sightings_added=0, discovered=0, ambiguous=0, quarantined=0,
-                 hosts_down=None, at=None):
+                 hosts_down=None, at=None, off=False):
     """dev #751 -- the ONE writer of a `feeds` event: one per `feed_poll.py --run`. Validated at
     write, loud: a row that claims a number it cannot account for never reaches the store.
 
@@ -795,7 +811,11 @@ def record_feeds(root, run_id, polled, covered, unchanged, not_covered, failures
     `{company_id: code}` (a dict, not the bare list the design first sketched: `channels_due.py` has
     to tell a BOARD failure from a HOST failure per company, B1); `hosts_down` is `{host: code}`, the
     hosts the poller stopped sending requests to for this run. ⚠️ ROLLBACK RISK, as for `roles`: an
-    engine older than 0.72.0 refuses a journal holding a `feeds` row."""
+    engine older than 0.72.0 refuses a journal holding a `feeds` row.
+
+    `off=True` (dev #774): the run was asked to poll and `sourcing.feeds.enabled` is false, so NOTHING was polled. The
+    row carries `off: true` and every count is 0 -- a switched-off feed is a row that says so, never an absent one,
+    so `channels_due.py` cannot read the silence as coverage."""
     at = at or now_iso()
     if not run_id:
         raise JournalError("record_feeds requires run_id")
@@ -859,6 +879,10 @@ def record_feeds(root, run_id, polled, covered, unchanged, not_covered, failures
            "carried": carried, "role_gaps": role_gaps, "quarantined": quarantined,
            "sightings_added": sightings_added, "discovered": discovered, "ambiguous": ambiguous,
            "at": at}
+    if off:
+        if any(counts.values()) or failures or companies_not_covered or hosts_down:
+            raise JournalError("record_feeds: off=True but the row claims work was done -- a switched-off feed polls nothing")
+        rec["off"] = True
     return append(root, rec)
 
 
@@ -926,6 +950,11 @@ def feed_company_state(recs, company):
     ev = events[-1]
     poll = str(ev.get("at") or "")[:10]
     out["poll"] = poll or None
+    if ev.get("off"):
+        # dev #774: a switched-off run lists no company as failed, and "not listed as failed" must NOT read as covered
+        out.update(state="not-checked", reason="company feeds are turned off (sourcing.feeds.enabled): the last "
+                                                "feeds event, %s, polled nothing" % (poll or "undated"))
+        return out
     cid = company.get("id")
     failed = ev.get("companies_not_covered") or {}
     if cid in failed:

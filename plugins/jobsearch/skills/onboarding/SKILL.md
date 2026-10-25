@@ -39,6 +39,17 @@ time; it is one-time.
 
 Missing files → `--scaffold`. **Never hand-create these**; the script guarantees they validate.
 
+**Tell the candidate which job sources the scaffold turned on, in plain words (0.76.0).** The scaffold output has a
+`default sources` block (company feeds and the alert-email senders the owner chose are on; the LinkedIn job search
+and the curated and portfolio boards are off) and, when a browser sweep is on by default, a `NOTICE` line. **Relay
+every `NOTICE` line to the candidate verbatim, once, now:** it says which site is read in their signed-in browser
+pane, that it takes no action there, and the exact command that stops it (`record.py source off <id>`). Do not
+paraphrase the command. Then say the one sentence that covers every source: *"`/jobsearch:sourcing` shows each source
+and turns any of them on or off."* **Then mark each notice shown**, so the coordinator does not announce it a second
+time (it prints a notice once and marks it itself; this step is the first telling): for each `source-notice:<entry>`
+ask the scaffold wrote, run `~/.claude/jobsearch/run record.py set source-notice:<entry> resolved_on <today> --file
+asks` and `... resolution shown --file asks`.
+
 ## 1. Read the resume — and copy it, do not summarize it
 
 Ask for it in any form (paste, file, PDF). Then:

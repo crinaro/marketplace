@@ -452,6 +452,13 @@ record above, and still report the SURFACE line as UNREACHABLE.
 
 **3. JOB SEARCH — run BOTH every time, not just remote:**
 
+   **⭐ A JOB SEARCH THE USER TURNED OFF IS NOT RUN (dev #774).** If your worklist's `JOBSEARCH` line reads
+   `JOBSEARCH off source=linkedin-jobsearch`, run NO job-search query this pass: open no search page, write no
+   `ROLES` block, and say in your reply `JOB SEARCH: off (the candidate turned it off with record.py source)`. That is
+   a choice, never a gap or a failure: do not file `--gap`, do not report the surface unreachable, and do not suggest
+   turning it back on (the candidate does that with `record.py source on linkedin-jobs`). Everything else in this
+   pass (the four lists, the inbox scan, the notifications) runs as usual.
+
    **⭐ THE WINDOW, THE TITLES AND THE GEOGRAPHIES COME FROM THE `JOBSEARCH` LINE OF YOUR WORKLIST,
    never from this file** (dev #489 / public #102). It reads `JOBSEARCH window=<daily|wide>
    f_TPR=<r86400|r604800> titles=<configured|all> geo=<remote[,local]>`, built by a script. On an
@@ -613,6 +620,7 @@ results as you always have.
 --- WORKLIST v1 run=<run-id> ---                      (what you are given; you never write one)
 SURFACE <token> url=<url> back-to=<YYYY-MM-DD|all|none> [positive-only]
 JOBSEARCH window=<daily|wide> f_TPR=<r86400|r604800> titles=<configured|all> geo=<remote[,local]> [wide-due-since=<YYYY-MM-DD|never>]
+JOBSEARCH off source=linkedin-jobsearch                              (turned off: run NO job search, record nothing as covered)
 WATCH contact:<id> since=<YYYY-MM-DD|?> medium=<linkedin-*|?> name="<display name>" [match=<profile url>]
 THREAD contact:<id> url=<messaging thread url>
 --- END WORKLIST ---

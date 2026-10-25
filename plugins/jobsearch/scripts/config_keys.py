@@ -522,6 +522,36 @@ _METADATA[GEOGRAPHY_KEEP_OUTSIDE_RADIUS] = (
     "affirmative destination. False (the default) removes it as outside-radius; True keeps it "
     "for the relocation floor (dev #729)")
 
+# ── company feeds as one switch (dev #774; jobsearch 0.76.0; design-source-catalog.md §4.1) ────────────
+# `sourcing.feeds.enabled` -- the company-feed poller (feed_poll.py --run) as a whole. ABSENT MEANS TRUE: that is
+# 0.72.0's behaviour, so an existing profile (and a 0.75.0 engine sharing it) keeps polling until someone says
+# otherwise, and no migration seeds it. A NEW profile gets it written explicitly by init_profile.py. It is written
+# only by `record.py source on|off company-feeds`. `false` skips every poll and records a `feeds` event with
+# `off: true`; it does NOT touch any company's `ats` (a per-company decline discards the slug, this does not).
+SOURCING_FEEDS_ENABLED = "sourcing.feeds.enabled"
+SOURCING_FEEDS_ENABLED_DEFAULT = True
+
+READER_KEYS = READER_KEYS | frozenset({SOURCING_FEEDS_ENABLED})
+
+_METADATA[SOURCING_FEEDS_ENABLED] = (
+    SOURCING_FEEDS_ENABLED_DEFAULT, "bool", ("True", "False"),
+    "whether the company job-board feeds are polled at all (feed_poll.py). Turn it with `record.py source off "
+    "company-feeds`; absent means polled, as in 0.72.0 (dev #774)")
+
+
+def feeds_enabled(cfg):
+    """`(enabled, problem)` for `sourcing.feeds.enabled` of a loaded config. Absent is True (the 0.72.0 behaviour).
+    A value that is neither true nor false is NOT read as either: it is True with a `problem` line the caller
+    prints, because a switch that cannot be read must say so and must not silently turn a feed off."""
+    v = _get_dotted(cfg, SOURCING_FEEDS_ENABLED)
+    if v is None:
+        return SOURCING_FEEDS_ENABLED_DEFAULT, None
+    if isinstance(v, bool):
+        return v, None
+    return True, ("%s is %r, not true or false: company feeds are treated as ON until it is fixed "
+                  "(record.py source on|off company-feeds writes it)" % (SOURCING_FEEDS_ENABLED, v))
+
+
 # ── the warm path (dev #751; jobsearch 0.72.0; design-sourcing-feeds.md §4.1) ─────────────────────
 # Days a company stays `looked-none` after the candidate recorded "I looked for a person here and found
 # nobody" (`record.py warm-lookup`): inside the window the role shows "looked <date>, none found"; after

@@ -6195,12 +6195,21 @@ ATS_FEEDS_PRE_COPY = "pre-0.72.0"
 ATS_FEED_HOSTS = ("boards-api.greenhouse.io", "api.lever.co", "api.eu.lever.co", "api.ashbyhq.com")
 
 
-def _ats_feeds_settings_step(profile, apply_it):
+def _ats_feeds_settings_step(profile, apply_it, hosts=None, label="0.72.0", pre_copy=None):
     """`(ok, line)` for the allow-list half. `ok` is False ONLY when it could not know or could not
-    write (PENDING); an already-complete list is ok with an empty line."""
+    write (PENDING); an already-complete list is ok with an empty line.
+
+    `hosts`, `label` and `pre_copy` default to the 0.72.0 values (`ATS_FEED_HOSTS`, "0.72.0",
+    `ATS_FEEDS_PRE_COPY`), so the 0.72.0 path is byte for byte what it was; dev #775 passes the Workday family and
+    "0.76.0" to reuse every rule here (the timestamped copy first, only the profile project's file, neighbours
+    untouched, casefold de-duplication, pending with nothing written on a file or key it cannot read, verified
+    from disk) instead of writing a second step."""
     import datetime
+    hosts = ATS_FEED_HOSTS if hosts is None else hosts
+    pre_copy = ATS_FEEDS_PRE_COPY if pre_copy is None else pre_copy
+    count_word = "the host" if len(hosts) == 1 else "%s hosts" % ({4: "four"}.get(len(hosts)) or len(hosts))
     path = os.path.join(profile, ".claude", "settings.json")
-    pending = "  ⏳ 0.72.0 PENDING -- %s. Nothing was written to .claude/settings.json."
+    pending = "  ⏳ " + label + " PENDING -- %s. Nothing was written to .claude/settings.json."
     data, existed = {}, os.path.exists(path)
     if existed:
         try:
@@ -6219,7 +6228,7 @@ def _ats_feeds_settings_step(profile, apply_it):
         return False, pending % ("sandbox.network.allowedDomains is present in a shape this does not "
                                  "understand (expected a list of host strings)")
     have = {x.strip().casefold() for x in allowed}
-    missing = [h for h in ATS_FEED_HOSTS if h.casefold() not in have]
+    missing = [h for h in hosts if h.casefold() not in have]
     if not missing:
         return True, ""
     if not apply_it:
@@ -6228,7 +6237,7 @@ def _ats_feeds_settings_step(profile, apply_it):
     copy_rel = None
     if existed:
         copy_rel = os.path.join(".claude", "settings.json.%s.%s" % (
-            ATS_FEEDS_PRE_COPY, datetime.datetime.now().strftime("%Y%m%dT%H%M%S")))
+            pre_copy, datetime.datetime.now().strftime("%Y%m%dT%H%M%S")))
         try:
             shutil.copy2(path, os.path.join(profile, copy_rel))
         except (OSError, shutil.Error) as exc:
@@ -6255,14 +6264,14 @@ def _ats_feeds_settings_step(profile, apply_it):
             exc, "; the original is restored from " + copy_rel if copy_rel else ""))
     got = after.get("sandbox", {}).get("network", {}).get("allowedDomains", [])
     got_cf = {x.strip().casefold() for x in got if isinstance(x, str)}
-    if after != new or not all(h.casefold() in got_cf for h in ATS_FEED_HOSTS):
+    if after != new or not all(h.casefold() in got_cf for h in hosts):
         if copy_rel:
             try:
                 shutil.copy2(os.path.join(profile, copy_rel), path)
             except (OSError, shutil.Error):
                 pass
-        return False, pending % "the re-read did not show exactly the four hosts added; original restored"
-    return True, ("  ✅ .claude/settings.json (0.72.0) -- allowed the %d company-feed host(s) %s in "
+        return False, pending % ("the re-read did not show exactly %s added; original restored" % count_word)
+    return True, ("  ✅ .claude/settings.json (" + label + ") -- allowed the %d company-feed host(s) %s in "
                   "sandbox.network.allowedDomains%s (nothing else in the file was changed)"
                   % (len(missing), ", ".join(missing),
                      (" (the original is kept at %s)" % copy_rel) if copy_rel else ""))
@@ -6365,6 +6374,233 @@ def m_0_72_0_ats_feeds(profile, apply_it):
     if line:
         lines.append(line)
     return (done and ok), "\n".join(lines)
+
+
+# ---- 0.76.0 (dev #775; design-workday-feed.md section 7.3, ruling R1): allow the Workday host family ---------------
+#
+# KEYED "0.76.0", a SECOND entry beside `m_0_76_0_source_adoption` (the registry supports entries that share a version:
+# `main()` runs every entry whose version is due, and `pending_for` returns each version once). It runs BEFORE the
+# source adoption, which keeps its "runs LAST" note: this one touches only <profile>/.claude/settings.json.
+#
+# WHAT IT DOES. The Workday feed (`feed_poll.py`, vendor `workday`) makes outbound HTTPS GETs to
+# `<tenant>.wd<N>.myworkdayjobs.com`: a host per tenant, so no list of exact hosts can be written. A sandboxed Bash command
+# reaches a host outside `sandbox.network.allowedDomains` only by prompting, and a scheduled run must never stop for a
+# prompt, so this adds the ONE family entry `*.myworkdayjobs.com` to the PROFILE PROJECT's `.claude/settings.json`,
+# by the very step `m_0_72_0_ats_feeds` uses for its four exact hosts (`_ats_feeds_settings_step`): a timestamped copy
+# first (`settings.json.pre-0.76.0.<timestamp>`), every other key and entry untouched, entries compared
+# case-insensitively and not repeated, the file or key created only if absent, PENDING with nothing written on a file
+# that exists but cannot be parsed or holds the key in a shape this does not understand, and the result RE-READ from
+# disk. It NEVER writes ~/.claude/settings.json. `ATS_FEED_HOSTS` and `m_0_72_0_ats_feeds` are history and are NOT edited.
+#
+# ⚠️ WHAT THE ENTRY WIDENS (finding F-e, DOCUMENTED): `allowedDomains` is HOST-level, so the entry lets any sandboxed
+# command in the profile project reach any path on any Workday tenant without a prompt, `/wday/cxs/` included. The
+# `/wday/cxs/` ban (ADR-037's condition 5) is held by `feed_poll.py` and its test, not by the sandbox.
+# ⚠️ UNVERIFIED (ruling R1): whether the sandbox honours `*.myworkdayjobs.com` for a TWO-level host
+# (`<tenant>.wd<N>.myworkdayjobs.com`). The vendor's settings reference says wildcards match subdomains and is silent on
+# two levels; no sandboxed session was run by the build. Named for the owner's first sandboxed session.
+#
+# IDEMPOTENT: a second run finds the entry present and writes nothing. ROLLBACK RISK: none beyond the setting itself;
+# restoring settings.json.pre-0.76.0.<timestamp> undoes it for a file not edited since.
+WORKDAY_FEED_HOSTS = ("*.myworkdayjobs.com",)
+WORKDAY_HOSTS_PRE_COPY = "pre-0.76.0"
+
+
+def m_0_76_0_workday_hosts(profile, apply_it):
+    """0.76.0 -- allow the Workday host family for the sandbox (see the block above). Returns (done, message)."""
+    return _ats_feeds_settings_step(profile, apply_it, hosts=WORKDAY_FEED_HOSTS, label="0.76.0",
+                                    pre_copy=WORKDAY_HOSTS_PRE_COPY)
+
+
+# ---- 0.76.0 (dev #774; design-source-catalog.md section 5, with review B3 and B4): adopt the hand-made rows the plugin
+# itself once told users to paste -----------------------------------------------------------------------------------
+#
+# WHY A MIGRATION NOW. Stamping an existing row changes what it MEANS: it starts receiving catalog updates. That is the
+# shape CLAUDE.md says ships as a version, not as an instruction, and it is why the boards-only build (which stamped
+# nothing on its own) needed none. KEYED "0.76.0": 0.75.0 is the newest PUBLISHED release (a profile that installed it is
+# stamped exactly "0.75.0", and strict `<` would never fire a migration keyed to it). It runs LAST.
+#
+# WHAT IT DOES, in the order it does it:
+#   1. READS STRICTLY. `channels.jsonl`, `companies.jsonl` and `asks.jsonl` are read with `_uid_text_read`: ONE line that
+#      does not parse is PENDING (nothing written), because rewriting a store this could not fully read would drop that
+#      line. The catalog is read with `channel_catalog.load_catalog`; one that cannot be read is PENDING too. An absent
+#      store reads as no rows (an honest zero, after a successful strict read).
+#   2. PRESERVES FIRST. Before the first write `channels.jsonl` is copied byte for byte to `channels.jsonl.pre-0.76.0`,
+#      never over a copy already there (that is the true original of an earlier partial run).
+#   3. MATCHES (`channel_catalog.adoption_plan`). Only UNSTAMPED rows of type job-board / aggregator / alert-email are
+#      considered, and only against `curated` / `portfolio` entries. EXACT = the row's id equals the entry's channel_id
+#      and its match projection equals the projection EMBEDDED in one of the entry's `shipped_templates` (B3: the
+#      installed copy has no git history, so it never looks at git; `check_channel_catalog.py` G11 recomputes the
+#      embedded value from the tagged text at release). An exact row is STAMPED with the template's sha and
+#      `ADOPTED_REV`; no other field is touched, and a retired row stays retired. A NEAR row (same id, or overlapping
+#      board_hosts, with a projection no template carries) gets ONE ask `source-adopt:<channel_id>` and is not written.
+#      Anything else is untouched and unasked. Swept boards and alert senders never had a template, so a hand row for
+#      Indeed, Dice or the LinkedIn job search is never adopted and never asked: it works without a stamp.
+#   4. VERIFIES FROM DISK. Every stamped row passes the stamp and field validators and still equals the template it was
+#      stamped against; every other row is byte-identical; every ask exists exactly once. ANY SHORTFALL restores the
+#      stores and returns PENDING (B4).
+#   5. B4 -- WHAT A ROLLBACK PUTS BACK. Only the bytes THIS RUN read just before its own write (an in-memory snapshot),
+#      never `channels.jsonl.pre-0.76.0`: that copy is the original of the FIRST run, so restoring it after a user edit
+#      between two shortfalls would erase the edit. (A shortfall, an edit, a shortfall again leaves the edit.)
+#   6. NEVER TURNS A SOURCE ON OR OFF. No row changes `relationship_status`, no row is created, and
+#      `sourcing.feeds.enabled` is not written (absent keeps 0.72.0's behaviour).
+#
+# IDEMPOTENT: a stamped row is no longer unstamped and an existing ask (open or resolved) is never rewritten, so a second
+# run finds nothing to do. ROLLBACK RISK: an engine older than 0.76.0 does not know the stamp on a row it adopted (the
+# stamp fields are declared since 0.75.x's data model, so the older validator accepts them); restoring
+# channels.jsonl.pre-0.76.0 undoes the adoption only for rows not edited since.
+ADOPTION_PRE_COPY = "pre-0.76.0"
+_adoption_fault = None            # TEST SEAM (in the family of `_inject_fault`): "shortfall" forces the verify step to fail
+
+
+def _adoption_replace_lines(text, replacements):
+    """`text` (a JSONL file's text) with the non-blank line at each index of `replacements` ({n: new line}) replaced and
+    every other byte untouched. The index counts non-blank lines, as `_uid_text_read` does."""
+    parts, n = text.split("\n"), 0              # NOT splitlines(): a raw U+2028 inside a JSON string is not a line break
+    for i, line in enumerate(parts):
+        if line.strip():
+            if n in replacements:
+                parts[i] = replacements[n]
+            n += 1
+    return "\n".join(parts)
+
+
+def m_0_76_0_source_adoption(profile, apply_it):
+    """0.76.0 -- stamp the hand-made rows that exactly match a template the plugin once shipped, and ask about the near
+    matches (see the block above). Returns (done, message); PENDING (False) whenever it cannot know or cannot verify."""
+    sys.path.insert(0, HERE)
+    import datetime
+    import channel_catalog as cc
+    import _atomic
+    import validate_data as _vd
+    pending = "  ⏳ 0.76.0 PENDING -- %s. Nothing was written."
+    channels, ch_raws, err = _uid_text_read(profile, "channels")
+    companies, _craws, err2 = _uid_text_read(profile, "companies")
+    asks, _araws, err3 = _uid_text_read(profile, "asks")
+    err = err or err2 or err3
+    if err:
+        return False, pending % ("%s. Fix it and this runs again next session: rewriting a store this could not fully read "
+                                 "would drop that line" % err)
+    try:
+        catalog = cc.load_catalog()
+    except cc.CatalogError as e:
+        return False, pending % ("the source catalog cannot be read (%s); it is tried again next session" % e)
+    plan = cc.adoption_plan(channels, catalog)
+    exact = [p for p in plan if p["status"] == "exact"]
+    exact_ids = {p["channel_id"] for p in exact}
+    near, seen_near = [], set()
+    for p in plan:                                  # ONE question per row: a row near two entries is asked about the first
+        if p["status"] == "near" and p["channel_id"] not in exact_ids and p["channel_id"] not in seen_near:
+            seen_near.add(p["channel_id"])
+            near.append(p)
+    entries = cc.by_id(catalog)
+    ask_ids = {a.get("id") for a in asks}
+    new_asks = [p for p in near if cc.ADOPT_ASK_PREFIX + p["channel_id"] not in ask_ids]
+    if not exact and not new_asks:
+        return True, "  ✅ sources (0.76.0) -- adopted 0, asked 0 (no hand-made row exactly matches a shipped template; %d catalog question%s already on file)" % (
+            len(near), "" if len(near) == 1 else "s")
+    if not apply_it:
+        return True, ("  would stamp %d hand-made row%s that exactly match%s a shipped template (%s) and ask about %d near match%s"
+                      % (len(exact), "" if len(exact) == 1 else "s", "es" if len(exact) == 1 else "",
+                         ", ".join(p["channel_id"] for p in exact) or "none", len(new_asks), "" if len(new_asks) == 1 else "es"))
+    data_dir = os.path.join(profile, "data")
+    chan_path = os.path.join(data_dir, "channels.jsonl")
+    asks_path = os.path.join(data_dir, "asks.jsonl")
+    today = datetime.date.today().isoformat()
+    try:
+        with open(chan_path, "rb") as fh:
+            chan_bytes = fh.read()                                  # THIS RUN's snapshot: what a restore puts back (B4)
+    except OSError as exc:
+        return False, pending % ("channels.jsonl cannot be re-read (%s)" % exc)
+    asks_bytes = None
+    if os.path.exists(asks_path):
+        try:
+            with open(asks_path, "rb") as fh:
+                asks_bytes = fh.read()
+        except OSError as exc:
+            return False, pending % ("asks.jsonl cannot be re-read (%s)" % exc)
+    pre = chan_path + "." + ADOPTION_PRE_COPY
+    if not os.path.exists(pre):
+        try:
+            shutil.copy2(chan_path, pre)
+        except (OSError, shutil.Error) as exc:
+            return False, "  ⚠️ 0.76.0 PENDING -- channels.jsonl could not be preserved to %s (%s), so NOTHING was changed." % (
+                os.path.basename(pre), exc)
+    replacements, stamped_rows = {}, {}
+    for p in exact:
+        row = channels[p["index"]]
+        new = cc.adopted_row(row, entries[p["entry"]], p["template_sha"], today)
+        replacements[p["index"]] = json.dumps(new, ensure_ascii=False)
+        stamped_rows[p["index"]] = (row, new, p)
+    try:
+        text = chan_bytes.decode("utf-8")
+        if replacements:
+            _atomic.write_text(chan_path, _adoption_replace_lines(text, replacements))
+        if new_asks:
+            base = asks_bytes.decode("utf-8") if asks_bytes is not None else ""
+            if base and not base.endswith("\n"):
+                base += "\n"
+            added = "".join(json.dumps(cc.adopt_ask_row(channels[p["index"]], entries[p["entry"]], p["differing"], today),
+                                       ensure_ascii=False) + "\n" for p in new_asks)
+            _atomic.write_text(asks_path, base + added)
+    except (OSError, UnicodeDecodeError) as exc:
+        _adoption_restore(chan_path, chan_bytes, asks_path, asks_bytes)
+        return False, pending % ("the write failed (%s); the stores are restored" % exc)
+    # ---- the success condition, re-read from disk
+    bad = []
+    after, _raws, e1 = _uid_text_read(profile, "channels")
+    after_asks, _ar2, e2 = _uid_text_read(profile, "asks")
+    if e1 or e2:
+        bad.append(e1 or e2)
+    else:
+        if len(after) != len(channels):
+            bad.append("the channel row count changed (%d -> %d)" % (len(channels), len(after)))
+        else:
+            for i, (was, now) in enumerate(zip(channels, after)):
+                if i in stamped_rows:
+                    _row, _new, p = stamped_rows[i]
+                    if cc.stamp_problems(now) or _vd.check_channel_catalog_fields([now]):
+                        bad.append("%s: the stamp does not validate" % now.get("id"))
+                    base = {k: v for k, v in now.items() if k not in cc.STAMP_FIELDS}
+                    if base != was or list(base) != list(was):
+                        bad.append("%s: a field other than the stamp changed" % now.get("id"))
+                    if cc.template_match_projection(now) != cc.template_match_projection(was) \
+                            or now.get("channel_catalog_sha") != p["template_sha"]:
+                        bad.append("%s: the row no longer equals the template it was stamped against" % now.get("id"))
+                elif now != was:
+                    bad.append("%s: a row that was not adopted changed" % was.get("id"))
+        counts = {}
+        for a in after_asks:
+            counts[a.get("id")] = counts.get(a.get("id"), 0) + 1
+        for p in new_asks:
+            if counts.get(cc.ADOPT_ASK_PREFIX + p["channel_id"]) != 1:
+                bad.append("the adoption question for %s does not exist exactly once" % p["channel_id"])
+    if _adoption_fault == "shortfall":
+        bad.append("TEST FAULT INJECTED: forced shortfall")
+    if bad:
+        _adoption_restore(chan_path, chan_bytes, asks_path, asks_bytes)
+        return False, ("  ⏳ 0.76.0 PENDING -- the success condition did not hold after the write (%s); the stores are "
+                       "restored to what this run read, so nothing you changed is lost. Offered again next session." % "; ".join(bad[:3]))
+    lines = ["  ✅ sources (0.76.0) -- adopted %d hand-made row%s, asked %d (nothing else in any row was touched; the original "
+             "channels.jsonl is kept at data/channels.jsonl.%s)" % (len(exact), "" if len(exact) == 1 else "s", len(new_asks),
+                                                                  ADOPTION_PRE_COPY)]
+    for p in exact:
+        lines.append("      adopted  %s  (catalog entry %s)" % (p["channel_id"], p["entry"]))
+    for p in new_asks:
+        lines.append("      asked    %s  (differs from the shipped template on: %s)" % (p["channel_id"], ", ".join(p["differing"]) or "its address"))
+    return True, "\n".join(lines)
+
+
+def _adoption_restore(chan_path, chan_bytes, asks_path, asks_bytes):
+    """B4: put back EXACTLY the bytes this run read before its own write. Never reads `*.pre-0.76.0`."""
+    import _atomic
+    try:
+        _atomic.write_text(chan_path, chan_bytes.decode("utf-8"))
+        if asks_bytes is not None:
+            _atomic.write_text(asks_path, asks_bytes.decode("utf-8"))
+        elif os.path.exists(asks_path):
+            os.unlink(asks_path)
+    except (OSError, UnicodeDecodeError):
+        pass
 
 
 MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
@@ -6564,7 +6800,14 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               ("0.71.0", m_0_71_0_retire_presence_artifact),
               # KEYED "0.72.0" -- see the note above `ATS_FEEDS_PRE_COPY`. It runs LAST; it touches only
               # data/companies.jsonl, data/channels.jsonl and <profile>/.claude/settings.json.
-              ("0.72.0", m_0_72_0_ats_feeds))
+              ("0.72.0", m_0_72_0_ats_feeds),
+              # KEYED "0.76.0" (dev #775) -- see the note above `WORKDAY_FEED_HOSTS`. It shares the version with the source
+              # adoption below and runs BEFORE it; it touches only <profile>/.claude/settings.json.
+              ("0.76.0", m_0_76_0_workday_hosts),
+              # KEYED "0.76.0" -- see the note above `ADOPTION_PRE_COPY`. It runs LAST; it stamps the hand-made rows that
+              # exactly match a template the plugin once shipped, and asks about the near matches. It never turns a
+              # source on or off.
+              ("0.76.0", m_0_76_0_source_adoption))
 
 
 # ⭐⭐ dev #365 (design-connected-entities.md §26.7/§28.2) — "no record of which version added
@@ -6789,6 +7032,35 @@ def _maybe_trampoline_to_newest(argv):
         return False
 
 
+# dev #769 (jobsearch 0.76.0, design-channel-catalog.md §6) -- the channel-catalog reconcile envelope. A catalog
+# update reaches an install as a VERSION: on every session with a settled verdict (applying only a strictly newer catalog revision), every channel row the user
+# turned on from the shipped catalog (`record.py channel-catalog add`) is compared three ways with this version's
+# catalog. An unedited row the catalog changed is APPLIED (the old values go to the row's own log, the change is
+# committed, one line is printed); an edited row is left alone; a row both sides changed gets an asks.jsonl row;
+# a row stamped by a NEWER catalog revision is never touched (R1). It runs BEFORE the purity envelope (it creates
+# no company row, so no purity term changes), only when the migration verdict is settled (`current`/`migrated`,
+# never `pending`), never under --check, and has its own try: housekeeping must never block a session. It writes a
+# diag row on EVERY outcome, `nothing` included, so "ran and found nothing" and "never ran" differ.
+def _run_channel_catalog_envelope(profile, migrations_verdict, args):
+    try:
+        if migrations_verdict not in ("current", "migrated"):
+            diag("channel-catalog", verdict="migrations-not-settled")
+            return
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import channel_catalog
+        res = channel_catalog.reconcile(profile)
+        diag("channel-catalog", verdict=res["verdict"], stamped=res["stamped"], applied=res["applied"],
+             asked=res["asked"], ahead=res["ahead"])
+        if res["written"]:
+            commit_migrated_paths(profile, res["written"],
+                                  "jobsearch: channel catalog reconciled (%d row%s)"
+                                  % (res["applied"] + res["asked"], "" if res["applied"] + res["asked"] == 1 else "s"))
+        if res["lines"]:
+            print("\n".join(res["lines"]))
+    except Exception as e:                     # noqa: BLE001 — housekeeping must never block
+        diag("channel-catalog", verdict="error", reason=type(e).__name__)
+
+
 # dev #411 §2.1 — the SEVENTH and LAST envelope: the engine-purity term scan, install-side.
 # Its own try, exactly like every housekeeping envelope above it: a purity-check crash must
 # never cost the session its migrations, which is why this runs LAST, after everything that
@@ -7004,6 +7276,7 @@ def main():
                 else:
                     print(base)
             if not args.check:
+                _run_channel_catalog_envelope(profile, "current", args)    # dev #769
                 _run_purity_envelope(profile, "current", args)
             return 0
 
@@ -7055,6 +7328,7 @@ def main():
             # than silently deciding the migration is finished when it is not.
             print("  (Not stamped — this will be offered again next session.)")
         if not args.check:
+            _run_channel_catalog_envelope(profile, "migrated" if all_done else "pending", args)    # dev #769
             _run_purity_envelope(profile, "migrated" if all_done else "pending", args)
         return 0
     except Exception as e:                     # noqa: BLE001 — housekeeping must never block

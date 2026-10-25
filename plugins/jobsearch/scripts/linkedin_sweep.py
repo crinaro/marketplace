@@ -64,6 +64,7 @@ Python 3.9+. Standard library only.
 
 import argparse
 import datetime
+import json
 import os
 import re
 import sys
@@ -115,6 +116,7 @@ SWEEP_GRAMMAR = """\
 --- WORKLIST v1 run=<run-id> ---                      (what you are given; you never write one)
 SURFACE <token> url=<url> back-to=<YYYY-MM-DD|all|none> [positive-only]
 JOBSEARCH window=<daily|wide> f_TPR=<r86400|r604800> titles=<configured|all> geo=<remote[,local]> [wide-due-since=<YYYY-MM-DD|never>]
+JOBSEARCH off source=linkedin-jobsearch                              (turned off: run NO job search, record nothing as covered)
 WATCH contact:<id> since=<YYYY-MM-DD|?> medium=<linkedin-*|?> name="<display name>" [match=<profile url>]
 THREAD contact:<id> url=<messaging thread url>
 --- END WORKLIST ---
@@ -243,6 +245,34 @@ def _normalise_profile_url(raw):
     return raw if PROFILE_URL_RE.match(raw) else None
 
 
+JOBSEARCH_CHANNEL = "linkedin-jobsearch"       # the channel id every LinkedIn job-search sighting is written with
+
+
+def job_search_is_off(root):
+    """dev #774 (design-source-catalog.md section 4.1): True when the user turned the LinkedIn job search off, i.e. the
+    `linkedin-jobsearch` channel row is `relationship_status: retired` -- the same off bit `alert_sweep.py`,
+    `channels_due.py` and `portfolio_boards.py` already honour for every other channel, written by
+    `record.py source off linkedin-jobs`. A MISSING row, or one that is not retired, is NOT off (an install older than
+    0.76.0 never had to hold the row, and its search ran). A channels store that cannot be read is not read as off
+    either: `validate_data.py` reports the unreadable store at run start; an off switch nobody can read must not
+    silently turn a search off."""
+    path = os.path.join(root, "data", "channels.jsonl")
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if isinstance(row, dict) and row.get("id") == JOBSEARCH_CHANNEL:
+                    return row.get("relationship_status") == "retired"
+    except OSError:
+        return False
+    return False
+
+
 def jobsearch_line(root, now=None):
     """dev #489 / public #102 + #692 (R5) -- the `JOBSEARCH` line of the worklist: which LinkedIn
     job-search window THIS pass runs, printed by a script so the runner never hard-codes one.
@@ -258,6 +288,8 @@ def jobsearch_line(root, now=None):
             cfg = json.load(fh)
     except (OSError, ValueError):
         cfg = {}
+    if job_search_is_off(root):
+        return "JOBSEARCH off source=%s" % JOBSEARCH_CHANNEL
     geos = journal.jobsearch_geos(cfg)
     w = journal.jobsearch_window(now or journal.now_iso(), journal.read(root), geos)
     line = "JOBSEARCH window=%s f_TPR=%s titles=%s geo=%s" % (

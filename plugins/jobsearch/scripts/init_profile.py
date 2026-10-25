@@ -275,6 +275,58 @@ this system.
 """
 
 
+def default_sources(catalog, today):
+    """dev #774 (design-source-catalog.md section 8; owner decision D1; review R1). What a NEW profile is born with, from
+    the shipped catalog: `(channels rows, companies rows, feeds_enabled, lines, notices)`.
+
+    THIS IS THE ONLY READER OF AN ENTRY'S `default_on` (a source scan in test_source_adoption.py holds that), and it
+    runs once, when the profile is created -- the plugin manifest's own `defaultEnabled` rule: a default applies at
+    creation and never again, so a later release that changes a default never changes an existing install.
+
+      * each `default_on: true` entry that writes a row is written EXACTLY as `record.py source on <entry>` would
+        (the same `channel_catalog.plan_add`), stamped;
+      * `company-feeds` (the feed policy) is written EXPLICITLY as true or false, so a new profile never relies on
+        "absent means on";
+      * R1: a `default_on: false` swept board whose reader treats an ABSENT row as ON (the LinkedIn job search) is
+        written as an explicit RETIRED row, so a new install's search is OFF, not on-by-absence.
+      * D1 follow-through (SC17): a `default_on` swept board that is on by an OWNER CARVE-OUT (the Indeed browser sweep)
+        gets a NOTICE, an ask `source-notice:<entry>` written with the scaffold. Onboarding prints it and the coordinator
+        tells the user once and resolves it, so the user is told in plain words that the sweep is on, what it does, and
+        the exact command that stops it.
+    Nothing else is written: every other entry is offered later by the view, never added."""
+    import channel_catalog as _cc
+    channels, companies, lines, notices = [], [], [], []
+    feeds = None
+    entries = catalog["entries"]
+    on_row_ids = [e["id"] for e in entries if e.get("default_on") is True and e["kind"] in _cc.ROW_KINDS
+                  and not _cc.is_retired(e)]
+    results = _cc.plan_add(catalog, on_row_ids, channels, companies, today)
+    _cc.apply_add(results, channels, companies)
+    for res in results:
+        lines.append("  source on   %s" % res["channel_id"])
+    for e in entries:
+        if e["kind"] == "feed-policy" and not _cc.is_retired(e):
+            feeds = e.get("default_on") is True
+            lines.append("  source %s  %s (sourcing.feeds.enabled = %s)" % ("on " if feeds else "off", e["id"], str(feeds).lower()))
+        elif (e["kind"] == "swept-board" and e.get("default_on") is not True and e.get("absence_reads_as") == "on"
+              and not _cc.is_retired(e)):
+            row = _cc.channel_row_from_entry(e, catalog, today)
+            channels.append(_cc.retire_row(row, today)[0])
+            lines.append("  source off  %s (a retired row, so its search is off rather than on by absence)" % e["channel_id"])
+    for e in entries:
+        if (e["kind"] == "swept-board" and e.get("default_on") is True and not _cc.is_retired(e)
+                and (e.get("terms") or {}).get("ruling") == "owner-carve-out"):
+            text = ("The %s browser sweep is ON for your search. What it does: Claude opens %s in your signed-in "
+                    "browser pane and reads the job listings that match the titles in your profile. It takes no action "
+                    "on your behalf: it never applies, messages or posts. Turn it off any time with: "
+                    "record.py source off %s" % (e["label"], e["label"], e["channel_id"]))
+            notices.append(_cc._ask_row(e["channel_id"], "the %s browser sweep is on" % e["label"], text,
+                                        "source-notice rev=%d" % catalog["revision"], today,
+                                        ask_id="source-notice:" + e["id"]))
+            lines.append("  NOTICE      %s" % text)
+    return channels, companies, feeds, lines, notices
+
+
 def exists(rel):
     return os.path.exists(os.path.join(ROOT, rel))
 
@@ -332,6 +384,21 @@ def main():
     cfg = dict(CONFIG_SKELETON)
     cfg["search"]["posture"] = args.posture
 
+    # dev #774 (D1, R1): a profile BORN here gets the owner's default sources, once. Only when this run created BOTH the
+    # channels store and config.json: re-running --scaffold on an existing profile (to fill in a newer store) must never
+    # turn a source on, or off -- the plugin manifest's `defaultEnabled` rule.
+    seeded = None
+    if "data/channels.jsonl" in created and not os.path.exists(os.path.join(ROOT, "config.json")):
+        import datetime as _dt
+        import channel_catalog as _cc
+        try:
+            seeded = default_sources(_cc.load_catalog(), _dt.date.today().isoformat())
+        except _cc.CatalogError as e:
+            print("  ⚠️ NOT SEEDED: the source catalog cannot be read (%s); no default sources were turned on. "
+                  "`record.py source list` shows what is available once it can." % e)
+        if seeded is not None and seeded[2] is not None:
+            cfg["sourcing"] = {"feeds": {"enabled": seeded[2]}}
+
     for name, payload in (("user.json", USER_SKELETON), ("config.json", cfg)):
         p = os.path.join(ROOT, name)
         if os.path.exists(p):
@@ -341,6 +408,17 @@ def main():
             json.dump(payload, fh, indent=2, ensure_ascii=False)
             fh.write("\n")
         created.append(name)
+
+    if seeded is not None and (seeded[0] or seeded[1] or seeded[4]):
+        import _atomic
+        _atomic.write_jsonl(os.path.join(DATA, "channels.jsonl"), seeded[0])
+        if seeded[1]:
+            _atomic.write_jsonl(os.path.join(DATA, "companies.jsonl"), seeded[1])
+        if seeded[4]:
+            _atomic.write_jsonl(os.path.join(DATA, "asks.jsonl"), seeded[4])
+    if seeded is not None:
+        created.append("default sources (D1; change any with `record.py source on|off <id>`):")
+        created.extend(seeded[3])
 
     p = os.path.join(ROOT, "CREDENTIALS.md")
     if not os.path.exists(p):

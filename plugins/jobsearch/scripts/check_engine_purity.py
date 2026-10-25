@@ -680,10 +680,22 @@ class ScanBudgetExceeded(Exception):
 # string. The reason is the whole justification: a public place name is not personal data, and the
 # user's own city appearing in a gazetteer is expected. Everything else is scanned as before -- the
 # same city written in a doc, a script or a fixture is still a finding.
+#
+# ⭐ dev #769 / public #164 (jobsearch 0.76.0, design-channel-catalog.md §8, CC11) -- THE SECOND ENTRY, EXACTLY ONE
+# FILE. The shipped channel catalog names investment firms and job boards (a legal person's name is not personal
+# data, GDPR Recital 14; every name is published by that organisation on its own site). Opting in to a portfolio
+# entry writes the firm's name into the user's own `companies.jsonl`, which is a purity term, so without this
+# entry the user's own SessionStart scan would flag the plugin's own file. The pattern has NO wildcard and is
+# pinned to this one path by `TestChannelCatalogIsANamedPurityExclusion`; the same names in ANY other shipped
+# file are still findings, and `TestChannelCatalogNamesStayInTheCatalog` (R3) proves it over the real published
+# set rather than a scratch engine.
 NAMED_EXCLUSIONS = (
     ("places/*.csv.gz",
      "the shipped US Census place table (public place names): a city in a gazetteer is not "
      "personal data, even when it is the user's own"),
+    ("channel_catalog/channel_catalog.json",
+     "the shipped channel catalog: public firm and board names (a legal person's name is not "
+     "personal data, GDPR Recital 14); the same names in any other engine file are findings"),
 )
 
 

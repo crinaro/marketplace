@@ -137,7 +137,14 @@
     "alert_sender",
     "company_id",
     "portfolio_of",
-    "board_hosts"
+    "board_hosts",
+    "board_url",
+    "channel_catalog_entry",
+    "channel_catalog_sha",
+    "channel_catalog_on",
+    "channel_catalog_rev",
+    "query_template",
+    "prior_relationship_status"
    ],
    "required": [
     "id",

@@ -503,7 +503,7 @@ fires repeatedly, run `~/.claude/jobsearch/run wake_chrome.sh` and check macOS A
 before assuming a new fault (`docs/architecture.md` §3d).
 
 **COMPANY FEEDS: EVERY DAY, UNDER EVERY POSTURE, BEFORE THE BOARD PASS (dev #751; jobsearch 0.72.0).**
-A tracked company whose own URLs name a Greenhouse, Lever or Ashby board carries `companies[].ats`, and
+A tracked company whose own URLs name a Greenhouse, Lever, Ashby or Workday board carries `companies[].ats`, and
 its public job list is read by a script, not a browser turn:
 
 ```bash
@@ -511,12 +511,15 @@ its public job list is read by a script, not a browser turn:
 ```
 
 It makes one read-only GET per slugged company (never a POST, 1 s apart per host, no credentials,
-`If-None-Match`), keeps the postings that match a configured `targets.titles`, and resolves each through
+`If-None-Match`; a Workday company is read from the sitemap its robots.txt advertises, then ONLY its new job
+pages, under ADR-037's five conditions, and never the `/wday/cxs/` endpoint), keeps the postings that match a configured `targets.titles`, and resolves each through
 the SAME per-role code `--add-roles` uses: a posting already in the pipeline is known and writes nothing,
 a new one becomes one `capture-role` item carrying its channel, which §7's claim -> `record.py create
 --from-item` -> `profile.py --minimal-screen` path captures and screens exactly as it does a board role.
 It costs no tokens and reads no mail. **It has an internal deadline** (`feed_poll.DEADLINE_S`, 240 s, under
-the 300 s Bash timeout above), so a stalled network ends in a written `feeds` event, not a killed process.
+the 300 s Bash timeout above; Workday job pages stop `feed_poll.WORKDAY_RESERVE_S` short of it, so the
+bookkeeping after the network finishes inside it), so a stalled network ends in a written `feeds` event, not a
+killed process.
 Run it in the read phase, unlocked: its own `record.py` calls take the lock they need.
 
 - **Exit 0** every feed covered. **Exit 4** at least one NOT COVERED: the line `FEED NOT COVERED <company>
@@ -529,9 +532,12 @@ Run it in the read phase, unlocked: its own `record.py` calls take the lock they
 - **Exit 3** `FEEDS NOT RUN: no readable title keys`: `targets.titles` is empty or its keys cannot be
   read. Say so; capturing every opening at every company is not a safe default.
 - **A page the feed covered today is not in the board worklist** (`channels_due.py` prints it under COVERED
-  BY FEED). Workday and every company with no slug stay browser-routed. `feed_poll.py --status` lists the
-  slugs, each company's last outcome, any `ATS AMBIGUOUS` the candidate must settle with `record.py ats`,
-  and every unlinked company-site channel.
+  BY FEED). A company with no slug stays browser-routed, and so does a Workday site that is not covered
+  (`FEED NOT COVERED ... robots-unavailable | sitemap-capped | blocked | locale-mismatch ...`: the page is
+  DUE for the browser). A covered Workday site reads "covered (sitemap window; completeness assumed)" in
+  `--status`: the sitemap is a window, and that it lists every open job is not shown. `feed_poll.py --status`
+  lists the slugs, each company's last outcome, any `ATS AMBIGUOUS` the candidate must settle with
+  `record.py ats`, and every unlinked company-site channel.
 - **Quote the `feeds:` line** from `run_summary.py` in the summary (§13).
 
 **Weekly (first run on/after Monday, per `log.md`):** dispatch `board-sweeper` for the non-LinkedIn sourcing pass — boards, aggregators and employer career pages, each reached by its configured route.

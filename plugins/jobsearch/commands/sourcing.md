@@ -1,13 +1,13 @@
 ---
-description: Choose how the search reaches each job board — a site plugin, Claude's in-app browser, or the Chrome extension — and see which channels are routable right now.
-argument-hint: "[browser,plugin,chrome | <channel> <plugin-name>]"
+description: "See every job source this search uses (LinkedIn job search, boards such as Indeed and Dice, alert emails, company job-board feeds, curated and investment-firm boards), whether each is on, how it is reached and whether it is covered, and turn any of them on or off, including the boards in the shipped catalog. Also choose how the search reaches each board: a site plugin, Claude's in-app browser, or the Chrome extension. Not for recording a role you saw on a board; that is `record.py board-sighting`."
+argument-hint: "[on <source> | off <source> | browser,plugin,chrome | <channel> <plugin-name>]"
 ---
 
 # Sourcing routes
 
-**What this sets:** how a channel is REACHED. Not whether it is searched — that is
-`/jobsearch:tier` and the channel review — and not what it requires, which is a property of the
-site itself.
+**What the routes below set:** how a channel is REACHED. Not what it requires, which is a property of the
+site itself, and not how often it is reviewed (that is `/jobsearch:tier` and the channel review). Whether a source
+is used at all is the on/off verb in *Your sources* further down.
 
 Show every routable channel and the current preference:
 
@@ -21,9 +21,56 @@ Ask about one channel:
 ~/.claude/jobsearch/run route.py --channel indeed
 ```
 
+## Your sources: see every one, turn any on or off (0.76.0)
+
+Every job source this search uses is listed in one place, from the profile's own stores: LinkedIn job search, the
+boards a browser reads (Indeed), alert emails (LinkedIn, Dice, Indeed), company job-board feeds as a whole, and the
+boards the candidate opens by hand (investment-firm portfolio boards and curated startup boards). For each one:
+its kind, whether it is **on**, where it came from (`yours` or a shipped catalog entry), how it is reached, and
+whether it is covered. A fact the script cannot know prints `NOT CHECKED`, never `0`. The view is read-only:
+
+```bash
+~/.claude/jobsearch/run sources.py --text
+```
+
+Print its output verbatim under the heading **Your sources**, including its trailing **You could turn on** block
+(catalog entries the profile does not hold, offered because the profile already points at them, or because a
+source of that kind has no signal to wait for). That block is a suggestion, never an action: stop and let the
+candidate choose.
+
+**Turning a source on or off is one verb, for every kind**, and it is the only way this command changes it:
+
+```bash
+~/.claude/jobsearch/run record.py source off dice
+~/.claude/jobsearch/run record.py source on dice
+```
+
+`<id>` is a channel the candidate holds, a catalog entry (turning one on copies and stamps it, exactly what
+`record.py channel-catalog add` does), `linkedin-jobsearch` (the LinkedIn job search), or `company-feeds` (every
+company feed at once; it never touches a company's own slug). Run `off` or `on` **only after the candidate names
+which source**; `--dry-run` previews it. Never answer "stop searching X" by editing `relationship_status` with
+`record.py set`: the verb stores what it found so `on` puts back exactly that. A recruiter, a referral or a
+company's career page is not a source and is refused with the right verb. The mod's Sources block runs the same
+verb. In a profile shared by two machines the verb says that a machine on an engine older than 0.76.0 keeps running
+a source until it upgrades, and that the change reaches the other machines after the next run.
+
+A source the candidate holds by hand that matches a catalog entry gets a one-line tip with the `--attach` form, which
+ties that row to the catalog so catalog updates reach it (`record.py channel-catalog add <entry> --attach
+<channel_id>`; `--kind curated|portfolio|swept-board|alert-sender` turns on a whole kind). The 0.76.0 upgrade asks
+once about a hand row that is *nearly* a shipped template: answer it with `--attach`, or
+`record.py source keep-mine <channel_id>` to leave the row as it is. A source the catalog later changes is updated at
+the next session start when the candidate has not edited it, and asked about when they have
+(`record.py channel-catalog take|keep <channel_id>`).
+
+**The new-install defaults** (written once, when a profile is created; an existing profile is never given a source):
+company feeds and the alert-email senders the catalog marks default-on are on; the LinkedIn job search and the
+curated and portfolio boards are off (the LinkedIn job search has an explicit retired row, so it is off rather than
+on-by-absence). Turn the LinkedIn job search on with `record.py source on linkedin-jobsearch` (the runner reads
+LinkedIn; it takes no LinkedIn action).
+
 ## Feeds
 
-Companies whose own links name a Greenhouse, Lever or Ashby board are read by a script, not a browser
+Companies whose own links name a Greenhouse, Lever, Ashby or Workday board are read by a script, not a browser
 (`companies[].ats`). Show what is slugged, each company's last outcome, any board the candidate must settle,
 and every company careers page not yet linked to a company:
 
@@ -35,7 +82,13 @@ Read-only; it fetches nothing. Settle an `ATS AMBIGUOUS` line, or decline or cle
 `record.py ats <company_id> --url <address> | --none | --clear`. A page a feed covered today is not in the
 browser worklist; one it could not read is. The feed needs four hosts allowed (`boards-api.greenhouse.io`,
 `api.lever.co`, `api.eu.lever.co`, `api.ashbyhq.com`), which the 0.72.0 upgrade adds to the profile
-project's sandbox settings.
+project's sandbox settings; Workday needs the one entry `*.myworkdayjobs.com`, added by the 0.76.0 upgrade
+(whether the sandbox honours it is UNVERIFIED, so a Workday company may show `not covered` until it does).
+For each Workday site `--status` prints `covered (sitemap window; completeness assumed)` (the site's list of
+jobs is assumed complete, not proven) and a line `window N (cap 100) · baseline <state> · seen N · baseSalary
+present on N page(s)`. A Workday company that is not covered carries the code, for example
+`not covered: sitemap-capped` (more jobs than the window shows) or `not covered: locale-mismatch` (the
+address you gave is in a different language from the site's pages); the browser covers it.
 
 **`manual-candidate` channels.** A board whose terms forbid automated access (Wellfound, Work at a Startup,
 Welcome to the Jungle) is a channel with `access: manual-candidate`. `route.py` prints `candidate: you open

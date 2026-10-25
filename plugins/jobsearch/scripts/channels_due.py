@@ -172,7 +172,7 @@ def load_companies():
     return [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
 
 
-def feed_review(chans, companies, recs, today):
+def feed_review(chans, companies, recs, today, feeds_on=True):
     """dev #751 (design §3.7 as amended by review B1): `{channel_id: (state, text)}` for every
     company-site channel linked to a company that polls a feed. `state` is
 
@@ -192,7 +192,10 @@ def feed_review(chans, companies, recs, today):
     by_company = {c.get("id"): c for c in companies}
     linked = [ch for ch in chans if ch.get("type") == "company-site" and ch.get("company_id")
               and isinstance((by_company.get(ch.get("company_id")) or {}).get("ats"), dict)]
-    events = _journal.feeds_events(recs, on=today.isoformat())
+    if not feeds_on:                                   # dev #774: the switch is off, so no page is covered by a feed
+        return {ch["id"]: ("cadence", "company feeds are turned off (sourcing.feeds.enabled)") for ch in linked}
+    # a switched-off event (dev #774) lists nothing as failed and polled nothing: it is never a poll that covered a page
+    events = [e for e in _journal.feeds_events(recs, on=today.isoformat()) if not e.get("off")]
     if not events:
         return {ch["id"]: ("cadence", "no feed poll yet today") for ch in linked}
     failed = events[-1].get("companies_not_covered") or {}
@@ -317,7 +320,16 @@ def main():
         print("  !! WARNING: the journal cannot be read (%s) -- feed coverage is UNKNOWN, so no "
               "channel is dropped from the queue on a feed's word." % _e)
         _recs = []
-    _feed = feed_review(chans, load_companies(), _recs, today)
+    import config_keys as _config_keys
+    try:
+        with open(os.path.join(ROOT, "config.json"), encoding="utf-8") as _fh:
+            _cfg = json.load(_fh)
+    except (OSError, ValueError):
+        _cfg = {}
+    _feeds_on, _feeds_problem = _config_keys.feeds_enabled(_cfg if isinstance(_cfg, dict) else {})
+    if _feeds_problem:
+        print("  !! WARNING: " + _feeds_problem)
+    _feed = feed_review(chans, load_companies(), _recs, today, feeds_on=_feeds_on)
     covered_by_feed = [c for c in chans if _feed.get(c.get("id"), ("",))[0] == "covered"
                        and c.get("relationship_status") != "retired"]
     cov_ids = {c["id"] for c in covered_by_feed}

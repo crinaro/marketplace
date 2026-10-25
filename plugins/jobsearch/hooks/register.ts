@@ -8,7 +8,10 @@
 // the pure functions in panel.tsx.
 //
 // WHAT IT NEVER DOES (the trust obligation, enforced in CI by the repository mod-surface gate, which does not ship):
-//   - write a profile file (no fs write, no store, no model call, no http, no process spawn);
+//   - write a profile file (no fs write, no store, no model call, no http, no process spawn). The ONE way a profile
+//     changes through this mod is a Sources button, which runs `record.py source <on|off> <id>` and nothing else: the
+//     write is that script's, under its own lock and validator (ADR-036, amended by dev #774). The mod-surface gate
+//     holds the list of scripts the mod may launch, and record.py is allowed only with the `source` sub-verb;
 //   - read mail or browser state; handle a tool call it did not register; approve or rewrite one;
 //   - run on a refused surface differently: NO runtime refusal is built (change R2) - S3b and S4
 //     are unsupported by documentation (plugins/jobsearch/docs/deployment.md, Supported surfaces).
@@ -72,6 +75,25 @@ async function refresh($: any, full: boolean): Promise<void> {
   } finally {
     busy[k] = false
   }
+}
+
+// dev #774: a Sources button. The mod runs the SAME verb the text path runs and relays its own first line; it writes
+// no file, keeps nothing in $.store, and decides nothing about what "on" means.
+async function toggleSource($: any, id: string, on: boolean): Promise<void> {
+  const verb = on ? 'on' : 'off'
+  try {
+    const r = await py($, 'record.py', ['source', verb, id], 30000)
+    const lines = String(r.stdout || r.stderr || '').split('\n').map((l: string) => l.trim()).filter((l: string) => l)
+    const refusal = lines.find((l: string) => l.includes('REFUSED'))
+    note = r.exitCode === 0
+      ? 'Turned ' + verb + ' ' + id + '.'
+      : (refusal || lines[lines.length - 1] || 'record.py source exited ' + r.exitCode).slice(0, 200)
+    $.ui.toast(note)
+  } catch (err) {
+    note = 'Could not turn ' + verb + ' ' + id + ': ' + String(err && (err as any).message ? (err as any).message : err).slice(0, 100)
+    $.ui.toast(note)
+  }
+  await refresh($, true)
 }
 
 async function refreshReview($: any, which: string): Promise<void> {
@@ -160,6 +182,7 @@ function paneFor($: any, els: any, id: string, surface: string): any {
       refresh: () => refresh($, true),
       runDaily: () => runTask($, 'daily'),
       runWeekly: () => runTask($, 'weekly'),
+      toggleSource: (id: string, on: boolean) => toggleSource($, id, on),
     }
     return statusTree(els, snapshot, surface === 'desktop', note, h)
   }

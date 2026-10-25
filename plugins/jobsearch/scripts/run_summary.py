@@ -374,6 +374,8 @@ def feeds_line(e):
     A not-covered count of zero is printed as such and a not-covered feed is NEVER read as "0 roles":
     the failure codes and, when a host was marked down, the host and its code are on the line. An
     event that polled nothing says `0 polled` (no tracked company carries a slug), not silence."""
+    if e.get("off"):
+        return "feeds: OFF (sourcing.feeds.enabled is false) · nothing polled, no company's feed is covered"
     nc = e.get("not_covered", 0)
     why = e.get("failures") or {}
     line = ("feeds: %d polled · %d covered (%d unchanged) · NOT COVERED %d%s · %d selected -> %d captured "
@@ -442,7 +444,12 @@ def roles_lines(recs, run_id, root=None, kind=None, at=None):
         w = _journal.jobsearch_window(now, recs, _geos(root))
         wide_here = [e for e in events if e.get("surface") == "linkedin-jobsearch"
                      and e.get("window") == "wide"]
-        if w["window"] == "wide" and not wide_here:
+        import linkedin_sweep as _ls
+        if _ls.job_search_is_off(root):
+            # dev #774: a search the user turned off is not a pass that failed to run and not a re-scan that is owed
+            lines.append("LinkedIn job search: OFF (record.py source on linkedin-jobs turns it back on); "
+                         "no wide re-scan is owed while it is off")
+        elif w["window"] == "wide" and not wide_here:
             passes = [r for r in recs if r.get("event") == "pass" and r.get("run_id") == run_id
                       and r.get("kind") == "linkedin"]
             refused = [r for r in passes if r.get("phase") == "refused"]

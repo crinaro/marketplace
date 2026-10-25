@@ -57,6 +57,13 @@ That single command: reports the write-lock state (**it does NOT take it**) · r
 runs queued · lists **what is blocked on the candidate**, act-by date first · runs the five gates
 (data integrity, rule homes, config leakage, resume-variant containment, published dashboard).
 
+**A `NEW` notice about a job source (0.76.0).** If `coordinator.py` prints a `NEW` block about a source being on for
+the candidate (the Indeed browser sweep, on by an owner carve-out for a new profile), relay it in plain words:
+which site is read, that it takes no action there, and the exact `record.py source off <id>` command it names. The
+script has already marked it shown, so it appears **once**; do not repeat it in later sessions and do not offer to
+turn the source off unless the candidate asks. Every source is listed, and turned on or off, with
+`/jobsearch:sourcing`.
+
 **⭐ THIS SESSION DOES NOT HOLD THE LOCK ALL DAY — corrected 2026-08-03.** the candidate: *"Why can't it
 run concurrently with the coordinator session? That was the main purpose."* Holding it from
 startup blocked every background run for as long as the candidate had a session open; on 08-03

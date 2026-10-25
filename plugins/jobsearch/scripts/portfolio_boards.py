@@ -50,6 +50,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 
 ROOT = _profile_root()
+# The channel field that makes a channel a portfolio board. Named ONCE here so a script that WRITES the field (the
+# channel catalog's opt-in, dev #769) does not retype it: the source-scan test holds every other script to never
+# naming the link fields, so a second derivation of the link cannot drift.
+FIRM_LINK_FIELD = "portfolio_of"
 EXIT_NOT_COVERED = 4
 EXIT_STORES = 3
 
