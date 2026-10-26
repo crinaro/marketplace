@@ -73,6 +73,10 @@ Nothing below sends anything or commits anything without you.
    data format up to date if the version moved — the first such update also points the Gmail
    connector plugin at this profile, a one-time step (see **What actually runs**, above). All of
    this is automatic; none of it asks you anything.
+   If the data format is current but `validate_data.py` still reports problems, session start says
+   so in one line with the count, instead of "Profile is current", and points you at that script.
+   (The 0.76.1 upgrade can ask one question in your asks for a row it cannot repair; see
+   *What the 0.76.1 upgrade writes* in [Your data](your-data.md).)
 
 2. **Sweep.** Your mailbox and LinkedIn are read for things that changed: recruiter replies,
    interview invitations, application receipts, rejections. This is deterministic — it finds

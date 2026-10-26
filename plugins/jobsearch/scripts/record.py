@@ -163,6 +163,13 @@ STORES = {"opportunities": "opportunities.jsonl",
           # (e.g. a `note` addendum — §4.4's dedup digest) now exist, validator-run like every
           # other store.
           "asks": "asks.jsonl"}
+# ⭐ dev #764 / public #162 -- THE STORES `create auto` CAN MINT AN ID FOR, and the label the
+# write's report uses for the id it minted. `create auto` on any other store used to write the
+# literal id "auto" (the argument was taken as the id) -- a row no later verb could tell from a
+# real one, and a `cover_letter_id` pointing at it. A store absent from this table has no minting
+# branch, so `create auto` on it is REFUSED before anything is written (see the create branch).
+AUTO_MINT_LABEL = {"applications": "app_id", "touches": "touch id",
+                   "cover_letters": "cover letter id"}
 # The only ops allowed to touch `--file messages` — everything else is refused in main().
 # design-inbound-resolution.md §2 — `received` joins `touched`/`answered`: the one public
 # INBOUND writer (ADR-029), promoted from `reconcile.py --harvest`'s own private append.
@@ -489,6 +496,22 @@ def mint_app_id(rid, existing):
         aid = a.get("id") if isinstance(a, dict) else None
         if isinstance(aid, str) and aid.startswith(prefix) and aid[len(prefix):].isdigit():
             n = max(n, int(aid[len(prefix):]))
+    return "%s%d" % (prefix, n + 1)
+
+
+def mint_cover_letter_id(opp_id, existing):
+    """`<opp_id>-clN`, N one past the highest suffix already minted for this opp_id (dev #764 /
+    public #162). The same past-the-max, never count-plus-one rule as `mint_app_id`, for the same
+    reason: a removed letter must not free its number for a later `cover_letter_id` reference to
+    collide into. A letter is written for a role, so it is owned by the OPPORTUNITY, like an
+    application. `existing` is every row whose ids could collide; the `<opp_id>-cl` prefix scopes
+    the match, and a suffix that is not all digits (`<opp_id>-cl2-cl1`) is not a mint of this id."""
+    prefix = "%s-cl" % opp_id
+    n = 0
+    for c in existing or []:
+        cid = c.get("id") if isinstance(c, dict) else None
+        if isinstance(cid, str) and cid.startswith(prefix) and cid[len(prefix):].isdigit():
+            n = max(n, int(cid[len(prefix):]))
     return "%s%d" % (prefix, n + 1)
 
 
@@ -3759,6 +3782,26 @@ def main():
                 return 1
             args.rid = mint_touch_id(_person_id, load("touches"))
             minted = [args.rid]
+        # dev #764 / public #162 -- `cover_letters` mints `<opp_id>-clN` from `opp_id`, the same
+        # way `applications` mints `<opp_id>-aN`. Before this the id was taken literally, so
+        # `create auto ... --file cover_letters` wrote a row whose id was the word "auto".
+        if args.file == "cover_letters" and args.rid in (None, "auto"):
+            _opp_id = new_row.get("opp_id")
+            if not _opp_id:
+                print("⛔ REFUSED — create auto '{...}' --file cover_letters requires 'opp_id' "
+                      "in the JSON payload; the id is minted from it (<opp_id>-clN).")
+                return 1
+            args.rid = mint_cover_letter_id(_opp_id, load("cover_letters"))
+            minted = [args.rid]
+        # dev #764 / public #162 -- a store with NO minting branch cannot honour `create auto`:
+        # the placeholder would be written as the row's real id. Refuse, name the store and how to
+        # supply an id, and write nothing. (An omitted id is the same request.)
+        if args.rid in (None, "auto") and args.file not in AUTO_MINT_LABEL:
+            print("⛔ REFUSED — `create auto` is not available for the %r store: it has no id "
+                  "minting, so \"auto\" would be written as the record's real id. Name the id "
+                  "yourself: create <id> '<json>' --file %s. (Stores that mint: %s.)"
+                  % (args.file, args.file, ", ".join(sorted(AUTO_MINT_LABEL))))
+            return 1
         # ⭐ design §12 — an unshaped introduction is exactly the row that "looks handled and
         # is not": a new intro-request touch naming neither object is refused at the door.
         # `validate_data.py` treats a MIGRATED intro-request with no object as legal (a
@@ -4453,7 +4496,7 @@ def main():
             return 0
         print("  ✅ dry-run validated clean against the same validator a real write runs.")
         if minted:
-            _mint_label = "touch id" if args.file == "touches" else "app_id"
+            _mint_label = AUTO_MINT_LABEL.get(args.file, "app_id")
             print("  · would mint %s: %s" % (_mint_label, ", ".join(minted)))
         if args.file == "opportunities" and args.op in ("append", "set-in") and args.rest:
             action = ASK_ACTION_FOR_ARRAY.get(args.rest[0].split(".")[-1])
@@ -4674,6 +4717,9 @@ def main():
         if args.file == "touches":
             print("  · touch id minted: %s — name it on the draft entry's own `**Touch:**` "
                   "line, or as trigger_ref on whatever it causes" % ", ".join(minted))
+        elif args.file == "cover_letters":
+            print("  · cover letter id minted: %s — name it as cover_letter_id on the "
+                  "application it goes with" % ", ".join(minted))
         else:
             print("  · app_id minted: %s — name it as trigger_ref on whatever this application "
                   "causes" % ", ".join(minted))

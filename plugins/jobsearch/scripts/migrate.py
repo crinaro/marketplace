@@ -39,11 +39,14 @@ Usage:
     python3 migrate.py --check     # what is pending; writes nothing
     python3 migrate.py             # apply the safe ones, report the rest
     python3 migrate.py --hook      # same, but silent when there is nothing to say
+                                   # (a current profile whose data fails validate_data.py is the one thing it
+                                   # always says: one `systemMessage`, dev #768-2)
 
 Python 3.9+. Standard library only.
 """
 
 import argparse
+import io
 import json
 import os
 import re
@@ -6603,6 +6606,291 @@ def _adoption_restore(chan_path, chan_bytes, asks_path, asks_bytes):
         pass
 
 
+# ---- 0.76.1 (dev #768-1 + #764-4; public #165, #162): bring legacy placeholder values into the shape the validator now
+# requires -------------------------------------------------------------------------------------------------------------
+#
+# WHY A MIGRATION. 0.73.0 tightened `check_company_fields` (an empty `career_url` / `domain` / `size_ownership`, or an empty
+# entry in `aliases`, became a PROBLEM) and shipped no step for data written earlier; a create-time `auto` on a store with
+# no minting branch left the literal id "auto" on a `cover_letters` row (#764). The contract step shipped without the
+# migrate step, so a profile that was clean before the upgrade validated red after it. The validator is NOT loosened: this
+# is the missing migrate step. KEYED "0.76.1" (0.76.0 is the newest PUBLISHED release; a profile that installed it is
+# stamped exactly "0.76.0", and strict `<` would never fire a migration keyed to it). It runs LAST.
+#
+# WHAT IT DOES, in the order it does it:
+#   1. READS STRICTLY (`_uid_text_read`): ONE line of companies / cover_letters / applications / asks that does not parse
+#      is PENDING with nothing written, because rewriting a store this could not fully read would drop that line.
+#   2. PRESERVES FIRST: each store about to change is copied byte for byte to `<store>.jsonl.pre-0.76.1`, never over a copy
+#      already there (that is the true original of an earlier partial run).
+#   3. companies: `career_url` / `domain` that are empty (or whitespace) strings become null; an empty `size_ownership`
+#      (or a null one, which carries nothing either) is dropped; empty entries of `aliases` are dropped (a null `aliases`
+#      is dropped like a null size_ownership). Nothing else in a row is touched, and no row is removed.
+#   4. cover_letters: exactly ONE row with id "auto" whose `opp_id` is present is given `<opp_id>-clN` (N one past the
+#      highest suffix already minted for that opp, never a freed number: `record.mint_app_id`'s rule), and every
+#      `cover_letter_id` in applications that said "auto" is repointed to it.
+#   5. ANYTHING IT CANNOT FIX LOSSLESSLY is left exactly as found and named, by store and id, in ONE `asks.jsonl` row
+#      (`legacy-placeholders-unfixed`, kind system, replaced by id on a re-run, closed once nothing is left). That is a value
+#      of the wrong TYPE (a list `career_url`, a bare-string `aliases`), several "auto" cover letters (which application
+#      meant which cannot be known), an "auto" letter with no `opp_id` to mint from, and an application pointing at an
+#      "auto" letter that does not exist. The result is PENDING (False), never a false "done".
+#   6. VERIFIES FROM DISK: every store re-read must equal exactly what was planned and every untouched line must be
+#      byte-identical; ANY SHORTFALL restores the bytes this run read just before its own write and returns PENDING.
+#
+# IDEMPOTENT: a second run finds nothing to fix and writes nothing. ROLLBACK RISK: restoring `<store>.jsonl.pre-0.76.1`
+# undoes it for rows not edited since; an older engine's validator reads the fixed shape as valid.
+LEGACY_PLACEHOLDERS_PRE_COPY = "pre-0.76.1"
+LEGACY_PLACEHOLDERS_ASK_ID = "legacy-placeholders-unfixed"
+_legacy_placeholders_fault = None   # TEST SEAM (family of `_adoption_fault`): "shortfall" forces the verify step to fail
+
+
+def _blank_str(v):
+    return isinstance(v, str) and not v.strip()
+
+
+def _legacy_fix_company(row):
+    """`(new_row, unfixable_fields)` for one companies row. Key order is kept; only the listed placeholders change."""
+    new, bad = dict(row), []
+    for f in ("career_url", "domain"):
+        if f in new and new[f] is not None:
+            if _blank_str(new[f]):
+                new[f] = None
+            elif not isinstance(new[f], str):
+                bad.append(f)
+    if "size_ownership" in new:
+        if new["size_ownership"] is None or _blank_str(new["size_ownership"]):
+            del new["size_ownership"]
+        elif not isinstance(new["size_ownership"], str):
+            bad.append("size_ownership")
+    if "aliases" in new:
+        al = new["aliases"]
+        if al is None:
+            del new["aliases"]
+        elif isinstance(al, list):
+            kept = [a for a in al if not _blank_str(a)]
+            if len(kept) != len(al):
+                new["aliases"] = kept
+            if any(not isinstance(a, str) for a in kept):
+                bad.append("aliases")
+        else:
+            bad.append("aliases")
+    return new, bad
+
+
+def _legacy_mint_cover_letter_id(opp_id, rows):
+    """`<opp_id>-clN`, N one past the highest suffix already minted for this opp (record.mint_app_id's rule)."""
+    prefix = "%s-cl" % opp_id
+    n = 0
+    for r in rows:
+        rid = r.get("id")
+        if isinstance(rid, str) and rid.startswith(prefix) and rid[len(prefix):].isdigit():
+            n = max(n, int(rid[len(prefix):]))
+    return "%s%d" % (prefix, n + 1)
+
+
+def _legacy_plan(companies, letters, apps):
+    """The whole plan as data: the rows each store should hold afterwards (`companies`, `cover_letters`,
+    `applications`), `changed` ({store: [row index, ...]}), `unfixable` (sorted `store:id (why)` labels), `minted`."""
+    new_companies, c_changed, unfixable = [], [], set()
+    for i, row in enumerate(companies):
+        new, bad = _legacy_fix_company(row)
+        if new != row:
+            c_changed.append(i)
+        for f in bad:
+            unfixable.add("companies:%s (%s has a value of the wrong type)" % (row.get("id", "line %d" % (i + 1)), f))
+        new_companies.append(new)
+    new_letters, l_changed = [dict(r) for r in letters], []
+    new_apps, a_changed = [dict(r) for r in apps], []
+    autos = [i for i, r in enumerate(letters) if r.get("id") == "auto"]
+    minted = None
+    if len(autos) > 1:
+        unfixable.add("cover_letters:auto (%d rows share the id, so which application meant which cannot be known)"
+                      % len(autos))
+    elif len(autos) == 1:
+        i = autos[0]
+        opp = letters[i].get("opp_id")
+        if isinstance(opp, str) and opp.strip():
+            minted = _legacy_mint_cover_letter_id(opp, letters)
+            new_letters[i]["id"] = minted
+            l_changed.append(i)
+        else:
+            unfixable.add("cover_letters:auto (no opp_id to mint an id from)")
+    for j, r in enumerate(apps):
+        if r.get("cover_letter_id") == "auto":
+            if minted:
+                new_apps[j]["cover_letter_id"] = minted
+                a_changed.append(j)
+            else:
+                unfixable.add("applications:%s (cover_letter_id points at 'auto', which cannot be resolved)"
+                              % r.get("id", "line %d" % (j + 1)))
+    return {"companies": new_companies, "cover_letters": new_letters, "applications": new_apps,
+            "changed": {"companies": c_changed, "cover_letters": l_changed, "applications": a_changed},
+            "unfixable": sorted(unfixable), "minted": minted}
+
+
+def _legacy_ask_row(unfixable, today, created=None):
+    """The ONE `asks.jsonl` row naming every row the migration could not fix. A DECISION, never mechanical work."""
+    shown = unfixable[:20]
+    more = len(unfixable) - len(shown)
+    return {"id": LEGACY_PLACEHOLDERS_ASK_ID, "kind": "system",
+            "title": "%d row%s still carry a legacy placeholder the migration could not fix"
+                     % (len(unfixable), "" if len(unfixable) == 1 else "s"),
+            "ask": ("jobsearch 0.76.1 repaired the legacy placeholder values it could repair without losing anything, and "
+                    "left these exactly as they were: %s%s. Decide what each should hold and fix it with `record.py set` "
+                    "(the validator names the command for each), then run validate_data.py. This migration tries again "
+                    "next session and closes this ask once nothing is left. The original files are kept beside the data "
+                    "as <store>.jsonl.%s." % ("; ".join(shown), (" and %d more" % more) if more else "",
+                                              LEGACY_PLACEHOLDERS_PRE_COPY)),
+            "created": created or today, "act_by": None, "opp_id": None, "channel_id": None,
+            "resolves_when": None, "resolved_on": None, "resolution": None,
+            "trigger_kind": None, "trigger_ref": None, "note": None}
+
+
+def _legacy_restore(snapshots):
+    """B4's rule: put back EXACTLY the bytes this run read before its own write (`None` = the file did not exist).
+    Never reads `*.pre-0.76.1`."""
+    import _atomic
+    for path, data in snapshots.items():
+        try:
+            if data is None:
+                if os.path.exists(path):
+                    os.unlink(path)
+            else:
+                _atomic.write_text(path, data.decode("utf-8"))
+        except (OSError, UnicodeDecodeError):
+            pass
+
+
+def m_0_76_1_legacy_placeholders(profile, apply_it):
+    """0.76.1 -- repair legacy placeholder values in companies / cover_letters / applications (see the block above).
+    Returns (done, message); PENDING (False) whenever it cannot read, cannot verify, or has a row it cannot fix losslessly."""
+    sys.path.insert(0, HERE)
+    import datetime
+    import _atomic
+    pending = "  ⏳ 0.76.1 PENDING -- %s. Nothing was written."
+    stores, err = {}, None
+    for name in ("companies", "cover_letters", "applications", "asks"):
+        rows, raws, e = _uid_text_read(profile, name)
+        err = err or e
+        stores[name] = (rows, raws)
+    if err:
+        return False, pending % ("%s. Fix it and this runs again next session: rewriting a store this could not fully read "
+                                 "would drop that line" % err)
+    asks = stores["asks"][0]
+    plan = _legacy_plan(stores["companies"][0], stores["cover_letters"][0], stores["applications"][0])
+    changed, unfixable = plan["changed"], plan["unfixable"]
+    n_changed = sum(len(v) for v in changed.values())
+    today = datetime.date.today().isoformat()
+    have_ask = next((a for a in asks if a.get("id") == LEGACY_PLACEHOLDERS_ASK_ID), None)
+    ask_open = have_ask is not None and not have_ask.get("resolved_on")
+    if not n_changed and not unfixable and not ask_open:
+        return True, "  ✅ legacy placeholders (0.76.1) -- nothing to fix"
+    summary = "%d companies row%s, %d cover letter%s, %d application reference%s" % (
+        len(changed["companies"]), "" if len(changed["companies"]) == 1 else "s",
+        len(changed["cover_letters"]), "" if len(changed["cover_letters"]) == 1 else "s",
+        len(changed["applications"]), "" if len(changed["applications"]) == 1 else "s")
+    if not apply_it:
+        msg = "  would repair (0.76.1): %s" % summary
+        if unfixable:
+            msg += "; %d row%s it cannot fix losslessly (%s)" % (len(unfixable), "" if len(unfixable) == 1 else "s",
+                                                               "; ".join(unfixable[:5]))
+        return not unfixable, msg
+    data_dir = os.path.join(profile, "data")
+    paths = {name: os.path.join(data_dir, name + ".jsonl") for name in stores}
+    # ---- plan every new file text BEFORE touching disk, from the bytes this run reads now
+    snapshots, texts = {}, {}
+    for name in ("companies", "cover_letters", "applications", "asks"):
+        if name != "asks" and not changed[name]:
+            continue
+        try:
+            with open(paths[name], "rb") as fh:
+                snapshots[paths[name]] = fh.read()
+        except FileNotFoundError:
+            snapshots[paths[name]] = None
+        except OSError as exc:
+            return False, pending % ("%s.jsonl cannot be re-read (%s)" % (name, exc))
+    try:
+        for name in ("companies", "cover_letters", "applications"):
+            if changed[name]:
+                repl = {i: json.dumps(plan[name][i], ensure_ascii=False) for i in changed[name]}
+                texts[paths[name]] = _adoption_replace_lines(snapshots[paths[name]].decode("utf-8"), repl)
+        ask_bytes = snapshots[paths["asks"]]
+        ask_text = ask_bytes.decode("utf-8") if ask_bytes is not None else ""
+        if unfixable:
+            want = _legacy_ask_row(unfixable, today, have_ask.get("created") if have_ask and have_ask.get("created") else None)
+            line = json.dumps(want, ensure_ascii=False)
+            if have_ask is not None:
+                new_ask_text = _adoption_replace_lines(ask_text, {asks.index(have_ask): line})
+            else:
+                new_ask_text = (ask_text if not ask_text or ask_text.endswith("\n") else ask_text + "\n") + line + "\n"
+        elif ask_open:
+            closed = json.dumps(dict(have_ask, resolved_on=today, resolution="fixed"), ensure_ascii=False)
+            new_ask_text = _adoption_replace_lines(ask_text, {asks.index(have_ask): closed})
+        else:
+            new_ask_text = ask_text
+        if new_ask_text != ask_text:
+            texts[paths["asks"]] = new_ask_text
+    except UnicodeDecodeError as exc:
+        return False, pending % ("a store is not valid UTF-8 (%s)" % exc)
+    # ---- PRESERVE FIRST: one byte-for-byte copy per store about to change, never over an earlier one
+    for path in texts:
+        if snapshots[path] is None:
+            continue
+        pre = path + "." + LEGACY_PLACEHOLDERS_PRE_COPY
+        if not os.path.exists(pre):
+            try:
+                shutil.copy2(path, pre)
+            except (OSError, shutil.Error) as exc:
+                return False, ("  ⚠️ 0.76.1 PENDING -- %s could not be preserved to %s (%s), so NOTHING was changed."
+                               % (os.path.basename(path), os.path.basename(pre), exc))
+    try:
+        for path, text in texts.items():
+            _atomic.write_text(path, text)
+    except OSError as exc:
+        _legacy_restore({p: snapshots[p] for p in texts})
+        return False, pending % ("the write failed (%s); the stores are restored" % exc)
+    # ---- the success condition, re-read from disk
+    bad = []
+    for name in ("companies", "cover_letters", "applications"):
+        rows, raws = stores[name]
+        after, after_raws, e = _uid_text_read(profile, name)
+        if e:
+            bad.append(e)
+        elif len(after) != len(rows):
+            bad.append("%s: the row count changed (%d -> %d)" % (name, len(rows), len(after)))
+        else:
+            for i, (was_raw, now_raw, now) in enumerate(zip(raws, after_raws, after)):
+                if i in changed[name]:
+                    if now != plan[name][i]:
+                        bad.append("%s line %d: does not equal the planned row" % (name, i + 1))
+                elif now_raw != was_raw:
+                    bad.append("%s line %d: a row that was not repaired changed" % (name, i + 1))
+    after_asks, _r, e = _uid_text_read(profile, "asks")
+    if e:
+        bad.append(e)
+    else:
+        mine = [a for a in after_asks if a.get("id") == LEGACY_PLACEHOLDERS_ASK_ID]
+        if unfixable and (len(mine) != 1 or mine[0].get("resolved_on")):
+            bad.append("the question naming the unfixable rows does not exist exactly once and open")
+        if len(after_asks) != len(asks) + (1 if unfixable and have_ask is None else 0):
+            bad.append("asks.jsonl: the row count is not what was planned")
+    if _legacy_placeholders_fault == "shortfall":
+        bad.append("TEST FAULT INJECTED: forced shortfall")
+    if bad:
+        _legacy_restore({p: snapshots[p] for p in texts})
+        return False, ("  ⏳ 0.76.1 PENDING -- the success condition did not hold after the write (%s); the stores are "
+                       "restored to what this run read, so nothing you changed is lost. Offered again next session."
+                       % "; ".join(bad[:3]))
+    lines = ["  %s legacy placeholders (0.76.1) -- repaired %s (the original files are kept beside the data as "
+             "<store>.jsonl.%s)" % ("⏳" if unfixable else "✅", summary, LEGACY_PLACEHOLDERS_PRE_COPY)]
+    if plan["minted"]:
+        lines.append("      cover letter 'auto' -> %s, and every application that named it repointed" % plan["minted"])
+    if unfixable:
+        lines.append("  ⏳ 0.76.1 PENDING -- %d row%s could not be fixed losslessly and %s left as found; one ask (%s) "
+                     "names %s: %s" % (len(unfixable), "" if len(unfixable) == 1 else "s",
+                                       "was" if len(unfixable) == 1 else "were", LEGACY_PLACEHOLDERS_ASK_ID,
+                                       "it" if len(unfixable) == 1 else "them", "; ".join(unfixable[:5])))
+    return not unfixable, "\n".join(lines)
+
+
 MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               ("0.17.0", m_0_17_0), ("0.18.0", m_0_18_0), ("0.19.0", m_0_19_0),
               ("0.20.0", m_0_20_0), ("0.24.0", m_0_24_0_blocked_until),
@@ -6807,7 +7095,10 @@ MIGRATIONS = (("0.4.0", m_0_4_0), ("0.13.0", m_0_13_0), ("0.14.0", m_0_14_0),
               # KEYED "0.76.0" -- see the note above `ADOPTION_PRE_COPY`. It runs LAST; it stamps the hand-made rows that
               # exactly match a template the plugin once shipped, and asks about the near matches. It never turns a
               # source on or off.
-              ("0.76.0", m_0_76_0_source_adoption))
+              ("0.76.0", m_0_76_0_source_adoption),
+              # KEYED "0.76.1" (dev #768-1, #764-4) -- see the note above `LEGACY_PLACEHOLDERS_PRE_COPY`. It runs LAST;
+              # it touches only data/companies.jsonl, cover_letters.jsonl, applications.jsonl and (one row) asks.jsonl.
+              ("0.76.1", m_0_76_1_legacy_placeholders))
 
 
 # ⭐⭐ dev #365 (design-connected-entities.md §26.7/§28.2) — "no record of which version added
@@ -7082,7 +7373,80 @@ def _run_purity_envelope(profile, migrations_verdict, args):
         diag("migrate", verdict="purity-error", reason=type(e).__name__)
 
 
+# ---- dev #768-2: "current" must not be said over data the validator rejects ---------------------------------------------
+VALIDATE_TIMEOUT_S = 15       # the SessionStart hook has a 30 s budget in all; the fixture validates in well under 1 s
+
+
+def _data_problem_count(profile):
+    """`(count, why)`: the number of PROBLEMs `validate_data.py` reports on `profile`, read from the validator's own
+    sidecar (never parsed out of printed text). `count` is 0 for clean and None when the validator could not be run or
+    did not finish, with `why` in plain words: unknown is never read as clean. READ-ONLY, so it also runs under --check."""
+    fd, sidecar = tempfile.mkstemp(prefix=".migrate-validate-", suffix=".json")
+    os.close(fd)
+    try:
+        env = dict(os.environ, CLAUDESEARCH_ROOT=profile, CLAUDESEARCH_DATA_DIR=os.path.join(profile, "data"),
+                   CLAUDESEARCH_PROBLEMS_OUT=sidecar)
+        try:
+            subprocess.run([sys.executable, os.path.join(HERE, "validate_data.py")], capture_output=True, text=True,
+                           env=env, cwd=profile, timeout=VALIDATE_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            return None, "validate_data.py did not finish within %d s" % VALIDATE_TIMEOUT_S
+        except OSError as exc:
+            return None, "validate_data.py could not be run: %s" % type(exc).__name__
+        try:
+            with open(sidecar, encoding="utf-8") as fh:
+                text = fh.read()
+            got = json.loads(text) if text.strip() else None
+        except (OSError, ValueError):
+            got = None
+        if not isinstance(got, list):
+            return None, "validate_data.py did not finish"
+        return len(got), ""
+    finally:
+        try:
+            os.unlink(sidecar)
+        except OSError:
+            pass
+
+
+_SYSTEM_MESSAGES = []
+
+
+def _say_system_message(text):
+    """Queue ONE user-facing SessionStart line (a `systemMessage`); the same text is never queued twice."""
+    if text not in _SYSTEM_MESSAGES:
+        _SYSTEM_MESSAGES.append(text)
+
+
+def _flush_hook_stdout(text, out):
+    """Write what a `--hook` run printed. With no queued system message the text passes through untouched. With one, stdout
+    becomes ONE JSON object (the only shape Claude Code reads a `systemMessage` from): the message, and everything else
+    the run printed carried as `additionalContext`, so nothing the model used to be told is lost."""
+    if not _SYSTEM_MESSAGES:
+        out.write(text)
+        return
+    payload = {"systemMessage": " ".join(_SYSTEM_MESSAGES)}
+    if text.strip():
+        payload["hookSpecificOutput"] = {"hookEventName": "SessionStart", "additionalContext": text.rstrip("\n")}
+    out.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+
 def main():
+    """`--hook` buffers stdout so a queued `systemMessage` can be emitted as one JSON document (see `_flush_hook_stdout`);
+    every other mode prints as it goes, exactly as before."""
+    del _SYSTEM_MESSAGES[:]
+    if "--hook" not in sys.argv[1:]:
+        return _main()
+    real, buf = sys.stdout, io.StringIO()
+    sys.stdout = buf
+    try:
+        return _main()
+    finally:
+        sys.stdout = real
+        _flush_hook_stdout(buf.getvalue(), real)
+
+
+def _main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--check", action="store_true", help="report only; write nothing")
@@ -7255,6 +7619,17 @@ def main():
             # behind while the hook shipped in every version across that range.
             if not args.check:
                 record_noop(profile, engine)
+            # ⭐⭐ dev #768-2 — CURRENT IS A CLAIM ABOUT THE VERSION STRING, NOT ABOUT THE DATA. 0.73.0 tightened
+            # a validator rule with no migration for older data, so a profile stamped current validated RED
+            # while this script said "Profile is current" and a session start said nothing at all. Ask the
+            # validator (read-only, so it also runs under --check). `invalid_n` is the PROBLEM count, 0 for
+            # clean, None when the validator could not be run (an honest "unknown", never read as clean).
+            invalid_n, invalid_why = _data_problem_count(profile)
+            if invalid_n:
+                _say_system_message(
+                    "jobsearch: this profile's data has %d validation PROBLEM%s although its schema is current "
+                    "(stamp %s) -- run `~/.claude/jobsearch/run validate_data.py` to see %s."
+                    % (invalid_n, "" if invalid_n == 1 else "S", stamp, "it" if invalid_n == 1 else "them"))
             if not args.hook:
                 # ⭐⭐ public #104 — THE LINE THE OWNER'S OWN RUN CAUGHT: this used to read
                 # "Profile is current" from the schema version string alone, over an install
@@ -7263,8 +7638,18 @@ def main():
                 # this line makes is still only ever about the version string; say so plainly,
                 # and never let it stand in for "the tree was verified clean this session."
                 # ⚠️ the exact sentence below is pinned by existing tests (assertIn "Profile is
-                # current") — extend what follows it, never the sentence itself.
-                base = "Profile is current (schema %s, engine %s)." % (stamp, engine)
+                # current") — extend what follows it, never the sentence itself. dev #768-2: it
+                # is NEVER printed over a profile the validator reports PROBLEMs on; that case
+                # says so in one line instead, naming the count and the script that lists them.
+                if invalid_n:
+                    base = ("Profile schema is up to date (schema %s, engine %s), but its data has %d validation "
+                            "PROBLEM%s -- run `~/.claude/jobsearch/run validate_data.py` to see %s."
+                            % (stamp, engine, invalid_n, "" if invalid_n == 1 else "S",
+                               "it" if invalid_n == 1 else "them"))
+                else:
+                    base = "Profile is current (schema %s, engine %s)." % (stamp, engine)
+                if invalid_n is None:
+                    base += " NOT CHECKED: the data was not validated (%s)." % invalid_why
                 if heal_verdict == "repaired":
                     print(base + " Install tree repaired this session (public #104) — see the "
                                  "install self-heal line above.")

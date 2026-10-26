@@ -1651,6 +1651,18 @@ Two steps, both automatic, both keeping your own fields exactly as you wrote the
 
 A catalog update after that (a plugin version that changes a source you turned on) is applied at session start only to rows you have not edited; see *Your sources* in [How it works](how-it-works.md).
 
+### What the 0.76.1 upgrade writes
+
+One step (`m_0_76_1_legacy_placeholders`), automatic, repairing placeholder values that older versions wrote and the validator now rejects. Anything it is not sure of, it leaves exactly as it was.
+
+- **Copies first.** Before it changes a store, that store is copied byte for byte to `<store>.jsonl.pre-0.76.1` (for example `companies.jsonl.pre-0.76.1`). An existing copy is never overwritten.
+- **Company placeholders.** In `data/companies.jsonl`, an empty `career_url` or `domain` becomes `null`; an empty or null `size_ownership` and empty or null `aliases` are removed, and empty entries inside `aliases` are dropped. Nothing else in a row changes and no row is removed.
+- **A cover letter named `auto`.** An older `record.py create auto` could leave a cover letter whose id was the word `auto`. If there is exactly one, and it names its opportunity, it is renamed `<opp_id>-clN` (the next number for that opportunity), and every application whose `cover_letter_id` said `auto` is repointed to the new id.
+- **One question for what it cannot fix.** A value of the wrong kind (a list where a text is expected), several `auto` letters (it cannot know which application meant which), an `auto` letter with no opportunity, or an application pointing at an `auto` letter that does not exist is left as found and named, by store and id, in one row in your asks (`legacy-placeholders-unfixed`). The step then waits and reports as pending until that is resolved; it closes the question itself once nothing is left.
+- **Verified, or put back.** The stores are re-read after the write; if anything differs from the plan, they are restored and the step tries again next session.
+
+Nothing else is changed: no other store, no setting, and no row it did not need to repair. Going forward, `record.py create auto` is refused for a store that cannot mint ids, and `validate_data.py` refuses `auto` or an empty id as a stored id.
+
 ### Attended and unattended
 
 A tier's `unattended` list is for **unattended** runs. A run is treated as unattended **unless
