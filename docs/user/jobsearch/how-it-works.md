@@ -301,7 +301,7 @@ same way here. The catalog stamp on each row is explained in [Your data](your-da
 
 **Add one by hand.** For a firm that is not in the catalog, paste these two rows, one into `companies.jsonl`
 (the firm is an ordinary company) and one into `channels.jsonl`, and fill the placeholders. `portfolio_of`
-names the firm's company id and `board_hosts` lists the board's own host, which the plugin must never open.
+names the firm's company id and `board_hosts` lists the board's own host, which the plugin must never open. When the plugin tries to fetch or open such a board through its web or browser tools, it is stopped: the message names the board and asks you to open it yourself. A fetch made through a shell command is not covered by that block.
 `alert_sender` is optional and only matters if the board sends alert emails.
 
 ```jsonl
