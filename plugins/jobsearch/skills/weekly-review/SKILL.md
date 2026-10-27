@@ -1,6 +1,6 @@
 ---
 name: weekly-review
-description: 'Weekly strategy review: channel yield, cadence adherence, and config proposals. Invoked by the scheduled routine, or on demand.'
+description: 'Weekly strategy review: channel yield, cadence adherence, and config proposals. Invoked by the scheduled routine, or on demand. Not for something broken; that is /jobsearch:checkup.'
 ---
 
 # Weekly strategy review

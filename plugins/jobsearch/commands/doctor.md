@@ -1,5 +1,5 @@
 ---
-description: Check that this job search is healthy and current with the installed plugin
+description: "Check that this job search's install and configuration are healthy and current with the installed plugin: deterministic checks, and a `--fix` that only makes safe repairs. Not for whether the search is working well: that is /jobsearch:checkup."
 ---
 
 Run the health check for the user's job-search profile, then **explain the results in plain

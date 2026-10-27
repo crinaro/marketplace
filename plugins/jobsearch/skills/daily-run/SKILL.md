@@ -1,6 +1,6 @@
 ---
 name: daily-run
-description: 'Run one job-search sweep: mailbox, LinkedIn, sourcing, state updates, dashboard, and a summary to the coordinator queue. Invoked by the scheduled routine, or on demand.'
+description: 'Run one job-search sweep: mailbox, LinkedIn, sourcing, state updates, dashboard, and a summary to the coordinator queue. Invoked by the scheduled routine, or on demand. Not for sweeping career pages or job boards on demand without the rest of the run; that is /jobsearch:search.'
 ---
 
 # Daily run
@@ -353,8 +353,8 @@ only a refusal is. So, once `posture.py --may linkedin` exits 0:
    `returned` row (it read *something*, even if nothing landed), it simply carries an empty
    `--reached` and does not consume the day's budget. A pass that never returns at all (the
    agent crashed mid-run, or ended before its own §"What you hand back" step) is a *crashed
-   pass*, never papered over with a hand-written `returned` row — `journal.py --may
-   linkedin`/`--passes` names it on its own line.
+   pass*, never papered over with a hand-written `returned` row — `journal.py
+   --passes` names it on its own line (`posture.py --may linkedin` does not).
 
 **⭐⭐ EVERY ROLE A PASS SEES IS ACCOUNTED FOR, BY SCRIPT (dev #692 / public #140, dev #489 /
 public #102).** The JOB SEARCH result is a `ROLES v1` block in the runner's hand-back file, never a
@@ -540,10 +540,35 @@ Run it in the read phase, unlocked: its own `record.py` calls take the lock they
   `record.py ats`, and every unlinked company-site channel.
 - **Quote the `feeds:` line** from `run_summary.py` in the summary (§13).
 
-**Weekly (first run on/after Monday, per `log.md`):** dispatch `board-sweeper` for the non-LinkedIn sourcing pass — boards, aggregators and employer career pages, each reached by its configured route.
-**Write the dispatch as a script row, in the same breath (dev #692 / public #140, R3):**
-`~/.claude/jobsearch/run journal.py --run <id> --pass board --phase dispatched`. The missing-ROLES
-check keys on that row, never on a folded `dispatch` row. When the sweeper hands back, run
+**EMPLOYER-FEED PROPOSALS: EVERY RUN, UNDER EVERY POSTURE (jobsearch 0.78.0, dev #770).** Companies you track that
+have no job-board feed yet are looked for in a session the candidate is present for, never here. This run only
+keeps the one ask honest: it opens the single "proposals wait for you" ask when proposals are waiting, and resolves
+it when none are left. It reads files only (no network, no model turn), so run it in the read phase, unlocked:
+
+```bash
+~/.claude/jobsearch/run ats_finder.py --reconcile-ask
+```
+
+Never add `--attended` or `--supersede` here: those belong to `/jobsearch:sourcing employers attended`. Exit 0
+always for this call; a line it cannot vouch for reads `NOT CHECKED` or `LEFT OPEN`, never "nothing waiting".
+**Quote its `finder:` line** in the summary (§13), beside the `feeds:` line.
+
+**Board sweep (on its posture's scheduled days; jobsearch 0.78.0, dev #770-4, owner ruling O4):** two
+schedules, one call. Employer career pages (`company-site`) run on the posture's `company_days`, job boards
+and aggregators on its `board_days`; ask the script, never the calendar and never `log.md`:
+`~/.claude/jobsearch/run channels_due.py --board-decision --run <id>` (add `--attended` only on the
+explicit attended form). **Dispatch `board-sweeper` for the non-LinkedIn sourcing pass
+only when it exits 0, and give it exactly the ids on the call's `  worklist:` line** — only the due kind's channels
+(`BOARD DISPATCH yes company`, `yes board`, or `yes company,board` says which), each reached by its
+configured route. Never add a channel of the kind that is not due. The call has
+already written the dispatch as a script row, one per due kind (dev #692 / public #140, R3), so do not
+write it again; the missing-ROLES check keys on that row, never on a folded `dispatch` row. On exit 1 print
+its `BOARD DISPATCH no ...` line in the summary and dispatch nothing: the posture does not permit a board
+sweep unattended today (`minimal`, or not a scheduled day for either kind), or no due channel has a route
+this machine can run (the day stays open for a run that can). On exit 3 print its line, say so in the
+summary, and dispatch nothing: a posture, `company_days`, `board_days` or journal it cannot read is never
+read as permission. When the sweeper
+hands back, run
 `~/.claude/jobsearch/run deferred.py --add-roles <hand-back file> --run <id> --surface board --check`
 and then the same call without `--check`, the same gate, the same outcomes and the same exit codes
 as the LinkedIn pass above; the sweeper no longer cross-checks the pipeline itself.
@@ -551,39 +576,73 @@ as the LinkedIn pass above; the sweeper no longer cross-checks the pipeline itse
 career pages moved to MONTHLY, and two job boards were RETIRED after a zero-yield trial. Do not
 re-add a retired channel.
 
-## 5. RESEARCH — delegate to `opportunity-researcher`
+## 4b. CAPTURE AND SCREEN — BEFORE RESEARCH (owner ruling O5, jobsearch 0.78.0)
 
-**⭐ A POSTURE LIMITS HOW OFTEN, NEVER HOW MUCH (dev #692 / public #140).** Only the RESEARCH
-agent is gated by posture. Capturing every role the run found, and screening it (§7's minimal
-screen), happens under every posture, `minimal` and `economy` included. Check the gate before
-dispatching:
+**The order is capture → screen → research → queue, in this run.** A role a pass found today is
+researched today when the screen keeps it; it does not wait for the next run. So, once the passes above
+have handed back, capture what they carried now, not in §7: claim each `capture-role` item from
+`deferred.py --claimable`, `record.py create … --from-item <the item's id>`, then `--done` the item,
+following §7's **CAPTURE WHAT THE PASSES CARRIED** rules exactly (the `--from-item` copies, the
+`location` and `channel_id` omissions, `--plan`, `source_url`) except one: **no `--already-locked`
+here.** This is the read phase, unlocked, so each `record.py` call takes and releases the lock itself
+(milliseconds), as `feed_poll.py`'s own calls do. Then screen every role captured this run, in ONE call:
 
 ```bash
-~/.claude/jobsearch/run posture.py --may research
+~/.claude/jobsearch/run profile.py --minimal-screen <opp_id> [<opp_id> ...]
 ```
 
-- **Exit 0** → dispatch `opportunity-researcher` as below, up to `max_agents_per_run`. Every new role
-  over that cap gets `~/.claude/jobsearch/run deferred.py --add-research <opp_id>`.
-- **Exit 1** → dispatch nothing, and queue each new role that needs research with
-  `~/.claude/jobsearch/run deferred.py --add-research <opp_id>`. It is a script form: fixed text,
-  `requires: research`, idempotent while one is pending. It is not a failure — §2b's `--claimable`
-  lists it under `HELD BY POSTURE` and it drains on the first run whose posture permits research.
-  Say "N research items held by posture" in the summary.
+Act on each `VERDICT` exactly as §7 says (a `remove:<rule>` role gets its `record.py decide … pass`
+now, without `--already-locked`), and keep the block's summary line for §13. §5 then researches the
+`VERDICT keep` roles. §7 captures only an item this step could not finish.
+
+## 5. RESEARCH — delegate to `opportunity-researcher`
+
+**⭐ A POSTURE LIMITS HOW OFTEN THE SEARCH LOOKS, NEVER WHETHER A FOUND ROLE IS RESEARCHED (owner
+ruling O6, jobsearch 0.78.0; supersedes O5).** Posture levels gate the sweeps (`company_days`,
+`board_days`, the `board` and `linkedin` tokens) and drafting. **No posture gates research, `minimal`
+included, and `max_agents_per_run` does not cap it:** every role this run found whose minimal screen
+keeps it is researched in this run. Do not ask the posture about research: its `--may` answers yes for research on every
+posture and is kept only for older callers.
+
+- **One `opportunity-researcher` dispatch covers the batch** of new kept roles, **at most 10 roles**
+  (a fixed batch size, the same on every posture: one agent reads each posting and company in full,
+  and ten is the bound kept so that one context holds them; OURS, not a measured limit). Each kept
+  role over 10 gets `~/.claude/jobsearch/run deferred.py --add-research <opp_id>`, and §2b drains it
+  on the next run. It is a script form: fixed text, `requires: research`, idempotent while one is
+  pending, claimable on every posture.
 - **A free-text research row queued before this release** (no `requires`) is `--done` once its
   `--add-research` replacement exists; the old row cannot drain, and rewriting it is a migration.
 
 **⭐ A RUN IS UNATTENDED BY DEFAULT (owner decision R2).** The rules above apply to every run
 unless it was started with the explicit attended form, `/jobsearch:daily-run attended`. Only that
-form passes `--attended` (`posture.py --may research --attended --run <id>`, `deferred.py
---claimable --attended`), which lifts the research and drafting gate and journals a note saying
-so. **Never infer attended** from a missing scheduler line, an `ENGINE=` marker or the time of
+form passes `--attended` (`posture.py --may drafting --attended --run <id>`, `deferred.py
+--claimable --attended`, `channels_due.py --board-decision --run <id> --attended`), which lifts the
+drafting gate, the board sweep's weekday schedule and the posture's `max_agents_per_run` cap on that
+sweep (an attended sweep needs one agent, so `minimal`'s 0 does not stop it), and journals a note saying
+so (research needs no lift: no posture gates it). An attended board dispatch spends no scheduled slot (its row carries `attended: true`). **Never infer attended** from a missing scheduler line, an `ENGINE=` marker or the time of
 day: Claude Code documents no in-session marker that tells a scheduled session from a typed one,
 and the safe reading of an unmarked run is that nobody is watching. `--attended` never lifts
 `linkedin` (§4's gate is the browser and the quota, not a posture word).
 
-For every genuinely new role, in one batch. It finds the posting on the company's own site/ATS
-(not the alert snippet), reads the full JD, and researches the company. Fold its findings into the
-role's record — comp, scope, reporting line, company snapshot, and any discrepancy versus the
+**⭐ RESEARCH ONLY A ROLE THE MINIMAL SCREEN KEPT (owner rulings O5, O6, jobsearch 0.78.0).** Research
+happens when a role is found and aligns to the candidate's criteria, on every posture, and never before
+the screen has said so. Before dispatching or queueing, screen the candidates (zero-token, read-only):
+
+```bash
+~/.claude/jobsearch/run profile.py --minimal-screen <opp_id> [<opp_id> ...]
+```
+
+Dispatch `opportunity-researcher`, or queue `deferred.py --add-research <opp_id>`, **only for a role whose
+block reads `VERDICT keep`**. A `VERDICT remove:<rule>` role is never researched (§4b records the pass);
+a `VERDICT review:<rule>` role waits for the owner's look and is not researched unattended (it does not
+yet meet the criteria). The roles §4b captured this run are in this screen: research the kept ones now,
+in the one batch above, and queue only the overflow with `--add-research`. **The script enforces it:** `--add-research` refuses a role whose
+current screen is not `keep` (exit 2, nothing queued), and the research claim re-checks it, so a queued
+role removed later never drains into research (`--claimable` lists it under `HELD BY SCREEN`).
+
+For every genuinely new role the screen kept, in one batch. It finds the posting on the company's own
+site/ATS (not the alert snippet), reads the full JD, and researches the company. Fold its findings into
+the role's record — comp, scope, reporting line, company snapshot, and any discrepancy versus the
 alert. **Skip roles already excluded or already researched.** An alert's title/company/comp snippet
 alone cannot support a fit judgement or a draft.
 
@@ -732,9 +791,13 @@ exclusion list: `~/.claude/jobsearch/run record.py decide <opp_id> pass --why-ki
 suggestion would have been `pursue`, so pass it every time), and name the rule in the run summary.
 **`VERDICT review:<rule>`**
 → keep the role and say which rule asked for a look (an advisory title rule never removes a role).
-**`VERDICT keep`** → nothing to do.
+**`VERDICT keep`** → a role captured in this phase (one §4b could not finish) that has no research yet gets
+`~/.claude/jobsearch/run deferred.py --add-research <opp_id>` (owner ruling O5: the screen comes first,
+then research; it drains through §2b on the next run, on any posture).
+No other verdict queues research, and the script refuses one that tries.
 
-**⭐ CAPTURE WHAT THE PASSES CARRIED, THEN SETTLE (dev #692 / public #140).** `deferred.py
+**⭐ CAPTURE WHAT THE PASSES CARRIED, THEN SETTLE (dev #692 / public #140).** §4b ran these rules
+before research, unlocked; here they cover only an item still pending, with `--already-locked`. `deferred.py
 --add-roles` (§4) left one `capture-role` item per role the pass saw and did not capture. Each is
 `--claimable` on every posture (no `requires`). Claim it, `record.py create … --from-item <the
 item's id> --already-locked` from the item's URL, screen the new role as above, then `--done` the

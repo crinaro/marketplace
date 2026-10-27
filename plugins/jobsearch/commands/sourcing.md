@@ -1,6 +1,6 @@
 ---
-description: "See every job source this search uses (LinkedIn job search, boards such as Indeed and Dice, alert emails, company job-board feeds, curated and investment-firm boards), whether each is on, how it is reached and whether it is covered, and turn any of them on or off, including the boards in the shipped catalog. Also choose how the search reaches each board: a site plugin, Claude's in-app browser, or the Chrome extension. Not for recording a role you saw on a board; that is `record.py board-sighting`."
-argument-hint: "[on <source> | off <source> | browser,plugin,chrome | <channel> <plugin-name>]"
+description: "See every job source this search uses (LinkedIn job search, boards such as Indeed and Dice, alert emails, company job-board feeds, curated and investment-firm boards), whether each is on, how it is reached and whether it is covered, and turn any of them on or off, including the boards in the shipped catalog. Also choose how the search reaches each board: a site plugin, Claude's in-app browser, or the Chrome extension. Also find the job-board feeds of companies you track that have none yet (`employers attended`, in a session you are present for): each one found is proposed for you to accept or decline. Not for recording a role you saw on a board; that is `record.py board-sighting`. Not for looking for roles now; that is /jobsearch:search."
+argument-hint: "[on <source> | off <source> | browser,plugin,chrome | <channel> <plugin-name> | employers [attended]]"
 ---
 
 # Sourcing routes
@@ -102,6 +102,61 @@ a role the candidate saw there with `record.py board-sighting <channel_id> --com
 <the company's own posting URL>`; a `--url` on one of the board's hosts is refused. `portfolio_boards.py`
 reports what each board produced and whether it is covered; it fetches nothing. A role whose every address is
 on a board host is recorded `unavailable: manual-board`, never read.
+
+## Employers: find the feeds of companies you track (0.78.0)
+
+`$ARGUMENTS` of `employers` or `employers attended` comes here. A company is polled only when `companies[].ats`
+names its board, and that is filled only from addresses the profile already holds. A company whose careers page is
+on its own site, with the board linked from that page, is never found that way. `ats_finder.py` reads that one page
+(plus at most one same-site link) for a company you already track, and **proposes** the board it names. It writes
+nothing to your companies. You accept or decline each one, and a decline is remembered (`ats: null`, which discovery
+never rewrites). It never guesses a board from a company name.
+
+**The bare form, `employers`, never fetches.** It shows what is queued and any proposals already waiting, from this
+machine's own cache:
+
+```bash
+~/.claude/jobsearch/run ats_finder.py --queue
+~/.claude/jobsearch/run ats_finder.py --review
+```
+
+Print both outputs verbatim. If companies are queued, tell the candidate that reading their careers pages needs the
+explicit form, `/jobsearch:sourcing employers attended`, in a session they are present for, and stop. A scheduled
+prompt that types the bare form therefore gets this no-network path, never a fetch. A company the review lists under
+**NEEDS A CAREERS ADDRESS** has no address of its own on file: ask for its careers URL and set it with
+`record.py set <company_id> career_url <address> --file companies`.
+
+### The attended form
+
+`/jobsearch:sourcing employers attended` is the only form that reads careers pages, and the only place the flag
+below is passed. Never infer it from a scheduled run, and never add it to the bare form. One call reads up to five
+queued companies (about half a minute), one page plus at most one same-site link each, politely (one request a
+second per host, robots.txt honoured):
+
+```bash
+~/.claude/jobsearch/run ats_finder.py --resolve --attended
+~/.claude/jobsearch/run ats_finder.py --review
+```
+
+Print the output verbatim. If a line begins `ATS FINDER EGRESS`, the session could not reach those employer hosts
+(the command sandbox refuses hosts outside its allowed list in auto mode and asks in manual mode): say so, say the
+remedy printed under it, and do not call those companies "no board". A line begins `ATS FINDER NOT RUN` means
+nothing was read; report it and stop. To read one company or one address the page-selection missed, add
+`--company <id>` (and `--url <its careers page>`) to the first command.
+
+Then ask **one** question that carries the numbered list `--review` printed: for each proposal, **accept**,
+**reject** or **skip**. Accept means the board is polled from the next run, reject remembers the decision, skip
+leaves it for later. Never answer for the candidate. Write their answers in one call:
+
+```bash
+~/.claude/jobsearch/run ats_finder.py --decide example-robotics=accept other-co=reject third-co=skip --attended
+```
+
+An accept is `record.py ats <company_id> --url <board>` and a reject is `record.py ats <company_id> --none`; the
+script checks each proposal is still current first and names any it refuses. When every proposal is decided the one
+ask the daily run raised ("Job-board feeds found for companies you track") resolves itself. Proposals are decided on
+the machine that found them: if `--review` lists an ask that belongs to another machine's cache, offer
+`ats_finder.py --reconcile-ask --attended --supersede <ask id>` to close it, and run it only when the candidate says so.
 
 ## Change the order mechanisms are tried
 

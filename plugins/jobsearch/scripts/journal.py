@@ -288,6 +288,10 @@ PASS_PHASES = ("dispatched", "returned", "refused")
 # `REASONS`/`TRIAGE_VERDICTS`'s own "counted, not narrated" rule, applied to `kind`.
 PASS_KINDS = ("linkedin", "board")
 
+# dev #770-4 / O4 -- the `sweep` field of a `board` pass: which kind of board-sweeper work it covered
+# (`config_keys.SWEEP_KINDS`, restated here so this module imports nothing new). See `record_pass`.
+BOARD_SWEEPS = ("company", "board")
+
 # design-script-first.md §8.2 (public #90/#111) — the ONE required shape for a `dispatch` row.
 # Strict parser discipline reused from `scripts/dispatch_ledger.py` (the MAINTENANCE ledger this
 # is a sibling of, never a second copy of — see §8.2's own "what this is not" section): an
@@ -664,7 +668,7 @@ def dispatch_rows(recs, today_only=False):
 
 
 def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_attempted=None,
-                reason=None, at=None, jobsearch=None):
+                reason=None, at=None, jobsearch=None, sweep=None, attended=None):
     """design-script-first.md §2 (public #75/#87/#110) — the ONE writer for a `pass` row.
     `phase` is validated against `PASS_PHASES`, `kind` against `PASS_KINDS`, `reason` against
     `REASONS` (required for `phase="refused"`, refused otherwise — a reason on a row that is not
@@ -698,6 +702,28 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
         if jobsearch not in JOBSEARCH_TOKENS:
             raise JournalError("record_pass jobsearch=%r is not one of %r"
                                % (jobsearch, JOBSEARCH_TOKENS))
+    # dev #770-4, owner ruling O4 (jobsearch 0.78.0) -- WHICH board-sweeper work a `board` pass
+    # covers: `company` (employer career pages) or `board` (job boards and aggregators), so each kind
+    # spends its own weekday slot (`posture.board_spent_on`). An EXTRA FIELD on the existing `board`
+    # kind, never a new `kind`: a 0.77.0 `read()` accepts any field on a `pass` row (it validates the
+    # event name and `dispatch` rows only), and its missing-ROLES check keys on `kind == "board"`, so
+    # a 0.77.0 machine sharing `runs.jsonl` (ADR-012) still expects the sweep's `roles` event. A row
+    # without it (any row written before 0.78.0) covered both kinds.
+    if sweep is not None:
+        if kind != "board":
+            raise JournalError("record_pass: sweep is only for a board pass (got kind=%r)" % kind)
+        if sweep not in BOARD_SWEEPS:
+            raise JournalError("record_pass sweep=%r is not one of %r" % (sweep, BOARD_SWEEPS))
+    # dev #770 (/jobsearch:search, jobsearch 0.78.0) -- `attended: true` marks a board pass a person
+    # started on demand. It is outside the posture's schedule, so it never spends a scheduled slot
+    # (`posture.board_spent_on` skips it): a Monday `/jobsearch:search boards attended` leaves
+    # Tuesday's scheduled sweep due. Another EXTRA FIELD, tolerated by a 0.77.0 `read()` for the
+    # reason `sweep` is (it validates the event name and `dispatch` rows only).
+    if attended is not None:
+        if attended is not True or kind != "board" or phase != "dispatched":
+            raise JournalError("record_pass: attended=True is only for a board pass with "
+                               "phase='dispatched' (got attended=%r kind=%r phase=%r)"
+                               % (attended, kind, phase))
     reached = list(reached) if reached is not None else []
     unreachable = list(unreachable) if unreachable is not None else []
     not_attempted = list(not_attempted) if not_attempted is not None else []
@@ -714,6 +740,10 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
            "reason": reason or "", "at": at}
     if jobsearch is not None:
         rec["jobsearch"] = jobsearch
+    if sweep is not None:
+        rec["sweep"] = sweep
+    if attended:
+        rec["attended"] = True
     return append(root, rec)
 
 
@@ -1084,7 +1114,8 @@ def linkedin_passes_reached(recs, today=None):
 def crashed_passes(recs):
     """design-script-first.md §2 item 2 — every `dispatched` LinkedIn pass, in a run that has
     ENDED, with no matching `returned` row: dispatched, but nothing proves it ever read a page.
-    Printed on its own line by `--may linkedin` / `--passes` rather than silently folded into
+    Printed on its own line by `journal.py --passes` (never `--may`, which journal.py rejects) rather than
+    silently folded into
     either "counted" or "not counted" — a crashed pass is neither."""
     ended = {r.get("run_id") for r in recs if r.get("event") == "end"}
     dispatched = {r.get("run_id") for r in recs

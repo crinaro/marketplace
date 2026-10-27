@@ -1,5 +1,5 @@
 ---
-description: Create or repair the scheduled runs for this job search
+description: "Create or repair the two scheduled runs for this job search (the daily run and the weekly review), with thin prompts and the cron your tier declares. Use after setup, after changing tier, or when a routine has drifted. Not for changing how often the search runs; that is /jobsearch:tier."
 ---
 
 Create the background routines, or repair them if they have drifted. **The user should never author
@@ -33,6 +33,12 @@ where the engine is and tells the run to read its instructions from there:
 
     ENGINE=<the plugin directory>
     Run instructions: the `jobsearch:daily-run` skill
+    Scripts: ~/.claude/jobsearch/run <name>.py, run from the user's search directory
+
+`search-strategy-weekly` gets the same three lines, naming its own skill:
+
+    ENGINE=<the plugin directory>
+    Run instructions: the `jobsearch:weekly-review` skill
     Scripts: ~/.claude/jobsearch/run <name>.py, run from the user's search directory
 
 **Do not restate the run steps in the task prompt.** A duplicated instruction is a stale

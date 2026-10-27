@@ -1615,8 +1615,8 @@ How much the plugin is allowed to do on its own — your cost tier. See *Cost* i
 
 | key | what it is |
 |---|---|
-| `search.posture` | the **name** of the tier in force, one of the names defined under `search.postures`. Defaults to `economy` on a new install. **Changing it changes what every scheduled run may do**: how often it fires, how many agents it may start, whether it may research or draft unattended, whether it may touch LinkedIn. **It does not change how much of what a run finds is processed**: every role a run sees is accounted for and minimally screened under every tier, and work a tier refuses is queued, not dropped (see *Deferred items* below). `posture.py` shows the effect (`posture.py --may drafting`, `--cron`). A name that is unset, or that is not defined in `search.postures`, permits **nothing** — the run reads the cheapest interpretation rather than guessing you meant a larger one |
-| `search.postures` | the table of tiers, keyed by name. Each tier holds `runs_per_day`, a `cron` line, `max_agents_per_run`, `max_drafts_per_run`, an `unattended` list of what it may do without you (`sweeps`, `linkedin`, `research`, `drafting`), and a `_for` note describing it. **Retune a tier** by editing its numbers, or **add your own** by adding a name with the same keys and pointing `search.posture` at it. The engine reads the numbers and the permission list, never the name. `doctor.py --fix` puts the shipped four back if the table is missing, and only ever adds |
+| `search.posture` | the **name** of the tier in force, one of the names defined under `search.postures`. Defaults to `economy` on a new install. **Changing it changes what every scheduled run may do**: how often it fires, how many agents it may start, which weekdays it searches career pages and job boards, whether it may draft unattended, whether it may touch LinkedIn. **It does not change how much of what a run finds is processed, or whether a found role is researched**: every role a run sees is accounted for and minimally screened under every tier, every role the screen keeps is researched in that run, and drafting a tier refuses is queued, not dropped (see *Deferred items* below). `posture.py` shows the effect (`posture.py --may drafting`, `--cron`). A name that is unset, or that is not defined in `search.postures`, permits **nothing** — the run reads the cheapest interpretation rather than guessing you meant a larger one |
+| `search.postures` | the table of tiers, keyed by name. Each tier holds `runs_per_day`, a `cron` line, `max_agents_per_run`, `max_drafts_per_run`, an `unattended` list of what it may do without you (`sweeps`, `linkedin`, `drafting` and, since 0.78.0, `board`; a `research` word may still be present in an older list and no longer changes anything), a `company_days` list and a `board_days` list (since 0.78.0) naming the weekdays an employer career-page sweep and a job-board sweep may start on their own, and a `_for` note describing it. **Retune a tier** by editing its numbers, or **add your own** by adding a name with the same keys and pointing `search.posture` at it. The engine reads the numbers and the permission list, never the name. `doctor.py --fix` puts the shipped four back if the table is missing, and only ever adds |
 | `linkedin_runs_per_day` | lives **inside a tier** — `search.postures.<tier>.linkedin_runs_per_day` — not at the top of `config.json`. How many LinkedIn passes per day may actually reach a page, **independent of `runs_per_day`**: a run over its tier's quota still does everything else and only skips the LinkedIn pass. A tier that does not set it gets **1**; accepted range 0–20. **`0` switches LinkedIn passes off for that tier** (the pass is refused as skipped-for-cost and the work is queued, not lost). **Raise it** for more LinkedIn coverage at more cost — a LinkedIn pass is the most expensive thing a scheduled run does |
 
 ### Settings added in 0.67.0 (all under `config.json.search`)
@@ -1663,12 +1663,54 @@ One step (`m_0_76_1_legacy_placeholders`), automatic, repairing placeholder valu
 
 Nothing else is changed: no other store, no setting, and no row it did not need to repair. Going forward, `record.py create auto` is refused for a store that cannot mint ids, and `validate_data.py` refuses `auto` or an empty id as a stored id.
 
+### The sweep days — `company_days` and `board_days` (0.78.0)
+
+A tier that lists `board` under `unattended` may search for roles without you, but only on the weekdays
+it names (`mon`, `tue`, `wed`, `thu`, `fri`, `sat`, `sun`), in two lists with a day of their own each:
+
+- `company_days`: employer career pages (channels of kind `company-site`);
+- `board_days`: job boards and aggregators (channels of kind `job-board` or `aggregator`).
+
+Each kind is due on the first run on or after one of its days, once per day listed. A machine that was asleep
+on the day does not catch up one sweep per missed day: it does one. A sweep that crashed before it finished
+does not count, so the next run tries again. Mail, company job feeds and LinkedIn are not on these lists and
+run as before.
+
+| tier | `company_days` | `board_days` |
+|---|---|---|
+| `minimal` | none | none |
+| `economy` | `mon` | `tue` |
+| `standard` | `mon`, `wed` | `tue`, `thu` |
+| `full` | `mon`, `wed`, `fri` | `tue`, `thu`, `sat` |
+
+- **A new install** gets those days.
+- **An existing profile** moves to those days when it upgrades to 0.78.0. Every tier except `minimal` that can
+  start an agent (`max_agents_per_run` of 1 or more) gets `board` added to its `unattended` list, and each tier
+  that has `board` gets the days above by its name; a tier you named yourself gets `economy`'s days. A tier that
+  has no `board` gets empty lists. A days list you had already set is left alone. A copy of your
+  `config.json` is kept first as `config.json.pre-0.78.0`. If a tier is shaped in a way the upgrade cannot
+  read, it is left as it is and one item in your asks list names it.
+- **To change the days**, run `~/.claude/jobsearch/run posture.py --set-company-days mon,wed` or
+  `~/.claude/jobsearch/run posture.py --set-board-days tue,thu` (add `--posture <name>` for a tier other
+  than the one in force; `none` turns that sweep off). They check the days before they write. Do not edit
+  the lists by hand.
+- **If you start a search yourself** (`/jobsearch:search ... attended`, or `/jobsearch:daily-run attended`), the
+  days do not apply, and a tier whose `max_agents_per_run` is 0 (`minimal`) can still run it. An on-demand search
+  does not use up the scheduled sweep.
+- **A machine that cannot reach the due boards** (no browser pane, no Chrome, no connector for them)
+  answers "no route on this machine" and leaves the day open for a run on a machine that can.
+
+**What the run journal records.** `data/runs.jsonl` gets one `dispatched` row per sweep. It carries
+`sweep: company` or `sweep: board` saying which kind it was (a row without that field, written before 0.78.0,
+counts as having spent both kinds' days). A search you started yourself carries `attended: true`, and that
+row spends no scheduled day: an on-demand board search on a Monday leaves Tuesday's scheduled one due.
+
 ### Attended and unattended
 
 A tier's `unattended` list is for **unattended** runs. A run is treated as unattended **unless
 you start it in an explicit attended form**, for example `/jobsearch:daily-run attended`. The
 engine never works out that you are at the keyboard from a missing scheduler marker. An attended
-run may research and draft even when its tier would hold that work. It **never** gains LinkedIn
+run may draft, and may search outside the tier's sweep days, even when its tier would hold that work. It **never** gains LinkedIn
 access that way: `linkedin` stays governed by the tier's `linkedin_runs_per_day` and by whether a
 signed-in browser is available.
 
@@ -1691,12 +1733,14 @@ the queue refuses free text that reads like a send.
 | `quarantine` | since 0.69.0, only on a `capture-role` item queued from a degraded sweep: `{run_id, because, queries}` — the run that saw the role, why it is held (one or more of `filter-dropped`, `param-added`, `window-unapplied`, `truncated`, `query-unparsed`), and which of that sweep's queries showed it. While present, no worker is served the item. Absent on every other item and once released. A release is a separate appended row of kind `_unquarantine`, never a rewrite of the item |
 | `queued_run` | since 0.69.0, only on a `read-jd` item: the run that queued it, so that run is never handed back the job it could not do |
 
-**Held by posture.** A `research-role` item requires `research`, and a `draft-message` item
-requires `drafting`. Under a tier that does not permit that work the item is **held**: it is
-listed as *held by posture* in `deferred.py --claimable`, counted in the run summary, and
-stays pending. It is not failed and not dropped. The first run whose tier (or whose attended
-form) permits the work claims it, does it, and marks it done. Only the names `research`,
-`drafting` and `sweeps` can be granted by a tier; an unknown name in a tier's `unattended`
+**Held by posture.** A `draft-message` item requires `drafting`. Under a tier that does not permit
+drafting the item is **held**: it is listed as *held by posture* in `deferred.py --claimable`, counted in the
+run summary, and stays pending. It is not failed and not dropped. The first run whose tier (or whose attended
+form) permits the work claims it, does it, and marks it done. **A `research-role` item is never held** (since
+0.78.0): any run on any tier can claim it. It exists only for a role over the batch of 10 that one run
+researches, so the next run picks up the rest. It is refused, with the reason printed, when the role no
+longer passes the screen (`VERDICT keep`), because only a kept role is researched. Only the names `drafting`
+and `sweeps` can be granted by a tier (`linkedin` and `board` have their own gates); an unknown name in a tier's `unattended`
 list is ignored and reported, never granted. `linkedin` is never granted that way. A browserless
 machine can never claim a LinkedIn item, under any tier.
 

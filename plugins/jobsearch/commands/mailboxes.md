@@ -1,6 +1,6 @@
 ---
 argument-hint: "[add <address> | check]"
-description: Configure which mail accounts the job search reads, check that each one can actually be searched, and show or switch which Gmail connector the search uses (gmail-multi or the claude.ai Gmail connector).
+description: Configure which mail accounts the job search reads, check that each one can actually be searched, and show or switch which Gmail connector the search uses (gmail-multi or the claude.ai Gmail connector). Not for registering an account with the connector; that is /gmail-multi:accounts.
 ---
 
 # Mailboxes

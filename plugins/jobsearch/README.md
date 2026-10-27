@@ -49,23 +49,37 @@ does not depend on either).
 Cost is essentially `runs per day × agents per run`. Deterministic work (mailbox sweeps, calendar
 checks, silence detection, the dashboard) is free at every tier and carries most of the daily value.
 
-| posture | runs/day | agents/run | unattended |
-|---|---|---|---|
-| `minimal` | 1 | 0 | sweeps only |
-| `economy` | 2 | 1 | + LinkedIn — **the default** |
-| `standard` | 3 | 2 | + research |
-| `full` | 5 | 5 | + drafting |
+| posture | runs/day | agents/run | unattended | career pages (`company_days`) | job boards (`board_days`) |
+|---|---|---|---|---|---|
+| `minimal` | 1 | 0 | mail and free feeds only | never | never |
+| `economy` | 2 | 1 | + LinkedIn, + career-page and board sweeps — **the default** | Mon | Tue |
+| `standard` | 3 | 2 | same sweeps, more often | Mon, Wed | Tue, Thu |
+| `full` | 5 | 5 | + drafting | Mon, Wed, Fri | Tue, Thu, Sat |
+
+The two day columns are the only thing a posture changes about searching: an **unattended** run
+searches employer career pages and job boards only on those days. Mail, company job feeds and
+LinkedIn run as before. A profile upgraded to 0.78.0 moves to these days (a copy of its
+`config.json` is kept as `config.json.pre-0.78.0`). Change the days with
+`posture.py --set-company-days` and `posture.py --set-board-days` (see `/jobsearch:tier`).
 
 Set `search.posture` in your `config.json`, or define your own. See
 [How it works — Cost](../../docs/user/jobsearch/how-it-works.md#cost).
 
-**A posture limits how often the search runs and which model work (research, drafting) it may
-start unattended. It never limits how much of a run's findings are processed.** Under every
-posture, each role a run sees is accounted for and given a script-only minimal screen, and
-research or drafting a posture refuses is queued and drained by the next run whose posture
-permits it. A run is unattended unless started in its explicit attended form
-(`/jobsearch:daily-run attended`), which lifts the research and drafting limit but never the
+**Research is never limited by a posture.** Every role a run finds that passes your screen
+(`VERDICT keep`) is researched in that same run, on every posture, in batches of up to 10, with any
+overflow on the next run. A borderline role (`review`) waits for you. Drafting is the other model
+work a posture holds: what it refuses is queued and drained by the next run whose posture permits
+it. A run is unattended unless started in its explicit attended form
+(`/jobsearch:daily-run attended`), which lifts the drafting limit and the sweep days but never the
 LinkedIn one.
+
+**`minimal` is the hands-on level.** You run the searches yourself:
+`/jobsearch:search attended` (both kinds), `/jobsearch:search companies attended` or
+`/jobsearch:search boards attended`. The form without `attended` only previews. An on-demand search
+works on every posture, ignores the sweep days, researches the roles it keeps in the same session,
+and does not use up the scheduled sweep. `/jobsearch:sourcing employers attended` finds a tracked
+company's job feed. Every command is listed in
+[Commands](../../docs/user/jobsearch/commands.md).
 
 ## Getting started
 
@@ -84,9 +98,13 @@ LinkedIn one.
 
 ## Understanding it
 
+- **[Commands](../../docs/user/jobsearch/commands.md)** — every `/jobsearch:` command and skill, in
+  plain words, grouped by what you want to do.
 - **[How it works](../../docs/user/jobsearch/how-it-works.md)** — the engine/profile split, what runs when,
   and the rules it holds itself to: it never sends, never handles a credential, and never invents
   a fact about you.
+- **[Mailboxes](../../docs/user/jobsearch/mailboxes.md)** — which mail accounts the search reads and
+  how to add or check one.
 - **[Your data](../../docs/user/jobsearch/your-data.md)** — every file it keeps, what the fields mean, and
   how to edit them by hand safely.
 - **[Reading what the search produces](../../docs/user/jobsearch/reading-your-files.md)** — which file

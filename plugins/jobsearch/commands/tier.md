@@ -1,5 +1,5 @@
 ---
-description: Change how often the job search runs — the main lever on cost
+description: "Change how often the job search runs (the main lever on cost), and which weekdays career pages and job boards are swept. Not for turning a source on or off; that is /jobsearch:sourcing."
 argument-hint: [minimal|economy|standard|full]
 ---
 
@@ -10,11 +10,11 @@ in agreement.
 artifacts, silence detection, the dashboard) are free at every tier and always run, so a lower tier
 loses timeliness, not coverage.
 
-**A tier limits how often the search runs, never how much of what it finds is processed.** Every
-role a run finds is captured and given the scripted minimal screen on every tier. What a tier does
-not permit unattended, research and drafting, is queued rather than dropped
-(`deferred.py --add-research`, `--add-draft`), and it drains on the first run whose tier permits
-it. Say so when you describe a lower tier: nothing is lost, it waits. A run is unattended unless
+**A tier limits how often the search looks, never whether a role it finds is researched.** Every
+role a run finds is captured and given the scripted minimal screen on every tier, and every role the
+screen keeps is researched in that run on every tier, `minimal` included (jobsearch 0.78.0). What a
+tier does not permit unattended, drafting, is queued rather than dropped (`deferred.py --add-draft`),
+and it drains on the first run whose tier permits it. Say so when you describe a lower tier: nothing is lost, it waits. A run is unattended unless
 the owner starts it with the explicit attended form, `/jobsearch:daily-run attended`.
 
 ## 1. Show where they are
@@ -27,6 +27,23 @@ the owner starts it with the explicit attended form, `/jobsearch:daily-run atten
 
 Edit `search.posture` in their `config.json`. Do not touch the `postures` definitions unless they
 ask — those are theirs to tune.
+
+### Sweep days
+
+A tier that lists `board` under `unattended` searches on its own, but only on the weekdays it names, in two
+separate lists: `company_days` for employer career pages and `board_days` for job boards and aggregators. Defaults:
+`economy` career pages Mon, boards Tue; `standard` Mon+Wed, Tue+Thu; `full` Mon+Wed+Fri, Tue+Thu+Sat; `minimal`
+never. A profile upgraded to 0.78.0 moves to these days. Mail, company job feeds and LinkedIn are not on these
+lists: they run every run. When they want a different rate, set it with the validated setters, never a hand edit:
+
+```bash
+~/.claude/jobsearch/run posture.py --set-company-days mon,wed [--posture <name>]   # `none` turns it off
+~/.claude/jobsearch/run posture.py --set-board-days tue,thu [--posture <name>]     # `none` turns it off
+```
+
+They refuse an unknown or repeated day and say what they wrote. The days apply to unattended runs only. A person
+who wants to look now uses `/jobsearch:search attended` (on `minimal` too); it ignores the days and does not use
+up the scheduled sweep.
 
 ## 3. ⭐ APPLY IT TO THE SCHEDULE — this is the step that makes it real
 

@@ -1,5 +1,5 @@
 ---
-description: "Show the job search's status now: what needs you and by when, roles whose stored pay removal would now be screened differently (flagged, never reopened), the inbox, the lock, the last and next background run, whether the runs did anything, dashboard freshness and gate health. Use when the user asks where things stand and no status pane is open. Not for working an item (that is the coordinator)."
+description: "Show the job search's status now: what needs you and by when, roles whose stored pay removal would now be screened differently (flagged, never reopened), the inbox, the lock, the last and next background run, whether the runs did anything, dashboard freshness and gate health. Use when the user asks where things stand and no status pane is open. Not for working an item (that is /jobsearch:coordinator)."
 ---
 
 # Status
@@ -17,7 +17,7 @@ Run it from the user's search directory and print what it says, verbatim:
 ```
 
 - **Print the output as it is.** Do not summarise it, re-rank it or add advice: it is a status
-  line, not a briefing. If the user wants to work an item, `/coordinator` is the session for that.
+  line, not a briefing. If the user wants to work an item, `/jobsearch:coordinator` is the session for that.
 - It is **read-only**: it takes no lock, acknowledges no inbox row and marks no staleness
   watermark, so it is safe to run at any time, including while a background run is mid-flight.
 - A line that says `NOT CHECKED (reason)` means that source could not be read. Say so plainly; do

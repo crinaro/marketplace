@@ -1,6 +1,6 @@
 ---
 argument-hint: "[drive | local_docx | <variant-id>]"
-description: Configure where a rendered resume variant goes — a Google Doc in your Drive folder, or a local .docx — and render one.
+description: Configure where a rendered resume variant goes — a Google Doc in your Drive folder, or a local .docx — and render one. Not for reviewing resume content; that is /jobsearch:review-resume.
 ---
 
 # Resume-variant output
@@ -36,7 +36,7 @@ library alone. **No Google account, no connector, no network.**
 account and the documents connector. The folder id comes from
 `config.drive.job_search_folder_id`.
 
-Unlike `/letters` (whose `drive` default is historical, not a recommendation), this renderer has
+Unlike `/jobsearch:letters` (whose `drive` default is historical, not a recommendation), this renderer has
 no prior behavior to inherit — `local_docx` is the deliberate default.
 
 ## ⚠️ `--render` refuses before writing anything, on purpose

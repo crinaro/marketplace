@@ -284,17 +284,37 @@ def check_config_currency(fix=False):
     return out
 
 
+# The two routines `/jobsearch:setup-routines` creates, by the task names it gives them, and the skill
+# each one's thin prompt must name (commands/setup-routines.md § 2).
+DAILY_TASK, DAILY_SKILL = "search-daily", "jobsearch:daily-run"
+WEEKLY_TASK, WEEKLY_SKILL = "search-strategy-weekly", "jobsearch:weekly-review"
+
+
 def check_scheduled_tasks():
-    """The failure that actually happened: prompts pointing at pre-plugin paths."""
+    """The failure that actually happened: prompts pointing at pre-plugin paths.
+
+    Finding #259 (dev #770): the weekly routine was never checked. `setup-routines` creates TWO
+    routines, and this used to accept any task naming EITHER skill as healthy, so a weekly task whose
+    prompt named `jobsearch:daily-run` read as fine, and a missing weekly task read as nothing at all.
+    Now the weekly routine is checked for what it must be: present once the daily one is, and naming
+    `jobsearch:weekly-review`. Degrade rules are unchanged: no scheduled-tasks directory, or no
+    task, is a WARN (the scheduler is the desktop app's; this host may not have one), never a FAIL;
+    only a prompt that cannot work (stale paths, the wrong skill) is a FAIL."""
     out, base = [], os.path.expanduser("~/.claude/scheduled-tasks")
     if not os.path.isdir(base):
         return [(WARN, "scheduled tasks", "none installed — the search will not run unattended")]
+    seen = set()
     for name in sorted(os.listdir(base)):
         f = os.path.join(base, name, "SKILL.md")
         if not os.path.exists(f):
             continue
-        t = open(f, encoding="utf-8", errors="ignore").read()
-        if "jobsearch:daily-run" in t or "jobsearch:weekly-review" in t:
+        seen.add(name)
+        with open(f, encoding="utf-8", errors="ignore") as fh:
+            t = fh.read()
+        if name == WEEKLY_TASK and WEEKLY_SKILL not in t:
+            out.append((BAD, name, "prompt does not name %s — this routine will not run the weekly "
+                        "review (re-run /jobsearch:setup-routines to repair it)" % WEEKLY_SKILL))
+        elif DAILY_SKILL in t or WEEKLY_SKILL in t:
             out.append((OK, name, "thin pointer -> plugin skill (updates with the plugin)"))
         elif ENGINE in t:
             out.append((WARN, name, "references the engine path but does not invoke the plugin "
@@ -303,6 +323,13 @@ def check_scheduled_tasks():
             out.append((BAD, name, "STALE pre-plugin paths — this run fails at step 0"))
         else:
             out.append((WARN, name, "does not reference the engine path; verify by hand"))
+    if WEEKLY_TASK not in seen:
+        # setup-routines creates the daily run and the weekly review together: once the daily task
+        # exists, the weekly one missing is a half-finished setup, not a choice.
+        out.append((WARN, WEEKLY_TASK,
+                    "not installed%s — no weekly review runs unattended; /jobsearch:setup-routines "
+                    "creates it" % (" (the %s task is, so setup stopped half way)" % DAILY_TASK
+                                    if DAILY_TASK in seen else "")))
     return out
 
 

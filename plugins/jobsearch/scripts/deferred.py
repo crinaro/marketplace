@@ -633,13 +633,37 @@ def _checked_opp_id(opp_id):
     return opp_id
 
 
+def research_screen_refusal(opp_id):
+    """Owner ruling O5 (jobsearch 0.78.0) -- why research of `opp_id` is refused NOW, or None when its
+    current minimal-screen verdict is `keep`. The verdict is `profile.current_verdict`, the one
+    definition `profile.py --minimal-screen` prints, imported and never re-derived here. Research
+    happens only for a role that passes the candidate's screen: `remove:<rule>` is refused, and so is
+    `review:<rule>` (it waits for the owner's look; an attended session researches it directly, never
+    through this queue). A screen that cannot be computed refuses too: it is never read as `keep`."""
+    try:
+        import profile as _pf
+        verdict = _pf.current_verdict(opp_id)
+    except (OSError, ValueError, KeyError) as e:
+        return "the minimal screen cannot be computed (%s)" % e
+    if verdict is None:
+        return "no opportunity %r in data/opportunities.jsonl" % (opp_id,)
+    if verdict != "keep":
+        return "its minimal screen reads VERDICT %s, not keep" % verdict
+    return None
+
+
 def queue_research(opp_id, rows=None):
     """dev #692 / public #140 (692-1b) -- queue the research a posture (or max_agents_per_run)
     held, as a script form: `kind` research-role, `ref` the opp id, `requires: [research]`, so it
     drains on the first run whose posture permits research. Idempotent on `(kind, ref)` among
     pending rows. Returns `(row, added)`; raises `DeferredRefused` for an id that is not a real
-    opportunity. Engine-built: skips `FORBIDDEN` by construction (the template cannot say send)."""
+    opportunity, or (owner ruling O5) for a role whose current minimal screen is not `keep`.
+    Engine-built: skips `FORBIDDEN` by construction (the template cannot say send)."""
     _checked_opp_id(opp_id)
+    why = research_screen_refusal(opp_id)
+    if why:
+        raise DeferredRefused("REFUSED — research of %s: %s; nothing queued. Research is only for a "
+                              "role the screen kept (owner ruling O5)." % (opp_id, why))
     hit = _pending_by_ref(KIND_RESEARCH, opp_id, rows)
     if hit:
         return hit, False
@@ -2132,6 +2156,15 @@ def main():
             if reason:
                 print("⛔ WITHHELD — %s. Leave it; the pane is not usable right now." % reason)
                 return 1
+            # Owner ruling O5 -- re-checked at CLAIM time, not only when queued: a role removed (or
+            # sent to review) after its research was queued must not drain into research.
+            if cur.get("kind") == KIND_RESEARCH:
+                why = research_screen_refusal(cur.get("ref"))
+                if why:
+                    print("⛔ HELD BY SCREEN — %s is research of %s, and %s. It is not researched "
+                          "(owner ruling O5); it drains if the role screens keep again."
+                          % (rid, cur.get("ref"), why))
+                    return 1
             if claim_is_live(cur, now) and cur.get("claimed_by") != me:
                 print("Already claimed by %s at %s (lease %d min). Not stealing."
                       % (cur["claimed_by"], cur.get("claimed_at"), CLAIM_LEASE_MINUTES))
@@ -2190,6 +2223,16 @@ def main():
         return r["id"] in withheld_now
 
     mine = [r for r in claim_pool if can_run(r, caps) and not _is_withheld(r)]
+    # Owner ruling O5 -- a research item whose role no longer screens keep is not served: `--claim`
+    # would refuse it, so listing it as claimable would cost a worker a turn for nothing.
+    screened_out = {}
+    if args.claimable:
+        for r in mine:
+            if r.get("kind") == KIND_RESEARCH:
+                why = research_screen_refusal(r.get("ref"))
+                if why:
+                    screened_out[r["id"]] = why
+        mine = [r for r in mine if r["id"] not in screened_out]
     withheld = [r for r in claim_pool if can_run(r, caps) and _is_withheld(r)]
     # dev #692 / public #140 -- an item held only by a POSTURE token is not "another
     # environment's": it is claimable here the moment a run's posture (or an --attended run)
@@ -2226,6 +2269,11 @@ def main():
         for r in held:
             print("     %-52s requires %s" % ((r.get("what") or "")[:52],
                                               ", ".join(r.get("requires") or [])))
+    if screened_out:
+        print("\n  ⏸ HELD BY SCREEN -- %d research item(s) whose role no longer screens keep; not "
+              "served (owner ruling O5):" % len(screened_out))
+        for rid, why in sorted(screened_out.items()):
+            print("     %-24s %s" % (rid, why))
     if owed_ids:
         owed = pending_linkedin_passes(rows)
         print("\n  ⇢ LINKEDIN PASS OWED — %d row(s), oldest queued %s; closed by daily-run's pass "

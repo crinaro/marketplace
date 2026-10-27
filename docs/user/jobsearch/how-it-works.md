@@ -37,7 +37,8 @@ silences, building the dashboard. They are plain Python with no packages to inst
 the same answer every time, and they cost nothing beyond running them. Most of the daily value
 is here.
 
-**Commands** are what you type: `/coordinator`, `/checkup`, `/tier`. They are entry points.
+**Commands** are what you type: `/jobsearch:coordinator`, `/jobsearch:checkup`, `/jobsearch:tier`. They are
+entry points. [Commands](commands.md) lists every one in plain words.
 
 **Agents** are the parts that need their own context window — bulk reading (sweeping a mailbox,
 scanning boards) or judgement (reading a job description against your resume, drafting a message
@@ -80,7 +81,8 @@ Nothing below sends anything or commits anything without you.
 
 2. **Sweep.** Your mailbox and LinkedIn are read for things that changed: recruiter replies,
    interview invitations, application receipts, rejections. This is deterministic — it finds
-   what is there, it does not interpret.
+   what is there, it does not interpret. Employer career pages and job boards are searched on the
+   days your posture names (see *Cost*), never on every run.
 
 3. **Reconcile.** New findings are matched against roles you already track. A role seen twice on
    two job boards is *one* opportunity with two sightings, not two opportunities. Ambiguous
@@ -88,7 +90,9 @@ Nothing below sends anything or commits anything without you.
    title can genuinely be several different roles.
 
 4. **Screen.** Roles are checked against the floors you set — compensation, geography, work
-   setting. Something below your floor does not silently vanish; it is marked, and you can see
+   setting. A role whose office is far beyond every place you said you would commute from, and is
+   not somewhere you would move to, is removed as too far (see *Where a role is, and when it is
+   too far* in [Your data](your-data.md#where-a-role-is-and-when-it-is-too-far--since-070)). Something below your floor does not silently vanish; it is marked, and you can see
    why. A role you accept at that pay (`decide <id> pursue --why-kind comp-acceptable`) shows as
    accepted and is never removed; reversing the decision brings the removal back. Fractional,
    interim, advisory and contract roles are measured against your separate non-employee pay floors
@@ -153,6 +157,20 @@ profile project's `.claude/settings.json` (what else it does is under *What the 
 administrator requires the sandbox, the hosts must be allowed in that administrator's settings. Until then
 the feed reports `egress-blocked` or `unreachable` with one gap per host, and the browser sweep keeps covering
 those careers pages as before. Nothing is lost; it is slower and costs more.
+
+### Finding a company's job feed
+
+A feed is only read for a company whose Greenhouse, Lever or Ashby board the plugin knows. It learns that
+from addresses you or the research step already attached to the company. A company whose careers page sits
+on its own website, with the board linked from that page, was never found that way. `/jobsearch:sourcing
+employers attended` closes that gap, in a session you are present for. For each company you already track
+that has no feed, it reads the company's own careers page, plus at most one link to another page on the same
+site, politely (one request a second to a host, and a site's robots file honoured). It only **proposes** the
+board it finds. You accept or decline each one, and nothing changes in your companies until you do. A
+decline is remembered and the plugin does not ask again. It never guesses a board from a company's name, and
+the form without `attended` only shows what is waiting, with no web request. Because it reads employers' own
+websites, the command sandbox may need to allow those hosts; when it cannot reach one, the command says so
+rather than reporting "no board".
 
 ### The warm path on each role card
 
@@ -372,19 +390,23 @@ tell you "12 unclassified". A guess folded quietly into a bucket cannot.
 Roughly `runs per day × agents per run`. The deterministic half — sweeps, calendar checks,
 silence detection, the dashboard — is free at every tier and carries most of the daily value.
 
-| posture | runs/day | agents/run | LinkedIn passes/day | what you get |
-|---|---|---|---|---|
-| `minimal` | 1 | 0 | 0 | sweeps only |
-| `economy` | 2 | 1 | 1 | + LinkedIn — **the default** |
-| `standard` | 3 | 2 | 1 | + research |
-| `full` | 5 | 5 | 2 | + drafting |
+| posture | runs/day | agents/run | LinkedIn passes/day | career pages searched | job boards searched | what you get |
+|---|---|---|---|---|---|---|
+| `minimal` | 1 | 0 | 0 | never | never | mail and free feeds; you search by hand |
+| `economy` | 2 | 1 | 1 | Mon | Tue | + LinkedIn — **the default** |
+| `standard` | 3 | 2 | 1 | Mon, Wed | Tue, Thu | + more sweep days |
+| `full` | 5 | 5 | 2 | Mon, Wed, Fri | Tue, Thu, Sat | + drafting |
 
-Set `search.posture` in your configuration, or define your own tier.
+**Research is not in this table because no posture gates it.** Every posture, `minimal` included, researches
+each role it finds that passes your screen, in the run that found it.
 
-**What a posture limits, and what it does not.** A posture controls **how often** the search
-runs and **which model work** (agents) a run may start without you. It never controls **how
-much of what a run finds is processed.** Under every posture, including `minimal` and
-`economy`:
+Set `search.posture` in your configuration, or define your own tier. A profile that existed before 0.78.0
+moves to these days when it upgrades.
+
+**What a posture limits, and what it does not.** A posture controls **how often** an unattended run searches
+employer career pages and job boards (the two day columns), how many agents a run may start, and whether it
+drafts. Mail, company job feeds and LinkedIn run as before. A posture never controls **what happens to a role
+once the search has found it.** Under every posture, including `minimal` and `economy`:
 
 - every role a run sees is accounted for, one by one. It is captured, already known, carried
   forward as its own queued item, or recorded as a named gap. A run never ends on "12 roles
@@ -393,18 +415,28 @@ much of what a run finds is processed.** Under every posture, including `minimal
   your comp floor (annual floors for employment, your non-employee floors for fractional, interim, advisory and contract roles; a role whose pay you accepted is kept), whether you already passed on or applied to it, geography, and whether the
   title matches one of yours. The title check only marks a role for your review; it never
   removes one. A mandate rule is not scripted, and the screen says so on each role instead of
-  staying quiet.
+  staying quiet;
+- **every role that passes the screen (`VERDICT keep`) is researched in that same run**, in batches of up to
+  10 roles, with any overflow queued for the next run. A borderline role (`review`) is not researched until
+  you have looked at it.
 
-Only the **model work** is gated. Research and drafting that your posture refuses are **queued,
-not dropped**: each shows as a held item (*held by posture*) and the next run whose posture
-permits it picks it up, with nothing for you to re-request.
+Only **drafting** is held by a posture. A draft your posture refuses is **queued, not dropped**: it shows as
+a held item (*held by posture*) and the next run whose posture permits it picks it up, with nothing for you
+to re-request.
+
+**`minimal` is the hands-on level.** It searches nothing on its own, so you run the searches:
+`/jobsearch:search attended` (career pages and boards), `/jobsearch:search companies attended` or
+`/jobsearch:search boards attended`. The same command without `attended` only previews what is due. An
+on-demand search works on every posture, ignores the sweep days, researches the roles it keeps in the same
+session, and does not use up the scheduled sweep: a Monday on-demand board search leaves Tuesday's scheduled
+one due.
 
 **A run counts as unattended unless you say otherwise.** A scheduled run, or a session where you
-just type `/jobsearch:daily-run`, follows the posture. To get research by hand on a tier that
-would hold it, start the run in its attended form: `/jobsearch:daily-run attended`. The engine
-never guesses that you are at the keyboard. Attended lifts the research and drafting limit
-only. It never lets a run touch LinkedIn, which stays governed by the posture's LinkedIn quota
-and by whether a signed-in browser is available.
+just type `/jobsearch:daily-run`, follows the posture. To draft by hand on a tier that
+would hold it, or to sweep outside the posture's days, start the run in its attended form:
+`/jobsearch:daily-run attended`. The engine never guesses that you are at the keyboard. Attended lifts the
+drafting limit and the sweep days only. It never lets a run touch LinkedIn, which stays governed by the
+posture's LinkedIn quota and by whether a signed-in browser is available.
 
 **LinkedIn passes are capped independently of runs/day.** A run above its posture's LinkedIn
 quota still does everything else its posture permits, and still accounts for and screens every

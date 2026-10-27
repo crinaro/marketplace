@@ -1797,6 +1797,21 @@ def minimal_screen(opp, profile, all_opps, applications=None, channels=None, tod
     return _screen_block(opp, r), r["verdict"]
 
 
+def current_verdict(opp_id):
+    """Owner ruling O5 (jobsearch 0.78.0) -- the minimal screen's VERDICT for one stored role, NOW,
+    computed exactly as `--minimal-screen <opp_id>` computes it (the same loaders and the same
+    `screen_rules` call), so a caller that gates on it (`deferred.py --add-research` and the research
+    claim) imports this one definition rather than re-deriving the screen. Returns the verdict string
+    (`keep`, `remove:<rule>`, `review:<rule>`), or None when no role has that id. A profile or store
+    that cannot be read raises (OSError / ValueError): the caller refuses, never reads it as keep."""
+    all_opps = _load_opps()
+    opp = next((o for o in all_opps if o.get("id") == opp_id), None)
+    if opp is None:
+        return None
+    apps, chans = _load_optional("applications.jsonl"), _load_optional("channels.jsonl")
+    return screen_rules(opp, load(), all_opps, applications=apps, channels=chans)["verdict"]
+
+
 # dev #729 / public #157 -- the run-level lines. `--minimal-screen` over several ids and
 # `--screen-all` end with the commute split, so "75 screened, 0 removed" can never again be a number
 # nobody can read behind: a far role is `outside`, one that needs a commute estimate is `near`, a

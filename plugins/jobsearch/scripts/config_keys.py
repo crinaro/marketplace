@@ -259,34 +259,44 @@ SEARCH_POSTURES_DEFAULT = {
         "max_agents_per_run": 0,
         "max_drafts_per_run": 0,
         "unattended": ["sweeps"],
+        "company_days": [],
+        "board_days": [],
         "_for": "The lowest tier, or a quiet week. Deterministic sweeps only: mailbox digests, "
-                "calendar artifacts, silence detection, gates, dashboard. Zero model fan-out. "
-                "Everything expensive is on demand.",
+                "calendar artifacts, silence detection, gates, dashboard. No sweep agents. "
+                "Everything expensive is on demand, except research of a role the screen kept, "
+                "which no posture gates.",
     },
     "economy": {
         "runs_per_day": 2,
         "cron": "0 8,15 * * *",
         "max_agents_per_run": 1,
         "max_drafts_per_run": 0,
-        "unattended": ["sweeps", "linkedin"],
+        "unattended": ["sweeps", "linkedin", "board"],
+        "company_days": ["mon"],
+        "board_days": ["tue"],
         "_for": "DEFAULT FOR NEW INSTALLS. Adds the LinkedIn sweep, which is where the outreach "
-                "funnel lives, at one agent per run. A reply can wait ~8h.",
+                "funnel lives, at one agent per run. Career pages Monday, job boards Tuesday. A "
+                "reply can wait ~8h.",
     },
     "standard": {
         "runs_per_day": 3,
         "cron": "0 8,12,16 * * *",
         "max_agents_per_run": 2,
         "max_drafts_per_run": 0,
-        "unattended": ["sweeps", "linkedin", "research"],
-        "_for": "Adds unattended research on genuinely NEW roles. Suits an active search on a "
-                "mid tier.",
+        "unattended": ["sweeps", "linkedin", "research", "board"],
+        "company_days": ["mon", "wed"],
+        "board_days": ["tue", "thu"],
+        "_for": "Economy at two agents per run, with career pages Mon+Wed and job boards "
+                "Tue+Thu. Suits an active search on a mid tier.",
     },
     "full": {
         "runs_per_day": 5,
         "cron": "0 7,9,11,13,15 * * *",
         "max_agents_per_run": 5,
         "max_drafts_per_run": 5,
-        "unattended": ["sweeps", "linkedin", "research", "drafting"],
+        "unattended": ["sweeps", "linkedin", "research", "drafting", "board"],
+        "company_days": ["mon", "wed", "fri"],
+        "board_days": ["tue", "thu", "sat"],
         "_for": "Everything unattended, including auto-drafting replies. Assumes real token "
                 "headroom; this is what the original installation runs.",
     },
@@ -327,6 +337,78 @@ _METADATA[LINKEDIN_RUNS_PER_DAY] = (
     "LinkedIn passes that reach a surface this posture permits per day, independent of "
     "runs_per_day (posture.py --may linkedin) — 0 disables LinkedIn passes on this posture "
     "entirely")
+
+# ── board-sweep schedule (dev #770-4, jobsearch 0.78.0; design-employer-discovery.md §5.1, owner ruling O4) ─
+# Two keys per posture, one per KIND of board-sweeper work (O4): `search.postures.<name>.company_days`
+# -- the weekdays a sweep of EMPLOYER CAREER PAGES (`company-site` channels) may START unattended --
+# and `search.postures.<name>.board_days` -- the weekdays a sweep of JOB BOARDS AND AGGREGATORS
+# (`job-board`, `aggregator`) may. The permission for both is the one `board` token in the posture's
+# `unattended` list; the keys are HOW OFTEN (the `linkedin_runs_per_day` shape: a posture limits how
+# often, never how much). `[]` means never unattended for that kind.
+#
+# Relative to a POSTURE dict, never the config root, and deliberately NOT in READER_KEYS or
+# `_METADATA` (the same reasoning `LINKEDIN_RUNS_PER_DAY` states above: `profile.py --options` and
+# `doctor.py` iterate those against the root). Each is a LIST of weekday names, not a scalar, so
+# `describe()` has no honest default to print; the reader below is STRICT instead and never treats a
+# missing or malformed value as `[]` or as a default (a value the owner did not choose must not
+# become a schedule). New-install values live in `SEARCH_POSTURES_DEFAULT`; the setters are
+# `posture.py --set-company-days` / `--set-board-days` (validated, atomic), never a hand edit.
+BOARD_TOKEN = "board"
+BOARD_DAYS = "board_days"
+COMPANY_DAYS = "company_days"
+WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+# The two sweep kinds, in the order every printer lists them, each with its days key and the channel
+# `type`s it covers (O4). A channel's kind is decided by its `type`, never by its name.
+SWEEP_KINDS = ("company", "board")
+SWEEP_DAYS_KEY = {"company": COMPANY_DAYS, "board": BOARD_DAYS}
+SWEEP_CHANNEL_TYPES = {"company": ("company-site",), "board": ("job-board", "aggregator")}
+
+
+def validate_days(value, key=BOARD_DAYS):
+    """Problems with a posture's `company_days` or `board_days` (`[]` when valid): a list of
+    DISTINCT lower-case weekday names from `WEEKDAYS`. Strict -- `"mon"` (a string), `["Mon"]`,
+    `["monday"]`, a repeat, a number and `None` are all refused with the legal names listed, never
+    coerced to a guess."""
+    if not isinstance(value, list):
+        return ["%s is %r -- not a list of weekday names (%s)"
+                % (key, value, ", ".join(WEEKDAYS))]
+    problems = []
+    for day in value:
+        if not isinstance(day, str) or day not in WEEKDAYS:
+            problems.append("%s has %r -- not one of %s" % (key, day, ", ".join(WEEKDAYS)))
+    if not problems and len(set(value)) != len(value):
+        problems.append("%s repeats a day: %r" % (key, value))
+    return problems
+
+
+def validate_board_days(value):
+    return validate_days(value, BOARD_DAYS)
+
+
+def validate_company_days(value):
+    return validate_days(value, COMPANY_DAYS)
+
+
+def resolve_days(posture, key=BOARD_DAYS):
+    """The validated `company_days` / `board_days` list of a posture dict. A key that is ABSENT or
+    malformed raises `ValueError` naming the problem -- never read as `[]` and never as a default
+    (design §5.1)."""
+    if not isinstance(posture, dict) or key not in posture:
+        raise ValueError("%s is missing" % key)
+    problems = validate_days(posture[key], key)
+    if problems:
+        raise ValueError("; ".join(problems))
+    return list(posture[key])
+
+
+def resolve_board_days(posture):
+    return resolve_days(posture, BOARD_DAYS)
+
+
+def resolve_company_days(posture):
+    return resolve_days(posture, COMPANY_DAYS)
+
 
 # ── dispatch_packet.py's per-section character caps (design-script-first.md §3.2, #77) ──────────────
 # `voice` (the candidate's `configure/strategy.md` "Message style" text, verbatim) and `claims`

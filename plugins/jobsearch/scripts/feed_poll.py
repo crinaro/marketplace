@@ -140,6 +140,23 @@ ENDPOINTS = {
     ("workday", None): ("%(tenant)s.%(wd)s.myworkdayjobs.com", None),
 }
 FEED_HOSTS = tuple(sorted({h for (v, _r), (h, _p) in ENDPOINTS.items() if v != "workday"}))
+# dev #770 (ats_finder.py, design-employer-discovery.md 3.4): Greenhouse's DOCUMENTED board-name GET
+# (`GET /v1/boards/{board_token}` "returns your organization's name and job board content"). It is the finder's
+# identity check, never a poll. It lives here beside ENDPOINTS so every vendor URL form stays in this one file.
+GREENHOUSE_BOARD_ENDPOINT = ("boards-api.greenhouse.io", "/v1/boards/%s")
+
+
+def list_url(vendor, region, slug, skip=0, limit=100):
+    """The ONE builder of a vendor's list-GET address (a non-Workday vendor): `poll` makes its requests with it and
+    `ats_finder.py` shows the same address as a proposal's probe (dev #770). Lever is paged (`mode=json&skip&limit`),
+    Ashby asks for compensation, Greenhouse takes no query."""
+    host, path = ENDPOINTS[(vendor, region if vendor == "lever" else None)]
+    base = "https://%s%s" % (host, path % slug)
+    if vendor == "lever":
+        return "%s?mode=json&skip=%d&limit=%d" % (base, skip, limit)
+    if vendor == "ashby":
+        return base + "?includeCompensation=true"
+    return base
 
 Request = collections.namedtuple("Request", "method url headers timeout")
 Response = collections.namedtuple("Response", "status headers body final_url")
@@ -176,24 +193,40 @@ class _SameOriginRedirect(urllib.request.HTTPRedirectHandler):
             self, req, fp, code, msg, headers, newurl)
 
 
-def build_opener():
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Follow NO redirect (dev #770): `redirect_request` answering None makes urllib raise the 3xx as an
+    `HTTPError`, which `default_fetch` returns as a `Response` carrying its `location` header. The finder
+    (`ats_finder.py`) guards each hop itself, so a redirect is never followed outside its guard."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def build_opener(follow_redirects=True):
     """The opener `default_fetch` uses: urllib's DEFAULT handlers (so `ProxyHandler` stays and a
-    sandboxed request reaches the proxy) minus nothing, plus the same-origin redirect rule, and NO
-    `HTTPCookieProcessor` -- `urllib` adds none by default, and none is added here."""
-    return urllib.request.build_opener(_SameOriginRedirect)
+    sandboxed request reaches the proxy) minus nothing, plus the same-origin redirect rule (or, for
+    `follow_redirects=False`, no redirect at all), and NO `HTTPCookieProcessor` -- `urllib` adds none by
+    default, and none is added here."""
+    return urllib.request.build_opener(_SameOriginRedirect if follow_redirects else _NoRedirect)
 
 
-def default_fetch(request):
+def default_fetch(request, follow_redirects=True):
     """The wire. See the module docstring's contract. Raises `FetchError`; never returns a Response
-    for a transport failure. An HTTP error status (404, 429, ...) IS a Response."""
+    for a transport failure. An HTTP error status (404, 429, ...) IS a Response.
+
+    `follow_redirects=False` (dev #770, the careers-page finder) returns a 3xx as a `Response` instead of
+    following it; the default keeps every existing caller's behaviour."""
     req = urllib.request.Request(request.url, headers=dict(request.headers), method=request.method)
-    opener = build_opener()
+    opener = build_opener(follow_redirects)
     try:
         resp = opener.open(req, timeout=request.timeout)
     except _CrossOrigin as e:
         raise FetchError("redirected", str(e))
     except urllib.error.HTTPError as e:
-        body = e.read(MAX_BODY + 1) if e.fp is not None else b""
+        try:
+            body = e.read(MAX_BODY + 1) if e.fp is not None else b""
+        finally:
+            e.close()
         return Response(e.code, {k.lower(): v for k, v in e.headers.items()}, body, e.geturl())
     except (socket.timeout, TimeoutError) as e:
         raise FetchError("timeout", str(e))
@@ -1413,19 +1446,13 @@ def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEAD
         if not ats_slug.SLUG_RE.match(str(ats.get("slug"))):
             outcomes[co["id"]] = _not_covered(co, ats, host, "unparseable")
             continue
-        base = "https://%s%s" % (host, path % ats["slug"])
         entry = cache.get(cache_key) or {}
         postings, unlisted, total, etag_out, pages = [], 0, 0, None, 0
         outcome = None
         try:
             skip = 0
             while True:
-                if ats["vendor"] == "lever":
-                    url = "%s?mode=json&skip=%d&limit=%d" % (base, skip, LEVER_PAGE)
-                elif ats["vendor"] == "ashby":
-                    url = base + "?includeCompensation=true"
-                else:
-                    url = base
+                url = list_url(ats["vendor"], ats.get("region"), ats["slug"], skip, LEVER_PAGE)
                 # conditional GET: only for a feed known to be ONE page (page 1 unchanged does not
                 # say page 2 is), and only on its first page
                 send_etag = entry.get("etag") if (pages == 0 and entry.get("pages", 1) == 1) else None

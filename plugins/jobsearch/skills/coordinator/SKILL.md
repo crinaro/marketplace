@@ -64,6 +64,8 @@ script has already marked it shown, so it appears **once**; do not repeat it in 
 turn the source off unless the candidate asks. Every source is listed, and turned on or off, with
 `/jobsearch:sourcing`.
 
+**When the candidate asks what they can do, or how to look for roles now.** Every command and skill is listed in plain words, grouped by purpose, on the commands page (https://github.com/crinaro/marketplace/blob/main/docs/user/jobsearch/commands.md). The ones to offer for a search: `/jobsearch:search attended` (career pages and job boards now; the form without `attended` only previews), `/jobsearch:search companies attended`, `/jobsearch:search boards attended`, and `/jobsearch:sourcing employers attended` (find a tracked company's job feed). A posture level governs only how often an UNATTENDED run searches; it never holds research of a role the screen kept, and `minimal` is the hands-on level where the candidate runs these themselves.
+
 **⭐ THIS SESSION DOES NOT HOLD THE LOCK ALL DAY — corrected 2026-08-03.** the candidate: *"Why can't it
 run concurrently with the coordinator session? That was the main purpose."* Holding it from
 startup blocked every background run for as long as the candidate had a session open; on 08-03

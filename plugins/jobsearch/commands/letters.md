@@ -1,11 +1,11 @@
 ---
-argument-hint: "[drive | local_docx | <opp-id>]"
+argument-hint: "[drive | local_docx | <employer>]"
 description: Configure where finished cover letters go — a Google Doc in your Drive folder, or a local .docx — and render one.
 ---
 
 # Cover-letter output
 
-See also `/resume` — the same output pattern (a Google Doc or a local `.docx`, no Google account
+See also `/jobsearch:resume` — the same output pattern (a Google Doc or a local `.docx`, no Google account
 needed) for a declared resume variant, via `variant_out.py`.
 
 Show the current setting:

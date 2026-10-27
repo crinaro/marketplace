@@ -109,7 +109,9 @@ CONFIG_SKELETON = {
                             "unattended": [
                                     "sweeps"
                             ],
-                            "_for": "The lowest tier, or a quiet week. Deterministic sweeps only: mailbox digests, calendar artifacts, silence detection, gates, dashboard. Zero model fan-out. Everything expensive is on demand."
+                            "company_days": [],
+                            "board_days": [],
+                            "_for": "The lowest tier, or a quiet week. Deterministic sweeps only: mailbox digests, calendar artifacts, silence detection, gates, dashboard. No sweep agents. Everything expensive is on demand, except research of a role the screen kept, which no posture gates."
                     },
                     "economy": {
                             "runs_per_day": 2,
@@ -118,9 +120,16 @@ CONFIG_SKELETON = {
                             "max_drafts_per_run": 0,
                             "unattended": [
                                     "sweeps",
-                                    "linkedin"
+                                    "linkedin",
+                                    "board"
                             ],
-                            "_for": "DEFAULT FOR NEW INSTALLS. Adds the LinkedIn sweep, which is where the outreach funnel lives, at one agent per run. A reply can wait ~8h."
+                            "company_days": [
+                                    "mon"
+                            ],
+                            "board_days": [
+                                    "tue"
+                            ],
+                            "_for": "DEFAULT FOR NEW INSTALLS. Adds the LinkedIn sweep, which is where the outreach funnel lives, at one agent per run. Career pages Monday, job boards Tuesday. A reply can wait ~8h."
                     },
                     "standard": {
                             "runs_per_day": 3,
@@ -130,9 +139,18 @@ CONFIG_SKELETON = {
                             "unattended": [
                                     "sweeps",
                                     "linkedin",
-                                    "research"
+                                    "research",
+                                    "board"
                             ],
-                            "_for": "Adds unattended research on genuinely NEW roles. Suits an active search on a mid tier."
+                            "company_days": [
+                                    "mon",
+                                    "wed"
+                            ],
+                            "board_days": [
+                                    "tue",
+                                    "thu"
+                            ],
+                            "_for": "Economy at two agents per run, with career pages Mon+Wed and job boards Tue+Thu. Suits an active search on a mid tier."
                     },
                     "full": {
                             "runs_per_day": 5,
@@ -143,7 +161,18 @@ CONFIG_SKELETON = {
                                     "sweeps",
                                     "linkedin",
                                     "research",
-                                    "drafting"
+                                    "drafting",
+                                    "board"
+                            ],
+                            "company_days": [
+                                    "mon",
+                                    "wed",
+                                    "fri"
+                            ],
+                            "board_days": [
+                                    "tue",
+                                    "thu",
+                                    "sat"
                             ],
                             "_for": "Everything unattended, including auto-drafting replies. Assumes real token headroom; this is what the original installation runs."
                     }

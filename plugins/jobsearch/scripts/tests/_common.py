@@ -1395,6 +1395,22 @@ def scratch_profile(testcase=None):
     return d
 
 
+def screen_keep(root, titles=("Chief Technology Officer",)):
+    """Owner ruling O5 (jobsearch 0.78.0) -- `deferred.py --add-research` and the research claim now
+    refuse a role whose minimal screen is not `keep`, and the fixture's `targets.titles` are
+    placeholders, so every fixture role screens `review:title`. This sets a SCRATCH profile's
+    `targets.titles` so the fixture's `acme-cto` (and a copy of it under another id) screens `keep`.
+    Never call it on the tracked fixture."""
+    if os.path.realpath(root) == os.path.realpath(_FIXTURE):
+        raise AssertionError("screen_keep writes config.json: pass a scratch_profile() copy")
+    path = os.path.join(root, "config.json")
+    with open(path, encoding="utf-8") as fh:
+        cfg = json.load(fh)
+    cfg.setdefault("targets", {})["titles"] = list(titles)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, indent=2)
+
+
 def scratch_registry(testcase, root=None, addresses=None, extra=()):
     """dev #469 (1b-8) -- the ONE shared helper that gives a test profile the gmail-multi registry
     it now needs. jobsearch no longer owns the account list: a profile's `mailboxes` are only a
@@ -1998,6 +2014,7 @@ __all__ = [
     '_rs_journal',
     '_B5Profile',
     'scratch_profile',
+    'screen_keep',
     'scratch_registry',
     'scratch_env',
     'scratch_fixture_tree',

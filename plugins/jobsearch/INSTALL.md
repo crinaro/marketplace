@@ -44,6 +44,11 @@ or 2.1.286 (Desktop) or later. Without it (an older version, `disableAllHooks`, 
 only managed mods) everything still works: `/jobsearch:status`, `/jobsearch:review-resume` and
 `/jobsearch:review-linkedin` print as text.
 
+## What you can type
+
+Every `/jobsearch:` command and skill, in plain words and grouped by what you want to do, is on the
+[Commands](../../docs/user/jobsearch/commands.md) page. Start with `/jobsearch:coordinator`.
+
 ## Install the rulebook into your profile
 
 A plugin cannot ship project context: Claude Code loads `CLAUDE.md` from the working directory,
