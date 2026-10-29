@@ -129,7 +129,7 @@ export type StatusHandlers = {
   runWeekly: () => any
   // dev #774: turn one job source on or off. register.ts runs `record.py source <on|off> <id>` and nothing else; this
   // file only draws the button and says which way it turns.
-  toggleSource?: (id: string, on: boolean) => any
+  toggleSource?: (id: string, enabled: boolean) => any
 }
 
 // dev #774: the Sources block. One row per job source (scripts/panel.py's `elsewhere.sources`, which is

@@ -79,8 +79,8 @@ async function refresh($: any, full: boolean): Promise<void> {
 
 // dev #774: a Sources button. The mod runs the SAME verb the text path runs and relays its own first line; it writes
 // no file, keeps nothing in $.store, and decides nothing about what "on" means.
-async function toggleSource($: any, id: string, on: boolean): Promise<void> {
-  const verb = on ? 'on' : 'off'
+async function toggleSource($: any, id: string, enabled: boolean): Promise<void> {
+  const verb = enabled ? 'on' : 'off'
   try {
     const r = await py($, 'record.py', ['source', verb, id], 30000)
     const lines = String(r.stdout || r.stderr || '').split('\n').map((l: string) => l.trim()).filter((l: string) => l)
@@ -182,7 +182,7 @@ function paneFor($: any, els: any, id: string, surface: string): any {
       refresh: () => refresh($, true),
       runDaily: () => runTask($, 'daily'),
       runWeekly: () => runTask($, 'weekly'),
-      toggleSource: (id: string, on: boolean) => toggleSource($, id, on),
+      toggleSource: (id: string, enabled: boolean) => toggleSource($, id, enabled),
     }
     return statusTree(els, snapshot, surface === 'desktop', note, h)
   }
