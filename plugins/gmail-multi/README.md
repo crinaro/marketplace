@@ -26,9 +26,38 @@ failure. A connection lost right after the message is handed to the server leave
 genuinely unknown; the tool says so, tells you to check `[Gmail]/Sent Mail`, and says not to
 retry blindly.
 
+## What it runs, sends and fetches
+
+Everything below is the complete list. Nothing in the plugin downloads code and runs it, and nothing
+is installed at install time: the plugin is Python standard library and its own files.
+
+**Programs it runs.**
+
+- `python3`, on the plugin's own scripts: the mail server (`gmail_mcp_server.py`) and two
+  session-start hooks.
+  - `heal_install.py` repairs this plugin's own install record after a version move. It reads the
+    marketplace clone with `git show`.
+  - `migrate.py` upgrades the account list in place.
+- To read the app password, your OS credential store's own tool: `security` on macOS,
+  `secret-tool` on Linux, or PowerShell's PasswordVault on Windows.
+
+**What it sends, and where.** It connects only to Google's mail servers:
+
+- `imap.gmail.com`, to search, read and draft;
+- `smtp.gmail.com`, to send, reply and forward, each only after you approve that call.
+
+The one credential it reads is the Gmail app password **you** store in your OS credential store,
+and it goes only to those two servers, over TLS. `myaccount.google.com` appears only as the link
+where you create an app password. Nothing is sent to the plugin's authors.
+
 ## Setup
 
-1. Install the plugin. Then, in a session: `/gmail-multi:accounts`, or directly:
+1. Install the plugin:
+   ```
+   /plugin marketplace add crinaro/marketplace
+   /plugin install gmail-multi@crinaro-marketplace
+   ```
+   Then, in a session: `/gmail-multi:accounts`, or directly:
 
    ```bash
    python3 scripts/accounts.py --add you@example.com

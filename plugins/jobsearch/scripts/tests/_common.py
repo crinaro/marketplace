@@ -31,6 +31,7 @@ import ast
 import collections
 import contextlib
 import datetime
+import functools
 import glob
 import hashlib
 import inspect
@@ -1934,9 +1935,49 @@ def steppable_zip_clock(step_seconds=2):
         time.localtime = real_localtime
 
 
+def today_iso():
+    """Today's date as YYYY-MM-DD, read WHEN CALLED (dev #789).
+
+    The scripts a test runs read the clock when they run, so a test's own "today" must too. A module-level
+    `TODAY = date.today()` is read at import, which in a 15-minute suite can be the day before."""
+    return datetime.date.today().isoformat()
+
+
+def _rerun_once_if_the_day_rolled(fn, clock):
+    @functools.wraps(fn)
+    def wrapper(self, *args, **kwargs):
+        day = clock()
+        try:
+            return fn(self, *args, **kwargs)
+        except Exception:
+            if clock() == day:
+                raise
+        # The day changed while the test ran, so its dates and the script's can disagree by one. Run it once
+        # more from a fresh setUp; a second failure is reported, because the day cannot roll twice in seconds.
+        self.tearDown()
+        self.setUp()
+        return fn(self, *args, **kwargs)
+    return wrapper
+
+
+def retry_on_day_rollover(namespace, clock=datetime.date.today):
+    """dev #789: give every TestCase class defined in `namespace` (a module's `globals()`) one re-run of a test
+    that failed while the date changed under it. CI run 40604462142 crossed midnight UTC and failed 9 tests
+    whose only fault was the date. A failure on an unchanged day is untouched. Call it at the END of the module,
+    after every class is defined."""
+    name = namespace.get("__name__")
+    for cls in list(namespace.values()):
+        if isinstance(cls, type) and issubclass(cls, unittest.TestCase) and cls.__module__ == name:
+            for attr, fn in list(vars(cls).items()):
+                if attr.startswith("test") and callable(fn):
+                    setattr(cls, attr, _rerun_once_if_the_day_rolled(fn, clock))
+
+
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 
 __all__ = [
+    'today_iso',
+    'retry_on_day_rollover',
     'HERE',
     'ROOT',
     'ENGINE',

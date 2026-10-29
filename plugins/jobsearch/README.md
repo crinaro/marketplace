@@ -81,10 +81,78 @@ and does not use up the scheduled sweep. `/jobsearch:sourcing employers attended
 company's job feed. Every command is listed in
 [Commands](../../docs/user/jobsearch/commands.md).
 
+## What it runs, sends and fetches
+
+Everything below is the complete list. Nothing in the plugin downloads code and runs it, and nothing
+is installed at install time: the plugin is Python standard library and its own files.
+
+**Programs it runs.** `python3`, on the plugin's own scripts under `scripts/`. One of them,
+`ensure_connectors.py`, also runs `claude plugin install gmail-multi` from this same marketplace when
+that companion plugin is missing; it is the only connector `plugin.json` declares.
+
+- **Hooks** (`hooks/hooks.json`):
+  - At session start:
+    - record that the session started (`journal.py --fired`);
+    - apply pending data migrations, then do two more things in your own folder (`migrate.py --hook`):
+      - scan your profile for engine terms;
+      - bring opted-in channels up to the shipped channel catalog;
+    - self-test the guards;
+    - install the companion connector if it is missing (`ensure_connectors.py`).
+  - On each prompt: `drift_guard.py` notices when the plugin was updated mid-session.
+  - Before tool calls, five guards that either **refuse** a call or let it through unchanged; none
+    approves anything:
+    - `guard_engine_writes.py` refuses a write into the plugin's own files;
+    - `guard_outbound_click.py` refuses a browser click that would send, connect or apply;
+    - `guard_mail_send.py` refuses the mail send tools outright;
+    - `guard_mail_scope.py` refuses mail access to an account your profile does not declare;
+    - `guard_board_hosts.py` refuses opening a job-board host the plugin does not support.
+- **The mod** (`hooks/register.ts`, the status pane) does these things, and only inside a session
+  whose folder is a job-search profile:
+  - Runs three scripts, each named as a literal: `panel.py` (the numbers it shows), `presence_set.py`
+    (the resume and LinkedIn review panes) and `record.py source on|off <id>` (the Sources buttons;
+    the only way the mod changes a file).
+  - Calls one tool itself: the Desktop app's `scheduled-tasks` → `run_scheduled_task`, when you press
+    **Run daily now** or **Run weekly now**. It starts your own `search-daily` or
+    `search-strategy-weekly` task and sends nothing else.
+  - Runs one slash command itself: `/jobsearch:resume <variant>`, when you press **Render**.
+  - Submits three prompts, all fixed text:
+    - "Start the scheduled task … and report only whether it started", when a Run button cannot call
+      the tool directly;
+    - "Revise the … variant … with profile-optimizer", when you press **Revise**;
+    - "A background run queued N new item(s). Drain the queue.", from the watcher.
+
+    They carry a task name, a variant name or a count, never your data.
+  - Registers `jobsearch_watch` and answers it itself: calling it arms the watcher, which checks
+    `data/inbox.jsonl` once a minute.
+  - Hooks `command.run` only to open its three panes (`/jobsearch:status`, `review-resume`,
+    `review-linkedin`).
+
+**What it fetches.**
+
+- Public job-posting APIs, with no account: Greenhouse (`boards-api.greenhouse.io`), Lever
+  (`api.lever.co`, `api.eu.lever.co`), Ashby (`api.ashbyhq.com`), and a Workday tenant's `robots.txt`
+  and sitemap (`feed_poll.py`).
+- A tracked employer's own careers page, one page plus one same-site link, only in an attended run
+  (`ats_finder.py`).
+- Through your own signed-in browser: LinkedIn and the job boards you list.
+
+**What it sends, and where.**
+
+- Your mail is read through the gmail-multi connector, or over IMAP to `imap.gmail.com` (TLS).
+- The one credential it reads is the Gmail app password **you** store in your OS credential store,
+  and it is sent only to `imap.gmail.com`.
+- It never sends mail, and it never posts, connects or applies on your behalf; the guards above
+  refuse those calls.
+- Your profile data stays in your own folder; nothing is sent to the plugin's authors.
+
 ## Getting started
 
-1. **Install the plugin.** See [INSTALL.md](INSTALL.md) — in short, add this repository as a
-   marketplace and install `jobsearch` from it via `/plugin`.
+1. **Install the plugin.**
+   ```
+   /plugin marketplace add crinaro/marketplace
+   /plugin install jobsearch@crinaro-marketplace
+   ```
+   See [INSTALL.md](INSTALL.md) for the details.
 2. **Create YOUR own private search directory**, then from inside it:
    ```bash
    ~/.claude/jobsearch/run init_profile.py --scaffold

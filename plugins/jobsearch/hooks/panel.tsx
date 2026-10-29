@@ -143,7 +143,7 @@ export function sourceRows(snap: any): any[] | null {
   return s
 }
 
-export function sourcesSection(els: Els, snap: any, h: StatusHandlers): any {
+export function sourcesSection(els: Els, snap: any, handlers: StatusHandlers): any {
   const el = snap && snap.elsewhere
   const rows = sourceRows(snap)
   if (el && notChecked(el.sources)) {
@@ -159,11 +159,11 @@ export function sourcesSection(els: Els, snap: any, h: StatusHandlers): any {
       columnGap: 2,
       children: [
         txt(els, label),
-        h.toggleSource
+        handlers.toggleSource
           ? els.Button({
               key: 'source-' + r.id,
               label: r.on ? 'Turn off' : 'Turn on',
-              onPress: () => (h.toggleSource as any)(String(r.id), !r.on),
+              onPress: () => (handlers.toggleSource as any)(String(r.id), !r.on),
             })
           : txt(els, ' '),
       ],
@@ -176,7 +176,7 @@ export function sourcesSection(els: Els, snap: any, h: StatusHandlers): any {
 }
 
 // `canRun`: the Run buttons exist only where the Desktop app's scheduler does (surface 'desktop').
-export function statusTree(els: Els, snap: any, canRun: boolean, note: string, h: StatusHandlers): any {
+export function statusTree(els: Els, snap: any, canRun: boolean, note: string, handlers: StatusHandlers): any {
   const held = !!(snap && snap.lock && snap.lock.held)
   const runRow: any[] = []
   if (!canRun) {
@@ -185,8 +185,8 @@ export function statusTree(els: Els, snap: any, canRun: boolean, note: string, h
     // The scheduled task is refused while it is already running: say so instead of offering it.
     runRow.push(txt(els, 'run in progress'))
   } else {
-    runRow.push(els.Button({ key: 'run-daily', label: 'Run daily now', onPress: h.runDaily }))
-    runRow.push(els.Button({ key: 'run-weekly', label: 'Run weekly now', onPress: h.runWeekly }))
+    runRow.push(els.Button({ key: 'run-daily', label: 'Run daily now', onPress: handlers.runDaily }))
+    runRow.push(els.Button({ key: 'run-weekly', label: 'Run weekly now', onPress: handlers.runWeekly }))
   }
   return els.Box({
     flexDirection: 'column',
@@ -201,12 +201,12 @@ export function statusTree(els: Els, snap: any, canRun: boolean, note: string, h
         snap && snap.elsewhere && Array.isArray(snap.elsewhere.preps_owed) && snap.elsewhere.preps_owed.length
           ? ['preps owed: ' + snap.elsewhere.preps_owed.length] : []), 'no calls this week'),
       section(els, 'Channels due', elsewhereLines(snap, 'channels_due'), 'none due'),
-      sourcesSection(els, snap, h),
+      sourcesSection(els, snap, handlers),
       section(els, 'Open asks', elsewhereLines(snap, 'asks'), 'none open'),
       els.Box({
         flexDirection: 'row',
         columnGap: 2,
-        children: [els.Button({ key: 'refresh', label: 'Refresh', onPress: h.refresh }), ...runRow],
+        children: [els.Button({ key: 'refresh', label: 'Refresh', onPress: handlers.refresh }), ...runRow],
       }),
       note ? txt(els, note, { dimColor: true }) : txt(els, ' '),
     ],
@@ -236,7 +236,7 @@ function stripLine(v: any): string {
   return 'limit ' + s.cap + ' · used ' + s.count + (s.as_of ? ' · as of ' + s.as_of : '')
 }
 
-export function reviewTree(els: Els, model: any, tab: string, h: ReviewHandlers): any {
+export function reviewTree(els: Els, model: any, tab: string, handlers: ReviewHandlers): any {
   if (isFailure(model)) {
     return txt(els, 'NOT CHECKED (' + (model && model.error ? model.error : 'no data yet') + ')')
   }
@@ -251,7 +251,7 @@ export function reviewTree(els: Els, model: any, tab: string, h: ReviewHandlers)
         label: t.label,
         plain: true,
         dimColor: t.key !== active,
-        onPress: () => h.selectTab(t.key),
+        onPress: () => handlers.selectTab(t.key),
       }),
     ),
   })
@@ -278,9 +278,9 @@ export function reviewTree(els: Els, model: any, tab: string, h: ReviewHandlers)
           ? (v.paragraphs || []).map((p: string, i: number) => els.Markdown({ key: 'p' + i, text: p }))
           : [txt(els, 'no preview: ' + (v.note || v.state))],
       )
-      actions.push(els.Button({ key: 'revise', label: 'Revise with Claude', onPress: () => h.revise(id) }))
+      actions.push(els.Button({ key: 'revise', label: 'Revise with Claude', onPress: () => handlers.revise(id) }))
       if (model.surface === 'print') {
-        actions.push(els.Button({ key: 'render', label: 'Render', onPress: () => h.render(id) }))
+        actions.push(els.Button({ key: 'render', label: 'Render', onPress: () => handlers.render(id) }))
       }
     }
   }
@@ -293,7 +293,7 @@ export function reviewTree(els: Els, model: any, tab: string, h: ReviewHandlers)
       els.Box({
         flexDirection: 'row',
         columnGap: 2,
-        children: [els.Button({ key: 'refresh', label: 'Refresh', onPress: h.refresh }), ...actions],
+        children: [els.Button({ key: 'refresh', label: 'Refresh', onPress: handlers.refresh }), ...actions],
       }),
     ],
   })
