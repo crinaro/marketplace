@@ -64,7 +64,7 @@ import profile as _profile
 try:
     from mail_client import (
         Mailbox, configured_accounts, decode_header_value, CredentialError,
-        body_text, sweep_accounts,
+        body_text, sweep_accounts, print_coverage,
     )
 except ImportError as exc:  # pragma: no cover - defensive
     sys.stderr.write(
@@ -349,6 +349,10 @@ def main():
                     collisions.append((account, date, frm, subj, sorted(future), clash))
             print("  %s %-28s | %s" % (flag, (date or "?")[:28], (subj or "(no subject)")[:78]))
 
+    # dev #799 — under a connector each account states what its bundle covered (a no-op under
+    # gmail-multi). A partial window never ends in an all-clear.
+    partial = print_coverage(ROOT, accounts, args.days)
+
     print("\n" + "=" * 72)
     if collisions:
         print("‼️  %d DATE COLLISION(S) — the date IS in the commitments store, but for SOMEONE ELSE."
@@ -393,6 +397,9 @@ def main():
         print("\n  A SUBJECT LINE IS NOT AUTHORITATIVE — it can be weeks stale while the")
         print("  newest message in the thread schedules something tomorrow. Confirm the real")
         print("  time via gmail_get_attachment + scripts/parse_ics.py before writing it down.")
+    elif partial:
+        print("NOT AN ALL-CLEAR — the mail coverage above is partial (a span not covered, or a message "
+              "whose body was never fetched).")
     elif seen and not undated:
         print("No unreconciled future dates: every artifact matches a commitment on DATE AND WHO.")
         print("(Still not proof the schedule is right — reschedules happen out of band.)")

@@ -484,16 +484,20 @@ _METADATA[DASHBOARD_BODY_COLLAPSE_WORDS] = (
 # a typo that silently selected gmail-multi would read as a choice the user never made.
 MAIL_CONNECTOR = "communications.mail_connector"
 MAIL_CONNECTOR_DEFAULT = "gmail-multi"
-MAIL_CONNECTOR_VALUES = ("gmail-multi", "claude-gmail")
+# dev #799: widened from two values to five. A LITERAL on purpose (this module imports nothing of the mail
+# stack); `test_mail_connector_selection.py` pins it equal to `mail_connectors.VALUES`, which holds every
+# connector's facts. An unknown value is still refused, never coerced.
+MAIL_CONNECTOR_VALUES = ("gmail-multi", "claude-gmail", "claude-m365", "claude-fastmail",
+                         "claude-superhuman")
 
 READER_KEYS = READER_KEYS | frozenset({MAIL_CONNECTOR})
 
 _METADATA[MAIL_CONNECTOR] = (
     MAIL_CONNECTOR_DEFAULT, "enum", MAIL_CONNECTOR_VALUES,
     "which mail connector jobsearch uses — gmail-multi (the standalone connector plugin, also "
-    "what the sweeps read) or claude-gmail (the claude.ai Gmail connector); the other is "
-    "denied at the tool layer (guard_mail_scope.py), and the deterministic sweeps run only "
-    "under gmail-multi (dev #161)")
+    "what the sweeps read), claude-gmail (the claude.ai Gmail connector), claude-m365 (the claude.ai "
+    "Microsoft 365 connector, work or school accounts only), claude-fastmail or claude-superhuman; "
+    "the unselected ones are denied at the tool layer (guard_mail_scope.py) (dev #161, dev #799)")
 
 
 def resolve_mail_connector(cfg):

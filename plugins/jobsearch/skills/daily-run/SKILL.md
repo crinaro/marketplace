@@ -231,14 +231,48 @@ those three numbers in the summary, and treat K above zero as an open gap, never
 ## 3. GMAIL — two passes, and the order matters
 
 **⭐ ONE MAIL CONNECTOR, the selected one — and the run says which it used.** `config.json`'s
-`communications.mail_connector` is `gmail-multi` (the default) or `claude-gmail` (the claude.ai-managed Gmail
-connector); `~/.claude/jobsearch/run mailboxes.py --status` prints it. Call **only** the selected
-connector's tools, here and in every `inbox-scan` dispatch. A hook denies the other connector's
-mail tools and names the selection: a denial is reported, never routed around. Under
-`claude-gmail` the deterministic sweeps in this skill (`alert_sweep.py`, `meeting_check.py`,
-`reconcile.py --ats`, `check_followups.py`) skip with one line saying why, and **a skipped sweep is a
-gap in the run summary, never a clean zero**. The RUN SUMMARY (§13) names the connector the run
+`communications.mail_connector` is `gmail-multi` (the default) or a claude.ai connector: `claude-gmail`,
+`claude-m365` (work or school accounts only), `claude-fastmail` or `claude-superhuman`;
+`~/.claude/jobsearch/run mailboxes.py --status` prints it. Call **only** the selected connector's tools,
+here and in every `inbox-scan` dispatch. A hook denies the other connectors' mail tools and names the
+selection: a denial is reported, never routed around. The RUN SUMMARY (§13) names the connector the run
 used.
+
+**⭐ UNDER A claude.ai CONNECTOR, THE FETCH COMES FIRST AND THE SWEEPS READ WHAT IT INGESTED (design-mail-any-connector §3, §6, §7.1).**
+A script cannot call a connector; the model can. So, before the sweeps below, in this order:
+
+1. **Preflight (a script, not your judgement).** List the mail tools this session holds whose name ends in
+   one of the selected connector's read tools, by their **full `mcp__<server>__<tool>` names**, and run
+   `~/.claude/jobsearch/run mail_ingest.py preflight --tools <those names>`. It prints exactly one verdict.
+   The read tools, by selection:
+   - `claude-gmail`: `search_threads`, `get_thread`, `get_message`, `list_labels`, `list_drafts`, `list_filters`.
+   - `claude-m365`: `outlook_email_search`, `read_resource`.
+   - `claude-fastmail`: `search_email`, `read_email`, `read_thread`, `list_folders`, `list_identities`.
+   - `claude-superhuman`: `list_threads`, `get_thread`, `get_message`, `get_attachment`,
+     `query_email_and_calendar`, `get_read_statuses`.
+2. **Only `covered` fetches.** `covered` means no grant gap was found in the reported tool names and the
+   settings the script read; it is not a promise that no prompt can appear. Any other verdict
+   (`CONNECTOR ABSENT`, `CONTRACT MISMATCH`, `CONNECTOR AMBIGUOUS`, `SERVER NAME CHANGED`,
+   `NOT COVERED: grant needed`, `NOT COVERED: managed settings unreadable`) **skips the fetch for this
+   run and announces it**: print the verdict line verbatim, put it in the RUN SUMMARY, and do not dispatch
+   `inbox-scan` to fetch. A `CONTRACT MISMATCH` or `SERVER NAME CHANGED` line prints a `report_issue.py`
+   command: pass it to the candidate (the tool names carry no personal data), who files it, or emails it
+   with `report_issue.py --email` if they have no GitHub account.
+3. **Fetch, through the connector's own tools.** On `covered`, dispatch `inbox-scan` with the verdict line
+   in its brief: it runs `mail_ingest.py plan`, fetches the window through the selected row's search and
+   body tools (full `mcp__<server>__<tool>` names, nothing else of that server), writes the bundle and runs
+   `mail_ingest.py ingest`. You do not fetch mail yourself, and you never write a bundle record the
+   connector did not return.
+4. **Then the sweeps** (`alert_sweep.py`, `meeting_check.py`, `reconcile.py --ats`, `check_followups.py`)
+   run over the ingested bundle and each prints its own `Mail coverage (...)` line per account.
+   **A `NOT COVERED` line is a gap in the run summary, never a clean zero**, and a window the bundle did not
+   reach is not "nothing found".
+
+**Nothing here waits on a prompt.** This skill runs unattended on the scheduled cadence with nobody
+present. If a connector call is denied, asks for permission or does not return, the fetch did not happen:
+record it as NOT COVERED, carry on with the rest of the run, and never stop to ask. Under `gmail-multi`
+none of this applies and the sweeps read the mailbox directly as before; a sweep that prints
+`MAIL SWEEP SKIPPED` (a selection with no backend) is likewise a gap, not a zero.
 
 **⭐ ATS status mail (rejections, receipts, interview invites) is NOT read here or by
 `inbox-scan` — it is §7a′'s `reconcile.py --ats`, in the write phase**, because resolving it
@@ -303,7 +337,8 @@ subject, or `in:sent`/`in:anywhere`). Two outcomes:
 This happened 2026-08-05: Ashford Search's <an employer> decline landed overnight and the candidate replied ~1 hour
 later; the scan saw only the inbound and nearly drafted a response to a thread the candidate had already closed.
 
-**c. HUMAN/MEETING PASS — delegate to `inbox-scan`.** New recruiter/human inbound, thread replies,
+**c. HUMAN/MEETING PASS — delegate to `inbox-scan`.** (Under a claude.ai connector this dispatch is the
+fetch above, and it runs ahead of pass a.) New recruiter/human inbound, thread replies,
 and — swept FIRST per the hard rule — meeting artifacts. **It is NOT trusted for the digests**
 (pass a owns those); brief it so it neither re-reports nor skips them.
 
@@ -1112,8 +1147,9 @@ it regardless — that convergence is the design, so never silence it.
 ## 13. SUMMARY
 
 Top 3 focus areas · new items with comp/fit assessment · status changes · proposed drafts ·
-**the mail connector this run used** (`gmail-multi` or `claude-gmail`), with any sweep that skipped
-because of it.
+**the mail connector this run used** (`gmail-multi`, `claude-gmail`, `claude-m365`, `claude-fastmail` or
+`claude-superhuman`), its preflight verdict when it was a claude.ai connector, and every `NOT COVERED` line
+(a gap, never a zero).
 **NEVER send messages, emails or applications — drafts are for approval only.** If nothing is new,
 one line, but still do UPDATE STATE and DASHBOARD.
 

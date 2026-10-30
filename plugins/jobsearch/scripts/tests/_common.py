@@ -1166,7 +1166,7 @@ class _ImapConnStub(object):
 import mail_client as _mail_client_for_fakes   # noqa: E402  (HERE is on sys.path above)
 
 
-class _FakeAtsMailbox(_mail_client_for_fakes.Mailbox):
+class _FakeAtsMailbox(_mail_client_for_fakes.ImapMailbox):   # dev #799 M7: `Mailbox` is a factory now
     """A `Mailbox` keyed by account -> {uid: (headers_dict, body_text)}. Raises `CredentialError`
     for an account named in `FAIL_ACCOUNTS`, mirroring a revoked app password -- the same shape
     `_fake_mailbox` in `TestSweepAccountsWiredIntoTheFourCallers` already establishes for the

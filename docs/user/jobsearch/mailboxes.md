@@ -5,6 +5,11 @@ separate plugin that installs alongside this one and holds the list of Gmail acc
 machine. This page says how the two lists relate, what the search will and will not touch, and
 what to do when it tells you an address is missing.
 
+You can instead pick a mail connector you added in claude.ai: Gmail, Microsoft 365 (work or school
+accounts only; personal outlook.com, hotmail.com and live.com are not covered), Fastmail or
+Superhuman. Then the two lists below do not apply: the connector reads the account you signed in
+to there. See [Mail connector](your-data.md#mail-connector--configjsoncommunicationsmail_connector).
+
 Starting with jobsearch 0.63.0 and gmail-multi 0.5.0 the two are linked **by reference**: the
 accounts live in one place, and your profile names the ones the job search may use.
 
@@ -37,7 +42,10 @@ password before it is searched.
   the plugin is enabled and a profile is remembered, gmail-multi's tools are limited to that
   profile's addresses in every session. To use another account, open a session where the
   job-search plugin is turned off.
-- **The job search still only drafts.** It never sends mail. Separately, gmail-multi now asks
+- **The job search still only drafts.** It never sends mail. Under a claude.ai connector, a
+  guard refuses that connector's send, reply and forward tools while jobsearch is loaded (the
+  script and its matcher are tested; whether the app routes every call through it is not yet
+  verified). Separately, gmail-multi now asks
   you to approve every send, reply or forward, and refuses one when nobody is there to answer
   (see the [gmail-multi README](../../../plugins/gmail-multi/README.md)). Inside a job-search
   session the draft-only rule applies first.

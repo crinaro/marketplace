@@ -87,14 +87,71 @@ asked the wrong question — say so in your report instead of loading it.
 
 **⭐ WHICH CONNECTOR — read the selection first, call only that connector's tools, say which you used.**
 The profile selects one mail connector (`config.json`'s `communications.mail_connector`: `gmail-multi`, the
-default, or `claude-gmail`, the claude.ai-managed Gmail connector); `~/.claude/jobsearch/run
-mailboxes.py --status` prints it. Call **only** the selected connector's tools. A hook denies the
-other connector's mail tools and names the selection; a denial is a finding to report, never a
-reason to reach for the other connector. Put the connector name in your report's Coverage line.
-Under `claude-gmail` there is no per-address loop: it searches the one account it is signed in
-to, and you say that account is the only one covered.
+default, or one of the claude.ai connectors `claude-gmail`, `claude-m365`, `claude-fastmail`,
+`claude-superhuman`); `~/.claude/jobsearch/run mailboxes.py --status` prints it. Call **only** the
+selected connector's tools. A hook denies the other connectors' mail tools and names the selection; a
+denial is a finding to report, never a reason to reach for another connector. Put the connector name in
+your report's Coverage line.
 
-With `gmail-multi` selected (the default), you scan the candidate's mailboxes — EVERY configured account, never one, and never anyone
+**⭐ UNDER A claude.ai CONNECTOR — you fetch, a script ingests (design-mail-any-connector §3, §6, §7.1).**
+A script cannot call a connector, so you are the one that does: fetch through the selected connector's
+**own tools, by their full `mcp__<server>__<tool>` names** (the server part differs by surface, so take the
+names from the tool list you actually hold, never from memory), then hand the result to a script that
+validates it. The profile's declared addresses are the account list; the gmail-multi account registry is
+not consulted. The selected row's tools:
+
+| selection | search tool, then body tool | other read tools it publishes (you do not need them) |
+|---|---|---|
+| `claude-gmail` | `search_threads` (window as `after:<date>`), then `get_message` | `get_thread`, `list_labels`, `list_drafts`, `list_filters` |
+| `claude-m365` (work or school accounts only) | `outlook_email_search`, then `read_resource` | none published |
+| `claude-fastmail` | `search_email`, then `read_email` | `read_thread`, `list_folders`, `list_identities` |
+| `claude-superhuman` | `list_threads` or `query_email_and_calendar`, then `get_message` | `get_thread`, `get_attachment`, `get_read_statuses` |
+
+Never call any other tool of these servers: no send, forward, reply, draft, filter or rule tool, and no
+calendar write. A hook denies a send and the rule above forbids the rest.
+
+1. **The preflight comes first, and it is not yours to skip.** `daily-run` runs
+   `~/.claude/jobsearch/run mail_ingest.py preflight --tools <the full mcp__<server>__<tool> names it holds>`
+   and passes you its one verdict line. If your brief carries none, run that line yourself with the
+   matching names from your own tool list. Only the verdict `covered` lets you fetch. **Any other verdict
+   (`CONNECTOR ABSENT`, `CONTRACT MISMATCH`, `CONNECTOR AMBIGUOUS`, `SERVER NAME CHANGED`,
+   `NOT COVERED: grant needed`, `NOT COVERED: managed settings unreadable`) skips the fetch: make no
+   connector call, write nothing, put the verdict line verbatim at the top of your report, and say the
+   run's mail is not covered.** `covered` means no grant gap was found in the reported tool names and the
+   settings the script read; it does not promise that no prompt will appear (see rule below).
+2. **Fetch, in the order the script says.** `mail_ingest.py plan` prints, per declared address, the window,
+   the read tools and the scratch path (or `fetch: none` when an earlier bundle already covers the window).
+   Fetch **every message in that window, inbox and sent**, with the selected row's search tool, paging until
+   the connector returns no continuation. Write the bundle exactly as `mail_ingest.py` documents it (a header
+   line carrying the server you called, the page ids exactly as the connector returned them, then one
+   record per message), with the Write tool, then run `mail_ingest.py ingest`. Never write a record you did
+   not receive from the connector, and never list an id you were not given: ingest checks that the pages and
+   records agree, and a bundle it refuses is reported, not repaired.
+3. **Bodies, capped.** `mail_ingest.py needs-body` lists the messages a query could not decide from headers.
+   Fetch those bodies with the row's body tool (`read_resource` for `claude-m365`), at most what it lists,
+   write the `bodies` file and ingest it. A message still undecided afterwards is NOT COVERED, never a miss.
+4. **Your own scan reads the bundle, not the mailbox.** Run the query lines below through
+   `~/.claude/jobsearch/run mail_ingest.py query`, which evaluates them over what was ingested and reports
+   what it could not decide. Do not re-search the connector for a second look.
+5. **A refusal or a mismatch is a finding, and you write nothing around it.** `CONTRACT MISMATCH` (the row's
+   search or body tool is not among the tools you hold) and `MAIL BUNDLE REFUSED (<connector>)` mean the
+   connector's results changed shape or its tools changed name. Hand back the line verbatim and the command
+   that the line prints, so the dispatching session can report it with `report_issue.py` (or
+   `report_issue.py --email` if you have no GitHub account). The tool names it carries are not personal
+   data. You do not file it yourself.
+6. **You never wait on a prompt.** This agent runs on the scheduled cadence with nobody present. If a
+   connector call is denied, asks for permission, or does not come back, treat that as the fetch not having
+   happened: stop fetching, record the denial in the report, and let the rest of the run continue. Do not
+   ask the user, do not retry in a loop, and do not try the other tools of the server.
+7. **Connector absent** (none of the row's tools are among the tools you hold) is the verdict
+   `CONNECTOR ABSENT` from rule 1: report its reasons as printed and stop. Never fall back to
+   `gmail-multi`, a browser, or anything that reaches the mailbox another way.
+
+Under a claude.ai connector a connector is signed in to its own account(s), not to every declared address.
+Say which declared addresses you actually fetched; an address with no bundle is not covered, and the report
+says so rather than counting it as empty.
+
+With `gmail-multi` selected (the default), the rest of this section applies as written: you scan the candidate's mailboxes — EVERY configured account, never one, and never anyone
 else's: run `~/.claude/jobsearch/run profile.py` and call `gmail_search` ONCE PER ADDRESS it
 prints, `account=<that address>`. Never call it with `account` unset or `all` — the connector's
 config is machine-wide and would return another profile's mail; the hook (`guard_mail_scope.py`)
@@ -166,7 +223,7 @@ you scanned in, so a truncated read still surfaces the most urgent thing.
 - **Human senders** — who, which account, which role or firm if known, and what they are asking.
 - **Replies on known threads** — which role, and what changed.
 - **Digests** — a count and the surfaced roles, marked as the low-value backstop they are.
-- **Coverage** — **the connector you used** (`gmail-multi` or `claude-gmail`), and every account you actually searched. ⚠️ **If any account raised an INCOMPLETE
+- **Coverage** — **the connector you used** (`gmail-multi`, `claude-gmail`, `claude-m365`, `claude-fastmail` or `claude-superhuman`), and every account you actually searched. Under a claude.ai connector, also the preflight verdict and each account's `Mail coverage (...)` line; any verdict other than `covered` goes at the top. ⚠️ **If any account raised an INCOMPLETE
   COVERAGE banner, say so at the top.** A partial sweep reported as a clean one is the failure
   this whole agent exists downstream of.
 

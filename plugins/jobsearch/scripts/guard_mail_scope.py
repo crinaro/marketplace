@@ -104,6 +104,20 @@ name is treated the same way — the one limit of matching by name (documented i
 No profile resolves from the hook's cwd -> the connector selection is not enforced (nothing to
 select for), the same posture as the per-address scope.
 
+⭐⭐ dev #799 — FIVE VALUES, AND THIS ENTRY OPENS NO HOLE (design-mail-any-connector.md §5.3, §5.1)
+---------------------------------------------------------------------------------------------
+`communications.mail_connector` also takes `claude-m365`, `claude-fastmail` and `claude-superhuman`.
+`connectors_of(name)` returns a SET (`get_message` and `get_thread` are both Gmail's and Superhuman's),
+and a tool is denied when the selection is not in it; under `gmail-multi` any connector candidate is
+denied. The new families' names are generic (`read_resource`), so they count ONLY on a connector-shaped
+server. `mcp_server.source`, when present and neither `claudeai` nor `sdk`, switches the claude.ai name
+rules off — for THIS guard only; the send guard never narrows.
+The `--connector` entry exits 0 with NO output for the selected connector's tools and never returns
+`permissionDecision: allow`, so guard_mail_send's deny (`deny` outranks `allow`) always wins: a
+`send_message` under `claude-gmail` is denied by the send guard and left alone by this one. The
+SessionStart selftest also COMPILES guard_mail_send.py: a syntax error there fails open on the platform
+and cannot announce itself, so this sibling does (M5).
+
 Protocol: PreToolUse stdin is the hook payload; exit 2 blocks and stderr is shown to the model.
 `--selftest` (run from SessionStart) proves every branch against synthetic payloads and a
 synthetic profile — never a real one — so a syntax error or interpreter problem here is LOUD
@@ -155,6 +169,13 @@ ACCOUNTS_LISTING_TOOLS = tuple(t for t in GUARDED_MAIL_SCOPE_TOOLS if t.endswith
 MAIL_CONNECTOR_KEY = "communications.mail_connector"
 GMAIL_MULTI = "gmail-multi"
 CLAUDE_GMAIL = "claude-gmail"
+# dev #799 — the three further claude.ai connectors. Literals, pinned equal to `mail_connectors.py` (the
+# connector table) and to `config_keys.MAIL_CONNECTOR_VALUES` by test, so a hook that cannot import them
+# still enforces the selection. Microsoft 365 is work or school accounts only (design §14 S6).
+CLAUDE_M365 = "claude-m365"
+CLAUDE_FASTMAIL = "claude-fastmail"
+CLAUDE_SUPERHUMAN = "claude-superhuman"
+CONNECTOR_VALUES = (GMAIL_MULTI, CLAUDE_GMAIL, CLAUDE_M365, CLAUDE_FASTMAIL, CLAUDE_SUPERHUMAN)
 
 # gmail-multi's whole tool family (plugin_gmail-multi_gmail-multi is the measured plugin-served
 # server name; gmail-multi is a manual .mcp.json wiring) — every tool the connector serves, the three
@@ -165,32 +186,118 @@ GMAIL_MULTI_TOOL_NAMES = ("gmail_search", "gmail_get_message", "gmail_get_attach
                           "gmail_reply", "gmail_forward")
 
 # the claude.ai Gmail connector's own tool names — UNDETERMINED, a lead from the connector's public
-# page (see the module docstring). Matched as an anchored suffix under ANY server name.
+# page (see the module docstring). Matched as an anchored suffix under ANY server name. dev #799 adds
+# the published `list_filters` and the registry's `create_filter`.
 CLAUDE_GMAIL_TOOL_NAMES = ("search_threads", "get_thread", "get_message", "list_labels",
-                           "list_drafts", "create_draft", "send_message", "reply", "forward")
+                           "list_drafts", "create_draft", "send_message", "reply", "forward",
+                           "list_filters", "create_filter")
+
+# dev #799 — the other three connectors' tool names, each as published (docs/design-mail-any-connector.md
+# §2.1; the committed listing spec/mail_connector_contracts.json holds the sources). Several are
+# GENERIC (`read_resource`, `unsubscribe`, `get_attachment`), so these are matched ONLY on a
+# connector-shaped server (a UUID, `claude_ai_…`, or a server name carrying the product's name), never
+# under any server name the way Gmail's already are: under `gmail-multi` (the default) a `read_resource`
+# from an unrelated MCP server must not be denied.
+CLAUDE_M365_TOOL_NAMES = ("outlook_email_search", "read_resource")
+CLAUDE_FASTMAIL_TOOL_NAMES = ("search_email", "read_email", "read_thread", "list_folders",
+                              "list_identities", "archive_email", "delete_email", "compose_event")
+CLAUDE_SUPERHUMAN_TOOL_NAMES = ("list_threads", "get_thread", "get_message", "get_attachment",
+                                "query_email_and_calendar", "get_read_statuses", "send_draft",
+                                "undo_send", "unsubscribe", "create_or_update_event",
+                                "create_or_update_draft", "discard_draft", "mark_spam")
+SHAPED_FAMILIES = ((CLAUDE_M365, CLAUDE_M365_TOOL_NAMES),
+                   (CLAUDE_FASTMAIL, CLAUDE_FASTMAIL_TOOL_NAMES),
+                   (CLAUDE_SUPERHUMAN, CLAUDE_SUPERHUMAN_TOOL_NAMES))
+# a server name carrying one of these says which connector it is (design §5.3 `server_hints`).
+SERVER_HINTS = (("microsoft", CLAUDE_M365), ("m365", CLAUDE_M365), ("outlook", CLAUDE_M365),
+                ("fastmail", CLAUDE_FASTMAIL), ("superhuman", CLAUDE_SUPERHUMAN),
+                ("gmail", CLAUDE_GMAIL))
+_UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+# every connector tool name the second hooks.json entry routes here, each once, in a fixed order.
+CONNECTOR_TOOL_NAMES = tuple(dict.fromkeys(
+    CLAUDE_GMAIL_TOOL_NAMES + CLAUDE_M365_TOOL_NAMES + CLAUDE_FASTMAIL_TOOL_NAMES
+    + CLAUDE_SUPERHUMAN_TOOL_NAMES))
 
 _GMAIL_MULTI_PATTERN = r"^mcp__(%s)__(%s)$" % ("|".join(GMAIL_MULTI_SERVERS),
                                               "|".join(GMAIL_MULTI_TOOL_NAMES))
-_CLAUDE_GMAIL_PATTERN = r"^mcp__.+__(%s)$" % "|".join(CLAUDE_GMAIL_TOOL_NAMES)
+_CLAUDE_CONNECTORS_PATTERN = r"^mcp__.+__(%s)$" % "|".join(CONNECTOR_TOOL_NAMES)
 # hooks.json's matcher for the connector entry: a regex (the `^`/`(`/`.` make it one), and unanchored by
-# the platform's own rule, so each alternative anchors itself.
-CONNECTOR_MATCHER = _GMAIL_MULTI_PATTERN + "|" + _CLAUDE_GMAIL_PATTERN
+# the platform's own rule, so each alternative anchors itself. It OVER-routes (a generic name from an
+# unrelated server reaches the script); `connectors_of` below is the classifier and allows it.
+CONNECTOR_MATCHER = _GMAIL_MULTI_PATTERN + "|" + _CLAUDE_CONNECTORS_PATTERN
 _GMAIL_MULTI_RE = re.compile(_GMAIL_MULTI_PATTERN)
-_CLAUDE_GMAIL_RE = re.compile(_CLAUDE_GMAIL_PATTERN)
+_CLAUDE_GMAIL_RE = re.compile(r"^mcp__.+__(%s)$" % "|".join(CLAUDE_GMAIL_TOOL_NAMES))
 
 
-def connector_of(tool_name):
-    """Which connector's mail tool `tool_name` is: GMAIL_MULTI, CLAUDE_GMAIL, or None (not a mail tool
-    of either — never denied on connector grounds). Pure; the gate runs it against sample names."""
-    name = tool_name if isinstance(tool_name, str) else ""
+def _splits(name):
+    """Every (server, tool) reading of `mcp__<server>__<tool>`; [] when it is not an MCP tool name."""
+    if not isinstance(name, str) or not name.startswith("mcp__"):
+        return []
+    rest = name[len("mcp__"):]
+    out = []
+    i = rest.find("__")
+    while i != -1:
+        out.append((rest[:i], rest[i + 2:]))
+        i = rest.find("__", i + 1)
+    return out
+
+
+def _shaped(server, mcp_server):
+    """True when `server` looks like a claude.ai-style mail connector's (UUID, `claude_ai_`, a product
+    name in it, or `mcp_server.source == "claudeai"`). Pinned equal to guard_mail_send's by test."""
+    if isinstance(mcp_server, dict) and mcp_server.get("source") == "claudeai":
+        return True
+    low = (server or "").lower()
+    return bool(_UUID_RE.match(server or "")) or low.startswith("claude_ai_") or any(
+        h in low for h, _ in SERVER_HINTS)
+
+
+def connectors_of(name, mcp_server=None):
+    """The SET of connectors whose mail tool `name` could be (`get_message` is both Gmail's and
+    Superhuman's, C2). Empty = not a mail tool of any connector, never denied on connector grounds.
+    gmail-multi's exact names decide alone. When the payload's `mcp_server.source` is present and is
+    neither `claudeai` nor `sdk`, the name rules for the claude.ai connectors do not apply (this
+    guard only — never the send guard). A server name that hints exactly one connector decides
+    between the candidates. Pure; the gate runs it against sample names."""
+    name = name if isinstance(name, str) else ""
     if _GMAIL_MULTI_RE.search(name):
-        return GMAIL_MULTI
+        return {GMAIL_MULTI}
+    source = mcp_server.get("source") if isinstance(mcp_server, dict) else None
+    if source not in (None, "claudeai", "sdk"):
+        return set()
+    cands = set()
     if _CLAUDE_GMAIL_RE.search(name):
-        return CLAUDE_GMAIL
+        cands.add(CLAUDE_GMAIL)
+    servers = []
+    for server, tool in _splits(name):
+        servers.append(server)
+        if _shaped(server, mcp_server):
+            for connector, names in SHAPED_FAMILIES:
+                if tool in names:
+                    cands.add(connector)
+    if isinstance(mcp_server, dict) and isinstance(mcp_server.get("name"), str):
+        servers.append(mcp_server["name"])
+    hinted = {c for server in servers for h, c in SERVER_HINTS if h in server.lower()}
+    if len(hinted) == 1 and hinted & cands:
+        cands = hinted & cands
+    return cands
+
+
+def connector_of(name):
+    """One connector whose mail tool `name` is (the first candidate in `CONNECTOR_VALUES` order), or
+    None — the pre-#799 single-value view, kept for callers that only classify."""
+    cands = connectors_of(name)
+    for value in CONNECTOR_VALUES:
+        if value in cands:
+            return value
     return None
 
 
-_FAMILY_LABEL = {GMAIL_MULTI: "gmail-multi", CLAUDE_GMAIL: "the claude.ai Gmail connector"}
+_FAMILY_LABEL = {GMAIL_MULTI: "gmail-multi", CLAUDE_GMAIL: "the claude.ai Gmail connector",
+                 CLAUDE_M365: "the claude.ai Microsoft 365 connector",
+                 CLAUDE_FASTMAIL: "the claude.ai Fastmail connector",
+                 CLAUDE_SUPERHUMAN: "the claude.ai Superhuman Mail connector"}
 
 
 def _how_to_change(wanted):
@@ -198,23 +305,26 @@ def _how_to_change(wanted):
             'the current selection).' % (_FAMILY_LABEL[wanted], MAIL_CONNECTOR_KEY, wanted))
 
 
-def _connector_verdict(name, connector, connector_error):
+def _connector_verdict(name, connector, connector_error, mcp_server=None):
     """None when the connector selection allows `name`; else ("deny-connector", reason).
     `connector` is the resolved selection (None = nothing to select for: no profile); a non-empty
-    `connector_error` means the selection could not be resolved or is not valid."""
-    family = connector_of(name)
-    if family is None:
+    `connector_error` means the selection could not be resolved or is not valid. A tool that more than
+    one connector could own is allowed when the selection is any of them."""
+    cands = connectors_of(name, mcp_server)
+    if not cands:
         return None
     if connector_error:
         return "deny-connector", ("jobsearch could not determine which mail connector you selected "
                                   "(%s), so it will not use %s. Fix %s in config.json."
                                   % (connector_error, name, MAIL_CONNECTOR_KEY))
-    if connector is None or family == connector:
+    if connector is None or connector in cands:
         return None
+    owners = [v for v in CONNECTOR_VALUES if v in cands]
     return "deny-connector", ("your mail connector is '%s' (%s in config.json; the default is '%s'), "
                               "and %s is %s's tool. jobsearch uses only the connector you selected. %s"
                               % (connector, MAIL_CONNECTOR_KEY, GMAIL_MULTI, name,
-                                 _FAMILY_LABEL[family], _how_to_change(family)))
+                                 " or ".join(_FAMILY_LABEL[v] for v in owners),
+                                 _how_to_change(owners[0])))
 
 
 def _addr_list_message(accounts):
@@ -269,7 +379,7 @@ def evaluate(payload, has_profile, accounts, connector=None, connector_error=Non
     if not name:
         return "deny", "hook payload carries no tool_name — failing CLOSED"
     if has_profile:
-        denied = _connector_verdict(name, connector, connector_error)
+        denied = _connector_verdict(name, connector, connector_error, payload.get("mcp_server"))
         if denied:
             return denied
     if not scope:
@@ -544,6 +654,33 @@ def selftest():
                           scope=False)
     if verdict != "deny-connector":
         failures.append("an unresolvable selection did not deny a connector tool")
+
+    # dev #799 — the further connectors, and the property this entry must keep: it never ALLOWS in a
+    # way that could outrank guard_mail_send's deny (it returns the plain "allow", which `main()`
+    # prints as nothing at all), and a shared name is allowed under either owner.
+    uuid_get = "mcp__0a1b2c3d-0000-4000-8000-000000000000__get_message"
+    for selected in (CLAUDE_GMAIL, CLAUDE_SUPERHUMAN):
+        verdict, _ = evaluate({"tool_name": uuid_get}, True, accounts, connector=selected, scope=False)
+        if verdict != "allow":
+            failures.append("a Gmail/Superhuman shared tool was not allowed under %s" % selected)
+    verdict, _ = evaluate({"tool_name": uuid_get}, True, accounts, connector=CLAUDE_M365, scope=False)
+    if verdict != "deny-connector":
+        failures.append("claude-m365 selected did not deny the Gmail/Superhuman shared tool")
+    verdict, _ = evaluate({"tool_name": "mcp__docs__read_resource"}, True, accounts,
+                          connector=GMAIL_MULTI, scope=False)
+    if verdict != "allow":
+        failures.append("an unrelated server's read_resource was denied under gmail-multi")
+
+    # M5 — a syntax error in the send guard fails OPEN on the platform (a hook that does not start is a
+    # non-blocking error), and nothing in that file can announce its own syntax error. So the SIBLING
+    # warns: this selftest compiles guard_mail_send.py.
+    sibling = os.path.join(HERE, "guard_mail_send.py")
+    try:
+        with open(sibling, "rb") as fh:
+            compile(fh.read(), sibling, "exec")
+    except Exception as exc:                              # noqa: BLE001 — any reason it cannot run
+        failures.append("guard_mail_send.py does not compile (%s: %s) - the draft-only send deny "
+                        "for EVERY mail connector is inert" % (type(exc).__name__, exc))
 
     if failures:
         print(json.dumps({"systemMessage":

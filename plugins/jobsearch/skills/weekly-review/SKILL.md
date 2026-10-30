@@ -144,7 +144,7 @@ run must leave nothing local.**
 > capability's defects belong on that capability's tracker.** Dispatch **`engine-reporter`**: it
 > reads what actually happened, checks the plugin's open issues so it does not duplicate one, and
 > hands back ready-to-file proposals. **Confirm with the candidate, then file with the
-> `report_issue.py`.** `check_process_debt.py` still runs and still exits 1 on a leftover
+> `report_issue.py` (or `--email` if you have no GitHub account).** `check_process_debt.py` still runs and still exits 1 on a leftover
 > local section, so a half-migrated profile fails loudly instead of quietly keeping two lists.
 
 Every item leaves exactly one of four ways:

@@ -123,6 +123,9 @@ one item is involved:
 ~/.claude/jobsearch/run report_issue.py --title … --symptom …   # read it back first
 ```
 
+Or `--email` if you have no GitHub account: it prints a To, Subject and Body to copy into your own
+mail client, after the same personal-data refusal, and sends nothing.
+
 ⚠️ **State each bug as the RULE that misbehaved, never the instance.** The tool refuses a
 submission carrying a comp figure, address, phone or name — it crosses from a private repo into
 the engine's, and git history is permanent.

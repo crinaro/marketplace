@@ -1,5 +1,5 @@
 {
-  "description": "Blocks a profile session from writing into the engine or the installed plugin cache (scripts/guard_engine_writes.py, docs/adr-010-engine-write-guard.md), DENYs a ref-based click that resolves to an outbound-terminal control such as Send/Connect/Invite/Apply (scripts/guard_outbound_click.py, docs/deployment.md's 'outbound-click guard' section), DENYs the gmail-multi connector's send/reply/forward tools so jobsearch stays draft-only now that the connector can send (scripts/guard_mail_send.py, marketplace #213), DENYs a gmail-multi mailbox read/draft call whose account is not exactly one of this profile's own addresses that gmail-multi's registry holds, and DENYs gmail_accounts (it lists every account on the machine) — the registry is machine-wide and would otherwise return another profile's mail (scripts/guard_mail_scope.py, design-manifest-heal.md § The boundary — fails OPEN with a queryable diag row when tool_input is not visible to this build at all, and allows on the profile list with a shown systemMessage plus a diag row while the registry is still schema 1), DENYs the mail tools of whichever mail connector the profile did NOT select — gmail-multi or the claude.ai Gmail connector, matched by tool name under any server name (scripts/guard_mail_scope.py --connector, communications.mail_connector, dev #161), DENYs WebFetch and browser navigation (navigate, preview_start with a url, and a navigate step in browser_batch, on both browser servers) to a manual-candidate board host, the union of the shipped channel catalog's board_hosts and the profile's own channels[].board_hosts resolved through board_hosts.blocked_channel (scripts/guard_board_hosts.py, ADR-037, dev #771 - fails OPEN with a board-guard-degraded diag row and a shown systemMessage only when the host list cannot be read and nothing matched; Bash curl and wget are not covered), records that a SessionStart hook fired before any model turn so a run that dies before it can call journal.py --start still leaves proof a session existed (scripts/journal.py --fired, the 'fired' event, public #65 — loud on failure, exit 0 on every path; the hooks in this SessionStart group run in parallel, not in sequence, so this is one of several rather than a guaranteed first), runs the engine-purity term scan against this machine's own real profile as an envelope of migrate.py --hook (scripts/check_engine_purity.hook_step(), dev #411 — loud on a real hit via an asks.jsonl row, exit 0 on every path, 30s timeout), reconciles opted-in rows against the shipped channel catalog in a further migrate.py --hook envelope (channel_catalog/channel_catalog.json, dev #769 — applies only a strictly newer catalog revision to an unedited row, never touches a user's own row, writes an asks.jsonl row when both sides changed), and self-installs the connector plugins declared in plugin.json metadata.connectors at session start (scripts/ensure_connectors.py — loud on failure, exit 0 on every path).",
+  "description": "Blocks a profile session from writing into the engine or the installed plugin cache (scripts/guard_engine_writes.py, docs/adr-010-engine-write-guard.md), DENYs a ref-based click that resolves to an outbound-terminal control such as Send/Connect/Invite/Apply (scripts/guard_outbound_click.py, docs/deployment.md's 'outbound-click guard' section), DENYs the gmail-multi connector's send/reply/forward tools so jobsearch stays draft-only now that the connector can send (scripts/guard_mail_send.py, marketplace #213), DENYs the send, reply, forward, unsubscribe and mail-rule tools of the claude.ai Gmail, Microsoft 365, Fastmail and Superhuman connectors unconditionally while jobsearch is loaded - no profile resolution, any exception exits 2, onFailure block (scripts/guard_mail_send.py --connector, dev #799 - the matcher over-routes and the Python floor classifies; script and matcher TESTED, platform routing UNVERIFIED), DENYs a gmail-multi mailbox read/draft call whose account is not exactly one of this profile's own addresses that gmail-multi's registry holds, and DENYs gmail_accounts (it lists every account on the machine) — the registry is machine-wide and would otherwise return another profile's mail (scripts/guard_mail_scope.py, design-manifest-heal.md § The boundary — fails OPEN with a queryable diag row when tool_input is not visible to this build at all, and allows on the profile list with a shown systemMessage plus a diag row while the registry is still schema 1), DENYs the mail tools of whichever mail connector the profile did NOT select — gmail-multi or the claude.ai Gmail connector, matched by tool name under any server name (scripts/guard_mail_scope.py --connector, communications.mail_connector, dev #161), DENYs WebFetch and browser navigation (navigate, preview_start with a url, and a navigate step in browser_batch, on both browser servers) to a manual-candidate board host, the union of the shipped channel catalog's board_hosts and the profile's own channels[].board_hosts resolved through board_hosts.blocked_channel (scripts/guard_board_hosts.py, ADR-037, dev #771 - fails OPEN with a board-guard-degraded diag row and a shown systemMessage only when the host list cannot be read and nothing matched; Bash curl and wget are not covered), records that a SessionStart hook fired before any model turn so a run that dies before it can call journal.py --start still leaves proof a session existed (scripts/journal.py --fired, the 'fired' event, public #65 — loud on failure, exit 0 on every path; the hooks in this SessionStart group run in parallel, not in sequence, so this is one of several rather than a guaranteed first), runs the engine-purity term scan against this machine's own real profile as an envelope of migrate.py --hook (scripts/check_engine_purity.hook_step(), dev #411 — loud on a real hit via an asks.jsonl row, exit 0 on every path, 30s timeout), reconciles opted-in rows against the shipped channel catalog in a further migrate.py --hook envelope (channel_catalog/channel_catalog.json, dev #769 — applies only a strictly newer catalog revision to an unedited row, never touches a user's own row, writes an asks.jsonl row when both sides changed), and self-installs the connector plugins declared in plugin.json metadata.connectors at session start (scripts/ensure_connectors.py — loud on failure, exit 0 on every path).",
   "modules": [
     "./register.ts"
   ],
@@ -25,6 +25,11 @@
           {
             "type": "command",
             "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/guard_mail_send.py --selftest",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/guard_mail_send.py --selftest --connector",
             "timeout": 10
           },
           {
@@ -88,6 +93,17 @@
         ]
       },
       {
+        "matcher": "^mcp__.*([Ss][Ee][Nn][Dd]|[Ff][Oo][Rr][Ww][Aa][Rr][Dd]|[Rr][Ee][Pp][Ll][Yy]|[Rr][Ee][Pp][Ll][Ii][Ee][Ss]|[Cc][Oo][Mm][Pp][Oo][Ss][Ee]|[Ff][Ii][Ll][Tt][Ee][Rr]|[Rr][Uu][Ll][Ee]|[Dd][Rr][Aa][Ff][Tt]|[Uu][Nn][Ss][Uu][Bb][Ss][Cc][Rr][Ii][Bb][Ee]|[Ee][Vv][Ee][Nn][Tt])",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}\"/scripts/guard_mail_send.py --connector",
+            "timeout": 10,
+            "onFailure": "block"
+          }
+        ]
+      },
+      {
         "matcher": "mcp__plugin_gmail-multi_gmail-multi__gmail_search|mcp__plugin_gmail-multi_gmail-multi__gmail_get_message|mcp__plugin_gmail-multi_gmail-multi__gmail_get_attachment|mcp__plugin_gmail-multi_gmail-multi__gmail_create_draft|mcp__plugin_gmail-multi_gmail-multi__gmail_accounts|mcp__gmail-multi__gmail_search|mcp__gmail-multi__gmail_get_message|mcp__gmail-multi__gmail_get_attachment|mcp__gmail-multi__gmail_create_draft|mcp__gmail-multi__gmail_accounts",
         "hooks": [
           {
@@ -108,7 +124,7 @@
         ]
       },
       {
-        "matcher": "^mcp__(plugin_gmail-multi_gmail-multi|gmail-multi)__(gmail_search|gmail_get_message|gmail_get_attachment|gmail_create_draft|gmail_accounts|gmail_send_message|gmail_reply|gmail_forward)$|^mcp__.+__(search_threads|get_thread|get_message|list_labels|list_drafts|create_draft|send_message|reply|forward)$",
+        "matcher": "^mcp__(plugin_gmail-multi_gmail-multi|gmail-multi)__(gmail_search|gmail_get_message|gmail_get_attachment|gmail_create_draft|gmail_accounts|gmail_send_message|gmail_reply|gmail_forward)$|^mcp__.+__(search_threads|get_thread|get_message|list_labels|list_drafts|create_draft|send_message|reply|forward|list_filters|create_filter|outlook_email_search|read_resource|search_email|read_email|read_thread|list_folders|list_identities|archive_email|delete_email|compose_event|list_threads|get_attachment|query_email_and_calendar|get_read_statuses|send_draft|undo_send|unsubscribe|create_or_update_event|create_or_update_draft|discard_draft|mark_spam)$",
         "hooks": [
           {
             "type": "command",

@@ -499,6 +499,9 @@ def main():
         print("   replied. Run an alert/watch sweep, then re-run this check.")
     else:
         print("(silence verified through %s)" % as_of.isoformat())
+    # dev #799 — ledger-only, but under a connector it still states what each account's bundle covered
+    # over THIS check's own window (a no-op under gmail-multi), so a silence claim is read against it.
+    _mail_client.print_coverage(ROOT, _mail_client.configured_accounts(), days)
 
     if silent:
         print("")
@@ -581,6 +584,12 @@ def main():
         print('    in:anywhere (from:mailer-daemon OR from:postmaster OR')
         print('      subject:("Address not found" OR "Delivery Status Notification" OR')
         print('              "Undeliverable" OR "could not be delivered")) newer_than:30d')
+        if _mail_client.is_bundle_backed(ROOT):
+            # dev #799 — under a connector this stays a MODEL-RUN query: inbox-scan answers it from the
+            # ingested bundle, which holds only the fetched window (a few days), not 30.
+            print("    (under your mail connector, inbox-scan runs it over the bundle: python3 "
+                  "scripts/mail_ingest.py query --account <address> --query '<the query above>'.")
+            print("     The bundle holds only the fetched window, so a bounce older than that is NOT COVERED.)")
         print("")
         for o, x in suspects:
             print("  - %-34s %s  (%s)" % ((x.get("to") or "")[:34], x.get("date"), o["id"][:34]))

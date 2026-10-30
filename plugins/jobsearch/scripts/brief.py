@@ -520,9 +520,9 @@ def run_email_probe(root, person_id, accounts=None):
     derived_domains = _reconcile.derived_sender_domains(_ym._load_jsonl(root, "messages.jsonl"))
     out = []
     for account in accounts:
-        if not credentials.has_credential(account):
+        if not mail_client.account_reachable(account, root):
             out.append({"account": account, "state": "unreachable",
-                       "reason": "credential-missing"})
+                       "reason": mail_client.unreachable_reason(account, root)})
             continue
         try:
             with mail_client.Mailbox(account) as mb:
@@ -561,6 +561,13 @@ def run_email_probe(root, person_id, accounts=None):
                                       medium="email", mailbox=account, at=at)
             out.append({"account": account, "state": "hit", "kind": kind, "n": len(hits),
                        "latest": latest})
+        elif mail_client.is_bundle_backed(root):
+            # dev #799 — an empty answer from a connector BUNDLE (at most a few days of mail) is not
+            # evidence the mailbox holds no thread with this person: no `empty` row is written (an
+            # absent row is the honest "not verified" state, section 4.2), and the result says so.
+            out.append({"account": account, "state": "unreachable",
+                       "reason": "not-covered: a connector bundle holds only the fetched window, "
+                                 "so no hit there is not an empty mailbox"})
         else:
             _journal.record_probe(root, thread, thread, "empty",
                                   medium="email", mailbox=account, at=at)
@@ -1144,7 +1151,7 @@ def cmd_probe_held(root, deadline_s=HELD_PROBE_DEADLINE_S):
         print("No held drafts to probe.")
         return 0
     accounts = mail_client.configured_accounts()                  # once per call (dev #712)
-    reachable = bool(accounts) and all(credentials.has_credential(a) for a in accounts)
+    reachable = bool(accounts) and all(mail_client.account_reachable(a, root) for a in accounts)
     started = _clock()
     probed, queued, not_reached = 0, 0, 0
     todo = [pid for pid in sorted(held_people)                    # sorted: a stable order

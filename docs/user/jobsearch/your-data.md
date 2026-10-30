@@ -1573,35 +1573,38 @@ that `gmail-multi` already holds, not a copy of it.
 - **An address missing from `gmail-multi` is never skipped silently.** The upgrade adds one ask
   per such address, `mailbox-unregistered:<address>`, until you register or remove it; the sweeps
   print a line for it and count it as not covered.
-- **Under `claude-gmail`** (below) this list is not consulted, because that connector reads the
-  one account you signed in to in claude.ai.
+- **Under any `claude-*` connector** (below) this list is not checked against gmail-multi,
+  because that connector reads the account you signed in to in claude.ai.
 
 [Mailboxes](mailboxes.md) explains the two lists, what the job search can and cannot reach, and
 the upgrade step by step.
 
 ## Mail connector — `config.json.communications.mail_connector`
 
-Which Gmail connector the job search reads mail through. The search uses **one**, the one you
+Which mail connector the job search reads mail through. The search uses **one**, the one you
 pick, and nothing else.
 
 | key | what it is |
 |---|---|
-| `mail_connector` | `gmail-multi` or `claude-gmail`. **`gmail-multi`** (the default) is the plugin that installs alongside this one and searches every address you listed with `/jobsearch:mailboxes`. **`claude-gmail`** is the Gmail connector managed in claude.ai, which searches the one account you signed in to there |
+| `mail_connector` | one of `gmail-multi`, `claude-gmail`, `claude-m365`, `claude-fastmail`, `claude-superhuman`. **`gmail-multi`** (the default) is the plugin that installs alongside this one and searches every address you listed with `/jobsearch:mailboxes`. The four **`claude-*`** values are the Gmail, Microsoft 365, Fastmail and Superhuman connectors managed in claude.ai, each reading the account you signed in to there. **Microsoft 365 is for work or school accounts only**, where your organisation's administrator has consented; personal outlook.com, hotmail.com and live.com are not covered |
 
 Written in full as `communications.mail_connector`. A profile that never set it reads `gmail-multi`, exactly what
 it did before this key existed, so nothing needed changing when it arrived.
 
 - **An unknown value is refused, not guessed at.** Set it to anything else (a typo, a connector the
-  plugin does not support) and the run stops with a message naming the two valid values. It is
+  plugin does not support) and the run stops with a message naming the valid values. It is
   never quietly read as the default, because that would send your search through a connector you
   did not choose.
 - **The other connector is switched off for the search.** With one selected, the plugin blocks the
   other one's mail tools and tells you which is selected and how to change it. This is enforced, not
   a suggestion.
-- **With `claude-gmail`, the scheduled mail sweeps skip.** The checks that read your mail directly
-  (the alert sweep, the meeting check, the ATS and follow-up sweeps) work only through
-  `gmail-multi`. Under `claude-gmail` each one says in one line that it skipped and why, and the
-  run summary reports it as a gap, not as "nothing new".
+- **With a `claude-*` connector, Claude fetches and a script checks.** A script cannot call a
+  claude.ai connector, so Claude reads the last few days of mail through the connector's own tools
+  and writes it to `.jobsearch/mail_bundle/` in your profile. A strict check reads that file before
+  the alert sweep, meeting check, ATS and follow-up sweeps use it. Anything the check cannot read is
+  refused out loud, and any span that was not fetched is reported as `NOT COVERED`, never as
+  "nothing new". These connectors are written to each vendor's published tools; live behaviour is
+  unverified until users report it.
 - **Every run says which connector it used.**
 - **One limit.** The claude.ai connector is recognised by its tool names. A different connector that
   happens to expose a tool with the same name is treated the same way.

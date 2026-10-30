@@ -359,7 +359,10 @@ data in your profile, or sends something you have not seen, and the plugin never
 ## The rules it holds itself to
 
 **It never sends.** Not email, not LinkedIn messages, not applications. Drafts are staged for
-you. This is structural, not a setting.
+you. This is structural, not a setting. With a claude.ai mail connector selected, a guard also
+refuses that connector's send, reply and forward tools; the script is tested, and whether the app
+routes every call through it is not yet verified. Reporting a problem by `report_issue.py --email`
+prints an email for you to send yourself; the plugin sends nothing.
 
 **It never handles a credential.** Your passwords and app passwords live in your operating
 system's keychain, placed by you. The engine asks the keychain for what it needs.

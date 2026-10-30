@@ -25,7 +25,7 @@ and a CI gate enforces that.
 | **Claude Code** | any subscription tier — see *Budget* below |
 | **A desktop (macOS)** | **required for LinkedIn.** LinkedIn has no API; it needs a real signed-in browser. This is the one thing that cannot run from a phone or the cloud, and it is roughly half the outreach funnel |
 | **Your own machine** | see *Where this runs*, below |
-| **An email account** | IMAP with an app password, stored in your own OS keychain |
+| **An email account** | Gmail over IMAP with an app password stored in your own OS keychain (the default), or a mailbox you have connected in claude.ai: Gmail, Microsoft 365 (work or school only), Fastmail or Superhuman. See *Mail connectors* below |
 | **Python 3.9+** | standard library only, no packages to install |
 
 **The engine never handles a credential.** You place them; it uses what your OS already holds.
@@ -103,7 +103,8 @@ that companion plugin is missing; it is the only connector `plugin.json` declare
     approves anything:
     - `guard_engine_writes.py` refuses a write into the plugin's own files;
     - `guard_outbound_click.py` refuses a browser click that would send, connect or apply;
-    - `guard_mail_send.py` refuses the mail send tools outright;
+    - `guard_mail_send.py` refuses the mail send tools outright, those of gmail-multi and those of the
+      claude.ai mail connectors (see *Mail connectors*);
     - `guard_mail_scope.py` refuses mail access to an account your profile does not declare;
     - `guard_board_hosts.py` refuses opening a job-board host the plugin does not support.
 - **The mod** (`hooks/register.ts`, the status pane) does these things, and only inside a session
@@ -138,12 +139,62 @@ that companion plugin is missing; it is the only connector `plugin.json` declare
 
 **What it sends, and where.**
 
-- Your mail is read through the gmail-multi connector, or over IMAP to `imap.gmail.com` (TLS).
+- Your mail is read through **one** connector you choose (see *Mail connectors*): the gmail-multi
+  connector over IMAP to `imap.gmail.com` (TLS), or a claude.ai connector for Gmail, Microsoft 365,
+  Fastmail or Superhuman. Through a claude.ai connector, Claude calls the connector's tools in your
+  session and the plugin's scripts contact no mail server.
 - The one credential it reads is the Gmail app password **you** store in your OS credential store,
-  and it is sent only to `imap.gmail.com`.
+  and it is sent only to `imap.gmail.com`. A claude.ai connector uses the sign-in you made in claude.ai.
 - It never sends mail, and it never posts, connects or applies on your behalf; the guards above
-  refuse those calls.
+  refuse those calls. The exact scope of that claim is in *Mail connectors* below.
 - Your profile data stays in your own folder; nothing is sent to the plugin's authors.
+- **A report you start yourself is the one exception.** `report_issue.py --file` files a public GitHub
+  issue. `report_issue.py --email` prints a message for you to paste into your own mail client, and
+  sends nothing. **An emailed report reaches the maintainers together with your own address**, and
+  may be re-filed publicly with personal data removed. Both forms refuse a report carrying an email
+  address, a phone number, a pay figure or a person's name.
+
+## Mail connectors
+
+You choose how the search reads mail with `communications.mail_connector` in `config.json`;
+`/jobsearch:mailboxes` shows the current value and how to switch. **Default `gmail-multi`.** An unknown
+value is refused, never read as the default.
+
+| value | reads | what it reads | where it runs |
+|---|---|---|---|
+| `gmail-multi` | Gmail, over IMAP, every address you declare | messages matching each check's search | S1 desktop, S2 scheduled task, S3a terminal |
+| `claude-gmail` | the claude.ai Gmail connector | headers of every message in the window (3 days at most), plus up to 25 bodies per account per run | S1, S2 (needs the allow rules the run prints), S3a under a claude.ai subscription login. Not under an API key, not on WSL |
+| `claude-m365` | the claude.ai Microsoft 365 connector | as `claude-gmail` | as `claude-gmail` |
+| `claude-fastmail` | the claude.ai Fastmail connector | as `claude-gmail` | as `claude-gmail` |
+| `claude-superhuman` | the claude.ai Superhuman connector | as `claude-gmail` | as `claude-gmail` |
+
+- **Written to the published contract, UNVERIFIED live.** The four `claude-*` connectors are built
+  against the tools each vendor publishes. Live behaviour against any of them is **UNVERIFIED until
+  users report it**. A connector that does not behave as published shows up as `CONTRACT MISMATCH` or
+  `MAIL BUNDLE REFUSED`; please report it with `report_issue.py`.
+- **Microsoft 365 is for work or school accounts only.** It works only where your organisation's
+  Entra administrator has consented to the Claude connector; an employee or student usually cannot
+  grant this. Personal outlook.com, hotmail.com and live.com accounts are **not covered** (follow-up
+  #801). If the tenant is an employer's, tracking a job search through it puts that search in your
+  employer's mailbox.
+- **How a claude.ai connector is read.** Claude fetches through the connector's tools, writes what
+  it fetched to `.jobsearch/mail_bundle/` in your profile (pruned at 3 days, never under your home
+  folder), and a script checks the file before any sweep uses it. A run prints `covered` when no
+  permission gap was found in the tool names the session reported and the settings files the plugin
+  can read. That is not "will not prompt". Where it cannot confirm that, the run skips the fetch,
+  says so and never waits on a prompt. A window longer than 3 days is reported as not covered.
+- **The send deny.** A second guard refuses the claude.ai mail connectors' send tools (send, reply,
+  forward, unsubscribe, mail rules, and the event writes of Superhuman and Fastmail) and stays on
+  while jobsearch is loaded. **Script and matcher TESTED, platform routing UNVERIFIED.** It is also
+  not claimed for a mail write tool with no mail word in its name that a vendor has not published,
+  for Microsoft 365 calendar event writes, or for a guard that fails to start (a syntax error, a
+  missing `python3`, a hook timeout), and it does not cover mail changes that are not sends. On a
+  user-scope install it applies to every session on the machine, so no claude.ai mail connector can
+  send there; install at project scope or disable jobsearch for the project to avoid that. **S6:**
+  whether plugin hooks run there is UNVERIFIED; if they do, the deny applies to every S6 session on
+  the account.
+- **gmail-multi is still installed** under a `claude-*` selection, and its tools are refused for
+  that profile.
 
 ## Privacy
 

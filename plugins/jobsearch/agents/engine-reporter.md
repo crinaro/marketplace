@@ -199,7 +199,12 @@ When you are filing:
 ```bash
 ~/.claude/jobsearch/run report_issue.py --title … --symptom …        # read the body back first
 ~/.claude/jobsearch/run report_issue.py --title … --symptom … --file
+~/.claude/jobsearch/run report_issue.py --title … --symptom … --email   # prints an email to send yourself
 ```
+
+Or `--email` if you have no GitHub account. It sends nothing: it prints a To, Subject and Body for the
+candidate to copy into their own mail client, after the same personal-data refusal. Offer it when
+`gh` is missing; the maintainers will see the sender's address, and say so.
 
 **`--dry-run` first, always.** You cannot edit an issue away once it is filed, and the body is the
 thing another team will act on. Report the issue URLs you created, plus anything you proposed and

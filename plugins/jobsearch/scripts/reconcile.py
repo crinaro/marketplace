@@ -115,7 +115,7 @@ import journal as _journal
 try:
     from mail_client import (
         Mailbox, configured_accounts, decode_header_value, CredentialError, body_text,
-        sweep_accounts, COVERAGE_BACKFILL_MAX_DAYS, lookback_days,
+        sweep_accounts, backfill_max_days, lookback_days, print_coverage, BundleError,
     )
 except ImportError as exc:  # pragma: no cover
     sys.stderr.write("Run as `python3 scripts/reconcile.py` from the repo root: %s\n" % exc)
@@ -1731,6 +1731,9 @@ def cmd_ats(args):
         _res, incomplete = sweep_accounts(search_one, since_days=since_days, root=ROOT,
                                           by=by_tag, accounts=[account])
         incomplete_all += incomplete
+        # dev #799 — under a connector the account states what its bundle covered (a no-op under
+        # gmail-multi); the lines print with the plan below.
+        print_coverage(ROOT, [account], since_days, out=plan_lines.append)
 
     print("ATS STATUS SWEEP — reconcile.py --ats (design-inbound-resolution.md)")
     print("=" * 78)
@@ -1779,7 +1782,7 @@ def cmd_verify(args):
     unstated = set(derived_not_configured(configured_domains, derived_domains))
     asks_all = load("asks.jsonl")
     have_sources = held_source_keys(messages_all)
-    days = args.days or COVERAGE_BACKFILL_MAX_DAYS
+    days = args.days or backfill_max_days(ROOT)      # dev #799: the ONE accessor (30, or 3 under a connector)
 
     problem = False
     accounts = configured_accounts()
@@ -1841,7 +1844,9 @@ def cmd_verify(args):
                         print("  ⛔ %d UNRECORDED — inside the sweep's own window; this is a "
                              "PROCESS FAILURE" % unrec)
         except CredentialError as exc:
-            print("--VERIFY %s: UNVERIFIED (credential-missing: %s)" % (account, exc))
+            # dev #799 — a missing or refused connector bundle is not a missing credential
+            print("--VERIFY %s: UNVERIFIED (%s: %s)" % (
+                account, "no-bundle" if isinstance(exc, BundleError) else "credential-missing", exc))
             problem = True
         except Exception as exc:                                # noqa: BLE001
             print("--VERIFY %s: UNVERIFIED (%s: %s)" % (account, type(exc).__name__, exc))
@@ -1909,7 +1914,7 @@ def main():
                          "UNVERIFIED and exits non-zero (D2).")
     ap.add_argument("--days", type=int, default=0,
                     help="--ats --verify: window in days (default: "
-                         "COVERAGE_BACKFILL_MAX_DAYS).")
+                         "the backfill ceiling: 30, or 3 under a mail connector).")
     # ⭐ public #101 — the test seam. `--apply`'s provenance note used to carry a LITERAL date
     # string (the date this feature was first written), so a row recovered weeks later carried
     # a false provenance date forever — nothing about the write depended on when the RUN
@@ -1990,7 +1995,7 @@ def main():
     # instead of Session's own former constructor loop. `since_days`: reconcile's own query
     # (`in:anywhere (...)`, below) carries NO time restriction — it is unbounded, unlike
     # alert_sweep/meeting_check/watch's `newer_than:%dd` windows. There is no true "window this
-    # sweep searched" to report, so recording `COVERAGE_BACKFILL_MAX_DAYS` is a deliberately
+    # sweep searched" to report, so recording the backfill ceiling (`backfill_max_days()`) is a deliberately
     # CONSERVATIVE understatement (the real search covers strictly more than this claims) rather
     # than a guess at "forever" — the ledger's own rule is that a window WIDER than what was
     # searched is a lie; a window narrower than an actually-unbounded search is merely modest,
@@ -1999,8 +2004,11 @@ def main():
         return [], sess.open_account(account)
 
     _sweep_results, incomplete = sweep_accounts(
-        search_one, since_days=COVERAGE_BACKFILL_MAX_DAYS, root=ROOT, by="reconcile",
+        search_one, since_days=backfill_max_days(ROOT), root=ROOT, by="reconcile",
         accounts=accounts)
+    # dev #799 — under a connector each account states what its bundle covered. The harvest's query
+    # has NO date bound, so the rest of the mailbox is named as not covered (a no-op under gmail-multi).
+    print_coverage(ROOT, accounts, backfill_max_days(ROOT), unbounded=True)
 
     n_done = 0
 

@@ -316,7 +316,7 @@ missing, a gate is broken — **do not fix it here.** Route it to the marketplac
   --title "..." --symptom "..." --evidence "..."
 ```
 
-Prints the report for review only — nothing is filed until you re-run with `--file`.
+Prints the report for review only — nothing is filed until you re-run with `--file` (or `--email` if you have no GitHub account: it prints a To, Subject and Body for you to send from your own mail client).
 
 ⚠️ **State the bug as the RULE that misbehaved, never the instance.** That submission crosses into
 a repo gated at zero personal data, and it refuses a currency figure, an address or a name — git

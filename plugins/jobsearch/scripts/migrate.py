@@ -5154,16 +5154,19 @@ def _gmail_multi_registry_path(home=None):
                                "accounts.json")
 
 
-def _profile_selects_claude_gmail(profile):
-    """True only when `config.json` says `communications.mail_connector` is exactly "claude-gmail"
-    (that connector binds its own account, so the registry is not consulted). Anything unreadable
-    or unrecognised is NOT "claude-gmail": the registry is consulted, which narrows, never widens."""
+def _profile_selects_a_connector(profile):
+    """True only when `config.json` names a known claude.ai connector in
+    `communications.mail_connector` (any accepted value other than "gmail-multi"; dev #799). A
+    connector binds its own account, so the registry is not consulted. Anything unreadable or
+    unrecognised is NOT a connector: the registry is consulted, which narrows, never widens."""
+    import config_keys as _ck
     try:
         with open(os.path.join(profile, "config.json"), encoding="utf-8") as fh:
             cfg = json.load(fh)
-        return (cfg.get("communications") or {}).get("mail_connector") == "claude-gmail"
+        value = (cfg.get("communications") or {}).get("mail_connector")
     except (OSError, ValueError, AttributeError):
         return False
+    return value in _ck.MAIL_CONNECTOR_VALUES and value != "gmail-multi"
 
 
 def _mailbox_reference_state(profile, home=None):
@@ -5171,7 +5174,7 @@ def _mailbox_reference_state(profile, home=None):
     `(registry, detail, unregistered, declared, keychain_left)`.
 
     `registry` is one of
-      "ok"           the connector is claude-gmail, or no address is declared, or the registry reads
+      "ok"           a claude.ai connector is selected, or no address is declared, or the registry reads
                      schema 2 and holds every declared address;
       "absent"       the registry file is not there (gmail-multi installs itself at session start);
       "pending"      the registry is still schema 1 — gmail-multi has not migrated it;
@@ -5193,7 +5196,7 @@ def _mailbox_reference_state(profile, home=None):
     declared = [b["address"].strip() for b in boxes
                 if isinstance(b.get("address"), str) and b["address"].strip()]
     keychain_left = any("keychain_service" in b for b in boxes)
-    if _profile_selects_claude_gmail(profile) or not declared:
+    if _profile_selects_a_connector(profile) or not declared:
         return "ok", "", [], declared, keychain_left
     import mail_client
     path = _gmail_multi_registry_path(home)

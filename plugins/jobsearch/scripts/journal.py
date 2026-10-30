@@ -581,7 +581,7 @@ def fired_events(recs):
     return sorted((r for r in recs if r.get("event") == "fired"), key=lambda r: r.get("at") or "")
 
 
-def record_swept(root, mailbox, frm, through, by, ok, reason=None, at=None):
+def record_swept(root, mailbox, frm, through, by, ok, reason=None, at=None, source=None):
     """⭐ dev #321 (V0) — the ONE writer for positive mailbox coverage. `ok=True` needs `frm`
     and `through` (the window this sweep actually searched, ISO timestamps) — a positive
     coverage row with no window is not verifiable, so that shape is refused rather than stored
@@ -589,7 +589,12 @@ def record_swept(root, mailbox, frm, through, by, ok, reason=None, at=None):
     a sentence cannot" rule the rest of this journal already enforces) and stores no window: a
     failed sweep covers nothing, which is the whole point — this is the `!! INCOMPLETE COVERAGE`
     banner stored instead of merely printed, so `covered_through()` for that mailbox does not
-    advance past whatever it already had."""
+    advance past whatever it already had.
+
+    ⭐ dev #799 — `source`, optional and ADDITIVE: `"connector-bundle"` marks a row whose window is the
+    span a fetched connector bundle covered. Absent means IMAP, so every old row keeps its meaning; no
+    reader refuses an unknown key on a `swept` row (checked at the build: `read()` validates only the
+    `dispatch` shape)."""
     at = at or now_iso()
     if not mailbox:
         raise JournalError("record_swept requires a mailbox")
@@ -600,6 +605,8 @@ def record_swept(root, mailbox, frm, through, by, ok, reason=None, at=None):
                 "actually searched. A positive coverage row with no window is not verifiable.")
         rec = {"event": "swept", "mailbox": mailbox, "from": frm, "through": through,
                "at": at, "by": by or "", "ok": True}
+        if source:
+            rec["source"] = source
     else:
         if reason not in REASONS:
             raise JournalError(

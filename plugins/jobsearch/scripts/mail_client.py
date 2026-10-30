@@ -50,15 +50,23 @@ An address the registry lacks is LOUD (one line per address, per process), never
 no-op and never searched: a missing thing must not read as an empty thing. Such an address
 also gets no `swept` row, so the coverage ledger reads it as not covered by construction.
 
-⭐ THIS LIBRARY RUNS ONLY WHEN `gmail-multi` IS THE SELECTED MAIL CONNECTOR (dev #161, dev #524)
------------------------------------------------------------------------------------------------
-`config.json` `communications.mail_connector` (config_keys.py) is `gmail-multi` (the default) or
-`claude-gmail`. This library IS gmail-multi's mailboxes, read directly, so under `claude-gmail` it
-must not read mail: `sweep_accounts()` — the one site every deterministic sweep goes through —
-prints ONE loud line saying why and returns without calling a single search, and `Mailbox`
-refuses to open a connection. A sweep never skips silently, and never writes a `swept` row for a
-mailbox it did not look at (that row would be a false coverage claim). Every sweep that does run
-prints which connector it used. An unknown selection raises `ValueError` — refused, never coerced.
+⭐ ONE SEAM, TWO BACKENDS (dev #161, dev #524, dev #799)
+-------------------------------------------------------
+`config.json` `communications.mail_connector` (config_keys.py) names where this profile's mail is
+read. `Mailbox(account)` is a FACTORY over that selection:
+
+    gmail-multi (the default)   `ImapMailbox` — Gmail IMAP, as it always was
+    any claude.ai connector     `BundleMailbox` — the bundle the model fetched through the
+                                connector and `mail_ingest.py ingest` validated (design
+                                docs/design-mail-any-connector.md)
+
+Both answer the same questions (`search`, `fetch_headers`, `fetch_full`, `coverage`), so the six
+consumers keep their own matching. `sweep_accounts()` — the one site every deterministic sweep goes
+through — writes the coverage ledger from `Mailbox.coverage()`: the IMAP window is `[now - since_days,
+now]`, a bundle's is the window it actually fetched, and an uncovered span writes NO row (a row would
+be a false coverage claim). A selection with NO backend still skips with ONE loud line (`skip_line`).
+A sweep never skips silently and every sweep that runs prints which connector it used. An unknown
+selection raises `ValueError` — refused, never coerced.
 
 CREDENTIALS
 -----------
@@ -70,7 +78,9 @@ on disk, never passed as command-line arguments, never logged. The service name
 Python 3.9+. No third-party packages, by design — see CLAUDE.md.
 """
 
+import collections
 import email
+import inspect
 import sys as _sys, os as _os
 _sys.path.insert(0, _os.path.dirname(_os.path.abspath(_os.path.realpath(__file__))))
 from _root import profile_root as _profile_root
@@ -392,6 +402,22 @@ def skip_line(connector):
 # own output rather than only in source.
 COVERAGE_BACKFILL_MAX_DAYS = 30
 
+# ⭐ dev #799 (design 3.1) — under a connector the backfill is 3 days, not 30: OURS, 30 days of
+# model-transcribed headers is the wrong price. A longer hole stays visible as NOT COVERED.
+CONNECTOR_BACKFILL_MAX_DAYS = 3
+
+
+def backfill_max_days(root=None):
+    """⭐ THE ONE ACCESSOR for the backfill ceiling (dev #799, design section 14 R2-M0): 30 under
+    gmail-multi, `CONNECTOR_BACKFILL_MAX_DAYS` under any connector. Every consumer reads the ceiling
+    HERE — `COVERAGE_BACKFILL_MAX_DAYS` is not named outside this module (a static test pins it).
+    An unreadable selection answers 30: every sweep refuses an unreadable selection on its own."""
+    try:
+        connector = selected_connector(root)
+    except ValueError:
+        return COVERAGE_BACKFILL_MAX_DAYS
+    return COVERAGE_BACKFILL_MAX_DAYS if connector == GMAIL_MULTI else CONNECTOR_BACKFILL_MAX_DAYS
+
 
 def lookback_days(root, mailbox, floor_days, by=None):
     """dev #321 §15.1 — the LEDGER-DERIVED lookback for one mailbox's next sweep: reach back far
@@ -416,15 +442,16 @@ def lookback_days(root, mailbox, floor_days, by=None):
     daily `alert_sweep` covers every day does not mask `reconcile-ats`'s own first-ever run.
     """
     recs = _journal.read(root)
+    ceiling = backfill_max_days(root)
     through = _journal.covered_through(recs, mailbox, by=by)
     if through is None:
-        return max(int(floor_days or 0), COVERAGE_BACKFILL_MAX_DAYS)
+        return max(int(floor_days or 0), ceiling)
     try:
         through_dt = _dt.datetime.fromisoformat(through)
     except ValueError:
-        return max(int(floor_days or 0), COVERAGE_BACKFILL_MAX_DAYS)
+        return max(int(floor_days or 0), ceiling)
     hole_days = (_dt.datetime.now() - through_dt).days
-    capped = min(max(hole_days, 0), COVERAGE_BACKFILL_MAX_DAYS)
+    capped = min(max(hole_days, 0), ceiling)
     return max(int(floor_days or 0), capped)
 
 
@@ -447,15 +474,60 @@ def _classify_failure(error_text):
     return "other"
 
 
-def sweep_accounts(search_one, since_days, root=None, by="", accounts=None):
+def _clock():
+    """The current time as an aware UTC datetime. ONE patch point for every bundle-side clock read
+    (the sweep, `BundleMailbox`, `mail_ingest`): a test freezes it here."""
+    return _dt.datetime.now(_dt.timezone.utc)
+
+
+Coverage = collections.namedtuple("Coverage", ["ok_from", "through"])
+Coverage.__doc__ = ("⭐ dev #799 (design 3.5) — what a mailbox VERIFIABLY covered, as naive LOCAL datetimes "
+                    "(the journal's own form): `ok_from`..`through`, or `(None, None)` when nothing is "
+                    "verifiable (no exhausted bundle).")
+
+
+def _has_backend(connector):
+    """True when `connector` has a bundle backend: a row in the connector table."""
+    import mail_ingest
+    try:
+        mail_ingest.row_for(connector)
+    except ConnectorNotSelected:
+        return False
+    return True
+
+
+def _call_search_one(search_one, account, with_window):
+    """`search_one(account) -> (rows, error)`, or with `with_window=True` — honoured only by a callback
+    that DECLARES the keyword — `(rows, error, Coverage)` (design 3.5). Every existing two-argument
+    callback and test double keeps working: its coverage is then read from the mailbox."""
+    if with_window:
+        try:
+            takes = "with_window" in inspect.signature(search_one).parameters
+        except (TypeError, ValueError):
+            takes = False
+        if takes:
+            rows, error, cov = search_one(account, with_window=True)
+            return rows, error, cov
+    rows, error = search_one(account)
+    return rows, error, None
+
+
+def sweep_accounts(search_one, since_days, root=None, by="", accounts=None, now=None):
     """dev #321 (V0) — THE shared multi-account sweep site. `search_one(account) -> (rows,
     error)` performs ONE account's actual search (Gmail query construction is the caller's —
     different sweeps search different things); this function does the part every caller
     duplicated: iterate every configured account (or `accounts`, for a narrowed run), call
-    `search_one`, and — the fix — write exactly ONE `swept` row per account via
-    `journal.record_swept()`: `ok: true` with the window `[now - since_days, now]` when
-    `search_one` succeeds, `ok: false` with a classified reason when it reports an error. A
-    `search_one` failure is never a crash here — that IS the `ok:false` row, not an exception.
+    `search_one`, and — the fix — write the `swept` row(s) via `journal.record_swept()`.
+
+    ⭐ gmail-multi: exactly ONE row per account — `ok: true` with the window `[now - since_days,
+    now]` when `search_one` succeeds, `ok: false` with a classified reason when it reports an error.
+    A `search_one` failure is never a crash here — that IS the `ok:false` row, not an exception.
+
+    ⭐ any connector (dev #799, design section 14 R2-M0): `ok: true` is written ONLY for the span a
+    fetched, EXHAUSTED bundle covers, intersected with this consumer's own window, with additive
+    `source: "connector-bundle"`. An uncovered span — no bundle, a bundle that is not exhausted, a
+    bundle that stopped short of the requested window — writes NO row: a row would claim coverage
+    nobody had. What is not covered is PRINTED by the consumer (`print_coverage`), from the ledger.
 
     Returns `(results, incomplete)`: `results` is `[(account, rows, error), ...]` in call order
     (exactly what a caller's own loop already produces, so this is a drop-in for that loop's
@@ -463,29 +535,200 @@ def sweep_accounts(search_one, since_days, root=None, by="", accounts=None):
     `!! INCOMPLETE COVERAGE` banner logic needs no other change.
     """
     root = root or _profile_root()
-    # ⭐ dev #161 — ADHERE to the selected connector. Under anything but gmail-multi this sweep
-    # does not run: one loud line, no search_one call, and NO `swept` row (a row would claim a
-    # mailbox was covered that nobody looked at). Under gmail-multi it states the connector it used.
+    # ⭐ dev #161 — ADHERE to the selected connector. A selection with NO backend does not run: one
+    # loud line, no search_one call, and NO `swept` row. Every sweep that runs states its connector.
     connector = selected_connector(root)
-    if connector != GMAIL_MULTI:
+    if connector != GMAIL_MULTI and not _has_backend(connector):
         print(skip_line(connector))
         return [], []
     print(connector_line(connector))
-    now = _dt.datetime.now().replace(microsecond=0)
+    now = (now or _dt.datetime.now()).replace(microsecond=0)
     frm = (now - _dt.timedelta(days=since_days)).isoformat()
     through = now.isoformat()
     accounts = accounts if accounts is not None else configured_accounts()
     results, incomplete = [], []
     for account in accounts:
-        rows, error = search_one(account)
-        if error:
-            incomplete.append(account)
-            _journal.record_swept(root, account, None, None, by, False,
-                                  reason=_classify_failure(error), at=through)
+        rows, error, cov = _call_search_one(search_one, account, connector != GMAIL_MULTI)
+        if connector == GMAIL_MULTI:
+            if error:
+                incomplete.append(account)
+                _journal.record_swept(root, account, None, None, by, False,
+                                      reason=_classify_failure(error), at=through)
+            else:
+                _journal.record_swept(root, account, frm, through, by, True, at=through)
         else:
-            _journal.record_swept(root, account, frm, through, by, True, at=through)
+            if not error and cov is None:
+                try:
+                    with BundleMailbox(account, connector, root) as mb:
+                        cov = mb.coverage(now - _dt.timedelta(days=since_days))
+                except (BundleError, ConnectorNotSelected) as exc:
+                    error = str(exc)
+            if error:
+                incomplete.append(account)
+            elif cov is not None and cov.ok_from is not None:
+                _journal.record_swept(root, account, cov.ok_from.isoformat(),
+                                      cov.through.isoformat(), by, True, at=through,
+                                      source=BUNDLE_SOURCE)
         results.append((account, rows, error))
     return results, incomplete
+
+
+# --------------------------------------------------------------------------
+# ⭐ dev #799 (design 4.3, section 14 R2-M0) — every consumer STATES its coverage
+# --------------------------------------------------------------------------
+
+BUNDLE_SOURCE = "connector-bundle"
+
+# What a consumer's own queries found in this process, per account — the numbers its coverage line
+# prints. A side channel (reset per process), the same shape `alert_sweep._last_skipped` already uses.
+_RUN_STATS = {}
+
+
+def reset_run_stats():
+    _RUN_STATS.clear()
+
+
+def _stat(account, name, key):
+    _RUN_STATS.setdefault(account.lower(), {"matched": set(), "unknown": set()})[name].add(key)
+
+
+def uncovered_spans(recs, mailbox, frm, to):
+    """The parts of `[frm, to]` (naive local datetimes) that NO `ok: true` `swept` row of `mailbox`
+    covers — `[now - since_days, now]` minus the union of the ledger's intervals. Never computed
+    from one bundle's window alone: a window that began later than the requested one is not a hole
+    when the ledger already covers what came before it."""
+    intervals = []
+    for r in recs:
+        if r.get("event") != "swept" or r.get("mailbox") != mailbox or not r.get("ok"):
+            continue
+        try:
+            f = _dt.datetime.fromisoformat(r.get("from"))
+            t = _dt.datetime.fromisoformat(r.get("through"))
+        except (TypeError, ValueError):
+            continue
+        if f.tzinfo is not None or t.tzinfo is not None:
+            continue
+        intervals.append((f, t))
+    merged = []
+    for f, t in sorted(intervals):
+        if merged and f <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], t))
+        else:
+            merged.append((f, t))
+    spans, cursor = [], frm
+    for f, t in merged:
+        if t <= cursor:
+            continue
+        if f >= to:
+            break
+        if f > cursor:
+            spans.append((cursor, min(f, to)))
+        cursor = max(cursor, t)
+        if cursor >= to:
+            break
+    if cursor < to:
+        spans.append((cursor, to))
+    return spans
+
+
+def _fmt(d):
+    return d.strftime("%Y-%m-%dT%H:%M")
+
+
+def coverage_lines(root, account, since_days, now=None, unbounded=False, connector=None):
+    """The `Mail coverage (...)` line(s) one consumer prints for one account (design 4.3). Empty under
+    gmail-multi — the existing reports are unchanged. `since_days` is THIS consumer's own window, so
+    the NOT COVERED span is its own, computed from the ledger. `unbounded` marks a query with no date
+    bound (reconcile's harvest, brief's per-person search): the rest of the mailbox was not covered."""
+    root = root or _profile_root()
+    connector = connector or selected_connector(root)
+    if connector == GMAIL_MULTI:
+        return []
+    import mail_ingest
+    now_utc = _clock() if now is None else now
+    now_local = now_utc.astimezone().replace(tzinfo=None, microsecond=0)
+    head = "Mail coverage (%s, %s):" % (connector, account)
+    try:
+        b = mail_ingest.load_kept(connector, account, [account], now_utc)
+    except BundleAbsent as exc:
+        return ["%s %s" % (head, exc)]
+    except (BundleError, ConnectorNotSelected) as exc:
+        return ["%s NOT COVERED: %s" % (head, exc)]
+    st = _RUN_STATS.get(account.lower())
+    parts = ["window %s..%s, %s" % (b.window_from.strftime("%Y-%m-%dT%H:%MZ"),
+                                    b.window_through.strftime("%Y-%m-%dT%H:%MZ"),
+                                    "exhausted" if b.exhausted else "NOT exhausted")]
+    if st is not None:
+        unk = st["unknown"] - st["matched"]
+        parts.append("matched %d, unknown %d%s" % (len(st["matched"]), len(unk),
+                                                    " (body not fetched)" if unk else ""))
+    notes = []
+    if not b.exhausted:
+        notes.append("NOT COVERED: bundle not exhausted")
+    recs = _journal.read(root)
+    through_local = mail_ingest.to_local_naive(b.window_through)
+    for a, z in uncovered_spans(recs, account, now_local - _dt.timedelta(days=since_days), now_local):
+        if a >= through_local - _dt.timedelta(seconds=1) and (z - a) <= mail_ingest.TAIL_GRACE:
+            continue                                   # the minutes between the fetch and this run
+        if a >= through_local - _dt.timedelta(seconds=1):
+            notes.append("NOT COVERED: after %s (not fetched yet)" % _fmt(through_local))
+        else:
+            notes.append("NOT COVERED: %s..%s (outside the fetched window)" % (_fmt(a), _fmt(z)))
+    if unbounded:
+        notes.append("NOT COVERED: mail before %s (this search has no date bound and the bundle "
+                     "holds only the fetched window)" % _fmt(mail_ingest.to_local_naive(b.window_from)))
+    if b.stale(now_utc):
+        notes.append("!! BUNDLE STALE: the window ended %s, more than %d hours ago"
+                     % (_fmt(through_local), mail_ingest.CONNECTOR_BUNDLE_STALE_HOURS))
+    if b.capped:
+        notes.append("NOT COVERED: window too large (%d records)" % b.capped)
+    return ["%s %s" % (head, "; ".join(parts + notes))]
+
+
+def is_bundle_backed(root=None):
+    """True when the selected connector is read from a bundle (a selection with a backend other than
+    gmail-multi). An unreadable selection answers False: the IMAP path refuses it on its own."""
+    try:
+        connector = selected_connector(root)
+    except ValueError:
+        return False
+    return connector != GMAIL_MULTI and _has_backend(connector)
+
+
+def account_reachable(account, root=None):
+    """Can `account`'s mail be read at all right now? gmail-multi: its stored credential. A connector:
+    a kept bundle that parses. Never raises; `unreachable_reason` says why not."""
+    if not is_bundle_backed(root):
+        return _cred.has_credential(account)
+    import mail_ingest
+    try:
+        return mail_ingest.kept_or_none(selected_connector(root), account, [account]) is not None
+    except (BundleError, ConnectorNotSelected):
+        return False
+
+
+def unreachable_reason(account, root=None):
+    """The short reason `account_reachable` said no."""
+    return "no-bundle" if is_bundle_backed(root) else "credential-missing"
+
+
+def print_coverage(root, accounts, since_days, now=None, unbounded=False, out=print):
+    """Print `coverage_lines` for each account; returns True when any line reports a NOT COVERED span
+    or an unknown message (so a consumer with an all-clear can withhold it). A no-op under
+    gmail-multi; under a selection with no backend the sweep already printed its one loud skip line."""
+    root = root or _profile_root()
+    try:
+        connector = selected_connector(root)
+    except ValueError:
+        return False
+    if connector == GMAIL_MULTI or not _has_backend(connector):
+        return False
+    partial = False
+    for account in accounts:
+        for line in coverage_lines(root, account, since_days, now, unbounded, connector):
+            out(line)
+            partial = partial or "NOT COVERED" in line or ("unknown" in line and "unknown 0" not in line)
+    return partial
 
 
 # --------------------------------------------------------------------------
@@ -501,6 +744,16 @@ class ConnectorNotSelected(CredentialError):
     """A mailbox open was requested while the selected mail connector is not gmail-multi (dev
     #161). A CredentialError subclass on purpose: every existing caller already turns one into a
     loud INCOMPLETE COVERAGE line, never into a silent empty result."""
+
+
+class BundleError(CredentialError):
+    """A connector bundle cannot be used (dev #799). A CredentialError subclass on purpose, the same
+    reason `ConnectorNotSelected` is one: every consumer already turns it into a loud INCOMPLETE
+    COVERAGE line, never into a silent empty result."""
+
+
+class BundleAbsent(BundleError):
+    """Nothing was fetched and ingested for this mailbox: `NOT COVERED: no bundle ...`."""
 
 
 def get_app_password(account):
@@ -617,7 +870,10 @@ def _decode_uids(account, raw):
     return out
 
 
-class Mailbox(object):
+class ImapMailbox(object):
+    """The gmail-multi backend: Gmail IMAP (renamed from `Mailbox`, dev #799 M7 — `Mailbox` is now a
+    factory below, and `isinstance(x, Mailbox)` is not a valid test)."""
+
     def __init__(self, account):
         self.account = account
         self.conn = None
@@ -724,6 +980,159 @@ class Mailbox(object):
         if typ != "OK" or not data or not isinstance(data[0], tuple):
             return None
         return email.message_from_bytes(data[0][1])
+
+    def coverage(self, since):
+        """⭐ dev #799 — what this search covered: IMAP asks Gmail itself, so it is the whole requested
+        window `(since, now)` — the gmail-multi path is unchanged."""
+        return Coverage(since, _dt.datetime.now().replace(microsecond=0))
+
+
+# --------------------------------------------------------------------------
+# ⭐ dev #799 — the bundle backend, and the factory every consumer opens a mailbox through
+# --------------------------------------------------------------------------
+
+def _address(person):
+    import email.utils
+    return email.utils.formataddr((person.get("name") or "", person["email"]))
+
+
+def record_to_message(rec, full):
+    """A stdlib message built from one normalised record — `Date`, `From`, `To`, `Cc`, `Subject`,
+    `Message-ID` for headers; with `full`, the body and one part per attachment (a calendar file is
+    `text/calendar`, as the consumers that look for one expect). The compat32 `Message`, exactly the
+    class the IMAP backend's `message_from_bytes` hands back."""
+    import email.mime.base
+    import email.mime.multipart
+    import email.mime.text
+    import email.utils
+    if full:
+        msg = email.mime.multipart.MIMEMultipart("mixed") if rec.get("attachments") else None
+        text = email.mime.text.MIMEText(rec.get("body_text") or "", "plain", "utf-8")
+        if msg is None:
+            msg = text
+        else:
+            msg.attach(text)
+            for att in rec["attachments"]:
+                name = att.get("filename") or ""
+                ctype = att.get("content_type") or (
+                    "text/calendar" if name.lower().endswith(".ics") else "application/octet-stream")
+                main, _, sub = ctype.partition("/")
+                part = email.mime.base.MIMEBase(main or "application", sub or "octet-stream")
+                part.add_header("Content-Disposition", "attachment", filename=name)
+                msg.attach(part)
+    else:
+        import email.message
+        msg = email.message.Message()
+    msg["From"] = _address(rec["from"])
+    if rec.get("to"):
+        msg["To"] = ", ".join(_address(p) for p in rec["to"])
+    if rec.get("cc"):
+        msg["Cc"] = ", ".join(_address(p) for p in rec["cc"])
+    msg["Subject"] = rec.get("subject") or ""
+    try:
+        msg["Date"] = email.utils.format_datetime(_dt.datetime.fromisoformat(
+            rec["date"].replace("Z", "+00:00")))
+    except ValueError:
+        pass
+    if rec.get("message_id"):
+        msg["Message-ID"] = rec["message_id"]
+    return msg
+
+
+class BundleMailbox(object):
+    """⭐ dev #799 (design section 4.1) — one account's mail read from the kept bundle, behind the
+    same four calls the IMAP backend answers. `search(query)` evaluates the consumer's own Gmail
+    query over the records with `mail_query` (three-valued): a TRUE record is returned, a FALSE one is
+    not, an UNKNOWN one (a body or attachment list that was never fetched) is counted and NEVER
+    returned as a miss — the consumer's coverage line prints it. A uid is a stable digit string
+    derived from the dedupe key, so it survives a new bundle and fits the `<tag>:<account>:<digits>`
+    source-tag grammar."""
+
+    def __init__(self, account, connector=None, root=None, now=None):
+        self.account, self.connector, self._root, self._now = account, connector, root, now
+        self.bundle = None
+
+    def __enter__(self):
+        import mail_ingest
+        connector = self.connector or selected_connector(self._root)
+        if connector == GMAIL_MULTI:
+            raise ConnectorNotSelected(
+                "your mail connector is gmail-multi, which has no bundle (mailbox %s)" % self.account)
+        mail_ingest.row_for(connector)               # ConnectorNotSelected when no backend
+        self.connector = connector
+        self.bundle = mail_ingest.load_kept(connector, self.account, [self.account], self._now or _clock())
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def _clock(self):
+        return self._now or _clock()
+
+    def search(self, query):
+        import mail_query
+        now = self._clock()
+        _RUN_STATS.setdefault(self.account.lower(), {"matched": set(), "unknown": set()})
+        uids = []
+        for rec in self.bundle.records:
+            key = _bundle_key(self.bundle, rec)
+            v = mail_query.evaluate(query, rec, now)
+            if v is True:
+                uids.append(_uid_of(self.bundle, key))
+                _stat(self.account, "matched", key)
+            elif v is None:
+                _stat(self.account, "unknown", key)
+        return uids
+
+    def _record(self, uid):
+        key = self.bundle.by_uid.get(str(uid))
+        return self.bundle.by_key.get(key) if key else None
+
+    def fetch_headers(self, uid):
+        rec = self._record(uid)
+        return None if rec is None else record_to_message(rec, False)
+
+    def fetch_full(self, uid):
+        rec = self._record(uid)
+        return None if rec is None else record_to_message(rec, True)
+
+    def coverage(self, since):
+        """The span a fetched, exhausted bundle verifiably covers, intersected with the requested
+        `since`: `Coverage(None, None)` when the bundle is not exhausted or stops before `since`."""
+        import mail_ingest
+        b = self.bundle
+        if not b.exhausted:
+            return Coverage(None, None)
+        frm = max(mail_ingest.to_local_naive(b.window_from), since) if since else \
+            mail_ingest.to_local_naive(b.window_from)
+        through = mail_ingest.to_local_naive(b.window_through)
+        if frm >= through:
+            return Coverage(None, None)
+        return Coverage(frm, through)
+
+
+def _bundle_key(bundle, rec):
+    import mail_ingest
+    return mail_ingest.record_key(rec, bundle.connector)
+
+
+def _uid_of(bundle, key):
+    import mail_ingest
+    return mail_ingest.uid_for(key)
+
+
+def Mailbox(account):
+    """⭐ dev #799 (design section 14 M7) — the ONE opener, a FACTORY: `ImapMailbox` under gmail-multi,
+    `BundleMailbox` under any other selection. Every consumer opens a mailbox here. An unreadable
+    selection returns the IMAP backend, whose `__enter__` refuses it loudly (as it always did)."""
+    try:
+        connector = selected_connector()
+    except ValueError:
+        return ImapMailbox(account)
+    if connector == GMAIL_MULTI:
+        return ImapMailbox(account)
+    return BundleMailbox(account, connector)
+
 
 # --------------------------------------------------------------------------
 # Message helpers

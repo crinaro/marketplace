@@ -1,6 +1,6 @@
 ---
 argument-hint: "[add <address> | check]"
-description: Configure which mail accounts the job search reads, check that each one can actually be searched, and show or switch which Gmail connector the search uses (gmail-multi or the claude.ai Gmail connector). Not for registering an account with the connector; that is /gmail-multi:accounts.
+description: Configure which mail accounts the job search reads, check that each one can actually be searched, and show or switch which mail connector the search uses (gmail-multi, or the claude.ai Gmail, Microsoft 365, Fastmail or Superhuman connector). Not for registering an account with the connector; that is /gmail-multi:accounts.
 ---
 
 # Mailboxes
@@ -38,29 +38,41 @@ their account list.
 
 ## Which connector the search uses — show it, and how to switch
 
-The search reads mail through **one** Gmail connector, chosen by `config.json`'s `communications.mail_connector`:
+The search reads mail through **one** connector, chosen by `config.json`'s `communications.mail_connector`:
 
 | value | what it means |
 |---|---|
 | `gmail-multi` (the default) | the `gmail-multi` plugin's tools, over the addresses listed above |
 | `claude-gmail` | the claude.ai-managed Gmail connector: one account, the one you signed in to claude.ai with |
+| `claude-m365` | the claude.ai Microsoft 365 connector, **work or school accounts only** (see below) |
+| `claude-fastmail` | the claude.ai Fastmail connector |
+| `claude-superhuman` | the claude.ai Superhuman Mail connector |
 
-`--status` prints the current selection first, before the accounts. **Relay it in plain words**:
-"jobsearch is reading mail through <connector>". A profile that never set the key reads
-`gmail-multi`, which is how every profile behaved before the key existed.
+`--status` prints the current selection first, before the accounts, then every other value with its switch
+line. **Relay it in plain words**: "jobsearch is reading mail through <connector>". A profile that never set
+the key reads `gmail-multi`, which is how every profile behaved before the key existed.
 
-To switch, the user sets `communications.mail_connector` in `config.json` to the other value. **Do not edit
+⚠️ **Microsoft 365 works only where your organisation's Entra administrator has consented to the Claude connector; an employee or student usually cannot grant this.**
+It reads a work or school Microsoft account only: personal outlook.com, hotmail.com and live.com accounts are **not covered**. Say so before the user picks it,
+and add the warning `--status` prints: reading through an employer's or school's tenant tracks a job search
+inside that organisation's mailbox.
+
+Each claude.ai connector is written to the contract its vendor publishes. How it behaves live is
+**UNVERIFIED** until users report it, so tell the user that and point them at `report_issue.py` (or its
+`--email` form) if something does not match.
+
+To switch, the user sets `communications.mail_connector` in `config.json` to the value they want. **Do not edit
 `config.json` for them unprompted**; say which value they are asking for and make the change only
 when they say so. Any other value is refused loudly, never read as the default, and the message
-names the two valid ones.
+names the valid ones.
 
-⚠️ **Choosing a connector turns the other one off for the search.** A guard denies the unselected
-connector's mail tools and says which connector is selected and how to change it, so a call that
+⚠️ **Choosing a connector turns the others off for the search.** A guard denies the unselected
+connectors' mail tools and says which connector is selected and how to change it, so a call that
 reaches for the wrong one fails with an explanation rather than quietly reading a mailbox the user
-did not pick. The scheduled sweeps that read mail directly (`alert_sweep.py`, `meeting_check.py`,
-`reconcile.py --ats`, `check_followups.py`) run only under `gmail-multi`; under `claude-gmail` each one
-skips with one line saying so. The addresses and app passwords on this page matter for
-`gmail-multi` only.
+did not pick. The scheduled sweeps that read mail over IMAP (`alert_sweep.py`, `meeting_check.py`,
+`reconcile.py --ats`, `check_followups.py`) read through `gmail-multi`. Under a claude.ai connector the
+addresses listed above are what is read through it; they need no app password and no entry in
+gmail-multi's registry, so `--status` does not check either.
 
 ## What to tell the user
 

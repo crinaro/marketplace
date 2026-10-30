@@ -21,6 +21,11 @@ account is invisible.**
     python3 scripts/mailboxes.py --status              # what is configured and what works
     python3 scripts/mailboxes.py --add you@work.com    # add an address (prints the next step)
     python3 scripts/mailboxes.py --remove old@x.com    # stop searching it
+
+⭐ dev #799: the connector selection (`communications.mail_connector`) has five values; every per-value
+fact (label, the Microsoft 365 work-or-school limit) lives in `mail_connectors.py`, the one table. Under a
+claude.ai connector the addresses below are what is read THROUGH it, the credential store is not
+consulted, and gmail-multi's registry is not either.
 """
 
 import argparse
@@ -32,6 +37,8 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
 import credentials as cred
+import mail_connectors            # the one table of connector values and their limits (dev #799)
+import mail_connectors            # the one table of connector values and their limits (dev #799)
 
 PROVIDER_HELP = {
     "gmail.com": ("Google", "https://myaccount.google.com/apppasswords",
@@ -92,19 +99,46 @@ def connector_lines():
             cfg_provenance = config_keys.describe(json.load(fh), key)[1]
     except (OSError, ValueError):
         cfg_provenance = "default — not in your file"
-    other = [v for v in config_keys.MAIL_CONNECTOR_VALUES if v != selected][0]
     lines = ["  Mail connector  : %s (%s)" % (selected, cfg_provenance),
-             "                    jobsearch uses ONLY this connector; the other one's mail tools are "
-             "blocked.",
-             '                    To switch to %s, set "%s" to "%s" in config.json.'
-             % (other, key, other)]
+             "                    jobsearch uses ONLY this connector; the others' mail tools are "
+             "blocked."]
+    row = mail_connectors.row(selected)
+    if row is not None:
+        # dev #799 (design §2, §14 S6): the limit and its warning are stated wherever the selection
+        # is shown, never only in a doc.
+        if row["limit"]:
+            lines.append("                    %s %s" % (row["label"].split(" (")[0], row["limit"]))
+        if row["warning"]:
+            lines.append("                    ⚠️ %s" % row["warning"])
+    lines.append("                    The values, and how to switch (set \"%s\" in config.json):" % key)
+    for value in mail_connectors.VALUES:
+        if value == selected:
+            continue
+        lines.append('                      "%s" — %s' % (value, mail_connectors.label(value)))
+        other = mail_connectors.row(value)
+        if other is not None and other["limit"]:
+            lines.append("                        %s %s" % (other["label"].split(" (")[0],
+                                                           other["limit"]))
     if selected != mail_client.GMAIL_MULTI:
-        lines.append("                    The mailbox list below is used by gmail-multi only — the "
-                     "daily sweeps skip while you use %s." % selected)
+        lines.append("                    The address list below is the list of mailboxes to read "
+                     "through %s; app passwords matter for gmail-multi only." % selected)
     return lines, True
 
 
 REGISTRY_FIX = "add it with /gmail-multi:accounts"
+
+
+def connector_in_use():
+    """The selected claude.ai connector's label, or None under `gmail-multi` (and when the selection
+    cannot be read: an unreadable selection narrows, so the gmail-multi path keeps its checks)."""
+    import mail_client
+    try:
+        selected = mail_client.selected_connector()
+    except ValueError:
+        return None
+    if selected == mail_client.GMAIL_MULTI:
+        return None
+    return mail_connectors.label(selected)
 
 
 def registry_state():
@@ -168,15 +202,24 @@ def status():
     if not boxes:
         print("  No mailboxes configured. The search is mailbox-blind: every query will come")
         print("  back empty, which looks exactly like a quiet inbox.")
-        print("\n  Register the account with gmail-multi first (/gmail-multi:accounts), then:")
+        if connector_in_use():
+            print("\n  List the address to read through your connector:")
+        else:
+            print("\n  Register the account with gmail-multi first (/gmail-multi:accounts), then:")
         print("  Add one:  python3 scripts/mailboxes.py --add you@example.com")
         return 1
 
     reg_state, reg_held, reg_detail = registry_state()
+    via = connector_in_use()        # a claude.ai connector's label, or None under gmail-multi
     problems = 0
     registry_problems = 0
     for m in boxes:
         addr = m.get("address", "")
+        if via:
+            # dev #799: a claude.ai connector holds its own sign-in, so no app password or registry
+            # entry is involved. Printing "NO CREDENTIAL" here would be a false alarm.
+            print("  [OK ] %-38s read through %s" % (addr, via))
+            continue
         ok = cred.has_credential(addr)
         problems += 0 if ok else 1
         print("  [%s] %-38s %s" % ("OK " if ok else "!! ", addr,
@@ -215,6 +258,9 @@ def status():
         print("  %d of %d mailbox(es) cannot be searched." % (problems, len(boxes)))
         print("  ⚠️ Until fixed, a search of those accounts returns empty — indistinguishable")
         print("     from no mail. Never read that as 'nothing arrived'.")
+    elif via:
+        print("  %d mailbox(es) listed to read through %s. Whether the connector can reach each one "
+              "is shown by the daily run's preflight, not here." % (len(boxes), via))
     elif not registry_problems:
         print("  All %d mailbox(es) configured and reachable." % len(boxes))
     return 1 if (problems or registry_problems or not connector_ok) else 0
@@ -244,7 +290,13 @@ def add(address):
                   "kind": "consumer" if "@gmail." in address else "workspace"})
     _save(data)
     print("Added %s to user.json.\n" % address)
-    print("⭐ It is NOT searchable yet — it still needs an app password in your credential store.")
+    via = connector_in_use()
+    if via:
+        print("It is listed to be read through %s, which holds its own sign-in. No app password "
+              "is involved." % via)
+    else:
+        print("⭐ It is NOT searchable yet — it still needs an app password in your credential "
+              "store.")
     print()
     return status()
 

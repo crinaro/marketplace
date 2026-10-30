@@ -58,6 +58,7 @@ from _root import profile_root as _profile_root
 try:
     from mail_client import (
         Mailbox, configured_accounts, decode_header_value, CredentialError, sweep_accounts,
+        print_coverage,
     )
 except ImportError as exc:  # pragma: no cover
     sys.stderr.write("Run as `python3 scripts/watch.py` from the repo root: %s\n" % exc)
@@ -285,6 +286,9 @@ def main():
         print("!! INCOMPLETE COVERAGE: %s"
               % "; ".join(rd.account_errors.get(a, a) for a in sorted(set(incomplete))))
         print("   Findings below are PARTIAL. Do not read a zero as an absence.")
+    # dev #799 — under a connector each account states what its bundle covered (a no-op under
+    # gmail-multi); a zero below is read against these lines.
+    print_coverage(ROOT, sorted({a for a in rd.boxes} | set(incomplete)), days)
     if not findings:
         print("  Nothing new. (%d finding(s) already queued from earlier sweeps.)" % len(seen))
     for f in sorted(findings, key=lambda x: (x["urgency"] != "high", x["kind"])):

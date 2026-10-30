@@ -36,9 +36,18 @@ Usage:
     ~/.claude/jobsearch/run report_issue.py --title "…" --symptom "…" [--evidence "…"]
     ~/.claude/jobsearch/run report_issue.py --title "…" --symptom "…" --file
         (without --file it prints the report for you to read first)
+    ~/.claude/jobsearch/run report_issue.py --title "…" --symptom "…" --email
+        (no GitHub account: prints To, Subject and Body for YOU to copy into your own mail client)
+
+⭐ `--email` (dev #800) NEVER SENDS. It runs the same LEAK_PATTERNS refusal first, then prints three
+blocks. It calls no subprocess, no `gh` and no mail tool, so nothing can be sent from here even
+on a machine with a mail connector: the user's own mail client does the sending, and adds the
+user's own address as the sender, which the plugin therefore never sees or prints. The recipient
+is `author.email` from THIS plugin's own `plugin.json`, read at runtime and never hardcoded; a
+manifest without a usable address refuses and points at the tracker URL instead.
 
 Python 3.9+. Standard library only. Filing needs the `gh` CLI; without it the report is
-printed with the tracker URL so it can be pasted in by hand.
+printed with the tracker URL so it can be pasted in by hand, and `--email` is offered next to it.
 """
 
 import argparse
@@ -89,6 +98,26 @@ def tracker():
     return m.group(1) if m else ""
 
 
+# A deliberately plain shape test: one `@`, a dotted domain, no whitespace or header separators.
+# It only has to refuse a missing or garbled field, not validate an RFC address.
+_ADDRESS = re.compile(r"^[^@\s<>,;:\"]+@[^@\s<>,;:\"]+\.[A-Za-z]{2,}$")
+
+
+def author_email():
+    """`author.email` from THIS plugin's own manifest, read at runtime — never hardcoded (dev #800).
+
+    Returns "" when the field is missing, not a string, or not address-shaped, so the caller
+    refuses rather than printing a To line a mail client would mangle."""
+    try:
+        with open(os.path.join(ENGINE, ".claude-plugin", "plugin.json"), encoding="utf-8") as fh:
+            author = json.load(fh).get("author")
+    except (OSError, ValueError, AttributeError):
+        return ""
+    addr = author.get("email") if isinstance(author, dict) else None
+    addr = addr.strip() if isinstance(addr, str) else ""
+    return addr if _ADDRESS.match(addr) else ""
+
+
 def schema_version():
     try:
         sys.path.insert(0, HERE)
@@ -111,15 +140,42 @@ def scan(text, field):
     return hits
 
 
-def main():
+def emit_email(args, repo, eng, body):
+    """Print the report as an email for the user to send themselves (dev #800). Calls no
+    subprocess, no `gh` and no mail tool; the caller has already refused any personal data."""
+    to = author_email()
+    if not to:
+        print("Could not read a contact address from this plugin's manifest (author.email).",
+              file=sys.stderr)
+        if repo:
+            print("Report it at https://github.com/%s/issues/new instead." % repo,
+                  file=sys.stderr)
+        return 1
+    subject = "[jobsearch %s] %s" % (eng, " ".join(args.title.split()))
+    email_body = body.rsplit("\n---\n", 1)[0] + (
+        "\n---\n_Emailed with `report_issue.py` from an installed plugin._\n")
+    print("EMAIL DRAFT — nothing was sent. Copy these three blocks into your own mail client.\n")
+    print("To:      %s" % to)
+    print("Subject: %s\n" % subject)
+    print(email_body)
+    print("Your mail client adds your own address as the sender, so the maintainers will see it.")
+    print("The report may be re-filed publicly with personal data removed.")
+    return 0
+
+
+def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--title", required=True)
     ap.add_argument("--symptom", required=True)
     ap.add_argument("--evidence", default="")
-    ap.add_argument("--file", action="store_true",
-                    help="actually file it (default: print for review)")
-    args = ap.parse_args()
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--file", action="store_true",
+                      help="actually file it (default: print for review)")
+    mode.add_argument("--email", action="store_true",
+                      help="no GitHub account: print To / Subject / Body to send from your "
+                           "own mail client (this tool never sends mail)")
+    args = ap.parse_args(argv)
 
     repo = tracker()
     eng, schema = engine_version(), schema_version()
@@ -147,14 +203,19 @@ def main():
         "---\n_Filed with `report_issue.py` from an installed plugin._\n"
         % (eng, schema, args.symptom, args.evidence or "_not supplied_"))
 
+    if args.email:
+        return emit_email(args, repo, eng, body)
+
     if not repo:
         print("Could not determine the tracker from this plugin's manifest.", file=sys.stderr)
-        print("Report it at the repository this plugin was installed from.", file=sys.stderr)
+        print("Report it at the repository this plugin was installed from, or re-run with "
+              "--email if you have no GitHub account.", file=sys.stderr)
         print("\n%s\n\n%s" % (args.title, body))
         return 1
 
     if not args.file:
-        print("DRY RUN — nothing filed. Re-run with --file to submit.\n")
+        print("DRY RUN — nothing filed. Re-run with --file to submit, or --email if you have "
+              "no GitHub account.\n")
         print("repo:   %s" % repo)
         print("title:  %s\n" % args.title)
         print(body)
@@ -176,7 +237,8 @@ def main():
         # Honest degradation: no gh, or not signed in. The report is still worth something.
         print("Could not file automatically (%s)."
               % (first_err or "gh unavailable"), file=sys.stderr)
-        print("Open https://github.com/%s/issues/new and paste:\n" % repo, file=sys.stderr)
+        print("Open https://github.com/%s/issues/new and paste, or re-run with --email if you "
+              "have no GitHub account:\n" % repo, file=sys.stderr)
         print("%s\n\n%s" % (args.title, body))
         return 1
     print("Filed against %s" % repo)

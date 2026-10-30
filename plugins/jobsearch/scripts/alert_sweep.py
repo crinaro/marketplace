@@ -70,6 +70,7 @@ import journal as _journal
 try:
     from mail_client import (
         Mailbox, configured_accounts, decode_header_value, CredentialError, sweep_accounts,
+        print_coverage,
     )
 except ImportError as exc:  # pragma: no cover - defensive
     sys.stderr.write(
@@ -240,6 +241,10 @@ def main():
                 print("  %-31s   from %s" % ("", frm or "?"))
             if skipped:
                 print("  (%d already triaged, skipped)" % skipped)
+
+    # dev #799 — under a connector every account states what its bundle covered (a no-op under
+    # gmail-multi): never a silent skip, and the NOT COVERED span is this sweep's own window.
+    print_coverage(_profile_root(), accounts, args.days)
 
     print("\n" + "=" * 72)
     if incomplete:
