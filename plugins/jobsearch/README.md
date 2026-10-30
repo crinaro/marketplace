@@ -145,6 +145,10 @@ that companion plugin is missing; it is the only connector `plugin.json` declare
   refuse those calls.
 - Your profile data stays in your own folder; nothing is sent to the plugin's authors.
 
+## Privacy
+
+[Privacy and your data](https://github.com/crinaro/marketplace/blob/main/plugins/jobsearch/PRIVACY.md) ([PRIVACY.md](PRIVACY.md) in this folder) says what jobsearch reads, where it keeps it, what leaves your machine, and how long it stays. Questions: marketplace@crinaro.ai.
+
 ## Getting started
 
 1. **Install the plugin.**

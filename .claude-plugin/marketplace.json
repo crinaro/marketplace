@@ -4,15 +4,15 @@
   "description": "General-purpose Claude Code plugins from Crinaro — not pinned to one vertical. Currently: a job-search assistant that helps a person find their next role (and a small agency support several people doing the same), and a connector for working across several Gmail accounts at once.",
   "owner": {
     "name": "Crinaro",
-    "email": "john@crinaro.ai"
+    "email": "marketplace@crinaro.ai"
   },
   "plugins": [
     {
       "name": "gmail-multi",
-      "description": "Search, read, draft, and send across SEVERAL Gmail accounts at once — the managed Gmail connector binds to one account; this one covers them all in a single query, tags every result with its mailbox, fetches attachments, creates reviewable drafts, and can send, reply, and forward from whichever account you name (every send asks you to approve it, and is refused when nobody is present; consumers with a draft-only policy, like jobsearch, deny the send tools with their own guard). Every call names its account: one left unset is refused, so pass `all` to search every registered account. Standalone: configure accounts with its own /gmail-multi:accounts command; app passwords stay in the OS credential store and are never seen by Claude. Use it whenever mail spans more than one Google account.",
+      "description": "Search, read, draft and send across several Gmail accounts at once; the managed Gmail connector binds to one. Results are tagged with their mailbox, and attachments can be fetched. Every call names its account (`all` searches every registered one). Every send, reply or forward asks you first and is refused when nobody is present. Configure accounts with /gmail-multi:accounts; app passwords stay in the OS credential store. Use it whenever mail spans more than one Google account.",
       "author": {
         "name": "Crinaro",
-        "email": "john@crinaro.ai"
+        "email": "marketplace@crinaro.ai"
       },
       "category": "productivity",
       "source": "./plugins/gmail-multi"
@@ -22,7 +22,7 @@
       "description": "A job-search assistant: sweeps your mailbox and LinkedIn for replies and interview invitations, screens roles against your own compensation floors and geography, tracks every application and conversation, and drafts outreach in your voice. It never sends anything itself.",
       "author": {
         "name": "Crinaro",
-    "email": "john@crinaro.ai"
+        "email": "marketplace@crinaro.ai"
       },
       "category": "productivity",
       "source": "./plugins/jobsearch"

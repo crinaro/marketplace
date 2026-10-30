@@ -50,6 +50,10 @@ The one credential it reads is the Gmail app password **you** store in your OS c
 and it goes only to those two servers, over TLS. `myaccount.google.com` appears only as the link
 where you create an app password. Nothing is sent to the plugin's authors.
 
+## Privacy
+
+[Privacy and your data](https://github.com/crinaro/marketplace/blob/main/plugins/gmail-multi/PRIVACY.md) ([PRIVACY.md](PRIVACY.md) in this folder) says what gmail-multi reads, where it keeps it, what leaves your machine, and how long it stays. Questions: marketplace@crinaro.ai.
+
 ## Setup
 
 1. Install the plugin:

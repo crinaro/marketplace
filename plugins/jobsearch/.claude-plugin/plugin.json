@@ -1,13 +1,14 @@
 {
   "name": "jobsearch",
   "description": "A job-search assistant: sweeps your mailbox and LinkedIn for replies and interview invitations, screens roles against your own compensation floors and geography, tracks every application and conversation, and drafts outreach in your voice. It never sends anything itself.",
-  "version": "0.78.2",
+  "version": "0.78.3",
   "author": {
     "name": "Crinaro",
-    "email": "john@crinaro.ai"
+    "email": "marketplace@crinaro.ai"
   },
   "repository": "https://github.com/crinaro/marketplace",
   "license": "Apache-2.0",
+  "privacyPolicyUrl": "https://github.com/crinaro/marketplace/blob/main/plugins/jobsearch/PRIVACY.md",
   "keywords": [
     "job-search",
     "career",

@@ -1,6 +1,6 @@
 ---
 name: call-prep
-description: 'Write the prep note for an upcoming call or interview: synthesize the company kb, archived preps, and pipeline records into conversations/call_prep_<date>.md, dispatching opportunity-researcher only when the counterparty is new. Use when conversations.py reports a PREP OWED row, or before any scheduled call. Not the meeting sweep (daily-run runs meeting_check.py to FIND meetings; this preps ones already in data/commitments.jsonl) and not role research in isolation (opportunity-researcher researches one role; this composes what THIS call needs from everything already known). Never prompts — on a degraded surface it writes a records-only note marked incomplete and the row stays owed.'
+description: 'Write the prep note for an upcoming call or interview: synthesize the company kb, archived preps, and pipeline records into conversations/call_prep_YYYY-MM-DD.md, dispatching opportunity-researcher only when the counterparty is new. Use when conversations.py reports a PREP OWED row, or before any scheduled call. Not the meeting sweep (daily-run runs meeting_check.py to FIND meetings; this preps ones already in data/commitments.jsonl) and not role research in isolation (opportunity-researcher researches one role; this composes what THIS call needs from everything already known). Never prompts — on a degraded surface it writes a records-only note marked incomplete and the row stays owed.'
 ---
 
 # Call prep
