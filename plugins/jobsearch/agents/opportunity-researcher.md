@@ -139,6 +139,37 @@ guidance — apply the same discipline here that the outreach playbook applies l
    UltiPro and most enterprise careers portals are all this style — assume SPA unless proven
    otherwise, and use the Browser pane for any live/closed claim. Quote exact visible text
    (the actual button/label/status line), don't paraphrase or infer from boilerplate.
+   **⭐ CONFIRM THE ROLE ON THE EMPLOYER'S OWN POSTING, AND REPORT IT AS A LINE (dev #776, public #166).**
+   A role seen only on an aggregator, a syndication copy or a staffing wrapper is not confirmed, however
+   many copies agree. Once you have located the posting on the employer's own site or ATS, **rendered in
+   the Browser pane**, write exactly one `EMPLOYER-POSTING` line per role to a file at
+   `<profile root>/.jobsearch/handbacks/opportunity-researcher-<date>.md` (rule 6's folder) and hand back
+   that path. Your hand-back never carries the lines inline, and you never run `record.py posting`
+   yourself: the dispatching session passes your file to it with `--from-file`. The grammar, one line each:
+
+   ```
+   EMPLOYER-POSTING <opp_id> live <url> via render "<the visible Apply or open text>"
+   EMPLOYER-POSTING <opp_id> live <url> via fetch "<quoted visible text>"
+   EMPLOYER-POSTING <opp_id> negative <url> render-unavailable "<the visible unavailable text>"
+   EMPLOYER-POSTING <opp_id> not-found
+   EMPLOYER-POSTING <opp_id> looked <url> site-not-allowed|render-failed|inconclusive
+   ```
+
+   - `live … via render` needs the Browser render and the quoted visible text. Never type a date: the
+     writer stamps the run date.
+   - `live … via fetch` only when a render was impossible, and only when the fetched page carries a
+     JobPosting whose `validThrough` is absent or in the future, or a visible Apply control whose text you
+     quote. A 200 alone, or page text with neither, is not enough: write `looked <url> inconclusive`.
+     **A fetch may record live; it can never record dead.**
+   - `negative … render-unavailable` only for a role already confirmed on the employer's posting, and it
+     is ONE signal: the record shows "could not confirm" until a second agreeing signal (the two-signal
+     rule above, applied by `closed_by`). On a role not yet confirmed write `not-found` and put the quoted
+     text in `research_log`.
+   - `not-found` when no employer posting exists. The role stays unconfirmed and is flagged.
+   - `looked … site-not-allowed` when the pane refuses the site or asks an approval that does not open.
+     Do not wait on it and do not retry: it is never counted toward dead.
+   - Quote the text exactly, on one line, in double quotes. The quote is the evidence; a script cannot
+     see your render, so it is a statement you stand behind.
 3. **Verify, don't assume.** Per configure/strategy.md's large-company guidance: confirm the JD body
    actually matches the title (some ATS feeds are mistitled); if the posting came through
    a staffing agency (Ledgent, Robert Half, etc.), identify the actual hiring company
@@ -181,6 +212,8 @@ guidance — apply the same discipline here that the outreach playbook applies l
 For each role, a compact structured block:
 - Company / Title (as verified — note if it differs from the alert)
 - Original posting URL (the real source, not the aggregator wrapper)
+- Employer-posting confirmation: the path of the file holding this role's `EMPLOYER-POSTING` line (step 2),
+  and in one clause whether the role is confirmed on the employer's own posting or not
 - Comp (JD's own figure; note if it conflicts with the alert's)
 - Location / work setting (as stated in the JD)
 - Reporting line / team-scope signals, if stated

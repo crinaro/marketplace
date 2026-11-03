@@ -341,9 +341,9 @@ def _date_slot(prefix, iso_or_ms):
 
 
 def parse_greenhouse(body):
-    """`(postings, unlisted)`. Greenhouse list: `{jobs: [{title, absolute_url, location{name}}], ...}`.
+    """`(postings, unlisted_urls)`. Greenhouse list: `{jobs: [{title, absolute_url, location{name}}], ...}`.
     `updated_at` is never a posted date; `first_published` and pay are single-job-only (D3), so
-    `posted` and `pay` are `?`."""
+    `posted` and `pay` are `?`. The list has no unlisted flag, so `unlisted_urls` is `[]`."""
     data = _load_json(body)
     if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
         raise Unparseable("no `jobs` list")
@@ -355,11 +355,11 @@ def parse_greenhouse(body):
         out.append({"url": j["absolute_url"].strip(), "title": j["title"].strip(),
                     "location": _s(loc.get("name")) if isinstance(loc, dict) else None,
                     "posted": "?", "pay": "?", "setting": "?"})
-    return out, 0
+    return out, []
 
 
 def parse_lever(body):
-    """`(postings, unlisted)`. Lever list: a top-level list of `{text, hostedUrl, categories{location,
+    """`(postings, unlisted_urls)` (always `[]`: Lever's list has no unlisted flag). Lever list: a top-level list of `{text, hostedUrl, categories{location,
     allLocations}, workplaceType, salaryRange{currency, interval, min, max}, createdAt?}`.
     `createdAt` is undocumented, so `posted` uses it only when present."""
     data = _load_json(body)
@@ -382,23 +382,26 @@ def parse_lever(body):
                     "pay": _pay_slot(sr.get("min"), sr.get("max"), sr.get("interval"),
                                      sr.get("currency")) if sr else "?",
                     "setting": ("none stated" if wt == "unspecified" else wt) if wt else "?"})
-    return out, 0
+    return out, []
 
 
 def parse_ashby(body):
-    """`(postings, unlisted)`. Ashby: `{jobs: [{title, jobUrl, location, secondaryLocations[],
-    isListed, workplaceType, publishedAt, compensation?}]}`. `isListed: false` is counted `unlisted`
-    and never captured. Compensation placement is documented inconsistently (D2), so it is read from
+    """`(postings, unlisted_urls)`. Ashby: `{jobs: [{title, jobUrl, location, secondaryLocations[],
+    isListed, workplaceType, publishedAt, compensation?}]}`. `isListed: false` puts the job's `jobUrl`
+    in `unlisted_urls` (the count is `len(unlisted_urls)`) and the job is never captured. The URL is
+    kept, not just counted, because an unlisted Ashby posting is still LIVE, reachable by its direct
+    link (Ashby's public job posting API page), so `listed` must carry it or a posting-liveness check would
+    read it as absent (dev #776, docs/design-employer-posting-confirmation.md 7.2). Compensation placement is documented inconsistently (D2), so it is read from
     the job first, then the top level, and is optional."""
     data = _load_json(body)
     if not isinstance(data, dict) or not isinstance(data.get("jobs"), list):
         raise Unparseable("no `jobs` list")
-    out, unlisted = [], 0
+    out, unlisted = [], []
     for j in data["jobs"]:
         if not isinstance(j, dict) or not _s(j.get("jobUrl")) or not _s(j.get("title")):
             raise Unparseable("a posting lacks `jobUrl` or `title`")
         if j.get("isListed") is False:
-            unlisted += 1
+            unlisted.append(j["jobUrl"].strip())
             continue
         locs = [_s(j.get("location"))] + [
             _s(s.get("location")) for s in (j.get("secondaryLocations") or []) if isinstance(s, dict)]
@@ -1045,11 +1048,39 @@ def workday_window_verdict(W, P, baseline, channel_last_reviewed, today, all_dec
 # ---- the poll -------------------------------------------------------------------------------------
 
 Outcome = collections.namedtuple(
-    "Outcome", "company_id vendor slug status code postings unlisted total etag pages host wd", defaults=(None,))
+    "Outcome", "company_id vendor slug status code postings unlisted total etag pages host wd listed_urls",
+    defaults=(None, None))
 # status: covered | unchanged | not-covered. `postings` are LISTED postings only; `total` counts every
 # posting the feed showed (listed + unlisted); `etag` is None unless a single-page 200 sent one. `wd` (dev #775)
 # is None for every vendor but Workday, whose Outcome carries `{"entry": <feed-cache entry or None>}`: a Workday
 # not-covered outcome may still carry the postings parsed before the verdict (5.3: they are resolved).
+# `listed_urls` (dev #776, docs/design-employer-posting-confirmation.md 7.2) is the canonical URL of every posting the
+# board showed, UNLISTED Ashby postings included (an unlisted posting is live), for a `covered` Greenhouse / Lever /
+# Ashby outcome; for an `unchanged` one it is the list CARRIED FORWARD from the cache entry; None for everything else
+# (not-covered, Workday). `run` writes it to the cache as `listed: {"on": <run date>, "urls": [...]}`.
+
+
+def _listed_urls_of(entry):
+    """The `listed.urls` list of a feed-cache entry, or None when the entry has none in the documented shape. An
+    entry written before dev #776 (an `etag` with no `listed`) reads None: a 304 must never carry forward nothing,
+    so such an entry is polled in full (see `poll`)."""
+    listed = entry.get("listed") if isinstance(entry, dict) else None
+    urls = listed.get("urls") if isinstance(listed, dict) else None
+    if isinstance(urls, list) and all(isinstance(u, str) for u in urls):
+        return urls
+    return None
+
+
+def _canonical_urls(*groups):
+    """Canonical URLs of every posting URL in `groups`, in first-seen order, duplicates and non-URLs dropped."""
+    seen, out = set(), []
+    for group in groups:
+        for u in group:
+            c = canonical_job_url(u)
+            if c and c not in seen:
+                seen.add(c)
+                out.append(c)
+    return out
 
 
 def _not_covered(co, ats, host, code):
@@ -1446,8 +1477,10 @@ def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEAD
         if not ats_slug.SLUG_RE.match(str(ats.get("slug"))):
             outcomes[co["id"]] = _not_covered(co, ats, host, "unparseable")
             continue
-        entry = cache.get(cache_key) or {}
-        postings, unlisted, total, etag_out, pages = [], 0, 0, None, 0
+        entry = cache.get(cache_key)
+        entry = entry if isinstance(entry, dict) else {}
+        carried = _listed_urls_of(entry)
+        postings, unlisted, total, etag_out, pages = [], [], 0, None, 0
         outcome = None
         try:
             skip = 0
@@ -1455,7 +1488,10 @@ def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEAD
                 url = list_url(ats["vendor"], ats.get("region"), ats["slug"], skip, LEVER_PAGE)
                 # conditional GET: only for a feed known to be ONE page (page 1 unchanged does not
                 # say page 2 is), and only on its first page
-                send_etag = entry.get("etag") if (pages == 0 and entry.get("pages", 1) == 1) else None
+                # dev #776: and only when the entry already carries `listed` -- a 304 carries `listed.urls` forward,
+                # so an entry that has an etag but no `listed` (written before 0.80.0) gets one full GET first
+                send_etag = entry.get("etag") if (pages == 0 and entry.get("pages", 1) == 1
+                                                  and carried is not None) else None
                 try:
                     resp = get(host, url, send_etag)
                     if resp.status in (429, 503):
@@ -1482,7 +1518,7 @@ def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEAD
                     host_ok.add(host)
                 if resp.status == 304 and send_etag:
                     outcome = Outcome(co["id"], ats["vendor"], ats["slug"], "unchanged", None, [], 0,
-                                      0, send_etag, entry.get("pages", 1), host)
+                                      0, send_etag, entry.get("pages", 1), host, None, list(carried))
                     break
                 if resp.status != 200:
                     code, host_level = classify(resp.status, resp, host, send_etag)
@@ -1498,7 +1534,7 @@ def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEAD
                 pages += 1
                 postings += got
                 unlisted += unl
-                total += len(got) + unl
+                total += len(got) + len(unl)
                 if pages == 1:
                     etag_out = resp.headers.get("etag")
                 # Lever pages until a short page; a vendor that always returns a full page is capped
@@ -1509,7 +1545,8 @@ def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEAD
                     skip += LEVER_PAGE
                     continue
                 outcome = Outcome(co["id"], ats["vendor"], ats["slug"], "covered", None, postings,
-                                  unlisted, total, etag_out if pages == 1 else None, pages, host)
+                                  len(unlisted), total, etag_out if pages == 1 else None, pages, host, None,
+                                  _canonical_urls([p["url"] for p in postings], unlisted))
                 break
         except _Budget:
             outcome = _not_covered(co, ats, host, "budget-exhausted")
@@ -1778,10 +1815,18 @@ def run(run_id, fetch=default_fetch, clock=None, today=None, already_locked=Fals
             key = "%s:%s:%s" % (oc.vendor, by_id[cid]["ats"].get("region") or "-", oc.slug)
             if oc.vendor == "workday":
                 pass                   # a Workday entry is not an ETag: it is written below for EVERY decided outcome
-            elif oc.etag:
-                cache[key] = {"etag": oc.etag, "pages": max(oc.pages, 1), "at": run_date}
             else:
-                cache.pop(key, None)
+                # dev #776: `listed` is written on a 200 AND on a 304 (a 304 carries `urls` forward). A covered board
+                # with no ETag keeps its entry as `{"listed": ...}` (the etag is dropped, never the list).
+                new = {}
+                if oc.etag:
+                    new.update({"etag": oc.etag, "pages": max(oc.pages, 1), "at": run_date})
+                if oc.listed_urls is not None:
+                    new["listed"] = {"on": run_date, "urls": oc.listed_urls}
+                if new:
+                    cache[key] = new
+                else:
+                    cache.pop(key, None)
             _close_gaps(_journal.FEED_COMPANY_GAP_SCOPE % cid, out)
         # dev #775 (B4): a Workday site's cache entry (window, seen, baseline) is written for covered AND
         # not-covered outcomes, AFTER the resolver committed, and never for a run a transport failure or a

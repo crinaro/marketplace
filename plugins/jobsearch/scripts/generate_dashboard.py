@@ -556,8 +556,24 @@ def _lean_html(o, role_state):
     return ""
 
 
+def _posting_html(label):
+    """The employer-posting line (dev #776 / public #166, design §8.2). `label` is one entry of
+    `your_move.posting_labels` - {"code", "text", "flag", "headline"} - or None for a role the
+    label does not belong on (no line at all, never a guessed one). It is RENDERED here and never
+    derived: this file does not import `posting_check`, and the headline, the code and the text
+    are your_move.py's. A flagged role (every code but `live`) gets the loud class, so an
+    unconfirmed role is visibly different from a confirmed one; it is flagged, never hidden."""
+    if not label:
+        return ""
+    flag = bool(label.get("flag"))
+    return ('<div class="opp-posting%s" data-posting="%s"><strong>%s</strong> &middot; %s</div>'
+            % (" opp-posting-flag" if flag else "", esc(str(label.get("code") or "")),
+               esc(str(label.get("headline") or "")), esc(str(label.get("text") or ""))))
+
+
 def render_opportunity_list(opps, companies, attention=None, owner=None, involvements=None,
-                            pursuit=None, roles=None, set_name="opportunities", warm=None):
+                            pursuit=None, roles=None, set_name="opportunities", warm=None,
+                            posting=None):
     """One row per LIVE role — needs-you first, then yours, then the run's — inside a
     FILTERED LIST over OPP_DIMS, EVERY member rendered. Closed roles are not here — they
     are not opportunities.
@@ -609,6 +625,10 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
     """
     attention = attention or {}
     owner = owner if owner is not None else _ym.owner_by_id(opps, OWNER_TOKEN)
+    # dev #776 / public #166 (S2): `posting` is {opp id: your_move.posting_label}, the same
+    # derivation `your_move.py --json` prints; derived here from your_move when the caller
+    # passes none, never from the employer_posting field by this file.
+    posting = posting if posting is not None else _ym.posting_labels(opps, OWNER_TOKEN)
     # dev #713 / public #145 (R4): `roles` is {opp id: your_move role state}, the same
     # classify_opportunities the router and the callouts read; derived here when the caller
     # passes none, never from the status and verdict fields.
@@ -750,7 +770,7 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
             f'    <div class="opp-rail">{stage_rail(o)}</div>'
             f'  </div>'
             f'  <div class="opp-meta">{meta}</div>'
-            f'  {_lean_html(o, roles.get(o.get("id")))}{nxt}{_warm_html((warm or {}).get(o.get("id")))}{body}'
+            f'  {_lean_html(o, roles.get(o.get("id")))}{_posting_html(posting.get(o.get("id")))}{nxt}{_warm_html((warm or {}).get(o.get("id")))}{body}'
             f'</div>'))
     # REACHABLE (ADR-024, public #54): every member renders; a filtered list has no remainder.
     keys = ["opp:%s" % i for i, _h in rows if i]
@@ -2917,6 +2937,10 @@ CSS = """
   /* dev #713: the triage lean (decide rows) and the "system is reading this" line (triaging). */
   .opp-lean { font-size:13px; margin-top:6px; }
   .opp-triaging { opacity:.7; font-style:italic; }
+  /* dev #776: the employer-posting line; flagged = not confirmed live on the employer's own posting. */
+  .opp-posting { font-size:13px; margin-top:6px; opacity:.8; }
+  .opp-posting-flag { opacity:1; color: var(--chip-waiting-fg); background: var(--chip-waiting-bg);
+                      border-radius:4px; padding:2px 6px; display:inline-block; }
   .lean-sig { font-size:11.5px; margin-left:6px; border:1px solid var(--card-border);
               border-radius:4px; padding:1px 5px; white-space:nowrap; }
   .opp-more > summary { cursor:pointer; font-size:12px; opacity:.6; margin-top:6px;

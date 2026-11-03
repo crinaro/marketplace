@@ -90,6 +90,9 @@ Print its output verbatim. Then say that the sweep runs only from the attended f
      batch size, and `deferred.py --add-research <opp_id>` for any kept role over it, which the next run drains.
      `deferred.py` refuses research for a role that is not `keep`, and a `VERDICT review:<rule>` role waits for the
      candidate's look.
+   - the researcher's `EMPLOYER-POSTING` lines (dev #776): its hand-back names a file holding one line per role.
+     Pass the file, whole, to `~/.claude/jobsearch/run record.py posting --from-file <the file>` (no
+     `--already-locked`; never a line on a command line). A refusal is quoted to the candidate with its remedy line.
 
    Do not pass `--attended` to any of these: it lifts the drafting gate, and nothing here drafts.
 

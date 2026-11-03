@@ -62,7 +62,10 @@ Usage:
     ~/.claude/jobsearch/run deferred.py --add-draft <opp_id>      # a draft a posture held
     ~/.claude/jobsearch/run deferred.py --add-jd-read <opp_id> --run <run id>
                                                                   # a JD only a browser can read
-    ~/.claude/jobsearch/run deferred.py --claimable [--attended]
+    ~/.claude/jobsearch/run deferred.py --add-posting-check <opp_id>
+                                                                  # re-check a role's employer page in a browser
+    ~/.claude/jobsearch/run deferred.py --claimable [--attended] [--browser-in-session]
+    ~/.claude/jobsearch/run deferred.py --site-not-allowed <id>   # close a posting-check the pane refused
     ~/.claude/jobsearch/run deferred.py --add-roles <hand-back file> --run <id> --surface board
                                                                   # or linkedin-jobsearch
     ~/.claude/jobsearch/run deferred.py --add-roles <hand-back file> --run <id> --surface board --check
@@ -105,6 +108,20 @@ ordinary `--claimable` path and records the read through `record.py`. `--settle`
 `fit.jd_source = "unavailable: surface-cannot-read"` THROUGH `record.py` once the item has waited
 past `search.triage_stuck_days`; `record.py` refuses that value before then
 (`introduced_row_violations`), so it cannot be written by hand early.
+
+⭐ A ROLE IN THE PURSUE LIST IS RE-CHECKED ON THE EMPLOYER'S OWN PAGE (dev #776 / public #166, group
+employer-posting-confirmation). `--add-posting-check <opp_id>` queues ONE `posting-check` item per role
+(`ref` the opportunity id, `requires: [browser]`, idempotent on `(kind, ref)`, NO `queued_run`: the run
+that queued it may drain it). There is no unattended hold: it renders on every run that has the
+Browser family, attended or not. A session that has made its own check of the family passes
+`--browser-in-session` to `--claimable` and `--claim`, which sets `browser` for that call only (never
+`chrome`, never `linkedin`) and prints that it did; with `--session-tools` (the names it has) and
+`--deferred-tools` (the names its harness lists as loadable through ToolSearch) the script judges the
+family itself, and a family that is only deferred counts as present. The item is never withheld by
+the pane lock and writes no `_withheld` row. A site the pane refuses, or one that asks for an approval
+and does not open, is closed with `--site-not-allowed <id>`: never waited on, never retried, never a
+dead signal, and nothing is written to the role. `--settle` closes the item when the role is gone or
+off the watch list, when a check has been recorded since, or after `RECHECK_DAYS` with no worker.
 
 ⭐ A DEGRADED SWEEP IS QUARANTINED, NEVER CAPTURED AS A CLEAN SET (dev #722 / public #156;
 jobsearch 0.69.0). A reached `QUERY` now says what the page did NOT do (`dropped=`, `added=`,
@@ -208,6 +225,38 @@ JD_READ_WHAT = ("Read the JD for %s in a signed-in browser and record it on the 
 JD_READ_WHY = "the JD needs a browser this surface does not have"
 JD_READ_REQUIRES = ("chrome",)
 SURFACE_CANNOT_READ = "unavailable: surface-cannot-read"
+
+# dev #776 / public #166 (group employer-posting-confirmation, criterion B4; design
+# docs/design-employer-posting-confirmation.md §7.4-§7.5 as amended by §15 N2, N4, N6) -- the
+# engine-built POSTING-CHECK item: render the employer's own posting for ONE pursue-list or
+# decide-state role and record whether it is still open. Same shape as `read-jd`, with four
+# differences that are the whole criterion:
+#   * `requires` is the MACHINE capability `browser` (an unauthenticated pane), not `chrome`, so a
+#     stalled or signed-out LinkedIn pane can never withhold it (N6);
+#   * it stores NO `queued_run`: it is queued whether or not the run has a browser, so the run that
+#     queued it may drain it in the same run (daily-run §4b), where `read-jd` must not (§7.4);
+#   * there is NO unattended hold and no `UNATTENDED_RENDER_PROVEN` (N2, owner decision
+#     2026-11-02): it renders on every run that has the browser family, attended or not;
+#   * a site the pane refuses, or one that asks for an approval and does not open, closes the item
+#     as `POSTING_CHECK_SITE_REFUSED` and nothing else: never waited on, never retried, never a
+#     dead signal.
+KIND_POSTING_CHECK = "posting-check"
+POSTING_CHECK_WHAT = ("Check whether role %s is still open on the employer's own page: render it "
+                      "in the browser, quote the visible status text, record it with "
+                      "record.py posting --from-file, then mark this item done. A site the pane "
+                      "refuses is closed with deferred.py --site-not-allowed, never waited on.")
+POSTING_CHECK_WHY = "the re-check needs a browser render of the employer's own page"
+POSTING_CHECK_REQUIRES = ("browser",)
+POSTING_CHECK_SITE_REFUSED = "negative render-unavailable site-not-allowed"
+
+# N4 -- the in-session browser grant. A script cannot see a session's tool list, so the session
+# passes the NAMES it sees and this script judges them. The family is present when a navigate tool
+# AND the page-text reader are each either loaded or listed as deferred and loadable through
+# ToolSearch (a deferred family is the common case in a fresh session, and reading only the loaded
+# tools would call it absent).
+BROWSER_NAVIGATE_TOOLS = ("mcp__Claude_Browser__navigate", "mcp__Claude_Browser__preview_start")
+BROWSER_READ_TOOL = "mcp__Claude_Browser__get_page_text"
+TOOL_LOADER = "ToolSearch"
 
 # ⭐ THE ROLES GRAMMAR (dev #692 / public #140, N7) -- byte-equal to the fenced copy between
 # `<!-- roles-grammar:begin -->` and `<!-- roles-grammar:end -->` in BOTH
@@ -446,6 +495,15 @@ def pane_withhold_reason():
         if age is not None and age <= limit:
             return "not-signed-in %s" % rec.get("verdict_at")
     return None
+
+
+def pane_gated(rec):
+    """dev #776 / public #166 (B4, design §15 N6) -- does the pane lock gate this item at all? Only an
+    item that `requires: chrome` (the signed-in LinkedIn pane) does, and a `posting-check` item NEVER
+    does, whatever else it is given: it renders a public employer page in the unauthenticated
+    browser, which a stalled or signed-out LinkedIn pane says nothing about. So it is never withheld,
+    and no `_withheld` row is ever written for the kind."""
+    return "chrome" in (rec.get("requires") or []) and rec.get("kind") != KIND_POSTING_CHECK
 
 
 def _record_withheld(rid, reason, now):
@@ -726,13 +784,84 @@ def jd_read_waited_past_bound(item, stuck_days, now=None):
     definition of 'the bound has passed', used by `settle` to write `surface-cannot-read` and by
     `record.py`'s gate to refuse writing it earlier, so the two can never disagree. An item whose
     `queued_at` cannot be read has waited for no known time: False, never a guess."""
+    return _waited_more_than(item, stuck_days, now)
+
+
+def _waited_more_than(item, days, now=None):
+    """True when `item` has waited MORE THAN `days` days since `queued_at`; False for a `queued_at` that
+    cannot be read. The one arithmetic behind both stuck bounds (`read-jd`, `posting-check`)."""
     at = item.get("queued_at")
     try:
         queued = datetime.datetime.fromisoformat(at)
     except (TypeError, ValueError):
         return False
     waited = ((now or datetime.datetime.now()) - queued).total_seconds() / 86400.0
-    return waited > stuck_days
+    return waited > days
+
+
+def queue_posting_check(opp_id, rows=None):
+    """dev #776 / public #166 (B4) -- queue the browser re-check of ONE role's employer posting, as a
+    script form: kind `posting-check`, `ref` the opportunity id, `requires: [browser]`. Returns
+    `(row, added)`; raises `DeferredRefused` for an id that is not a real opportunity.
+
+      * idempotent on `(kind, ref)` among pending rows (`_pending_by_ref`): a second call is a no-op;
+      * stores NO `queued_run` (design §7.4): the run that queued it may drain it, so the same-run
+        guard of `--claimable --run` does not apply to this kind;
+      * whether the role is still on the watch list is NOT judged here (Step A chose it); `settle`
+        closes the item the moment it is not.
+
+    Engine-built: skips `FORBIDDEN` by construction (the template cannot say send)."""
+    _checked_opp_id(opp_id)
+    hit = _pending_by_ref(KIND_POSTING_CHECK, opp_id, rows)
+    if hit:
+        return hit, False
+    return _append_item(POSTING_CHECK_WHAT % opp_id, POSTING_CHECK_WHY, POSTING_CHECK_REQUIRES,
+                        kind=KIND_POSTING_CHECK, ref=opp_id), True
+
+
+def posting_check_waited_past_bound(item, recheck_days, now=None):
+    """True when a `posting-check` item has waited MORE THAN `recheck_days` days with no browser worker
+    (design §7.4 condition 4; `posting_check.RECHECK_DAYS`, 7). `settle` then closes it as expired and
+    writes nothing to the role: the role already reads NOT CHECKED from `due()`, and the next Step A
+    queues it again. An unreadable `queued_at` is False, never a guess."""
+    return _waited_more_than(item, recheck_days, now)
+
+
+def browser_family_present(loaded=(), deferred=()):
+    """dev #776 / public #166 (B4, design §15 N4) -- is the Browser tool family usable in this session?
+    `loaded` are the tool names the session has; `deferred` are the names its harness lists as
+    available through `ToolSearch` without having loaded them. The family is present when a navigate
+    tool (`BROWSER_NAVIGATE_TOOLS`) and the page-text reader (`BROWSER_READ_TOOL`) are each in
+    `loaded`, or in `deferred` WHILE `ToolSearch` is loaded to fetch them: a family that is only
+    listed by name is still loadable, and calling it absent would strand every re-check in a fresh
+    session. One tool is not the family: navigate without the reader cannot read a page."""
+    seen = set(loaded)
+    if TOOL_LOADER in seen:
+        seen |= set(deferred)
+    return bool(seen & set(BROWSER_NAVIGATE_TOOLS)) and BROWSER_READ_TOOL in seen
+
+
+def browser_in_session_grant(session_tools=None, deferred_tools=None):
+    """dev #776 / public #166 (B4) -> `(granted, header_line)`: the `--browser-in-session` decision.
+    A grant sets `caps["browser"]` for ONE call and nothing else (never `chrome`, never `linkedin`).
+
+      * no tool names passed: the session has made its own check (the read-jd runtime check, or
+        `list_connected_browsers` returning a device for the extension) and says so; granted, and the
+        header line says it rests on the session's word;
+      * names passed: judged by `browser_family_present`. An absent family is NOT granted, and the
+        line says to `--release` and record nothing."""
+    if session_tools is None and deferred_tools is None:
+        return True, ("  + browser granted for this call by --browser-in-session, on the session's "
+                      "own check (no tool list passed). chrome and linkedin are not granted.")
+    loaded = [t.strip() for t in (session_tools or "").split(",") if t.strip()]
+    deferred = [t.strip() for t in (deferred_tools or "").split(",") if t.strip()]
+    if browser_family_present(loaded, deferred):
+        return True, ("  + browser granted for this call by --browser-in-session: the Browser family "
+                      "is present (%d loaded name(s), %d deferred). chrome and linkedin are not "
+                      "granted." % (len(loaded), len(deferred)))
+    return False, ("  ⚠️ browser NOT granted: the Browser family (a navigate tool and get_page_text) "
+                   "is in neither the loaded nor the ToolSearch-deferred tool names this session "
+                   "passed. Run --release on anything claimed and record nothing.")
 
 
 def _record_refusal_gap(run_id, what):
@@ -1813,6 +1942,65 @@ def _write_cannot_read(opp, now, already_locked, out):
     return True
 
 
+_STRICT_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _employer_checked_on(opp):
+    """The date in `opp["employer_posting"]["checked_on"]`, or None when the field is absent, is not an
+    object, or holds anything but a real `YYYY-MM-DD`. The shape is tested BEFORE the calendar, so
+    `20261102` and `2026-W44-1`, which `date.fromisoformat` reads on Python 3.11+, are None on every
+    interpreter. This is a read for `settle`, never a validation: a malformed value reads as "not
+    checked", which leaves the item open, the safe side."""
+    ep = opp.get("employer_posting") if isinstance(opp, dict) else None
+    value = ep.get("checked_on") if isinstance(ep, dict) else None
+    if not isinstance(value, str) or not _STRICT_DATE.match(value):
+        return None
+    try:
+        return datetime.date(int(value[:4]), int(value[5:7]), int(value[8:10]))
+    except ValueError:
+        return None
+
+
+def _settle_posting_check(item, opp, now, out):
+    """dev #776 / public #166 (B4, design §7.4) -- True when a pending `posting-check` item should close.
+    It closes when ANY of these holds, and WRITES NOTHING to the role in any case (a closure is not an
+    observation; the role's own `employer_posting` moves only through `record.py posting`):
+
+      1. the opportunity no longer exists;
+      2. `posting_check.in_watch_list` no longer holds for it (passed, expired, decided away);
+      3. its `employer_posting.checked_on` is on or after the item's `queued_at` date: someone checked;
+      4. it has waited MORE THAN `posting_check.RECHECK_DAYS` with no browser worker
+         (`posting_check_waited_past_bound`): prints `POSTING CHECK EXPIRED <ref>: ...`. The role then
+         reads NOT CHECKED from `due()`, and the next Step A queues it again.
+
+    Conditions 2 and 4 need `posting_check`; if it cannot be imported the item is LEFT OPEN and the
+    refusal is printed, never read as "nothing to settle"."""
+    if opp is None:
+        return True                                                    # 1
+    try:
+        queued_on = datetime.datetime.fromisoformat(item.get("queued_at")).date()
+    except (TypeError, ValueError):
+        queued_on = None
+    checked_on = _employer_checked_on(opp)
+    if queued_on is not None and checked_on is not None and checked_on >= queued_on:
+        return True                                                    # 3
+    try:
+        import posting_check as _pc
+        import your_move as _ym
+        on_list = _pc.in_watch_list(opp, _ym.triage_missing(opp))
+        recheck_days = _pc.RECHECK_DAYS
+    except ImportError as e:
+        out("⚠️ posting-check %s not settled: posting_check is unavailable (%s); left open"
+            % (item.get("id"), e))
+        return False
+    if not on_list:
+        return True                                                    # 2
+    if posting_check_waited_past_bound(item, recheck_days, now):
+        out("POSTING CHECK EXPIRED %s: no browser worker within %d days" % (item["ref"], recheck_days))
+        return True                                                    # 4
+    return False
+
+
 def settle(out=print, now=None, already_locked=False):
     """dev #692 / public #140 -- close the script-built items the stores already show done, so
     a carried role that has been captured stops being listed as owed. Returns the closed ids.
@@ -1827,6 +2015,9 @@ def settle(out=print, now=None, already_locked=False):
       came for: it records `fit.jd_source = "unavailable: surface-cannot-read"` through `record.py`
       (`_write_cannot_read`; `already_locked` is passed through, for a call inside a run's write
       phase) and then closes. Before the bound it does nothing.
+    * a `posting-check` item (dev #776, `_settle_posting_check`) whose role is gone, is off the watch
+      list, was checked since the item was queued, or has waited past `RECHECK_DAYS`; it writes
+      NOTHING to the role.
 
     A per-role gap closes in `add_roles` itself, the moment a later block resolves the role."""
     from pipeline_index import canonical_job_url
@@ -1849,6 +2040,8 @@ def settle(out=print, now=None, already_locked=False):
             done = (canonical_job_url(r["ref"]) or r["ref"]) in urls
         elif r.get("kind") == KIND_RESEARCH and r.get("ref"):
             done = bool((by_id.get(r["ref"]) or {}).get("research_log"))
+        elif r.get("kind") == KIND_POSTING_CHECK and r.get("ref"):
+            done = _settle_posting_check(r, by_id.get(r["ref"]), now, out)
         elif r.get("kind") == KIND_JD_READ and r.get("ref"):
             opp = by_id.get(r["ref"])
             if opp is not None and "jd-read" not in _ym.triage_missing(opp):
@@ -1944,6 +2137,28 @@ def main():
                     help="Queue the JD read this surface could not do (dev #723): fixed text, "
                          "requires `chrome`, idempotent while one is pending, nothing queued for a "
                          "role already read. With --run, the item is never served to that run.")
+    ap.add_argument("--add-posting-check", dest="add_posting_check", metavar="OPP_ID",
+                    help="Queue the browser re-check of this role's employer page (dev #776 / "
+                         "public #166): fixed text, requires `browser`, idempotent while one is "
+                         "pending, and stores no queued_run (the run that queued it may drain it).")
+    ap.add_argument("--site-not-allowed", dest="site_not_allowed", metavar="ID",
+                    help="Close this posting-check item as `negative render-unavailable "
+                         "site-not-allowed`: the pane refused the site, or it asked for an approval "
+                         "and did not open. Never waited on, never retried, never a dead signal; "
+                         "writes nothing to the role.")
+    ap.add_argument("--browser-in-session", dest="browser_in_session", action="store_true",
+                    help="With --claimable or --claim (dev #776 / public #166): this session has "
+                         "checked that the Browser tool family is usable, so `browser` is granted "
+                         "FOR THIS CALL ONLY (never `chrome`, never `linkedin`). Printed in the "
+                         "header. With --session-tools / --deferred-tools the script judges the "
+                         "family from the names; without them it rests on the session's word.")
+    ap.add_argument("--session-tools", dest="session_tools", metavar="NAMES", default=None,
+                    help="With --browser-in-session: comma-separated names of the tools this "
+                         "session has loaded.")
+    ap.add_argument("--deferred-tools", dest="deferred_tools", metavar="NAMES", default=None,
+                    help="With --browser-in-session: comma-separated names of the tools this "
+                         "session's harness lists as loadable through ToolSearch. They count as "
+                         "present while ToolSearch itself is among the loaded names.")
     ap.add_argument("--add-roles", dest="add_roles", metavar="FILE",
                     help="The gate on a pass report (dev #692 / public #140): FILE is the pass's "
                          "hand-back holding a `ROLES v1` block; needs --run and --surface. Every "
@@ -2055,6 +2270,38 @@ def main():
                   % (rec["id"], rec.get("queued_at")))
         return 0
 
+    if args.add_posting_check:
+        try:
+            rec, added = queue_posting_check(args.add_posting_check, rows)
+        except DeferredRefused as e:
+            print("⛔ %s" % e)
+            return 2
+        if added:
+            print("Queued %s [requires: %s]:\n  %s"
+                  % (rec["id"], ", ".join(rec["requires"]), rec["what"]))
+        else:
+            print("= already pending %s (queued %s) -- adding again writes no second row"
+                  % (rec["id"], rec.get("queued_at")))
+        return 0
+
+    if args.site_not_allowed:
+        cur = {r["id"]: r for r in rows}.get(args.site_not_allowed)
+        if not cur:
+            print("No such item: %s" % args.site_not_allowed)
+            return 1
+        if cur.get("kind") != KIND_POSTING_CHECK:
+            print("⛔ %s is not a posting-check item (kind %s); nothing closed."
+                  % (args.site_not_allowed, cur.get("kind")))
+            return 1
+        if cur.get("status") != "pending":
+            print("= %s is already closed; nothing to do" % args.site_not_allowed)
+            return 0
+        close_item(cur["id"], POSTING_CHECK_SITE_REFUSED, now)
+        print("Closed %s as %s. It is not waited on and not retried, and the closure is not a "
+              "signal: this script wrote nothing to %s." % (cur["id"], POSTING_CHECK_SITE_REFUSED,
+                                                            cur.get("ref")))
+        return 0
+
     if args.unquarantine:
         cur = {r["id"]: r for r in rows}.get(args.unquarantine)
         if not cur:
@@ -2107,8 +2354,17 @@ def main():
         return 0
 
     caps, me, merge_report, posture_name = claim_capabilities(attended=args.attended)
+    # dev #776 / public #166 (B4) -- the in-session grant: `browser` for THIS call only, never
+    # `chrome` or `linkedin`, and always said out loud (the header, or before a claim's verdict).
+    grant_line = None
+    if args.browser_in_session:
+        granted, grant_line = browser_in_session_grant(args.session_tools, args.deferred_tools)
+        if granted:
+            caps["browser"] = True
 
     if args.claim or args.release:
+        if grant_line:
+            print(grant_line)
         rid = args.claim or args.release
         cur = {r["id"]: r for r in rows}.get(rid)
         if not cur:
@@ -2152,7 +2408,7 @@ def main():
             # recovered since then must not stay gated on a stale marker. `pane_withhold_reason`
             # is itself time-windowed (stalled_at/verdict_at vs linkedin.pane_stale_minutes), so
             # recomputing it here is cheap and always current.
-            reason = pane_withhold_reason() if "chrome" in (cur.get("requires") or []) else None
+            reason = pane_withhold_reason() if pane_gated(cur) else None
             if reason:
                 print("⛔ WITHHELD — %s. Leave it; the pane is not usable right now." % reason)
                 return 1
@@ -2207,7 +2463,7 @@ def main():
                   and not (args.run and r.get("queued_run") == args.run)]
     withheld_now = {}
     for r in claim_pool:
-        if "chrome" in (r.get("requires") or []) and can_run(r, caps):
+        if pane_gated(r) and can_run(r, caps):
             reason = pane_withhold_reason()
             if reason:
                 withheld_now[r["id"]] = reason
@@ -2245,6 +2501,8 @@ def main():
     print("=" * 72)
     for line in merge_report:
         print("  ⚠️ %s" % line)
+    if grant_line:
+        print(grant_line)
     print("  %d pending · %d this worker can run · %d withheld (pane) · %d held by posture · "
           "%d need another environment · %d done"
           % (len(pending), len(mine), len(withheld), len(held), len(blocked),

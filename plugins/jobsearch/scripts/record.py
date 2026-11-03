@@ -93,6 +93,8 @@ Usage:
     python3 scripts/record.py channel-catalog take|keep <channel_id>
     python3 scripts/record.py source on|off <id> [--anyway]      # turn ANY job source on or off (dev #774): a board, an
     python3 scripts/record.py source list | keep-mine <id>       # alert sender, the LinkedIn job search, `company-feeds`
+    python3 scripts/record.py posting --from-file <file>         # EMPLOYER-POSTING lines (dev #776): the ONLY writer of an
+                                              # opportunity's `employer_posting` (never argv, never a flag)
                                               # turn shipped catalog boards on (nothing is on by default), and settle
                                               # a board you edited that the catalog also changed (dev #769)
     ... --file companies|channels to address the other stores. --dry-run to preview.
@@ -102,6 +104,7 @@ Python 3.9+. Standard library only.
 """
 
 import argparse
+import contextlib
 import datetime
 import hashlib
 import json
@@ -219,7 +222,12 @@ OPS = ("create", "set", "set-in", "append", "show", "fields",
        # resolve an adoption question (`keep-mine`). An early-return verb writing CHANNELS (and COMPANIES / ASKS /
        # config.json when they change) in one locked, validated, rollback-verified transaction, so --dry-run is
        # proven in test_record_source.py.
-       "source")
+       "source",
+       # jobsearch 0.80.0 (dev #776 / public #166) -- record what research or the scheduled re-check saw on the employer's OWN
+       # posting. An early-return verb: it reads EMPLOYER-POSTING lines from a FILE (never argv, so no quote in a
+       # posting's visible text can break a shell line), and writes OPPORTUNITIES in one locked, validated,
+       # rollback-verified transaction, so --dry-run is proven in test_record_posting.py.
+       "posting")
 SOURCING_OPS = ("screened", "lean", "listed-pay", "posted")
 LOCK = os.path.join(ENGINE_SCRIPTS, "runlock.py")
 # ⭐ ENGINE, not profile — the data MODEL ships with the code; the DATA belongs to the user.
@@ -647,6 +655,58 @@ def introduced_row_violations(store, before_row, after_row):
         return gate
     before = set(vd.row_rule_violations(store, before_row)) if before_row is not None else set()
     return gate + [m for m in after if m not in before]
+
+
+# ---- dev #776 / public #166 (design-employer-posting-confirmation.md section 6.1, 15 N1/N9): THE FIELD HAS ONE WRITER ----
+#
+# `opportunities[].employer_posting` says a role is confirmed on the employer's OWN posting. A model that could write it
+# with `set`, `set-in`, `append` or `create` could write "confirmed" over a posting nobody opened, which is the
+# defect the field exists to end. So the field is written by exactly two paths, `record.py posting --from-file` and the
+# capture call inside `create --from-item` for a feed item, and every other write that changes it is REFUSED here,
+# `--force` included (a flag that lifts the guard would be the second writer).
+_POSTING_FIELD = "employer_posting"
+# Module-private: no command-line flag, environment variable or JSON payload sets it. It is held only inside
+# `_posting_writer()`, by the two sanctioned paths.
+_POSTING_WRITER = [False]
+
+
+@contextlib.contextmanager
+def _posting_writer(held=True):
+    """Hold (or, with `held=False`, explicitly not hold) the writer token for the checks inside the block."""
+    prev = _POSTING_WRITER[0]
+    _POSTING_WRITER[0] = bool(held)
+    try:
+        yield
+    finally:
+        _POSTING_WRITER[0] = prev
+
+
+def _posting_keys(row):
+    """`{key: value}` of every key of `row` that IS the field or lives under it. A dotted key (`append <id>
+    employer_posting.pending ...` writes the dotted key itself, see `introduced_row_violations`' siblings) is the same
+    field spelled differently, so it is compared too."""
+    if not isinstance(row, dict):
+        return {}
+    return {k: v for k, v in row.items() if k == _POSTING_FIELD or k.startswith(_POSTING_FIELD + ".")}
+
+
+def verb_owned_refusal(op, store, before_row, after_row):
+    """The refusals (a list of messages, empty when none) for a write of `op` to `store` that CHANGES `employer_posting`
+    when it did not come from a sanctioned path. Called at EVERY call site of `introduced_row_violations` (the four
+    shared ones in `cmd_board_sighting` and `main`, and `cmd_posting`'s own), on the dry-run and the real path, so no op
+    can bypass it; comparing the row as it stood with the row as it would be (`before_row` None for a create) covers
+    `set`, `set-in`, `append`, `create` and any op added later without listing them.
+
+    A key that is present with a null value differs from an absent key (`set <id> employer_posting null` is a write),
+    and `--force` is not an input: the refusal text says so."""
+    if store != "opportunities" or not isinstance(after_row, dict) or _POSTING_WRITER[0]:
+        return []
+    before, after = _posting_keys(before_row), _posting_keys(after_row)
+    if before == after:
+        return []
+    return ["%s is written only by `record.py posting --from-file <file>` (research and the scheduled re-check write the "
+            "EMPLOYER-POSTING lines it reads) and by the capture of a company-feed role; `%s` cannot change it, and "
+            "--force does not lift this" % (_POSTING_FIELD, op)]
 
 
 SURFACE_CANNOT_READ = "unavailable: surface-cannot-read"
@@ -1921,8 +1981,9 @@ def cmd_board_sighting(args):
     if args.dry_run:
         print(summary)
         row_after = find(shadow_op, plan["opp_id"])
-        introduced = introduced_row_violations(
-            "opportunities", None if plan["new_opp"] is not None else find(opps, plan["opp_id"]), row_after)
+        _bs_before = None if plan["new_opp"] is not None else find(opps, plan["opp_id"])
+        introduced = (introduced_row_violations("opportunities", _bs_before, row_after)
+                      + verb_owned_refusal("board-sighting", "opportunities", _bs_before, row_after))
         if introduced:
             print("  ⛔ a REAL (non-dry-run) write of this would be REFUSED (nothing is written):")
             print("  " + "\n  ".join("- " + m for m in introduced))
@@ -1962,7 +2023,8 @@ def cmd_board_sighting(args):
             return 0
         before_row = None if plan["new_opp"] is not None else json.loads(json.dumps(find(opps, plan["opp_id"])))
         _apply_board_sighting(plan, companies, opps)
-        introduced = introduced_row_violations("opportunities", before_row, find(opps, plan["opp_id"]))
+        introduced = (introduced_row_violations("opportunities", before_row, find(opps, plan["opp_id"]))
+                      + verb_owned_refusal("board-sighting", "opportunities", before_row, find(opps, plan["opp_id"])))
         if introduced:
             print("⛔ REFUSED — " + "; ".join(introduced))
             return 1
@@ -1992,6 +2054,297 @@ def cmd_board_sighting(args):
                                if firms else "no firm is linked (this board is not a portfolio board, or "
                                              "no backing is stated)"))
     return 0
+
+
+# ---- jobsearch 0.80.0 (dev #776 / public #166; design-employer-posting-confirmation.md sections 5-6, 15 N1/N9/N10) ------
+#
+# `record.py posting --from-file <file>` is the ONE writer of an opportunity's `employer_posting` field (the other is the
+# capture call inside `create --from-item` for a company-feed item, `_feed_posting_value`). It reads every
+# EMPLOYER-POSTING line in a FILE and never takes a line on argv: the researcher's quoted visible text holds quotes, a
+# dollar sign and backticks, and a line a shell has already parsed is a line that has already been altered (N1).
+#
+# What it relies on from `posting_check.py` (the pure half, built beside this verb):
+#   parse_line(line)                        -> (opp_id, Observation(kind, url, via, signal, evidence)); raises PostingLineError
+#                                              (a ValueError) on anything outside the grammar; a `looked` line carries its word
+#                                              (site-not-allowed|render-failed|inconclusive) in `signal`, mapped to a look-cache
+#                                              code by `LOOKED_CODES`
+#   parse(value)                            -> the stored value read strictly; raises on a malformed one; None -> unconfirmed
+#   observe(reading, obs, today: ISO str)   -> the new value to store; raises ObservationRefused (T3, T7, T8)
+#   employer_owned(url, company, channels)  -> (bool, basis)
+#   capture_confirms(sighting, channels, opp) -> bool
+#   note_look(root, opp_id, outcome, today) -> writes the look cache (a cache: losing it costs repeated looks, never a state)
+POSTING_USAGE = ("posting --from-file <file of EMPLOYER-POSTING lines> [--dry-run] [--already-locked] "
+                 "[--today YYYY-MM-DD (test-only)]")
+POSTING_LINE_PREFIX = "EMPLOYER-POSTING "
+
+
+def _posting_check():
+    import posting_check as _pc
+    return _pc
+
+
+def _posting_errors(pc):
+    """The exception types `posting_check` raises for a refusal (grammar, strict parse, a refused observation)."""
+    return (ValueError, getattr(pc, "PostingFieldError", ValueError))
+
+
+def _posting_today(raw):
+    """The run date as a `datetime.date`: `--today` (TEST-ONLY, `YYYY-MM-DD`, a real calendar day) or today. Checked by
+    shape first and calendar second, with ASCII digits only, so it does not depend on which Python runs it."""
+    if raw is None:
+        return datetime.date.today()
+    m = re.fullmatch(r"([0-9]{4})-([0-9]{2})-([0-9]{2})", raw)
+    if not m:
+        raise _Refused("--today must be YYYY-MM-DD (it is test-only), got %r" % raw)
+    try:
+        return datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        raise _Refused("--today %r is not a calendar date" % raw)
+
+
+def _posting_read_lines(path):
+    """`([(line number, line), ...], ignored)` for the file at `path`: every line that begins (after spaces or tabs) with
+    `EMPLOYER-POSTING `, stripped of the spaces or tabs around it and of nothing else, and the count of other non-blank
+    lines. Split on a newline only (`str.splitlines` also splits on U+2028 and others, which a quoted posting text may
+    hold), so a quote reaches the parser byte for byte."""
+    with open(path, encoding="utf-8", newline="") as fh:
+        text = fh.read()
+    lines, ignored = [], 0
+    for n, raw in enumerate(text.split("\n"), 1):
+        line = (raw[:-1] if raw.endswith("\r") else raw).strip(" \t")
+        if line.startswith(POSTING_LINE_PREFIX):
+            lines.append((n, line))
+        elif line:
+            ignored += 1
+    return lines, ignored
+
+
+def _board_root(pc, url):
+    """The part of `url` that names the employer's board: scheme and host, plus the first path segment on a shared
+    multi-tenant host (`posting_check.PATH_TENANT_HOSTS`), where the path is what names the employer."""
+    import urllib.parse as _up
+    sp = _up.urlsplit(url or "")
+    root = "%s://%s" % (sp.scheme, sp.netloc)
+    host = (sp.hostname or "").lower()
+    if host in tuple(getattr(pc, "PATH_TENANT_HOSTS", ())):
+        seg = next((p for p in sp.path.split("/") if p), "")
+        if seg:
+            root += "/" + seg
+    return root
+
+
+def _posting_not_owned(pc, url, company):
+    """The refusal for a `live` line whose URL is not the employer's own posting, with the remedy as a command the user can
+    run (design section 5.1). The remedy uses the field the engine already has for "this company's own careers page",
+    `companies[].career_url`, whose host `posting_check.employer_owned` compares; it replaces whatever is stored, and the
+    message prints what that is."""
+    import urllib.parse as _up
+    import shlex
+    ats = company.get("ats") if isinstance(company.get("ats"), dict) else None
+    ats_txt = ("%s:%s" % (ats.get("vendor"), ats.get("slug") or ats.get("tenant"))) if ats else "none"
+    career = company.get("career_url") if isinstance(company.get("career_url"), str) else None
+    host = (_up.urlsplit(career).hostname or "none") if career else "none"
+    return ("⛔ REFUSED — %s is not %s's own posting: not its ATS (%s), not its careers host (%s).\n"
+            "   If this IS the employer's own board, record it as the company's careers page (this replaces the stored "
+            "career_url, %s):  ~/.claude/jobsearch/run record.py set %s career_url %s --file companies"
+            % (url, company.get("id"), ats_txt, host, career or "none", shlex.quote(str(company.get("id"))),
+               shlex.quote(_board_root(pc, url))))
+
+
+def _posting_plan(pc, lines, opps, companies, channels, today):
+    """Apply every parsed line to `opps` IN MEMORY and return `{results, looks, changed}`. A line that cannot be applied is
+    a result with `ok` False and the reason in `text`; the others still apply (each line is its own role). Nothing here
+    touches disk."""
+    errors = _posting_errors(pc)
+    results, looks, changed = [], [], []
+    for n, line in lines:
+        res = {"n": n, "opp_id": None, "ok": False, "text": ""}
+        results.append(res)
+        try:
+            oid, obs = pc.parse_line(line)
+        except errors as e:
+            res["text"] = "⛔ REFUSED line %d — outside the EMPLOYER-POSTING grammar (%s); never retry it edited." % (n, e)
+            continue
+        res["opp_id"] = oid
+        row = find(opps, oid)
+        if row is None:
+            res["text"] = "⛔ REFUSED line %d — no opportunity with id %r." % (n, oid)
+            continue
+        kind = obs.kind
+        if kind == "looked":
+            # `posting_check.LOOKED_CODES` maps the line's word to the look-cache code (`inconclusive` -> `inconclusive-line`)
+            looks.append((oid, pc.LOOKED_CODES[obs.signal]))
+            res["ok"] = True
+            res["text"] = "%s: looked (%s) — noted, nothing written to the role" % (oid, obs.signal)
+            continue
+        if kind == "live":
+            company = find(companies, row.get("company_id"))
+            if company is None:
+                res["text"] = ("⛔ REFUSED line %d — %s names company %r, which is not in companies; nothing written."
+                               % (n, oid, row.get("company_id")))
+                continue
+            owned, _basis = pc.employer_owned(obs.url, company, channels)
+            if not owned:
+                looks.append((oid, "refused-not-owned"))
+                res["text"] = _posting_not_owned(pc, obs.url, company)
+                continue
+        try:
+            # `observe` takes the run date as an ISO string (a real YYYY-MM-DD, checked by `posting_check._real_date`)
+            new = pc.observe(pc.parse(row.get(_POSTING_FIELD)), obs, today.isoformat())
+        except errors as e:
+            res["text"] = "⛔ REFUSED line %d — %s: %s" % (n, oid, e)
+            continue
+        row[_POSTING_FIELD] = new
+        if oid not in changed:
+            changed.append(oid)
+        res["ok"] = True
+        res["text"] = "%s: %s → %s" % (oid, kind, (new or {}).get("state") if isinstance(new, dict) else new)
+    return {"results": results, "looks": looks, "changed": changed}
+
+
+def _posting_row_checks(opps_before, opps_after, changed):
+    """The row-level refusals for the rows this call changed: the introduced-only rules AND `verb_owned_refusal`, with the
+    writer token held (this IS the sanctioned writer; the token is what `cmd_posting`'s own test plants against)."""
+    bad = []
+    with _posting_writer():
+        for oid in changed:
+            before, after = find(opps_before, oid), find(opps_after, oid)
+            bad += (introduced_row_violations("opportunities", before, after)
+                    + verb_owned_refusal("posting", "opportunities", before, after))
+    return bad
+
+
+def _posting_note_looks(pc, looks, today):
+    for oid, outcome in looks:
+        try:
+            pc.note_look(ROOT, oid, outcome, today.isoformat())
+        except (OSError, ValueError) as e:                       # a cache: never fails the call
+            print("  ⚠️ could not note the look for %s (%s); it costs a repeated look, never a state" % (oid, e))
+
+
+def _print_posting_results(plan, ignored):
+    n_ok = sum(1 for r in plan["results"] if r["ok"])
+    print("posting: %d EMPLOYER-POSTING line(s) read, %d applied or noted, %d refused%s"
+          % (len(plan["results"]), n_ok, len(plan["results"]) - n_ok,
+             ("; %d other line(s) in the file ignored" % ignored) if ignored else ""))
+    for r in plan["results"]:
+        print("  " + r["text"])
+
+
+def cmd_posting(args):
+    """`record.py posting --from-file <file>` -- dev #776 / public #166 (design section 6.1, 15 N1/N9/N10). Record what
+    research or the scheduled re-check saw on the employer's OWN posting, from the EMPLOYER-POSTING lines in a file.
+
+    The date is the run date (`--today` is a test-only seam), never typed on a line. Each line is parsed strictly
+    (`posting_check.parse_line`), a `live` line must name the employer's own posting (`employer_owned`) or is refused
+    with a remedy and a look noted, and the new value is `posting_check.observe`'s. Every line that applies lands in
+    ONE locked, validated, rollback-verified write of the opportunities store, or none does; a refused line does not stop
+    the others. `looked` lines and ownership refusals write only the look cache. Exit 0 when every line applied or was
+    noted, 1 when any was refused (the applied ones still landed) or the write was rolled back, 2 on usage."""
+    if args.rid or args.rest or not args.from_file:
+        print("usage: " + POSTING_USAGE)
+        return 2
+    try:
+        today = _posting_today(args.today_arg)
+        lines, ignored = _posting_read_lines(args.from_file)
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+    except (OSError, UnicodeDecodeError) as e:
+        print("⛔ REFUSED — %s cannot be read (%s); nothing written." % (args.from_file, e))
+        return 1
+    if not lines:
+        print("⛔ REFUSED — NOT CHECKED: %s holds no EMPLOYER-POSTING line (%d other non-blank line(s) ignored). A role "
+              "the research could not place owes a `not-found` line, never silence." % (args.from_file, ignored))
+        return 1
+    pc = _posting_check()
+    try:
+        channels, companies, opps = (_load_or_empty("channels"), load("companies"), load("opportunities"))
+    except (OSError, ValueError) as e:
+        print("⛔ REFUSED — a store cannot be read (%s); nothing written." % e)
+        return 1
+    shadow = json.loads(json.dumps(opps))
+    plan = _posting_plan(pc, lines, shadow, companies, channels, today)
+    refused = any(not r["ok"] for r in plan["results"])
+    if args.dry_run:
+        _print_posting_results(plan, ignored)
+        if plan["changed"]:
+            introduced = _posting_row_checks(opps, shadow, plan["changed"])
+            if introduced:
+                print("  ⛔ a REAL (non-dry-run) write of this would be REFUSED (nothing is written):")
+                print("  " + "\n  ".join("- " + m for m in introduced))
+                return 1
+            pre_rc, _, _, pre_problems = validate()
+            rc, out, err, problems = dry_run_validate("opportunities", shadow)
+            added = new_problems(pre_problems, problems) if rc != 0 else []
+            if rc != 0 and (added is None or added):
+                print("  ⛔ a REAL (non-dry-run) write of this would be REFUSED and rolled back.")
+                print("  " + "\n  ".join(added if added else _diagnostic_lines(rc, out, err)))
+                return 1
+            print("  ✅ dry-run validated clean against the same validator a real write runs.")
+        print("  --dry-run: nothing written.")
+        return 1 if refused else 0
+    if plan["changed"]:
+        if args.already_locked:
+            if not lock_is_held():
+                print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
+                return 1
+        else:
+            try:
+                take_lock("record.py posting", wait=args.wait)
+            except LockError as e:
+                print("  REFUSED — %s" % e)
+                return 1
+        try:
+            # re-read INSIDE the lock, and re-apply on what is really there
+            channels, companies, opps = (_load_or_empty("channels"), load("companies"), load("opportunities"))
+            before_rows = json.loads(json.dumps(opps))
+            plan = _posting_plan(pc, lines, opps, companies, channels, today)
+            refused = any(not r["ok"] for r in plan["results"])
+            if plan["changed"]:
+                introduced = _posting_row_checks(before_rows, opps, plan["changed"])
+                if introduced:
+                    print("⛔ REFUSED — " + "; ".join(introduced))
+                    return 1
+                snap = snapshot("opportunities")
+                pre_problems = validate()[3]
+                save_atomic("opportunities", opps)
+                rc, out, err, post_problems = validate()
+                added = new_problems(pre_problems, post_problems)
+                if rc != 0 and (added is None or added):
+                    ok = restore("opportunities", snap)
+                    print("⛔ the write left the store invalid and was %s."
+                          % ("ROLLED BACK (byte-identical)" if ok else
+                             "NOT VERIFIABLY ROLLED BACK — restore opportunities.jsonl from git"))
+                    print("  " + "\n  ".join(added if added else _diagnostic_lines(rc, out, err)))
+                    return 1
+        finally:
+            if not args.already_locked:
+                release_lock()
+    _print_posting_results(plan, ignored)
+    _posting_note_looks(pc, plan["looks"], today)
+    return 1 if refused else 0
+
+
+def _feed_posting_value(item, new_row, today):
+    """`(value, error)` for `create --from-item` of a company-FEED item (design section 6.3): the `employer_posting` value
+    the script writes itself, `live <canonical job url> via feed`, through the same `observe` every writer uses, when
+    `capture_confirms` holds for the sighting (a company-site channel linked to this role's company). `(None, None)` when
+    it does not hold or the item has no URL: nothing is written for that role. A typed `employer_posting` is an error."""
+    if _POSTING_FIELD in new_row:
+        return None, ("%s is written only by the script (`record.py posting`, or this capture of a feed item); remove it "
+                      "from the JSON" % _POSTING_FIELD)
+    pc = _posting_check()
+    sgs = new_row.get("sightings")
+    sighting = next((s for s in (sgs if isinstance(sgs, list) else []) if isinstance(s, dict)), None)
+    url = item.get("ref")
+    if sighting is None or not url or not pc.capture_confirms(sighting, _load_or_empty("channels"), new_row):
+        return None, None
+    try:
+        value = pc.observe(pc.parse(None), pc.live(url, "feed"), today.isoformat())
+    except _posting_errors(pc) as e:
+        return None, "the feed observation was refused (%s)" % e
+    return value, None
 
 
 CHANNEL_CATALOG_USAGE = ("channel-catalog add <entry> | --kind portfolio|curated|swept-board|alert-sender [--attach <channel_id>] "
@@ -2774,6 +3127,10 @@ def _help_epilog():
         "      R is <min>-<max>/<yr|mo|day|hr>/<CUR> or <min>+/<unit>/<CUR>",
         "  posted <opp_id> --document-date D | --ats-date D | --board-date D | --shown-age N | "
         "--unknown",
+        "",
+        "employer posting (dev #776 / public #166) -- the ONE writer of an opportunity's employer_posting:",
+        "  posting --from-file <file of EMPLOYER-POSTING lines> [--dry-run] [--already-locked]",
+        "      reads every EMPLOYER-POSTING line in the file (never argv); set / set-in / append / create refuse the field.",
     ]
     try:
         lines.append("")
@@ -3592,6 +3949,14 @@ def main():
     ap.add_argument("--firm", dest="cc_firm", default=None,
                     help="channel-catalog add <portfolio entry>: the companies id to use as the firm when the "
                          "firm's name matches several companies you track.")
+    # jobsearch 0.80.0 (dev #776) posting flags. NO `--from-line`: a line on argv is a line a shell has already
+    # parsed, and a posting's quoted visible text holds quotes, a dollar sign and backticks (design section 15 N1).
+    ap.add_argument("--from-file", dest="from_file", default=None,
+                    help="posting: a file holding the EMPLOYER-POSTING lines to record (the researcher's hand-back, or "
+                         "`posting_check.py --run`'s own file). Every such line in it is read; other lines are ignored.")
+    ap.add_argument("--today", dest="today_arg", default=None,
+                    help="posting / create --from-item: TEST-ONLY. The run date as YYYY-MM-DD, so a dated case runs end "
+                         "to end; omitted, it is today. Never pass it in a real run.")
     args = ap.parse_args()
 
     # These three verbs each own exactly one store — --file is never the caller's to pick for
@@ -3621,6 +3986,8 @@ def main():
         args.file = "channels"           # dev #769: cmd_channel_catalog names its own stores
     elif args.op == "source":
         args.file = "channels"           # dev #774: cmd_source names its own stores
+    elif args.op == "posting":
+        args.file = "opportunities"      # dev #776: cmd_posting names its own stores
 
     # §15.3 point 1 — `messages` is append-only; `answered`/`touched`/`received` are its ONLY
     # writers. Refused here, before any generic single-store machinery runs, so the refusal is
@@ -3650,6 +4017,8 @@ def main():
         return cmd_channel_catalog(args)
     if args.op == "source":
         return cmd_source(args)
+    if args.op == "posting":
+        return cmd_posting(args)
 
     if args.reuse and not (args.op == "create" and args.file == "people"):
         print("⛔ REFUSED — --reuse applies only to `create <id> '<json>' --file people`.")
@@ -3717,6 +4086,8 @@ def main():
 
     # ---- build the mutation, describing it before touching anything -------------
     new_row = None
+    # dev #776: True only when `create --from-item` of a company-FEED item has set `employer_posting` itself (below).
+    _feed_posting_written = False
     # dev #728: a verb that writes a SECOND row of the same store (link-sibling, unlink-sibling)
     # reaches it through this holder, so the dry-run mutates its shadow copy and the real write the
     # rows it re-read under the lock -- never the other way round.
@@ -3920,6 +4291,22 @@ def main():
                             {"channel_id": _sg0.get("channel_id"), "seen_on": _sg0.get("seen_on"),
                              "source_url": _sib.get("url")},
                             **({"location": _sib["location"]} if _sib.get("location") else {})))
+        # ⭐ dev #776 / public #166 (design section 6.3) -- a role born from a company-FEED item is confirmed on the
+        # employer's own posting by CONSTRUCTION (the feed is the employer's own board): the script writes
+        # `employer_posting` itself, through the same `observe` every other writer uses, and holds the writer token only
+        # for the checks below. A typed `employer_posting` is refused here, token or no token: the value is the script's.
+        if _item and str(_item.get("source") or "").startswith("feed:"):
+            try:
+                _feed_value, _feed_err = _feed_posting_value(_item, new_row, _posting_today(args.today_arg))
+            except _Refused as e:
+                print("⛔ REFUSED — %s" % e)
+                return 1
+            if _feed_err:
+                print("⛔ REFUSED — --from-item: %s" % _feed_err)
+                return 1
+            if _feed_value is not None:
+                new_row[_POSTING_FIELD] = _feed_value
+                _feed_posting_written = True
         if _link_match and args.force:
             _dist = list(new_row.get("distinct_from") or [])
             if _link_match[0].get("id") not in _dist:
@@ -4466,8 +4853,11 @@ def main():
         # dev #644 item 5 — the introduced-only rules are judged on the ROW here, exactly as the
         # real write below judges them (a dry-run must predict the write, dev #143).
         _after_row = new_row if args.op == "create" else shadow_rec
-        _introduced = introduced_row_violations(
-            args.file, None if args.op == "create" else rec, _after_row)
+        with _posting_writer(_feed_posting_written):
+            _introduced = (introduced_row_violations(
+                               args.file, None if args.op == "create" else rec, _after_row)
+                           + verb_owned_refusal(
+                               args.op, args.file, None if args.op == "create" else rec, _after_row))
         if _introduced:
             print("  ⛔ a REAL (non-dry-run) write of this would be REFUSED (nothing is written):")
             print("  " + "\n  ".join("- " + m for m in _introduced))
@@ -4565,8 +4955,11 @@ def main():
         # written or changed, before a byte lands: the whole-store validator only WARNS about
         # rows that already exist (validate_data.INTRODUCED_ONLY_RULES), so this is the one
         # place a new violation is stopped. Nothing is written, so there is nothing to roll back.
-        _introduced = introduced_row_violations(
-            args.file, _row_before, new_row if args.op == "create" else rec)
+        with _posting_writer(_feed_posting_written):
+            _introduced = (introduced_row_violations(
+                               args.file, _row_before, new_row if args.op == "create" else rec)
+                           + verb_owned_refusal(
+                               args.op, args.file, _row_before, new_row if args.op == "create" else rec))
         if _introduced:
             print("  ⛔ REFUSED — this write would introduce a violation (nothing was written):")
             print("  " + "\n  ".join("- " + m for m in _introduced))

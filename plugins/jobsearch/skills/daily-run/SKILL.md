@@ -71,6 +71,13 @@ If the launcher is missing, reinstall it with
 
 Model **Sonnet** · schedule from `~/.claude/jobsearch/run posture.py --cron` (never retyped here — this line said 07:00–16:00 while the generator emitted 07,09,11,13,15) · working folder = this repo.
 
+**The `search-daily` task launches from the PROFILE ROOT, the directory the attended coordinator runs
+from (owner direction, 2026-11-02; dev #776).** That is the supported setup: the scheduled session then
+inherits the same project settings and allowlist as the attended one, because a scheduled run sees
+exactly what its launch directory sees (`docs/surfaces.md`, S2). A `cd` in this prompt is too late to
+change it. `check_runs.py` reports a daily run whose session was launched from anywhere else
+(`launched outside the profile root`); the coordinator reads that line at its start.
+
 Run the daily job-search check for the candidate. Read `CLAUDE.md` first — it governs everything.
 All state lives in this repo. Be token-frugal.
 
@@ -187,6 +194,12 @@ usable claims it normally, on a later pass.** This is the fix for the #96 loop: 
 keyed the skip to THIS session's run_id in skill prose, so the next scheduled session (a fresh
 run_id) re-claimed the same still-stalled pane. The withholding is data, read fresh every run,
 never a rule this file states.
+
+**⭐ A `posting-check` item (dev #776) is drained here only for what an earlier run left behind**; this
+run's own are drained by §4b's Step B, which also says how to claim one (`--browser-in-session`, after
+the tool-list check) and what to do when the pane refuses a site. An item the worker cannot render stays
+pending and is reported, never claimed and left; one pending more than 7 days with no browser worker
+expires at `deferred.py --settle` and is queued again by the next Step A.
 
 **⭐ The owed LinkedIn pass is listed, never claimed (dev #481 / public #112).** A failed pass
 queues ONE item (`deferred.py --add-linkedin-pass`, no row while one is pending), and `--claimable`
@@ -575,6 +588,29 @@ Run it in the read phase, unlocked: its own `record.py` calls take the lock they
   `record.py ats`, and every unlinked company-site channel.
 - **Quote the `feeds:` line** from `run_summary.py` in the summary (§13).
 
+**POSTING CHECK, STEP A: EVERY RUN, UNDER EVERY POSTURE, RIGHT AFTER THE FEED POLL (dev #776, public #166).**
+A role the candidate is deciding on or pursuing must still be open on the employer's own posting. This is
+the zero-token half of the re-check, as its own Bash call with its own timeout (never sharing the feed
+poll's):
+
+```bash
+~/.claude/jobsearch/run posting_check.py --run <id>      # run it with a Bash timeout of 300000 ms
+```
+
+It reads the watch list (a `pursue` role not passed or expired, and a triaged `backlog` role waiting
+for the candidate's decision), takes the feed signal first (no network), then one robots-checked GET per
+role still due, at most once a day per role. Each outcome goes through `record.py posting`, the one
+writer of a role's `employer_posting` field. It never declares a role dead alone: a fetch can confirm a
+posting live and can never establish that one is gone. Whatever it cannot settle stays due and is queued
+as a `posting-check` item for Step B.
+
+- **Its first line leads `examined N of W in watch list`.** Quote the line in the summary (§13). If
+  `W` is 0 while the pipeline holds `pursue` roles, the script says so loudly: report that as a fault,
+  never as "nothing to check".
+- **`POSTING CHECK NOT RUN -- <why>` (exit 3):** say so and carry on. A role not checked is shown to the
+  candidate as `NOT CHECKED since <date>`, never as live.
+- Run it in the read phase, unlocked: each `record.py posting` call takes the lock itself.
+
 **EMPLOYER-FEED PROPOSALS: EVERY RUN, UNDER EVERY POSTURE (jobsearch 0.78.0, dev #770).** Companies you track that
 have no job-board feed yet are looked for in a session the candidate is present for, never here. This run only
 keeps the one ask honest: it opens the single "proposals wait for you" ask when proposals are waiting, and resolves
@@ -630,6 +666,41 @@ Act on each `VERDICT` exactly as §7 says (a `remove:<rule>` role gets its `reco
 now, without `--already-locked`), and keep the block's summary line for §13. §5 then researches the
 `VERDICT keep` roles. §7 captures only an item this step could not finish.
 
+**POSTING CHECK, STEP B: THE BROWSER HALF (dev #776).** Step A queued a `posting-check` item for every
+role it could not settle without a render (about three tool calls per role, at most five per run). Drain
+them here, after the capture loop, and on any later run from §2b for what this run left behind. **They
+render on every run that has the browser family, attended or not**, as `opportunity-researcher` already
+renders employer pages unattended. Check the session's own tool list first: the Browser family counts
+as present when `mcp__Claude_Browser__navigate` (or `preview_start`) and `get_page_text` are listed by
+name, loaded or loadable through ToolSearch (deferred), or when `list_connected_browsers` returns a
+device for the extension. One tool alone is not proof of the family. Then:
+
+```bash
+~/.claude/jobsearch/run deferred.py --claimable --run <id> --browser-in-session   # only after the check above
+~/.claude/jobsearch/run deferred.py --claim <id> --browser-in-session
+```
+
+`--browser-in-session` grants `browser` for that call only and never `chrome` or `linkedin`. A
+`posting-check` item is never pane-withheld and is never listed under `⏸ WITHHELD`. For each claimed item:
+
+1. Render the role's stored URL in the Browser pane, or for a role not yet confirmed locate the employer
+   posting first (the ATS, then the careers page).
+2. Quote the visible status text exactly (the Apply control, or the closed notice).
+3. Write one `EMPLOYER-POSTING` line to the hand-back file `<profile root>/.jobsearch/handbacks/
+   posting-check-<run id>.md`, in the grammar `opportunity-researcher` uses (a line is never put on a
+   command line: quoted page text carries quotes and shell metacharacters). Then
+   `~/.claude/jobsearch/run record.py posting --from-file <that file>` with no `--already-locked`, then
+   `~/.claude/jobsearch/run deferred.py --done <id>`. A refused line is quoted in the summary with its remedy
+   line and is never retried with an edited line; the item is still `--done`.
+
+**When it cannot finish.** No browser tool after all, or the render tool errors: `deferred.py --release
+<id>` and record nothing. **The pane refuses the site, or the site asks for an approval that does not
+open:** write `EMPLOYER-POSTING <opp_id> looked <url> site-not-allowed`, record it, `--done` the item, and
+move on. **Never wait on an approval and never retry in the same run.** A refused site is never counted
+toward a dead verdict; the role reads `NOT CHECKED` once it is due. Whether a Browser-pane site approval
+given in an attended session carries over to a later scheduled session on the same machine is
+UNVERIFIED; do not tell the candidate that it does.
+
 ## 5. RESEARCH — delegate to `opportunity-researcher`
 
 **⭐ A POSTURE LIMITS HOW OFTEN THE SEARCH LOOKS, NEVER WHETHER A FOUND ROLE IS RESEARCHED (owner
@@ -680,6 +751,20 @@ site/ATS (not the alert snippet), reads the full JD, and researches the company.
 the role's record — comp, scope, reporting line, company snapshot, and any discrepancy versus the
 alert. **Skip roles already excluded or already researched.** An alert's title/company/comp snippet
 alone cannot support a fit judgement or a draft.
+
+**⭐ THE RESEARCHER'S `EMPLOYER-POSTING` LINES GO IN BY FILE (dev #776, public #166).** Its hand-back
+names a file under `<profile root>/.jobsearch/handbacks/` that holds one `EMPLOYER-POSTING` line per role.
+Pass that file, whole, to the one writer of the `employer_posting` field:
+
+```bash
+~/.claude/jobsearch/run record.py posting --from-file <the hand-back file>
+```
+
+No `--already-locked`: this is the read phase, so the call takes its own lock. **Never put a line on a
+command line** (`--from-line` does not exist): the quoted page text carries `'`, `"`, `$` and backticks,
+and a shell would change it. A refusal is quoted in the run summary with its remedy line and is never
+retried with an edited line. A role with no line, or with `not-found`, stays unconfirmed, and the
+pursue review flags it; that is the correct state, not a gap to fill by hand.
 
 **⭐ ANY ROLE THAT BECOMES A PURSUIT GETS A `fit` ANALYSIS** (`fit.requirements[]` — run
 `~/.claude/jobsearch/run record.py fields --file opportunities` for the exact shape):

@@ -356,6 +356,49 @@ data in your profile, or sends something you have not seen, and the plugin never
 
 ---
 
+## Is the role still open? Confirmation on the employer's own posting (since 0.80.0)
+
+A job alert can outlive the job. A role copied from one board to the next stays "open" on every copy
+long after the employer took it down, so the search no longer treats a role as real because an
+aggregator lists it. Each role carries a record, `employer_posting`, of whether it was **confirmed on the
+employer's own posting** (their careers page or applicant-tracking site), with the address and the date.
+
+- **Research confirms it.** When the researcher finds the employer's posting, it opens it in the browser
+  pane and writes down the visible text it saw, such as the Apply button. A plain fetch can say a posting
+  is live; it can never say one is gone, because a fetched page from a script-driven site is often an
+  empty shell that reads like a closed notice.
+- **A role seen only on boards stays unconfirmed.** Two job-board copies, or an aggregator and a
+  syndication copy, are never enough. Roles you already tracked before this version simply read as not yet
+  checked; nothing about your data is rewritten.
+- **Your Move and the dashboard flag what is not confirmed.** They flag, they do not hide: a role you
+  are working through a contact, with no application in view, stays where you can see it. The two surfaces
+  show the same text for the same role. The flag is read from the record, never from a note that says
+  "confirmed".
+- **The roles you are deciding on or pursuing are re-checked on the daily run.** A script reads the
+  company's job feed first, then makes at most one read-only request per role per day, honouring the
+  site's robots.txt. What it cannot settle is checked in the browser pane. The pane step runs on every
+  run that has the browser, attended or not.
+- **One sign that a posting is gone is not enough.** A single failed fetch or one "unavailable" page
+  records a pending signal and the role shows "could not confirm". Only a second, agreeing signal marks it
+  closed, and you still decide what to do with the role: nothing is expired automatically.
+- **A check that did not happen says so.** If the machine was off, the browser was unavailable or a site
+  was refused, the role shows `NOT CHECKED since <date>`. It is never shown as live.
+
+**What is not verified.** Every "live" or "unavailable" the browser step records is the assistant's
+statement of what it saw; no script watches the pane, which is why the exact visible text is kept beside
+it. A site the pane has never visited can ask for approval. The search does not wait for that: it records
+the site as refused and moves on, and the role shows `NOT CHECKED`. Whether an approval you gave in a
+session you were watching carries over to a later scheduled run **has not been verified**, so do not count
+on it. Whether a pending approval can stall a scheduled run has not been verified on any machine either;
+the researcher already carries the same exposure.
+
+**Run the daily task from your profile folder.** The scheduled task should launch in the same folder you
+open the coordinator in, your profile directory. A scheduled run sees exactly what its launch folder sees:
+the same project settings, plugin enablement and allowed commands. The coordinator reports a daily
+run that was launched from anywhere else, from the run check it already makes.
+
+---
+
 ## The rules it holds itself to
 
 **It never sends.** Not email, not LinkedIn messages, not applications. Drafts are staged for

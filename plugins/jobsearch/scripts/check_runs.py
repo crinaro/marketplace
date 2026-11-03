@@ -35,6 +35,7 @@ import json
 import os
 import re
 import sys
+from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
@@ -150,6 +151,95 @@ def guard_blind_rows(path=None):
         return []
     rows.sort(key=lambda r: r.get("at") or "", reverse=True)
     return rows
+
+
+# ⭐ dev #776 (employer-posting confirmation, owner direction 2026-11-02) -- THE SEARCH-DAILY TASK
+# LAUNCHES FROM THE PROFILE ROOT. A scheduled run sees exactly what its LAUNCH directory sees
+# (docs/surfaces.md, "S2 and enablement scope"): the same project settings, plugin enablement and
+# allowlist as the attended coordinator, which also runs from the profile root. A task pinned anywhere
+# else inherits a different set, silently. This is the existing scheduled-run check, extended; it is
+# not a second one.
+#
+# WHAT THE EVIDENCE IS. `list_scheduled_tasks` does not return a task's launch directory, so the
+# scheduler cannot be asked. The journal can: the SessionStart hook writes a `fired` event carrying
+# the session's `cwd` before any model turn (journal.py `_record_fired`), and the run's own first
+# action writes `start daily`. A `start daily` paired with the newest `fired` just before it names
+# the directory that daily run was launched in.
+#
+# WHAT IT CANNOT SEE, stated here so a clean line is not read as more than it is:
+#   * a task launched where the plugin is not enabled writes no `fired` row into this profile at
+#     all -- that is the "lastRunAt newer than any FIRED" comparison, unchanged;
+#   * a typed `/jobsearch:daily-run` from another directory looks identical to a scheduled launch;
+#   * a `start` with no `fired` just before it, or a `fired` with no `cwd`, cannot be compared. It
+#     is COUNTED and printed as not checked, never read as "launched from the root".
+LAUNCH_PAIR_WINDOW_S = 30 * 60
+
+
+def _at(value):
+    """A journal `at` as a naive datetime, or None. Both events are written by the same code in the
+    same format, so a naive comparison is exact; an unparseable value is None, never 'now'."""
+    try:
+        return datetime.strptime(str(value or "")[:19], "%Y-%m-%dT%H:%M:%S")
+    except ValueError:
+        return None
+
+
+def _norm(path):
+    return os.path.normcase(os.path.realpath(os.path.expanduser(str(path))))
+
+
+def _inside(child, parent):
+    c, p = _norm(child), _norm(parent)
+    try:
+        return os.path.commonpath([c, p]) == p
+    except ValueError:                                 # different drives on Windows
+        return False
+
+
+def daily_launch_dirs(recs, root, limit=10):
+    """⭐ dev #776 -- where each of the newest `limit` `start daily` events was LAUNCHED from.
+
+    One dict per daily start, newest first: `run_id`, `started`, `fired_at`, `cwd`, and `state`:
+
+        root     the launch directory IS the profile root (the supported setup)
+        inside   under the profile root but not the root itself -- reported: the supported setup
+                 is the root, the directory the attended coordinator runs from
+        outside  anywhere else -- reported
+        unknown  the paired `fired` event carries no `cwd` -- NOT CHECKED
+        unpaired no `fired` event within `LAUNCH_PAIR_WINDOW_S` before the start (or an unreadable
+                 `at`) -- NOT CHECKED
+
+    `unknown` and `unpaired` are never `root`: "cannot tell" must not read as "fine"."""
+    starts = [r for r in recs if r.get("event") == "start" and r.get("kind") == "daily"]
+    starts.sort(key=lambda r: r.get("at") or "", reverse=True)
+    fired = [(f, _at(f.get("at"))) for f in recs if f.get("event") == "fired"]
+    out = []
+    for s in starts[:limit]:
+        s_at = _at(s.get("at"))
+        best = None
+        if s_at is not None:
+            for f, f_at in fired:
+                if f_at is None or f_at > s_at:
+                    continue
+                if (s_at - f_at).total_seconds() > LAUNCH_PAIR_WINDOW_S:
+                    continue
+                if best is None or f_at > best[1]:
+                    best = (f, f_at)
+        row = {"run_id": s.get("run_id"), "started": s.get("at"),
+               "fired_at": best[0].get("at") if best else None, "cwd": None, "state": "unpaired"}
+        if best is not None:
+            cwd = str(best[0].get("cwd") or "")
+            row["cwd"] = cwd or None
+            if not cwd:
+                row["state"] = "unknown"
+            elif _norm(cwd) == _norm(root):
+                row["state"] = "root"
+            elif _inside(cwd, root):
+                row["state"] = "inside"
+            else:
+                row["state"] = "outside"
+        out.append(row)
+    return out
 
 
 ALL_CLEAN_STREAK = 7
@@ -269,6 +359,12 @@ def footprints(root):
                             for r in fired[:10]]
     out["last_fired"] = fired[0].get("at") if fired else None
 
+    # dev #776 -- where the daily runs were launched from (see `daily_launch_dirs`).
+    launches = daily_launch_dirs(recs, root)
+    out["daily_launches"] = launches
+    out["daily_launch_off_root"] = [d for d in launches if d["state"] in ("inside", "outside")]
+    out["daily_launch_not_checked"] = sum(1 for d in launches if d["state"] in ("unknown", "unpaired"))
+
     # ⭐⭐ public #85 — A THIRD FOOTPRINT SOURCE: not "did a run leave a trace", but "did the
     # trace it left agree with itself." Two independent findings, both from data already read
     # above (`recs`) plus the inbox: an `end` event recorded with no `footprint` at all, and a
@@ -352,6 +448,34 @@ def main():
             print("\n  ⚠️ %s (session %s): mail-scope guard could not see tool arguments on "
                   "this build — scoping is not enforced; connector-side fallback pending"
                   % (b.get("at") or "unknown time", b.get("session_id") or "no session_id"))
+
+    # ⭐ dev #776 -- THE LAUNCH DIRECTORY. The supported setup is the profile root.
+    launches = fp.get("daily_launches") or []
+    off_root = fp.get("daily_launch_off_root") or []
+    print("\n  daily-run launch directory (dev #776):")
+    if not launches:
+        print("    NOT CHECKED -- no `start daily` event is journalled, so there is no run to compare.")
+    for d in off_root:
+        print("    ⚠️ %s was launched outside the profile root: %s (%s). The search-daily task "
+              "should launch from the profile root, the directory the attended coordinator runs "
+              "from; a scheduled run sees exactly what its launch directory sees."
+              % (d.get("run_id") or "a daily run", d.get("cwd"),
+                 "inside the profile, not at its root" if d["state"] == "inside"
+                 else "not in the profile"))
+    unchecked = fp.get("daily_launch_not_checked") or 0
+    if unchecked:
+        print("    NOT CHECKED: %d of the last %d daily run(s) have no launch directory on record "
+              "(no `fired` event just before the start, or none with a cwd)."
+              % (unchecked, len(launches)))
+    if launches and not off_root:
+        checked = len(launches) - unchecked
+        print("    %s" % ("clean for the %d run(s) checked: each was launched from the profile root."
+                          % checked if checked else
+                          "none could be checked, so this is NOT a pass."))
+    if launches:
+        print("    (A typed `/jobsearch:daily-run` from another directory reads the same as a "
+              "scheduled launch, and a task launched where the plugin is not enabled leaves no "
+              "row here at all -- that is the `lastRunAt` newer than any FIRED state below.)")
 
     # ⭐⭐ public #85 — A THIRD ROW: did the trace a run left agree with ITSELF? Distinct from
     # every check above, which only asks whether a trace exists at all.

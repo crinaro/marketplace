@@ -120,6 +120,13 @@ issue**: route it to `engine-reporter`, do not work around it by hand.
 ~/.claude/jobsearch/run check_runs.py
 ```
 
+**Read its `daily-run launch directory` block too (dev #776).** The `search-daily` task launches from the
+profile root, the directory you are running in; a line saying a daily run was `launched outside the profile
+root` means the scheduled run inherits different settings and allowlist than an attended one. Say so, and
+tell the candidate to re-create the task from the profile root with `/jobsearch:setup-routines`. `NOT CHECKED`
+there means no launch directory is on record for that run, which is not a pass. This block cannot see a task
+launched where the plugin is not enabled; the comparison below is the check for that.
+
 Then call `list_scheduled_tasks` and **compare the two**:
 
 ⚠️ **If `list_scheduled_tasks` is not available on this surface (anything other than the desktop
@@ -304,6 +311,12 @@ already know.
 parallelism, and a subagent staging `git add -A` bundles this session's in-flight edits. Fan out
 only for read-only work. **A dispatched agent inherits no conversation** — put what it needs in
 the prompt.
+
+**When `opportunity-researcher` hands back (dev #776, public #166),** its hand-back names a file holding one
+`EMPLOYER-POSTING` line per role. Pass the file, whole, to
+`~/.claude/jobsearch/run record.py posting --from-file <the file>`; it takes its own lock, and a line is never
+put on a command line. A refusal is quoted to the candidate with its remedy line. A role with no line stays
+unconfirmed, and the pursue review flags it; never mark one confirmed by hand.
 
 **You route. You do not do the roster's work yourself** — the moment you do, every CONTEXT BUDGET
 in `agents/` stops meaning anything.

@@ -1203,6 +1203,40 @@ def check_posted(p, label, problems):
                         % (label, p.get("recorded_on")))
 
 
+def check_employer_posting(ep, label, problems):
+    """`employer_posting` (dev #776 / public #166, design-employer-posting-confirmation.md §3.3 and
+    §15 N8, N12): whether the role is confirmed on the EMPLOYER'S OWN posting. OPTIONAL, and ABSENT
+    means "never checked" (the validator does not look at a row without the key: no rewrite of any
+    stored row is needed). A PRESENT value must be an object that `posting_check.parse` accepts.
+
+    ⭐ THE RULES LIVE IN ONE PLACE. This function only CALLS the parser every reader calls, so the
+    validator and the surfaces cannot disagree about what a readable value is. It does not re-run
+    the ownership resolver (design §3.3: ownership is a write-time check, and a later change to
+    `companies[].ats` must not turn a valid historical row invalid).
+
+    ⭐ A PRESENT value is never skipped quietly. An explicit `null` is refused (absent is how an
+    unchecked role reads; a stored null is a value nothing wrote on purpose), and if the parser
+    cannot be imported the row is reported as a PROBLEM saying it was NOT CHECKED, because a green
+    run that validated nothing reads as a valid row. The import is lazy and inside this function so
+    that `posting_check` never has to import this module at load time (N8: no import cycle), and so
+    a profile that stores no such value never touches it."""
+    if not isinstance(ep, dict):
+        problems.append("%s: employer_posting must be an object (state, checked_on, ...) or ABSENT -- "
+                        "got %s (absent reads as never checked; a stored null is refused)"
+                        % (label, type(ep).__name__))
+        return
+    try:
+        import posting_check as _posting_check
+    except ImportError as exc:
+        problems.append("%s: employer_posting is present but NOT CHECKED -- posting_check could not "
+                        "be imported (%s)" % (label, exc))
+        return
+    try:
+        _posting_check.parse(ep)
+    except _posting_check.PostingFieldError as exc:
+        problems.append("%s: employer_posting %s" % (label, exc))
+
+
 def check_commute_minutes(cm, label, problems):
     """`location.commute_minutes` (design §3.5): `{minutes, anchor, source}`."""
     if not isinstance(cm, dict):
@@ -3033,6 +3067,8 @@ def _main():
             check_posted(r["posted"], label, problems)
         if "screen" in r:
             check_screen(r["screen"], label, problems)
+        if "employer_posting" in r:
+            check_employer_posting(r["employer_posting"], label, problems)
         if "passed_from" in r:
             check_passed_from(r, label, problems)
         check_sibling_links(r, label, _all_opp_ids, _opp_by_id, problems)

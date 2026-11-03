@@ -610,10 +610,11 @@ def probe_board(ctx, triple, company):
     resp = _guarded_get(ctx, url, "api")
     _api_ok(resp, ctx, host, url)
     try:
-        postings, unlisted = feed_poll.PARSERS[vendor](resp.body)
+        postings, unlisted_urls = feed_poll.PARSERS[vendor](resp.body)
     except feed_poll.Unparseable as e:
         raise Unresolved("unparseable", "the %s list is not the documented shape (%s)" % (vendor, e))
-    count = len(postings) + unlisted
+    # dev #776: the parsers return the unlisted postings' canonical URLs (a list), not a count.
+    count = len(postings) + len(unlisted_urls)
     if count == 0:
         raise Unresolved("api-empty", "%s:%s answered 200 with an empty list: an empty board carries no evidence "
                                       "of whose it is" % (vendor, slug))

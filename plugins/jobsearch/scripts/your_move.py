@@ -1433,6 +1433,85 @@ def decide_lean(opp, today=None, stuck_days=None):
     return {"lean": "ask", "line": line, "signals": [], "source": "unavailable"}
 
 
+# ═════════════════════════════════════════════════════════════════════════════════════════
+# dev #776 / public #166 (design-employer-posting-confirmation.md §8, §14 row 6, §15 N3) - the
+# employer-posting label. A role the candidate is asked to pursue-or-pass on, or already
+# pursues, is FLAGGED when it is not confirmed live on the employer's own posting. FLAGGED,
+# NEVER EXCLUDED (design §8.3): a role whose employer posts nowhere public would never confirm
+# and would vanish, and a pursuit worked through the network has no application in view.
+#
+# ⭐ ONE DERIVATION. The code and the text come from `posting_check.label(opp, today)` and from
+# nothing else - the structured `employer_posting` field, never a research-log line, a note or
+# the look cache (S3). `generate_dashboard.py` renders what `posting_label` / `posting_labels`
+# say and never calls `posting_check` itself, the same rule this module's docstring states for
+# group membership. Every code except `live` is a flag, so a code this table has never heard of
+# is still flagged: the safe direction for an unknown is to ask, never to pass.
+# ═════════════════════════════════════════════════════════════════════════════════════════
+
+POSTING_LIVE_CODE = "live"
+# The short headline a surface prints in front of the label's own text. Owner decision
+# 2026-11-02 (design §15): a lone negative signal is RECORDED AND FLAGGED, the role showing
+# "could not confirm" until a second agreeing signal (dead) or a later positive (cleared).
+POSTING_HEADLINES = {
+    "live": "Live",
+    "never": "Unconfirmed",
+    "unconfirmed": "Not found on the employer's posting",
+    "not-checked": "Not checked",
+    "one-signal": "Could not confirm",
+    "closed": "Closed",
+    "unreadable": "Posting field unreadable",
+}
+
+
+def _posting_check():
+    """The label's owner, imported on first use (`triage_queue` does the same with
+    `board_hosts`). `posting_check` imports neither this module nor `validate_data` at module
+    level (design §15 N8), so there is no cycle either way."""
+    import posting_check as _pc
+    return _pc
+
+
+def _as_date(today):
+    """`today` as a date: callers here pass an ISO string, `posting_check` does day arithmetic."""
+    if isinstance(today, datetime.date):
+        return today
+    return datetime.datetime.strptime(str(today)[:10], "%Y-%m-%d").date()
+
+
+def posting_label(opp, today=None):
+    """{"code", "text", "flag", "headline"} for one role: `posting_check.label`'s answer, plus
+    `flag` (True for every code but `live`) and the surface `headline` for the code. Derived from
+    the `employer_posting` field alone; a role with no field is `never` and flagged."""
+    today = today or datetime.date.today().isoformat()
+    # `posting_check.label` takes the run date as an ISO string (a real YYYY-MM-DD); this module holds a date
+    code, text = _posting_check().label(opp, _as_date(today).isoformat())
+    return {"code": code, "text": text, "flag": code != POSTING_LIVE_CODE,
+            "headline": POSTING_HEADLINES.get(code, "Could not confirm")}
+
+
+def on_posting_watch_list(opp):
+    """Is `opp` on the re-check watch list? `posting_check.in_watch_list` is the ONE definition
+    (design §7.1); it takes this module's triage result as an argument (design §15 N8)."""
+    return bool(_posting_check().in_watch_list(opp, triage_missing(opp)))
+
+
+def posting_labels(opps, owner_token, today=None, stuck_days=None):
+    """{opp id: posting_label} for every role the label belongs on: each role `decide` holds
+    (the pursue-or-pass question) and each role on the watch list (a role in pursuit). A
+    `triaging` role is on neither: the system is still reading it. A folded duplicate is on
+    neither: its listings live on the canonical row. NEVER removes a role from any group."""
+    today = today or datetime.date.today().isoformat()
+    decide = decide_ids(opps, owner_token, today, stuck_days)
+    out = {}
+    for o in opps:
+        oid = o.get("id")
+        if not oid or _pidx.is_folded(o):
+            continue
+        if oid in decide or on_posting_watch_list(o):
+            out[oid] = posting_label(o, today)
+    return out
+
+
 def classify_opportunities(opps, owner_token, today=None, stuck_days=None):
     """[(opp, state, why)] for every opportunity `is_your_move_candidate` admits — the ONE
     definition of Your Move role-group membership. `generate_dashboard.py` consumes this;
@@ -1892,14 +1971,19 @@ def report(root, today=None):
     _touches.enrich_opportunities(root, opps)
     owner = _profile.owner_token()
     roles = classify_opportunities(opps, owner, today)
+    # dev #776 / public #166 - the employer-posting label, one derivation (`posting_labels`).
+    posting = posting_labels(opps, owner, today)
     chans = classify_channels(channels, messages, today, involvements)
     # public #95 — the terminal-transition cascade, over the same context every row shares.
     ended_ctx = build_ended_context(root)
     letters_rows, _errs, _present = _apps.load_cover_letters(root)
     touches_rows, _t_errs, _t_present = _touches.load(root)
     return {
-        "roles": [{"id": o.get("id"), "title": o.get("title"), "state": s, "why": w}
+        "roles": [{"id": o.get("id"), "title": o.get("title"), "state": s, "why": w,
+                   "posting_label": posting.get(o.get("id"))}
                   for o, s, w in roles],
+        # every labelled role, including a watch-list role Your Move has no group for
+        "posting_labels": posting,
         "channels": [{"id": c.get("id"), "label": c.get("label") or c.get("id"), "state": s,
                       "derived_last_touch": t, "evidence": ev}
                      for c, s, t, ev in chans],
@@ -1984,6 +2068,9 @@ def main():
                                      (r["title"] or r["id"] or "?")[:60]))
             if r["why"]:
                 print("        %s" % r["why"])
+            pl = r.get("posting_label")
+            if pl and pl["flag"]:
+                print("        posting: %s - %s" % (pl["headline"], pl["text"]))
         cmarks = {"now": "🤝", "scheduled": "🗓️ ", "fulfilled": "✅"}
         for c in data["channels"]:
             print("  %s %-10s %s" % (cmarks[c["state"]], c["state"], c["label"]))

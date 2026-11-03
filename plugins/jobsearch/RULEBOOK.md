@@ -247,9 +247,8 @@ before they were centralized — a value stated twice is a value that disagrees 
   search-portal shell; and <an employer>'s returned **"the job you are trying to apply for has been filled"** for a req that
   was live with a working Apply button and a stated 07/31 close date. **In every case the browser render showed the
   truth.** So: a fetch may confirm a posting is LIVE, but it can never establish that one is DEAD — and telling the candidate
-  a role is gone when it isn't costs them a real opportunity. **A genuine negative needs two agreeing signals** (e.g.
-  <an employer>'s closed "Lead Director – Cloud Solution Architecture" returned both HTTP 410 and a browser render saying
-  unavailable — that is a confirmed close).
+  a role is gone when it isn't costs them a real opportunity. **A genuine negative needs two agreeing signals**, decided by `closed_by` and recorded in the role's
+  `employer_posting` field; one signal reads "could not confirm". HTTP 410 plus a render saying unavailable is a close.
 - **⭐ CANONICAL COVER-LETTER HEADER — the template is DATA, in `config.writing.cover_letter_header`.**
   Render it with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/profile.py"`; never retype a name, city, phone or address into a
   letter. The candidate corrected this header directly (2026-07-22), and it deliberately uses a
