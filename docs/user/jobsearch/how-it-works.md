@@ -449,6 +449,14 @@ each role it finds that passes your screen, in the run that found it.
 Set `search.posture` in your configuration, or define your own tier. A profile that existed before 0.78.0
 moves to these days when it upgrades.
 
+**Career pages can be shared out across their days.** On a tier with more than one career-page day, you can
+turn on `company_split` (`/jobsearch:tier` shows how). Each career page is then checked on one of the days,
+always the same one, instead of all of them on every day, so each run is shorter and each page is still checked
+once a week. It is off unless you turn it on. When you look at what is due (`channels_due.py`), a page whose day
+has not come is listed under **WAITING FOR ITS SWEEP DAY**, with the date it opens, and only what the next
+sweep will really pick up is listed under *DUE NOW*. A job board you want checked every day needs its `board_days`
+set to all seven days; no tier ships that way.
+
 **What a posture limits, and what it does not.** A posture controls **how often** an unattended run searches
 employer career pages and job boards (the two day columns), how many agents a run may start, and whether it
 drafts. Mail, company job feeds and LinkedIn run as before. A posture never controls **what happens to a role
@@ -473,9 +481,9 @@ to re-request.
 **`minimal` is the hands-on level.** It searches nothing on its own, so you run the searches:
 `/jobsearch:search attended` (career pages and boards), `/jobsearch:search companies attended` or
 `/jobsearch:search boards attended`. The same command without `attended` only previews what is due. An
-on-demand search works on every posture, ignores the sweep days, researches the roles it keeps in the same
-session, and does not use up the scheduled sweep: a Monday on-demand board search leaves Tuesday's scheduled
-one due.
+on-demand search works on every posture, ignores the sweep days (and the career-page split), researches the roles
+it keeps in the same session, and does not use up the scheduled sweep: a Monday on-demand board search leaves
+Tuesday's scheduled one due.
 
 **A run counts as unattended unless you say otherwise.** A scheduled run, or a session where you
 just type `/jobsearch:daily-run`, follows the posture. To draft by hand on a tier that

@@ -309,13 +309,130 @@ def _runnable(mechanism, caps):
     return bool(caps.get(mechanism)) if mechanism in ("browser", "chrome") else False
 
 
-def board_worklist(chans, companies, recs, cfg, today, caps):
+def _board_admissible(c):
+    """dev #785 (design-sourcing-schedule.md §5.2) -- the ONE predicate for "is this channel
+    board-sweeper work", by FIELD: `(admitted, warning)`. A channel is admitted exactly when (1) its
+    `type` is `job-board`, `aggregator` or `company-site`; (2) its `relationship_status` is not
+    `retired`; and (3) `route.parse_access(access)` succeeds and is not in `route.NOT_BROWSABLE`
+    (`human`, `n/a`, `manual-candidate`). An UNREADABLE `access` is not admitted and carries a printable
+    `warning` (named, never silently dropped); every other refusal has `warning` None. `board_worklist`
+    (rules 1-3) and `schedule_due` (which channels the sweep schedule gates) both call this, so "what the
+    sweeper is offered" and "what the schedule gates" cannot drift apart; `posture._career_pages` (the
+    share line's population) calls it too, by a lazy import."""
+    import route as _route
+    if c.get("type") not in BOARD_TYPES or c.get("relationship_status") == "retired":
+        return False, None
+    try:
+        requirement, _legacy = _route.parse_access(c.get("access"))
+    except _route.RouteError as e:
+        return False, ("  !! WARNING: channel %r has an unreadable access (%s) — NOT in the "
+                       "board worklist." % (c.get("id"), e))
+    if requirement in _route.NOT_BROWSABLE:
+        return False, None
+    return True, None
+
+
+def schedule_due(chans, companies, recs, cfg, today, sched, attended=False):
+    """dev #785 / public #167 (design-sourcing-schedule.md §5.2, §5.3) -- THE one owner of "is this
+    channel due TODAY, given its pass". The bare listing, `board_worklist` and `--board-decision` all
+    call it; none decides a sweep day itself. `sched` is `posture.sweep_schedule(...)`'s `{kind: K}`
+    (required: `None` is a `ValueError`, never read as "no schedule").
+
+    Returns `due_state()`'s dict, with `due`/`upcoming`/`cadence_warnings` adjusted, plus
+
+      due        [(channel, why)]  DUE NOW: due by cadence or feed AND (not gated, or its pass is open)
+      waiting    [(channel, kind, day_or_None, opens_on, why)]  gated, due, its pass closed today;
+                 `day` is its split day (None unsplit), `opens_on` that bucket's next slot
+      no_pass    [(channel, kind, why)]  gated, due, its kind is `off` on this posture
+      blocked    [(channel, kind, why)]  gated, due, its kind is `unreadable` / `journal`
+      schedule_problem  a printable line, or None, when any kind is `unreadable` / `journal`
+
+    GATED = `_board_admissible` admits it. Every other due channel (`manual-candidate`, `human`,
+    `n/a`, an unreadable `access`, a recruiter) stays in `due` EXACTLY as today: a person's task is
+    never moved behind a sweep day. A gated channel's pass is its kind's bucket
+    (`posture.split_day(id, K.split)` when the career-page split is on, else `"*"`); it is open when that
+    bucket is due, or -- split channels only -- when `posture.nearer_chance` says today is strictly
+    nearer its due date than its next split day (a `current` channel is then moved from `upcoming` to
+    `due`). `attended=True` lifts the whole schedule: every kind open, no split, nothing waiting."""
+    if sched is None:
+        raise ValueError("schedule_due needs the sweep schedule (posture.sweep_schedule); None is "
+                         "never read as 'no schedule'")
+    import posture as _posture
+    state = due_state(chans, companies, recs, cfg, today)
+    due, upcoming = [], []
+    waiting, no_pass, blocked = [], [], []
+    warnings = list(state["cadence_warnings"])
+
+    def bucket(c, K):
+        """(day, key) of a gated company/board channel in K, or None when a split channel has no
+        usable id. Unsplit: `(None, "*")`."""
+        if not K["split"]:
+            return None, "*"
+        cid = c.get("id")
+        if not isinstance(cid, str) or not cid:
+            return False
+        day = _posture.split_day(cid, K["split"])
+        return day, day
+
+    for c, why in state["due"]:
+        if attended or not _board_admissible(c)[0]:
+            due.append((c, why))
+            continue
+        kind = sweep_kind(c)
+        K = sched[kind]
+        if K["state"] == "off":
+            no_pass.append((c, kind, why))
+        elif K["state"] in ("unreadable", "journal"):
+            blocked.append((c, kind, why))
+        else:
+            b = bucket(c, K)
+            if b is False:
+                warnings.append("  !! WARNING: career-page channel %r has no usable id — NOT in any "
+                                "split day, so NOT offered to any sweep." % (c.get("label") or "?",))
+                continue
+            day, key = b
+            B = K["buckets"][key]
+            if B["due"]:
+                due.append((c, why))
+            else:
+                waiting.append((c, kind, day, B["next_slot"],
+                                "swept today" if B["last"] == today else why))
+    for c, next_due in state["upcoming"]:
+        if not attended and _board_admissible(c)[0]:
+            K = sched[sweep_kind(c)]
+            if K["state"] in ("open", "closed") and K["split"]:
+                b = bucket(c, K)
+                if b is not False:
+                    B = K["buckets"][b[1]]
+                    if B["due"] and _posture.nearer_chance(next_due, today, B["next_slot"]):
+                        due.append((c, "due %s, nearer than its next split day %s %s"
+                                    % (next_due.isoformat(), _posture.weekday_name(B["next_slot"]),
+                                       B["next_slot"].isoformat())))
+                        continue
+        upcoming.append((c, next_due))
+    problems = [] if attended else [sched[k]["line"] for k in sched
+                                    if sched[k]["state"] in ("unreadable", "journal")]
+    out = dict(state)
+    out.update({"due": due, "upcoming": upcoming, "cadence_warnings": warnings,
+                "waiting": waiting, "no_pass": no_pass, "blocked": blocked,
+                "schedule_problem": ("  !! SCHEDULE UNREADABLE: " + "; ".join(problems))
+                if problems else None})
+    return out
+
+
+def board_worklist(chans, companies, recs, cfg, today, caps, *, sched, attended=False):
     """dev #770-4 -- the ONE definition of board-sweeper work, by FIELD. A channel is in it exactly
     when (1) its `type` is `job-board`, `aggregator` or `company-site`; (2) its `relationship_status`
     is not `retired`; (3) `route.parse_access(access)` is not in `route.NOT_BROWSABLE` (`human`,
-    `n/a`, `manual-candidate`); (4) `review_rows()` says `due`, or `feed_review()` says `due` (a
-    board-code feed failure); and (5) `feed_review()` does not say `covered` today. (4) and (5) are
-    `due_state()`'s, shared with the printed queue.
+    `n/a`, `manual-candidate`) -- rules 1-3 are `_board_admissible`; (4) `review_rows()` says `due`,
+    or `feed_review()` says `due` (a board-code feed failure); and (5) `feed_review()` does not say
+    `covered` today. (4) and (5) are `due_state()`'s, shared with the printed queue.
+
+    dev #785 (design-sourcing-schedule.md §5.2): and (6) its pass is OPEN today -- `schedule_due`
+    decides that, from `sched` (`posture.sweep_schedule`'s `{kind: K}`), a REQUIRED keyword argument:
+    omitting it is a `TypeError` and `None` a `ValueError`, so a caller cannot skip the schedule by
+    accident. A channel of a closed, off or unreadable kind, or whose split day is closed, is absent.
+    `attended=True` lifts the schedule (never the worklist).
 
     Returns `(rows, unroutable, warnings)`. With `caps` (a `whoami.probe()` dict), `rows` are
     `(channel, runnable_mechanisms, why)` for channels with at least one mechanism from
@@ -325,21 +442,17 @@ def board_worklist(chans, companies, recs, cfg, today, caps):
     printable lines (an unreadable `access` is named, never silently dropped). A
     `route.RouteError` from an unreadable route preference propagates: the caller refuses."""
     import route as _route
-    state = due_state(chans, companies, recs, cfg, today)
+    state = schedule_due(chans, companies, recs, cfg, today, sched, attended=attended)
     pref = _route.preference(cfg) if caps is not None else None
     rows, unroutable, warnings = [], [], []
     for c, why in sorted(state["due"], key=lambda x: (x[0].get("last_reviewed") or "",
                                                        x[0].get("id") or "")):
-        if c.get("type") not in BOARD_TYPES or c.get("relationship_status") == "retired":
+        admitted, warning = _board_admissible(c)
+        if warning:
+            warnings.append(warning)
+        if not admitted:
             continue
-        try:
-            requirement, _legacy = _route.parse_access(c.get("access"))
-        except _route.RouteError as e:
-            warnings.append("  !! WARNING: channel %r has an unreadable access (%s) — NOT in the "
-                            "board worklist." % (c.get("id"), e))
-            continue
-        if requirement in _route.NOT_BROWSABLE:
-            continue
+        requirement, _legacy = _route.parse_access(c.get("access"))
         if caps is None:
             rows.append((c, [], why))
             continue
@@ -423,19 +536,20 @@ def board_decision(chans, companies, recs, cfg, today, run_id, dry_run, attended
         return 3, ["BOARD DISPATCH refused: unknown sweep kind %s (one of %s)"
                    % (", ".join(map(repr, unknown)), ", ".join(_ck.SWEEP_KINDS))]
     name, p, err = _posture.load(root)
-    if err or p is None:
-        if not attended:
-            return 3, ["BOARD DISPATCH refused: posture unreadable (%s)" % err]
-        checks = [{"state": "unreadable", "sweep": k,
-                   "line": "%s: posture unreadable (%s)" % (k, err)} for k in _ck.SWEEP_KINDS]
-    else:
-        checks = _posture.board_checks(p, name, today, recs=recs, root=root, fresh=fresh)
+    if (err or p is None) and not attended:
+        return 3, ["BOARD DISPATCH refused: posture unreadable (%s)" % err]
+    # dev #785: THE schedule, read once for every kind (`posture.sweep_schedule`), then handed to the
+    # worklist, so the decision and the printed queue answer from ONE place. An unreadable posture is
+    # every kind `unreadable` there, which an attended decision lifts as it always did.
+    sched = _posture.sweep_schedule(p, name, today, recs=recs, fresh=fresh, err=err, root=root)
+    checks = [dict(_posture._checked(sched[k]), split=sched[k]["split"]) for k in _ck.SWEEP_KINDS]
     checks = [c for c in checks if c["sweep"] in wanted]
     bad = [c for c in checks if c["state"] in ("unreadable", "journal")]
     if bad and not attended:
         return 3, ["BOARD DISPATCH refused: %s" % "; ".join(c["line"] for c in bad)]
     try:
-        rows, unroutable, _warn = board_worklist(chans, companies, recs, cfg, today, caps)
+        rows, unroutable, _warn = board_worklist(chans, companies, recs, cfg, today, caps,
+                                                 sched=sched, attended=attended)
     except Exception as e:                                       # noqa: BLE001 -- route.RouteError
         return 3, ["BOARD DISPATCH refused: the route preference cannot be read (%s)" % e]
     due, reasons = [], []
@@ -473,10 +587,17 @@ def board_decision(chans, companies, recs, cfg, today, run_id, dry_run, attended
         if today != datetime.date.today():
             at = "%sT%s" % (today.isoformat(), _journal.now_iso()[11:])
         for kind, _c, _gate, _mine in due:
+            # dev #785 (design §6): under an active career-page split the company row names the split
+            # days whose pages are IN THIS WORKLIST -- a fact this run knows -- so each day spends its
+            # own slot (`posture.board_spent_on(day=)`). An open day with nothing due contributes no
+            # page, is not named, and stays open. An attended row spends nothing, so it never carries one.
+            split = _c["split"] if (kind == "company" and not attended) else None
+            split_days = (sorted({_posture.split_day(r[0]["id"], split) for r in _mine},
+                                 key=_ck.WEEKDAYS.index) or None) if split else None
             try:
                 _journal.record_pass(root or ROOT, run_id=run_id, kind="board",
                                      phase="dispatched", at=at, sweep=kind,
-                                     attended=True if attended else None)
+                                     attended=True if attended else None, split_days=split_days)
             except _journal.JournalError as e:
                 return 3, ["BOARD DISPATCH refused: the dispatch row could not be written (%s)"
                            % e]
@@ -619,7 +740,21 @@ def main():
         _recs = []
     _cfg = load_cfg()
     _companies = load_companies()
-    _state = due_state(chans, _companies, _recs, _cfg, today)
+    # dev #785 / public #167 (design-sourcing-schedule.md §5.1, §7): the SWEEP SCHEDULE is read once, here,
+    # and `schedule_due` is the one owner of "due TODAY, given its pass" -- the same answer
+    # `--board-decision` and `board_worklist` take. An unreadable posture, days, `company_split`,
+    # `split_days` or journal is a SCHEDULE UNREADABLE section below, never a non-zero exit: this listing
+    # is advisory (RULEBOOK.md, the daily-run hygiene paragraph) and REPORTS; `--board-decision`
+    # is the gate that refuses (exit 3).
+    import posture as _posture
+    _pname, _pdict, _perr = _posture.load(ROOT)
+    if _journal_warning:
+        _sched = _posture.sweep_schedule(_pdict, _pname, today, err=_perr, root=ROOT)
+    else:
+        _sched = _posture.sweep_schedule(_pdict, _pname, today, recs=_recs,
+                                         fresh=not os.path.exists(_journal.path(ROOT)),
+                                         err=_perr, root=ROOT)
+    _state = schedule_due(chans, _companies, _recs, _cfg, today, _sched)
     for _w in _state["cadence_warnings"]:
         print(_w)
     if _journal_warning:
@@ -627,11 +762,12 @@ def main():
     if _state["feeds_problem"]:
         print(_state["feeds_problem"])
     # dev #770-4 -- the board worklist's own warnings (an unreadable `access` is named, not skipped).
-    for _w in board_worklist(chans, _companies, _recs, _cfg, today, None)[2]:
+    for _w in board_worklist(chans, _companies, _recs, _cfg, today, None, sched=_sched)[2]:
         print(_w)
     _feed = _state["feed"]
     covered_by_feed = _state["covered"]
     due, upcoming, retired = _state["due"], _state["upcoming"], _state["retired"]
+    waiting, no_pass, blocked = _state["waiting"], _state["no_pass"], _state["blocked"]
     candidate_tasks = [(c, w) for c, w in due if c.get("access") == "manual-candidate"]
     due = [(c, w) for c, w in due if c.get("access") != "manual-candidate"]
     upcoming_manual = [(c, dd) for c, dd in upcoming if c.get("access") == "manual-candidate"]
@@ -663,8 +799,39 @@ def main():
             print("  ● %-24s %-9s [%s] %s" % (c["label"][:24], cad, acc, why))
             if c.get("scope_notes"):
                 print("      %s" % c["scope_notes"][:80])
+    elif waiting or no_pass or blocked or _state["schedule_problem"]:
+        print("  Nothing is due for a sweep today; see below.")
     else:
         print("  Nothing due. All active-search channels are current.")
+
+    # dev #785 (design §7) -- a channel whose pass is not open today is NAMED here, never dropped and
+    # never listed as DUE NOW (public #167 P5).
+    if waiting:
+        print("\nWAITING FOR ITS SWEEP DAY — due by cadence, but its sweep is not scheduled today:")
+        for c, kind, day, opens_on, why in sorted(
+                waiting, key=lambda x: (x[3] or datetime.date.max, x[0].get("id") or "")):
+            print("  ◔ %-24s %-9s %s  %s; opens %s %s" % (
+                c["label"][:24], c.get("review_cadence") or "next_touch",
+                "%s, split day %s" % (kind, day) if day else kind, why,
+                _posture.weekday_name(opens_on) if opens_on else "?",
+                opens_on.isoformat() if opens_on else "(no slot)"))
+    if no_pass:
+        _kinds = [k for k in ("company", "board") if any(kk == k for _c, kk, _w in no_pass)]
+        _arg = {"company": "companies", "board": "boards"}
+        print("\nDUE, NO UNATTENDED SWEEP — posture %s does not sweep %s on its own; "
+              "/jobsearch:search %s attended sweeps %s now:"
+              % (_pname, " or ".join(_kinds), "|".join(_arg[k] for k in _kinds),
+                 "it" if len(no_pass) == 1 else "them"))
+        for c, kind, why in no_pass:
+            print("  ◇ %-24s %-9s %s  %s" % (c["label"][:24], c.get("review_cadence") or "next_touch",
+                                              kind, why))
+    if _state["schedule_problem"]:
+        print("\nSCHEDULE UNREADABLE — these due channels are offered to no sweep until it is fixed; "
+              "channels_due.py --board-decision refuses (exit 3):")
+        print(_state["schedule_problem"])
+        for c, kind, why in blocked:
+            print("  ✖ %-24s %-9s %s  %s" % (c["label"][:24], c.get("review_cadence") or "next_touch",
+                                              kind, why))
 
     if covered_by_feed:
         print("\nCOVERED BY FEED — the feed is this page's review today; no browser visit:")

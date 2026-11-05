@@ -573,8 +573,8 @@ Run it in the read phase, unlocked: its own `record.py` calls take the lock they
 - **Exit 0** every feed covered. **Exit 4** at least one NOT COVERED: the line `FEED NOT COVERED <company>
   <vendor>:<slug> <code>` names it and the summary's `feeds:` line counts it. A feed that did not return
   the documented list is **never read as "0 roles"**: nothing was captured from it, its page was not
-  stamped reviewed, and `channels_due.py` lists that page for the browser (DUE) so the sweep below still
-  covers it. A HOST-level failure (`egress-blocked`, `tls-untrusted`, `unreachable`, `budget-exhausted`:
+  stamped reviewed, and `channels_due.py` lists that page for the browser (DUE NOW on a day its sweep is
+  open, else WAITING FOR ITS SWEEP DAY with the date it opens) so the board sweep covers it on its day. A HOST-level failure (`egress-blocked`, `tls-untrusted`, `unreachable`, `budget-exhausted`:
   this machine cannot reach the vendor, or the poll ran out of time) does NOT make every page due daily:
   those companies keep their normal cadence, and ONE `jobsearch:feeds:host:<host>` gap says why.
 - **Exit 3** `FEEDS NOT RUN: no readable title keys`: `targets.titles` is empty or its keys cannot be
@@ -582,7 +582,7 @@ Run it in the read phase, unlocked: its own `record.py` calls take the lock they
 - **A page the feed covered today is not in the board worklist** (`channels_due.py` prints it under COVERED
   BY FEED). A company with no slug stays browser-routed, and so does a Workday site that is not covered
   (`FEED NOT COVERED ... robots-unavailable | sitemap-capped | blocked | locale-mismatch ...`: the page is
-  DUE for the browser). A covered Workday site reads "covered (sitemap window; completeness assumed)" in
+  due for the browser on its sweep day). A covered Workday site reads "covered (sitemap window; completeness assumed)" in
   `--status`: the sitemap is a window, and that it lists every open job is not shown. `feed_poll.py --status`
   lists the slugs, each company's last outcome, any `ATS AMBIGUOUS` the candidate must settle with
   `record.py ats`, and every unlinked company-site channel.
@@ -631,7 +631,9 @@ and aggregators on its `board_days`; ask the script, never the calendar and neve
 explicit attended form). **Dispatch `board-sweeper` for the non-LinkedIn sourcing pass
 only when it exits 0, and give it exactly the ids on the call's `  worklist:` line** — only the due kind's channels
 (`BOARD DISPATCH yes company`, `yes board`, or `yes company,board` says which), each reached by its
-configured route. Never add a channel of the kind that is not due. The call has
+configured route. With `company_split` on, the call offers each career page only on its own split day, so the
+worklist is already today's share. Never choose channels by weekday yourself.
+Never add a channel of the kind that is not due. The call has
 already written the dispatch as a script row, one per due kind (dev #692 / public #140, R3), so do not
 write it again; the missing-ROLES check keys on that row, never on a folded `dispatch` row. On exit 1 print
 its `BOARD DISPATCH no ...` line in the summary and dispatch nothing: the posture does not permit a board
@@ -643,9 +645,8 @@ hands back, run
 `~/.claude/jobsearch/run deferred.py --add-roles <hand-back file> --run <id> --surface board --check`
 and then the same call without `--check`, the same gate, the same outcomes and the same exit codes
 as the LinkedIn pass above; the sweeper no longer cross-checks the pipeline itself.
-**Check `~/.claude/jobsearch/run channels_due.py` rather than assuming anything is due** — anchor-employer
-career pages moved to MONTHLY, and two job boards were RETIRED after a zero-yield trial. Do not
-re-add a retired channel.
+**`channels_due.py` and `--board-decision` give one answer:** a channel waiting for its sweep day is listed
+under WAITING FOR ITS SWEEP DAY, never DUE NOW. Do not re-add a retired channel.
 
 ## 4b. CAPTURE AND SCREEN — BEFORE RESEARCH (owner ruling O5, jobsearch 0.78.0)
 

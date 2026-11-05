@@ -103,7 +103,7 @@ guidance — apply the same discipline here that the outreach playbook applies l
 1. **Find the original posting.** The alert link is often a job board's own wrapper
    around a listing that actually lives on the company's careers site or an ATS (Greenhouse, Lever, Workday, SmartRecruiters, iCIMS, BambooHR, etc.).
    **Never assume a job board is still in the rotation — `~/.claude/jobsearch/run channels_due.py` is
-   the source; two were retired after a zero-yield trial.**
+   the source; a retired channel is listed under RETIRED.**
    WebSearch `"<company>" "<title>" careers` or `"<company>" "<title>" (greenhouse OR
    lever OR workday OR smartrecruiters OR icims)` to locate it. Prefer the company's own
    source over the aggregator — it's the ground truth and often has more detail.

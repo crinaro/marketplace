@@ -56,7 +56,9 @@ Print its output verbatim. Then say that the sweep runs only from the attended f
    `--attended` lifts the posture's `company_days` and `board_days`, and the posture's `max_agents_per_run` cap
    (this sweep needs one agent, so `minimal`, whose cap is 0 because it runs no unattended sweeps, can still run
    it by hand). It never adds a channel: `manual-candidate`, `human`, `n/a` and retired channels are never in the
-   worklist, and a page a feed covered today is not either.
+   worklist, and a page a feed covered today is not either. It also lifts `company_split`: an attended
+   `companies` sweep offers every due career page, whatever its split day, and spends no split day, so each
+   page's scheduled day still comes.
 
    - **Exit 0:** dispatch `board-sweeper` once, with exactly the ids on the `  worklist:` line, each reached by its
      configured route. The call has already written the dispatch row, marked `attended: true`. **That row spends no

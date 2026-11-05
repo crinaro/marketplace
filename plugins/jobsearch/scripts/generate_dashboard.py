@@ -2298,7 +2298,7 @@ def sourcing_view(today=None):
         lr = c.get("last_reviewed") or "never"
         if state == "due":
             n_due += 1
-            due_html = ('<span class="chip action">due now</span> '
+            due_html = ('<span class="chip action">review due (cadence)</span> '
                         '<span class="sub">%s</span>' % esc(detail["why"]))
         elif state == "current":
             due_html = '<span class="chip scheduled">%s</span>' % esc(detail["next_due"])

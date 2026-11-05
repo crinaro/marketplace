@@ -410,6 +410,48 @@ def resolve_company_days(posture):
     return resolve_days(posture, COMPANY_DAYS)
 
 
+# ── the career-page split (dev #785 / public #167, jobsearch 0.81.0; design-sourcing-schedule.md §3) ──
+# `search.postures.<name>.company_split` -- a JSON boolean, beside `company_days`. When `true` and
+# `company_days` names two or more days, each `company-site` channel is offered on ONE of those days
+# (`posture.split_day`, computed from the channel id, never stored); `false` is the repeat behaviour of
+# 0.78.0-0.80.0 (every due career page is offered on every company day). Posture-relative like
+# `company_days`: in neither `READER_KEYS` nor `_METADATA`, because `profile.py --options` and
+# `doctor.py` iterate those against the config ROOT, where this key does not live (`describe()` has no
+# root-level default to print for a per-posture boolean). Not seeded: `SEARCH_POSTURES_DEFAULT` is
+# unchanged. Setter: `posture.py --set-company-split on|off` (validated, atomic), never a hand edit.
+#
+# ⭐ AN ABSENT KEY READS AS `false` (owner decision, 2026-11-03), the ONE exception to this file's rule
+# that a missing posture key refuses: absence restores the pre-0.81.0 behaviour exactly, so it is not a
+# schedule the owner did not choose, and the alternative (a migration writing `false` into every
+# posture) buys no behaviour. A key that is PRESENT but is not a JSON boolean is unreadable and refuses,
+# never "no split": `"true"`, `1`, `null`, `"on"` are all refused.
+COMPANY_SPLIT = "company_split"
+
+
+def validate_company_split(value):
+    """Problems with a posture's `company_split` (`[]` when valid): a JSON boolean and nothing else.
+    `isinstance(value, bool)` is the test, so `1`, `0`, `"true"`, `"on"` and `None` are refused with
+    the two legal values named, never coerced."""
+    if not isinstance(value, bool):
+        return ["%s is %r -- not a JSON boolean (true or false)" % (COMPANY_SPLIT, value)]
+    return []
+
+
+def resolve_company_split(posture):
+    """The posture's `company_split` as a `bool`. ABSENT reads `False` (see above); a present value
+    that is not a boolean raises `ValueError` naming it. Presence is tested by MEMBERSHIP
+    (`COMPANY_SPLIT in posture`), never `posture.get(...)`: `.get` returns `None` for both an absent
+    key and a stored `null`, and only the first may read as `false`."""
+    if not isinstance(posture, dict):
+        raise ValueError("%s is unreadable: the posture is not an object" % COMPANY_SPLIT)
+    if COMPANY_SPLIT not in posture:
+        return False
+    problems = validate_company_split(posture[COMPANY_SPLIT])
+    if problems:
+        raise ValueError("; ".join(problems))
+    return posture[COMPANY_SPLIT]
+
+
 # ── dispatch_packet.py's per-section character caps (design-script-first.md §3.2, #77) ──────────────
 # `voice` (the candidate's `configure/strategy.md` "Message style" text, verbatim) and `claims`
 # (matched `presence/claims.md` addenda) are the two sections that ride on the profile's OWN

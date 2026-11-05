@@ -568,7 +568,7 @@ def render_text(obj):
         if _na(el):
             add("  " + _na(el))
         else:
-            titles = {"in_flight": "In flight", "week": "This week", "channels_due": "Channels due",
+            titles = {"in_flight": "In flight", "week": "This week", "channels_due": "Channel reviews (cadence)",
                       "preps_owed": "Preps owed", "asks": "Open asks", "kb_index": "Knowledge index",
                       "sources": "Sources"}
             for k in ELSEWHERE_KEYS:

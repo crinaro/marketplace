@@ -55,14 +55,17 @@ It never overrides the LinkedIn limit.
 **`/jobsearch:search attended`**. Use it when you want to look for roles now, on any day, in both
 employer career pages and job boards. **Runs** a sweep, then screens what it found and researches
 every role that passes your screen, in the same session. It works on every posture, `minimal`
-included, ignores the sweep days, and does not use up the scheduled sweep.
+included, ignores the sweep days (and the career-page split, if you turned it on: every due career
+page is checked, whatever its day), and does not use up the scheduled sweep.
 
 **`/jobsearch:search companies attended`**. Use it for employer career pages only. **Runs**, as above.
 
 **`/jobsearch:search boards attended`**. Use it for job boards and aggregators only. **Runs**, as above.
 
 **`/jobsearch:search`**, **`/jobsearch:search companies`** or **`/jobsearch:search boards`**, without
-`attended`. Use it to see what is due without searching. **Shows** a preview and stops.
+`attended`. Use it to see what is due without searching. **Shows** a preview and stops. A career page
+whose day in a split has not come is not in the preview's worklist; `channels_due.py` lists it under
+WAITING FOR ITS SWEEP DAY, with the date it opens.
 
 **`/jobsearch:sourcing employers attended`**. Use it to find the job-board feed of a company you track
 that has none yet. **Runs**: it reads each company's careers page (plus one link on the same site),
@@ -72,7 +75,9 @@ then proposes what it found, and you accept or decline each one. Without `attend
 **`/jobsearch:tier`** *(`minimal`, `economy`, `standard` or `full`)*. Use it to change how often the
 search runs, which is the main lever on cost, and on which weekdays it sweeps career pages and job
 boards. **Shows** where you are; naming a posture **runs** (it saves the choice and updates the
-schedule).
+schedule). It also explains how to share a tier's career pages out across its days, so each is checked on
+one of them (`company_split`, off unless you turn it on), and that a job board you want checked every day
+needs its `board_days` set to all seven days.
 
 On `minimal` nothing sweeps career pages or job boards by itself, so the three `search ... attended`
 commands above are how you search. Mail, company job feeds and LinkedIn keep running as set.

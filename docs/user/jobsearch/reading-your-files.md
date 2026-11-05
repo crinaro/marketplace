@@ -72,7 +72,7 @@ place you read it changed.
 | conversations and commitments, this week and what is owed | the status pane, *This week* and *Preps owed* |
 | a call prep's body | the file itself, `views/conversations.md` names it; the page no longer shows a prep body |
 | open asks, and the "configure" and "pipeline" asks | the status pane, *Needs you* (soonest act-by date first) and *Open asks* |
-| channels | the status pane, *Channels due* (every channel is listed, the due ones first) |
+| channels | the status pane, *Channel reviews (cadence)* (every channel is listed, the ones due for review first; "due" here means by each channel's own review cadence, not that a sweep will pick it up today) |
 | the knowledge index | the status pane, *Knowledge index* |
 | stale resume or LinkedIn text | the *Open items* tab of the two review panes. The status band does not count them |
 | the second page (your resume layer and public-profile layer) | `/jobsearch:review-resume` and `/jobsearch:review-linkedin` |

@@ -45,6 +45,28 @@ They refuse an unknown or repeated day and say what they wrote. The days apply t
 who wants to look now uses `/jobsearch:search attended` (on `minimal` too); it ignores the days and does not use
 up the scheduled sweep.
 
+**Splitting the career pages across the days.** A tier can share its career pages out across its company days
+instead of checking all of them on every company day. With `company_split` on, each page gets one of the days,
+always the same one, and is checked once per week on that day. Adding or removing a page never moves the
+others. With only a few pages, a day may get none. Turn it on or off with:
+
+```bash
+~/.claude/jobsearch/run posture.py --set-company-split on [--posture <name>]   # `off` turns it off
+```
+
+It prints how many pages landed on each day, and says it takes effect elsewhere after the next run and that
+an older engine ignores the key. It takes effect on machines running jobsearch 0.81.0 or later, and on other
+machines after their next run. Until every machine that shares the profile is on 0.81.0, an older one keeps
+checking every page on each company day, so the split does not hold there. A tier with one company day, or none,
+is not changed by it. Mail, company job feeds and LinkedIn are never split.
+The queue (`channels_due.py`) follows the same schedule: a page whose day has not come is listed under
+WAITING FOR ITS SWEEP DAY, with the date it opens, instead of under DUE NOW. `/jobsearch:search companies attended`
+ignores the split too: it checks every due page, whatever its day, and each page's own day still comes.
+
+**A job board you want checked every day needs `board_days` set to all seven days.** No tier ships that way
+(`full` is Tue, Thu and Sat). Set it with
+`--set-board-days mon,tue,wed,thu,fri,sat,sun`; a board whose review cadence is daily is then offered on each day.
+
 ## 3. ⭐ APPLY IT TO THE SCHEDULE — this is the step that makes it real
 
 The tier declares a `cron`; the scheduler holds the one that actually fires. **Changing the config

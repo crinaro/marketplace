@@ -1620,7 +1620,7 @@ How much the plugin is allowed to do on its own — your cost tier. See *Cost* i
 | key | what it is |
 |---|---|
 | `search.posture` | the **name** of the tier in force, one of the names defined under `search.postures`. Defaults to `economy` on a new install. **Changing it changes what every scheduled run may do**: how often it fires, how many agents it may start, which weekdays it searches career pages and job boards, whether it may draft unattended, whether it may touch LinkedIn. **It does not change how much of what a run finds is processed, or whether a found role is researched**: every role a run sees is accounted for and minimally screened under every tier, every role the screen keeps is researched in that run, and drafting a tier refuses is queued, not dropped (see *Deferred items* below). `posture.py` shows the effect (`posture.py --may drafting`, `--cron`). A name that is unset, or that is not defined in `search.postures`, permits **nothing** — the run reads the cheapest interpretation rather than guessing you meant a larger one |
-| `search.postures` | the table of tiers, keyed by name. Each tier holds `runs_per_day`, a `cron` line, `max_agents_per_run`, `max_drafts_per_run`, an `unattended` list of what it may do without you (`sweeps`, `linkedin`, `drafting` and, since 0.78.0, `board`; a `research` word may still be present in an older list and no longer changes anything), a `company_days` list and a `board_days` list (since 0.78.0) naming the weekdays an employer career-page sweep and a job-board sweep may start on their own, and a `_for` note describing it. **Retune a tier** by editing its numbers, or **add your own** by adding a name with the same keys and pointing `search.posture` at it. The engine reads the numbers and the permission list, never the name. `doctor.py --fix` puts the shipped four back if the table is missing, and only ever adds |
+| `search.postures` | the table of tiers, keyed by name. Each tier holds `runs_per_day`, a `cron` line, `max_agents_per_run`, `max_drafts_per_run`, an `unattended` list of what it may do without you (`sweeps`, `linkedin`, `drafting` and, since 0.78.0, `board`; a `research` word may still be present in an older list and no longer changes anything), a `company_days` list and a `board_days` list (since 0.78.0) naming the weekdays an employer career-page sweep and a job-board sweep may start on their own, an optional `company_split` (since 0.81.0, absent means off) that shares the career pages out across the company days, and a `_for` note describing it. **Retune a tier** by editing its numbers, or **add your own** by adding a name with the same keys and pointing `search.posture` at it. The engine reads the numbers and the permission list, never the name. `doctor.py --fix` puts the shipped four back if the table is missing, and only ever adds |
 | `linkedin_runs_per_day` | lives **inside a tier** — `search.postures.<tier>.linkedin_runs_per_day` — not at the top of `config.json`. How many LinkedIn passes per day may actually reach a page, **independent of `runs_per_day`**: a run over its tier's quota still does everything else and only skips the LinkedIn pass. A tier that does not set it gets **1**; accepted range 0–20. **`0` switches LinkedIn passes off for that tier** (the pass is refused as skipped-for-cost and the work is queued, not lost). **Raise it** for more LinkedIn coverage at more cost — a LinkedIn pass is the most expensive thing a scheduled run does |
 
 ### Settings added in 0.67.0 (all under `config.json.search`)
@@ -1708,6 +1708,49 @@ run as before.
 `sweep: company` or `sweep: board` saying which kind it was (a row without that field, written before 0.78.0,
 counts as having spent both kinds' days). A search you started yourself carries `attended: true`, and that
 row spends no scheduled day: an on-demand board search on a Monday leaves Tuesday's scheduled one due.
+When career pages are split across days (next section), that row also carries `split_days`, the list of days
+whose pages it covered. A row without that field, written before 0.81.0 or by an unsplit sweep, counts as
+having covered every day.
+
+**Which job boards are checked on which day.** The queue (`channels_due.py`) now shows only what its sweep
+can pick up today. A channel that is due by its own review cadence but whose sweep day has not come is listed
+under **WAITING FOR ITS SWEEP DAY**, with the date it opens, instead of under *DUE NOW*. A job board you want
+checked every day needs `board_days` set to all seven days, because no tier ships that way (`full` is Tue,
+Thu and Sat): `~/.claude/jobsearch/run posture.py --set-board-days mon,tue,wed,thu,fri,sat,sun`. A tier
+that has no unattended sweep at all (`minimal`) lists its due boards under **DUE, NO UNATTENDED SWEEP**;
+`/jobsearch:search attended` still checks them.
+
+### Sharing career pages across the days — `company_split` (0.81.0)
+
+`search.postures.<name>.company_split` is `true` or `false`, beside `company_days`. With it on, a tier
+with more than one company day shares its career pages out among those days instead of checking every
+due page on every one of them. Each page gets one day, always the same one, and is checked on that day.
+
+- **Absent means off.** A profile that never sets it behaves exactly as before, and nothing needs to be done
+  when you upgrade. No upgrade step writes it.
+- **The same day each time.** A page's day depends only on the page and on the list of days. Adding or
+  removing a page moves no other page. Changing the list of days moves only the pages the change gives or
+  takes away. The day is worked out each time and never stored in `channels.jsonl`.
+- **A few pages share unevenly.** With fewer than about ten pages a day, a day can get none, and that is
+  expected. A day with nothing due does nothing and writes no row.
+- **A late run does not lose a week.** If a run is a day or two late for a page's day, the page is checked
+  on that late run when it is nearer that day's due date than its next day is. Otherwise it waits for its day.
+- **Turn it on or off** with `~/.claude/jobsearch/run posture.py --set-company-split on` (or `off`; add
+  `--posture <name>` for a tier other than the one in force). It checks the value before it writes, and prints
+  how many pages landed on each day, for example `company_split on (posture standard): 20 career pages: 11 on
+  mon, 9 on wed (not split: 1 retired, 1 not browsable)`. Changing the company days with a split on prints
+  that line again. Do not edit the key by hand.
+- **A value it cannot read stops the sweep and says why.** Anything other than `true` or `false` (the words
+  `"true"` or `"on"`, a number, an empty value) is refused. The sweep does not run, no row is written and the
+  daily run carries on with mail and LinkedIn. The queue lists the affected pages under **SCHEDULE UNREADABLE**
+  until it is fixed. A damaged `split_days` field in the journal does the same.
+- **A shared profile needs every machine on 0.81.0 for the split to hold.** Another machine on an older version
+  ignores the key and checks every due page on each company day. It never checks less, but a run can be
+  longer than the split promises. The key reaches the other machines after the next run ends and they pull.
+  While two machines each find the same day unspent, both can sweep it before either pulls.
+- **Attended searches ignore the split.** `/jobsearch:search companies attended` checks every due career page,
+  whatever its day, and spends no day, so each page's own day still comes.
+- **Job boards are not split**, and mail, company job feeds and LinkedIn are not on these days at all.
 
 ### Attended and unattended
 

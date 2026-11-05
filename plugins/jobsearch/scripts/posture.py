@@ -25,6 +25,7 @@ Advisory; always exits 0 except for an explicit --may miss (exit 1) so a run can
 
     ~/.claude/jobsearch/run posture.py --may board [--attended] [--run ID] [--today YYYY-MM-DD]
     ~/.claude/jobsearch/run posture.py --set-board-days mon,thu [--posture NAME]   # or: none
+    ~/.claude/jobsearch/run posture.py --set-company-split on|off [--posture NAME]
 
 ⭐ A POSTURE LIMITS HOW OFTEN, NEVER HOW MUCH (dev #692 / public #140, 2026-10-09)
 -------------------------------------------------------------------------------
@@ -56,11 +57,24 @@ the first run on or after a scheduled weekday since the last board pass that was
 with `--set-company-days` / `--set-board-days` (validated, atomic), and READ strictly: a missing or malformed value refuses
 loudly and is never `[]` or a default. design-employer-discovery.md §5.
 
+⭐ THE CAREER-PAGE SPLIT (dev #785 / public #167, jobsearch 0.81.0, design-sourcing-schedule.md)
+----------------------------------------------------------------------------------------------
+`company_split` (a posture key beside `company_days`, a JSON boolean, ABSENT reads `false`) offers each
+`company-site` channel on ONE of the posture's company days instead of on every one of them. The day is
+computed from the channel id by a rendezvous hash (`split_day`), never stored, so adding or removing a
+channel moves no other channel. Each split day has its own on-or-after slot: a company dispatch under
+an active split writes `split_days` on its `pass board dispatched` row, and
+`board_spent_on(recs, "company", day=d)` is the one filter that reads it. `sweep_schedule` is the one
+reader of the whole schedule (`board_check` / `board_checks` / `--may board` are derived from it), and
+`check_split_days` is the one validator of the journal field, run once, on every `pass` row, before any
+per-kind work. Set with `--set-company-split on|off`.
+
 Python 3.9+, stdlib only.
 """
 
 import argparse
 import datetime
+import hashlib
 import json
 import os
 import sys
@@ -283,11 +297,117 @@ def _sweep_of(r):
     return {s}
 
 
-def board_spent_on(recs, sweep=None):
+def split_day(channel_id, days):
+    """dev #785 / public #167 (design-sourcing-schedule.md §4) -- the weekday a career-page channel is
+    offered on under `company_split`: the RENDEZVOUS (highest-random-weight) winner over `days`,
+
+        max(days, key=(sha256(channel_id + "\\0" + day).digest(), -WEEKDAYS.index(day)))
+
+    Computed, never stored. The answer depends only on the channel's own id and the day SET, so it is
+    the same on every run, in any list order, and under any `PYTHONHASHSEED` (`hashlib`, never the
+    built-in `hash()`, which Python seeds per process); adding or removing ONE channel moves no other
+    channel, and adding or removing a day moves only the channels that day wins or loses. The second
+    key component breaks a digest collision that will not happen in practice, so the function is
+    total. `channel_id` must be a non-empty string and `days` a valid, non-empty `company_days`
+    list, else `ValueError`: a channel that cannot be bucketed is refused, never given a default day."""
+    if not isinstance(channel_id, str) or not channel_id:
+        raise ValueError("split_day needs a non-empty string channel id (got %r)" % (channel_id,))
+    problems = _ck.validate_days(days, _ck.COMPANY_DAYS)
+    if problems or not days:
+        raise ValueError("split_day needs a non-empty list of weekday names (%s)"
+                         % ("; ".join(problems) or "company_days is empty"))
+    return max(days, key=lambda d: (hashlib.sha256((channel_id + "\0" + d).encode("utf-8")).digest(),
+                                    -_ck.WEEKDAYS.index(d)))
+
+
+def nearer_chance(next_due, today, next_slot):
+    """dev #785 (design-sourcing-schedule.md §5.3, §15 N3) -- the STRICT nearer-chance rule, for a
+    channel in an OPEN split bucket: with `early = next_due - today` and `late = next_slot - next_due`
+    (all `datetime.date`; `next_slot` is that bucket's next split-day slot), sweep it today only when
+
+        late > 0 and early < late
+
+    In words: today is STRICTLY nearer the page's due date than its next split day is; on a tie the
+    page waits for its split day (owner decision, 2026-11-03). It reads only `next_due`, so who
+    stamped the page (a split sweep, an attended one, an older engine) does not matter. A tie is
+    reachable only on a catch-up day (on the split day itself `early + late` is a whole cycle). A
+    caller applies it ONLY when the kind's `split` is set: an unsplit schedule is 0.80.0's, unchanged.
+    `next_slot` None (no slot) is never due by this rule."""
+    if next_due is None or next_slot is None:
+        return False
+    early = (next_due - today).days
+    late = (next_slot - next_due).days
+    return late > 0 and early < late
+
+
+def _split_days_problem(value):
+    """Why a `split_days` value is unreadable, or None when it is a non-empty list of DISTINCT
+    `WEEKDAYS` names in `WEEKDAYS` order (the order `board_decision` writes them in)."""
+    if not isinstance(value, list) or not value:
+        return "not a non-empty list of weekday names (%s)" % ", ".join(_ck.WEEKDAYS)
+    bad = [d for d in value if not isinstance(d, str) or d not in _ck.WEEKDAYS]
+    if bad:
+        return "has %s -- not one of %s" % (", ".join(map(repr, bad)), ", ".join(_ck.WEEKDAYS))
+    if len(set(value)) != len(value):
+        return "repeats a day"
+    if value != sorted(value, key=_ck.WEEKDAYS.index):
+        return "is not in weekday order (%s)" % ", ".join(_ck.WEEKDAYS)
+    return None
+
+
+def _split_days_of(r):
+    """The split days a `pass board dispatched` company row spent (dev #785, design §6): `None` for
+    an ABSENT field, and `None` means EVERY split day (a pre-0.81.0 row, or one from an unsplit sweep,
+    covered the whole due set); otherwise the validated list. A field that is PRESENT but unreadable
+    (including a stored `null`, tested by membership) raises `ValueError`: `_sweep_of`'s rule, a row
+    this cannot read is refused, never skipped. `check_split_days` has already refused such a row
+    before `board_spent_on(day=d)` runs, so this is defence in depth, with its own unit case."""
+    if "split_days" not in r:
+        return None
+    problem = _split_days_problem(r["split_days"])
+    if problem:
+        raise ValueError("split_days on the pass row of run %r is %r: %s"
+                         % (r.get("run_id"), r["split_days"], problem))
+    return list(r["split_days"])
+
+
+def check_split_days(recs):
+    """dev #785 (design-sourcing-schedule.md §15 N1) -- refuse a malformed `split_days` on ANY `pass`
+    row of the journal's `recs`, once, whatever the posture, the split, the sweep, or the row's
+    attended or crashed state. A row with the key at all (`null` included) must be a
+    `kind: board`, `phase: dispatched`, `sweep: company` row WITHOUT `attended: true`, and its value a
+    non-empty list of distinct `WEEKDAYS` names in `WEEKDAYS` order; anything else raises
+    `ValueError` naming the row's `run_id` and the value, starting `split_days ...`. It reads no
+    posture. Called ONCE, in `sweep_schedule`, before any per-kind work -- not inside
+    `board_spent_on`, whose filter order (phase, attended, sweep, crashed, `at`) never even sees most
+    malformed rows -- and not in `journal.read()`, which every advisory reader goes through and which
+    must not wedge them. The refusing gate stays `channels_due.py --board-decision` (exit 3)."""
+    for r in recs:
+        if r.get("event") != "pass" or "split_days" not in r:
+            continue
+        run = r.get("run_id")
+        value = r["split_days"]
+        if not (r.get("kind") == "board" and r.get("phase") == "dispatched"
+                and r.get("sweep") == "company" and r.get("attended") is not True):
+            raise ValueError(
+                "split_days on the pass row of run %r is %r, but only an unattended `pass board "
+                "dispatched` row with sweep `company` may carry it" % (run, value))
+        problem = _split_days_problem(value)
+        if problem:
+            raise ValueError("split_days on the pass row of run %r is %r: %s" % (run, value, problem))
+
+
+def board_spent_on(recs, sweep=None, day=None):
     """The latest `datetime.date` a board pass SPENT a slot of kind `sweep` (`company` or `board`,
     owner ruling O4; None counts every kind), over the journal's `recs`, or None. Each kind's slot is
     counted separately: a row whose `sweep` is `company` never spends a `board` slot, or the reverse;
     a row with no `sweep` (before 0.78.0) spends both.
+
+    `day` (dev #785, design §6) is the ONE extra filter for a split schedule: with `day` set (a
+    `WEEKDAYS` name, and `sweep == "company"`, else `ValueError`), a row that passes every test below
+    counts only when its `split_days` is absent (it spent every day) or contains `day`. There is no
+    second copy of the crashed, attended or `at` rules. With `day=None` this is byte-identical to
+    0.80.0: `split_days` is never read.
 
     A row carrying `attended: true` (a pass a person started on demand, `/jobsearch:search ...
     attended` or `/jobsearch:daily-run attended`) spends nothing: the schedule limits unattended work
@@ -303,6 +423,12 @@ def board_spent_on(recs, sweep=None):
     `at` is not an ISO date raises `ValueError`: a journal this cannot read is refused, never
     skipped. (The generalisation of `journal.crashed_passes` to a second kind is kept here because
     that module is outside this change's file set; the LinkedIn call there is unchanged.)"""
+    if day is not None:
+        if sweep != "company":
+            raise ValueError("board_spent_on(day=%r) needs sweep='company' (got %r): only the career "
+                             "pages are split" % (day, sweep))
+        if day not in _ck.WEEKDAYS:
+            raise ValueError("board_spent_on day %r is not one of %s" % (day, ", ".join(_ck.WEEKDAYS)))
     ended = {r.get("run_id") for r in recs if r.get("event") == "end"}
     returned = {r.get("run_id") for r in recs
                 if (r.get("event") == "pass" and r.get("kind") == "board"
@@ -324,72 +450,201 @@ def board_spent_on(recs, sweep=None):
         if rid in ended and rid not in returned:
             continue                                        # a crashed pass spends nothing
         try:
-            spent.append(datetime.date.fromisoformat(str(r.get("at"))[:10]))
+            at = datetime.date.fromisoformat(str(r.get("at"))[:10])
         except ValueError:
             raise ValueError("a board pass row has an unreadable `at` (%r)" % (r.get("at"),))
+        if day is not None:
+            covered = _split_days_of(r)             # dev #785: None = every split day
+            if covered is not None and day not in covered:
+                continue                                    # spent other days, not this one
+        spent.append(at)
     return max(spent) if spent else None
+
+
+# dev #785 / public #167 (design-sourcing-schedule.md §5.1) -- the schedule, read ONCE, for every kind.
+# `state` here is the schedule's own vocabulary; `board_check` maps it to the 0.78.0 one (`yes`/`no`).
+_STATE_OF = {"open": "yes", "closed": "no", "off": "no", "unreadable": "unreadable",
+             "journal": "journal"}
+
+
+def _kind(sweep, state, line):
+    """One kind's answer from `sweep_schedule`: `{sweep, state, line, slot, next_slot, last, split,
+    buckets}` (see `sweep_schedule`), with nothing computed yet."""
+    return {"sweep": sweep, "state": state, "line": line, "slot": None, "next_slot": None,
+            "last": None, "split": None, "buckets": {}}
+
+
+def _spent_text(sweep, last, fresh):
+    if fresh:
+        return "first board sweep (no journal yet)"
+    if last is None:
+        return "no %s pass spent yet" % sweep
+    return "last spent %s %s" % (weekday_name(last), last.isoformat())
+
+
+def _kind_schedule(p, name, today, recs, fresh, sweep):
+    """`sweep_schedule`'s answer for ONE kind: the 0.78.0 `board_check` rules, in the same order and
+    with the same lines for an unsplit kind, plus the career-page split (dev #785)."""
+    key = _ck.SWEEP_DAYS_KEY[sweep]
+    unattended = p.get("unattended") if isinstance(p, dict) else None
+    if not isinstance(unattended, list):
+        return _kind(sweep, "unreadable",
+                     "%s: unattended list unreadable on posture %s" % (sweep, name))
+    if _ck.BOARD_TOKEN not in unattended:
+        return _kind(sweep, "off", "%s: not permitted unattended on posture %s" % (sweep, name))
+    try:
+        days = _ck.resolve_days(p, key)
+    except ValueError as e:
+        return _kind(sweep, "unreadable",
+                     "%s: %s unreadable on posture %s (%s)" % (sweep, key, name, e))
+    split_on = False
+    if sweep == "company":
+        # Read at exactly the point `company_days` is: after `board` is confirmed in `unattended` and
+        # the days are readable. A value that is present but not a boolean is UNREADABLE, never "no
+        # split" (an absent key reads false: config_keys.resolve_company_split).
+        try:
+            split_on = _ck.resolve_company_split(p)
+        except ValueError as e:
+            return _kind(sweep, "unreadable",
+                         "%s: %s unreadable on posture %s (%s)"
+                         % (sweep, _ck.COMPANY_SPLIT, name, e))
+    if not days:
+        return _kind(sweep, "off", "%s: %s is empty on posture %s (never unattended)"
+                     % (sweep, key, name))
+    out = _kind(sweep, "closed", "")
+    try:
+        last = board_spent_on(recs or [], sweep)
+        split = sorted(days, key=_ck.WEEKDAYS.index) if (split_on and len(days) >= 2) else None
+        if split is None:
+            parts = {"*": board_slot(days, last, today) + (last,)}
+        else:
+            parts = {}
+            for d in split:
+                last_d = board_spent_on(recs or [], "company", day=d)
+                parts[d] = board_slot([d], last_d, today) + (last_d,)
+    except ValueError as e:                     # an unreadable `at` or `sweep`, JournalError included
+        return _kind(sweep, "journal", "%s: journal unreadable (%s)" % (sweep, e))
+    out["split"] = split
+    out["last"] = last
+    out["buckets"] = {b: {"due": due, "slot": slot, "next_slot": nxt, "last": lb}
+                      for b, (due, slot, nxt, lb) in parts.items()}
+    slots = [v["slot"] for v in out["buckets"].values() if v["slot"] is not None]
+    nexts = [v["next_slot"] for v in out["buckets"].values() if v["next_slot"] is not None]
+    out["slot"] = max(slots) if slots else None
+    out["next_slot"] = min(nexts) if nexts else None
+    any_due = any(v["due"] for v in out["buckets"].values())
+    out["state"] = "open" if any_due else "closed"
+    if split is None:                                           # the 0.78.0 lines, byte for byte
+        due, slot, next_slot, _lb = parts["*"]
+        if due:
+            if fresh:
+                out["line"] = "%s: due (slot %s %s), first board sweep (no journal yet)" % (
+                    sweep, weekday_name(slot), slot.isoformat())
+            elif last is None:
+                out["line"] = "%s: due (slot %s %s, no %s pass spent yet)" % (
+                    sweep, weekday_name(slot), slot.isoformat(), sweep)
+            else:
+                out["line"] = "%s: due (slot %s %s, last spent %s %s)" % (
+                    sweep, weekday_name(slot), slot.isoformat(), weekday_name(last),
+                    last.isoformat())
+        else:
+            out["line"] = "%s: not due until %s %s" % (sweep, weekday_name(next_slot),
+                                                      next_slot.isoformat())
+        if split_on:                                    # `true` over a single day is legal, and says so
+            out["line"] += "; split over one day is the whole set"
+        return out
+    due_days = [d for d in split if out["buckets"][d]["due"]]
+    rest = ["split day %s not due until %s %s" % (
+        d, weekday_name(out["buckets"][d]["next_slot"]), out["buckets"][d]["next_slot"].isoformat())
+        for d in split if d not in due_days]
+    if due_days:
+        # `due (split day wed, slot wed 2026-11-04, last spent wed 2026-10-28); split day mon not
+        # due until mon 2026-11-09` -- one parenthesised clause per due day, then the rest.
+        clauses = "; ".join("split day %s, slot %s %s, %s" % (
+            d, weekday_name(out["buckets"][d]["slot"]), out["buckets"][d]["slot"].isoformat(),
+            _spent_text(sweep, out["buckets"][d]["last"], fresh)) for d in due_days)
+        out["line"] = "%s: due (%s)" % (sweep, clauses)
+        if rest:
+            out["line"] += "; " + "; ".join(rest)
+    else:
+        out["line"] = "%s: not due until %s %s (%s)" % (
+            sweep, weekday_name(out["next_slot"]), out["next_slot"].isoformat(), "; ".join(rest))
+    return out
+
+
+def sweep_schedule(p, name, today, recs=None, fresh=False, err=None, root=None):
+    """dev #785 / public #167 (design-sourcing-schedule.md §5.1, §15 N1) -- THE schedule, read once, for
+    every sweep kind: `{kind: K}` in `SWEEP_KINDS` order, where K is
+
+        sweep       the kind (`company` or `board`)
+        state       `open` (some bucket of this kind is due), `closed` (none is), `off` (`board` is not in
+                    `unattended`, or the days list is `[]`: no unattended pass at all), `unreadable`
+                    (the posture, its `unattended` list, its days or `company_split` cannot be read: the
+                    posture itself when `err` is set) or `journal` (`runs.jsonl`, a board pass row in
+                    it, or a `split_days` field on any pass row cannot be read)
+        line        the one reason line `--may board` and `--board-decision` print. Unsplit lines are
+                    0.80.0's, byte for byte
+        slot, next_slot, last
+                    the kind's latest slot, earliest next slot and last spend (None when off/unreadable)
+        split       None, or the company days in weekday order when `company_split` is true and there
+                    are two or more of them (company only)
+        buckets     `{day: {due, slot, next_slot, last}}`: one entry per split day (each with its OWN
+                    spend, `board_spent_on(recs, "company", day=d)`), or a single entry keyed `"*"`
+                    for an unsplit kind (`board_slot(days, board_spent_on(recs, kind), today)`)
+
+    `err` is the posture's load error (`load()`): no config.json, no active posture, an undefined one.
+    Every kind is then `unreadable` with that line, and nothing else is read. `recs` is the journal's
+    rows; when None and `p` is a posture, it is read here (`fresh` is then computed: a MISSING
+    runs.jsonl reads as no rows, due once), and a journal that cannot be read makes every kind
+    `journal`. `check_split_days` runs HERE, exactly once, immediately after the rows are obtained and
+    BEFORE any per-kind work, including before the `unattended` and days checks that return early
+    without reading the journal: a malformed `split_days` makes every kind `journal` on every posture,
+    `minimal` included, with the split on or off, so `--board-decision` exits 3 and `--may board` /
+    `board_gate` read it as not permitted (they fail safe)."""
+    if err:
+        return {k: _kind(k, "unreadable", "%s: posture unreadable (%s)" % (k, err))
+                for k in _ck.SWEEP_KINDS}
+    if recs is None and isinstance(p, dict):
+        import journal as _journal
+        try:
+            fresh = not os.path.exists(_journal.path(root or ROOT))
+            recs = _journal.read(root or ROOT)
+        except _journal.JournalError as e:
+            return {k: _kind(k, "journal", "%s: journal unreadable (%s)" % (k, e))
+                    for k in _ck.SWEEP_KINDS}
+    if recs is not None:
+        try:
+            check_split_days(recs)
+        except ValueError as e:
+            return {k: _kind(k, "journal", "%s: journal unreadable (%s)" % (k, e))
+                    for k in _ck.SWEEP_KINDS}
+    return {k: _kind_schedule(p, name, today, recs, fresh, k) for k in _ck.SWEEP_KINDS}
+
+
+def _checked(k):
+    """A `sweep_schedule` kind as `board_check`'s 0.78.0 dict (`state` is `yes`/`no`/`unreadable`/
+    `journal`)."""
+    return {"state": _STATE_OF[k["state"]], "line": k["line"], "slot": k["slot"],
+            "next_slot": k["next_slot"], "last": k["last"], "sweep": k["sweep"]}
 
 
 def board_check(p, name, today, recs=None, root=None, fresh=False, sweep="board"):
     """The board gate's one answer for ONE sweep kind (`company`: `company_days`, employer career
     pages; `board`: `board_days`, job boards and aggregators; owner ruling O4), as a dict
     `{state, line, slot, next_slot, last, sweep}`. Each line starts with the kind (`company:` or
-    `board:`), so the two answers never read alike.
+    `board:`), so the two answers never read alike. Derived from `sweep_schedule` (dev #785), so
+    `--may board`, `board_gate` and `channels_due.py --board-decision` read ONE answer.
 
     `state` is `yes` (a sweep may start unattended), `no` (not permitted, or not due),
-    `unreadable` (the posture, its `unattended` list or `board_days` cannot be read: refused
-    loudly, never read as `[]` or as a default) or `journal` (`runs.jsonl` cannot be read). `line`
-    is the one reason line `--may board` prints. `recs` is the journal's rows (read here when None;
-    a MISSING `runs.jsonl` reads as no rows, so a fresh journal is due once, said in the line; a
-    caller that read the journal itself passes `fresh=True` when the file did not exist)."""
+    `unreadable` (the posture, its `unattended` list, `board_days` or `company_split` cannot be read:
+    refused loudly, never read as `[]` or as a default) or `journal` (`runs.jsonl`, or a `split_days`
+    field in it, cannot be read). `line` is the one reason line `--may board` prints. `recs` is the
+    journal's rows (read here when None; a MISSING `runs.jsonl` reads as no rows, so a fresh journal
+    is due once, said in the line; a caller that read the journal itself passes `fresh=True` when the
+    file did not exist)."""
     if sweep not in _ck.SWEEP_KINDS:
         raise ValueError("sweep %r is not one of %s" % (sweep, ", ".join(_ck.SWEEP_KINDS)))
-    key = _ck.SWEEP_DAYS_KEY[sweep]
-    out = {"state": "no", "line": "", "slot": None, "next_slot": None, "last": None,
-           "sweep": sweep}
-    unattended = (p or {}).get("unattended") if isinstance(p, dict) else None
-    if not isinstance(unattended, list):
-        out.update(state="unreadable",
-                   line="%s: unattended list unreadable on posture %s" % (sweep, name))
-        return out
-    if _ck.BOARD_TOKEN not in unattended:
-        out["line"] = "%s: not permitted unattended on posture %s" % (sweep, name)
-        return out
-    try:
-        days = _ck.resolve_days(p, key)
-    except ValueError as e:
-        out.update(state="unreadable",
-                   line="%s: %s unreadable on posture %s (%s)" % (sweep, key, name, e))
-        return out
-    if not days:
-        out["line"] = ("%s: %s is empty on posture %s (never unattended)" % (sweep, key, name))
-        return out
-    import journal as _journal
-    try:
-        if recs is None:
-            fresh = not os.path.exists(_journal.path(root or ROOT))
-            recs = _journal.read(root or ROOT)
-        last = board_spent_on(recs, sweep)
-    except (_journal.JournalError, ValueError) as e:
-        out.update(state="journal", line="%s: journal unreadable (%s)" % (sweep, e))
-        return out
-    due, slot, next_slot = board_slot(days, last, today)
-    out.update(slot=slot, next_slot=next_slot, last=last)
-    if due:
-        out["state"] = "yes"
-        if fresh:
-            out["line"] = "%s: due (slot %s %s), first board sweep (no journal yet)" % (
-                sweep, weekday_name(slot), slot.isoformat())
-        elif last is None:
-            out["line"] = "%s: due (slot %s %s, no %s pass spent yet)" % (
-                sweep, weekday_name(slot), slot.isoformat(), sweep)
-        else:
-            out["line"] = "%s: due (slot %s %s, last spent %s %s)" % (
-                sweep, weekday_name(slot), slot.isoformat(), weekday_name(last), last.isoformat())
-    else:
-        out["line"] = "%s: not due until %s %s" % (sweep, weekday_name(next_slot),
-                                                  next_slot.isoformat())
-    return out
+    return _checked(sweep_schedule(p, name, today, recs=recs, fresh=fresh, root=root)[sweep])
 
 
 def _any_due(checks):
@@ -403,17 +658,8 @@ def _any_due(checks):
 def board_checks(p, name, today, recs=None, root=None, fresh=False):
     """`board_check` for every sweep kind, in `SWEEP_KINDS` order (company, then board), reading
     the journal ONCE. Returns a list of the per-kind dicts."""
-    if recs is None and isinstance(p, dict):
-        import journal as _journal
-        try:
-            fresh = not os.path.exists(_journal.path(root or ROOT))
-            recs = _journal.read(root or ROOT)
-        except _journal.JournalError as e:
-            return [{"state": "journal", "line": "%s: journal unreadable (%s)" % (k, e),
-                     "slot": None, "next_slot": None, "last": None, "sweep": k}
-                    for k in _ck.SWEEP_KINDS]
-    return [board_check(p, name, today, recs=recs, root=root, fresh=fresh, sweep=k)
-            for k in _ck.SWEEP_KINDS]
+    sched = sweep_schedule(p, name, today, recs=recs, fresh=fresh, root=root)
+    return [_checked(sched[k]) for k in _ck.SWEEP_KINDS]
 
 
 def _as_date(today):
@@ -460,6 +706,20 @@ def set_board_days(root, days_arg, posture=None, key=None):
     problems = _ck.validate_days(days, key)
     if problems:
         raise ValueError("; ".join(problems))
+    name, posture_dict = _write_posture_key(root, posture, key, days)
+    note = ""
+    unattended = posture_dict.get("unattended")
+    if not isinstance(unattended, list) or _ck.BOARD_TOKEN not in unattended:
+        note = ("board is not in posture %s's unattended list, so these days take effect only "
+                "once it is" % name)
+    return name, days, note
+
+
+def _write_posture_key(root, posture, key, value):
+    """The ONE atomic write of a posture key (`set_board_days` and `set_company_split` share it): load
+    `config.json`, set `search.postures.<name>[key] = value` (`name` is `posture`, else the active
+    one), and replace the file atomically, every other key untouched. Returns `(name, posture_dict)`;
+    raises `ValueError` naming the problem and writing nothing."""
     path = os.path.join(root, "config.json")
     try:
         with open(path, encoding="utf-8") as fh:
@@ -474,18 +734,114 @@ def set_board_days(root, days_arg, posture=None, key=None):
     if name not in postures or not isinstance(postures[name], dict):
         raise ValueError("posture %r is not defined in config.search.postures (have: %s)"
                          % (name, ", ".join(sorted(postures)) or "none"))
-    postures[name][key] = days
+    postures[name][key] = value
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2, ensure_ascii=False)
         fh.write("\n")
     os.replace(tmp, path)                       # atomic: never a half-written config.json
-    note = ""
-    unattended = postures[name].get("unattended")
-    if not isinstance(unattended, list) or _ck.BOARD_TOKEN not in unattended:
-        note = ("board is not in posture %s's unattended list, so these days take effect only "
-                "once it is" % name)
-    return name, days, note
+    return name, postures[name]
+
+
+def _posture_dict(root, name):
+    """`search.postures.<name>` of `<root>/config.json`, just written by a setter (so it exists)."""
+    with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
+        return json.load(fh)["search"]["postures"][name]
+
+
+SPLIT_TAKES_EFFECT_LINE ="takes effect elsewhere after the next run; an older engine ignores the key"
+
+
+def set_company_split(root, value_arg, posture=None):
+    """dev #785 (design-sourcing-schedule.md §3, §15 N9) -- write `search.postures.<name>.company_split`:
+    `value_arg` is `on` or `off` (anything else is refused, writing nothing), `posture` defaults to the
+    active one. Validated and atomic through the same writer as the days setters, every other key
+    untouched. Returns `(name, on)`; raises `ValueError` naming the problem."""
+    text = (value_arg or "").strip().lower()
+    if text not in ("on", "off"):
+        raise ValueError("%r is not on or off" % (value_arg,))
+    on = text == "on"
+    name, _p = _write_posture_key(root, posture, _ck.COMPANY_SPLIT, on)
+    return name, on
+
+
+def _career_pages(root):
+    """`(pages, retired, not_browsable, unreadable)` for the share line: the `company-site` channels of
+    `<root>/data/channels.jsonl` that `schedule_due` will bucket (not retired, `access` readable and
+    not in `route.NOT_BROWSABLE`, with a non-empty string id), and the counts of those it will not.
+    A missing store reads as no channels; one that cannot be parsed raises `ValueError`.
+
+    The predicate is `channels_due._board_admissible`'s -- ONE owner (design §5.2), reached by a LAZY
+    import because `channels_due` imports this module (dev #785). This function only classifies the
+    channels that predicate refuses, for the line's `(not split: ...)` clause."""
+    import channels_due as _cd
+    path = os.path.join(root, "data", "channels.jsonl")
+    if not os.path.exists(path):
+        return [], 0, 0, 0
+    pages, retired, not_browsable, unreadable = [], 0, 0, 0
+    try:
+        with open(path, encoding="utf-8") as fh:
+            rows = [json.loads(l) for l in fh if l.strip()]
+    except (OSError, ValueError) as e:
+        raise ValueError("cannot read data/channels.jsonl (%s)" % e)
+    for c in rows:
+        if not isinstance(c, dict) or c.get("type") not in _ck.SWEEP_CHANNEL_TYPES["company"]:
+            continue
+        admitted, warning = _cd._board_admissible(c)
+        if not admitted:
+            if c.get("relationship_status") == "retired":
+                retired += 1
+            elif warning:
+                unreadable += 1                     # an unreadable `access`
+            else:
+                not_browsable += 1
+            continue
+        if not isinstance(c.get("id"), str) or not c.get("id"):
+            unreadable += 1
+            continue
+        pages.append(c["id"])
+    return pages, retired, not_browsable, unreadable
+
+
+def split_share_line(root, name, p):
+    """dev #785 (design §3) -- the one line saying what the split does on posture `name` (`p`): for
+    `company_split` true, `company_split on (posture standard): 20 career pages: 11 on mon, 9 on wed
+    (not split: 1 retired, 1 not browsable)`. The population is exactly the set `schedule_due` buckets
+    (see `_career_pages`), WHETHER OR NOT a page is due today; the excluded channels are counted on
+    the same line, never silently. For `false` (or absent) it says each page is offered on every
+    company day. A store or a posture key that cannot be read is said on the line, never skipped."""
+    try:
+        split_on = _ck.resolve_company_split(p)
+    except ValueError as e:
+        return "company_split unreadable on posture %s (%s)" % (name, e)
+    if not split_on:
+        return ("company_split off (posture %s): each career page is offered on every company day"
+                % name)
+    head = "company_split on (posture %s)" % name
+    try:
+        days = _ck.resolve_days(p, _ck.COMPANY_DAYS)
+    except ValueError as e:
+        return "%s: no share to show, %s unreadable (%s)" % (head, _ck.COMPANY_DAYS, e)
+    try:
+        pages, retired, not_browsable, unreadable = _career_pages(root)
+    except ValueError as e:
+        return "%s: no share to show (%s)" % (head, e)
+    if not days:
+        return "%s: %d career pages, none scheduled (company_days is empty)" % (head, len(pages))
+    ordered = sorted(days, key=_ck.WEEKDAYS.index)
+    if len(ordered) == 1:
+        shares = "%d on %s (split over one day is the whole set)" % (len(pages), ordered[0])
+    else:
+        counts = {d: 0 for d in ordered}
+        for cid in pages:
+            counts[split_day(cid, ordered)] += 1
+        shares = ", ".join("%d on %s" % (counts[d], d) for d in ordered)
+    skipped = ", ".join(s for s in ("%d retired" % retired if retired else "",
+                                    "%d not browsable" % not_browsable if not_browsable else "",
+                                    "%d unreadable access or id" % unreadable if unreadable else "")
+                        if s)
+    return "%s: %d career pages: %s%s" % (head, len(pages), shares,
+                                          " (not split: %s)" % skipped if skipped else "")
 
 
 def _main_board(args, name, p, err):
@@ -577,9 +933,14 @@ def main():
                     help="owner ruling O4: set company_days (employer career-page sweeps) on the "
                          "active posture (or --posture NAME): comma-separated weekday names "
                          "(mon,wed), or 'none' for never. Validated; never a hand edit.")
+    ap.add_argument("--set-company-split", metavar="on|off",
+                    help="dev #785 / public #167: turn the career-page split on or off on the active "
+                         "posture (or --posture NAME). On: each employer career page is offered on "
+                         "ONE of the posture's company days instead of on every one. Absent means "
+                         "off. Validated; never a hand edit. Prints how many pages land on each day.")
     ap.add_argument("--posture", metavar="NAME",
-                    help="with --set-board-days / --set-company-days: the posture to change "
-                         "(default: the active one).")
+                    help="with --set-board-days / --set-company-days / --set-company-split: the "
+                         "posture to change (default: the active one).")
     args = ap.parse_args()
 
     for value, key in ((args.set_company_days, _ck.COMPANY_DAYS),
@@ -594,7 +955,22 @@ def main():
         print("OK: posture %r %s = %s" % (pname, key, ", ".join(days) or "none"))
         if note:
             print("   %s" % note)
-    if args.set_company_days is not None or args.set_board_days is not None:
+        if key == _ck.COMPANY_DAYS:
+            # A change of days on a posture whose split is on shows its effect (design §3).
+            split_p = _posture_dict(ROOT, pname)
+            if _ck.COMPANY_SPLIT in split_p and split_p[_ck.COMPANY_SPLIT] is not False:
+                print(split_share_line(ROOT, pname, split_p))   # on, or unreadable (said, not hidden)
+    if args.set_company_split is not None:
+        try:
+            pname, on = set_company_split(ROOT, args.set_company_split, args.posture)
+        except ValueError as e:
+            print("REFUSED: %s not changed: %s" % (_ck.COMPANY_SPLIT, e))
+            return 1
+        print("OK: posture %r %s = %s" % (pname, _ck.COMPANY_SPLIT, "on" if on else "off"))
+        print(split_share_line(ROOT, pname, _posture_dict(ROOT, pname)))
+        print(SPLIT_TAKES_EFFECT_LINE)
+    if (args.set_company_days is not None or args.set_board_days is not None
+            or args.set_company_split is not None):
         return 0
 
     name, p, err = load()

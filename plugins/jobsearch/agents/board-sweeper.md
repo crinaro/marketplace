@@ -69,7 +69,7 @@ dispatching session's context (dev #482 / public #111).
 
 ## CONTEXT BUDGET
 
-**READS** `~/.claude/jobsearch/run channels_due.py` (which channels are active and due) ·
+**READS** the worklist ids you were handed (the caller's copy of the `--board-decision` `  worklist:` line) ·
 `~/.claude/jobsearch/run route.py --channel <id>` (how to reach each one) ·
 `~/.claude/jobsearch/run profile.py` (titles and geography to search for). The pipeline
 cross-check is no longer yours: `deferred.py --add-roles` resolves every `ROLE` you list against the
@@ -109,7 +109,7 @@ this one already had to change once.
 company feed prints `feed:<vendor>` first (`route.py` lists the browser mechanisms after it). That is
 `feed_poll.py`'s route, run by the daily run before you: **never act on a `feed:` entry**, and a page
 the feed covered today is not in your worklist at all (`channels_due.py` prints it under COVERED BY
-FEED). You reach such a page only when `channels_due.py` lists it DUE because its feed was not covered,
+FEED). You reach such a page only when it is on your worklist because its feed was not covered,
 and then through the next browser mechanism on the line. A channel whose requirement is
 `manual-candidate` (Wellfound, YC Work at a Startup, Welcome to the Jungle: sites whose terms forbid
 automated access) prints `candidate: you open it` and no mechanism: **never open it**; the candidate
@@ -122,10 +122,13 @@ silent zero.
 
 ## What a sweep is
 
-1. **`channels_due.py` first.** It says which channels are active and due. **Channels get retired
-   after a zero-yield trial and must not be re-added by a helpful sweep** — if a board is not in
-   the list, it is not in the rotation, and that is a decision, not an oversight.
-2. **For each due channel, resolve the route, then search it** for each configured title, in both
+1. **Your worklist is the ids you were handed**, from the `--board-decision` call's `  worklist:` line.
+   It is the whole of your work: sweep each id on it and no other channel. Do not run `channels_due.py`
+   to decide what to sweep. **Channels get retired after a zero-yield trial and must not be re-added by
+   a helpful sweep**: a channel not on your worklist is not yours today. Handed no worklist, STOP and
+   report it; the caller gets one from `channels_due.py --board-decision` (the daily run) or
+   `/jobsearch:search` (attended).
+2. **For each id on your worklist, resolve the route, then search it** for each configured title, in both
    postures the profile asks for: remote, and in-radius on-site/hybrid. Filter to the most recent
    postings the surface allows. **Before dropping any hit for geography, run
    `~/.claude/jobsearch/run geo_screen.py "<location>"` and quote its verdict line** (public #89,

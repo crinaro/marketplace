@@ -292,6 +292,10 @@ PASS_KINDS = ("linkedin", "board")
 # (`config_keys.SWEEP_KINDS`, restated here so this module imports nothing new). See `record_pass`.
 BOARD_SWEEPS = ("company", "board")
 
+# dev #785 / public #167 -- the weekday vocabulary of a `split_days` field (`config_keys.WEEKDAYS`,
+# restated here for the same reason as `BOARD_SWEEPS`). See `record_pass`.
+SPLIT_WEEKDAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
 # design-script-first.md §8.2 (public #90/#111) — the ONE required shape for a `dispatch` row.
 # Strict parser discipline reused from `scripts/dispatch_ledger.py` (the MAINTENANCE ledger this
 # is a sibling of, never a second copy of — see §8.2's own "what this is not" section): an
@@ -675,7 +679,8 @@ def dispatch_rows(recs, today_only=False):
 
 
 def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_attempted=None,
-                reason=None, at=None, jobsearch=None, sweep=None, attended=None):
+                reason=None, at=None, jobsearch=None, sweep=None, attended=None,
+                split_days=None):
     """design-script-first.md §2 (public #75/#87/#110) — the ONE writer for a `pass` row.
     `phase` is validated against `PASS_PHASES`, `kind` against `PASS_KINDS`, `reason` against
     `REASONS` (required for `phase="refused"`, refused otherwise — a reason on a row that is not
@@ -731,6 +736,27 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
             raise JournalError("record_pass: attended=True is only for a board pass with "
                                "phase='dispatched' (got attended=%r kind=%r phase=%r)"
                                % (attended, kind, phase))
+    # dev #785 / public #167 (design-sourcing-schedule.md §6, §15 N1) -- `split_days`: the split days
+    # whose career pages were in a `company` dispatch's worklist, so each day spends its own slot
+    # (`posture.board_spent_on(day=)`). Another EXTRA FIELD on the existing `board` kind, tolerated by an
+    # older `read()` for the reason `sweep` is. Refused at WRITE unless the row is an unattended
+    # `pass board dispatched` row with sweep `company`, and its value a non-empty list of DISTINCT weekday
+    # names in weekday order -- the shape `posture.check_split_days` demands when the journal is read.
+    # `None` means "not given" (the field is omitted: every split day, as a pre-0.81.0 row); `[]` is
+    # refused, never read as "not given".
+    if split_days is not None:
+        if kind != "board" or phase != "dispatched" or sweep != "company" or attended:
+            raise JournalError(
+                "record_pass: split_days is only for an unattended board pass with phase='dispatched' "
+                "and sweep='company' (got kind=%r phase=%r sweep=%r attended=%r)"
+                % (kind, phase, sweep, attended))
+        if (not isinstance(split_days, (list, tuple)) or not split_days
+                or any(not isinstance(d, str) or d not in SPLIT_WEEKDAYS for d in split_days)
+                or len(set(split_days)) != len(split_days)
+                or list(split_days) != sorted(split_days, key=SPLIT_WEEKDAYS.index)):
+            raise JournalError(
+                "record_pass split_days=%r is not a non-empty list of distinct weekday names (%s) in "
+                "weekday order" % (split_days, ", ".join(SPLIT_WEEKDAYS)))
     reached = list(reached) if reached is not None else []
     unreachable = list(unreachable) if unreachable is not None else []
     not_attempted = list(not_attempted) if not_attempted is not None else []
@@ -751,6 +777,8 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
         rec["sweep"] = sweep
     if attended:
         rec["attended"] = True
+    if split_days is not None:
+        rec["split_days"] = list(split_days)
     return append(root, rec)
 
 

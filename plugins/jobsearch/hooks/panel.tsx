@@ -200,7 +200,7 @@ export function statusTree(els: Els, snap: any, canRun: boolean, note: string, h
       section(els, 'This week', elsewhereLines(snap, 'week').concat(
         snap && snap.elsewhere && Array.isArray(snap.elsewhere.preps_owed) && snap.elsewhere.preps_owed.length
           ? ['preps owed: ' + snap.elsewhere.preps_owed.length] : []), 'no calls this week'),
-      section(els, 'Channels due', elsewhereLines(snap, 'channels_due'), 'none due'),
+      section(els, 'Channel reviews (cadence)', elsewhereLines(snap, 'channels_due'), 'none due for review'),
       sourcesSection(els, snap, handlers),
       section(els, 'Open asks', elsewhereLines(snap, 'asks'), 'none open'),
       els.Box({
