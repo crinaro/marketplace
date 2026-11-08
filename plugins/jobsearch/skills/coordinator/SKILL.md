@@ -52,6 +52,12 @@ startup is identical every time, rather than depending on what anyone remembers.
 ~/.claude/jobsearch/run coordinator.py    # run from YOUR search directory
 ```
 
+**Its FIRST line is the start line** (`lifecycle.process_report().start_line`): `PIPELINE N ready · N your read ·
+PROCESS FAILURE: N (oldest Dd: causes) · WAITING FOR INTAKE: N (oldest Dd) · …`, the same counts every surface
+prints. Give it to the candidate first, as printed, before anything else. **When it shows `PROCESS FAILURE`
+above 0, NEEDS YOU carries the line `PROCESS FAILURE: run the drain (skills/coordinator § Drain) before deciding
+anything`: run § Drain (4c below) before offering any pursue-or-pass decision.**
+
 That single command: reports the write-lock state (**it does NOT take it**) · runs the
 **staleness check** and re-marks the watermark · summarises the **inbox** of findings background
 runs queued · lists **what is blocked on the candidate**, act-by date first · runs the five gates
@@ -301,7 +307,8 @@ already know.
 |---|---|
 | scan the mailboxes | `inbox-scan` (haiku) |
 | anything needing the authenticated browser | `linkedin-runner` |
-| a newly sourced role with an empty `research_log` | `opportunity-researcher` |
+| a role whose JD is not yet read (the drain's render residue) | `jd-reader`, through § Drain (4c) |
+| a role whose JD read screened it `keep` (lifecycle stage `screened`) | `opportunity-researcher`, through § Drain (4c) |
 | a message to a recruiter, warm intro, or reply | `outreach-drafter` |
 | a letter accompanying a formal application | `cover-letter-writer` |
 | the live LinkedIn profile | `profile-optimizer` |
@@ -334,6 +341,82 @@ Prints the report for review only — nothing is filed until you re-run with `--
 ⚠️ **State the bug as the RULE that misbehaved, never the instance.** That submission crosses into
 a repo gated at zero personal data, and it refuses a currency figure, an address or a name — git
 history is permanent. Full protocol: `marketplace-dev/docs/intake.md`.
+
+## 4c. Drain — the attended backstop (jobsearch 0.82.0, dev #820 / public #175)
+
+**When.** `coordinator.py`'s start line shows `PROCESS FAILURE` above 0 (a run took roles on and did not
+finish them), or the candidate asks to clear roles now. The scheduled daily run drains on its own; this is the
+same drain, run with the candidate present. **While the start line shows failures and this session has not
+run § Drain, do not show the candidate a pursue-or-pass list:** run the drain first, then reprint the start
+line. A run finishes every role it takes on (the owner's ruling: *"it has to complete the process for roles it
+finds"*); anything left is a PROCESS FAILURE, printed, never hidden.
+
+**The render route.** Declare `--render-route yes` when `mcp__Claude_Browser__preview_start` is among your
+tools (a deferred one counts: load it through ToolSearch, then declare `yes`); `no` otherwise, and always
+for a `mcp__remote-devices__Claude_Browser__` tool.
+
+**⭐ This session's own tab.** If this session itself uses the Browser pane, open your own tab with
+`preview_start` and pass its `tabId` on every call. In the drain the readers and researchers render, each in
+its own tab; this session renders nothing itself.
+
+**The steps, in this order:**
+
+1. Start an attended run, and keep the id it prints:
+   ```bash
+   ~/.claude/jobsearch/run journal.py --start drain
+   ```
+2. Link the sightings of known roles:
+   ```bash
+   ~/.claude/jobsearch/run record.py capture-batch --run <id> --link-only
+   ```
+3. Plan the intake, attended. **`--intake N` only with a number the candidate names in this session; never
+   choose or default one yourself.** Without it the stored `search.intake_per_run` applies:
+   ```bash
+   ~/.claude/jobsearch/run lifecycle.py --drain-plan --run <id> --attended --render-route yes --intake <N the candidate named>
+   ```
+   Read `fanout:`, `fetch_calls:` and `solo:` from what it prints. An attended plan also admits the roles an
+   unattended run will not: a site that asked for approval, and a `retry-stopped` role (each alone).
+4. Capture the admitted roles; repeat until the last line reads `deadline-left 0`:
+   ```bash
+   ~/.claude/jobsearch/run record.py capture-batch --run <id> --admitted
+   ```
+5. Read by script; repeat until `deadline-left 0`, at most `fetch_calls` times. The `RESIDUE` lines are the
+   render residue:
+   ```bash
+   ~/.claude/jobsearch/run record.py read-batch --run <id> --fetch
+   ```
+6. `jd-reader` over the residue: chunks of at most 15, at most `fanout` at once, each `solo` id alone, each
+   written first with `journal.py --run <id> --pass reader --phase dispatched --ids <ids>` and closed with
+   `--phase returned --ids <ids>`. Brief it `attended: yes`: the candidate is here to approve a site the pane
+   asks about. Then run step 5's call once more: it re-screens what lifecycle puts back at `read`.
+7. Research the keeps: for each admitted role, `~/.claude/jobsearch/run deferred.py --add-research <opp_id>`
+   is the gate (exit 0: research it; exit 2: refused, with the reason). Dispatch `opportunity-researcher`
+   for the keeps, briefed `attended: yes`, each written with `--pass research --phase dispatched --ids` and
+   `--phase returned --ids`.
+8. Close the drain, and show the candidate its `drain:` line and every `LEFT` line as printed:
+   ```bash
+   ~/.claude/jobsearch/run lifecycle.py --drain-close --run <id>
+   ```
+9. End the run:
+   ```bash
+   ~/.claude/jobsearch/run journal.py --run <id> --end
+   ```
+
+**A role only the candidate can read (`your-read`), or one stopped after repeated failures
+(`retry-stopped`).** `coordinator.py` lists each under NEEDS YOU as `YOUR READ <company> — <title>: <reason>`,
+with its `link:` and the `then:` command. Give the candidate that link and that reason, from the report, as
+printed. Once they have read the posting and tell you its pay, its work setting and its place in their own
+words, record it inside this drain's run:
+
+```bash
+~/.claude/jobsearch/run record.py read-jd <opp_id> --run <id> --url - --via candidate --pay <pay> --setting "<their words, or none stated>" --location "<their words, or ?>" --evidence "<the candidate's one-line note>"
+```
+
+The read re-screens the role. A role it screens `keep` goes to step 7 in this same run. Then reprint the start
+line (`coordinator.py`) and only then offer pursue-or-pass on the `ready` roles.
+
+**If a drain verb is refused as unknown,** the installed scripts are older than these instructions: say so,
+skip the drain, and never improvise the old per-role steps instead.
 
 ## 5. RECORD — ⭐ BEFORE YOU GO QUIET, PUBLISH. This session had no publish step at all.
 

@@ -58,8 +58,8 @@ page:
 
 - **Drafts to review** — staged messages, shown in full, plus touches that are due and **people
   who are due** (their own section is gone; they are listed here).
-- **Opportunities to pursue** — roles where a pursue-or-pass decision is owed. A role the run is
-  still reading is not here until it has finished.
+- **Opportunities to pursue** — roles where a pursue-or-pass decision is owed. A role the run has not
+  finished is not here; it is counted as waiting or as a process failure (see *One lifecycle per role*).
 - **Applications to finish** — roles you are pursuing that nothing has been sent for yet, **with
   their cover letters**, which are now shown here and nowhere else.
 
@@ -145,18 +145,70 @@ The page republishes whole every run, and a check run with it reads your files a
 together and fails if a record appears in full twice, a reference points at nothing, a link has no
 destination, or a record the page no longer shows is missing from the place it was moved to.
 
-### Triaging versus Decide (since 0.67.0)
+### One lifecycle per role (since 0.82.0)
 
-A newly sourced role used to count as a pursue-or-pass decision the moment it was captured, whether
-or not anyone had read the posting. Now a role reaches **Opportunities to pursue** only after the
-system has done its reading. Until then it is still being triaged, and **it is not on the page**:
-nothing in that state is waiting on you. (From 0.67.0 to 0.70.0 the page showed these roles in a
-separate *Triaging* group; the page no longer has that group or the needs-you filter it sat beside.
-When roles are being read, the run's own summary says how many.)
+Every role the search finds goes through the same steps, in order: it is **found**, its **job description is
+read**, it is **screened** against your rules, and if it passes it is **researched**. Where a role is in that
+sequence is worked out from what is recorded about it; nothing is typed in by hand. A role reaches
+**Opportunities to pursue** only when all of that is done. Until then it is not waiting on you, and it is
+not hidden either.
 
-A role is ready for your decision when the record has all of: the job description was read (with
-where it was read from), the pay as the listing wrote it, the work setting as the listing wrote it,
-the hard screens applied, and a **lean**. A role the screen removes never reaches you at all.
+**How a run works.** A daily run takes on up to `search.intake_per_run` roles (40 unless you changed it) and
+finishes every one it takes on. While older unread roles are still waiting, half of those places are held
+for roles found since, so new finds are never starved by a backlog. Every role that is not removed gets its
+job description read. Only the roles the screen keeps (*keep*) are researched. Pay, work setting and
+location that come off a search-result card are **provisional** until the description is read: a card's
+screen never says *keep*, and the description's own pay and setting replace the card's.
+
+**Anything a run took on and did not finish is a process failure, not a quiet delay.** It is shown, with its
+cause and how old it is, in these places:
+
+- the **dashboard**, in a *Process failure* group with the oldest failed roles listed and each one's cause;
+- **Your Move** (the status pane);
+- the **start line** of the coordinator session;
+- the **headline** of the run summary, as `PROCESS FAILURE: N`.
+
+Roles not yet taken on are counted and aged as **waiting for intake**, which is not a failure: nothing says a
+run ever tried them. The start line reads like this, with made-up numbers:
+
+```
+PIPELINE 6 ready · 2 your read · PROCESS FAILURE: 3 (oldest 5d: run-died 2, challenge 1) · WAITING FOR INTAKE: 11 (oldest 2d) · intake 40/run
+```
+
+Each cause in the list says what happened and what to do about it. A few you may see: `run-died` (the run
+that took the role on never ended), `deadline-reached` (it ran out of time before reaching the role),
+`challenge` or `render-failed` (the posting showed a bot check or would not display; it is retried first
+next run), `agent-returned-nothing` (a reader or researcher was started for it and recorded nothing),
+`capture-refused`, and `retry-stopped` (three runs in a row left it unfinished, usually a page that hangs
+the reader; read it yourself, or report it).
+
+**Old unread roles stay failures until they are read.** Roles found before 0.82.0 that nobody read are
+labelled `LEGACY BACKLOG` and are counted inside the process-failure total. They are taken on oldest first,
+and the run says when it holds places back for new roles.
+
+**Roles only you can open ("your read").** Some postings the plugin never opens or cannot: a board you open
+yourself (see below), a role with no address at all, or a page behind a sign-in. These come to you as
+**Your read**, in their own list on the page, with the reason. Open the posting, then record what it says
+with `record.py read-jd <id> --via candidate`, quoting a line that names the role. The next run screens it
+with your read.
+
+**Postings that are down.** A posting that is closed or a dead link ends the role's progress as *gone*; the
+role leaves the live list and nothing is asked of you.
+
+**The conservation line.** The last line on the page adds every role to exactly one group, so nothing can be
+lost between lists, for example:
+
+```
+ROLES 120 = waiting 11 + in progress 0 + FAILURE 3 + your read 2 + ready 6 + decided 40 + removed 38 + gone 5 + ended 15 + UNCLASSIFIED 0
+```
+
+If the roles in your file do not add up to the roles the page accounts for, it says `ROLES MISMATCH` instead
+of staying quiet. A role the plugin cannot place at all is counted as `UNCLASSIFIED` and reported, never
+dropped.
+
+**When a role is ready for your decision,** the record has the job description read (with where it was read
+from), the pay and work setting, the hard screens applied, and a lean. A role the screen removes never
+reaches you at all.
 
 - **A lean** is the system's read of a role: `pursue`, `pass` or `ask`, plus one line. It is
   shown on the role's card as advice. **A lean never removes a role and never decides
@@ -171,17 +223,6 @@ the hard screens applied, and a **lean**. A role the screen removes never reache
   recruiter what stage the search is in, before research or letters" (or, for an unknown age, "ask
   the recruiter when the search opened"). The run states a different lean only when the job
   description gives a reason, and says so in the line.
-- **A read that failed still ends.** If the job description could not be read (a login wall, a dead
-  link, no link at all, or a surface with no browser), the role goes to your list with the lean
-  `ask` and the line "not read: <reason>", so you are never left waiting on a read that cannot happen.
-- **Nothing waits forever.** A role still being read once `search.triage_stuck_days` days have
-  passed (default 3, counted from its first sighting) is shown to you anyway, labelled
-  "not yet read (waited K days)", with the lean `ask`. A role with no readable sighting date has
-  no age to wait out, so it is shown at once, labelled "not yet read (age unknown)". Each daily
-  run triages at most `search.triage_per_run` roles (default 10, oldest first sighting first) and
-  prints one line, for example `triaging: 4 waiting, 6 triaged this run, 0 over the stuck bound`:
-  how many are still being read, how many this run finished, and how many are past the stuck
-  limit and so reached you unread.
 - **A title below your floor leans by pay, and is never removed (since 0.69.0).** If you set
   [`screen.title_floor`](your-data.md#screening--configjsonscreen) and a role's title reads below
   it, the card shows a computed lean: **pursue**, "title below your floor (<floor>), but
@@ -191,18 +232,18 @@ the hard screens applied, and a **lean**. A role the screen removes never reache
   nothing. Phrases you list for the title field of `screen.likely_pass_signals` (the mandate) show
   as a **LEAN to pass** with your reason, titled `OFF-MANDATE`. In both cases the role stays on the
   page for you to decide.
-- **A job description only a browser can read waits for a browser session (since 0.69.0).** If the
-  posting needs a signed-in browser and this run has none, the role stays unread and a
-  `read-jd` item is queued for a session that does. You will see it under *needs another
-  environment* in `deferred.py --claimable`. Once it has waited past `search.triage_stuck_days` the
-  role reaches your list with the lean `ask` and the line "not read: surface-cannot-read".
 - **A role whose only addresses are on a board you open yourself is never read by the run (since 0.75.0).** When every
   address a role carries is on a `manual-candidate` board's `board_hosts` (a portfolio board, say), the run does
-  not open it and the role shows "not read: manual-board" with the lean `ask`. Open the posting yourself, or
+  not open it and the role comes to you as *Your read* (`manual-board`). Open the posting yourself, or
   record the company's own posting address; the plugin never visits that board.
 
-**On upgrade:** every role that was waiting on your pursue-or-pass and has not been read is still
-being read, and drains into your list over the next daily runs.
+**A change to your rules sends screened roles back to waiting.** If you change a pay floor, the title floor,
+your target titles or a likely-pass phrase, roles screened under the old rules go back to *waiting* with the
+note "your screening rules changed" and a later run re-screens them. That is not counted as a failure.
+
+**On upgrade,** roles you had already decided, removed or been shown as ready keep their place. Roles that
+were waiting on a read and never got one appear as old unread roles, as above. What the upgrade changes in
+your files is described in [Your data](your-data.md#one-lifecycle-per-role--since-0820).
 
 ### A sweep that was held, and the counts under it (since 0.69.0)
 

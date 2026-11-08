@@ -92,6 +92,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
 import journal as _journal
 import inbox as _inbox
+import handback as _handback        # handback.py: the hand-back contract (dev #811 / #812); kept_where()
+# dev #820 / public #175: `lifecycle.py` owns the text of process state (`process_report().headline`).
+# Named here by file because a bare `import` is invisible to `publish_manifest.py`'s reachability closure.
+import lifecycle as _lifecycle
 
 # ⭐ public #85 (§B.3, the check_stale_claims.py shape) — a posted text is red only when it
 # CONTAINS one of these AND the footprint it is describing shows real activity. Absence of a
@@ -301,7 +305,12 @@ def _fmt_when(at):
         return at or "unknown time"
 
 
-def render_headline(recs, run_id, fp):
+def render_headline(recs, run_id, fp, report=None, report_error=None):
+    """The run's one-line headline. `report` is `lifecycle.process_report(...)` (dev #820 / public #175):
+    when given, the headline ends with its own text, ` · PROCESS FAILURE: n (oldest Nd)`, ` · WAITING: n`,
+    ` · DID NOT LOOK: ...`, and ` · PARTIAL:` also names the feeds, the mail and the drain that the report
+    says were not complete (SUM1). A report that could not be computed is ` · PIPELINE NOT CHECKED (...)`
+    (`report_error`), never silence. With neither, the headline is exactly what it was before 0.82.0."""
     start_at, _as_of, kind = _run_window(recs, run_id)
     label = "%s run" % kind.capitalize() if kind else "Run"
     when = _fmt_when(start_at)
@@ -323,6 +332,20 @@ def render_headline(recs, run_id, fp):
         # ⭐ public #85 plant — the headline NAMES the incomplete account; a failure is never
         # folded into a bare count nobody can act on.
         head += " · INCOMPLETE: %s" % ", ".join(fp["swept_failed"])
+    # dev #811 / public #170 + dev #812 / public #169 -- a sweep that could not read one channel or
+    # one line is named in the headline, computed the way INCOMPLETE is, from the LATEST events only
+    # (a corrected re-submission clears it).
+    partial = partial_surfaces(recs, run_id)
+    # SUM1: feeds with companies not covered (or a poll never journaled), a mailbox INCOMPLETE or with
+    # UNMATCHED status mail, and a drain that left roles, are PARTIAL too. Those come from the report.
+    if report is not None:
+        partial = partial + [k for k in report.partial_kinds if k not in partial]
+    if partial:
+        head += " · PARTIAL: %s" % ", ".join(partial)
+    if report is not None:
+        head += report.headline
+    elif report_error:
+        head += " · PIPELINE NOT CHECKED (%s)" % report_error
     return head
 
 
@@ -390,6 +413,145 @@ def feeds_line(e):
     return line
 
 
+def latest_roles_events(recs, run_id):
+    """dev #811 / public #170 + dev #812 / public #169 (design §6, LATEST WINS) -- a run's `roles`
+    events reduced to the latest one per surface and window (by `at`, ties by file order), in file
+    order. `deferred.add_roles` writes a second event for a corrected re-submission (its new fields
+    make it differ from the first), so reading every event would print the stale partial line beside
+    the corrected one. The key is (surface, window) rather than surface alone so that a run holding
+    both a daily and a wide LinkedIn event keeps both; a re-submission carries the same header, so
+    the two keys agree wherever the design's single key does."""
+    best = {}
+    for i, e in enumerate(_journal.roles_events(recs, run_id=run_id)):
+        key = (e.get("surface"), e.get("window"))
+        rank = (str(e.get("at", "")), i)
+        if key not in best or rank >= best[key][0]:
+            best[key] = (rank, i, e)
+    return [e for _rank, _i, e in sorted(best.values(), key=lambda t: t[1])]
+
+
+def _plural(n, word, many=None):
+    return "%d %s" % (n, word if n == 1 else (many or word + "s"))
+
+
+def _partial_causes(e):
+    """The reasons a `roles` event reads PARTIAL, as short phrases, in a fixed order."""
+    out = []
+    if e.get("line_faults"):
+        out.append(_plural(e["line_faults"], "line fault"))
+    unreachable_queries = e.get("queries", 0) - e.get("q_reached", 0)
+    if e.get("coverage") == "partial" and unreachable_queries > 0:
+        out.append(_plural(unreachable_queries, "query", "queries") + " unreachable")
+    return out
+
+
+def _board_attended(recs, run_id):
+    """True when the run's latest board `dispatched` row is an attended one: an attended pass spends
+    no scheduled slot, so a 'slot spent' clause would be false."""
+    rows = [(str(r.get("at", "")), i, r) for i, r in enumerate(recs)
+            if r.get("event") == "pass" and r.get("kind") == "board"
+            and r.get("phase") == "dispatched" and r.get("run_id") == run_id]
+    return bool(rows) and bool(max(rows, key=lambda t: (t[0], t[1]))[2].get("attended"))
+
+
+def _board_coverage_line(e, label, tail, attended):
+    """The `sourcing (board)` line of a 0.82.0+ event: PARTIAL or complete, then the channel
+    accounting, then the existing counts. See the design §6 for the five shapes."""
+    partial = e.get("coverage") == "partial"
+    worklist, reached = e.get("channels_worklist"), e.get("channels_reached") or 0
+    unreachable = e.get("channels_unreachable") or {}
+    not_attempted = e.get("channels_not_attempted") or {}
+    unaccounted = e.get("channels_unaccounted") or []
+    unr = "%s unreachable" % len(unreachable)
+    if unreachable:
+        unr += " (%s)" % ", ".join("%s %s" % (cid, unreachable[cid]) for cid in sorted(unreachable))
+    na = "%d not attempted" % len(not_attempted)
+    if not_attempted:
+        na += " (%s)" % ", ".join(sorted(set(not_attempted.values())))
+    una = "%d unaccounted (%s)" % (len(unaccounted), ", ".join(sorted(unaccounted)))
+    causes = _partial_causes(e)
+    head = "sourcing (%s): %s" % (label, "PARTIAL" if partial else "complete")
+    if worklist is None:
+        chan = "channels not checked (no worklist on record)"
+    else:
+        chan = "%d of %d channels reached" % (reached, worklist)
+    if partial and worklist and reached == 0 and not e.get("distinct"):
+        # nothing was read: the counts would be a row of zeros. Say what happened, and that the slot
+        # is gone (the dispatch row spent it), so the user knows these channels wait.
+        parts = [chan] + [x for x, n in ((unr, len(unreachable)), (na, len(not_attempted)),
+                                         (una, len(unaccounted))) if n] + causes
+        if not attended:
+            parts.append("slot spent: these channels wait for the next board slot")
+        return head + " · " + " · ".join(parts)
+    parts = [chan]
+    if partial:
+        parts += [unr, na]
+        if unaccounted:
+            parts.append(una)
+        parts += causes
+    return head + " · " + " · ".join(parts) + " · " + tail
+
+
+def _sweep_line(recs, run_id):
+    """The `linkedin sweep` line: how `linkedin_sweep.py record` judged this run's SWEEP hand-back,
+    read from the run's LATEST `recorded` pass row. Returns `(line, is_partial)` or `(None, False)`
+    for a run with no such row (a pre-0.82.0 run, or no sweep). An unreadable row is a LOUD line,
+    never a crash: a summary that cannot print is a summary nobody posts."""
+    row = _journal.latest_recorded_row(recs, run_id)
+    if row is None:
+        return None, False
+    try:
+        verdict = _journal.record_verdict(row)
+    except _journal.JournalError as err:
+        return "linkedin sweep: record UNREADABLE (%s)" % err, True
+    faults, kept = row.get("faults", 0), row.get("kept") or ""
+    where = _handback.kept_where(kept, run_id) if kept else ""
+    counts = "%d concluded · %d not concluded" % (row.get("concluded", 0), row.get("not_concluded", 0))
+    if verdict == "clean":
+        return "linkedin sweep: complete · %d concluded" % row.get("concluded", 0), False
+    if verdict == "refused":
+        counted = ""
+        returned = [r for r in recs if r.get("event") == "pass" and r.get("kind") == "linkedin"
+                    and r.get("phase") == "returned" and r.get("run_id") == run_id
+                    and len(r.get("reached") or []) >= 1]
+        if returned:
+            day = str(returned[-1].get("at", ""))[:10]
+            excused = any(x is returned[-1] for x in _journal.linkedin_excused_rows(recs, day))
+            counted = (" (not counted against the quota)" if excused
+                       else " (counted against the quota)")
+        return ("linkedin sweep: REFUSED%s%s" % (counted, (" · raw kept at %s" % where) if where else ""),
+                True)
+    if verdict in ("pass-failed", "pane-held"):
+        what = "PASS FAILED" if verdict == "pass-failed" else "PANE HELD (the pass did not run)"
+        extra = [("line faults: %d" % faults)] if faults else []
+        if where:
+            extra.append("raw kept at %s" % where)
+        return "linkedin sweep: %s%s" % (what, (" (%s)" % "; ".join(extra)) if extra else ""), True
+    inside = []
+    if faults:
+        inside.append("line faults: %d" % faults)
+    else:
+        inside.append("coverage incomplete")
+    if where:
+        inside.append("raw kept at %s" % where)
+    return "linkedin sweep: PARTIAL (%s) · %s" % ("; ".join(inside), counts), True
+
+
+def partial_surfaces(recs, run_id):
+    """`["board", "linkedin"]`, only the ones that read PARTIAL (or failed) from the LATEST events:
+    the board's latest `roles` event with `coverage == "partial"`; LinkedIn when its latest job
+    search event is partial or the latest `recorded` sweep row is anything but `clean`."""
+    out = []
+    events = latest_roles_events(recs, run_id)
+    if any(e.get("surface") == "board" and e.get("coverage") == "partial" for e in events):
+        out.append("board")
+    linkedin = any(e.get("surface") == "linkedin-jobsearch" and e.get("coverage") == "partial"
+                   for e in events)
+    if linkedin or _sweep_line(recs, run_id)[1]:
+        out.append("linkedin")
+    return out
+
+
 def roles_lines(recs, run_id, root=None, kind=None, at=None):
     """dev #692 / public #140 + #489 / public #102 -- the sourcing lines, COMPUTED from this
     run's `roles` events and gaps, never composed. Returns a list of lines (no indent):
@@ -406,33 +568,45 @@ def roles_lines(recs, run_id, root=None, kind=None, at=None):
     accepted, or the block was refused), so silence never reads as zero. The wide-due line prints
     for a `daily` run whose pass produced no wide event while wide is due."""
     lines = []
-    events = _journal.roles_events(recs, run_id=run_id)
+    events = latest_roles_events(recs, run_id)
     for e in events:
         seen = e.get("distinct", 0)
         gaps_q = (e.get("query_gaps_window", 0), e.get("query_gaps_truncated", 0))
         quarantine = _quarantine_clause(e)
+        causes = _partial_causes(e)
+        # dev #811/#812: a LinkedIn job-search line says nothing extra when the pass was complete
+        # (its 0.81.0 text is unchanged); a partial one is named, with what made it so.
+        flag = ("PARTIAL (%s) · " % ", ".join(causes)) if (
+            e.get("coverage") == "partial" and e.get("surface") != "board" and causes) else ""
         if e.get("surface") == "linkedin-jobsearch" and e.get("window") == "wide":
-            lines.append("wide re-scan: %d re-surfaced (%d seen · %d already known · %d role gaps "
+            lines.append("wide re-scan: %s%d re-surfaced (%d seen · %d already known · %d role gaps "
                          "· %d query gaps%s)"
-                         % (e.get("captured", 0) + e.get("carried", 0), seen, e.get("known", 0),
+                         % (flag, e.get("captured", 0) + e.get("carried", 0), seen, e.get("known", 0),
                             e.get("role_gaps", 0), gaps_q[0] + gaps_q[1], quarantine))
             reads = _query_reads_line(e)
             if reads:
                 lines.append(reads)
             continue
         label = "board" if e.get("surface") == "board" else (e.get("window") or "daily")
-        line = ("sourcing (%s): %d seen · %d captured · %d known · %d carried · %d role gap%s"
-                % (label, seen, e.get("captured", 0), e.get("known", 0), e.get("carried", 0),
+        tail = ("%d seen · %d captured · %d known · %d carried · %d role gap%s"
+                % (seen, e.get("captured", 0), e.get("known", 0), e.get("carried", 0),
                    e.get("role_gaps", 0), "" if e.get("role_gaps", 0) == 1 else "s"))
-        line += quarantine
+        tail += quarantine
         if gaps_q[1]:
-            line += " · %d query truncated" % gaps_q[1]
+            tail += " · %d query truncated" % gaps_q[1]
         if gaps_q[0]:
-            line += " · %d query gap%s (window)" % (gaps_q[0], "" if gaps_q[0] == 1 else "s")
+            tail += " · %d query gap%s (window)" % (gaps_q[0], "" if gaps_q[0] == 1 else "s")
+        if e.get("surface") == "board" and e.get("coverage"):
+            line = _board_coverage_line(e, label, tail, _board_attended(recs, run_id))
+        else:
+            line = "sourcing (%s): %s%s" % (label, flag, tail)
         lines.append(line)
         reads = _query_reads_line(e, label)
         if reads:
             lines.append(reads)
+    sweep, _partial = _sweep_line(recs, run_id)
+    if sweep:
+        lines.append(sweep)
     for e in _journal.feeds_events(recs, run_id=run_id):
         lines.append(feeds_line(e))
     held = {g.get("scope") for g in _journal.open_gaps(recs, run_id=run_id)}
@@ -574,7 +748,15 @@ def main():
         print("OK — the posted text's change/no-change claim agrees with the footprint.")
         return 0
 
-    headline = render_headline(recs, args.run, fp)
+    # dev #820 (SUM1): the pipeline's own words, from the ONE report every surface prints. `now` is the
+    # footprint's `--at` when a test or a replay names one, else the clock.
+    report, report_error = None, None
+    try:
+        now = datetime.datetime.fromisoformat(args.at) if args.at else datetime.datetime.now()
+        report = _lifecycle.process_report(_lifecycle.load_data(root), now)
+    except Exception as e:                                      # noqa: BLE001 - said, never silent
+        report_error = "%s: %s" % (type(e).__name__, str(e)[:160])
+    headline = render_headline(recs, args.run, fp, report, report_error)
     body = render_detail(recs, args.run, fp, root=root, at=args.at)
     detail = body
     if args.annotate:

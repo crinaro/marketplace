@@ -171,6 +171,17 @@ it is learned here, nowhere else):
 **Never mix the two in one pass** — a half-and-half sweep makes it impossible to tell which surface
 missed something.
 
+**⭐ ON THE IN-APP PANE, WORK IN A TAB OF YOUR OWN (dev #820 / public #175).** The pane is one
+surface shared with every other task, and a pane call that names no tab acts on whichever tab is in
+front, which another task may have changed since your last call. So, once you hold the pane lock
+(next section): open your tab with `mcp__Claude_Browser__preview_start`, passing the page's `url`
+(the first one is the feed check above); it returns a `tabId`. **Pass that `tabId` on every pane
+call that touches the page** (`navigate`, `get_page_text`, `read_page`, `find`, `form_input`,
+`computer`, `javascript_tool`, and each step of a `browser_batch`). Close it with
+`mcp__Claude_Browser__tabs_close` when you finish, early returns included. The tab is yours and the
+pane lock is still taken first: a `tabId` does not replace the lock. `guard_browser_tab.py` refuses a
+pane call from this agent that names no `tabId`; it backstops this rule and does not replace it.
+
 ---
 
 ## ⭐⭐ TAKE THE PANE LOCK — THE FIRST CALL, BEFORE ANY BROWSER TOOL (closes public #47)
@@ -515,7 +526,8 @@ backstops this mechanically, but it does not replace it. Return a compact struct
 the group makes Chrome auto-remove the group; leaving one open orphans it indefinitely, and
 accumulating orphaned groups correlates with the "connected but navigate hangs" failure.
 **Every time, no exceptions — including on an early `BROWSER UNAVAILABLE` return that opened a
-canary tab.**
+canary tab.** The in-app pane's tab is closed the same way with `mcp__Claude_Browser__tabs_close`
+(the extension's `tabs_close_mcp` does not reach it).
 
 ---
 
@@ -639,8 +651,19 @@ VIEW contact:<id> kind=<thread|profile> at=<ISO time> saw=<empty|message:<YYYY-M
 (sent invitations) means presence is pending and absence proves nothing. `state=accepted` is read
 only on `connections`, `state=reply` only on `inbox`, `requests` or `invitations` and always with its
 date, `state=pending` only on `invitations`. `match=` appears only in a one-off. A line that
-fits none of these forms refuses the whole block, so write nothing else inside it. The `JOBSEARCH`
+fits none of these forms is dropped, filed as a gap, and withholds the "no change" conclusion from
+the people it could have named, so write nothing else inside the block. The `JOBSEARCH`
 line is what you are given for capability 3 (never write one); a one-off worklist has none.
+
+**Check your own SWEEP block before you hand it back (dev #812 / public #169).** Run
+`~/.claude/jobsearch/run linkedin_sweep.py record --run <the run id you were given> --file <your hand-back file> --check`.
+It writes nothing: it prints every faulty line with its line number and the rule it broke, then a
+`verdict:` line. Fix every line it names and run it again until the verdict is `verdict: clean`.
+A faulty line no longer refuses the block, but it is dropped and filed as a gap, and everyone it
+could have named is left unconcluded, so a fault you leave in is a conclusion this pass loses.
+**A `--check` call whose output has no line starting `verdict:` means the check is unavailable**
+(an older `linkedin_sweep.py` does not know the flag, and its usage error carries no verdict).
+Hand the block back unchecked. Never rewrite the block because of it.
 
 **⭐ THE ROLES BLOCK — what your JOB SEARCH saw, as data a script parses (dev #692 / public #140,
 dev #489 / public #102).** Write it into the SAME hand-back file, after the SWEEP block, in exactly
@@ -656,6 +679,7 @@ company or location containing a double quote has it replaced by `'`.
 --- ROLES v1 run=<run-id> surface=<linkedin-jobsearch|board> window=<daily|wide|none> ---
 QUERY geo=<remote|local> title="<query>" window=<r86400|r604800|none> shown=<n> total=<m|m+|?> dropped=<none|?|<filter>[,<filter>...]> added=<none|?|<filter>[,<filter>...]> [unapplied] [channel=<channel_id>]
 QUERY geo=<remote|local> title="<query>" unreachable reason=<journal.REASONS code> [channel=<channel_id>]
+CHANNEL <channel_id> <unreachable|not-attempted> reason=<journal.REASONS code>
 SEEN distinct=<n>
 ROLE url=<posting url> q=<k>[,<k>...] title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|ats:YYYY-MM-DD|<n>d|?> pay=<pay|?> setting="<verbatim|none stated|?>"
 ROLE nourl title="<t>" company="<c>" reason=<journal.REASONS code>
@@ -713,8 +737,8 @@ nothing.
   office"`), `none stated` when you read the listing and it states none, `?` when you did not read
   it. Replace any `"` with `'`.
 
-`window=none` and `channel=` are for `board-sweeper`; **a LinkedIn block has no
-`channel=`**. **Report the JOB SEARCH capability alongside the five reply tokens:** `jobsearch` is
+`window=none`, `channel=` and the `CHANNEL` line are for `board-sweeper`; **a LinkedIn block has no
+`channel=` and no `CHANNEL` line** (either is a line fault). **Report the JOB SEARCH capability alongside the five reply tokens:** `jobsearch` is
 `reached` when at least one job search ran, `unreachable` when none could, `not-attempted` when
 you did not run it. The dispatching session records that token, and a `reached` pass with no
 accepted ROLES block is a gap.

@@ -58,9 +58,20 @@ There are exactly two channels, and only one of them is a wake-up:
 session-handoff letter. That is a feature: a file is inspectable, replayable, and does not depend on any
 session still being alive.
 
+## The first line is the pipeline (dev #820 / public #175, design section 7)
+
+The FIRST line this prints is `lifecycle.process_report().start_line`: how many roles are ready for a
+decision, how many only you can read, how many a run failed to finish (counted, aged, with a cause), how
+many wait for intake, what no pass looked at, and any engine skew. It is the same string the dashboard,
+Your Move, the run headline and the status panel print, because all of them print the report's own text.
+A pipeline that cannot be read prints `PIPELINE NOT CHECKED (...)` on that line, never an empty one. The
+coordinator is the BACKSTOP: when a run did not finish its roles, `skills/coordinator/SKILL.md` § Drain is
+the attended way to finish them.
+
 Usage:
     python3 scripts/coordinator.py          # stand up the session; does NOT take the lock
     python3 scripts/coordinator.py --take   # hold it all session (rarely correct)
+    python3 scripts/coordinator.py --full   # also print every deferred item, not one count per kind
 
 **⭐ IT DOES NOT TAKE THE LOCK — corrected 2026-08-03.** the candidate: *"Why can't it run concurrently
 with the coordinator session? That was the main purpose."* Holding it from startup blocked every
@@ -84,6 +95,15 @@ _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 import profile as _profile
 from pipeline_index import is_excluded as _is_excluded
+# dev #820 / public #175: the role lifecycle (`lifecycle.py`) and its Your Move groups (`your_move.py`).
+# Named here by file because a bare `import` is invisible to `publish_manifest.py`'s reachability closure.
+try:
+    import lifecycle as _lifecycle
+    import your_move as _your_move
+    _LIFECYCLE_IMPORT_ERROR = None
+except Exception as _e:                                         # noqa: BLE001 - the start-up screen must still print
+    _lifecycle = _your_move = None
+    _LIFECYCLE_IMPORT_ERROR = "%s: %s" % (type(_e).__name__, str(_e)[:160])
 ENGINE_SCRIPTS = os.path.dirname(os.path.realpath(__file__))
 
 ROOT = _profile_root()
@@ -146,9 +166,24 @@ def main():
                          "run for as long as you hold it. Prefer taking it per-write.")
     ap.add_argument("--no-take", action="store_true",
                     help="Deprecated no-op; not taking the lock is now the default.")
+    ap.add_argument("--full", action="store_true",
+                    help="Print every deferred item. The default prints one count per kind.")
     args = ap.parse_args()
 
-    print("COORDINATOR — %s" % datetime.datetime.now().strftime("%A %Y-%m-%d %H:%M"))
+    # ---- 0. the pipeline: the FIRST line is process_report's own start line (dev #820, CO1) ------
+    lc_now = datetime.datetime.now()
+    lc_data, lc_report, lc_error = None, None, None
+    try:
+        if _lifecycle is None:
+            raise RuntimeError("the role lifecycle could not be imported (%s)" % _LIFECYCLE_IMPORT_ERROR)
+        lc_data = _lifecycle.load_data(ROOT)
+        lc_report = _lifecycle.process_report(lc_data, lc_now)
+    except Exception as e:                                      # noqa: BLE001 - said, never empty
+        lc_error = "%s: %s" % (type(e).__name__, str(e)[:200])
+    print(lc_report.start_line if lc_report is not None
+          else "PIPELINE NOT CHECKED (%s)" % lc_error)
+    print()
+    print("COORDINATOR — %s" % lc_now.strftime("%A %Y-%m-%d %H:%M"))
     print("=" * 76)
     print("You are in the session you interact with. Scheduled runs are unattended and")
     print("cannot be messaged — they hand work over through data/inbox.jsonl.")
@@ -168,6 +203,23 @@ def main():
             print("      python3 scripts/sync.py --status")
     except Exception:
         print("⚠️ SYNC state unreadable — python3 scripts/sync.py --status")
+
+    # ---- 0b. the pipeline blocks: process_report's own lines, verbatim ---------------------------
+    rule("0. PIPELINE — where every role found is")
+    if lc_report is None:
+        print("  NOT CHECKED — the role lifecycle could not be read: %s" % lc_error)
+        print("  Nothing here is an empty pipeline. Run: python3 scripts/lifecycle.py --report")
+    else:
+        for line in lc_report.block_lines:
+            print("  " + line)
+        for line in lc_report.run_lines:
+            print("  " + line)
+        if lc_report.skew:
+            print("  ENGINE SKEW: starts within the last %d days came from %s. A profile is driven by"
+                  % (_lifecycle.SKEW_DAYS, ", ".join(lc_report.skew)))
+            print("  ONE engine version at a time: update the plugin on every machine that runs it.")
+        if lc_report.failure:
+            print("  PROCESS FAILURE: run the drain (skills/coordinator § Drain) before deciding anything")
 
     # ---- 1. is anyone else writing right now? ---------------------------------
     rule("1. WRITE LOCK — is a background run mid-flight?")
@@ -236,10 +288,20 @@ def main():
         waiting = []
     if waiting:
         rule("2b. NEEDS THIS MACHINE — deferred laptop-bound work")
+        # dev #820 (CO1): ONE line per kind with its count. Capture items alone can number in the
+        # hundreds, and a list that long is not a start-up screen; `--full` prints today's list.
+        by_kind = {}
         for r in waiting:
-            print("  • %s" % (r.get("what") or "")[:70])
-            if r.get("why"):
-                print("      %s" % r["why"][:66])
+            by_kind.setdefault(str(r.get("kind") or "(no kind)"), []).append(r)
+        for kind, rows in sorted(by_kind.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+            print("  • %s: %d" % (kind, len(rows)))
+            if args.full:
+                for r in rows:
+                    print("      - %s" % (r.get("what") or "")[:70])
+                    if r.get("why"):
+                        print("          %s" % r["why"][:66])
+        if not args.full:
+            print("\n  (one line per kind; `python3 scripts/coordinator.py --full` prints every item)")
         print("\n  You are on the laptop now, so this is the session that can clear it.")
         print("  Detail: python3 scripts/deferred.py")
 
@@ -249,12 +311,40 @@ def main():
     mine = [o for o in opps if o.get("next_action_owner") == _profile.owner_token()
             and o.get("status") in ("active-pursuit", "needs-resolution", "in-motion")]
     companies = {c["id"]: c.get("name", c["id"]) for c in load("companies.jsonl")}
-    if not mine:
+    # dev #820 (CO1): the roles a pursue/pass is owed on (`ready`) and the postings only you can read
+    # (`your-read`, each with its link and its reason) are NEEDS YOU too. A failure is not listed here: it
+    # is the process's, counted above, and the drain finishes it.
+    ready_rows, read_rows = [], []
+    if lc_data is not None:
+        try:
+            lc_ctx = _your_move.lifecycle_context(lc_data["opportunities"], lc_now, lc_data)
+            for o, st, _why in _your_move.classify_opportunities(
+                    lc_data["opportunities"], _profile.owner_token(), ctx=lc_ctx):
+                if st == "decide":
+                    ready_rows.append(o)
+                elif st == "your-read":
+                    read_rows.append((o, lc_ctx.stage_of_opp(o)))
+        except Exception as e:                                  # noqa: BLE001 - said, never empty
+            print("  NOT CHECKED — the decide / your-read roles could not be listed (%s: %s)"
+                  % (type(e).__name__, str(e)[:120]))
+    if lc_report is not None and lc_report.failure:
+        print("  PROCESS FAILURE: run the drain (skills/coordinator § Drain) before deciding anything")
+    if not mine and not ready_rows and not read_rows:
         print("  No role decisions are blocked on you.")
     for o in sorted(mine, key=lambda x: x.get("next_action_date") or "9999"):
         by = o.get("next_action_date") or "no date"
         print("  • [%s] %s — %s" % (by, companies.get(o.get("company_id"), "?")[:28],
                                     (o.get("title") or "")[:40]))
+    for o in sorted(ready_rows, key=lambda x: x.get("next_action_date") or "9999"):
+        by = o.get("next_action_date") or "no date"
+        print("  • [%s] DECIDE %s — %s: pursue or pass" % (by, companies.get(o.get("company_id"), "?")[:28],
+                                                           (o.get("title") or "")[:40]))
+    for o, st in read_rows:
+        url, owned = _your_move.role_link(o)
+        print("  • YOUR READ %s — %s: %s" % (companies.get(o.get("company_id"), "?")[:28],
+                                              (o.get("title") or "")[:40], _your_move.your_read_reason(st)))
+        print("      link: %s" % ((url + ("" if owned else " (aggregator copy)")) if url else "none on record"))
+        print("      then: %s" % (_your_move.YOUR_READ_REMEDY % o.get("id")))
     # dev #93 — the cross-cutting asks are a store, not a focus.md section.
     try:
         import your_move as _ym

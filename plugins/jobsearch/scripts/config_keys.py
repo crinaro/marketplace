@@ -584,17 +584,16 @@ COMPENSATION_HYBRID_INSIDE_RADIUS_VALUES = ("band", "hybrid-tier")
 SEARCH_RETAINED_SEARCH_AGE_DAYS = "search.retained_search_age_days"
 SEARCH_RETAINED_SEARCH_AGE_DAYS_DEFAULT = 35
 
-# R3 — the triage gate always exits, is bounded, and is measured. Roles the daily run's triage step
-# takes per run (oldest capture first), and the days after which a role still `triaging` surfaces to
-# the candidate as "not yet read (waited K days)" with the lean `ask`.
-SEARCH_TRIAGE_PER_RUN = "search.triage_per_run"
-SEARCH_TRIAGE_PER_RUN_DEFAULT = 10
-SEARCH_TRIAGE_STUCK_DAYS = "search.triage_stuck_days"
-SEARCH_TRIAGE_STUCK_DAYS_DEFAULT = 3
+# ⚠️ dev #820 / public #175 (jobsearch 0.82.0): `search.triage_per_run` and `search.triage_stuck_days` are RETIRED
+# and UNREGISTERED. `search.intake_per_run` replaces the first (its meaning changed from "reads per run" to "roles
+# admitted per run") and the second has no successor (an unread role is `waiting` or a visible process failure,
+# never "stuck"). `m_0_82_0_role_lifecycle` moves a stored value aside; it reads the raw config and needs no
+# registration, so `profile.py --options` and `doctor.py`'s CONFIG CURRENCY no longer list either key. The 0.67.0
+# migration no longer seeds them (they are not in `SOURCING_SCREEN_SEEDED`), so a profile older than 0.67.0 never
+# receives a key that 0.82.0 would move aside again.
 
 READER_KEYS = READER_KEYS | frozenset({COMPENSATION_CURRENCY, COMPENSATION_HYBRID_INSIDE_RADIUS,
-                                       SEARCH_RETAINED_SEARCH_AGE_DAYS, SEARCH_TRIAGE_PER_RUN,
-                                       SEARCH_TRIAGE_STUCK_DAYS})
+                                       SEARCH_RETAINED_SEARCH_AGE_DAYS})
 
 _METADATA[COMPENSATION_CURRENCY] = (
     COMPENSATION_CURRENCY_DEFAULT, "iso4217", ("an ISO 4217 three-letter code, e.g. USD",),
@@ -610,14 +609,6 @@ _METADATA[SEARCH_RETAINED_SEARCH_AGE_DAYS] = (
     SEARCH_RETAINED_SEARCH_AGE_DAYS_DEFAULT, "int", (14, 120),
     "days after which a role from a recruiter channel is flagged: ask the recruiter what stage "
     "the search is in before research or letters (dev #716)")
-_METADATA[SEARCH_TRIAGE_PER_RUN] = (
-    SEARCH_TRIAGE_PER_RUN_DEFAULT, "int", (1, 50),
-    "roles the daily run's triage step reads per run, oldest capture first; the rest wait and "
-    "the step prints how many (dev #713)")
-_METADATA[SEARCH_TRIAGE_STUCK_DAYS] = (
-    SEARCH_TRIAGE_STUCK_DAYS_DEFAULT, "int", (1, 14),
-    "days a role may stay 'triaging' before it surfaces to you as 'not yet read (waited K "
-    "days)' with the lean 'ask' (dev #713)")
 
 # What `migrate.m_0_67_0_sourcing_screen_config_keys` seeds where absent: (section, key, default)
 # — one place, so the migration and the registry cannot name two different sets. The currency is
@@ -625,8 +616,6 @@ _METADATA[SEARCH_TRIAGE_STUCK_DAYS] = (
 SOURCING_SCREEN_SEEDED = (
     ("compensation", "hybrid_inside_radius", COMPENSATION_HYBRID_INSIDE_RADIUS_DEFAULT),
     ("search", "retained_search_age_days", SEARCH_RETAINED_SEARCH_AGE_DAYS_DEFAULT),
-    ("search", "triage_per_run", SEARCH_TRIAGE_PER_RUN_DEFAULT),
-    ("search", "triage_stuck_days", SEARCH_TRIAGE_STUCK_DAYS_DEFAULT),
 )
 SOURCING_SCREEN_UNSEEDED = (COMPENSATION_CURRENCY,)
 
@@ -678,6 +667,50 @@ def feeds_enabled(cfg):
         return v, None
     return True, ("%s is %r, not true or false: company feeds are treated as ON until it is fixed "
                   "(record.py source on|off company-feeds writes it)" % (SOURCING_FEEDS_ENABLED, v))
+
+
+# ── the role pipeline (dev #820 / public #175; jobsearch 0.82.0; design-role-pipeline.md §4.5, 17 N8) ──────
+# `search.intake_per_run` -- how many ROLES one run ADMITS and finishes (capture, JD read, re-screen,
+# research for a keep). It is an INTAKE budget, not a read or research count: there is no ceiling on
+# model reads, because every admitted role completes in the run that admitted it (owner rulings 4, 5). A
+# role the run sees and does not admit is `waiting`, visible and aged. 1..300, default 40: sized from one
+# profile's measured arrival rate (about 18 new roles a run) plus about 22 of backlog drain, so it is a
+# starting point, not a law -- a rising waiting count is the signal to raise it, and the drain's own time
+# cap (`lifecycle.DRAIN_BUDGET_S`) may lower the effective capacity (N7). It REPLACES
+# `search.triage_per_run`, whose meaning was "reads per run": `m_0_82_0_role_lifecycle` moves the old
+# key aside, carrying a stored 10 to 40 (owner ruling 7) and any other value unchanged.
+SEARCH_INTAKE_PER_RUN = "search.intake_per_run"
+SEARCH_INTAKE_PER_RUN_DEFAULT = 40
+# `search.intake_new_percent` -- while the pre-0.82.0 backlog is non-empty, this share of each run's
+# intake is reserved for newly found roles, so a fresh find never stalls behind the backlog (owner
+# ruling 8). 0..100, default 50. NOT SEEDED: absent means the default.
+SEARCH_INTAKE_NEW_PERCENT = "search.intake_new_percent"
+SEARCH_INTAKE_NEW_PERCENT_DEFAULT = 50
+# `sourcing.feeds.deadline_s` -- the feed poller's own deadline in seconds (was fixed at 240, the daily
+# run's Bash timeout is 300 s). Above 240 the daily run starts the poll in the background and waits.
+SOURCING_FEEDS_DEADLINE_S = "sourcing.feeds.deadline_s"
+SOURCING_FEEDS_DEADLINE_S_DEFAULT = 240
+
+READER_KEYS = READER_KEYS | frozenset({SEARCH_INTAKE_PER_RUN, SEARCH_INTAKE_NEW_PERCENT,
+                                       SOURCING_FEEDS_DEADLINE_S})
+
+_METADATA[SEARCH_INTAKE_PER_RUN] = (
+    SEARCH_INTAKE_PER_RUN_DEFAULT, "int", (1, 300),
+    "roles one run admits and finishes -- captured, read, re-screened and (for a keep) researched in "
+    "that run. A role it sees and does not admit waits, visibly. The default comes from one profile's "
+    "measured rate; raise it when the waiting count keeps rising (dev #820)")
+_METADATA[SEARCH_INTAKE_NEW_PERCENT] = (
+    SEARCH_INTAKE_NEW_PERCENT_DEFAULT, "int", (0, 100),
+    "while old unread roles remain, this percent of each run's intake is kept for newly found roles so "
+    "fresh finds are admitted every run; 0 admits the old backlog first (dev #820)")
+_METADATA[SOURCING_FEEDS_DEADLINE_S] = (
+    SOURCING_FEEDS_DEADLINE_S_DEFAULT, "int", (60, 1800),
+    "seconds the company-feed poll may run before it stops and reports what it did not reach; above 240 "
+    "the daily run polls in the background (dev #813)")
+
+# What `migrate.m_0_82_0_role_lifecycle` seeds where absent: (section, key, default). The intake keys are
+# moved, not seeded (see the block above).
+ROLE_PIPELINE_SEEDED = (("sourcing.feeds", "deadline_s", SOURCING_FEEDS_DEADLINE_S_DEFAULT),)
 
 
 # ── the warm path (dev #751; jobsearch 0.72.0; design-sourcing-feeds.md §4.1) ─────────────────────

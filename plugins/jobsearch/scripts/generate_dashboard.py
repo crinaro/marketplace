@@ -75,6 +75,10 @@ from _root import profile_root as _profile_root
 import _tree
 import profile as _profile
 import your_move as _ym
+# dev #820 / public #175: the role lifecycle, `lifecycle.py` (`process_report` is the one text every
+# surface prints about process state). Named here by file because a bare `import` is invisible to
+# `publish_manifest.py`'s reachability closure.
+import lifecycle as _lifecycle
 import applications as _apps
 import touches as _touches
 import validate_data as _vd
@@ -294,18 +298,18 @@ _STAGE_LABEL = {"sourced": "Sourced", "contacted": "Contacted",
 
 
 def best_link(o):
-    """The role's posting URL — `jd_url`, else the first sighting that carried one.
+    """`(url, employer_owned)`: the role's posting address and whether it is the employer's own.
 
-    ⭐ ONE RULE, TWO SURFACES. Your Move and the Opportunities row both need this, and a second
-    copy would drift. On the live pipeline the fallback is not decorative: it is the difference
-    between 33 and 34 of 38 live roles having a reachable posting.
+    (1) The `employer_posting.url` when the field reads `confirmed` (the employer's own page, checked);
+    (2) else `jd_url`; (3) else the first sighting that carried a URL; `(None, False)` when none. A link
+    that is not employer-owned is an aggregator copy and the row says so (dev #817 / public #173, D817).
+
+    ⭐ ONE RULE, MANY SURFACES. The rule is `your_move.role_link`, which the status panel and Your Move
+    print too, so the `your-read` card carries the SAME link on all of them. On the live pipeline the
+    sighting fallback is not decorative: it is the difference between 33 and 34 of 38 live roles having a
+    reachable posting.
     """
-    if o.get("jd_url"):
-        return o["jd_url"]
-    for s in (o.get("sightings") or []):
-        if (s or {}).get("source_url"):
-            return s["source_url"]
-    return None
+    return _ym.role_link(o)
 
 
 def opp_bucket(o, involvements=()):
@@ -443,30 +447,54 @@ OPP_DIMS = (("pursuit", "your_move.PURSUIT_STATES", tuple(_ym.PURSUIT_STATES)),
             ("owner", "your_move.OWNER", _ym.OWNER))
 
 
-def pursuit_by_id(opps, roles=None):
+# dev #820 / public #175: ONE lifecycle snapshot per render. `main()` loads it once and every helper reads
+# it; a helper called on its own (a test, a script importing this module) loads the profile's own.
+_LC_MAIN = {"active": False, "data": None, "error": None}
+
+
+def _lc_data(opps=None):
+    """The `lifecycle.load_data` snapshot of this profile, with `opps` as its opportunity rows when
+    given (so the rows a caller already enriched are the rows staged). An unreadable store is NOT an
+    empty one: the error is kept in `_LC_MAIN["error"]` for `main()` to print, and the snapshot then
+    holds no journal and no open items."""
+    c = _LC_MAIN
+    d = c["data"] if c["active"] else None
+    if d is None:
+        try:
+            d = _lifecycle.load_data(str(ROOT))
+        except _lifecycle.LifecycleError as e:
+            c["error"] = str(e)
+            d = {"root": str(ROOT), "opportunities": [], "items": [], "companies": [], "journal": [],
+                 "config": {}}
+        if c["active"]:
+            c["data"] = d
+    if opps is not None and d.get("opportunities") is not opps:
+        d = dict(d, opportunities=opps)
+    return d
+
+
+def pursuit_by_id(opps, roles=None, stages=None):
     """{opp id: your_move.pursuit_state dict} for every opportunity in `opps` that carries an
     id - the ONE map the opportunity list's `pursuit` chips, its row chips, the reading
     order and the router's `applying` count all read, so the label population and the router
     number are one query. Reads the stores through the enriched `_applications` join, never a
     nested array.
 
-    ⭐ dev #713 / public #145 (owner decision 2026-10-14): a role the run is still reading is not
-    the candidate's decision ANYWHERE on the page. `pursuit_state` projects it as `new` (it is an
-    undecided role), but only the role classification knows it is unread, so a `new` role whose
-    `roles` state (`classify_opportunities`) is `triaging` is moved to the `triaging` partition
-    option here: it is counted and shown under `Triaging`, and `New` neither lists nor counts it.
-    `roles` is {opp id: role state}, derived from `opps` when the caller passes none."""
-    if roles is None:
-        roles = {o.get("id"): st for o, st, _w in _ym.classify_opportunities(opps, OWNER_TOKEN)
-                 if o.get("id")}
+    ⭐ dev #820 / public #175: a role nobody has read is not the candidate's decision ANYWHERE on the
+    page. `pursuit_state` projects it as `new` (it is an undecided role), but only the lifecycle knows
+    whether it is READ, so a `new` role whose stage is not `ready` or `decided` is moved to its
+    lifecycle partition option by `your_move.pursuit_with_stage` (`your-read`, `process-failure`,
+    `waiting-intake`, `in-progress`, `removed` or `gone`): it is counted under that option and `New`
+    neither lists nor counts it. `stages` is {opp id: lifecycle.Stage}, derived from `opps` when the
+    caller passes none. `roles` is accepted for the old signature and unused: the stage says it all."""
+    if stages is None:
+        stages = _ym.stage_by_id(opps, data=_lc_data(opps))
     out = {}
     for o in opps:
         if not o.get("id"):
             continue
         p = _ym.pursuit_state(str(ROOT), o, o.get("_applications") or [])
-        if p.get("state") == "new" and roles.get(o["id"]) == "triaging":
-            p = dict(p, state="triaging", cell="triaging")
-        out[o["id"]] = p
+        out[o["id"]] = _ym.pursuit_with_stage(p, stages.get(o["id"]))
     return out
 
 
@@ -533,11 +561,13 @@ def _warm_html(a):
     return '<div class="opp-warm" data-warm="%s">Warm path: %s</div>' % (esc(st), text)
 
 
-def _lean_html(o, role_state):
-    """The row-level triage line (dev #713 / public #145): a `decide` row shows the LEAN and the
-    likely-pass signals that matched; a `triaging` row names what the system has yet to do.
-    Everything comes from your_move.py (`decide_lean`, `triage_missing`) - this only renders.
-    A lean is a lean: it never removes a role, and the line says `LEAN`, not a verdict."""
+def _lean_html(o, role_state, stage=None):
+    """The row-level line under a role (dev #713 / public #145, dev #820 / public #175): a `decide` row
+    shows the LEAN and the likely-pass signals that matched; a `your-read` row shows WHY only you can
+    read it and the command that records your read; a `process-failure`, `waiting-intake` or
+    `in-progress` row names what the process did not do. Everything comes from your_move.py
+    (`decide_lean`, `group_why`) - this only renders. A lean is a lean: it never removes a role, and
+    the line says `LEAN`, not a verdict."""
     if role_state == "decide":
         ln = _ym.decide_lean(o)
         if not ln:
@@ -549,10 +579,14 @@ def _lean_html(o, role_state):
             for s in ln["signals"])
         return ('<div class="opp-lean"><strong>LEAN %s</strong> · %s%s</div>'
                 % (esc(ln["lean"]), esc(ln["line"]), sigs))
-    if role_state == "triaging":
-        return ('<div class="opp-lean opp-triaging">Triaging &mdash; the system is reading '
-                'this before it asks you. Still to do: %s</div>'
-                % esc(", ".join(_ym.triage_missing(o))))
+    if role_state == _ym.GROUP_YOUR_READ and stage is not None:
+        return ('<div class="opp-lean opp-read" data-read="%s"><strong>YOUR READ</strong> &middot; %s'
+                ' &middot; <code>%s</code></div>'
+                % (esc(str(stage.cause or "")), esc(_ym.your_read_reason(stage)),
+                   esc(_ym.YOUR_READ_REMEDY % (o.get("id") or "<id>"))))
+    if role_state in (_ym.GROUP_FAILURE, _ym.GROUP_INTAKE, _ym.GROUP_PROGRESS) and stage is not None:
+        return ('<div class="opp-lean opp-process" data-process="%s">%s</div>'
+                % (esc(role_state), esc(_ym.group_why(role_state, stage, o))))
     return ""
 
 
@@ -573,7 +607,7 @@ def _posting_html(label):
 
 def render_opportunity_list(opps, companies, attention=None, owner=None, involvements=None,
                             pursuit=None, roles=None, set_name="opportunities", warm=None,
-                            posting=None):
+                            posting=None, stages=None):
     """One row per LIVE role — needs-you first, then yours, then the run's — inside a
     FILTERED LIST over OPP_DIMS, EVERY member rendered. Closed roles are not here — they
     are not opportunities.
@@ -628,13 +662,14 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
     # dev #776 / public #166 (S2): `posting` is {opp id: your_move.posting_label}, the same
     # derivation `your_move.py --json` prints; derived here from your_move when the caller
     # passes none, never from the employer_posting field by this file.
-    posting = posting if posting is not None else _ym.posting_labels(opps, OWNER_TOKEN)
-    # dev #713 / public #145 (R4): `roles` is {opp id: your_move role state}, the same
-    # classify_opportunities the router and the callouts read; derived here when the caller
-    # passes none, never from the status and verdict fields.
-    roles = roles if roles is not None else {
-        o.get("id"): st for o, st, _w in _ym.classify_opportunities(opps, OWNER_TOKEN)
-        if o.get("id")}
+    # dev #820 / public #175: `stages` is {opp id: lifecycle.Stage} and `roles` {opp id: your_move role
+    # state}, both from the ONE snapshot (`_lc_data`) the router and the callouts read; derived here when
+    # the caller passes none, never from the status and verdict fields.
+    _snap = _lc_data(opps) if (posting is None or roles is None or stages is None) else None
+    _ctx = _ym.lifecycle_context(opps, data=_snap) if _snap is not None else None
+    posting = posting if posting is not None else _ym.posting_labels(opps, OWNER_TOKEN, ctx=_ctx)
+    roles = roles if roles is not None else _ym.role_states(opps, OWNER_TOKEN, ctx=_ctx)
+    stages = stages if stages is not None else _ym.stage_by_id(opps, ctx=_ctx)
     # ADR-031 B1 — involvements[], not opportunities.contacts[] any more (retired). Loaded
     # here, not passed by every caller, for the same reason `owner`'s default is derived here:
     # a caller with no opinion about it should not have to know it exists.
@@ -647,7 +682,7 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
         return '<div class="sub">No live opportunities.</div>', dict(_EMPTY_OPP_COUNTS)
     order = {"active-pursuit": 0, "needs-resolution": 1, "in-motion": 2, "backlog": 3}
     if pursuit is None:
-        pursuit = pursuit_by_id(live, roles)
+        pursuit = pursuit_by_id(live, roles, stages)
 
     # ADR-031 B4 (design §19) — `play_stage`/`next_action` are retired; the row's position
     # and "what's next" are now DERIVED from the play engine, every render. The shared
@@ -730,10 +765,13 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
         # version of this layout still cost a click to reach it. Collapsing the duplication is
         # not the same as making the most-wanted thing reachable. It sits next to the title,
         # always in the same place, so it can be hit without reading the row.
-        link = best_link(o)
+        link, _employer_owned = best_link(o)
         if link:
+            # D817: a link that is not the employer's own says so, so nobody mistakes an aggregator's
+            # copy of the posting for the employer's.
             jd = (f'<a class="opp-jd" href="{esc(link)}" target="_blank" rel="noopener" '
-                  f'title="Open the posting">JD ↗</a>')
+                  f'title="Open the posting">JD ↗</a>'
+                  + ('' if _employer_owned else ' <span class="opp-copy">(aggregator copy)</span>'))
         else:
             # Named, not blank — "no link recorded" is a fact about the role, and an empty
             # space here reads as "look harder".
@@ -753,8 +791,9 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
         dims = {"pursuit": _p["state"], "owner": owner.get(o.get("id"))}
         # The cross-cuts (your_move.PURSUIT_CROSS_CUTS): a row carries each one it is in, space-
         # separated. `your-move` is ATTENTION's needs-you and `decide` the role state of that name
-        # (dev #713) - a decide row is also a your-move row. `triaging` is NOT a cross-cut: it is a
-        # partition value (`pursuit_by_id`), so a triaging row is in `Triaging` and not in `New`.
+        # (dev #713) - a decide row is also a your-move row. The lifecycle options (`your-read`,
+        # `process-failure`, `waiting-intake`, ...) are NOT cross-cuts: each is a partition value
+        # (`pursuit_by_id`), so such a row is in its own option and not in `New`.
         also = [cc for cc, on in (("your-move", attention.get(o.get("id")) == "needs-you"),
                                   ("decide", roles.get(o.get("id")) == "decide")) if on]
         if also:
@@ -770,7 +809,7 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
             f'    <div class="opp-rail">{stage_rail(o)}</div>'
             f'  </div>'
             f'  <div class="opp-meta">{meta}</div>'
-            f'  {_lean_html(o, roles.get(o.get("id")))}{_posting_html(posting.get(o.get("id")))}{nxt}{_warm_html((warm or {}).get(o.get("id")))}{body}'
+            f'  {_lean_html(o, roles.get(o.get("id")), stages.get(o.get("id")))}{_posting_html(posting.get(o.get("id")))}{nxt}{_warm_html((warm or {}).get(o.get("id")))}{body}'
             f'</div>'))
     # REACHABLE (ADR-024, public #54): every member renders; a filtered list has no remainder.
     keys = ["opp:%s" % i for i, _h in rows if i]
@@ -1747,12 +1786,18 @@ _FILTER_VALUE_LABELS = {
     # dimension, in the user's words (NN/g: merge overlapping categories, no jargon, most
     # general first). The row's own chip reads this same table (`_pursuit_chip`).
     ("pursuit", "your-move"): "Your move — today",
-    # dev #713 / public #145 (R4): the two role groups the triage gate adds. `decide` is a cross-cut
-    # of the partition; `triaging` is a partition option of its own (a role is in it or in `New`).
+    # dev #713 / public #145 (R4), dev #820 / public #175: the role groups the lifecycle adds. `decide` is
+    # a cross-cut of the partition; each lifecycle option is a partition option of its own (a role is in
+    # it or in `New`).
     # (not "Decide — pursue or pass": that exact heading is the deleted dev #540 SECTION, and
     # tests assert it stays gone - a chip is not a section.)
     ("pursuit", "decide"): "Decide — pursue/pass owed",
-    ("pursuit", "triaging"): "Triaging — the system is reading these",
+    ("pursuit", "your-read"): "Your read — only you can open the posting",
+    ("pursuit", "process-failure"): "Process failure — a run did not finish these",
+    ("pursuit", "waiting-intake"): "Waiting for intake — no run has taken these on",
+    ("pursuit", "in-progress"): "In progress — a run has these open",
+    ("pursuit", "removed"): "Screened out",
+    ("pursuit", "gone"): "Posting gone",
     ("pursuit", "new"): "New — pursue or pass?",
     ("pursuit", "conversation"): "In live conversation",
     ("pursuit", "sent"): "Sent — awaiting a reply",
@@ -2065,7 +2110,10 @@ JUMP_TARGETS = (("Drafts", "phase-outreach-approvals"), ("Opportunities", "phase
                 ("Applications", "phase-applying-finish"))
 
 
-def render_jump_bar(n_drafts, n_opps, n_apply=None, n_flags=None):
+READ_SECTION = "phase-needs-read"
+
+
+def render_jump_bar(n_drafts, n_opps, n_apply=None, n_flags=None, n_read=None):
     """The pinned jump bar (OWNER REQUEST 2026-10-13, three entries since jobsearch 0.71.0):
     `Drafts (N)`, `Opportunities (N)` and `Applications (N)`, each an in-page link to its list's
     heading. Pinned by CSS `position: sticky` only - no script - and offset by the viewer's top
@@ -2078,6 +2126,9 @@ def render_jump_bar(n_drafts, n_opps, n_apply=None, n_flags=None):
             out.append('<span class="jump off">%s (0)</span>' % label)
         else:
             out.append('<a class="jump" href="#%s">%s (%d)</a>' % (sid, label, n))
+    if n_read is not None:
+        # dev #820: "Needs your read" exists ONLY while a role waits on the candidate's own read.
+        out.append('<a class="jump" href="#%s">Your read (%d)</a>' % (READ_SECTION, n_read))
     if n_flags is not None:
         # dev #761: a fourth entry exists ONLY when the conditional section does (no "(0)" label).
         out.append('<a class="jump" href="#%s">Reconsider (%d)</a>' % (RESCREEN_SECTION, n_flags))
@@ -2505,7 +2556,8 @@ def your_move_roles_from_jsonl():
     Returns (title, ask, opp_id) tuples matching render_your_move's shape (opp_id lets it
     resolve the JD link from the same links map the tagged manual asks use)."""
     companies = {c["id"]: c for c in load_jsonl("companies.jsonl")}
-    classified = _ym.classify_opportunities(load_jsonl("opportunities.jsonl"), OWNER_TOKEN)
+    _rows = load_jsonl("opportunities.jsonl")
+    classified = _ym.classify_opportunities(_rows, OWNER_TOKEN, data=_lc_data(_rows))
     items = []
     for o, state, _why in classified:
         if state != "now":
@@ -2534,7 +2586,8 @@ def your_move_decides_from_jsonl():
 
     Returns render_your_move's (title, ask, opp_id) tuples, soonest act-by first."""
     companies = {c["id"]: c for c in load_jsonl("companies.jsonl")}
-    classified = _ym.classify_opportunities(load_jsonl("opportunities.jsonl"), OWNER_TOKEN)
+    _rows = load_jsonl("opportunities.jsonl")
+    classified = _ym.classify_opportunities(_rows, OWNER_TOKEN, data=_lc_data(_rows))
     items = []
     for o, state, _why in classified:
         if state != "decide":
@@ -2618,7 +2671,7 @@ def your_move_callouts():
     companies = {c["id"]: c for c in load_jsonl("companies.jsonl")}
     all_opps = load_jsonl("opportunities.jsonl")
     unresolved, waiting = [], []
-    for o, state, why in _ym.classify_opportunities(all_opps, OWNER_TOKEN):
+    for o, state, why in _ym.classify_opportunities(all_opps, OWNER_TOKEN, data=_lc_data(all_opps)):
         if state == "unresolved":
             unresolved.append((_role_title(o, companies, "🚧"), why, o.get("id"),
                                o.get("next_action_date") or "9999"))
@@ -2936,7 +2989,19 @@ CSS = """
   .opp-next-none { opacity:.55; font-style:italic; }
   /* dev #713: the triage lean (decide rows) and the "system is reading this" line (triaging). */
   .opp-lean { font-size:13px; margin-top:6px; }
-  .opp-triaging { opacity:.7; font-style:italic; }
+  .opp-process { opacity:.8; font-style:italic; }
+  .opp-read { color: var(--chip-action-fg); }
+  .opp-copy { font-size:11.5px; opacity:.7; margin-left:4px; }
+  /* dev #820: the process-state block, never collapsed. */
+  .process { background: var(--card-bg); border: 1px solid var(--card-border); border-radius:10px;
+             padding:8px 14px; margin: 4px 0 12px; }
+  .process .pline { font-size:13px; padding:2px 0; white-space:pre-wrap; }
+  .process .pline.pfail { font-weight:700; color: var(--chip-action-fg); }
+  .process .pside { display:flex; gap:16px; flex-wrap:wrap; }
+  .process .pside .pline { flex:1 1 280px; }
+  .process .pgen, .process .prun, .process .pdrill { font-size:12.5px; opacity:.85; }
+  .process .pdrill li { margin: 2px 0; }
+  .conservation { font-size:12px; margin-top:18px; opacity:.8; }
   /* dev #776: the employer-posting line; flagged = not confirmed live on the employer's own posting. */
   .opp-posting { font-size:13px; margin-top:6px; opacity:.8; }
   .opp-posting-flag { opacity:1; color: var(--chip-waiting-fg); background: var(--chip-waiting-bg);
@@ -3078,6 +3143,82 @@ def render_rescreen_flags(flags, unreadable, failed, companies):
            '<div class="card">%s</div>' % "".join(parts) if parts else "")), n
 
 
+def _role_titles(ctx, data):
+    """{role key: title} for every role the lifecycle counts: an opportunity's title, and for a role
+    that exists only as open capture items, the title its first item names."""
+    out = {o.get("id"): str(o.get("title") or o.get("id")) for o in (data.get("opportunities") or [])
+           if isinstance(o, dict) and o.get("id")}
+    for key, items in ctx.groups.items():
+        _company, title = _lifecycle.item_company_title(items[0])
+        out[key] = title or key
+    return out
+
+
+PROCESS_DRILL_CAP = 30
+
+
+def render_process_block(rep, ctx, data, now, error=None):
+    """The process-state block, NEVER collapsed (dev #820 / public #175, design 2.4, N14): the page's
+    generation time, every open run (or `no run open`), and `process_report().block_lines` verbatim: the
+    process failure with its oldest age and causes, waiting for intake and the legacy backlog side by side
+    with the reservation, `UNCLASSIFIED`/`ROLES MISMATCH` when they are true, and `Did not look`. Then a
+    drill list of the oldest failed roles with each one's cause. The conservation line (the report's last
+    line) is NOT here; `render_conservation_line` prints it at the end of the page.
+
+    A report that could not be computed is `PIPELINE NOT CHECKED`, loudly, never an empty block."""
+    gen = '<div class="pgen" data-generated="%s">Page generated %s (local time)</div>' % (
+        esc(now.replace(microsecond=0).isoformat()), esc(now.strftime("%Y-%m-%d %H:%M")))
+    if rep is None:
+        return ('<section class="process" id="process-state">'
+                '<div class="pline pfail">PIPELINE NOT CHECKED &mdash; %s. Nothing below is an empty '
+                'queue.</div>%s</section>' % (esc(error or "the lifecycle could not be read"), gen))
+    body = list(rep.block_lines[:-1])           # the last line is the conservation line
+    rows = []
+    i = 0
+    while i < len(body):
+        line = body[i]
+        nxt = body[i + 1] if i + 1 < len(body) else ""
+        if line.startswith("Waiting for intake") and nxt.startswith("Legacy backlog"):
+            rows.append('<div class="pside"><div class="pline">%s</div><div class="pline">%s</div></div>'
+                        % (esc(line), esc(nxt)))
+            i += 2
+            continue
+        cls = "pline pfail" if line.startswith("Process failure") else "pline"
+        rows.append('<div class="%s">%s</div>' % (cls, esc(line)))
+        i += 1
+    runs = "".join('<div class="prun">%s</div>' % esc(l) for l in rep.run_lines)
+    drill = ""
+    if rep.failure_roles:
+        titles = _role_titles(ctx, data)
+        ordered = sorted(rep.failure_roles, key=lambda kv: (kv[1].since or datetime.date.max, kv[0]))
+        shown = ordered[:PROCESS_DRILL_CAP]
+        lis = []
+        for key, st in shown:
+            age = ""
+            if st.since is not None:
+                age = ", %dd" % (now.date() - st.since).days
+            lis.append('<li data-process-role="%s"><strong>%s</strong> &middot; %s%s</li>'
+                       % (esc(key), esc(titles.get(key, key)), esc(_ym.failure_text(st)), esc(age)))
+        more = ""
+        if len(ordered) > len(shown):
+            more = ('<li>+%d more, oldest first above. Every live role is also listed in the status '
+                    'pane (<code>/jobsearch:status</code>) and by <code>lifecycle.py --report --json'
+                    '</code>.</li>' % (len(ordered) - len(shown)))
+        drill = ('<details class="pdrill" open><summary>The oldest %d of %d failed roles, with their '
+                 'cause</summary><ul>%s%s</ul></details>'
+                 % (len(shown), len(ordered), "".join(lis), more))
+    return ('<section class="process" id="process-state">%s%s%s%s</section>'
+            % (gen, "".join(rows), runs, drill))
+
+
+def render_conservation_line(rep):
+    """The conservation line, LAST on the page (TOT): every role is in exactly one term. Its text is
+    `process_report().conservation_line` and nothing else."""
+    if rep is None:
+        return ""
+    return '<div class="conservation" data-conservation="1">%s</div>' % esc(rep.conservation_line)
+
+
 def render_review_router(rows):
     """The top of the page since jobsearch 0.71.0: THREE anchors and a clause each, nothing else.
     The counts that used to ride the six-phase router moved to the band and the status pane
@@ -3105,6 +3246,23 @@ def main():
     _all_asks = load_jsonl("asks.jsonl")
     _opp_rows = load_jsonl("opportunities.jsonl")
     _opp_comps = {c["id"]: c for c in load_jsonl("companies.jsonl")}
+
+    # ── dev #820 / public #175: ONE lifecycle snapshot for the whole render. Every role's stage, the
+    # Your Move groups and the process block all read it, so they cannot disagree. An unreadable
+    # snapshot is said on the page (PIPELINE NOT CHECKED), never rendered as an empty pipeline.
+    _LC_MAIN.update(active=True, data=None, error=None)
+    _lc_now = datetime.datetime.now()
+    _lc_snapshot = _lc_data(_opp_rows)
+    _lc_ctx = _ym.lifecycle_context(_opp_rows, _lc_now, _lc_snapshot)
+    _lc_report, _lc_error = None, _LC_MAIN["error"]
+    if _lc_error is None:
+        try:
+            _lc_report = _lifecycle.process_report(_lc_snapshot, _lc_now)
+        except Exception as _e:                                      # noqa: BLE001 - said, never swallowed
+            _lc_error = "%s: %s" % (type(_e).__name__, _e)
+    if _lc_error:
+        print("  !! WARNING: the role lifecycle could not be read (%s) - the page says PIPELINE NOT "
+              "CHECKED" % _lc_error)
 
     # ── Preconditions over the staged-message pair (issues #6/#13, dev #169, public #29).
     _DRAFTS_REL, _COVERS_REL = _tree.rel("drafts"), _tree.rel("cover_letters")
@@ -3230,18 +3388,20 @@ def main():
 
     # The role classification and the ONE pursuit map (dev #713, #494/#540).
     _live = [o for o in _opp_rows if o.get("status") not in _TERMINAL]
-    _attention = _ym.attention_by_id(_opp_rows, OWNER_TOKEN)
+    _attention = _ym.attention_by_id(_opp_rows, OWNER_TOKEN, ctx=_lc_ctx)
     _owner = _ym.owner_by_id(_opp_rows, OWNER_TOKEN)
-    _roles = {o.get("id"): st for o, st, _w in _ym.classify_opportunities(_opp_rows, OWNER_TOKEN)
-              if o.get("id")}
-    _pursuit = pursuit_by_id(_live, _roles)
+    _roles = _ym.role_states(_opp_rows, OWNER_TOKEN, ctx=_lc_ctx)
+    _stages = _ym.stage_by_id(_opp_rows, ctx=_lc_ctx)
+    _posting = _ym.posting_labels(_opp_rows, OWNER_TOKEN, ctx=_lc_ctx)
+    _pursuit = pursuit_by_id(_live, _roles, _stages)
     _new_opps = [o for o in _live if (_pursuit.get(o.get("id")) or {}).get("state") == "new"]
+    _read_opps = [o for o in _live if (_pursuit.get(o.get("id")) or {}).get("state") == "your-read"]
     _unsent_opps = [o for o in _live if (_pursuit.get(o.get("id")) or {}).get("state") == "not-sent"]
 
     # A follow-up row whose subject is NOT rendered on this page (a channel, a role in flight) is a
     # PRIMARY row of the Drafts list (render_message_list `primary`); one whose subject IS on the page
     # (a role under Opportunities / Applications) stays a reference with a link to it.
-    _page_opp_keys = set("opp:%s" % o.get("id") for o in _new_opps + _unsent_opps)
+    _page_opp_keys = set("opp:%s" % o.get("id") for o in _new_opps + _unsent_opps + _read_opps)
     _od_refs = [dict(r, primary=(r["kind"] in ("chan", "opp") and r["key"] not in _page_opp_keys))
                 for r in _od["refs"]]
 
@@ -3263,15 +3423,31 @@ def main():
     if _new_opps:
         opp_list_html, opp_counts = render_opportunity_list(
             _new_opps, _opp_comps, attention=_attention, owner=_owner, pursuit=_pursuit,
-            roles=_roles, warm=_warm_by_opp)
+            roles=_roles, warm=_warm_by_opp, posting=_posting, stages=_stages)
         _first_opps = (
             '<h2 id="phase-pipeline-roles">🎯 Opportunities to pursue '
             '<span class="tcount">%d</span></h2>'
             '<div class="sub" style="margin:-6px 0 10px">Roles where a <strong>decision is '
-            'owed</strong>: pursue or pass. A role the run is still reading is not here until it '
-            'has finished; a role you are pursuing is under Applications to finish; everything '
+            'owed</strong>: pursue or pass, on a role that is read and screened. A role no run has '
+            'finished reading is a process failure above, never a question for you; a role you are '
+            'pursuing is under Applications to finish; everything '
             'in flight lives in the jobsearch status pane (<code>/jobsearch:status</code>).</div>'
             % opp_counts["all"] + opp_list_html)
+
+    # ── Needs your read (dev #820 / public #175, N9): a posting only YOU can open (a manual board, no
+    # address, a login wall), as an owner task next to Decide, each with its link and its reason.
+    _first_read, n_read = "", len(_read_opps)
+    if _read_opps:
+        read_list_html, _read_counts = render_opportunity_list(
+            _read_opps, _opp_comps, attention=_attention, owner=_owner, pursuit=_pursuit,
+            roles=_roles, set_name="needs-read", warm=_warm_by_opp, posting=_posting, stages=_stages)
+        _first_read = (
+            '<h2 id="%s">&#128065; Needs your read <span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">Postings only <strong>you</strong> can '
+            'open: a board that needs your login, a role with no posting address, a page behind a '
+            'wall. Read it, then record what it says; the next run screens it and, if it is a keep, '
+            'researches it. The link and the reason are on each row.</div>'
+            % (READ_SECTION, n_read) + read_list_html)
 
     # ── Applications to finish: pursuing, nothing sent, plus their cover letters ──
     _first_apply, n_apply = "", 0
@@ -3279,7 +3455,8 @@ def main():
     if _unsent_opps:
         todo_html, todo_counts = render_opportunity_list(
             _unsent_opps, _opp_comps, attention=_attention, owner=_owner, pursuit=_pursuit,
-            roles=_roles, set_name="applying-finish", warm=_warm_by_opp)
+            roles=_roles, set_name="applying-finish", warm=_warm_by_opp, posting=_posting,
+            stages=_stages)
         n_apply += todo_counts["all"]
         _apply_parts.append(todo_html +
                             '<div class="note"><strong>&ldquo;Not sent yet&rdquo; is the gap.'
@@ -3406,7 +3583,11 @@ def main():
         ("📝", "Applications to finish", "phase-applying-finish", 1 if _first_apply else 0,
          ("%d item%s to finish." % (n_apply, "" if n_apply == 1 else "s"))
          if _first_apply else "Nothing queued to apply."),
-    ] + ([("&#8617;&#65039;", "Roles to reconsider", RESCREEN_SECTION, 1,
+    ] + ([("&#128065;", "Needs your read", READ_SECTION, 1,
+           "%d posting%s only you can open, with the link and the reason."
+           % (n_read, "" if n_read == 1 else "s"))]
+         if _first_read else [])
+      + ([("&#8617;&#65039;", "Roles to reconsider", RESCREEN_SECTION, 1,
            "%d removed role%s jobsearch 0.73.0 would not repeat; nothing was changed."
            % (n_flags, "" if n_flags == 1 else "s")
            if n_flags else "The re-screen check could not run; see the section.")]
@@ -3415,14 +3596,18 @@ def main():
     # rows that list renders (`data-rec="draft:…"` / `data-rec="opp:…"`), never a reference row;
     # a list that is not on the page is a plain, unlinked label, so the bar never links to nothing.
     _first_html = ""
-    if _first_drafts or _first_opps or _first_apply or _first_flags:
+    if _first_drafts or _first_read or _first_opps or _first_apply or _first_flags:
         _first_html = ('<section class="first" id="first-lists">\n%s\n</section>'
-                       % "\n".join([_first_drafts, _first_opps, _first_apply]
+                       % "\n".join([_first_drafts] + ([_first_read] if _first_read else [])
+                                   + [_first_opps, _first_apply]
                                    + ([_first_flags] if _first_flags else [])))
     jump_html = render_jump_bar(n_drafts_primary if _first_drafts else None,
                                 opp_counts["all"] if _first_opps else None,
                                 n_apply if _first_apply else None,
-                                n_flags if _first_flags else None)
+                                n_flags if _first_flags else None,
+                                n_read if _first_read else None)
+    _process_html = render_process_block(_lc_report, _lc_ctx, _lc_snapshot, _lc_now, _lc_error)
+    _conservation_html = render_conservation_line(_lc_report)
 
     body_inner = (
         '%s\n'
@@ -3432,15 +3617,15 @@ def main():
         '<div class="updated">Generated <strong>%s</strong> · the page of what needs a decision '
         'or a finish today · status lives in the jobsearch panel (<code>/jobsearch:status</code>) '
         '· generated by scripts/generate_dashboard.py</div>\n'
-        '%s\n%s\n'
+        '%s\n%s\n%s\n'
         '<div class="sub" style="margin-top:26px">Not on this page: status and everything in '
         'flight (the jobsearch panel and <code>/jobsearch:status</code>), the resume and '
         'public-profile reviews (<code>/jobsearch:review-resume</code>, '
         '<code>/jobsearch:review-linkedin</code>), the full network (queried in session — '
         '<code class="fileref">data/channels.jsonl</code>, <code class="fileref">%s</code>), '
-        'archives, sent and closed items, and knowledge bodies.</div>'
-        % (jump_html, html.escape(_title), today, router_html, _first_html,
-           esc(_tree.rel("network"))))
+        'archives, sent and closed items, and knowledge bodies.</div>\n%s'
+        % (jump_html, html.escape(_title), today, router_html, _process_html, _first_html,
+           esc(_tree.rel("network")), _conservation_html))
 
     # ── The output: the ONE artifact. Nothing outside views/ is written (dev #546). ──
     (ROOT / "views").mkdir(exist_ok=True)
@@ -3475,9 +3660,12 @@ def main():
           "check_dashboard_fresh.py --publish-state FIRST: never-published (no stamp "
           "either) means create it on first publish; url-missing (a stamp already exists) "
           "means RECOVER the URL via the Artifact tool's list action, never mint a new one")
-    print("  review-now: drafts %d · opportunities %d · applications to finish %d  "
+    print("  review-now: drafts %d · opportunities %d · your read %d · applications to finish %d  "
           "(everything else is ELSEWHERE in the ledger: the panel, /jobsearch:status)"
-          % (n_drafts_primary, opp_counts["all"], n_apply))
+          % (n_drafts_primary, opp_counts["all"], n_read, n_apply))
+    if _lc_report is not None:
+        print("  pipeline: " + _lc_report.start_line)
+    _LC_MAIN.update(active=False, data=None, error=None)
     try:
         import pending_stubs as _stubs
         _pend = [r for r in _stubs.load_rows(str(ROOT))

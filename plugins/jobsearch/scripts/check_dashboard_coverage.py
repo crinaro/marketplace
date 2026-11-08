@@ -194,6 +194,14 @@ _ROUTER_FLIGHT_RE = re.compile(r'<span class="ct2">(?:(\d+) in flight)?</span><a
 # NOT CHECKED, the row plain doesn't exist) from "the row is there but its in-flight markup
 # changed shape" (this matches, _ROUTER_FLIGHT_RE above does not — a GAP, never a silent skip).
 _ROUTER_PIPELINE_ANCHOR_RE = re.compile(r'<a class="ph" href="#phase-pipeline"')
+# dev #820 / public #175 (design 2.4, N14): the process-state block and the conservation line. The page
+# renders `lifecycle.process_report`'s own lines; this check recomputes the report from the stores at the
+# page's own generation time and holds the page to it.
+_PROCESS_SECTION_RE = re.compile(r'<section class="process" id="process-state">(.*?)</section>', re.S)
+_PLINE_RE = re.compile(r'<div class="pline[^"]*">(.*?)</div>', re.S)
+_PRUN_RE = re.compile(r'<div class="prun">(.*?)</div>', re.S)
+_PGEN_RE = re.compile(r'data-generated="([^"]+)"')
+_CONS_RE = re.compile(r'<div class="conservation" data-conservation="1">(.*?)</div>', re.S)
 # The modules a ledger may name as a vocabulary's owner. A source outside this list is a
 # gap, not an import: the check resolves enums, it does not run arbitrary code.
 _ENUM_MODULES = frozenset({"validate_data", "your_move", "applying", "precondition",
@@ -450,6 +458,72 @@ def check_scripts(page):
     if re.search(r'href="\s*javascript:', page, re.I):
         gaps.append("SCRIPT — a javascript: URL is on the page")
     return gaps, "script: %d (allowed: the copy-as-prompt script, at most once)" % len(opens)
+
+
+def _plain(fragment):
+    return _html.unescape(re.sub(r"<[^>]+>", "", fragment))
+
+
+def check_process_block(page, root):
+    """(gaps, summary) for the process-state block (dev #820 / public #175, N14, TOT). The page must carry
+    the block, and its lines must be EXACTLY `lifecycle.process_report(...).block_lines` (without the
+    conservation line), its open-run lines `run_lines`, and its last line the `conservation_line`,
+    recomputed here from the stores at the page's own generation time (`data-generated`). A page that
+    drops the block, words a count differently, or prints a conservation line that does not add up is a
+    gap, never a pass; a lifecycle that cannot be read is said (`NOT CHECKED`), and the page must then
+    say `PIPELINE NOT CHECKED` too."""
+    m = _PROCESS_SECTION_RE.search(page)
+    if not m:
+        return (["PROCESS BLOCK MISSING — the page has no `process-state` section, so a role a run did "
+                 "not finish, a role waiting for intake and what no pass looked at are not on it "
+                 "(design 2.4: the block is never collapsed and never absent)"],
+                "process: block MISSING")
+    sec = m.group(1)
+    gen = _PGEN_RE.search(sec)
+    if not gen:
+        return (["PROCESS BLOCK HAS NO GENERATION TIME — a stale render must read as stale (N14)"],
+                "process: no generation time")
+    try:
+        now = datetime.datetime.fromisoformat(_html.unescape(gen.group(1)))
+    except ValueError:
+        return (["PROCESS BLOCK GENERATION TIME UNREADABLE — %r" % gen.group(1)],
+                "process: generation time unreadable")
+    try:
+        import lifecycle as _lifecycle
+        rep = _lifecycle.process_report(_lifecycle.load_data(root), now)
+    except Exception as e:                                      # noqa: BLE001 - said, never a pass
+        if "PIPELINE NOT CHECKED" in sec:
+            return [], "process: NOT CHECKED here (%s: %s); the page says so too" % (
+                type(e).__name__, str(e)[:100])
+        return (["PROCESS BLOCK NOT VERIFIABLE — the role lifecycle cannot be read here (%s: %s) and "
+                 "the page does not say PIPELINE NOT CHECKED" % (type(e).__name__, str(e)[:100])],
+                "process: NOT CHECKED")
+    gaps = []
+    if "PIPELINE NOT CHECKED" in sec:
+        gaps.append("PROCESS BLOCK SAYS NOT CHECKED — the page claims the lifecycle could not be read, "
+                    "but it reads here; regenerate")
+    else:
+        page_lines = [_plain(x) for x in _PLINE_RE.findall(sec)]
+        want = list(rep.block_lines[:-1])
+        if page_lines != want:
+            extra = [x for x in page_lines if x not in want]
+            missing = [x for x in want if x not in page_lines]
+            gaps.append("PROCESS BLOCK DISAGREES — the page's lines differ from process_report's "
+                        "block_lines (page only: %s; report only: %s)"
+                        % (extra[:2] or "none", missing[:2] or "none"))
+        runs = [_plain(x) for x in _PRUN_RE.findall(sec)]
+        if runs != list(rep.run_lines):
+            gaps.append("OPEN RUNS DISAGREE — the page says %s; the journal says %s"
+                        % (runs or "nothing", list(rep.run_lines)))
+        cons = _CONS_RE.search(page)
+        if not cons:
+            gaps.append("CONSERVATION LINE MISSING — the page does not print `ROLES N = ...`, so a role "
+                        "could leave the count unseen")
+        elif _plain(cons.group(1)) != rep.conservation_line:
+            gaps.append("CONSERVATION LINE DISAGREES — the page prints %r; process_report says %r"
+                        % (_plain(cons.group(1)), rep.conservation_line))
+    return gaps, "process: %d failure(s), %d waiting, %d ready, %d your read (conservation %s)" % (
+        rep.failure, rep.waiting, rep.ready, rep.your_read, "MISMATCH" if rep.mismatch else "agrees")
 
 
 def check_links(page, exp):
@@ -978,6 +1052,8 @@ def check(root, verbose=False):
     gaps.extend(s_gaps)
     w_gaps, w_line = check_warm_path(page, root, today)
     gaps.extend(w_gaps)
+    p_gaps, p_line = check_process_block(page, root)
+    gaps.extend(p_gaps)
     n_exp = len(exp)
     n_placed = n_exp - sum(1 for g in gaps if g.startswith("UNPLACED"))
     lines = ["covered %d of %d record(s) — %d rendered · %d in counted remainders · "
@@ -987,6 +1063,7 @@ def check(root, verbose=False):
     lines.extend(f_lines)
     lines.append(l_line)
     lines.append(w_line)
+    lines.append(p_line)
     if verbose:
         lines.extend("  " + p for p in placements)
     # EXACTLY ONCE is a GAP since design r3 (check_links); nothing is advisory any more. The

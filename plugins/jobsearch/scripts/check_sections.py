@@ -64,10 +64,18 @@ _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root, looks_like_profile as _looks_like_profile
 import profile as _profile
 import your_move as _ym
+# dev #820 / public #175: the role lifecycle (`lifecycle.py`) stages the roles the derived half of the
+# panel is made of. Named here by file because a bare `import` is invisible to `publish_manifest.py`'s
+# reachability closure.
+import lifecycle as _lifecycle
 import applications as _apps
 import touches as _touches
 
 ROOT = _profile_root()
+
+# The Your Move groups whose rows the dashboard renders as a role to act on (dev #820): the derived half
+# of the panel this check reads.
+_DERIVED_STATES = ("now", "decide", "your-read")
 
 
 def _candidate_name_words():
@@ -300,9 +308,21 @@ def main():
     # to `note`. The duplication heuristic reads `note` now — the same subject-overlap idea,
     # a weaker signal than before (plays.py is the real authority for "what's next"), never
     # re-derived as anything stronger here.
+    # dev #820: membership is `classify_opportunities`' (the lifecycle's), so a `ready` or `your-read`
+    # role is a derived row whoever owns it, exactly as the dashboard renders it. A lifecycle that
+    # cannot be read is said in the footer and the owner-routed rows are used, never an empty set.
+    lifecycle_error = None
+    classified = []
+    if owner:
+        try:
+            classified = _ym.classify_opportunities(opps, owner,
+                                                    data=dict(_lifecycle.load_data(ROOT),
+                                                              opportunities=opps))
+        except Exception as e:                                  # noqa: BLE001 - said, never empty
+            lifecycle_error = "%s: %s" % (type(e).__name__, str(e)[:120])
+            classified = [(o, "now", "") for o in opps if _ym.is_your_move_candidate(o, owner)]
     derived = [(o, keywords("%s %s" % (o.get("title") or "", o.get("note") or "")))
-               for o in opps
-               if owner and _ym.is_your_move_candidate(o, owner)]
+               for o, st, _w in classified if st in _DERIVED_STATES]
     for a, ka in ask_keys:
         for o, ko in derived:
             if a.get("opp_id") and a["opp_id"] == o.get("id"):
@@ -317,8 +337,7 @@ def main():
     # ---- 3b: the DERIVED half of the panel (public #43) -------------------------
     # Membership and grouping are your_move.py's (classify_opportunities); this only reads
     # what it says. Terminal/other-owner rows never reach here, by that predicate.
-    derived_rows = ([(o, st) for o, st, _w in _ym.classify_opportunities(opps, owner)
-                     if st in ("now", "decide")] if owner else [])
+    derived_rows = [(o, st) for o, st, _w in classified if st in _DERIVED_STATES]
     for o, st in derived_rows:
         oid = o.get("id", "?")
         na = str(o.get("note") or "")
@@ -355,8 +374,11 @@ def main():
     print("Section-rule check — data/asks.jsonl · data/commitments.jsonl · handoff.md")
     # ⭐ Coverage, stated: both halves of the panel, counted — a clean report that had only
     # seen the asks is the public #43 defect. Copies check_engine_purity's "scanned N of M".
-    print("  checked %d open ask(s) and %d derived role row(s) (your_move now/decide)"
+    print("  checked %d open ask(s) and %d derived role row(s) (your_move now/decide/your-read)"
           % (len(open_asks), len(derived_rows)))
+    if lifecycle_error:
+        print("  NOT CHECKED against the role lifecycle (%s): derived rows are the owner-routed ones"
+              % lifecycle_error)
     if not problems:
         print("\n  Clean. Every open ask reads as an ask, nothing resolved is lingering,")
         print("  and no item appears in two places.")

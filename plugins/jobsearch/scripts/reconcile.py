@@ -805,6 +805,154 @@ def classify_status_phrase(text_low, status_phrases):
     return None, bool(uniq)
 
 
+# ── dev #820 / public #175 (design-role-pipeline section 8.2, M818, issue #818) ─────────────────
+# STATUS MAIL IS ACCOUNTED, NOT FILTERED. The sweep used to search by the sender allowlist alone and
+# read a non-allowlisted message only when it hit a status phrase AND named a live application's
+# company in its display name or domain; every other message an unlisted sender sent was read by
+# nobody and counted nowhere ("a missing thing reads as an empty thing"). Now every message the
+# sweep reads is CLASSED, the classes are COUNTED per mailbox, an `ats-status` message that matched no
+# application is PRINTED and RECORDED, and the sender list is a hint that widens the class, never a
+# gate that hides a message.
+STATUS_MAIL_CLASSES = _journal.MAIL_CLASSES          # ats-status, human, digest, noise (one list)
+UNMATCHED_CAP = _journal.MAIL_UNMATCHED_CAP          # the journal's own per-field cap
+
+# One-click-apply confirmations ("your application was sent to X", "thanks for applying") come from
+# a job board or ATS the owner may never have listed. They are ATS status mail by definition (M818).
+APPLY_CONFIRMATION_PHRASES = (
+    "thank you for applying", "thanks for applying", "thank you for your application",
+    "your application was sent", "your application has been submitted", "application submitted",
+    "we have received your application", "we received your application",
+    "you applied to", "you've applied",
+)
+# Markers of a bulk digest. Matched on the SUBJECT and the sender's local part only: a status phrase
+# quoted deep inside a newsletter body is not what makes a message a digest, and a digest marker
+# deep inside a human's body is not what makes it one either.
+DIGEST_SUBJECT_MARKERS = (
+    "digest", "job alert", "jobs for you", "recommended jobs", "new jobs", "jobs you may",
+    "weekly roundup", "newsletter",
+)
+
+
+def _one_line(s, cap=None):
+    s = re.sub(r"\s+", " ", s or "").strip()
+    return s[:cap] if cap else s
+
+
+def classify_status_mail(msg, hints):
+    """The ONE classifier of a message the status-mail sweep reads (M818) -> one of
+    `STATUS_MAIL_CLASSES`: `ats-status | human | digest | noise`.
+
+    `msg` is `{from, subject, body}` (`from` the raw header, `body` may be empty). `hints` is
+    `{configured_domains, derived_domains, status_phrases, companies}`: the two sender sets
+    `sender_domain_sets()` computes, `ats.status_phrases`, and the names of companies with a live
+    application or an active opportunity (`tracked_company_names`). Pure: no mailbox, no store.
+
+    In order, first match wins:
+      1. a one-click-apply confirmation (`APPLY_CONFIRMATION_PHRASES`), not in a digest  -> ats-status
+      2. a status phrase AND (a tracked company named OR a hinted ATS sender), not a digest -> ats-status
+      3. a digest subject, or a `*digest*` local part                                     -> digest
+      4. a sender the allowlist or the derived set names (a HINT, so it widens the class) -> ats-status
+      5. a status phrase from an automated sender                                          -> ats-status
+      6. any other automated sender (no-reply, LinkedIn notifications)                     -> noise
+      7. anything else, a person writing                                                   -> human
+    A human who writes "we have decided not to move forward" about a tracked company is ATS-status
+    CONTENT and is classed so: the reader must see it, whoever sent it."""
+    hints = hints or {}
+    configured = hints.get("configured_domains") or ()
+    derived = hints.get("derived_domains") or ()
+    _display, addr = parseaddr((msg or {}).get("from") or "")
+    addr = (addr or "").strip().lower()
+    local, domain = (addr.split("@", 1) + [""])[:2] if "@" in addr else (addr, "")
+    subject = (msg or {}).get("subject") or ""
+    text_low = ("%s\n%s" % (subject, (msg or {}).get("body") or "")).lower()
+    subj_low = subject.lower()
+
+    listed, _leg = identify_sender_class(domain, configured, derived)
+    automated = is_automated_sender(addr, configured, derived)
+    digest = "digest" in local or any(k in subj_low for k in DIGEST_SUBJECT_MARKERS)
+    status_hit, status_ambig = classify_status_phrase(text_low, hints.get("status_phrases"))
+    phrase = status_hit is not None or status_ambig
+    named = any((n or "").strip().lower() in text_low
+                for n in (hints.get("companies") or ()) if len((n or "").strip()) >= 3)
+
+    if not digest and any(p in text_low for p in APPLY_CONFIRMATION_PHRASES):
+        return "ats-status"
+    if phrase and (named or listed) and not digest:
+        return "ats-status"
+    if digest:
+        return "digest"
+    if listed:
+        return "ats-status"
+    if phrase and automated:
+        return "ats-status"
+    if automated:
+        return "noise"
+    return "human"
+
+
+def tracked_company_names(live_apps, opps, companies_map):
+    """The names of companies the owner is actually pursuing: a live application's company, or an
+    active (non-terminal) opportunity's. Sorted and de-duplicated; a name under three characters is
+    dropped (it would match inside ordinary words)."""
+    ids = {a.get("_company_id") for a in live_apps or ()}
+    ids |= {o.get("company_id") for o in opps or ()
+            if o.get("status") not in _vd.TERMINAL_OPP_STATUSES}
+    ids.discard(None)
+    names = {(companies_map.get(i) or "").strip() for i in ids}
+    return sorted(n for n in names if len(n) >= 3)
+
+
+def build_status_query(domains, status_phrases, company_names, days):
+    """The status-mail search query (M818): the UNION of sender domains, `ats.status_phrases` as
+    subject phrases, and tracked company names as subject terms, inside the window. Written in the
+    Gmail subset `mail_query` evaluates, so the same string serves `X-GM-RAW` and a connector bundle.
+    Returns None when there is nothing to search for (no domain, no phrase, no company)."""
+    def quoted(s):
+        s = _one_line(str(s or "").replace('"', " "))
+        return '"%s"' % s if s else ""
+    terms = ["from:%s" % d.strip().lower() for d in sorted(set(domains or ())) if (d or "").strip()]
+    phrases = sorted({quoted(p) for ps in (status_phrases or {}).values() for p in (ps or ())} - {""})
+    names = sorted({quoted(n) for n in (company_names or ())} - {""})
+    subject_terms = sorted(set(phrases) | set(names))
+    if subject_terms:
+        terms.append("subject:(%s)" % " OR ".join(subject_terms))
+    if not terms:
+        return None
+    return "(%s) newer_than:%dd" % (" OR ".join(terms), days)
+
+
+def unmatched_entry(source, subject):
+    """A `{source, subject}` row for `journal.record_mail_status`: single-line, each at most
+    `UNMATCHED_CAP` characters (the journal refuses longer)."""
+    return {"source": _one_line(source, UNMATCHED_CAP), "subject": _one_line(subject, UNMATCHED_CAP)}
+
+
+class MailStatusTally(object):
+    """One mailbox's status-mail accounting for one run: a count per class, the `ats-status`
+    messages that matched no application, and the messages that could not be read at all (printed,
+    never a class). `add()` is the only way a count moves, so `unmatched <= counts['ats-status']`
+    holds by construction -- the journal's own invariant."""
+
+    def __init__(self, mailbox):
+        self.mailbox = mailbox
+        self.counts = {c: 0 for c in STATUS_MAIL_CLASSES}
+        self.unmatched = []
+        self.unread = []
+        self.searched = False
+
+    def add(self, cls, source, subject, matched):
+        if cls not in self.counts:
+            raise ValueError("unknown status-mail class %r" % (cls,))
+        self.counts[cls] += 1
+        if cls == "ats-status" and not matched:
+            self.unmatched.append(unmatched_entry(source, subject))
+
+    def line(self):
+        return ("MAIL STATUS %s: %s -- %d unmatched"
+                % (self.mailbox, " · ".join("%s %d" % (c, self.counts[c])
+                                            for c in STATUS_MAIL_CLASSES), len(self.unmatched)))
+
+
 _SUBJECT_PREFIX_RE = re.compile(r"^\s*(re|fwd?)\s*:\s*", re.I)
 
 
@@ -1307,6 +1455,12 @@ def cmd_ats(args):
     configured_domains, derived_domains = sender_domain_sets(cfg, messages_all)
     sp = (cfg.get("ats") or {}).get("status_phrases")
     status_phrases = sp if isinstance(sp, dict) else {}
+    # dev #820 / public #175 (M818) -- the classifier's inputs and the search's, computed once.
+    company_names = tracked_company_names(live_apps, opps, companies_map)
+    mail_hints = {"configured_domains": configured_domains, "derived_domains": derived_domains,
+                  "status_phrases": status_phrases, "companies": company_names}
+    tallies, mail_lines, unrecorded = {}, [], []
+    run_id = getattr(args, "run", None)
 
     asks_all = load("asks.jsonl")
     asks_by_id = {a.get("id"): a for a in asks_all}
@@ -1482,8 +1636,11 @@ def cmd_ats(args):
         tag = "mail:%s:%s" % (account, uid)
         if tag_already_asked(tag, asks_all):
             return
+        tally = tallies[account]
         hdr = mb.fetch_headers(uid)
         if hdr is None:
+            # never classed, never silent: printed with the accounting below
+            tally.unread.append(source)
             return
         frm = decode_header_value(hdr.get("From")) or ""
         display_name, from_addr = parseaddr(frm)
@@ -1504,6 +1661,11 @@ def cmd_ats(args):
                 body = body_text(full, limit=8000) or ""
             mail_date = parse_hdr_date(decode_header_value(hdr.get("Date")))
             mail_date_iso = mail_date.isoformat() if mail_date else run_date
+            # M818 -- an unlisted sender's message is CLASSED and COUNTED before anything below
+            # decides to skip it. This branch never resolves a message, so an `ats-status` one
+            # here is unmatched by definition.
+            tally.add(classify_status_mail({"from": frm, "subject": subject, "body": body},
+                                           mail_hints), source, subject, matched=False)
             status_hit, status_ambig = classify_status_phrase(
                 ("%s\n%s" % (subject, body)).lower(), status_phrases)
             if status_hit is None and not status_ambig:
@@ -1538,6 +1700,9 @@ def cmd_ats(args):
         result = resolve_application(subject, body, from_domain, live_apps, companies_map)
         status, ambiguous = classify_status_phrase(("%s\n%s" % (subject, body)).lower(),
                                                     status_phrases)
+        # M818 -- counted here, before any early return below (historical, tie, withdrawn, ...).
+        tally.add(classify_status_mail({"from": frm, "subject": subject, "body": body}, mail_hints),
+                  source, subject, matched=isinstance(result, Resolved))
         have_sources.add(_vd.normalize_source_tag(source))   # never re-process this uid, whatever happens below
         if historical:
             history_counts["total"] += 1
@@ -1698,6 +1863,7 @@ def cmd_ats(args):
         since_days = lookback_days(ROOT, account, sweep_floor, by="reconcile-ats")
         first_run = is_first_run_for_mailbox(ROOT, account)
         domains = all_sender_domains(configured_domains, derived_domains)
+        tally = tallies[account] = MailStatusTally(account)
         plan_lines.append("  %s: window %dd (floor %d, ledger says covered through %s)%s"
                           % (account, since_days, sweep_floor,
                              _journal.covered_through(_journal.read(ROOT), account,
@@ -1713,13 +1879,13 @@ def cmd_ats(args):
         def search_one(acct, _since_days=since_days, _first_run=first_run):
             """D7 — catches EVERYTHING. A non-CredentialError exception is an ok:false row
             with reason 'other', never a traceback out of sweep_accounts()."""
-            if not domains:
+            q = build_status_query(domains, status_phrases, company_names, _since_days)
+            if q is None:
                 return [], None
             try:
                 with Mailbox(acct) as mb:
-                    q = "(%s) newer_than:%dd" % (
-                        " OR ".join("from:%s" % d for d in domains), _since_days)
                     uids = mb.search(q)
+                    tallies[acct].searched = True
                     for uid in uids:
                         process_candidate(mb, acct, uid, _since_days, _first_run)
                 return [], None
@@ -1734,6 +1900,23 @@ def cmd_ats(args):
         # dev #799 — under a connector the account states what its bundle covered (a no-op under
         # gmail-multi); the lines print with the plan below.
         print_coverage(ROOT, [account], since_days, out=plan_lines.append)
+        # dev #820 / public #175 (M818) -- what the search found, by class; recorded only when the
+        # search RAN and finished, so a partial count is never the latest word on a mailbox.
+        if not tally.searched:
+            mail_lines.append("  MAIL STATUS %s: NOT CHECKED -- no search ran" % account)
+        elif incomplete:
+            mail_lines.append("  %s -- NOT RECORDED (the sweep was incomplete)" % tally.line())
+        elif not can_write:
+            mail_lines.append("  %s -- not recorded (plan only)" % tally.line())
+        elif not run_id:
+            mail_lines.append("  %s -- NOT RECORDED: no --run <run_id> given" % tally.line())
+        else:
+            try:
+                _journal.record_mail_status(ROOT, run_id, account, tally.counts, tally.unmatched)
+                mail_lines.append("  %s -- recorded (run %s)" % (tally.line(), run_id))
+            except _journal.JournalError as exc:
+                mail_lines.append("  %s -- NOT RECORDED: %s" % (tally.line(), exc))
+                unrecorded.append(account)
 
     print("ATS STATUS SWEEP — reconcile.py --ats (design-inbound-resolution.md)")
     print("=" * 78)
@@ -1753,8 +1936,18 @@ def cmd_ats(args):
     if withheld[0]:
         print("  %d candidate(s) not asked this run (cap %d) — re-seen next run"
              % (withheld[0], max_asks))
+    # M818 -- the accounting is printed whether or not it could be recorded: nothing unread is silent.
+    for line in mail_lines:
+        print(line)
+    for acct, t in tallies.items():
+        for u in t.unmatched:
+            print("UNMATCHED STATUS MAIL %s %s %s" % (acct, u["source"], u["subject"]))
+        for src in t.unread:
+            print("UNREAD STATUS MAIL %s %s -- headers could not be read; not classed" % (acct, src))
     if incomplete_all:
         print("!! INCOMPLETE COVERAGE: %s" % ", ".join(sorted(set(incomplete_all))))
+    if unrecorded:
+        print("!! MAIL STATUS NOT RECORDED: %s" % ", ".join(sorted(set(unrecorded))))
 
     if not can_write:
         if dry_run:
@@ -1764,7 +1957,7 @@ def cmd_ats(args):
                  "byte-identical to before this run. Re-run under the daily's write phase, or "
                  "take the lock by hand, to actually apply this plan.")
         return 2
-    return 1 if incomplete_all else 0
+    return 1 if (incomplete_all or unrecorded) else 0
 
 
 def cmd_verify(args):
@@ -1906,6 +2099,10 @@ def main():
                          "this run holds the lock under `runlock.py --run` (matched on the "
                          "wrapper's token); with no lock, or another holder's, it REFUSES "
                          "(exit 2).")
+    ap.add_argument("--run", metavar="RUN_ID", default=None,
+                    help="--ats: the journal run this sweep belongs to (dev #820, M818). The "
+                         "per-mailbox status-mail accounting (`mail-status`) is recorded against "
+                         "it; without it the accounting is PRINTED and says NOT RECORDED.")
     ap.add_argument("--verify", action="store_true",
                     help="--ats --verify: read-only ingestion check (design §7) — queries "
                          "each mailbox for the sender class over the window independent of "
@@ -1937,6 +2134,10 @@ def main():
         print("⛔ REFUSED — --as-of must be an ISO date (YYYY-MM-DD), got %r" % args.as_of)
         return 1
     run_date = args.as_of or datetime.date.today().isoformat()
+    if args.run is not None and not (args.ats and not args.verify):
+        print("⛔ REFUSED — --run is the journal run a `--ats` sweep records its status-mail "
+              "accounting against; it means nothing without --ats (and --verify records nothing)")
+        return 1
 
     if args.ats:
         return cmd_verify(args) if args.verify else cmd_ats(args)

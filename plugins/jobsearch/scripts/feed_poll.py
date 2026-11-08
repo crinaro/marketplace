@@ -46,9 +46,18 @@ gap `jobsearch:feeds:host:<host>` is filed, and those companies keep their NORMA
 cannot reach a vendor must not turn a monthly browser visit into a daily one). Per-board codes (404, not the
 documented shape, redirect, odd status) keep the DUE-regardless fallback.
 
-⭐ AN INTERNAL DEADLINE (review B3). `DEADLINE_S` bounds the whole network phase, safely below the Bash
-timeout the daily run passes (`skills/daily-run/SKILL.md`: 300 s). Companies not reached by it are not
+⭐ AN INTERNAL DEADLINE (review B3). The deadline bounds the whole network phase. `DEADLINE_S` (240 s) is its
+DEFAULT, safely below the Bash timeout the daily run passes (`skills/daily-run/SKILL.md`: 300 s); dev #820 / public
+#175 (0.82.0, CV2) makes it `sourcing.feeds.deadline_s` (60..1800), read by `run` (an unreadable or out-of-range value
+is NAMED and the default is used, never a silent fallback). A value above 240 does not fit a foreground Bash call, so
+the daily run starts such a poll in the background and waits for its exit. Companies not reached by it are not
 covered with `budget-exhausted`; the `feeds` event and the summary line are ALWAYS written.
+
+⭐ ROTATION (dev #820 / public #175, CV2; issue #813). A deadline that reaches only part of the list must not reach the
+same part every day. `poll(last_covered=...)` asks companies in the order least-recently-covered first: never covered,
+then the oldest `journal.feed_last_covered` date, then id. `run` passes that map and journals `covered_ids` (the
+companies actually covered, 304s included) so the next poll has something to rotate on. Before this the file order was
+the only order, and seven companies with a deadline for three read the same three every day.
 
 ⭐ THE FETCH CONTRACT (review B4). `fetch(Request) -> Response`, or raise `FetchError(code)`:
 
@@ -1401,8 +1410,17 @@ class _Workday(object):
         return self._finish(st, st["code"])
 
 
+def rotation_order(companies, last_covered):
+    """`companies` re-ordered least-recently-covered first (dev #820 / public #175, CV2): a company never covered
+    sorts before every covered one, then the older `last_covered[id]` date (`YYYY-MM-DD`, so a string compare is a
+    date compare), then the id. Pure. OURS (issue #813, recommendation 2): the deadline stays a deadline, and what
+    it reaches changes from one run to the next."""
+    lc = last_covered or {}
+    return sorted(companies, key=lambda c: (lc.get(c.get("id")) or "", str(c.get("id"))))
+
+
 def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEADLINE_S, env=None,
-         known=None, reviewed=None, locales=None, today=None, reserve_s=WORKDAY_RESERVE_S):
+         known=None, reviewed=None, locales=None, today=None, reserve_s=WORKDAY_RESERVE_S, last_covered=None):
     """`{company_id: Outcome}` (insertion-ordered) for each company in `companies` that carries an
     `ats` OBJECT -- and ONLY those (A1): a company with no `ats`, or `ats: null`, is never fetched.
 
@@ -1416,7 +1434,13 @@ def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEAD
     `known(canonical_url) -> bool` (the resolver's own de-dup predicate), `reviewed` (`{company_id: the
     company's channel last_reviewed}`), `locales` (`{company_id: 'll-CC' from the candidate's URL}`), and `today`.
     Workday runs in TWO PHASES: every company's listing (every vendor) is read before any Workday job page, and
-    phase 2 stops `reserve_s` short of `deadline_s` (B3)."""
+    phase 2 stops `reserve_s` short of `deadline_s` (B3).
+
+    `last_covered` (dev #820 / public #175, CV2) is `journal.feed_last_covered(recs)`: when it is given -- `{}`
+    included -- the companies are polled in `rotation_order`, so the deadline does not always cut the same tail
+    off. `None` keeps the caller's own order (every test that pre-dates the rotation)."""
+    if last_covered is not None:
+        companies = rotation_order(companies, last_covered)
     clock = clock or RealClock()
     cache = cache or {}
     env = os.environ if env is None else env
@@ -1679,9 +1703,23 @@ def feed_role(company, posting, vendor, channel_id, canonical_job_url, deferred)
             "channel_id": channel_id, "source": "feed:%s" % vendor}
 
 
+def feeds_deadline_s(cfg, out=print):
+    """The poll's deadline in seconds: `sourcing.feeds.deadline_s` of a loaded config (60..1800), `DEADLINE_S` (240)
+    when it is absent. A value present but unusable (not an integer, or outside 60..1800) is NAMED on `out` and the
+    default is used for this poll: an unattended poll must still run and journal, and a typo that fell back without
+    a word would read as a choice the candidate never made (dev #820 / public #175, CV2)."""
+    import config_keys as _config_keys
+    try:
+        return _config_keys.resolve_int(cfg, _config_keys.SOURCING_FEEDS_DEADLINE_S)
+    except ValueError as e:
+        out("⚠️ %s This poll uses the default, %d s." % (e, DEADLINE_S))
+        return DEADLINE_S
+
+
 def run(run_id, fetch=default_fetch, clock=None, today=None, already_locked=False, dry_run=False,
-        out=print, deadline_s=DEADLINE_S):
-    """The whole job; returns the exit code. See the module docstring."""
+        out=print, deadline_s=None):
+    """The whole job; returns the exit code. See the module docstring. `deadline_s=None` reads
+    `sourcing.feeds.deadline_s` (`feeds_deadline_s`); a caller that passes a number (a test) is not overridden."""
     import config_keys as _config_keys
     import deferred as _deferred
     import profile as _profile
@@ -1701,6 +1739,8 @@ def run(run_id, fetch=default_fetch, clock=None, today=None, already_locked=Fals
             except _journal.JournalError as e:
                 out("⚠️ could not journal the feeds-off event (%s)" % e)
         return 0
+    if deadline_s is None:
+        deadline_s = feeds_deadline_s(_read_config(), out)
     companies, channels, opps = _load("companies.jsonl"), _load("channels.jsonl"), _load("opportunities.jsonl")
     try:
         prof = _profile.load()
@@ -1739,8 +1779,10 @@ def run(run_id, fetch=default_fetch, clock=None, today=None, already_locked=Fals
             lc = ats_slug.workday_locale_for(c, opps, c["ats"])
             if lc:
                 locales[c["id"]] = lc
+    # dev #820 / public #175 (CV2): least-recently-covered first, from what earlier polls journalled as covered
+    last_covered = _journal.feed_last_covered(_journal.read(ROOT))
     outcomes = poll(to_poll, fetch=fetch, clock=clock, cache=cache, deadline_s=deadline_s, known=known,
-                    reviewed=reviewed, locales=locales, today=run_date)
+                    reviewed=reviewed, locales=locales, today=run_date, last_covered=last_covered)
     # companies the deadline never reached are not silently absent: they are NOT COVERED
     for co in to_poll:
         if co["id"] not in outcomes:
@@ -1755,6 +1797,7 @@ def run(run_id, fetch=default_fetch, clock=None, today=None, already_locked=Fals
     postings_n = unlisted_n = selected_n = sightings = 0
     failures, not_covered_map, hosts_down = {}, {}, {}
     covered_n = unchanged_n = 0
+    covered_ids = []                                          # dev #820 (CV2): who was actually covered, for rotation
     by_id = {c["id"]: c for c in to_poll}
     stamp_ids = []
 
@@ -1794,6 +1837,7 @@ def run(run_id, fetch=default_fetch, clock=None, today=None, already_locked=Fals
                 resolve(co, oc, channel)
             continue
         covered_n += 1
+        covered_ids.append(cid)
         postings_n += oc.total
         unlisted_n += oc.unlisted
         if oc.status == "unchanged":
@@ -1868,7 +1912,8 @@ def run(run_id, fetch=default_fetch, clock=None, today=None, already_locked=Fals
                 postings=postings_n, unlisted=unlisted_n, selected=selected_n,
                 captured=totals["captured"], known=totals["known"], carried=totals["carried"],
                 role_gaps=totals["role_gaps"], sightings_added=sightings, discovered=discovered,
-                ambiguous=ambiguous, quarantined=totals["quarantined"], hosts_down=hosts_down)
+                ambiguous=ambiguous, quarantined=totals["quarantined"], hosts_down=hosts_down,
+                covered_ids=covered_ids)
         except _journal.JournalError as e:
             out("⚠️ could not journal the feeds event (%s)" % e)
     out("FEEDS polled %d · covered %d (%d unchanged) · NOT COVERED %d%s · selected %d → %d captured, "

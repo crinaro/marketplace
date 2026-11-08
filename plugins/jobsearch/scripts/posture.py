@@ -206,6 +206,8 @@ def _linkedin_check(p, name, today=None):
     this posture outright (#76: reported as DISABLED, never printed as '0 of 0'), otherwise
     today's REACHED passes (`journal.linkedin_passes_reached` — a `returned` row with >= 1
     surface, never a mere `dispatched` one) must be under the key to still permit one more.
+    dev #812 / public #169: a pass whose `linkedin_sweep.py record` was REFUSED is not counted, once
+    a day (`journal.linkedin_refusals_excused`); the permit message then says so.
 
     Returns `(allowed, reason, message)`. `reason` is a `journal.REASONS` code — 'skipped-for-cost'
     for both the quota and the disabled-key case (both are cost decisions, not capability ones,
@@ -223,11 +225,19 @@ def _linkedin_check(p, name, today=None):
             "deferred.py queues the work)" % name)
     import journal as _journal
     today = today or _journal.now_iso()[:10]
-    count = _journal.linkedin_passes_reached(_journal.read(ROOT), today)
+    recs = _journal.read(ROOT)
+    count = _journal.linkedin_passes_reached(recs, today)
     if count >= limit:
         return False, "skipped-for-cost", (
             "REFUSED — quota: %d of %d LinkedIn passes already reached a surface today"
             % (count, limit))
+    # dev #812 / public #169 (owner ruling 2026-11-05: "One free refusal a day") -- a pass whose
+    # record was refused is not counted, once a day. Say so, so an admitted rerun is never silent
+    # about why the quota still has room.
+    excused = _journal.linkedin_refusals_excused(recs, today)
+    if excused:
+        return True, None, ("OK (%d refused record%s today not counted against "
+                            "linkedin_runs_per_day)" % (excused, "" if excused == 1 else "s"))
     return True, None, "OK"
 
 
@@ -1022,6 +1032,8 @@ def main():
             allowed, reason, msg = _linkedin_check(p, name, today=None)
             print(("OK: 'linkedin' is PERMITTED unattended on posture %r" % name) if allowed
                   else msg)
+            if allowed and msg != "OK":
+                print("   %s" % msg)
             if not allowed:
                 if args.run:
                     _record_linkedin_refusal(args.run, reason)

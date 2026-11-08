@@ -179,6 +179,21 @@ def load_companies():
     return [json.loads(l) for l in open(path, encoding="utf-8") if l.strip()]
 
 
+def budget_failure_since(recs, company_id):
+    """The ISO date a company's CURRENT run of consecutive `budget-exhausted` polls began, or None when its latest
+    poll did not end that way. The twin of `journal.feed_board_failure_since` for the one host-class code that
+    `feed_review` treats as a board matter once it repeats (dev #820 / public #175, B4.3): a switched-off event is
+    not a poll, as in `journal.feed_repeat_failures`, so it neither counts nor breaks the streak."""
+    import journal as _journal
+    since = None
+    for ev in reversed([e for e in _journal.feeds_events(recs) if not e.get("off")]):
+        if (ev.get("companies_not_covered") or {}).get(company_id) == "budget-exhausted":
+            since = str(ev.get("at") or "")[:10]
+        else:
+            break
+    return since
+
+
 def feed_review(chans, companies, recs, today, feeds_on=True):
     """dev #751 (design §3.7 as amended by review B1): `{channel_id: (state, text)}` for every
     company-site channel linked to a company that polls a feed. `state` is
@@ -190,9 +205,14 @@ def feed_review(chans, companies, recs, today, feeds_on=True):
                 status) and no browser review has stamped the channel since the streak began: listed
                 DUE regardless of cadence -- this is the fallback #751's 'a failing feed is loud'
                 requires;
-      cadence   everything else, and the reason is in `text`: no `feeds` event yet today, a HOST or
-                BUDGET failure (the machine cannot reach the vendor: a monthly page must not become a
-                daily browser visit), or a streak a browser review has already answered.
+                dev #820 / public #175 (B4.3, CV2): a company the poll's own deadline cut off
+                (`budget-exhausted`) on its last TWO polls (`journal.feed_repeat_failures`) is DUE the same
+                way, until one browser review is stamped after the streak began. `budget-exhausted` is not a
+                host failure: the machine reached the vendor and the poll ran out of time, so the feed has
+                not looked at this company for two runs and the browser is the only thing that will;
+      cadence   everything else, and the reason is in `text`: no `feeds` event yet today, a HOST failure
+                (the machine cannot reach the vendor: a monthly page must not become a daily browser
+                visit), a SINGLE budget-exhausted, or a streak a browser review has already answered.
 
     Pure over what it is handed: today's events and the journal's streak helper come from `recs`."""
     import journal as _journal
@@ -206,6 +226,7 @@ def feed_review(chans, companies, recs, today, feeds_on=True):
     if not events:
         return {ch["id"]: ("cadence", "no feed poll yet today") for ch in linked}
     failed = events[-1].get("companies_not_covered") or {}
+    repeated_budget = set(_journal.feed_repeat_failures(recs, "budget-exhausted", 2))   # dev #820 (B4.3)
     polled = {c.get("id") for c in companies
               if isinstance(c.get("ats"), dict) and c.get("status") != "passed"}
     out = {}
@@ -221,6 +242,14 @@ def feed_review(chans, companies, recs, today, feeds_on=True):
                                      "%s" % (code, since))
                 else:
                     out[ch["id"]] = ("due", "feed not covered: %s" % code)
+            elif code == "budget-exhausted" and cid in repeated_budget:
+                since = budget_failure_since(recs, cid)
+                lr = as_date(ch.get("last_reviewed"))
+                if since and lr is not None and lr >= datetime.date.fromisoformat(since):
+                    out[ch["id"]] = ("cadence", "feed ran out of time (budget-exhausted) on consecutive polls "
+                                     "but the page was reviewed since %s" % since)
+                else:
+                    out[ch["id"]] = ("due", "feed not covered: budget-exhausted, 2 polls running")
             else:
                 out[ch["id"]] = ("cadence", "feed not covered (%s: the machine or the poll's own "
                                  "budget, not this board)" % code)
@@ -299,14 +328,49 @@ def due_state(chans, companies, recs, cfg, today):
 BOARD_TYPES = ("job-board", "aggregator", "company-site")
 
 
-def _runnable(mechanism, caps):
-    """Can THIS machine run a `route.route()` mechanism? `plugin:<name>` is taken as runnable
-    (whether the plugin is installed is not probed -- UNDETERMINED, as today); `browser` and
-    `chrome` need the capability `whoami.probe()` reports. `feed:<vendor>` is not a mechanism the
-    sweeper acts on."""
+# dev #811 / public #170 (design-sweep-partial-failure.md N2) -- the route mechanisms the board
+# sweeper's own tool allowlist can drive: `plugin` (a site plugin's tools) and `browser` (the built-in
+# browser pane's `mcp__Claude_Browser__*` tools). `agents/board-sweeper.md`'s `tools:` line lists NO
+# `mcp__claude-in-chrome__*` tool, so `chrome` is NOT here: dispatching a sweeper to a route it holds no
+# tool for spends the kind's slot on a pass that can only fail. Granting the extension to the sweeper is
+# a capability change with its own review; when it lands this constant moves with it, and
+# `TestSweeperCanUseRoute` (which reads the `tools:` line) fails until it does.
+SWEEPER_MECHANISMS = ("plugin", "browser")
+
+
+def _capable(mechanism, caps):
+    """Can THIS machine run a `route.route()` mechanism with a tool the board sweeper's allowlist
+    could hold? `plugin:<name>` is taken as runnable (whether the plugin is installed is not probed --
+    UNDETERMINED, as today). `chrome` needs `caps["chrome"]`. `browser` needs `caps["pane"]`, the
+    Browser PANE probe (`whoami.probe_with_pane()`), NOT `caps["browser"]`: `whoami._has_browser()`
+    falls back to `_has_chrome()`, so a machine with only the Claude in Chrome extension reports
+    `browser=True` and would dispatch a sweeper that has no pane tool (dev #811 / public #170, N2).
+    A `caps` without `pane` reads as no pane, loudly (a refused dispatch), never as the fallback.
+    `feed:<vendor>` is not a mechanism the sweeper acts on."""
     if mechanism.startswith("plugin:"):
         return True
-    return bool(caps.get(mechanism)) if mechanism in ("browser", "chrome") else False
+    if mechanism == "browser":
+        return bool(caps.get("pane"))
+    return bool(caps.get("chrome")) if mechanism == "chrome" else False
+
+
+def _runnable(mechanism, caps):
+    """Can the BOARD SWEEPER use a `route.route()` mechanism on THIS machine: the machine can run it
+    (`_capable`) AND `SWEEPER_MECHANISMS` names it (dev #811 / public #170, N2). A mechanism the
+    machine has but the sweeper holds no tool for (`chrome`) is not runnable."""
+    return mechanism.split(":", 1)[0] in SWEEPER_MECHANISMS and _capable(mechanism, caps)
+
+
+def sweeper_filtered(channel, cfg, caps):
+    """dev #811 / public #170 (N2) -- the mechanisms of this channel's route that the MACHINE can run
+    but the board sweeper's allowlist cannot (`_capable` and not `_runnable`), in route order; `[]`
+    when there are none. A channel with no runnable mechanism and a non-empty answer here is stuck
+    because of `SWEEPER_MECHANISMS`; one with `[]` is stuck because the capability itself is absent.
+    `route.RouteError` from an unreadable preference or access propagates, as in `board_worklist`."""
+    import route as _route
+    requirement, _legacy = _route.parse_access(channel.get("access"))
+    mechs = _route.route(requirement, _route.preference(cfg), channel.get("id"), cfg)
+    return [m for m in mechs if _capable(m, caps) and not _runnable(m, caps)]
 
 
 def _board_admissible(c):
@@ -434,7 +498,7 @@ def board_worklist(chans, companies, recs, cfg, today, caps, *, sched, attended=
     accident. A channel of a closed, off or unreadable kind, or whose split day is closed, is absent.
     `attended=True` lifts the schedule (never the worklist).
 
-    Returns `(rows, unroutable, warnings)`. With `caps` (a `whoami.probe()` dict), `rows` are
+    Returns `(rows, unroutable, warnings)`. With `caps` (a `whoami.probe_with_pane()` dict), `rows` are
     `(channel, runnable_mechanisms, why)` for channels with at least one mechanism from
     `route.route()` this machine can run, and `unroutable` are `(channel, why)` for the rest. With
     `caps=None` nothing is routed: `rows` carries every channel the definition admits (mechanisms
@@ -566,8 +630,21 @@ def board_decision(chans, companies, recs, cfg, today, run_id, dry_run, attended
             due.append((kind, c, gate, mine))
             reasons.append(gate)
         elif stuck:
-            reasons.append("%s: no route on this machine (%d due channels need a browser)"
-                           % (kind, len(stuck)))
+            # dev #811 / public #170 (N2): when EVERY stuck channel has a route this machine can run
+            # that the board sweeper holds no tool for, say so by name; when the capability itself is
+            # absent (or only some channels are filtered), the old line stays true.
+            filtered = [sweeper_filtered(u[0], cfg, caps) for u in stuck]
+            if all(filtered):
+                names = []
+                for m in (m for f in filtered for m in f):
+                    if m not in names:
+                        names.append(m)
+                reasons.append("%s: no route the board sweeper can use on this machine "
+                               "(%d due channels: %s, which agents/board-sweeper.md holds no tool for)"
+                               % (kind, len(stuck), ", ".join(names)))
+            else:
+                reasons.append("%s: no route on this machine (%d due channels need a browser)"
+                               % (kind, len(stuck)))
         else:
             reasons.append("%s: nothing due in the worklist (%s)" % (kind, gate))
     if not due:
@@ -580,6 +657,10 @@ def board_decision(chans, companies, recs, cfg, today, run_id, dry_run, attended
         return 3, ["BOARD DISPATCH refused: %s" % why]
     if budget is False:
         return 1, ["BOARD DISPATCH no %s" % "; ".join("%s: %s" % (k, why) for k, _c, _g, _m in due)]
+    # dev #811 / public #170 (design §5.3): every id of THIS call's combined worklist, in the order it
+    # is printed. Every `dispatched` row the call writes carries the same list, so the sweeper's
+    # hand-back is checked against what it was handed (`journal.board_worklist` reads the latest row's).
+    channels = list(dict.fromkeys(r[0]["id"] for _k, _c, _g, m in due for r in m))
     if not dry_run:
         # The row carries the asked-about date, so --today answers coherently in a test; a real
         # call has no --today and the row carries the real clock (journal.now_iso()).
@@ -597,7 +678,8 @@ def board_decision(chans, companies, recs, cfg, today, run_id, dry_run, attended
             try:
                 _journal.record_pass(root or ROOT, run_id=run_id, kind="board",
                                      phase="dispatched", at=at, sweep=kind,
-                                     attended=True if attended else None, split_days=split_days)
+                                     attended=True if attended else None, split_days=split_days,
+                                     channels=channels)
             except _journal.JournalError as e:
                 return 3, ["BOARD DISPATCH refused: the dispatch row could not be written (%s)"
                            % e]
@@ -605,7 +687,7 @@ def board_decision(chans, companies, recs, cfg, today, run_id, dry_run, attended
             _posture._record_attended_note(run_id, "board", root=root)
     kinds = [k for k, _c, _g, _m in due]
     lines = ["BOARD DISPATCH yes %s %s" % (",".join(kinds), "; ".join(reasons)),
-             "  worklist: %s" % ", ".join(r[0]["id"] for _k, _c, _g, m in due for r in m)]
+             "  worklist: %s" % ", ".join(channels)]
     lines += ["  %s worklist: %s" % (k, ", ".join(r[0]["id"] for r in m)) for k, _c, _g, m in due]
     return 0, lines
 
@@ -651,7 +733,7 @@ def _board_decision_cli(args):
         return 3
     import whoami as _whoami
     code, lines = board_decision(chans, companies, recs, load_cfg(), today, args.run,
-                                 args.dry_run, args.attended, _whoami.probe(), root=ROOT,
+                                 args.dry_run, args.attended, _whoami.probe_with_pane(), root=ROOT,
                                  fresh=fresh, kinds=[args.kind] if args.kind else None)
     for line in lines:
         print(line)
@@ -727,7 +809,8 @@ def main():
 
     # dev #751 -- company feeds. A channel the feed covered TODAY is not listed for the browser (the
     # feed is its review); one whose feed failed with a BOARD code is listed DUE whatever its
-    # cadence; a host/budget failure keeps the cadence. A `manual-candidate` channel is never in the
+    # cadence; a host failure, or a single budget-exhausted, keeps the cadence (dev #820: a budget-exhausted
+    # on two polls running is DUE like a board failure). A `manual-candidate` channel is never in the
     # board worklist: it is a task for the candidate, printed apart below. dev #770-4: the
     # classification itself is `due_state()`, the one definition `board_worklist()` shares.
     import journal as _journal

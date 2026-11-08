@@ -35,7 +35,9 @@
     "employer_posting",
     "passed_from",
     "duplicate_of",
-    "distinct_from"
+    "distinct_from",
+    "jd_read",
+    "capture"
    ],
    "required": [
     "id",

@@ -846,7 +846,8 @@ def plan_prune(root, filename=None, today=None, person_anchor=False):
         with open(path, encoding="utf-8") as fh:
             md = fh.read()
     except OSError:
-        return {"new_text": None, "relocations": [], "deleted_only": [], "unresolved": []}
+        return {"new_text": None, "relocations": [], "deleted_only": [], "unresolved": [],
+                "malformed": []}
 
     import datetime
     today = today or datetime.date.today().isoformat()
@@ -926,11 +927,45 @@ def plan_prune(root, filename=None, today=None, person_anchor=False):
                                "channel-only involvement, and no **To:** contact resolving to "
                                "a person (dev #686) — left in place, not dropped"))
 
+    # dev #819 / public #174 — an entry about to be DELETED that is really two entries welded
+    # together takes the other one with it. `cmd_prune` refuses on this; the frozen migration
+    # ignores the (additive) key and keeps its old output.
+    removing = set(remove_spans)
+    malformed = []
+    for m in ENTRY_RE.finditer(md):
+        if m.span() in removing:
+            why = entry_defect(m.group(2))
+            if why:
+                malformed.append((m.group(1).strip(), why))
+
     new_text = md
     for start, end in sorted(remove_spans, reverse=True):
         new_text = new_text[:start] + new_text[end:]
     return {"new_text": new_text, "relocations": relocations,
-           "deleted_only": deleted_only, "unresolved": unresolved}
+           "deleted_only": deleted_only, "unresolved": unresolved, "malformed": malformed}
+
+
+_TO_LINE_RE = re.compile(r"^\*\*To:\*\*", re.M | re.I)
+# A `## ` heading that follows a non-space character on a `**Label:**` meta line: the shape
+# the old `brief.py --rebrief` left (`**Brief:** brief:...## Next entry`). `ENTRY_RE` splits on
+# `^##`, so it cannot see this heading and reads the next entry as part of this one.
+_GLUED_HEADING_RE = re.compile(r"^\*\*[^\n]*\S##\s+\S", re.M)
+
+
+def entry_defect(body):
+    """Why an entry's body cannot be trusted to be ONE entry, or None. Three shapes, each one
+    that makes `ENTRY_RE`'s span longer than the entry the owner wrote: a heading glued onto a
+    meta line, a second `**To:**` line, a second `**Medium:**` line. Each entry carries exactly
+    one of each, so a second is another entry's (dev #819 / public #174)."""
+    m = _GLUED_HEADING_RE.search(body)
+    if m:
+        return ("a `## ` heading is glued onto the end of a meta line (%r), so the entry after "
+                "it is inside this one" % m.group(0)[-40:])
+    if len(_TO_LINE_RE.findall(body)) > 1:
+        return "more than one **To:** line, so another entry is inside this one"
+    if len(list(MEDIUM_RE.finditer(body))) > 1:
+        return "more than one **Medium:** line, so another entry is inside this one"
+    return None
 
 
 def cmd_prune(root, already_locked=False):
@@ -948,6 +983,20 @@ def cmd_prune(root, already_locked=False):
     if plan["new_text"] is None:
         print("no %s found — nothing to prune" % FILES[0])
         return 0
+
+    # dev #819 / public #174 — BEFORE any relocation lands: deleting a welded entry would delete
+    # the entry glued to it, with no row anywhere. Refuse, name it, change nothing.
+    if plan["malformed"]:
+        print("PRUNE — drafts.md working set")
+        print("  ⛔ REFUSED — %d entr%s it would delete %s malformed; NOTHING was changed "
+              "(no row relocated, drafts.md untouched):"
+              % (len(plan["malformed"]), "y" if len(plan["malformed"]) == 1 else "ies",
+                 "is" if len(plan["malformed"]) == 1 else "are"))
+        for title, why in plan["malformed"]:
+            print("    %s: %s" % (title[:60], why))
+        print("  Split the entries apart in %s (one `## ` heading per line start), then re-run "
+              "`--prune`." % FILES[0])
+        return 1
 
     import subprocess
     record_py = os.path.join(os.path.dirname(os.path.abspath(__file__)), "record.py")

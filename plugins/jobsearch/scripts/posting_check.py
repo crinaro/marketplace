@@ -20,8 +20,8 @@ file is every pure rule about that object, in one place, so no other script re-d
     label(opp, today)       the ONE label every surface renders, derived ONLY from the field (S3): prose,
                             a research log line and the look cache are never read.
     in_watch_list(opp, triage_missing)
-                            which roles are re-checked (pursue, plus triaged decide-state roles). The
-                            triage result is an ARGUMENT, so this module imports neither `your_move`
+                            which roles are re-checked (pursue, plus `ready` decide-state roles). The
+                            lifecycle result is an ARGUMENT, so this module imports neither `your_move`
                             nor `validate_data` (N8: no import cycle; a test imports each alone).
     employer_owned / capture_confirms
                             is this URL the employer's own (C4): decided from the company's `ats`, its
@@ -531,12 +531,14 @@ def in_watch_list(opp, triage_missing):
     """Which roles are re-checked, defined once. A role is on the list when either holds:
 
       pursue   `verdict == "pursue"` and the status is not passed or expired;
-      decide   `status == "backlog"`, `verdict == "undecided"` and the triage gate is empty.
+      decide   `status == "backlog"`, `verdict == "undecided"` and the lifecycle gate is empty.
 
-    `triage_missing` is the RESULT of `your_move.triage_missing(opp)` (a list), passed in by the caller:
-    this module imports neither `your_move` nor `validate_data` (N8). It is consulted only for a
-    backlog+undecided role, where `None` is a ValueError: an unknown triage result must never be read as
-    'triaged' or as 'not triaged'. A `triaging` role is not on the list (research reads it first)."""
+    `triage_missing` is the RESULT of `lifecycle.watch_missing(opp)` (a list: `[]` for a `ready` or
+    `decided` role, else the role's stage name), passed in by the caller: this module imports neither
+    `your_move`, `lifecycle` nor `validate_data` at the top (N8). It is consulted only for a
+    backlog+undecided role, where `None` is a ValueError: an unknown result must never be read as
+    'ready' or as 'not ready'. A role that is not yet read and screened (any stage but `ready`) is not
+    on the list. The parameter keeps its 0.81 name: the signature is frozen (dev #820)."""
     if not isinstance(opp, dict):
         return False
     status, verdict = opp.get("status"), opp.get("verdict")
@@ -1058,8 +1060,11 @@ def _load_jsonl(root, name, required):
 
 
 def _default_triage(opp):
-    import your_move
-    return your_move.triage_missing(opp)
+    """dev #820 / public #175 (B2.3, LC1) -- the watch-list gate for a backlog undecided role: `[]` when
+    the lifecycle says the role is `ready` (or `decided`), else `[<its stage name>]`. It is
+    `lifecycle.watch_missing`, the one definition; the 0.81 `your_move.triage_missing` is not called."""
+    import lifecycle
+    return lifecycle.watch_missing(opp)
 
 
 def _default_record(root, today):

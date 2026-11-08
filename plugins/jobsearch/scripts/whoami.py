@@ -144,6 +144,26 @@ def _has_browser():
     return _has_chrome()          # an environment with Chrome can always render a page
 
 
+def _has_pane():
+    """dev #811 / public #170 (N2) -- is the built-in Browser PANE (the `mcp__Claude_Browser__*` tool
+    family) configured, with NO Chrome fallback? `_has_browser()` answers True for an environment that
+    only has the Claude in Chrome extension (it can render a page), which is right for research routing
+    and wrong for "does the board sweeper hold a tool for this route": that agent's `tools:` line lists
+    the pane's tools and no extension tool. ADDITIVE and used by nothing but `probe_with_pane()`; it is
+    not a CAPABILITIES token (`--can`, the report and the queue's `requires` are unchanged). Reads the
+    same configuration `_has_browser()` reads for the pane, so keep the two in step."""
+    for rel in (".mcp.json", ".claude/settings.json", ".claude/settings.local.json"):
+        p = os.path.join(ROOT, rel)
+        if os.path.exists(p):
+            try:
+                with open(p, encoding="utf-8") as fh:
+                    if "Claude_Browser" in fh.read():
+                        return True
+            except Exception:
+                pass
+    return False
+
+
 PROBES = {
     "repo": _has_repo,
     "python": _has_python,
@@ -160,6 +180,18 @@ def probe():
             caps[name] = bool(PROBES[name]())
         except Exception:
             caps[name] = False
+    return caps
+
+
+def probe_with_pane():
+    """dev #811 / public #170 (N2) -- `probe()` plus `pane`, for the ONE caller that must ask whether
+    the board sweeper holds a tool for a route (`channels_due --board-decision`). `probe()` itself, and
+    every key in it, is unchanged; `pane` is False on any probe error, never absent."""
+    caps = probe()
+    try:
+        caps["pane"] = bool(_has_pane())
+    except Exception:
+        caps["pane"] = False
     return caps
 
 

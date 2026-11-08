@@ -66,7 +66,12 @@ export function needsYouLines(snap: any): string[] {
   const ny = snap && snap.needs_you
   if (notChecked(ny)) return [notChecked(ny) as string]
   if (!Array.isArray(ny)) return ['NOT CHECKED (no data yet)']
-  return ny.map((r: any) => '[' + (r.act_by || 'no date') + '] ' + r.kind + ': ' + r.title)
+  // dev #820 / public #175 (N18): the pipeline row's title IS scripts/lifecycle.py's start line (the failure
+  // and waiting counts, the oldest age, what was not looked at), the same string the coordinator prints.
+  // It is drawn VERBATIM, with no date or kind prefix, so the fast panel can never word it differently.
+  return ny.map((r: any) =>
+    r.kind === 'pipeline' ? String(r.title) : '[' + (r.act_by || 'no date') + '] ' + r.kind + ': ' + r.title,
+  )
 }
 
 // dev #761: roles whose stored comp removal jobsearch 0.73.0 would not repeat. The pane only DRAWS

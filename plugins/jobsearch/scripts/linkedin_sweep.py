@@ -25,12 +25,29 @@ Three defects shared one shape: the model was asked to make a judgement a script
 
 Usage:
     python3 scripts/linkedin_sweep.py worklist --run <id> [--one-off contact:<id>]
-    python3 scripts/linkedin_sweep.py record   --run <id> [--one-off contact:<id>] [--file PATH]
+    python3 scripts/linkedin_sweep.py record   --run <id> [--one-off contact:<id>] [--file PATH] [--check]
 
-`record` reads the runner's hand-back from `--file` (or stdin). Exit codes:
+`record` reads the runner's hand-back from `--file` (or stdin). Exit codes (precedence 4 > 2 > 5 > 3 > 0):
     0  every watched person concluded            3  some person NOT concluded (pass still closes)
-    2  input refused; nothing journaled          4  the pass FAILED (a reserved first line, or no
-                                                    list surface REACHED); the owed row stands
+    2  STRUCTURAL refusal (no block, two blocks, a bad header, a run that is not this call's, no END
+       line) or an unreadable --file; no sighting journaled; the raw hand-back is kept (an unreadable
+       file cannot be); the owed pass stays owed
+    4  the pass FAILED (a reserved first line, or no list surface REACHED, with or without line faults);
+       the owed row stands, the raw hand-back is kept when a block was present
+    5  RECORDED WITH LINE FAULTS: every readable line is journaled, the owed pass is closed, and each
+       faulty line is a gap of its own; do NOT re-dispatch the runner. The raw hand-back is kept.
+`record --check` runs the SAME judgement, writes nothing at all, prints each fault and one `verdict:`
+line (`verdict: clean` only with exit 0), and exits with the code the real call would.
+
+## One rule, stated once (dev #811 / public #170, dev #812 / public #169)
+
+`handback.py` holds the contract this file shares with `deferred.py --add-roles`: a hand-back block is
+refused whole only for a STRUCTURAL fault, every other fault is a LINE fault (the line is dropped, it
+is a `partial-results` gap naming the line, its text and the rule, everything else that parsed is
+recorded), the raw hand-back is kept whenever a call refuses or records a fault, and `--check` writes
+nothing. `record` is `apply(judge(...))`: `judge` is pure and returns a `Verdict`, `apply` is the only
+function that writes. Every dropped line gets one taint class (`taint_of`): T1 taints nothing, T2 taints
+the contacts it names, T3 taints the block, and a tainted contact or block is NEVER concluded `empty`.
 
 ## The JOB SEARCH window rides the same worklist (dev #489 / public #102, dev #692, R5)
 
@@ -54,10 +71,12 @@ daily pass: the one-off runs with the owner present and is not the daily pass.
 
 ## The grammar (one definition; `agents/linkedin-runner.md` carries it byte-equal, test-enforced)
 
-`SWEEP_GRAMMAR` below. The parser is strict and all-or-nothing: a line inside a block that matches no
-form refuses the WHOLE block (exit 2, the line printed, nothing journaled). A `contact:<id>` absent
-from the watch set is refused, `VIEW` included. Principle 4 (a fact a run knows goes into the
-queryable store, never narrative; an unparseable value is loud).
+`SWEEP_GRAMMAR` below. A line inside the block that matches no
+form, or breaks a value rule, is a LINE fault (exit 5): it is dropped, printed with its line number and
+the rule, filed as a gap, and the rest of the block is recorded. Before 0.82.0 it refused the WHOLE
+block (exit 2) and every sighting in it was lost with the dispatch. A `contact:<id>` absent from the
+watch set is a line fault that taints the block, `VIEW` included. Principle 4 (a fact a run knows goes
+into the queryable store, never narrative; an unparseable value is loud).
 
 Python 3.9+. Standard library only.
 """
@@ -74,6 +93,7 @@ sys.path.insert(0, _HERE)
 from _root import profile_root  # noqa: E402
 import deferred  # noqa: E402
 import graph as _graph  # noqa: E402
+import handback  # noqa: E402     # handback.py: the hand-back contract (dev #811 / #812)
 import journal  # noqa: E402
 
 # The four LIST surfaces a reply sweep reads. `notifications` and `degree` are coverage vocabulary
@@ -107,7 +127,7 @@ PROFILE_URL_RE = re.compile(r"^https://www\.linkedin\.com/in/[^/\s]+/?$")
 PASS_FAILURES = ("BROWSER UNAVAILABLE", "NOT SIGNED IN", "RENDER STALLED")
 PANE_HELD = "PANE HELD"
 
-EXIT_OK, EXIT_REFUSED, EXIT_INCOMPLETE, EXIT_PASS_FAILED = 0, 2, 3, 4
+EXIT_OK, EXIT_REFUSED, EXIT_INCOMPLETE, EXIT_PASS_FAILED, EXIT_LINE_FAULTS = 0, 2, 3, 4, 5
 
 # ⭐ THE GRAMMAR — byte-equal to the fenced copy between `<!-- sweep-grammar:begin -->` and
 # `<!-- sweep-grammar:end -->` in plugins/jobsearch/agents/linkedin-runner.md. Edit both in the same
@@ -346,13 +366,100 @@ def build_worklist(root, run_id, one_off=None):
 
 
 # ---------------------------------------------------------------------------------------------
-# parsing a hand-back
+# parsing a hand-back: a STRUCTURAL fault refuses, every other fault is a LINE fault
+# (dev #812 / public #169; the rule is handback.py's, shared with deferred.py --add-roles)
 # ---------------------------------------------------------------------------------------------
 
+SWEEP_LINE_GAP_SCOPE = "linkedin:sweep-line:%s"            # (<line>:<h8> | block:<check>)
+ONE_OFF_LINE_GAP_SCOPE = "linkedin:sweep-line-oneoff:%s"   # a family of its own: a one-off never closes the daily pass's gaps
+OUTSIDE_BLOCK = "outside-block"
+
+# The key set of each line form, for T2's "no free text" condition (N1, condition 3).
+_FORM_KEYS = {"SEEN": ("on", "state", "date"), "VIEW": ("kind", "at", "saw")}
+# A line that LOOKS like the sweep grammar. `SEEN distinct=<n>` is the ROLES block's own line (the
+# runner writes both blocks into one file), so it is not sweep-shaped.
+_GRAMMAR_SHAPED = re.compile(r"^(SEEN|VIEW|SURFACE) ")
+_ROLES_SEEN = re.compile(r"^SEEN distinct=\d+$")
+
+
+def named(line):
+    """Every token that follows `contact:` on the line, split on `,` (so a joined pair counts as two).
+    An empty `contact:` yields one empty token, which is in no watch set."""
+    out = []
+    for m in re.finditer(r"contact:(\S*)", line):
+        out.extend(m.group(1).split(","))
+    return out
+
+
+def _needles(pid, name):
+    """What a remainder must not contain for a person: their id, their display name, and each word of
+    the name of three or more characters, compared as case-insensitive substrings."""
+    out = [str(pid).lower()]
+    full = " ".join(str(name or "").split()).lower()
+    if full:
+        out.append(full)
+        out += [w for w in full.split() if len(w) >= 3]
+    return [x for x in out if x]
+
+
+def taint_of(raw, watch):
+    """⭐ dev #812 / public #169 (design §15 N1) -- what a DROPPED line that could have carried a fact
+    about a watched person does to the verdict. Returns `("T2", {ids})` when the line taints exactly
+    those contacts, else `("T3", None)`, which taints the whole block.
+
+    T2 needs ALL FOUR to hold; anything else is T3:
+      1. a recognised prefix: the line starts `SEEN contact:` or `VIEW contact:`;
+      2. watched names only: `named(line)` is non-empty and every element is exactly in the watch set;
+      3. no free text: after the first token and the `contact:<ids>` token, every remaining token is
+         `<key>=<value>` with the key in the form's key set, no key twice (a `;`, `also` or a name fails);
+      4. the remainder names no one: with every `contact:<token>` removed, the line contains no watch-set
+         id and no watch-set name (case-insensitive substrings; each word of three or more characters of
+         a name is also checked alone).
+
+    THE INVARIANT. A dropped line inside the block can withhold a fact about watched person P from
+    `judge` in exactly two ways: by naming P, or by being free text. Naming P as `contact:P` is T2 for P
+    or T3; naming P anywhere else is T3 (4); free text is T3 (3); a non-prefixed line is T3 (1). A full
+    SURFACE line (T1, decided by the caller) can only remove coverage. STATED RESIDUAL: a person referred
+    to only inside a `key=value` value, by something that is neither their id nor any word of their name
+    (for example `state=her-colleague`), is outside the rule; the grammar ties a value to the line's own
+    `contact:`, and a fuzzy rule would need its own proof."""
+    if not (raw.startswith("SEEN contact:") or raw.startswith("VIEW contact:")):       # 1
+        return "T3", None
+    names = named(raw)
+    if not names or any(n not in watch for n in names):                                 # 2
+        return "T3", None
+    toks = raw.split()
+    keys, used = _FORM_KEYS[toks[0]], set()
+    for tok in toks[2:]:                                                                # 3
+        key, eq, val = tok.partition("=")
+        if not eq or not val or key not in keys or key in used:
+            return "T3", None
+        used.add(key)
+    rest = re.sub(r"contact:\S*", "", raw).lower()                                      # 4
+    for pid, w in watch.items():
+        if any(needle in rest for needle in _needles(pid, w.get("name"))):
+            return "T3", None
+    return "T2", set(names)
+
+
+def _h8(raw):
+    import hashlib
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+
+
 def parse_sweep(text, run_id, watch):
-    """`(surfaces, seen, views)` from the one SWEEP block in `text`. Strict, all-or-nothing:
-    raises `SweepRefused` naming the first line it cannot read. Prose outside the block is
-    ignored — the block is the contract, not the hand-back around it."""
+    """`{"surfaces", "seen", "views", "dropped"}` from the one SWEEP block in `text`.
+
+    ⭐ TWO KINDS OF FAULT (dev #812 / public #169, handback.py). A STRUCTURAL fault -- no block, two
+    blocks, a header that does not parse, a `run=` that is not this call's, no END line -- raises
+    `SweepRefused` naming it: without those nothing says which lines belong to this call. EVERY OTHER
+    fault is a LINE fault: the line is dropped and RETURNED in `dropped` as `(line number, text, rule,
+    class, names)` where class is `T1` (taints nothing), `T2` (taints `names`) or `T3` (taints the
+    block), never raised. A dropped line used to refuse the whole block and lose every sighting in it.
+    Prose outside the block is ignored EXCEPT a line that starts `SEEN `, `VIEW ` or `SURFACE `, which
+    is a T3 line fault with the rule `outside-block` (N12). T1 is a line that matched the SURFACE form
+    in FULL and failed a value check (the surface is then unreported, so it covers nobody); a line that
+    only STARTS `SURFACE ` fits no form and goes to `taint_of`."""
     lines = text.splitlines()
     begins = [i for i, ln in enumerate(lines) if ln.startswith("--- SWEEP")]
     if not begins:
@@ -372,7 +479,36 @@ def parse_sweep(text, run_id, watch):
     except StopIteration:
         raise SweepRefused("the SWEEP block has no `%s` line" % _END)
 
-    surfaces, seen, views = {}, [], []
+    surfaces, seen, views, dropped = {}, [], [], []
+    surface_line = {}                   # token -> (line number, text) of its first report
+    doubled = set()                     # tokens reported more than once: every report is dropped
+
+    def drop(n, raw, rule, cls, names=None):
+        dropped.append((n, raw, rule, cls, names or set()))
+
+    def classify(n, raw, rule):
+        cls, names = taint_of(raw, watch)
+        drop(n, raw, rule, cls, names)
+
+    def put_surface(tok, n, raw, info):
+        if tok not in journal.LINKEDIN_SWEEP_SURFACES:
+            drop(n, raw, "%r is not a surface token (%s)"
+                 % (tok, ", ".join(sorted(journal.LINKEDIN_SWEEP_SURFACES))), "T1")
+            return
+        rule = "surface %s is reported twice (both lines dropped)" % tok
+        if tok in doubled:
+            drop(n, raw, rule, "T1")
+            return
+        if tok in surfaces:
+            first_n, first_raw = surface_line[tok]
+            del surfaces[tok]
+            doubled.add(tok)
+            drop(first_n, first_raw, rule, "T1")
+            drop(n, raw, rule, "T1")
+            return
+        surfaces[tok] = info
+        surface_line[tok] = (n, raw)
+
     for i in range(begins[0] + 1, end):
         raw = lines[i].strip()
         if not raw:
@@ -383,69 +519,77 @@ def parse_sweep(text, run_id, watch):
             shown, total = int(sm.group("shown")), sm.group("total")
             total = None if total == "?" else int(total)
             if total is not None and shown > total:
-                raise SweepRefused("line %d: shown=%d exceeds total=%d: %r" % (n, shown, total, raw))
-            _put_surface(surfaces, sm.group("tok"), n, raw, {
+                drop(n, raw, "shown=%d exceeds total=%d" % (shown, total), "T1")
+                continue
+            put_surface(sm.group("tok"), n, raw, {
                 "status": "REACHED", "shown": shown, "total": total,
                 "oldest": None if sm.group("oldest") == "?" else sm.group("oldest")})
             continue
         sm = _SURF_UNREACHABLE.match(raw)
         if sm:
             if sm.group("reason") not in journal.REASONS:
-                raise SweepRefused("line %d: reason=%s is not a journal.REASONS code: %r"
-                                   % (n, sm.group("reason"), raw))
-            _put_surface(surfaces, sm.group("tok"), n, raw,
-                         {"status": "UNREACHABLE", "reason": sm.group("reason")})
+                drop(n, raw, "reason=%s is not a journal.REASONS code" % sm.group("reason"), "T1")
+                continue
+            put_surface(sm.group("tok"), n, raw,
+                        {"status": "UNREACHABLE", "reason": sm.group("reason")})
             continue
         sm = _SURF_NOT_ATTEMPTED.match(raw)
         if sm:
-            _put_surface(surfaces, sm.group("tok"), n, raw, {"status": "NOT-ATTEMPTED"})
+            put_surface(sm.group("tok"), n, raw, {"status": "NOT-ATTEMPTED"})
             continue
         sm = _SEEN.match(raw)
         if sm:
             state, on, d = sm.group("state"), sm.group("on"), sm.group("date")
             if on not in _STATE_SURFACES[state]:
-                raise SweepRefused("line %d: state=%s is not read on %s: %r" % (n, state, on, raw))
+                classify(n, raw, "state=%s is not read on %s" % (state, on))
+                continue
             if state == "reply" and d == "?":
-                raise SweepRefused("line %d: a reply needs its date (it is journaled as "
-                                   "thread:<date>): %r" % (n, raw))
-            _need_watched(sm.group("id"), watch, n, raw)
+                classify(n, raw, "a reply needs its date (it is journaled as thread:<date>)")
+                continue
+            if sm.group("id") not in watch:
+                drop(n, raw, "contact:%s is not in this sweep's watch set (an unwatched person's "
+                             "sighting is never recorded)" % sm.group("id"), "T3")
+                continue
             seen.append({"id": sm.group("id"), "on": on, "state": state,
-                         "date": None if d == "?" else d, "line": n})
+                         "date": None if d == "?" else d, "line": n, "raw": raw})
             continue
         sm = _VIEW.match(raw)
         if sm:
             kind, saw = sm.group("kind"), sm.group("saw")
             if (kind == "thread") != (saw == "empty" or saw.startswith("message:")):
-                raise SweepRefused("line %d: a %s view cannot see %r: %r" % (n, kind, saw, raw))
+                classify(n, raw, "a %s view cannot see %r" % (kind, saw))
+                continue
             if journal._parse_iso(sm.group("at")) is None:
-                raise SweepRefused("line %d: at=%s is not an ISO time: %r" % (n, sm.group("at"), raw))
-            _need_watched(sm.group("id"), watch, n, raw)
+                classify(n, raw, "at=%s is not an ISO time" % sm.group("at"))
+                continue
+            if sm.group("id") not in watch:
+                drop(n, raw, "contact:%s is not in this sweep's watch set (an unwatched person's "
+                             "sighting is never recorded)" % sm.group("id"), "T3")
+                continue
             views.append({"id": sm.group("id"), "kind": kind, "at": sm.group("at"),
                           "saw": saw, "line": n})
             continue
-        raise SweepRefused("line %d is not a line of the SWEEP grammar: %r" % (n, raw))
+        classify(n, raw, "not a line of the SWEEP grammar")
 
+    kept_seen = []
     for s in seen:
         info = surfaces.get(s["on"])
         if not info or info["status"] != "REACHED":
-            raise SweepRefused("line %d: SEEN on=%s but that surface is not reported REACHED"
-                               % (s["line"], s["on"]))
-    return surfaces, seen, views
+            classify(s["line"], s["raw"], "SEEN on=%s but that surface is not reported REACHED"
+                     % s["on"])
+        else:
+            kept_seen.append(s)
 
-
-def _put_surface(surfaces, tok, n, raw, info):
-    if tok not in journal.LINKEDIN_SWEEP_SURFACES:
-        raise SweepRefused("line %d: %r is not a surface token (%s): %r"
-                           % (n, tok, ", ".join(sorted(journal.LINKEDIN_SWEEP_SURFACES)), raw))
-    if tok in surfaces:
-        raise SweepRefused("line %d: surface %s is reported twice: %r" % (n, tok, raw))
-    surfaces[tok] = info
-
-
-def _need_watched(pid, watch, n, raw):
-    if pid not in watch:
-        raise SweepRefused("line %d: contact:%s is not in this sweep's watch set (an unwatched "
-                           "person's sighting is never recorded): %r" % (n, pid, raw))
+    # N12 -- a grammar-shaped line outside the block is judged by nobody, so it may hide a fact.
+    for i, ln in enumerate(lines):
+        if begins[0] <= i <= end:
+            continue
+        raw = ln.strip()
+        if _GRAMMAR_SHAPED.match(raw) and not _ROLES_SEEN.match(raw):
+            drop(i + 1, raw, "%s: a SEEN, VIEW or SURFACE line outside the SWEEP block is judged by "
+                             "nobody, so it may hold a fact" % OUTSIDE_BLOCK, "T3")
+    dropped.sort(key=lambda d: d[0])
+    return {"surfaces": surfaces, "seen": kept_seen, "views": views, "dropped": dropped}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -485,92 +629,159 @@ def _slot_gaps(pid, w, surfaces, thread_viewed, profile_viewed):
     return missing
 
 
-def record(root, run_id, text, watch, one_off=False, at=None, out=print):
-    """Judge one hand-back; journal what it proves; return the exit code. See the module
-    docstring for the codes and for what closes the owed pass row."""
-    at = at or journal.now_iso()
-    first = next((ln.strip() for ln in text.splitlines() if ln.strip()), "")
+class Verdict(object):
+    """What `judge` decided, as data. `apply` is the only thing that writes; `--check` prints `lines`
+    and the `verdict:` line and never calls it. Fields: `name` (one of `journal.RECORD_VERDICTS`),
+    `exit`, `detail` (the reason, for a `refused` / `pass-failed` verdict line), `faults` (a list of
+    `handback.Fault`), `lines` (what to print, in order), `probes` (`[(pid, result)]` to journal),
+    `gaps` (`[(scope, reason, closes_when)]`, the INCOMPLETE COVERAGE gaps), `owed` (`"close"` |
+    `"queue"` | `None`: what to do to the owed pass row), `keep` (copy the raw hand-back), `judged`
+    (the block's lines were judged, so stale line gaps may close), `reached` / `unreachable` /
+    `not_attempted` (the parsed SURFACE statuses), `concluded` / `not_concluded`, `one_off`,
+    `not_measured` (print the NOT MEASURED line) and `summary` (print the SWEEP RECORDED line)."""
 
-    def _owed():
-        if one_off:
-            out("(a one-off never queues the daily pass)")
-            return
-        row, added = deferred.queue_linkedin_pass()
-        out("LINKEDIN PASS STILL OWED: %s %s" % ("queued" if added else "already pending", row["id"]))
+    def __init__(self, one_off=False):
+        self.name = None
+        self.exit = None
+        self.detail = None
+        self.faults = []
+        self.lines = []
+        self.probes = []
+        self.gaps = []
+        self.owed = None
+        self.keep = False
+        self.judged = False
+        self.reached = []
+        self.unreachable = []
+        self.not_attempted = []
+        self.concluded = 0
+        self.not_concluded = 0
+        self.one_off = one_off
+        self.not_measured = False
+        self.summary = False
+
+    def verdict_line(self):
+        """The one `verdict:` line (§3.4), through `handback.verdict_line`. `verdict: clean` is
+        returned only for exit 0."""
+        n = len(self.faults)
+        if self.name == "clean":
+            return handback.verdict_line("clean")
+        if self.name == "incomplete":
+            return handback.verdict_line("incomplete", detail=self.not_concluded)
+        if self.name == "line-faults":
+            return handback.verdict_line("line-faults", n, detail=self.not_concluded)
+        if self.name == "refused":
+            return handback.verdict_line("refused", detail=self.detail)
+        if self.name == "pass-failed":
+            return handback.verdict_line("pass-failed", detail=self.detail)
+        return handback.verdict_line("pane-held")
+
+
+def judge(text, run_id, watch, one_off=False, recs=None):
+    """⭐ dev #812 / public #169 -- PURE: judge one hand-back and return a `Verdict`; write nothing.
+    `recs` is the journal's records (for the gaps already open). Precedence, highest first: 4 > 2 > 5 >
+    3 > 0. A reserved first line is a pass outcome the runner meant to report and wins over a refusal;
+    a structural fault refuses before any line is judged; line faults beat an uncovered person (5 over
+    3); line faults with NO list surface reached are a failed pass (4, N13), because nothing was
+    concluded and the pass is still owed."""
+    v = Verdict(one_off)
+    lines = text.splitlines()
+    first = next((ln.strip() for ln in lines if ln.strip()), "")
+    has_block = any(ln.startswith("--- SWEEP") for ln in lines)
 
     if first.startswith(PANE_HELD):
-        out("PANE HELD — another run holds the pane and is doing this work; nothing queued, "
-            "nothing recorded.")
-        return EXIT_PASS_FAILED
+        v.name, v.exit, v.keep = "pane-held", EXIT_PASS_FAILED, has_block
+        v.lines.append("PANE HELD — another run holds the pane and is doing this work; nothing "
+                       "queued, no sighting recorded.")
+        return v
     for token in PASS_FAILURES:
         if first.startswith(token):
-            out("PASS FAILED — %s (the hand-back's first line). The block, if any, was not read." % token)
-            _owed()
-            return EXIT_PASS_FAILED
+            v.name, v.exit, v.keep, v.owed = "pass-failed", EXIT_PASS_FAILED, has_block, "queue"
+            v.detail = token.lower()
+            v.lines.append("PASS FAILED — %s (the hand-back's first line). The block, if any, was "
+                           "not read." % token)
+            return v
 
     try:
-        surfaces, seen, views = parse_sweep(text, run_id, watch)
+        parsed = parse_sweep(text, run_id, watch)
     except SweepRefused as e:
-        out("⛔ REFUSED — %s. Nothing was journaled." % e)
-        _owed()
-        return EXIT_REFUSED
+        v.name, v.exit, v.keep, v.owed, v.detail = "refused", EXIT_REFUSED, True, "queue", str(e)
+        v.lines.append("⛔ REFUSED — %s. No sighting or conclusion was journaled." % e)
+        return v
 
-    by = "linkedin-runner"
-    exit_code = EXIT_OK
-    concluded, not_concluded = 0, 0
+    v.judged = True
+    surfaces, seen, views = parsed["surfaces"], parsed["seen"], parsed["views"]
+    tainted, block_taint = set(), False
+    for n, raw, rule, cls, names in parsed["dropped"]:
+        v.faults.append(handback.Fault(n, " ".join(raw.split())[:200], "%d:%s" % (n, _h8(raw)), rule))
+        if cls == "T2":
+            tainted |= names
+        elif cls == "T3":
+            block_taint = True
+    v.lines += [handback.describe(f) for f in v.faults]
+    for tok, info in sorted(surfaces.items()):
+        {"REACHED": v.reached, "UNREACHABLE": v.unreachable,
+         "NOT-ATTEMPTED": v.not_attempted}[info["status"]].append(tok)
+
+    out = v.lines
+    exit_incomplete = False
     incomplete = {}                      # surface token -> [(person id, since)]
     seen_by = {}
     for s in seen:
         seen_by.setdefault(s["id"], []).append(s)
     views_by = {}
-    for v in views:
-        views_by.setdefault(v["id"], []).append(v)
+    for vw in views:
+        views_by.setdefault(vw["id"], []).append(vw)
 
     for pid in sorted(watch):
         w = watch[pid]
         mine, vws = seen_by.get(pid, []), views_by.get(pid, [])
         accepted = [s for s in mine if s["state"] == "accepted"]
-        accepted_view = [v for v in vws if v["kind"] == "profile" and v["saw"] == "degree:1"]
+        accepted_view = [x for x in vws if x["kind"] == "profile" and x["saw"] == "degree:1"]
         reply_dates = [s["date"] for s in mine if s["state"] == "reply"]
-        reply_dates += [v["saw"][len("message:"):] for v in vws
-                        if v["kind"] == "thread" and v["saw"].startswith("message:")]
+        reply_dates += [x["saw"][len("message:"):] for x in vws
+                        if x["kind"] == "thread" and x["saw"].startswith("message:")]
         sighting = False
-        for v in vws:                                # a view that proves neither is only printed
-            if v["kind"] == "profile" and v["saw"] != "degree:1":
-                out("VIEWED contact:%s kind=profile %s" % (pid, v["saw"]))
+        for x in vws:                                # a view that proves neither is only printed
+            if x["kind"] == "profile" and x["saw"] != "degree:1":
+                out.append("VIEWED contact:%s kind=profile %s" % (pid, x["saw"]))
         for s in mine:
             if s["state"] == "pending":
-                out("PENDING contact:%s on=%s (an invitation still listed; no reply attached)"
-                    % (pid, s["on"]))
+                out.append("PENDING contact:%s on=%s (an invitation still listed; no reply attached)"
+                           % (pid, s["on"]))
         if accepted or accepted_view:
             sighting = True
             on = (accepted[0]["date"] or "?") if accepted else accepted_view[0]["at"][:10]
-            out("ACCEPTED contact:%s on=%s" % (pid, on))
+            out.append("ACCEPTED contact:%s on=%s" % (pid, on))
         if reply_dates:
             sighting = True
             newest = max(reply_dates)
-            out("REPLIED contact:%s %s" % (pid, newest))
-            journal.record_probe(root, "contact:%s" % pid, "contact:%s" % pid,
-                                 "thread:%s" % newest, medium="linkedin", by=by, at=at)
+            out.append("REPLIED contact:%s %s" % (pid, newest))
+            v.probes.append((pid, "thread:%s" % newest))
         if sighting:
-            concluded += 1
+            v.concluded += 1
             continue
         if one_off:
             continue                                  # a one-off is a look, not a sweep verdict
         gaps = _slot_gaps(pid, w, surfaces,
-                          {v["id"] for v in views if v["kind"] == "thread"},
-                          {v["id"] for v in views if v["kind"] == "profile"})
+                          {x["id"] for x in views if x["kind"] == "thread"},
+                          {x["id"] for x in views if x["kind"] == "profile"})
         if gaps:
-            not_concluded += 1
+            v.not_concluded += 1
             for tok in gaps:
                 incomplete.setdefault(tok, []).append((pid, w["since"]))
             continue
-        concluded += 1
-        out("NO CHANGE contact:%s (covered through %s)" % (pid, w["since"] or "?"))
-        journal.record_probe(root, "contact:%s" % pid, "contact:%s" % pid, "empty",
-                             medium="linkedin", by=by, at=at)
+        if pid in tainted or block_taint:
+            # ⭐ a dropped line may have carried a reply for this person: NEVER a NO CHANGE
+            v.not_concluded += 1
+            out.append("NOT CONCLUDED contact:%s — a faulted line may name this contact, so no "
+                       "`empty` probe is written for them" % pid)
+            continue
+        v.concluded += 1
+        out.append("NO CHANGE contact:%s (covered through %s)" % (pid, w["since"] or "?"))
+        v.probes.append((pid, "empty"))
 
-    open_scopes = {g.get("scope") for g in journal.open_gaps(journal.read(root))}
+    open_scopes = {g.get("scope") for g in journal.open_gaps(recs or [])}
     for tok in LIST_SURFACES:
         people = incomplete.get(tok)
         if not people:
@@ -585,33 +796,146 @@ def record(root, run_id, text, watch, one_off=False, at=None, out=print):
             what = "not reached (%s)" % (info.get("reason") or info.get("status") or "not reported")
         sinces = [s for _p, s in people if s]
         back = min(sinces) if len(sinces) == len(people) else "the start"
-        out("!! INCOMPLETE COVERAGE linkedin:%s — %s; %d contact(s) not concluded"
-            % (tok, what, len(people)))
+        out.append("!! INCOMPLETE COVERAGE linkedin:%s — %s; %d contact(s) not concluded"
+                   % (tok, what, len(people)))
         scope = "linkedin:%s" % tok
         if scope not in open_scopes:
-            journal.record_gap(root, run_id, scope, reason,
-                               closes_when="a run reads %s back to %s" % (tok, back), at=at)
+            v.gaps.append((scope, reason, "a run reads %s back to %s" % (tok, back)))
             open_scopes.add(scope)
-        exit_code = EXIT_INCOMPLETE
+        exit_incomplete = True
 
     if one_off:
-        out("ONE-OFF RECORDED run=%s: %d sighting(s). The daily pass row is untouched." % (run_id, concluded))
-        return EXIT_OK
+        if v.faults:
+            v.name, v.exit, v.keep = "line-faults", EXIT_LINE_FAULTS, True
+        else:
+            v.name, v.exit = "clean", EXIT_OK
+        out.append("ONE-OFF RECORDED run=%s: %d sighting(s). The daily pass row is untouched."
+                   % (run_id, v.concluded))
+        return v
 
-    reached = [t for t in LIST_SURFACES if (surfaces.get(t) or {}).get("status") == "REACHED"]
     if not watch:
-        out("No open LinkedIn touches to conclude.")
-    if not reached:
-        out("!! NO LIST SURFACE REACHED — the pass read nothing it can conclude from; "
-            "the owed pass row stays pending.")
-        _owed()
-        out("NOT MEASURED HERE: job search and notifications (they never gate closure).")
-        return EXIT_PASS_FAILED
-    closed = deferred.close_linkedin_passes()
-    out("SWEEP RECORDED run=%s: %d concluded, %d not concluded; %d owed pass row(s) closed%s"
-        % (run_id, concluded, not_concluded, len(closed), (" (%s)" % ", ".join(closed)) if closed else ""))
-    out("NOT MEASURED HERE: job search and notifications (they never gate closure of the owed pass).")
-    return exit_code
+        out.append("No open LinkedIn touches to conclude.")
+    if not [t for t in LIST_SURFACES if t in v.reached]:
+        v.name, v.exit, v.keep, v.owed = "pass-failed", EXIT_PASS_FAILED, True, "queue"
+        v.detail = "no list surface reached"
+        v.not_measured = True
+        out.append("!! NO LIST SURFACE REACHED — the pass read nothing it can conclude from; "
+                   "the owed pass row stays pending.")
+        return v
+    v.owed, v.summary, v.not_measured = "close", True, True
+    if v.faults:
+        v.name, v.exit, v.keep = "line-faults", EXIT_LINE_FAULTS, True
+    elif exit_incomplete:
+        v.name, v.exit = "incomplete", EXIT_INCOMPLETE
+    else:
+        v.name, v.exit = "clean", EXIT_OK
+    return v
+
+
+def _probe_key(p):
+    return (p.get("subject"), p.get("thread"), p.get("result"), p.get("medium"), p.get("by"))
+
+
+def apply(root, run_id, text, v, at=None, out=print, check=False):
+    """⭐ dev #812 / public #169 -- the ONLY function that writes. `check=True` (`--check`) prints the
+    verdict's lines and its `verdict:` line and returns `v.exit` without writing anything, so that
+    `--check` writes nothing BY CONSTRUCTION. Otherwise, in order: copy the raw hand-back when the
+    verdict calls for it (a refusal, a fault, a failed pass with a block: byte for byte,
+    `handback.keep`); print; journal the probes (one identical to a probe already journaled since this
+    run's start is skipped, so a corrected re-record is idempotent); file one `partial-results` gap per
+    line fault and close the ones a corrected hand-back no longer has; file the INCOMPLETE COVERAGE
+    gaps; close or queue the owed pass row; and append one `recorded` pass row (a daily pass only: a
+    one-off is not the daily pass). Returns `v.exit`."""
+    at = at or journal.now_iso()
+    if check:
+        for ln in v.lines:
+            out(ln)
+        out(v.verdict_line())
+        return v.exit
+
+    surface = "linkedin-oneoff" if v.one_off else "linkedin"
+    kept_abs = handback.keep(root, "sweep", run_id, surface, text, out) if v.keep else None
+    rel = handback.kept_rel("sweep", run_id, surface) if kept_abs else ""
+    where = handback.kept_where(rel, run_id) if rel else ""
+
+    if v.exit == EXIT_LINE_FAULTS:
+        if v.one_off:
+            out("ONE-OFF RECORDED WITH LINE FAULTS (exit 5): every readable line is journaled and the "
+                "daily pass row is untouched. The faulty lines are gaps: %s" % (where or "(not kept)"))
+        else:
+            out("RECORDED WITH LINE FAULTS (exit 5): every readable line is journaled and the owed "
+                "pass is closed. Do not re-dispatch the runner. The faulty lines are gaps: %s"
+                % (where or "(not kept)"))
+    for ln in v.lines:
+        out(ln)
+    if v.name in ("refused", "pass-failed", "pane-held") and where:
+        out("   The raw hand-back is kept at %s" % where)
+
+    recs = journal.read(root)
+    starts = [str(r.get("at", "")) for r in recs
+              if r.get("event") == "start" and r.get("run_id") == run_id]
+    since = min(starts) if starts else str(at)[:10]
+    have = {_probe_key(p) for p in recs
+            if p.get("event") == "probe" and str(p.get("at", "")) >= since}
+    for pid, result in v.probes:
+        key = ("contact:%s" % pid, "contact:%s" % pid, result, "linkedin", "linkedin-runner")
+        if key in have:
+            out("= already recorded: contact:%s %s" % (pid, result))
+            continue
+        journal.record_probe(root, "contact:%s" % pid, "contact:%s" % pid, result,
+                             medium="linkedin", by="linkedin-runner", at=at)
+        have.add(key)
+
+    if v.judged:
+        scope_fmt = ONE_OFF_LINE_GAP_SCOPE if v.one_off else SWEEP_LINE_GAP_SCOPE
+
+        def closes(f):
+            what = ("line %d %r broke: %s" % (f["line"], f["text"], f["rule"])
+                    if f["line"] is not None else "block check broke: %s" % f["rule"])
+            return ("%s -- fixed when a corrected hand-back for this run is accepted by "
+                    "linkedin_sweep.py record%s"
+                    % (what, (" (raw hand-back kept at %s)" % where) if where else ""))
+
+        current = handback.file_line_gaps(root, run_id, scope_fmt, v.faults, closes, out)
+        handback.close_stale_line_gaps(root, run_id, scope_fmt % "", current, out)
+    for scope, reason, closes_when in v.gaps:
+        journal.record_gap(root, run_id, scope, reason, closes_when=closes_when, at=at)
+
+    if v.owed == "queue":
+        if v.one_off:
+            out("(a one-off never queues the daily pass)")
+        else:
+            row, added = deferred.queue_linkedin_pass()
+            out("LINKEDIN PASS STILL OWED: %s %s" % ("queued" if added else "already pending", row["id"]))
+    elif v.owed == "close":
+        closed = deferred.close_linkedin_passes()
+        if v.summary:
+            out("SWEEP RECORDED run=%s: %d concluded, %d not concluded; %d owed pass row(s) closed%s"
+                % (run_id, v.concluded, v.not_concluded, len(closed),
+                   (" (%s)" % ", ".join(closed)) if closed else ""))
+    if v.not_measured:
+        out("NOT MEASURED HERE: job search and notifications (they never gate closure of the owed pass)."
+            if v.summary else
+            "NOT MEASURED HERE: job search and notifications (they never gate closure).")
+
+    if not v.one_off:
+        try:
+            journal.record_pass(root, run_id, "linkedin", "recorded", reached=v.reached,
+                                unreachable=v.unreachable, not_attempted=v.not_attempted, at=at,
+                                verdict=v.name, faults=len(v.faults), kept=rel,
+                                concluded=v.concluded, not_concluded=v.not_concluded)
+        except journal.JournalError as e:
+            out("⚠️ could not journal the `recorded` pass row (%s): the quota will count this pass" % e)
+    out(v.verdict_line())
+    return v.exit
+
+
+def record(root, run_id, text, watch, one_off=False, at=None, out=print, check=False):
+    """Judge one hand-back and (unless `check`) journal what it proves; return the exit code. See the
+    module docstring for the codes and for what closes the owed pass row. `judge` decides and `apply`
+    writes (dev #812 / public #169)."""
+    v = judge(text, run_id, watch, one_off=one_off, recs=journal.read(root))
+    return apply(root, run_id, text, v, at=at, out=out, check=check)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -639,6 +963,10 @@ def main(argv=None):
                        help="the explicit degree check: one person's profile, journaled as a probe")
     r.add_argument("--file", metavar="PATH", help="the hand-back (default: stdin)")
     r.add_argument("--at", help="ISO timestamp; for tests and for replaying a known time")
+    r.add_argument("--check", action="store_true",
+                   help="judge the hand-back with the same code as the real call, print each fault and "
+                        "one `verdict:` line, write NOTHING, and exit with the code the real call "
+                        "would")
     args = ap.parse_args(argv)
     root = profile_root()
     try:
@@ -649,11 +977,13 @@ def main(argv=None):
         try:
             text = _read_input(args.file)
         except SweepRefused as e:
-            # An unreadable hand-back is a refused one: say so, then let `record` refuse the empty
-            # text (which also keeps the owed pass owed, for a routine pass).
-            print("⛔ %s" % e, file=sys.stderr)
-            text = ""
-        return record(root, args.run, text, watch, one_off=bool(args.one_off), at=args.at)
+            # dev #812 / public #169 (N14) -- nothing was read, so there is nothing to judge or keep:
+            # exit 2 at once, writing nothing (no `recorded` row, no copy, no queue). The pass still
+            # counts against the quota (no row, §4 rule 4).
+            print("⛔ %s; raw NOT kept" % e, file=sys.stderr)
+            return EXIT_REFUSED
+        return record(root, args.run, text, watch, one_off=bool(args.one_off), at=args.at,
+                      check=args.check)
     except (SweepRefused, journal.JournalError) as e:
         print("⛔ %s" % e, file=sys.stderr)
         return EXIT_REFUSED

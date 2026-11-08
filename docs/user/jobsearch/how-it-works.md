@@ -42,7 +42,9 @@ entry points. [Commands](commands.md) lists every one in plain words.
 
 **Agents** are the parts that need their own context window — bulk reading (sweeping a mailbox,
 scanning boards) or judgement (reading a job description against your resume, drafting a message
-in your voice, researching a company). Each runs in its own context and reports back.
+in your voice, researching a company). Each runs in its own context and reports back. Reading a job
+description is one of these: a script fetches the page first, and what it cannot read goes to a reader
+agent that works in a browser tab of its own, or to you (see *One lifecycle per role*, below).
 
 **Skills** are procedures the assistant follows, loaded when a session starts.
 
@@ -82,14 +84,17 @@ Nothing below sends anything or commits anything without you.
 2. **Sweep.** Your mailbox and LinkedIn are read for things that changed: recruiter replies,
    interview invitations, application receipts, rejections. This is deterministic — it finds
    what is there, it does not interpret. Employer career pages and job boards are searched on the
-   days your posture names (see *Cost*), never on every run.
+   days your posture names (see *Cost*), never on every run. Status mail from employers is counted
+   by kind each run (application status, a person writing, a digest, noise), and a status message the
+   plugin could not match to a role is listed by sender and subject, not dropped.
 
 3. **Reconcile.** New findings are matched against roles you already track. A role seen twice on
    two job boards is *one* opportunity with two sightings, not two opportunities. Ambiguous
    matches are surfaced for you to confirm rather than merged automatically, because one job
    title can genuinely be several different roles.
 
-4. **Screen.** Roles are checked against the floors you set — compensation, geography, work
+4. **Read and screen.** Each role the run takes on has its job description read, and only then is it
+   screened (see *One lifecycle per role*, below). Roles are checked against the floors you set — compensation, geography, work
    setting. A role whose office is far beyond every place you said you would commute from, and is
    not somewhere you would move to, is removed as too far (see *Where a role is, and when it is
    too far* in [Your data](your-data.md#where-a-role-is-and-when-it-is-too-far--since-070)). Something below your floor does not silently vanish; it is marked, and you can see
@@ -106,6 +111,42 @@ Nothing below sends anything or commits anything without you.
 6. **Draft — only if you asked.** Outreach and cover letters are written citing sentences from
    your own resume rather than paraphrasing them. A draft is *staged*. You read it, you edit it,
    you send it.
+
+---
+
+## One lifecycle per role (since 0.82.0)
+
+Every role goes through one sequence, and a run does not stop halfway through it:
+
+1. **Capture.** A role a sweep found is recorded, or matched to a role you already have. What a search
+   result card showed (pay, work setting, location) is kept, but marked as *provisional*, because a card
+   is often wrong or thin.
+2. **Read.** The job description is read for **every** role that has not been removed. A script tries a
+   plain fetch first for a remote posting that states its pay; anything else, or anything the fetch could
+   not read, goes to a reader agent working in a browser tab of its own. A posting only you can open comes to you
+   as **your read**, and a posting that is down ends there as *gone*. The description's own pay and work
+   setting replace the card's.
+3. **Screen.** Your floors and rules are applied to the facts from the description. A screen that rests
+   only on card facts can never say *keep*.
+4. **Research.** Only a role the screen **keeps** is researched. A role marked for your review, or one the
+   screen removed, is not.
+
+A role is ready for your decision when it has been through all four. If you change a pay floor, your
+title floor, your target titles or a likely-pass phrase, roles screened under the old rules go back to
+*waiting* and a later run re-screens them.
+
+**A run takes on a limited number of roles and finishes every one.** The limit is `search.intake_per_run`
+(40 unless you changed it; a number above what the run has time for is trimmed, and the run says so).
+While older unread roles are still waiting, half of the places go to roles found since. Roles found but
+not yet taken on are *waiting*, counted and aged. **Anything a run took on and did not finish is a
+process failure**, shown with its cause and how long it has been there: on the dashboard, in Your Move,
+in the coordinator's start line and in the run's headline. Nothing is hidden, and an old unread role stays
+a failure until it is read. Reading the files that show this is in
+[Reading what the search produces](reading-your-files.md#one-lifecycle-per-role-since-0820).
+
+**What a run looked at and what it did not.** A run that could not look at everything says so in its
+headline as `DID NOT LOOK`, with a count and an age: company feeds it ran out of time for, searches it
+could not reach, mail it could not read.
 
 ---
 
@@ -133,8 +174,12 @@ anything and never submits an application. It keeps the postings whose title mat
 nothing, a new one is captured and screened exactly like a board role. A feed that does not return the
 documented list is **never read as "no roles"**: the page is listed for your browser review instead, and a
 failure of the machine to reach the vendor is reported once as a gap rather than turning every careers page
-into a daily visit. The poll has its own deadline, so a stalled network ends in a written summary, not a
-hung run.
+into a daily visit. The poll has its own deadline (`sourcing.feeds.deadline_s`, 240 seconds unless you
+change it), so a stalled network ends in a written summary, not a hung run. When a poll runs out of time
+before reaching every company, it records which ones it did reach, and the next poll starts with the
+companies covered longest ago, so the same companies are not skipped every day. The companies it did not
+reach are counted under `DID NOT LOOK: feeds` in the run's headline. A company whose feed is cut short by
+the deadline on two polls in a row is listed as due for a browser review until one is done.
 
 Check or correct what it knows:
 
@@ -156,7 +201,8 @@ profile project's `.claude/settings.json` (what else it does is under *What the 
 [Your data](your-data.md)). If the sandbox ignores that entry, which the vendor documents as the case when an
 administrator requires the sandbox, the hosts must be allowed in that administrator's settings. Until then
 the feed reports `egress-blocked` or `unreachable` with one gap per host, and the browser sweep keeps covering
-those careers pages as before. Nothing is lost; it is slower and costs more.
+those careers pages as before. Nothing is lost and nothing is hidden: the pages are covered by the browser
+instead, which is slower and costs more, and a feed that could not be read is counted in the run's headline.
 
 ### Finding a company's job feed
 
@@ -333,10 +379,10 @@ names the firm's company id and `board_hosts` lists the board's own host, which 
 python3 scripts/record.py board-sighting portfolio:<firm-id> --company "<name as the board shows it>" --title "<title>" --url <the company's own posting URL>
 ```
 
-The verb creates or matches the company and records the role so the daily run triages it like any other. It
+The verb creates or matches the company and records the role so the daily run takes it on like any other. It
 never fetches the address, and it refuses one on the board's host. If the board only links to a page on
 itself, open that page and find where the employer posts the role. A role whose every address is on the board
-is never read by a run: it shows "not read: manual-board".
+is never read by a run: it comes to you as **your read** (`manual-board`).
 
 **See what a board produced.** `python3 scripts/portfolio_boards.py` prints, per board, the companies and
 roles it produced and whether the board is covered. A board is covered only while your last review is inside
@@ -465,14 +511,16 @@ once the search has found it.** Under every posture, including `minimal` and `ec
 - every role a run sees is accounted for, one by one. It is captured, already known, carried
   forward as its own queued item, or recorded as a named gap. A run never ends on "12 roles
   seen, top few captured";
-- every captured role gets a **minimal screen**, done by a script with no agent and no tokens:
+- every role that is not removed gets its **job description read**, and every captured role gets a
+  **minimal screen**, done by a script with no agent and no tokens:
   your comp floor (annual floors for employment, your non-employee floors for fractional, interim, advisory and contract roles; a role whose pay you accepted is kept), whether you already passed on or applied to it, geography, and whether the
   title matches one of yours. The title check only marks a role for your review; it never
   removes one. A mandate rule is not scripted, and the screen says so on each role instead of
   staying quiet;
-- **every role that passes the screen (`VERDICT keep`) is researched in that same run**, in batches of up to
-  10 roles, with any overflow queued for the next run. A borderline role (`review`) is not researched until
-  you have looked at it.
+- **every role that passes the screen (`VERDICT keep`) is researched in that same run**, and a run finishes
+  every role it takes on (up to `search.intake_per_run`, 40 unless you changed it). Roles not yet taken on
+  are counted as waiting, never dropped. A borderline role (`review`) is not researched until you have
+  looked at it.
 
 Only **drafting** is held by a posture. A draft your posture refuses is **queued, not dropped**: it shows as
 a held item (*held by posture*) and the next run whose posture permits it picks it up, with nothing for you
@@ -498,6 +546,26 @@ role it finds. It just skips the LinkedIn pass for the rest of that day. `econom
 `standard` get one LinkedIn pass a day even though they run 2 or 3 times; `full` gets two even
 though it runs 5 times. Set `search.postures.<tier>.linkedin_runs_per_day` to change it for
 your own tier.
+
+**When a sweep cannot read everything, it says so (since 0.82.0).** A board sweep that hits a bot check
+(a "prove you are human" page) or a channel it cannot read records that channel as **unreachable**, with a
+reason. It never tries to get past the check: it does not click it, solve it, wait it out or reload it. It
+carries on with the rest. Every channel it was given is accounted for: each one is either read, recorded as
+unreachable, or recorded as not attempted, and a channel the sweep never mentioned is reported as unaccounted.
+The run summary then marks the sweep **PARTIAL** and names what it missed (for example "3 of 5 channels
+reached", then which channels were unreachable and why), instead of reporting a quiet zero.
+
+- **LinkedIn: one unreadable line costs only that line.** If the LinkedIn helper's record has a line the
+  engine cannot read, every other line is kept and recorded, and the run names the line it dropped. A
+  person the dropped line could have been about is never reported as "nothing changed" on its account.
+- **LinkedIn: a refused record keeps the hand-back.** If the whole record is refused (a broken hand-back),
+  the raw hand-back is kept on your machine (see *Your data*, under `handbacks/`). The first refusal each day
+  does not use up that day's LinkedIn pass, so the pass can run again. A second refusal the same day counts.
+- **When the only way to reach a board on this machine is one the board sweeper cannot use, the board slot
+  is not spent.** The board sweeper holds the plugin's own tools and the built-in browser. It does not hold
+  the Claude in Chrome extension. If a due board can be reached only through the extension, the daily run
+  does not start a sweep it cannot finish: it says there is no route the board sweeper can use on this
+  machine, and the board slot stays open for a later run.
 
 **Once a week, that day's LinkedIn pass looks further back.** The daily pass uses LinkedIn's
 own "Past 24 hours" filter. One pass a week uses "Past week" instead, so a role missed on its

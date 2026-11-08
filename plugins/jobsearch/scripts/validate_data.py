@@ -34,6 +34,9 @@ import ats_slug as _ats_slug
 import surfaces as _surfaces
 # dev #740 -- the engagement vocabulary lives in the leaf `config_keys` (profile.py reads it too).
 import config_keys as _config_keys
+# dev #820 / public #175 -- the ONE parser of `opportunities[].jd_read` (jd_read.py, a stdlib-only leaf; named here
+# by file because a bare `import` is invisible to publish_manifest's reachability closure).
+import jd_read as _jd_read
 # ⚠️ `your_move` is imported BELOW the vocabulary block, not here — see the note above
 # `def load`. It reads this module's TERMINAL_OPP_STATUSES at import time, so a top-of-file
 # import would hand it a half-initialised module whenever validate_data is imported first.
@@ -1048,7 +1051,10 @@ def check_trigger(row, label, problems, app_refs, sent_ids):
 LISTED_PAY_STATES = ("employer-stated", "board-estimate", "none-shown")
 LISTED_PAY_SOURCES = ("listing-text", "ats-api", "json-ld", "board-widget", "candidate")
 PAY_INTERVALS = ("year", "month", "day", "hour")          # R2: the four units postings in scope use
-LISTED_PAY_KEYS = ("state", "ranges", "source", "captured_on", "inferred_from")
+# dev #820 / public #175 (0.82.0): WHERE a figure came from -- the capture card, the JD read, or the
+# candidate. Absent on a legacy row (not rewritten). `source` says what FORM the figure took.
+PROVENANCES = ("card", "jd", "candidate")
+LISTED_PAY_KEYS = ("state", "ranges", "source", "captured_on", "inferred_from", "provenance")
 INFERRED_FROM = ("description",)             # dev #775: how a figure was READ, not what the listing showed
 PAY_RANGE_KEYS = ("min", "max", "currency", "interval", "label")
 CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
@@ -1057,7 +1063,14 @@ POSTED_KEYS = ("date", "source", "recorded_on")
 COMMUTE_MINUTES_KEYS = ("minutes", "anchor", "source")
 COMMUTE_MINUTES_SOURCES = ("candidate", "map-estimate", "config-place")
 SCREEN_KEYS = ("on", "verdict", "rules", "engine", "title_keys", "setting_source", "comp_keys",
-               "engagement_source")
+               "engagement_source", "inputs")
+# dev #820 / public #175 (0.82.0, design section 3.2): which inputs a screen was computed from -- the
+# capture CARD, the JD read, or the CANDIDATE's own read. Computed by `record.py screened`, never passed.
+# Absent on a legacy screen, which `lifecycle` trusts only beside a `via: legacy` read.
+SCREEN_INPUTS = PROVENANCES
+# the stored verdict: `keep`, `provisional` (a card-input screen never keeps), `review:<rules>` or
+# `remove:<rules>` with comma-separated lower-case rule names (comp, passed, geo, title, age).
+SCREEN_VERDICT_RE = re.compile(r"^(keep|provisional|(review|remove):[a-z][a-z-]*(,[a-z][a-z-]*)*)$")
 # dev #722 / public #156 (jobsearch 0.69.0): the title rule's tokens, a CLOSED set. 0.68.0 and earlier
 # stored three; the floor and the mandate add BELOW-FLOOR and OFF-MANDATE, and an unreadable key is a
 # visible UNREADABLE-TITLE-KEYS. A token outside the set is a stored screen nothing here can read.
@@ -1137,6 +1150,9 @@ def check_listed_pay(lp, label, problems):
         elif state != "employer-stated" or source != "listing-text":
             problems.append("%s: listed_pay.inferred_from is legal only with state 'employer-stated' "
                             "and source 'listing-text' -- got %r and %r" % (label, state, source))
+    if "provenance" in lp and lp["provenance"] not in PROVENANCES:
+        problems.append("%s: listed_pay.provenance %r not in {%s}"
+                        % (label, lp["provenance"], ", ".join(PROVENANCES)))
     if not _real_date(lp.get("captured_on")):
         problems.append("%s: listed_pay.captured_on not an ISO date -- %r"
                         % (label, lp.get("captured_on")))
@@ -1267,6 +1283,11 @@ def check_screen(sc, label, problems):
         problems.append("%s: screen.on not an ISO date -- %r" % (label, sc.get("on")))
     if not (isinstance(sc.get("verdict"), str) and sc["verdict"].strip()):
         problems.append("%s: screen.verdict must be a non-empty string" % label)
+    elif not SCREEN_VERDICT_RE.match(sc["verdict"]):
+        problems.append("%s: screen.verdict %r must be keep, provisional, review:<rules> or remove:<rules>"
+                        % (label, sc["verdict"]))
+    if "inputs" in sc and sc["inputs"] not in SCREEN_INPUTS:
+        problems.append("%s: screen.inputs %r not in {%s}" % (label, sc["inputs"], ", ".join(SCREEN_INPUTS)))
     rules = sc.get("rules")
     if not isinstance(rules, dict) or not rules:
         problems.append("%s: screen.rules must be a non-empty object of rule -> result" % label)
@@ -1298,6 +1319,54 @@ def check_screen(sc, label, problems):
                         % (label, sc["engagement_source"]))
 
 
+def check_jd_read(value, label, problems):
+    """`jd_read` (dev #820 / public #175, design section 4.2): the stored record of every JD read attempt,
+    parsed by `jd_read.parse` -- the ONE parser, so what a verb may write and what the validator accepts
+    cannot drift. Written only by `record.py read-jd`, `read-failed` and `read-batch` and by the 0.82.0
+    migration (`via: legacy`). Appends one problem naming the attempt; a record with no attempt, an
+    unknown outcome, empty evidence, a `render` read with no quote and a bad `at` are each refused."""
+    try:
+        _jd_read.parse(value)
+    except _jd_read.JdReadError as e:
+        problems.append("%s: jd_read: %s" % (label, e))
+
+
+# the codes a degraded sweep query can carry, mirrored from `deferred.DEGRADED_CODES` (that module reads
+# the work queue and cannot be imported here); a test pins the equality.
+CAPTURE_UNVERIFIED_CODES = ("filter-dropped", "param-added", "window-unapplied", "truncated",
+                            "query-unparsed")
+CAPTURE_KEYS = ("run", "at", "item", "unverified")
+
+
+def check_capture(cap, label, problems):
+    """`capture` (dev #820 / public #175): `{run, at, item, unverified?}`, stamped by `record.py
+    capture-batch` on a role it creates from a capture item. `run` is the run id, `at` an ISO date and
+    time, `item` the queue item id the role was made from, and `unverified` (present only when the item
+    was quarantined: every query that showed the role was degraded) a non-empty list of distinct codes
+    from `deferred.DEGRADED_CODES`. `lifecycle` reads `item` to find the role's admission."""
+    if not isinstance(cap, dict):
+        problems.append("%s: capture must be an object (run, at, item, unverified?) -- got %s"
+                        % (label, type(cap).__name__))
+        return
+    _unknown_keys(cap, CAPTURE_KEYS, label + " capture", problems)
+    for k in ("run", "item"):
+        v = cap.get(k)
+        if not (isinstance(v, str) and v.strip() and not re.search(r"\s", v)):
+            problems.append("%s: capture.%s must be a non-empty string without whitespace -- %r"
+                            % (label, k, v))
+    at = cap.get("at")
+    try:
+        _jd_read.parse_at(at)
+    except _jd_read.JdReadError:
+        problems.append("%s: capture.at must be YYYY-MM-DDTHH:MM:SS -- %r" % (label, at))
+    if "unverified" in cap:
+        u = cap["unverified"]
+        if (not isinstance(u, list) or not u or len(set(map(str, u))) != len(u)
+                or any(c not in CAPTURE_UNVERIFIED_CODES for c in u)):
+            problems.append("%s: capture.unverified must be a non-empty list of distinct codes from {%s} "
+                            "-- %r" % (label, ", ".join(CAPTURE_UNVERIFIED_CODES), u))
+
+
 def check_location_provenance(loc, label, problems):
     """The two optional `location` keys jobsearch 0.70.0 added (dev #727 / public #159, design R3:
     keys INSIDE `location` are validated here only -- `record.py check_field` guards top-level and
@@ -1313,6 +1382,22 @@ def check_location_provenance(loc, label, problems):
     """
     if not isinstance(loc, dict):
         return
+    # dev #820 / public #175 (design section 3.1): where the location facts came from, and whether a CARD's
+    # place only echoed a commute anchor's (which proves nothing about the role).
+    if "provenance" in loc and loc["provenance"] not in PROVENANCES:
+        problems.append("%s: location.provenance %r not in {%s}"
+                        % (label, loc["provenance"], ", ".join(PROVENANCES)))
+    if "anchor_echo" in loc:
+        if loc["anchor_echo"] is not True:
+            problems.append("%s: location.anchor_echo must be true when present -- %r"
+                            % (label, loc["anchor_echo"]))
+        elif loc.get("provenance") != "card":
+            problems.append("%s: location.anchor_echo is legal only with provenance 'card' (a read of "
+                            "the JD or by the candidate is not an echo) -- provenance is %r"
+                            % (label, loc.get("provenance")))
+    if loc.get("provenance") == "card" and loc.get("setting_source") == "inferred":
+        problems.append("%s: a card never infers a setting: location.provenance 'card' with "
+                        "setting_source 'inferred' (design section 3.1)" % label)
     if "setting_source" in loc:
         if loc["setting_source"] != "inferred":
             problems.append("%s: location.setting_source must be 'inferred' (absent means the "
@@ -1852,73 +1937,14 @@ def check_pay_captured(opps):
             for o in opps if isinstance(o, dict) and _live(o) and not _has_pay(o)]
 
 
-def _first_sighting(opp):
-    dates = [s.get("seen_on") for s in (opp.get("sightings") or []) if isinstance(s, dict)
-             and _real_date(s.get("seen_on"))]
-    return min(dates) if dates else None
+# dev #820 / public #175 (0.82.0): `check_triaging_stuck`, `triaging_states` and `triage_stuck_days` are
+# RETIRED with the `triaging` role state and `search.triage_stuck_days`. A role that has not been read is no
+# longer a stage that can be "stuck": `lifecycle` shows it as `waiting` or as a process failure with a cause,
+# on every surface, and `lifecycle.py --report` counts every role (the conservation line).
 
-
-def check_triaging_stuck(opps, states, today, stuck_days):
-    """One line per opportunity the dashboard classification still calls `triaging` after
-    `stuck_days` days from its first sighting (dev #713 / public #145, R3). The surfacing rule moves
-    such a role into Decide labelled 'not yet read', so this list should be EMPTY: a non-empty one
-    means the rule has drifted, and the line names the role. `states` is `{opp id: state}` from
-    `your_move.classify_opportunities`; a role with no readable first sighting cannot be aged and
-    is named too (an age nobody can compute is not 'young')."""
-    import datetime as _dt
-    out = []
-    today_d = _dt.date.fromisoformat(today)
-    for o in opps:
-        if not isinstance(o, dict) or states.get(o.get("id")) != "triaging":
-            continue
-        first = _first_sighting(o)
-        if first is None:
-            out.append("opportunities[%s]: still `triaging` and has no readable first sighting, "
-                       "so its age cannot be computed" % o.get("id", "?"))
-            continue
-        age = (today_d - _dt.date.fromisoformat(first)).days
-        if age > stuck_days:
-            out.append("opportunities[%s]: still `triaging` after %d days (first seen %s; the "
-                       "stuck bound is %d) -- the surfacing rule should have moved it to Decide"
-                       % (o.get("id", "?"), age, first, stuck_days))
-    return out
-
-
-def triaging_states(opps, owner_token, today):
-    """`({opp id: state}, None)` from `your_move.classify_opportunities`, or `(None, why)` when the
-    classification cannot answer `triaging` (the triage gate is not part of this install). Lazy
-    import, for the same cycle reason `_ym` is imported below the vocabulary."""
-    import your_move as _ym_
-    if "triaging" not in getattr(_ym_, "ROLE_STATES", ()):
-        return None, "your_move.ROLE_STATES has no `triaging` state"
-    return {o.get("id"): st for o, st, _why in _ym_.classify_opportunities(opps, owner_token, today)}, None
-
-
-def triage_stuck_days(cfg):
-    """`(days, None)` from the registered `search.triage_stuck_days`, or `(None, why)` when
-    `config_keys` does not register it (so the check says NOT CHECKED rather than guessing a
-    default of its own)."""
-    import config_keys as _ck
-    try:
-        value, _prov = _ck.describe(cfg or {}, "search.triage_stuck_days")
-    except KeyError:
-        return None, "config_keys does not register search.triage_stuck_days"
-    return value, None
-
-
-def hygiene_lines(opps, cfg, today, owner_token, classify=None, stuck=None):
-    """The `HYGIENE` section as printable lines (an empty list when there is nothing to say).
-    `classify` / `stuck` are seams for the two lookups that depend on the triage gate being
-    installed (`triaging_states`, `triage_stuck_days`); a test passes stubs. A lookup that cannot
-    answer prints `NOT CHECKED` with its reason -- green is never an unexamined silence."""
-    out = check_pay_captured(opps)
-    states, why = (classify or triaging_states)(opps, owner_token, today)
-    days, why2 = (stuck or triage_stuck_days)(cfg)
-    if states is None or days is None:
-        out.append("check_triaging_stuck: NOT CHECKED -- %s" % (why or why2))
-    else:
-        out += check_triaging_stuck(opps, states, today, days)
-    return out
+def hygiene_lines(opps, cfg, today, owner_token):
+    """The `HYGIENE` section as printable lines (an empty list when there is nothing to say)."""
+    return check_pay_captured(opps)
 
 
 def emit_problems(problems):
@@ -3067,6 +3093,10 @@ def _main():
             check_posted(r["posted"], label, problems)
         if "screen" in r:
             check_screen(r["screen"], label, problems)
+        if "jd_read" in r:
+            check_jd_read(r["jd_read"], label, problems)
+        if "capture" in r:
+            check_capture(r["capture"], label, problems)
         if "employer_posting" in r:
             check_employer_posting(r["employer_posting"], label, problems)
         if "passed_from" in r:

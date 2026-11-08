@@ -118,6 +118,41 @@ is working well. **Runs** an investigation and tells you whether the cause is a 
 for you, or a defect in the plugin; a defect is turned into a report for the plugin's maintainers only
 after you approve what is in it.
 
+### Looking at a role and at the pipeline from the command line
+
+These are scripts, run as `~/.claude/jobsearch/run <script> ...`. They **show** or record one thing, and
+you can leave them alone unless something looks wrong.
+
+- **`lifecycle.py --report`**. Shows the whole pipeline in one place: how many roles are ready, how many are
+  yours to read, how many are process failures (with the oldest age and each cause), how many are waiting
+  for intake, anything the run did not look at, and the line that adds every role to exactly one group. Add
+  `--json` for a machine-readable version. **Shows** only.
+- **`record.py show <role id>`**. Prints the whole stored record of one role, including its read attempts,
+  its research notes and its fit. Nothing is cut short. **Shows** only.
+- **`record.py read-jd <role id> --via candidate`**. Use it when a role is waiting as *your read*: you open
+  the posting yourself, then record what it says, quoting a short line that names the role. **Runs**: it
+  writes the read onto the role, and the next run screens the role on it.
+
+**What the daily run drives for you.** You do not type these; they are listed so a line in a run's output
+makes sense.
+
+- `record.py capture-batch` records the roles a sweep found. It ends with a count line: how many roles were
+  created, linked to a role you have, folded into a duplicate, refused, left waiting, flagged unverified,
+  and how many it left because it ran out of time. It repeats until nothing is left over, and a refused item
+  is reported rather than treated as a fault.
+- `record.py read-batch` fetches job descriptions for the roles that state a pay and re-screens each one.
+  A page it cannot read is listed as `RESIDUE <role> (render)` with the reason, and goes on to a reader
+  agent, or to you.
+- `record.py read-failed <role id> --outcome <reason> --evidence "..."` records a read that failed, with its
+  cause. It does not re-screen the role.
+- `lifecycle.py --drain-plan` chooses which roles a run takes on (and prints a line when the count is
+  trimmed to the time a run has); `lifecycle.py --drain-close` writes down at the end which roles the run
+  left unfinished and why.
+- `reconcile.py --ats --run <run id>` sweeps status mail and records the per-kind counts and any
+  unmatched messages for that run. `brief.py --rebrief --already-locked` is accepted when the run already
+  holds the lock. `precondition.py --prune` now refuses, and says so, when an entry it would delete is
+  malformed, instead of deleting it.
+
 ---
 
 ## Make documents

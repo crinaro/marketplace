@@ -1,7 +1,7 @@
 ---
 name: inbox-scan
 color: cyan
-description: 'Scan Gmail for job-search signals — PRIORITIZING recruiter and human mail and meeting artifacts; treating board and aggregator job-alert digests as a low-value backstop, since direct search is the real source. Use for the daily Gmail pass. Not for LinkedIn messages (linkedin-runner), not for reading a JD (opportunity-researcher), not for automated ATS status mail (reconcile.py --ats — sender-domain identification and three-tier resolution, never a subject-line skim), and it reports findings rather than writing the pipeline. Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
+description: 'Scan Gmail for job-search signals — PRIORITIZING recruiter and human mail and meeting artifacts; treating board and aggregator job-alert digests as a low-value backstop, since direct search is the real source. Use for the daily Gmail pass. Not for LinkedIn messages (linkedin-runner), not for reading a JD (jd-reader), not for researching a role (opportunity-researcher), not for automated ATS status mail (reconcile.py --ats --run — sender-domain identification and three-tier resolution, never a subject-line skim), and it reports findings rather than writing the pipeline. Operates only on a configured job-search profile and asserts that binding at entry; not for sessions unrelated to this job search. See "When to invoke" in the agent body.'
 model: haiku
 disallowedTools: Agent
 ---
@@ -62,7 +62,15 @@ dispatching session's context (dev #482 / public #111).
 - **The daily mailbox pass.** Across every configured account, never one — a zero from a partial sweep is not a zero.
 - **Meeting artifacts first, unconditionally.** Invitations and acceptance receipts before any named priority list, because a numbered list reads as permission to ignore everything not on it — and that once cost a confirmed interview booked for the next morning.
 
-**Not this agent:** LinkedIn's inbox (`linkedin-runner`), reading a posting in depth (`opportunity-researcher`), or writing anything into `data/*.jsonl`.
+**Not this agent:** LinkedIn's inbox (`linkedin-runner`), reading a posting (`jd-reader`) or researching one in depth (`opportunity-researcher`), ATS status mail (below), or writing anything into `data/*.jsonl`.
+
+**ATS status mail is accounted by a script, not by you (dev #818).** Rejections, receipts and interview invites from an
+ATS are counted and resolved in the run's write phase by
+`~/.claude/jobsearch/run reconcile.py --ats --already-locked --run <run id>`, which prints one
+`MAIL STATUS <account>: ats-status N · human N · digest N · noise N -- U unmatched` line per mailbox and records
+it against the run; without `--run` nothing is recorded. Do not count, resolve or report status mail yourself: an
+`UNMATCHED STATUS MAIL` line is that script's finding, never a miss of yours. A message from a person at the
+employer is still yours to report.
 
 ## CONTEXT BUDGET — READ THIS FIRST
 

@@ -203,11 +203,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import (profile_root, is_tracked_fixture, transcript_stash_path, is_unbound,
-                   say_unbound_once, STATE_DIRNAME)
+                   say_unbound_once, STATE_DIRNAME, engine_root)
 
 JOURNAL = os.path.join("data", "runs.jsonl")
 EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swept", "probe",
-         "triaged", "dispatch", "pass", "roles", "feeds")
+         "triaged", "dispatch", "pass", "roles", "feeds", "drain", "mail-status")
 
 # dev #751 (sourcing-feeds; design §3.6 as amended by review B1/B3/B6) -- the company feed poller's
 # failure vocabulary, CLOSED and validated by `record_feeds`: a code, not a sentence, each mapped to
@@ -267,6 +267,7 @@ FEEDS_COUNT_FIELDS = ("polled", "covered", "unchanged", "not_covered", "postings
 # computed window and no `r2592000`.
 ROLES_SURFACES = ("linkedin-jobsearch", "board")
 ROLES_WINDOWS = ("daily", "wide", "none")
+ROLES_COVERAGE = ("complete", "partial")      # dev #811/#812 (0.82.0): a `roles` event's `coverage`
 F_TPR_DAILY, F_TPR_WIDE = "r86400", "r604800"
 F_TPR_BUCKETS = (F_TPR_DAILY, F_TPR_WIDE)
 WIDE_EVERY_DAYS = 7
@@ -281,12 +282,44 @@ ROLES_GAP_SCOPE = "jobsearch:roles:%s"
 # actually finishes, `refused` when the gate (browser capability or quota) never let the pass
 # start at all — never a printed line with no row behind it (#87). Any other value is refused at
 # write, loud, the same discipline `REASONS`/`PROBE_RESULT_RE` already apply to their own fields.
-PASS_PHASES = ("dispatched", "returned", "refused")
+#
+# dev #812 / public #169 (design-sweep-partial-failure.md §4) -- a FOURTH phase, `recorded`: written by
+# `linkedin_sweep.py record` after it has judged a SWEEP hand-back, carrying a `verdict`. It is how the
+# quota (`linkedin_passes_reached`) and the run summary learn whether a `returned` pass was actually
+# recorded. A row older than 0.82.0 never has one, and every reader treats "no `recorded` row" as the
+# conservative case (the pass counts).
+#
+# dev #820 / public #175 (0.82.0) -- a FIFTH phase, `done`: written by the two bounded drain verbs
+# (`capture-batch`, `read-batch --fetch`) when a call ends, with the ids it did NOT reach. Only the
+# `capture` and `fetch` pass kinds use it (`record_pass` refuses it elsewhere).
+PASS_PHASES = ("dispatched", "returned", "refused", "recorded", "done")
+
+# dev #812 / public #169 -- the six verdicts a `recorded` row can carry, one per row of the design's
+# §3.4 table. `handback.VERDICTS` restates the same tuple (a test pins the equality).
+RECORD_VERDICTS = ("clean", "incomplete", "line-faults", "refused", "pass-failed", "pane-held")
+
+# dev #812 / public #169 -- owner ruling (2026-11-05), verbatim: "One free refusal a day." A `returned`
+# pass whose run's latest `recorded` row says `refused` is not counted against `linkedin_runs_per_day`,
+# for at most this many such passes a day (oldest first); any later one counts. The worst case is
+# `linkedin_runs_per_day + 1` passes per day per synced journal.
+LINKEDIN_FREE_REFUSALS_PER_DAY = 1
+
+# Where a `recorded` row's `kept` value points: the kept raw hand-back (`handback.HANDBACK_DIR`),
+# profile-relative, with `/` separators.
+RECORDED_KEPT_PREFIX = ".jobsearch/handbacks/"
 
 # design-script-first.md §2 — V0's only LinkedIn pass kind. A tuple, not a bare string field, so
 # a second kind (were one ever added) is a vocabulary addition here, never free-text drift —
 # `REASONS`/`TRIAGE_VERDICTS`'s own "counted, not narrated" rule, applied to `kind`.
-PASS_KINDS = ("linkedin", "board")
+#
+# dev #820 / public #175 (design-role-pipeline.md section 9, 17 N7) -- five more kinds, all rows the SCRIPT
+# or the dispatching run writes about a drain step: `reader` and `research` (a `dispatched` row naming
+# the ids handed to a `jd-reader` / `opportunity-researcher` agent, written BEFORE the dispatch),
+# `feeds` (the feed poll was started), and `capture` / `fetch` (a bounded verb's call ended: the
+# `unreached` ids). A 0.81.0 reader tolerates the new kinds (it validates the event name only).
+PASS_KINDS = ("linkedin", "board", "reader", "research", "feeds", "capture", "fetch")
+AGENT_PASS_KINDS = ("reader", "research")          # `ids` required on dispatched/returned
+UNREACHED_PASS_KINDS = ("capture", "fetch")        # phase `done`, with `unreached`
 
 # dev #770-4 / O4 -- the `sweep` field of a `board` pass: which kind of board-sweeper work it covered
 # (`config_keys.SWEEP_KINDS`, restated here so this module imports nothing new). See `record_pass`.
@@ -334,7 +367,11 @@ REASONS = {"browser-unavailable", "credential-missing", "rate-limited", "timeout
            # (§2) — the page answered, a click may have landed, nothing painted. Reusing
            # `browser-unavailable` for either would erase exactly the signal these two issues say
            # is missing; a code exists to be counted.
-           "pane-held", "render-stalled"}
+           "pane-held", "render-stalled",
+           # design-role-pipeline.md 9.1 (jobsearch 0.82.0): the prose is newer than the scripts, and a
+           # drain verb is refused as unknown. A gap for that is not `other`: a code exists to be counted,
+           # and "how often is the install behind its instructions" is a question worth asking.
+           "version-skew"}
 
 # ⭐ dev #321 — a `probe` result is either the literal "empty" or "thread:<ISO timestamp>" (the
 # newest inbound's date/time) — Class C's own vocabulary, settled here since V0 is the first
@@ -504,6 +541,11 @@ def read(root):
                 if rec.get("event") not in EVENTS:
                     raise JournalError("%s line %d has unknown event %r"
                                        % (JOURNAL, n, rec.get("event")))
+                if rec.get("event") in ("drain", "mail-status"):
+                    try:
+                        (_check_drain_row if rec["event"] == "drain" else _check_mail_status_row)(rec)
+                    except JournalError as e:
+                        raise JournalError("%s line %d %s row: %s" % (JOURNAL, n, rec["event"], e))
                 if rec.get("event") == "dispatch":
                     missing = [k for k in DISPATCH_FIELDS if k not in rec]
                     unknown = [k for k in rec if k not in DISPATCH_FIELDS]
@@ -583,6 +625,18 @@ def fired_events(recs):
     """Every `fired` record — proof a SessionStart hook ran, independent of whether the run's
     own `--start` ever followed it. See the module docstring, public #65."""
     return sorted((r for r in recs if r.get("event") == "fired"), key=lambda r: r.get("at") or "")
+
+
+def run_events(recs, run_id):
+    """dev #820 / public #175 (N1) -- the records that are `run_id`'s OWN: those whose `run_id` field
+    names it (`start`, `note`, `gap`, `pass`, `drain`, `roles`, `feeds`, `end`, ...). A `fired` record
+    is never anyone's: it carries only a session id and a cwd, and every SessionStart on the machine
+    writes one, a compaction or resume of the run's own session included. A close written ON BEHALF of
+    a run (`on_behalf_of`) names that run in `run_id` but is the CLOSING run's act, not this run's, so
+    it is not counted either: if it were, closing a dead run would make it look alive again.
+    `lifecycle` decides a run is over from the latest of these."""
+    return [r for r in recs if r.get("run_id") == run_id and r.get("event") != "fired"
+            and not r.get("on_behalf_of")]
 
 
 def record_swept(root, mailbox, frm, through, by, ok, reason=None, at=None, source=None):
@@ -678,9 +732,74 @@ def dispatch_rows(recs, today_only=False):
     return rows
 
 
+def _is_count(v):
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
+
+
+def check_recorded_fields(verdict, faults, kept, concluded, not_concluded):
+    """dev #812 / public #169 (design §4, §15 N13) -- the ONE validation of a `recorded` pass row's
+    fields. PURE: it reads nothing and writes nothing, and raises `JournalError` on any combination
+    it refuses. `record_pass` calls it, and so does the `judge` test, which feeds every verdict
+    `linkedin_sweep.py` can reach through it: a combination refused here fails that test and is
+    never an `apply` exception.
+
+      * `verdict` is one of `RECORD_VERDICTS`;
+      * `faults` is an int >= 0: **0** on `clean`, `incomplete` and `refused` (a structural refusal
+        judges no lines), **> 0** on `line-faults`, **>= 0** on `pass-failed` and `pane-held` (a
+        pass that reached nothing can still carry garbled lines);
+      * `kept` is `""` (no copy was kept, or the write failed) or a profile-relative path under
+        `.jobsearch/handbacks/` (no `..` segment);
+      * `concluded` and `not_concluded` are ints >= 0."""
+    if verdict not in RECORD_VERDICTS:
+        raise JournalError("a recorded pass row's verdict %r is not one of RECORD_VERDICTS %r"
+                           % (verdict, RECORD_VERDICTS))
+    if not _is_count(faults):
+        raise JournalError("a recorded pass row's faults=%r is not a non-negative integer" % (faults,))
+    if verdict == "line-faults" and faults == 0:
+        raise JournalError("a recorded pass row with verdict 'line-faults' must carry faults > 0")
+    if verdict in ("clean", "incomplete", "refused") and faults != 0:
+        raise JournalError("a recorded pass row with verdict %r must carry faults=0 (got %r): "
+                           "only line-faults, pass-failed and pane-held carry line faults"
+                           % (verdict, faults))
+    if not isinstance(kept, str):
+        raise JournalError("a recorded pass row's kept=%r is not a string (use '' for no copy)"
+                           % (kept,))
+    if kept:
+        tail = kept[len(RECORDED_KEPT_PREFIX):]
+        if (not kept.startswith(RECORDED_KEPT_PREFIX) or not tail or "\\" in kept
+                or ".." in kept.split("/")):
+            raise JournalError("a recorded pass row's kept=%r is not a path under %s"
+                               % (kept, RECORDED_KEPT_PREFIX))
+    for label, v in (("concluded", concluded), ("not_concluded", not_concluded)):
+        if not _is_count(v):
+            raise JournalError("a recorded pass row's %s=%r is not a non-negative integer"
+                               % (label, v))
+
+
+def _check_ids(label, ids, nonempty):
+    """A list of distinct ids: strings, non-empty, without whitespace. Opportunity ids, capture item ids
+    and company ids all satisfy it."""
+    if (not isinstance(ids, (list, tuple)) or (nonempty and not ids)
+            or any(not isinstance(i, str) or not i or re.search(r"\s", i) for i in ids)
+            or len(set(ids)) != len(ids)):
+        raise JournalError("record_pass %s=%r is not %sa list of distinct ids (non-empty strings "
+                           "without whitespace)" % (label, ids, "non-empty " if nonempty else ""))
+
+
+def _check_channels(channels):
+    """dev #811 / public #170 (design §5.3) -- a `pass board dispatched` row's `channels`: the ids of
+    the call's combined worklist. A non-empty list of DISTINCT non-empty strings without whitespace."""
+    if (not isinstance(channels, (list, tuple)) or not channels
+            or any(not isinstance(c, str) or not c or re.search(r"\s", c) for c in channels)
+            or len(set(channels)) != len(channels)):
+        raise JournalError("record_pass channels=%r is not a non-empty list of distinct channel ids "
+                           "(non-empty strings without whitespace)" % (channels,))
+
+
 def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_attempted=None,
                 reason=None, at=None, jobsearch=None, sweep=None, attended=None,
-                split_days=None):
+                split_days=None, *, verdict=None, faults=None, kept=None, concluded=None,
+                not_concluded=None, channels=None, ids=None, unreached=None):
     """design-script-first.md §2 (public #75/#87/#110) — the ONE writer for a `pass` row.
     `phase` is validated against `PASS_PHASES`, `kind` against `PASS_KINDS`, `reason` against
     `REASONS` (required for `phase="refused"`, refused otherwise — a reason on a row that is not
@@ -688,7 +807,21 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
     validated against `LINKEDIN_SURFACES` when `kind == "linkedin"` when given at all: an
     unrecognised surface token is refused at write, the same "unparseable value must be LOUD"
     rule this whole file applies everywhere else. Every field is stored even when empty ([] is
-    written, not omitted) so a reader never has to tell 'absent' from 'empty list' apart."""
+    written, not omitted) so a reader never has to tell 'absent' from 'empty list' apart.
+
+    dev #812 / public #169 -- `phase="recorded"` (a LinkedIn row only) is what `linkedin_sweep.py
+    record` writes after judging a SWEEP hand-back. It REQUIRES the keyword-only `verdict`, `faults`,
+    `kept`, `concluded` and `not_concluded`, validated by `check_recorded_fields`; any of the five on
+    another phase is refused. dev #811 / public #170 -- the keyword-only `channels` is for a `pass
+    board dispatched` row only (the call's combined worklist, `board_worklist` reads it back).
+
+    dev #820 / public #175 (0.82.0) -- the drain's pass kinds. `reader` and `research` rows name the
+    ids handed to an agent: `ids` (a non-empty list of distinct ids) is REQUIRED on their `dispatched`
+    and `returned` rows and refused anywhere else; a `feeds` row may carry the company ids it covered.
+    `capture` and `fetch` take phase `done` ONLY, with the keyword-only `unreached` (the ids the bounded
+    call did not reach, `[]` when it reached them all); `done` and `unreached` are refused on any
+    other kind. `drain_close` reads the LAST `capture` row's `unreached` to give an admitted item the
+    cause `deadline-reached`."""
     at = at or now_iso()
     if not run_id:
         raise JournalError("record_pass requires run_id")
@@ -696,6 +829,29 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
         raise JournalError("record_pass kind %r is not in PASS_KINDS %r" % (kind, PASS_KINDS))
     if phase not in PASS_PHASES:
         raise JournalError("record_pass phase %r is not in PASS_PHASES %r" % (phase, PASS_PHASES))
+    if (phase == "done") != (kind in UNREACHED_PASS_KINDS):
+        raise JournalError("record_pass: phase 'done' is for the %s pass kinds and only for them (got "
+                           "kind=%r phase=%r)" % (" and ".join(UNREACHED_PASS_KINDS), kind, phase))
+    if kind in ("reader", "research", "feeds") and phase not in ("dispatched", "returned", "refused"):
+        raise JournalError("record_pass: a %s pass has phases dispatched, returned and refused (got %r)"
+                           % (kind, phase))
+    if kind in AGENT_PASS_KINDS and phase in ("dispatched", "returned") and ids is None:
+        raise JournalError("record_pass: a %s pass %s row names the ids it handed over (ids=[...]); a "
+                           "row that names none cannot be checked against what was admitted"
+                           % (kind, phase))
+    if ids is not None:
+        if kind not in AGENT_PASS_KINDS and kind != "feeds":
+            raise JournalError("record_pass: ids are for the reader, research and feeds passes (got "
+                               "kind=%r)" % kind)
+        if kind in AGENT_PASS_KINDS and phase not in ("dispatched", "returned"):
+            raise JournalError("record_pass: ids are for a %s pass dispatched or returned row (got "
+                               "phase=%r)" % (kind, phase))
+        _check_ids("ids", ids, nonempty=kind in AGENT_PASS_KINDS)
+    if unreached is not None:
+        if kind not in UNREACHED_PASS_KINDS:
+            raise JournalError("record_pass: unreached is for the capture and fetch passes (got kind=%r)"
+                               % kind)
+        _check_ids("unreached", unreached, nonempty=False)
     if phase == "refused" and reason not in REASONS:
         raise JournalError(
             "record_pass(phase='refused') requires --reason from REASONS %r (got %r)"
@@ -757,6 +913,35 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
             raise JournalError(
                 "record_pass split_days=%r is not a non-empty list of distinct weekday names (%s) in "
                 "weekday order" % (split_days, ", ".join(SPLIT_WEEKDAYS)))
+    # dev #812 / public #169 (design §4, §15 N13) -- a `recorded` row says how `linkedin_sweep.py
+    # record` judged a SWEEP hand-back. LinkedIn only, and every one of its five fields is required;
+    # on any other phase they are refused, never stored (a field on a row that is not a record is not
+    # a record of anything).
+    recorded_fields = dict(verdict=verdict, faults=faults, kept=kept, concluded=concluded,
+                           not_concluded=not_concluded)
+    if phase == "recorded":
+        if kind != "linkedin":
+            raise JournalError("record_pass: phase='recorded' is only for a LinkedIn pass "
+                               "(got kind=%r)" % kind)
+        missing = sorted(k for k, v in recorded_fields.items() if v is None)
+        if missing:
+            raise JournalError("record_pass(phase='recorded') requires %s (missing: %s)"
+                               % (", ".join(sorted(recorded_fields)), ", ".join(missing)))
+        check_recorded_fields(verdict, faults, kept, concluded, not_concluded)
+    else:
+        given = sorted(k for k, v in recorded_fields.items() if v is not None)
+        if given:
+            raise JournalError("record_pass: %s only for phase='recorded' (got phase=%r)"
+                               % (", ".join(given), phase))
+    # dev #811 / public #170 (design §5.3) -- `channels`: the ids of the combined worklist one
+    # `channels_due.py --board-decision` call handed the board sweeper, on its `dispatched` row, so
+    # `deferred.add_roles` can ask which of them the hand-back accounts for (`board_worklist`). An
+    # EXTRA FIELD on the existing `board` kind, tolerated by an older `read()` for the reason `sweep` is.
+    if channels is not None:
+        if kind != "board" or phase != "dispatched":
+            raise JournalError("record_pass: channels is only for a board pass with "
+                               "phase='dispatched' (got kind=%r phase=%r)" % (kind, phase))
+        _check_channels(channels)
     reached = list(reached) if reached is not None else []
     unreachable = list(unreachable) if unreachable is not None else []
     not_attempted = list(not_attempted) if not_attempted is not None else []
@@ -779,14 +964,62 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
         rec["attended"] = True
     if split_days is not None:
         rec["split_days"] = list(split_days)
+    if phase == "recorded":
+        rec.update(verdict=verdict, faults=faults, kept=kept, concluded=concluded,
+                   not_concluded=not_concluded)
+    if channels is not None:
+        rec["channels"] = list(channels)
+    if ids is not None:
+        rec["ids"] = list(ids)
+    if kind in UNREACHED_PASS_KINDS:
+        rec["unreached"] = list(unreached) if unreached is not None else []
     return append(root, rec)
+
+
+def record_verdict(row):
+    """dev #812 / public #169 -- the verdict of a `recorded` pass row. Raises `JournalError` on a row
+    that is not one, or whose verdict is outside `RECORD_VERDICTS` (a hand-edited journal): the quota
+    count then fails LOUDLY rather than guessing which way an unreadable verdict should lean."""
+    if row.get("event") != "pass" or row.get("phase") != "recorded":
+        raise JournalError("record_verdict: not a recorded pass row: %r" % (row,))
+    verdict = row.get("verdict")
+    if verdict not in RECORD_VERDICTS:
+        raise JournalError("a recorded pass row (run %r) carries verdict %r, which is not one of "
+                           "RECORD_VERDICTS %r" % (row.get("run_id"), verdict, RECORD_VERDICTS))
+    return verdict
+
+
+def board_worklist(recs, run_id):
+    """dev #811 / public #170 (design §5.3) -- the combined worklist of the run's LATEST board
+    `dispatched` row (by `at`, ties by file order), as a list of channel ids. `None` when the run
+    has no such row, or the latest one lacks the field (written before 0.82.0): "no worklist on
+    record" is a state the caller prints as NOT CHECKED, never an empty worklist. A repeated
+    `--board-decision` in one run therefore supersedes the earlier call. Raises `JournalError` on a
+    `channels` value that is present and unreadable (a hand-edited journal)."""
+    rows = [(i, r) for i, r in enumerate(recs)
+            if r.get("event") == "pass" and r.get("kind") == "board"
+            and r.get("phase") == "dispatched" and r.get("run_id") == run_id]
+    if not rows:
+        return None
+    _i, latest = max(rows, key=lambda t: (str(t[1].get("at", "")), t[0]))
+    if "channels" not in latest:
+        return None
+    channels = latest["channels"]
+    try:
+        _check_channels(channels)
+    except JournalError as e:
+        raise JournalError("the board dispatched row of run %r carries an unreadable worklist: %s"
+                           % (run_id, e))
+    return list(channels)
 
 
 def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_gaps_window,
                  query_gaps_truncated, distinct, captured, known, carried, role_gaps, at=None,
                  quarantined=0, quarantine_reasons=None, query_gaps_filters=0,
                  captured_degraded=0, q_reached=0, q_clean=0, q_unread=0, q_total_unknown=0,
-                 q_degraded=None, q_degraded_queries=0):
+                 q_degraded=None, q_degraded_queries=0, *, coverage=None, line_faults=None,
+                 channels_worklist=None, channels_reached=None, channels_unreachable=None,
+                 channels_not_attempted=None, channels_unaccounted=None):
     """dev #692 / public #140 -- the ONE writer of a `roles` event: one per ACCEPTED `ROLES v1`
     block (`deferred.add_roles`). Validated at write, loud: an unknown surface or window, a
     bucket outside `F_TPR_BUCKETS`, a negative count, or an identity that does not hold
@@ -806,7 +1039,20 @@ def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_g
     `q_total_unknown` is counted apart (it can sit under any of the three) and `q_degraded` is
     `{code: queries}`. They are the sweep's SELF-REPORT (SHAPE, not enforced): they make a sweep
     that never looks countable (`check_runs.py`), they cannot prove it looked. An event written
-    before 0.69.0 lacks every one of these fields and readers use `.get(k, 0)`."""
+    before 0.69.0 lacks every one of these fields and readers use `.get(k, 0)`.
+
+    ⭐ dev #811 / public #170 + dev #812 / public #169 (design §6, 0.82.0) -- PARTIAL versus COMPLETE.
+    The keyword-only `coverage` (`complete` | `partial`) and its accounting are written together or
+    not at all (an event from before 0.82.0 has none, and readers treat the absence as "not
+    recorded"): `line_faults` (an int, REQUIRED with `coverage`); `channels_worklist` (the board
+    worklist's size, or None when none is on record); `channels_reached` (an int, or None);
+    `channels_unreachable` and `channels_not_attempted` (each `{channel_id: REASONS code}`);
+    `channels_unaccounted` (a list of ids). The channel fields are null or empty off the board.
+    THE IDENTITY, refused when it breaks (the `feeds` event's own discipline): `coverage` is
+    `partial` EXACTLY when `line_faults > 0`, or any QUERY was unreachable (`queries - q_reached > 0`:
+    every QUERY line is reached or unreachable, so the difference is the unreachable count), or any
+    channel map or list is non-empty. A truncated or filter-degraded query DID produce a recorded
+    subset, keeps its own fields, and does not by itself make a pass partial."""
     at = at or now_iso()
     if not run_id:
         raise JournalError("record_roles requires run_id")
@@ -854,13 +1100,80 @@ def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_g
            "captured_degraded": captured_degraded, "q_reached": q_reached, "q_clean": q_clean,
            "q_unread": q_unread, "q_total_unknown": q_total_unknown, "q_degraded": q_degraded,
            "q_degraded_queries": q_degraded_queries, "at": at}
+    rec.update(_roles_coverage(surface, queries, q_reached, coverage, line_faults, channels_worklist,
+                               channels_reached, channels_unreachable, channels_not_attempted,
+                               channels_unaccounted))
     return append(root, rec)
+
+
+def _check_channel_map(label, table):
+    if not isinstance(table, dict):
+        raise JournalError("record_roles %s=%r is not a {channel_id: REASONS code} map"
+                           % (label, table))
+    for cid, code in table.items():
+        if not isinstance(cid, str) or not cid or re.search(r"\s", cid):
+            raise JournalError("record_roles %s has the channel id %r (a non-empty string without "
+                               "whitespace)" % (label, cid))
+        if code not in REASONS:
+            raise JournalError("record_roles %s[%r]=%r is not a REASONS code" % (label, cid, code))
+
+
+def _roles_coverage(surface, queries, q_reached, coverage, line_faults, worklist, reached,
+                    unreachable, not_attempted, unaccounted):
+    """The `coverage` half of `record_roles`: validate it, and return the fields to store ({} when
+    `coverage` is not given -- and then none of the others may be). See `record_roles`."""
+    given = dict(line_faults=line_faults, channels_worklist=worklist, channels_reached=reached,
+                 channels_unreachable=unreachable, channels_not_attempted=not_attempted,
+                 channels_unaccounted=unaccounted)
+    if coverage is None:
+        extra = sorted(k for k, v in given.items() if v is not None)
+        if extra:
+            raise JournalError("record_roles: %s need coverage= (they are written together)"
+                               % ", ".join(extra))
+        return {}
+    if coverage not in ROLES_COVERAGE:
+        raise JournalError("record_roles coverage=%r is not one of %r" % (coverage, ROLES_COVERAGE))
+    if not _is_count(line_faults):
+        raise JournalError("record_roles line_faults=%r is not a non-negative integer "
+                           "(required with coverage)" % (line_faults,))
+    for label, v in (("channels_worklist", worklist), ("channels_reached", reached)):
+        if v is not None and not _is_count(v):
+            raise JournalError("record_roles %s=%r is neither None nor a non-negative integer"
+                               % (label, v))
+    unreachable = {} if unreachable is None else unreachable
+    not_attempted = {} if not_attempted is None else not_attempted
+    unaccounted = [] if unaccounted is None else unaccounted
+    _check_channel_map("channels_unreachable", unreachable)
+    _check_channel_map("channels_not_attempted", not_attempted)
+    if (not isinstance(unaccounted, (list, tuple)) or any(not isinstance(c, str) or not c or re.search(r"\s", c) for c in unaccounted)
+            or len(set(unaccounted)) != len(unaccounted)):
+        raise JournalError("record_roles channels_unaccounted=%r is not a list of distinct channel "
+                           "ids" % (unaccounted,))
+    if surface != "board" and (worklist is not None or reached or unreachable or not_attempted
+                               or unaccounted):
+        raise JournalError("record_roles: the channel fields are for surface 'board' only (got "
+                           "surface=%r)" % surface)
+    query_unreachable = queries - q_reached
+    if query_unreachable < 0:
+        raise JournalError("record_roles: q_reached=%d exceeds queries=%d" % (q_reached, queries))
+    partial = bool(line_faults > 0 or query_unreachable > 0 or unreachable or not_attempted
+                   or unaccounted)
+    if (coverage == "partial") != partial:
+        raise JournalError(
+            "record_roles: coverage=%r but line_faults=%d, unreachable queries=%d (queries - "
+            "q_reached), channels_unreachable=%d, channels_not_attempted=%d, "
+            "channels_unaccounted=%d -- a pass is partial exactly when any of them is non-zero"
+            % (coverage, line_faults, query_unreachable, len(unreachable), len(not_attempted),
+               len(unaccounted)))
+    return {"coverage": coverage, "line_faults": line_faults, "channels_worklist": worklist,
+            "channels_reached": reached, "channels_unreachable": dict(unreachable),
+            "channels_not_attempted": dict(not_attempted), "channels_unaccounted": list(unaccounted)}
 
 
 def record_feeds(root, run_id, polled, covered, unchanged, not_covered, failures,
                  companies_not_covered, postings, unlisted, selected, captured, known, carried,
                  role_gaps, sightings_added=0, discovered=0, ambiguous=0, quarantined=0,
-                 hosts_down=None, at=None, off=False):
+                 hosts_down=None, at=None, off=False, *, covered_ids=None):
     """dev #751 -- the ONE writer of a `feeds` event: one per `feed_poll.py --run`. Validated at
     write, loud: a row that claims a number it cannot account for never reaches the store.
 
@@ -880,7 +1193,13 @@ def record_feeds(root, run_id, polled, covered, unchanged, not_covered, failures
 
     `off=True` (dev #774): the run was asked to poll and `sourcing.feeds.enabled` is false, so NOTHING was polled. The
     row carries `off: true` and every count is 0 -- a switched-off feed is a row that says so, never an absent one,
-    so `channels_due.py` cannot read the silence as coverage."""
+    so `channels_due.py` cannot read the silence as coverage.
+
+    dev #820 / public #175 (0.82.0, B0.2) -- the keyword-only `covered_ids` is the list of company ids
+    this poll COVERED (distinct; as many as `covered`; none of them also in `companies_not_covered`).
+    The event stored a count of covered companies and a map of the not-covered ones, so "when was this
+    company last covered" had no answer; `feed_last_covered` reads this list to order the next poll's
+    rotation and to age a "did not look" row. Omitted from an older event and from `off`."""
     at = at or now_iso()
     if not run_id:
         raise JournalError("record_feeds requires run_id")
@@ -935,6 +1254,14 @@ def record_feeds(root, run_id, polled, covered, unchanged, not_covered, failures
         if code not in FEED_HOST_CODES:
             raise JournalError("record_feeds: host %r down with %r, which is not a HOST code %r"
                                % (host, code, FEED_HOST_CODES))
+    if covered_ids is not None:
+        _check_ids("covered_ids", covered_ids, nonempty=False)
+        if len(covered_ids) != covered:
+            raise JournalError("record_feeds: covered=%d but covered_ids names %d company(ies)"
+                               % (covered, len(covered_ids)))
+        both = sorted(set(covered_ids) & set(companies_not_covered))
+        if both:
+            raise JournalError("record_feeds: %s is both covered and not covered" % ", ".join(both))
     rec = {"event": "feeds", "run_id": run_id, "polled": polled, "covered": covered,
            "unchanged": unchanged, "not_covered": not_covered,
            "failures": {c: n for c, n in sorted(failures.items()) if n},
@@ -948,6 +1275,8 @@ def record_feeds(root, run_id, polled, covered, unchanged, not_covered, failures
         if any(counts.values()) or failures or companies_not_covered or hosts_down:
             raise JournalError("record_feeds: off=True but the row claims work was done -- a switched-off feed polls nothing")
         rec["off"] = True
+    if covered_ids is not None:
+        rec["covered_ids"] = sorted(covered_ids)
     return append(root, rec)
 
 
@@ -960,6 +1289,39 @@ def feeds_events(recs, run_id=None, on=None):
     if on is not None:
         rows = [r for r in rows if str(r.get("at") or "")[:10] == str(on)[:10]]
     return sorted(rows, key=lambda r: r.get("at") or "")
+
+
+def feed_last_covered(recs):
+    """`{company_id: 'YYYY-MM-DD'}`: the date of the latest `feeds` event whose `covered_ids` names the
+    company. A switched-off event (`off`) covered nothing, and an event written before `covered_ids`
+    existed says nothing about who was covered, so neither contributes. `feed_poll.poll` orders its
+    companies by this (never-covered first) and `coverage` ages a "did not look" feed row from it."""
+    out = {}
+    for ev in feeds_events(recs):
+        if ev.get("off"):
+            continue
+        day = str(ev.get("at") or "")[:10]
+        for cid in ev.get("covered_ids") or []:
+            out[cid] = day
+    return out
+
+
+def feed_repeat_failures(recs, code, n):
+    """The sorted company ids that were NOT covered with failure `code` in EACH of the latest `n`
+    polls (a switched-off event is not a poll). Fewer than `n` polls give `[]`: two failures need
+    two polls to have happened. `channels_due` lists these companies DUE for the browser after a
+    repeated `budget-exhausted` (n=2), which the host-code rule would otherwise leave on a normal
+    cadence forever."""
+    if code not in FEED_FAILURES:
+        raise JournalError("feed_repeat_failures code %r is not in FEED_FAILURES" % (code,))
+    if not _is_int(n, 1):
+        raise JournalError("feed_repeat_failures n=%r is not a positive integer" % (n,))
+    polls = [e for e in feeds_events(recs) if not e.get("off")]
+    if len(polls) < n:
+        return []
+    sets = [{cid for cid, c in (e.get("companies_not_covered") or {}).items() if c == code}
+            for e in polls[-n:]]
+    return sorted(set.intersection(*sets))
 
 
 def feed_board_failure_since(recs, company_id, today=None):
@@ -1044,6 +1406,269 @@ def feed_company_state(recs, company):
         return out
     out["state"] = "covered"
     return out
+
+
+ENGINE_VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+def engine_version():
+    """The running engine's version, from its `.claude-plugin/plugin.json`. Raises `JournalError` when
+    it cannot be read as `X.Y.Z`: a `start` written without one would read as an OLDER engine and print a
+    bogus ENGINE SKEW, so `--start` refuses rather than write it (dev #820, G3)."""
+    try:
+        with open(os.path.join(engine_root(), ".claude-plugin", "plugin.json"), encoding="utf-8") as fh:
+            v = json.load(fh).get("version")
+    except (OSError, ValueError):
+        v = None
+    if not isinstance(v, str) or not ENGINE_VERSION_RE.match(v):
+        raise JournalError("cannot read this engine's version from .claude-plugin/plugin.json (got %r): a "
+                           "run start without its engine cannot be told from a pre-0.82.0 run" % (v,))
+    return v
+
+
+def record_start(root, kind, at=None, engine=None, start_sha=None):
+    """dev #820 / public #175 -- the ONE writer of a `start` event. It carries `engine`, the plugin
+    version that began the run (read from `plugin.json` when not given), which `lifecycle` reads for the
+    cutover (nothing is legacy before the first 0.82.0 start) and for ENGINE SKEW. A missing or
+    malformed engine is refused. `start_sha` (dev #703) is omitted when None. Returns the run id."""
+    at = at or now_iso()
+    if not kind or not isinstance(kind, str):
+        raise JournalError("record_start requires a kind")
+    engine = engine_version() if engine is None else engine
+    if not isinstance(engine, str) or not ENGINE_VERSION_RE.match(engine):
+        raise JournalError("record_start engine=%r is not X.Y.Z" % (engine,))
+    rid = new_run_id(kind, at)
+    rec = {"event": "start", "run_id": rid, "kind": kind, "at": at, "engine": engine}
+    if start_sha:
+        rec["start_sha"] = start_sha
+    append(root, rec)
+    return rid
+
+
+# dev #820 / public #175 (design-role-pipeline.md section 4.5, 17) -- the `drain` event: one `planned`
+# when a run admits its intake, one `closed` when it checks every admitted role finished (and at most one
+# MORE, written on its behalf by the next run when it died). CLOSED vocabularies, validated at write and
+# again at read. `lifecycle.CAUSES` is these plus the three causes `stage()` derives and never stores.
+DRAIN_PHASES = ("planned", "closed")
+CAPACITY_REASONS = ("no-render-route", "time-bound")
+DRAIN_RUN_CAUSES = ("run-died", "cause-not-recorded", "not-dispatched", "deadline-reached")
+DRAIN_ROLE_CAUSES = ("agent-returned-nothing", "capture-refused", "challenge", "render-failed",
+                     "surface-cannot-read", "site-not-allowed")
+DRAIN_CLOSE_CAUSES = DRAIN_RUN_CAUSES + DRAIN_ROLE_CAUSES
+DRAIN_CLASSES = ("retry", "returned", "legacy", "new")
+RENDER_ROUTES = ("yes", "no")
+DRAIN_PLANNED_FIELDS = ("intake", "capacity", "render_route", "attended", "admitted", "waiting",
+                        "retry_stopped", "fanout", "solo", "fetch_calls", "reserved_new",
+                        "admitted_by_class", "excluded_open")
+
+
+def _is_int(v, lo=0, hi=None):
+    return isinstance(v, int) and not isinstance(v, bool) and v >= lo and (hi is None or v <= hi)
+
+
+def _id_list(label, v, what="drain"):
+    if (not isinstance(v, list) or any(not isinstance(i, str) or not i or re.search(r"\s", i) for i in v)
+            or len(set(v)) != len(v)):
+        raise JournalError("%s %s=%r is not a list of distinct ids (non-empty strings without "
+                           "whitespace)" % (what, label, v))
+
+
+def _check_drain_row(rec):
+    """The shape of a `drain` event, for the writer and the reader alike. Raises `JournalError`."""
+    phase = rec.get("phase")
+    if phase not in DRAIN_PHASES:
+        raise JournalError("drain phase %r is not one of %r" % (phase, DRAIN_PHASES))
+    if not isinstance(rec.get("run_id"), str) or not rec["run_id"]:
+        raise JournalError("drain requires run_id")
+    if phase == "planned":
+        if rec.get("on_behalf_of") is not None:
+            raise JournalError("drain planned: a plan is the run's own act (on_behalf_of is for a close)")
+        missing = [k for k in DRAIN_PLANNED_FIELDS if rec.get(k) is None]
+        if missing:
+            raise JournalError("drain planned is missing %s" % ", ".join(missing))
+        if not _is_int(rec["intake"], 1, 300):
+            raise JournalError("drain planned intake=%r is not 1..300" % (rec["intake"],))
+        if not _is_int(rec["capacity"], 0) or rec["capacity"] > rec["intake"]:
+            raise JournalError("drain planned capacity=%r is not 0..intake (%r)" % (rec["capacity"], rec["intake"]))
+        reason = rec.get("capacity_reason")
+        if rec["capacity"] < rec["intake"]:
+            if reason not in CAPACITY_REASONS:
+                raise JournalError("drain planned capacity %r is below intake %r, so capacity_reason must be "
+                                   "one of %r (got %r): a cut is never silent"
+                                   % (rec["capacity"], rec["intake"], CAPACITY_REASONS, reason))
+        elif reason is not None:
+            raise JournalError("drain planned capacity_reason %r with capacity == intake" % (reason,))
+        if rec["render_route"] not in RENDER_ROUTES:
+            raise JournalError("drain planned render_route %r is not one of %r" % (rec["render_route"], RENDER_ROUTES))
+        if rec["render_route"] == "no" and rec["capacity"] != 0:
+            raise JournalError("drain planned: no render route admits nothing (capacity must be 0)")
+        if not isinstance(rec["attended"], bool):
+            raise JournalError("drain planned attended=%r is not a boolean" % (rec["attended"],))
+        adm = rec["admitted"]
+        if not isinstance(adm, dict) or set(adm) != {"opps", "items"}:
+            raise JournalError("drain planned admitted must be {opps: [...], items: [...]} -- got %r" % (adm,))
+        _id_list("admitted.opps", adm["opps"])
+        _id_list("admitted.items", adm["items"])
+        w = rec["waiting"]
+        if (not isinstance(w, dict) or set(w) != {"count", "oldest"} or not _is_int(w["count"])
+                or not (w["oldest"] is None or re.match(r"^\d{4}-\d{2}-\d{2}$", str(w["oldest"])))):
+            raise JournalError("drain planned waiting must be {count: n, oldest: date|null} -- got %r" % (w,))
+        _id_list("retry_stopped", rec["retry_stopped"])
+        _id_list("solo", rec["solo"])
+        if not _is_int(rec["fanout"], 1) or not _is_int(rec["fetch_calls"]) or not _is_int(rec["reserved_new"]):
+            raise JournalError("drain planned fanout/fetch_calls/reserved_new are not non-negative integers")
+        byc = rec["admitted_by_class"]
+        if (not isinstance(byc, dict) or set(byc) != set(DRAIN_CLASSES)
+                or any(not _is_int(v) for v in byc.values())):
+            raise JournalError("drain planned admitted_by_class must be {%s: n} -- got %r"
+                               % (", ".join(DRAIN_CLASSES), byc))
+        if sum(byc.values()) > rec["capacity"]:
+            raise JournalError("drain planned admits %d roles with capacity %d" % (sum(byc.values()), rec["capacity"]))
+        ex = rec["excluded_open"]
+        if not isinstance(ex, dict) or any(not isinstance(k, str) or not k or not _is_int(v, 1) for k, v in ex.items()):
+            raise JournalError("drain planned excluded_open must be {run id: count >= 1} -- got %r" % (ex,))
+        for k in ("finished", "left", "elapsed_s", "per_role_s"):
+            if rec.get(k) is not None:
+                raise JournalError("drain planned carries %s, which belongs to a close" % k)
+        return
+    # --- closed ---
+    for k in DRAIN_PLANNED_FIELDS + ("capacity_reason",):
+        if k != "admitted" and rec.get(k) is not None:       # `admitted` is a count here, a map in a plan
+            raise JournalError("drain closed carries %s, which belongs to a plan" % k)
+    if not _is_int(rec.get("admitted")) or not _is_int(rec.get("finished")) or rec["finished"] > rec["admitted"]:
+        raise JournalError("drain closed needs integers 0 <= finished <= admitted (got admitted=%r finished=%r)"
+                           % (rec.get("admitted"), rec.get("finished")))
+    left = rec.get("left")
+    if not isinstance(left, dict):
+        raise JournalError("drain closed left must be {id: cause} -- got %r" % (left,))
+    for i, cause in left.items():
+        if not isinstance(i, str) or not i or re.search(r"\s", i):
+            raise JournalError("drain closed left has the id %r (a non-empty string without whitespace)" % (i,))
+        if cause not in DRAIN_CLOSE_CAUSES:
+            raise JournalError("drain closed left[%r]=%r is not a cause a close may record (%s); "
+                               "retry-stopped, legacy-backlog and unclassified are derived, never stored"
+                               % (i, cause, ", ".join(DRAIN_CLOSE_CAUSES)))
+    if rec["finished"] + len(left) != rec["admitted"]:
+        raise JournalError("drain closed: admitted=%d but finished=%d + left=%d -- every admitted role "
+                           "finished or has a cause" % (rec["admitted"], rec["finished"], len(left)))
+    obh = rec.get("on_behalf_of")
+    if obh is not None:
+        if not isinstance(obh, str) or not obh or obh == rec["run_id"]:
+            raise JournalError("drain closed on_behalf_of=%r must name ANOTHER run" % (obh,))
+        for k in ("elapsed_s", "per_role_s"):
+            if rec.get(k) is not None:
+                raise JournalError("drain closed on behalf of %s carries %s: a close written for a dead "
+                                   "run measures nothing" % (obh, k))
+    else:
+        if rec.get("elapsed_s") is not None and not _is_int(rec["elapsed_s"]):
+            raise JournalError("drain closed elapsed_s=%r is not a non-negative integer" % (rec["elapsed_s"],))
+        prs = rec.get("per_role_s")
+        if prs is not None and (isinstance(prs, bool) or not isinstance(prs, (int, float)) or prs < 0):
+            raise JournalError("drain closed per_role_s=%r is not a non-negative number" % (prs,))
+
+
+def record_drain(root, run_id, phase, *, intake=None, capacity=None, capacity_reason=None,
+                 render_route=None, attended=None, admitted=None, waiting=None, retry_stopped=None,
+                 fanout=None, solo=None, fetch_calls=None, reserved_new=None, admitted_by_class=None,
+                 excluded_open=None, finished=None, left=None, elapsed_s=None, per_role_s=None,
+                 on_behalf_of=None, at=None):
+    """dev #820 / public #175 (design section 4.5, 17 N1, N7) -- the ONE writer of a `drain` event.
+
+      planned   `lifecycle.Plan.event_fields()`: intake, capacity (+ capacity_reason whenever it is below
+                intake), render_route, attended, admitted {opps, items}, waiting {count, oldest},
+                retry_stopped, fanout, solo, fetch_calls, reserved_new, admitted_by_class,
+                excluded_open. One per run: a second is refused.
+      closed    `admitted` (an INTEGER here: how many were admitted), `finished`, `left` {id: cause}
+                with `finished + len(left) == admitted`, and for the run's own close `elapsed_s` and
+                `per_role_s` (the measured rate N7's time cap reads). `on_behalf_of=<closing run>`
+                marks a close written for a run that went silent; it measures nothing.
+
+    EXACTLY ONE EFFECTIVE CLOSE PER RUN: a second own close for the run is refused, and a second
+    on-behalf close is refused. The run's own close is still accepted after an on-behalf one (the
+    run went silent past the window and then came back); `lifecycle.closed_event` reads the own close
+    first. A close needs the run to have a plan."""
+    at = at or now_iso()
+    rec = {"event": "drain", "phase": phase, "run_id": run_id, "at": at}
+    planned = dict(intake=intake, capacity=capacity, render_route=render_route, attended=attended,
+                   admitted=admitted, waiting=waiting, retry_stopped=retry_stopped, fanout=fanout,
+                   solo=solo, fetch_calls=fetch_calls, reserved_new=reserved_new,
+                   admitted_by_class=admitted_by_class, excluded_open=excluded_open)
+    closed = dict(finished=finished, left=left, elapsed_s=elapsed_s, per_role_s=per_role_s)
+    if phase == "planned":
+        rec.update({k: v for k, v in planned.items()})
+        if capacity_reason is not None:
+            rec["capacity_reason"] = capacity_reason
+        rec.update({k: v for k, v in closed.items() if v is not None})
+        if on_behalf_of is not None:
+            rec["on_behalf_of"] = on_behalf_of
+    else:
+        rec["admitted"] = admitted
+        rec.update({k: v for k, v in closed.items() if v is not None})
+        rec.update({k: v for k, v in planned.items() if v is not None and k != "admitted"})
+        if capacity_reason is not None:
+            rec["capacity_reason"] = capacity_reason
+        if on_behalf_of is not None:
+            rec["on_behalf_of"] = on_behalf_of
+    _check_drain_row(rec)
+    existing = [r for r in read(root) if r.get("event") == "drain" and r.get("run_id") == run_id]
+    if phase == "planned":
+        if any(r.get("phase") == "planned" for r in existing):
+            raise JournalError("run %r already has a drain plan: a run plans once" % run_id)
+    else:
+        if not any(r.get("phase") == "planned" for r in existing):
+            raise JournalError("run %r has no drain plan, so there is nothing to close" % run_id)
+        kind_of = lambda r: "behalf" if r.get("on_behalf_of") else "own"   # noqa: E731
+        mine = "behalf" if on_behalf_of else "own"
+        if any(r.get("phase") == "closed" and kind_of(r) == mine for r in existing):
+            raise JournalError("run %r already has a %s close: exactly one close of each kind is "
+                               "allowed, and the run's own close outranks one written on its behalf"
+                               % (run_id, "on-behalf" if on_behalf_of else "own"))
+    return append(root, rec)
+
+
+MAIL_CLASSES = ("ats-status", "human", "digest", "noise")
+MAIL_UNMATCHED_CAP = 200
+
+
+def _check_mail_status_row(rec):
+    if not isinstance(rec.get("run_id"), str) or not rec["run_id"]:
+        raise JournalError("mail-status requires run_id")
+    mb = rec.get("mailbox")
+    if not isinstance(mb, str) or not mb.strip():
+        raise JournalError("mail-status mailbox %r is not a non-empty string" % (mb,))
+    counts = rec.get("counts")
+    if not isinstance(counts, dict) or set(counts) != set(MAIL_CLASSES) \
+            or any(not _is_int(v) for v in counts.values()):
+        raise JournalError("mail-status counts must be {%s: n >= 0} (every class, no other) -- got %r"
+                           % (", ".join(MAIL_CLASSES), counts))
+    un = rec.get("unmatched")
+    if not isinstance(un, list):
+        raise JournalError("mail-status unmatched must be a list -- got %r" % (un,))
+    for u in un:
+        if (not isinstance(u, dict) or set(u) != {"source", "subject"}
+                or not isinstance(u["source"], str) or not u["source"].strip()
+                or not isinstance(u["subject"], str)
+                or len(u["source"]) > MAIL_UNMATCHED_CAP or len(u["subject"]) > MAIL_UNMATCHED_CAP):
+            raise JournalError("mail-status unmatched entries are {source, subject}, each at most %d "
+                               "characters, source non-empty -- got %r" % (MAIL_UNMATCHED_CAP, u))
+    if len(un) > counts["ats-status"]:
+        raise JournalError("mail-status: %d unmatched but only %d ats-status messages -- an unmatched "
+                           "message is an ats-status one that matched no application"
+                           % (len(un), counts["ats-status"]))
+
+
+def record_mail_status(root, run_id, mailbox, counts, unmatched, at=None):
+    """dev #820 / public #175 (design section 8.2, M818) -- the ONE writer of a `mail-status` event: what
+    one mailbox's status-mail search found in a run. `counts` is `{ats-status, human, digest, noise: n}`
+    (`reconcile.classify_status_mail`'s four classes, every one given); `unmatched` is a list of
+    `{source, subject}` for each `ats-status` message that matched no application. `coverage` reads the
+    latest event per mailbox. Validated at write; an unknown class or an `unmatched` longer than the
+    `ats-status` count is refused."""
+    at = at or now_iso()
+    rec = {"event": "mail-status", "run_id": run_id, "mailbox": mailbox, "counts": dict(counts or {}),
+           "unmatched": [dict(u) if isinstance(u, dict) else u for u in (unmatched or [])], "at": at}
+    _check_mail_status_row(rec)
+    return append(root, rec)
 
 
 def roles_events(recs, run_id=None, surface=None):
@@ -1138,12 +1763,65 @@ def linkedin_passes_reached(recs, today=None):
     count comes from surfaces the pass actually REACHED, never from a `dispatched` row, so a
     browserless launch that read nothing never consumes the quota). A `dispatched` row with no
     matching `returned` row is a crashed pass (see `crashed_passes` below) and is not counted
-    here either."""
+    here either.
+
+    ⭐ dev #812 / public #169 (design §4) -- ONE FREE REFUSAL A DAY (owner ruling, 2026-11-05). A
+    `returned` pass is not counted when its run's LATEST `recorded` row (by `at`, ties by file
+    order) says `refused`, for at most `LINKEDIN_FREE_REFUSALS_PER_DAY` such passes a day, oldest
+    `returned` first; any later one counts. The pairing is by run id and the latest row, never by
+    position, so the order in which the dispatcher writes `returned` and `record` writes `recorded`
+    does not matter. A `returned` row with NO `recorded` row counts (a record not yet run, or a
+    journal from before 0.82.0: the conservative reading), and so does one whose latest verdict is
+    anything but `refused` -- including `pass-failed` and `pane-held`: the account was driven. Raises
+    `JournalError` on a `recorded` row whose verdict is unreadable (`record_verdict`)."""
+    counted, _excused = _linkedin_quota_split(recs, today)
+    return len(counted)
+
+
+def linkedin_refusals_excused(recs, today=None):
+    """dev #812 / public #169 -- how many of TODAY's `returned` passes the quota did NOT count
+    because their record was refused (0 or `LINKEDIN_FREE_REFUSALS_PER_DAY`). `posture.py --may
+    linkedin` prints it, so an admitted rerun is never silent about why."""
+    _counted, excused = _linkedin_quota_split(recs, today)
+    return len(excused)
+
+
+def linkedin_excused_rows(recs, today=None):
+    """The `returned` pass rows `linkedin_refusals_excused` counts: `run_summary` asks whether THIS
+    run's refusal was the excused one, and must not re-derive the rule."""
+    return _linkedin_quota_split(recs, today)[1]
+
+
+def latest_recorded_row(recs, run_id):
+    """The LinkedIn `recorded` pass row of `run_id` with the latest `at` (ties by file order), or
+    None. The one definition of "the run's outcome" the quota and the run summary both read."""
+    best = None
+    for i, r in enumerate(recs):
+        if (r.get("event") == "pass" and r.get("kind") == "linkedin"
+                and r.get("phase") == "recorded" and r.get("run_id") == run_id):
+            key = (str(r.get("at", "")), i)
+            if best is None or key >= best[0]:
+                best = (key, r)
+    return best[1] if best else None
+
+
+def _linkedin_quota_split(recs, today=None):
     today = today or now_iso()[:10]
-    return sum(1 for r in recs
-              if r.get("event") == "pass" and r.get("kind") == "linkedin"
-              and r.get("phase") == "returned" and str(r.get("at", ""))[:10] == today
-              and len(r.get("reached") or []) >= 1)
+    returned = sorted(
+        ((str(r.get("at", "")), i, r) for i, r in enumerate(recs)
+         if r.get("event") == "pass" and r.get("kind") == "linkedin"
+         and r.get("phase") == "returned" and str(r.get("at", ""))[:10] == today
+         and len(r.get("reached") or []) >= 1),
+        key=lambda t: (t[0], t[1]))
+    counted, excused = [], []
+    for _at, _i, r in returned:
+        row = latest_recorded_row(recs, r.get("run_id"))
+        if (row is not None and record_verdict(row) == "refused"
+                and len(excused) < LINKEDIN_FREE_REFUSALS_PER_DAY):
+            excused.append(r)
+        else:
+            counted.append(r)
+    return counted, excused
 
 
 def crashed_passes(recs):
@@ -1706,6 +2384,17 @@ def cmd_passes(root, today_only=False):
                 bits += " jobsearch=%s" % r["jobsearch"]
         elif r.get("phase") == "refused":
             bits += " reason=%s" % (r.get("reason") or "-")
+        elif r.get("phase") == "recorded":
+            # dev #812 / public #169 -- how `linkedin_sweep.py record` judged the hand-back
+            bits += (" verdict=%s faults=%s concluded=%s not_concluded=%s kept=%s"
+                    % (r.get("verdict"), r.get("faults"), r.get("concluded"),
+                       r.get("not_concluded"), r.get("kept") or "-"))
+        elif r.get("phase") == "dispatched" and r.get("channels"):
+            bits += " channels=%s" % ",".join(r["channels"])
+        elif r.get("phase") == "done":
+            bits += " unreached=%s" % (",".join(r.get("unreached") or []) or "-")
+        if r.get("ids"):
+            bits += " ids=%s" % ",".join(r["ids"])
         print("  %s" % bits)
     crashed = crashed_passes(recs)
     if crashed:
@@ -2036,7 +2725,10 @@ def main():
     ap.add_argument("--pass", dest="pass_kind", metavar="KIND", choices=PASS_KINDS,
                     help="with --run: record a pass event, e.g. 'linkedin' — needs --phase")
     ap.add_argument("--phase", choices=PASS_PHASES,
-                    help="with --pass: dispatched | returned | refused")
+                    help="with --pass: dispatched | returned | refused (done: capture and fetch only). "
+                         "(`recorded` is written by "
+                         "linkedin_sweep.py record, never by hand: this CLI cannot supply its "
+                         "verdict, so it refuses.)")
     ap.add_argument("--reached", metavar="SURFACES", default="",
                     help="with --pass --phase returned: comma-separated LINKEDIN_SURFACES")
     ap.add_argument("--unreachable", metavar="SURFACES", default="",
@@ -2048,6 +2740,12 @@ def main():
                          "capability reach LinkedIn's job search this pass? `reached` means the "
                          "pass owes a ROLES block; `unreachable` and `not-attempted` do not. "
                          "daily-run reports it from the runner's hand-back, always.")
+    ap.add_argument("--ids", metavar="ID,ID", default=None,
+                    help="with --pass reader|research (dispatched/returned) or feeds: the ids handed "
+                         "to the agent, comma-separated (dev #820). Required for reader and research.")
+    ap.add_argument("--unreached", metavar="ID,ID", default=None,
+                    help="with --pass capture|fetch --phase done: the ids the bounded call did not "
+                         "reach, comma-separated; omitted means none (dev #820)")
     ap.add_argument("--passes", action="store_true",
                     help="print every pass row by phase, oldest first (design-script-first.md "
                          "§2) — '0 passes' on an empty journal")
@@ -2098,15 +2796,12 @@ def main():
             return 0
 
         if args.start:
-            rid = new_run_id(args.start, at)
-            rec = {"event": "start", "run_id": rid, "kind": args.start, "at": at}
             # dev #703 / public #155: the HEAD this run began on, so run_summary.footprint()
             # can count what the run COMMITTED. Omitted (never null) when git cannot be asked:
             # a `start` without it is the "not measured" case, same as every older `start`.
-            sha = head_sha(root)
-            if sha:
-                rec["start_sha"] = sha
-            append(root, rec)
+            # dev #820 / public #175: and the ENGINE that began it, from plugin.json -- refused
+            # when unreadable (record_start), never written without.
+            rid = record_start(root, args.start, at=at, start_sha=head_sha(root))
             print(rid)
             return 0
 
@@ -2273,10 +2968,12 @@ def main():
                 reached = [s.strip() for s in args.reached.split(",") if s.strip()]
                 unreachable = [s.strip() for s in args.unreachable.split(",") if s.strip()]
                 not_attempted = [s.strip() for s in args.not_attempted.split(",") if s.strip()]
+                _csv = lambda raw: (None if raw is None  # noqa: E731
+                                    else [x.strip() for x in raw.split(",") if x.strip()])
                 record_pass(root, args.run, args.pass_kind, args.phase,
                            reached=reached, unreachable=unreachable,
                            not_attempted=not_attempted, reason=args.reason, at=at,
-                           jobsearch=args.jobsearch)
+                           jobsearch=args.jobsearch, ids=_csv(args.ids), unreached=_csv(args.unreached))
                 print("pass %s %s recorded" % (args.pass_kind, args.phase))
             return 0
 

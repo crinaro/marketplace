@@ -5,7 +5,7 @@ description: 'Sweep the non-LinkedIn sourcing surfaces for new roles — job boa
 model: sonnet
 effort: low
 disallowedTools: Agent
-tools: WebSearch, WebFetch, Read, Bash, mcp__Claude_Browser__preview_start, mcp__Claude_Browser__navigate, mcp__Claude_Browser__get_page_text, mcp__Claude_Browser__read_page, mcp__Claude_Browser__find
+tools: WebSearch, WebFetch, Read, Bash, mcp__Claude_Browser__preview_start, mcp__Claude_Browser__navigate, mcp__Claude_Browser__get_page_text, mcp__Claude_Browser__read_page, mcp__Claude_Browser__find, mcp__Claude_Browser__tabs_close
 ---
 
 ## THE PLUGIN AGENT CONTRACT — standing rules, before anything else in this file
@@ -115,19 +115,41 @@ and then through the next browser mechanism on the line. A channel whose require
 automated access) prints `candidate: you open it` and no mechanism: **never open it**; the candidate
 does, and `channels_due.py` lists it apart under FOR YOU TO OPEN, not in your worklist.
 
-⚠️ **If `route.py` refuses, STOP and report it.** An unreadable route is not a reason to guess:
-guessing produces a sweep that silently covered less than it claims, which is the one failure
-this whole plugin is organised against. A channel you could not reach is a REPORTED GAP, never a
-silent zero.
+⚠️ **If `route.py` refuses, never guess a route, and say which kind of refusal it was.** An unreadable
+route is not a reason to guess: guessing produces a sweep that silently covered less than it claims,
+which is the one failure this whole plugin is organised against. A channel you could not reach is a
+REPORTED GAP, never a silent zero.
+- **`ROUTE CONFIGURATION UNREADABLE` is pass-wide:** no channel has a route you can trust. STOP, and
+  hand back every channel on your worklist as `CHANNEL <id> not-attempted reason=other` (see "When a
+  channel fails").
+- **`HAS AN UNREADABLE ROUTE` or `NO SUCH CHANNEL` names ONE id: that is that channel's failure, not
+  the pass's.** Record `CHANNEL <id> not-attempted reason=other` for it and carry on with the next id.
+
+## ⭐ Your own browser tab (dev #820 / public #175)
+
+When a channel's route is the in-app Browser pane, work in a tab of your own. The pane is one surface
+shared with every other task, and a pane call that names no tab acts on whichever tab is in front,
+which another task may have changed since your last call. You would read a page you never opened and
+report it as this channel's.
+
+- **Open one tab per channel you sweep** with `mcp__Claude_Browser__preview_start`, passing the page's
+  `url`. It returns a `tabId`.
+- **Pass that `tabId` on every call that touches the page:** `navigate`, `get_page_text`, `read_page`
+  and `find`. A call with no `tabId` is a call on someone else's tab.
+- **Close the tab with `mcp__Claude_Browser__tabs_close` when you are done with that channel**, whether
+  it yielded roles, nothing, or failed, and open a fresh one for the next channel. Never leave a tab
+  open on the way out.
+- `guard_browser_tab.py` refuses a pane call from this agent that names no `tabId`, and its refusal
+  says what to do. It is a backstop for this rule and does not replace it.
 
 ## What a sweep is
 
 1. **Your worklist is the ids you were handed**, from the `--board-decision` call's `  worklist:` line.
    It is the whole of your work: sweep each id on it and no other channel. Do not run `channels_due.py`
    to decide what to sweep. **Channels get retired after a zero-yield trial and must not be re-added by
-   a helpful sweep**: a channel not on your worklist is not yours today. Handed no worklist, STOP and
-   report it; the caller gets one from `channels_due.py --board-decision` (the daily run) or
-   `/jobsearch:search` (attended).
+   a helpful sweep**: a channel not on your worklist is not yours today. Handed no worklist, that is
+   pass-wide: STOP and report it; the caller gets one from `channels_due.py --board-decision` (the
+   daily run) or `/jobsearch:search` (attended).
 2. **For each id on your worklist, resolve the route, then search it** for each configured title, in both
    postures the profile asks for: remote, and in-radius on-site/hybrid. Filter to the most recent
    postings the surface allows. **Before dropping any hit for geography, run
@@ -145,10 +167,58 @@ silent zero.
    (an obvious gig or volunteer listing).
 4. **Report per channel**, including the ones that yielded nothing — a zero from a channel you
    actually searched and a zero from a channel you could not reach are different facts, and the
-   channel review cannot tell them apart unless you say which it was.
+   channel review cannot tell them apart unless you say which it was. **Every id on your worklist ends as
+   QUERY lines, a `CHANNEL` line, or both** (see "When a channel fails").
 
 **Query parameters drift.** If a constructed URL fails, use the site's own search box rather than
 concluding the board is empty. A malformed query and an empty board look identical.
+
+## ⭐ When a channel fails: record it and move on (dev #811 / public #170)
+
+**One channel failing is never the pass failing.** A sweep that stops at the first page that will not
+cooperate hands back nothing, the channels after it are lost without a trace, and the run reads as a
+pass that found nothing. Five clauses, in order:
+
+- **Clause 1. Name the failures, by what the page does, not by what it says.** A channel has failed when the
+   page you land on does not show the channel's search or listing UI, and shows instead:
+   - an interstitial or challenge (any page that asks you to prove you are human, or to wait while
+     your browser is checked, before showing content);
+   - a sign-in wall;
+   - a page that will not load;
+   - a rate-limit message;
+   - or `route.py` refusing **this one id** (`HAS AN UNREADABLE ROUTE`, `NO SUCH CHANNEL`).
+
+   **The wording varies by site and by locale.** Phrases such as "verify you are human", "checking
+   your browser" or "unusual traffic" are *examples*, not the definition. Judge by what is missing
+   (the search UI) and what is in its place.
+- **Clause 2. Never bypass.** Do not click the challenge, solve it, wait it out in a loop, reload it, or
+   switch to another route to get past it. Retrying is out of scope: the next scheduled sweep is the
+   retry.
+- **Clause 3. Record it as `unreachable` with a `journal.REASONS` code, in one `CHANNEL` line**
+   (`CHANNEL <channel_id> unreachable reason=<code>`). If the channel failed after some of its
+   searches had run, keep those `QUERY` lines and add the `CHANNEL` line for the rest. The codes: a
+   challenge or block page `upstream-error` · a sign-in demanded `credential-missing` · a page that
+   never loaded, or a site the Browser pane refused to open or whose approval was declined
+   `surface-unreachable` · a stall past the wait `timeout` · a rate-limit page `rate-limited`. A route
+   refusal for one id is `CHANNEL <id> not-attempted reason=other`. A `not-attempted` line never goes
+   with a `QUERY` for the same channel: a channel you searched at all was attempted.
+- **Clause 4. Continue with the next id on the worklist.** Every id ends as `QUERY` lines, a `CHANNEL` line, or
+   both, and the roles you read on the channels that worked are still listed.
+- **Clause 5. Only a pass-wide failure stops the pass:** no worklist, a failed `binding.py --assert`,
+   `route.py` printing `ROUTE CONFIGURATION UNREADABLE`, or no browser for any route. Even then, hand
+   back a ROLES block with **every channel not yet swept as `CHANNEL <id> not-attempted
+   reason=<code>`** (`other` for the route configuration, `browser-unavailable` for the browser), so
+   the pass reads as partial, never as zero.
+
+`deferred.py --add-roles` checks the block against the worklist the run stored: an id with neither a
+`QUERY` nor a `CHANNEL` line is a `channel-unaccounted` fault, and the pass is recorded `partial`. That
+count, not these words, is how anyone learns whether a live sweep obeyed this section.
+
+**If your scripts are older than these instructions.** When `--add-roles --check` prints `LINE FAULT
+line <n>: not a line of the ROLES grammar -- 'CHANNEL …'` for one of your `CHANNEL` lines (it counts it
+in the `verdict:` line and exits 4), your scripts are older than your instructions. Keep the line and
+hand the block back. Never delete a `CHANNEL` line to make the check come out clean: the failure it
+records is a fact the run needs.
 
 ## Output
 
@@ -166,7 +236,9 @@ it in your hand-back file (rule 6) in exactly this grammar. `surface=board` and 
 board has no uniform posted-window filter, so you report "the most recent postings the surface
 allows" and say so with `window=none` on every QUERY. Every QUERY carries its `channel=<channel
 id>` and never `unapplied`. One `QUERY` line per channel × title × geography you ran (an
-`unreachable` QUERY, with a `journal.REASONS` code, for one you could not), one `ROLE` line per
+`unreachable` QUERY, with a `journal.REASONS` code, for one you could not), one `CHANNEL` line for each
+worklist channel that failed or was not tried (see "When a channel fails"; it takes no `q=` ordinal),
+one `ROLE` line per
 distinct role any of them showed (the same posting on two channels is ONE line), and `SEEN
 distinct=<n>` equal to the number of `ROLE` lines. A title, company
 or location containing a double quote has it replaced by `'`. `deferred.py --add-roles` accepts
@@ -184,6 +256,7 @@ as a gap, so a fault you leave in is a role this pass loses.
 --- ROLES v1 run=<run-id> surface=<linkedin-jobsearch|board> window=<daily|wide|none> ---
 QUERY geo=<remote|local> title="<query>" window=<r86400|r604800|none> shown=<n> total=<m|m+|?> dropped=<none|?|<filter>[,<filter>...]> added=<none|?|<filter>[,<filter>...]> [unapplied] [channel=<channel_id>]
 QUERY geo=<remote|local> title="<query>" unreachable reason=<journal.REASONS code> [channel=<channel_id>]
+CHANNEL <channel_id> <unreachable|not-attempted> reason=<journal.REASONS code>
 SEEN distinct=<n>
 ROLE url=<posting url> q=<k>[,<k>...] title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|ats:YYYY-MM-DD|<n>d|?> pay=<pay|?> setting="<verbatim|none stated|?>"
 ROLE nourl title="<t>" company="<c>" reason=<journal.REASONS code>

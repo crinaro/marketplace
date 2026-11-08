@@ -79,8 +79,10 @@ noted here rather than hidden.
 From that anchor, resolution walks `parentUuid` BACKWARD — never scans the file by proximity —
 so a parallel subagent's interleaved writes (a different, unrelated `parentUuid` lineage) are
 never picked up as "the most recent read." Where the click carries a `tabId`, only a page read
-with a matching `tabId` counts; where it carries none (the in-app pane has one tab), no tab
-filter applies. **Unresolvable is unresolvable — never a cross-page guess.** An unresolved ref
+with a matching `tabId` counts; where it carries none, no tab filter applies. (The in-app pane is
+shared by every task and has many tabs: a pane call naming no tab acts on whichever is in front. The
+jobsearch browsing agents are required to name theirs, `guard_browser_tab.py`, dev #820, so for them
+this branch is the rare case and no longer the pane's normal one.) **Unresolvable is unresolvable — never a cross-page guess.** An unresolved ref
 allows the click and attaches a `systemMessage` saying so; it never denies on a guess and never
 silently allows either.
 

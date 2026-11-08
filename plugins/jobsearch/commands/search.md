@@ -15,7 +15,7 @@ argument-hint: "[companies|boards] [attended]"
 | any of the above **without** `attended` | nothing: a preview of what is due | the same, with `--dry-run` |
 
 This is one sweep and what it finds, not a full run. It does not read mail, run LinkedIn, draft, or rebuild the
-dashboard; the next daily run does those. A role the sweep finds is captured, screened and, when the screen keeps
+dashboard; the next daily run does those. A role the sweep finds is captured, read, screened and, when the screen keeps
 it, researched in this same session (step 4), the way the daily run does it: a posture level governs how often
 an UNATTENDED run searches, never whether a found role is looked into. Free company feeds (`feed_poll.py`) are
 not this command either: they run every daily run.
@@ -76,31 +76,55 @@ Print its output verbatim. Then say that the sweep runs only from the attended f
 
    and then the same call without `--check`, with the same outcomes and exit codes as daily-run's board pass.
 
-4. **Capture, screen and research what it found, now, by the daily run's own steps** (owner ruling O6: a role that
-   is found and passes the screen is researched when it is found, on every posture, `minimal` included). Read
-   `${CLAUDE_PLUGIN_ROOT}/skills/daily-run/SKILL.md` sections **4b. CAPTURE AND SCREEN** and **5. RESEARCH** and
-   follow them as written, with this session's run id. They are the one definition; this command restates none of
-   their rules, so a change to them reaches this command with no edit here. The scripts they run, so you know what
-   you are about to do:
+   **Then say what did not get swept (dev #811 / public #170).** Each `CHANNEL GAP` line in the
+   `--add-roles` output is a worklist channel that was `unreachable`, `not-attempted` or
+   `channel-unaccounted` (the sweeper handed back nothing for it), with its reason. **Name every one of
+   them to the person present, with its reason**, and what they can do about it:
+   - `upstream-error` (a challenge or block page) or `credential-missing` (a sign-in wall): they can
+     open that channel in their own browser, clear the challenge or sign in, and re-run
+     `/jobsearch:search boards attended`. The sweeper never clicks through either.
+   - `surface-unreachable`: if the browser asked you to approve this site, approve it once in the
+     Claude desktop app's Browser pane, then re-run `/jobsearch:search boards attended`.
+   - `channel-unaccounted`: the sweeper stopped without saying why. Say so; the channel waits for the
+     next sweep.
 
-   - capture: `deferred.py --claimable --run <id>`, then `record.py create ... --from-item <item id>` for each
-     `capture-role` item, then `deferred.py --done <item id>` (this session holds no run lock, so §4b's
-     "no `--already-locked`" is exactly right);
-   - screen, in ONE call for every role captured: `profile.py --minimal-screen <opp_id> [<opp_id> ...]`, and
-     `record.py decide <opp_id> pass ...` for a `VERDICT remove:<rule>` role;
-   - research: one `opportunity-researcher` dispatch for the roles whose block reads `VERDICT keep`, within §5's
-     batch size, and `deferred.py --add-research <opp_id>` for any kept role over it, which the next run drains.
-     `deferred.py` refuses research for a role that is not `keep`, and a `VERDICT review:<rule>` role waits for the
-     candidate's look.
-   - the researcher's `EMPLOYER-POSTING` lines (dev #776): its hand-back names a file holding one line per role.
-     Pass the file, whole, to `~/.claude/jobsearch/run record.py posting --from-file <the file>` (no
-     `--already-locked`; never a line on a command line). A refusal is quoted to the candidate with its remedy line.
+   Then print the run's own coverage line, so an attended run reads partial the way an unattended one
+   does: `~/.claude/jobsearch/run run_summary.py --run <id>`, and quote its `sourcing (board)` line
+   (`PARTIAL` when anything above was listed, `complete` when nothing was).
 
-   Do not pass `--attended` to any of these: it lifts the drafting gate, and nothing here drafts.
+4. **Drain what it found, now, by the daily run's own steps** (owner ruling O6: a role that is found and passes
+   the screen is researched when it is found, on every posture, `minimal` included; and the owner's ruling for the
+   drain: a run finishes every role it takes on). Read `${CLAUDE_PLUGIN_ROOT}/skills/daily-run/SKILL.md` section
+   **4b. THE DRAIN** (its research step is **5. RESEARCH**) and follow it as written, with this session's run id and
+   this session's own render-route declaration. It is the one definition; this command restates none of its rules, so
+   a change to it reaches this command with no edit here. The scripts it runs, in its order, so you know what you are
+   about to do:
+
+   - link the sightings of roles already known: `record.py capture-batch --run <id> --link-only`;
+   - plan the intake: `lifecycle.py --drain-plan --run <id> --render-route yes|no`. Read `fanout`, `fetch_calls` and
+     `solo` from what it prints, never a number of your own;
+   - capture: `record.py capture-batch --run <id> --admitted`, repeated until `deadline-left 0`;
+   - read: `record.py read-batch --run <id> --fetch` for what a script can read, then `jd-reader` for the
+     `RESIDUE` lines (each role in its own tab), and a posting only the candidate can open is listed under YOUR READ
+     with its link and reason, never skipped;
+   - re-screen what was read: `record.py read-batch --run <id> --fetch` again, until `deadline-left 0`;
+   - research, only past the gate: `deferred.py --add-research <opp_id>` exits 0 for a role screened `keep`, and an
+     `opportunity-researcher` dispatch takes those; an exit 2 is a refusal with its reason, quoted to the
+     candidate, and a `review:<rule>` role waits for the candidate's look;
+   - close: `lifecycle.py --drain-close --run <id>`, and put its `drain:` line, and every `LEFT` line it prints, in
+     what you tell the candidate verbatim. Exit 3 is a role left unfinished: say so; the next run takes it again.
+
+   This session holds no run lock, so none of these takes `--already-locked`. Do not pass `--attended` to any of
+   them: it lifts the drafting gate, and nothing here drafts.
+
+   The researcher's `EMPLOYER-POSTING` lines (dev #776): its hand-back names a file holding one line per role.
+   Pass the file, whole, to `~/.claude/jobsearch/run record.py posting --from-file <the file>` (no
+   `--already-locked`; never a line on a command line). A refusal is quoted to the candidate with its remedy line.
 
 5. Close the journal: `~/.claude/jobsearch/run journal.py --run <id> --end`. Tell the candidate how many roles came
-   back and how many are new (from the `--add-roles` output), the `MINIMAL SCREEN SUMMARY` line, and how many were
-   researched now and how many queued, from the scripts' own output, never a count of your own.
+   back and how many are new (from the `--add-roles` output), the `drain:` line step 4's close printed (admitted, finished, left, waiting for
+   intake) with any `LEFT` lines, and how many were researched now, from the scripts' own output, never a count
+   of your own.
 
 ## What NOT to do
 

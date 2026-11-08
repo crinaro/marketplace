@@ -117,7 +117,7 @@ roles I pursue?" is a query, not a memory exercise.
 | `access` | how it is reached — see below |
 | `relationship_status`, `log` | for firms and referrals: where you stand, and the thread history — each `log` entry is a dated line, `log[].date` and `log[].note`. Who you know there is a person, not a field on the channel — see *People* below |
 | `portfolio_of` | since 0.75.0, on a portfolio job board only: the id of the company row for the investment firm that publishes it. The channel must be a `job-board` with `access: manual-candidate` and a calendar `review_cadence` (`daily`, `weekly`, `biweekly` or `monthly`), and it needs `board_hosts`. See *Portfolio boards* in [How it works](how-it-works.md) |
-| `board_hosts` | since 0.75.0, on a `manual-candidate` channel only: a non-empty list of distinct bare host names (for example `jobs.example.org`) that the engine must never open. A role whose every address is on one of these hosts, or on a subdomain of one, is not read by a run: it is recorded `not read: manual-board`, and you read it |
+| `board_hosts` | since 0.75.0, on a `manual-candidate` channel only: a non-empty list of distinct bare host names (for example `jobs.example.org`) that the engine must never open. A role whose every address is on one of these hosts, or on a subdomain of one, is not read by a run: it comes to you as *your read* (`manual-board`), and you read it |
 | `board_url` | since 0.76.0, optional, on a `manual-candidate` channel: the address of the board's front page, which **you** open. The engine never visits it. A channel turned on from the shipped catalog carries it; one you write by hand may omit it. Must be an `https://` address with no port whose host is covered by the channel's `board_hosts` |
 | `channel_catalog_entry` | since 0.76.0, a catalog stamp: the id of the shipped catalog entry this channel was turned on from (`record.py channel-catalog add`). A channel you wrote by hand has no stamp, and the plugin never changes it |
 | `channel_catalog_sha` | since 0.76.0, part of the stamp: a short fingerprint (12 hex characters) of the catalog-managed fields of the channel as the catalog last set or you last accepted them. Which fields are managed depends on the source's kind (a manual board: `label`, `type`, `access`, `board_url`, `board_hosts`; an alert sender: `label`, `type`, `access`, `alert_sender`; a browser-read board: `label`, `type`, `access`, `query_template`), and whether the channel is retired always counts. Comparing it to the row is how the plugin tells whether you edited those fields. It is never edited by hand |
@@ -160,6 +160,8 @@ The main record. Everything about one role hangs off it.
 | `posted` | since 0.67.0 — when the role was posted, and how we know. Absent means the age is unknown |
 | `screen` | since 0.67.0 — the hard screens the engine applied to the role, and their verdict, written by the script that ran them. Since 0.69.0 it also carries `title_keys`, a short fingerprint of the title settings it was computed under (see *The title floor and the mandate* below). Since 0.73.0 it also carries `comp_keys`, a fingerprint of the pay inputs it ran under, and `engagement_source: inferred` when the pay was routed on an engagement read from the title (see *The pay re-screen* below) |
 | `lean` | since 0.67.0 — the system's read of the role (`pursue` · `pass` · `ask`) with a one-line reason. A lean is advice; it never removes a role |
+| `jd_read` | since 0.82.0 — the one record of every attempt to read the role's job description: when it was tried, by which run, which address, how (the plugin's own fetch, a browser page, a company job feed, a job-board interface, or you), and what came of it, with a short quote or note as evidence. Absent means no attempt has been made. See *One lifecycle per role* below |
+| `capture` | since 0.82.0 — only on a role the daily run created from a find a sweep had queued: which run did it, when, and which queued item it came from. If every search that showed the role was a degraded one, it also lists why (`unverified`). Absent means the role did not come in that way |
 | `employer_posting` | since 0.80.0 — whether the role was seen on the **employer's own** posting (their careers page or applicant-tracking site) and whether that posting is still up: `confirmed`, `unconfirmed` or `closed`, with the address, the dates and the visible text that was quoted. Absent means *never checked*, and reads as unconfirmed. Only the plugin's own scripts write it, so a hand edit is refused; a role not re-checked within a week reads *NOT CHECKED since* a date, never "live". See *Is the role still open?* in `how-it-works.md` |
 | `status` | what you are **doing** about it |
 | `stage` | where it **is** in the funnel |
@@ -191,6 +193,77 @@ This is the one thing people mix up, so it is worth stating plainly:
 They are orthogonal and you want both. A live pursuit waiting on a recruiter is
 `status: active-pursuit`, `stage: contacted`. A role you have shelved is `status: backlog`,
 `verdict: parked`, `stage: sourced`.
+
+### One lifecycle per role — since 0.82.0
+
+Before 0.82.0 a role's progress was spread across several free-text fields and four different checks that
+each decided for themselves what "reviewed" meant, so a role nobody had read could end up in front of you as
+a decision. Now every role has **one lifecycle**: the plugin stores a few plain facts and *works out* where
+the role is from them. The place a role is in is never stored, so it cannot go out of date.
+
+The facts it stores:
+
+- **`jd_read`** holds every attempt to read the job description, oldest to newest. Each attempt has
+  `at` (when), `run`, `url` (the address read, or `null`), `via` (how: the plugin's own `fetch`, a
+  browser `render`, a company `feed`, a job-board `ats-api`, `candidate` for you, or `legacy`) and
+  `outcome`, plus `evidence`. A successful read quotes a short passage that names the role (or, when the plugin fetched the page itself, records a fingerprint of what it got). A failed one
+  says why in a short sentence. The outcomes fall into four groups:
+  - **read**: the description was read;
+  - **gone**: `closed` or `dead-link`. The posting is down, and the role leaves the live list;
+  - **your read**: `manual-board`, `no-url` or `login-wall`, which only you can open (see *Roles only you
+    can open* in [Reading what the search produces](reading-your-files.md#one-lifecycle-per-role-since-0820));
+  - **unfinished**: `challenge`, `render-failed`, `surface-cannot-read` or `site-not-allowed`. The run's
+    work is not done, and the role shows as a process failure until it is.
+
+  Absent `jd_read` means no attempt has been made. When you read a posting yourself, that is an attempt
+  with `via: candidate`, and it carries your attestation of what the posting says.
+- **`capture`** says which run created the role from which queued find (see the table above).
+- **Where a fact came from.** `location`, `listed_pay` and `screen` each carry a `provenance` (for a
+  screen, `inputs`): `card` (a search-result card), `jd` (the job description) or `candidate` (you).
+  **A card fact is provisional.** A screen computed from card facts never says *keep*; it says
+  *provisional*, and it may remove a role only on a rule that is safe on a card, which is a role you
+  already passed. When the job description is read it replaces the card's pay and setting, except
+  anything you set yourself. A role stored before 0.82.0 carries no provenance and is not rewritten.
+
+A run takes on up to `search.intake_per_run` roles and **finishes every role it takes on**: capture it,
+read the description, screen it, and research it if it is a keeper. Every role that is not removed gets its
+description read; only a keeper (screen *keep*) is researched. Anything a run took on and did not finish is
+a **process failure**, shown with its cause and age, never hidden: see
+[Reading what the search produces](reading-your-files.md#one-lifecycle-per-role-since-0820).
+
+**What the 0.82.0 upgrade does.** It runs the migration `m_0_82_0_role_lifecycle` once, and it is built so
+that nothing is lost or guessed.
+
+1. **Copies first.** Before it writes anything it copies `data/opportunities.jsonl` to
+   `data/opportunities.jsonl.pre-0.82.0` and `config.json` to `config.json.pre-0.82.0`, never over a copy
+   that is already there. It reads both strictly: if one line cannot be read, or the config is not a JSON
+   object, it changes nothing and reports itself pending, to run again next session.
+2. **Turns old reads into attempts.** For every role that had a recorded read (`fit.analyzed_on` set and a
+   non-empty `fit.jd_source`) and no `jd_read` yet, it writes one attempt with `run: legacy`,
+   `via: legacy`, dated from `fit.analyzed_on`, quoting the old value as its evidence. A plain source
+   becomes outcome `read`; an old `unavailable: <reason>` becomes that reason. **`fit` itself is not
+   touched.** A value it cannot map (an unknown reason, a date that is no date) writes nothing for that
+   role, is counted and named in the migration's summary, and leaves the role unread rather than inventing
+   a read nobody made.
+3. **Settings.** `search.triage_per_run` becomes `search.intake_per_run`. **A stored `10` (the old default)
+   becomes `40`, and the migration prints one line saying so;** any other number you chose is copied as it
+   is. The old setting and `search.triage_stuck_days` are moved to `search._retired_0_82_0` so you can see
+   what they were. `sourcing.feeds.deadline_s` is set to **240** where it is absent (the feed poll's time
+   limit, until now fixed at 240 seconds). `search.intake_new_percent` is not written: absent means 50.
+4. **Running it again changes nothing**, and a profile with no `opportunities.jsonl` or `config.json` gets
+   no output.
+
+**On the day you upgrade.** Roles that were read before keep their place: a decided role stays decided, a
+removed one stays removed, and a role ready for your decision stays ready. Roles that were *never* read, and
+finds a sweep had queued but nobody had captured, are **old unread roles**. They show as a process failure
+labelled `LEGACY BACKLOG` and stay that way until they are read. The daily run works through them, oldest
+first, while holding half its slots (`search.intake_new_percent`) for roles found since. Nothing you had
+already seen removed comes back as a failure.
+
+**To undo it,** restore the two `.pre-0.82.0` copies; that is only safe for what you have not changed
+since. Going back to 0.81.0 on an upgraded profile is not supported: that version rejects a role carrying
+`jd_read` and cannot read the run journal's new entries. A profile is driven by one version of the plugin at
+a time.
 
 ### A pass on a backlog role is final — since 0.69.0
 
@@ -316,8 +389,8 @@ types a verdict in. `lean` is `{lean, line, on, signals}`: `pursue`, `pass` or `
 reason, and any likely-pass signals that matched (below). **A lean is shown on the role's
 card as advice and never removes or decides anything.** When the age line asks for a first move
 (a recruiter role over the age limit, or of unknown age), the lean defaults to `ask` and its line
-is that first move; the run states a different lean only when the job description gives a reason. A role in `triaging` is described in
-[Reading what the search produces](reading-your-files.md#triaging-versus-decide-since-0670).
+is that first move; the run states a different lean only when the job description gives a reason. A role whose job description has not been read is not yours to decide yet; see
+[Reading what the search produces](reading-your-files.md#one-lifecycle-per-role-since-0820).
 
 **The title floor and the mandate — since 0.69.0.** Two optional settings keep titles that are
 plainly not yours from piling up undecided. **Neither one removes a role.** Only the hard rules
@@ -358,10 +431,11 @@ either way.
 
 **The one-time re-screen.** A stored screen records `title_keys`, a fingerprint of
 `screen.title_floor`, your `targets.titles` and the title-field signals. When the fingerprint no
-longer matches today's settings, or the screen has none and a floor is now set, the role counts as
-missing its screen and goes through the ordinary triage step again, within the usual
-`search.triage_per_run` cap. So setting a floor re-screens the existing pile over the next daily
-runs, once, and changing the floor or those phrases later does it again. With no floor set, an old
+longer matches today's settings, or the screen has none and a floor is now set, the role goes back to
+*waiting* and a daily run re-screens it as part of its intake, within the `search.intake_per_run` count
+(this is not counted as a failure: you changed your settings, nothing went wrong). So setting a floor
+re-screens the existing pile over the next daily runs, once, and changing the floor or those phrases
+later does it again. With no floor set, an old
 screen with no fingerprint is left alone. To see the size of it before and after:
 
 ```
@@ -373,7 +447,8 @@ undecided: 40, flagged below floor: 12, off-mandate: 3, re-screen pending: 40
 pay inputs: the engagement vocabulary, `compensation.non_employee`, the role's engagement, its `comp`
 period and basis, and whether your current decision accepts the pay. A screen computed without those
 inputs is stale where it could matter. A stale screen on an **undecided** role re-screens
-automatically through the ordinary triage step, within the `search.triage_per_run` cap. Roles you
+automatically: it goes back to *waiting* and a daily run re-screens it within the
+`search.intake_per_run` count. Roles you
 already decided, or that an earlier screen already removed, do not drain on their own. Count them
 with:
 
@@ -411,10 +486,9 @@ whose re-screen could not be computed is listed as *not checked*, never dropped.
 off-mandate under today's settings, and how many have a stored screen waiting to be redone. It
 reads only; it changes nothing.
 
-**Roles that already existed.** Triage state is *derived*, never stored. After upgrading, a role
-that was waiting on your pursue-or-pass but has no recorded job-description read, pay as written,
-work setting as written, screen and lean shows as `triaging` until the daily run has triaged it.
-Nothing was moved; the derivation does it.
+**Roles that already existed.** Where a role is in the search is *worked out* from what is stored,
+never stored itself. What the 0.82.0 upgrade does to roles that were already there is under
+*One lifecycle per role* below.
 
 **Commute time on a role.** A role may carry `location.commute_minutes`: `{minutes, anchor,
 source}`, where `source` is `candidate`, `map-estimate` or `config-place`. Absent means the minutes
@@ -1511,6 +1585,7 @@ a role was found, rather than the application's own clock.
 | key | what it is |
 |---|---|
 | `feeds.enabled` | since 0.76.0, the full path is `sourcing.feeds.enabled`: a boolean, the on/off switch for **all** company feeds at once. **Absent means on**, exactly as in 0.72.0. `false` polls no company feed (every company is then read by the browser as before) and changes nothing else: no company's `ats` slug is touched, so turning it back on resumes where it was. A new profile gets an explicit `true`. Set it with `record.py source off company-feeds` / `source on company-feeds`, not by editing the file |
+| `feeds.deadline_s` | since 0.82.0, the full path is `sourcing.feeds.deadline_s`: how many seconds the company-feed poll may run before it stops and writes down what it reached. A whole number from 60 to 1800; defaults to **240**, and the 0.82.0 upgrade writes 240 where the key is absent. The poll starts from the company covered longest ago, so a poll cut short does not keep skipping the same companies. A company whose feed was cut short by the time limit on two polls in a row is listed as due for a browser review until one is done. If you raise it above 240, the daily run starts the poll in the background and waits for it to finish |
 | `linkless_grace_days` | since 0.48.0 — how many days a board/aggregator sighting with no link gets before it is named in the SOURCING advisory below. Defaults to **3** |
 
 **The SOURCING advisory (since 0.48.0).** `doctor.py` now warns, at the start of every run, about
@@ -1630,8 +1705,17 @@ The upgrade seeds each of these where it is absent and never overwrites a value 
 | key | what it is |
 |---|---|
 | `search.retained_search_age_days` | how many days old a role from a recruiter channel may be before the screen flags it and recommends asking the recruiter what stage the search is in. A whole number from 14 to 120; defaults to **35**. The default is our choice inside the 4 to 6 week window a retained search usually takes to a first shortlist, picked at the early end because a wrong flag costs one question and a late one costs research and letters for a closed search |
-| `search.triage_per_run` | how many waiting roles one daily run reads and triages, oldest first. A whole number from 1 to 50; defaults to **10**. The run prints `triaging: N waiting, M triaged this run, K over the stuck bound` |
-| `search.triage_stuck_days` | how many days a role may sit in `triaging` before it is shown to you anyway, labelled "not yet read (waited K days)", with the lean `ask`. A whole number from 1 to 14; defaults to **3**. Counted from the role's first sighting |
+| `search.triage_per_run` | **retired in 0.82.0**, replaced by `search.intake_per_run` below. The upgrade moves a stored value aside (see *One lifecycle per role*); nothing reads it any more |
+| `search.triage_stuck_days` | **retired in 0.82.0**. A role that has not been read no longer waits out a timer and then reaches you unread; it is a process failure that stays on the page, with its cause, until it is read. The upgrade moves a stored value aside; nothing reads it any more |
+
+### Settings added in 0.82.0
+
+The upgrade does not write these into your file (absent means the default).
+
+| key | what it is |
+|---|---|
+| `search.intake_per_run` | how many roles one daily run takes on. It reads every role it takes on, screens it, and researches the keepers, so it finishes every one. A whole number from 1 to 300; defaults to **40**. The count is also capped by the time a run has: until the plugin has measured how long a role takes in your runs it assumes a few minutes each, so a larger number may be trimmed, and the run says so. See *One lifecycle per role* |
+| `search.intake_new_percent` | while older unread roles are still waiting, how much of `search.intake_per_run` is held back for roles found since. A whole number from 0 to 100; defaults to **50**, so half. With no older unread roles every slot goes to whoever is next |
 
 ### Setting added in 0.72.0
 
@@ -1826,16 +1910,15 @@ query that also showed it is enough to vouch for it.
   was still sweeping, before its hand-back was checked, cannot be held after the fact; it is
   counted and the line says `DEGRADED QUERY`.
 
-**A job description only a browser can read (since 0.69.0).** When the triage step meets a posting
-it cannot read on a surface with no browser (a sign-in wall, a headless or cloud run), it queues one
-`read-jd` item for that role with `deferred.py --add-jd-read <role id> --run <run id>`. It is
-one per role (asking twice adds nothing), needs the machine capability `chrome`, and is served only
-to a worker that has a browser and did not itself queue it. That worker reads the posting and
-records it on the role's `fit`. The role stays in *Triaging* meanwhile. If no browser-holding
-worker has done it once the item has waited more than `search.triage_stuck_days` days,
-`deferred.py --settle` records `fit.jd_source` as `unavailable: surface-cannot-read` on the role
-and it goes to Decide with the lean `ask`. That value cannot be written by hand earlier: the
-record script refuses it unless such an item exists and has waited past the bound.
+**A job description only a browser can read (since 0.69.0, changed in 0.82.0).** When a posting cannot
+be read on a surface with no browser (a sign-in wall, a headless or cloud run), a `read-jd` item for that
+role can be queued with `deferred.py --add-jd-read <role id> --run <run id>`. It is one per role (asking
+twice adds nothing), needs the machine capability `chrome`, and is served only to a worker that has a
+browser and did not itself queue it. That worker reads the posting and records it as a read attempt on the
+role (`jd_read`). **Nothing is written to the role on a timer any more:** the 0.69.0 rule that marked the
+role `unavailable: surface-cannot-read` after a number of days is gone. An item is closed (as superseded)
+once its role has any read attempt recorded; until then the role is an unfinished read, shown as such.
+A failed read is recorded as an attempt with its cause, never as a free-text value on `fit`.
 
 **What a sweep hands back about each role (since 0.67.0).** Besides title, company, location and
 link, each role line now carries three slots a screen needs: `posted` (the posting date; an `ats:`
@@ -1848,9 +1931,11 @@ quiet blank. A script, not a model, parses each slot and keeps the result on the
 capture item (as `listed_pay`, `posted` and `location_declared`, in the shapes a role stores).
 When the run opens the role from that item, `record.py create … --from-item <the item's id>` copies
 those three onto the new role, so a pay the sweep read is on the role without anyone retyping it
-(a slot the sweep marked `?` is left off, so it still reads as not captured). A role created
-without `--from-item` carries none of them; the run's triage step then records whatever the role
-still lacks (`record.py listed-pay`, `record.py posted`, the work setting in `location.declared`).
+(a slot the sweep marked `?` is left off, so it still reads as not captured). **Since 0.82.0 these
+are card facts**: what a search-result card showed, marked `card` on the role and treated as
+provisional until the job description is read (see *One lifecycle per role*). A card never makes the
+engine infer a work setting. A role created without `--from-item` carries none of them; reading the
+job description then records whatever the role still lacks.
 
 ## Dashboard — `config.json.dashboard`
 
@@ -1951,6 +2036,12 @@ still recorded, and each bad line is listed as a gap in the run's journal with i
 the rule it broke. The kept copy is the whole report as the helper wrote it, so you can fix the
 lines and re-run it. **Unlike the rest of this folder, these files do name roles and companies**,
 because that is what a list of roles is. They stay on your machine, in the same git-ignored folder.
+
+The LinkedIn sweep keeps copies the same way, at `.jobsearch/handbacks/sweep-<run>-linkedin…md`. The
+LinkedIn helper hands back a short record of what it saw on each surface. If that record is refused, or
+is accepted with one or more unreadable lines dropped, the run keeps the helper's hand-back exactly as
+written. The run summary and the journal name the dropped line and the run. Each copy stays on the machine
+that recorded the run, so the run id tells you which machine to look on; it is not synced with your data.
 
 Before a report is accepted, `deferred.py --add-roles <file> --run <id> --surface <s> --check` reads
 it the same way and prints each faulty line and a one-line verdict without writing anything.

@@ -183,7 +183,7 @@ def deny_message(info):
         "  * Tell the candidate which board page to open themselves, and carry on without it.\n"
         "  * For a role you already hold: use the posting's OWN address (the employer's career site\n"
         "    or its ATS page), never the board's. `record.py board-sighting` records that address.\n"
-        "  * A JD you cannot read from a non-board address is recorded `unavailable: manual-board`.\n\n"
+        "  * A JD you cannot read from a non-board address is recorded with `record.py read-failed <id> --outcome manual-board`.\n\n"
         "[guard_board_hosts: host %s, channel %s]\n"
         % (info["label"], info["host"], named, info["host"], cid))
 

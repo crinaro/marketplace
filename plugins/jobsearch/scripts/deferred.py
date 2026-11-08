@@ -104,10 +104,11 @@ step meets a JD it cannot read on its own surface (an authenticated page, on a s
 browser), `--add-jd-read <opp_id> --run <run id>` queues ONE `read-jd` item for that role
 (`ref` the opportunity id, `requires: [chrome]`, idempotent on `(kind, ref)`, and never served to the
 run that queued it: that run could not read it). A browser-holding worker claims it through the
-ordinary `--claimable` path and records the read through `record.py`. `--settle` writes
-`fit.jd_source = "unavailable: surface-cannot-read"` THROUGH `record.py` once the item has waited
-past `search.triage_stuck_days`; `record.py` refuses that value before then
-(`introduced_row_violations`), so it cannot be written by hand early.
+ordinary `--claimable` path and records the read through `record.py read-jd` (or `read-failed`).
+`--settle` closes it as `superseded:jd_read` once its role has ANY `jd_read` attempt (jobsearch 0.82.0,
+dev #820 / public #175): the lifecycle owns the retry of an unread role, so `--settle` writes nothing
+to the role any more (no `fit.jd_source`, no stuck-days bound). An item whose role has no attempt
+stays open, and so does one whose `jd_read` record cannot be parsed, with the reason printed.
 
 ⭐ A ROLE IN THE PURSUE LIST IS RE-CHECKED ON THE EMPLOYER'S OWN PAGE (dev #776 / public #166, group
 employer-posting-confirmation). `--add-posting-check <opp_id>` queues ONE `posting-check` item per role
@@ -162,6 +163,24 @@ each fault with its line number and rule and a one-line `verdict:` (`clean`, `N 
 `refused: <why>`), and exits with the code the real call would. The dispatcher runs it on a
 hand-back before accepting it, and the agents that write the block run it on their own first.
 
+⭐ THE CONTRACT IS STATED ONCE, IN `handback.py` (dev #811 / public #170, dev #812 / public #169). The
+rule above (a STRUCTURAL fault refuses, every other fault is a line gap, the raw copy is kept, `--check`
+writes nothing and prints one `verdict:` line) is `handback.py`'s docstring, shared with
+`linkedin_sweep.py record`. This file calls it: the fault shape, the printed fault, the kept copy, the
+line-gap loop and the `verdict:` line are `handback`'s, and `_handback_rel` / `_keep_handback` /
+`_describe_fault` below are thin aliases that keep their 0.81.0 names and output. Exit 4 stays
+"accepted with line faults" here (`linkedin_sweep.py` uses 4 for PASS FAILED and adds 5).
+
+⭐ A CHANNEL THAT FAILED IS RECORDED, AND THE REST OF THE BOARD PASS IS TOO (dev #811 / public #170). A
+board block may say `CHANNEL <id> <unreachable|not-attempted> reason=<REASONS code>` for a worklist
+channel the sweeper could not read, and every worklist id the run's latest `pass board dispatched` row
+carried (`journal.board_worklist`) must end as a `QUERY ... channel=<id>` line, a `CHANNEL` line, or both:
+one with neither is the block fault `channel-unaccounted:<id>`. Each failed or unaccounted channel is a
+`jobsearch:channel:<id>` gap, the `roles` event records `coverage` (`complete` | `partial`) and the
+channel accounting, and a run with no worklist on record prints `channels: NOT CHECKED`. The worklist
+cross-check is the BEHAVIOURAL measure of the sweeper's rule to record a failure and continue; the
+agent file's words are only shape-tested.
+
 Python 3.9+. Standard library only.
 """
 
@@ -176,6 +195,7 @@ import sys
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
+import handback as _handback        # handback.py: the hand-back contract (dev #811 / #812)
 
 ROOT = _profile_root()
 QUEUE = os.path.join(ROOT, "data", "pending_actions.jsonl")
@@ -220,11 +240,16 @@ OPP_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,80}$")
 # posture token, so `held_by_posture` is false and a browserless worker sees it under "needs another
 # environment"), and the claiming worker acts on the `kind`, never on the `what`.
 KIND_JD_READ = "read-jd"
-JD_READ_WHAT = ("Read the JD for %s in a signed-in browser and record it on the role's fit "
-                "(record.py set <id> fit ...); a login wall is recorded as unavailable: login-wall.")
+JD_READ_WHAT = ("Read the JD for %s in a signed-in browser and record it with record.py read-jd; "
+                "a posting that cannot be read is recorded with record.py read-failed (a login "
+                "wall is --outcome login-wall).")
 JD_READ_WHY = "the JD needs a browser this surface does not have"
 JD_READ_REQUIRES = ("chrome",)
-SURFACE_CANNOT_READ = "unavailable: surface-cannot-read"
+# dev #820 / public #175 (B2.2) -- `settle` closes a `read-jd` item with this `closed_as` once its role
+# has any `jd_read` attempt. It replaces the 0.69.0 auto-close that wrote `fit.jd_source =
+# "unavailable: surface-cannot-read"` after `search.triage_stuck_days`: the lifecycle (lifecycle.py)
+# owns the retry of an unread role, and no deferred path writes a role's fit any more.
+SUPERSEDED_JD_READ = "superseded:jd_read"
 
 # dev #776 / public #166 (group employer-posting-confirmation, criterion B4; design
 # docs/design-employer-posting-confirmation.md §7.4-§7.5 as amended by §15 N2, N4, N6) -- the
@@ -268,6 +293,7 @@ ROLES_GRAMMAR = """\
 --- ROLES v1 run=<run-id> surface=<linkedin-jobsearch|board> window=<daily|wide|none> ---
 QUERY geo=<remote|local> title="<query>" window=<r86400|r604800|none> shown=<n> total=<m|m+|?> dropped=<none|?|<filter>[,<filter>...]> added=<none|?|<filter>[,<filter>...]> [unapplied] [channel=<channel_id>]
 QUERY geo=<remote|local> title="<query>" unreachable reason=<journal.REASONS code> [channel=<channel_id>]
+CHANNEL <channel_id> <unreachable|not-attempted> reason=<journal.REASONS code>
 SEEN distinct=<n>
 ROLE url=<posting url> q=<k>[,<k>...] title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|ats:YYYY-MM-DD|<n>d|?> pay=<pay|?> setting="<verbatim|none stated|?>"
 ROLE nourl title="<t>" company="<c>" reason=<journal.REASONS code>
@@ -345,7 +371,7 @@ ROLES_FIELD_CAP = 200
 #   2  usage            a missing --run/--surface, or an unreadable hand-back file
 ROLES_EXIT_OK, ROLES_EXIT_USAGE, ROLES_EXIT_REFUSED, ROLES_EXIT_FAULTS = 0, 2, 3, 4
 ROLES_LINE_GAP_SCOPE = "jobsearch:roles-line:%s:%s"     # (surface, line number | block:<check>)
-ROLES_HANDBACK_DIR = (".jobsearch", "handbacks")         # under the PROFILE root, never the engine
+ROLES_HANDBACK_DIR = _handback.HANDBACK_DIR              # under the PROFILE root, never the engine
 
 # A queue id is typed by hand into --claim, so four bytes (eight hex digits), not brief.py's
 # eight (dev #680): 2**32 per second is far beyond any add rate this queue sees.
@@ -604,8 +630,10 @@ def _append_item(what, why="", requires=(), kind="action", ref=None, role=None,
     `read-jd` item passes one) is the run that queued it, so that run is never served the item it
     could not finish. Both are omitted when None.
 
-    `channel_id` and `source` (dev #751, B7; only a FEED `capture-role` item passes them) are the
-    linked company-site channel the posting came from and `feed:<vendor>`. `record.py create
+    `channel_id` and `source` (dev #751, B7) are the channel the posting came from and, for a feed,
+    `feed:<vendor>`. Only a `capture-role` item passes them; since dev #820 / public #175 (B2b) every one
+    passes `channel_id` when its query named a channel (a board sweep's `channel=`), not only a FEED item,
+    so `record.py capture-batch` can attribute a board sighting among several boards. `record.py create
     --from-item` copies the channel into `sightings[0]` and refuses a different one the model
     supplies, so a feed role's channel is a recorded fact, not a thing a model typed. Omitted when
     None, so every other item is unchanged."""
@@ -691,23 +719,76 @@ def _checked_opp_id(opp_id):
     return opp_id
 
 
-def research_screen_refusal(opp_id):
-    """Owner ruling O5 (jobsearch 0.78.0) -- why research of `opp_id` is refused NOW, or None when its
-    current minimal-screen verdict is `keep`. The verdict is `profile.current_verdict`, the one
-    definition `profile.py --minimal-screen` prints, imported and never re-derived here. Research
-    happens only for a role that passes the candidate's screen: `remove:<rule>` is refused, and so is
-    `review:<rule>` (it waits for the owner's look; an attended session researches it directly, never
-    through this queue). A screen that cannot be computed refuses too: it is never read as `keep`."""
+# dev #820 / public #175 (B2.1, RD1; design 4.4) -- the two lifecycle stages at which research is
+# admitted: `screened` (an admitted role, read and kept, whose run is still open) and `unresearched`
+# (the same role once its run is over, or a legacy keep). `lifecycle.stage` is the ONLY judge of
+# "has this role been read and screened keep"; nothing here reads `fit`, `screen` or `jd_read`.
+RESEARCH_ADMITTED_STAGES = ("screened", "unresearched")
+
+
+def _refusal_for_stage(st):
+    """The reason research is refused for a role at lifecycle `Stage` `st`, or None when it is admitted.
+    Pure: the stage's name (and its `detail`, which for `removed` and a reviewed `ready` role is the
+    screen's rule list) is the whole input. A reason is always a sentence the owner can act on."""
+    name = st.name
+    if name in RESEARCH_ADMITTED_STAGES:
+        return None
+    if name == "ready":
+        if st.detail:
+            return ("its screen reads review:%s after the read: a reviewed role is the owner's call, "
+                    "and research runs for keep" % st.detail)
+        return "it is already read, kept and researched: it waits for the owner's decision"
+    if name == "removed":
+        return "its screen reads remove:%s: research is not run for a removed role" % st.detail
+    if name == "decided":
+        return "it is already decided (pursue, parked, live or applied): research runs before the decision"
+    if name in ("folded", "ended"):
+        return "it is %s (a duplicate row, or a passed or expired role)" % name
+    if name == "gone":
+        return "its posting is gone (%s): there is nothing to research" % (st.cause or "closed")
+    if name == "your-read":
+        return "it needs the owner's read (%s), not research" % (st.cause or "candidate")
+    if name == "waiting":
+        return ("it has not been admitted by an intake run yet (lifecycle stage waiting): research "
+                "follows the read, in a run that admitted it")
+    if name == "unclassified":
+        return "its record matches no lifecycle stage (%s)" % (st.detail or "unclassified")
+    # admitted · captured · reading · uncaptured · unread · read-failed · read · unscreened: read it
+    # first. A provisional screen (card facts) never keeps, so a role screened on its card is here too.
+    return ("it is not read and screened keep yet (lifecycle stage %s): read it first; a provisional "
+            "screen, from the card alone, never keeps" % name)
+
+
+def _research_ctx():
+    """`(lifecycle module, Ctx)` for the profile this script is bound to, built ONCE so a listing that
+    checks many research items loads the stores once. Raises OSError/ValueError (LifecycleError is a
+    ValueError) / ImportError; callers turn that into a refusal, never into 'admitted'."""
+    import lifecycle as _lc
+    data = _lc.load_data(ROOT)
+    return _lc, _lc.context(data, datetime.datetime.now())
+
+
+def research_screen_refusal(opp_id, ctx=None):
+    """Owner ruling O5 (jobsearch 0.78.0), rewritten for jobsearch 0.82.0 (dev #820 / public #175,
+    RD1; design 4.4) -- why research of `opp_id` is refused NOW, or None when it is admitted.
+
+    The decision is `lifecycle.stage`'s and nothing else's: research is admitted only for a role that
+    has been READ and screened keep (stage `screened`, or `unresearched` once its run is over). It is
+    refused, with the reason named, for a role that is unread, for one with only a provisional (card)
+    screen, for a `review:<rule>` after a read (the owner's call), for `remove:<rule>`, and for every
+    other stage. A role whose stage cannot be computed is refused too: never read as admitted.
+
+    `ctx` is an optional `(lifecycle module, Ctx)` from `_research_ctx()`, so a caller that checks many
+    items builds it once."""
     try:
-        import profile as _pf
-        verdict = _pf.current_verdict(opp_id)
-    except (OSError, ValueError, KeyError) as e:
-        return "the minimal screen cannot be computed (%s)" % e
-    if verdict is None:
-        return "no opportunity %r in data/opportunities.jsonl" % (opp_id,)
-    if verdict != "keep":
-        return "its minimal screen reads VERDICT %s, not keep" % verdict
-    return None
+        lc, c = ctx or _research_ctx()
+        opp = c.opps_by_id.get(opp_id)
+        if opp is None:
+            return "no opportunity %r in data/opportunities.jsonl" % (opp_id,)
+        st = lc.stage(opp, c)
+    except (OSError, ValueError, KeyError, ImportError) as e:
+        return "the lifecycle stage cannot be computed (%s)" % e
+    return _refusal_for_stage(st)
 
 
 def queue_research(opp_id, rows=None):
@@ -715,7 +796,8 @@ def queue_research(opp_id, rows=None):
     held, as a script form: `kind` research-role, `ref` the opp id, `requires: [research]`, so it
     drains on the first run whose posture permits research. Idempotent on `(kind, ref)` among
     pending rows. Returns `(row, added)`; raises `DeferredRefused` for an id that is not a real
-    opportunity, or (owner ruling O5) for a role whose current minimal screen is not `keep`.
+    opportunity, or (owner ruling O5, RD1) for a role `research_screen_refusal` refuses: one that has
+    not been read and screened keep.
     Engine-built: skips `FORBIDDEN` by construction (the template cannot say send)."""
     _checked_opp_id(opp_id)
     why = research_screen_refusal(opp_id)
@@ -759,8 +841,9 @@ def queue_jd_read(opp_id, run_id=None, rows=None):
     the opportunity id, `requires: [chrome]`. Returns `(row, added)`; raises `DeferredRefused` for an
     id that is not a real opportunity.
 
-      * a role that no longer lists `jd-read` in `your_move.triage_missing` has been read (or a read
-        was tried and failed): nothing is queued and `(None, False)` comes back;
+      * a role that already has a `jd_read` attempt (read, or tried and failed: the lifecycle owns
+        the retry of a failed one) queues nothing and `(None, False)` comes back; so does a role
+        whose `jd_read` record cannot be parsed, which is a refusal to guess;
       * idempotent on `(kind, ref)` among pending rows (`_pending_by_ref`): a second call is a no-op;
       * `run_id` is stored as `queued_run`, so `--claimable --run <id>` never serves the item to the
         run that could not read it (the same-run guard, design finding F3).
@@ -768,9 +851,8 @@ def queue_jd_read(opp_id, run_id=None, rows=None):
     Engine-built: skips `FORBIDDEN` by construction. A sibling of `queue_research`, not an extension
     of it: that one is a posture-gated model step, this one a machine-gated browser step."""
     _checked_opp_id(opp_id)
-    import your_move as _ym
     opp = _opportunity_row(opp_id)
-    if opp is not None and "jd-read" not in _ym.triage_missing(opp):
+    if opp is not None and _jd_attempt_state(opp) != "none":
         return None, False
     hit = _pending_by_ref(KIND_JD_READ, opp_id, rows)
     if hit:
@@ -779,17 +861,21 @@ def queue_jd_read(opp_id, run_id=None, rows=None):
                         ref=opp_id, queued_run=run_id), True
 
 
-def jd_read_waited_past_bound(item, stuck_days, now=None):
-    """True when a `read-jd` item has waited MORE THAN `stuck_days` days (dev #723, SS-C3): the one
-    definition of 'the bound has passed', used by `settle` to write `surface-cannot-read` and by
-    `record.py`'s gate to refuse writing it earlier, so the two can never disagree. An item whose
-    `queued_at` cannot be read has waited for no known time: False, never a guess."""
-    return _waited_more_than(item, stuck_days, now)
+def _jd_attempt_state(opp):
+    """`"none"` (the role has no `jd_read` attempt), `"some"` (it has one or more, read or failed) or
+    `"unreadable"` (its `jd_read` record is one `jd_read.parse` refuses). The one question
+    `queue_jd_read` and `settle` ask of a role, answered by `jd_read`, never re-derived here."""
+    import jd_read as _jd
+    try:
+        return "some" if _jd.attempts(opp) else "none"
+    except _jd.JdReadError:
+        return "unreadable"
 
 
 def _waited_more_than(item, days, now=None):
     """True when `item` has waited MORE THAN `days` days since `queued_at`; False for a `queued_at` that
-    cannot be read. The one arithmetic behind both stuck bounds (`read-jd`, `posting-check`)."""
+    cannot be read. The arithmetic behind the `posting-check` bound (`posting_check_waited_past_bound`).
+    (The `read-jd` stuck-days bound that shared it was retired in 0.82.0, dev #820 / public #175.)"""
     at = item.get("queued_at")
     try:
         queued = datetime.datetime.fromisoformat(at)
@@ -948,6 +1034,11 @@ _QUERY_UNREACHABLE = re.compile(
     r"^QUERY geo=(?P<geo>remote|local) title=" + _Q + r" unreachable reason=(?P<reason>[a-z-]+)"
     r"(?: channel=(?P<channel>\S+))?$")
 _SEEN_DISTINCT = re.compile(r"^SEEN distinct=(?P<n>\d+)$")
+# dev #811 / public #170 -- a board channel the sweeper could not read, or never tried. The `reason` is
+# matched loosely and judged in `parse_roles`, so a code outside `journal.REASONS` is a fault whose rule
+# NAMES it. A CHANNEL line is not a QUERY line: it takes no `q=` ordinal.
+_CHANNEL_LINE = re.compile(
+    r"^CHANNEL (?P<id>\S+) (?P<state>unreachable|not-attempted) reason=(?P<reason>[a-z-]+)$")
 # The ROLE line's `pay=` and `setting=` are matched OPTIONALLY here so that a line without them is a
 # line fault with a rule that NAMES the missing slot (see `_role_slot_faults`), not the generic
 # "not a line of the ROLES grammar". The slots are required: the fault is raised, never defaulted.
@@ -1182,9 +1273,9 @@ def role_payload(r, run_date):
             "slots": r.get("slots") or {}}
 
 
-def parse_roles(text, run_id, surface):
-    """`{"header", "queries", "distinct", "listed", "roles", "faults"}` from the one `ROLES v1`
-    block in `text`. Prose outside the block is ignored -- the block is the contract.
+def parse_roles(text, run_id, surface, worklist=None):
+    """`{"header", "queries", "distinct", "listed", "roles", "faults", "channels", "unaccounted",
+    "worklist"}` from the one `ROLES v1` block in `text`. Prose outside the block is ignored -- the block is the contract.
 
     ⭐ TWO KINDS OF FAULT (dev #707 / public #151). A STRUCTURAL fault -- no block, two blocks, a
     bad header, a run or surface that is not this call's, no END line -- raises `RolesRefused`
@@ -1195,9 +1286,22 @@ def parse_roles(text, run_id, surface):
     QUERY shown, a missing SEEN or QUERY) evaluated over the lines that parsed. One stray line
     used to refuse a pass's whole block and lose every valid role in it; now each valid ROLE is
     kept and each fault is reported on its own. A fault is `{"line": n | None, "text": the line |
-    None, "scope_key": str, "rule": why}`; `line` is `None` for a block-level count check.
-    `distinct` is the number the block's SEEN line stated (`None` when it has none); `listed` is
-    how many ROLE lines were accepted, the number the roles event records."""
+    None, "scope_key": str, "rule": why}` (a `handback.Fault`, equal to that dict); `line` is
+    `None` for a block-level count check. `distinct` is the number the block's SEEN line stated
+    (`None` when it has none); `listed` is how many ROLE lines were accepted, the number the roles
+    event records.
+
+    ⭐ dev #811 / public #170 -- THE CHANNEL LINES AND THE WORKLIST. `worklist` is the list of channel
+    ids the run's latest board `dispatched` row carried (`journal.board_worklist`), or `None` when none
+    is on record (then nothing is cross-checked and `unaccounted` is empty). A `CHANNEL <id>
+    <unreachable|not-attempted> reason=<code>` line is accepted into `channels` (`{id: {"state",
+    "reason", "line"}}`); each of these is a LINE fault, the line dropped: a CHANNEL line off the board
+    surface, a `reason` outside `REASONS`, a second line for one id, an id not on the worklist (when
+    one is on record), and `not-attempted` for a channel that also has a parsed `QUERY ... channel=<id>`
+    (the QUERY lines say it was tried; `unreachable` with reached QUERYs is allowed: the channel
+    stopped answering partway). Then, with a worklist, every worklist id that has NEITHER a parsed
+    QUERY line for it NOR an accepted CHANNEL line is the block fault `channel-unaccounted:<id>`, and
+    `unaccounted` lists those ids in worklist order."""
     import journal as _journal
     from pipeline_index import canonical_job_url
     lines = text.splitlines()
@@ -1232,12 +1336,13 @@ def parse_roles(text, run_id, surface):
         raise RolesRefused("the ROLES block has no `%s` line" % _ROLES_END)
 
     faults = []
+    channel_lines = {}          # dev #811 / public #170: id -> {"state", "reason", "line"}
 
     def fault(n, raw, rule):
-        faults.append({"line": n, "text": _clip(raw), "scope_key": str(n), "rule": rule})
+        faults.append(_handback.Fault(n, _clip(raw), str(n), rule))
 
     def block_fault(key, rule):
-        faults.append({"line": None, "text": None, "scope_key": "block:" + key, "rule": rule})
+        faults.append(_handback.Fault(None, None, "block:" + key, rule))
 
     expected_bucket = _journal.F_TPR_WIDE if window == "wide" else _journal.F_TPR_DAILY
     queries, roles, distinct, role_lines = [], [], None, 0
@@ -1315,6 +1420,24 @@ def parse_roles(text, run_id, surface):
                  "truncated": False, "degraded": [], "unread": [], "ordinal": qord}
             queries.append(q)
             ordinals[qord] = q
+            continue
+        cm = _CHANNEL_LINE.match(raw)
+        if cm:
+            cid, state, reason = cm.group("id"), cm.group("state"), cm.group("reason")
+            if surface != "board":
+                fault(n, raw, "a CHANNEL line is for the board surface only (a LinkedIn block has "
+                              "no channels)")
+                continue
+            if reason not in _journal.REASONS:
+                fault(n, raw, "reason=%s is not a journal.REASONS code" % reason)
+                continue
+            if cid in channel_lines:
+                fault(n, raw, "a second CHANNEL line for %s (the first one counts)" % cid)
+                continue
+            if worklist is not None and cid not in worklist:
+                fault(n, raw, "CHANNEL %s is not on this run's worklist" % cid)
+                continue
+            channel_lines[cid] = {"state": state, "reason": reason, "line": n}
             continue
         qm = _SEEN_DISTINCT.match(raw)
         if qm:
@@ -1395,6 +1518,14 @@ def parse_roles(text, run_id, surface):
         if c:
             canon_seen[c] = r["line"]
         kept.append(r)
+    # dev #811 / public #170 -- `not-attempted` says the channel was never tried; a parsed QUERY for it
+    # says it was. The CHANNEL line is the one dropped (the QUERY lines are the stronger evidence).
+    tried = {q["channel"] for q in queries if q.get("channel")}
+    for cid in [c for c, v in channel_lines.items() if v["state"] == "not-attempted" and c in tried]:
+        fault(channel_lines[cid]["line"], lines[channel_lines[cid]["line"] - 1],
+              "CHANNEL %s is `not-attempted` but the block has a QUERY for channel=%s: those lines "
+              "say it was tried" % (cid, cid))
+        del channel_lines[cid]
     faults.sort(key=lambda f: f["line"])
     # block-level count checks, over the lines that PARSED: a fault, never a refusal
     if distinct is None:
@@ -1409,8 +1540,18 @@ def parse_roles(text, run_id, surface):
     if distinct is not None and distinct < shown_max:
         block_fault("seen-vs-shown", "SEEN distinct=%d is below the largest QUERY shown=%d: a "
                     "query cannot show more roles than the pass saw" % (distinct, shown_max))
+    unaccounted = []
+    if surface == "board" and worklist is not None:
+        for cid in worklist:
+            if cid not in tried and cid not in channel_lines:
+                unaccounted.append(cid)
+                block_fault("channel-unaccounted:" + cid,
+                            "worklist channel %s has no QUERY or CHANNEL line (not attempted, "
+                            "reason not given)" % cid)
     return {"header": {"window": window, "surface": surface}, "queries": queries,
-            "distinct": distinct, "listed": len(kept), "roles": kept, "faults": faults}
+            "distinct": distinct, "listed": len(kept), "roles": kept, "faults": faults,
+            "channels": channel_lines, "unaccounted": unaccounted,
+            "worklist": None if worklist is None else list(worklist)}
 
 
 def _role_key(company, title):
@@ -1448,31 +1589,18 @@ def _file_gap(run_id, scope, reason, closes_when, out):
 
 
 def _handback_rel(run_id, surface):
-    """The profile-relative path of the kept hand-back for `(run, surface)`. Keyed by both, so a
-    re-run of the same call overwrites its own copy and never another pass's."""
-    safe = re.sub(r"[^A-Za-z0-9._-]+", "-", str(run_id))[:80].strip("-") or "run"
-    return "/".join(ROLES_HANDBACK_DIR + ("roles-%s-%s.md" % (safe, surface),))
+    """The profile-relative path of the kept hand-back for `(run, surface)`: `handback.kept_rel`
+    with kind `roles`, so `roles-<safe run>-<surface>.md` (no kept file moved in 0.82.0)."""
+    return _handback.kept_rel("roles", run_id, surface)
 
 
 def _keep_handback(text, run_id, surface, out):
-    """dev #707 / public #151 (D2) -- copy the raw hand-back under the PROFILE root, byte for byte,
-    so a refused or faulty block is never lost with the dispatch that wrote it. Returns the
-    absolute path, or `None` (reported, never swallowed) when it cannot be written."""
-    path = os.path.join(ROOT, *_handback_rel(run_id, surface).split("/"))
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8", newline="") as fh:
-            fh.write(text)
-    except OSError as e:
-        out("⚠️ could not keep a copy of the hand-back at %s (%s)" % (path, e))
-        return None
-    return path
+    """dev #707 / public #151 (D2) -- copy the raw hand-back under the PROFILE root, byte for byte
+    (`handback.keep`). Returns the absolute path, or `None` (reported, never swallowed)."""
+    return _handback.keep(ROOT, "roles", run_id, surface, text, out)
 
 
-def _describe_fault(f):
-    if f["line"] is None:
-        return "BLOCK FAULT: %s" % f["rule"]
-    return "LINE FAULT  line %d: %s -- %r" % (f["line"], f["rule"], f["text"])
+_describe_fault = _handback.describe
 
 
 def _resolve_roles(roles, run_id, surface, queries, run_date, pass_label, opps, companies, apps,
@@ -1525,6 +1653,13 @@ def _resolve_roles(roles, run_id, surface, queries, run_date, pass_label, opps, 
                     out("⚠️ could not journal the gap %s (%s)" % (scope, e))
             continue
         canon = r["canonical"]
+        # dev #820 / public #175 (B2b): EVERY capture item names the channel its sighting came from, not only a
+        # feed item. A feed role names its own; a board sweep's role takes the `channel=` of the QUERY line(s)
+        # that showed it (a LinkedIn sweep's QUERY lines name none, so its items carry none). Without it
+        # `record.py capture-batch` cannot attribute a board sighting in a profile with several boards.
+        item_channel = (r.get("channel_id")
+                        or next((queries[k - 1].get("channel") for k in (r.get("q") or [])
+                                 if 0 < k <= len(queries) and queries[k - 1].get("channel")), None))
         company_id = resolve_company(company, companies)
         hit = find_known_match(opps, url=canon, company_id=company_id, title=title,
                                applications=apps)
@@ -1636,7 +1771,8 @@ def _resolve_roles(roles, run_id, surface, queries, run_date, pass_label, opps, 
             item = _append_item(what, "seen in a pass; not yet captured", (), kind=KIND_CAPTURE,
                                 ref=canon, role=role_payload(r, run_date),
                                 quarantine={"run_id": run_id, "because": list(qcodes),
-                                            "queries": list(r["q"])})
+                                            "queries": list(r["q"])},
+                                channel_id=item_channel, source=r.get("source"))
             rows.append(item)
             out("QUARANTINED %s (q=%s: %s) queued %s" % (canon, qks, ", ".join(qcodes), item["id"]))
             continue
@@ -1654,7 +1790,7 @@ def _resolve_roles(roles, run_id, surface, queries, run_date, pass_label, opps, 
                 % (title, company, loc or "?", pass_label, canon))
         item = _append_item(what, "seen in a pass; not yet captured", (), kind=KIND_CAPTURE,
                             ref=canon, role=role_payload(r, run_date),
-                            channel_id=r.get("channel_id"), source=r.get("source"))
+                            channel_id=item_channel, source=r.get("source"))
         rows.append(item)
         out("CARRIED     %s (queued %s)" % (canon, item["id"]))
     return {"counts": counts, "siblings": siblings, "possible": possible,
@@ -1671,6 +1807,59 @@ def feed_sighting_needed(row, url):
     have = [row.get("jd_url")] + [s.get("source_url") for s in (row.get("sightings") or [])
                                   if isinstance(s, dict) and not s.get("split_to")]
     return not any(h and _pidx._urls_equal(url, h) for h in have)
+
+
+CHANNEL_GAP_SCOPE = "jobsearch:channel:%s"      # dev #811 / public #170: one open gap per failed channel
+SURFACE_UNREACHABLE_NOTE = ("the page never opened: the site was down, or a site approval nobody "
+                            "answered")
+
+
+def _channel_accounting(parsed, surface):
+    """dev #811 / public #170 (S2) -- how a board block accounted for its worklist channels, from what
+    `parse_roles` accepted. Returns `{worklist, reached, unreachable, not_attempted, unaccounted,
+    gaps}`: `worklist` is the worklist's size and `reached` how many of its channels have at least one
+    REACHED QUERY and no accepted `CHANNEL unreachable` line (a channel that stopped answering
+    partway is unreachable, not reached) -- both `None` when no worklist is on record, which is NOT
+    CHECKED, never a count of zero; `unreachable` and `not_attempted` are `{id: REASONS code}` from
+    the accepted CHANNEL lines; `unaccounted` lists the worklist ids with neither a QUERY nor a
+    CHANNEL line; `gaps` is `[(id, reason, kind)]`, one per channel that failed or was unaccounted
+    for (the reason is the line's own code, `other` for an unaccounted channel: the sweeper did not
+    say why and nothing here guesses). Off the board every part is empty or `None`.
+    A channel whose QUERY lines are ALL unreachable and which has no CHANNEL line is counted in none
+    of the four groups: its unreachable QUERY lines already make the pass partial and file their own
+    query gaps."""
+    empty = {"worklist": None, "reached": None, "unreachable": {}, "not_attempted": {},
+             "unaccounted": [], "gaps": []}
+    if surface != "board":
+        return empty
+    lines = parsed["channels"]
+    unreachable = {c: v["reason"] for c, v in lines.items() if v["state"] == "unreachable"}
+    not_attempted = {c: v["reason"] for c, v in lines.items() if v["state"] == "not-attempted"}
+    unaccounted = list(parsed["unaccounted"])
+    wl = parsed["worklist"]
+    reached = None
+    if wl is not None:
+        reached_ids = {q["channel"] for q in parsed["queries"]
+                       if q["status"] == "reached" and q.get("channel")}
+        reached = len((reached_ids - set(unreachable)) & set(wl))
+    gaps = ([(c, r, "unreachable reason=%s" % r) for c, r in unreachable.items()]
+            + [(c, r, "not-attempted reason=%s" % r) for c, r in not_attempted.items()]
+            + [(c, "other", "channel-unaccounted (no QUERY or CHANNEL line)") for c in unaccounted])
+    return {"worklist": None if wl is None else len(wl), "reached": reached,
+            "unreachable": unreachable, "not_attempted": not_attempted,
+            "unaccounted": unaccounted, "gaps": gaps}
+
+
+def _channel_gap_closes(cid, reason, kind):
+    """The `closes_when` of a `jobsearch:channel:<id>` gap. A `surface-unreachable` gap names both of
+    its causes (the page never opened: down, or a site approval nobody answered), so it does not read
+    as an outage alone (dev #811 / public #170, N5)."""
+    text = "a board pass reaches %s" % cid
+    if reason == "surface-unreachable":
+        text += " (%s)" % SURFACE_UNREACHABLE_NOTE
+    if kind.startswith("channel-unaccounted"):
+        text += " (the sweeper handed back no QUERY or CHANNEL line for it)"
+    return text
 
 
 def add_roles(text, run_id, surface, out=print, check=False, already_locked=False):
@@ -1711,11 +1900,21 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
     import journal as _journal
     gap_scope = _journal.ROLES_GAP_SCOPE % surface
     rel = _handback_rel(run_id, surface)
+    # dev #811 / public #170 -- the board worklist this run's sweeper was handed, read BEFORE the parse so
+    # the parse can cross-check it. `None` = none on record (a run from before 0.82.0, or one that never
+    # called `--board-decision`): the check is NOT CHECKED, never a quiet pass. A worklist that is on
+    # record but unreadable is a block fault below, never a downgrade to NOT CHECKED.
+    worklist, worklist_problem = None, None
+    if surface == "board":
+        try:
+            worklist = _journal.board_worklist(_journal.read(ROOT), run_id)
+        except _journal.JournalError as e:
+            worklist_problem = str(e)
     try:
-        parsed = parse_roles(text, run_id, surface)
+        parsed = parse_roles(text, run_id, surface, worklist)
     except RolesRefused as e:
         if check:
-            out("verdict: refused: %s" % e)
+            out(_handback.verdict_line("refused", detail=str(e)))
             return ROLES_EXIT_REFUSED
         kept = _keep_handback(text, run_id, surface, out)
         out("⛔ REFUSED — %s. Nothing was recorded except a `partial-results` gap (%s)."
@@ -1724,17 +1923,25 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
             out("   The raw hand-back is kept at %s" % kept)
         _file_gap(run_id, gap_scope, "partial-results",
                   "the pass's ROLES block is accepted by deferred.py --add-roles --surface %s%s"
-                  % (surface, (" (raw hand-back kept at %s)" % rel) if kept else ""), out)
+                  % (surface, (" (raw hand-back kept at %s)" % _handback.kept_where(rel, run_id))
+                     if kept else ""), out)
         return ROLES_EXIT_REFUSED
 
     faults = parsed["faults"]
+    if worklist_problem is not None:
+        faults.append(_handback.Fault(None, None, "block:worklist-unreadable",
+                                      "the worklist on record for this run cannot be read (%s): the "
+                                      "channels are NOT CHECKED, and a pass whose channels cannot be "
+                                      "checked is not complete" % worklist_problem))
+    if surface == "board" and worklist is None and worklist_problem is None:
+        out("channels: NOT CHECKED (no worklist on record for this run)")
     if check:
         for f in faults:
             out(_describe_fault(f))
         if faults:
-            out("verdict: %d line fault%s" % (len(faults), "" if len(faults) == 1 else "s"))
+            out(_handback.verdict_line("line-faults", len(faults)))
             return ROLES_EXIT_FAULTS
-        out("verdict: clean")
+        out(_handback.verdict_line("clean"))
         return ROLES_EXIT_OK
 
     opps = _load_store("opportunities.jsonl")
@@ -1822,31 +2029,42 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
             _file_gap(run_id, scope, "partial-results",
                       "the next pass reads the result count on this query", out)
 
+    # dev #811 / public #170 (S2) -- a channel that failed, was never tried, or was never accounted for
+    # is a gap of its own, and a reached channel's roles are already in above: one channel's failure
+    # never makes another's roles disappear. A corrected re-submission closes the channel gaps it no
+    # longer has.
+    chan = _channel_accounting(parsed, surface)
+    channel_scopes = []
+    for cid, why, kind in chan["gaps"]:
+        scope = CHANNEL_GAP_SCOPE % cid
+        channel_scopes.append(scope)
+        out("CHANNEL GAP  %s %s" % (cid, kind))
+        _file_gap(run_id, scope, why, _channel_gap_closes(cid, why, kind), out)
+    if surface == "board":
+        _handback.close_stale_line_gaps(ROOT, run_id, CHANNEL_GAP_SCOPE % "", channel_scopes, out)
+        if worklist is not None:
+            out("CHANNELS %d of %d reached · %d unreachable · %d not attempted · %d unaccounted"
+                % (chan["reached"], chan["worklist"], len(chan["unreachable"]),
+                   len(chan["not_attempted"]), len(chan["unaccounted"])))
+
     # dev #707 / public #151 -- a line fault is a gap of its own; the roles above are already in
     kept = _keep_handback(text, run_id, surface, out) if faults else None
-    fault_scopes = set()
     for f in faults:
-        scope = ROLES_LINE_GAP_SCOPE % (surface, f["scope_key"])
-        fault_scopes.add(scope)
         out(_describe_fault(f))
+
+    def _fault_gap_text(f):
         what = ("line %d %r broke: %s" % (f["line"], f["text"], f["rule"])
                 if f["line"] is not None else "block check broke: %s" % f["rule"])
-        _file_gap(run_id, scope, "partial-results",
-                  "%s -- fixed when a corrected hand-back for this run is accepted by deferred.py "
-                  "--add-roles --surface %s%s" % (what, surface,
-                                                   (" (raw hand-back kept at %s)" % rel)
-                                                   if kept else ""), out)
+        return ("%s -- fixed when a corrected hand-back for this run is accepted by deferred.py "
+                "--add-roles --surface %s%s"
+                % (what, surface, (" (raw hand-back kept at %s)" % _handback.kept_where(rel, run_id))
+                   if kept else ""))
+
+    fault_scopes = _handback.file_line_gaps(
+        ROOT, run_id, ROLES_LINE_GAP_SCOPE % (surface, "%s"), faults, _fault_gap_text, out)
     # a corrected re-submission closes the line gaps it no longer has
     prefix = ROLES_LINE_GAP_SCOPE % (surface, "")
-    for g in _journal.open_gaps(_journal.read(ROOT), run_id=run_id):
-        sc = str(g.get("scope", ""))
-        if sc.startswith(prefix) and sc not in fault_scopes:
-            try:
-                _journal.append(ROOT, {"event": "gap-closed", "gap_id": g["gap_id"],
-                                       "at": _journal.now_iso()})
-                out("GAP CLOSED %s (the corrected hand-back no longer has this fault)" % sc)
-            except _journal.JournalError as e:
-                out("⚠️ could not close the gap %s (%s)" % (sc, e))
+    _handback.close_stale_line_gaps(ROOT, run_id, prefix, fault_scopes, out)
 
     listed = parsed["listed"]
     ident = (counts["captured"] + counts["known"] + counts["carried"] + counts["quarantined"]
@@ -1857,6 +2075,14 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
     f_tpr = None
     if surface == "linkedin-jobsearch":
         f_tpr = _journal.F_TPR_WIDE if window == "wide" else _journal.F_TPR_DAILY
+    # dev #811 / public #170 (G2) -- PARTIAL versus COMPLETE. `line_faults` counts the faults the block
+    # carried EXCEPT `channel-unaccounted` (those are `channels_unaccounted`, counted once, there).
+    # `journal.record_roles` asserts the identity (partial exactly when line faults, an unreachable
+    # QUERY, or any channel list is non-empty) and refuses an event that breaks it.
+    line_faults = len([f for f in faults
+                       if not str(f["scope_key"]).startswith("block:channel-unaccounted:")])
+    partial = bool(line_faults or (len(parsed["queries"]) - q_reached) or chan["unreachable"]
+                   or chan["not_attempted"] or chan["unaccounted"])
     event = dict(run_id=run_id, surface=surface, window=window, f_tpr=f_tpr,
                  queries=len(parsed["queries"]), geos_ok=sorted(geos_ok),
                  query_gaps_window=gaps_window, query_gaps_truncated=gaps_trunc,
@@ -1866,7 +2092,12 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
                  query_gaps_filters=gaps_filters, captured_degraded=captured_degraded,
                  q_reached=q_reached, q_clean=q_clean, q_unread=q_unread,
                  q_total_unknown=q_total_unknown, q_degraded=q_degraded,
-                 q_degraded_queries=q_degraded_queries)
+                 q_degraded_queries=q_degraded_queries,
+                 coverage="partial" if partial else "complete", line_faults=line_faults,
+                 channels_worklist=chan["worklist"], channels_reached=chan["reached"],
+                 channels_unreachable=chan["unreachable"],
+                 channels_not_attempted=chan["not_attempted"],
+                 channels_unaccounted=chan["unaccounted"])
     same = [e for e in _journal.roles_events(recs, run_id=run_id, surface=surface)
             if all(e.get(k) == v for k, v in event.items())]
     if same:
@@ -1887,6 +2118,19 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
         % (q_reached, q_clean, q_unread, q_degraded_queries,
            (" (%s)" % ", ".join("%s x%d" % (c, n) for c, n in sorted(q_degraded.items())))
            if q_degraded else "", q_total_unknown))
+    out("COVERAGE %s%s" % ("partial" if partial else "complete",
+                           "" if not partial else " (%s)" % ", ".join(
+                               [x for x in (
+                                   ("%d line fault(s)" % line_faults) if line_faults else "",
+                                   ("%d unreachable QUERY line(s)"
+                                    % (len(parsed["queries"]) - q_reached))
+                                   if len(parsed["queries"]) - q_reached else "",
+                                   ("%d channel(s) unreachable" % len(chan["unreachable"]))
+                                   if chan["unreachable"] else "",
+                                   ("%d channel(s) not attempted" % len(chan["not_attempted"]))
+                                   if chan["not_attempted"] else "",
+                                   ("%d channel(s) unaccounted" % len(chan["unaccounted"]))
+                                   if chan["unaccounted"] else "") if x])))
     if counts["quarantined"]:
         out("HELD %d role(s) (quarantined) from degraded queries: %s -- not captured until a clean "
             "pass sees them, or deferred.py --unquarantine <id>"
@@ -1907,39 +2151,6 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
                 "again (idempotent), or leave the gaps." % kept)
         return ROLES_EXIT_FAULTS
     return ROLES_EXIT_OK
-
-
-CANNOT_READ_REQUIREMENT = {
-    "requirement": "Read the job description", "verdict": "unknown", "evidence": None,
-    "pitch_line": None,
-    "question_for_candidate": ("No surface that ran could read this JD: read it yourself before "
-                               "deciding."),
-    "question_status": "open", "answered_on": None, "landed_in": None, "act_by": None}
-
-
-def _write_cannot_read(opp, now, already_locked, out):
-    """dev #723 -- record `fit.jd_source = "unavailable: surface-cannot-read"` on `opp` THROUGH
-    `record.py set` (one writer of `opportunities.jsonl`: the lock, the validator, the rollback and
-    the surface-cannot-read gate all apply; this script never opens the store for writing). The rest of
-    `fit` is kept and `analyzed_on` is set; a role that never had a `fit` gets one open question
-    (the validator wants a non-empty `requirements`), so the candidate sees why it is unread. A
-    subprocess on this interpreter: `record.py` exposes no in-process dispatch. True when it wrote."""
-    import subprocess
-    fit = dict(opp.get("fit") or {})
-    fit["jd_source"] = SURFACE_CANNOT_READ
-    fit["analyzed_on"] = now.date().isoformat()
-    if not fit.get("requirements"):
-        fit["requirements"] = [dict(CANNOT_READ_REQUIREMENT)]
-    cmd = [sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "record.py"),
-           "set", str(opp.get("id")), "fit", json.dumps(fit)]
-    if already_locked:
-        cmd.append("--already-locked")
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-    if r.returncode != 0:
-        out("⚠️ could not record surface-cannot-read on %s (record.py exit %d): %s"
-            % (opp.get("id"), r.returncode, " ".join((r.stdout + r.stderr).split())[-300:]))
-        return False
-    return True
 
 
 _STRICT_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -1986,8 +2197,8 @@ def _settle_posting_check(item, opp, now, out):
         return True                                                    # 3
     try:
         import posting_check as _pc
-        import your_move as _ym
-        on_list = _pc.in_watch_list(opp, _ym.triage_missing(opp))
+        import lifecycle as _lc
+        on_list = _pc.in_watch_list(opp, _lc.watch_missing(opp))
         recheck_days = _pc.RECHECK_DAYS
     except ImportError as e:
         out("⚠️ posting-check %s not settled: posting_check is unavailable (%s); left open"
@@ -2009,19 +2220,19 @@ def settle(out=print, now=None, already_locked=False):
       `sightings[].source_url` in `opportunities` (canonical on both sides, N6: a tracking-
       parameter variant of the URL still closes it);
     * a `research-role` item whose opportunity has a non-empty `research_log`;
-    * a `read-jd` item (dev #723) whose opportunity no longer lists `jd-read` in
-      `your_move.triage_missing`: someone read it. One that is STILL unread and has waited MORE THAN
-      `search.triage_stuck_days` days (`jd_read_waited_past_bound`) is the case no worker with a browser
-      came for: it records `fit.jd_source = "unavailable: surface-cannot-read"` through `record.py`
-      (`_write_cannot_read`; `already_locked` is passed through, for a call inside a run's write
-      phase) and then closes. Before the bound it does nothing.
+    * a `read-jd` item (dev #723) whose opportunity has ANY `jd_read` attempt (dev #820 / public #175,
+      B2.2): the lifecycle owns a role's read and its retry, so the item is closed as
+      `superseded:jd_read` (the `closed_as` of its `_done` row) and NOTHING is written to the role. One
+      whose role has no attempt stays open, and so does one whose `jd_read` cannot be parsed (the
+      refusal is printed). The 0.69.0 behaviour that wrote `fit.jd_source = "unavailable:
+      surface-cannot-read"` after `search.triage_stuck_days` is retired. `already_locked` is kept in the
+      signature for callers that pass it; this branch no longer writes anything to take a lock for.
     * a `posting-check` item (dev #776, `_settle_posting_check`) whose role is gone, is off the watch
       list, was checked since the item was queued, or has waited past `RECHECK_DAYS`; it writes
       NOTHING to the role.
 
     A per-role gap closes in `add_roles` itself, the moment a later block resolves the role."""
     from pipeline_index import canonical_job_url
-    import your_move as _ym
     opps = _load_store("opportunities.jsonl")
     by_id = {o.get("id"): o for o in opps}
     urls = set()
@@ -2036,6 +2247,7 @@ def settle(out=print, now=None, already_locked=False):
         if r.get("status") != "pending":
             continue
         done = False
+        closed_as = None
         if r.get("kind") == KIND_CAPTURE and r.get("ref"):
             done = (canonical_job_url(r["ref"]) or r["ref"]) in urls
         elif r.get("kind") == KIND_RESEARCH and r.get("ref"):
@@ -2044,17 +2256,18 @@ def settle(out=print, now=None, already_locked=False):
             done = _settle_posting_check(r, by_id.get(r["ref"]), now, out)
         elif r.get("kind") == KIND_JD_READ and r.get("ref"):
             opp = by_id.get(r["ref"])
-            if opp is not None and "jd-read" not in _ym.triage_missing(opp):
-                done = True
-            elif opp is not None and jd_read_waited_past_bound(r, _ym.triage_stuck_days(), now):
-                done = _write_cannot_read(opp, now, already_locked, out)
-                if done:
-                    out("CANNOT READ %s: no worker with a browser read it within %d days; recorded "
-                        "%s" % (r["ref"], _ym.triage_stuck_days(), SURFACE_CANNOT_READ))
+            state = _jd_attempt_state(opp) if opp is not None else "none"
+            if state == "some":
+                done, closed_as = True, SUPERSEDED_JD_READ
+            elif state == "unreadable":
+                out("⚠️ read-jd %s not settled: the jd_read record of %s cannot be parsed; left open"
+                    % (r["id"], r["ref"]))
         if done:
+            rec = {"id": r["id"], "kind": "_done", "done_at": now.isoformat(timespec="seconds")}
+            if closed_as:
+                rec["closed_as"] = closed_as
             with open(QUEUE, "a", encoding="utf-8") as fh:
-                fh.write(json.dumps({"id": r["id"], "kind": "_done",
-                                     "done_at": now.isoformat(timespec="seconds")}) + "\n")
+                fh.write(json.dumps(rec) + "\n")
             closed.append(r["id"])
             out("SETTLED    %s (%s %s)" % (r["id"], r.get("kind"), r.get("ref")))
     out("SETTLE: %d item(s) closed" % len(closed))
@@ -2183,13 +2396,14 @@ def main():
                     help="Close the script-built items the stores already show done: a "
                          "capture-role item whose URL now has an opportunity, a research-role "
                          "item whose opportunity has a research_log (dev #692), a read-jd item "
-                         "whose role was read; one still unread past search.triage_stuck_days "
-                         "records surface-cannot-read through record.py first (dev #723).")
+                         "whose role has any jd_read attempt (closed as superseded:jd_read; "
+                         "nothing is written to the role, dev #820), and a posting-check item "
+                         "that is done (dev #776).")
     ap.add_argument("--already-locked", dest="already_locked", action="store_true",
-                    help="With --settle or --add-roles: the calling run already holds the run "
-                         "lock, so the record.py write that records surface-cannot-read (dev #723) "
-                         "or adds a sibling listing to an existing row (dev #728) passes "
-                         "--already-locked.")
+                    help="With --add-roles: the calling run already holds the run lock, so the "
+                         "record.py write that adds a sibling listing to an existing row "
+                         "(dev #728) passes --already-locked. Accepted and ignored by --settle, "
+                         "which writes nothing to a role (dev #820).")
     ap.add_argument("--attended", action="store_true",
                     help="This run was started with the EXPLICIT attended form (owner decision "
                          "R2): claims may use the research/drafting tokens regardless of the "
@@ -2483,9 +2697,15 @@ def main():
     # would refuse it, so listing it as claimable would cost a worker a turn for nothing.
     screened_out = {}
     if args.claimable:
+        research_ctx = None
+        if any(r.get("kind") == KIND_RESEARCH for r in mine):
+            try:
+                research_ctx = _research_ctx()      # built once for every research item below
+            except (OSError, ValueError, ImportError):
+                research_ctx = None                  # each refusal then rebuilds it and names the cause
         for r in mine:
             if r.get("kind") == KIND_RESEARCH:
-                why = research_screen_refusal(r.get("ref"))
+                why = research_screen_refusal(r.get("ref"), research_ctx)
                 if why:
                     screened_out[r["id"]] = why
         mine = [r for r in mine if r["id"] not in screened_out]

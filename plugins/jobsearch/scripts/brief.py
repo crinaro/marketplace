@@ -35,7 +35,7 @@ Usage:
     python3 brief.py --json --for contact:<id>
     python3 brief.py --probe contact:<id>                          # mailbox probe alone
     python3 brief.py --probe --held [--deadline-s N]               # probe/queue every held draft
-    python3 brief.py --rebrief [--all]                             # bulk, store-only evidence
+    python3 brief.py --rebrief [--all] [--already-locked]          # bulk, store-only evidence
     python3 brief.py --restamp                                     # re-stamp unaddressed (#92)
     python3 brief.py --address "<entry title>" --to contact:<id>    # address + brief in one write (#686)
 
@@ -1352,12 +1352,17 @@ def rebrief(root, probe=False, only_all=False):
         del row["events"]
         append_ledger(root, row)
         rebriefed += 1
+        # dev #819 / public #174 — neither edit may reach past this entry. REPLACE only the
+        # Brief line itself (`_line_span`: `BRIEF_LINE_RE.end()` swallows the blank lines that
+        # follow, so splicing over it glued the next paragraph on), and INSERT the stamp next
+        # to `**To:**` inside this entry (`m.end(2)` is the byte before the NEXT `## `, so an
+        # insert there glued the next heading onto the stamp).
         bm = BRIEF_LINE_RE.search(body)
         if bm:
-            start, end = m.start(2) + bm.start(), m.start(2) + bm.end()
-            inserts.append((start, end, "**Brief:** %s" % brief_id))
+            bs, be = _line_span(body, bm)
+            inserts.append((m.start(2) + bs, m.start(2) + be, "**Brief:** %s" % brief_id))
         else:
-            inserts.append((m.end(2), m.end(2), "\n**Brief:** %s" % brief_id))
+            inserts.append(_to_line_edit(m, pid, brief_id))
     if inserts:
         new_md = md
         for start, end, text in sorted(inserts, key=lambda t: t[0], reverse=True):
@@ -1367,7 +1372,11 @@ def rebrief(root, probe=False, only_all=False):
     return {"rebriefed": rebriefed, "path": path}
 
 
-def cmd_rebrief(root, only_all):
+def cmd_rebrief(root, only_all, already_locked=False):
+    """`already_locked` (dev #819 / public #174): the caller holds the run lock for the write
+    (the drain's write phase), as `record.py --already-locked` means it. `rebrief` takes no
+    lock of its own, so there is nothing to skip and the flag changes no byte written; it is
+    accepted so a call made inside a lock-holding write phase parses."""
     result = rebrief(root, probe=False, only_all=only_all)
     print("%d draft(s) rebriefed." % result["rebriefed"])
     return 0
@@ -1543,6 +1552,10 @@ def main():
                     help="re-stamp `**To:** unaddressed` entries that now resolve a contact "
                          "(public #92) — re-runnable, safe to call any time")
     ap.add_argument("--all", action="store_true")
+    ap.add_argument("--already-locked", dest="already_locked", action="store_true",
+                    help="--rebrief only (dev #819): the calling run already holds the run lock "
+                         "for this write. Accepted so a drain's write phase can pass it; "
+                         "`--rebrief` takes no lock of its own, so it changes nothing written.")
     ap.add_argument("--address", metavar="TITLE",
                     help="dev #686: address AND brief the open draft entry titled TITLE in one "
                          "write — needs --to contact:<id>. Rewrites **To:** and **Brief:**; "
@@ -1565,8 +1578,10 @@ def main():
             return cmd_probe(root, args.probe)
         if args.address:
             return cmd_address(root, args.address, args.to, args.i_checked)
+        if args.already_locked and not args.rebrief:
+            ap.error("--already-locked is only meaningful with --rebrief")
         if args.rebrief:
-            return cmd_rebrief(root, args.all)
+            return cmd_rebrief(root, args.all, already_locked=args.already_locked)
         if args.restamp:
             return cmd_restamp(root)
         if args.check:

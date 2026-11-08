@@ -53,7 +53,7 @@ whose current decision is pursue + comp-acceptable is KEPT; `comp_accepted`), th
 `PAY-UNCOMPARABLE` for a `comp` in a unit or basis the annual BASE floor cannot be set against.
 `comp_keys` / `screen_is_comp_stale` report a stored comp verdict computed without those inputs.
 jobsearch 0.74.0 (dev #761) adds `comp_rescreen_flags`: of the roles whose stored `remove:comp`
-is stale, the DECIDED or REMOVED ones (which triage never reaches) that today's `screen_comp` would
+is stale, the DECIDED or REMOVED ones (settled stages, which the intake drain never reaches) that today's `screen_comp` would
 not remove. They are FLAGGED in the status panel and the review-now page and NEVER reopened by the
 engine; the candidate's own `record.py decide` / `record.py screened` ends the flag.
 
@@ -63,6 +63,7 @@ Python 3.9+. Standard library only.
 import argparse
 import json
 import os
+import re
 import sys
 
 import os, sys as _sys
@@ -639,6 +640,48 @@ def is_inferred(opp_or_location):
     return isinstance(loc, dict) and loc.get("setting_source") == "inferred"
 
 
+def card_inputs(opp):
+    """True when any screen input of the role is a capture CARD's, not a read of the JD (dev #820 / public #175,
+    design-role-pipeline.md section 3): `location.provenance` or `listed_pay.provenance` is `card`. A row with no
+    provenance (a legacy row, never rewritten) is NOT card-input: it screens exactly as it always did."""
+    if not isinstance(opp, dict):
+        return False
+    for key in ("location", "listed_pay"):
+        blob = opp.get(key)
+        if isinstance(blob, dict) and blob.get("provenance") == "card":
+            return True
+    return False
+
+
+_PLACE_PAREN = re.compile(r"\([^)]*\)")
+
+
+def _place_core(text):
+    """The city part of a place text, normalised for an equality test: case-folded, a parenthetical dropped,
+    everything after the first comma (state and country suffixes) dropped, punctuation removed. `Chicago, IL, USA`
+    and `chicago` agree. None when nothing is left."""
+    if not isinstance(text, str):
+        return None
+    t = _PLACE_PAREN.sub(" ", text).split(",")[0]
+    core = " ".join(re.sub(r"[^\w]+", " ", t.casefold()).split())
+    return core or None
+
+
+def anchor_echo(listed, profile):
+    """True when a capture card's place text is one of the profile's commute anchors' own places (dev #820 /
+    public #175, design section 3.1). A job board that is searched at the candidate's home town prints that town on
+    every card whatever the posting says, so a card place equal to an anchor proves nothing about the role: the
+    capture marks it `location.anchor_echo`, and the role screens `provisional` until the JD is read. Compared on
+    `_place_core` (case-folded; punctuation, state and country suffixes stripped); a card listing several places
+    (`;` or `|`) echoes when any one does."""
+    if not isinstance(listed, str) or not listed.strip():
+        return False
+    anchors = {c for c in (_place_core(a.get("place")) for a in _commute_anchors(profile)) if c}
+    if not anchors:
+        return False
+    return any(_place_core(part) in anchors for part in re.split(r"[;|]", listed))
+
+
 def comp_accepted(opp):
     """True when the role's CURRENT decision accepts its pay (dev #739 / public #161): the row's own
     `verdict` is `pursue` and its `decision.reason_kind` is `comp-acceptable`. Read-only, from the row
@@ -1176,9 +1219,13 @@ def title_signals(profile):
 def title_keys(profile):
     """A short hash of everything the title rule reads (dev #722 / public #156, R2):
     `screen.title_floor`, `targets.titles` and the title-field `likely_pass_signals` (id and
-    phrase). `record.py screened` stores it on the screen; `your_move.triage_missing` asks for a
-    re-screen when the stored hash is not today's. An unreadable signal list hashes as itself, so
-    fixing it also re-screens."""
+    phrase). `record.py screened` stores it on the screen; `screen_is_title_stale` and `title_scope_count`
+    compare it with today's, so a pile screened under other keys is counted (`rescreen_pending`) and a role can be
+    re-screened with `record.py screened`. Since 0.82.0 the lifecycle reads the same staleness: a role whose screen is
+    title-stale (or comp-stale) and that no unfinished admission holds is staged `waiting` with detail `rules-changed`
+    (never a failure: editing your profile is not a process failure), and the intake drain's `read-batch --fetch`
+    re-screens it, which stores the new keys and ends the staleness. (The pre-0.82.0 triage step with its per-run cap is
+    retired.) An unreadable signal list hashes as itself, so fixing it also changes the hash."""
     import hashlib
     try:
         sigs = [[s["id"], s["phrase"]] for s in title_signals(profile)]
@@ -1196,9 +1243,10 @@ def screen_is_title_stale(screen, profile):
     public #156, R2): its `title_keys` is not `title_keys(profile)`, or it has none and a
     `screen.title_floor` is now set (a screen stored by 0.68.0 or earlier). With no floor set, an
     absent hash is NOT stale: nothing the old screen could have missed has been asked of it. A
-    screen that is not an object is not this function's question (`triage_missing` already asks
-    for it). `your_move.triage_missing` reads this, so the pile screened before the keys existed
-    drains through the normal triage path, at the per-run cap, with no bulk pass."""
+    screen that is not an object is not this function's question (the validator already refuses
+    it). `title_scope_count` reads this to count the pile screened before the keys existed
+    (`rescreen_pending`); `lifecycle.stage` stages a stale screen as `waiting` / `rules-changed` and the intake drain
+    re-screens it; `record.py screened <id>` re-screens one role by hand."""
     if not isinstance(screen, dict):
         return False
     stored = screen.get("title_keys")
@@ -1275,9 +1323,9 @@ def screen_is_comp_stale(screen, opp, profile):
     than base/total on a stated figure, or a current comp-acceptable pursue on a stored BELOW-FLOOR.
     An absent hash on a role with none of those is NOT stale: nothing the old screen could have
     missed was asked of it, so the pile screened before the keys existed drains only where it must.
-    A screen that is not an object is not this function's question (`triage_missing` asks for it).
-    `your_move.triage_missing` reads this, so a wrong stored `remove:comp` drains through the normal
-    triage path at its per-run cap, with no bulk pass."""
+    A screen that is not an object is not this function's question (the validator already refuses it).
+    `comp_scope_count` and `comp_rescreen_flags` read this, so a wrong stored `remove:comp` is counted and flagged
+    for the candidate's own `record.py screened`; nothing re-screens it on its own."""
     import config_keys as _ck
     if not isinstance(screen, dict):
         return False
@@ -1381,9 +1429,9 @@ def comp_rescreen_flags(opps, profile):
         removed on geography or a duplicate stays removed whatever the comp rule now says);
       * that screen is comp-stale (`screen_is_comp_stale`);
       * today's `screen_comp` token is not BELOW-FLOOR (so the stored verdict would differ);
-      * it is NOT an undecided backlog role (the triage path re-screens those at its per-run cap),
-        and not `expired` (the posting is gone, nothing to reopen), but it IS a decided, removed
-        (`passed`) or otherwise closed one, which triage never reaches;
+      * it is NOT an undecided backlog role (a role the pipeline has not decided is re-screened when its JD
+        is read), and not `expired` (the posting is gone, nothing to reopen), but it IS a decided, removed
+        (`passed`) or otherwise closed one, which no read ever reaches;
       * the candidate did NOT re-decide it after the screen (`_decided_after_screen`, F2).
 
     Each flag carries the old verdict (the stored one), the new (what today's comp token makes of
@@ -1652,7 +1700,9 @@ def screen_rules(opp, profile, all_opps, applications=None, channels=None, today
     only a printer over it. `rules` maps rule name -> a short token (comp: the screen_comp verdict;
     passed: MATCHES / NOT-EXCLUDED; geo: the geo_screen verdict; title: MATCHES / NO-MATCH /
     NO-CONFIGURED-TITLES; age: UNKNOWN / OK / OVER-THRESHOLD), `detail` the text each prints after
-    its label, `verdict` `keep`, `remove:<rule>[,<rule>]` or `review:<rule>[,<rule>]`.
+    its label, `verdict` `keep`, `remove:<rule>[,<rule>]` or `review:<rule>[,<rule>]`, or -- since 0.82.0 (dev
+    #820 / public #175) -- `provisional` for a role with any CARD input (`card_inputs`): that screen never keeps,
+    and removes only on `passed`.
 
     Pure over what it is handed, and it never reads `posture`. Only rules that already remove a
     role can say `remove`: comp BELOW-FLOOR, geo `out`, a passed/excluded duplicate. A question the
@@ -1754,7 +1804,19 @@ def screen_rules(opp, profile, all_opps, applications=None, channels=None, today
     if review:
         reviews.append("age")
 
-    if inherited is not None:
+    if card_inputs(opp):
+        # dev #820 / public #175 (design-role-pipeline.md section 3.3): a screen computed from a capture CARD is
+        # PROVISIONAL. It never says `keep` (a card's pay is often absent and its place is often the search's own,
+        # so the quiet keep it used to give was a claim about a posting nobody had read), and it removes only on
+        # the card-safe rule: `passed` (this role, or the row it duplicates, was already removed). A comp or geo
+        # removal on card inputs, and every review, become part of `provisional`; the per-rule results above are
+        # still stored, so the JD read re-screens from the same record. A row with no provenance (legacy) never
+        # takes this branch.
+        if (inherited is not None and inherited.startswith("remove:")) or (inherited is None and "passed" in removes):
+            v = "remove:passed"
+        else:
+            v = "provisional"
+    elif inherited is not None:
         v = inherited
     elif removes:
         v = "remove:" + ",".join(removes)
@@ -1852,12 +1914,16 @@ def screen_summary(results):
     keep = sum(1 for r in results if r["verdict"] == "keep")
     removed = [r for r in results if r["verdict"].startswith("remove:")]
     review = sum(1 for r in results if r["verdict"].startswith("review:"))
+    provisional = sum(1 for r in results if r["verdict"] == "provisional")
     by = {rule: sum(1 for r in removed if rule in r["verdict"][len("remove:"):].split(","))
           for rule in ("geo", "comp", "passed")}
     counts = commute_counts(r.get("commute") for r in results)
+    # `provisional` (a card-input screen, 0.82.0) is a segment only while there is one, so the line a profile with
+    # no card-input role prints is byte-for-byte what it was
     lines = ["MINIMAL SCREEN SUMMARY %d screened · keep %d · remove %d (geo %d, comp %d, passed %d)"
-             " · review %d · %s" % (n, keep, len(removed), by["geo"], by["comp"], by["passed"],
-                                    review, commute_text(counts))]
+             " · review %d%s · %s" % (n, keep, len(removed), by["geo"], by["comp"], by["passed"], review,
+                                      (" · provisional %d" % provisional) if provisional else "",
+                                      commute_text(counts))]
     if counts["place-table"]:
         lines.append(place_table_missing_line())
     return lines

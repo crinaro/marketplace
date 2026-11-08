@@ -81,7 +81,14 @@ Usage:
     python3 scripts/record.py set <opp_id> next_action_owner <candidate>   # e.g. your own name, lowercased
     python3 scripts/record.py set-in <opp_id> outreach contact_id=jane-doe outcome replied
     python3 scripts/record.py append <opp_id> research_log '{"date":"2026-08-04","note":"..."}'
-    python3 scripts/record.py show <opp_id>
+    python3 scripts/record.py show <opp_id> [--json]       # the WHOLE record, untruncated (0.82.0, SH1)
+    python3 scripts/record.py capture-batch --run <id> --link-only | --admitted [--deadline-s N] [--check]
+                                              # card -> role, two phases, one write per store (0.82.0, dev #820)
+    python3 scripts/record.py read-jd <opp_id> --run <id> --url <u|-> --via render|fetch|feed|ats-api|candidate
+                                  --pay none|stated:<range> --setting "<text>" --location "<text|?>" --evidence "<quote>"
+    python3 scripts/record.py read-failed <opp_id> --run <id> --url <u|-> --via render --outcome <outcome> --evidence "<text>"
+    python3 scripts/record.py read-batch --run <id> --fetch [--deadline-s N] [--check]
+                                              # read-jd / read-failed / read-batch are the ONLY writers of `jd_read`
     python3 scripts/record.py screened <opp_id>            # store the minimal screen it computes
     python3 scripts/record.py lean <opp_id> --lean pursue|pass|ask --line "<one line>" [--jd-file P]
     python3 scripts/record.py listed-pay <opp_id> --none-shown | --stated R[;R] | --estimate R[;R]
@@ -227,7 +234,12 @@ OPS = ("create", "set", "set-in", "append", "show", "fields",
        # posting. An early-return verb: it reads EMPLOYER-POSTING lines from a FILE (never argv, so no quote in a
        # posting's visible text can break a shell line), and writes OPPORTUNITIES in one locked, validated,
        # rollback-verified transaction, so --dry-run is proven in test_record_posting.py.
-       "posting")
+       "posting",
+       # jobsearch 0.82.0 (dev #820 / public #175) -- the role pipeline's verbs. `read-jd` and `read-failed` are branches of
+       # the shared mutation chain (one role, one attempt: the lock, the validator, the rollback and --dry-run all apply);
+       # `capture-batch` and `read-batch` are early-return verbs writing OPPORTUNITIES (and COMPANIES, and the append-only
+       # queue and journal) in one locked, validated, rollback-verified transaction, `--dry-run` being `--check`.
+       "read-jd", "read-failed", "capture-batch", "read-batch")
 SOURCING_OPS = ("screened", "lean", "listed-pay", "posted")
 LOCK = os.path.join(ENGINE_SCRIPTS, "runlock.py")
 # ⭐ ENGINE, not profile — the data MODEL ships with the code; the DATA belongs to the user.
@@ -648,7 +660,7 @@ def introduced_row_violations(store, before_row, after_row):
     changed in some other field keeps the same message and is therefore not "introduced", so an
     unrelated edit to an old row is accepted. Messages are label-free, so they compare equal."""
     vd = _validator_module()
-    gate = (_cannot_read_violations(store, before_row, after_row)
+    gate = (_fit_unavailable_violations(store, before_row, after_row)
             + _manual_board_violations(store, before_row, after_row))
     after = vd.row_rule_violations(store, after_row)
     if not after:
@@ -691,34 +703,82 @@ def _posting_keys(row):
 
 
 def verb_owned_refusal(op, store, before_row, after_row):
-    """The refusals (a list of messages, empty when none) for a write of `op` to `store` that CHANGES `employer_posting`
-    when it did not come from a sanctioned path. Called at EVERY call site of `introduced_row_violations` (the four
-    shared ones in `cmd_board_sighting` and `main`, and `cmd_posting`'s own), on the dry-run and the real path, so no op
-    can bypass it; comparing the row as it stood with the row as it would be (`before_row` None for a create) covers
-    `set`, `set-in`, `append`, `create` and any op added later without listing them.
+    """The refusals (a list of messages, empty when none) for a write of `op` to `store` that CHANGES a field a verb
+    owns when it did not come from that verb's sanctioned path. Two fields are owned:
+
+      * `employer_posting` -- written only by `record.py posting --from-file` and the capture of a company-feed role
+        (dev #776 / public #166);
+      * `jd_read` -- written only by `record.py read-jd`, `read-failed` and `read-batch --fetch` (dev #820 / public
+        #175, design section 4.2): a read that cannot be told from a typed one is the defect the field exists to end.
+
+    Called at EVERY call site of `introduced_row_violations` (the four shared ones in `cmd_board_sighting` and `main`,
+    and `cmd_posting`'s own), on the dry-run and the real path, so no op can bypass it; comparing the row as it stood
+    with the row as it would be (`before_row` None for a create) covers `set`, `set-in`, `append`, `create` and any op
+    added later without listing them.
 
     A key that is present with a null value differs from an absent key (`set <id> employer_posting null` is a write),
     and `--force` is not an input: the refusal text says so."""
-    if store != "opportunities" or not isinstance(after_row, dict) or _POSTING_WRITER[0]:
+    if store != "opportunities" or not isinstance(after_row, dict):
         return []
-    before, after = _posting_keys(before_row), _posting_keys(after_row)
-    if before == after:
-        return []
-    return ["%s is written only by `record.py posting --from-file <file>` (research and the scheduled re-check write the "
-            "EMPLOYER-POSTING lines it reads) and by the capture of a company-feed role; `%s` cannot change it, and "
-            "--force does not lift this" % (_POSTING_FIELD, op)]
+    out = []
+    if not _POSTING_WRITER[0] and _posting_keys(before_row) != _posting_keys(after_row):
+        out.append("%s is written only by `record.py posting --from-file <file>` (research and the scheduled re-check "
+                   "write the EMPLOYER-POSTING lines it reads) and by the capture of a company-feed role; `%s` cannot "
+                   "change it, and --force does not lift this" % (_POSTING_FIELD, op))
+    if not _JD_READ_WRITER[0] and _jd_read_keys(before_row) != _jd_read_keys(after_row):
+        out.append("%s is written only by `record.py read-jd`, `read-failed` and `read-batch --fetch` (a read is "
+                   "recorded with its evidence by the verb that made it); `%s` cannot change it, and --force does "
+                   "not lift this" % (_JD_READ_FIELD, op))
+    return out
 
 
-SURFACE_CANNOT_READ = "unavailable: surface-cannot-read"
-MANUAL_BOARD = "unavailable: manual-board"
+# ---- dev #820 / public #175 (design-role-pipeline.md section 4.2): `jd_read` HAS ONE WRITER FAMILY ----
+_JD_READ_FIELD = "jd_read"
+# Module-private, like `_POSTING_WRITER`: no flag, environment variable or JSON payload sets it. It is held only inside
+# `_jd_read_writer()`, by `read-jd`, `read-failed` and `read-batch --fetch`.
+_JD_READ_WRITER = [False]
+
+
+@contextlib.contextmanager
+def _jd_read_writer(held=True):
+    """Hold (or, with `held=False`, explicitly not hold) the `jd_read` writer token for the checks inside the block."""
+    prev = _JD_READ_WRITER[0]
+    _JD_READ_WRITER[0] = bool(held)
+    try:
+        yield
+    finally:
+        _JD_READ_WRITER[0] = prev
+
+
+def _jd_read_keys(row):
+    """`{key: value}` of every key of `row` that IS `jd_read` or lives under it (a dotted key is the same field spelled
+    differently, so it is compared too)."""
+    if not isinstance(row, dict):
+        return {}
+    return {k: v for k, v in row.items() if k == _JD_READ_FIELD or k.startswith(_JD_READ_FIELD + ".")}
+
+
+FIT_UNAVAILABLE_PREFIX = "unavailable"
+# the outcomes `read-failed` takes (jd_read.OUTCOMES minus `read`), spelled out in the refusal that points at it
+READ_FAILED_REMEDY = ("`record.py read-failed <id> --run <run id> --url <u|-> --via fetch|render|feed|ats-api "
+                      "--outcome closed|dead-link|manual-board|no-url|login-wall|challenge|render-failed|"
+                      "surface-cannot-read|site-not-allowed --evidence \"<1-200 characters>\"`")
+
+
+def _touches_fit(before_row, after_row):
+    """True when a write changed any `fit` / `fit.*` key (a create counts as touching it)."""
+    if not isinstance(before_row, dict):
+        return True
+    keys = {k for k in set(before_row) | set(after_row) if k == "fit" or k.startswith("fit.")}
+    return any(before_row.get(k) != after_row.get(k) for k in keys)
 
 
 def _manual_board_violations(store, before_row, after_row):
     """dev #765 (design-portfolio-boards.md, review B1) -- a JD cannot be recorded as READ when every
     address the role carries is on a `manual-candidate` channel's `board_hosts`: those sites' terms
     forbid automated access (ADR-037), so the run must not have opened them. The role records
-    `fit.jd_source = "unavailable: manual-board"` instead. Lives here for the reason
-    `_cannot_read_violations` does: `introduced_row_violations` is the one choke point every write op and
+    `read-failed --outcome manual-board` instead (dev #820 / public #175: the read record is `jd_read`, not
+    `fit.jd_source`). Lives here because `introduced_row_violations` is the one choke point every write op and
     `--dry-run` passes through.
 
     WHEN IT FIRES: the row after the write carries a `fit.jd_source` that claims a read (a non-empty
@@ -732,12 +792,10 @@ def _manual_board_violations(store, before_row, after_row):
         return []
     fit = after_row.get("fit")
     src = fit.get("jd_source") if isinstance(fit, dict) else None
-    if not (isinstance(src, str) and src.strip()) or src.startswith("unavailable"):
+    if not (isinstance(src, str) and src.strip()) or src.startswith(FIT_UNAVAILABLE_PREFIX):
         return []
-    if isinstance(before_row, dict):
-        keys = {k for k in set(before_row) | set(after_row) if k == "fit" or k.startswith("fit.")}
-        if all(before_row.get(k) == after_row.get(k) for k in keys):
-            return []                                   # this write did not touch fit
+    if not _touches_fit(before_row, after_row):
+        return []                                       # this write did not touch fit
     try:
         import board_hosts as _bh
         plan = _bh.jd_read_plan(after_row, _load_or_empty("channels"))
@@ -746,57 +804,35 @@ def _manual_board_violations(store, before_row, after_row):
     if plan["url"] is None and plan["blocked"]:
         b = plan["blocked"][0]
         return ["fit.jd_source %r claims a read, but every address this role carries is on the manual-candidate "
-                "board %r (host %s), which the engine never opens (ADR-037): record `%s` instead"
-                % (src, b["channel_id"], b["host"], MANUAL_BOARD)]
+                "board %r (host %s), which the engine never opens (ADR-037): record `record.py read-failed %s "
+                "--outcome manual-board ...` instead" % (src, b["channel_id"], b["host"], after_row.get("id") or "<id>")]
     return []
 
 
-def _cannot_read_violations(store, before_row, after_row):
-    """dev #723 (jobsearch 0.69.0, design R5) -- `fit.jd_source = "unavailable: surface-cannot-read"`
-    is refused unless a `read-jd` item for this role, pending or done, has waited MORE THAN
-    `search.triage_stuck_days` days. It lives HERE because `introduced_row_violations` is the one
-    row-level choke point every write op (`set`, `set-in`, `create`, `append`) and `--dry-run`
-    already passes through, so no op can bypass it. 'Surface cannot read' is a claim about every
-    surface, and one run on one surface cannot make it: it is the outcome of an item that waited for a
-    browser-holding worker and none came (`deferred.py --settle` writes it, through this script).
+def _fit_unavailable_violations(store, before_row, after_row):
+    """dev #820 / public #175 (design-role-pipeline.md section 4.2, "Retired writes") -- `fit.jd_source` with an
+    `unavailable: ...` value is REFUSED. Before 0.82.0 a read that failed was a free string on the research field
+    (`unavailable: dead-link` with a placeholder requirement, accepted with no evidence), and a role could be
+    marked `surface-cannot-read` only after a bound of days (`search.triage_stuck_days`, retired with the
+    `triaging` state). A failed read is a `jd_read` attempt now, with its evidence and the run that made it:
+    `read-failed`. The refusal names it, `--force` included.
 
-    The queue is read through `deferred.py`'s own reader (`load` / `replay`, pointed at THIS store's
-    data directory). A queue that cannot be read is NOT treated as an empty one: the write is refused
-    with `NOT CHECKED: deferred store unreadable`, never silently allowed.
-
-    WHEN IT FIRES: the row after the write carries the value AND this write touched its `fit`
-    (a new row, a `set fit`, a `set-in` on `fit.requirements`, and an `append` to it, which writes
-    the dotted key `fit.requirements` itself -- a quirk this does not fix, and that counts as
-    touching fit). A write that leaves every `fit*` key alone is not this rule's business, so a role
-    a 0.68.0 run marked by hand (the skill then allowed it after the bound) is never locked out of
-    `decide` or any other edit; only an edit of its `fit` is held to the bound."""
+    WHEN IT FIRES: the row after the write carries `fit.jd_source` (or the dotted key of that name) beginning
+    `unavailable` AND this write touched `fit`. A write that leaves every `fit*` key alone is not this rule's
+    business, so a legacy row that carries the old value is never locked out of `decide` or any other edit."""
     if store != "opportunities" or not isinstance(after_row, dict):
         return []
     fit = after_row.get("fit")
-    if not (isinstance(fit, dict) and fit.get("jd_source") == SURFACE_CANNOT_READ):
+    src = fit.get("jd_source") if isinstance(fit, dict) else None
+    if src is None:
+        src = after_row.get("fit.jd_source")
+    if not (isinstance(src, str) and src.strip().lower().startswith(FIT_UNAVAILABLE_PREFIX)):
         return []
-    if isinstance(before_row, dict):
-        keys = {k for k in set(before_row) | set(after_row) if k == "fit" or k.startswith("fit.")}
-        if all(before_row.get(k) == after_row.get(k) for k in keys):
-            return []                               # this write did not touch fit
-    oid = after_row.get("id")
-    try:
-        import deferred as _deferred
-        import your_move as _ym
-        items = [r for r in _deferred.replay(
-                    _deferred.load(os.path.join(DATA, "pending_actions.jsonl")))
-                 if r.get("kind") == _deferred.KIND_JD_READ and r.get("ref") == oid]
-        bound = _ym.triage_stuck_days()
-    except (OSError, ValueError) as e:
-        return ["NOT CHECKED: deferred store unreadable (%s), so fit.jd_source %r cannot be "
-                "allowed" % (e, SURFACE_CANNOT_READ)]
-    if any(_deferred.jd_read_waited_past_bound(i, bound) for i in items):
+    if not _touches_fit(before_row, after_row):
         return []
-    return ["fit.jd_source %r needs a `read-jd` item for this role that has waited more than "
-            "search.triage_stuck_days (%d) days, and %s: queue one with `deferred.py --add-jd-read "
-            "%s --run <run id>`; `deferred.py --settle` records this once the bound has passed"
-            % (SURFACE_CANNOT_READ, bound,
-               ("the oldest has not waited that long" if items else "there is none"), oid)]
+    return ["fit.jd_source %r is a retired write (jobsearch 0.82.0, dev #820): a read that failed is recorded with "
+            "%s -- it keeps the evidence and the run, and the role settles to `gone`, `your-read` or a visible "
+            "process failure by its outcome. `fit` records research, never a read" % (src, READ_FAILED_REMEDY)]
 
 
 def dry_run_validate(store, rows, extra=None):
@@ -2199,6 +2235,8 @@ def _posting_plan(pc, lines, opps, companies, channels, today):
             changed.append(oid)
         res["ok"] = True
         res["text"] = "%s: %s → %s" % (oid, kind, (new or {}).get("state") if isinstance(new, dict) else new)
+        if kind == "live" and isinstance(new, dict) and new.get("state") == "confirmed":
+            res["text"] += _posting_jd_url(row, new.get("url"))
     return {"results": results, "looks": looks, "changed": changed}
 
 
@@ -2212,6 +2250,24 @@ def _posting_row_checks(opps_before, opps_after, changed):
             bad += (introduced_row_violations("opportunities", before, after)
                     + verb_owned_refusal("posting", "opportunities", before, after))
     return bad
+
+
+def _posting_jd_url(row, employer_url):
+    """dev #820 / public #175 (design section 8.1, D817): a posting CONFIRMED on the employer's own address fills an EMPTY
+    `jd_url` with it (the link a person is shown prefers the employer's posting). When `jd_url` is already set to
+    another host nothing is changed and the disagreement is printed, once: `JD_URL DISAGREES: jd_url <host> vs employer
+    posting <host>`. Returns the text to add to the result line."""
+    import board_hosts as _bh
+    current = row.get("jd_url")
+    if not (isinstance(employer_url, str) and employer_url.strip()):
+        return ""
+    if not (isinstance(current, str) and current.strip()):
+        row["jd_url"] = employer_url
+        return "; jd_url filled from the employer posting"
+    h_cur, h_emp = _bh.host_of(current), _bh.host_of(employer_url)
+    if h_cur and h_emp and h_cur != h_emp:
+        return "\n  JD_URL DISAGREES: jd_url %s vs employer posting %s (nothing changed)" % (h_cur, h_emp)
+    return ""
 
 
 def _posting_note_looks(pc, looks, today):
@@ -2326,7 +2382,7 @@ def cmd_posting(args):
     return 1 if refused else 0
 
 
-def _feed_posting_value(item, new_row, today):
+def _feed_posting_value(item, new_row, today, channels=None):
     """`(value, error)` for `create --from-item` of a company-FEED item (design section 6.3): the `employer_posting` value
     the script writes itself, `live <canonical job url> via feed`, through the same `observe` every writer uses, when
     `capture_confirms` holds for the sighting (a company-site channel linked to this role's company). `(None, None)` when
@@ -2338,7 +2394,9 @@ def _feed_posting_value(item, new_row, today):
     sgs = new_row.get("sightings")
     sighting = next((s for s in (sgs if isinstance(sgs, list) else []) if isinstance(s, dict)), None)
     url = item.get("ref")
-    if sighting is None or not url or not pc.capture_confirms(sighting, _load_or_empty("channels"), new_row):
+    if channels is None:
+        channels = _load_or_empty("channels")
+    if sighting is None or not url or not pc.capture_confirms(sighting, channels, new_row):
         return None, None
     try:
         value = pc.observe(pc.parse(None), pc.live(url, "feed"), today.isoformat())
@@ -3413,7 +3471,7 @@ def location_replace(old, new, rid):
     return out, None
 
 
-def copy_capture_item_facts(new_row, item_id, rid=None):
+def copy_capture_item_facts(new_row, item_id, rid=None, item=None, profile=None):
     """`(copied, error)` -- `create --from-item <deferred id>` (dev #715 / public #143, dev #716 /
     public #142; design §2). Copy what `deferred.py --add-roles` PARSED from the sweep's ROLE line,
     held on the `capture-role` item's `role` object, onto the opportunity being created:
@@ -3441,17 +3499,27 @@ def copy_capture_item_facts(new_row, item_id, rid=None):
       * A `location.primary` in the JSON that differs from `location_listed` is refused (one value,
         stated once). An item queued before 0.70.0 has no `location_listed`; the JSON's is used.
 
+    ⭐ jobsearch 0.82.0 (dev #820 / public #175; design-role-pipeline.md section 3.1): EVERYTHING copied here is a
+    CARD fact. `listed_pay` and `location` are stamped `provenance: card`, a card place that equals a commute
+    anchor's own place also gets `location.anchor_echo: true` (a board searched at your home town prints that
+    town on every card), and **a card never infers `onsite`**: the 0.70.0 inference above is NOT made here any
+    more, so a `none stated` card at a concrete place has no `type` until the JD is read (`record.py read-jd`
+    keeps the inference, where the posting itself has been read). The screen of a card-input role is
+    `provisional` (`profile.screen_rules`). `item` (a replayed `capture-role` item) and `profile` may be passed by
+    a caller that copies many items, so each is loaded once per call, not once per item.
+
     A slot the sweep did not read (`?`) is `None` on the item and is NOT copied: the field stays
     ABSENT (NOT CAPTURED / age unknown), never `none-shown` and never an invented date. A field the
     payload already carries must agree with the item (one fact, stated once): a different value is
     an `error`, never a silent overwrite. An item with no `role` object (queued before 0.67.0)
     copies nothing and is not an error. `new_row` is mutated in place; `copied` names the fields."""
     import deferred as _deferred
-    try:
-        items = {r.get("id"): r for r in _deferred.replay(_deferred.load())}
-    except (OSError, ValueError) as e:
-        return [], "the deferred queue cannot be read (%s)" % e
-    item = items.get(item_id)
+    if item is None:
+        try:
+            items = {r.get("id"): r for r in _deferred.replay(_deferred.load())}
+        except (OSError, ValueError) as e:
+            return [], "the deferred queue cannot be read (%s)" % e
+        item = items.get(item_id)
     if item is None:
         return [], ("no deferred item %r (`deferred.py --claimable` lists the pending ones)"
                     % item_id)
@@ -3487,12 +3555,17 @@ def copy_capture_item_facts(new_row, item_id, rid=None):
     declared = role.get("location_declared")
     listed = role.get("location_listed")
     for field, value in wanted:
-        if field in new_row and new_row[field] != value:
+        if field == "listed_pay":
+            value = dict(value, provenance="card")
+        have_f = new_row.get(field)
+        if field in new_row and _without_provenance(have_f) != _without_provenance(value):
             return [], ("the JSON carries %s=%s but deferred item %r says %s. One value, stated "
                         "once." % (field, json.dumps(new_row[field]), item_id, json.dumps(value)))
         if field not in new_row:
             new_row[field] = value
             copied.append(field)
+        elif field == "listed_pay" and isinstance(have_f, dict) and "provenance" not in have_f:
+            new_row[field] = dict(have_f, provenance="card")
     if declared is not None:
         loc = new_row.get("location")
         if loc is not None and not isinstance(loc, dict):
@@ -3529,11 +3602,29 @@ def copy_capture_item_facts(new_row, item_id, rid=None):
                         "'<the whole location object, without setting_source>'` -- that write "
                         "records the overturn."
                         % (json.dumps(loc["type"]), rid or "<id>"))
-        if _places.parse_place(loc.get("primary")):
-            new_row["location"] = dict(loc, type="onsite", setting_source="inferred")
-            new_row["location"].setdefault("remote", False)
-            copied.append("location.type (inferred onsite)")
+        # dev #820 / public #175 (design section 3.1): a CARD never infers `onsite`. The place is recorded as the
+        # card printed it, and `type` stays absent (legal beside `declared: none stated`) until the JD is read.
+    loc = new_row.get("location")
+    if isinstance(loc, dict) and (declared is not None or listed is not None):
+        loc = dict(loc, provenance="card")
+        if listed is not None and not loc.get("anchor_echo"):
+            try:
+                import profile as _pf_echo
+                if _pf_echo.anchor_echo(listed, profile if profile is not None else _pf_echo.load()):
+                    loc["anchor_echo"] = True
+                    copied.append("location.anchor_echo")
+            except (OSError, ValueError, KeyError):
+                pass                    # an unreadable profile cannot say; the card is provisional all the same
+        new_row["location"] = loc
+        copied.append("location.provenance (card)")
+    if "listed_pay" in copied:
+        copied.append("listed_pay.provenance (card)")
     return copied, None
+
+
+def _without_provenance(blob):
+    """`blob` without its `provenance` key (a `listed_pay` object compared as the sweep parsed it), else `blob`."""
+    return {k: v for k, v in blob.items() if k != "provenance"} if isinstance(blob, dict) else blob
 
 
 def _sourcing_mutation(args, rec):
@@ -3578,37 +3669,7 @@ def _sourcing_mutation(args, rec):
         engine = _engine_version()
 
         def apply(r):
-            profile = _pf.load()
-            result = _pf.screen_rules(r, profile, load("opportunities"),
-                                      applications=_load_or_empty("applications"),
-                                      channels=_load_or_empty("channels"), today=on)
-            r["screen"] = {"on": on_iso, "verdict": result["verdict"],
-                           "rules": dict(result["rules"]), "engine": engine,
-                           "title_keys": _pf.title_keys(profile),
-                           # dev #739 / #740 (0.73.0, R2): the sibling hash of the comp inputs, so
-                           # a later decision or engagement edit makes this screen stale.
-                           "comp_keys": _pf.comp_keys(r, profile)}
-            if result.get("engagement_source"):
-                # dev #740 / public #160: the pay was routed on an engagement INFERRED from the
-                # title; the stored result says so, as it does for an inferred setting.
-                r["screen"]["engagement_source"] = result["engagement_source"]
-            if result.get("setting_source"):
-                # dev #727 / public #159: the role was screened as onsite on an INFERENCE; the
-                # stored result says so, so a later reader never mistakes it for a stated setting.
-                r["screen"]["setting_source"] = result["setting_source"]
-            # dev #722 / public #156 (R1, R2): a re-screen that finds the title BELOW the floor
-            # attaches the computed lean hit to a lean the run already recorded -- the hit only,
-            # never the choice (an explicit lean wins) -- and drops a title-floor hit the
-            # screen no longer supports. A role with no lean yet gets it from `lean`.
-            ln = r.get("lean")
-            if isinstance(ln, dict):
-                kept = [h for h in (ln.get("signals") or [])
-                        if not (isinstance(h, dict) and h.get("id") == _pf.TITLE_FLOOR_LEAN_ID)]
-                tf = _pf.title_floor_lean(r["screen"], profile)
-                if tf:
-                    kept.append(tf[2])
-                if kept != (ln.get("signals") or []):
-                    ln["signals"] = kept
+            _store_screen(r, on, engine)
         return "screened (the minimal screen, re-run and stored; on %s)" % on_iso, apply
 
     if op == "lean":
@@ -3732,6 +3793,1211 @@ def _sourcing_mutation(args, rec):
     def apply(r):
         r["posted"] = obj
     return "posted %s (%s)" % (obj["date"], obj["source"]), apply
+
+
+# ====================================================================================================================
+# jobsearch 0.82.0 (dev #820 / public #175; design-role-pipeline.md sections 3, 4, 8.1 and 17): THE ROLE PIPELINE'S VERBS
+#
+#   screen_inputs / _store_screen   the screen, with the inputs it was computed from (section 3.2)
+#   read-jd / read-failed           the ONLY writers of `jd_read` besides `read-batch --fetch` and the migration
+#   capture-batch                   the card -> role step, two phases, one write per store (section 4.1)
+#   read-batch --fetch              the script-first JD read (section 4.3)
+#   show                            the whole record, untruncated (section 7, SH1)
+# ====================================================================================================================
+
+JD_READ_OPS = ("read-jd", "read-failed")
+BATCH_OPS = ("capture-batch", "read-batch")
+CAPTURE_DEADLINE_S_DEFAULT = 120
+FETCH_DEADLINE_S_DEFAULT = 240
+EXIT_ITEM_REFUSED = 4                  # capture-batch: at least one item was refused (the others still landed)
+
+
+def _now():
+    """The clock every 0.82.0 verb reads, to the second. A seam: tests replace it."""
+    return datetime.datetime.now().replace(microsecond=0)
+
+
+def _has_read(row):
+    """True when `row` has a `read` attempt. A `jd_read` the parser refuses is not a read."""
+    try:
+        import jd_read as _jd
+        return _jd.is_read(row)
+    except ValueError:
+        return False
+
+
+def screen_inputs(row):
+    """`card` | `jd` | `candidate`, or None -- which inputs a screen of `row` is computed from (design section 3.2).
+    COMPUTED from the row, never passed: `card` when the location or the listed pay carries `provenance: card`;
+    else `candidate` when either carries `candidate`; else `jd`, but only when the role really has a `read` attempt
+    (provenance `jd` with no read cannot happen through a verb, and is not trusted as a JD-input screen if a
+    hand-edit makes it). None -- the screen stores no `inputs` -- when neither carries a provenance: a legacy row,
+    which `lifecycle` trusts only beside a `via: legacy` read."""
+    provs = []
+    for key in ("location", "listed_pay"):
+        blob = row.get(key) if isinstance(row, dict) else None
+        p = blob.get("provenance") if isinstance(blob, dict) else None
+        if p:
+            provs.append(p)
+    if not provs:
+        return None
+    if "card" in provs:
+        return "card"
+    if "candidate" in provs:
+        return "candidate"
+    return "jd" if _has_read(row) else "card"
+
+
+def _store_screen(r, on, engine, profile=None, all_opps=None, applications=None, channels=None):
+    """Compute and store `r["screen"]` (and keep the lean's title-floor hit honest). The one body of `record.py
+    screened`, `read-jd`, `read-batch` and `capture-batch`. `on` is a date, `engine` the plugin version. The lists
+    are loaded here only when the caller passed none -- a caller that screens many roles passes them, so each
+    store is read once per call. Returns the stored screen."""
+    import profile as _pf
+    profile = _pf.load() if profile is None else profile
+    all_opps = load("opportunities") if all_opps is None else all_opps
+    applications = _load_or_empty("applications") if applications is None else applications
+    channels = _load_or_empty("channels") if channels is None else channels
+    result = _pf.screen_rules(r, profile, all_opps, applications=applications, channels=channels, today=on)
+    r["screen"] = {"on": on.isoformat(), "verdict": result["verdict"],
+                   "rules": dict(result["rules"]), "engine": engine,
+                   "title_keys": _pf.title_keys(profile),
+                   # dev #739 / #740 (0.73.0, R2): the sibling hash of the comp inputs, so a later decision or
+                   # engagement edit makes this screen stale.
+                   "comp_keys": _pf.comp_keys(r, profile)}
+    inputs = screen_inputs(r)
+    if inputs:
+        r["screen"]["inputs"] = inputs                    # dev #820: which inputs this verdict stands on
+    if result.get("engagement_source"):
+        # dev #740 / public #160: the pay was routed on an engagement INFERRED from the title; the stored
+        # result says so, as it does for an inferred setting.
+        r["screen"]["engagement_source"] = result["engagement_source"]
+    if result.get("setting_source"):
+        # dev #727 / public #159: the role was screened as onsite on an INFERENCE; the stored result says so, so a
+        # later reader never mistakes it for a stated setting.
+        r["screen"]["setting_source"] = result["setting_source"]
+    # dev #722 / public #156 (R1, R2): a re-screen that finds the title BELOW the floor attaches the computed lean
+    # hit to a lean the run already recorded -- the hit only, never the choice (an explicit lean wins) -- and drops
+    # a title-floor hit the screen no longer supports. A role with no lean yet gets it from `lean`.
+    ln = r.get("lean")
+    if isinstance(ln, dict):
+        kept = [h for h in (ln.get("signals") or [])
+                if not (isinstance(h, dict) and h.get("id") == _pf.TITLE_FLOOR_LEAN_ID)]
+        tf = _pf.title_floor_lean(r["screen"], profile)
+        if tf:
+            kept.append(tf[2])
+        if kept != (ln.get("signals") or []):
+            ln["signals"] = kept
+    return r["screen"]
+
+
+def _default_lean(r, on_iso, profile=None, company=None):
+    """The lean `read-jd` stores when the role has none (design section 4.2, "writes the default lean when none is
+    stored"): the SAME defaults `record.py lean` falls back to when `--lean` is omitted -- an age-flagged recruiter
+    role asks (with the age line's first move), a title below the floor leans by pay -- computed from the stored
+    screen. None when neither applies: there is no JD text on the command line to match signals against, so no
+    lean is invented. An unreadable signal list stores NO lean (a lean stored with `signals: []` because the list
+    could not be read would claim nothing matched)."""
+    import profile as _pf
+    screen = r.get("screen")
+    profile = _pf.load() if profile is None else profile
+    first_move = _pf.age_flag_first_move(screen)
+    title_lean = _pf.title_floor_lean(screen, profile)
+    if first_move:
+        choice, line = "ask", "FIRST MOVE: %s" % first_move
+    elif title_lean:
+        choice, line = title_lean[0], title_lean[1]
+    else:
+        return None
+    try:
+        signals = (_pf.config().get("screen") or {}).get("likely_pass_signals")
+        hits = _pf.match_signals(r, company, "", signals or [])
+    except (OSError, ValueError):
+        return None
+    if title_lean:
+        hits = hits + [title_lean[2]]
+    return {"lean": choice, "line": line.strip(), "on": on_iso, "signals": hits}
+
+
+_SET_REMOTE = ("remote", "telecommut", "work from home", "work-from-home", "wfh", "work from anywhere")
+_SET_HYBRID = ("hybrid",)
+_SET_ONSITE = ("on-site", "onsite", "on site", "in-office", "in office", "in-person", "in person")
+
+
+def type_from_setting(declared, primary):
+    """`(location.type | None, inferred)` for a work-setting text read off a JD (OURS; the validator requires a
+    `location.type` beside any declared setting except `none stated`).
+
+      `none stated` at a concrete place (`places.parse_place` reads it) -> `("onsite", True)`: the 0.70.0 inference,
+        kept for a JD read -- the posting itself has been read, so the flag `setting_source: inferred` is honest.
+        With no readable place -> `(None, False)`; the screen asks.
+      a verbatim setting -> `remote`, `hybrid` or `onsite` by its words; `hybrid` with `remote` beside it, `remote`
+        with `onsite`, or no recognised word at all -> `unresolved` (the posting's wording is contested or unreadable;
+        `declared` keeps it verbatim, which is what the question to the employer is asked from). Never a guess."""
+    import places as _places
+    text = str(declared or "").casefold()
+    if text.strip() == "none stated":
+        return ("onsite", True) if _places.parse_place(primary) else (None, False)
+    remote = any(w in text for w in _SET_REMOTE)
+    hybrid = any(w in text for w in _SET_HYBRID)
+    onsite = any(w in text for w in _SET_ONSITE)
+    if hybrid:
+        return ("unresolved" if remote else "hybrid"), False
+    if remote and onsite:
+        return "unresolved", False
+    if remote:
+        return "remote", False
+    if onsite:
+        return "onsite", False
+    return "unresolved", False
+
+
+def _words(text):
+    """Words of three or more letters, case-folded, split on anything that is not a letter (N16)."""
+    return set(re.findall(r"[^\W\d_]{3,}", str(text or "").casefold()))
+
+
+def _evidence_names_role(quote, row, company):
+    """N16 (design section 17): a render read must quote its OWN role. True when the normalised quote shares at least
+    one word with the opportunity's title or its company's name. A page of another role (a wrong tab) shares none."""
+    names = _words(row.get("title")) | _words((company or {}).get("name")) | _words(row.get("company_id"))
+    return bool(_words(quote) & names)
+
+
+_VIA_PAY_SOURCE = {"fetch": "json-ld", "feed": "json-ld", "ats-api": "ats-api", "render": "listing-text",
+                   "candidate": "candidate"}
+
+
+def jd_pay(slot, via, on_iso, provenance):
+    """The `listed_pay` object a JD read stores, from the ROLE line's own pay grammar (`none` |
+    `stated:<range>[;<range>]` | `estimate:<range>[;<range>]`, parsed by `deferred.parse_pay_slot`, the one parser).
+    `?` is refused: a read states the pay or states there is none. The `source` is the form the figure took, by how
+    it was read; `provenance` says WHERE (`jd`, or `candidate`)."""
+    import deferred as _deferred
+    slot = str(slot or "").strip()
+    if not slot:
+        raise _Usage("--pay is required: none | stated:<min>-<max>/<yr|mo|day|hr>/<CUR> | estimate:<range>")
+    if slot == "?":
+        raise _Refused("--pay ? is a card's word. A read states the pay or states there is none: --pay none")
+    lp, why = _deferred.parse_pay_slot(slot)
+    if why:
+        raise _Refused(why)
+    if lp["state"] == "board-estimate":
+        source = "board-widget"
+    elif lp["state"] == "none-shown":
+        source = "candidate" if via == "candidate" else "listing-text"
+    else:
+        source = _VIA_PAY_SOURCE[via]
+    return dict(lp, source=source, captured_on=on_iso, provenance=provenance)
+
+
+def jd_location(old, setting, place, provenance):
+    """The `location` object a JD read stores. The JD wins over whatever was there (a card's place may be the
+    search's own echo), so the facts the card or the JD states -- `declared`, `primary`, `type`, `remote`, the
+    inference flags, `anchor_echo` -- are replaced; what a person added (a `note`, a `commute_minutes` for the SAME
+    place) is kept."""
+    old = old if isinstance(old, dict) else {}
+    replaced = ("primary", "declared", "type", "remote", "setting_source", "inference_overturned", "anchor_echo",
+                "provenance")
+    new = {k: v for k, v in old.items() if k not in replaced}
+    if "commute_minutes" in new and (old.get("primary") or None) != (place or None):
+        del new["commute_minutes"]                  # an estimate for a place this read no longer states
+    new["declared"] = setting
+    if place:
+        new["primary"] = place
+    typ, inferred = type_from_setting(setting, place)
+    if typ:
+        new["type"] = typ
+        new["remote"] = typ == "remote"
+    if inferred:
+        new["setting_source"] = "inferred"
+    new["provenance"] = provenance
+    return new
+
+
+JD_READ_USAGE = ("read-jd <opp> --run <id> --url <u|-> --via fetch|render|feed|ats-api|candidate "
+                 "--pay none|stated:<range>|estimate:<range> --setting \"<verbatim|none stated>\" "
+                 "--location \"<text|?>\" --evidence \"<1-200 characters>\" [--dry-run] [--already-locked]\n"
+                 "       read-failed <opp> --run <id> --url <u|-> --via fetch|render|feed|ats-api --outcome "
+                 "closed|dead-link|manual-board|no-url|login-wall|challenge|render-failed|surface-cannot-read|"
+                 "site-not-allowed --evidence \"<1-200 characters>\" [--dry-run] [--already-locked]")
+
+
+def _jd_read_common(args, rec):
+    """`(run, url, evidence, via)` after the checks `read-jd` and `read-failed` share. Raises `_Usage` / `_Refused`
+    before anything is written."""
+    import jd_read as _jd
+    import board_hosts as _bh
+    if args.rest:
+        raise _Usage("usage: " + JD_READ_USAGE)
+    if args.jd_file:
+        raise _Usage("%s takes no JD file (--jd-file): a page's text never crosses the command line, and a hash of a "
+                     "file proves only that a file existed. Record what the posting states in --pay, --setting, "
+                     "--location and a short --evidence quote\nusage: %s" % (args.op, JD_READ_USAGE))
+    run = (args.run_id_arg or "").strip()
+    if not run or re.search(r"\s", run):
+        raise _Usage("--run <run id> is required (the run that made this read; no whitespace)\nusage: " + JD_READ_USAGE)
+    via = args.via_medium
+    legal = _jd.VIAS if args.op == "read-jd" else tuple(v for v in _jd.VIAS if v != "candidate")
+    if via not in legal:
+        raise _Usage("--via must be one of %s for %s (got %r)\nusage: %s"
+                     % (", ".join(legal), args.op, via, JD_READ_USAGE))
+    raw_url = (args.listing_url or "").strip()
+    if not raw_url:
+        raise _Usage("--url <the address read, or -> is required\nusage: " + JD_READ_USAGE)
+    url = None if raw_url == "-" else raw_url
+    if url is not None and _bh.host_of(url) is None:
+        raise _Refused("--url must be an http(s) address with a host, or - (got %r)" % raw_url)
+    if url is None and via != "candidate" and args.op == "read-jd":
+        raise _Refused("--url - is only for a candidate read: a read of a posting names the address it read")
+    evidence = (args.evidence_text or "").strip()
+    if not evidence:
+        raise _Usage("--evidence is required: 1-200 characters\nusage: " + JD_READ_USAGE)
+    if len(evidence) > _jd.EVIDENCE_CAP:
+        raise _Refused("--evidence is %d characters; the cap is %d (shorten it -- it is never truncated for you)"
+                       % (len(evidence), _jd.EVIDENCE_CAP))
+    if url is not None and via != "candidate" and args.op == "read-jd":
+        blocked = _bh.blocked_channel(url, _load_or_empty("channels"))
+        if blocked is not None:
+            raise _Refused("--url %r is on the manual-candidate board %s (host %s), which the engine never opens "
+                           "(ADR-037): record `read-failed --outcome manual-board` instead, or `read-jd --via "
+                           "candidate` with what the candidate read" % (url, blocked.get("id"), _bh.host_of(url)))
+    return run, url, evidence, via
+
+
+def _jd_read_mutation(args, rec):
+    """`(desc, apply)` for `read-jd` and `read-failed` against the opportunity `rec` (dev #820 / public #175; design
+    section 4.2). `apply(row)` runs under the lock on the row as re-read there. BOTH append ONE attempt built by
+    `jd_read.make_attempt` (the one constructor: an unknown outcome, empty evidence or a bad `at` is refused by the
+    parser, not by this code). Raises `_Refused` / `_Usage` before anything is written.
+
+    `read-jd` also REPLACES `location` and `listed_pay` with what the JD says (`provenance: jd`, or `candidate`
+    under `--via candidate`, the replaced values kept in `evidence.replaced`), except a value the CANDIDATE wrote,
+    which only the candidate replaces; it re-runs the screen (so `screen.inputs` follows the new provenance), and
+    stores the default lean when the role has none. `read-failed` changes nothing but the attempt."""
+    import jd_read as _jd
+    run, url, evidence, via = _jd_read_common(args, rec)
+    company = next((c for c in _load_or_empty("companies") if c.get("id") == rec.get("company_id")), None)
+    at = _now()
+    on = at.date()
+    at_iso = at.isoformat()
+
+    def append_attempt(r, attempt):
+        try:
+            existing = _jd.attempts(r)
+        except _jd.JdReadError as e:
+            raise KeyError("the stored jd_read cannot be read (%s); nothing was written" % e)
+        r["jd_read"] = {"attempts": [dict(a) for a in existing] + [attempt]}
+
+    if args.op == "read-failed":
+        outcome = (args.outcome_arg or "").strip()
+        failed = tuple(o for o in _jd.OUTCOMES if o != _jd.READ)
+        if outcome == _jd.READ:
+            raise _Refused("--outcome read is `record.py read-jd`'s: a read states pay, setting and location")
+        if outcome not in failed:
+            raise _Usage("--outcome must be one of %s (got %r)\nusage: %s"
+                         % (", ".join(failed), outcome or None, JD_READ_USAGE))
+        try:
+            attempt = _jd.make_attempt(at_iso, run, url, via, outcome, {"text": evidence})
+        except _jd.JdReadError as e:
+            raise _Refused(str(e))
+
+        def apply_failed(r):
+            append_attempt(r, dict(attempt))
+        return ("read-failed via %s: %s (%s)" % (via, outcome, _jd.outcome_class(outcome))), apply_failed
+
+    # ---- read-jd ----
+    if via != "candidate" and not _evidence_names_role(evidence, rec, company):
+        raise _Usage("evidence does not name this role: the quote shares no word of three or more letters with "
+                     "the title %r or the company %r. A wrong tab is not a read -- record `read-failed --outcome "
+                     "render-failed --evidence \"quote did not match the role\"`"
+                     % (rec.get("title"), (company or {}).get("name") or rec.get("company_id")))
+    provenance = "candidate" if via == "candidate" else "jd"
+    pay = jd_pay(args.pay_slot, via, on.isoformat(), provenance)
+    setting = (args.setting_text or "").strip()
+    if setting == "?":
+        raise _Refused("--setting ? is a card's word: a read states the setting, or `none stated`")
+    if not setting or "\n" in setting:
+        raise _Usage("--setting is required: the posting's own work-setting text on one line, or the literal "
+                     "`none stated`\nusage: " + JD_READ_USAGE)
+    if len(setting) > 200:
+        raise _Refused("--setting is %d characters; the cap is 200 (never truncated for you)" % len(setting))
+    place = (args.location_text or "").strip()
+    if not place:
+        raise _Usage("--location is required: the posting's place text, or ? when it states none\nusage: "
+                     + JD_READ_USAGE)
+    if place == "?":
+        place = None
+    elif "\n" in place or len(place) > 200:
+        raise _Refused("--location is one line of at most 200 characters")
+    engine = _engine_version()
+
+    def apply_read(r):
+        _apply_read(r, run=run, url=url, via=via, evidence={"quote": evidence}, pay=pay, setting=setting,
+                    place=place, at_iso=at_iso, on=on, engine=engine, profile=_profile_mod().load(),
+                    company=company)
+
+    return ("read-jd via %s: location and listed_pay re-read from the posting (provenance %s), screen re-run"
+            % (via, provenance)), apply_read
+
+
+def _stage_line(opp_id):
+    """`stage: <name>` (with the failure cause) for one stored role, from `lifecycle` -- the only function that says
+    where a role is. A snapshot that cannot be read prints `NOT CHECKED`, never a guess."""
+    try:
+        import lifecycle as _lc
+        data = _lc.load_data(ROOT)
+        opp = next((o for o in data["opportunities"] if o.get("id") == opp_id), None)
+        if opp is None:
+            return "stage: NOT CHECKED (no such role in the snapshot)"
+        st = _lc.stage(opp, _lc.context(data, _now()))
+    except Exception as e:                                   # noqa: BLE001 -- an advisory line; the write landed
+        return "stage: NOT CHECKED (%s)" % " ".join(str(e).split())[:200]
+    text = "stage: %s" % st.name
+    if st.failure:
+        text += " (FAILURE %s%s)" % (st.cause, (" %s" % st.detail) if st.detail else "")
+    elif st.cause:
+        text += " (%s)" % st.cause
+    return text
+
+
+# ---- capture-batch: the card -> role step (design section 4.1, 17 N6, N7, N17) ----------------------------------------
+#
+# `record.py capture-batch --run <id> --link-only | --admitted [--deadline-s N] [--check] [--already-locked]`
+#
+#   --link-only   before intake, over EVERY open `capture-role` item (quarantined included): an item that is a sighting
+#                 of a known role is linked (its listings join the row; `linked` when the address was already known,
+#                 `folded` when it is another listing of the same company + title) and closed `linked:<opp>`. Those items
+#                 are sightings of known roles, not new roles, so they never consume intake.
+#   --admitted    after `lifecycle.py --drain-plan`: for each role the run's `drain planned` event admitted, create it from
+#                 its OLDEST item (company matched or made, `provenance: card`, `capture: {run, at, item, unverified?}`),
+#                 close that item `created:<opp>` and every SIBLING item (same `lifecycle.role_key`) `linked:<opp>`, and
+#                 store the provisional screen.
+#
+# Bounded time and ONE write: each store is loaded once per call and written once with the atomic replace (companies,
+# then opportunities); the queue is append-only, so the closes follow. A kill BEFORE the first replace leaves every store
+# as it was; a kill BETWEEN replaces leaves a state the rerun completes without a duplicate (an item whose role already
+# carries `capture.item == <its id>` is closed `created:` and never made twice). `--deadline-s` stops BETWEEN roles, writes
+# what is done, and releases the lock in a `finally`; an admitted item it did not reach is journaled in `pass capture done
+# unreached=[...]`, which `lifecycle.drain_close` turns into the cause `deadline-reached`. A per-item fault refuses that
+# role only: the item stays open, a `jobsearch:capture-item:<id>` gap is filed, and `drain_close` gives `capture-refused`.
+
+CAPTURE_USAGE = ("capture-batch --run <id> --link-only | --admitted [--deadline-s N] [--check] [--already-locked]")
+
+
+class _ItemRefused(Exception):
+    """One capture item (or the role it belongs to) is refused: the others still land."""
+
+
+def _row_checks(op, before, after, posting_ok=False, jd_read_ok=False):
+    """The introduced-only rules AND `verb_owned_refusal` for one row of a batch write (`capture-batch`, `read-batch`):
+    `before` is the row as it stood (None for a created one). The writer tokens are held only for the field the verb
+    owns -- a capture of a company-feed item writes `employer_posting` (`posting_ok`), `read-batch` writes `jd_read`
+    (`jd_read_ok`) -- so the same call refuses either field changed by anything else. The one call site of both checks
+    for every batch verb, so a new batch write cannot reach a store without them."""
+    with _posting_writer(posting_ok), _jd_read_writer(jd_read_ok):
+        return (introduced_row_violations("opportunities", before, after)
+                + verb_owned_refusal(op, "opportunities", before, after))
+
+
+def _item_listings(item):
+    """`[(url, location | None)]` the item is listed at: its address, then each sibling listing."""
+    role = item.get("role") if isinstance(item.get("role"), dict) else {}
+    out = []
+    ref = item.get("ref")
+    if isinstance(ref, str) and ref.strip():
+        loc = role.get("location_listed")
+        out.append((ref.strip(), loc if isinstance(loc, str) and loc.strip() else None))
+    for s in item.get("siblings") or []:
+        if isinstance(s, dict) and isinstance(s.get("url"), str) and s["url"].strip():
+            loc = s.get("location")
+            out.append((s["url"].strip(), loc if isinstance(loc, str) and loc.strip() else None))
+    return out
+
+
+def _item_seen_on(item):
+    raw = str(item.get("queued_at") or "")[:10]
+    try:
+        return datetime.date.fromisoformat(raw).isoformat()
+    except ValueError:
+        return _now().date().isoformat()
+
+
+def _item_channel(item, channels, row=None):
+    """The channel a capture item's sighting is attributed to, or None. In order: the channel the item itself names (a
+    company-feed item, dev #751); the role's own (when it is linked to a row); the one `board_hosts` names for the item's
+    address; the ONE job-board or aggregator channel the profile holds, if it holds exactly one. Never a guess beyond
+    that: a profile with several boards and an item that names none is REFUSED (`capture-refused`), not attributed."""
+    import board_hosts as _bh
+    if item.get("channel_id"):
+        return item["channel_id"]
+    if row is not None:
+        ch = row.get("channel_id") or next((s.get("channel_id") for s in (row.get("sightings") or [])
+                                            if isinstance(s, dict) and s.get("channel_id")), None)
+        if ch:
+            return ch
+    host = _bh.host_of(item.get("ref"))
+    if host:
+        for c in channels:
+            hosts = c.get("board_hosts") if isinstance(c, dict) else None
+            if isinstance(hosts, list) and any(_bh.host_matches(host, h) for h in hosts if isinstance(h, str)):
+                return c.get("id")
+    boards = [c.get("id") for c in channels if isinstance(c, dict)
+              and c.get("type") in _validator_module().URL_BEARING_CHANNEL_TYPES
+              and c.get("relationship_status") != "retired"]
+    return boards[0] if len(boards) == 1 else None
+
+
+def _run_planned_items(recs, run):
+    """The item ids the run's own `drain planned` event admitted, or None when the run has no plan."""
+    planned = None
+    for r in recs:
+        if (r.get("event") == "drain" and r.get("phase") == "planned" and r.get("run_id") == run
+                and not r.get("on_behalf_of")):
+            planned = r
+    if planned is None:
+        return None
+    adm = planned.get("admitted") or {}
+    return set(adm.get("items") or [])
+
+
+def _capture_code_list(item):
+    """`capture.unverified` for an item: the distinct degraded codes it was quarantined for, else None."""
+    q = item.get("quarantine")
+    if not q:
+        return None
+    codes = []
+    for c in (q.get("because") if isinstance(q, dict) else None) or []:
+        if c in _validator_module().CAPTURE_UNVERIFIED_CODES and c not in codes:
+            codes.append(c)
+    if not codes:
+        raise _ItemRefused("the item is quarantined but names no degraded code the capture record can carry")
+    return codes
+
+
+def _same_listing(url, row):
+    import pipeline_index as _pidx
+    have = [row.get("jd_url")] + [s.get("source_url") for s in (row.get("sightings") or [])
+                                  if isinstance(s, dict) and not s.get("split_to")]
+    return any(h and _pidx._urls_equal(url, h) for h in have)
+
+
+def cmd_capture_batch(args):
+    """`record.py capture-batch` -- see the section comment above. Exit 0 when every item was landed or is waiting (a
+    deadline is not a fault: run it again), 4 when any item was refused (the others still landed), 1 when a store could
+    not be read or the write was rolled back, 2 on usage."""
+    import time
+    if args.rid or args.rest:
+        print("usage: " + CAPTURE_USAGE)
+        return 2
+    run = (args.run_id_arg or "").strip()
+    if not run or re.search(r"\s", run):
+        print("⛔ REFUSED — --run <run id> is required (no whitespace).\nusage: " + CAPTURE_USAGE)
+        return 2
+    if bool(args.link_only) == bool(args.admitted):
+        print("⛔ REFUSED — exactly one of --link-only and --admitted.\nusage: " + CAPTURE_USAGE)
+        return 2
+    deadline_s = CAPTURE_DEADLINE_S_DEFAULT if args.deadline_s is None else args.deadline_s
+    if deadline_s < 0:
+        print("⛔ REFUSED — --deadline-s must be 0 or more.")
+        return 2
+    check = bool(args.check or args.dry_run)
+    phase = "admitted" if args.admitted else "link-only"
+    t0 = time.monotonic()
+
+    if not check:
+        if args.already_locked:
+            if not lock_is_held():
+                print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
+                return 1
+        else:
+            try:
+                take_lock("record.py capture-batch --run %s --%s" % (run, phase), wait=args.wait)
+            except LockError as e:
+                print("  REFUSED — %s" % e)
+                return 1
+    try:
+        import deferred as _deferred
+        import journal as _journal
+        try:
+            # the stores are read HERE, inside the lock (once each), and handed down: nothing below reads a store again
+            stores = {"opps": load("opportunities"), "companies": load("companies"),
+                      "apps": _load_or_empty("applications"), "channels": _load_or_empty("channels"),
+                      "items": _deferred.replay(_deferred.load()), "recs": _journal.read(ROOT),
+                      "profile": _profile_mod().load()}
+        except (OSError, ValueError, _journal.JournalError) as e:
+            print("⛔ REFUSED — a store cannot be read (%s); nothing written." % e)
+            return 1
+        return _capture_batch_locked(args, run, phase, deadline_s, check, t0, stores)
+    finally:
+        if not check and not args.already_locked:
+            release_lock()
+
+
+def _capture_batch_locked(args, run, phase, deadline_s, check, t0, stores):
+    import time
+    import deferred as _deferred
+    import journal as _journal
+    import lifecycle as _lc
+    import pipeline_index as _pidx
+    import profile as _pf
+    opps, companies = stores["opps"], stores["companies"]
+    applications, channels = stores["apps"], stores["channels"]
+    items, recs, profile = stores["items"], stores["recs"], stores["profile"]
+    open_items = sorted((i for i in items if i.get("kind") == _deferred.KIND_CAPTURE and i.get("status") == "pending"),
+                        key=lambda i: (str(i.get("queued_at") or ""), str(i.get("id"))))
+    admitted = None
+    if phase == "admitted":
+        admitted = _run_planned_items(recs, run)
+        if admitted is None:
+            print("⛔ REFUSED — run %r has no `drain planned` event: run `lifecycle.py --drain-plan --run %s "
+                  "--render-route yes|no` first (it decides which roles this run admits); nothing written."
+                  % (run, run))
+            return 1
+    idx = _lc.RoleIndex(opps, companies)
+    opps_by_id = {o.get("id"): o for o in opps}
+    created_by_item = {o["capture"]["item"]: o for o in opps
+                       if isinstance(o.get("capture"), dict) and o["capture"].get("item")}
+    keys = {i["id"]: idx.key(i) for i in open_items}
+    considered = [i for i in open_items if phase == "link-only" or i["id"] in admitted]
+    engine, now = _engine_version(), _now()
+    on, at_iso = now.date(), now.isoformat()
+    owner = _pf.owner_token()
+    plan_cache = []
+
+    state = {"created": 0, "linked": 0, "folded": 0, "refused": 0, "nearer": 0, "unverified": 0}
+    closes = []                                    # [(item id, closed_as)]
+    refused_ids = []                               # item ids a gap is filed for
+    reasons = {}
+    changed_before = {}                            # opp id -> deepcopy before this call touched it
+    new_companies, new_opps = [], []
+    skipped = []
+
+    def refuse(item_ids, why):
+        state["refused"] += len(item_ids)
+        for iid in item_ids:
+            refused_ids.append(iid)
+            reasons[iid] = why
+        print("REFUSED %s: %s" % (", ".join(item_ids), why))
+
+    def touch(row):
+        changed_before.setdefault(row["id"], json.loads(json.dumps(row)))
+
+    def link(item, row):
+        """Join `item`'s listings onto `row`; close it. Returns 'linked' | 'folded' | 'nearer'."""
+        kind = "excluded" if _pidx.is_excluded(row) else "active"
+        listings = _item_listings(item)
+        basis = "url" if any(_same_listing(u, row) for u, _l in listings) else "company + title"
+        if kind == "excluded" and basis != "url":
+            try:
+                nearer, place, st = _pf.nearer_listing(_pidx.listing_places(row), [l for _u, l in listings if l],
+                                                        profile)
+            except (OSError, ValueError, KeyError):
+                nearer, place, st = False, None, None
+            if nearer:
+                print("NEARER LISTING of passed %s: %s (%s) -- %s stays open, a fresh decision" %
+                      (row["id"], place, st, item["id"]))
+                return "nearer"
+        todo = [(u, l) for u, l in listings if not _same_listing(u, row)]
+        if todo:
+            channel = _item_channel(item, channels, row)
+            if not channel:
+                raise _ItemRefused("no channel can be named for the sighting of %s: the item names none, its "
+                                   "address is on no channel's board_hosts, and the profile holds several boards"
+                                   % item["id"])
+            touch(row)
+            seen_on = _item_seen_on(item)
+            have = set()
+            for u, l in todo:
+                if u in have:
+                    continue
+                have.add(u)
+                sg = {"channel_id": channel, "seen_on": seen_on, "source_url": u}
+                if l:
+                    sg["location"] = l
+                row.setdefault("sightings", []).append(sg)
+        owned = isinstance(row.get("capture"), dict) and row["capture"].get("item") == item["id"]
+        closes.append((item["id"], ("created:%s" if owned else "linked:%s") % row["id"]))
+        if owned:
+            return "created"
+        return "linked" if basis == "url" else "folded"
+
+    def plan_id_for_new():
+        if not plan_cache:
+            plan_cache.append(_new_opportunity_plan(None))
+        plan_id, err = plan_cache[0]
+        if not plan_id:
+            raise _ItemRefused(err or "no active search plan sources role/contract, so a new role has no plan_id")
+        return plan_id
+
+    def create(group):
+        """Create the role of a group of sibling items (oldest first); returns the new row."""
+        item = group[0]
+        company_name, title = _lc.item_company_title(item)
+        if not (company_name and title):
+            raise _ItemRefused("the item's text names no company and title (%r)" % str(item.get("what"))[:80])
+        listings = _item_listings(item)
+        if not listings:
+            raise _ItemRefused("the item carries no address")
+        channel = _item_channel(item, channels)
+        if not channel:
+            raise _ItemRefused("no channel can be named for the sighting: the item names none, its address is on no "
+                               "channel's board_hosts, and the profile holds several boards (create it by hand: "
+                               "`record.py create <id> '<json>' --from-item %s`)" % item["id"])
+        unverified = _capture_code_list(item)
+        plan_id = plan_id_for_new()
+        hits = _pidx.company_candidates(company_name, companies)
+        if len(hits) > 1:
+            raise _ItemRefused("the company %r matches %d companies (%s); name the right one by hand"
+                               % (company_name, len(hits), ", ".join(hits)))
+        new_company = None
+        if hits:
+            company_id = hits[0]
+        else:
+            company_id = _slug(company_name)
+            if not company_id:
+                raise _ItemRefused("the company %r has no letters or digits to make an id from" % company_name)
+            taken_c = {c.get("id") for c in companies}
+            base_c, n = company_id, 1
+            while company_id in taken_c:
+                n += 1
+                company_id = "%s-%d" % (base_c, n)
+            new_company = {"id": company_id, "name": company_name.strip(), "vertical": "other",
+                           "status": "watching", "research_log": []}
+        taken = {o.get("id") for o in opps}
+        base = _slug("%s-%s" % (company_id, title)) or _slug(company_id) or "role"
+        opp_id, n = base, 1
+        while opp_id in taken:
+            n += 1
+            opp_id = "%s-%d" % (base, n)
+        seen_on = _item_seen_on(item)
+        sightings = []
+        for pos, (u, l) in enumerate(listings):
+            sg = {"channel_id": channel, "seen_on": seen_on, "source_url": u}
+            if pos and l:
+                sg["location"] = l
+            sightings.append(sg)
+        for sib in group[1:]:                                   # the siblings' listings join the same role
+            for u, l in _item_listings(sib):
+                if not any(_pidx._urls_equal(u, s["source_url"]) for s in sightings):
+                    sg = {"channel_id": channel, "seen_on": _item_seen_on(sib), "source_url": u}
+                    if l:
+                        sg["location"] = l
+                    sightings.append(sg)
+        new_row = {"id": opp_id, "company_id": company_id, "title": title, "status": "backlog", "stage": "sourced",
+                   "verdict": "undecided", "jd_url": listings[0][0], "location": {}, "sightings": sightings,
+                   "next_action_owner": owner, "plan_id": plan_id, "plan_assigned_on": on.isoformat()}
+        _copied, err = copy_capture_item_facts(new_row, item["id"], rid=opp_id, item=item, profile=profile)
+        if err:
+            raise _ItemRefused(err)
+        loc = new_row.get("location") if isinstance(new_row.get("location"), dict) else {}
+        loc = dict(loc)
+        loc.setdefault("declared", "none stated")             # a card that read no setting states none
+        loc.setdefault("provenance", "card")
+        if "type" not in loc and loc["declared"] != "none stated":
+            loc["type"] = type_from_setting(loc["declared"], loc.get("primary"))[0] or "unresolved"
+            loc["remote"] = loc["type"] == "remote"
+        new_row["location"] = loc
+        cap = {"run": run, "at": at_iso, "item": item["id"]}
+        if unverified:
+            cap["unverified"] = unverified
+        new_row["capture"] = cap
+        feed_written = False
+        if str(item.get("source") or "").startswith("feed:"):
+            try:
+                value, ferr = _feed_posting_value(item, new_row, on, channels=channels)
+            except _Refused as e:
+                raise _ItemRefused(str(e))
+            if ferr:
+                raise _ItemRefused(ferr)
+            if value is not None:
+                new_row[_POSTING_FIELD] = value
+                feed_written = True
+        # the new row is in the lists before it is screened and checked, and OUT of them again if either refuses
+        if new_company is not None:
+            companies.append(new_company)
+        opps.append(new_row)
+        try:
+            _store_screen(new_row, on, engine, profile=profile, all_opps=opps, applications=applications,
+                          channels=channels)
+            bad = _row_checks("capture-batch", None, new_row, posting_ok=feed_written)
+            if bad:
+                raise _ItemRefused("; ".join(bad))
+        except BaseException:
+            opps.remove(new_row)
+            if new_company is not None:
+                companies.remove(new_company)
+            raise
+        if new_company is not None:
+            new_companies.append(new_company)
+        new_opps.append(new_row)
+        opps_by_id[opp_id] = new_row
+        if unverified:
+            state["unverified"] += 1
+        return new_row
+
+    # ---- walk the items: units are a role's items (new roles, grouped by key) or one item (a known role) ----
+    groups = []
+    seen_groups = {}
+    for item in considered:
+        iid = item["id"]
+        if iid in created_by_item:                              # a rerun after a kill between the stores
+            row = created_by_item[iid]
+            closes.append((iid, "created:%s" % row["id"]))
+            state["created"] += 1
+            continue
+        k = keys[iid]
+        if k in opps_by_id and not k.startswith("item:"):
+            groups.append(("known", opps_by_id[k], [item]))
+        elif phase == "admitted":
+            if k not in seen_groups:
+                members = [i for i in open_items if keys[i["id"]] == k and i["id"] not in created_by_item]
+                seen_groups[k] = ("new", None, members)
+                groups.append(seen_groups[k])
+    for kind, row, members in groups:
+        if time.monotonic() - t0 >= deadline_s:
+            skipped += [i["id"] for i in members]            # between roles, never inside one
+            continue
+        ids = [i["id"] for i in members]
+        before_opps, before_cos, n_changed = len(new_opps), len(new_companies), len(changed_before)
+        mark = len(closes)
+        try:
+            if kind == "known":
+                res = link(members[0], row)
+                if res == "nearer":
+                    state["nearer"] += 1
+                else:
+                    state[res] += 1
+            else:
+                new_row = create(members)
+                closes.append((members[0]["id"], "created:%s" % new_row["id"]))
+                for sib in members[1:]:
+                    closes.append((sib["id"], "linked:%s" % new_row["id"]))
+                state["created"] += 1
+                print("CREATED %s from %s%s" % (new_row["id"], members[0]["id"],
+                                                (" (+%d sibling item(s))" % (len(members) - 1)) if len(members) > 1
+                                                else ""))
+        except _ItemRefused as e:
+            del closes[mark:]
+            refuse(ids, str(e))
+        except (KeyError, ValueError, OSError) as e:
+            del closes[mark:]
+            refuse(ids, "%s: %s" % (type(e).__name__, " ".join(str(e).split())[:200]))
+    closed_ids = {iid for iid, _c in closes}
+    remaining = [i for i in open_items if i["id"] not in closed_ids]
+    waiting_roles = len({keys[i["id"]] for i in remaining})
+    nconsidered = len(considered)
+    deadline_left = len(skipped)
+    unreached = [i for i in skipped if admitted is not None and i in admitted]
+
+    # ---- nothing written under --check; otherwise: validate, write once per store, then the append-only records ----
+    rc = 0
+    if check:
+        if new_opps or changed_before:
+            rc_v, out_v, err_v, problems = dry_run_validate("opportunities", opps, extra={"companies": companies})
+            pre = validate()[3]
+            added = new_problems(pre, problems) if rc_v != 0 else []
+            if rc_v != 0 and (added is None or added):
+                print("  ⛔ a REAL (non-dry-run) write of this would be REFUSED and rolled back.")
+                print("  " + "\n  ".join(added if added else _diagnostic_lines(rc_v, out_v, err_v)))
+                return 1
+        print("  --check: nothing written.")
+    else:
+        if new_opps or changed_before:
+            for oid, before in changed_before.items():
+                bad = _row_checks("capture-batch", before, opps_by_id[oid])
+                if bad:
+                    print("⛔ REFUSED — %s: %s (nothing written)" % (oid, "; ".join(bad)))
+                    return 1
+            snap_o, snap_c = snapshot("opportunities"), snapshot("companies")
+            pre_problems = validate()[3]
+            if new_companies:
+                save_atomic("companies", companies)
+            save_atomic("opportunities", opps)
+            rc_v, out_v, err_v, post_problems = validate()
+            added = new_problems(pre_problems, post_problems)
+            if rc_v != 0 and (added is None or added):
+                ok_o = restore("opportunities", snap_o)
+                ok_c = restore("companies", snap_c) if new_companies else True
+                print("⛔ the write left the stores invalid and was %s."
+                      % ("ROLLED BACK (byte-identical)" if ok_o and ok_c
+                         else "NOT VERIFIABLY ROLLED BACK -- restore companies.jsonl and opportunities.jsonl "
+                              "from git"))
+                print("  " + "\n  ".join(added if added else _diagnostic_lines(rc_v, out_v, err_v)))
+                return 1
+        for iid, closed_as in closes:
+            _deferred.close_item(iid, closed_as)
+        open_scopes = {g.get("scope") for g in _journal.open_gaps(recs, run)}
+        for iid in refused_ids:
+            scope = "jobsearch:capture-item:%s" % iid
+            if scope in open_scopes:
+                continue
+            try:
+                _journal.record_gap(ROOT, run, scope, "other", closes_when="captured")
+            except _journal.JournalError as e:
+                print("⚠️ could not journal the gap %s (%s)" % (scope, e))
+                rc = 1
+        if phase == "admitted":
+            try:
+                _journal.record_pass(ROOT, run, "capture", "done", unreached=sorted(unreached))
+            except _journal.JournalError as e:
+                print("⚠️ could not journal `pass capture done` (%s): drain-close cannot name a deadline-reached "
+                      "role without it" % e)
+                rc = 1
+    import handback as _handback
+    if state["refused"]:
+        verdict = _handback.verdict_line("line-faults", state["refused"],
+                                         len(unreached) if unreached else None)
+    elif deadline_left:
+        verdict = _handback.verdict_line("incomplete", detail=deadline_left)
+    else:
+        verdict = _handback.verdict_line("clean")
+    print(verdict)
+    print("capture-batch: %d items -> %d created · %d linked · %d folded · %d refused · %d waiting · "
+          "%d unverified-source%s · %d deadline-left"
+          % (nconsidered, state["created"], state["linked"], state["folded"], state["refused"], waiting_roles,
+             state["unverified"], (" · %d nearer" % state["nearer"]) if state["nearer"] else "", deadline_left))
+    print("deadline-left %d" % deadline_left)
+    if rc:
+        return rc
+    return EXIT_ITEM_REFUSED if state["refused"] else 0
+
+
+# ---- read-batch --fetch: the script-first JD read (design section 4.3, 17 N7) -----------------------------------------
+#
+# `record.py read-batch --run <id> --fetch [--deadline-s N] [--check] [--already-locked]`
+#
+# For every role THIS run admitted (its own `drain planned` event: the opportunity ids, and the roles made from the
+# admitted capture items) that is at progress stage `captured` or `reading`, oldest first, within `--deadline-s`:
+#   1. the address `board_hosts.jd_read_plan` gives; none -> `read-failed --outcome manual-board` (every address is on a
+#      manual-candidate board) or `no-url`, which settles the role to `your-read`;
+#   2. one GET, with the feed poller's politeness (`feed_poll.MIN_INTERVAL_S` per host, `RETRY_AFTER_CAP_S` on a 429/503);
+#   3. `feed_poll.parse_jobposting`: pay, setting and place all derivable -> a `read` attempt `via fetch` (evidence: the
+#      sha1 and length of the body fetched HERE, never a model's word); `expired` -> `closed`; 404/410 -> `dead-link`;
+#      401/403 -> `login-wall` (the status line as evidence); anything else -> NO attempt, and the role is in the render
+#      RESIDUE, which `jd-reader` takes. A role the deadline did not reach is in the residue as `fetch-unreached`.
+# It also re-screens every admitted role at progress stage `read` (read, but its screen is absent or stale), which needs no
+# fetch. The network is touched BEFORE the lock is taken; the lock is held only for the one write of the opportunities
+# store, which re-reads the rows and applies each result only to a role that is still unread.
+
+READ_BATCH_USAGE = "read-batch --run <id> --fetch [--deadline-s N] [--check] [--already-locked]"
+
+# Seams (tests replace them; the shipped verb never does): `_FETCH(url) -> (status, headers, body)` stands in for the
+# network, `_CLOCK` (an object with `now()` and `sleep(s)`) for the wall clock and the politeness sleeps.
+_FETCH = None
+_CLOCK = None
+
+
+def _fetch_clock():
+    if _CLOCK is not None:
+        return _CLOCK
+    import feed_poll as _fp
+    return _fp.RealClock()
+
+
+def _polite_get(url, last_by_host, clock):
+    """`(status, headers, body)` for one GET of a job page, with the feed poller's politeness. Raises
+    `feed_poll.FetchError` on a transport failure."""
+    import feed_poll as _fp
+    import board_hosts as _bh
+    host = _bh.host_of(url)
+
+    def one():
+        if host in last_by_host:
+            wait = _fp.MIN_INTERVAL_S - (clock.now() - last_by_host[host])
+            if wait > 0:
+                clock.sleep(wait)
+        last_by_host[host] = clock.now()
+        if _FETCH is not None:
+            return _FETCH(url)
+        r = _fp.default_fetch(_fp.Request("GET", url, {"User-Agent": _fp.USER_AGENT}, _fp.TIMEOUT_S))
+        return r.status, r.headers, r.body
+
+    status, headers, body = one()
+    if status in (429, 503):
+        ra = _fp.parse_retry_after((headers or {}).get("retry-after"))
+        if ra is not None:
+            clock.sleep(min(ra, _fp.RETRY_AFTER_CAP_S))
+            status, headers, body = one()
+    return status, headers, body
+
+
+def _fetch_one(row, company, channels, run_date, last_by_host, clock):
+    """What one fetch of one role decided: `("read", {...})`, `("failed", {outcome, text, url})` or `("residue",
+    reason)`. No store is touched."""
+    import feed_poll as _fp
+    import board_hosts as _bh
+    plan = _bh.jd_read_plan(row, channels)
+    if plan["url"] is None:
+        if plan["blocked"]:
+            b = plan["blocked"][0]
+            return "failed", {"outcome": "manual-board", "url": b["url"],
+                              "text": "every address is on the manual-candidate board %s (host %s): not opened"
+                                      % (b["channel_id"], b["host"])}
+        return "failed", {"outcome": "no-url", "url": None, "text": "the role carries no address to read"}
+    url = plan["url"]
+    try:
+        status, headers, body = _polite_get(url, last_by_host, clock)
+    except _fp.FetchError as e:
+        return "residue", "fetch-error (%s)" % e.code
+    if status in (404, 410):
+        return "failed", {"outcome": "dead-link", "url": url, "text": "HTTP %d" % status}
+    if status in (401, 403):
+        return "failed", {"outcome": "login-wall", "url": url, "text": "HTTP %d" % status}
+    if status != 200:
+        return "residue", "http-%d" % status
+    try:
+        parsed = _fp.parse_jobposting(body, url, run_date)
+    except _fp.PageRefusal as e:
+        return "residue", "unparseable (%s)" % e.code
+    if parsed["expired"]:
+        return "failed", {"outcome": "closed", "url": url, "text": "the posting's validThrough is in the past"}
+    posting = parsed["posting"]
+    if not (_words(posting["title"]) & (_words(row.get("title")) | _words((company or {}).get("name"))
+                                        | _words(row.get("company_id")))):
+        return "residue", "wrong-page (the posting's title shares no word with the role)"
+    if posting["pay"] == "?" or posting["setting"] == "?":
+        return "residue", "insufficient (%s not derivable)" % ("pay" if posting["pay"] == "?" else "setting")
+    import hashlib
+    return "read", {"url": url, "pay": posting["pay"], "setting": posting["setting"],
+                    "place": posting["location"], "sha1": hashlib.sha1(body).hexdigest(), "chars": len(body)}
+
+
+def _apply_read(r, *, run, url, via, evidence, pay, setting, place, at_iso, on, engine, profile, company,
+                all_opps=None, applications=None, channels=None, pay_inferred=False):
+    """Apply one READ of a JD to the fresh row `r`: replace `location` and `listed_pay` with what the JD says
+    (`provenance: jd`, or `candidate`), except a value the candidate wrote; append the `read` attempt through
+    `jd_read.make_attempt` (the replaced values kept in `evidence.replaced`); re-run the screen; store the default lean
+    when the role has none. The one body of `read-jd` and `read-batch --fetch`. `evidence` is the attempt's evidence
+    without `replaced` (`{quote}` or `{sha1, chars}`). Raises KeyError (a refusal the shared write path prints)."""
+    import jd_read as _jd
+    provenance = "candidate" if via == "candidate" else "jd"
+    replaced = {}
+    old_loc, old_pay = r.get("location"), r.get("listed_pay")
+    keep_loc = isinstance(old_loc, dict) and old_loc.get("provenance") == "candidate" and via != "candidate"
+    keep_pay = isinstance(old_pay, dict) and old_pay.get("provenance") == "candidate" and via != "candidate"
+    if not keep_loc:
+        if isinstance(old_loc, dict) and old_loc:
+            replaced["location"] = old_loc
+        r["location"] = jd_location(old_loc, setting, place, provenance)
+    if not keep_pay:
+        if isinstance(old_pay, dict) and old_pay:
+            replaced["listed_pay"] = old_pay
+        new_pay = dict(pay)
+        if pay_inferred and new_pay.get("state") != "none-shown":
+            new_pay["inferred_from"] = "description"
+        r["listed_pay"] = new_pay
+    ev = dict(evidence)
+    if via == "candidate":
+        ev["attestation"] = "candidate"
+    if replaced:
+        ev["replaced"] = json.loads(json.dumps(replaced))
+    try:
+        existing = _jd.attempts(r)
+        attempt = _jd.make_attempt(at_iso, run, url, via, _jd.READ, ev)
+    except _jd.JdReadError as e:
+        raise KeyError("the read cannot be recorded (%s); nothing was written" % e)
+    r["jd_read"] = {"attempts": [dict(a) for a in existing] + [attempt]}
+    _store_screen(r, on, engine, profile=profile, all_opps=all_opps, applications=applications, channels=channels)
+    if not isinstance(r.get("lean"), dict):
+        lean = _default_lean(r, on.isoformat(), profile=profile, company=company)
+        if lean:
+            r["lean"] = lean
+
+
+def _apply_failed(r, *, run, url, via, outcome, text, at_iso):
+    """Append one failed-read attempt to the fresh row `r` (`jd_read.make_attempt`). Raises KeyError on a refusal."""
+    import jd_read as _jd
+    try:
+        existing = _jd.attempts(r)
+        attempt = _jd.make_attempt(at_iso, run, url, via, outcome, {"text": text})
+    except _jd.JdReadError as e:
+        raise KeyError("the failed read cannot be recorded (%s); nothing was written" % e)
+    r["jd_read"] = {"attempts": [dict(a) for a in existing] + [attempt]}
+
+
+def cmd_read_batch(args):
+    """`record.py read-batch --run <id> --fetch` -- see the section comment above. Exit 0 (a residue and a deadline are
+    not faults: the next steps take them), 1 when a store cannot be read or the write was rolled back, 2 on usage."""
+    if args.rid or args.rest or not args.fetch:
+        print("usage: " + READ_BATCH_USAGE)
+        return 2
+    run = (args.run_id_arg or "").strip()
+    if not run or re.search(r"\s", run):
+        print("⛔ REFUSED — --run <run id> is required (no whitespace).\nusage: " + READ_BATCH_USAGE)
+        return 2
+    deadline_s = FETCH_DEADLINE_S_DEFAULT if args.deadline_s is None else args.deadline_s
+    if deadline_s < 0:
+        print("⛔ REFUSED — --deadline-s must be 0 or more.")
+        return 2
+    check = bool(args.check or args.dry_run)
+    import journal as _journal
+    import lifecycle as _lc
+    clock = _fetch_clock()
+    try:
+        data = _lc.load_data(ROOT)
+        planned = None
+        for r in data["journal"]:
+            if (r.get("event") == "drain" and r.get("phase") == "planned" and r.get("run_id") == run
+                    and not r.get("on_behalf_of")):
+                planned = r
+    except (OSError, ValueError, _lc.LifecycleError) as e:
+        print("⛔ REFUSED — a store cannot be read (%s); nothing written." % e)
+        return 1
+    if planned is None:
+        print("⛔ REFUSED — run %r has no `drain planned` event: run `lifecycle.py --drain-plan --run %s "
+              "--render-route yes|no` first; nothing written." % (run, run))
+        return 1
+    adm = planned.get("admitted") or {}
+    adm_opps, adm_items = set(adm.get("opps") or []), set(adm.get("items") or [])
+    now = _now()
+    ctx = _lc.context(data, now)
+    companies = {c.get("id"): c for c in data["companies"]}
+    channels = _load_or_empty("channels")
+    to_fetch, to_rescreen = [], []
+    for o in data["opportunities"]:
+        cap = o.get("capture") if isinstance(o.get("capture"), dict) else {}
+        if o.get("id") not in adm_opps and cap.get("item") not in adm_items:
+            continue
+        try:
+            st, progress = ctx.settled_or_progress(o)
+        except Exception:                                    # noqa: BLE001 -- an unclassifiable row is `unclassified`
+            continue
+        if st is not None:
+            continue
+        if progress in ("captured", "reading"):
+            to_fetch.append(o)
+        elif progress == "read":
+            to_rescreen.append(o)
+    to_fetch.sort(key=lambda o: (_lc.first_seen(o) or datetime.date.max, str(o.get("id"))))
+    n_admitted = len(to_fetch) + len(to_rescreen)
+    if check:
+        print("read-batch --check: %d admitted role(s) -> %d to fetch, %d to re-screen; nothing fetched, nothing "
+              "written." % (n_admitted, len(to_fetch), len(to_rescreen)))
+        return 0
+    # ---- the network, BEFORE the lock ----
+    t0 = clock.now()
+    last_by_host, results, residue, unreached = {}, [], [], []
+    run_date = now.date().isoformat()
+    for o in to_fetch:
+        if clock.now() - t0 >= deadline_s:
+            unreached.append(o["id"])
+            residue.append((o["id"], "fetch-unreached"))
+            continue
+        kind, payload = _fetch_one(o, companies.get(o.get("company_id")), channels, run_date, last_by_host, clock)
+        if kind == "residue":
+            residue.append((o["id"], payload))
+        else:
+            results.append((o["id"], kind, payload))
+    # ---- one locked write ----
+    if args.already_locked:
+        if not lock_is_held():
+            print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
+            return 1
+    else:
+        try:
+            take_lock("record.py read-batch --run %s" % run, wait=args.wait)
+        except LockError as e:
+            print("  REFUSED — %s" % e)
+            return 1
+    tally = {"read": 0, "gone": 0, "your-read": 0, "rescreened": 0}
+    try:
+        profile = _profile_mod().load()
+        opps = load("opportunities")
+        applications = _load_or_empty("applications")
+        channels = _load_or_empty("channels")
+        by_id = {o.get("id"): o for o in opps}
+        before = {}
+        engine, at_iso, on = _engine_version(), now.isoformat(), now.date()
+        import jd_read as _jd
+        for oid, kind, p in results:
+            row = by_id.get(oid)
+            if row is None:
+                continue
+            if _has_read(row):
+                continue                                     # a read landed while the network was out
+            pre_row = json.loads(json.dumps(row))
+            before.setdefault(oid, pre_row)
+            company = next((c for c in data["companies"] if c.get("id") == row.get("company_id")), None)
+            try:
+                if kind == "failed":
+                    _apply_failed(row, run=run, url=p["url"], via="fetch", outcome=p["outcome"], text=p["text"],
+                                  at_iso=at_iso)
+                    tally["gone" if _jd.outcome_class(p["outcome"]) == "terminal" else "your-read"] += 1
+                else:
+                    import deferred as _deferred
+                    lp, why = _deferred.parse_pay_slot(p["pay"])
+                    if why:
+                        raise KeyError(why)
+                    lp = dict(lp, captured_on=on.isoformat(), provenance="jd")      # source: listing-text, as parsed
+                    _apply_read(row, run=run, url=p["url"], via="fetch",
+                                evidence={"sha1": p["sha1"], "chars": p["chars"]}, pay=lp, setting=p["setting"],
+                                place=p["place"], at_iso=at_iso, on=on, engine=engine, profile=profile,
+                                company=company, all_opps=opps, applications=applications, channels=channels,
+                                pay_inferred=True)
+                    tally["read"] += 1
+            except KeyError as e:
+                before.pop(oid, None)
+                residue.append((oid, "not recorded: %s" % " ".join(str(e).split())[:120]))
+                row.clear()
+                row.update(pre_row)                          # a refused result leaves the row exactly as it was
+        for o in to_rescreen:
+            row = by_id.get(o["id"])
+            if row is None:
+                continue
+            before.setdefault(row["id"], json.loads(json.dumps(row)))
+            _store_screen(row, on, engine, profile=profile, all_opps=opps, applications=applications,
+                          channels=channels)
+            tally["rescreened"] += 1
+        changed = [i for i in before if by_id[i] != before[i]]
+        bad = []
+        for oid in changed:
+            bad += _row_checks("read-batch", before[oid], by_id[oid], jd_read_ok=True)
+        if bad:
+            print("⛔ REFUSED — " + "; ".join(bad) + " (nothing was written)")
+            return 1
+        if changed:
+            snap = snapshot("opportunities")
+            pre_problems = validate()[3]
+            save_atomic("opportunities", opps)
+            rc, out, err, post_problems = validate()
+            added = new_problems(pre_problems, post_problems)
+            if rc != 0 and (added is None or added):
+                ok = restore("opportunities", snap)
+                print("⛔ the write left the store invalid and was %s."
+                      % ("ROLLED BACK (byte-identical)" if ok else
+                         "NOT VERIFIABLY ROLLED BACK -- restore opportunities.jsonl from git"))
+                print("  " + "\n  ".join(added if added else _diagnostic_lines(rc, out, err)))
+                return 1
+    finally:
+        if not args.already_locked:
+            release_lock()
+    rc_out = 0
+    try:
+        _journal.record_pass(ROOT, run, "fetch", "done", unreached=sorted(unreached))
+    except _journal.JournalError as e:
+        print("⚠️ could not journal `pass fetch done` (%s)" % e)
+        rc_out = 1
+    for oid, why in residue:
+        print("RESIDUE %s (render): %s" % (oid, why))
+    print("read-batch: %d admitted → %d read · %d gone · %d your-read · %d re-screened · %d residue (render) · "
+          "%d deadline-left" % (n_admitted, tally["read"], tally["gone"], tally["your-read"], tally["rescreened"],
+                                len(residue), len(unreached)))
+    print("deadline-left %d" % len(unreached))
+    return rc_out
+
+
+# ---- show: the whole record, untruncated (design section 7, SH1) -----------------------------------------------------
+
+def cmd_show(rec, as_json):
+    """Print the whole stored record. Indented JSON by default; `--json` prints ONE compact line (a script reads it).
+    Before 0.82.0 `show` dropped `research_log` and `fit` and cut the rest at 3000 characters, so a role looked
+    smaller than it was and a reader could not tell what had been left out (SH1). Nothing is left out now."""
+    if as_json:
+        print(json.dumps(rec, ensure_ascii=False, separators=(",", ":")))
+    else:
+        print(json.dumps(rec, ensure_ascii=False, indent=2))
+    return 0
 
 
 def main():
@@ -3957,11 +5223,50 @@ def main():
     ap.add_argument("--today", dest="today_arg", default=None,
                     help="posting / create --from-item: TEST-ONLY. The run date as YYYY-MM-DD, so a dated case runs end "
                          "to end; omitted, it is today. Never pass it in a real run.")
+    # jobsearch 0.82.0 (dev #820 / public #175) -- the role pipeline's flags. `--url` and `--via` are the existing ones
+    # (read-jd / read-failed reuse them); `--json` belongs to `show`.
+    ap.add_argument("--run", dest="run_id_arg", default=None,
+                    help="read-jd / read-failed / capture-batch / read-batch: the id of the run making the write "
+                         "(stored on the attempt and the capture record; the drain's `drain planned` event is found "
+                         "by it).")
+    ap.add_argument("--pay", dest="pay_slot", default=None,
+                    help="read-jd: the pay the posting states, in the ROLE line's grammar: none | "
+                         "stated:<min>-<max>/<yr|mo|day|hr>/<CUR> | estimate:<range>  (? is refused: a read states "
+                         "the pay or states there is none).")
+    ap.add_argument("--setting", dest="setting_text", default=None,
+                    help="read-jd: the posting's own work-setting text, verbatim, or the literal `none stated`.")
+    ap.add_argument("--location", dest="location_text", default=None,
+                    help="read-jd: the posting's place text, verbatim, or ? when it states none.")
+    ap.add_argument("--evidence", dest="evidence_text", default=None,
+                    help="read-jd / read-failed: 1-200 characters. Under render, a quote of the posting's own title or "
+                         "Apply text (it must share a word with this role's title or company); under candidate, the "
+                         "candidate's own one-line note; under read-failed, the status line, the error text or the "
+                         "page's own words.")
+    ap.add_argument("--outcome", dest="outcome_arg", default=None,
+                    help="read-failed: closed | dead-link | manual-board | no-url | login-wall | challenge | "
+                         "render-failed | surface-cannot-read | site-not-allowed.")
+    ap.add_argument("--link-only", dest="link_only", action="store_true",
+                    help="capture-batch: link every open capture-role item that is a sighting of a known role "
+                         "(before intake; they never consume it).")
+    ap.add_argument("--admitted", dest="admitted", action="store_true",
+                    help="capture-batch: create the roles the run's `drain planned` event admitted, from their oldest "
+                         "item, and close every sibling item.")
+    ap.add_argument("--fetch", dest="fetch", action="store_true",
+                    help="read-batch: read each admitted role's posting by script (JSON-LD), settle what it can and "
+                         "list the rest as the render residue.")
+    ap.add_argument("--check", dest="check", action="store_true",
+                    help="capture-batch / read-batch: compute and print, write nothing (--dry-run is the same).")
+    ap.add_argument("--deadline-s", dest="deadline_s", type=int, default=None,
+                    help="capture-batch (default %d) / read-batch (default %d): stop BETWEEN roles after this many "
+                         "seconds, write what is done and print `deadline-left N`." %
+                         (CAPTURE_DEADLINE_S_DEFAULT, FETCH_DEADLINE_S_DEFAULT))
+    ap.add_argument("--json", dest="json_out", action="store_true",
+                    help="show: print the whole record as ONE compact JSON line.")
     args = ap.parse_args()
 
     # These three verbs each own exactly one store — --file is never the caller's to pick for
     # them (a mistaken --file would silently target the wrong record and never be diagnosed).
-    if args.op in ("decide", "networking-closed") + SOURCING_OPS:
+    if args.op in ("decide", "networking-closed") + SOURCING_OPS + JD_READ_OPS + BATCH_OPS:
         args.file = "opportunities"
     elif args.op == "application-status":
         args.file = "applications"
@@ -4019,6 +5324,10 @@ def main():
         return cmd_source(args)
     if args.op == "posting":
         return cmd_posting(args)
+    if args.op == "capture-batch":
+        return cmd_capture_batch(args)
+    if args.op == "read-batch":
+        return cmd_read_batch(args)
 
     if args.reuse and not (args.op == "create" and args.file == "people"):
         print("⛔ REFUSED — --reuse applies only to `create <id> '<json>' --file people`.")
@@ -4080,9 +5389,7 @@ def main():
         return 1
 
     if args.op == "show":
-        print(json.dumps({k: v for k, v in rec.items()
-                          if k not in ("research_log", "fit")}, indent=2)[:3000])
-        return 0
+        return cmd_show(rec, args.json_out)
 
     # ---- build the mutation, describing it before touching anything -------------
     new_row = None
@@ -4788,6 +6095,19 @@ def main():
                 df.append(r.get("id"))
             target["distinct_from"] = df
 
+    elif args.op in JD_READ_OPS:
+        # dev #820 / public #175 -- see `_jd_read_mutation`: it validates the flags and returns (desc, apply); the lock,
+        # the introduced-only rules (with the `jd_read` writer token held), the validator and the rollback are the
+        # shared path every other verb takes.
+        try:
+            desc, apply = _jd_read_mutation(args, rec)
+        except _Usage as e:
+            print(str(e))
+            return 2
+        except _Refused as e:
+            print("⛔ REFUSED — %s" % e)
+            return 1
+
     elif args.op in SOURCING_OPS:
         # dev #713-#716 / public #142-#145 -- see `_sourcing_mutation`: it computes the value and
         # returns (desc, apply); everything after this chain (dry-run through the validator, the
@@ -4853,7 +6173,7 @@ def main():
         # dev #644 item 5 — the introduced-only rules are judged on the ROW here, exactly as the
         # real write below judges them (a dry-run must predict the write, dev #143).
         _after_row = new_row if args.op == "create" else shadow_rec
-        with _posting_writer(_feed_posting_written):
+        with _posting_writer(_feed_posting_written), _jd_read_writer(args.op in JD_READ_OPS):
             _introduced = (introduced_row_violations(
                                args.file, None if args.op == "create" else rec, _after_row)
                            + verb_owned_refusal(
@@ -4955,7 +6275,7 @@ def main():
         # written or changed, before a byte lands: the whole-store validator only WARNS about
         # rows that already exist (validate_data.INTRODUCED_ONLY_RULES), so this is the one
         # place a new violation is stopped. Nothing is written, so there is nothing to roll back.
-        with _posting_writer(_feed_posting_written):
+        with _posting_writer(_feed_posting_written), _jd_read_writer(args.op in JD_READ_OPS):
             _introduced = (introduced_row_violations(
                                args.file, _row_before, new_row if args.op == "create" else rec)
                            + verb_owned_refusal(
@@ -5118,6 +6438,8 @@ def main():
                   "causes" % ", ".join(minted))
     if args.file == "opportunities":
         _your_move_visibility_note(new_row if args.op == "create" else rec)
+    if args.op in JD_READ_OPS:
+        print("  " + _stage_line(args.rid))
     return 0
 
 

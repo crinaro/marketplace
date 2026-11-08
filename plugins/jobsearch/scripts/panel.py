@@ -24,7 +24,12 @@ draw nothing, so one profile's data never appears in an unrelated directory's se
 
 THE CONTRACT (both renderers and `check_dashboard_coverage.py`'s ELSEWHERE test read these keys):
 
-    needs_you[]   {kind, id, title, act_by}   roles waiting on you, open JD-fit questions, open asks
+    needs_you[]   {kind, id, title, act_by}   FIRST the pipeline line (`kind: pipeline`, its `title` is
+                  `lifecycle.process_report().start_line`, the SAME string the coordinator prints, so the
+                  failure count and the waiting count are in the fast panel too, dev #820 N18), then the
+                  roles waiting on you (`role`), the roles a pursue/pass is owed on (`decide`), the postings
+                  only you can read (`your-read`, whose title carries the link and the reason), open
+                  JD-fit questions and open asks
     rescreen_flags  {count, unreadable[], items[]}   roles whose stored comp removal jobsearch 0.73.0
                   would not repeat (dev #761); each item {id, title, status, old_verdict, new_verdict,
                   why, action}. FLAG, NEVER REOPEN (owner decision 2026-10-23): nothing here changes a
@@ -37,6 +42,9 @@ THE CONTRACT (both renderers and `check_dashboard_coverage.py`'s ELSEWHERE test 
     dashboard     {state, as_of}              published dashboard vs the repo           (full only)
     gates[]       {name, ok}                  the ORIENT gates                           (full only)
     elsewhere     {in_flight[], channels_due[], week[], preps_owed[], asks[], kb_index[], sources[]}   (full only)
+                  `in_flight[].state` is the role's pursuit option: a role a run did not finish is
+                  `process-failure`, one no run has taken on is `waiting-intake`, one a run has open is
+                  `in-progress` (dev #820); never the retired `triaging`.
                   `sources[]` {id, title, kind, on, state} is `sources.report`'s rows (dev #774): the ONE composer the
                   text view and the mod's Sources block share. A button in the mod runs `record.py source on|off <id>`;
                   THIS script writes nothing.
@@ -97,9 +105,10 @@ GATES = (
 )
 GATE_TIMEOUT_S = 25
 
-# The two pursuit states the DASHBOARD renders (design section 4): `new` (a decision is owed) and
-# `not-sent` (pursuing, nothing sent). Every other live role is `in_flight` here.
-DASHBOARD_STATES = ("new", "not-sent")
+# The pursuit states the DASHBOARD renders (design section 4): `new` (a decision is owed), `not-sent`
+# (pursuing, nothing sent) and, since dev #820, `your-read` (a posting only the candidate can open).
+# Every other live role is `in_flight` here.
+DASHBOARD_STATES = ("new", "not-sent", "your-read")
 
 
 # ---- root resolution ---------------------------------------------------------------------------
@@ -158,7 +167,14 @@ def _company_names(root):
 
 # ---- the sections ------------------------------------------------------------------------------
 
-def sec_needs_you(root, today):
+def _now_of(today, now=None):
+    """The lifecycle's `now`: the caller's, else midnight of `today` (a test's `--today`)."""
+    if now is not None:
+        return now
+    return datetime.datetime.combine(today, datetime.time(0, 0))
+
+
+def sec_needs_you(root, today, now=None):
     import coordinator
     import profile as _profile
     import your_move
@@ -166,6 +182,33 @@ def sec_needs_you(root, today):
     names = _company_names(root)
     owner = _profile.owner_token()
     out = []
+    # dev #820 / public #175 (N18): the pipeline line comes FIRST and is `process_report`'s own
+    # `start_line`, so the failure and waiting counts are in the fast panel too. A lifecycle that cannot
+    # be read is `PIPELINE NOT CHECKED`, a line, never a missing one.
+    pipeline = None
+    try:
+        import lifecycle
+        data = lifecycle.load_data(root)
+        lc_now = _now_of(today, now)
+        rep = lifecycle.process_report(data, lc_now)
+        pipeline = {"kind": "pipeline", "id": "process", "title": rep.start_line, "act_by": None}
+        ctx = your_move.lifecycle_context(data["opportunities"], lc_now, data)
+        for o, st, _why in your_move.classify_opportunities(data["opportunities"], owner,
+                                                              ctx=ctx):
+            if st not in ("decide", "your-read"):
+                continue
+            who = names.get(o.get("company_id"), "?")
+            title = "%s: %s" % (who, o.get("title") or "")
+            if st == "your-read":
+                url, owned = your_move.role_link(o)
+                title += " — %s%s" % (
+                    your_move.your_read_reason(ctx.stage_of_opp(o)),
+                    " (%s%s)" % (url, "" if owned else ", aggregator copy") if url else " (no link)")
+            out.append({"kind": st, "id": o.get("id"), "title": title,
+                        "act_by": o.get("next_action_date") or None})
+    except Exception as e:                                      # noqa: BLE001 - loud, not fatal
+        pipeline = {"kind": "pipeline", "id": "process", "act_by": None,
+                    "title": "PIPELINE NOT CHECKED (%s: %s)" % (type(e).__name__, str(e)[:160])}
     for o in opps:
         if o.get("next_action_owner") == owner and \
                 o.get("status") in ("active-pursuit", "needs-resolution", "in-motion"):
@@ -184,7 +227,7 @@ def sec_needs_you(root, today):
                     "title": str(a.get("title") or a.get("ask") or a.get("id") or "")[:100],
                     "act_by": a.get("act_by") or None})
     out.sort(key=lambda r: (r["act_by"] or "9999-99-99", r["kind"], str(r["id"])))
-    return out
+    return [pipeline] + out if pipeline else out
 
 
 def sec_rescreen_flags(root, today):
@@ -333,42 +376,41 @@ def sec_gates(root, today):
         return list(ex.map(lambda g: _run_gate(g, root), GATES))
 
 
-def sec_elsewhere(root, today):
+def sec_elsewhere(root, today, now=None):
     """The HOMES of every record the review-now dashboard no longer renders (design section 4/5).
     `scripts/check_dashboard_coverage.py` reads this object and refuses an `elsewhere:panel` record
     whose id is not in the list its kind maps to, so what is listed here is a CONTRACT:
 
-        opp:<id>      -> in_flight   every live role that is neither `new` nor `not-sent` (the two states the
-                                     dashboard renders), including triaging, parked and unclassifiable ones
+        opp:<id>      -> in_flight   every live role that is none of `new`, `not-sent` or `your-read` (the states
+                                     the dashboard renders), including the process-failure, waiting-intake,
+                                     in-progress, parked and unclassifiable ones
         ask:<id>      -> asks        every open ask
         commit:<id>   -> week        every commitment still ahead, plus every one whose date cannot be placed
         chan:<id>     -> channels_due   EVERY channel, with its review state (the due ones first)
         prep:<rel>    -> kb_index    every call prep and company knowledge file
     """
-    import applications as _apps
     import channels_due
     import conversations
     import knowledge
-    import profile as _profile
     import validate_data
     import your_move
     out = {k: [] for k in ELSEWHERE_KEYS}
     names = _company_names(root)
-    opps = _jsonl(root, "opportunities.jsonl")
-    _apps.enrich_opportunities(root, opps)
-    owner = _profile.owner_token()
+    # dev #820 / public #175: ONE lifecycle snapshot stages every role, the SAME stage the dashboard
+    # reads, so a role is on one side or the other of the pursue-or-pass line for both surfaces.
+    import lifecycle
+    data = lifecycle.load_data(root)
+    opps = data["opportunities"]
+    ctx = your_move.lifecycle_context(opps, _now_of(today, now), data)
     terminal = validate_data.TERMINAL_OPP_STATUSES
-    roles = {o.get("id"): st for o, st, _w in your_move.classify_opportunities(opps, owner)
-             if o.get("id")}
     for o in opps:
         if not o.get("id") or o.get("status") in terminal:
             continue
         try:
-            st = your_move.pursuit_state(root, o, o.get("_applications") or []).get("state")
+            p = your_move.pursuit_state(root, o, o.get("_applications") or [])
+            st = your_move.pursuit_with_stage(p, ctx.stage_of_opp(o)).get("state")
         except Exception:                                        # noqa: BLE001 - loud, never dropped
             st = "unclassifiable"
-        if st == "new" and roles.get(o["id"]) == "triaging":
-            st = "triaging"                                      # the run is still reading it
         if st in DASHBOARD_STATES:
             continue                                             # rendered on the dashboard
         out["in_flight"].append({"id": o.get("id"), "state": st,
@@ -440,7 +482,7 @@ def collect(root, full=True, today=None, now=None, only=None):
     wanted = (lambda k: only is None or k in only)
     obj = {}
     if wanted("needs_you"):
-        obj["needs_you"] = _safe(sec_needs_you, root, today)
+        obj["needs_you"] = _safe(sec_needs_you, root, today, now)
     if wanted("rescreen_flags"):
         obj["rescreen_flags"] = _safe(sec_rescreen_flags, root, today)
     if wanted("inbox"):
@@ -459,7 +501,7 @@ def collect(root, full=True, today=None, now=None, only=None):
         if wanted("gates"):
             obj["gates"] = _safe(sec_gates, root, today)
         if wanted("elsewhere"):
-            obj["elsewhere"] = _safe(sec_elsewhere, root, today)
+            obj["elsewhere"] = _safe(sec_elsewhere, root, today, now)
     obj["band"] = band_line(obj)
     return obj
 
@@ -469,8 +511,9 @@ def band_line(obj):
     parts = ["jobsearch"]
     ny = obj.get("needs_you")
     if isinstance(ny, list):
-        dated = sorted(r["act_by"] for r in ny if r.get("act_by"))
-        parts.append("%d need you%s" % (len(ny), " (next by %s)" % dated[0] if dated else ""))
+        mine = [r for r in ny if r.get("kind") != "pipeline"]       # the pipeline line is not an item
+        dated = sorted(r["act_by"] for r in mine if r.get("act_by"))
+        parts.append("%d need you%s" % (len(mine), " (next by %s)" % dated[0] if dated else ""))
     elif ny is not None:
         parts.append("needs-you NOT CHECKED")
     rf = obj.get("rescreen_flags")
@@ -512,6 +555,9 @@ def render_text(obj):
         add("  nothing is waiting on you")
     else:
         for r in ny:
+            if r.get("kind") == "pipeline":
+                add("  - %s" % r.get("title"))                      # process_report's own words, verbatim
+                continue
             add("  - [%s] %s %s: %s" % (r.get("act_by") or "no date", r["kind"], r.get("id"), r.get("title")))
     rf = obj.get("rescreen_flags")
     add("%s:" % LABELS["rescreen_flags"])

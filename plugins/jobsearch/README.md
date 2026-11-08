@@ -14,6 +14,10 @@ and a CI gate enforces that.
   receipts, and tells you what needs a decision.
 - **Screens roles against your comp floors and geography** before they reach you, so the pipeline
   holds things you would actually take.
+- **Finishes what it starts.** Every role a run takes on has its job description read (a script fetches
+  what it can; the `jd-reader` agent reads the rest in a browser tab of its own; a posting only you can
+  open comes to you as *your read*), is screened, and, if it passes, is researched. Anything a run took on
+  and did not finish is shown as a process failure with its cause and age, never hidden.
 - **Drafts** outreach and cover letters that cite your own resume sentences rather than paraphrasing
   them, and refuses to invent facts to fill a gap.
 - **Remembers** every touch, so you never send someone a cold introduction they already answered.
@@ -99,14 +103,16 @@ that companion plugin is missing; it is the only connector `plugin.json` declare
     - self-test the guards;
     - install the companion connector if it is missing (`ensure_connectors.py`).
   - On each prompt: `drift_guard.py` notices when the plugin was updated mid-session.
-  - Before tool calls, five guards that either **refuse** a call or let it through unchanged; none
+  - Before tool calls, six guards that either **refuse** a call or let it through unchanged; none
     approves anything:
     - `guard_engine_writes.py` refuses a write into the plugin's own files;
     - `guard_outbound_click.py` refuses a browser click that would send, connect or apply;
     - `guard_mail_send.py` refuses the mail send tools outright, those of gmail-multi and those of the
       claude.ai mail connectors (see *Mail connectors*);
     - `guard_mail_scope.py` refuses mail access to an account your profile does not declare;
-    - `guard_board_hosts.py` refuses opening a job-board host the plugin does not support.
+    - `guard_board_hosts.py` refuses opening a job-board host the plugin does not support;
+    - `guard_browser_tab.py` refuses a browser-pane call from a reading or research agent
+      (`board-sweeper`, `opportunity-researcher`, `jd-reader`, `linkedin-runner`) that does not name its own tab.
 - **The mod** (`hooks/register.ts`, the status pane) does these things, and only inside a session
   whose folder is a job-search profile:
   - Runs three scripts, each named as a literal: `panel.py` (the numbers it shows), `presence_set.py`
