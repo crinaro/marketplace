@@ -2072,6 +2072,8 @@ reused for a question it was not asked. Neither file contains a name, an employe
 your profile or from the plugin's files: a match is recorded only as a file, a line number and a
 position in the list. You can delete either at any time; the next check writes it again.
 
+If the check finds a match, it asks you about it. Every match in the ask has a short label such as `h1`, `h2` or `p1`, with the line shown and the matching word hidden as `[term]`. Answer `report` to send the plugin's maintainers a note, or answer `not-my-data h2 p1` to say that only those labelled entries are an ordinary word and not your data. Naming labels is the only way to dismiss several entries at once: a bare `not-my-data` is accepted only when exactly one entry is open, and an answer the plugin does not understand leaves everything open and asks again, listing the accepted forms. A dismissed line stays quiet in later releases until its text changes. `purity-check.json` also keeps a random value used to recognise a dismissed common word without storing the word, the labels for the question on screen, and your dismissals. These stay on this machine, so an answer given on another machine is asked again there.
+
 **It is not committed to git.** The same upgrade that created the folder added `.jobsearch/` to
 your profile's `.gitignore` automatically — this state is specific to the machine it runs on,
 and committing it would just add churn to every commit for no benefit.

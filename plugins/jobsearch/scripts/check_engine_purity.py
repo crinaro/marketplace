@@ -620,6 +620,12 @@ ALLOWANCES = _publisher_allowances()
 # identifiers (`NEEDS_<term>_HEADER`, `..._requires_<term>`) and dev #46's fixture map KEY (the
 # whole of a quoted literal) are both excluded from the exemption by construction, not by
 # coincidence — see the tests built against `_shape_exempt()`.
+#
+# ⭐ dev #710 / public #148 — AN UPPERCASE CONSTANT SEGMENT IS NOT SHAPE-EXEMPT, BY DESIGN. An
+# ordinary word that is also a tracked company name, written as a segment of a module constant
+# (`LANTERN_RETRY_LIMIT = 3`), has the same shape as dev #45's leak (`NEEDS_<term>_HEADER`), so no
+# rule on the occurrence's shape can tell the two apart without becoming a word list (PS-10). It
+# is answered by the user's own durable per-hit `not-my-data` answer (`hook_step()`), not here.
 JOIN = "-_./:@"
 
 
@@ -644,6 +650,12 @@ def _shape_exempt(kind, w, m, line):
          line[s-1]`). A JSON key (`"x": {`) or a value literal (`== 'x'`) still fires — the
          dev #46 shape. Backticks are NOT quotes here: a docstring's `` `param` `` reference is
          an identifier reference, one of the shapes this exempts.
+
+    ⭐ dev #710 / public #148 — an UPPERCASE constant segment (`LANTERN_RETRY_LIMIT`) is NOT
+    shape-exempt, by design: it fails rule 3 (not lowercase) and rule 4 (joined), exactly as dev
+    #45's `NEEDS_<term>_HEADER` leak does, and the two cannot be told apart by shape. It is
+    answered by a durable per-hit `not-my-data` dismissal (`hook_step()`), never by loosening
+    this function.
 
     Residual, accepted deliberately (design §5 / CLAUDE.md dev #342): a real entity written as a
     bare lowercase word inside otherwise-ordinary text — "talked to sprocket today" — is exempt
@@ -1188,10 +1200,50 @@ def _engine_version_of(engine):
         return "unknown"
 
 
-def _pervasive_fold(hits, terms, threshold=PERVASIVE_FILE_THRESHOLD):
+# ⭐⭐ dev #710 / public #148 (jobsearch 0.82.1) — THE ANSWER IS PER ENTRY, AND IT IS DURABLE.
+#
+# An ordinary word that is also a tracked company name, written as a segment of a module constant,
+# fires on every run, and no rule on the occurrence's shape may exempt it without exempting dev #45's
+# leak (`_shape_exempt()`'s own note). The one list-free judgement that separates the two is the
+# user's, and this file already collects it (`not-my-data`). Two things made that answer useless:
+# it was keyed on the line NUMBER, so any release that shifted lines asked again; and it was an
+# all-or-nothing answer (any resolution but `report` dismissed every open hit), so a user could
+# silence a real leak with the same word that silenced the false positive.
+#
+#   * An entry is answered by id (`h1`, `p1`), through the map the ask was written with. A bare
+#     answer is accepted only when exactly one entry is open. Anything else stays OPEN and says why.
+#   * A dismissal row written by this version carries `"match": "text"` and matches on
+#     (path, kind, text_sha256): quiet until that line's text changes. A row without the marker is a
+#     LEGACY row and keeps its exact four-field match, so what an existing profile means does not
+#     change and no migration is needed.
+#   * The ask shows the line with every profile term masked (`[term]_RETRY_LIMIT = 3`). The term is
+#     written nowhere (dev #411): not the stamp, not --json, not the ask, not stdout.
+#
+# ⚠️ WHERE THE ID MAP LIVES. The design put `id_map` and `engine_version` on the ask row. The asks
+# store is a closed schema (`validate_data.py` refuses an unknown key on a row: measured against a
+# scratch copy of the tracked fixture), so the map is kept in the stamp (`ask_map`), beside the hits
+# and dismissals it resolves against. Same semantics: the ids are read only through the map, and a
+# map written for another engine version is not trusted.
+ASK_LIST_MAX = 20
+MASK = "[term]"
+ASK_FORMS = ("`report`, or `not-my-data h1 h3 ...` (only the ids you name), or a bare "
+             "`not-my-data` (only when exactly one entry is open)")
+ASK_NOTICE_MARK = "Your last answer was not accepted"
+
+
+def _term_key(salt, kind, term):
+    """M3 — the stable, term-free handle of a pervasive entry: sha256(salt + kind + NUL + term).
+    The salt is kept in the stamp (`term_salt`); the term itself is never stored."""
+    return _sha256_text("%s%s\0%s" % (salt, kind, term))
+
+
+def _pervasive_fold(hits, terms, threshold=PERVASIVE_FILE_THRESHOLD, salt_getter=None,
+                    skip_keys=frozenset()):
     """§2.4 T3 — hits: list of dicts with path/line/kind/term/text_sha256. Returns
     (kept, pervasive) where `pervasive` never names the term — only a stable per-kind index
-    into the SORTED term list, so the fold can be reported without ever printing the term."""
+    into the SORTED term list and (dev #710) a salted `term_key`, so the fold can be reported and
+    answered without ever printing the term. `skip_keys` holds (kind, term_key) pairs the user has
+    dismissed: such a term is folded away entirely (neither kept nor reported)."""
     by_term = {}
     for h in hits:
         by_term.setdefault((h["kind"], h["term"]), []).append(h)
@@ -1199,17 +1251,141 @@ def _pervasive_fold(hits, terms, threshold=PERVASIVE_FILE_THRESHOLD):
     for (kind, term), group in sorted(by_term.items()):
         files = {h["path"] for h in group}
         if len(files) >= threshold:
+            key = _term_key(salt_getter(), kind, term) if salt_getter else None
+            if key is not None and (kind, key) in skip_keys:
+                continue
             index = sorted(terms.get(kind, [])).index(term) if term in terms.get(kind, []) else -1
-            pervasive.append({"kind": kind, "term_index": index,
-                              "files": len(files), "lines": len(group)})
+            entry = {"kind": kind, "term_index": index,
+                     "files": len(files), "lines": len(group)}
+            if key is not None:
+                entry["term_key"] = key
+            pervasive.append(entry)
         else:
             kept.extend(group)
     return kept, sorted(pervasive, key=lambda p: -p["lines"])[:5]
 
 
-def _write_purity_ask(profile, engine_version, open_hits, pervasive):
+def _dismissal_index(dismissed):
+    """(text_keys, legacy_keys, pervasive_keys) from the stamp's `dismissed` rows (M1/M3).
+
+    The discriminator is the explicit `match` MARKER, never the presence of `text_sha256`: every
+    legacy row already carries a `text_sha256` (since 201a69e2), so keying on that would widen
+    every old answer to text-keyed matching without consent. An unmarked row keeps today's exact
+    four-field key; a row with an unrecognised marker matches nothing (it asks again)."""
+    text, legacy, perv = set(), set(), set()
+    for d in dismissed or []:
+        if not isinstance(d, dict):
+            continue
+        m = d.get("match")
+        if m == "text":
+            text.add((d.get("path"), d.get("kind"), d.get("text_sha256")))
+        elif m == "pervasive":
+            perv.add((d.get("kind"), d.get("term_key")))
+        elif m is None:
+            legacy.add((d.get("path"), d.get("line"), d.get("kind"), d.get("text_sha256")))
+    return text, legacy, perv
+
+
+def _hit_dismissed(index, path, line, kind, text_sha256):
+    text, legacy, _perv = index
+    return (path, kind, text_sha256) in text or (path, line, kind, text_sha256) in legacy
+
+
+def _term_masker(terms):
+    """M4 — `mask(text)` replaces every case-insensitive occurrence of any profile term (ALL kinds,
+    and as a bare substring, so `lanterns` cannot leave `lantern` showing) with `[term]`. A final
+    backstop re-checks what is left; if a term could still be read, the whole line is withheld.
+    The cost is one substring test per term per line, for at most `ASK_LIST_MAX` lines."""
+    pairs = []
+    for words in terms.values():
+        for w in words:
+            fw = _fold(w)
+            if fw:
+                pairs.append((w, fw, not w.isascii()))
+    withheld = "[line withheld: a profile term could not be masked]"
+
+    def _readable(seg):
+        low = _fold(seg)
+        for w, fw, wide in pairs:
+            if fw in low or (wide and re.search(re.escape(w), seg, re.IGNORECASE)):
+                return True
+        return False
+
+    def mask(text):
+        low = _fold(text)
+        spans = []
+        for w, fw, wide in pairs:
+            if fw in low or wide:
+                spans.extend(m.span() for m in re.finditer(re.escape(w), text, re.IGNORECASE))
+        spans.sort()
+        merged = []
+        for s, e in spans:
+            if merged and s <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], e)
+            else:
+                merged.append([s, e])
+        out, last = [], 0
+        for s, e in merged:
+            if _readable(text[last:s]):
+                return withheld
+            out.append(text[last:s])
+            out.append(MASK)
+            last = e
+        if _readable(text[last:]):
+            return withheld
+        out.append(text[last:])
+        return "".join(out)
+    return mask
+
+
+def _masked_line(path, n, mask):
+    """The `n`th line of `path`, stripped, term-masked, cut to 120 chars (the cut is AFTER the
+    masking, so it can never expose a term)."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.readlines()
+        raw = lines[n - 1] if 0 < n <= len(lines) else ""
+    except (OSError, UnicodeDecodeError):
+        raw = ""
+    return mask(raw.strip())[:120]
+
+
+def _ask_plan(open_hits, pervasive, masks=None):
+    """The listed entries, their printed lines, and the id map the ask is answered through (M2).
+    Ids are assigned in the SORTED order of the listed entries: `h1`...`h20` for hits (at most
+    `ASK_LIST_MAX`), `p1`... for pervasive entries. A hit beyond the listed ones has NO id."""
+    masks = masks or {}
+    ordered = sorted(open_hits, key=lambda h: (h["path"], h["line"], h["kind"]))
+    listed = ordered[:ASK_LIST_MAX]
+    lines_txt, id_map = [], []
+    for i, h in enumerate(listed, 1):
+        lines_txt.append("    h%d  %s:%s  [%s]  %s"
+                         % (i, h["path"], h["line"], h["kind"],
+                            masks.get((h["path"], h["line"], h["kind"]), "")))
+        id_map.append({"id": "h%d" % i, "path": h["path"], "kind": h["kind"],
+                       "text_sha256": h["text_sha256"]})
+    more = len(ordered) - len(listed)
+    if more > 0:
+        lines_txt.append("    ... and %d more not listed; answer the listed ones first and the "
+                         "rest are asked again" % more)
+    for j, p in enumerate(pervasive, 1):
+        lines_txt.append("    p%d  [%s] term #%d matches %d line(s) in %d file(s) — a common "
+                         "word, most likely; answering it quiets that term in every file until "
+                         "it leaves your profile" % (j, p["kind"], p["term_index"], p["lines"],
+                                                     p["files"]))
+        id_map.append({"id": "p%d" % j, "kind": p["kind"], "term_key": p.get("term_key")})
+    return {"lines": lines_txt, "id_map": id_map, "more": max(more, 0),
+            "total": len(open_hits) + len(pervasive)}
+
+
+def _notice_text(reason):
+    return ("%s (%s). Accepted answers: %s. Nothing was dismissed for the part that was not "
+            "accepted; this ask stays open." % (ASK_NOTICE_MARK, reason, ASK_FORMS))
+
+
+def _write_purity_ask(profile, engine_version, plan, notice=None):
     """§2.5(b) — one `asks.jsonl` row, kind=system, stable id, replace-by-id, re-run safe. The
-    ask text names path:line:kind — NEVER the term."""
+    ask text names id, path:line, kind and the TERM-MASKED line — NEVER the term (dev #411/#710)."""
     try:
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
         import _atomic
@@ -1221,46 +1397,105 @@ def _write_purity_ask(profile, engine_version, open_hits, pervasive):
                     line = line.strip()
                     if line:
                         asks.append(json.loads(line))
-        lines_txt = []
-        for h in open_hits[:20]:
-            lines_txt.append("    %s:%s  [%s]" % (h["path"], h["line"], h["kind"]))
-        remainder = len(open_hits) - 20
-        if remainder > 0:
-            lines_txt.append("    ... and %d more" % remainder)
-        for p in pervasive:
-            lines_txt.append("    [%s] term #%d matches %d line(s) in %d file(s) — a common "
-                             "word, most likely; dismiss or report as one"
-                             % (p["kind"], p["term_index"], p["lines"], p["files"]))
-        body = ("%d engine file(s) contain text matching your profile (jobsearch %s). The "
-               "engine must be portable. Nothing below is your data itself — only where a "
-               "match sits:\n%s\nDecide, then resolve this ask with ONE word as the "
-               "resolution:\n    report       the next session start files the file:line list "
-               "and the engine version to the public tracker — never the matched text — from a "
-               "machine that has `gh`\n    not-my-data  these lines stay quiet until the engine "
-               "changes"
-               % (len(open_hits) + len(pervasive), engine_version, "\n".join(lines_txt)))
+        body = ("%d engine line(s) contain text matching your profile (jobsearch %s). The "
+                "engine must be portable. Nothing below is your data itself — only where a "
+                "match sits, with each matched term masked as %s:\n%s\nDecide per entry, then "
+                "resolve this ask with ONE of these as the resolution:\n"
+                "    report                 the next session start files the file:line list and "
+                "the engine version to the public tracker — never the matched text — from a "
+                "machine that has `gh`\n"
+                "    not-my-data h1 h3 ...  only the entries you name stay quiet, in every "
+                "future release, until that line's text changes\n"
+                "    not-my-data            no id: accepted only when exactly one entry is open\n"
+                "Anything else is not accepted: this ask stays open and tells you why."
+                % (plan["total"], engine_version, MASK, "\n".join(plan["lines"])))
+        if notice:
+            body = _notice_text(notice) + "\n\n" + body
         row = {"id": ASK_ID, "kind": "system",
-              "title": "%d engine line(s) match your profile data" % (len(open_hits) + len(pervasive)),
-              "ask": body, "created": _now_iso()[:10], "act_by": None, "opp_id": None,
-              "channel_id": None, "resolves_when": None, "resolved_on": None,
-              "resolution": None, "trigger_kind": None, "trigger_ref": None, "note": None}
-        # Preserve a prior open row's resolution fields ONLY when this hit set is unchanged —
-        # a genuinely new scan replaces the row fresh, exactly as system-application-endings does.
+               "title": "%d engine line(s) match your profile data" % plan["total"],
+               "ask": body, "created": _now_iso()[:10], "act_by": None, "opp_id": None,
+               "channel_id": None, "resolves_when": None, "resolved_on": None,
+               "resolution": None, "trigger_kind": None, "trigger_ref": None, "note": None}
+        # A genuinely new scan replaces the row fresh, exactly as system-application-endings does.
         new_asks = [a for a in asks if a.get("id") != ASK_ID] + [row]
         _atomic.write_jsonl(asks_path, new_asks)
     except Exception:
         pass                                      # dev #411 §2.2 — housekeeping never blocks
 
 
+def _plog(**kw):
+    try:
+        from _diag import log as _dlog
+        _dlog("purity", **kw)
+    except Exception:
+        pass
+
+
+def _judge_not_my_data(ids, stamp, engine_version):
+    """M2 — decide a `not-my-data [ids]` answer against the stamp, through the ask's own map.
+    Returns (accepted_hit_keys, accepted_pervasive_keys, rejected_reasons, whole_reason):
+    `whole_reason` is set when NOTHING can be accepted (no map, another engine version, a bare
+    answer with more than one entry open); otherwise each bad id is named in `rejected_reasons`
+    and the good ones are accepted."""
+    amap = stamp.get("ask_map")
+    if not isinstance(amap, dict) or not isinstance(amap.get("id_map"), list):
+        return [], [], [], "no id map for this ask yet; wait for the next completed scan"
+    if amap.get("engine_version") != engine_version:
+        return [], [], [], "the engine version changed since this ask was written"
+    by_id = {e.get("id"): e for e in amap["id_map"] if isinstance(e, dict)}
+    open_hits = [h for h in (stamp.get("hits") or []) if isinstance(h, dict)]
+    open_perv = [p for p in (stamp.get("pervasive") or []) if isinstance(p, dict)]
+    hit_keys = {(h.get("path"), h.get("kind"), h.get("text_sha256")) for h in open_hits}
+    perv_keys = {(p.get("kind"), p.get("term_key")) for p in open_perv}
+    if not ids:
+        n_open = len(open_hits) + len(open_perv)
+        if n_open != 1:
+            return [], [], [], ("a bare not-my-data needs exactly one open entry; %d are open — "
+                                "name the ids" % n_open)
+        ids = [e["id"] for e in amap["id_map"]
+               if isinstance(e, dict) and e.get("id")
+               and ((e["id"][0] == "h" and (e.get("path"), e.get("kind"), e.get("text_sha256"))
+                     in hit_keys)
+                    or (e["id"][0] == "p" and (e.get("kind"), e.get("term_key")) in perv_keys))]
+        if len(ids) != 1:
+            return [], [], [], "the one open entry is not one this ask lists; wait for the next scan"
+    acc_h, acc_p, bad = [], [], []
+    for tok in ids:
+        e = by_id.get(tok)
+        if e is None:
+            bad.append("unknown id %s" % tok[:12])
+        elif tok[0] == "h":
+            key = (e.get("path"), e.get("kind"), e.get("text_sha256"))
+            if key in hit_keys:
+                acc_h.append(key)
+            else:
+                bad.append("%s is no longer an open entry" % tok)
+        else:
+            key = (e.get("kind"), e.get("term_key"))
+            if e.get("term_key") and key in perv_keys:
+                acc_p.append(key)
+            else:
+                bad.append("%s is no longer an open entry" % tok)
+    return acc_h, acc_p, bad, None
+
+
 def _resolve_purity_ask(profile, engine_version):
-    """§2.5 decision table — read the ask's own `resolution` field (no shape change) and act:
-    `not-my-data` → dismiss every currently-open hit into the stamp; `report` → (best-effort,
-    scoped) attempted only when `gh` is on PATH, else deferred; anything unreadable is re-raised
-    LOUD. Returns True if it changed the stamp/ask (so the caller can re-read before reporting)."""
+    """§2.5 decision table — read the ask's own `resolution` field (no shape change) and act.
+    Returns `(changed, unaccepted)`: `changed` is True if it changed the stamp/ask (so the caller
+    can re-read before reporting); `unaccepted` is a short reason when the answer was NOT (fully)
+    accepted, else None.
+
+    The accepted answers are exactly: `report` (best-effort, scoped: attempted only when `gh` is on
+    PATH, else deferred); `not-my-data <ids>` (dismisses only the named ids, through the ask's own
+    id map); and a bare `not-my-data` when exactly one entry is open. ⭐ Anything else — a typo, a
+    bare `not-my-data` with several open, an unknown id, an answer for another engine version —
+    is NOT accepted: `resolved_on` resets to None, the ask is re-shown with the accepted forms
+    printed first, and the caller prints one hook line. (This replaces the old
+    `resolution != 'report'` branch, which dismissed EVERY open hit on any other word.)"""
     try:
         asks_path = os.path.join(profile, "data", "asks.jsonl")
         if not os.path.exists(asks_path):
-            return False
+            return False, None
         asks = []
         with open(asks_path, encoding="utf-8") as fh:
             for line in fh:
@@ -1269,47 +1504,75 @@ def _resolve_purity_ask(profile, engine_version):
                     asks.append(json.loads(line))
         row = next((a for a in asks if a.get("id") == ASK_ID), None)
         if not row or not row.get("resolved_on"):
-            return False
+            return False, None
         resolution = (row.get("resolution") or "").strip()
         stamp_path = os.path.join(profile, STAMP_REL)
         stamp = _read_json(stamp_path) or {}
         if not resolution:
-            try:
-                from _diag import log as _dlog
-                _dlog("purity", verdict="resolution-unreadable")
-            except Exception:
-                pass
-            return False
-        if resolution.split()[0] == "not-my-data" or resolution != "report":
-            dismissed = list(stamp.get("dismissed", []))
-            for h in stamp.get("hits", []):
-                key_row = dict(h, engine_version=engine_version)
-                if key_row not in dismissed:
-                    dismissed.append(key_row)
+            _plog(verdict="resolution-unreadable")
+            return False, None
+        if resolution == "report":
+            import shutil as _shutil
+            if not _shutil.which("gh"):
+                stamp["report"] = {"decided": _now_iso(), "filed": None,
+                                   "deferred_reason": "no-gh"}
+                _write_json_atomic(stamp_path, stamp)
+                _plog(verdict="report-deferred", reason="no-gh")
+                return True, None
+            return False, None
+
+        parts = resolution.split()
+        if parts[0] != "not-my-data":
+            acc_h, acc_p, bad, whole = [], [], [], "unrecognised answer"
+        else:
+            acc_h, acc_p, bad, whole = _judge_not_my_data(parts[1:], stamp, engine_version)
+        reason = whole or ("; ".join(bad[:3]) if bad else None)
+
+        dismissed = list(stamp.get("dismissed", []))
+        for (path, kind, sha) in dict.fromkeys(acc_h):
+            line_no = next((h.get("line") for h in stamp.get("hits", [])
+                            if (h.get("path"), h.get("kind"), h.get("text_sha256"))
+                            == (path, kind, sha)), None)
+            dismissed.append({"path": path, "line": line_no, "kind": kind, "text_sha256": sha,
+                              "engine_version": engine_version, "match": "text"})
+        for (kind, key) in dict.fromkeys(acc_p):
+            dismissed.append({"match": "pervasive", "kind": kind, "term_key": key,
+                              "engine_version": engine_version})
+        if acc_h or acc_p:
             stamp["dismissed"] = dismissed
-            stamp["hits"] = []
-            stamp["pervasive"] = []
+            stamp["hits"] = [h for h in stamp.get("hits", [])
+                             if (h.get("path"), h.get("kind"), h.get("text_sha256")) not in acc_h]
+            stamp["pervasive"] = [p for p in stamp.get("pervasive", [])
+                                  if (p.get("kind"), p.get("term_key")) not in acc_p]
+            _plog(verdict="dismissed", n=len(dismissed))
+        remaining = len(stamp.get("hits", [])) + len(stamp.get("pervasive", []))
+        if reason is None and not remaining:
+            stamp.pop("ask_map", None)             # consumed: a stale id must not answer again
             _write_json_atomic(stamp_path, stamp)
-            try:
-                from _diag import log as _dlog
-                _dlog("purity", verdict="dismissed", n=len(dismissed))
-            except Exception:
-                pass
-            return True
-        # resolution == "report" — best-effort, scoped: only when `gh` is reachable.
-        import shutil as _shutil
-        if not _shutil.which("gh"):
-            stamp["report"] = {"decided": _now_iso(), "filed": None, "deferred_reason": "no-gh"}
-            _write_json_atomic(stamp_path, stamp)
-            try:
-                from _diag import log as _dlog
-                _dlog("purity", verdict="report-deferred", reason="no-gh")
-            except Exception:
-                pass
-            return True
-        return False
+            return True, None
+
+        # Something is still open (or the answer was not accepted): the ask is re-shown. Force a
+        # rescan on this run (the scan reuses unchanged files from the progress file) so the fresh
+        # ask carries fresh ids and a fresh map; reset the row NOW so it is open even if that
+        # scan cannot finish.
+        if reason is None:
+            stamp.pop("ask_map", None)
+        stamp["sources"] = None
+        stamp["terms_sha256"] = None
+        _write_json_atomic(stamp_path, stamp)
+        if reason is not None:
+            import _atomic
+            body = row.get("ask") or ""
+            if body.startswith(ASK_NOTICE_MARK):
+                body = body.split("\n\n", 1)[-1]
+            row["ask"] = _notice_text(reason) + "\n\n" + body
+            row["resolved_on"] = None
+            row["resolution"] = None
+            _atomic.write_jsonl(asks_path, [row if a.get("id") == ASK_ID else a for a in asks])
+            _plog(verdict="answer-not-accepted")
+        return True, reason
     except Exception:
-        return False
+        return False, None
 
 
 def hook_step(profile, engine, budget_s=8, migrations_verdict="current"):
@@ -1378,8 +1641,10 @@ def hook_step(profile, engine, budget_s=8, migrations_verdict="current"):
         # acted on even on a session where nothing else about the engine or profile changed
         # (the common case: the scan itself would otherwise short-circuit as "unchanged" and
         # never look at the ask row again). Re-read the stamp AFTER this, since the resolution
-        # step may have just mutated it (dismissed hits, cleared verdict).
-        _resolve_purity_ask(profile, engine_version)
+        # step may have just mutated it (dismissed hits, cleared verdict). ⭐ dev #710 — an answer
+        # that was not (fully) accepted, or that left entries open, forces a rescan on THIS run
+        # (it clears the stamp's fast-path keys), so the re-shown ask is rebuilt with fresh ids.
+        _changed, unaccepted = _resolve_purity_ask(profile, engine_version)
 
         stamp_path = os.path.join(state_dir, "purity-check.json")
         stamp = _read_json(stamp_path) or {}
@@ -1442,15 +1707,27 @@ def hook_step(profile, engine, budget_s=8, migrations_verdict="current"):
                     st = sorted_terms[kind] = sorted(terms.get(kind, []))
                 hits_raw.append({"path": rec["path"], "line": n, "kind": kind,
                                  "term": st[idx] if 0 <= idx < len(st) else "?",
-                                 "text_sha256": text_sha})
-
-        kept, pervasive = _pervasive_fold(hits_raw, terms)
+                                 "text_sha256": text_sha, "_file": path})
 
         dismissed = stamp.get("dismissed", [])
-        dismissed_keys = {(d.get("path"), d.get("line"), d.get("kind"), d.get("text_sha256"))
-                          for d in dismissed}
+        if not isinstance(dismissed, list):
+            dismissed = []
+        dindex = _dismissal_index(dismissed)
+        # dev #710 — the salt behind every pervasive `term_key`, created the first time a term is
+        # actually folded and kept in the stamp from then on (a new one would orphan every
+        # pervasive dismissal). Random, so a term_key cannot be recomputed from the stamp alone.
+        salt_box = [stamp.get("term_salt")]
+
+        def _salt():
+            if not salt_box[0]:
+                salt_box[0] = os.urandom(16).hex()
+            return salt_box[0]
+        kept, pervasive = _pervasive_fold(hits_raw, terms, salt_getter=_salt,
+                                          skip_keys=dindex[2])
+
         open_hits_internal = [h for h in kept
-                    if (h["path"], h["line"], h["kind"], h["text_sha256"]) not in dismissed_keys]
+                              if not _hit_dismissed(dindex, h["path"], h["line"], h["kind"],
+                                                    h["text_sha256"])]
         # dev #411 §2.3/§2.5 — the TERM ITSELF is written NOWHERE past this point: not in the
         # stamp, not in --json, not in the ask, not on stdout. `open_hits_internal` (which still
         # carries `term`, used only for the pervasive fold and dismissal keying above) never
@@ -1472,13 +1749,32 @@ def hook_step(profile, engine, budget_s=8, migrations_verdict="current"):
             "resume_from": resume_from, "verdict": verdict, "hits": open_hits,
             "pervasive": pervasive, "dismissed": dismissed, "report": stamp.get("report"),
         }
+        if salt_box[0]:
+            new_stamp["term_salt"] = salt_box[0]
+        plan = None
+        if verdict == "hit":
+            # dev #710 M2/M4 — the ask is built (and its id map recorded in the stamp) from the
+            # SAME entries, so an id can only ever name what this ask listed. Each listed line is
+            # shown with every profile term masked.
+            mask = _term_masker(terms)
+            masks = {}
+            for h in sorted(open_hits_internal,
+                            key=lambda h: (h["path"], h["line"], h["kind"]))[:ASK_LIST_MAX]:
+                masks[(h["path"], h["line"], h["kind"])] = _masked_line(h["_file"], h["line"], mask)
+            plan = _ask_plan(open_hits, pervasive, masks)
+            new_stamp["ask_map"] = {"engine_version": engine_version, "id_map": plan["id_map"]}
+        elif verdict == "partial" and isinstance(stamp.get("ask_map"), dict):
+            new_stamp["ask_map"] = stamp["ask_map"]       # still the map of the ask on screen
         _write_json_atomic(stamp_path, new_stamp)
 
         lines = []
+        if unaccepted:
+            lines.append("purity ask: answer not accepted (%s); see Your Move" % unaccepted)
         if verdict == "hit":
-            _write_purity_ask(profile, engine_version, open_hits, pervasive)
-            lines.append("jobsearch: %d engine line(s) match your profile data — see Your "
-                         "Move › System & tooling." % (len(open_hits) + len(pervasive)))
+            _write_purity_ask(profile, engine_version, plan, notice=unaccepted)
+            if not unaccepted:
+                lines.append("jobsearch: %d engine line(s) match your profile data — see Your "
+                             "Move › System & tooling." % (len(open_hits) + len(pervasive)))
         elif verdict == "partial":
             lines.append("jobsearch: purity scan incomplete (%d of %d engine files) — resumes "
                          "next session where this profile's state persists"
@@ -1797,6 +2093,29 @@ def main():
     if progress_path is not None:
         _save_progress(progress_path, progress_key, res.records, complete=not partial)
     scanned = [p for p, _k in res.order]
+
+    # ⭐⭐ dev #710 / public #148 (M5) — THE STANDALONE SCAN HONOURS THE USER'S DISMISSALS, from the
+    # SAME root its terms came from (`ROOT`, via `_profile_terms()`), never from a second root. No
+    # stamp resolved is stated as NOT READ, never as 0: a count of zero would read as "nobody
+    # dismissed anything" when the truth is "this run could not look".
+    stamp_doc = _read_json(os.path.join(ROOT, STAMP_REL)) if ROOT else None
+    dindex = _dismissal_index(stamp_doc.get("dismissed")) if isinstance(stamp_doc, dict) else None
+    quiet_terms = set()
+    if dindex is not None and dindex[2] and stamp_doc.get("term_salt"):
+        files_by_term = {}
+        for _p, rel_key in res.order:
+            rec = res.records.get(rel_key)
+            if not rec or not rec.get("text"):
+                continue
+            for _n, kind, idx, _sha in rec["hits"]:
+                st = sorted(terms.get(kind, []))
+                if 0 <= idx < len(st):
+                    files_by_term.setdefault((kind, st[idx]), set()).add(rec["path"])
+        for (kind, term), files_ in files_by_term.items():
+            if (len(files_) >= PERVASIVE_FILE_THRESHOLD
+                    and (kind, _term_key(stamp_doc["term_salt"], kind, term)) in dindex[2]):
+                quiet_terms.add((kind, term))
+    n_dismissed = 0
     for p, rel_key in res.order:
         rec = res.records.get(rel_key)
         if not rec or not rec.get("text"):
@@ -1807,10 +2126,13 @@ def main():
             exempt_by_file[rel] = ex
         hits = _materialize(p, terms, rec["hits"])
         keep = []
-        for h in hits:
+        for h, row in zip(hits, rec["hits"]):
             exc = known_exception_for(rel, h[3])
             if exc:
                 fired.add(exc)
+            elif dindex is not None and ((h[1], h[2]) in quiet_terms
+                                         or _hit_dismissed(dindex, rel, row[0], row[1], row[3])):
+                n_dismissed += 1          # the user's own answer; counted below, never silent
             else:
                 keep.append(h)
         if keep:
@@ -1849,6 +2171,11 @@ def main():
             print("\n  %s (shape-exempt)" % rel)
             for n, kind, w, line in ex[:12]:
                 print("    %4d  [%s:%s]  %s" % (n, kind, w, line))
+    if dindex is None:
+        print("  dismissals: NOT READ (no profile stamp resolved)")
+    else:
+        print("  dismissed (not-my-data): %d match(es), from this profile's own answers (dev #710)"
+              % n_dismissed)
 
     # ⭐⭐ THE COVERAGE LINE IS THE POINT OF #45. A gate that cannot say what it skipped is a
     # gate whose green run means nothing. scanned + excluded must equal the tracked total, and
