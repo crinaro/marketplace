@@ -492,6 +492,26 @@ def _board_coverage_line(e, label, tail, attended):
     return head + " · " + " · ".join(parts) + " · " + tail
 
 
+def _pane_account(row):
+    """`(partial surfaces, notes)` -- what a `recorded` pass row says about the Browser pane (dev #826 / public #177,
+    jobsearch 0.83.0). `partial` is the row's list of surfaces read from a pane that was not painting; `notes` are the
+    phrases a summary line carries so a hidden-mode or unreported-pane pass never reads as an ordinary complete one.
+    A row written before 0.83.0 carries none of the three fields and yields `([], [])`: its line is unchanged. A
+    malformed `partial` (not a list of strings) is ignored here; the writer (`journal.record_pass`) refuses one."""
+    raw = row.get("partial")
+    partial = [t for t in raw if isinstance(t, str)] if isinstance(raw, list) else []
+    notes = []
+    if partial:
+        notes.append("read from a Browser pane that was not painting: %s" % ", ".join(partial))
+    if row.get("mode") == "hidden":
+        notes.append("hidden mode")
+    if row.get("pane") == "unknown":
+        notes.append("Browser pane state unknown")
+    elif row.get("pane") == "unreported":
+        notes.append("Browser pane state not reported")
+    return partial, notes
+
+
 def _sweep_line(recs, run_id):
     """The `linkedin sweep` line: how `linkedin_sweep.py record` judged this run's SWEEP hand-back,
     read from the run's LATEST `recorded` pass row. Returns `(line, is_partial)` or `(None, False)`
@@ -507,8 +527,13 @@ def _sweep_line(recs, run_id):
     faults, kept = row.get("faults", 0), row.get("kept") or ""
     where = _handback.kept_where(kept, run_id) if kept else ""
     counts = "%d concluded · %d not concluded" % (row.get("concluded", 0), row.get("not_concluded", 0))
+    partial, pane_notes = _pane_account(row)             # dev #826 / public #177
     if verdict == "clean":
-        return "linkedin sweep: complete · %d concluded" % row.get("concluded", 0), False
+        if partial:
+            return ("linkedin sweep: PARTIAL (%s) · %d concluded" % ("; ".join(pane_notes), row.get("concluded", 0)),
+                    True)
+        return ("linkedin sweep: complete · %d concluded%s"
+                % (row.get("concluded", 0), "".join(" · " + n for n in pane_notes)), False)
     if verdict == "refused":
         counted = ""
         returned = [r for r in recs if r.get("event") == "pass" and r.get("kind") == "linkedin"
@@ -519,13 +544,15 @@ def _sweep_line(recs, run_id):
             excused = any(x is returned[-1] for x in _journal.linkedin_excused_rows(recs, day))
             counted = (" (not counted against the quota)" if excused
                        else " (counted against the quota)")
-        return ("linkedin sweep: REFUSED%s%s" % (counted, (" · raw kept at %s" % where) if where else ""),
+        return ("linkedin sweep: REFUSED%s%s%s" % (counted, (" · raw kept at %s" % where) if where else "",
+                                                   "".join(" · " + n for n in pane_notes)),
                 True)
     if verdict in ("pass-failed", "pane-held"):
         what = "PASS FAILED" if verdict == "pass-failed" else "PANE HELD (the pass did not run)"
         extra = [("line faults: %d" % faults)] if faults else []
         if where:
             extra.append("raw kept at %s" % where)
+        extra.extend(pane_notes)
         return "linkedin sweep: %s%s" % (what, (" (%s)" % "; ".join(extra)) if extra else ""), True
     inside = []
     if faults:
@@ -534,6 +561,7 @@ def _sweep_line(recs, run_id):
         inside.append("coverage incomplete")
     if where:
         inside.append("raw kept at %s" % where)
+    inside.extend(pane_notes)
     return "linkedin sweep: PARTIAL (%s) · %s" % ("; ".join(inside), counts), True
 
 

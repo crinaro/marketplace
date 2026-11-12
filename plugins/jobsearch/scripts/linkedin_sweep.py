@@ -69,6 +69,28 @@ gate closure** — they have their own reporting; a pass that read a list but sk
 still the pass that was owed. A failed or garbled `record --one-off` hand-back NEVER queues the
 daily pass: the one-off runs with the owner present and is not the daily pass.
 
+## The pane rides the block (dev #826 / public #177, jobsearch 0.83.0)
+
+A SWEEP block carries a required `PANE state=<displayed|hidden|unknown|not-pane> mode=<normal|hidden>` line.
+A hidden Browser pane is not a stalled pane (public #96): the runner reads the harness's own display line,
+and when the pane is hidden it reads the lists by text only (HIDDEN MODE). `record` then stores `pane`,
+`mode` and `partial` on the pass row and decides what that means, in `_judge_pane`:
+
+* `mode=hidden`: every reached surface is `partial`, a `pane-hidden` gap opens (scope `linkedin:pane-hidden`,
+  or `linkedin:chrome-tab-hidden` for the extension) with the user's remedy, and a hidden pass NEVER closes
+  one. A hidden pass that reaches a list still closes the owed pass row (the text rows are real rows) and is
+  never re-queued;
+* `state=displayed` / `not-pane` with `mode=normal` closes that executor's open `pane-hidden` gap;
+* `state=unknown` applies the pre-0.83 rule loudly and opens a `pane-unreadable` gap, closed by a pass that
+  reads `displayed` or `hidden`;
+* no readable line: a block-level fault, `pane: unreported`, every reached surface `partial`;
+* a `RENDER STALLED` first line over a block whose PANE line says hidden is a contradiction, not a stall.
+
+THE STATE IS SELF-REPORTED (PARTIAL), and a pane that reads `displayed` but is not painting keeps the
+pre-0.83 outcome (UNVERIFIED). One scope per reason, never `linkedin:pane` for the new gaps: that scope
+already carries `render-stalled` and `pane-held`, and `journal.record_gap` derives the gap id from (run,
+scope) alone, so two reasons on one scope would share an id and one close would close both.
+
 ## The grammar (one definition; `agents/linkedin-runner.md` carries it byte-equal, test-enforced)
 
 `SWEEP_GRAMMAR` below. A line inside the block that matches no
@@ -142,6 +164,7 @@ THREAD contact:<id> url=<messaging thread url>
 --- END WORKLIST ---
 
 --- SWEEP v1 run=<run-id> ---                         (what you hand back, in your hand-back file)
+PANE state=<displayed|hidden|unknown|not-pane> mode=<normal|hidden>
 SURFACE <token> REACHED shown=<n> total=<m|?> oldest=<YYYY-MM-DD|?>
 SURFACE <token> UNREACHABLE reason=<journal.REASONS code>
 SURFACE <token> NOT-ATTEMPTED
@@ -161,6 +184,68 @@ _VIEW = re.compile(r"^VIEW contact:(?P<id>\S+) kind=(?P<kind>thread|profile) at=
                    r"saw=(?P<saw>empty|message:%s|degree:(?:1|2|3|pending))$" % _DATE)
 _BEGIN = re.compile(r"^--- SWEEP v1 run=(?P<run>\S+) ---$")
 _END = "--- END SWEEP ---"
+
+# ---------------------------------------------------------------------------------------------
+# the pane (dev #826 / public #177, jobsearch 0.83.0; design-sweep-misfires.md section 2.4)
+# ---------------------------------------------------------------------------------------------
+#
+# The SWEEP block's required `PANE state=<...> mode=<normal|hidden>` line. `state` is what the runner read
+# from the harness (`pane_probe.pane_state`), or `not-pane` for the Chrome extension; `mode` is whether any part
+# of the pass ran in HIDDEN MODE (reads by text only, no click). They are separate so that a hidden Chrome tab
+# (`state=not-pane mode=hidden`) is never recorded as full coverage. THE STATE IS SELF-REPORTED (PARTIAL): this
+# script judges what it is handed, and the hook that would record the harness line itself is a follow-up.
+# UNVERIFIED: a pane that reads `displayed` and is not painting (an occluded window, another Space, a sleeping
+# display, a locked screen) is reported `displayed mode=normal` and keeps the pre-0.83 outcome.
+PANE_LINE_STATES = ("displayed", "hidden", "unknown", "not-pane")
+PANE_LINE_MODES = ("normal", "hidden")
+_PANE_LINE = re.compile(r"^PANE state=(?P<state>\S+) mode=(?P<mode>\S+)$")
+
+# One scope per REASON, never `linkedin:pane` for all of them. `journal.record_gap` builds the gap id from
+# (run, scope) alone and a close is by gap id, so two gaps of different reasons on one scope, opened by one run,
+# would share an id and a close of either would close both. `linkedin:pane` already carries `render-stalled` and
+# `pane-held` (written by the runner), and a hidden pass must neither be deduped away by them nor close them.
+PANE_HIDDEN_SCOPES = {"pane": "linkedin:pane-hidden", "chrome-tab": "linkedin:chrome-tab-hidden"}
+PANE_UNREADABLE_SCOPE = "linkedin:pane-unreadable"
+
+# The remedy, worded WITHOUT "this session": a scheduled pass prints it too, and "this session" there would be
+# the scheduled session, which the owner cannot put in view (R2-SURF-5).
+PANE_REMEDY = {
+    "pane": ("Click-dependent LinkedIn work runs only while the Browser pane is shown: run /jobsearch:linkedin "
+             "in the desktop app and keep it in view."),
+    "chrome-tab": ("Click-dependent LinkedIn work runs only while the browser tab is shown: run "
+                   "/jobsearch:linkedin with the Chrome window open and in view."),
+}
+PANE_HIDDEN_CLOSES_WHEN = {
+    "pane": ("a LinkedIn pass runs with the Browser pane shown (PANE state=displayed mode=normal): run "
+             "/jobsearch:linkedin in the desktop app and keep it in view"),
+    "chrome-tab": ("a LinkedIn pass runs on the Chrome extension with the tab shown (PANE state=not-pane "
+                   "mode=normal): run /jobsearch:linkedin with the Chrome window open and in view"),
+}
+PANE_UNREADABLE_CLOSES_WHEN = ("a LinkedIn pass reads the Browser pane's display line (PANE state=displayed or "
+                               "hidden). If every pass reads unknown, the harness wording has changed: report it")
+
+
+def _executor(state):
+    """`pane` (the in-app Browser pane) or `chrome-tab` (the extension, `state=not-pane`)."""
+    return "chrome-tab" if state == "not-pane" else "pane"
+
+
+def close_pane_gaps(root, scope, reason, at=None, out=print):
+    """The ONE writer that closes a pane gap: every OPEN gap with exactly this `scope` AND this `reason` gets a
+    `gap-closed` row. Keyed on both, so a gap of another reason (`render-stalled`, `pane-held`) is never closed
+    by a pane pass that did not examine it. Returns the closed gap ids; a journal that cannot be written is
+    reported through `out`, never swallowed."""
+    closed = []
+    at = at or journal.now_iso()
+    try:
+        for g in journal.open_gaps(journal.read(root)):
+            if g.get("scope") == scope and g.get("reason") == reason:
+                journal.append(root, {"event": "gap-closed", "gap_id": g["gap_id"], "at": at})
+                closed.append(g["gap_id"])
+                out("GAP CLOSED %s (%s)" % (scope, reason))
+    except journal.JournalError as e:
+        out("⚠️ could not close the gap %s (%s)" % (scope, e))
+    return closed
 
 # Which (state, surface) pairs are meaningful. Anything else is a hand-back this parser cannot
 # read, and refusing it is the point.
@@ -480,6 +565,7 @@ def parse_sweep(text, run_id, watch):
         raise SweepRefused("the SWEEP block has no `%s` line" % _END)
 
     surfaces, seen, views, dropped = {}, [], [], []
+    panes, pane_shaped = [], False      # every well-formed PANE line; whether any PANE-shaped line was seen
     surface_line = {}                   # token -> (line number, text) of its first report
     doubled = set()                     # tokens reported more than once: every report is dropped
 
@@ -514,6 +600,22 @@ def parse_sweep(text, run_id, watch):
         if not raw:
             continue
         n = i + 1
+        if raw.startswith("PANE "):
+            # dev #826 / public #177: the pane line names no person, so a bad one is T1 (taints nothing)
+            pane_shaped = True
+            pm = _PANE_LINE.match(raw)
+            if not pm:
+                drop(n, raw, "not a `PANE state=<displayed|hidden|unknown|not-pane> mode=<normal|hidden>` line",
+                     "T1")
+            elif pm.group("state") not in PANE_LINE_STATES:
+                drop(n, raw, "PANE state=%s is not one of %s"
+                     % (pm.group("state"), "|".join(PANE_LINE_STATES)), "T1")
+            elif pm.group("mode") not in PANE_LINE_MODES:
+                drop(n, raw, "PANE mode=%s is not one of %s"
+                     % (pm.group("mode"), "|".join(PANE_LINE_MODES)), "T1")
+            else:
+                panes.append((n, raw, pm.group("state"), pm.group("mode")))
+            continue
         sm = _SURF_REACHED.match(raw)
         if sm:
             shown, total = int(sm.group("shown")), sm.group("total")
@@ -588,8 +690,24 @@ def parse_sweep(text, run_id, watch):
         if _GRAMMAR_SHAPED.match(raw) and not _ROLES_SEEN.match(raw):
             drop(i + 1, raw, "%s: a SEEN, VIEW or SURFACE line outside the SWEEP block is judged by "
                              "nobody, so it may hold a fact" % OUTSIDE_BLOCK, "T3")
+    # dev #826 / public #177 -- the PANE line. Exactly one well-formed line is the pane account. Two are
+    # contradictory, so BOTH are dropped (the SURFACE rule); a missing line is a block-level fault the caller
+    # files (`pane_missing`); a malformed one is already dropped above. A hidden state claimed with mode=normal
+    # contradicts itself: it is dropped as a fault and the pass is recorded as the hidden-mode pass it was.
+    pane = None
+    if len(panes) > 1:
+        for pn, praw, _s, _m in panes:
+            drop(pn, praw, "PANE is reported twice (all PANE lines dropped)", "T1")
+    elif panes:
+        pn, praw, state, mode = panes[0]
+        pane = {"state": state, "mode": mode}
+        if state == "hidden" and mode == "normal":
+            drop(pn, praw, "PANE state=hidden requires mode=hidden (a hidden pane is read without clicks); "
+                           "recorded as mode=hidden", "T1")
+            pane["mode"] = "hidden"
     dropped.sort(key=lambda d: d[0])
-    return {"surfaces": surfaces, "seen": kept_seen, "views": views, "dropped": dropped}
+    return {"surfaces": surfaces, "seen": kept_seen, "views": views, "dropped": dropped,
+            "pane": pane, "pane_missing": not pane_shaped}
 
 
 # ---------------------------------------------------------------------------------------------
@@ -638,7 +756,9 @@ class Verdict(object):
     `"queue"` | `None`: what to do to the owed pass row), `keep` (copy the raw hand-back), `judged`
     (the block's lines were judged, so stale line gaps may close), `reached` / `unreachable` /
     `not_attempted` (the parsed SURFACE statuses), `concluded` / `not_concluded`, `one_off`,
-    `not_measured` (print the NOT MEASURED line) and `summary` (print the SWEEP RECORDED line)."""
+    `not_measured` (print the NOT MEASURED line) and `summary` (print the SWEEP RECORDED line). dev #826:
+    `pane` / `mode` / `partial` (the pass row's account of the Browser pane) and `pane_actions` (the pane
+    gaps to open or close)."""
 
     def __init__(self, one_off=False):
         self.name = None
@@ -659,6 +779,12 @@ class Verdict(object):
         self.one_off = one_off
         self.not_measured = False
         self.summary = False
+        # dev #826 / public #177: the pane account of a judged block (None until a block is parsed), and the
+        # gap writes it implies: [("open"|"close", scope, reason, closes_when)], run by `apply` only.
+        self.pane = None
+        self.mode = None
+        self.partial = []
+        self.pane_actions = []
 
     def verdict_line(self):
         """The one `verdict:` line (§3.4), through `handback.verdict_line`. `verdict: clean` is
@@ -675,6 +801,60 @@ class Verdict(object):
         if self.name == "pass-failed":
             return handback.verdict_line("pass-failed", detail=self.detail)
         return handback.verdict_line("pane-held")
+
+
+def _block_says_hidden(lines):
+    """True when a well-formed `PANE` line in the hand-back says `state=hidden` or `mode=hidden`. Used
+    only to refuse a `RENDER STALLED` first line that contradicts it (a hidden pane is not a stalled pane)."""
+    for ln in lines:
+        m = _PANE_LINE.match(ln.strip())
+        if m and "hidden" in (m.group("state"), m.group("mode")):
+            return True
+    return False
+
+
+def _judge_pane(v, pane, surfaces):
+    """dev #826 / public #177 (design-sweep-misfires.md section 2.4) -- what a block's `PANE` line means:
+    fill `v.pane`, `v.mode`, `v.partial`, print the loud lines, and list the pane gaps to open or close.
+    PURE, like `judge`: it writes nothing (`apply` runs `v.pane_actions`).
+
+      * `mode=hidden` (any state): every reached surface is `partial` (read by text from a pane that was not
+        painting), one `pane-hidden` gap opens on the EXECUTOR's scope, and a hidden pass NEVER closes one;
+      * `mode=normal` with `state` `displayed` / `not-pane`: closes that executor's open `pane-hidden` gap;
+      * `state=unknown`: the pre-0.83 rule applied. A `!!` line and a `pane-unreadable` gap say so, and the gap
+        stays open until a pass reads one of the two pinned literals;
+      * no readable line: `pane` / `mode` are `unreported` and every reached surface is `partial`. A missing
+        line is not evidence of a hidden pane, so no pane gap opens or closes (the block fault is the signal).
+    `covers()` is untouched: rows read by text from a non-painting pane are real rows, and a lazily-loaded
+    list only ever makes `covers` refuse more."""
+    if pane is None:
+        v.pane = v.mode = "unreported"
+        v.partial = sorted(v.reached)
+        return
+    state, mode = pane["state"], pane["mode"]
+    v.pane, v.mode = state, mode
+    ex = _executor(state)
+    if mode == "hidden":
+        v.partial = sorted(v.reached)
+        what = "pane" if ex == "pane" else "browser tab"
+        for tok in v.partial:
+            info = surfaces[tok]
+            total = "?" if info.get("total") is None else info["total"]
+            v.lines.append("!! PARTIAL linkedin:%s — read from a %s that was not painting (shown %d of %s). %s"
+                           % (tok, what, info["shown"], total, PANE_REMEDY[ex]))
+        if not v.partial:
+            v.lines.append("!! PANE %s mode=hidden — nothing was read from a %s that was not painting. %s"
+                           % (state, what, PANE_REMEDY[ex]))
+        v.pane_actions.append(("open", PANE_HIDDEN_SCOPES[ex], "pane-hidden", PANE_HIDDEN_CLOSES_WHEN[ex]))
+    elif state in ("displayed", "not-pane"):
+        v.pane_actions.append(("close", PANE_HIDDEN_SCOPES[ex], "pane-hidden", None))
+    if state == "unknown":
+        v.lines.append("!! PANE unknown — the Browser pane's display line could not be read; the pre-0.83 "
+                       "stall rule applied. A pane-unreadable gap stays open until a pass reads it. Report "
+                       "this: the harness wording may have changed.")
+        v.pane_actions.append(("open", PANE_UNREADABLE_SCOPE, "pane-unreadable", PANE_UNREADABLE_CLOSES_WHEN))
+    elif state in ("displayed", "hidden"):
+        v.pane_actions.append(("close", PANE_UNREADABLE_SCOPE, "pane-unreadable", None))
 
 
 def judge(text, run_id, watch, one_off=False, recs=None):
@@ -694,8 +874,15 @@ def judge(text, run_id, watch, one_off=False, recs=None):
         v.lines.append("PANE HELD — another run holds the pane and is doing this work; nothing "
                        "queued, no sighting recorded.")
         return v
+    stall_contradiction = None
     for token in PASS_FAILURES:
         if first.startswith(token):
+            if token == "RENDER STALLED" and has_block and _block_says_hidden(lines):
+                # dev #826 / public #177 (P4): a hidden pane is not a stalled pane. The block is judged as the
+                # hidden-mode pass it was; the contradiction is a loud, block-tainting fault, and no stall is
+                # recorded or queued.
+                stall_contradiction = first
+                break
             v.name, v.exit, v.keep, v.owed = "pass-failed", EXIT_PASS_FAILED, has_block, "queue"
             v.detail = token.lower()
             v.lines.append("PASS FAILED — %s (the hand-back's first line). The block, if any, was "
@@ -718,10 +905,27 @@ def judge(text, run_id, watch, one_off=False, recs=None):
             tainted |= names
         elif cls == "T3":
             block_taint = True
+    pane = parsed["pane"]
+    if stall_contradiction:
+        n1 = next(i for i, ln in enumerate(lines) if ln.strip()) + 1
+        v.faults.append(handback.Fault(
+            n1, " ".join(stall_contradiction.split())[:200], "%d:%s" % (n1, _h8(stall_contradiction)),
+            "the first line says RENDER STALLED but the PANE line says the pane was hidden: a hidden pane is "
+            "not a stalled pane, so no stall is recorded and nothing is queued; the pass is recorded as the "
+            "hidden-mode pass it was"))
+        block_taint = True
+    if pane is None and parsed["pane_missing"]:
+        # a missing line is not evidence of a hidden pane: it is a block-level fault, and the pass row says
+        # `unreported` rather than guessing a state
+        v.faults.append(handback.Fault(
+            None, None, "block:pane",
+            "the SWEEP block has no `PANE state=<displayed|hidden|unknown|not-pane> mode=<normal|hidden>` line: "
+            "every reached surface is recorded partial, because nothing says the pane was painting"))
     v.lines += [handback.describe(f) for f in v.faults]
     for tok, info in sorted(surfaces.items()):
         {"REACHED": v.reached, "UNREACHABLE": v.unreachable,
          "NOT-ATTEMPTED": v.not_attempted}[info["status"]].append(tok)
+    _judge_pane(v, pane, surfaces)
 
     out = v.lines
     exit_incomplete = False
@@ -821,6 +1025,13 @@ def judge(text, run_id, watch, one_off=False, recs=None):
         v.not_measured = True
         out.append("!! NO LIST SURFACE REACHED — the pass read nothing it can conclude from; "
                    "the owed pass row stays pending.")
+        if v.mode == "hidden":
+            # dev #826 / public #177 (design 2.3 rule 4): a hidden pass is never re-queued. On a scheduled
+            # surface nobody is there to show the pane, so a queued pass would recur daily; the open
+            # pane-hidden gap and its remedy line are the signal. An owed row already pending stays pending.
+            v.owed = None
+            out.append("(a hidden pass is not re-queued; the open %s gap carries the remedy)"
+                       % PANE_HIDDEN_SCOPES[_executor(pane["state"] if pane else None)])
         return v
     v.owed, v.summary, v.not_measured = "close", True, True
     if v.faults:
@@ -898,6 +1109,20 @@ def apply(root, run_id, text, v, at=None, out=print, check=False):
 
         current = handback.file_line_gaps(root, run_id, scope_fmt, v.faults, closes, out)
         handback.close_stale_line_gaps(root, run_id, scope_fmt % "", current, out)
+    if v.judged and not v.one_off:
+        # dev #826 / public #177: the pane gaps. A one-off is a look the owner is present for and is not the
+        # daily pass, so it neither opens nor closes one. Dedupe and close on (scope, reason).
+        for act, scope, reason, closes_when in v.pane_actions:
+            if act == "open":
+                if any(g.get("scope") == scope and g.get("reason") == reason
+                       for g in journal.open_gaps(journal.read(root))):
+                    continue
+                try:
+                    journal.record_gap(root, run_id, scope, reason, closes_when=closes_when, at=at)
+                except journal.JournalError as e:
+                    out("⚠️ could not journal the gap %s (%s)" % (scope, e))
+            else:
+                close_pane_gaps(root, scope, reason, at=at, out=out)
     for scope, reason, closes_when in v.gaps:
         journal.record_gap(root, run_id, scope, reason, closes_when=closes_when, at=at)
 
@@ -920,10 +1145,12 @@ def apply(root, run_id, text, v, at=None, out=print, check=False):
 
     if not v.one_off:
         try:
+            pane_row = ({"pane": v.pane, "mode": v.mode, "partial": v.partial}
+                        if v.pane is not None else {})        # a block that was never read has no pane account
             journal.record_pass(root, run_id, "linkedin", "recorded", reached=v.reached,
                                 unreachable=v.unreachable, not_attempted=v.not_attempted, at=at,
                                 verdict=v.name, faults=len(v.faults), kept=rel,
-                                concluded=v.concluded, not_concluded=v.not_concluded)
+                                concluded=v.concluded, not_concluded=v.not_concluded, **pane_row)
         except journal.JournalError as e:
             out("⚠️ could not journal the `recorded` pass row (%s): the quota will count this pass" % e)
     out(v.verdict_line())

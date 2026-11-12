@@ -3538,7 +3538,7 @@ def copy_capture_item_facts(new_row, item_id, rid=None, item=None, profile=None)
             have_ch = first.get("channel_id")
             if have_ch and have_ch != feed_channel:
                 return [], ("the JSON's sightings[0].channel_id is %s but deferred item %r came from "
-                            "channel %s (a company feed). One value, stated once: omit "
+                            "channel %s (the sweep or feed that queued it recorded it). One value, stated once: omit "
                             "sightings[0].channel_id and the script copies it."
                             % (json.dumps(have_ch), item_id, json.dumps(feed_channel)))
             if not have_ch:
@@ -4223,29 +4223,135 @@ def _item_seen_on(item):
         return _now().date().isoformat()
 
 
-def _item_channel(item, channels, row=None):
-    """The channel a capture item's sighting is attributed to, or None. In order: the channel the item itself names (a
-    company-feed item, dev #751); the role's own (when it is linked to a row); the one `board_hosts` names for the item's
-    address; the ONE job-board or aggregator channel the profile holds, if it holds exactly one. Never a guess beyond
-    that: a profile with several boards and an item that names none is REFUSED (`capture-refused`), not attributed."""
+def _sighting_catalog():
+    """`(catalog or None, why-not or None)`: the shipped source catalog, for step 4 of `_item_channel_why`. An unreadable
+    catalog is NOT an empty one: the reason is returned and the refusal says it (a missing thing must not read as "no board
+    owns this host")."""
+    import channel_catalog as _cc
+    try:
+        return _cc.load_catalog(), None
+    except _cc.CatalogError as e:
+        return None, str(e)
+
+
+def _sighting_entries(host, catalog):
+    """The `swept-board` catalog entries whose `sighting_hosts` domain-match `host`: a value matches itself and any
+    subdomain of it (`board_hosts.host_matches`, RFC 6265 section 5.1.3), never another registrable domain.
+    `check_channel_catalog.py` rule K7 keeps the answer to at most one; more than one here is a catalog defect and is
+    treated as no answer."""
     import board_hosts as _bh
-    if item.get("channel_id"):
-        return item["channel_id"]
+    out = []
+    for e in (catalog or {}).get("entries") or []:
+        if not (isinstance(e, dict) and e.get("kind") == "swept-board"):
+            continue
+        hosts = e.get("sighting_hosts")
+        if isinstance(hosts, list) and any(_bh.host_matches(host, h) for h in hosts if isinstance(h, str)):
+            out.append(e)
+    return out
+
+
+def _item_channel_why(item, channels, row=None, catalog=None):
+    """dev #825 / public #176 -- `(channel_id, None)` or `(None, why)`: the channel a capture item's sighting is attributed
+    to, or the reason none can be, with the FIX named. `catalog` is `_sighting_catalog()`'s pair (loaded here when None).
+    In order:
+
+      1. the channel the item itself names (a company-feed item, dev #751; every producer since dev #825), IF the profile
+         holds a row with that id. An id the profile does not hold is REMEMBERED and resolution continues;
+      2. the role's own channel (when the item is linked to a row);
+      3. the one `board_hosts` names for the item's address (a `manual-candidate` board, dev #765);
+      4. the `swept-board` catalog entry whose `sighting_hosts` domain-match the item's host, then the ONE live profile row
+         linked to that entry (`channel_catalog_entry == entry.id`, or `id == entry.channel_id`). A `login`-access board
+         such as LinkedIn can never carry `board_hosts` (that field means "the engine never opens this host"), so this is
+         how its sightings are attributed;
+      5. the ONE job-board or aggregator channel the profile holds, ONLY when step 1 named nothing and step 4 matched no
+         entry. Evidence of a specific source is never overridden by guessing the only other board.
+
+    Never a guess beyond that: an item that matches no channel is REFUSED (`capture-refused`), and the reason names the
+    cause and what to do about it."""
+    import board_hosts as _bh
+    held = {c.get("id") for c in channels if isinstance(c, dict)}
+    named = item.get("channel_id") or None
+    if named and named in held:
+        return named, None
     if row is not None:
         ch = row.get("channel_id") or next((s.get("channel_id") for s in (row.get("sightings") or [])
                                             if isinstance(s, dict) and s.get("channel_id")), None)
         if ch:
-            return ch
+            return ch, None
     host = _bh.host_of(item.get("ref"))
     if host:
         for c in channels:
             hosts = c.get("board_hosts") if isinstance(c, dict) else None
             if isinstance(hosts, list) and any(_bh.host_matches(host, h) for h in hosts if isinstance(h, str)):
-                return c.get("id")
+                return c.get("id"), None
+    entries, cat_why, why = [], None, None
+    if host:
+        cat, cat_why = catalog if catalog is not None else _sighting_catalog()
+        entries = _sighting_entries(host, cat) if cat is not None else []
+    if len(entries) == 1:
+        ent = entries[0]
+        linked = [c for c in channels if isinstance(c, dict)
+                  and (c.get("channel_catalog_entry") == ent.get("id") or c.get("id") == ent.get("channel_id"))]
+        live = [c for c in linked if c.get("relationship_status") != "retired"]
+        if len(live) == 1:
+            return live[0].get("id"), None
+        if len(live) > 1:
+            why = ("the address is on %s and this profile links %d channel rows to it (%s): name the right one by hand "
+                   "(`record.py create <id> '<json>' --from-item %s`), or close the item"
+                   % (ent.get("label"), len(live), ", ".join(str(c.get("id")) for c in live), item.get("id")))
+        elif linked:
+            why = ("the address is on %s, whose channel row %s is turned off in this profile: turn it back on "
+                   "(`record.py source on %s`) to capture it, or close the item"
+                   % (ent.get("label"), linked[0].get("id"), linked[0].get("id")))
+        else:
+            why = ("the address is on %s, which this profile does not link: adopt that source to capture it "
+                   "(`record.py source on %s`), or close the item" % (ent.get("label"), ent.get("id")))
+    elif len(entries) > 1:
+        why = ("the address host %s is claimed by %d catalog entries (%s): that is a catalog defect, report it, or close "
+               "the item" % (host, len(entries), ", ".join(str(e.get("id")) for e in entries)))
+    if why is None and named:
+        why = ("the item was seen on channel %s, which this profile does not hold: adopt it (`record.py source on %s` for a "
+               "catalog source, or `record.py channel-catalog add <entry> --attach <your channel id>` to tie a channel you "
+               "already hold), or close the item" % (named, named))
+    if why is not None:
+        return None, why
     boards = [c.get("id") for c in channels if isinstance(c, dict)
               and c.get("type") in _validator_module().URL_BEARING_CHANNEL_TYPES
               and c.get("relationship_status") != "retired"]
-    return boards[0] if len(boards) == 1 else None
+    if len(boards) == 1:
+        return boards[0], None
+    if host:
+        return None, ("the address host %s belongs to no known board: report the host if it is a board's (it may belong in "
+                      "a catalog entry's sighting_hosts), or close the item; the profile holds %d board%s, so none is "
+                      "assumed%s" % (host, len(boards), "" if len(boards) == 1 else "s",
+                                     "" if cat_why is None else " (the source catalog could not be read: %s)" % cat_why))
+    return None, ("the item names no channel, its address has no host to match, and the profile holds %d board%s: create "
+                  "it by hand (`record.py create <id> '<json>' --from-item %s`) or close the item"
+                  % (len(boards), "" if len(boards) == 1 else "s", item.get("id")))
+
+
+def _from_item_resolved_channel(item_id):
+    """dev #825 / public #176 -- `(item or None, error or None)` for `create --from-item <id>`: the capture item with its
+    `channel_id` made to name a channel this profile HOLDS, or the reason it cannot be, with the fix named (the same
+    wording `capture-batch` prints, `_item_channel_why`). `(None, None)` means "let `copy_capture_item_facts` look the
+    item up itself" (no such item, a non-capture item, or an item that names no channel: its own refusals, unchanged), so
+    this adds one refusal and no other behaviour. An item whose stamped channel the profile holds is returned as is."""
+    import deferred as _deferred_mod
+    item = _deferred_mod.load_capture_item(item_id)
+    if item is None or not item.get("channel_id"):
+        return None, None
+    channels = _load_or_empty("channels")
+    if item["channel_id"] in {c.get("id") for c in channels if isinstance(c, dict)}:
+        return item, None
+    channel, why = _item_channel_why(item, channels)
+    if channel is None:
+        return None, why
+    return dict(item, channel_id=channel), None
+
+
+def _item_channel(item, channels, row=None, catalog=None):
+    """The channel `_item_channel_why` attributes the item to, or None (the reason is the other half of that pair)."""
+    return _item_channel_why(item, channels, row, catalog)[0]
 
 
 def _run_planned_items(recs, run):
@@ -4364,6 +4470,7 @@ def _capture_batch_locked(args, run, phase, deadline_s, check, t0, stores):
     on, at_iso = now.date(), now.isoformat()
     owner = _pf.owner_token()
     plan_cache = []
+    catalog = _sighting_catalog()                  # dev #825: read once; an unreadable one is said in the refusal
 
     state = {"created": 0, "linked": 0, "folded": 0, "refused": 0, "nearer": 0, "unverified": 0}
     closes = []                                    # [(item id, closed_as)]
@@ -4400,11 +4507,9 @@ def _capture_batch_locked(args, run, phase, deadline_s, check, t0, stores):
                 return "nearer"
         todo = [(u, l) for u, l in listings if not _same_listing(u, row)]
         if todo:
-            channel = _item_channel(item, channels, row)
+            channel, why = _item_channel_why(item, channels, row, catalog)
             if not channel:
-                raise _ItemRefused("no channel can be named for the sighting of %s: the item names none, its "
-                                   "address is on no channel's board_hosts, and the profile holds several boards"
-                                   % item["id"])
+                raise _ItemRefused("no channel can be named for the sighting of %s: %s" % (item["id"], why))
             touch(row)
             seen_on = _item_seen_on(item)
             have = set()
@@ -4439,11 +4544,9 @@ def _capture_batch_locked(args, run, phase, deadline_s, check, t0, stores):
         listings = _item_listings(item)
         if not listings:
             raise _ItemRefused("the item carries no address")
-        channel = _item_channel(item, channels)
+        channel, why = _item_channel_why(item, channels, None, catalog)
         if not channel:
-            raise _ItemRefused("no channel can be named for the sighting: the item names none, its address is on no "
-                               "channel's board_hosts, and the profile holds several boards (create it by hand: "
-                               "`record.py create <id> '<json>' --from-item %s`)" % item["id"])
+            raise _ItemRefused("no channel can be named for the sighting: %s" % why)
         unverified = _capture_code_list(item)
         plan_id = plan_id_for_new()
         hits = _pidx.company_candidates(company_name, companies)
@@ -5430,8 +5533,16 @@ def main():
             if args.file != "opportunities":
                 print("⛔ REFUSED — --from-item applies only to `create ... --file opportunities`.")
                 return 1
+            # dev #825 / public #176 -- an item stamped with a channel THIS profile does not hold (a pre-0.76.0 install has
+            # no `linkedin-jobsearch` row) would copy an id that does not resolve into sightings[0] and fail later as a
+            # validator rollback that names no fix. Resolve it the way `capture-batch` does (`_item_channel_why`), and
+            # refuse BEFORE anything is written with the same named fix.
+            _item_for_copy, _chan_err = _from_item_resolved_channel(args.from_item)
+            if _chan_err:
+                print("⛔ REFUSED — --from-item: %s" % _chan_err)
+                return 1
             _from_item_copied, _item_err = copy_capture_item_facts(new_row, args.from_item,
-                                                                    rid=args.rid)
+                                                                    rid=args.rid, item=_item_for_copy)
             if _item_err:
                 print("⛔ REFUSED — --from-item: %s" % _item_err)
                 return 1

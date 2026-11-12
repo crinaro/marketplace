@@ -217,6 +217,9 @@
       "review_cadence": "daily",
       "route_by": "linkedin-runner",
       "scope_notes": "the LinkedIn runner reads the job search in your signed-in browser; the engine takes no LinkedIn action",
+      "sighting_hosts": [
+        "linkedin.com"
+      ],
       "terms": {
         "adr": "ADR-037",
         "read_on": "2026-10-24",
@@ -288,6 +291,9 @@
       "review_cadence": "daily",
       "route_by": "board-sweeper",
       "scope_notes": "board-sweeper reads Indeed in your signed-in browser for your titles; it takes no action there. Stop it with: record.py source off indeed",
+      "sighting_hosts": [
+        "indeed.com"
+      ],
       "terms": {
         "adr": "ADR-037",
         "read_on": "2026-10-24",

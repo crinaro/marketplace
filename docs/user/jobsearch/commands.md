@@ -139,7 +139,12 @@ makes sense.
 - `record.py capture-batch` records the roles a sweep found. It ends with a count line: how many roles were
   created, linked to a role you have, folded into a duplicate, refused, left waiting, flagged unverified,
   and how many it left because it ran out of time. It repeats until nothing is left over, and a refused item
-  is reported rather than treated as a fault.
+  is reported rather than treated as a fault. Since 0.83.0 every queued role names the source it was seen
+  on, and a role is refused, with the fix named, in one of three cases: its address is on no board the search
+  knows; it is on a listed board your profile does not link (for example LinkedIn when you have no LinkedIn
+  row) or has turned off; or it names a source your profile does not hold. The fix is the command to turn
+  the source on (`record.py source on <source>`), or to close the item. A refused role stays waiting and is
+  listed again on the next run.
 - `record.py read-batch` fetches job descriptions for the roles that state a pay and re-screens each one.
   A page it cannot read is listed as `RESIDUE <role> (render)` with the reason, and goes on to a reader
   agent, or to you.

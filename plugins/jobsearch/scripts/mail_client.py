@@ -446,11 +446,12 @@ def lookback_days(root, mailbox, floor_days, by=None):
     through = _journal.covered_through(recs, mailbox, by=by)
     if through is None:
         return max(int(floor_days or 0), ceiling)
-    try:
-        through_dt = _dt.datetime.fromisoformat(through)
-    except ValueError:
+    # ⭐ dev #807 — `through` is an offset-bearing instant; `_clock()` is aware UTC. The old
+    # `datetime.now() - fromisoformat(through)` would raise (naive minus aware) on a new row.
+    through_dt = _journal.parse_instant(through, "through")
+    if through_dt is None:
         return max(int(floor_days or 0), ceiling)
-    hole_days = (_dt.datetime.now() - through_dt).days
+    hole_days = (_clock() - through_dt).days
     capped = min(max(hole_days, 0), ceiling)
     return max(int(floor_days or 0), capped)
 
@@ -480,10 +481,24 @@ def _clock():
     return _dt.datetime.now(_dt.timezone.utc)
 
 
+def _aware(d):
+    """An aware datetime. A NAIVE one (only a test passes one) is read as host-local wall time: a
+    documented test convenience (dev #807), never a production path."""
+    return d.astimezone() if d.tzinfo is None else d
+
+
+def _wall_days_before(now, days):
+    """The instant `days` local WALL-CLOCK days before the aware `now` (dev #806): across a DST change
+    that is not `days` x 24h. Arithmetic runs on the host's naive wall time and is then made aware by the
+    platform's own rules (the first reading in a repeated hour), so an hour is never lost or gained."""
+    local = _aware(now).astimezone().replace(tzinfo=None)
+    return (local - _dt.timedelta(days=days)).astimezone()
+
+
 Coverage = collections.namedtuple("Coverage", ["ok_from", "through"])
-Coverage.__doc__ = ("⭐ dev #799 (design 3.5) — what a mailbox VERIFIABLY covered, as naive LOCAL datetimes "
-                    "(the journal's own form): `ok_from`..`through`, or `(None, None)` when nothing is "
-                    "verifiable (no exhausted bundle).")
+Coverage.__doc__ = ("⭐ dev #799 (design 3.5), dev #807 — what a mailbox VERIFIABLY covered, as AWARE "
+                    "datetimes (instants; the writer stores their offset): `ok_from`..`through`, or "
+                    "`(None, None)` when nothing is verifiable (no exhausted bundle).")
 
 
 def _has_backend(connector):
@@ -542,9 +557,13 @@ def sweep_accounts(search_one, since_days, root=None, by="", accounts=None, now=
         print(skip_line(connector))
         return [], []
     print(connector_line(connector))
-    now = (now or _dt.datetime.now()).replace(microsecond=0)
-    frm = (now - _dt.timedelta(days=since_days)).isoformat()
-    through = now.isoformat()
+    # ⭐ dev #807 — `now` is an INSTANT (aware UTC from `_clock()`), the one patch point for both
+    # connector paths. The window start is `since_days` local wall-clock days back (dev #806). The
+    # journal stores both ends with their offset (`record_swept` refuses a naive one), so the fall-back
+    # hour's two `01:10`s are distinguishable on disk.
+    now = _aware(now or _clock()).replace(microsecond=0)
+    frm = _wall_days_before(now, since_days)
+    through = now
     accounts = accounts if accounts is not None else configured_accounts()
     results, incomplete = [], []
     for account in accounts:
@@ -560,14 +579,13 @@ def sweep_accounts(search_one, since_days, root=None, by="", accounts=None, now=
             if not error and cov is None:
                 try:
                     with BundleMailbox(account, connector, root) as mb:
-                        cov = mb.coverage(now - _dt.timedelta(days=since_days))
+                        cov = mb.coverage(frm)
                 except (BundleError, ConnectorNotSelected) as exc:
                     error = str(exc)
             if error:
                 incomplete.append(account)
             elif cov is not None and cov.ok_from is not None:
-                _journal.record_swept(root, account, cov.ok_from.isoformat(),
-                                      cov.through.isoformat(), by, True, at=through,
+                _journal.record_swept(root, account, cov.ok_from, cov.through, by, True, at=through,
                                       source=BUNDLE_SOURCE)
         results.append((account, rows, error))
     return results, incomplete
@@ -593,24 +611,20 @@ def _stat(account, name, key):
 
 
 def uncovered_spans(recs, mailbox, frm, to):
-    """The parts of `[frm, to]` (naive local datetimes) that NO `ok: true` `swept` row of `mailbox`
-    covers — `[now - since_days, now]` minus the union of the ledger's intervals. Never computed
-    from one bundle's window alone: a window that began later than the requested one is not a hole
-    when the ledger already covers what came before it."""
-    intervals = []
-    for r in recs:
-        if r.get("event") != "swept" or r.get("mailbox") != mailbox or not r.get("ok"):
-            continue
-        try:
-            f = _dt.datetime.fromisoformat(r.get("from"))
-            t = _dt.datetime.fromisoformat(r.get("through"))
-        except (TypeError, ValueError):
-            continue
-        if f.tzinfo is not None or t.tzinfo is not None:
-            continue
-        intervals.append((f, t))
+    """The parts of `[frm, to]` (AWARE datetimes) that NO `ok: true` `swept` row of `mailbox` covers —
+    `[now - since_days, now]` minus the union of the ledger's intervals. Never computed from one
+    bundle's window alone: a window that began later than the requested one is not a hole when the
+    ledger already covers what came before it.
+
+    ⭐ dev #807 — every row is read through `journal.coverage_intervals` (the one parser): an
+    offset-bearing row as the instant it is, a legacy naive row by its stated rule, an empty or
+    inverted one not at all. This function USED to skip every aware row, so the first offset-bearing
+    row would have vanished from the ledger and printed a covered span as a hole (loud, but wrong)."""
+    if frm.tzinfo is None or to.tzinfo is None:
+        raise ValueError("uncovered_spans needs aware datetimes (dev #807): a naive local time in the "
+                         "fall-back hour names two instants")
     merged = []
-    for f, t in sorted(intervals):
+    for f, t in sorted(_journal.coverage_intervals(recs, mailbox)):
         if merged and f <= merged[-1][1]:
             merged[-1] = (merged[-1][0], max(merged[-1][1], t))
         else:
@@ -632,7 +646,10 @@ def uncovered_spans(recs, mailbox, frm, to):
 
 
 def _fmt(d):
-    return d.strftime("%Y-%m-%dT%H:%M")
+    """An instant as `YYYY-MM-DDTHH:MM+HH:MM` in the declared zone (dev #807): the offset is what makes
+    the two `01:05`s of the fall-back hour distinguishable in a NOT COVERED line."""
+    iso = _journal.coverage_iso(d)
+    return iso[:16] + iso[19:]
 
 
 def coverage_lines(root, account, since_days, now=None, unbounded=False, connector=None):
@@ -645,8 +662,8 @@ def coverage_lines(root, account, since_days, now=None, unbounded=False, connect
     if connector == GMAIL_MULTI:
         return []
     import mail_ingest
-    now_utc = _clock() if now is None else now
-    now_local = now_utc.astimezone().replace(tzinfo=None, microsecond=0)
+    now_utc = _aware(_clock() if now is None else now)
+    window_start = _wall_days_before(now_utc, since_days)
     head = "Mail coverage (%s, %s):" % (connector, account)
     try:
         b = mail_ingest.load_kept(connector, account, [account], now_utc)
@@ -666,8 +683,8 @@ def coverage_lines(root, account, since_days, now=None, unbounded=False, connect
     if not b.exhausted:
         notes.append("NOT COVERED: bundle not exhausted")
     recs = _journal.read(root)
-    through_local = mail_ingest.to_local_naive(b.window_through)
-    for a, z in uncovered_spans(recs, account, now_local - _dt.timedelta(days=since_days), now_local):
+    through_local = b.window_through
+    for a, z in uncovered_spans(recs, account, window_start, now_utc.replace(microsecond=0)):
         if a >= through_local - _dt.timedelta(seconds=1) and (z - a) <= mail_ingest.TAIL_GRACE:
             continue                                   # the minutes between the fetch and this run
         if a >= through_local - _dt.timedelta(seconds=1):
@@ -676,7 +693,7 @@ def coverage_lines(root, account, since_days, now=None, unbounded=False, connect
             notes.append("NOT COVERED: %s..%s (outside the fetched window)" % (_fmt(a), _fmt(z)))
     if unbounded:
         notes.append("NOT COVERED: mail before %s (this search has no date bound and the bundle "
-                     "holds only the fetched window)" % _fmt(mail_ingest.to_local_naive(b.window_from)))
+                     "holds only the fetched window)" % _fmt(b.window_from))
     if b.stale(now_utc):
         notes.append("!! BUNDLE STALE: the window ended %s, more than %d hours ago"
                      % (_fmt(through_local), mail_ingest.CONNECTOR_BUNDLE_STALE_HOURS))
@@ -983,8 +1000,8 @@ class ImapMailbox(object):
 
     def coverage(self, since):
         """⭐ dev #799 — what this search covered: IMAP asks Gmail itself, so it is the whole requested
-        window `(since, now)` — the gmail-multi path is unchanged."""
-        return Coverage(since, _dt.datetime.now().replace(microsecond=0))
+        window `(since, now)` — the gmail-multi path is unchanged. Aware datetimes (dev #807)."""
+        return Coverage(_aware(since) if since else since, _clock().replace(microsecond=0))
 
 
 # --------------------------------------------------------------------------
@@ -1103,9 +1120,10 @@ class BundleMailbox(object):
         b = self.bundle
         if not b.exhausted:
             return Coverage(None, None)
-        frm = max(mail_ingest.to_local_naive(b.window_from), since) if since else \
-            mail_ingest.to_local_naive(b.window_from)
-        through = mail_ingest.to_local_naive(b.window_through)
+        # ⭐ dev #807 — instants, not naive local wall times: the writer stores their offset.
+        window_from = b.window_from.replace(microsecond=0)
+        frm = max(window_from, _aware(since)) if since else window_from
+        through = b.window_through.replace(microsecond=0)
         if frm >= through:
             return Coverage(None, None)
         return Coverage(frm, through)

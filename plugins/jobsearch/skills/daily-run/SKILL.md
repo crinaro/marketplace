@@ -511,7 +511,8 @@ concluded, a `partial-results` gap is filed, and "still pending" is never writte
 search and notifications are not measured by it and do not gate closure; report them as before. A
 refused record does not use up the day's LinkedIn pass, once a day (`posture.py --may linkedin`
 says so). **Read `PARTIAL`:** `run_summary.py` prints the result as the `linkedin sweep:` line
-(`complete`, `PARTIAL (line faults: …)` or `REFUSED`), and the headline names `PARTIAL: linkedin`;
+(`complete`, `PARTIAL (line faults: …)`, `PARTIAL (read from a Browser pane that was not painting: …)`
+or `REFUSED`; a hidden-mode or unknown pane adds a note), and the headline names `PARTIAL: linkedin`;
 quote that line rather than a count of your own. A line `record` drops is a defect in the hand-back
 to report, never to patch by hand.
 

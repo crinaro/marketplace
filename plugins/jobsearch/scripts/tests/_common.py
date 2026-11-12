@@ -294,6 +294,33 @@ class _SyntheticStore(unittest.TestCase):
                               capture_output=True, text=True, env=env)
 
 
+def seed_legacy_swept(root, mailbox, frm, through, by, at=None, source=None):
+    """⭐ dev #807 — append a `swept` row in the LEGACY shape: `from`/`through` NAIVE local wall time, the
+    form every row written before 0.83.0 has on disk. `journal.record_swept` now refuses that shape
+    (the writer stores an instant), so a test that exercises the legacy READ path, or that only needs a
+    prior sweep to exist, seeds it raw through `journal.append`, the way an old engine wrote it. It is
+    not a back door for new behaviour: a case about what the writer produces calls `record_swept`."""
+    import journal as _j
+    rec = {"event": "swept", "mailbox": mailbox, "from": frm, "through": through,
+           "at": at or _j.now_iso(), "by": by or "", "ok": True}
+    if source:
+        rec["source"] = source
+    return _j.append(root, rec)
+
+
+def fresh_localzone(test):
+    """⭐ dev #807 — forget the zone `_localzone` resolved EARLIER IN THIS PROCESS, now and again when `test`
+    ends. `_localzone` resolves once per process (production wants that), so a case that prints or asserts
+    an instant in the host zone or a declared zone reads whatever an earlier case left cached unless it
+    resets first. `check_ci_parity.py` runs the whole suite in one process under `TZ=UTC`: the first case
+    to ask caches `ZoneInfo("UTC")`, and a later case that pins its own `TZ` then prints `+00:00`
+    (parity 3706f5b9). Call this AFTER the case's own TZ/profile pin and BEFORE the `addCleanup` that
+    restores them, so the cleanup (LIFO) restores first and forgets last."""
+    import _localzone
+    _localzone.reset_cache()
+    test.addCleanup(_localzone.reset_cache)
+
+
 class _SyntheticCoverage(unittest.TestCase):
     """Shared scaffolding for the dev #321 test classes below: a synthetic profile with a
     controlled mailbox list and a controlled coverage ledger. No test_ methods of its own —
@@ -1286,8 +1313,8 @@ class _AtsSweepProfile(unittest.TestCase):
         """A prior REAL sweep row, so `is_first_run_for_mailbox` reads False — isolates a
         test from the first-run/historical carve-out (design §5) when it wants to exercise
         the ordinary apply/propose/ask path instead."""
-        self.J.record_swept(self.tmp, account or self.ACCOUNT, "2020-01-01T00:00:00",
-                            "2020-01-02T00:00:00", by, True, at="2020-01-02T00:00:01")
+        seed_legacy_swept(self.tmp, account or self.ACCOUNT, "2020-01-01T00:00:00",
+                          "2020-01-02T00:00:00", by, at="2020-01-02T00:00:01")
 
     def _ats(self, already_locked=False, days=0, as_of=None):
         import argparse
@@ -2020,6 +2047,8 @@ __all__ = [
     '_norm_invocations',
     '_SyntheticStore',
     '_SyntheticCoverage',
+    'seed_legacy_swept',
+    'fresh_localzone',
     '_SyncFixtures',
     '_WriteApiHarness',
     '_synthetic_dashboard_profile',

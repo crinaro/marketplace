@@ -69,6 +69,31 @@ import touches as _touches
 ROOT = _profile_root()
 
 
+def verified_through(root):
+    """dev #807 — the INSTANT (aware UTC) through which EVERY configured mailbox is verifiably swept,
+    or `None` when that cannot be said (no mailbox configured, an empty ledger for one, or a value that
+    cannot be read). It is the least-covered account's `covered_through`, compared as INSTANTS: the
+    answers are offset-bearing strings in the declared zone, and a string `min` across two offsets is
+    not an instant `min` (inside the fall-back hour `01:10-06:00` sorts before `01:30-05:00` as text and
+    is the LATER instant). Split out of `verified_as_of` so that comparison has a result a test can see:
+    `verified_as_of` returns only a date, and the two readings share a date, so no date could ever
+    tell them apart."""
+    accounts = _mail_client.configured_accounts()
+    if not accounts:
+        return None
+    recs = _journal.read(root)
+    instants = []
+    for account in accounts:
+        through = _journal.covered_through(recs, account)
+        if through is None:
+            return None
+        instant = _journal.parse_instant(through, "through")
+        if instant is None:
+            return None
+        instants.append(instant)
+    return min(instants)
+
+
 def verified_as_of(root):
     """dev #321 — the newest point through which EVERY configured mailbox is verifiably swept,
     as a `date`, or `None` when that cannot be said.
@@ -83,20 +108,15 @@ def verified_as_of(root):
     The conjunction is deliberate: a silence claim about ANY thread implicitly claims "and
     nobody replied on the other configured mailbox either" the moment more than one account
     exists, so the whole-profile answer can only be as fresh as the least-covered account.
+
+    ⭐ dev #807 — the date is the DECLARED-zone date of `verified_through`'s instant (`coverage_iso`
+    renders in that zone).
     """
-    accounts = _mail_client.configured_accounts()
-    if not accounts:
+    instant = verified_through(root)
+    if instant is None:
         return None
-    recs = _journal.read(root)
-    throughs = []
-    for account in accounts:
-        through = _journal.covered_through(recs, account)
-        if through is None:
-            return None
-        throughs.append(through)
-    as_of = min(throughs)
     try:
-        return datetime.fromisoformat(as_of).date()
+        return datetime.fromisoformat(_journal.coverage_iso(instant)).date()
     except ValueError:
         return None
 

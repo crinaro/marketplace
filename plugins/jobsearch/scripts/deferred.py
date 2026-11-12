@@ -361,6 +361,11 @@ SETTING_NONE_STATED = "none stated"
 POSTED_MAX_AGE_DAYS = 3650      # an `<n>d` older than ten years is a typo, not a posting age
 
 KIND_CAPTURE = "capture-role"
+# dev #825 / public #176 (R2) -- the channel a `--add-roles` SURFACE names by itself, for the surface whose QUERY lines carry
+# no `channel=` by contract (a LinkedIn QUERY with one is a line fault, `linkedin-runner.md`): the surface IS the channel.
+# `board` is not here: its QUERY lines MUST name one. Three places state this fact and a test pins their equality: this
+# table, `linkedin_sweep.JOBSEARCH_CHANNEL`, and the catalog entry `linkedin-jobs`'s `channel_id`.
+ROLES_SURFACE_CHANNEL = {"linkedin-jobsearch": "linkedin-jobsearch"}
 ROLES_FIELD_CAP = 200
 # dev #707 / public #151 -- `--add-roles` and `--add-roles --check` answer with ONE of these:
 #   0  clean            every line parsed; everything was recorded (or, with --check, would be)
@@ -636,7 +641,14 @@ def _append_item(what, why="", requires=(), kind="action", ref=None, role=None,
     so `record.py capture-batch` can attribute a board sighting among several boards. `record.py create
     --from-item` copies the channel into `sightings[0]` and refuses a different one the model
     supplies, so a feed role's channel is a recorded fact, not a thing a model typed. Omitted when
-    None, so every other item is unchanged."""
+    None, so every other item is unchanged. Since dev #825 / public #176 (R2) a `capture-role` item MUST
+    carry one (`ValueError` otherwise): a LinkedIn sweep's items take `ROLES_SURFACE_CHANNEL`."""
+    if kind == KIND_CAPTURE and not channel_id:
+        # dev #825 / public #176 (R2): a capture item with no channel is the queue row `record.py capture-batch` cannot
+        # attribute. Every producer stamps one (`_resolve_roles`); this is the invariant that makes a new producer that
+        # forgets fail where it is written, not weeks later at capture. It guards NEW writes only: rows already on disk
+        # without one are `migrate.m_0_83_0_capture_channel`'s.
+        raise ValueError("a %s item needs a channel_id: the channel its sighting came from" % KIND_CAPTURE)
     now = datetime.datetime.now()
     # dev #481 / public #112 -- the timestamp prefix keeps ids sortable; the random suffix is what
     # stops two adds inside one second (two controllers, or a runner and daily-run in the same
@@ -1655,11 +1667,15 @@ def _resolve_roles(roles, run_id, surface, queries, run_date, pass_label, opps, 
         canon = r["canonical"]
         # dev #820 / public #175 (B2b): EVERY capture item names the channel its sighting came from, not only a
         # feed item. A feed role names its own; a board sweep's role takes the `channel=` of the QUERY line(s)
-        # that showed it (a LinkedIn sweep's QUERY lines name none, so its items carry none). Without it
-        # `record.py capture-batch` cannot attribute a board sighting in a profile with several boards.
+        # that showed it. Without it `record.py capture-batch` cannot attribute a board sighting in a profile with
+        # several boards.
+        # dev #825 / public #176 (R2): a surface whose QUERY lines name none by contract (LinkedIn: a `channel=` there is a
+        # line fault) is stamped with the channel the surface IS (`ROLES_SURFACE_CHANNEL`), so its items carry one too.
+        # With none of the three left, the role is a ROLE GAP and nothing is queued (below).
         item_channel = (r.get("channel_id")
                         or next((queries[k - 1].get("channel") for k in (r.get("q") or [])
-                                 if 0 < k <= len(queries) and queries[k - 1].get("channel")), None))
+                                 if 0 < k <= len(queries) and queries[k - 1].get("channel")), None)
+                        or ROLES_SURFACE_CHANNEL.get(surface))
         company_id = resolve_company(company, companies)
         hit = find_known_match(opps, url=canon, company_id=company_id, title=title,
                                applications=apps)
@@ -1748,6 +1764,19 @@ def _resolve_roles(roles, run_id, surface, queries, run_date, pass_label, opps, 
                     siblings += 1
                     out("SIBLING     %s (%s) -> %s" % (canon, loc or "?", sib["id"]))
                 continue
+        if pending is None and not item_channel:
+            # dev #825 / public #176 (R2): nothing below would queue a channel-less capture item (`_append_item` refuses
+            # one). Say so as a gap of the role's own, the existing ROLE GAP path, and queue nothing.
+            scope = "jobsearch:role:%s" % key
+            counts["role_gaps"] += 1
+            out("ROLE GAP    %s at %s -- no channel can be named for the sighting: its QUERY line names none and the "
+                "surface does not (partial-results)" % (title, company))
+            if not any(g.get("scope") == scope for g in _journal.open_gaps(recs)):
+                try:
+                    _journal.record_gap(ROOT, run_id, scope, "partial-results", closes_when="captured")
+                except _journal.JournalError as e:
+                    out("⚠️ could not journal the gap %s (%s)" % (scope, e))
+            continue
         qcodes = r.get("quarantine_codes")
         held = bool(pending and pending.get("quarantine"))
         if qcodes and pending and not held:

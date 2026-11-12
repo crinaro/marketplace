@@ -1859,6 +1859,7 @@ the queue refuses free text that reads like a send.
 | `kind` | what procedure drains it: `action` (free text written with `deferred.py --add`, and the owed LinkedIn pass), `capture-role`, `research-role`, `draft-message` or, since 0.69.0, `read-jd`. The `capture-role`, `research-role` and `draft-message` kinds are new in 0.61.0, so that a role a run saw, or research a tier held, is a structured row rather than a free-text sentence |
 | `ref` | since 0.61.0, optional: what the item is *about*. For `capture-role` it is the posting's canonical URL (tracking parameters removed, a LinkedIn posting reduced to its job id). For `research-role` and `draft-message` it is the role's id. Adding the same `(kind, ref)` while one is pending writes no second row. Older rows have no `ref` and behave as before |
 | `what`, `why` | the instruction in plain words, and why it was deferred |
+| `channel_id` | since 0.83.0, on every `capture-role` item: the source the role was seen on (for example your LinkedIn job search), written when the item is queued. Capture uses it to file the role under that source. An item queued before 0.83.0 gets it from the upgrade below |
 | `requires` | what a worker needs to take it: `research`, `drafting`, `sweeps`, or a machine capability such as a browser. Empty means any worker under any tier |
 | `status` | `pending` until it is done |
 | `quarantine` | since 0.69.0, only on a `capture-role` item queued from a degraded sweep: `{run_id, because, queries}` — the run that saw the role, why it is held (one or more of `filter-dropped`, `param-added`, `window-unapplied`, `truncated`, `query-unparsed`), and which of that sweep's queries showed it. While present, no worker is served the item. Absent on every other item and once released. A release is a separate appended row of kind `_unquarantine`, never a rewrite of the item |
@@ -1879,6 +1880,35 @@ machine can never claim a LinkedIn item, under any tier.
 passed on, it becomes one `capture-role` item. The run captures it, screens it, and
 `deferred.py --settle` closes the item once the role exists in your pipeline. Whatever is not
 captured stays pending and is listed on the next run, under any tier.
+
+**What the 0.83.0 upgrade does.** Before 0.83.0, a role found by the LinkedIn job search was queued without
+saying which source it came from. In a profile with several boards, capture could not tell and refused it on
+every run. From 0.83.0 every queued role carries its source. The upgrade runs the migration
+`m_0_83_0_capture_channel` once to add it to the roles already waiting.
+
+1. **Copies first.** Before it writes anything it copies `data/pending_actions.jsonl` to
+   `data/pending_actions.jsonl.pre-0.83.0`, never over a copy that is already there. If the queue has a line
+   it cannot read, or the source list that ships with the plugin cannot be read, it changes nothing and
+   reports itself pending, to run again next session.
+2. **Adds the source, nothing else.** For each waiting role with no source, it looks at the address the
+   role was seen at. If that address belongs to exactly one board the plugin knows (LinkedIn, say), it adds
+   that board's source to the item. Everything else on the item stays as it was, and no existing line of the
+   queue is rewritten: the item gets one new line after its old ones.
+3. **Roles it cannot place** (an address on no known board, or on more than one) are counted and named in the
+   migration's summary and left alone. They meet capture's refusal, which says what to do.
+4. **Running it again changes nothing**, and a profile with no queue, or nothing waiting to fix, gets no
+   output.
+
+A role whose source your profile does not hold is still refused when capture runs. For example, a LinkedIn
+role is refused if your profile has no LinkedIn job-search row, and the message names the command to turn it
+on. **To undo it,** restore `data/pending_actions.jsonl.pre-0.83.0`; that is only safe for what has not been
+queued or captured since.
+
+**The date range of a mail check is stored with its offset (since 0.83.0).** A checked mail range used to be
+saved as a local clock time, which in the hour the clocks go back names two different moments. New ranges
+carry the offset (for example `-06:00`), and a `NOT COVERED` line prints it. Ranges saved before 0.83.0 are
+read conservatively: a gap in the repeated hour is shown, never hidden, and the next sweep fills it. Nothing
+in your files is rewritten. Setting `geography.timezone` in `config.json` makes the offsets match your own clock.
 
 **A degraded sweep is held, not captured (since 0.69.0).** A sweep can come back looking clean while
 the page it read was not showing what was asked: a filter the run set was dropped, one it never set

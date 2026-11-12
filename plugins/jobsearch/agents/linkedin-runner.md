@@ -181,6 +181,9 @@ call that touches the page** (`navigate`, `get_page_text`, `read_page`, `find`, 
 `mcp__Claude_Browser__tabs_close` when you finish, early returns included. The tab is yours and the
 pane lock is still taken first: a `tabId` does not replace the lock. `guard_browser_tab.py` refuses a
 pane call from this agent that names no `tabId`; it backstops this rule and does not replace it.
+**The next call is `mcp__Claude_Browser__tabs_context`, once** (§"THE PANE STATE, AND HIDDEN MODE"
+below): it says whether the pane is displayed or hidden, and a hidden pane changes how the whole
+pass reads.
 
 ---
 
@@ -320,13 +323,67 @@ and right after any click meant to change the screen. **Also do not trust Linked
 search as ground truth for "does this thread exist"** — it has returned "We didn't find anything"
 for threads found seconds later by scrolling the raw list.
 
+### ⭐⭐ THE PANE STATE, AND HIDDEN MODE — a hidden pane is not a stalled pane (closes public #177 / dev #826)
+
+A Browser pane the owner is not looking at does not paint, and the frame probe below cannot tell that
+from a broken compositor: from inside the page they read the same. The harness can: the last line of
+`mcp__Claude_Browser__tabs_context` says whether the pane is displayed or hidden. That line is read
+once, at a fixed point, and it decides whether this pass clicks at all.
+
+<!-- pane-hidden:begin -->
+**1. When to read it.** Call `mcp__Claude_Browser__tabs_context` ONCE, immediately after
+`mcp__Claude_Browser__preview_start` returns the `tabId` of your own tab (the one that opens on the
+feed URL, dev #820). Only where no `preview_start` occurs, call it immediately after the first
+`navigate` instead. NEVER call `tabs_context` before the tab is open: until the pane is open the
+line says nothing about it. `tabs_context` needs no `tabId` and is not refused by the tab guard.
+Keep the LAST non-empty line of the result. If the pass runs on the Chrome extension, the state is
+`not-pane` and there is nothing to read.
+
+**2. What it means.** The line `The Browser pane is currently displayed.` is state `displayed`; the
+line `The Browser pane is currently hidden.` is state `hidden`; any other text is state `unknown`.
+Copy the exact line into `--pane` (below) and the state word into the `PANE` line of your SWEEP block.
+`displayed` and `unknown` start the pass in NORMAL mode. `unknown` is reported, never guessed: the
+pre-0.83 rule applies (the page's own `{hidden: true}` is the only no-verdict guard), and the script
+that records your block opens a `pane-unreadable` gap so the user sees it.
+
+**3. Hidden mode starts** when the state is `hidden`, or when a verdict says `no-verdict:pane-hidden`
+(the harness line was hidden at a re-read, or the probe returned `{hidden: true}`, on either executor).
+From that call on, in hidden mode:
+
+- **Read by text.** Reach each read-only surface with `mcp__Claude_Browser__navigate` to its URL,
+  then read it with `get_page_text`, `read_page` or `find`. Before reading, confirm the page text
+  names the surface you expect; otherwise report it `SURFACE <token> UNREACHABLE reason=pane-hidden`.
+- **No click-class tool, of any kind.** These are FORBIDDEN in hidden mode: `computer` (a click, a
+  type, a key, a scroll, a ref-based click included), `form_input`, `javascript_tool`, and any
+  `browser_batch` step that is one of these. A click whose effect cannot be seen is a click you
+  cannot verify. A surface or step that needs one is click-dependent and is NOT performed: report it
+  `SURFACE <token> UNREACHABLE reason=pane-hidden`; a job-search QUERY that cannot be read by
+  navigate-and-text is `unreachable reason=pane-hidden`.
+- **Never a stall.** No `runlock.py --resource pane --stalled`, no `RENDER STALLED` first line, no
+  `--reason render-stalled`: a hidden pane is not a stalled pane.
+- **No re-queue.** Write no `deferred.py --add-linkedin-pass` for a hidden pass. The script that
+  records your block opens the gap and prints the remedy.
+- **Say so.** Your SWEEP block's `PANE` line says `mode=hidden`, and your report's first block says
+  the pane was hidden and the lists were read by text.
+<!-- pane-hidden:end -->
+
+**What this does not cover (UNVERIFIED).** The harness line says whether the owner's window is
+showing the session. It does not say the pane is PAINTING. A pane that reads `displayed` while its
+window is occluded, on another Space, on a sleeping display or behind a locked screen gets the full
+#96 verdict below, as it did before 0.83.0: the false stall is still possible there, and nothing in
+this file claims otherwise. `scripts/guard_outbound_click.py` still denies an outbound ref-based
+click, and the "no click is re-issued after a confirmed stall verdict" rule below still applies.
+Nothing mechanical stops a `computer` call in hidden mode yet; this section is the instruction.
+
 ### ⭐⭐ THE FRAME PROBE — does the pane still PAINT, not just respond? (closes public #96)
 
 **A screenshot can time out (see "SCREENSHOT MAY TIME OUT" below); the pane can still ANSWER a
 tool call while it has stopped RENDERING anything new** — the aria state can flip on a click
 while nothing paints, which is indistinguishable from a landed click without a real paint-proof.
-Run this probe **after every DOM-changing action** (a navigate, a click on a non-outbound
-control, a scroll that loads more) — one probe, not two, unless the first returns a candidate.
+In NORMAL mode (§"THE PANE STATE, AND HIDDEN MODE" above), run this probe **after every
+DOM-changing action** (a navigate, a click on a non-outbound control, a scroll that loads more) —
+one probe, not two, unless the first returns a candidate. In hidden mode it is never run: it needs
+`javascript_tool`, which hidden mode forbids, and a hidden pane gives no verdict.
 
 **Run it on THIS PASS'S OWN EXECUTOR, by name — never "via javascript_tool," which does not say
 which browser:** `mcp__Claude_Browser__javascript_tool` on the pane, `mcp__claude-in-chrome__javascript_tool`
@@ -355,10 +412,25 @@ below (a test asserts this):
 
 | result | verdict |
 |---|---|
-| `{hidden: true}` | **no verdict.** Chromium pauses `requestAnimationFrame` in a hidden document — a timer-vs-rAF probe there reads "stalled" forever. The pane's visibility on a scheduled (S2) pass is UNVERIFIED; on `hidden`, proceed WITHOUT stall detection, record `journal.py --note "pane hidden: stall detection unavailable this pass"`, say so in the report's first block, and rely on the preflight ladder alone. |
+| `{hidden: true}` | **no verdict, and HIDDEN MODE starts here** (on either executor). Chromium pauses `requestAnimationFrame` in a hidden document — a timer-vs-rAF probe there reads "stalled" forever. Record `journal.py --note "pane hidden: stall detection unavailable this pass"`, say so in the report's first block, and follow §"THE PANE STATE, AND HIDDEN MODE": no click-class tool from here on. |
 | `{painted: true}` | painting normally — proceed |
-| `{painted: false, tasks_ran: true}` | a **candidate**, not yet a verdict. Probe again, **at least 4 seconds after the first returned** (the two windows must not sit inside one busy stretch), document still visible. Two such candidates in a row → **confirmed render-stall.** |
+| `{painted: false, tasks_ran: true}` | a **candidate**, not yet a verdict. Probe again, **at least 4 seconds after the first returned** (the two windows must not sit inside one busy stretch), document still visible. Two such candidates in a row → **confirmed render-stall — but only the script says so** (below). |
 | the call errors, times out, or returns anything else | **no verdict** — the existing ladder's `BROWSER UNAVAILABLE`, not a new state |
+
+**The verdict on a candidate is a script's, not yours (dev #826).** On the first candidate: call
+`mcp__Claude_Browser__tabs_context` and keep its last line; run the second probe; call `tabs_context`
+again and keep its last line; then run
+
+```bash
+~/.claude/jobsearch/run pane_probe.py --verdict --pane "<first tabs_context last line>" --pane "<second last line>" \
+  --result '<first probe JSON>' --result '<second probe JSON>'
+```
+
+and act on the one `VERDICT` word it prints, not on your own reading: `render-stalled` → §"A CONFIRMED
+RENDER STALL" below; `no-verdict:pane-hidden` → hidden mode; `painting` or `candidate` → proceed and
+probe again after the next DOM-changing action; `no-verdict:probe-error` → the ladder above. On the
+Chrome extension pass `--pane not-pane`. A `displayed` pane still gets the #96 verdict. On the common
+path (`{painted: true}`) this script is never called.
 
 **The honest limit:** a page whose main thread stays continuously busy across both 4-second
 windows plus the gap between them (over 8 seconds with no rendering opportunity) reads as
@@ -368,7 +440,8 @@ follows: the cost of a false stall is a deferred pass, never a duplicated click.
 
 ### ⭐⭐ A CONFIRMED RENDER STALL — stop, journal, defer; never click again
 
-On a confirmed stall (two candidates, 4s+ apart, both visible):
+On a confirmed stall (`pane_probe.py --verdict` printed `VERDICT render-stalled`: two candidates, 4s+ apart, no
+hidden pane; a hidden pane is never a stall and never gets this section):
 
 1. **`RENDER STALLED` is the FIRST LINE of this agent's report** — never folded into "partial"
    or omitted. A pass that degrades without naming why is the exact shape public #96 records.
@@ -593,10 +666,12 @@ writer.**
    return `PANE HELD by <run_id> since <at>`, done — no queue entry (§"TAKE THE PANE LOCK").
 2. **Preflight** as usual (§"PREFLIGHT BEFORE ANY LONG CALL"); verify the session; record
    `--verdict signed-in|not-signed-in` on the lock.
-3. **Probe** after each DOM-changing action, on this pass's own executor by name
+2a. **Read the pane state once**, right after `preview_start` returns your `tabId` (§"THE PANE STATE,
+   AND HIDDEN MODE"). `hidden` → hidden mode for the whole pass: text reads only.
+3. **Probe** (normal mode only) after each DOM-changing action, on this pass's own executor by name
    (§"THE FRAME PROBE").
-4. **Confirmed stall** → §"A CONFIRMED RENDER STALL": journal, defer, stop clicking, never the
-   extension in the same pass.
+4. **Confirmed stall** (the script's `VERDICT render-stalled`) → §"A CONFIRMED RENDER STALL":
+   journal, defer, stop clicking, never the extension in the same pass.
 5. **Release the pane lock with the nonce, then end the journal run** — the last two calls,
    always, even on an early `BROWSER UNAVAILABLE`.
 
@@ -638,6 +713,7 @@ THREAD contact:<id> url=<messaging thread url>
 --- END WORKLIST ---
 
 --- SWEEP v1 run=<run-id> ---                         (what you hand back, in your hand-back file)
+PANE state=<displayed|hidden|unknown|not-pane> mode=<normal|hidden>
 SURFACE <token> REACHED shown=<n> total=<m|?> oldest=<YYYY-MM-DD|?>
 SURFACE <token> UNREACHABLE reason=<journal.REASONS code>
 SURFACE <token> NOT-ATTEMPTED
@@ -646,6 +722,15 @@ VIEW contact:<id> kind=<thread|profile> at=<ISO time> saw=<empty|message:<YYYY-M
 --- END SWEEP ---
 ```
 <!-- sweep-grammar:end -->
+
+**The `PANE` line is required, once, right after the header (dev #826 / public #177).** `state` is the
+pane state of §"THE PANE STATE, AND HIDDEN MODE" (`displayed`, `hidden` or `unknown`), or `not-pane`
+when the pass ran on the Chrome extension. `mode=hidden` if ANY part of the pass ran in hidden mode,
+else `normal`; a hidden Chrome tab is `state=not-pane mode=hidden`. A hidden pane is always
+`mode=hidden`. A block with no `PANE` line is a line fault, and every surface it reached is recorded
+as partial. In hidden mode, report a surface you could not read by text as `SURFACE <token>
+UNREACHABLE reason=pane-hidden` (the script knows the code). Never write `RENDER STALLED` as the first
+line over a block whose `PANE` line is hidden: the script refuses it as a contradiction.
 
 `back-to=none` means no one is watched: read each list's first view and report it. `positive-only`
 (sent invitations) means presence is pending and absence proves nothing. `state=accepted` is read

@@ -985,10 +985,9 @@ def plan_window(recs, account, now):
     floor = now - _dt.timedelta(days=_mc.CONNECTOR_BACKFILL_MAX_DAYS)
     cov = _journal.covered_through(recs, account)
     if cov:
-        try:
-            frm = from_local_naive(_dt.datetime.fromisoformat(cov))
-        except ValueError:
-            frm = floor
+        # ⭐ dev #807 — `covered_through` answers an offset-bearing instant; `parse_instant` is the one
+        # reader (it also takes a legacy naive string), so this never depends on the string's form.
+        frm = _journal.parse_instant(cov, "through") or floor
         return max(frm, floor), through
     return floor, through
 

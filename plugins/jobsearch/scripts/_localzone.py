@@ -84,6 +84,15 @@ def reset_cache():
     del _CACHE[:]
 
 
+def local_zone():
+    """⭐ dev #807 — the tzinfo of the zone this module resolves (declared `geography.timezone`, then
+    `TZ`), or None when only the HOST zone is known. The public accessor for `_zone()`: callers that
+    must print or read an instant in the OWNER's clock (`journal.coverage_iso`, `parse_instant`) ask
+    here rather than reaching into the private cache. None means "use the host's own rules", which
+    `datetime.astimezone()` applies with real DST: it is not a guess."""
+    return _zone()[0]
+
+
 def offset_for_local(naive_local):
     """UTC offset, in hours, that applies to this naive LOCAL wall time."""
     tz, _ = _zone()

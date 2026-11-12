@@ -125,6 +125,15 @@ the wall clock (`check_followups.py`, fixed here) must render "unverified" inste
 confidently wrong day count. `probe_covered_through(recs, thread)` is `probe`'s pointwise twin —
 one look verifies through its own timestamp, no interval needed.
 
+⭐ dev #807 — A `swept` WINDOW IS AN INSTANT. `from`/`through` used to be naive local wall time, and in
+the fall-back hour one wall time names two instants, so a real hole between two sweeps could be merged
+away. Since 0.83.0 `record_swept` stores a numeric offset (`coverage_iso`, in the zone `_localzone`
+resolves) and refuses a naive window; every reader goes through `parse_instant`, which reads a LEGACY
+naive row by a stated rule that can only shrink coverage (both readings of the repeated hour, in the
+host zone and the declared one: `from` takes the latest, `through` the earliest, an empty or inverted
+row contributes nothing). `at` keeps the journal-wide naive-local form. Old rows are READ, not migrated:
+the journal is append-only and its SessionStart writer runs before `migrate.py`.
+
 Usage:
     python3 journal.py --start daily                     # prints the run id
     python3 journal.py --run <id> --note "what was found"
@@ -371,7 +380,25 @@ REASONS = {"browser-unavailable", "credential-missing", "rate-limited", "timeout
            # design-role-pipeline.md 9.1 (jobsearch 0.82.0): the prose is newer than the scripts, and a
            # drain verb is refused as unknown. A gap for that is not `other`: a code exists to be counted,
            # and "how often is the install behind its instructions" is a question worth asking.
-           "version-skew"}
+           "version-skew",
+           # dev #826 / public #177 (jobsearch 0.83.0, design-sweep-misfires.md section 2.4). The Browser pane was
+           # not painting and the pass ran in HIDDEN MODE: the harness reported the pane hidden, or the page reported
+           # itself hidden; stall detection and clicks were withheld, and the list surfaces were read by text only.
+           # It is NOT `render-stalled` (a displayed pane that stopped painting, public #96): reusing that code would
+           # erase the signal #177 says is missing, and a code exists to be counted. HOW TO COUNT IT: the pass-level
+           # gap is scoped `linkedin:pane-hidden` (the in-app pane) or `linkedin:chrome-tab-hidden` (the extension),
+           # one scope per reason because a gap id is (run, scope) and `linkedin:pane` already carries
+           # `render-stalled` and `pane-held`. A gap closed by an attended run and reopened by the next hidden pass
+           # is a NEW `gap` row (the journal is append-only; the old one stays closed): the number of hidden passes
+           # over a period is the number of `gap` events on those two scopes, and the number still owed is the open
+           # ones. A surface a hidden pass could not read by text is a `linkedin:<token>` gap with this reason too
+           # (`SURFACE <token> UNREACHABLE reason=pane-hidden`): count those for WHICH lists went unread.
+           "pane-hidden",
+           # dev #826 (R2-SURF-3): the `tabs_context` display line could not be read after the pane was open
+           # (`PANE state=unknown`): a harness rewording, or a parse slip. The pass applies the pre-0.83 rule, which
+           # is #826 itself, so the user must see it without reading a transcript: this gap is open until a later
+           # pass reads one of the two pinned literals (`displayed`, `hidden`). Scope `linkedin:pane`.
+           "pane-unreadable"}
 
 # ⭐ dev #321 — a `probe` result is either the literal "empty" or "thread:<ISO timestamp>" (the
 # newest inbound's date/time) — Class C's own vocabulary, settled here since V0 is the first
@@ -652,8 +679,14 @@ def record_swept(root, mailbox, frm, through, by, ok, reason=None, at=None, sour
     ⭐ dev #799 — `source`, optional and ADDITIVE: `"connector-bundle"` marks a row whose window is the
     span a fetched connector bundle covered. Absent means IMAP, so every old row keeps its meaning; no
     reader refuses an unknown key on a `swept` row (checked at the build: `read()` validates only the
-    `dispatch` shape)."""
-    at = at or now_iso()
+    `dispatch` shape).
+
+    ⭐ dev #807 — `frm` and `through` are INSTANTS: an aware datetime (written through `coverage_iso`) or
+    an ISO string that carries a numeric offset. A naive value is REFUSED, because a naive local time in
+    the fall-back hour names two instants and the reader cannot tell which one the writer meant. `at`
+    keeps the journal-wide naive-local convention (`reconcile.first_swept_at` sorts it as a string), so
+    an aware `at` is converted to naive host-local here."""
+    at = _journal_at(at) if at else now_iso()
     if not mailbox:
         raise JournalError("record_swept requires a mailbox")
     if ok:
@@ -661,6 +694,7 @@ def record_swept(root, mailbox, frm, through, by, ok, reason=None, at=None, sour
             raise JournalError(
                 "record_swept(ok=True) requires frm and through — the window this sweep "
                 "actually searched. A positive coverage row with no window is not verifiable.")
+        frm, through = _coverage_field(frm, "frm"), _coverage_field(through, "through")
         rec = {"event": "swept", "mailbox": mailbox, "from": frm, "through": through,
                "at": at, "by": by or "", "ok": True}
         if source:
@@ -796,10 +830,21 @@ def _check_channels(channels):
                            "(non-empty strings without whitespace)" % (channels,))
 
 
+# dev #826 / public #177 (jobsearch 0.83.0, design-sweep-misfires.md section 2.4) -- what a `recorded` LinkedIn
+# pass row says about the Browser pane. `pane` is the state the runner read from the harness (`displayed`,
+# `hidden`, `unknown`) or `not-pane` (the pass ran on the Chrome extension); `unreported` is the script's own word
+# for a SWEEP block that carried no readable `PANE` line, never something the runner writes. `mode` is whether any
+# part of the pass ran in hidden mode; `unreported` goes with `pane == "unreported"` only, because a pass whose
+# pane line is missing proves neither mode.
+PASS_PANE_STATES = ("displayed", "hidden", "unknown", "not-pane", "unreported")
+PASS_PANE_MODES = ("normal", "hidden", "unreported")
+
+
 def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_attempted=None,
                 reason=None, at=None, jobsearch=None, sweep=None, attended=None,
                 split_days=None, *, verdict=None, faults=None, kept=None, concluded=None,
-                not_concluded=None, channels=None, ids=None, unreached=None):
+                not_concluded=None, channels=None, ids=None, unreached=None,
+                pane=None, mode=None, partial=None):
     """design-script-first.md §2 (public #75/#87/#110) — the ONE writer for a `pass` row.
     `phase` is validated against `PASS_PHASES`, `kind` against `PASS_KINDS`, `reason` against
     `REASONS` (required for `phase="refused"`, refused otherwise — a reason on a row that is not
@@ -821,7 +866,13 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
     `capture` and `fetch` take phase `done` ONLY, with the keyword-only `unreached` (the ids the bounded
     call did not reach, `[]` when it reached them all); `done` and `unreached` are refused on any
     other kind. `drain_close` reads the LAST `capture` row's `unreached` to give an admitted item the
-    cause `deadline-reached`."""
+    cause `deadline-reached`.
+
+    dev #826 / public #177 (0.83.0) -- the keyword-only `pane`, `mode` and `partial` are a `recorded`
+    LinkedIn row's account of the Browser pane: all three or none (a row written before 0.83.0, or a failed
+    pass whose block was never read, carries none). `pane` is one of `PASS_PANE_STATES`, `mode` one of
+    `PASS_PANE_MODES` (`unreported` exactly when `pane == "unreported"`), and `partial` the surfaces read from
+    a pane that was not painting, a subset of `reached`."""
     at = at or now_iso()
     if not run_id:
         raise JournalError("record_pass requires run_id")
@@ -933,6 +984,38 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
         if given:
             raise JournalError("record_pass: %s only for phase='recorded' (got phase=%r)"
                                % (", ".join(given), phase))
+    # dev #826 / public #177 -- the pane account. All three or none; a `recorded` LinkedIn row only.
+    pane_fields = dict(pane=pane, mode=mode, partial=partial)
+    given_pane = sorted(k for k, v in pane_fields.items() if v is not None)
+    if given_pane:
+        if kind != "linkedin" or phase != "recorded":
+            raise JournalError("record_pass: %s only for a LinkedIn pass with phase='recorded' (got kind=%r "
+                               "phase=%r)" % (", ".join(given_pane), kind, phase))
+        if len(given_pane) != 3:
+            raise JournalError("record_pass: pane, mode and partial go together (missing: %s)"
+                               % ", ".join(sorted(set(pane_fields) - set(given_pane))))
+        if pane not in PASS_PANE_STATES:
+            raise JournalError("record_pass pane=%r is not one of %r" % (pane, PASS_PANE_STATES))
+        if mode not in PASS_PANE_MODES:
+            raise JournalError("record_pass mode=%r is not one of %r" % (mode, PASS_PANE_MODES))
+        if (pane == "unreported") != (mode == "unreported"):
+            raise JournalError("record_pass: mode 'unreported' goes with pane 'unreported' and only with it "
+                               "(got pane=%r mode=%r)" % (pane, mode))
+        if pane == "hidden" and mode != "hidden":
+            raise JournalError("record_pass: pane 'hidden' requires mode 'hidden' (a hidden pane is read "
+                               "without clicks); got mode=%r" % (mode,))
+        if (not isinstance(partial, (list, tuple))
+                or any(not isinstance(t, str) for t in partial)
+                or len(set(partial)) != len(partial)):
+            raise JournalError("record_pass partial=%r is not a list of distinct surface tokens" % (partial,))
+        bad = sorted(set(partial) - LINKEDIN_SWEEP_SURFACES)
+        if bad:
+            raise JournalError("record_pass partial=%r is not in LINKEDIN_SWEEP_SURFACES %r"
+                               % (bad, sorted(LINKEDIN_SWEEP_SURFACES)))
+        stray = sorted(set(partial) - set(reached or []))
+        if stray:
+            raise JournalError("record_pass partial=%r names a surface that was not reached (reached=%r)"
+                               % (stray, list(reached or [])))
     # dev #811 / public #170 (design §5.3) -- `channels`: the ids of the combined worklist one
     # `channels_due.py --board-decision` call handed the board sweeper, on its `dispatched` row, so
     # `deferred.add_roles` can ask which of them the hand-back accounts for (`board_worklist`). An
@@ -969,6 +1052,8 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
                    not_concluded=not_concluded)
     if channels is not None:
         rec["channels"] = list(channels)
+    if given_pane:
+        rec.update(pane=pane, mode=mode, partial=list(partial))
     if ids is not None:
         rec["ids"] = list(ids)
     if kind in UNREACHED_PASS_KINDS:
@@ -1971,13 +2056,168 @@ def _parse_iso(raw):
         return None
 
 
+# --------------------------------------------------------------------------
+# ⭐ dev #807 — coverage windows are INSTANTS, read by ONE parser
+# --------------------------------------------------------------------------
+# A `swept` row's `from`/`through` used to be naive local wall time. In the fall-back hour that names
+# two instants, and `01:10` (before the change) and `01:50` (after it) compared with the wrong order:
+# a real 1h40m hole merged away and printed as covered. The writer now stores a numeric offset, and
+# every reader goes through `parse_instant`. Rows written before 0.83.0 stay naive on disk (the journal
+# is append-only, and a rewrite could only apply the same rule the reader does: design-sweep-misfires
+# section 4.2), so `parse_instant` carries the stated legacy interpretation too.
+_UTC = datetime.timezone.utc
+INSTANT_ROLES = ("from", "through", "point")
+
+
+def _declared_zone():
+    """The tzinfo `_localzone` resolves (declared `geography.timezone`, then `TZ`), or None when only
+    the host zone is known. Never raises: a zone we cannot load is the host zone, not a crash."""
+    try:
+        import _localzone
+        return _localzone.local_zone()
+    except Exception:
+        return None
+
+
+def _fromiso(raw):
+    """`fromisoformat` that accepts a trailing `Z` (3.9 and 3.10 refuse it); None on anything else."""
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if text[-1:] in ("Z", "z"):
+        text = text[:-1] + "+00:00"
+    try:
+        return datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def is_offset_bearing(raw):
+    """True when `raw` is an ISO string that names ONE instant (it carries a numeric offset or `Z`).
+    The predicate `record_swept` uses: `parse_instant` cannot be, because it deliberately reads a naive
+    legacy value as an instant by the legacy rule."""
+    d = _fromiso(raw)
+    return d is not None and d.tzinfo is not None and d.utcoffset() is not None
+
+
+def coverage_iso(dt):
+    """An AWARE datetime as the ISO string a `swept` row stores: its offset, in the zone `_localzone`
+    resolves (declared `geography.timezone`, then `TZ`, then the host), e.g. `2026-11-01T01:05:00-06:00`.
+    The instant is correct in any zone; the declared zone only decides which offset is printed, so the
+    ledger reads in the owner's clock even when the host is elsewhere. Never emits `Z` (3.9 cannot parse
+    it back). Raises on a naive datetime: that is the defect this exists to end."""
+    if not isinstance(dt, datetime.datetime) or dt.tzinfo is None or dt.utcoffset() is None:
+        raise JournalError("coverage_iso needs an AWARE datetime, got %r — a naive local time in the "
+                           "fall-back hour names two instants (dev #807)" % (dt,))
+    tz = _declared_zone()
+    local = dt.astimezone(tz) if tz is not None else dt.astimezone()
+    return local.replace(microsecond=0).isoformat()
+
+
+def _coverage_field(value, name):
+    """The stored form of a `swept` window end: an aware datetime through `coverage_iso`, or a string
+    that already carries an offset (kept verbatim). Anything naive is refused."""
+    if isinstance(value, datetime.datetime):
+        return coverage_iso(value)
+    if not is_offset_bearing(value):
+        raise JournalError(
+            "record_swept(ok=True) %s=%r carries no UTC offset. A naive local time in the fall-back hour "
+            "names two instants, so a coverage window must be an instant: pass an aware datetime or "
+            "journal.coverage_iso(dt) (dev #807)." % (name, value))
+    return value
+
+
+def _journal_at(at):
+    """`at` keeps the journal-wide naive-local convention: an aware datetime becomes naive host-local."""
+    if isinstance(at, datetime.datetime):
+        if at.tzinfo is not None:
+            at = at.astimezone().replace(tzinfo=None)
+        return at.replace(microsecond=0).isoformat()
+    return at
+
+
+def parse_instant(raw, role="point"):
+    """⭐ dev #807 — THE ONE parser for a coverage timestamp: an aware UTC datetime, or None when `raw`
+    cannot be read. `role` is one of `INSTANT_ROLES`.
+
+    An offset-bearing value is exact. A NAIVE value is a legacy row (written before 0.83.0 as wall time
+    on the writing machine's zone), read by the stated rule of design-sweep-misfires section 4.2:
+      * the candidate zones are this host's zone and the declared zone (`_localzone`);
+      * in each candidate, BOTH readings of the wall time are built (`fold=0` and `fold=1`);
+      * `from` takes the LATEST reading and `through` the EARLIEST, so coverage can only shrink: a
+        real hole is never merged away, and a false hole is closed by the next sweep reaching back;
+      * `point` takes `fold=0` in the declared zone (the host zone when none is declared).
+    Outside a fold, with one zone, every reading is equal and nothing changes. When the candidate zones
+    differ, a legacy row shrinks by their difference, so a legacy row SHORTER than that difference reads
+    inverted and contributes no coverage (`coverage_intervals` drops it)."""
+    if role not in INSTANT_ROLES:
+        raise JournalError("parse_instant role must be one of %r, got %r" % (INSTANT_ROLES, role))
+    d = _fromiso(raw)
+    if d is None:
+        return None
+    if d.tzinfo is not None:
+        return d.astimezone(_UTC)
+    declared = _declared_zone()
+    readings = []
+    point = None
+    for fold in (0, 1):
+        naive = d.replace(fold=fold)
+        candidates = [("host", naive)]
+        if declared is not None:
+            candidates.append(("declared", naive.replace(tzinfo=declared)))
+        for kind, cand in candidates:
+            try:
+                utc = cand.astimezone(_UTC)
+            except (OverflowError, OSError, ValueError):
+                continue
+            readings.append(utc)
+            if fold == 0 and kind == ("declared" if declared is not None else "host"):
+                point = utc
+    if not readings:
+        return None
+    if role == "from":
+        return max(readings)
+    if role == "through":
+        return min(readings)
+    return point if point is not None else readings[0]
+
+
+def coverage_intervals(recs, mailbox, by=None):
+    """⭐ dev #807 — `[(from_utc, through_utc), ...]` for every `ok: true` `swept` row of `mailbox` (and
+    of sweep kind `by`, when given), read through `parse_instant`. A row that cannot be read, or whose
+    `from` is at or after its `through` (a legacy row wholly inside the fold, or shorter than the zone
+    difference), contributes NOTHING: its hour reads as not covered, never as a crash. The one place a
+    `swept` window is turned into intervals; `covered_through` and `mail_client.uncovered_spans` share it."""
+    out = []
+    for r in recs:
+        if r.get("event") != "swept" or r.get("mailbox") != mailbox or not r.get("ok"):
+            continue
+        if by is not None and r.get("by") != by:
+            continue
+        fd, td = parse_instant(r.get("from"), "from"), parse_instant(r.get("through"), "through")
+        if fd is None or td is None or fd >= td:
+            continue
+        out.append((fd, td))
+    return out
+
+
+def _as_of_instant(as_of):
+    """`covered_through`'s `as_of` (a datetime or a string) as an aware UTC instant, or None."""
+    if isinstance(as_of, datetime.datetime):
+        if as_of.tzinfo is not None:
+            return as_of.astimezone(_UTC)
+        return parse_instant(as_of.isoformat(), "point")
+    return parse_instant(as_of, "point")
+
+
 def _merge_intervals(intervals):
-    """[(from_dt, through_dt), ...] -> the same list with every overlapping or touching pair
-    merged into one. Adjacency is guaranteed across a healthy run history by the ledger-derived
-    lookback in `mail_client.py` (each sweep reaches back to the end of the last covered
-    interval), so a gap that survives this merge is a REAL hole, not a rounding artefact."""
+    """[(from_dt, through_dt), ...] (aware datetimes) -> the same list with every overlapping or
+    touching pair merged into one. Adjacency is guaranteed across a healthy run history by the
+    ledger-derived lookback in `mail_client.py` (each sweep reaches back to the end of the last covered
+    interval), so a gap that survives this merge is a REAL hole, not a rounding artefact. An empty or
+    inverted pair is dropped (dev #807), never raised."""
     merged = []
-    for f, t in sorted(intervals, key=lambda p: p[0]):
+    for f, t in sorted((p for p in intervals if p[0] < p[1]), key=lambda p: p[0]):
         if merged and f <= merged[-1][1]:
             if t > merged[-1][1]:
                 merged[-1] = (merged[-1][0], t)
@@ -2009,28 +2249,24 @@ def covered_through(recs, mailbox, as_of=None, by=None):
     the plain `mail_client.lookback_days(..., by=None)` call `watch.py`/`alert_sweep.py`/
     `meeting_check.py` already make) — only a caller that asks for its OWN sweep kind's history
     gets the narrower answer.
+
+    ⭐ dev #807 — the windows are INSTANTS, read by `parse_instant` (a legacy naive row by its stated
+    rule), merged as instants, and the answer is an offset-bearing ISO string in the declared zone,
+    not a naive one: `01:05-05:00` and `01:05-06:00` are two different answers. `as_of` is read as a
+    `point`. A row whose `from` is at or after its `through` contributes nothing.
     """
-    intervals = []
-    for r in recs:
-        if r.get("event") != "swept" or r.get("mailbox") != mailbox or not r.get("ok"):
-            continue
-        if by is not None and r.get("by") != by:
-            continue
-        fd, td = _parse_iso(r.get("from")), _parse_iso(r.get("through"))
-        if fd is None or td is None:
-            continue
-        intervals.append((fd, td))
+    intervals = coverage_intervals(recs, mailbox, by=by)
     if not intervals:
         return None
     merged = _merge_intervals(intervals)
     if as_of is None:
-        return merged[-1][1].isoformat()
-    as_of_dt = as_of if isinstance(as_of, datetime.datetime) else _parse_iso(as_of)
+        return coverage_iso(merged[-1][1])
+    as_of_dt = _as_of_instant(as_of)
     if as_of_dt is None:
         return None
     for f, t in merged:
         if f <= as_of_dt <= t:
-            return t.isoformat()
+            return coverage_iso(t)
     return None
 
 
@@ -2389,6 +2625,14 @@ def cmd_passes(root, today_only=False):
             bits += (" verdict=%s faults=%s concluded=%s not_concluded=%s kept=%s"
                     % (r.get("verdict"), r.get("faults"), r.get("concluded"),
                        r.get("not_concluded"), r.get("kept") or "-"))
+            # dev #826 / public #177 -- the pane account (0.83.0). A row written before it carries none of the three
+            # fields and prints exactly as it did; one that carries them says the pane, the mode and any partial surfaces.
+            if r.get("pane") is not None:
+                part = r.get("partial") if isinstance(r.get("partial"), list) else []
+                bits += " pane=%s mode=%s partial=%s" % (r.get("pane"), r.get("mode"),
+                                                         ",".join(str(t) for t in part) or "-")
+                if part:
+                    bits += " PARTIAL"
         elif r.get("phase") == "dispatched" and r.get("channels"):
             bits += " channels=%s" % ",".join(r["channels"])
         elif r.get("phase") == "done":

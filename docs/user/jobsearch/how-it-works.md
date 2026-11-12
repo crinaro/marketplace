@@ -597,6 +597,39 @@ signed-in browser on a desktop (macOS); it cannot run from a phone on its own or
 it is roughly half of the outreach funnel. The mailbox, screening, reports and drafting need only
 one of the supported places above.
 
+### LinkedIn needs the browser pane in view (since 0.83.0)
+
+LinkedIn is read in the desktop app's built-in browser pane. A pane you are not looking at does not draw
+anything on screen, so a click in it cannot be checked. Since 0.83.0 the search asks the app whether the pane
+is shown, once at the start of each LinkedIn pass, and works accordingly:
+
+- **Pane shown (you are watching, or the session is in view).** The full pass runs: it reads your lists and
+  does the work that needs clicks. If the pane stops drawing while it is shown, the pass says so and stops
+  clicking, as before.
+- **Pane hidden, or a scheduled run.** Nobody is looking at a scheduled run's pane, so it counts as hidden.
+  The pass reads LinkedIn by text only: it opens each list's address and reads the words on the page, and it
+  clicks nothing and types nothing. Work that needs a click is not done, and the pass does not call a hidden
+  pane a broken one. A list read this way is still read, and it still counts as that day's LinkedIn pass.
+  The pass is not run again later on its own, because on a schedule nobody would be there to show the pane.
+- **Pane state unreadable.** If the app's answer cannot be understood (for example after an app update changes
+  its wording), the pass carries on as it did before 0.83.0 and says so loudly. In that case a hidden pane can
+  still be mistaken for a broken one.
+
+The hidden and unreadable cases each leave a **gap** open. A text-only list is reported as partial rather than
+as a complete read. The gap tells you what to do:
+
+- **Hidden pane:** click-dependent LinkedIn work runs only while the Browser pane is shown. Run
+  `/jobsearch:linkedin` in the desktop app and keep it in view. The gap closes when a pass runs that way.
+  If your LinkedIn pass runs in Chrome instead of the pane, the same rule applies to the Chrome window: have
+  it open and in view.
+- **Pane state unreadable:** nothing for you to fix on your own. The gap stays open until a pass can read the
+  pane again. If it never closes, report it (see **[reporting-issues.md](../reporting-issues.md)**): the app's
+  wording has probably changed.
+
+One limit is not covered. The app says whether the session is in view, not whether the pane is actually
+drawing. A pane that reads as shown while the window is covered, on another desktop, on a sleeping display or
+behind a locked screen can still be mistaken for a broken one, as before 0.83.0.
+
 ---
 
 ## When something looks wrong
