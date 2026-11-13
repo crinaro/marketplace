@@ -2992,14 +2992,22 @@ CSS = """
   .opp-process { opacity:.8; font-style:italic; }
   .opp-read { color: var(--chip-action-fg); }
   .opp-copy { font-size:11.5px; opacity:.7; margin-left:4px; }
-  /* dev #820: the process-state block, never collapsed. */
+  /* dev #820: the process-state block. Owner request 2026-11-12 (C7): it now sits at the bottom, collapsed
+     (`details.pstate`), and the page's top carries ONE `.palert` line only when the pipeline is not
+     healthy, or when it could not be checked. */
+  .palert { font-size:13px; font-weight:700; margin: 0 0 14px; padding:8px 12px; border-radius:10px;
+            border:1px solid var(--card-border); background: var(--card-bg);
+            color: var(--chip-action-fg); }
+  .palert a { color: inherit; }
+  details.pstate { margin: 26px 0 0; }
+  details.pstate > summary { cursor:pointer; font-size:12.5px; opacity:.85; padding:4px 0; }
   .process { background: var(--card-bg); border: 1px solid var(--card-border); border-radius:10px;
              padding:8px 14px; margin: 4px 0 12px; }
   .process .pline { font-size:13px; padding:2px 0; white-space:pre-wrap; }
   .process .pline.pfail { font-weight:700; color: var(--chip-action-fg); }
   .process .pside { display:flex; gap:16px; flex-wrap:wrap; }
   .process .pside .pline { flex:1 1 280px; }
-  .process .pgen, .process .prun, .process .pdrill { font-size:12.5px; opacity:.85; }
+  .process .prun, .process .pdrill { font-size:12.5px; opacity:.85; }
   .process .pdrill li { margin: 2px 0; }
   .conservation { font-size:12px; margin-top:18px; opacity:.8; }
   /* dev #776: the employer-posting line; flagged = not confirmed live on the employer's own posting. */
@@ -3158,20 +3166,34 @@ PROCESS_DRILL_CAP = 30
 
 
 def render_process_block(rep, ctx, data, now, error=None):
-    """The process-state block, NEVER collapsed (dev #820 / public #175, design 2.4, N14): the page's
-    generation time, every open run (or `no run open`), and `process_report().block_lines` verbatim: the
-    process failure with its oldest age and causes, waiting for intake and the legacy backlog side by side
-    with the reservation, `UNCLASSIFIED`/`ROLES MISMATCH` when they are true, and `Did not look`. Then a
-    drill list of the oldest failed roles with each one's cause. The conservation line (the report's last
-    line) is NOT here; `render_conservation_line` prints it at the end of the page.
+    """The process-state block, at the BOTTOM of the page and COLLAPSED (owner request 2026-11-12, design
+    r3 section 2.7, criterion C7). This SUPERSEDES dev #820 / public #175 design 2.4 N14 "never collapsed"
+    for the dashboard. What N14 held that still holds: the block is never absent, its lines are
+    `process_report`'s own, every open run (or `no run open`) is on the page, and PIPELINE NOT CHECKED is
+    loud (and is now loud at the top too, `render_pipeline_alert`).
+
+    It is `process_report().block_lines` verbatim: the process failure with its oldest age and causes,
+    waiting for intake and the legacy backlog side by side with the reservation, `UNCLASSIFIED`/`ROLES
+    MISMATCH` when they are true, and `Did not look`. Then a drill list of the oldest failed roles with
+    each one's cause (that list keeps its own `open`, so it shows open once the reader opens the outer
+    block). The conservation line (the report's last line) is NOT here; `render_conservation_line` prints
+    it after this block, last on the page. The page's ONE generation time is on the `Generated` line at the
+    top, not here.
+
+    The outer `<details>` is told apart from the inner drill `<details>` by `id="pipeline-details"`, which
+    the top alert links to. Its `<summary>` reads `Pipeline state: healthy`, or the alert text, or `NOT
+    CHECKED`.
 
     A report that could not be computed is `PIPELINE NOT CHECKED`, loudly, never an empty block."""
-    gen = '<div class="pgen" data-generated="%s">Page generated %s (local time)</div>' % (
-        esc(now.replace(microsecond=0).isoformat()), esc(now.strftime("%Y-%m-%d %H:%M")))
+    def wrap(summary, section):
+        return ('<details class="pstate" id="pipeline-details"><summary>Pipeline state: %s</summary>%s'
+                '</details>' % (esc(summary), section))
+
     if rep is None:
-        return ('<section class="process" id="process-state">'
-                '<div class="pline pfail">PIPELINE NOT CHECKED &mdash; %s. Nothing below is an empty '
-                'queue.</div>%s</section>' % (esc(error or "the lifecycle could not be read"), gen))
+        return wrap("PIPELINE NOT CHECKED",
+                    '<section class="process" id="process-state">'
+                    '<div class="pline pfail">PIPELINE NOT CHECKED &mdash; %s. Nothing on this page is an '
+                    'empty queue.</div></section>' % esc(error or "the lifecycle could not be read"))
     body = list(rep.block_lines[:-1])           # the last line is the conservation line
     rows = []
     i = 0
@@ -3207,8 +3229,9 @@ def render_process_block(rep, ctx, data, now, error=None):
         drill = ('<details class="pdrill" open><summary>The oldest %d of %d failed roles, with their '
                  'cause</summary><ul>%s%s</ul></details>'
                  % (len(shown), len(ordered), "".join(lis), more))
-    return ('<section class="process" id="process-state">%s%s%s%s</section>'
-            % (gen, "".join(rows), runs, drill))
+    return wrap(_lifecycle.alert_line(rep) or "healthy",
+                '<section class="process" id="process-state">%s%s%s</section>'
+                % ("".join(rows), runs, drill))
 
 
 def render_conservation_line(rep):
@@ -3219,24 +3242,28 @@ def render_conservation_line(rep):
     return '<div class="conservation" data-conservation="1">%s</div>' % esc(rep.conservation_line)
 
 
-def render_review_router(rows):
-    """The top of the page since jobsearch 0.71.0: THREE anchors and a clause each, nothing else.
-    The counts that used to ride the six-phase router moved to the band and the status pane
-    (scripts/panel.py), because status is not what this page is for. A row whose list is not on the
-    page is a muted label with no anchor, so the router never links to nothing (ANCHOR)."""
-    out = ['<div class="router">']
-    for icon, label, sid, n, clause in rows:
-        if n:
-            out.append('<div class="rrow"><a class="ph" href="#%s">%s %s</a>'
-                       '<span class="nx">%s</span></div>' % (sid, icon, esc(label), md_inline(clause)))
-        else:
-            out.append('<div class="rrow zero"><span class="ph">%s %s</span>'
-                       '<span class="nx">%s</span></div>' % (icon, esc(label), md_inline(clause)))
-    out.append("</div>")
-    return "".join(out)
+def render_pipeline_alert(rep, error=None):
+    """The ONE line between the `Generated` line and the first list, and only when something is wrong
+    (owner request 2026-11-12, design r3 section 2.7, criterion C7). A healthy pipeline renders NOTHING
+    here. `lifecycle.alert_line(rep)` is the text, with no glyph; the `⚠ ` is added once, here, and the
+    gate compares exactly the text between it and ` — details`. The link goes to the collapsed process
+    block's `<summary>` (`#pipeline-details`), which stays visible while the block is closed, so the link
+    never depends on a fragment opening a closed `<details>` (UNDETERMINED in the HTML spec).
+
+    A report that could not be computed is `PIPELINE NOT CHECKED`, always loud, and is its own line
+    because there is no report to read an alert from."""
+    if rep is None:
+        return ('<div class="palert pfail" data-pipeline-alert="not-checked">⚠ PIPELINE NOT CHECKED '
+                '— %s. Nothing on this page is an empty queue. — <a href="#pipeline-details">details</a>'
+                '</div>' % esc(error or "the lifecycle could not be read"))
+    line = _lifecycle.alert_line(rep)
+    if line is None:
+        return ""
+    return ('<div class="palert" data-pipeline-alert="1">⚠ %s — <a href="#pipeline-details">details</a>'
+            '</div>' % esc(line))
 
 
-def main():
+def main(run_id=None):
     drafts = parse_drafts(read(_tree.rel("drafts")))
     # Cover letters are a distinct artifact from outreach drafts (added 2026-07-21).
     covers = [c for c in parse_cover_letters(read(_tree.rel("cover_letters")))]
@@ -3252,12 +3279,16 @@ def main():
     # snapshot is said on the page (PIPELINE NOT CHECKED), never rendered as an empty pipeline.
     _LC_MAIN.update(active=True, data=None, error=None)
     _lc_now = datetime.datetime.now()
+    # C7 (round-2 S5): the run generating this page is open by definition, so it is not "overlong" against
+    # itself. The caller names it (`--run ID`, or CLAUDESEARCH_RUN_ID so a wrapper that regenerates the page
+    # passes it through). Unnamed, no run is excluded.
+    _gen_run = run_id or os.environ.get("CLAUDESEARCH_RUN_ID") or None
     _lc_snapshot = _lc_data(_opp_rows)
     _lc_ctx = _ym.lifecycle_context(_opp_rows, _lc_now, _lc_snapshot)
     _lc_report, _lc_error = None, _LC_MAIN["error"]
     if _lc_error is None:
         try:
-            _lc_report = _lifecycle.process_report(_lc_snapshot, _lc_now)
+            _lc_report = _lifecycle.process_report(_lc_snapshot, _lc_now, generating_run=_gen_run)
         except Exception as _e:                                      # noqa: BLE001 - said, never swallowed
             _lc_error = "%s: %s" % (type(_e).__name__, _e)
     if _lc_error:
@@ -3566,32 +3597,9 @@ def main():
     # %-d is a glibc/BSD strftime extension; on Windows it raises ValueError and kills the dashboard
     # at the last step. Build the day number by hand (same fix as parse_ics.py).
     _t = datetime.date.today()
-    today = "%s %d, %d" % (_t.strftime("%B"), _t.day, _t.year)
     _title = _dashboard_title()
 
     n_drafts_primary = len(_drafts_active)
-    router_html = render_review_router([
-        ("✉️", "Drafts to review", "phase-outreach-approvals",
-         1 if _first_drafts else 0,
-         ("%d staged message%s to read and approve." % (n_drafts_primary,
-                                                         "" if n_drafts_primary == 1 else "s"))
-         if _first_drafts else "Nothing staged."),
-        ("🎯", "Opportunities to pursue", "phase-pipeline-roles", 1 if _first_opps else 0,
-         ("%d role%s where a decision is owed." % (opp_counts["all"],
-                                                    "" if opp_counts["all"] == 1 else "s"))
-         if _first_opps else "No decision is owed on a role."),
-        ("📝", "Applications to finish", "phase-applying-finish", 1 if _first_apply else 0,
-         ("%d item%s to finish." % (n_apply, "" if n_apply == 1 else "s"))
-         if _first_apply else "Nothing queued to apply."),
-    ] + ([("&#128065;", "Needs your read", READ_SECTION, 1,
-           "%d posting%s only you can open, with the link and the reason."
-           % (n_read, "" if n_read == 1 else "s"))]
-         if _first_read else [])
-      + ([("&#8617;&#65039;", "Roles to reconsider", RESCREEN_SECTION, 1,
-           "%d removed role%s jobsearch 0.73.0 would not repeat; nothing was changed."
-           % (n_flags, "" if n_flags == 1 else "s")
-           if n_flags else "The re-screen check could not run; see the section.")]
-         if _first_flags else []))
     # The pinned jump bar (OWNER REQUEST 2026-10-13): one entry per list, each count the PRIMARY
     # rows that list renders (`data-rec="draft:…"` / `data-rec="opp:…"`), never a reference row;
     # a list that is not on the page is a plain, unlinked label, so the bar never links to nothing.
@@ -3608,24 +3616,37 @@ def main():
                                 n_read if _first_read else None)
     _process_html = render_process_block(_lc_report, _lc_ctx, _lc_snapshot, _lc_now, _lc_error)
     _conservation_html = render_conservation_line(_lc_report)
+    _alert_html = render_pipeline_alert(_lc_report, _lc_error)
+    # The page's ONE generation time (owner request 2026-11-12, C7): the date and the minute and the
+    # machine-readable `data-generated` all come from the ONE clock read `_lc_now`, so the line a reader
+    # sees and the instant the gate recomputes the pipeline at cannot disagree. `data-generating-run` is
+    # present only when a run was named, so the gate recomputes the alert with the same run excluded.
+    _gen_attrs = 'data-generated="%s"' % esc(_lc_now.replace(microsecond=0).isoformat())
+    if _gen_run:
+        _gen_attrs += ' data-generating-run="%s"' % esc(_gen_run)
+    _gen_text = "%s %d, %d, %s" % (_lc_now.strftime("%B"), _lc_now.day, _lc_now.year,
+                                   _lc_now.strftime("%H:%M"))
 
-    body_inner = (
-        '%s\n'
-        '<h1>%s</h1>\n'
+    # Page order: jump bar, title, `Generated`, the ONE alert line (nothing when healthy), the lists, the
+    # "Not on this page" note, the collapsed process block, the conservation line (last).
+    body_inner = "\n".join(x for x in (
+        jump_html,
+        '<h1>%s</h1>' % html.escape(_title),
         # ⭐ The generated-date line stays PROMINENT: for the dashboard-only reader it is the ONLY
         # staleness signal there is (deployment.md, the S5 read leg).
-        '<div class="updated">Generated <strong>%s</strong> · the page of what needs a decision '
+        '<div class="updated" %s>Generated <strong>%s</strong> · the page of what needs a decision '
         'or a finish today · status lives in the jobsearch panel (<code>/jobsearch:status</code>) '
-        '· generated by scripts/generate_dashboard.py</div>\n'
-        '%s\n%s\n%s\n'
+        '· generated by scripts/generate_dashboard.py</div>' % (_gen_attrs, esc(_gen_text)),
+        _alert_html,
+        _first_html,
         '<div class="sub" style="margin-top:26px">Not on this page: status and everything in '
         'flight (the jobsearch panel and <code>/jobsearch:status</code>), the resume and '
         'public-profile reviews (<code>/jobsearch:review-resume</code>, '
         '<code>/jobsearch:review-linkedin</code>), the full network (queried in session — '
         '<code class="fileref">data/channels.jsonl</code>, <code class="fileref">%s</code>), '
-        'archives, sent and closed items, and knowledge bodies.</div>\n%s'
-        % (jump_html, html.escape(_title), today, router_html, _process_html, _first_html,
-           esc(_tree.rel("network")), _conservation_html))
+        'archives, sent and closed items, and knowledge bodies.</div>' % esc(_tree.rel("network")),
+        _process_html,
+        _conservation_html) if x)
 
     # ── The output: the ONE artifact. Nothing outside views/ is written (dev #546). ──
     (ROOT / "views").mkdir(exist_ok=True)
@@ -3678,4 +3699,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    _ap = argparse.ArgumentParser(description="Render views/dashboard_artifact.html.")
+    _ap.add_argument("--run", metavar="ID", default=None,
+                     help="the id of the run generating this page; that run is left out of the "
+                          "overlong-run alert (a long healthy run must not alert about itself). "
+                          "CLAUDESEARCH_RUN_ID is the same, for a wrapper that regenerates the page.")
+    main(run_id=_ap.parse_args().run)

@@ -489,6 +489,11 @@ def stale():
 def main():
     ap = argparse.ArgumentParser(description="Is the dashboard behind its sources?")
     ap.add_argument("--fix", action="store_true", help="Regenerate, then re-check.")
+    ap.add_argument("--run", metavar="ID", default=None,
+                    help="The id of the run that is regenerating the page (C7 / round-2 S5). With "
+                         "--fix it is passed to generate_dashboard.py as `--run ID`, so the run "
+                         "producing the page is left out of the overlong-run alert (a long healthy "
+                         "run must not alert about itself). CLAUDESEARCH_RUN_ID is the same.")
     ap.add_argument("--stamp-published", action="store_true",
                     help="Record that dashboard_artifact.html was JUST published with the "
                          "Artifact tool. Run it right after every successful publish (dev #133).")
@@ -518,6 +523,10 @@ def main():
             print("  %-32s %-10s — %s" % (o, "unchanged" if s == "current" else s, detail))
         return 1 if bad else 0
 
+    # C7 / round-2 S5: the run producing the page is named to the generator, never guessed. This script
+    # does no lifecycle recomputation of its own (it compares mtimes), so the generator is the one place
+    # the exclusion is applied; the coverage gate reads the excluded run off the page it checks.
+    run_id = args.run or os.environ.get("CLAUDESEARCH_RUN_ID") or None
     bad = stale()
     absent = missing()
     if args.fix and (bad or absent):
@@ -534,8 +543,10 @@ def main():
         for gen, out_rel in zip(GENERATORS, OUTPUTS):
             target = _tree.resolve_rel(ROOT, out_rel)
             before_mtime = mtime(target)
-            r = subprocess.run([sys.executable, os.path.join(ENGINE_SCRIPTS, gen)],
-                               capture_output=True, text=True)
+            gen_argv = [sys.executable, os.path.join(ENGINE_SCRIPTS, gen)]
+            if run_id and gen == "generate_dashboard.py":
+                gen_argv += ["--run", run_id]
+            r = subprocess.run(gen_argv, capture_output=True, text=True)
             out = r.stdout.strip()
             print("  " + (out.splitlines() or ["?"])[0])
             if r.returncode:

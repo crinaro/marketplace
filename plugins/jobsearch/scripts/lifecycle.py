@@ -96,7 +96,12 @@ DRAIN_BUDGET_S = 10800                  # 3 h: the most a drain may be asked to 
 PER_ROLE_S_DEFAULT = 270                # an ESTIMATE until `per_role_s` is measured (N7)
 PER_ROLE_MIN_FINISHED = 5               # a close counts toward the measured rate only with this many finished
 PER_ROLE_WINDOW = 5                     # the last N own closes whose median is the measured rate
-LONGEST_RUN_S = 8100                    # 2 h 15 min: the longest whole run measured (runlock.py docstring)
+# LONGEST_RUN_S: 2 h 15 min, the longest whole run measured (runlock.py docstring). The board batch loop
+# (dev #830) now keeps a run open one batch after another until the script says stop, so a healthy run can
+# outlast it: the figure UNDERSTATES a healthy run and is a "worth a look" line, not a bound. That is why the
+# run generating the page is left out of `overlong_runs` (C7 / S5, `--run`); a DIFFERENT open run past it
+# still alerts. The value is unchanged.
+LONGEST_RUN_S = 8100
 DRAIN_FANOUT = 1                        # readers/researchers at once. Raising it needs P-RP-1a (N3)
 P_RP_1A_MIN_READS = 40
 P_RP_1A_LINE_RE = re.compile(
@@ -1377,6 +1382,7 @@ class Report(object):
         self.reserved_new = 0
         self.no_render_route = False
         self.open_runs = []
+        self.overlong_runs = []                      # C7: open runs older than LONGEST_RUN_S (not in to_json)
         self.partial_kinds = []
         self.headline = ""
         self.start_line = ""
@@ -1438,8 +1444,22 @@ def raw_role_count(data, units=None):
     return n + len(keys), source
 
 
-def process_report(data, now):
-    """The `Report` every surface prints (section 2.4, N6, N8, N14, SUM1)."""
+def _elapsed_s(start, now):
+    """Real seconds from `start` to `now`, DST-safe (C7, round-2 M5). The journal's `at` and `now` are
+    NAIVE local datetimes, so subtracting them directly is off by an hour across a DST change; both are
+    converted to UTC first (a naive value is read as the machine's local time). An hour that happens twice
+    is read as its first occurrence, so the one remaining error is at most an hour inside that ambiguous
+    hour, which is accepted."""
+    utc = datetime.timezone.utc
+    return (now.astimezone(utc) - start.astimezone(utc)).total_seconds()
+
+
+def process_report(data, now, generating_run=None):
+    """The `Report` every surface prints (section 2.4, N6, N8, N14, SUM1).
+
+    `generating_run` is the id of the run that is producing the page being rendered (C7, round-2 S5). That
+    run is open by definition, so it is left out of `overlong_runs`: a long healthy daily run must not alert
+    about itself on the page it writes. It stays in `open_runs`."""
     ctx = Ctx(data, now)
     rep = Report()
     today = ctx.today
@@ -1501,6 +1521,11 @@ def process_report(data, now):
                                   "since": run["start_at"].replace(microsecond=0).isoformat(" ")
                                   if run["start_at"] else None,
                                   "last_event_hours": None if hrs is None else int(hrs)})
+            if run["id"] != generating_run:
+                open_s = (None if run["start_at"] is None
+                          else _elapsed_s(run["start_at"], ctx.now))
+                if open_s is None or open_s > LONGEST_RUN_S:
+                    rep.overlong_runs.append({"run_id": run["id"], "open_s": open_s})
     # --- PARTIAL (SUM1) ---
     cov = _coverage.summary(rep.coverage_rows)
     if "feed" in cov:
@@ -1598,6 +1623,44 @@ def _reserve_text(rep):
 
 def _mismatch_text(rep):
     return "ROLES MISMATCH raw %s ≠ staged %s" % (_fmt_n(rep.totals["raw"]), _fmt_n(rep.totals["staged"]))
+
+
+def pipeline_alerts(rep):
+    """C7 (owner request 2026-11-12): what makes the pipeline NOT healthy, as a list of segments in a fixed
+    order. An empty list is healthy. This is the ONE definition: the dashboard top reads it and so does
+    `check_dashboard_coverage.py`, so the page and its gate cannot disagree about "not healthy".
+
+    The four conditions, and only these (each from `process_report`):
+      - process failure > 0 (every cause, `legacy-backlog` included, because `process_report` counts it);
+      - UNCLASSIFIED > 0;
+      - ROLES MISMATCH;
+      - an open run older than `LONGEST_RUN_S`, other than the run generating the page.
+    Deliberately NOT here: `Did not look`, PARTIAL kinds, waiting for intake (a queue, not a failure),
+    clock skew, no render route. They stay in the dashboard's collapsed block."""
+    segs = []
+    if rep.failure > 0:
+        seg = "%s %s stuck in the pipeline" % (_fmt_n(rep.failure), "role" if rep.failure == 1 else "roles")
+        if rep.failure_oldest is not None:
+            seg += " (oldest %dd)" % rep.failure_oldest
+        segs.append(seg)
+    if rep.unclassified > 0:
+        segs.append("UNCLASSIFIED %s" % _fmt_n(rep.unclassified))
+    if rep.mismatch:
+        segs.append(_mismatch_text(rep))
+    for r in rep.overlong_runs:
+        if r["open_s"] is None:
+            segs.append("run %s open (start time not recorded)" % r["run_id"])
+        else:
+            segs.append("run %s open %.1fh" % (r["run_id"], r["open_s"] / 3600.0))
+    return segs
+
+
+def alert_line(rep):
+    """The segments of `pipeline_alerts` joined with ` · `, or None when the pipeline is healthy. No glyph:
+    the dashboard template adds its `⚠ ` once, the run summary prints the bare text, and the gate compares
+    exactly this string (round-2 M3, one alert form)."""
+    segs = pipeline_alerts(rep)
+    return " · ".join(segs) if segs else None
 
 
 # ----------------------------------------------------------------------------------------------

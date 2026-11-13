@@ -80,7 +80,11 @@ and every company careers page not yet linked to a company:
 
 Read-only; it fetches nothing. Settle an `ATS AMBIGUOUS` line, or decline or clear a feed, with
 `record.py ats <company_id> --url <address> | --none | --clear`. A page a feed covered today is not in the
-browser worklist; one it could not read is. The feed needs four hosts allowed (`boards-api.greenhouse.io`,
+browser worklist; one it could not read is. Feeds are tried least-recently-ATTEMPTED first (0.84.0), so a feed that is
+reached but cannot cover does not head the order every run; a slow read is that board's own outcome
+(`read-timeout`, `read-dropped`) and a host goes down only after repeated consecutive failures. The board sweep that
+follows runs in batches, and its `BOARD BATCHES` and `OWNED BY` summary lines name what was handed out and what another
+agent owns (LinkedIn is `linkedin-runner`'s). The feed needs four hosts allowed (`boards-api.greenhouse.io`,
 `api.lever.co`, `api.eu.lever.co`, `api.ashbyhq.com`), which the 0.72.0 upgrade adds to the profile
 project's sandbox settings; Workday needs the one entry `*.myworkdayjobs.com`, added by the 0.76.0 upgrade
 (whether the sandbox honours it is UNVERIFIED, so a Workday company may show `not covered` until it does).

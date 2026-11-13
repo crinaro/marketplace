@@ -197,11 +197,26 @@ _ROUTER_PIPELINE_ANCHOR_RE = re.compile(r'<a class="ph" href="#phase-pipeline"')
 # dev #820 / public #175 (design 2.4, N14): the process-state block and the conservation line. The page
 # renders `lifecycle.process_report`'s own lines; this check recomputes the report from the stores at the
 # page's own generation time and holds the page to it.
+# Owner request 2026-11-12 (C7), which SUPERSEDES N14's "never collapsed" for the dashboard: the block is
+# COLLAPSED at the bottom in `<details id="pipeline-details">` (told apart from the inner drill
+# `<details class="pdrill" open>` by that id), the page's ONE generation time is the `data-generated` on the
+# `.updated` line (read page-wide), and the top carries ONE `data-pipeline-alert` line only when
+# `lifecycle.pipeline_alerts` is non-empty (or PIPELINE NOT CHECKED).
 _PROCESS_SECTION_RE = re.compile(r'<section class="process" id="process-state">(.*?)</section>', re.S)
 _PLINE_RE = re.compile(r'<div class="pline[^"]*">(.*?)</div>', re.S)
 _PRUN_RE = re.compile(r'<div class="prun">(.*?)</div>', re.S)
 _PGEN_RE = re.compile(r'data-generated="([^"]+)"')
+_GEN_RUN_RE = re.compile(r'data-generating-run="([^"]*)"')
 _CONS_RE = re.compile(r'<div class="conservation" data-conservation="1">(.*?)</div>', re.S)
+_PDETAILS_OPEN_RE = re.compile(r'<details\b([^>]*\bid="pipeline-details"[^>]*)>')
+_DETAILS_TAG_RE = re.compile(r'<details\b|</details>')
+_UPDATED_RE = re.compile(r'<div class="updated"')
+_FIRST_SECTION_RE = re.compile(r'<section class="first"')
+_ALERT_ATTR_RE = re.compile(r'data-pipeline-alert="([^"]*)"')
+_ALERT_EL_RE = re.compile(r'<div class="palert[^"]*" data-pipeline-alert="[^"]*">(.*?)</div>', re.S)
+_SCRIPT_BLOCK_RE = re.compile(r'<script\b.*?</script>', re.S | re.I)
+_ALERT_GLYPH = "⚠ "
+_ALERT_TAIL = " — details"
 # The modules a ledger may name as a vocabulary's owner. A source outside this list is a
 # gap, not an import: the check resolves enums, it does not run arbitrary code.
 _ENUM_MODULES = frozenset({"validate_data", "your_move", "applying", "precondition",
@@ -464,45 +479,154 @@ def _plain(fragment):
     return _html.unescape(re.sub(r"<[^>]+>", "", fragment))
 
 
+def _outer_details_end(page, start):
+    """Index just past the `</details>` that closes the `<details>` opened at `start`, counting nested
+    `<details>` (the drill list is one), or None when it never closes."""
+    depth = 0
+    for m in _DETAILS_TAG_RE.finditer(page, start):
+        depth += 1 if m.group(0).startswith("<details") else -1
+        if depth == 0:
+            return m.end()
+    return None
+
+
+def _process_position_gaps(page, sec_start):
+    """The C7 position gaps: the process block is the page's collapsed bottom block. The outer
+    `<details id="pipeline-details">` must exist, carry no `open`, contain the process section, follow the
+    `.updated` line and every list, and precede the conservation line when there is one; with no
+    conservation line (the report could not be computed) nothing but a script may follow it."""
+    why = []
+    dm = _PDETAILS_OPEN_RE.search(page)
+    if not dm:
+        return ["PROCESS BLOCK NOT COLLAPSED — the process section is not inside "
+                "`<details id=\"pipeline-details\">`, so it is open on the page (owner request 2026-11-12: "
+                "the block is collapsed at the bottom)"]
+    if re.search(r'(?:^|\s)open(?:\s|=|$)', dm.group(1)):
+        why.append("the outer `<details>` carries `open`")
+    end = _outer_details_end(page, dm.start())
+    if end is None:
+        why.append("the outer `<details>` never closes")
+    elif not dm.start() < sec_start < end:
+        why.append("the process section is not inside it")
+    upd = _UPDATED_RE.search(page)
+    if upd and dm.start() < upd.start():
+        why.append("it precedes the `Generated` line")
+    last_row = max([m.start() for m in re.finditer(r'data-rec="', page)]
+                   + [m.start() for m in _FIRST_SECTION_RE.finditer(page)] + [-1])
+    if dm.start() < last_row:
+        why.append("it sits above a list, not after the lists")
+    if end is not None:
+        cons = _CONS_RE.search(page)
+        tail = page[end:cons.start()] if cons else page[end:]
+        tail = _SCRIPT_BLOCK_RE.sub("", tail).strip()
+        if cons and cons.start() < dm.start():
+            why.append("the conservation line precedes it")
+        elif tail:
+            why.append("%s follows it" % ("something other than the conservation line" if cons
+                                          else "something (the page has no conservation line, so it "
+                                               "must be last)"))
+    if not why:
+        return []
+    return ["PROCESS BLOCK NOT COLLAPSED — %s (the block is a closed `<details>` after the lists and "
+            "before the conservation line, owner request 2026-11-12)" % "; ".join(why)]
+
+
+def _alert_gaps(page, rep, not_checked):
+    """The C7 alert gaps. With a computed `rep`: `lifecycle.pipeline_alerts(rep)` non-empty needs exactly
+    one `data-pipeline-alert` whose text is `⚠ ` + `alert_line(rep)` + ` — details`, and empty needs none.
+    With `not_checked` (no report could be computed and the page says so) the one alert must say
+    PIPELINE NOT CHECKED. Either way one alert, between the `Generated` line and the first list."""
+    import lifecycle as _lifecycle
+    gaps = []
+    marks = list(_ALERT_ATTR_RE.finditer(page))
+    els = _ALERT_EL_RE.findall(page)
+    if not_checked:
+        if not marks:
+            gaps.append("PIPELINE ALERT MISSING — the page says PIPELINE NOT CHECKED in its block but not at "
+                        "the top, where a reader would see it")
+        elif not any("PIPELINE NOT CHECKED" in _plain(e) for e in els):
+            gaps.append("PIPELINE ALERT DISAGREES — the top line does not say PIPELINE NOT CHECKED")
+    else:
+        want = _lifecycle.alert_line(rep)
+        if want is not None and not marks:
+            gaps.append("PIPELINE ALERT MISSING — the pipeline is not healthy (%s) but the page's top has "
+                        "no `data-pipeline-alert` line" % want)
+        elif want is None and marks:
+            gaps.append("PIPELINE ALERT UNEXPECTED — the pipeline is healthy and the page's top still "
+                        "carries an alert (a healthy page shows nothing there)")
+        elif want is not None and els:
+            text = _plain(els[0])
+            if text.startswith(_ALERT_GLYPH):
+                text = text[len(_ALERT_GLYPH):]
+            if text.endswith(_ALERT_TAIL):
+                text = text[:-len(_ALERT_TAIL)]
+            if text != want:
+                gaps.append("PIPELINE ALERT DISAGREES — the page's alert reads %r; alert_line says %r"
+                            % (text, want))
+    if len(marks) > 1:
+        gaps.append("PIPELINE ALERT MISPLACED — the page carries %d alert lines; exactly one, at the top"
+                    % len(marks))
+    elif marks:
+        at = marks[0].start()
+        upd, first = _UPDATED_RE.search(page), _FIRST_SECTION_RE.search(page)
+        dm = _PDETAILS_OPEN_RE.search(page)
+        if (upd and at < upd.start()) or (first and at > first.start()) or (dm and at > dm.start()):
+            gaps.append("PIPELINE ALERT MISPLACED — the alert must sit between the `Generated` line and the "
+                        "first list, above the collapsed process block")
+    return gaps
+
+
 def check_process_block(page, root):
-    """(gaps, summary) for the process-state block (dev #820 / public #175, N14, TOT). The page must carry
-    the block, and its lines must be EXACTLY `lifecycle.process_report(...).block_lines` (without the
-    conservation line), its open-run lines `run_lines`, and its last line the `conservation_line`,
-    recomputed here from the stores at the page's own generation time (`data-generated`). A page that
-    drops the block, words a count differently, or prints a conservation line that does not add up is a
-    gap, never a pass; a lifecycle that cannot be read is said (`NOT CHECKED`), and the page must then
-    say `PIPELINE NOT CHECKED` too."""
+    """(gaps, summary) for the process-state block (dev #820 / public #175, N14, TOT; owner request
+    2026-11-12, C7). The page must carry the block, COLLAPSED at the bottom (`_process_position_gaps`),
+    and its lines must be EXACTLY `lifecycle.process_report(...).block_lines` (without the conservation
+    line), its open-run lines `run_lines`, and its last line the `conservation_line`, recomputed here from
+    the stores at the page's own generation time (the one `data-generated`, read page-wide; two are
+    `GENERATION TIME AMBIGUOUS`). The top carries the one alert line exactly when
+    `lifecycle.pipeline_alerts` says the pipeline is not healthy (`_alert_gaps`), recomputed with the run
+    the page names in `data-generating-run` left out, as the page did. A page that drops the block, words a
+    count differently, or prints a conservation line that does not add up is a gap, never a pass; a
+    lifecycle that cannot be read is said (`NOT CHECKED`), and the page must then say `PIPELINE NOT
+    CHECKED` in the block and at the top."""
     m = _PROCESS_SECTION_RE.search(page)
     if not m:
         return (["PROCESS BLOCK MISSING — the page has no `process-state` section, so a role a run did "
                  "not finish, a role waiting for intake and what no pass looked at are not on it "
-                 "(design 2.4: the block is never collapsed and never absent)"],
+                 "(design 2.4: the block is never absent)"],
                 "process: block MISSING")
     sec = m.group(1)
-    gen = _PGEN_RE.search(sec)
-    if not gen:
+    gens = _PGEN_RE.findall(page)
+    if not gens:
         return (["PROCESS BLOCK HAS NO GENERATION TIME — a stale render must read as stale (N14)"],
                 "process: no generation time")
+    gaps = []
+    if len(gens) > 1:
+        gaps.append("GENERATION TIME AMBIGUOUS — the page carries %d `data-generated` times; it has ONE, on "
+                    "the `Generated` line, and the pipeline is recomputed at that instant" % len(gens))
     try:
-        now = datetime.datetime.fromisoformat(_html.unescape(gen.group(1)))
+        now = datetime.datetime.fromisoformat(_html.unescape(gens[0]))
     except ValueError:
-        return (["PROCESS BLOCK GENERATION TIME UNREADABLE — %r" % gen.group(1)],
+        return (gaps + ["PROCESS BLOCK GENERATION TIME UNREADABLE — %r" % gens[0]],
                 "process: generation time unreadable")
+    gaps += _process_position_gaps(page, m.start())
+    run_m = _GEN_RUN_RE.search(page)
     try:
         import lifecycle as _lifecycle
-        rep = _lifecycle.process_report(_lifecycle.load_data(root), now)
+        rep = _lifecycle.process_report(_lifecycle.load_data(root), now,
+                                        generating_run=_html.unescape(run_m.group(1)) if run_m else None)
     except Exception as e:                                      # noqa: BLE001 - said, never a pass
         if "PIPELINE NOT CHECKED" in sec:
-            return [], "process: NOT CHECKED here (%s: %s); the page says so too" % (
+            gaps += _alert_gaps(page, None, True)
+            return gaps, "process: NOT CHECKED here (%s: %s); the page says so too" % (
                 type(e).__name__, str(e)[:100])
-        return (["PROCESS BLOCK NOT VERIFIABLE — the role lifecycle cannot be read here (%s: %s) and "
-                 "the page does not say PIPELINE NOT CHECKED" % (type(e).__name__, str(e)[:100])],
+        return (gaps + ["PROCESS BLOCK NOT VERIFIABLE — the role lifecycle cannot be read here (%s: %s) and "
+                        "the page does not say PIPELINE NOT CHECKED" % (type(e).__name__, str(e)[:100])],
                 "process: NOT CHECKED")
-    gaps = []
     if "PIPELINE NOT CHECKED" in sec:
         gaps.append("PROCESS BLOCK SAYS NOT CHECKED — the page claims the lifecycle could not be read, "
                     "but it reads here; regenerate")
     else:
+        gaps += _alert_gaps(page, rep, False)
         page_lines = [_plain(x) for x in _PLINE_RE.findall(sec)]
         want = list(rep.block_lines[:-1])
         if page_lines != want:

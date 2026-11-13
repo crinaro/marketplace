@@ -228,11 +228,15 @@ EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swep
 #                    odd status). The company's career-page channel is listed DUE for the browser
 #                    regardless of cadence, until one browser review stamps `last_reviewed`.
 #   HOST codes    -- the machine or the host failed (egress refused by a sandbox or firewall, a TLS
-#                    chain the host does not trust, DNS/connect failure, a timeout or rate limit on
-#                    the host's FIRST request, or the poller's own deadline). Not a fact about any
-#                    one company, so the channel keeps its NORMAL cadence: a machine that cannot
-#                    reach a vendor must not turn a monthly browser visit into a daily one for every
-#                    slugged company.
+#                    chain the host does not trust, DNS/connect failure, a CONNECT-PHASE timeout or a
+#                    rate limit on the host's FIRST request, or the poller's own deadline). Not a fact
+#                    about any one company, so the channel keeps its NORMAL cadence: a machine that
+#                    cannot reach a vendor must not turn a monthly browser visit into a daily one for
+#                    every slugged company.
+# dev #831 (public #179, jobsearch 0.84.0): a failure AFTER the request was sent (the server never finished
+# its answer) is the BOARD's own, so `read-timeout` and `read-dropped` are BOARD codes. A host goes down on a
+# connect-phase failure before it has answered this run, or on the second consecutive transport failure on it
+# (`feed_poll._HostBreaker`); a host-down carries a HOST code, never a read-* one.
 FEED_FAILURES = {
     "not-found": "upstream-error",          # 404
     "auth-required": "upstream-error",      # 401 / 403 once the host has answered (design U1)
@@ -244,6 +248,8 @@ FEED_FAILURES = {
     "unreachable": "surface-unreachable",   # DNS, connect or generic transport failure
     "egress-blocked": "surface-unreachable",  # a sandbox/proxy refused the host (B1)
     "tls-untrusted": "surface-unreachable",   # certificate verification failed (B1)
+    "read-timeout": "timeout",              # dev #831: the request was SENT and the answer never finished (a BOARD code)
+    "read-dropped": "upstream-error",       # dev #831: the connection was reset or dropped after the request (a BOARD code)
     "budget-exhausted": "timeout",          # the poller's own deadline expired before this board (B3)
     # dev #775 (jobsearch 0.76.0, design-workday-feed.md 5.2 + ruling R2): the Workday vendor's board codes. All map to the
     # existing `upstream-error` reason (REASONS is unchanged) and all are BOARD codes (FEED_HOST_CODES is unchanged), so a
@@ -260,6 +266,7 @@ FEED_FAILURES = {
     "locale-mismatch": "upstream-error",        # the candidate's URL locale differs from the pages' inLanguage (R2)
 }
 FEED_BOARD_CODES = ("not-found", "auth-required", "http-error", "redirected", "unparseable",
+                    "read-timeout", "read-dropped",
                     "robots-unavailable", "robots-disallowed", "sitemap-not-advertised", "blocked",
                     "sitemap-malformed", "sitemap-empty", "sitemap-capped", "sitemap-window-gap",
                     "no-jsonld", "locale-mismatch")
@@ -301,7 +308,13 @@ ROLES_GAP_SCOPE = "jobsearch:roles:%s"
 # dev #820 / public #175 (0.82.0) -- a FIFTH phase, `done`: written by the two bounded drain verbs
 # (`capture-batch`, `read-batch --fetch`) when a call ends, with the ids it did NOT reach. Only the
 # `capture` and `fetch` pass kinds use it (`record_pass` refuses it elsewhere).
-PASS_PHASES = ("dispatched", "returned", "refused", "recorded", "done")
+#
+# dev #830 / public #180 (0.84.0) -- two more phases, BOARD only, written by `channels_due.py --board-batch`: `batch` (one
+# bounded slice of the run's worklist was handed out: `channels`, `batch`, `of`, `t0_utc`) and `batch-end` (the loop ended:
+# `state`, optional `code`, `handed`, `worklist`). `journal --end` writes `batch-end` too, for a loop the run left open.
+PASS_PHASES = ("dispatched", "returned", "refused", "recorded", "done", "batch", "batch-end")
+BATCH_END_STATES = ("done", "budget-spent", "stopped", "abandoned")
+OWNED_RULES = ("link", "channel-id", "host-label")
 
 # dev #812 / public #169 -- the six verdicts a `recorded` row can carry, one per row of the design's
 # §3.4 table. `handback.VERDICTS` restates the same tuple (a test pins the equality).
@@ -398,7 +411,14 @@ REASONS = {"browser-unavailable", "credential-missing", "rate-limited", "timeout
            # (`PANE state=unknown`): a harness rewording, or a parse slip. The pass applies the pre-0.83 rule, which
            # is #826 itself, so the user must see it without reading a transcript: this gap is open until a later
            # pass reads one of the two pinned literals (`displayed`, `hidden`). Scope `linkedin:pane`.
-           "pane-unreadable"}
+           "pane-unreadable",
+           # dev #830 / public #180 (jobsearch 0.84.0, design-coverage-regressions.md section 2.5). A channel not swept names
+           # its REAL cause, never `other`. `run-budget`: `channels_due.py --board-batch` ended the board loop (its batch cap
+           # or its time budget) before this channel was handed out; written by the script, never by the sweeper.
+           # `route-refused`: `route.py` refused this id (`HAS AN UNREADABLE ROUTE`, `NO SUCH CHANNEL`); written by the
+           # sweeper for one id. `run-ended`: `journal --end` found the batch loop open and closed it, so this channel was
+           # never handed out; written by the script, never by the sweeper. A cost stop reuses `skipped-for-cost`.
+           "run-budget", "route-refused", "run-ended"}
 
 # ⭐ dev #321 — a `probe` result is either the literal "empty" or "thread:<ISO timestamp>" (the
 # newest inbound's date/time) — Class C's own vocabulary, settled here since V0 is the first
@@ -840,11 +860,28 @@ PASS_PANE_STATES = ("displayed", "hidden", "unknown", "not-pane", "unreported")
 PASS_PANE_MODES = ("normal", "hidden", "unreported")
 
 
+def _check_owned_elsewhere(owned):
+    """dev #830 / public #180 (C6, owner ruling O2) -- a `pass board dispatched` row's `owned_elsewhere`: a non-empty
+    `{channel_id: {"agent": str, "rule": OWNED_RULES}}`, the agent never `board-sweeper` (a channel the sweeper owns is in
+    its worklist, not excluded from it)."""
+    if not isinstance(owned, dict) or not owned:
+        raise JournalError("record_pass owned_elsewhere=%r is not a non-empty {channel_id: {agent, rule}} map" % (owned,))
+    for cid, v in owned.items():
+        if not isinstance(cid, str) or not cid or re.search(r"\s", cid):
+            raise JournalError("record_pass owned_elsewhere has the channel id %r (a non-empty string without "
+                               "whitespace)" % (cid,))
+        if (not isinstance(v, dict) or set(v) != {"agent", "rule"} or not isinstance(v["agent"], str) or not v["agent"]
+                or v["agent"] == "board-sweeper" or v["rule"] not in OWNED_RULES):
+            raise JournalError("record_pass owned_elsewhere[%r]=%r is not {agent: <an agent other than board-sweeper>, "
+                               "rule: one of %s}" % (cid, v, ", ".join(OWNED_RULES)))
+
+
 def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_attempted=None,
                 reason=None, at=None, jobsearch=None, sweep=None, attended=None,
                 split_days=None, *, verdict=None, faults=None, kept=None, concluded=None,
                 not_concluded=None, channels=None, ids=None, unreached=None,
-                pane=None, mode=None, partial=None):
+                pane=None, mode=None, partial=None, batch=None, of=None, t0_utc=None, state=None,
+                code=None, handed=None, worklist=None, owned_elsewhere=None):
     """design-script-first.md §2 (public #75/#87/#110) — the ONE writer for a `pass` row.
     `phase` is validated against `PASS_PHASES`, `kind` against `PASS_KINDS`, `reason` against
     `REASONS` (required for `phase="refused"`, refused otherwise — a reason on a row that is not
@@ -872,7 +909,15 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
     LinkedIn row's account of the Browser pane: all three or none (a row written before 0.83.0, or a failed
     pass whose block was never read, carries none). `pane` is one of `PASS_PANE_STATES`, `mode` one of
     `PASS_PANE_MODES` (`unreported` exactly when `pane == "unreported"`), and `partial` the surfaces read from
-    a pane that was not painting, a subset of `reached`."""
+    a pane that was not painting, a subset of `reached`.
+
+    dev #830 / public #180 (0.84.0) -- the board loop's rows. `phase="batch"` (board only) REQUIRES `channels` (the ids
+    handed out), `batch` (an int >= 1), `of` (the planned batch count, an int >= batch) and `t0_utc` (an ISO instant WITH a
+    UTC offset: batch 1's, copied by later batches). `phase="batch-end"` (board only) REQUIRES `state` (one of
+    `BATCH_END_STATES`), `handed` and `worklist` (counts), and may carry `code` (a `REASONS` code). Every one of these
+    keywords is refused on any other phase. `owned_elsewhere` is for a `dispatched` board row only: a non-empty
+    `{channel_id: {"agent": <owning agent, never board-sweeper>, "rule": one of OWNED_RULES}}`, the channels the worklist
+    left out because another agent owns them (`channels_due.owner_elsewhere`)."""
     at = at or now_iso()
     if not run_id:
         raise JournalError("record_pass requires run_id")
@@ -883,6 +928,44 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
     if (phase == "done") != (kind in UNREACHED_PASS_KINDS):
         raise JournalError("record_pass: phase 'done' is for the %s pass kinds and only for them (got "
                            "kind=%r phase=%r)" % (" and ".join(UNREACHED_PASS_KINDS), kind, phase))
+    loop_fields = dict(batch=batch, of=of, t0_utc=t0_utc, state=state, code=code, handed=handed, worklist=worklist)
+    if phase in ("batch", "batch-end"):
+        if kind != "board":
+            raise JournalError("record_pass: phase %r is only for a board pass (got kind=%r)" % (phase, kind))
+        if phase == "batch":
+            need = ("channels", "batch", "of", "t0_utc")
+            missing = [k for k in need if (channels if k == "channels" else loop_fields[k]) is None]
+            if missing:
+                raise JournalError("record_pass(phase='batch') requires %s (missing: %s)" % (", ".join(need),
+                                                                                         ", ".join(missing)))
+            if not _is_count(batch) or batch < 1 or not _is_count(of) or of < batch:
+                raise JournalError("record_pass batch=%r of=%r: batch is an integer >= 1 and of an integer >= batch"
+                                   % (batch, of))
+            parsed = _parse_iso(t0_utc) if isinstance(t0_utc, str) else None
+            if parsed is None or parsed.tzinfo is None:
+                raise JournalError("record_pass t0_utc=%r is not an ISO instant with a UTC offset (a naive time "
+                                   "cannot be subtracted across a DST change)" % (t0_utc,))
+        else:
+            missing = [k for k in ("state", "handed", "worklist") if loop_fields[k] is None]
+            if missing:
+                raise JournalError("record_pass(phase='batch-end') requires state, handed and worklist (missing: %s)"
+                                   % ", ".join(missing))
+            if state not in BATCH_END_STATES:
+                raise JournalError("record_pass state=%r is not one of %r" % (state, BATCH_END_STATES))
+            if not _is_count(handed) or not _is_count(worklist) or handed > worklist:
+                raise JournalError("record_pass handed=%r worklist=%r: counts, handed <= worklist" % (handed, worklist))
+            if code is not None and code not in REASONS:
+                raise JournalError("record_pass code=%r is not a REASONS code" % (code,))
+    else:
+        given_loop = sorted(k for k, v in loop_fields.items() if v is not None)
+        if given_loop:
+            raise JournalError("record_pass: %s only for phase 'batch' or 'batch-end' (got phase=%r)"
+                               % (", ".join(given_loop), phase))
+    if owned_elsewhere is not None:
+        if kind != "board" or phase != "dispatched":
+            raise JournalError("record_pass: owned_elsewhere is only for a board pass with phase='dispatched' "
+                               "(got kind=%r phase=%r)" % (kind, phase))
+        _check_owned_elsewhere(owned_elsewhere)
     if kind in ("reader", "research", "feeds") and phase not in ("dispatched", "returned", "refused"):
         raise JournalError("record_pass: a %s pass has phases dispatched, returned and refused (got %r)"
                            % (kind, phase))
@@ -1021,9 +1104,9 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
     # `deferred.add_roles` can ask which of them the hand-back accounts for (`board_worklist`). An
     # EXTRA FIELD on the existing `board` kind, tolerated by an older `read()` for the reason `sweep` is.
     if channels is not None:
-        if kind != "board" or phase != "dispatched":
+        if kind != "board" or phase not in ("dispatched", "batch"):
             raise JournalError("record_pass: channels is only for a board pass with "
-                               "phase='dispatched' (got kind=%r phase=%r)" % (kind, phase))
+                               "phase='dispatched' or 'batch' (got kind=%r phase=%r)" % (kind, phase))
         _check_channels(channels)
     reached = list(reached) if reached is not None else []
     unreachable = list(unreachable) if unreachable is not None else []
@@ -1052,6 +1135,14 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
                    not_concluded=not_concluded)
     if channels is not None:
         rec["channels"] = list(channels)
+    if phase == "batch":
+        rec.update(batch=batch, of=of, t0_utc=t0_utc)
+    if phase == "batch-end":
+        rec.update(state=state, handed=handed, worklist=worklist)
+        if code is not None:
+            rec["code"] = code
+    if owned_elsewhere is not None:
+        rec["owned_elsewhere"] = {c: dict(v) for c, v in sorted(owned_elsewhere.items())}
     if given_pane:
         rec.update(pane=pane, mode=mode, partial=list(partial))
     if ids is not None:
@@ -1074,19 +1165,28 @@ def record_verdict(row):
     return verdict
 
 
-def board_worklist(recs, run_id):
-    """dev #811 / public #170 (design §5.3) -- the combined worklist of the run's LATEST board
-    `dispatched` row (by `at`, ties by file order), as a list of channel ids. `None` when the run
-    has no such row, or the latest one lacks the field (written before 0.82.0): "no worklist on
-    record" is a state the caller prints as NOT CHECKED, never an empty worklist. A repeated
-    `--board-decision` in one run therefore supersedes the earlier call. Raises `JournalError` on a
-    `channels` value that is present and unreadable (a hand-edited journal)."""
+def _latest_dispatched(recs, run_id):
+    """`(index, row)` of the run's LATEST board `dispatched` row (by `at`, ties by file order), or None."""
     rows = [(i, r) for i, r in enumerate(recs)
             if r.get("event") == "pass" and r.get("kind") == "board"
             and r.get("phase") == "dispatched" and r.get("run_id") == run_id]
     if not rows:
         return None
-    _i, latest = max(rows, key=lambda t: (str(t[1].get("at", "")), t[0]))
+    return max(rows, key=lambda t: (str(t[1].get("at", "")), t[0]))
+
+
+def board_worklist_dispatched(recs, run_id):
+    """dev #811 / public #170 (design §5.3) -- the combined worklist of the run's LATEST board
+    `dispatched` row (by `at`, ties by file order), as a list of channel ids. `None` when the run
+    has no such row, or the latest one lacks the field (written before 0.82.0): "no worklist on
+    record" is a state the caller prints as NOT CHECKED, never an empty worklist. A repeated
+    `--board-decision` in one run therefore supersedes the earlier call. Raises `JournalError` on a
+    `channels` value that is present and unreadable (a hand-edited journal). (Until 0.84.0 this was `board_worklist`;
+    `channels_due.py --board-batch` reads the whole worklist through it.)"""
+    got = _latest_dispatched(recs, run_id)
+    if got is None:
+        return None
+    latest = got[1]
     if "channels" not in latest:
         return None
     channels = latest["channels"]
@@ -1098,13 +1198,140 @@ def board_worklist(recs, run_id):
     return list(channels)
 
 
+def _batch_rows(recs, run_id):
+    """`(batch rows, batch-end rows)` of the run written AFTER its latest board `dispatched` row, in file order."""
+    got = _latest_dispatched(recs, run_id)
+    if got is None:
+        return [], []
+    after = [r for i, r in enumerate(recs) if i > got[0] and r.get("event") == "pass"
+             and r.get("kind") == "board" and r.get("run_id") == run_id]
+    return ([r for r in after if r.get("phase") == "batch"], [r for r in after if r.get("phase") == "batch-end"])
+
+
+def board_batch_current(recs, run_id):
+    """dev #830 / public #180 -- `(n, channels)` of the run's latest board `batch` row written after its latest
+    `dispatched` row, or None when the run has none (the attended path, a 0.83.0-shaped run, or a run whose loop never
+    started). `deferred.add_roles` reads it to know which batch a hand-back belongs to."""
+    batches, _ends = _batch_rows(recs, run_id)
+    if not batches:
+        return None
+    last = max(batches, key=lambda r: r.get("batch", 0))
+    return last.get("batch"), list(last.get("channels") or [])
+
+
+def board_worklist(recs, run_id):
+    """The ids a board hand-back is checked against: the run's latest `batch` row's `channels` when the run has a batch
+    row after its latest `dispatched` row (dev #830 / public #180, 0.84.0), otherwise the `dispatched` row's whole
+    worklist exactly as before (`board_worklist_dispatched`). `None` = no worklist on record (NOT CHECKED)."""
+    cur = board_batch_current(recs, run_id)
+    if cur is not None:
+        return cur[1]
+    return board_worklist_dispatched(recs, run_id)
+
+
+def board_batches(recs, run_id):
+    """dev #830 / public #180 (design §2.4.4) -- the board loop of one run, as a dict, or None when the run has no
+    board `dispatched` row:
+
+      worklist       the `dispatched` row's channels (``[]`` when it carries none)
+      batches        ``[(n, channels)]`` in batch order
+      of             the planned batch count the last `batch` row stated (0 with no batch)
+      handed         the ids of every batch, in hand-out order
+      unhanded       worklist ids no batch handed out
+      open_batches   batch numbers with no board `roles` event carrying that `batch` (a sweeper that crashed, or a
+                     hand-back never added)
+      terminal       the run's latest `batch-end` row, or None
+    """
+    got = _latest_dispatched(recs, run_id)
+    if got is None:
+        return None
+    batches, ends = _batch_rows(recs, run_id)
+    wl = got[1].get("channels") if isinstance(got[1].get("channels"), list) else []
+    ordered = sorted(batches, key=lambda r: r.get("batch", 0))
+    handed = []
+    for r in ordered:
+        for c in r.get("channels") or []:
+            if c not in handed:
+                handed.append(c)
+    have = {e.get("batch") for e in recs if e.get("event") == "roles" and e.get("surface") == "board"
+            and e.get("run_id") == run_id}
+    return {"worklist": list(wl), "batches": [(r.get("batch"), list(r.get("channels") or [])) for r in ordered],
+            "of": max([r.get("of", 0) for r in ordered] or [0]), "handed": handed,
+            "unhanded": [c for c in wl if c not in set(handed)],
+            "open_batches": [r.get("batch") for r in ordered if r.get("batch") not in have],
+            "terminal": ends[-1] if ends else None}
+
+
+_ROLES_SUM_FIELDS = ("queries", "query_gaps_window", "query_gaps_truncated", "distinct", "captured", "known", "carried",
+                     "role_gaps", "quarantined", "query_gaps_filters", "captured_degraded", "q_reached", "q_clean",
+                     "q_unread", "q_total_unknown", "q_degraded_queries", "line_faults", "channels_reached")
+
+
+def board_roles_run(recs, run_id):
+    """dev #830 / public #180 (design §2.4.3) -- THE ONE FOLD of a run's board `roles` events, or None when it has
+    none. Every reader of the board's coverage (run_summary, coverage, check_runs, add_roles) reads the run through it.
+
+    A board event written from a batch carries `batch: n` (>= 1); the script's closing event (budget spent, a pass-wide
+    stop, a loop left open) carries `batch: 0`; an event with no `batch` key (written before 0.84.0, or on the attended
+    path) belongs to key None. (1) The run's events are grouped by `(window, batch)` and the LATEST of each group kept
+    (by `at`, ties by file order), so a corrected re-submission still supersedes within ONE batch. (2) The kept events are
+    folded: counters are summed, per-code maps (`q_degraded`, `quarantine_reasons`) summed per code, channel maps
+    unioned, lists concatenated, `geos_ok` unioned, `channels_worklist` is the dispatched worklist's own length.
+    (3) `coverage` is `partial` when any kept event is, when `board_batches` has unhanded ids or an open batch, or when
+    the terminal state is not `done`. A role listed on two channels in two batches is counted twice in `distinct`
+    (named, accepted: `captured` and `known` are resolved per role). A run whose events all lack `batch` returns its
+    latest event UNCHANGED, which is today's latest-wins."""
+    evs = [(i, e) for i, e in enumerate(recs) if e.get("event") == "roles" and e.get("surface") == "board"
+           and e.get("run_id") == run_id]
+    if not evs:
+        return None
+    best = {}
+    for i, e in evs:
+        key = (e.get("window"), e.get("batch"))
+        rank = (str(e.get("at", "")), i)
+        if key not in best or rank >= best[key][0]:
+            best[key] = (rank, e)
+    kept = [e for _rank, e in sorted(best.values(), key=lambda t: t[0])]
+    if all(e.get("batch") is None for e in kept):
+        return kept[-1]
+    out = dict(kept[-1])
+    for f in _ROLES_SUM_FIELDS:
+        out[f] = sum(int(e.get(f) or 0) for e in kept)
+    for f in ("q_degraded", "quarantine_reasons"):
+        m = {}
+        for e in kept:
+            for code, n in (e.get(f) or {}).items():
+                m[code] = m.get(code, 0) + n
+        out[f] = m
+    for f in ("channels_unreachable", "channels_not_attempted"):
+        m = {}
+        for e in kept:
+            m.update(e.get(f) or {})
+        out[f] = m
+    for f in ("channels_unaccounted", "channels_reached_ids"):
+        out[f] = [c for e in kept for c in (e.get(f) or [])]
+    out["batch"] = max(int(e.get("batch") or 0) for e in kept)       # 0 only when NO batch returned (closing event alone)
+    out["geos_ok"] = sorted({g for e in kept for g in (e.get("geos_ok") or [])})
+    out["at"] = max(str(e.get("at", "")) for e in kept)
+    b = board_batches(recs, run_id)
+    partial = any(e.get("coverage") == "partial" for e in kept)
+    if b is not None:
+        out["channels_worklist"] = len(b["worklist"]) or out["channels_worklist"]
+        term = b["terminal"]
+        partial = partial or bool(b["unhanded"]) or bool(b["open_batches"]) or (
+            term is not None and term.get("state") != "done")
+    out["coverage"] = "partial" if partial else "complete"
+    return out
+
+
 def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_gaps_window,
                  query_gaps_truncated, distinct, captured, known, carried, role_gaps, at=None,
                  quarantined=0, quarantine_reasons=None, query_gaps_filters=0,
                  captured_degraded=0, q_reached=0, q_clean=0, q_unread=0, q_total_unknown=0,
                  q_degraded=None, q_degraded_queries=0, *, coverage=None, line_faults=None,
                  channels_worklist=None, channels_reached=None, channels_unreachable=None,
-                 channels_not_attempted=None, channels_unaccounted=None):
+                 channels_not_attempted=None, channels_unaccounted=None, batch=None,
+                 channels_reached_ids=None):
     """dev #692 / public #140 -- the ONE writer of a `roles` event: one per ACCEPTED `ROLES v1`
     block (`deferred.add_roles`). Validated at write, loud: an unknown surface or window, a
     bucket outside `F_TPR_BUCKETS`, a negative count, or an identity that does not hold
@@ -1137,7 +1364,12 @@ def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_g
     `partial` EXACTLY when `line_faults > 0`, or any QUERY was unreachable (`queries - q_reached > 0`:
     every QUERY line is reached or unreachable, so the difference is the unreachable count), or any
     channel map or list is non-empty. A truncated or filter-degraded query DID produce a recorded
-    subset, keeps its own fields, and does not by itself make a pass partial."""
+    subset, keeps its own fields, and does not by itself make a pass partial.
+
+    dev #830 / public #180 (0.84.0) -- the keyword-only `batch` (an int >= 0; board only) says which batch of the board
+    loop the event was written from (`0` is the script's closing event), and `channels_reached_ids` (a list of distinct
+    channel ids; board only) names the channels whose QUERY lines were reached, so the next batch order can put the
+    longest-unattempted first. Both are additive: an event without them is today's (`batch` key None)."""
     at = at or now_iso()
     if not run_id:
         raise JournalError("record_roles requires run_id")
@@ -1188,6 +1420,16 @@ def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_g
     rec.update(_roles_coverage(surface, queries, q_reached, coverage, line_faults, channels_worklist,
                                channels_reached, channels_unreachable, channels_not_attempted,
                                channels_unaccounted))
+    if batch is not None:
+        if surface != "board" or not _is_count(batch):
+            raise JournalError("record_roles batch=%r is a non-negative integer for surface 'board' only (got "
+                               "surface=%r)" % (batch, surface))
+        rec["batch"] = batch
+    if channels_reached_ids is not None:
+        if surface != "board":
+            raise JournalError("record_roles: channels_reached_ids is for surface 'board' only")
+        _check_ids("channels_reached_ids", channels_reached_ids, nonempty=False)
+        rec["channels_reached_ids"] = sorted(channels_reached_ids)
     return append(root, rec)
 
 
@@ -1258,7 +1500,7 @@ def _roles_coverage(surface, queries, q_reached, coverage, line_faults, worklist
 def record_feeds(root, run_id, polled, covered, unchanged, not_covered, failures,
                  companies_not_covered, postings, unlisted, selected, captured, known, carried,
                  role_gaps, sightings_added=0, discovered=0, ambiguous=0, quarantined=0,
-                 hosts_down=None, at=None, off=False, *, covered_ids=None):
+                 hosts_down=None, at=None, off=False, *, covered_ids=None, attempted_ids=None):
     """dev #751 -- the ONE writer of a `feeds` event: one per `feed_poll.py --run`. Validated at
     write, loud: a row that claims a number it cannot account for never reaches the store.
 
@@ -1284,7 +1526,14 @@ def record_feeds(root, run_id, polled, covered, unchanged, not_covered, failures
     this poll COVERED (distinct; as many as `covered`; none of them also in `companies_not_covered`).
     The event stored a count of covered companies and a map of the not-covered ones, so "when was this
     company last covered" had no answer; `feed_last_covered` reads this list to order the next poll's
-    rotation and to age a "did not look" row. Omitted from an older event and from `off`."""
+    rotation and to age a "did not look" row. Omitted from an older event and from `off`.
+
+    dev #832 (public #178, 0.84.0) -- the keyword-only `attempted_ids` is the list of company ids this poll ATTEMPTED:
+    at least one request for the company was sent (a covered company is always attempted; a company skipped because
+    its host was already down, or reached by the budget before its first request, sent nothing). `feed_last_attempted`
+    reads it to order the next poll, so a feed that is reached but can never cover stops heading the order every run.
+    Refused when: it is not a list of distinct ids; a covered company is not in it; it names a company the event does
+    not account for (neither covered nor not covered); or `off` is set (a switched-off poll attempted nothing)."""
     at = at or now_iso()
     if not run_id:
         raise JournalError("record_feeds requires run_id")
@@ -1347,6 +1596,17 @@ def record_feeds(root, run_id, polled, covered, unchanged, not_covered, failures
         both = sorted(set(covered_ids) & set(companies_not_covered))
         if both:
             raise JournalError("record_feeds: %s is both covered and not covered" % ", ".join(both))
+    if attempted_ids is not None:
+        _check_ids("attempted_ids", attempted_ids, nonempty=False)
+        if covered_ids is not None:
+            unattempted = sorted(set(covered_ids) - set(attempted_ids))
+            if unattempted:
+                raise JournalError("record_feeds: %s is covered but not in attempted_ids -- a feed cannot be covered "
+                                   "without a request for it having been sent" % ", ".join(unattempted))
+            stray = sorted(set(attempted_ids) - (set(covered_ids) | set(companies_not_covered)))
+            if stray:
+                raise JournalError("record_feeds: attempted_ids names %s, which the event neither covers nor lists "
+                                   "as not covered" % ", ".join(stray))
     rec = {"event": "feeds", "run_id": run_id, "polled": polled, "covered": covered,
            "unchanged": unchanged, "not_covered": not_covered,
            "failures": {c: n for c, n in sorted(failures.items()) if n},
@@ -1357,11 +1617,13 @@ def record_feeds(root, run_id, polled, covered, unchanged, not_covered, failures
            "sightings_added": sightings_added, "discovered": discovered, "ambiguous": ambiguous,
            "at": at}
     if off:
-        if any(counts.values()) or failures or companies_not_covered or hosts_down:
+        if any(counts.values()) or failures or companies_not_covered or hosts_down or attempted_ids:
             raise JournalError("record_feeds: off=True but the row claims work was done -- a switched-off feed polls nothing")
         rec["off"] = True
     if covered_ids is not None:
         rec["covered_ids"] = sorted(covered_ids)
+    if attempted_ids is not None:
+        rec["attempted_ids"] = sorted(attempted_ids)
     return append(root, rec)
 
 
@@ -1388,6 +1650,26 @@ def feed_last_covered(recs):
         day = str(ev.get("at") or "")[:10]
         for cid in ev.get("covered_ids") or []:
             out[cid] = day
+    return out
+
+
+def feed_last_attempted(recs):
+    """`{company_id: ordinal}` (dev #832 / public #178, jobsearch 0.84.0): the 0-BASED position, among the `feeds`
+    events in FILE order, of the latest event that ATTEMPTED the company -- the key `feed_poll.rotation_order` sorts on,
+    so a company never attempted comes first and then the one attempted longest ago. An ordinal, not a date: two polls
+    on one day (a manual rerun) tie on a date and would repeat the same head, while the position in the append-only
+    journal is a total order that needs no clock.
+
+    An event that carries `attempted_ids` contributes them. An event written before 0.84.0 has none, so it contributes
+    its `covered_ids` (a covered company was necessarily attempted). A switched-off event (`off`) contributes nothing.
+    `feed_last_covered` is unchanged: `coverage` still ages a "did not look" row from it."""
+    out = {}
+    for i, ev in enumerate(r for r in recs if r.get("event") == "feeds"):
+        if ev.get("off"):
+            continue
+        ids = ev["attempted_ids"] if isinstance(ev.get("attempted_ids"), list) else ev.get("covered_ids") or []
+        for cid in ids:
+            out[cid] = i
     return out
 
 
@@ -1784,10 +2066,57 @@ def roles_missing(recs, run_id):
             and r.get("jobsearch") == "reached" for r in passes)
             and "linkedin-jobsearch" not in have):
         missing.append("linkedin-jobsearch")
-    if (any(r.get("kind") == "board" and r.get("phase") in ("dispatched", "returned")
-            for r in passes) and "board" not in have):
-        missing.append("board")
+    if any(r.get("kind") == "board" and r.get("phase") in ("dispatched", "returned") for r in passes):
+        # dev #830 / public #180: a run that handed its worklist out in batches owes ONE block per batch, so each
+        # open batch is `board:b<n>` (its gap is `jobsearch:roles:board:b<n>`); a run with no batch row owes the one
+        # `board` block, as before. The closing `batch: 0` event accounts for no batch, so it never hides an open one.
+        b = board_batches(recs, run_id)
+        if b is not None and b["batches"]:
+            missing.extend("board:b%d" % n for n in b["open_batches"])
+        elif "board" not in have:
+            missing.append("board")
     return missing
+
+
+def close_board_loop(root, run_id, at=None):
+    """dev #830 / public #180 (design §2.4.4, round-2 M1) -- close a board batch loop the run left open. Returns the
+    text it printed, or None when there was nothing to close. Written by `journal --end` (a script, once, at the end of
+    the run); `run_summary` and `check_runs` read an open loop themselves, so nothing relies on this having run.
+
+    A run with at least one `batch` row and no `batch-end` row is closed in one of two ways:
+      * every id of the worklist WAS handed out (the model went from the last hand-back straight to the summary without
+        the extra call that would have printed `done`): write `batch-end state=done` and NOTHING else. A closing `roles`
+        event with no id to account for would be refused (`partial` with nothing partial), and no sweep was abandoned.
+        A batch with no hand-back is still reported by `roles_missing` as `board:b<n>`.
+      * ids were never handed out: write `batch-end state=abandoned code=run-ended` and ONE closing `roles` event
+        (`batch=0`, `partial`, each unhanded id `not-attempted reason=run-ended`).
+    Idempotent: a run that already has a `batch-end` row writes nothing."""
+    recs = read(root)
+    b = board_batches(recs, run_id)
+    if b is None or not b["batches"] or b["terminal"] is not None:
+        return None
+    at = at or now_iso()
+    if not b["unhanded"]:
+        record_pass(root, run_id, "board", "batch-end", at=at, state="done", handed=len(b["handed"]),
+                    worklist=len(b["worklist"]))
+        return "BOARD BATCHES %d of %d (every channel handed out)" % (len(b["batches"]), b["of"])
+    record_pass(root, run_id, "board", "batch-end", at=at, state="abandoned", code="run-ended",
+                handed=len(b["handed"]), worklist=len(b["worklist"]))
+    record_closing_roles(root, run_id, b["unhanded"], "run-ended", len(b["worklist"]), at=at)
+    return ("BOARD BATCHES LEFT OPEN %d of %d: %d ids never handed"
+            % (len(b["batches"]), b["of"], len(b["unhanded"])))
+
+
+def record_closing_roles(root, run_id, remaining, code, worklist_size, at=None):
+    """The script's closing board `roles` event (`batch=0`): every id in `remaining` recorded `not-attempted` under
+    `code` (`run-budget`, `run-ended`, `browser-unavailable`, `route-refused`). `queries=0`, `coverage="partial"`,
+    `channels_worklist` the whole worklist's size. Written through `record_roles`, the writer `deferred.add_roles`
+    uses, so it holds every identity that one does. `remaining` must be non-empty (an empty one would be a `partial`
+    event with nothing partial, and `record_roles` refuses it)."""
+    return record_roles(root, run_id, "board", "none", None, 0, [], 0, 0, 0, 0, 0, 0, 0, at=at, coverage="partial",
+                        line_faults=0, channels_worklist=worklist_size, channels_reached=0,
+                        channels_unreachable={}, channels_not_attempted={c: code for c in remaining},
+                        channels_unaccounted=[], batch=0)
 
 
 def jobsearch_geos(cfg):
@@ -3167,6 +3496,15 @@ def main():
                 # gap, written HERE so this run's own `gaps_open` and its footprint include it.
                 # Skipped when the run already holds an open gap with that scope (the gate files
                 # one itself when it REFUSES a block).
+                # dev #830 / public #180 (M1): close a board batch loop the run left open, BEFORE the footprint is
+                # computed, wrapped like the footprint call so a fault here never blocks the `end` event.
+                try:
+                    closed_loop = close_board_loop(root, args.run, at=at)
+                    if closed_loop:
+                        print(closed_loop)
+                except Exception as e:                        # noqa: BLE001 -- never block --end
+                    print("⚠️ journal.py --end: the board batch loop could not be closed (%s) -- the end event "
+                          "is recorded anyway; run_summary reads an open loop itself" % e, file=sys.stderr)
                 for surface in roles_missing(read(root), args.run):
                     scope = ROLES_GAP_SCOPE % surface
                     if any(g.get("scope") == scope
@@ -3174,10 +3512,12 @@ def main():
                         continue
                     record_gap(root, args.run, scope, "partial-results",
                                closes_when="the pass's ROLES block is accepted by "
-                                           "deferred.py --add-roles --surface %s" % surface,
+                                           "deferred.py --add-roles --surface %s%s"
+                                           % (surface.split(":")[0],
+                                              (" --batch %s" % surface.split(":b")[1]) if ":b" in surface else ""),
                                at=at)
                     print("ROLES NOT ACCOUNTED (%s): the pass returned, no ROLES block was "
-                          "accepted — gap filed" % surface)
+                          "accepted — gap filed" % surface.replace(":b", " batch "))
                 recs_before_end = read(root)
                 gaps_open_run = len(open_gaps(recs_before_end, run_id=args.run))
                 gaps_open_all = len(open_gaps(recs_before_end))

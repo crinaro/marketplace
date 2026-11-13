@@ -427,7 +427,9 @@ def board_spent_on(recs, sweep=None, day=None):
     row and neither a `pass board returned` row nor a `roles` event with `surface: board` (a board
     pass returns through the `roles` event today; `returned` is accepted too, so a later writer needs
     no change here). So a pass in flight (run not ended) and a pass that returned, degraded or not,
-    spend the slot; a crashed pass does not, and the next run in the slot dispatches again.
+    spend the slot; a crashed pass does not, and the next run in the slot dispatches again. (dev #830 / public #180,
+    0.84.0: the script's CLOSING board `roles` event, `batch: 0`, is not a `roles` event that RETURNED -- a sweeper that
+    crashed in batch 1 and never handed back leaves only that closing event, so the pass is still a crashed one.)
 
     The date is `str(at)[:10]`, the naive local-time date `journal.now_iso()` writes. A row whose
     `at` is not an ISO date raises `ValueError`: a journal this cannot read is refused, never
@@ -440,10 +442,15 @@ def board_spent_on(recs, sweep=None, day=None):
         if day not in _ck.WEEKDAYS:
             raise ValueError("board_spent_on day %r is not one of %s" % (day, ", ".join(_ck.WEEKDAYS)))
     ended = {r.get("run_id") for r in recs if r.get("event") == "end"}
+    # dev #830 / public #180 (round-2 S1): the script's CLOSING board `roles` event (`batch: 0`, written when a loop
+    # ended with ids never handed out, and by `journal --end` for one left open) is NOT a batch returning. A sweeper
+    # that crashed in batch 1 and never handed back leaves only that closing event, so the run still reads as a crashed
+    # pass and the next run in the slot dispatches again, as on 0.83.0. Any other board `roles` event (a batch >= 1, or
+    # one with no `batch` key) is a pass that returned.
     returned = {r.get("run_id") for r in recs
                 if (r.get("event") == "pass" and r.get("kind") == "board"
                     and r.get("phase") == "returned")
-                or (r.get("event") == "roles" and r.get("surface") == "board")}
+                or (r.get("event") == "roles" and r.get("surface") == "board" and r.get("batch") != 0)}
     spent = []
     for r in recs:
         if not (r.get("event") == "pass" and r.get("kind") == "board"

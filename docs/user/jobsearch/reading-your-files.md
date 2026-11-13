@@ -76,7 +76,7 @@ place you read it changed.
 | the knowledge index | the status pane, *Knowledge index* |
 | stale resume or LinkedIn text | the *Open items* tab of the two review panes. The status band does not count them |
 | the second page (your resume layer and public-profile layer) | `/jobsearch:review-resume` and `/jobsearch:review-linkedin` |
-| the router with a count per phase | the summary at the top (three rows). The status band carries how many items need you, the inbox, the lock and the last run |
+| the router with a count per phase | removed. Under the jump bar the page goes straight to *Drafts*; the status band carries how many items need you, the inbox, the lock and the last run |
 
 **The status pane** is a mod panel inside Claude Code: a one-line band under the prompt and a pane
 you open with `/jobsearch:status`. It needs a terminal or the Desktop app on your own machine
@@ -163,7 +163,10 @@ screen never says *keep*, and the description's own pay and setting replace the 
 **Anything a run took on and did not finish is a process failure, not a quiet delay.** It is shown, with its
 cause and how old it is, in these places:
 
-- the **dashboard**, in a *Process failure* group with the oldest failed roles listed and each one's cause;
+- the **dashboard**: a healthy pipeline shows nothing between the jump bar and *Drafts*; an unhealthy one adds a
+  single alert line at the top that links to the *Pipeline state* block, collapsed at the bottom of the page beside
+  the conservation line. Open it for the *Process failure* group, the oldest failed roles and each one's cause, and
+  every open run. `PIPELINE NOT CHECKED` always shows at the top. (`/jobsearch:status` is unchanged.)
 - **Your Move** (the status pane);
 - the **start line** of the coordinator session;
 - the **headline** of the run summary, as `PROCESS FAILURE: N`.
@@ -260,6 +263,13 @@ those queries showed are **held** instead of captured. You see it in three place
 - **`deferred.py --claimable`** lists held items under *QUARANTINED*. The pass's own output
   (`deferred.py --add-roles`) prints `QUARANTINED <url> (q=…: <reasons>)` per held role and a closing
   `HELD N role(s) (quarantined) from degraded queries: …` line.
+
+- **Two more run-summary lines for a batched board sweep (since 0.84.0).** `BOARD BATCHES 2 of 14 (stopped:
+  browser-unavailable, 41 remaining)` says how many batches ran and why it stopped (`done`, `budget-spent`, `stopped`,
+  or `LEFT OPEN` when the run ended mid-loop). `OWNED BY linkedin-runner: <channels>` lists the channels the board
+  worklist left out because the LinkedIn helper owns them, with how each matched (`link`, `channel-id` or `host-label`,
+  the last meaning it was matched by its name). A channel that was not swept carries its own reason: `run-budget` (the
+  batch cap or time budget ended first), `route-refused`, or `run-ended`, never a bare `other`.
 
 **How a held role is released.** A later sweep that sees it through a clean query releases it
 automatically (the line reads `RELEASED`), and it is then captured like any other. Or release it

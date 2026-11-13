@@ -258,12 +258,14 @@ def all_clean_board_streak(recs):
     every query clean, week after week -- so the pattern is counted and shown, and a person decides
     whether the boards were really that well-behaved. SHAPE, not enforced; advisory, like the rest
     of this script."""
+    # dev #830 / public #180: one pass is one run, and a run handed out in batches holds one event per batch, so the
+    # run's event is `journal.board_roles_run`'s fold (the summed `q_*` counts), not its latest event. The streak reads
+    # only those counts: a batch whose reached queries were not clean makes the run not all-clean. A run with no
+    # `batch` key folds to its latest event, as before.
     latest = {}
-    for e in recs:
-        if e.get("event") == "roles" and e.get("surface") == "board" and e.get("run_id"):
-            prev = latest.get(e["run_id"])
-            if prev is None or (e.get("at") or "") >= (prev.get("at") or ""):
-                latest[e["run_id"]] = e
+    for rid in sorted({e["run_id"] for e in recs
+                       if e.get("event") == "roles" and e.get("surface") == "board" and e.get("run_id")}):
+        latest[rid] = _journal.board_roles_run(recs, rid)
     streak = 0
     for e in sorted(latest.values(), key=lambda x: x.get("at") or "", reverse=True):
         reached = e.get("q_reached")
@@ -273,6 +275,18 @@ def all_clean_board_streak(recs):
         else:
             break
     return streak
+
+
+def _loop_left_open(recs, run_id):
+    """True when `run_id` handed its board worklist out in batches and the loop did not end cleanly (see
+    `journal.board_batches`): no `batch-end` row while ids were never handed out, an `abandoned` one, or a batch with no
+    accepted hand-back."""
+    b = _journal.board_batches(recs, run_id)
+    if b is None or not b["batches"]:
+        return False
+    term = b["terminal"]
+    return bool(b["open_batches"]) or (term is None and bool(b["unhanded"])) or (
+        term is not None and term.get("state") == "abandoned")
 
 
 def footprints(root):
@@ -352,6 +366,12 @@ def footprints(root):
     streak = all_clean_board_streak(recs)
     out["board_all_clean_streak"] = streak
     out["board_all_clean_flag"] = streak >= ALL_CLEAN_STREAK
+    # dev #830 / public #180: a run whose board batch loop was left open (batches handed out, ids never handed, no
+    # `batch-end`): listed, never read as a complete sweep. Advisory like the rest of this script.
+    out["board_loops_left_open"] = sorted({
+        r.get("run_id") for r in recs
+        if r.get("event") == "pass" and r.get("kind") == "board" and r.get("phase") == "batch"
+        and r.get("run_id") and _loop_left_open(recs, r["run_id"])})
     out["run_starts"] = [{"run_id": r.get("run_id"), "at": r.get("at"), "kind": r.get("kind")}
                          for r in starts[:10]]
     out["last_start"] = starts[0].get("at") if starts else None
@@ -428,6 +448,12 @@ def main():
               "sweep's own, nothing here can verify it. Look at one board's results page against "
               "its QUERY line before trusting the streak (dev #722 / public #156)."
               % fp["board_all_clean_streak"])
+
+    if fp.get("board_loops_left_open"):
+        print("\n  ⚠️ BOARD BATCH LOOP LEFT OPEN (run%s %s): the run handed its worklist out in batches and the loop "
+              "ended with channels never handed out, or a batch with no accepted hand-back. That run's board sweep "
+              "reads PARTIAL, never complete (dev #830 / public #180)."
+              % ("" if len(fp["board_loops_left_open"]) == 1 else "s", ", ".join(fp["board_loops_left_open"])))
 
     print("\n  last journalled FIRED (SessionStart hook): %s"
           % (fp.get("last_fired") or "none recorded"))

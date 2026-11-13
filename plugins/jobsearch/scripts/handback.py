@@ -125,14 +125,21 @@ def file_line_gaps(root, run_id, scope_fmt, faults, closes_when, out=print):
     return scopes
 
 
-def close_stale_line_gaps(root, run_id, prefix, current, out=print):
+def close_stale_line_gaps(root, run_id, prefix, current, out=print, within=None):
     """A corrected re-submission closes the line gaps it no longer has: every OPEN gap of this run
-    whose scope starts with `prefix` and is not in `current` is closed. Returns the closed scopes."""
+    whose scope starts with `prefix` and is not in `current` is closed. Returns the closed scopes.
+
+    `within` (dev #830 / public #180, 0.84.0) is the one extra filter for a board loop handed out in batches: when it is
+    given, only a gap whose scope is IN it may be closed, so batch k+1's hand-back never closes batch k's channel gaps.
+    It defaults to None (no filter), so `linkedin_sweep.py` and every other caller are unchanged."""
     import journal as _journal
     keep_scopes = set(current)
+    only = None if within is None else set(within)
     closed = []
     for g in _journal.open_gaps(_journal.read(root), run_id=run_id):
         sc = str(g.get("scope", ""))
+        if only is not None and sc not in only:
+            continue
         if sc.startswith(prefix) and sc not in keep_scopes:
             try:
                 _journal.append(root, {"event": "gap-closed", "gap_id": g["gap_id"],

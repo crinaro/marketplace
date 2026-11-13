@@ -16,6 +16,12 @@ after reviewing a channel you stamp its last_reviewed so it drops off the queue.
                                                     # --dry-run asks without writing. Exit 0 dispatch,
                                                     # 1 not today, 3 refused.
 
+    python3 scripts/channels_due.py --board-batch --run <id> [--now ISO-with-offset] [--dry-run]
+                                                    # dev #830 / public #180: print the NEXT bounded slice of the
+                                                    # run's stored board worklist for one board-sweeper dispatch,
+                                                    # or the terminal line. Exit 0 a batch (`  batch: <ids>`),
+                                                    # 1 `done` / `budget-spent` / `stopped`, 3 refused.
+
 IMPORTANT — what "review a channel" means (the 2026-07-20 clarification):
   Active-search channels are reviewed by DIRECT SEARCH on the source's own job
   pages (LinkedIn Jobs, Dice, Indeed, BuiltIn) plus organizations' own career
@@ -373,7 +379,81 @@ def sweeper_filtered(channel, cfg, caps):
     return [m for m in mechs if _capable(m, caps) and not _runnable(m, caps)]
 
 
-def _board_admissible(c):
+# dev #830 / public #180 (C6, owner ruling O2) -- WHO OWNS a channel. The board-sweeper's worklist must not hold a surface
+# another agent owns (LinkedIn saved-jobs and the LinkedIn job search belong to `linkedin-runner`, which has its own quota,
+# pane lock and hidden-mode rules). An "elsewhere" entry is a `swept-board` catalog entry whose `route_by` is not
+# `board-sweeper`.
+_ELSEWHERE = {"path": None, "entries": None}
+_TWO_LEVEL_SUFFIX_HEAD = ("co", "com", "org", "net", "gov", "ac", "edu")
+
+
+def _host_label(host):
+    """The REGISTRABLE-DOMAIN label of a host (round-2 S8): `linkedin.com` and `www.linkedin.com` are `linkedin`,
+    `jobs.example.co.uk` is `example`. Never the first label of a host as written, so a future catalog entry whose host
+    is `jobs.<x>` or `www.<x>` cannot make every user's `jobs-*` or `www-*` row read as owned elsewhere."""
+    parts = [x for x in str(host or "").lower().strip(".").split(".") if x]
+    if len(parts) >= 3 and len(parts[-1]) == 2 and parts[-2] in _TWO_LEVEL_SUFFIX_HEAD:
+        return parts[-3]
+    if len(parts) >= 2:
+        return parts[-2]
+    return parts[0] if parts else ""
+
+
+def _elsewhere_entries(strict=False):
+    """The catalog's elsewhere entries (`swept-board`, `route_by` not `board-sweeper`), read once per catalog path. An
+    unreadable catalog is `CatalogError` when `strict` (`--board-decision` refuses: ownership cannot be known), else
+    `[]` (the printed queue and the schedule read on, with no one excluded)."""
+    import channel_catalog as _cc
+    if _ELSEWHERE["path"] == _cc.CATALOG_PATH and _ELSEWHERE["entries"] is not None:
+        return _ELSEWHERE["entries"]
+    try:
+        doc = _cc.load_catalog()
+    except _cc.CatalogError:
+        if strict:
+            raise
+        return []
+    got = [e for e in doc["entries"] if e.get("kind") == "swept-board"
+           and e.get("route_by") not in (None, "board-sweeper") and not _cc.is_retired(e)]
+    _ELSEWHERE.update(path=_cc.CATALOG_PATH, entries=got)
+    return got
+
+
+def owner_elsewhere(channel, entries):
+    """`(agent, rule)` when another agent owns `channel`, else None (dev #830 / public #180, C6). `entries` are the
+    catalog's elsewhere entries (`_elsewhere_entries`). Three rules, in order:
+
+      link         the channel's `channel_catalog_entry` names an elsewhere entry;
+      channel-id   the channel's `id` is an elsewhere entry's own `channel_id` (a hand row made before the catalog,
+                   `linkedin-jobsearch`);
+      host-label   the channel is UNLINKED (no `channel_catalog_entry`) and its `id`'s first hyphen-separated token equals
+                   the registrable-domain label of an elsewhere entry's `sighting_hosts` value (`linkedin.com` ->
+                   `linkedin`).
+
+    ⚠️ `host-label` CLASSIFIES BY A NAME, which the rulebook's trap 8 forbids. The OWNER ALLOWED IT on 2026-11-12 (O2,
+    design-coverage-regressions.md section 2.6) as a stated exception, because no host-based form exists: a channel row
+    stores a host only in `board_hosts`, legal only on `manual-candidate` rows, so a user-made LinkedIn saved-jobs row
+    carries no field that names the site. The condition of the exception: every channel excluded this way is printed
+    (`OWNED BY <agent>` with its id and `[host-label]` in the run summary and the listing), so a false match is visible
+    and the user renames or links the row. A LinkedIn row NOT named `linkedin-*` and not linked is still in the board
+    sweep and nothing is printed for it. A hand row's `query_template` is not read for a host."""
+    cid = str(channel.get("id") or "")
+    linked = channel.get("channel_catalog_entry")
+    for e in entries:
+        if linked and linked == e.get("id"):
+            return e["route_by"], "link"
+    for e in entries:
+        if cid and cid == e.get("channel_id"):
+            return e["route_by"], "channel-id"
+    if not linked and cid:
+        head = cid.split("-")[0]
+        for e in entries:
+            for h in e.get("sighting_hosts") or []:
+                if head and head == _host_label(h):
+                    return e["route_by"], "host-label"
+    return None
+
+
+def _board_admissible_base(c):
     """dev #785 (design-sourcing-schedule.md §5.2) -- the ONE predicate for "is this channel
     board-sweeper work", by FIELD: `(admitted, warning)`. A channel is admitted exactly when (1) its
     `type` is `job-board`, `aggregator` or `company-site`; (2) its `relationship_status` is not
@@ -394,6 +474,31 @@ def _board_admissible(c):
     if requirement in _route.NOT_BROWSABLE:
         return False, None
     return True, None
+
+
+def _board_admissible(c):
+    """The ONE predicate for "is this channel board-sweeper work" (see `_board_admissible_base`, whose rules 1-3 are
+    the channel's own fields), plus (dev #830 / public #180, round-2 M11) a fourth: ANOTHER AGENT DOES NOT OWN IT
+    (`owner_elsewhere`). Ownership lives HERE, not in the worklist alone, so the three callers (`board_worklist`,
+    `schedule_due`, `posture._career_pages`) agree: an owned channel is not gated by the sweep schedule (it stays DUE in
+    the printed queue like any channel the sweeper never takes), and it is not counted in the career-page share line."""
+    admitted, warning = _board_admissible_base(c)
+    if admitted and owner_elsewhere(c, _elsewhere_entries()) is not None:
+        return False, None
+    return admitted, warning
+
+
+def owned_elsewhere_of(channels):
+    """`{channel_id: {"agent", "rule"}}` over `channels` that pass the base admission rules and are owned elsewhere: what
+    the board worklist LEFT OUT. Written on the `pass board dispatched` row and printed by the run summary."""
+    entries = _elsewhere_entries()
+    out = {}
+    for c in channels:
+        if _board_admissible_base(c)[0]:
+            got = owner_elsewhere(c, entries)
+            if got is not None and c.get("id"):
+                out[c["id"]] = {"agent": got[0], "rule": got[1]}
+    return out
 
 
 def schedule_due(chans, companies, recs, cfg, today, sched, attended=False):
@@ -541,9 +646,10 @@ def sweep_kind(channel):
 
 
 def _agent_budget(p, name, attended=False):
-    """`max_agents_per_run` of posture `p` as `(ok, line)`: the board sweep is one `board-sweeper`
-    agent, so on the UNATTENDED path a value below 1 means no sweep (a budget the posture sets for
-    runs nobody is watching). The explicit attended form (dev #770, owner intent: posture levels
+    """`max_agents_per_run` of posture `p` as `(ok, line)`: the board sweep is up to `max_agents_per_run`
+    `board-sweeper` dispatches of one bounded batch each (dev #830 / public #180, owner ruling O1: each batch counts as
+    ONE agent, so economy's "one agent per run" and ADR-008's bound stay true as written), so on the UNATTENDED path a
+    value below 1 means no sweep (a budget the posture sets for runs nobody is watching). The explicit attended form (dev #770, owner intent: posture levels
     govern only how often UNATTENDED runs search; `minimal` is the level where the user searches by
     hand) needs at least one agent whatever the posture caps, so `minimal`'s 0 does not stop
     `/jobsearch:search attended`. A value that is not an integer is unreadable either way: `ok` is
@@ -594,6 +700,11 @@ def board_decision(chans, companies, recs, cfg, today, run_id, dry_run, attended
     if not run_id and not dry_run:
         return 3, ["BOARD DISPATCH refused: --run <id> is required (the decision writes its own "
                    "dispatch row); use --dry-run to ask without writing"]
+    try:
+        _elsewhere_entries(strict=True)                  # dev #830: ownership must be knowable, or no dispatch
+    except Exception as e:                               # noqa: BLE001 -- channel_catalog.CatalogError
+        return 3, ["BOARD DISPATCH refused: the channel catalog cannot be read, so which channels another agent owns "
+                   "is unknown (%s)" % e]
     wanted = tuple(kinds) if kinds else tuple(_ck.SWEEP_KINDS)
     unknown = [k for k in wanted if k not in _ck.SWEEP_KINDS]
     if unknown:
@@ -661,6 +772,10 @@ def board_decision(chans, companies, recs, cfg, today, run_id, dry_run, attended
     # is printed. Every `dispatched` row the call writes carries the same list, so the sweeper's
     # hand-back is checked against what it was handed (`journal.board_worklist` reads the latest row's).
     channels = list(dict.fromkeys(r[0]["id"] for _k, _c, _g, m in due for r in m))
+    # dev #830 / public #180 (C6, O2): what the worklist LEFT OUT because another agent owns it, from the same due
+    # channels the schedule offered, so the summary can print `OWNED BY <agent>` and a false match is visible.
+    owned = owned_elsewhere_of([c for c, _w in schedule_due(chans, companies, recs, cfg, today, sched,
+                                                            attended=attended)["due"]])
     if not dry_run:
         # The row carries the asked-about date, so --today answers coherently in a test; a real
         # call has no --today and the row carries the real clock (journal.now_iso()).
@@ -679,7 +794,7 @@ def board_decision(chans, companies, recs, cfg, today, run_id, dry_run, attended
                 _journal.record_pass(root or ROOT, run_id=run_id, kind="board",
                                      phase="dispatched", at=at, sweep=kind,
                                      attended=True if attended else None, split_days=split_days,
-                                     channels=channels)
+                                     channels=channels, owned_elsewhere=owned or None)
             except _journal.JournalError as e:
                 return 3, ["BOARD DISPATCH refused: the dispatch row could not be written (%s)"
                            % e]
@@ -689,7 +804,197 @@ def board_decision(chans, companies, recs, cfg, today, run_id, dry_run, attended
     lines = ["BOARD DISPATCH yes %s %s" % (",".join(kinds), "; ".join(reasons)),
              "  worklist: %s" % ", ".join(channels)]
     lines += ["  %s worklist: %s" % (k, ", ".join(r[0]["id"] for r in m)) for k, _c, _g, m in due]
+    by_agent = {}
+    for cid, v in sorted(owned.items()):
+        by_agent.setdefault(v["agent"], []).append("%s [%s]" % (cid, v["rule"]))
+    lines += ["  OWNED BY %s: %s" % (agent, ", ".join(items)) for agent, items in sorted(by_agent.items())]
     return 0, lines
+
+
+# dev #830 / public #180 (C4) -- the board loop's two named constants. BOTH are OURS and UNDETERMINED until the `batch` rows
+# are measured: no probe has timed a sweeper batch, so neither is a measured fact. The batch CAP is not a constant: each
+# batch counts as one agent against the posture's `max_agents_per_run` (owner ruling O1).
+BOARD_SWEEP_BUDGET_S = 3600      # UTC seconds from batch 1 to the next call; checked BETWEEN batches, so the loop's wall
+                                 # time is at most this plus the longest single batch
+BOARD_BATCH_QUERIES = 24         # searches one sweeper dispatch is sized to (size = this // (titles x postures), min 1)
+
+
+def _board_batch_line(term, worklist, handed, n):
+    """The line a terminal `batch-end` row prints (again, idempotently)."""
+    left = len(worklist) - len(handed)
+    if term.get("state") == "done":
+        return "BOARD BATCH done (%d of %d handed out in %d batches)" % (len(handed), len(worklist), n)
+    if term.get("state") == "stopped":
+        return "BOARD BATCH stopped: %s remaining=%d" % (term.get("code") or "?", left)
+    if term.get("state") == "abandoned":
+        return "BOARD BATCH abandoned: the run ended with the loop open remaining=%d" % left
+    return "BOARD BATCH budget-spent remaining=%d" % left
+
+
+def _attempt_ordinals(recs):
+    """`{channel_id: ordinal}`: the 0-based position, among the journal's board `roles` events in file order, of the
+    latest one that ATTEMPTED the channel (a reached id or an unreachable one). Not-attempted and unaccounted ids are not
+    attempts, so a channel that was never reached sorts ahead of every one that was (C1's rule, applied to the board)."""
+    out = {}
+    for i, e in enumerate(r for r in recs if r.get("event") == "roles" and r.get("surface") == "board"):
+        for cid in (e.get("channels_reached_ids") or []):
+            out[cid] = i
+        for cid in (e.get("channels_unreachable") or {}):
+            out[cid] = i
+    return out
+
+
+def _browser_stop(recs, run_id, batches):
+    """True when the TRAILING ids handed out (in hand-out order, only those whose batch has a `roles` event) are at least
+    two in a row, each `not-attempted` with `browser-unavailable`: the browser is gone for the whole pass, so the loop
+    stops. A reached id, an unreachable id, or an id not attempted for another reason ends the count. Size-1 batches need
+    two such ids, so one id's missing browser never stops a pass."""
+    by_batch = {}
+    for e in recs:
+        if e.get("event") == "roles" and e.get("surface") == "board" and e.get("run_id") == run_id \
+                and isinstance(e.get("batch"), int) and e["batch"] >= 1:
+            by_batch[e["batch"]] = e                       # a re-submission supersedes within its batch
+    trailing = 0
+    for n, chans in reversed(batches):
+        ev = by_batch.get(n)
+        if ev is None:
+            break
+        na = ev.get("channels_not_attempted") or {}
+        for cid in reversed(chans):
+            if na.get(cid) == "browser-unavailable":
+                trailing += 1
+            else:
+                return trailing >= 2
+    return trailing >= 2
+
+
+def board_batch(recs, run_id, cfg, p, p_err, now, root=None, dry_run=False):
+    """dev #830 / public #180 (C4; design-coverage-regressions.md section 2.4) -- `channels_due.py --board-batch`: the
+    NEXT bounded slice of the run's stored board worklist, or the loop's end. Returns `(exit_code, lines)` and writes the
+    `pass board batch` / `batch-end` rows itself (`dry_run` writes nothing).
+
+    ORDER OF CHECKS (round-2 S2): (1) the worklist on record; (2) a TERMINAL row already written -> its line again,
+    nothing written, exit 1 (every terminal call is idempotent); (3) nothing remains -> `done`; (4) the PASS-WIDE STOP
+    (the browser: at least two trailing ids `not-attempted browser-unavailable`) -> `stopped`; (5) the CAP and the TIME
+    budget -> `budget-spent`; (6) the batch. The pass-wide stop is checked BEFORE the cap, so on economy (cap 1) a batch
+    that came back all `browser-unavailable` reads `stopped: browser-unavailable`, never `budget-spent`. There is no
+    route load and no `route-refused` pass-wide stop (round-2 M6): `--board-decision` already refuses an unreadable route
+    preference before it writes the `dispatched` row this verb reads, so a stop here could only fire if config.json were
+    edited between the two calls. `route-refused` stays the sweeper's per-id reason.
+
+    EXIT 0 prints `BOARD BATCH n of k` and `  batch: <ids>` (plus `BOARD BATCH n-1 has no accepted ROLES block` when the
+    previous batch has none). EXIT 1 prints one of `BOARD BATCH done (...)`, `BOARD BATCH budget-spent remaining=<r>
+    (cap <c> | time <s>s)`, `BOARD BATCH stopped: <code> remaining=<r>`. EXIT 3 prints `BOARD BATCH refused: <why>` and
+    writes nothing: an unreadable journal, titles, posture or `--now`, never read as `done`.
+
+    An id is handed out ONCE per run, whatever its hand-back said, so batches are disjoint and the loop ends within
+    `ceil(len(worklist) / size)` calls. The CAP is `max_agents_per_run` of the run's posture (owner O1: each batch is one
+    agent). The TIME budget `BOARD_SWEEP_BUDGET_S` is measured in UTC from batch 1's `t0_utc` to `now` (an aware
+    datetime), so a DST change cannot make 70 real minutes read as 10. SIZE is `max(1, BOARD_BATCH_QUERIES // (titles x
+    postures))` where `titles` is the profile's `targets.titles` (what `profile.py` prints and the sweeper queries; the
+    sweeper does not read the active search plans) and `postures` is 2 when the profile has commute anchors, else 1 (the
+    geographies `journal.jobsearch_geos` names). With no titles the size is undefined: exit 3 `no titles`.
+    ORDER of the remaining ids: never attempted first, then the oldest attempt (`_attempt_ordinals`), then worklist order."""
+    import journal as _journal
+    if not isinstance(run_id, str) or not run_id:
+        return 3, ["BOARD BATCH refused: --run <id> is required"]
+    if now is None or getattr(now, "tzinfo", None) is None:
+        return 3, ["BOARD BATCH refused: --now must carry a UTC offset (a naive time cannot be subtracted across a DST "
+                   "change)"]
+    try:
+        worklist = _journal.board_worklist_dispatched(recs, run_id)
+    except _journal.JournalError as e:
+        return 3, ["BOARD BATCH refused: %s" % e]
+    if worklist is None:
+        return 3, ["BOARD BATCH refused: no board dispatch on record for run %s" % run_id]
+    b = _journal.board_batches(recs, run_id)
+    batches, handed, term = b["batches"], b["handed"], b["terminal"]
+    if term is not None:
+        return 1, [_board_batch_line(term, worklist, handed, len(batches))]
+    remaining = [c for c in worklist if c not in set(handed)]
+
+    def end(state, code, line):
+        if not dry_run:
+            try:
+                _journal.record_pass(root or ROOT, run_id, "board", "batch-end", state=state, code=code,
+                                     handed=len(handed), worklist=len(worklist))
+                if remaining and state != "done":
+                    _journal.record_closing_roles(root or ROOT, run_id, remaining, code, len(worklist))
+            except _journal.JournalError as e:
+                return 3, ["BOARD BATCH refused: the closing rows could not be written (%s)" % e]
+        return 1, [line]
+    if not remaining:
+        return end("done", None, "BOARD BATCH done (%d of %d handed out in %d batches)"
+                   % (len(handed), len(worklist), len(batches)))
+    if _browser_stop(recs, run_id, batches):
+        return end("stopped", "browser-unavailable",
+                   "BOARD BATCH stopped: browser-unavailable remaining=%d" % len(remaining))
+    if p_err or not isinstance(p, dict):
+        return 3, ["BOARD BATCH refused: posture unreadable (%s)" % (p_err or "none")]
+    cap = p.get("max_agents_per_run")
+    if not isinstance(cap, int) or isinstance(cap, bool) or cap < 1:
+        return 3, ["BOARD BATCH refused: max_agents_per_run unreadable on the posture (%r)" % (cap,)]
+    titles = [t for t in (((cfg or {}).get("targets") or {}).get("titles") or []) if isinstance(t, str) and t.strip()]
+    if not titles:
+        return 3, ["BOARD BATCH refused: no titles (targets.titles is empty, so a batch cannot be sized)"]
+    t0 = None
+    if batches:
+        first = min((r for r in _journal._batch_rows(recs, run_id)[0]), key=lambda r: r.get("batch", 0))
+        t0 = _journal._parse_iso(first.get("t0_utc")) if isinstance(first.get("t0_utc"), str) else None
+        if t0 is None or t0.tzinfo is None:
+            return 3, ["BOARD BATCH refused: batch 1's t0_utc %r is unreadable" % (first.get("t0_utc"),)]
+        elapsed = (now - t0).total_seconds()
+        if elapsed >= BOARD_SWEEP_BUDGET_S:
+            return end("budget-spent", "run-budget", "BOARD BATCH budget-spent remaining=%d (time %ds)"
+                       % (len(remaining), int(elapsed)))
+    if len(batches) >= cap:
+        return end("budget-spent", "run-budget", "BOARD BATCH budget-spent remaining=%d (cap %d)"
+                   % (len(remaining), cap))
+    size = max(1, BOARD_BATCH_QUERIES // (len(titles) * len(_journal.jobsearch_geos(cfg))))
+    order = _attempt_ordinals(recs)
+    pos = {c: i for i, c in enumerate(worklist)}
+    ranked = sorted(remaining, key=lambda c: (c in order, order.get(c, -1), pos[c]))
+    take = ranked[:size]
+    n = len(batches) + 1
+    planned = n + (len(remaining) - len(take) + size - 1) // size
+    t0_utc = (t0 if t0 is not None else now).astimezone(datetime.timezone.utc).isoformat()
+    lines = ["BOARD BATCH %d of %d" % (n, planned), "  batch: %s" % ", ".join(take)]
+    if batches and (n - 1) in b["open_batches"]:
+        lines.insert(1, "BOARD BATCH %d has no accepted ROLES block" % (n - 1))
+    if not dry_run:
+        try:
+            _journal.record_pass(root or ROOT, run_id, "board", "batch", channels=take, batch=n, of=planned,
+                                 t0_utc=t0_utc)
+        except _journal.JournalError as e:
+            return 3, ["BOARD BATCH refused: the batch row could not be written (%s)" % e]
+    return 0, lines
+
+
+def _board_batch_cli(args):
+    """`--board-batch`: read the stores once, ask `board_batch`, print, return its exit code."""
+    import journal as _journal
+    import posture as _posture
+    try:
+        recs = _journal.read(ROOT)
+    except (OSError, ValueError) as e:
+        print("BOARD BATCH refused: the journal cannot be read (%s)" % e)
+        return 3
+    if not args.run:
+        print("BOARD BATCH refused: --run <id> is required")
+        return 3
+    if args.now:
+        try:
+            now = datetime.datetime.fromisoformat(args.now.replace("Z", "+00:00"))
+        except ValueError:
+            print("BOARD BATCH refused: --now %r is not an ISO time with a UTC offset" % args.now)
+            return 3
+    else:
+        now = datetime.datetime.now(datetime.timezone.utc)
+    _name, p, err = _posture.load(ROOT)
+    code, lines = board_batch(recs, args.run, load_cfg(), p, err, now, root=ROOT, dry_run=args.dry_run)
+    for line in lines:
+        print(line)
+    return code
 
 
 def channel_yield(opps, since=None):
@@ -754,8 +1059,14 @@ def main():
                          "kind in the same call. Prints BOARD DISPATCH yes <kinds>|no <reasons> and "
                          "the worklist ids. Exit 0 dispatch, 1 not today, 3 refused (unreadable "
                          "posture/company_days/board_days/journal, or no --run).")
+    ap.add_argument("--board-batch", action="store_true",
+                    help="dev #830 / public #180: the next bounded batch of the run's stored board worklist (needs "
+                         "--run), or the loop's end. Exit 0 prints `  batch: <ids>` for ONE board-sweeper dispatch; "
+                         "exit 1 prints `BOARD BATCH done|budget-spent|stopped ...`; exit 3 refuses.")
+    ap.add_argument("--now", metavar="ISO",
+                    help="with --board-batch: the current time WITH a UTC offset (default: the real UTC clock).")
     ap.add_argument("--run", metavar="ID",
-                    help="with --board-decision: the run id the dispatch row is written under.")
+                    help="with --board-decision / --board-batch: the run id the rows are written under.")
     ap.add_argument("--dry-run", action="store_true",
                     help="with --board-decision: print the answer, write nothing.")
     ap.add_argument("--attended", action="store_true",
@@ -771,6 +1082,8 @@ def main():
 
     if args.board_decision:
         return _board_decision_cli(args)
+    if args.board_batch:
+        return _board_batch_cli(args)
 
     chans = load()
 

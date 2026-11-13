@@ -39,12 +39,15 @@ page for the browser. The `feeds` event's identity (`polled = covered + not_cove
 failed page makes the whole feed not covered with that page's code and its earlier pages are NOT resolved
 (review B6).
 
-⭐ HOST BEFORE COMPANY (review B1). If the FIRST request to a host fails at transport level (DNS, connect,
-TLS verification, a proxy refusing the CONNECT, a timeout, an unresolved rate limit), the host is marked down
-for this run and NO further request goes to it: every company on it is not covered with that one code, one
-gap `jobsearch:feeds:host:<host>` is filed, and those companies keep their NORMAL cadence (a machine that
-cannot reach a vendor must not turn a monthly browser visit into a daily one). Per-board codes (404, not the
-documented shape, redirect, odd status) keep the DUE-regardless fallback.
+⭐ HOST BEFORE COMPANY (review B1; amended dev #831 / public #179, jobsearch 0.84.0). If a request to a host fails in
+the CONNECT phase (DNS, connect, TLS verification, a proxy refusing the CONNECT, a connect timeout) before the host has
+answered this run, or an unresolved rate limit, the host is marked down for this run and NO further request goes to it:
+every company on it is not covered with that one code, one gap `jobsearch:feeds:host:<host>` is filed, and those
+companies keep their NORMAL cadence (a machine that cannot reach a vendor must not turn a monthly browser visit into a
+daily one). A failure AFTER the request was sent (the server never finished its answer: `read-timeout`, or a dropped
+connection `read-dropped`) is that BOARD's own outcome, so one slow board no longer takes its whole host down; the SECOND
+consecutive transport failure on a host does, and any answer from it resets the count (`_HostBreaker`, shared by every
+vendor). Per-board codes (404, not the documented shape, redirect, odd status, read-*) keep the DUE-regardless fallback.
 
 ⭐ AN INTERNAL DEADLINE (review B3). The deadline bounds the whole network phase. `DEADLINE_S` (240 s) is its
 DEFAULT, safely below the Bash timeout the daily run passes (`skills/daily-run/SKILL.md`: 300 s); dev #820 / public
@@ -53,11 +56,17 @@ is NAMED and the default is used, never a silent fallback). A value above 240 do
 the daily run starts such a poll in the background and waits for its exit. Companies not reached by it are not
 covered with `budget-exhausted`; the `feeds` event and the summary line are ALWAYS written.
 
-⭐ ROTATION (dev #820 / public #175, CV2; issue #813). A deadline that reaches only part of the list must not reach the
-same part every day. `poll(last_covered=...)` asks companies in the order least-recently-covered first: never covered,
-then the oldest `journal.feed_last_covered` date, then id. `run` passes that map and journals `covered_ids` (the
-companies actually covered, 304s included) so the next poll has something to rotate on. Before this the file order was
-the only order, and seven companies with a deadline for three read the same three every day.
+⭐ ROTATION (dev #820 / public #175, CV2; issue #813; amended dev #832 / public #178, jobsearch 0.84.0). A deadline that
+reaches only part of the list must not reach the same part every day. `poll(last_attempted=...)` asks companies in the
+order least-recently-ATTEMPTED first: never attempted, then the oldest attempt (`journal.feed_last_attempted`, the
+position of the latest `feeds` event that sent at least one request for the company), then id. It was last COVERED
+before 0.84.0, and a feed that is reached but can never cover (a 200 in the wrong shape, a board that always times out)
+never aged under that key, so it headed the order every run and the feeds behind it were never read. `run` journals
+`attempted_ids` (and `covered_ids`, 304s included) so the next poll has something to rotate on.
+
+⭐ A TIME-FAIR PHASE 1 (dev #832, C2). Phase 1 runs two queues: the cheap single-GET vendors (Greenhouse, Lever, Ashby)
+and Workday's robots/sitemap reads. Each next company comes from whichever queue has spent less clock time so far, so a
+costly Workday sitemap index cannot starve the cheap boards, nor a long cheap list the Workday sites.
 
 ⭐ THE FETCH CONTRACT (review B4). `fetch(Request) -> Response`, or raise `FetchError(code)`:
 
@@ -173,7 +182,8 @@ Response = collections.namedtuple("Response", "status headers body final_url")
 
 class FetchError(Exception):
     """A transport-level failure: `code` is one of timeout / unreachable / tls-untrusted /
-    egress-blocked / redirected (all in `journal.FEED_FAILURES`)."""
+    egress-blocked / redirected (all in `journal.FEED_FAILURES`), or -- dev #831, raised only for a failure AFTER the
+    request was sent -- read-timeout / read-dropped (a BOARD's own outcome, not the host's)."""
 
     def __init__(self, code, detail=""):
         Exception.__init__(self, "%s %s" % (code, detail))
@@ -223,6 +233,21 @@ def default_fetch(request, follow_redirects=True):
     """The wire. See the module docstring's contract. Raises `FetchError`; never returns a Response
     for a transport failure. An HTTP error status (404, 429, ...) IS a Response.
 
+    A failure is classified by the PHASE it happened in (dev #831 / public #179). The stdlib wraps everything that goes
+    wrong while the request is being set up and sent (DNS, connect, TLS, the proxy's CONNECT, `h.request`) in
+    `URLError`; whatever goes wrong AFTER the request was sent arrives bare:
+
+        URLError, any reason                    connect phase   timeout / unreachable / egress-blocked / tls-untrusted
+        bare timeout from `opener.open`         response        read-timeout  (waiting for the status line and headers)
+        bare OSError / HTTPException            response        read-dropped  (RemoteDisconnected, a reset, BadStatusLine)
+        timeout from `resp.read`                body            read-timeout
+        OSError / HTTPException from `resp.read` body           read-dropped  (a reset or aborted connection mid-body)
+
+    A TRUNCATED body is not in the last row: `resp.read(MAX_BODY + 1)` is a bounded read, and a server that sends fewer
+    bytes than its Content-Length and closes makes it return what arrived, with no exception (`IncompleteRead` is raised
+    only by an unbounded read; TESTED on 3.14.6, UNVERIFIED on 3.9). That is a short 200, so the poller's parser refuses
+    it as `unparseable`, which is a board outcome that does not count toward a host breaker.
+
     `follow_redirects=False` (dev #770, the careers-page finder) returns a 3xx as a `Response` instead of
     following it; the default keeps every existing caller's behaviour."""
     req = urllib.request.Request(request.url, headers=dict(request.headers), method=request.method)
@@ -238,7 +263,7 @@ def default_fetch(request, follow_redirects=True):
             e.close()
         return Response(e.code, {k.lower(): v for k, v in e.headers.items()}, body, e.geturl())
     except (socket.timeout, TimeoutError) as e:
-        raise FetchError("timeout", str(e))
+        raise FetchError("read-timeout", str(e))
     except urllib.error.URLError as e:
         reason = e.reason
         if isinstance(reason, (socket.timeout, TimeoutError)):
@@ -251,14 +276,14 @@ def default_fetch(request, follow_redirects=True):
     except ssl.SSLCertVerificationError as e:
         raise FetchError("tls-untrusted", str(e))
     except (OSError, http.client.HTTPException) as e:
-        raise FetchError("unreachable", "%s: %s" % (type(e).__name__, e))
+        raise FetchError("read-dropped", "%s: %s" % (type(e).__name__, e))
     try:
         body = resp.read(MAX_BODY + 1)
         status, headers, final = resp.status, {k.lower(): v for k, v in resp.headers.items()}, resp.geturl()
     except (socket.timeout, TimeoutError) as e:
-        raise FetchError("timeout", str(e))
+        raise FetchError("read-timeout", str(e))
     except (OSError, http.client.HTTPException) as e:
-        raise FetchError("unreachable", "%s: %s" % (type(e).__name__, e))
+        raise FetchError("read-dropped", "%s: %s" % (type(e).__name__, e))
     finally:
         resp.close()
     return Response(status, headers, body, final)
@@ -1057,8 +1082,8 @@ def workday_window_verdict(W, P, baseline, channel_last_reviewed, today, all_dec
 # ---- the poll -------------------------------------------------------------------------------------
 
 Outcome = collections.namedtuple(
-    "Outcome", "company_id vendor slug status code postings unlisted total etag pages host wd listed_urls",
-    defaults=(None, None))
+    "Outcome", "company_id vendor slug status code postings unlisted total etag pages host wd listed_urls attempted",
+    defaults=(None, None, False))
 # status: covered | unchanged | not-covered. `postings` are LISTED postings only; `total` counts every
 # posting the feed showed (listed + unlisted); `etag` is None unless a single-page 200 sent one. `wd` (dev #775)
 # is None for every vendor but Workday, whose Outcome carries `{"entry": <feed-cache entry or None>}`: a Workday
@@ -1067,6 +1092,9 @@ Outcome = collections.namedtuple(
 # board showed, UNLISTED Ashby postings included (an unlisted posting is live), for a `covered` Greenhouse / Lever /
 # Ashby outcome; for an `unchanged` one it is the list CARRIED FORWARD from the cache entry; None for everything else
 # (not-covered, Workday). `run` writes it to the cache as `listed: {"on": <run date>, "urls": [...]}`.
+# `attempted` (dev #832) is True when at least one request for the company was sent: `poll` counts a request
+# immediately before each network call and fills it in for every outcome on return. A company skipped because its host
+# was already down, reached by the deadline before its first request, or refused locally (an unparseable slug) is False.
 
 
 def _listed_urls_of(entry):
@@ -1144,9 +1172,10 @@ class _Workday(object):
     It reads no store: `known` (the resolver's own de-dup predicate), `reviewed` (channel last_reviewed by company),
     `locales` and `cache` are handed in."""
 
-    def __init__(self, get, clock, spent, deadline_s, host_ok, host_down, env, today, known, reviewed, locales,
+    def __init__(self, get, clock, spent, deadline_s, breaker, env, today, known, reviewed, locales,
                  cache, limit2):
-        self.get, self.clock, self.host_ok, self.host_down, self.env = get, clock, host_ok, host_down, env
+        self.get, self.clock, self.env = get, clock, env
+        self.breaker, self.host_ok, self.host_down = breaker, breaker.host_ok, breaker.host_down
         self.spent, self.deadline_s = spent, deadline_s
         self.today, self.known, self.reviewed = today, known or (lambda _u: False), reviewed or {}
         self.locales, self.cache, self.limit2 = locales or {}, cache, limit2
@@ -1186,15 +1215,15 @@ class _Workday(object):
                     self.clock.sleep(wait)
                     resp = _workday_get(self.get, host, path, limit)
         except FetchError as fe:
-            if fe.code != "redirected" and host not in self.host_ok:
-                self.host_down[host] = fe.code
+            if fe.code != "redirected":
+                self.breaker.failed(host, fe.code)            # one breaker for every vendor (dev #831)
             raise _WdFail(fe.code, transport=True)
         if resp.status in (429, 503):
             self.host_down[host] = "rate-limited"
             raise _WdFail("rate-limited", transport=True)
         egress = resp.status == 403 and host not in self.host_ok and _proxy_is_local(self.env)
         if not egress:
-            self.host_ok.add(host)
+            self.breaker.answered(host)
         if egress:
             self.host_down[host] = "egress-blocked"
             raise _WdFail("egress-blocked", transport=True)
@@ -1410,25 +1439,71 @@ class _Workday(object):
         return self._finish(st, st["code"])
 
 
-def rotation_order(companies, last_covered):
-    """`companies` re-ordered least-recently-covered first (dev #820 / public #175, CV2): a company never covered
-    sorts before every covered one, then the older `last_covered[id]` date (`YYYY-MM-DD`, so a string compare is a
-    date compare), then the id. Pure. OURS (issue #813, recommendation 2): the deadline stays a deadline, and what
-    it reaches changes from one run to the next."""
-    lc = last_covered or {}
-    return sorted(companies, key=lambda c: (lc.get(c.get("id")) or "", str(c.get("id"))))
+def rotation_order(companies, last_attempted):
+    """`companies` re-ordered least-recently-ATTEMPTED first (dev #832 / public #178, C1; before this it keyed on last
+    COVERED, dev #820): a company never attempted sorts before every attempted one, then the older attempt
+    (`last_attempted[id]`, the 0-based ordinal of the latest `feeds` event that attempted it,
+    `journal.feed_last_attempted`), then the id. Pure.
+
+    Why the attempt and not the success: a feed that is reached but can never cover (a 200 in the wrong shape, a board
+    that always times out) never ages under a last-COVERED key, so it heads the order every run and the feeds behind it
+    are never read. An attempted company moves behind every company not yet attempted. OURS (issue #832; the nearest
+    published form is Nutch's fetch schedule, which also times the next fetch from the attempt)."""
+    la = last_attempted or {}
+    return sorted(companies, key=lambda c: (c.get("id") in la, la.get(c.get("id"), -1), str(c.get("id"))))
+
+
+# A `FetchError` code that is the BOARD's own (the request was sent and the answer never finished) trips its host only
+# on the SECOND consecutive one, and then as the HOST code it reads as: `journal.record_feeds` accepts only a HOST code
+# in `hosts_down`. Every other transport code trips as itself.
+TRIP_CODE = {"read-timeout": "timeout", "read-dropped": "unreachable"}
+# Failures in the CONNECT phase (DNS, connect, TLS, proxy CONNECT, send): the host was never reached, so while it has
+# not answered this run one of these takes it down at once. The stdlib surfaces every one of them as `URLError`.
+CONNECT_CODES = ("timeout", "unreachable", "egress-blocked", "tls-untrusted")
+
+
+class _HostBreaker(object):
+    """ONE per-host breaker shared by `poll` and `_Workday` (dev #831 / public #179, C3). It owns `host_ok` (hosts that
+    have answered this run), `host_down` (`{host: HOST code}`, no further request goes there) and `fails` (consecutive
+    transport failures per host).
+
+      answered(host)       any answer from the host: it is reachable, and its failure count is reset
+      failed(host, code)   a transport `FetchError` other than `redirected` (which is never host-level):
+                             - a CONNECT-phase code while the host has NOT answered this run: down at once with it;
+                             - any other, including a `read-*` code at any time and a connect-phase code AFTER the
+                               host answered: counted, and the SECOND in a row takes the host down as
+                               `TRIP_CODE.get(code, code)`.
+
+    The board that failed keeps its own outcome and code; only boards after the trip are skipped (and send nothing)."""
+
+    def __init__(self):
+        self.host_ok, self.host_down, self.fails = set(), {}, {}
+
+    def answered(self, host):
+        self.host_ok.add(host)
+        self.fails[host] = 0
+
+    def failed(self, host, code):
+        if code in CONNECT_CODES and host not in self.host_ok:
+            self.host_down[host] = code
+            return
+        self.fails[host] = self.fails.get(host, 0) + 1
+        if self.fails[host] >= 2:
+            self.host_down[host] = TRIP_CODE.get(code, code)
 
 
 def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEADLINE_S, env=None,
-         known=None, reviewed=None, locales=None, today=None, reserve_s=WORKDAY_RESERVE_S, last_covered=None):
-    """`{company_id: Outcome}` (insertion-ordered) for each company in `companies` that carries an
-    `ats` OBJECT -- and ONLY those (A1): a company with no `ats`, or `ats: null`, is never fetched.
+         known=None, reviewed=None, locales=None, today=None, reserve_s=WORKDAY_RESERVE_S, last_attempted=None,
+         host_report=None):
+    """`{company_id: Outcome}` (insertion-ordered, in the order the companies were SERVED) for each company in
+    `companies` that carries an `ats` OBJECT -- and ONLY those (A1): a company with no `ats`, or `ats: null`, is never
+    fetched.
 
     `fetch` and `clock` are injected (tests pass fakes; no sleeping, no socket). `cache` is
     `{"<vendor>:<region>:<slug>": {"etag", "pages", ...}}` (a Workday site's entry is keyed
     `workday:-:<tenant>.<wd>/<site>` and holds its window, `seen` set and baseline). This function reads no
     store and writes none: resolution, stamping and the cache write are `run`'s, after it. See the module
-    docstring for the host-first rule, the deadline and the paging rule.
+    docstring for the host rules, the deadline and the paging rule.
 
     The Workday vendor (dev #775) needs four things `poll` cannot read for itself, so `run` hands them in:
     `known(canonical_url) -> bool` (the resolver's own de-dup predicate), `reviewed` (`{company_id: the
@@ -1436,17 +1511,30 @@ def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEAD
     Workday runs in TWO PHASES: every company's listing (every vendor) is read before any Workday job page, and
     phase 2 stops `reserve_s` short of `deadline_s` (B3).
 
-    `last_covered` (dev #820 / public #175, CV2) is `journal.feed_last_covered(recs)`: when it is given -- `{}`
-    included -- the companies are polled in `rotation_order`, so the deadline does not always cut the same tail
-    off. `None` keeps the caller's own order (every test that pre-dates the rotation)."""
-    if last_covered is not None:
-        companies = rotation_order(companies, last_covered)
+    `last_attempted` (dev #832 / public #178, C1) is `journal.feed_last_attempted(recs)`: when it is given -- `{}`
+    included -- each queue is polled in `rotation_order`, so the deadline does not always cut the same tail off. `None`
+    keeps the caller's own order (every test that pre-dates the rotation).
+
+    PHASE 1 RUNS TWO QUEUES (dev #832, C2): `cheap` (Greenhouse, Lever, Ashby: one GET each) and `wd` (a Workday site's
+    robots, sitemap index and child sitemaps). Each next company comes from whichever queue has spent LESS clock time
+    so far in this phase, so neither starves the other: while both have work, the two queues' times differ by at most one
+    item's cost, and each gets at least `(T - c_max) / 2` of a phase-1 time `T`. Phase 2 is Workday's alone, as before.
+
+    `Outcome.attempted` is True when at least one request for the company was sent (`sent` is counted immediately
+    before every network call). `host_report`, a dict, is filled on return with `{host: HOST code}` for every host the
+    breaker took down: `run` journals that, and no longer re-derives a host-down from outcome codes."""
+    if last_attempted is not None:
+        companies = rotation_order(companies, last_attempted)
     clock = clock or RealClock()
     cache = cache or {}
     env = os.environ if env is None else env
     start = clock.now()
-    last_at, host_ok, host_down = {}, set(), {}
+    last_at = {}
+    breaker = _HostBreaker()
+    host_ok, host_down = breaker.host_ok, breaker.host_down
     outcomes = collections.OrderedDict()
+    sent = collections.Counter()                              # company id -> requests sent for it
+    current = [None]                                          # the company `get` is sending for
 
     def spent():
         return clock.now() - start
@@ -1464,6 +1552,7 @@ def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEAD
         if etag:
             headers["If-None-Match"] = etag
         last_at[host] = clock.now()
+        sent[current[0]] += 1                                 # attempted: counted immediately before the call (C1)
         return fetch(Request("GET", url, headers, TIMEOUT_S))
 
     def classify(status, resp, host, sent_etag):
@@ -1476,31 +1565,19 @@ def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEAD
             return "not-found", False
         return "http-error", False
 
-    wd = _Workday(get, clock, spent, deadline_s, host_ok, host_down, env,
+    wd = _Workday(get, clock, spent, deadline_s, breaker, env,
                   today or datetime.date.today().isoformat(), known, reviewed, locales, cache,
                   max(0, deadline_s - reserve_s))
-    wd_pending = []
-    for co in companies:
-        ats = co.get("ats")
-        if not isinstance(ats, dict) or co.get("status") == "passed":
-            continue
-        if ats.get("vendor") == "workday":                    # phase 1; phase 2 follows the loop
-            outcomes[co["id"]] = None
-            oc = wd.phase1(co, ats)
-            if oc is None:
-                wd_pending.append(co)
-            else:
-                outcomes[co["id"]] = oc
-            continue
+
+    def poll_cheap(co, ats):
+        """One Greenhouse / Lever / Ashby company: its Outcome."""
         key = (ats["vendor"], ats.get("region") if ats["vendor"] == "lever" else None)
         host, path = ENDPOINTS[key]
         cache_key = "%s:%s:%s" % (ats["vendor"], ats.get("region") or "-", ats["slug"])
         if host in host_down:
-            outcomes[co["id"]] = _not_covered(co, ats, host, host_down[host])
-            continue
+            return _not_covered(co, ats, host, host_down[host])
         if not ats_slug.SLUG_RE.match(str(ats.get("slug"))):
-            outcomes[co["id"]] = _not_covered(co, ats, host, "unparseable")
-            continue
+            return _not_covered(co, ats, host, "unparseable")
         entry = cache.get(cache_key)
         entry = entry if isinstance(entry, dict) else {}
         carried = _listed_urls_of(entry)
@@ -1524,13 +1601,12 @@ def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEAD
                             clock.sleep(wait)
                             resp = get(host, url, send_etag)
                 except FetchError as fe:
-                    code = fe.code
-                    first = host not in host_ok
-                    if code == "redirected" or not first:
-                        outcome = _not_covered(co, ats, host, code)
-                    else:
-                        host_down[host] = code
-                        outcome = _not_covered(co, ats, host, code)
+                    # dev #831: the breaker decides whether this failure takes the HOST down (a connect-phase failure
+                    # before the host answered, or the second consecutive transport failure). The board that failed
+                    # keeps ITS OWN code either way.
+                    if fe.code != "redirected":
+                        breaker.failed(host, fe.code)
+                    outcome = _not_covered(co, ats, host, fe.code)
                     break
                 if resp.status in (429, 503):
                     host_down[host] = "rate-limited"
@@ -1539,7 +1615,7 @@ def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEAD
                 if not (resp.status == 403 and host not in host_ok and _proxy_is_local(env)):
                     # ANY answer from the vendor proves the host is reachable (a 404 included); a 403
                     # that may be the local proxy refusing the host proves nothing (review B1).
-                    host_ok.add(host)
+                    breaker.answered(host)
                 if resp.status == 304 and send_etag:
                     outcome = Outcome(co["id"], ats["vendor"], ats["slug"], "unchanged", None, [], 0,
                                       0, send_etag, entry.get("pages", 1), host, None, list(carried))
@@ -1575,9 +1651,40 @@ def poll(companies, fetch=default_fetch, clock=None, cache=None, deadline_s=DEAD
         except _Budget:
             outcome = _not_covered(co, ats, host, "budget-exhausted")
             # the deadline is spent: every company after this one is unreached too (set below)
-        outcomes[co["id"]] = outcome
+        return outcome
+
+    queues = {"cheap": collections.deque(), "wd": collections.deque()}
+    for co in companies:
+        ats = co.get("ats")
+        if not isinstance(ats, dict) or co.get("status") == "passed":
+            continue
+        queues["wd" if ats.get("vendor") == "workday" else "cheap"].append(co)
+    used = {"cheap": 0.0, "wd": 0.0}                          # clock seconds each queue has spent in phase 1
+    wd_pending = []
+    while queues["cheap"] or queues["wd"]:
+        q = "cheap" if queues["cheap"] and (not queues["wd"] or used["cheap"] <= used["wd"]) else "wd"
+        co = queues[q].popleft()
+        ats = co["ats"]
+        current[0] = co["id"]
+        t0 = clock.now()
+        if q == "wd":                                         # phase 1; phase 2 follows the loop
+            outcomes[co["id"]] = None
+            oc = wd.phase1(co, ats)
+            if oc is None:
+                wd_pending.append(co)
+            else:
+                outcomes[co["id"]] = oc
+        else:
+            outcomes[co["id"]] = poll_cheap(co, ats)
+        used[q] += clock.now() - t0
     for co in wd_pending:                                     # phase 2: only the NEW job pages (dev #775)
+        current[0] = co["id"]
         outcomes[co["id"]] = wd.phase2(co)
+    for cid in list(outcomes):
+        outcomes[cid] = outcomes[cid]._replace(attempted=sent[cid] >= 1)
+    if host_report is not None:
+        host_report.clear()
+        host_report.update(host_down)
     return outcomes
 
 
@@ -1779,10 +1886,12 @@ def run(run_id, fetch=default_fetch, clock=None, today=None, already_locked=Fals
             lc = ats_slug.workday_locale_for(c, opps, c["ats"])
             if lc:
                 locales[c["id"]] = lc
-    # dev #820 / public #175 (CV2): least-recently-covered first, from what earlier polls journalled as covered
-    last_covered = _journal.feed_last_covered(_journal.read(ROOT))
+    # dev #832 / public #178 (C1): least-recently-ATTEMPTED first, from what earlier polls journalled as attempted
+    last_attempted = _journal.feed_last_attempted(_journal.read(ROOT))
+    host_report = {}                                          # dev #831: the poll's own host-down map
     outcomes = poll(to_poll, fetch=fetch, clock=clock, cache=cache, deadline_s=deadline_s, known=known,
-                    reviewed=reviewed, locales=locales, today=run_date, last_covered=last_covered)
+                    reviewed=reviewed, locales=locales, today=run_date, last_attempted=last_attempted,
+                    host_report=host_report)
     # companies the deadline never reached are not silently absent: they are NOT COVERED
     for co in to_poll:
         if co["id"] not in outcomes:
@@ -1795,7 +1904,10 @@ def run(run_id, fetch=default_fetch, clock=None, today=None, already_locked=Fals
     rows = _deferred.replay(_deferred.load())
     totals = {"captured": 0, "known": 0, "carried": 0, "role_gaps": 0, "quarantined": 0}
     postings_n = unlisted_n = selected_n = sightings = 0
-    failures, not_covered_map, hosts_down = {}, {}, {}
+    failures, not_covered_map = {}, {}
+    # dev #831: the hosts the poll's breaker took down, from the poll itself, not re-derived from outcome codes. Only a
+    # HOST code is journalled (`record_feeds` refuses any other): a Workday `blocked` page is a board code.
+    hosts_down = {h: c for h, c in host_report.items() if c in _journal.FEED_HOST_CODES and c != "budget-exhausted"}
     covered_n = unchanged_n = 0
     covered_ids = []                                          # dev #820 (CV2): who was actually covered, for rotation
     by_id = {c["id"]: c for c in to_poll}
@@ -1829,8 +1941,6 @@ def run(run_id, fetch=default_fetch, clock=None, today=None, already_locked=Fals
         if oc.status == "not-covered":
             failures[oc.code] = failures.get(oc.code, 0) + 1
             not_covered_map[cid] = oc.code
-            if oc.code in _journal.FEED_HOST_CODES and oc.code != "budget-exhausted":
-                hosts_down[oc.host] = oc.code
             if oc.postings or oc.unlisted:                   # Workday only: pages parsed before the verdict
                 postings_n += len(oc.postings) + oc.unlisted
                 unlisted_n += oc.unlisted
@@ -1894,7 +2004,7 @@ def run(run_id, fetch=default_fetch, clock=None, today=None, already_locked=Fals
             _gap(run_id, _journal.FEED_COMPANY_GAP_SCOPE % cid, _journal.FEED_FAILURES[code],
                  "a later poll covers it", out)
     for host, code in sorted(hosts_down.items()):
-        skipped = sum(1 for oc in outcomes.values() if oc.host == host and oc.code == code)
+        skipped = sum(1 for oc in outcomes.values() if oc.host == host and not oc.attempted and oc.code == code)
         out("FEED HOST DOWN %s %s (%d compan%s not polled)" % (host, code, skipped,
                                                                 "y" if skipped == 1 else "ies"))
         if not dry_run:
@@ -1913,7 +2023,8 @@ def run(run_id, fetch=default_fetch, clock=None, today=None, already_locked=Fals
                 captured=totals["captured"], known=totals["known"], carried=totals["carried"],
                 role_gaps=totals["role_gaps"], sightings_added=sightings, discovered=discovered,
                 ambiguous=ambiguous, quarantined=totals["quarantined"], hosts_down=hosts_down,
-                covered_ids=covered_ids)
+                covered_ids=covered_ids,
+                attempted_ids=sorted(cid for cid, oc in outcomes.items() if oc.attempted))
         except _journal.JournalError as e:
             out("⚠️ could not journal the feeds event (%s)" % e)
     out("FEEDS polled %d · covered %d (%d unchanged) · NOT COVERED %d%s · selected %d → %d captured, "

@@ -555,6 +555,19 @@ unreachable, or recorded as not attempted, and a channel the sweep never mention
 The run summary then marks the sweep **PARTIAL** and names what it missed (for example "3 of 5 channels
 reached", then which channels were unreachable and why), instead of reporting a quiet zero.
 
+**The board sweep runs in batches (since 0.84.0).** A script, not the model, cuts the list of boards due into batches
+sized to the number of job titles you search, and each batch goes to its own sweep agent, one after another. The run
+stops handing out batches when its batch cap or its time budget is reached, and the channels never handed out are
+recorded as not attempted with the reason `run-budget`; a channel the router refused is recorded `route-refused`;
+channels still unfinished when the run ends are recorded `run-ended`. None of these is the catch-all `other` any more.
+The run summary shows a `BOARD BATCHES` line (for example `BOARD BATCHES 2 of 14 (stopped: browser-unavailable, 41
+remaining)`). A LinkedIn source belongs to the LinkedIn helper, not to the board sweep: the run summary prints an
+`OWNED BY linkedin-runner` line naming the channels left out of the board list for that reason. A source you added by
+hand is matched to the LinkedIn helper by its name when it has no catalog link, and the line says that is how it matched.
+A company job-board feed that is read but slow now counts as that board's own result; it no longer takes the whole
+vendor down, and feeds are tried in order of the last time they were *attempted*, so the same few do not head the list
+every day.
+
 - **LinkedIn: one unreadable line costs only that line.** If the LinkedIn helper's record has a line the
   engine cannot read, every other line is kept and recorded, and the run names the line it dropped. A
   person the dropped line could have been about is never reported as "nothing changed" on its account.

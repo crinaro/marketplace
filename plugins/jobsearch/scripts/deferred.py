@@ -1858,7 +1858,7 @@ def _channel_accounting(parsed, surface):
     of the four groups: its unreachable QUERY lines already make the pass partial and file their own
     query gaps."""
     empty = {"worklist": None, "reached": None, "unreachable": {}, "not_attempted": {},
-             "unaccounted": [], "gaps": []}
+             "unaccounted": [], "gaps": [], "reached_ids": []}
     if surface != "board":
         return empty
     lines = parsed["channels"]
@@ -1866,17 +1866,18 @@ def _channel_accounting(parsed, surface):
     not_attempted = {c: v["reason"] for c, v in lines.items() if v["state"] == "not-attempted"}
     unaccounted = list(parsed["unaccounted"])
     wl = parsed["worklist"]
-    reached = None
+    reached, reached_list = None, []
     if wl is not None:
         reached_ids = {q["channel"] for q in parsed["queries"]
                        if q["status"] == "reached" and q.get("channel")}
         reached = len((reached_ids - set(unreachable)) & set(wl))
+        reached_list = sorted((reached_ids - set(unreachable)) & set(wl))     # dev #830: names, for the batch order
     gaps = ([(c, r, "unreachable reason=%s" % r) for c, r in unreachable.items()]
             + [(c, r, "not-attempted reason=%s" % r) for c, r in not_attempted.items()]
             + [(c, "other", "channel-unaccounted (no QUERY or CHANNEL line)") for c in unaccounted])
     return {"worklist": None if wl is None else len(wl), "reached": reached,
             "unreachable": unreachable, "not_attempted": not_attempted,
-            "unaccounted": unaccounted, "gaps": gaps}
+            "unaccounted": unaccounted, "gaps": gaps, "reached_ids": reached_list}
 
 
 def _channel_gap_closes(cid, reason, kind):
@@ -1891,7 +1892,7 @@ def _channel_gap_closes(cid, reason, kind):
     return text
 
 
-def add_roles(text, run_id, surface, out=print, check=False, already_locked=False):
+def add_roles(text, run_id, surface, out=print, check=False, already_locked=False, batch=None):
     """dev #692 / public #140 (692-2a/b, N5, N6) -- the gate on a pass report. Returns the exit
     code: 0 clean, 4 accepted with line faults (dev #707 / public #151), 3 refused (ONE
     `partial-results` gap `jobsearch:roles:<surface>`, nothing else written).
@@ -1925,10 +1926,50 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
     (over the ROLE lines accepted) and writes ONE `roles` event. Query-level gaps (unreachable, window not
     applied, truncated) are filed and counted in their own fields. Re-running the same block writes
     no new row: the queue is idempotent, a gap is filed once per run, and an identical `roles`
-    event is not repeated."""
+    event is not repeated.
+
+    dev #830 / public #180 (0.84.0, round-2 M10) -- `batch`. A board run that handed its worklist out in batches
+    (`channels_due.py --board-batch`) writes one `roles` event PER BATCH, and the batch is NAMED by the caller
+    (`--batch <n>`), never inferred from the latest batch row: a hand-back submitted after the next batch was printed is
+    still checked against, and stamped with, its own batch. It is REQUIRED on the board surface once the run has batch
+    rows, and refused (exit 3, nothing written) when `n` is not a batch of this run, or when given for a run with none.
+    A re-submission of a batch that already has an event is ACCEPTED and supersedes within that batch (the corrected
+    re-submission rule, which `journal.board_roles_run` keeps), not refused as the round-2 text literally put it: refusing
+    it would make a hand-back with line faults unfixable. The batch's own gap `jobsearch:roles:board:b<n>` (filed when a
+    batch ends with no accepted block, or when the block is refused) is CLOSED when its block is accepted. Line-fault
+    gaps are scoped `jobsearch:roles-line:board@b<n>:...` and channel gaps are closed `within` the batch's own ids, so
+    batch k+1's hand-back never closes batch k's gaps."""
     import journal as _journal
+    sk = surface                         # the surface label of this call's scopes and kept files
     gap_scope = _journal.ROLES_GAP_SCOPE % surface
-    rel = _handback_rel(run_id, surface)
+    batch_channels = None
+    if surface == "board":
+        try:
+            b = _journal.board_batches(_journal.read(ROOT), run_id)
+        except _journal.JournalError:
+            b = None
+        if b is not None and b["batches"]:
+            known = dict(b["batches"])
+            if batch is None:
+                out("⛔ REFUSED -- this run handed its worklist out in %d batch(es): name this hand-back's batch with "
+                    "--batch <n> (one of %s). Nothing was recorded." % (len(known), ", ".join(map(str, sorted(known)))))
+                return ROLES_EXIT_REFUSED
+            if batch not in known:
+                out("⛔ REFUSED -- batch %s is not a batch of run %s (its batches: %s). Nothing was recorded."
+                    % (batch, run_id, ", ".join(map(str, sorted(known)))))
+                return ROLES_EXIT_REFUSED
+            batch_channels = list(known[batch])
+        elif batch is not None:
+            out("⛔ REFUSED -- run %s has no board batch (--board-batch wrote none), so --batch %s names nothing. "
+                "Nothing was recorded." % (run_id, batch))
+            return ROLES_EXIT_REFUSED
+        if batch is not None:
+            sk = "board@b%d" % batch
+            gap_scope = _journal.ROLES_GAP_SCOPE % ("board:b%d" % batch)
+    elif batch is not None:
+        out("⛔ --batch is for --surface board only")
+        return ROLES_EXIT_USAGE
+    rel = _handback_rel(run_id, sk.replace("@", "-"))
     # dev #811 / public #170 -- the board worklist this run's sweeper was handed, read BEFORE the parse so
     # the parse can cross-check it. `None` = none on record (a run from before 0.82.0, or one that never
     # called `--board-decision`): the check is NOT CHECKED, never a quiet pass. A worklist that is on
@@ -1936,7 +1977,8 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
     worklist, worklist_problem = None, None
     if surface == "board":
         try:
-            worklist = _journal.board_worklist(_journal.read(ROOT), run_id)
+            worklist = (batch_channels if batch_channels is not None
+                        else _journal.board_worklist_dispatched(_journal.read(ROOT), run_id))
         except _journal.JournalError as e:
             worklist_problem = str(e)
     try:
@@ -1945,7 +1987,7 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
         if check:
             out(_handback.verdict_line("refused", detail=str(e)))
             return ROLES_EXIT_REFUSED
-        kept = _keep_handback(text, run_id, surface, out)
+        kept = _keep_handback(text, run_id, sk.replace("@", "-"), out)
         out("⛔ REFUSED — %s. Nothing was recorded except a `partial-results` gap (%s)."
             % (e, gap_scope))
         if kept:
@@ -2070,14 +2112,16 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
         out("CHANNEL GAP  %s %s" % (cid, kind))
         _file_gap(run_id, scope, why, _channel_gap_closes(cid, why, kind), out)
     if surface == "board":
-        _handback.close_stale_line_gaps(ROOT, run_id, CHANNEL_GAP_SCOPE % "", channel_scopes, out)
+        _handback.close_stale_line_gaps(ROOT, run_id, CHANNEL_GAP_SCOPE % "", channel_scopes, out,
+                                        within=([CHANNEL_GAP_SCOPE % c for c in batch_channels]
+                                                if batch_channels is not None else None))
         if worklist is not None:
             out("CHANNELS %d of %d reached · %d unreachable · %d not attempted · %d unaccounted"
                 % (chan["reached"], chan["worklist"], len(chan["unreachable"]),
                    len(chan["not_attempted"]), len(chan["unaccounted"])))
 
     # dev #707 / public #151 -- a line fault is a gap of its own; the roles above are already in
-    kept = _keep_handback(text, run_id, surface, out) if faults else None
+    kept = _keep_handback(text, run_id, sk.replace("@", "-"), out) if faults else None
     for f in faults:
         out(_describe_fault(f))
 
@@ -2090,9 +2134,9 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
                    if kept else ""))
 
     fault_scopes = _handback.file_line_gaps(
-        ROOT, run_id, ROLES_LINE_GAP_SCOPE % (surface, "%s"), faults, _fault_gap_text, out)
-    # a corrected re-submission closes the line gaps it no longer has
-    prefix = ROLES_LINE_GAP_SCOPE % (surface, "")
+        ROOT, run_id, ROLES_LINE_GAP_SCOPE % (sk, "%s"), faults, _fault_gap_text, out)
+    # a corrected re-submission closes the line gaps it no longer has (a batch's own scope: `board@b<n>`)
+    prefix = ROLES_LINE_GAP_SCOPE % (sk, "")
     _handback.close_stale_line_gaps(ROOT, run_id, prefix, fault_scopes, out)
 
     listed = parsed["listed"]
@@ -2127,6 +2171,10 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
                  channels_unreachable=chan["unreachable"],
                  channels_not_attempted=chan["not_attempted"],
                  channels_unaccounted=chan["unaccounted"])
+    if batch is not None:
+        event["batch"] = batch
+    if surface == "board" and batch is not None:
+        event["channels_reached_ids"] = chan["reached_ids"]
     same = [e for e in _journal.roles_events(recs, run_id=run_id, surface=surface)
             if all(e.get(k) == v for k, v in event.items())]
     if same:
@@ -2136,6 +2184,18 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
             _journal.record_roles(ROOT, **event)
         except _journal.JournalError as e:
             out("⚠️ could not journal the roles event (%s)" % e)
+        else:
+            if batch is not None:
+                # round-2 M10: the batch's own `jobsearch:roles:board:b<n>` gap (a batch that ended with no accepted
+                # block, or a refused one) is closed by the block's acceptance
+                for g in _journal.open_gaps(_journal.read(ROOT), run_id=run_id):
+                    if g.get("scope") == gap_scope:
+                        try:
+                            _journal.append(ROOT, {"event": "gap-closed", "gap_id": g["gap_id"],
+                                                   "at": _journal.now_iso()})
+                            out("GAP CLOSED %s (the batch's ROLES block is accepted)" % gap_scope)
+                        except _journal.JournalError as e:
+                            out("⚠️ could not close the gap %s (%s)" % (gap_scope, e))
     out("ROLES RECORDED run=%s surface=%s window=%s: %d seen = %d captured + %d known + %d carried "
         "+ %d role gap(s) + %d quarantined · %d query gap(s) (window) · %d truncated"
         "%s"
@@ -2414,6 +2474,11 @@ def main():
                          "profile's .jobsearch/handbacks/. Idempotent.")
     ap.add_argument("--surface", choices=("linkedin-jobsearch", "board"),
                     help="With --add-roles: the surface the block belongs to.")
+    ap.add_argument("--batch", type=int, metavar="N", default=None,
+                    help="With --add-roles --surface board (dev #830 / public #180): which board batch this hand-back "
+                         "belongs to. REQUIRED once the run has batch rows (`channels_due.py --board-batch`); the "
+                         "batch is named, never inferred from the latest one. Refused (exit 3) when N is not a batch "
+                         "of this run.")
     ap.add_argument("--check", action="store_true",
                     help="With --add-roles (dev #707 / public #151): parse the hand-back with the "
                          "SAME code, print every faulty line with its line number and the rule it "
@@ -2491,7 +2556,7 @@ def main():
             print("⛔ cannot read the hand-back %s: %s" % (args.add_roles, e))
             return ROLES_EXIT_USAGE
         return add_roles(text, args.run, args.surface, check=args.check,
-                         already_locked=args.already_locked)
+                         already_locked=args.already_locked, batch=args.batch)
 
     if args.settle:
         settle(already_locked=args.already_locked)

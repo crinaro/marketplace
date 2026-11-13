@@ -69,7 +69,7 @@ dispatching session's context (dev #482 / public #111).
 
 ## CONTEXT BUDGET
 
-**READS** the worklist ids you were handed (the caller's copy of the `--board-decision` `  worklist:` line) ·
+**READS** the worklist ids you were handed (the caller's copy of the `--board-batch` call's `  batch:` line) ·
 `~/.claude/jobsearch/run route.py --channel <id>` (how to reach each one) ·
 `~/.claude/jobsearch/run profile.py` (titles and geography to search for). The pipeline
 cross-check is no longer yours: `deferred.py --add-roles` resolves every `ROLE` you list against the
@@ -120,10 +120,10 @@ route is not a reason to guess: guessing produces a sweep that silently covered 
 which is the one failure this whole plugin is organised against. A channel you could not reach is a
 REPORTED GAP, never a silent zero.
 - **`ROUTE CONFIGURATION UNREADABLE` is pass-wide:** no channel has a route you can trust. STOP, and
-  hand back every channel on your worklist as `CHANNEL <id> not-attempted reason=other` (see "When a
+  hand back every channel on your worklist as `CHANNEL <id> not-attempted reason=route-refused` (see "When a
   channel fails").
 - **`HAS AN UNREADABLE ROUTE` or `NO SUCH CHANNEL` names ONE id: that is that channel's failure, not
-  the pass's.** Record `CHANNEL <id> not-attempted reason=other` for it and carry on with the next id.
+  the pass's.** Record `CHANNEL <id> not-attempted reason=route-refused` for it and carry on with the next id.
 
 ## ⭐ Your own browser tab (dev #820 / public #175)
 
@@ -144,8 +144,11 @@ report it as this channel's.
 
 ## What a sweep is
 
-1. **Your worklist is the ids you were handed**, from the `--board-decision` call's `  worklist:` line.
-   It is the whole of your work: sweep each id on it and no other channel. Do not run `channels_due.py`
+1. **Your worklist is the ids you were handed**, from the `--board-batch` call's `  batch:` line (the daily run
+   dispatches you once per batch; `/jobsearch:search` hands you the `--board-decision` `  worklist:` line).
+   It is the whole of your work: sweep each id on it and no other channel. **Your batch is sized for you; sweep
+   every id on it.** If you stop before the end anyway, each id not swept is
+   `CHANNEL <id> not-attempted reason=skipped-for-cost`: a cost stop is named as one, never as `other`. Do not run `channels_due.py`
    to decide what to sweep. **Channels get retired after a zero-yield trial and must not be re-added by
    a helpful sweep**: a channel not on your worklist is not yours today. Handed no worklist, that is
    pass-wide: STOP and report it; the caller gets one from `channels_due.py --board-decision` (the
@@ -200,14 +203,15 @@ pass that found nothing. Five clauses, in order:
    challenge or block page `upstream-error` · a sign-in demanded `credential-missing` · a page that
    never loaded, or a site the Browser pane refused to open or whose approval was declined
    `surface-unreachable` · a stall past the wait `timeout` · a rate-limit page `rate-limited`. A route
-   refusal for one id is `CHANNEL <id> not-attempted reason=other`. A `not-attempted` line never goes
+   refusal for one id is `CHANNEL <id> not-attempted reason=route-refused`. A `not-attempted` line never goes
    with a `QUERY` for the same channel: a channel you searched at all was attempted.
 - **Clause 4. Continue with the next id on the worklist.** Every id ends as `QUERY` lines, a `CHANNEL` line, or
    both, and the roles you read on the channels that worked are still listed.
 - **Clause 5. Only a pass-wide failure stops the pass:** no worklist, a failed `binding.py --assert`,
    `route.py` printing `ROUTE CONFIGURATION UNREADABLE`, or no browser for any route. Even then, hand
    back a ROLES block with **every channel not yet swept as `CHANNEL <id> not-attempted
-   reason=<code>`** (`other` for the route configuration, `browser-unavailable` for the browser), so
+   reason=<code>`** (`route-refused` for the route configuration, `browser-unavailable` for the browser, and for a
+   failed `binding.py --assert`: the binding is the browser), so
    the pass reads as partial, never as zero.
 
 `deferred.py --add-roles` checks the block against the worklist the run stored: an id with neither a

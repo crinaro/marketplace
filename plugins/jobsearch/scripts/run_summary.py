@@ -420,14 +420,27 @@ def latest_roles_events(recs, run_id):
     make it differ from the first), so reading every event would print the stale partial line beside
     the corrected one. The key is (surface, window) rather than surface alone so that a run holding
     both a daily and a wide LinkedIn event keeps both; a re-submission carries the same header, so
-    the two keys agree wherever the design's single key does."""
+    the two keys agree wherever the design's single key does.
+
+    dev #830 / public #180 (0.84.0): the BOARD key is not latest-wins any more. A board run handed out in batches holds
+    one `roles` event per batch, and `journal.board_roles_run` is the ONE fold of them (counters summed, channel maps
+    unioned, PARTIAL when any batch is, or ids were never handed out); a run with no `batch` key still reads exactly as
+    before. The folded event takes the place of the run's last board event."""
     best = {}
+    last_board = None
     for i, e in enumerate(_journal.roles_events(recs, run_id=run_id)):
+        if e.get("surface") == "board":
+            last_board = i
+            continue
         key = (e.get("surface"), e.get("window"))
         rank = (str(e.get("at", "")), i)
         if key not in best or rank >= best[key][0]:
             best[key] = (rank, i, e)
-    return [e for _rank, _i, e in sorted(best.values(), key=lambda t: t[1])]
+    out = [(i, e) for _rank, i, e in best.values()]
+    folded = _journal.board_roles_run(recs, run_id)
+    if folded is not None:
+        out.append((last_board, folded))
+    return [e for _i, e in sorted(out, key=lambda t: t[0])]
 
 
 def _plural(n, word, many=None):
@@ -481,7 +494,12 @@ def _board_coverage_line(e, label, tail, attended):
         parts = [chan] + [x for x, n in ((unr, len(unreachable)), (na, len(not_attempted)),
                                          (una, len(unaccounted))) if n] + causes
         if not attended:
-            parts.append("slot spent: these channels wait for the next board slot")
+            if e.get("batch") == 0:
+                # dev #830: only the script's closing event exists, so NO batch came back and the slot is NOT spent
+                # (`posture.board_spent_on`): the next run in the slot dispatches again
+                parts.append("no batch came back: the next run in the slot dispatches again")
+            else:
+                parts.append("slot spent: these channels wait for the next board slot")
         return head + " · " + " · ".join(parts)
     parts = [chan]
     if partial:
@@ -565,13 +583,73 @@ def _sweep_line(recs, run_id):
     return "linkedin sweep: PARTIAL (%s) · %s" % ("; ".join(inside), counts), True
 
 
+def _board_loop_open(recs, run_id):
+    """dev #830 / public #180 -- True when the run handed its board worklist out in batches and the loop has NOT ended
+    cleanly: no `batch-end` row with ids never handed out, or a batch with no accepted hand-back. Read here, never
+    only by `journal --end`, so a loop the model abandoned reads PARTIAL even when `--end` never ran."""
+    b = _journal.board_batches(recs, run_id)
+    if b is None or not b["batches"]:
+        return False
+    return (b["terminal"] is None and bool(b["unhanded"])) or bool(b["open_batches"])
+
+
+def _board_batches_line(recs, run_id):
+    """The `BOARD BATCHES` line (dev #830 / public #180), computed from `journal.board_batches`, or None for a run with
+    no batch row:
+
+      BOARD BATCHES 3 of 3 (done)
+      BOARD BATCHES 1 of 3 (budget-spent, 6 remaining)
+      BOARD BATCHES 2 of 14 (stopped: browser-unavailable, 41 remaining)
+      BOARD BATCHES LEFT OPEN 1 of 14 (95 never handed)
+
+    A batch that was handed out and has no accepted hand-back is named after it (`batch 2 has no hand-back`)."""
+    b = _journal.board_batches(recs, run_id)
+    if b is None or not b["batches"]:
+        return None
+    n, k, term = len(b["batches"]), b["of"], b["terminal"]
+    left = len(b["unhanded"])
+    if term is None or term.get("state") == "abandoned":
+        if left:
+            line = "BOARD BATCHES LEFT OPEN %d of %d (%d never handed)" % (n, k, left)
+        else:
+            line = "BOARD BATCHES %d of %d (done)" % (n, k)
+    elif term.get("state") == "done":
+        line = "BOARD BATCHES %d of %d (done)" % (n, k)
+    elif term.get("state") == "stopped":
+        line = "BOARD BATCHES %d of %d (stopped: %s, %d remaining)" % (n, k, term.get("code") or "?", left)
+    else:
+        line = "BOARD BATCHES %d of %d (%s, %d remaining)" % (n, k, term.get("state"), left)
+    if b["open_batches"]:
+        line += " · %s no hand-back" % ", ".join("batch %s" % x for x in b["open_batches"])
+    return line
+
+
+def _owned_by_lines(recs, run_id):
+    """dev #830 / public #180 (owner ruling O2) -- one `OWNED BY <agent>` line per owning agent, from the run's latest
+    board `dispatched` row's `owned_elsewhere`: the channels the worklist LEFT OUT because another agent owns them, each
+    with the rule that matched (`link`, `channel-id`, `host-label`). `host-label` is the by-name exception to the rule
+    that a thing is classified by what it does, so it is printed wherever it applies. None for a row that excluded
+    nothing (and for one written before 0.84.0)."""
+    got = _journal._latest_dispatched(recs, run_id)
+    owned = got[1].get("owned_elsewhere") if got else None
+    if not isinstance(owned, dict) or not owned:
+        return []
+    by_agent = {}
+    for cid, v in sorted(owned.items()):
+        if isinstance(v, dict):
+            by_agent.setdefault(v.get("agent") or "?", []).append("%s [%s]" % (cid, v.get("rule") or "?"))
+    return ["OWNED BY %s: %d not in the board sweep (%s)" % (agent, len(items), ", ".join(items))
+            for agent, items in sorted(by_agent.items())]
+
+
 def partial_surfaces(recs, run_id):
     """`["board", "linkedin"]`, only the ones that read PARTIAL (or failed) from the LATEST events:
     the board's latest `roles` event with `coverage == "partial"`; LinkedIn when its latest job
     search event is partial or the latest `recorded` sweep row is anything but `clean`."""
     out = []
     events = latest_roles_events(recs, run_id)
-    if any(e.get("surface") == "board" and e.get("coverage") == "partial" for e in events):
+    if (any(e.get("surface") == "board" and e.get("coverage") == "partial" for e in events)
+            or _board_loop_open(recs, run_id)):
         out.append("board")
     linkedin = any(e.get("surface") == "linkedin-jobsearch" and e.get("coverage") == "partial"
                    for e in events)
@@ -635,12 +713,19 @@ def roles_lines(recs, run_id, root=None, kind=None, at=None):
     sweep, _partial = _sweep_line(recs, run_id)
     if sweep:
         lines.append(sweep)
+    batches_line = _board_batches_line(recs, run_id)
+    if batches_line:
+        lines.append(batches_line)
+    lines.extend(_owned_by_lines(recs, run_id))
     for e in _journal.feeds_events(recs, run_id=run_id):
         lines.append(feeds_line(e))
     held = {g.get("scope") for g in _journal.open_gaps(recs, run_id=run_id)}
     for surface in _journal.ROLES_SURFACES:
         if _journal.ROLES_GAP_SCOPE % surface in held:
             lines.append("ROLES NOT ACCOUNTED (%s)" % surface)
+    prefix = _journal.ROLES_GAP_SCOPE % "board:b"
+    for scope in sorted(x for x in held if str(x).startswith(prefix)):
+        lines.append("ROLES NOT ACCOUNTED (board batch %s)" % scope[len(prefix):])
     if kind == "daily" and root is not None:
         now = at or _journal.now_iso()
         w = _journal.jobsearch_window(now, recs, _geos(root))

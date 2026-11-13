@@ -123,6 +123,10 @@ CODES = ("proposed",) + OWN_CODES + tuple(_journal.FEED_FAILURES)
 # attended call. Everything else is `days`: retried after RECHECK_DAYS.
 INPUT_CODES = ("no-employer-url", "refused-url", "board-host", "ambiguous", "identity-mismatch")
 HOST_CODES = tuple(_journal.FEED_HOST_CODES)
+# dev #831: `feed_poll.default_fetch` splits a header-wait timeout and a dropped connection out of `timeout` / `unreachable`
+# (BOARD codes for the poller). The finder keeps the 0.83.0 vocabulary: it maps them back where a FetchError is consumed,
+# so its cache never holds a new code and a rollback reads every entry as valid.
+FETCH_CODE_AS_0_83 = {"read-timeout": "timeout", "read-dropped": "unreachable"}
 EGRESS_CODES = ("egress-blocked", "timeout")
 if set(OWN_CODES) & set(_journal.FEED_FAILURES):          # an engine fault, caught at import
     raise AssertionError("ats_finder.OWN_CODES collide with journal.FEED_FAILURES: %s"
@@ -418,8 +422,14 @@ def _send(ctx, url, host, kind):
         except feed_poll.FetchError as fe:
             if fe.code in ("redirected",):
                 raise Unresolved(fe.code, fe.detail)
-            _mark_down(ctx, host, fe.code, kind)
-            raise Unresolved(fe.code, fe.detail)
+            # dev #831 (jobsearch 0.84.0): `feed_poll.default_fetch` now says `read-timeout` / `read-dropped` for a failure
+            # AFTER the request was sent. The finder's host rules, its egress tally and its stored cache are out of that
+            # group's criteria and stay byte-identical to 0.83.0, so the new codes are mapped back to the codes 0.83.0
+            # stored BEFORE the code is used or stored, here where a FetchError is consumed (never at the default
+            # fetch alone: a test, or a caller, injects its own).
+            code = FETCH_CODE_AS_0_83.get(fe.code, fe.code)
+            _mark_down(ctx, host, code, kind)
+            raise Unresolved(code, fe.detail)
         if resp.final_url != url:
             raise EngineFault("a redirect was followed outside the guard: asked %s, answered %s"
                               % (url, resp.final_url))

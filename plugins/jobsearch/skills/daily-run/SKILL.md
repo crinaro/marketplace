@@ -592,7 +592,7 @@ a new one becomes one `capture-role` item carrying its channel, which the drain 
 screens exactly as it does a board role.
 It costs no tokens and reads no mail. **It has an internal deadline** (`sourcing.feeds.deadline_s`, read above;
 Workday job pages stop `feed_poll.WORKDAY_RESERVE_S` short of it, so the
-bookkeeping after the network finishes inside it), and it asks the companies least recently covered first, so a stalled network ends in a written `feeds` event, not a
+bookkeeping after the network finishes inside it), and it asks the companies least recently ATTEMPTED first (a company that was reached but never covers no longer heads the order every run; 0.84.0), so a stalled network ends in a written `feeds` event, not a
 killed process.
 Run it in the read phase, unlocked: its own `record.py` calls take the lock they need.
 
@@ -654,9 +654,9 @@ always for this call; a line it cannot vouch for reads `NOT CHECKED` or `LEFT OP
 schedules, one call. Employer career pages (`company-site`) run on the posture's `company_days`, job boards
 and aggregators on its `board_days`; ask the script, never the calendar and never `log.md`:
 `~/.claude/jobsearch/run channels_due.py --board-decision --run <id>` (add `--attended` only on the
-explicit attended form). **Dispatch `board-sweeper` for the non-LinkedIn sourcing pass
-only when it exits 0, and give it exactly the ids on the call's `  worklist:` line** — only the due kind's channels
-(`BOARD DISPATCH yes company`, `yes board`, or `yes company,board` says which), each reached by its
+explicit attended form). **The non-LinkedIn sourcing pass runs only when it exits 0, as a loop of bounded batches
+(jobsearch 0.84.0, dev #830 / public #180, below), never as one dispatch of the whole worklist** — only the due kind's
+channels (`BOARD DISPATCH yes company`, `yes board`, or `yes company,board` says which), each reached by its
 configured route. With `company_split` on, the call offers each career page only on its own split day, so the
 worklist is already today's share. Never choose channels by weekday yourself.
 Never add a channel of the kind that is not due. The call has
@@ -668,9 +668,30 @@ this machine can run (the day stays open for a run that can). On exit 3 print it
 summary, and dispatch nothing: a posture, `company_days`, `board_days` or journal it cannot read is never
 read as permission. When the sweeper
 hands back, run
-`~/.claude/jobsearch/run deferred.py --add-roles <hand-back file> --run <id> --surface board --check`
+`~/.claude/jobsearch/run deferred.py --add-roles <hand-back file> --run <id> --surface board --batch <n> --check`
 and then the same call without `--check`, the same gate, the same outcomes and the same exit codes
 as the LinkedIn pass above; the sweeper no longer cross-checks the pipeline itself.
+
+**The batch loop (dev #830 / public #180).** After `--board-decision` exits 0, the script plans the sweep and you
+drive it one bounded batch at a time. Repeat:
+
+```
+~/.claude/jobsearch/run channels_due.py --board-batch --run <id>
+  exit 0 -> dispatch board-sweeper with exactly the ids on its `  batch:` line (n is on its `BOARD BATCH n of k` line);
+            on hand-back run deferred.py --add-roles <file> --run <id> --surface board --batch <n> --check,
+            then without --check
+  exit 1 -> quote its BOARD BATCH line in the summary and stop
+  exit 3 -> quote its line, say so in the summary, and stop
+  any other exit, or no `BOARD BATCH` line -> quote the output, dispatch nothing, say so in the summary, and stop
+```
+
+**Never dispatch a batch the script did not print, never re-dispatch an id, never stop while it exits 0.** The script
+owns each batch's size, the stop and the end: its batch cap is the posture's `max_agents_per_run` (each batch is one
+agent) and its time budget is stated in UTC, so the loop cannot run on. The loop takes no `runlock.py --resource pane`
+lock (the sweeper has never taken one); it runs sequentially in this session. `run_summary.py` prints the
+`BOARD BATCHES ...` and `OWNED BY ...` lines: quote them, never compose them. A loop you leave open is closed by
+`journal.py --end` and reads PARTIAL, never complete. The unattended path only: `/jobsearch:search` still hands the
+sweeper the `  worklist:` line in one dispatch.
 **`channels_due.py` and `--board-decision` give one answer:** a channel waiting for its sweep day is listed
 under WAITING FOR ITS SWEEP DAY, never DUE NOW. Do not re-add a retired channel.
 
@@ -1201,7 +1222,7 @@ to zero.**
 ## 12. DASHBOARD — after the LAST mutation
 
 ```bash
-~/.claude/jobsearch/run check_dashboard_fresh.py --fix
+~/.claude/jobsearch/run check_dashboard_fresh.py --fix --run <id>   # this run's id: the run building the page is not "overlong" against itself
 ~/.claude/jobsearch/run check_dashboard_coverage.py   # the page accounts for every record; a gap here is a renderer defect, never a hand-edit
 ~/.claude/jobsearch/run presence_set.py --check       # the resume / public-profile review (a pane now, no published page) round-trips against its sources (ADR-028 rules 3-7)
 ```

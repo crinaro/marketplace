@@ -115,7 +115,15 @@ def _latest_per(recs, event, key):
 
 def _roles_rows(recs, today):
     rows = []
-    for surface, ev in sorted(_latest_per(recs, "roles", "surface").items(), key=lambda t: str(t[0])):
+    latest = _latest_per(recs, "roles", "surface")
+    if "board" in latest and latest["board"].get("run_id"):
+        # dev #830 / public #180 (0.84.0): a board run handed out in batches holds one event per batch, so "the latest
+        # board event" is the run of that event FOLDED (`journal.board_roles_run`), and the "did not look" rows carry
+        # every batch's unreachable and not-attempted channels. A run with no `batch` key folds to its latest event.
+        folded = _journal.board_roles_run(recs, latest["board"]["run_id"])
+        if folded is not None:
+            latest["board"] = folded
+    for surface, ev in sorted(latest.items(), key=lambda t: str(t[0])):
         at = ev.get("at")
         for code, n in sorted((ev.get("q_degraded") or {}).items()):
             if n:
