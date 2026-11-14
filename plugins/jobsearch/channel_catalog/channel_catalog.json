@@ -228,7 +228,7 @@
       },
       "type": "job-board",
       "verified_by": "https://www.linkedin.com/legal/user-agreement",
-      "verified_note": "This entry DESCRIBES today's linkedin-runner reads and adds no LinkedIn read and no action. LinkedIn's User Agreement (effective 2025-11-03) section 8.2 items 2 and 13 ban software that scrapes the Services and bots or unauthorized automated methods; ADR-037 does not rule on the existing runner (finding F2) and the owner's carve-out (2026-10-24, #774) leaves its reads as they are. LinkedIn actions are never automated.",
+      "verified_note": "This entry DESCRIBES today's linkedin-runner reads and adds no LinkedIn action. With search.posting_fetch on (off by default), when the browser cannot read an admitted LinkedIn role on a run, the drain reads that role's public posting once, logged out (ADR-038, which amends ADR-037). LinkedIn's User Agreement (effective 2025-11-03) section 8.2 items 2 and 13 ban software that scrapes the Services and bots or unauthorized automated methods; ADR-037 does not rule on the existing runner (finding F2) and the owner's carve-out (2026-10-24, #774) leaves its reads as they are. LinkedIn actions are never automated.",
       "verified_on": "2026-10-24"
     },
     {

@@ -42,6 +42,24 @@ or, if it was first seen strictly before the cutover, a `legacy-backlog` failure
 failures until read"). A row no rule matches is `unclassified`, a TERM of the conservation line and never
 an exception (N6).
 
+AN ENVIRONMENT FAULT IS NOT THE ROLE'S FAULT (0.85.0, dev #839 / public #182, dev #840 / public #181; design-hidden-pane-reads.md
+section 7). A browser read that cannot happen because the Browser pane is hidden, or because the reader's tab stays in the
+background, is recorded `not-attempted` with outcome `pane-hidden`: cause class `environment`, a third class beside `run`
+and `role`. It BREAKS both retry-stop chains and counts toward neither, so an aggregator-only role is never abandoned for a
+pane the engine cannot show. Such a role waits in the admission class `held` (after `retry`, `returned` and `legacy`, with
+new roles keeping their reserved share). After `HELD_ROUTE_AFTER` consecutive environment closes it is routed to YOUR READ
+(a derived stage, never stored, like `retry-stopped`) and is re-admitted only by an ATTENDED plan. A role whose only attempts
+are `not-attempted` is at `captured`, never `reading`. Held roles are counted in the run summary's `HELD:` segment, not in
+`PROCESS FAILURE`.
+
+A RE-ADMITTED ROLE (0.85.0, dev #840 / public #181; design-hidden-pane-reads.md section 9). A role retry-stopped for
+`render-failed` under 0.83.0 and 0.84.0 accounting, which did not know that a hidden pane produces that outcome, is put back
+into intake by a `readmit` event (`journal.record_readmit`, appended once by `m_0_85_0_readmit_render_failed`). `Ctx.working`
+drops every admission of the role planned at or before that event, so with none left it is `waiting` with `detail ==
+"readmitted"` (or `legacy-backlog`, for a role seen before the cutover), and `drain_plan` admits it in the class `held`.
+Two events with the same `by` are read as ONE (the union of their ids, at the earliest `at`): two machines that each ran the
+migration before syncing cannot re-admit a role twice. `render_failed_stops(ctx)` is the one selection of who is re-admitted.
+
 WHEN A RUN IS OVER (N1). Run R is over when the journal holds an `end` event for R, or R's OWN latest
 journal record is more than RUN_LIVENESS_HOURS (8) before `now`. A `fired` record is never any run's
 event, and a later `start` by another run never ends R. The window must exceed the longest legitimate
@@ -102,7 +120,9 @@ PER_ROLE_WINDOW = 5                     # the last N own closes whose median is 
 # run generating the page is left out of `overlong_runs` (C7 / S5, `--run`); a DIFFERENT open run past it
 # still alerts. The value is unchanged.
 LONGEST_RUN_S = 8100
-DRAIN_FANOUT = 1                        # readers/researchers at once. Raising it needs P-RP-1a (N3)
+DRAIN_FANOUT = 1                        # readers/researchers at once. Raising it needs P-RP-1a (N3), and a design for the
+                                        # browser path: a second reader would compete for the one FRONT tab the first
+                                        # reader's pages need to render (0.85.0, design-hidden-pane-reads.md section 5.2)
 P_RP_1A_MIN_READS = 40
 P_RP_1A_LINE_RE = re.compile(
     r"^- \*\*P-RP-1a\*\*: PASS (\d{4}-\d{2}-\d{2}), (\d+) interleaved reads, 0 cross-reads\s*$",
@@ -111,6 +131,7 @@ FETCH_WORST_CASE_S = 51                 # 10 s timeout + 30 s Retry-After + 10 s
 FETCH_CALL_S = 240                      # feed_poll.DEADLINE_S: one `read-batch --fetch` call
 RETRY_STOP_RUN_CLASS = 3                # N4: consecutive run-class unfinished admissions
 RETRY_STOP_ROLE_CLASS = 2               # section 4.5 IN4: consecutive role-class unfinished admissions
+HELD_ROUTE_AFTER = 3                    # 0.85.0: consecutive environment-class admissions before a role goes to YOUR READ
 SKEW_DAYS = 14
 ENGINE_CUTOVER = "0.82.0"
 INTAKE_KEY = "search.intake_per_run"
@@ -118,9 +139,11 @@ INTAKE_NEW_PERCENT_KEY = "search.intake_new_percent"
 
 # the order of the admission classes when there is NO reservation (N8). `new` is the waiting roles
 # found on or after the cutover, `returned` is a role the candidate has read since its last admitting
-# run closed (N9), `legacy` is the pre-0.82.0 backlog, `retry` an admitted role that is a failure now.
-ADMISSION_CLASSES = ("retry", "returned", "legacy", "new")
-ADMISSION_ORDER = ("retry", "returned", "legacy", "new")
+# run closed (N9), `legacy` is the pre-0.82.0 backlog, `retry` an admitted role that is a failure now,
+# and `held` (0.85.0) a role whose read could not happen for an ENVIRONMENT cause (a hidden pane): it waits behind
+# the other three, and new roles keep their reserved share ahead of it (`drain_plan`).
+ADMISSION_CLASSES = ("retry", "returned", "legacy", "held", "new")
+ADMISSION_ORDER = ("retry", "returned", "legacy", "held", "new")
 
 # mirrored, never imported: validate_data/your_move resolve a profile at import. Pinned equal by tests.
 SUBMITTED_APP_STATUS = frozenset({"submitted", "acknowledged", "rejected", "advanced", "closed"})
@@ -162,10 +185,17 @@ CAUSE_TABLE = collections.OrderedDict([
     ("site-not-allowed", ("role", "the pane refused the site or asked for an approval that did not "
                                  "open", "approve the site in an attended session; the attended "
                                  "drain retries it")),
+    ("pane-hidden", ("environment", "the Browser pane was hidden, or the reader's tab stayed in the background, so "
+                                    "the page could not render",
+                     "none: it is retried after new roles; show the pane during a run to read it sooner, or see "
+                     "docs/user/jobsearch/posting-fetch.md (search.posting_fetch)")),
     ("retry-stopped", ("status", "left unfinished by repeated runs",
-                       "left unfinished by three runs in a row: the likely reason is a page that "
-                       "hangs the reader. Report it, or read it yourself (`read-jd --via "
-                       "candidate`)")),
+                       # built from the two constants, never a number written into prose: the run class
+                       # stops at RETRY_STOP_RUN_CLASS and the role class at RETRY_STOP_ROLE_CLASS (0.85.0, §7.4)
+                       "left unfinished by repeated runs (%d in a row for a run-level cause, %d for a "
+                       "role-level one): the likely reason is a page that hangs the reader. Report it, "
+                       "or read it yourself (`read-jd --via candidate`)"
+                       % (RETRY_STOP_RUN_CLASS, RETRY_STOP_ROLE_CLASS))),
     ("legacy-backlog", ("status", "read by nothing before 0.82.0, not yet admitted",
                         "none: intake drains it oldest first")),
     ("unclassified", ("status", "no stage rule matches this row's values",
@@ -177,8 +207,9 @@ CAUSE_MEANING = {c: v[1] for c, v in CAUSE_TABLE.items()}
 CAUSE_ACTION = {c: v[2] for c, v in CAUSE_TABLE.items()}
 RUN_CLASS_CAUSES = tuple(c for c in CAUSES if CAUSE_CLASS[c] == "run")
 ROLE_CLASS_CAUSES = tuple(c for c in CAUSES if CAUSE_CLASS[c] == "role")
+ENV_CLASS_CAUSES = tuple(c for c in CAUSES if CAUSE_CLASS[c] == "environment")
 # the causes `drain_close` may write: exactly what `journal.record_drain` accepts in `left`
-CLOSE_CAUSES = RUN_CLASS_CAUSES + ROLE_CLASS_CAUSES
+CLOSE_CAUSES = RUN_CLASS_CAUSES + ROLE_CLASS_CAUSES + ENV_CLASS_CAUSES
 
 _SCREEN_RE = re.compile(r"^(review|remove):([a-z][a-z-]*(?:,[a-z][a-z-]*)*)$")
 
@@ -497,6 +528,7 @@ class Ctx(object):
         self._build_runs()
         self._build_cutover()
         self._build_admissions()
+        self._build_readmits()
         self.index = RoleIndex(self.opps, data.get("companies"))
         self._build_groups()
         self._stage_cache = {}
@@ -613,11 +645,44 @@ class Ctx(object):
         planned.sort(key=lambda t: (t[0], t[1]))
         self.admitted_by = collections.defaultdict(list)       # id -> [run id, oldest first]
         self.planned_order = [t[2] for t in planned]
+        self.planned_at = {}                                   # run id -> when its plan was written (a datetime)
+        for _at, _i, r in planned:
+            self.planned_at.setdefault(r["run_id"], _parse_at(r.get("at")))
         for _at, _i, r in planned:
             adm = r.get("admitted") or {}
             for i in list(adm.get("opps") or []) + list(adm.get("items") or []):
                 if r["run_id"] not in self.admitted_by[i]:
                     self.admitted_by[i].append(r["run_id"])
+
+    def _build_readmits(self):
+        """`self.readmits`: `[(at, frozenset(ids))]`, ONE entry per `by`. Events written by the same migration are read as one:
+        the union of their ids, at the earliest `at` (design section 9 step 6, R2-S7). An event whose `at` cannot be read
+        counts for nothing, and one with no readable ids is skipped (the journal reader refuses both; a hand-built snapshot
+        may carry them)."""
+        merged = {}
+        for r in self.recs:
+            if r.get("event") != "readmit" or r.get("on_behalf_of"):
+                continue
+            at = _parse_at(r.get("at"))
+            ids = r.get("ids")
+            if at is None or not isinstance(ids, list):
+                continue
+            slot = merged.setdefault(str(r.get("by")), [at, set()])
+            try:
+                if at < slot[0]:
+                    slot[0] = at
+            except TypeError:                       # a zone-aware `at` beside a naive one: keep the first
+                pass
+            slot[1].update(i for i in ids if isinstance(i, str))
+        self.readmits = [(at, frozenset(ids)) for _by, (at, ids) in sorted(merged.items())]
+
+    def readmitted_at(self, ids):
+        """The `at` a `readmit` event naming any of `ids` took effect (the earliest such, after the union rule), else None."""
+        hits = [at for at, named in self.readmits if any(i in named for i in ids)]
+        try:
+            return min(hits) if hits else None
+        except TypeError:
+            return hits[0]
 
     def admissions(self, ids):
         """The distinct run ids that admitted any of `ids`, oldest planned first."""
@@ -646,6 +711,11 @@ class Ctx(object):
             return _jd.attempts(opp)
         except _jd.JdReadError as e:
             raise _Unclassified("jd_read: %s" % e)
+
+    def page_attempts(self, opp):
+        """The attempts at the PAGE: every one but a `not-attempted` (`pane-hidden`), which says the page was never
+        read. Progress ("captured" / "reading") and the settled outcomes read these, never the others."""
+        return [a for a in self.attempts(opp) if _jd.is_page_attempt(a)]
 
     def screen(self, opp):
         """`(kind, rules, inputs, on)` of the stored screen, or None when there is none.
@@ -713,6 +783,18 @@ class Ctx(object):
                 return True, text
         return False, ""
 
+    def held_chain(self, adm, ids):
+        """The role's trailing consecutive ENDED admissions whose close cause is environment-class, newest first
+        (`[]` when its latest ended admission was anything else). At `HELD_ROUTE_AFTER` the role goes to YOUR READ."""
+        history = [self.outcome(rid, ids) for rid in adm if self.runs[rid]["done"]]
+        chain = []
+        for c in reversed(history):
+            if c is not None and CAUSE_CLASS.get(c) == "environment":
+                chain.append(c)
+            else:
+                break
+        return chain
+
     def working(self, progress, ids, seen, key, latest_attempt, rules_changed=False):
         """Turn a role's PROGRESS stage into what a surface shows (section 2.2, "the admission rule").
 
@@ -722,6 +804,22 @@ class Ctx(object):
         `cause-not-recorded`. What remains is admissions that left it unfinished, which are real failures,
         or nothing, and then the role is `waiting` with `detail == "rules-changed"`, never `legacy-backlog`."""
         adm = self.admissions(ids)
+        readmitted = False
+        re_at = self.readmitted_at(ids)
+        if re_at is not None:
+            # a `readmit` puts the role back into intake: the admissions planned at or before it no longer count
+            kept = []
+            for rid in adm:
+                planned = self.planned_at.get(rid)
+                try:
+                    dropped = planned is not None and planned <= re_at
+                except TypeError:
+                    dropped = False
+                if dropped:
+                    readmitted = True
+                else:
+                    kept.append(rid)
+            adm = kept
         if rules_changed:
             last_finished = -1
             for n, rid in enumerate(adm):
@@ -745,6 +843,13 @@ class Ctx(object):
                 return Stage("waiting", False, seen, None, "returned", key)
             since = self.run_start_date(adm[0]) or seen
             cause = self.outcome(adm[-1], ids) or "cause-not-recorded"
+            held = self.held_chain(adm, ids)
+            if len(held) >= HELD_ROUTE_AFTER:
+                # derived, never stored (like `retry-stopped`): only the candidate's own read, or an ATTENDED run
+                # (`drain_plan`), takes it from here
+                counts = collections.Counter(held)
+                text = ", ".join("%s ×%d" % (c, n) for c, n in sorted(counts.items(), key=lambda t: (-t[1], t[0])))
+                return Stage("your-read", False, since, held[0], text, key)
             stop, text = self.retry_stop(adm, ids)
             if stop:
                 return Stage(PROGRESS_TO_FAILURE[progress], True, since, "retry-stopped", text, key)
@@ -755,6 +860,8 @@ class Ctx(object):
             return Stage("waiting", False, seen, None, "rules-changed", key)
         if self.is_legacy(seen):
             return Stage(PROGRESS_TO_FAILURE[progress], True, seen, "legacy-backlog", "", key)
+        if readmitted:
+            return Stage("waiting", False, seen, None, "readmitted", key)
         return Stage("waiting", False, seen, None, "", key)
 
     # --- stage of an opportunity ------------------------------------------------------------------
@@ -803,7 +910,7 @@ class Ctx(object):
         if (verdict in ("pursue", "parked") or status in LIVE_OPP_STATUSES
                 or any(a.get("status") in SUBMITTED_APP_STATUS for a in apps)):
             return Stage("decided", False, None, None, "", key), None, False
-        atts = self.attempts(opp)
+        atts = self.page_attempts(opp)               # a `not-attempted` attempt is no try at the page (0.85.0)
         latest = _jd.latest_of(atts)
         reads = sorted((a for a in atts if a["outcome"] == "read"), key=lambda a: a["at"])
         latest_read = reads[-1] if reads else None
@@ -869,7 +976,7 @@ class Ctx(object):
         try:
             st, progress, stale = self._settle(opp)
             if st is None:
-                atts = self.attempts(opp)
+                atts = self.page_attempts(opp)
                 st = self.working(progress, self.opp_ids(opp), first_seen(opp), key,
                                   _jd.latest_of(atts), rules_changed=stale)
         except _Unclassified as e:
@@ -922,6 +1029,31 @@ class Ctx(object):
 def context(data, now):
     """The `Ctx` for a snapshot at `now` (a datetime or date, passed in and never read from the clock)."""
     return Ctx(data, now)
+
+
+# the `detail` of a retry-stopped role whose stopping chain is ONLY `render-failed` (`Ctx.retry_stop` formats it
+# "%s ×%d"); a chain with any other cause in it reads "challenge ×1, render-failed ×1" and does not match
+_RENDER_FAILED_ONLY_RE = re.compile(r"^render-failed ×\d+$")
+
+
+def render_failed_stops(ctx):
+    """`[(unit key, ids)]`: every role the retry-stop gave up on whose stopping chain is `render-failed` and nothing else,
+    sorted by key (0.85.0, dev #840 / public #181; design section 9 step 2). The selection is the lifecycle's own
+    logic (`Stage.cause == "retry-stopped"` and its detail), never a second reading of the journal, so `m_0_85_0_readmit_
+    render_failed` re-admits exactly the roles the retry-stop abandoned. `ids` is every id a run could have admitted the
+    role under: the opportunity id and its capture item for a role, the item ids for an item group. A mixed chain is not
+    returned (a role whose pages also challenged is a genuinely bad page, not the hidden-pane class)."""
+    out = []
+    for u in ctx.units():
+        st = u.stage
+        if u.folded or st.name == "unclassified" or not st.failure or st.cause != "retry-stopped":
+            continue
+        if not _RENDER_FAILED_ONLY_RE.match(st.detail or ""):
+            continue
+        opp_ids, item_ids = ctx.unit_ids(u)
+        ids = opp_ids + item_ids + [i for o in opp_ids for i in ctx.opp_ids(ctx.opps_by_id[o])[1:]]
+        out.append((u.key, list(dict.fromkeys(ids))))
+    return sorted(out)
 
 
 def stage(row, ctx):
@@ -1051,11 +1183,12 @@ class Plan(object):
         out = ["drain-plan run=%s intake=%d capacity=%d render-route=%s attended=%s"
                % (self.run_id, self.intake, self.capacity, self.render_route,
                   "yes" if self.attended else "no")]
-        out.append("admitted %d roles (%d new · %d retry · %d returned · %d legacy) "
+        out.append("admitted %d roles (%d new · %d retry · %d returned · %d legacy · %d held) "
                    "· reserved_new %d" % (n, self.admitted_by_class["new"],
                                               self.admitted_by_class["retry"],
                                               self.admitted_by_class["returned"],
-                                              self.admitted_by_class["legacy"], self.reserved_new))
+                                              self.admitted_by_class["legacy"],
+                                              self.admitted_by_class["held"], self.reserved_new))
         out.append("fanout: %d" % self.fanout)
         out.append("fetch_calls: %d" % self.fetch_calls)
         out.append("solo: %s" % (",".join(self.solo) if self.solo else "-"))
@@ -1090,9 +1223,11 @@ def drain_plan(data, now, intake=None, render_route="yes", attended=False, run_i
 
       capacity   min(intake, floor(DRAIN_BUDGET_S / per_role_s)), and 0 with no render route
       reserve    S = ceil(capacity x intake_new_percent / 100) slots go to NEW roles first while the
-                 legacy backlog is non-empty (ruling 8); unused slots fall through
-      order      ADMISSION_ORDER (retry, returned, legacy, new), oldest first within a class; the
-                 reservation is applied before it
+                 legacy backlog OR the held class is non-empty (ruling 8; 0.85.0); unused slots fall through
+      order      ADMISSION_ORDER (retry, returned, legacy, held, new), oldest first within a class; the
+                 reservation is applied before it. `held` (0.85.0) is a role whose read could not happen for an
+                 environment cause (a hidden pane): attended or not, it is admitted in that class, and a role
+                 routed to YOUR READ by `HELD_ROUTE_AFTER` such closes is admitted again ONLY by an attended plan
       exclusion  an id another OPEN run's plan already admitted is never admitted again (N2)
     """
     ctx = Ctx(data, now)
@@ -1122,7 +1257,13 @@ def drain_plan(data, now, intake=None, render_route="yes", attended=False, run_i
         if u.folded or st.name == "unclassified":
             continue
         if st.name == "waiting":
-            cls = "returned" if st.detail == "returned" else "new"
+            cls = "returned" if st.detail == "returned" else "held" if st.detail == "readmitted" else "new"
+        elif st.name == "your-read" and CAUSE_CLASS.get(st.cause) == "environment":
+            # reached YOUR READ by the held route (an outcome of the candidate's own never has this cause): an
+            # ATTENDED run is the one place the pane can be shown, so only it re-admits the role (0.85.0)
+            if not attended:
+                continue
+            cls = "held"
         elif st.failure and st.cause == "legacy-backlog":
             cls = "legacy"
         elif st.failure:
@@ -1132,7 +1273,7 @@ def drain_plan(data, now, intake=None, render_route="yes", attended=False, run_i
                     continue
             if st.cause == "site-not-allowed" and not attended:
                 continue
-            cls = "retry"
+            cls = "held" if CAUSE_CLASS.get(st.cause) == "environment" else "retry"
         else:
             continue
         opp_ids, item_ids = ctx.unit_ids(u)
@@ -1155,7 +1296,7 @@ def drain_plan(data, now, intake=None, render_route="yes", attended=False, run_i
     else:
         plan.capacity = intake
     cap = plan.capacity
-    plan.reserved_new = int(math.ceil(cap * pct / 100.0)) if buckets["legacy"] else 0
+    plan.reserved_new = int(math.ceil(cap * pct / 100.0)) if (buckets["legacy"] or buckets["held"]) else 0
     # --- admit ---
     chosen = []                                             # (class, unit)
 
@@ -1166,7 +1307,7 @@ def drain_plan(data, now, intake=None, render_route="yes", attended=False, run_i
             n += 1
         return n
 
-    if buckets["legacy"]:
+    if buckets["legacy"] or buckets["held"]:
         take("new", plan.reserved_new)
         for cls in ADMISSION_ORDER:
             take(cls, cap)
@@ -1217,6 +1358,22 @@ class CloseResult(object):
         self.waiting_oldest = None
         self.elapsed_s = None
         self.per_role_s = None
+        self.render_failed_pane_unknown = 0         # 0.85.0: render-failed closes whose evidence says pane `unknown`
+        self.pane_hidden_by_line = 0                # not-attempted closes whose evidence says pane `hidden`
+        self.pane_hidden_by_tab = 0                 # ... and those the pane line did NOT say (the model's tab word)
+
+    @property
+    def pane_hidden(self):
+        return self.pane_hidden_by_line + self.pane_hidden_by_tab
+
+    def count_lines(self):
+        """The two counts the close report gains (0.85.0, design section 7.5): a `render-failed` recorded while the
+        pane state was `unknown` (a rise means the harness line changed wording), and the `not-attempted` roles split by
+        whether the PANE LINE said hidden or only the model's word about its tab did. Always printed, zeros included:
+        an absent line would read as zero."""
+        return ["render-failed under pane unknown: %d" % self.render_failed_pane_unknown,
+                "not-attempted: pane-hidden %d (by pane line %d, by tab only %d)"
+                % (self.pane_hidden, self.pane_hidden_by_line, self.pane_hidden_by_tab)]
 
     def summary_line(self, now_age_days=None):
         t = self.tally
@@ -1307,6 +1464,19 @@ def close_result(data, run_id, now, by=None):
             continue
         res.left[iid] = _left_cause(ctx, run, iid, None, by, capture_unreached, dispatched, gap_scopes,
                                     item=item)
+    for lid, cause in res.left.items():
+        lopp = _left_opp(ctx, lid, ctx.items_by_id.get(lid))
+        if cause == "render-failed":
+            a = _run_attempt(ctx, run, lopp, ("host",))
+            if a is not None and (a["evidence"] or {}).get("pane") == "unknown":
+                res.render_failed_pane_unknown += 1
+        elif cause in ENV_CLASS_CAUSES:
+            a = _run_attempt(ctx, run, lopp, ("not-attempted",))
+            if a is not None:
+                if (a["evidence"] or {}).get("pane") == "hidden":
+                    res.pane_hidden_by_line += 1
+                else:
+                    res.pane_hidden_by_tab += 1
     others = [u for u in ctx.units() if u.stage.name == "waiting"]
     res.waiting_count = len(others)
     oldest = min((u.stage.since for u in others if u.stage.since), default=None)
@@ -1319,18 +1489,60 @@ def close_result(data, run_id, now, by=None):
     return res
 
 
+def _run_attempt(ctx, run, opp, classes=("host", "not-attempted")):
+    """The latest attempt `run` made on `opp` whose outcome class is in `classes`, or None. Both classes are what
+    stops a role short of settled in a run: the machine or the pane failed (`host`), or the page was never read
+    because the pane was hidden (`not-attempted`, 0.85.0)."""
+    if opp is None:
+        return None
+    try:
+        for a in reversed(ctx.attempts(opp)):
+            if a["run"] == run["id"] and _jd.outcome_class(a["outcome"]) in classes:
+                return a
+    except _Unclassified:
+        pass
+    return None
+
+
+def _item_opp_ids(ctx, iid, item):
+    """The opportunity ids an admitted capture item (`act-...`) stands for (0.85.0, dev #837 / public #184, design
+    section 8). The drain's dispatch rows and the reader's attempts name OPPORTUNITY ids, never item ids, so an item is
+    resolved before it is tested against either: the target of its `closed_as` (`created:` or `linked:`) when that is
+    a known opportunity, then the opportunity its role key matched (`item_key`). Distinct, in that order."""
+    out = []
+    done_as = (item or {}).get("closed_as") if item and item.get("status") == "done" else None
+    if done_as and ":" in str(done_as):
+        kind, _, target = str(done_as).partition(":")
+        if kind in ("created", "linked") and target in ctx.opps_by_id:
+            out.append(target)
+    key = ctx.item_key.get(iid)
+    if key and key in ctx.opps_by_id and key not in out:
+        out.append(key)
+    return out
+
+
+def _left_opp(ctx, rid_, item=None):
+    """The opportunity row a left id is about: the id itself, or, for an admitted item, the first opportunity it
+    resolves to (None when it resolves to none)."""
+    if rid_ in ctx.opps_by_id:
+        return ctx.opps_by_id[rid_]
+    ids = _item_opp_ids(ctx, rid_, item)
+    return ctx.opps_by_id[ids[0]] if ids else None
+
+
 def _left_cause(ctx, run, rid_, opp, by, capture_unreached, dispatched, gap_scopes, item=None):
     """The cause of one admitted role left unfinished. On behalf of a dead run (`by`): its latest
-    host-class attempt outcome, else `run-died` (N1)."""
-    host = None
-    if opp is not None:
-        try:
-            for a in reversed(ctx.attempts(opp)):
-                if a["run"] == run["id"] and _jd.outcome_class(a["outcome"]) == "host":
-                    host = a["outcome"]
-                    break
-        except _Unclassified:
-            pass
+    host-class (or not-attempted) attempt outcome, else `run-died` (N1).
+
+    An admitted ITEM (`act-...`) is resolved to its opportunity ids FIRST (dev #837 / public #184): the dispatched
+    set holds opportunity ids, so testing the item's own id reported every dispatched item `not-dispatched`, and the
+    host and not-attempted lookup never ran for it (an item-admitted `render-failed` closed as the run-level
+    `not-dispatched`)."""
+    opp_ids = _item_opp_ids(ctx, rid_, item) if opp is None else []
+    if opp is None and opp_ids:
+        opp = ctx.opps_by_id[opp_ids[0]]
+    host_attempt = _run_attempt(ctx, run, opp)
+    host = host_attempt["outcome"] if host_attempt else None
     if host:
         return host
     if by is not None:
@@ -1339,7 +1551,7 @@ def _left_cause(ctx, run, rid_, opp, by, capture_unreached, dispatched, gap_scop
         return "capture-refused"
     if rid_ in capture_unreached:
         return "deadline-reached"
-    if rid_ in dispatched:
+    if rid_ in dispatched or any(o in dispatched for o in opp_ids):
         return "agent-returned-nothing"
     return "not-dispatched"
 
@@ -1369,6 +1581,11 @@ class Report(object):
         self.waiting_oldest = None
         self.legacy = 0
         self.legacy_oldest = None
+        self.held_failures = 0                       # 0.85.0: roles waiting as `held` (environment cause), outside `failure`
+        self.held_route = 0                          # ... plus roles the held route sent to YOUR READ (inside `your_read`)
+        self.held_oldest = None
+        self.held_by_line = 0
+        self.held_by_tab = 0
         self.in_progress = 0
         self.ready = 0
         self.your_read = 0
@@ -1394,11 +1611,18 @@ class Report(object):
     def partial_text(self):
         return ", ".join(self.partial_kinds)
 
+    @property
+    def held(self):
+        """Every role the pane kept from being read: waiting as `held`, plus those now at YOUR READ by the route."""
+        return self.held_failures + self.held_route
+
     def to_json(self):
         return {"counts": dict(self.counts), "totals": self.totals, "failure": self.failure,
                 "failure_oldest": self.failure_oldest, "failure_causes": dict(self.failure_causes),
                 "waiting": self.waiting, "waiting_oldest": self.waiting_oldest,
                 "legacy": self.legacy, "legacy_oldest": self.legacy_oldest,
+                "held": self.held, "held_oldest": self.held_oldest, "held_your_read": self.held_route,
+                "held_by_pane_line": self.held_by_line, "held_by_tab_only": self.held_by_tab,
                 "ready": self.ready, "your_read": self.your_read, "in_progress": self.in_progress,
                 "unclassified": self.unclassified, "folded": self.folded, "mismatch": self.mismatch,
                 "did_not_look": self.coverage_rows, "skew": self.skew, "intake": self.intake,
@@ -1464,6 +1688,7 @@ def process_report(data, now, generating_run=None):
     rep = Report()
     today = ctx.today
     rep.skew = list(ctx.skew)
+    held_ages = []
     rep.intake = intake_setting(ctx.cfg)
     pct = new_percent_setting(ctx.cfg)
     rep.reserved_new = int(math.ceil(rep.intake * pct / 100.0))
@@ -1478,7 +1703,20 @@ def process_report(data, now, generating_run=None):
             rep.failure_roles.append((u.key, st))
             continue
         rep.counts[st.name] += 1
-        if st.failure:
+        if CAUSE_CLASS.get(st.cause) == "environment" and (st.failure or st.name == "your-read"):
+            # 0.85.0: held roles are counted in the HELD segment, never in PROCESS FAILURE. A routed one is also a
+            # `your-read` role (counted there), so only a waiting one adds a term to the conservation line.
+            if st.failure:
+                rep.held_failures += 1
+            else:
+                rep.held_route += 1
+            kind = _held_kind(ctx, u.key)
+            if kind == "line":
+                rep.held_by_line += 1
+            elif kind == "tab":
+                rep.held_by_tab += 1
+            held_ages.append(_age(st.since, today) if st.since is not None else None)
+        elif st.failure:
             rep.failure += 1
             rep.failure_causes[st.cause] = rep.failure_causes.get(st.cause, 0) + 1
             rep.failure_ids.setdefault(st.cause, []).append(u.key)
@@ -1490,6 +1728,8 @@ def process_report(data, now, generating_run=None):
         elif st.name in PROGRESS_STAGES:
             rep.in_progress += 1
     rep.ready, rep.your_read = rep.counts["ready"], rep.counts["your-read"]
+    ages = [a for a in held_ages if a is not None]
+    rep.held_oldest = max(ages) if ages else None
 
     def oldest(pred):
         ages = [_age(st.since, today) for (_k, st) in
@@ -1504,7 +1744,7 @@ def process_report(data, now, generating_run=None):
         sorted(rep.failure_causes.items(), key=lambda t: (-t[1], t[0])))
     staged = (rep.counts["waiting"] + rep.in_progress + rep.failure + rep.your_read + rep.ready
               + rep.counts["decided"] + rep.counts["removed"] + rep.counts["gone"]
-              + rep.counts["ended"] + rep.unclassified)
+              + rep.counts["ended"] + rep.unclassified + rep.held_failures)
     raw, raw_source = raw_role_count(data)
     rep.mismatch = raw != staged
     rep.totals = {"roles": staged, "raw": raw, "raw_source": raw_source, "folded": rep.folded,
@@ -1540,6 +1780,37 @@ def process_report(data, now, generating_run=None):
     return rep
 
 
+def _held_kind(ctx, key):
+    """`line` when the pane line itself said hidden on the role's latest `not-attempted` attempt, `tab` when only the
+    reader's word about its tab did (0.85.0, design section 7.5), None when the role has no such attempt."""
+    opp = ctx.opps_by_id.get(key)
+    if opp is None:
+        return None
+    try:
+        na = [a for a in ctx.attempts(opp) if _jd.outcome_class(a["outcome"]) == "not-attempted"]
+    except _Unclassified:
+        return None
+    a = _jd.latest_of(na)
+    if a is None:
+        return None
+    return "line" if (a["evidence"] or {}).get("pane") == "hidden" else "tab"
+
+
+HELD_TEXT = ("the Browser pane was hidden or the reader's tab was not in front, so these roles were not read. Show "
+             "the pane during a run, or see docs/user/jobsearch/posting-fetch.md (search.posting_fetch).")
+
+
+def held_segment(rep):
+    """`HELD: <N> (oldest <D>d; <M> now your read; <P> by pane line, <T> by tab only): <what to do>`, or None when
+    nothing is held (0.85.0). "By pane line" is the stored evidence `pane == hidden`; "by tab only" is the pane NOT
+    being hidden and `tab_active == no`, which is the reader's own word."""
+    if not rep.held:
+        return None
+    old = "oldest %dd; " % rep.held_oldest if rep.held_oldest is not None else ""
+    return "HELD: %s (%s%s now your read; %s by pane line, %s by tab only): %s" % (
+        _fmt_n(rep.held), old, _fmt_n(rep.held_route), _fmt_n(rep.held_by_line), _fmt_n(rep.held_by_tab), HELD_TEXT)
+
+
 def _compose(rep, ctx):
     f_oldest = " (oldest %dd)" % rep.failure_oldest if rep.failure_oldest is not None else ""
     seg_fail = "PROCESS FAILURE: %s" % _fmt_n(rep.failure)
@@ -1555,6 +1826,9 @@ def _compose(rep, ctx):
     if rep.legacy:
         l_old = " (oldest %dd)" % rep.legacy_oldest if rep.legacy_oldest is not None else ""
         parts.append("LEGACY BACKLOG: %s%s" % (_fmt_n(rep.legacy), l_old))
+    held_seg = held_segment(rep)
+    if held_seg:
+        parts.append(held_seg)
     parts.append("intake %d/run%s" % (rep.intake, _reserve_text(rep)))
     if rep.unclassified:
         parts.append("UNCLASSIFIED: %s" % _fmt_n(rep.unclassified))
@@ -1585,6 +1859,8 @@ def _compose(rep, ctx):
         % (_fmt_n(rep.totals["roles"]), _fmt_n(rep.waiting), _fmt_n(rep.in_progress),
            _fmt_n(rep.failure), _fmt_n(rep.your_read), _fmt_n(rep.ready), _fmt_n(c["decided"]),
            _fmt_n(c["removed"]), _fmt_n(c["gone"]), _fmt_n(c["ended"]), _fmt_n(rep.unclassified)))
+    if rep.held_failures:
+        rep.conservation_line += " + HELD %s" % _fmt_n(rep.held_failures)
     if rep.folded:
         rep.conservation_line += " (+ %s folded duplicates)" % _fmt_n(rep.folded)
     lines = []
@@ -1598,6 +1874,8 @@ def _compose(rep, ctx):
         lines.append("Legacy backlog: %s%s" % (_fmt_n(rep.legacy),
                                                " (oldest %dd)" % rep.legacy_oldest
                                                if rep.legacy_oldest is not None else ""))
+    if held_seg:
+        lines.append(held_seg)
     if rep.unclassified:
         lines.append("UNCLASSIFIED %s: no stage rule matches these rows" % _fmt_n(rep.unclassified))
     if rep.mismatch:
@@ -1828,6 +2106,8 @@ def _cmd_close(args, root):
             return 3 if left else 0
         _record_close(root, args.run, res, now, by=None)
     print(res.summary_line(res.waiting_oldest))
+    for ln in res.count_lines():
+        print(ln)
     for oid, cause in sorted(res.left.items()):
         print("  LEFT %s: %s — %s" % (oid, cause, CAUSE_MEANING.get(cause, "")))
     return 3 if res.left else 0

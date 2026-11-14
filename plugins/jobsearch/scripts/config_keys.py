@@ -729,6 +729,26 @@ _METADATA[SEARCH_WARM_LOOKUP_DAYS] = (
     "days a company reads 'looked, none found' after you record that you looked for a person there "
     "and found nobody (record.py warm-lookup); after that the lookup is owed again (dev #751)")
 
+# ── the opt-in posting fetch (dev #840 / public #181; jobsearch 0.85.0; design-hidden-pane-reads.md section 3.7, 16) ──
+# `search.posting_fetch` -- `on` | `off`. OFF UNLESS THE USER TURNS IT ON (owner ruling D2, 2026-11-13): when `on`,
+# `record.py read-batch --fallback` reads the public logged-out posting of a LinkedIn role whose browser read could not
+# happen on this run. Absent means `off`, and NO migration and NO default ever writes it: only the user's own
+# `posting_fetch.py --set on` does, and that prints the terms before it writes anything and adds the sandbox host or
+# writes nothing. The registered default is therefore `off`, asserted by a test, and the 0.85.0 migration leaves the key
+# absent. It is a user decision about automated access to a site whose terms restrict it (LinkedIn User Agreement
+# section 8.2), not a tuning knob.
+SEARCH_POSTING_FETCH = "search.posting_fetch"
+SEARCH_POSTING_FETCH_DEFAULT = "off"
+SEARCH_POSTING_FETCH_VALUES = ("on", "off")
+
+READER_KEYS = READER_KEYS | frozenset({SEARCH_POSTING_FETCH})
+
+_METADATA[SEARCH_POSTING_FETCH] = (
+    SEARCH_POSTING_FETCH_DEFAULT, "enum", SEARCH_POSTING_FETCH_VALUES,
+    "whether a LinkedIn role the Browser pane could not read is read from LinkedIn's public posting page instead "
+    "(automated access that LinkedIn User Agreement section 8.2 restricts; off unless you turn it on). Set it only "
+    "with `posting_fetch.py --set on|off`, which prints the terms first and allows the sandbox host (dev #840)")
+
 # What `migrate.m_0_70_0_location_screen_config_keys` seeds where absent: (path to the section, key,
 # default) -- one place, so the migration and the registry cannot name two different sets.
 LOCATION_SCREEN_SEEDED = (

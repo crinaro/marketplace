@@ -216,7 +216,7 @@ from _root import (profile_root, is_tracked_fixture, transcript_stash_path, is_u
 
 JOURNAL = os.path.join("data", "runs.jsonl")
 EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swept", "probe",
-         "triaged", "dispatch", "pass", "roles", "feeds", "drain", "mail-status")
+         "triaged", "dispatch", "pass", "roles", "feeds", "drain", "mail-status", "readmit")
 
 # dev #751 (sourcing-feeds; design §3.6 as amended by review B1/B3/B6) -- the company feed poller's
 # failure vocabulary, CLOSED and validated by `record_feeds`: a code, not a sentence, each mapped to
@@ -588,9 +588,9 @@ def read(root):
                 if rec.get("event") not in EVENTS:
                     raise JournalError("%s line %d has unknown event %r"
                                        % (JOURNAL, n, rec.get("event")))
-                if rec.get("event") in ("drain", "mail-status"):
+                if rec.get("event") in ("drain", "mail-status", "readmit"):
                     try:
-                        (_check_drain_row if rec["event"] == "drain" else _check_mail_status_row)(rec)
+                        _ROW_CHECKS[rec["event"]](rec)
                     except JournalError as e:
                         raise JournalError("%s line %d %s row: %s" % (JOURNAL, n, rec["event"], e))
                 if rec.get("event") == "dispatch":
@@ -1821,8 +1821,23 @@ CAPACITY_REASONS = ("no-render-route", "time-bound")
 DRAIN_RUN_CAUSES = ("run-died", "cause-not-recorded", "not-dispatched", "deadline-reached")
 DRAIN_ROLE_CAUSES = ("agent-returned-nothing", "capture-refused", "challenge", "render-failed",
                      "surface-cannot-read", "site-not-allowed")
-DRAIN_CLOSE_CAUSES = DRAIN_RUN_CAUSES + DRAIN_ROLE_CAUSES
-DRAIN_CLASSES = ("retry", "returned", "legacy", "new")
+# 0.85.0 (dev #839 / public #182, dev #840 / public #181; design-hidden-pane-reads.md sections 7.1, 10): a third cause
+# class. The page was never read (the Browser pane was hidden, or the reader's tab stayed in the background), so the
+# cause is neither the run's fault nor the role's: it breaks both retry-stop chains and counts toward neither.
+DRAIN_ENV_CAUSES = ("pane-hidden",)
+DRAIN_CLOSE_CAUSES = DRAIN_RUN_CAUSES + DRAIN_ROLE_CAUSES + DRAIN_ENV_CAUSES
+# The admission classes. `held` (0.85.0) is a role whose read could not happen for an ENVIRONMENT cause: it waits
+# behind retry, returned and legacy, and new roles keep their reserved share ahead of it. The 0.84.0 reader's key set
+# is the first four: a stored `admitted_by_class` carries EITHER those four OR those plus `held`, and 0.85.0 WRITES
+# `held` ONLY WHEN IT IS NON-ZERO (a journal that never held a role stays readable by 0.84.0).
+DRAIN_CLASSES = ("retry", "returned", "legacy", "held", "new")
+DRAIN_CLASSES_084 = ("retry", "returned", "legacy", "new")
+# ⚠️ ROLLBACK RISK, STATED (0.85.0): an engine older than 0.85.0 raises on any journal holding a `held` admission
+# class, a `readmit` event or an environment-class close cause (`read()` refuses them), so after one run on this
+# version an older version cannot read this profile's journal. It is the 0.82.0 cutover's accepted behaviour (the
+# older machine "stops at the journal read"); `lifecycle.process_report`'s `ENGINE SKEW` line shows it on the newer
+# machine. The break starts at the FIRST `held` admission, environment close or `readmit` event, not at upgrade.
+# The 0.85.0 release note says: upgrade every machine that shares the profile.
 RENDER_ROUTES = ("yes", "no")
 DRAIN_PLANNED_FIELDS = ("intake", "capacity", "render_route", "attended", "admitted", "waiting",
                         "retry_stopped", "fanout", "solo", "fetch_calls", "reserved_new",
@@ -1885,10 +1900,10 @@ def _check_drain_row(rec):
         if not _is_int(rec["fanout"], 1) or not _is_int(rec["fetch_calls"]) or not _is_int(rec["reserved_new"]):
             raise JournalError("drain planned fanout/fetch_calls/reserved_new are not non-negative integers")
         byc = rec["admitted_by_class"]
-        if (not isinstance(byc, dict) or set(byc) != set(DRAIN_CLASSES)
+        if (not isinstance(byc, dict) or set(byc) not in (set(DRAIN_CLASSES), set(DRAIN_CLASSES_084))
                 or any(not _is_int(v) for v in byc.values())):
-            raise JournalError("drain planned admitted_by_class must be {%s: n} -- got %r"
-                               % (", ".join(DRAIN_CLASSES), byc))
+            raise JournalError("drain planned admitted_by_class must be {%s: n} (`held` is optional: a missing "
+                               "one reads as 0) -- got %r" % (", ".join(DRAIN_CLASSES_084), byc))
         if sum(byc.values()) > rec["capacity"]:
             raise JournalError("drain planned admits %d roles with capacity %d" % (sum(byc.values()), rec["capacity"]))
         ex = rec["excluded_open"]
@@ -1955,6 +1970,8 @@ def record_drain(root, run_id, phase, *, intake=None, capacity=None, capacity_re
     run went silent past the window and then came back); `lifecycle.closed_event` reads the own close
     first. A close needs the run to have a plan."""
     at = at or now_iso()
+    if isinstance(admitted_by_class, dict) and admitted_by_class.get("held") == 0:
+        admitted_by_class = {k: v for k, v in admitted_by_class.items() if k != "held"}     # 0.85.0: held only when > 0
     rec = {"event": "drain", "phase": phase, "run_id": run_id, "at": at}
     planned = dict(intake=intake, capacity=capacity, render_route=render_route, attended=attended,
                    admitted=admitted, waiting=waiting, retry_stopped=retry_stopped, fanout=fanout,
@@ -1993,6 +2010,51 @@ def record_drain(root, run_id, phase, *, intake=None, capacity=None, capacity_re
     return append(root, rec)
 
 
+# jobsearch 0.85.0 (dev #840 / public #181; design-hidden-pane-reads.md sections 9, 10) -- the `readmit` event: roles a
+# migration put back into intake because their stop was counted under rules that did not know the cause. One
+# event, appended once by `record_readmit` (the ONLY writer), naming the role ids. `lifecycle.Ctx.working()` drops
+# every admission planned at or before it for those ids; it reads two events of the same `by` as ONE (the union of
+# the ids, at the earliest `at`), so two machines that each ran the migration before syncing cannot re-admit twice.
+READMIT_FIELDS = ("event", "at", "by", "cause", "ids")
+_READMIT_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
+
+
+def _check_readmit_row(rec):
+    """The shape of a `readmit` event, for the writer and the reader alike. Raises `JournalError`."""
+    unknown = sorted(set(rec) - set(READMIT_FIELDS))
+    missing = [k for k in READMIT_FIELDS if k not in rec]
+    if unknown:
+        raise JournalError("readmit has unknown field(s) %s" % ", ".join(unknown))
+    if missing:
+        raise JournalError("readmit is missing field(s) %s" % ", ".join(missing))
+    at = rec["at"]
+    if not isinstance(at, str) or not _READMIT_AT_RE.match(at):
+        raise JournalError("readmit at=%r is not an ISO date and time" % (at,))
+    try:
+        datetime.datetime.fromisoformat(at)
+    except ValueError:
+        raise JournalError("readmit at=%r is not a real date and time" % (at,))
+    by = rec["by"]
+    if not isinstance(by, str) or not by or re.search(r"\s", by):
+        raise JournalError("readmit by=%r is not a non-empty name without whitespace" % (by,))
+    if rec["cause"] not in DRAIN_ROLE_CAUSES:
+        raise JournalError("readmit cause=%r is not a role-class cause (%s)"
+                           % (rec["cause"], ", ".join(DRAIN_ROLE_CAUSES)))
+    if not isinstance(rec["ids"], list) or not rec["ids"]:
+        raise JournalError("readmit ids=%r must be a non-empty list: a re-admit of nothing is not an event"
+                           % (rec["ids"],))
+    _id_list("ids", rec["ids"], what="readmit")
+
+
+def record_readmit(root, ids, by, cause, at=None):
+    """dev #840 / public #181 -- the ONE writer of a `readmit` event: `{event, at, by, cause, ids}`. `cause` must
+    be a role-class cause and `ids` non-empty and distinct; nothing is appended on a refusal. Returns the row."""
+    rec = {"event": "readmit", "at": at or now_iso(), "by": by, "cause": cause,
+           "ids": list(ids) if isinstance(ids, (list, tuple)) else ids}
+    _check_readmit_row(rec)
+    return append(root, rec)
+
+
 MAIL_CLASSES = ("ats-status", "human", "digest", "noise")
 MAIL_UNMATCHED_CAP = 200
 
@@ -2022,6 +2084,10 @@ def _check_mail_status_row(rec):
         raise JournalError("mail-status: %d unmatched but only %d ats-status messages -- an unmatched "
                            "message is an ats-status one that matched no application"
                            % (len(un), counts["ats-status"]))
+
+
+# the event -> its row check, read by `read()` (a row of one of these events is validated when it is read)
+_ROW_CHECKS = {"drain": _check_drain_row, "mail-status": _check_mail_status_row, "readmit": _check_readmit_row}
 
 
 def record_mail_status(root, run_id, mailbox, counts, unmatched, at=None):

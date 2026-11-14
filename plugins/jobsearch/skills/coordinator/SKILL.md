@@ -385,9 +385,10 @@ its own tab; this session renders nothing itself.
    ```bash
    ~/.claude/jobsearch/run record.py read-batch --run <id> --fetch
    ```
-6. `jd-reader` over the residue: chunks of at most 15, at most `fanout` at once, each `solo` id alone, each
-   written first with `journal.py --run <id> --pass reader --phase dispatched --ids <ids>` and closed with
-   `--phase returned --ids <ids>`. Brief it `attended: yes`: the candidate is here to approve a site the pane
+6. `jd-reader` over the residue (the `RESIDUE <opp_id> (render)` lines), in one fronted tab: chunks of at most 15, at most
+   `fanout` at once, each `solo` id alone, each written first with `journal.py --run <id> --pass reader --phase
+   dispatched --ids <the opportunity ids of the chunk, as the RESIDUE lines print them>` and closed with
+   `--phase returned --ids <the same ids>` (an opportunity id, never an `act-` item id: dev #837). Brief it `attended: yes`: the candidate is here to approve a site the pane
    asks about. Then run step 5's call once more: it re-screens what lifecycle puts back at `read`.
 7. Research the keeps: for each admitted role, `~/.claude/jobsearch/run deferred.py --add-research <opp_id>`
    is the gate (exit 0: research it; exit 2: refused, with the reason). Dispatch `opportunity-researcher`

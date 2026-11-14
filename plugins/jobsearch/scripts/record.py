@@ -86,9 +86,23 @@ Usage:
                                               # card -> role, two phases, one write per store (0.82.0, dev #820)
     python3 scripts/record.py read-jd <opp_id> --run <id> --url <u|-> --via render|fetch|feed|ats-api|candidate
                                   --pay none|stated:<range> --setting "<text>" --location "<text|?>" --evidence "<quote>"
+                                  [--body-sha1 <sha1>]   # --via fetch: the reader's read of a saved body (0.85.0, dev #838 / public #183)
     python3 scripts/record.py read-failed <opp_id> --run <id> --url <u|-> --via render --outcome <outcome> --evidence "<text>"
+                                  --page-result chars=<N>|error=<text> [--pane "<tabs_context line>" --probe '<json>']
+                                              # 0.85.0 (dev #838 / public #183): no page outcome without a page. `--page-result` is
+                                              # required under `--via render` (not for no-url / manual-board / site-not-allowed),
+                                              # and `render-failed` also needs --pane and --probe and is refused when either is hidden
     python3 scripts/record.py read-batch --run <id> --fetch [--deadline-s N] [--check]
-                                              # read-jd / read-failed / read-batch are the ONLY writers of `jd_read`
+                                              # 0.85.0: never a GET to a LinkedIn address (RESIDUE ... (render): browser-first)
+    python3 scripts/record.py read-batch --run <id> --fallback [--ids <opp id> ...] [--deadline-s N] [--check]
+                                              # 0.85.0 (dev #840 / public #181): the opt-in logged-out posting read of a
+                                              # LinkedIn role whose browser read could not happen (posting_fetch.py; the key
+                                              # `search.posting_fetch` is off unless `posting_fetch.py --set on` turned it on)
+    python3 scripts/record.py not-attempted <opp_id> [<opp_id> ...] --run <id> --via render --reason pane-hidden
+                                  --pane "<the tabs_context line>" --tab-active yes|no --evidence "<the status line>"
+                                              # 0.85.0 (dev #839 / public #182): the page was NEVER READ because the Browser
+                                              # pane was hidden or the reader's tab stayed in the background. ALL ids or none.
+                                              # read-jd / read-failed / not-attempted / read-batch are the ONLY writers of `jd_read`
     python3 scripts/record.py screened <opp_id>            # store the minimal screen it computes
     python3 scripts/record.py lean <opp_id> --lean pursue|pass|ask --line "<one line>" [--jd-file P]
     python3 scripts/record.py listed-pay <opp_id> --none-shown | --stated R[;R] | --estimate R[;R]
@@ -239,7 +253,11 @@ OPS = ("create", "set", "set-in", "append", "show", "fields",
        # the shared mutation chain (one role, one attempt: the lock, the validator, the rollback and --dry-run all apply);
        # `capture-batch` and `read-batch` are early-return verbs writing OPPORTUNITIES (and COMPANIES, and the append-only
        # queue and journal) in one locked, validated, rollback-verified transaction, `--dry-run` being `--check`.
-       "read-jd", "read-failed", "capture-batch", "read-batch")
+       "read-jd", "read-failed", "capture-batch", "read-batch",
+       # jobsearch 0.85.0 (dev #839 / public #182, dev #840 / public #181) -- record that a browser read could not HAPPEN (the
+       # Browser pane was hidden, or the reader's tab stayed in the background): several ids in one call, ALL or none, an
+       # early-return verb writing OPPORTUNITIES in one locked, validated, rollback-verified transaction.
+       "not-attempted")
 SOURCING_OPS = ("screened", "lean", "listed-pay", "posted")
 LOCK = os.path.join(ENGINE_SCRIPTS, "runlock.py")
 # ⭐ ENGINE, not profile — the data MODEL ships with the code; the DATA belongs to the user.
@@ -708,7 +726,7 @@ def verb_owned_refusal(op, store, before_row, after_row):
 
       * `employer_posting` -- written only by `record.py posting --from-file` and the capture of a company-feed role
         (dev #776 / public #166);
-      * `jd_read` -- written only by `record.py read-jd`, `read-failed` and `read-batch --fetch` (dev #820 / public
+      * `jd_read` -- written only by `record.py read-jd`, `read-failed`, `not-attempted` and `read-batch --fetch` (dev #820 / public
         #175, design section 4.2): a read that cannot be told from a typed one is the defect the field exists to end.
 
     Called at EVERY call site of `introduced_row_violations` (the four shared ones in `cmd_board_sighting` and `main`,
@@ -726,7 +744,7 @@ def verb_owned_refusal(op, store, before_row, after_row):
                    "write the EMPLOYER-POSTING lines it reads) and by the capture of a company-feed role; `%s` cannot "
                    "change it, and --force does not lift this" % (_POSTING_FIELD, op))
     if not _JD_READ_WRITER[0] and _jd_read_keys(before_row) != _jd_read_keys(after_row):
-        out.append("%s is written only by `record.py read-jd`, `read-failed` and `read-batch --fetch` (a read is "
+        out.append("%s is written only by `record.py read-jd`, `read-failed`, `not-attempted` and `read-batch --fetch` (a read is "
                    "recorded with its evidence by the verb that made it); `%s` cannot change it, and --force does "
                    "not lift this" % (_JD_READ_FIELD, op))
     return out
@@ -3806,7 +3824,7 @@ def _sourcing_mutation(args, rec):
 # ====================================================================================================================
 
 JD_READ_OPS = ("read-jd", "read-failed")
-BATCH_OPS = ("capture-batch", "read-batch")
+BATCH_OPS = ("capture-batch", "read-batch", "not-attempted")
 CAPTURE_DEADLINE_S_DEFAULT = 120
 FETCH_DEADLINE_S_DEFAULT = 240
 EXIT_ITEM_REFUSED = 4                  # capture-batch: at least one item was refused (the others still landed)
@@ -4017,10 +4035,13 @@ def jd_location(old, setting, place, provenance):
 
 JD_READ_USAGE = ("read-jd <opp> --run <id> --url <u|-> --via fetch|render|feed|ats-api|candidate "
                  "--pay none|stated:<range>|estimate:<range> --setting \"<verbatim|none stated>\" "
-                 "--location \"<text|?>\" --evidence \"<1-200 characters>\" [--dry-run] [--already-locked]\n"
+                 "--location \"<text|?>\" --evidence \"<1-200 characters>\" [--body-sha1 <sha1>: required with --via "
+                 "fetch] [--dry-run] [--already-locked]\n"
                  "       read-failed <opp> --run <id> --url <u|-> --via fetch|render|feed|ats-api --outcome "
                  "closed|dead-link|manual-board|no-url|login-wall|challenge|render-failed|surface-cannot-read|"
-                 "site-not-allowed --evidence \"<1-200 characters>\" [--dry-run] [--already-locked]")
+                 "site-not-allowed --evidence \"<1-200 characters>\" [--page-result chars=<N>|error=<text>: required "
+                 "with --via render, except for no-url, manual-board and site-not-allowed] [--pane \"<the tabs_context "
+                 "line>\" --probe '<json>': both required for render-failed] [--dry-run] [--already-locked]")
 
 
 def _jd_read_common(args, rec):
@@ -4048,8 +4069,10 @@ def _jd_read_common(args, rec):
     url = None if raw_url == "-" else raw_url
     if url is not None and _bh.host_of(url) is None:
         raise _Refused("--url must be an http(s) address with a host, or - (got %r)" % raw_url)
-    if url is None and via != "candidate" and args.op == "read-jd":
-        raise _Refused("--url - is only for a candidate read: a read of a posting names the address it read")
+    body_read = args.op == "read-jd" and via == "fetch"      # `--url -` here is checked by `_jd_read_mutation` (needs --body-sha1)
+    if url is None and via != "candidate" and args.op == "read-jd" and not body_read:
+        raise _Refused("--url - is only for a candidate read (or a `--via fetch --body-sha1` read of a saved body, whose "
+                       "address is the one its index entry names): a read of a posting names the address it read")
     evidence = (args.evidence_text or "").strip()
     if not evidence:
         raise _Usage("--evidence is required: 1-200 characters\nusage: " + JD_READ_USAGE)
@@ -4063,6 +4086,155 @@ def _jd_read_common(args, rec):
                            "(ADR-037): record `read-failed --outcome manual-board` instead, or `read-jd --via "
                            "candidate` with what the candidate read" % (url, blocked.get("id"), _bh.host_of(url)))
     return run, url, evidence, via
+
+
+# ---- no page outcome without a page (0.85.0, dev #838 / public #183; design-hidden-pane-reads.md section 6, 16 entry 23) ------
+#
+# #838's failure was INFERENCE: a reader that had read one page recorded `render-failed` for the rest of its chunk, so a role
+# nobody opened was retry-stopped on another role's evidence. The rule (`jd-reader.md`): record a page outcome only for a page
+# you opened and read in this dispatch, by itself. The script cannot prove a number is true; it can refuse to take a page
+# outcome that names no page. PARTIAL, stated: after this, inference needs a FABRICATED figure, which turns a default into an
+# explicit violation of the agent rule. A batch-level copy-paste refusal was considered and rejected (design 6.1: identical
+# challenge pages have identical lengths on honest records).
+#
+#   read-failed --via render --outcome ...      --page-result    --pane      --probe
+#   render-failed                               required         required    required (refused when either says hidden)
+#   closed dead-link login-wall challenge
+#     surface-cannot-read                       required         optional    optional (each stored when given)
+#   no-url manual-board site-not-allowed        exempt           exempt      exempt (no page exists to measure: the pane refused
+#                                                                              the site, the role has no address, or a board's
+#                                                                              terms forbid opening it)
+#
+# `read-batch`'s own failure writes are exempt: they go through `_apply_failed`, not this verb, and carry the status line they
+# measured. A `--via fetch|feed|ats-api` read-failed is not a page the reader rendered, so it asks for none of these.
+
+RENDER_EXEMPT_OUTCOMES = ("no-url", "manual-board", "site-not-allowed")
+_PAGE_RESULT_RE = re.compile(r"^(?:chars=\d+|error=[^\r\n]{1,120})$")
+
+
+def _failed_page_evidence(args, via, outcome):
+    """The extra evidence keys (`page`, `pane`, `probe`) a `read-failed` stores, after the per-page requirement above.
+    `page` is the page result as given, `pane` the PARSED state (never the raw line) and `probe` the verdict
+    `pane_probe.verdict` returned. Raises `_Usage` (exit 2, nothing written) when a required flag is missing or malformed, or
+    when the pane or the probe says hidden for a `render-failed` (a hidden pane is `not-attempted --reason pane-hidden`)."""
+    import pane_probe as _pp
+    on_page = via == "render" and outcome not in RENDER_EXEMPT_OUTCOMES
+    on_render_failed = via == "render" and outcome == "render-failed"
+    extra = {}
+    page = (args.page_result or "").strip()
+    if page:
+        if not _PAGE_RESULT_RE.match(page):
+            raise _Usage("--page-result must be `chars=<N>` (the length of this page's get_page_text result) or `error=<the "
+                         "tool's own error text, 1-120 characters, one line>` (got %r)\nusage: %s" % (page, JD_READ_USAGE))
+        extra["page"] = page
+    elif on_page:
+        raise _Usage("read-failed --via render --outcome %s needs --page-result chars=<N>|error=<text>: no page outcome is "
+                     "recorded for a page that was not opened and read, by itself, in this dispatch. A role you did not open "
+                     "is reported in your hand-back (or, when the pane was hidden, recorded with `record.py not-attempted "
+                     "--reason pane-hidden`), never given another role's outcome\nusage: %s" % (outcome, JD_READ_USAGE))
+    pane = None
+    if args.pane_line is not None and str(args.pane_line).strip():
+        pane = _pp.pane_state(args.pane_line)
+        extra["pane"] = pane
+    elif on_render_failed:
+        raise _Usage("read-failed --outcome render-failed needs --pane \"<the last line of tabs_context>\": the pane state is "
+                     "parsed from the harness's own line\nusage: " + JD_READ_USAGE)
+    verdict = None
+    if args.probe_json is not None and str(args.probe_json).strip():
+        try:
+            parsed = json.loads(args.probe_json)
+        except ValueError:
+            parsed = None                       # an unreadable probe is `no-verdict:probe-error`, never a crash or a guess
+        verdict = _pp.verdict([pane] if pane else [], [parsed])
+        extra["probe"] = verdict
+    elif on_render_failed:
+        raise _Usage("read-failed --outcome render-failed needs --probe '<json>': the result of the frame probe run on this "
+                     "page (pane_probe.PROBE_JS, with this tab's tabId)\nusage: " + JD_READ_USAGE)
+    if on_render_failed and (pane == "hidden" or verdict == "no-verdict:pane-hidden"):
+        raise _Usage("a hidden pane is not a failed render: with the Browser pane hidden (pane line or probe) the page never "
+                     "rendered, which is no evidence about the role. Record `record.py not-attempted <opp_id> ... --run <run id> "
+                     "--via render --reason pane-hidden --pane \"<line>\" --tab-active yes|no --evidence \"<the status line>\"` "
+                     "for this role and every one not yet read, and stop reading in the browser\nusage: " + NOT_ATTEMPTED_USAGE)
+    return extra
+
+
+def _norm_text(text):
+    """Case-folded, whitespace-collapsed text: how a saved body is compared with a quote taken from it."""
+    return " ".join(str(text or "").casefold().split())
+
+
+_FIGURE_RE = re.compile(r"\d+(?:[.,]\d+)*[kK]?")
+
+
+def _figures(text):
+    """The set of numbers in `text`, each normalised (design 5.1, R2-M10): remove `,` and `.` separators and a trailing
+    `k`/`K`, then strip trailing zeros, so `150000`, `150K`, `USD 150,000` and `150.0K` all read `15` and `152.5K` and `152,500`
+    both read `1525`. A number that is all zeros reads `0`."""
+    out = set()
+    for m in _FIGURE_RE.finditer(str(text or "")):
+        digits = re.sub(r"[.,]", "", m.group(0)).rstrip("kK")
+        out.add(digits.rstrip("0") or "0")
+    return out
+
+
+def _fetch_body_read(args, rec, evidence, place):
+    """`(url, extra_evidence)` for `read-jd --via fetch --body-sha1 <sha1>`: the reader's read of a body the fallback saved
+    (`RESIDUE <id> (body)`), from the saved index entry and file under `posting_fetch.state_dir()`. Raises `_Usage` /
+    `_Refused` (nothing written) unless ALL of these hold:
+
+      * the sha1 given matches the index entry for this role AND the file on disk (`posting_fetch.saved_body` re-hashes it);
+      * `--evidence` is a substring of the saved body, or of the title the index holds for it (the body file carries the
+        description only; the title came from the same page), case-folded with whitespace collapsed;
+      * `--location` is `?` (it states none), or such a substring, or equal to the index's `place`;
+      * every figure in `--pay` is found in the body (a NECESSARY condition: it refuses an invented figure without guessing
+        the right reading. PARTIAL: a figure found in the body may still be the wrong one).
+
+    `--url` is `-` (the address the index entry names is used) or exactly that address. `--setting` is the posting's own
+    words and is checked only against what `read-jd` already validates; the closed vocabulary the design hoped for does not
+    exist (INFERRED at design time, CONFIRMED at build: `jd_location` classifies free text), so it stays the reader's word."""
+    import posting_fetch as _pf
+    sha1 = (args.body_sha1 or "").strip().lower()
+    if not re.match(r"^[0-9a-f]{40}$", sha1):
+        raise _Usage("--body-sha1 must be the 40 lowercase hex digits the `RESIDUE <id> (body)` line printed (got %r)\nusage: %s"
+                     % (args.body_sha1, JD_READ_USAGE))
+    sdir = _pf.state_dir()
+    if sdir is None:
+        raise _Refused("read-jd --via fetch reads a body the posting fallback saved, and this machine has no profile state "
+                       "directory to hold one: nothing written")
+    saved = _pf.saved_body(sdir, rec.get("id"))
+    if saved is None:
+        raise _Refused("no saved body for %s (none was fetched, it is older than 7 days, or its file no longer matches its "
+                       "index entry): read-jd --via fetch reads only a body the fallback saved; nothing written" % rec.get("id"))
+    path, entry = saved
+    if entry.get("sha1") != sha1:
+        raise _Refused("--body-sha1 %s is not the saved body's sha1: the file for %s hashes to %s. Pass the sha1 the RESIDUE "
+                       "(body) line printed; nothing written" % (sha1, rec.get("id"), entry.get("sha1")))
+    try:
+        with open(path, encoding="utf-8") as fh:
+            body = fh.read()
+    except (OSError, ValueError) as e:
+        raise _Refused("the saved body cannot be read (%s); nothing written" % e)
+    if _pf._sha1_text(body) != sha1:
+        raise _Refused("the saved body file does not hash to %s; nothing written" % sha1)
+    entry_url = entry.get("url")
+    given_url = (args.listing_url or "").strip()
+    if given_url not in ("", "-") and given_url != entry_url:
+        raise _Refused("--url %r is not the address this body was fetched from (%r): pass --url - to use it; nothing written"
+                       % (given_url, entry_url))
+    hay = _norm_text(body) + " " + _norm_text(entry.get("title"))
+    if _norm_text(evidence) not in hay:
+        raise _Refused("--evidence is not found in the saved body (or its title): quote the posting's own words from the file "
+                       "%s, never from memory; nothing written" % path)
+    if place:
+        if _norm_text(place) not in hay and _norm_text(place) != _norm_text(entry.get("place")):
+            raise _Refused("--location %r is not found in the saved body and is not the place its index entry holds (%r); "
+                           "nothing written" % (place, entry.get("place")))
+    missing = sorted(_figures(args.pay_slot) - _figures(body))
+    if missing:
+        raise _Refused("--pay names figure(s) the saved body does not contain (normalised %s): a pay figure is quoted from the "
+                       "body, never estimated or remembered. Use --pay none if the posting states none; nothing written"
+                       % ", ".join(missing))
+    return entry_url, {"sha1": sha1, "chars": len(body)}
 
 
 def _jd_read_mutation(args, rec):
@@ -4097,8 +4269,13 @@ def _jd_read_mutation(args, rec):
         if outcome not in failed:
             raise _Usage("--outcome must be one of %s (got %r)\nusage: %s"
                          % (", ".join(failed), outcome or None, JD_READ_USAGE))
+        if args.body_sha1:
+            raise _Usage("--body-sha1 belongs to `read-jd --via fetch` (a read of a saved body), not to read-failed\nusage: "
+                         + JD_READ_USAGE)
+        failed_evidence = {"text": evidence}
+        failed_evidence.update(_failed_page_evidence(args, via, outcome))
         try:
-            attempt = _jd.make_attempt(at_iso, run, url, via, outcome, {"text": evidence})
+            attempt = _jd.make_attempt(at_iso, run, url, via, outcome, failed_evidence)
         except _jd.JdReadError as e:
             raise _Refused(str(e))
 
@@ -4107,6 +4284,16 @@ def _jd_read_mutation(args, rec):
         return ("read-failed via %s: %s (%s)" % (via, outcome, _jd.outcome_class(outcome))), apply_failed
 
     # ---- read-jd ----
+    for flag, val in (("--page-result", args.page_result), ("--probe", args.probe_json), ("--pane", args.pane_line)):
+        if val is not None:
+            raise _Usage("%s belongs to `read-failed` (it describes a page that did not render as a posting), not to read-jd\n"
+                         "usage: %s" % (flag, JD_READ_USAGE))
+    if via == "fetch" and not (args.body_sha1 or "").strip():
+        raise _Usage("read-jd --via fetch needs --body-sha1 <sha1>: it records the reader's read of a body the fallback saved "
+                     "(`RESIDUE <id> (body)`), and is refused unless the sha1, the evidence, the location and every --pay "
+                     "figure are found in that saved body\nusage: " + JD_READ_USAGE)
+    if via != "fetch" and (args.body_sha1 or "").strip():
+        raise _Usage("--body-sha1 is only for `read-jd --via fetch` (got --via %s)\nusage: %s" % (via, JD_READ_USAGE))
     if via != "candidate" and not _evidence_names_role(evidence, rec, company):
         raise _Usage("evidence does not name this role: the quote shares no word of three or more letters with "
                      "the title %r or the company %r. A wrong tab is not a read -- record `read-failed --outcome "
@@ -4130,12 +4317,22 @@ def _jd_read_mutation(args, rec):
         place = None
     elif "\n" in place or len(place) > 200:
         raise _Refused("--location is one line of at most 200 characters")
+    read_evidence = {"quote": evidence}
+    body_pay_inferred = False
+    if via == "fetch":
+        url, body_evidence = _fetch_body_read(args, rec, evidence, place)
+        read_evidence.update(body_evidence)
+        if pay.get("state") == "employer-stated":
+            # a figure the reader took out of the saved description's PROSE, not out of JSON-LD: the same shape the fallback's
+            # own scripted read stores (`listing-text`, `inferred_from: description`), so the screen weighs it the same way
+            pay = dict(pay, source="listing-text")
+            body_pay_inferred = True
     engine = _engine_version()
 
     def apply_read(r):
-        _apply_read(r, run=run, url=url, via=via, evidence={"quote": evidence}, pay=pay, setting=setting,
+        _apply_read(r, run=run, url=url, via=via, evidence=dict(read_evidence), pay=pay, setting=setting,
                     place=place, at_iso=at_iso, on=on, engine=engine, profile=_profile_mod().load(),
-                    company=company)
+                    company=company, pay_inferred=body_pay_inferred)
 
     return ("read-jd via %s: location and listed_pay re-read from the posting (provenance %s), screen re-run"
             % (via, provenance)), apply_read
@@ -4774,7 +4971,8 @@ def _capture_batch_locked(args, run, phase, deadline_s, check, t0, stores):
 # admitted capture items) that is at progress stage `captured` or `reading`, oldest first, within `--deadline-s`:
 #   1. the address `board_hosts.jd_read_plan` gives; none -> `read-failed --outcome manual-board` (every address is on a
 #      manual-candidate board) or `no-url`, which settles the role to `your-read`;
-#   2. one GET, with the feed poller's politeness (`feed_poll.MIN_INTERVAL_S` per host, `RETRY_AFTER_CAP_S` on a 429/503);
+#   2. one GET, with the feed poller's politeness (`feed_poll.MIN_INTERVAL_S` per host, `RETRY_AFTER_CAP_S` on a 429/503) --
+#      NEVER to a LinkedIn address (0.85.0): such a role is `RESIDUE <id> (render): browser-first`, key on or off;
 #   3. `feed_poll.parse_jobposting`: pay, setting and place all derivable -> a `read` attempt `via fetch` (evidence: the
 #      sha1 and length of the body fetched HERE, never a model's word); `expired` -> `closed`; 404/410 -> `dead-link`;
 #      401/403 -> `login-wall` (the status line as evidence); anything else -> NO attempt, and the role is in the render
@@ -4783,7 +4981,12 @@ def _capture_batch_locked(args, run, phase, deadline_s, check, t0, stores):
 # fetch. The network is touched BEFORE the lock is taken; the lock is held only for the one write of the opportunities
 # store, which re-reads the rows and applies each result only to a role that is still unread.
 
-READ_BATCH_USAGE = "read-batch --run <id> --fetch [--deadline-s N] [--check] [--already-locked]"
+READ_BATCH_USAGE = ("read-batch --run <id> --fetch [--deadline-s N] [--check] [--already-locked]\n"
+                    "       read-batch --run <id> --fallback [--ids <opp id> ...] [--deadline-s N] [--check] "
+                    "[--already-locked]")
+
+# The host the first pass never GETs (0.85.0). `board_hosts.host_matches` is the one comparison, so a sub-domain counts.
+LINKEDIN_HOST = "linkedin.com"
 
 # Seams (tests replace them; the shipped verb never does): `_FETCH(url) -> (status, headers, body)` stands in for the
 # network, `_CLOCK` (an object with `now()` and `sleep(s)`) for the wall clock and the politeness sleeps.
@@ -4839,6 +5042,12 @@ def _fetch_one(row, company, channels, run_date, last_by_host, clock):
                                       % (b["channel_id"], b["host"])}
         return "failed", {"outcome": "no-url", "url": None, "text": "the role carries no address to read"}
     url = plan["url"]
+    if _bh.host_matches(_bh.host_of(url), LINKEDIN_HOST):
+        # 0.85.0 (dev #840 / public #181, owner ruling "browser first"): the first pass NEVER sends a GET to a LinkedIn
+        # address, the key on or off. Up to 0.84.0 it made one plain GET here, read no JSON-LD and left the role in the
+        # render residue; the browser reads such a role first, and `read-batch --fallback` (below) is the only script
+        # that reads LinkedIn, only for an opted-in user and only after the browser read could not happen.
+        return "residue", "browser-first"
     try:
         status, headers, body = _polite_get(url, last_by_host, clock)
     except _fp.FetchError as e:
@@ -4922,13 +5131,15 @@ def _apply_failed(r, *, run, url, via, outcome, text, at_iso):
 def cmd_read_batch(args):
     """`record.py read-batch --run <id> --fetch` -- see the section comment above. Exit 0 (a residue and a deadline are
     not faults: the next steps take them), 1 when a store cannot be read or the write was rolled back, 2 on usage."""
-    if args.rid or args.rest or not args.fetch:
+    if args.rid or args.rest or bool(args.fetch) == bool(args.fallback) or (args.ids_arg and not args.fallback):
         print("usage: " + READ_BATCH_USAGE)
         return 2
     run = (args.run_id_arg or "").strip()
     if not run or re.search(r"\s", run):
         print("⛔ REFUSED — --run <run id> is required (no whitespace).\nusage: " + READ_BATCH_USAGE)
         return 2
+    if args.fallback:
+        return cmd_read_fallback(args, run)
     deadline_s = FETCH_DEADLINE_S_DEFAULT if args.deadline_s is None else args.deadline_s
     if deadline_s < 0:
         print("⛔ REFUSED — --deadline-s must be 0 or more.")
@@ -5088,6 +5299,413 @@ def cmd_read_batch(args):
                                 len(residue), len(unreached)))
     print("deadline-left %d" % len(unreached))
     return rc_out
+
+
+# ---- read-batch --fallback: the opt-in posting fetch (0.85.0; design-hidden-pane-reads.md section 3, 16) --------------------
+#
+# `record.py read-batch --run <id> --fallback [--ids <opp id> ...] [--deadline-s N] [--check] [--already-locked]`
+#
+# The script is `posting_fetch.py` (imported lazily, here only): it owns the request, the parse, the pacing, the backoff,
+# the cap, the host breaker and the files. THIS verb owns the decisions that read the stores: which roles are eligible,
+# and the one locked write. It runs from `jd-reader`, after the reader's last role, and again while it prints `MORE`.
+#
+#   1. the key: `search.posting_fetch` not `on` (absent is off) prints `FALLBACK: off` and exits 0 -- no GET, nothing written;
+#      with no profile state directory it prints `FALLBACK: off (no profile state directory)` and exits 0 the same way;
+#   2. eligible = admitted in this run, not read, its LATEST attempt in this run `pane-hidden` or `render-failed` via
+#      render, a LinkedIn job-view address, and not already tried in this run. `--ids` only narrows this set;
+#   3. a saved body younger than 7 days is reused with no GET; otherwise one GET (`posting_fetch.Session`);
+#   4. only `read` and `closed` are recorded (through `_apply_read` / `_apply_failed`, via `fetch`). A role the script
+#      cannot settle is printed `RESIDUE <id> (body): <reason> file=<path> sha1=<sha1>` for the reader; every other result
+#      (429, any other HTTP status, a shape change, a wrong page, the cap, a closed host) records NOTHING.
+
+def _fallback_names(row, company):
+    return _words(row.get("title")) | _words((company or {}).get("name")) | _words(row.get("company_id"))
+
+
+def _fallback_ineligible(row, run, sess):
+    """`(job_id, None)` when `row` may be fetched, else `(None, why)`. Decided from the stored attempts, never the reader's word."""
+    import jd_read as _jd
+    import board_hosts as _bh
+    import posting_fetch as _pf
+    if _has_read(row):
+        return None, "already read"
+    try:
+        in_run = [a for a in _jd.attempts(row) if a["run"] == run]
+    except _jd.JdReadError as e:
+        return None, "its jd_read cannot be read (%s)" % e
+    latest = _jd.latest_of(in_run)
+    if latest is None:
+        return None, "no attempt in this run: the browser read comes first"
+    if latest["via"] != "render" or latest["outcome"] not in FALLBACK_OUTCOMES:
+        return None, "its latest attempt in this run is %s via %s, not %s" % (
+            latest["outcome"], latest["via"], " or ".join(FALLBACK_OUTCOMES))
+    job_id = next((j for j in (_pf.posting_id(u) for u in _bh.read_urls(row)) if j), None)
+    if job_id is None:
+        return None, "no LinkedIn job-view address"
+    if sess is not None and sess.tried(row["id"]):
+        return None, "already tried in this run"
+    return job_id, None
+
+
+FALLBACK_OUTCOMES = ("pane-hidden", "render-failed")
+
+
+def _fallback_one(sess, sdir, row, job_id, run, company):
+    """What the fallback decided for one eligible role: a dict with `kind` in read | closed | body | wrong-page | refused |
+    rate-limited | http | redirected | unreachable | capped | host-closed. Touches no store. A saved body is reused."""
+    import posting_fetch as _pf
+    import places as _places
+    oid = row["id"]
+    saved = _pf.saved_body(sdir, oid)
+    if saved is not None:
+        path, entry = saved
+        sess.mark_tried(oid)
+        return {"kind": "body", "reason": entry.get("reason") or "saved-body", "path": path, "sha1": entry["sha1"]}
+    res = sess.get(job_id)
+    if res.kind != "ok":
+        if res.kind not in ("capped", "host-closed"):
+            sess.mark_tried(oid)                               # a role the host answered badly is not asked again this run
+        return {"kind": res.kind, "status": res.status, "detail": res.detail}
+    sess.mark_tried(oid)
+    try:
+        parsed = _pf.parse(res.body)
+    except _pf.PostingRefusal as e:
+        return {"kind": "refused", "detail": e.code}
+    countries = ["United States"] if _places.parse_place(parsed["place"]) else []
+    d = _pf.decide(parsed, _fallback_names(row, company), countries)
+    url = _pf.endpoint_url(job_id)
+    sha1, chars = hashlib.sha1(res.body).hexdigest(), len(res.body)
+    if d["kind"] == "wrong-page":
+        return {"kind": "wrong-page"}
+    if d["kind"] == "closed":
+        return {"kind": "closed", "url": url, "sha1": sha1, "chars": chars}
+    if d["kind"] == "read":
+        return {"kind": "read", "url": url, "sha1": sha1, "chars": chars, "pay": d["pay"], "setting": d["setting"],
+                "place": d["place"]}
+    path, body_sha1 = _pf.save_body(sdir, oid, run, url, parsed, d["reason"])
+    return {"kind": "body", "reason": d["reason"], "path": path, "sha1": body_sha1}
+
+
+def cmd_read_fallback(args, run):
+    """`record.py read-batch --run <id> --fallback` -- see the section comment above. Exit 0 (every non-recording answer is
+    a printed line, not a fault), 1 when a store cannot be read or the write was rolled back, 2 on usage."""
+    import posting_fetch as _pf
+    import lifecycle as _lc
+    deadline_s = FETCH_DEADLINE_S_DEFAULT if args.deadline_s is None else args.deadline_s
+    if deadline_s < 0:
+        print("⛔ REFUSED — --deadline-s must be 0 or more.")
+        return 2
+    check = bool(args.check or args.dry_run)
+    on, why = _pf.key_state(ROOT)
+    if not on:
+        print("FALLBACK: off" + ((" (%s)" % why) if why else ""))
+        return 0
+    sdir = _pf.state_dir()
+    if sdir is None:
+        print("FALLBACK: off (no profile state directory)")
+        return 0
+    try:
+        data = _lc.load_data(ROOT)
+        planned = None
+        for r in data["journal"]:
+            if (r.get("event") == "drain" and r.get("phase") == "planned" and r.get("run_id") == run
+                    and not r.get("on_behalf_of")):
+                planned = r
+    except (OSError, ValueError, _lc.LifecycleError) as e:
+        print("⛔ REFUSED — a store cannot be read (%s); nothing written." % e)
+        return 1
+    if planned is None:
+        print("⛔ REFUSED — run %r has no `drain planned` event: run `lifecycle.py --drain-plan --run %s "
+              "--render-route yes|no` first; nothing written." % (run, run))
+        return 1
+    adm = planned.get("admitted") or {}
+    adm_opps, adm_items = set(adm.get("opps") or []), set(adm.get("items") or [])
+    by_id = {o.get("id"): o for o in data["opportunities"]}
+    companies = {c.get("id"): c for c in data["companies"]}
+
+    def admitted(o):
+        cap = o.get("capture") if isinstance(o.get("capture"), dict) else {}
+        return o.get("id") in adm_opps or cap.get("item") in adm_items
+
+    sess = None if check else _pf.Session(sdir, run)
+    asked = list(dict.fromkeys(args.ids_arg)) if args.ids_arg else None
+    pool = ([by_id.get(i) or i for i in asked] if asked is not None
+            else sorted((o for o in data["opportunities"] if admitted(o)),
+                        key=lambda o: (_lc.first_seen(o) or datetime.date.max, str(o.get("id")))))
+    import collections
+    eligible, counts = [], collections.Counter()
+    for o in pool:
+        if isinstance(o, str):
+            print("FALLBACK %s: not eligible (no such role)" % o)
+            continue
+        if not admitted(o):
+            print("FALLBACK %s: not eligible (it was not admitted in this run)" % o["id"])
+            continue
+        job_id, why = _fallback_ineligible(o, run, sess)
+        if why:
+            print("FALLBACK %s: not eligible (%s)" % (o["id"], why))
+            continue
+        eligible.append((o, job_id))
+    if check:
+        print("read-batch --fallback --check: %d eligible role(s); nothing fetched, nothing written." % len(eligible))
+        return 0
+    _pf.prune(sdir, lambda oid: bool(by_id.get(oid)) and _has_read(by_id[oid]))
+    clock, t0 = _pf._clock(), _pf._clock().now()
+    results, more = [], False
+    for o, job_id in eligible:
+        if results and deadline_s - (clock.now() - t0) < _pf.ROLE_WORST_CASE_S:
+            more = True                                         # always one role per call, so a small deadline still moves
+            break
+        out = _fallback_one(sess, sdir, o, job_id, run, companies.get(o.get("company_id")))
+        out["id"] = o["id"]
+        results.append(out)
+        k = out["kind"]
+        if k == "body":
+            print("RESIDUE %s (body): %s file=%s sha1=%s" % (o["id"], out["reason"], out["path"], out["sha1"]))
+            counts["body"] += 1
+        elif k in ("read", "closed"):
+            pass                                                # printed after the write, which can still refuse
+        else:
+            counts[{"rate-limited": "rate-limited", "http": "http", "refused": "refused", "wrong-page": "refused",
+                    "capped": "capped"}.get(k, "host-closed")] += 1
+            what = {"http": "http-%s" % out.get("status"), "refused": out.get("detail"),
+                    "capped": "fetch-capped", "unreachable": "unreachable (%s)" % out.get("detail")}.get(k, k)
+            print("FALLBACK %s: %s" % (o["id"], what))
+    rc = 0
+    writes = [r for r in results if r["kind"] in ("read", "closed")]
+    if writes:
+        rc = _apply_fallback_writes(args, run, data, writes, counts, _now())
+    nothing = sum(counts[k] for k in ("rate-limited", "http", "refused", "capped", "host-closed"))
+    print("FALLBACK DONE: read %d, closed %d, body %d, nothing recorded %d (rate-limited %d, http %d, refused %d, "
+          "capped %d, host closed %d)" % (counts["read"], counts["closed"], counts["body"], nothing,
+                                          counts["rate-limited"], counts["http"], counts["refused"], counts["capped"],
+                                          counts["host-closed"]))
+    if more:
+        print("MORE")
+    return rc
+
+
+def _apply_fallback_writes(args, run, data, writes, counts, now):
+    """The ONE locked write of the fallback: `read` and `closed` attempts, each applied only to a role that is still
+    unread when the lock is held. Mirrors `cmd_read_batch`'s write (same checks, same rollback). Returns the exit code."""
+    import jd_read as _jd
+    import deferred as _deferred
+    if args.already_locked:
+        if not lock_is_held():
+            print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
+            return 1
+    else:
+        try:
+            take_lock("record.py read-batch --run %s --fallback" % run, wait=args.wait)
+        except LockError as e:
+            print("  REFUSED — %s" % e)
+            return 1
+    try:
+        profile = _profile_mod().load()
+        opps = load("opportunities")
+        applications = _load_or_empty("applications")
+        channels = _load_or_empty("channels")
+        by_id = {o.get("id"): o for o in opps}
+        before, landed = {}, []
+        engine, at_iso, on = _engine_version(), now.isoformat(), now.date()
+        for p in writes:
+            oid = p["id"]
+            row = by_id.get(oid)
+            if row is None or _has_read(row):
+                print("FALLBACK %s: not recorded (a read landed while the network was out)" % oid)
+                continue
+            pre_row = json.loads(json.dumps(row))
+            before.setdefault(oid, pre_row)
+            company = next((c for c in data["companies"] if c.get("id") == row.get("company_id")), None)
+            try:
+                if p["kind"] == "closed":
+                    _apply_failed(row, run=run, url=p["url"], via="fetch", outcome="closed", at_iso=at_iso,
+                                  text="the guest posting says it is no longer accepting applications (sha1 %s, %d chars)"
+                                       % (p["sha1"][:12], p["chars"]))
+                else:
+                    lp, why = _deferred.parse_pay_slot(p["pay"])
+                    if why:
+                        raise KeyError(why)
+                    lp = dict(lp, captured_on=on.isoformat(), provenance="jd")
+                    _apply_read(row, run=run, url=p["url"], via="fetch",
+                                evidence={"sha1": p["sha1"], "chars": p["chars"]}, pay=lp, setting=p["setting"],
+                                place=p["place"], at_iso=at_iso, on=on, engine=engine, profile=profile,
+                                company=company, all_opps=opps, applications=applications, channels=channels,
+                                pay_inferred=True)
+                landed.append(p)
+            except KeyError as e:
+                before.pop(oid, None)
+                row.clear()
+                row.update(pre_row)                             # a refused result leaves the row exactly as it was
+                print("FALLBACK %s: not recorded: %s" % (oid, " ".join(str(e).split())[:120]))
+        changed = [i for i in before if by_id[i] != before[i]]
+        bad = []
+        for oid in changed:
+            bad += _row_checks("read-batch", before[oid], by_id[oid], jd_read_ok=True)
+        if bad:
+            print("⛔ REFUSED — " + "; ".join(bad) + " (nothing was written)")
+            return 1
+        if changed:
+            snap = snapshot("opportunities")
+            pre_problems = validate()[3]
+            save_atomic("opportunities", opps)
+            rc, out, err, post_problems = validate()
+            added = new_problems(pre_problems, post_problems)
+            if rc != 0 and (added is None or added):
+                ok = restore("opportunities", snap)
+                print("⛔ the write left the store invalid and was %s."
+                      % ("ROLLED BACK (byte-identical)" if ok else
+                         "NOT VERIFIABLY ROLLED BACK -- restore opportunities.jsonl from git"))
+                print("  " + "\n  ".join(added if added else _diagnostic_lines(rc, out, err)))
+                return 1
+    finally:
+        if not args.already_locked:
+            release_lock()
+    for p in landed:
+        counts[p["kind"]] += 1
+        print("FALLBACK %s: %s%s" % (p["id"], p["kind"], (" (pay %s)" % p["pay"]) if p["kind"] == "read" else ""))
+    return 0
+
+
+# ---- not-attempted: a browser read that could not HAPPEN (0.85.0; design-hidden-pane-reads.md section 5.4) ------------
+#
+# `record.py not-attempted <opp_id> [<opp_id> ...] --run <id> --via render --reason pane-hidden --pane "<tabs_context line>"
+#                          --tab-active yes|no --evidence "<the status line>" [--dry-run] [--already-locked]`
+#
+# Appends ONE `pane-hidden` attempt (through `jd_read.make_attempt`) to EVERY id named, in one locked, validated,
+# rollback-verified write: all the ids or none, so a refused id refuses the call. It records that the page was never read
+# because the Browser pane was hidden or the reader's tab stayed in the background, which is NOT a failed read: it is an
+# `environment`-class cause that never counts toward retry-stop (`lifecycle`). The evidence is `{text, pane, tab_active}`:
+# `pane` is the PARSED state (`pane_probe.pane_state`, never the raw line), and `tab_active` is the reader's OWN WORD about
+# its tab, which the name says (the engine cannot check it). The verb is refused unless the pane line said hidden or the
+# reader says its tab is in the background: a displayed pane with the tab in front is a page that could have rendered.
+
+NOT_ATTEMPTED_USAGE = ("not-attempted <opp id> [<opp id> ...] --run <id> --via render --reason pane-hidden "
+                       "--pane \"<the tabs_context line>\" --tab-active yes|no --evidence \"<1-200 characters>\" "
+                       "[--dry-run] [--already-locked]")
+
+
+def cmd_not_attempted(args):
+    """`record.py not-attempted` -- see the section comment above. Exit 0 on a write (or a dry run), 1 on a refusal (nothing
+    written), 2 on usage."""
+    import jd_read as _jd
+    import pane_probe as _pp
+    ids = [i for i in ([args.rid] + list(args.rest or [])) if i]
+    if not ids:
+        print("usage: " + NOT_ATTEMPTED_USAGE)
+        return 2
+    if any(re.search(r"\s", i) for i in ids):
+        print("\u26d4 REFUSED \u2014 an opportunity id has no whitespace (got %r); nothing written." % ids)
+        return 1
+    if len(set(ids)) != len(ids):
+        print("\u26d4 REFUSED \u2014 an id is named twice (%s): one call records one attempt per role; nothing written."
+              % ", ".join(sorted(i for i in set(ids) if ids.count(i) > 1)))
+        return 1
+    run = (args.run_id_arg or "").strip()
+    if not run or re.search(r"\s", run):
+        print("\u26d4 REFUSED \u2014 --run <run id> is required (no whitespace).\nusage: " + NOT_ATTEMPTED_USAGE)
+        return 2
+    if args.via_medium != _jd.NOT_ATTEMPTED_VIA:
+        print("\u26d4 REFUSED \u2014 --via must be %s (got %r): a not-attempted record is a browser read that could not "
+              "happen.\nusage: %s" % (_jd.NOT_ATTEMPTED_VIA, args.via_medium, NOT_ATTEMPTED_USAGE))
+        return 2
+    reason = (args.reason_text or "").strip()
+    if reason not in _jd.NOT_ATTEMPTED:
+        print("\u26d4 REFUSED \u2014 --reason must be one of %s (got %r).\nusage: %s"
+              % (", ".join(_jd.NOT_ATTEMPTED), reason or None, NOT_ATTEMPTED_USAGE))
+        return 2
+    if args.pane_line is None or not str(args.pane_line).strip():
+        print("\u26d4 REFUSED \u2014 --pane \"<the tabs_context line>\" is required: the pane state is parsed from the "
+              "harness's own line, never taken from the reader's word.\nusage: " + NOT_ATTEMPTED_USAGE)
+        return 2
+    pane = _pp.pane_state(args.pane_line)
+    tab = args.tab_active
+    if tab not in _jd.TAB_ACTIVE_VALUES:
+        print("\u26d4 REFUSED \u2014 --tab-active yes|no is required (the reader's own word about its tab).\nusage: "
+              + NOT_ATTEMPTED_USAGE)
+        return 2
+    if pane != "hidden" and tab != "no":
+        print("\u26d4 REFUSED \u2014 the pane line reads %r and --tab-active is yes: with the pane not hidden and the tab in "
+              "front the page could have rendered, so a missing posting is `read-failed` evidence about the role, never "
+              "`not-attempted`. Nothing written." % pane)
+        return 1
+    text = (args.evidence_text or "").strip()
+    if not text:
+        print("\u26d4 REFUSED \u2014 --evidence is required: 1-200 characters (the status line).\nusage: "
+              + NOT_ATTEMPTED_USAGE)
+        return 2
+    if len(text) > _jd.EVIDENCE_CAP:
+        print("\u26d4 REFUSED \u2014 --evidence is %d characters; the cap is %d (shorten it -- it is never truncated for "
+              "you)." % (len(text), _jd.EVIDENCE_CAP))
+        return 1
+    evidence = {"text": text, "pane": pane, "tab_active": tab}
+    at_iso = _now().isoformat()
+    check = bool(args.check or args.dry_run)
+    try:
+        for i in ids:                                       # the attempt itself must parse, before any lock or write
+            _jd.make_attempt(at_iso, run, None, _jd.NOT_ATTEMPTED_VIA, reason, dict(evidence))
+    except _jd.JdReadError as e:
+        print("\u26d4 REFUSED \u2014 %s; nothing written." % e)
+        return 1
+    if check:
+        missing = [i for i in ids if find(load("opportunities"), i) is None]
+        if missing:
+            print("\u26d4 REFUSED \u2014 no opportunity %s (all or none: nothing written)." % ", ".join(missing))
+            return 1
+        print("not-attempted --dry-run: %d role(s) would record %s (pane %s, tab_active %s); --dry-run: nothing written"
+              % (len(ids), reason, pane, tab))
+        return 0
+    if args.already_locked:
+        if not lock_is_held():
+            print("  REFUSED \u2014 --already-locked, but NOBODY holds the run lock.")
+            return 1
+    else:
+        try:
+            take_lock("record.py not-attempted --run %s" % run, wait=args.wait)
+        except LockError as e:
+            print("  REFUSED \u2014 %s" % e)
+            return 1
+    try:
+        opps = load("opportunities")
+        by_id = {o.get("id"): o for o in opps}
+        missing = [i for i in ids if i not in by_id]
+        if missing:
+            print("\u26d4 REFUSED \u2014 no opportunity %s (all or none: nothing written)." % ", ".join(missing))
+            return 1
+        before = {i: json.loads(json.dumps(by_id[i])) for i in ids}
+        try:
+            for i in ids:
+                row = by_id[i]
+                existing = _jd.attempts(row)
+                attempt = _jd.make_attempt(at_iso, run, None, _jd.NOT_ATTEMPTED_VIA, reason, dict(evidence))
+                row["jd_read"] = {"attempts": [dict(a) for a in existing] + [attempt]}
+        except _jd.JdReadError as e:
+            print("\u26d4 REFUSED \u2014 the stored jd_read cannot be extended (%s); nothing written." % e)
+            return 1
+        bad = []
+        for i in ids:
+            bad += _row_checks("not-attempted", before[i], by_id[i], jd_read_ok=True)
+        if bad:
+            print("\u26d4 REFUSED \u2014 " + "; ".join(bad) + " (nothing was written)")
+            return 1
+        snap = snapshot("opportunities")
+        pre_problems = validate()[3]
+        save_atomic("opportunities", opps)
+        rc, out, err, post_problems = validate()
+        added = new_problems(pre_problems, post_problems)
+        if rc != 0 and (added is None or added):
+            ok = restore("opportunities", snap)
+            print("\u26d4 the write left the store invalid and was %s."
+                  % ("ROLLED BACK (byte-identical)" if ok else
+                     "NOT VERIFIABLY ROLLED BACK -- restore opportunities.jsonl from git"))
+            print("  " + "\n  ".join(added if added else _diagnostic_lines(rc, out, err)))
+            return 1
+    finally:
+        if not args.already_locked:
+            release_lock()
+    print("not-attempted: %d role(s) recorded %s via %s (pane %s, tab_active %s: the reader's own word); "
+          "not a failed read, never counted toward retry-stop" % (len(ids), reason, _jd.NOT_ATTEMPTED_VIA, pane, tab))
+    return 0
 
 
 # ---- show: the whole record, untruncated (design section 7, SH1) -----------------------------------------------------
@@ -5348,6 +5966,29 @@ def main():
     ap.add_argument("--outcome", dest="outcome_arg", default=None,
                     help="read-failed: closed | dead-link | manual-board | no-url | login-wall | challenge | "
                          "render-failed | surface-cannot-read | site-not-allowed.")
+    ap.add_argument("--reason", dest="reason_text", default=None,
+                    help="not-attempted: pane-hidden (the only reason: the Browser pane was hidden, or the reader's tab "
+                         "stayed in the background after one re-front).")
+    ap.add_argument("--pane", dest="pane_line", default=None,
+                    help="not-attempted / read-failed (required for render-failed): the last line of "
+                         "`mcp__Claude_Browser__tabs_context`, as the harness wrote it. The "
+                         "pane state is PARSED from it (`pane_probe.pane_state`) and stored; the raw line never is.")
+    ap.add_argument("--page-result", dest="page_result", default=None,
+                    help="read-failed --via render: what THIS page's read gave -- `chars=<N>` (the length of its get_page_text "
+                         "result) or `error=<the tool's own error text, 1-120 characters>`. Required for every outcome but "
+                         "no-url, manual-board and site-not-allowed: no page outcome is recorded for a page that was not opened "
+                         "and read (dev #838 / public #183).")
+    ap.add_argument("--probe", dest="probe_json", default=None,
+                    help="read-failed --via render: the JSON result of the frame probe run on THIS page (`pane_probe.PROBE_JS`). "
+                         "The verdict `pane_probe.verdict` gives is stored; render-failed requires it, and is refused when the "
+                         "verdict is no-verdict:pane-hidden.")
+    ap.add_argument("--body-sha1", dest="body_sha1", default=None,
+                    help="read-jd --via fetch: the sha1 the `RESIDUE <id> (body)` line printed. The read is refused unless it "
+                         "matches the saved body's index entry and file, and the evidence, location and every --pay figure are "
+                         "found in that body.")
+    ap.add_argument("--tab-active", dest="tab_active", default=None, choices=("yes", "no"),
+                    help="not-attempted: yes | no, the reader's own word about whether its tab was in front (the engine "
+                         "cannot check it, and the stored evidence names it `tab_active` for that reason).")
     ap.add_argument("--link-only", dest="link_only", action="store_true",
                     help="capture-batch: link every open capture-role item that is a sighting of a known role "
                          "(before intake; they never consume it).")
@@ -5357,6 +5998,12 @@ def main():
     ap.add_argument("--fetch", dest="fetch", action="store_true",
                     help="read-batch: read each admitted role's posting by script (JSON-LD), settle what it can and "
                          "list the rest as the render residue.")
+    ap.add_argument("--fallback", dest="fallback", action="store_true",
+                    help="read-batch: the opt-in fallback (search.posting_fetch on) -- read the public logged-out posting of "
+                         "a LinkedIn role whose browser read could not happen on this run (its latest attempt in the run is "
+                         "pane-hidden or render-failed). Records only `read` or `closed`; anything else records nothing.")
+    ap.add_argument("--ids", dest="ids_arg", nargs="+", default=None, metavar="OPP_ID",
+                    help="read-batch --fallback: narrow the fallback to these opportunity ids (it never widens the set).")
     ap.add_argument("--check", dest="check", action="store_true",
                     help="capture-batch / read-batch: compute and print, write nothing (--dry-run is the same).")
     ap.add_argument("--deadline-s", dest="deadline_s", type=int, default=None,
@@ -5431,6 +6078,8 @@ def main():
         return cmd_capture_batch(args)
     if args.op == "read-batch":
         return cmd_read_batch(args)
+    if args.op == "not-attempted":
+        return cmd_not_attempted(args)
 
     if args.reuse and not (args.op == "create" and args.file == "people"):
         print("⛔ REFUSED — --reuse applies only to `create <id> '<json>' --file people`.")

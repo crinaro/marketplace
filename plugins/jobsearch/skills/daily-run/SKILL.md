@@ -777,18 +777,21 @@ what it read. **Every `RESIDUE <opp_id> (render): <reason>` line, across all the
 residue:** a page that needs a browser (`unparseable`, `insufficient`, `wrong-page`, `fetch-error`, `http-N`,
 or `fetch-unreached` for one the calls did not reach). Nothing in the residue is dropped.
 
-**5. Render the residue: `jd-reader`, each role in its own tab.** Hand the residue to the render route,
-`jd-reader`, in chunks of at most 15 roles, and at most `fanout` dispatches at once. **Every `solo` id gets a
-dispatch of its own.** Each dispatch is in the FOREGROUND and waited for, and each is written first, in the
-call immediately before it, then closed when it hands back:
+**5. Render the residue: `jd-reader`, every role in one fronted tab.** Hand the `RESIDUE <opp_id> (render)` lines to
+the render route, `jd-reader`, in chunks of at most 15 roles, and at most `fanout` dispatches at once. **Every `solo`
+id gets a dispatch of its own.** Each dispatch is in the FOREGROUND and waited for, and each is written first, in the
+call immediately before it, then closed when it hands back. **`--ids` takes the chunk's OPPORTUNITY ids, as the
+`RESIDUE` lines print them**, never a capture item's `act-` id: the close reads these rows to tell a role the reader
+was handed from one it never was (dev #837):
 
 ```bash
-~/.claude/jobsearch/run journal.py --run <id> --pass reader --phase dispatched --ids <the chunk's ids, comma-separated>
+~/.claude/jobsearch/run journal.py --run <id> --pass reader --phase dispatched --ids <the chunk's opportunity ids, comma-separated>
 ~/.claude/jobsearch/run journal.py --run <id> --pass reader --phase returned --ids <the same ids>
 ```
 
 The brief carries the run id, `attended: no`, the profile root and the chunk's opp ids, and nothing else: the
-reader looks each role up, opens its own tab, and records it with `record.py read-jd` or `read-failed`. A
+reader looks each role up, reads them in one fronted tab (navigated role by role, with a pane and tab check between
+roles), and records each with `record.py read-jd` or `read-failed`. A
 posting only a person can open (a manual-candidate board, `manual-board`; no address, `no-url`; a sign-in
 wall, `login-wall`) goes **to the candidate**: the reader records that outcome, and the role is listed under YOUR READ with its link and the
 reason, for the candidate to read and record with `record.py read-jd <id> --via candidate`.
@@ -836,7 +839,7 @@ L left (causes…) · W waiting (oldest D d)`, then one `LEFT <id>: <cause> — 
 **Put the `drain:` line in the summary verbatim. Exit 3 means roles were left: that is a PROCESS FAILURE,
 and every `LEFT` line goes in the summary as printed.** Never re-run a step to make the count come out
 clean after the close, and never hand-write a cause: the next run admits a left role again as a retry, and a
-role left by three runs in a row is shown as `retry-stopped`.
+role left by two runs in a row for a role-level cause (three for a run-level cause) is shown as `retry-stopped`; an environment cause such as `pane-hidden` never counts and goes to `held`.
 
 **Retired by this release, and never run:** the old triage step (its script now prints only a version-skew
 notice) with its bounded batch and its waiting bound, recording a failed read in `fit`, a JD read

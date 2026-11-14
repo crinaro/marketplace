@@ -214,6 +214,9 @@ The facts it stores:
     can open* in [Reading what the search produces](reading-your-files.md#one-lifecycle-per-role-since-0820));
   - **unfinished**: `challenge`, `render-failed`, `surface-cannot-read` or `site-not-allowed`. The run's
     work is not done, and the role shows as a process failure until it is.
+  - **held** (since 0.85.0): `not-attempted` with outcome `pane-hidden`. The Browser pane was hidden, or the
+    reader's tab was not in front, so the page was never read. It is not a failure of the role and never counts
+    toward a stop; see [Posting fetch](posting-fetch.md).
 
   Absent `jd_read` means no attempt has been made. When you read a posting yourself, that is an attempt
   with `via: candidate`, and it carries your attestation of what the posting says.
@@ -1715,6 +1718,7 @@ The upgrade does not write these into your file (absent means the default).
 | key | what it is |
 |---|---|
 | `search.intake_per_run` | how many roles one daily run takes on. It reads every role it takes on, screens it, and researches the keepers, so it finishes every one. A whole number from 1 to 300; defaults to **40**. The count is also capped by the time a run has: until the plugin has measured how long a role takes in your runs it assumes a few minutes each, so a larger number may be trimmed, and the run says so. See *One lifecycle per role* |
+| `search.posting_fetch` | `on` or `off`; **off unless you turn it on**, and no upgrade ever sets it. With it on, a LinkedIn role the Browser pane could not read (hidden pane, or the page did not draw) is read once from LinkedIn's public posting page, at most 40 requests per run per machine and 3 seconds apart. Set it only with `posting_fetch.py --set on` (or `off`), which prints the terms first. It is automated access that LinkedIn's User Agreement section 8.2 restricts, and turning it on is your decision. See [Posting fetch](posting-fetch.md) |
 | `search.intake_new_percent` | while older unread roles are still waiting, how much of `search.intake_per_run` is held back for roles found since. A whole number from 0 to 100; defaults to **50**, so half. With no older unread roles every slot goes to whoever is next |
 
 ### Setting added in 0.72.0
@@ -1903,6 +1907,28 @@ A role whose source your profile does not hold is still refused when capture run
 role is refused if your profile has no LinkedIn job-search row, and the message names the command to turn it
 on. **To undo it,** restore `data/pending_actions.jsonl.pre-0.83.0`; that is only safe for what has not been
 queued or captured since.
+
+**What the 0.85.0 upgrade does.** Before 0.85.0, a LinkedIn role whose page could not be read because the
+Browser pane was hidden was recorded `render-failed`, and two such runs in a row stopped the unattended retry for
+good. The upgrade runs the migration `m_0_85_0_readmit_render_failed` once to give those roles another chance.
+
+1. **Copies first.** Before it writes anything it copies `data/runs.jsonl` to `data/runs.jsonl.pre-0.85.0`, never
+   over a copy that is already there, and checks the copy. If a run is open, or a store cannot be read, it changes
+   nothing and reports itself pending, to run again next session.
+2. **Adds one event.** It appends a single `readmit` line to `data/runs.jsonl`: `{"event": "readmit", "at": ...,
+   "by": "m_0_85_0_readmit_render_failed", "cause": "render-failed", "ids": [...]}`. Nothing else in the journal and no
+   role is rewritten. Only roles stopped *only* by `render-failed` are named; a role whose stop also includes
+   another cause (a bot check, say) is left alone. If two machines each run the upgrade, their events are read as
+   one.
+3. **What a `readmit` does.** A role named in it waits again as *held*, and is taken after retried and returned
+   roles but behind the places kept for new roles. A role that really has a bad page stops again after two more
+   runs.
+4. **It prints one line about `search.posting_fetch`**, the first time only, and never turns it on.
+5. **Running it again changes nothing.**
+
+**To undo it,** restore `data/runs.jsonl.pre-0.85.0`; that is only safe for what has not been recorded since. A
+0.84.0 install reads a journal until it holds a *held* admission, an environment close or a `readmit` line; after
+the first of those, do not run 0.84.0 against the profile.
 
 **The date range of a mail check is stored with its offset (since 0.83.0).** A checked mail range used to be
 saved as a local clock time, which in the hour the clocks go back names two different moments. New ranges

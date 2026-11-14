@@ -181,8 +181,8 @@ PIPELINE 6 ready · 2 your read · PROCESS FAILURE: 3 (oldest 5d: run-died 2, ch
 Each cause in the list says what happened and what to do about it. A few you may see: `run-died` (the run
 that took the role on never ended), `deadline-reached` (it ran out of time before reaching the role),
 `challenge` or `render-failed` (the posting showed a bot check or would not display; it is retried first
-next run), `agent-returned-nothing` (a reader or researcher was started for it and recorded nothing),
-`capture-refused`, and `retry-stopped` (three runs in a row left it unfinished, usually a page that hangs
+next run), `pane-hidden` (since 0.85.0: the Browser pane was hidden, or the reader's tab was not in front, so the page was never read. This is not a fault of the role and never counts toward a stop. The role is *held*, taken after retried and returned roles, and the run summary says `HELD: <n> ...`; after three such runs in a row it moves to your read and is retried only on a run you attend. Show the pane during a run, or see [Posting fetch](posting-fetch.md)), `agent-returned-nothing` (a reader or researcher was started for it and recorded nothing),
+`capture-refused`, and `retry-stopped` (runs in a row left it unfinished: three for a cause about the run, two for a cause about the role, usually a page that hangs
 the reader; read it yourself, or report it).
 
 **Old unread roles stay failures until they are read.** Roles found before 0.82.0 that nobody read are

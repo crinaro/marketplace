@@ -29,7 +29,8 @@ renders exactly what `classify_opportunities` / `classify_channels` say.
                  posting link and the reason.
     process-failure   a run admitted the role and did not finish it, or nothing read it before 0.82.0.
                  A counted, aged, caused failure of the PROCESS; never asked pursue-or-pass.
-    waiting-intake    found, and no run has taken it on yet. Counted and aged, not a failure.
+    waiting-intake    found, and no run has taken it on yet (or, detail `readmitted`, set aside after failed reads and let
+                 back in by the 0.85.0 migration). Counted and aged, not a failure.
     in-progress  an open run holds it. Counted, never asked.
 
 ## ⭐ One lifecycle, one owner: `lifecycle.stage` (dev #820 / public #175)
@@ -1320,6 +1321,9 @@ YOUR_READ_REASONS = {
     "manual-board": "the posting is on a board only you can open",
     "no-url": "the role has no posting address on record",
     "login-wall": "the posting is behind a login only you have",
+    # 0.85.0 (dev #840 / public #181): reached by `lifecycle.HELD_ROUTE_AFTER` consecutive environment closes, not by a
+    # candidate-class outcome. The Browser pane was never shown on the runs that tried, so the page was never read.
+    "pane-hidden": "the Browser pane was hidden on every run that tried to read it",
 }
 YOUR_READ_REMEDY = "record.py read-jd %s --via candidate"
 
@@ -1428,6 +1432,11 @@ def group_why(group, st, opp, act=""):
         if st.detail == "rules-changed":
             return ("waiting for intake — your screening rules changed since this was screened; "
                     "the next run re-screens it")
+        if st.detail == "readmitted":
+            # 0.85.0 (dev #840 / public #181): runs DID take it on, and its reads kept failing, so it was set aside.
+            # The 0.85.0 migration let it back in, because those failures may have been a hidden browser pane.
+            return ("waiting for intake — it was set aside after reads that failed, which may have been a hidden "
+                    "browser pane, and has been let back in; a run will try it again")
         return "waiting for intake — no run has taken it on yet"
     return "in progress — a run has this role open (%s)" % st.name
 

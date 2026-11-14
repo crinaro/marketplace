@@ -18,7 +18,7 @@ THE SHAPE
   url       the address read, or null (`--url -`: there was none)
   via       how it was read: fetch | render | feed | ats-api | candidate; or `legacy`
   outcome   read | closed | dead-link | manual-board | no-url | login-wall | challenge |
-            render-failed | surface-cannot-read | site-not-allowed
+            render-failed | surface-cannot-read | site-not-allowed | pane-hidden
   evidence  an object, never empty (shapes below)
 
 The outcome CLASSES are disjoint and together cover `OUTCOMES`:
@@ -30,6 +30,15 @@ The outcome CLASSES are disjoint and together cover `OUTCOMES`:
   HOST_CLASS  challenge, render-failed,
               surface-cannot-read,
               site-not-allowed           -- the machine or the pane failed: the run's work is unfinished
+  NOT_ATTEMPTED  pane-hidden             -- (0.85.0, dev #839 / public #182, dev #840 / public #181) the page was
+                                            NEVER READ, because the Browser pane was hidden or the reader's tab
+                                            stayed in the background: no page attempt was made, so it is no
+                                            evidence about the role. It is `environment`-class in `lifecycle`
+                                            and is never a `read-failed` or `render-failed`.
+
+`OUTCOMES` is the four classes above `NOT_ATTEMPTED` (the outcomes `read-failed` may record); `ALL_OUTCOMES` is
+`OUTCOMES + NOT_ATTEMPTED`, every outcome this parser accepts. A `pane-hidden` attempt is written only by
+`record.py not-attempted`, and only `via render`.
 
 EVIDENCE
 --------
@@ -38,7 +47,12 @@ EVIDENCE
                    posting's own title or Apply text) and under `candidate` (the candidate's own
                    one-line note, which must also carry `attestation: "candidate"`). `chars` and `sha1`
                    are written only by `record.py read-batch`, from the body it fetched itself.
-  any failure      {text}  1-200 characters: the status line, the error text or the page's own words
+  any failure      {text}  1-200 characters: the status line, the error text or the page's own words, and
+                   (0.85.0, written by `record.py read-failed --via render`) optionally `page` (the page result
+                   as given), `pane` (the PARSED pane state: hidden | displayed | unknown, never the raw line)
+                   and `probe` (the verdict `pane_probe.verdict` returned)
+  not-attempted    {text, pane, tab_active}  `pane` is the parsed pane state, and `tab_active` (yes | no) is the
+                   MODEL'S word about its own tab, which its name says: the engine cannot check it
   via `legacy`     {legacy}  `fit.jd_source=<value, at most 200 characters>`, for EVERY outcome
 
 `legacy` is legal ONLY together with `run: "legacy"`, and only from the migration
@@ -64,6 +78,14 @@ TERMINAL = ("closed", "dead-link")
 CANDIDATE = ("manual-board", "no-url", "login-wall")
 HOST_CLASS = ("challenge", "render-failed", "surface-cannot-read", "site-not-allowed")
 OUTCOMES = (READ,) + TERMINAL + CANDIDATE + HOST_CLASS
+# 0.85.0 (dev #839 / public #182, dev #840 / public #181; design-hidden-pane-reads.md section 7.1, 16 entry 19). The
+# page was never read, so this is NOT a failed read: a fourth class, kept outside `OUTCOMES` (which is what
+# `read-failed` may record, and which the four classes above cover exactly). `ALL_OUTCOMES` is what the parser accepts.
+NOT_ATTEMPTED = ("pane-hidden",)
+ALL_OUTCOMES = OUTCOMES + NOT_ATTEMPTED
+NOT_ATTEMPTED_VIA = "render"
+PANE_EVIDENCE_STATES = ("hidden", "displayed", "unknown")     # `pane_probe.pane_state`'s answers, mirrored (pure module)
+TAB_ACTIVE_VALUES = ("yes", "no")
 
 # The closed set `fit.jd_source: "unavailable: <reason>"` accepted from 0.67.0 (validate_data.
 # JD_UNAVAILABLE_REASONS, mirrored here and pinned equal by a test). Each reason is also an outcome.
@@ -73,7 +95,8 @@ LEGACY_UNAVAILABLE_PREFIX = "unavailable"
 
 EVIDENCE_CAP = 200
 READ_EVIDENCE_KEYS = ("quote", "chars", "sha1", "replaced", "attestation")
-FAILED_EVIDENCE_KEYS = ("text",)
+FAILED_EVIDENCE_KEYS = ("text", "page", "pane", "probe")        # only `text` is required; the rest are 0.85.0's, optional
+NOT_ATTEMPTED_EVIDENCE_KEYS = ("text", "pane", "tab_active")
 LEGACY_EVIDENCE_KEYS = ("legacy",)
 ATTEMPT_KEYS = ("at", "run", "url", "via", "outcome", "evidence")
 
@@ -86,7 +109,8 @@ class JdReadError(ValueError):
 
 
 def outcome_class(outcome):
-    """`read` | `terminal` | `candidate` | `host`, or raises `JdReadError` for an unknown outcome."""
+    """`read` | `terminal` | `candidate` | `host` | `not-attempted`, or raises `JdReadError` for an unknown
+    outcome. `not-attempted` (0.85.0) is a page that was never read: it is no page attempt at all."""
     if outcome == READ:
         return "read"
     if outcome in TERMINAL:
@@ -95,7 +119,15 @@ def outcome_class(outcome):
         return "candidate"
     if outcome in HOST_CLASS:
         return "host"
-    raise JdReadError("outcome %r is not one of %s" % (outcome, ", ".join(OUTCOMES)))
+    if outcome in NOT_ATTEMPTED:
+        return "not-attempted"
+    raise JdReadError("outcome %r is not one of %s" % (outcome, ", ".join(ALL_OUTCOMES)))
+
+
+def is_page_attempt(attempt):
+    """True when `attempt` is a try at a page (every class but `not-attempted`). A role whose only attempts are
+    `not-attempted` has had no page attempt, so `lifecycle` reads it as `captured`, never `reading`."""
+    return outcome_class(attempt["outcome"]) != "not-attempted"
 
 
 def parse_at(at):
@@ -123,6 +155,8 @@ def _check_evidence(via, outcome, evidence):
         allowed = LEGACY_EVIDENCE_KEYS
     elif outcome == READ:
         allowed = READ_EVIDENCE_KEYS
+    elif outcome in NOT_ATTEMPTED:
+        allowed = NOT_ATTEMPTED_EVIDENCE_KEYS
     else:
         allowed = FAILED_EVIDENCE_KEYS
     unknown = sorted(set(evidence) - set(allowed))
@@ -133,8 +167,23 @@ def _check_evidence(via, outcome, evidence):
         # the value is `fit.jd_source=<up to 200 chars>`
         _text(evidence.get("legacy"), "evidence.legacy", cap=EVIDENCE_CAP + len("fit.jd_source="))
         return
+    if outcome in NOT_ATTEMPTED:
+        _text(evidence.get("text"), "evidence.text")
+        if evidence.get("pane") not in PANE_EVIDENCE_STATES:
+            raise JdReadError("a %s attempt needs evidence.pane, one of %s (the parsed pane state, never the raw "
+                              "line) -- %r" % (outcome, ", ".join(PANE_EVIDENCE_STATES), evidence.get("pane")))
+        if evidence.get("tab_active") not in TAB_ACTIVE_VALUES:
+            raise JdReadError("a %s attempt needs evidence.tab_active, yes or no (the reader's own word about its "
+                              "tab) -- %r" % (outcome, evidence.get("tab_active")))
+        return
     if outcome != READ:
         _text(evidence.get("text"), "evidence.text")
+        if "pane" in evidence and evidence["pane"] not in PANE_EVIDENCE_STATES:
+            raise JdReadError("evidence.pane must be one of %s (the parsed state) -- %r"
+                              % (", ".join(PANE_EVIDENCE_STATES), evidence["pane"]))
+        for k in ("page", "probe"):
+            if k in evidence:
+                _text(evidence[k], "evidence.%s" % k)
         return
     if "quote" in evidence:
         _text(evidence["quote"], "evidence.quote")
@@ -187,6 +236,9 @@ def parse_attempt(att):
         raise JdReadError("via 'legacy' and run 'legacy' are legal only together (via=%r, run=%r)"
                           % (via, run))
     outcome_class(outcome)
+    if outcome in NOT_ATTEMPTED and via != NOT_ATTEMPTED_VIA:
+        raise JdReadError("a %s attempt is written only via %s (got via %r): it records a page the Browser pane "
+                          "could not render, never a read by another route" % (outcome, NOT_ATTEMPTED_VIA, via))
     if via == "candidate" and outcome != READ:
         raise JdReadError("a candidate attempt is a read: the candidate records what the posting says, "
                           "never a failure (via 'candidate' needs outcome 'read')")
