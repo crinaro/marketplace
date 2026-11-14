@@ -1,0 +1,21 @@
+{
+  "extraKnownMarketplaces": {
+    "crinaro-marketplace": {
+      "source": { "source": "github", "repo": "crinaro/marketplace" }
+    }
+  },
+  "enabledPlugins": {
+    "site-studio@crinaro-marketplace": true
+  },
+  "permissions": {
+    "ask": [
+      "Bash(python3 *deploy.py*)",
+      "Bash(python3 *repos.py*protect*)",
+      "Bash(python3 *repos.py*first-publish*)",
+      "Bash(git push *)",
+      "Bash(gh secret set *)",
+      "Bash(gh api -X *)",
+      "Bash(gh api --method *)"
+    ]
+  }
+}

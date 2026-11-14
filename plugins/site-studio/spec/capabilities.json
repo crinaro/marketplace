@@ -1,0 +1,2170 @@
+{
+  "schema": 1,
+  "about": "What the plugin does, as a catalog adopt matches a repo's local files against (dev #835, design 6.4.2). The numbers are OURS: changing one is a reviewed change with its test. 'descriptions' is the one section a reader who must not see the scoring may read: it names each capability, its counterpart and the behaviour in prose, with no pattern and no weight.",
+  "thresholds": {
+    "match": 0.6,
+    "ambiguousGap": 0.1,
+    "residualMax": 0.15
+  },
+  "capabilities": {
+    "content-editor": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "facts-traced",
+          "weight": 4,
+          "any": [
+            "(trace|traceable|sourced|supported)\\b.{0,40}\\b(fact|claim|content|decision)",
+            "every (fact|claim)",
+            "(fact|claim)s?\\b.{0,40}\\b(trace|back to|come from)",
+            "(back(ed)?|support(ed)?|ground(ed)?|verif(y|ied)|substantiat\\w+|evidence)\\b.{0,50}\\b(statements?|facts?|claims?|assertions?)",
+            "(statements?|claims?|assertions?|facts?)\\b.{0,80}\\b(backing|backed|sourced?|evidence|came from|come from|supplied)",
+            "made[- ]up|invented",
+            "\\btrace[sd]?\\b.{0,90}\\b(notes|decisions|content|sources?|origin)",
+            "no origin|never (told|supplied|gave)"
+          ]
+        },
+        {
+          "id": "placeholders",
+          "weight": 3,
+          "any": [
+            "placeholder",
+            "lorem",
+            "\\bTODO\\b",
+            "\\bTBD\\b",
+            "filler (text|copy|content|words?)|dummy (text|copy|content)|coming soon|insert .{0,20} here",
+            "fill[- ]in[- ]the[- ]blank|\\bto-?do\\b|unfinished (text|sentences?|copy|pages?)|sentences left unfinished"
+          ]
+        },
+        {
+          "id": "voice",
+          "weight": 3,
+          "any": [
+            "\\bvoice\\b",
+            "\\btone\\b",
+            "brand\\.md",
+            "sounds? like|reads? (like|as)",
+            "(writing|usual|house|brand) style|style (notes?|guide)",
+            "how (they|she|he) (talks?|speaks?|writes?)"
+          ]
+        },
+        {
+          "id": "consistency",
+          "weight": 2,
+          "any": [
+            "consisten(t|cy)",
+            "\\bstructure\\b",
+            "contradict",
+            "(used|named|written|spelled|capitali[sz]ed) the same (way|term)|the same thing named",
+            "\\buniform|heading levels?|terminology|across (all |the |every )?pages",
+            "same outline|follow the same|handled the same way|\\bspellings?\\b|\\boutline\\b"
+          ]
+        },
+        {
+          "id": "copy-review",
+          "weight": 3,
+          "any": [
+            "\\b(review|check|edit)s?\\b.{0,60}\\b(copy|wording|text|pages?)\\b",
+            "what (the )?pages? say",
+            "\\b(read|proofread)s?\\b.{0,40}\\b(words|copy|wording|writing|pages?)\\b",
+            "\\b(words|wording|writing|copy)\\b.{0,30}\\b(on|in) (the |each |every )?pages?\\b",
+            "you are the (\\w+ )?(editor|proofreader)"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "content[-_ ]?(editor|review)|copy[-_ ]?edit|^editor"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "privacy-guard": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "public-forever",
+          "weight": 4,
+          "any": [
+            "public forever",
+            "forever public",
+            "permanent(ly)? public",
+            "cannot be (un)?published",
+            "never be public",
+            "(stays?|remains?|lives?) (on the (internet|web)|online|public)",
+            "for good|can'?t be (taken back|undone|retracted)|cannot be (taken back|undone|retracted)",
+            "\\bpermanent(ly)?\\b|\\bforever\\b",
+            "(web|internet) (does not|doesn'?t|never) forget|quoted back|goes? (online|public|live)"
+          ]
+        },
+        {
+          "id": "location",
+          "weight": 3,
+          "any": [
+            "\\blocation\\b",
+            "home address",
+            "street address",
+            "geotag",
+            "\\bgps\\b",
+            "where (the person|they|she|he) (lives?|works?)",
+            "street (names?|signs?)|house numbers?|coordinates",
+            "\\baddress(es)? of (homes?|houses?|studios?|the person)",
+            "latitude|longitude|map pins?|(home|studio|work) addresses"
+          ]
+        },
+        {
+          "id": "metadata",
+          "weight": 3,
+          "any": [
+            "image metadata",
+            "\\bexif\\b",
+            "hidden (data|metadata)",
+            "hidden\\b.{0,20}\\b(data|information|details)",
+            "camera (data|details|info)|scrubbed"
+          ]
+        },
+        {
+          "id": "other-people",
+          "weight": 3,
+          "any": [
+            "\\bminors?\\b",
+            "\\bchildren\\b",
+            "other people",
+            "family members?",
+            "third part(y|ies)",
+            "bystanders?",
+            "\\bkids?\\b|relatives?|passers-?by",
+            "(anyone|anybody|people) (who is )?(not|other than)"
+          ]
+        },
+        {
+          "id": "documents",
+          "weight": 2,
+          "any": [
+            "\\bpassports?\\b",
+            "licen[sc]e",
+            "\\bid cards?\\b",
+            "\\bbills?\\b",
+            "driving licen[sc]e|utility (statements?|bills?)|\\bscans? of\\b"
+          ]
+        },
+        {
+          "id": "unapproved",
+          "weight": 2,
+          "any": [
+            "unapproved",
+            "without (the person's )?(approval|consent|permission)",
+            "unreleased",
+            "confidential",
+            "signed[- ]off|sign-?off|embargo|private (correspondence|messages?|emails?)",
+            "not (been )?(approved|released|cleared)|hold back",
+            "unannounced|\\bNDA\\b|not yet cleared|under (an )?embargo"
+          ]
+        },
+        {
+          "id": "source-comments",
+          "weight": 2,
+          "any": [
+            "html comments?",
+            "source comments?",
+            "comments? in the (page )?source",
+            "commented-out|raw (page )?source|page source|left-?behind (notes?|comments?)",
+            "forgotten comments?|notes to self|comments? (inside|in) the (html|markup)|inside the html"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "privacy|safe[-_ ]to[-_ ]publish"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "route": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "navigation",
+          "weight": 3,
+          "any": [
+            "\\bnav(igation)?\\b",
+            "\\bmenu\\b",
+            "\\bmenus?\\b|site ?map|top bar"
+          ]
+        },
+        {
+          "id": "links",
+          "weight": 3,
+          "any": [
+            "(external|broken|dead|internal)\\s+links?",
+            "link (check|walk)",
+            "every link",
+            "(each|every|all|any) (internal |external |outgoing )?links?",
+            "links? (that|which) (stay|go|point|lead)|links? to (other )?(sites?|websites?)",
+            "dead ends?|time out|links? (works?|resolves?|lands?)",
+            "hyperlinks?|outbound|\\b404\\b"
+          ]
+        },
+        {
+          "id": "base-path",
+          "weight": 3,
+          "any": [
+            "base paths?",
+            "sub-?paths?",
+            "github\\.io/",
+            "root-absolute",
+            "(project|sub)[- ]?paths?|bare (domain|slash)",
+            "(begin|start)s? with a (bare )?slash"
+          ]
+        },
+        {
+          "id": "retired",
+          "weight": 2,
+          "any": [
+            "retired",
+            "old (page|url|address)",
+            "moved (page|address)",
+            "redirects?",
+            "taken down|replacement|(moved|removed|renamed) pages?|old links?"
+          ]
+        },
+        {
+          "id": "head-metadata",
+          "weight": 3,
+          "any": [
+            "<title>",
+            "og:",
+            "open graph",
+            "meta description",
+            "canonical",
+            "head metadata",
+            "social preview",
+            "sharing (tags?|cards?)|social (cards?|tags?)",
+            "titles?\\b.{0,30}\\bdescriptions?"
+          ]
+        },
+        {
+          "id": "built-walk",
+          "weight": 3,
+          "any": [
+            "\\bdist/",
+            "built site",
+            "\\bwalk(s|ing)?\\b",
+            "\\bcrawl",
+            "http\\.server",
+            "generated site|click(s|ing)? through|every page of|follow(s|ing)? the (menus?|links?)",
+            "built (output|site|pages)|find your way|start(s)? at the home ?page"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "^route|walk|crawl|nav[-_]check"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "visual-qa": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "screenshots",
+          "weight": 3,
+          "any": [
+            "screenshots?",
+            "render(ed|ing)?\\b.{0,30}\\b(page|width|theme)",
+            "(pictures?|images?|photos?|shots?|captures?) of (each|every|the|all)( \\w+)? pages?",
+            "screen ?caps?"
+          ]
+        },
+        {
+          "id": "widths-themes",
+          "weight": 3,
+          "any": [
+            "\\b(390|1440|768|1024)\\b",
+            "\\bmobile\\b",
+            "dark (mode|theme)",
+            "light (mode|theme)",
+            "viewports?",
+            "breakpoints?",
+            "(phone|laptop|desktop|tablet)[- ](sized?|screens?|widths?)|screen sizes?",
+            "colou?r schemes?|dark (and|or) light|narrow and wide|different (sizes|widths)"
+          ]
+        },
+        {
+          "id": "overflow",
+          "weight": 3,
+          "any": [
+            "overflow",
+            "horizontal scroll",
+            "cut off",
+            "(sticks?|poke[sd]?|spill(s|ed)?|runs?) (out|over|past|off)|past the (edge|screen)",
+            "wobble|sideways"
+          ]
+        },
+        {
+          "id": "look",
+          "weight": 3,
+          "any": [
+            "typograph",
+            "\\bspacing\\b",
+            "\\balignment\\b",
+            "\\bcontrast\\b",
+            "legib",
+            "visual(ly)?",
+            "\\bgaps?\\b|lines? up|hard to read|readab"
+          ]
+        },
+        {
+          "id": "weight",
+          "weight": 2,
+          "any": [
+            "page weight",
+            "download size",
+            "image budget",
+            "\\bweight\\b",
+            "how heavy|(heavy|big|large) (pages?|images?|pictures?)|load (time|size)|\\bweighs?\\b"
+          ]
+        },
+        {
+          "id": "images",
+          "weight": 2,
+          "any": [
+            "\\b(images?|photos?)\\b.{0,40}(crop|sharp|blurr|aspect|distort|stretch)",
+            "\\b(images?|photos?|pictures?)\\b.{0,40}(squash|fuzz|pixelat|low-res)",
+            "\\b(pictures?)\\b.{0,40}(crop|sharp|blurr|aspect|distort|stretch)"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "visual|^qa|screenshot|render"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "brand-advisor": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "identity",
+          "weight": 4,
+          "any": [
+            "\\b(brand|identity|logo|wordmark|monogram)\\b"
+          ]
+        },
+        {
+          "id": "messaging",
+          "weight": 3,
+          "any": [
+            "positioning",
+            "messaging",
+            "tagline",
+            "value proposition"
+          ]
+        },
+        {
+          "id": "visual-direction",
+          "weight": 3,
+          "any": [
+            "visual direction",
+            "art direction",
+            "palette",
+            "typeface",
+            "typograph",
+            "colou?rs?\\b"
+          ]
+        },
+        {
+          "id": "layout",
+          "weight": 2,
+          "any": [
+            "\\blayout\\b",
+            "\\bgrid\\b",
+            "hierarchy",
+            "home ?page"
+          ]
+        },
+        {
+          "id": "photography",
+          "weight": 3,
+          "any": [
+            "photograph",
+            "image presentation",
+            "retouch",
+            "image (style|treatment)"
+          ]
+        },
+        {
+          "id": "audience",
+          "weight": 2,
+          "any": [
+            "audience",
+            "visitors?",
+            "\\bclients?\\b"
+          ]
+        },
+        {
+          "id": "family",
+          "weight": 1,
+          "any": [
+            "famil(y|ies) of (brands|sites)",
+            "related sites",
+            "sibling sites"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "brand|art[-_ ]?director|designer|strateg|identity"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "portfolio-advisor": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "selection",
+          "weight": 3,
+          "any": [
+            "\\bselect(ion|ing)?\\b",
+            "\\bcurat",
+            "which (pieces|projects|work)"
+          ]
+        },
+        {
+          "id": "sequence",
+          "weight": 3,
+          "any": [
+            "\\bsequenc",
+            "order(ing)?\\b.{0,30}\\b(pieces|projects|work)",
+            "lead with",
+            "opening piece"
+          ]
+        },
+        {
+          "id": "story",
+          "weight": 3,
+          "any": [
+            "case[- ]stud",
+            "\\bstory\\b",
+            "\\bnarrative\\b",
+            "\\boutcome\\b",
+            "\\bapproach\\b"
+          ]
+        },
+        {
+          "id": "interview",
+          "weight": 3,
+          "any": [
+            "interview",
+            "questions? to ask",
+            "ask(s|ing)? (the person|them)"
+          ]
+        },
+        {
+          "id": "gaps",
+          "weight": 2,
+          "any": [
+            "\\bgaps?\\b",
+            "missing (piece|project|work)",
+            "what'?s missing"
+          ]
+        },
+        {
+          "id": "pdf-portfolio",
+          "weight": 2,
+          "any": [
+            "pdf portfolio",
+            "portfolio pdf",
+            "printable"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "portfolio|curator|case[-_ ]?study|coach"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "presence-advisor": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "profile-text",
+          "weight": 3,
+          "any": [
+            "profile (text|bio|description)",
+            "\\bbio\\b",
+            "\\bheadline\\b",
+            "linked ?in",
+            "instagram",
+            "social (profile|media)"
+          ]
+        },
+        {
+          "id": "seo",
+          "weight": 3,
+          "any": [
+            "\\bseo\\b",
+            "search (result|engine|visibility)",
+            "keywords?"
+          ]
+        },
+        {
+          "id": "social-previews",
+          "weight": 3,
+          "any": [
+            "social preview",
+            "share (card|preview|image)",
+            "open graph",
+            "link preview",
+            "(link|page) (looks|appears?|shows?)\\b.{0,30}\\b(shared|chat|feed)|shared in (chat|a feed|messages)",
+            "when (it|a link|the page) is shared"
+          ]
+        },
+        {
+          "id": "content-plan",
+          "weight": 3,
+          "any": [
+            "content plan",
+            "\\bposting\\b",
+            "\\bcadence\\b",
+            "what to post"
+          ]
+        },
+        {
+          "id": "analytics",
+          "weight": 2,
+          "any": [
+            "analytics",
+            "plausible",
+            "goatcounter",
+            "visits"
+          ]
+        },
+        {
+          "id": "align",
+          "weight": 2,
+          "any": [
+            "align(ed|s)?\\b.{0,40}\\bsite",
+            "consisten(t|cy) (with|across)",
+            "lines? up with (the )?site|matches? (the )?site|in step with"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "presence|seo|social|visibility"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "publish": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "dry-run",
+          "weight": 3,
+          "any": [
+            "dry[- ]?run",
+            "trial run|rehears(e|al)|what would change|preview of (the )?changes"
+          ]
+        },
+        {
+          "id": "confirm",
+          "weight": 3,
+          "any": [
+            "\\bconfirm",
+            "\\bapprove",
+            "ask (the )?(person|user)",
+            "go-?ahead|say (yes|so)|wait(s)? for (the )?(person|user)|sign-?off"
+          ]
+        },
+        {
+          "id": "deploy",
+          "weight": 3,
+          "any": [
+            "\\bdeploy",
+            "publish(es|ed)?\\b.{0,30}\\bpublic",
+            "push(es|ed)? (to )?(the )?public",
+            "send(s)? (the )?\\w*\\s?(build|site)? ?(out|live)|\\brelease[sd]?\\b|go(es)? live|\\bship(s|ped)?\\b",
+            "public repo(sitory)?|put .{0,30}(live|online|on the internet)"
+          ]
+        },
+        {
+          "id": "read-back",
+          "weight": 2,
+          "any": [
+            "read (it )?back",
+            "verify (the )?(live|public)",
+            "is live",
+            "live site",
+            "real (address|site)|visitors? see|once it'?s up|open the (live|real|published)"
+          ]
+        },
+        {
+          "id": "handoff",
+          "weight": 2,
+          "any": [
+            "handoff\\.md"
+          ]
+        },
+        {
+          "id": "state-check",
+          "weight": 3,
+          "any": [
+            "state check",
+            "git status",
+            "uncommitted",
+            "on main",
+            "working tree is clean",
+            "on the main branch|no uncommitted|nothing (is )?(half-done|pending|uncommitted)|clean (checkout|tree|state)"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "^publish|^deploy|ship"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "setup": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "install",
+          "weight": 3,
+          "any": [
+            "\\binstall",
+            "homebrew",
+            "\\bbrew\\b",
+            "\\bnode\\b",
+            "\\bpython\\b",
+            "\\b(programs|tools)\\b.{0,40}\\b(needs?|requires?|installed)|set(ting)? up"
+          ]
+        },
+        {
+          "id": "gh-login",
+          "weight": 3,
+          "any": [
+            "gh auth",
+            "github (account|login)",
+            "sign in",
+            "log ?in",
+            "authenticat|gh (command|auth)|github (sign-?in|login)"
+          ]
+        },
+        {
+          "id": "chrome",
+          "weight": 2,
+          "any": [
+            "\\bchrome\\b",
+            "\\bbrowser\\b"
+          ]
+        },
+        {
+          "id": "one-step",
+          "weight": 3,
+          "any": [
+            "one step at a time",
+            "step by step",
+            "one thing at a time",
+            "non-?developer",
+            "one (small )?(thing|step) at a time|go slowly|never used a terminal|\\bbeginner|\\bnovice|first[- ]time",
+            "walk(s)? (the )?person through|plain (words|language)",
+            "\\bpatient\\b|never run two|explain(s)? each (command|step)"
+          ]
+        },
+        {
+          "id": "clone",
+          "weight": 2,
+          "any": [
+            "\\bclone\\b",
+            "download the (repo|site)",
+            "(copy|download)\\b.{0,30}\\b(repo|repository|site)\\b",
+            "(fetch|get|pull|grab)\\b.{0,30}\\b(repo|repository)\\b"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "^setup|set-up|onboard"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "add-work": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "new-piece",
+          "weight": 3,
+          "any": [
+            "add (a )?(new )?(piece|project|work|case study)",
+            "new (piece|project)",
+            "update (a|an|the) (piece|project)",
+            "portfolio (entry|entries|piece|item|page)"
+          ]
+        },
+        {
+          "id": "front-matter",
+          "weight": 3,
+          "any": [
+            "front ?matter",
+            "index\\.md",
+            "content/\\w+/"
+          ]
+        },
+        {
+          "id": "images",
+          "weight": 3,
+          "any": [
+            "\\bimages?\\b",
+            "\\bmedia\\b",
+            "\\bphotos?\\b",
+            "originals",
+            "resiz",
+            "\\bpictures?\\b|thumbnails?"
+          ]
+        },
+        {
+          "id": "draft",
+          "weight": 2,
+          "any": [
+            "\\bdraft",
+            "not ready|held back|stays? out of (the )?(live )?site|unpublished|work in progress"
+          ]
+        },
+        {
+          "id": "required",
+          "weight": 2,
+          "any": [
+            "required (fields|keys)",
+            "title.{0,20}year"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "add[-_ ]?work|add[-_ ]?piece"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "resume": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "resume",
+          "weight": 4,
+          "any": [
+            "\\bresume\\b",
+            "\\bcv\\b"
+          ]
+        },
+        {
+          "id": "pdf",
+          "weight": 3,
+          "any": [
+            "\\bpdf\\b"
+          ]
+        },
+        {
+          "id": "upkeep",
+          "weight": 2,
+          "any": [
+            "upkeep",
+            "keep (it )?current",
+            "refresh"
+          ]
+        },
+        {
+          "id": "sync",
+          "weight": 3,
+          "any": [
+            "resume\\.md",
+            "\\bstale\\b",
+            "regenerat"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "resume|^cv"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "import-profile": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "export",
+          "weight": 4,
+          "any": [
+            "\\bexport\\b",
+            "data archive"
+          ]
+        },
+        {
+          "id": "linkedin",
+          "weight": 4,
+          "any": [
+            "linked ?in"
+          ]
+        },
+        {
+          "id": "files",
+          "weight": 2,
+          "any": [
+            "\\.zip",
+            "\\.csv",
+            "\\bcsv\\b"
+          ]
+        },
+        {
+          "id": "own-data",
+          "weight": 3,
+          "any": [
+            "your own (export|data)",
+            "the person'?s own",
+            "never scrape",
+            "no scraping",
+            "don'?t scrape"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "import|linkedin"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "ideas": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "parallel",
+          "weight": 4,
+          "any": [
+            "in parallel",
+            "\\badvisors?\\b",
+            "sub-?agents?",
+            "each agent"
+          ]
+        },
+        {
+          "id": "ideas",
+          "weight": 3,
+          "any": [
+            "\\bideas?\\b",
+            "brainstorm",
+            "suggestions?"
+          ]
+        },
+        {
+          "id": "trio",
+          "weight": 3,
+          "any": [
+            "\\bbrand\\b",
+            "\\bportfolio\\b",
+            "\\bpresence\\b"
+          ]
+        },
+        {
+          "id": "combine",
+          "weight": 3,
+          "any": [
+            "\\bcombine",
+            "synthes",
+            "merge (the )?results"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "^ideas?"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "review": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "sequence",
+          "weight": 3,
+          "any": [
+            "\\bsequence\\b",
+            "\\bin order\\b",
+            "first\\b.{0,40}\\bthen\\b",
+            "start(s)? with|\\bthen ask|in turn|one after (the )?other"
+          ]
+        },
+        {
+          "id": "checks",
+          "weight": 3,
+          "any": [
+            "\\bgates?\\b",
+            "check_site",
+            "check-site",
+            "\\bchecker\\b",
+            "automated checks?|\\blint"
+          ]
+        },
+        {
+          "id": "reviewers",
+          "weight": 3,
+          "any": [
+            "privacy",
+            "content.editor",
+            "visual",
+            "\\broute\\b"
+          ]
+        },
+        {
+          "id": "verdict",
+          "weight": 3,
+          "any": [
+            "\\bverdict\\b",
+            "\\bblockers?\\b",
+            "\\bfindings?\\b",
+            "go or no-?go|go/no-go|sign[- ]?off|ready to (publish|release|ship)",
+            "yes or no|may be published"
+          ]
+        },
+        {
+          "id": "before-publish",
+          "weight": 2,
+          "any": [
+            "before (publish|deploy|going live)",
+            "before (anything is )?(release|released|publishing|going live)",
+            "before (the site |it |anything |everything )?(is |are |gets? |goes? )?(release[sd]?|publish(ing|ed)?|deploy(ing|ed)?|live)\\b"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "review"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "capture": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "capture",
+          "weight": 4,
+          "any": [
+            "\\bcapture",
+            "\\bclip\\b",
+            "bookmark|clipping|save(s)? (a |the )?(post|page|article|link)"
+          ]
+        },
+        {
+          "id": "card",
+          "weight": 3,
+          "any": [
+            "preview card",
+            "\\bcard\\b",
+            "og:image",
+            "(small|share|sharing|preview|thumbnail) (picture|image)|shows? when (it is |it'?s )?shared"
+          ]
+        },
+        {
+          "id": "feed-cover",
+          "weight": 3,
+          "any": [
+            "\\bfeed\\b",
+            "\\bcover\\b",
+            "(home ?page|site) (stream|feed)|\\bstream\\b|picture on one of"
+          ]
+        },
+        {
+          "id": "url",
+          "weight": 3,
+          "any": [
+            "https?://",
+            "\\burl\\b",
+            "web address|paste[sd]? (a |the )?(link|address)"
+          ]
+        },
+        {
+          "id": "files",
+          "weight": 2,
+          "any": [
+            "text\\.md",
+            "reference\\.json"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "capture|clip"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "portfolio-list": {
+      "kinds": [
+        "agent",
+        "command",
+        "skill"
+      ],
+      "signals": [
+        {
+          "id": "list",
+          "weight": 4,
+          "any": [
+            "\\blist (the |all |every )?(portfolio|pieces|projects|work)",
+            "inventory of"
+          ]
+        },
+        {
+          "id": "fields",
+          "weight": 3,
+          "any": [
+            "\\bstatus\\b",
+            "\\bdraft\\b",
+            "\\bfields?\\b"
+          ]
+        },
+        {
+          "id": "read-only",
+          "weight": 3,
+          "any": [
+            "read[- ]only",
+            "never (writes|changes|edits)",
+            "does not (write|change|edit)"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "^portfolio$"
+          ],
+          "name": true
+        }
+      ]
+    },
+    "builder": {
+      "kinds": [
+        "code"
+      ],
+      "signals": [
+        {
+          "id": "strip-comments",
+          "weight": 3,
+          "any": [
+            "<!--.{0,16}-->",
+            "strip.{0,20}comments?"
+          ]
+        },
+        {
+          "id": "nojekyll",
+          "weight": 3,
+          "any": [
+            "\\.nojekyll"
+          ]
+        },
+        {
+          "id": "cname",
+          "weight": 2,
+          "any": [
+            "\\bCNAME\\b"
+          ]
+        },
+        {
+          "id": "drafts",
+          "weight": 2,
+          "any": [
+            "--drafts?",
+            "\\bdraft\\b"
+          ]
+        },
+        {
+          "id": "list",
+          "weight": 1,
+          "any": [
+            "--list"
+          ]
+        },
+        {
+          "id": "tokens",
+          "weight": 3,
+          "any": [
+            "\\\\?\\{\\\\?\\{\\s*(siteUrl|siteTitle|year|name|nav|root)",
+            "replace.{0,40}\\\\?\\{\\\\?\\{"
+          ]
+        },
+        {
+          "id": "dist",
+          "weight": 3,
+          "any": [
+            "dist.{0,80}(writeFile|mkdir|copyFile|cpSync|write_text)",
+            "(writeFile|mkdirSync|copyFile|cpSync|write_text).{0,80}dist"
+          ]
+        },
+        {
+          "id": "markdown",
+          "weight": 2,
+          "any": [
+            "front ?matter",
+            "\\bmarkdown\\b"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "^build"
+          ],
+          "name": true
+        }
+      ],
+      "needsParity": true,
+      "script": "build.py",
+      "hook": "rewrite"
+    },
+    "content-loader": {
+      "kinds": [
+        "code"
+      ],
+      "signals": [
+        {
+          "id": "front-matter",
+          "weight": 4,
+          "any": [
+            "front ?matter",
+            "^---\\s*$",
+            "/\\^---|['\\\"]---['\\\"]|header block|\\byaml\\b"
+          ]
+        },
+        {
+          "id": "markdown",
+          "weight": 3,
+          "any": [
+            "\\bmarkdown\\b",
+            "\\*\\*.{0,30}\\*\\*",
+            "<(p|h[1-6]|ul|li|em|strong)>"
+          ]
+        },
+        {
+          "id": "video",
+          "weight": 3,
+          "any": [
+            "youtube",
+            "vimeo",
+            "drive\\.google"
+          ]
+        },
+        {
+          "id": "draft",
+          "weight": 2,
+          "any": [
+            "draft"
+          ]
+        },
+        {
+          "id": "references",
+          "weight": 2,
+          "any": [
+            "\\bref:",
+            "reference"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "^content|^load"
+          ],
+          "name": true
+        }
+      ],
+      "needsParity": true,
+      "script": "content.py",
+      "hook": null
+    },
+    "checker": {
+      "kinds": [
+        "code"
+      ],
+      "signals": [
+        {
+          "id": "private",
+          "weight": 3,
+          "any": [
+            "forbidden",
+            "HANDOFF",
+            "decisions",
+            "private path"
+          ]
+        },
+        {
+          "id": "links",
+          "weight": 3,
+          "any": [
+            "broken link",
+            "links? (exist|resolve)",
+            "\\bhref\\b",
+            "\\bhrefs?\\b"
+          ]
+        },
+        {
+          "id": "root-absolute",
+          "weight": 2,
+          "any": [
+            "root-absolute",
+            "startsWith\\(['\\\"]/"
+          ]
+        },
+        {
+          "id": "privacy-patterns",
+          "weight": 3,
+          "any": [
+            "\\bphone\\b",
+            "street address",
+            "unlisted",
+            "e-?mail"
+          ]
+        },
+        {
+          "id": "reachable",
+          "weight": 2,
+          "any": [
+            "reachab"
+          ]
+        },
+        {
+          "id": "unfinished",
+          "weight": 3,
+          "any": [
+            "\\bTODO\\b",
+            "\\bTBD\\b",
+            "\\blorem\\b"
+          ]
+        },
+        {
+          "id": "media",
+          "weight": 2,
+          "any": [
+            "\\bexif\\b",
+            "\\bmetadata\\b",
+            "\\b3 ?MB\\b",
+            "3 \\* 1024"
+          ]
+        },
+        {
+          "id": "cutover",
+          "weight": 2,
+          "any": [
+            "cutover"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "^check"
+          ],
+          "name": true
+        }
+      ],
+      "script": "check_site.py",
+      "hook": "rewrite"
+    },
+    "deploy": {
+      "kinds": [
+        "code"
+      ],
+      "signals": [
+        {
+          "id": "clone-public",
+          "weight": 4,
+          "any": [
+            "git clone",
+            "clone.{0,40}public",
+            "public[ _-]?repo",
+            "['\\\"]clone['\\\"]"
+          ]
+        },
+        {
+          "id": "wipe",
+          "weight": 3,
+          "any": [
+            "rm -rf",
+            "rmSync",
+            "rimraf",
+            "\\bwipe",
+            "rmtree"
+          ]
+        },
+        {
+          "id": "copy-dist",
+          "weight": 3,
+          "any": [
+            "\\bdist/",
+            "cp -R",
+            "cpSync",
+            "copytree",
+            "\\brsync\\b"
+          ]
+        },
+        {
+          "id": "forbidden",
+          "weight": 3,
+          "any": [
+            "forbidden",
+            "private path"
+          ]
+        },
+        {
+          "id": "gate",
+          "weight": 2,
+          "any": [
+            "check-site",
+            "check_site",
+            "\\bgate\\b"
+          ]
+        },
+        {
+          "id": "push",
+          "weight": 4,
+          "any": [
+            "git push",
+            "push origin",
+            "['\\\"]push['\\\"]"
+          ]
+        },
+        {
+          "id": "commit",
+          "weight": 2,
+          "any": [
+            "git commit",
+            "commit -m",
+            "['\\\"]commit['\\\"]"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "deploy|publish|ship"
+          ],
+          "name": true
+        }
+      ],
+      "script": "deploy.py",
+      "hook": "rewrite"
+    },
+    "doctor": {
+      "kinds": [
+        "code"
+      ],
+      "signals": [
+        {
+          "id": "probe",
+          "weight": 3,
+          "any": [
+            "command -v",
+            "\\bwhich\\b",
+            "--version"
+          ]
+        },
+        {
+          "id": "tools",
+          "weight": 3,
+          "any": [
+            "\\bnode\\b.{0,60}\\bgit\\b",
+            "\\bgit\\b.{0,60}\\bnode\\b",
+            "gh auth"
+          ]
+        },
+        {
+          "id": "never-installs",
+          "weight": 2,
+          "any": [
+            "never install",
+            "does not install",
+            "only report",
+            "report only"
+          ]
+        },
+        {
+          "id": "browser",
+          "weight": 2,
+          "any": [
+            "\\bchrome\\b",
+            "\\bchromium\\b"
+          ]
+        },
+        {
+          "id": "messages",
+          "weight": 2,
+          "any": [
+            "\\bmissing\\b",
+            "not installed",
+            "\\bfound\\b"
+          ]
+        },
+        {
+          "id": "exit0",
+          "weight": 3,
+          "any": [
+            "exit 0"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "check[-_]?setup|doctor|machine"
+          ],
+          "name": true
+        }
+      ],
+      "script": "doctor.py",
+      "hook": "plugin"
+    },
+    "sync_main": {
+      "kinds": [
+        "code"
+      ],
+      "signals": [
+        {
+          "id": "fetch",
+          "weight": 3,
+          "any": [
+            "git fetch",
+            "['\\\"]fetch['\\\"]"
+          ]
+        },
+        {
+          "id": "ff-only",
+          "weight": 4,
+          "any": [
+            "--ff-only"
+          ]
+        },
+        {
+          "id": "main",
+          "weight": 3,
+          "any": [
+            "\\bmain\\b"
+          ]
+        },
+        {
+          "id": "dirty",
+          "weight": 3,
+          "any": [
+            "\\bdirty\\b",
+            "uncommitted",
+            "status --porcelain",
+            "diff --quiet",
+            "porcelain"
+          ]
+        },
+        {
+          "id": "exit0",
+          "weight": 2,
+          "any": [
+            "exit 0",
+            "exit\\(0\\)"
+          ]
+        },
+        {
+          "id": "branch-check",
+          "weight": 2,
+          "any": [
+            "rev-parse --abbrev-ref",
+            "symbolic-ref",
+            "branch --show-current",
+            "abbrev-ref"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "sync|current|fast-?forward"
+          ],
+          "name": true
+        }
+      ],
+      "script": "sync_main.py",
+      "hook": "plugin"
+    },
+    "render": {
+      "kinds": [
+        "code"
+      ],
+      "signals": [
+        {
+          "id": "browser",
+          "weight": 4,
+          "any": [
+            "playwright",
+            "puppeteer",
+            "chromium",
+            "chrome",
+            "launch\\("
+          ]
+        },
+        {
+          "id": "screenshot",
+          "weight": 4,
+          "any": [
+            "screenshot",
+            "fullPage"
+          ]
+        },
+        {
+          "id": "widths",
+          "weight": 3,
+          "any": [
+            "\\b(390|1440|768|1024)\\b",
+            "viewport",
+            "setViewportSize"
+          ]
+        },
+        {
+          "id": "themes",
+          "weight": 2,
+          "any": [
+            "colorScheme",
+            "prefers-color-scheme",
+            "\\bdark\\b"
+          ]
+        },
+        {
+          "id": "overflow",
+          "weight": 3,
+          "any": [
+            "scrollWidth",
+            "overflow",
+            "clientWidth"
+          ]
+        },
+        {
+          "id": "weight",
+          "weight": 2,
+          "any": [
+            "transferSize",
+            "content-length",
+            "\\bweight\\b"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "render|screenshot"
+          ],
+          "name": true
+        }
+      ],
+      "script": "render.py",
+      "hook": "rewrite"
+    },
+    "images": {
+      "kinds": [
+        "code"
+      ],
+      "signals": [
+        {
+          "id": "strip-app1",
+          "weight": 4,
+          "any": [
+            "APP1",
+            "0xFFE1",
+            "0xff\\W+0xe1",
+            "\\\\xff\\\\xe1",
+            "\\bexif\\b",
+            "exif",
+            "\\b0xe1\\b|\\bapp1\\b"
+          ]
+        },
+        {
+          "id": "resize",
+          "weight": 3,
+          "any": [
+            "\\bsips\\b",
+            "\\bresize",
+            "\\bsharp\\b",
+            "\\bmagick\\b"
+          ]
+        },
+        {
+          "id": "widths",
+          "weight": 3,
+          "any": [
+            "\\b(480|640|960)\\b",
+            "srcset",
+            "\\bwidths?\\b"
+          ]
+        },
+        {
+          "id": "originals",
+          "weight": 2,
+          "any": [
+            "originals?"
+          ]
+        },
+        {
+          "id": "formats",
+          "weight": 2,
+          "any": [
+            "jpe?g",
+            "\\bpng\\b",
+            "\\bwebp\\b"
+          ]
+        },
+        {
+          "id": "size-cap",
+          "weight": 2,
+          "any": [
+            "3 ?MB",
+            "3 \\* 1024",
+            "3145728",
+            "too large"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "image|photo|prepare"
+          ],
+          "name": true
+        }
+      ],
+      "script": "images.py",
+      "hook": "rewrite"
+    },
+    "capture-tool": {
+      "kinds": [
+        "code"
+      ],
+      "signals": [
+        {
+          "id": "fetch",
+          "weight": 3,
+          "any": [
+            "fetch\\(",
+            "https?\\.get",
+            "urllib",
+            "requests?\\.get",
+            "\\bcurl\\b"
+          ]
+        },
+        {
+          "id": "og",
+          "weight": 3,
+          "any": [
+            "og:(title|image|description)",
+            "twitter:"
+          ]
+        },
+        {
+          "id": "instagram",
+          "weight": 3,
+          "any": [
+            "instagram",
+            "comment[s ]?count"
+          ]
+        },
+        {
+          "id": "write-ref",
+          "weight": 4,
+          "any": [
+            "reference\\.json",
+            "text\\.md"
+          ]
+        },
+        {
+          "id": "card",
+          "weight": 3,
+          "any": [
+            "card\\.(jpg|png)",
+            "og:image"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "capture|clip"
+          ],
+          "name": true
+        }
+      ],
+      "script": "capture.py",
+      "hook": "rewrite"
+    },
+    "resume-pdf": {
+      "kinds": [
+        "code"
+      ],
+      "signals": [
+        {
+          "id": "print",
+          "weight": 4,
+          "any": [
+            "page\\.pdf",
+            "printToPDF",
+            "--print-to-pdf"
+          ]
+        },
+        {
+          "id": "resume",
+          "weight": 4,
+          "any": [
+            "\\bresume\\b"
+          ]
+        },
+        {
+          "id": "paper",
+          "weight": 3,
+          "any": [
+            "\\bLetter\\b",
+            "\\bA4\\b",
+            "8\\.5"
+          ]
+        },
+        {
+          "id": "hash",
+          "weight": 3,
+          "any": [
+            "sha256",
+            "createHash",
+            "hashlib"
+          ]
+        },
+        {
+          "id": "markdown",
+          "weight": 2,
+          "any": [
+            "resume\\.md"
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "resume|cv"
+          ],
+          "name": true
+        }
+      ],
+      "script": "resume_pdf.py",
+      "hook": "rewrite"
+    },
+    "playwright-pin": {
+      "kinds": [
+        "code"
+      ],
+      "signals": [
+        {
+          "id": "playwright",
+          "weight": 6,
+          "any": [
+            "\\\"playwright\\\""
+          ]
+        },
+        {
+          "id": "deps",
+          "weight": 2,
+          "any": [
+            "\\\"dependencies\\\""
+          ]
+        },
+        {
+          "id": "name",
+          "weight": 1,
+          "any": [
+            "^package\\.json$"
+          ],
+          "name": true
+        }
+      ],
+      "files": [
+        "^package\\.json$"
+      ],
+      "hook": null
+    }
+  },
+  "descriptions": {
+    "content-editor": {
+      "counterpart": "agent content-editor",
+      "does": "Reviews what a site's pages say: every fact traced to the person's content, no placeholders, voice, structure and consistency across pages.",
+      "behaviour": [
+        "traces each fact on a page to the person's content or decisions",
+        "flags placeholder text (lorem, TODO, TBD)",
+        "judges voice and tone against the brand notes",
+        "checks structure and consistency across pages"
+      ]
+    },
+    "privacy-guard": {
+      "counterpart": "agent privacy-guard plus the check_site privacy family",
+      "does": "Decides what is safe to be public forever: location, other people, documents, image metadata, unapproved content, comments in the page source.",
+      "behaviour": [
+        "treats anything published as public forever",
+        "looks for location details (home address, geotags)",
+        "looks for hidden image metadata",
+        "protects other people, especially minors",
+        "looks for documents and identifiers",
+        "refuses unapproved content",
+        "checks source comments"
+      ]
+    },
+    "route": {
+      "counterpart": "script check_site.py (walk family) and --report",
+      "does": "Walks the built site: navigation, external links, base paths, retired pages and head metadata.",
+      "behaviour": [
+        "walks every page of the built site",
+        "checks navigation and that every internal link resolves",
+        "checks external links",
+        "checks that links work under both base paths",
+        "checks that retired pages redirect",
+        "checks head metadata (title, description, social tags)"
+      ]
+    },
+    "visual-qa": {
+      "counterpart": "agent visual-qa (and render.py --weight)",
+      "does": "Looks at the rendered site at several widths and themes: overflow, spacing, legibility, image presentation and page weight.",
+      "behaviour": [
+        "looks at screenshots of the rendered pages",
+        "at narrow and wide widths and in light and dark themes",
+        "looks for horizontal overflow",
+        "judges spacing, alignment, contrast and legibility",
+        "measures image and page weight"
+      ]
+    },
+    "brand-advisor": {
+      "counterpart": "agent brand-advisor",
+      "does": "Proposes identity, messaging, visual direction, layout, typography and how images are presented, from the person's decisions.",
+      "behaviour": [
+        "works on the site's identity and positioning",
+        "proposes messaging and tagline options",
+        "proposes visual direction: colour, typography, layout",
+        "advises how photography and images are presented",
+        "thinks about audience paths through the site"
+      ]
+    },
+    "portfolio-advisor": {
+      "counterpart": "agent portfolio-advisor",
+      "does": "Chooses which pieces of work to show and in what order, how each tells its story, and interviews the person for what a case study needs.",
+      "behaviour": [
+        "selects and curates which pieces to show",
+        "sequences the pieces",
+        "shapes each piece as a story (brief, role, approach, outcome)",
+        "interviews the person for the facts",
+        "points out gaps in the set",
+        "advises on a printable portfolio PDF"
+      ]
+    },
+    "presence-advisor": {
+      "counterpart": "agent presence-advisor",
+      "does": "Advises on profile text aligned with the site, search visibility, social previews, a light content plan and analytics options.",
+      "behaviour": [
+        "writes or reviews profile text and bios",
+        "advises on search visibility and keywords",
+        "checks social share previews",
+        "suggests a light content plan and posting rhythm",
+        "compares analytics options"
+      ]
+    },
+    "publish": {
+      "counterpart": "skill publish",
+      "does": "The publish routine: check state, dry run, ask for confirmation, deploy, read the live site back, record it in HANDOFF.",
+      "behaviour": [
+        "checks the repo state first",
+        "does a dry run and shows the changes",
+        "asks the person to confirm",
+        "deploys",
+        "reads the live site back",
+        "records the publish in HANDOFF.md"
+      ]
+    },
+    "setup": {
+      "counterpart": "skill setup",
+      "does": "Sets up a non-developer's machine one step at a time: tools, GitHub sign-in, a browser, a copy of the site.",
+      "behaviour": [
+        "installs or checks the tools one step at a time",
+        "signs in to GitHub",
+        "checks for a browser",
+        "gets a copy of the repo"
+      ]
+    },
+    "add-work": {
+      "counterpart": "skill add-work",
+      "does": "Adds or updates a piece of work: front matter, images, draft status, required fields.",
+      "behaviour": [
+        "adds a new piece or updates one",
+        "writes the piece's front matter",
+        "prepares its images",
+        "keeps it as a draft until ready",
+        "checks the required fields"
+      ]
+    },
+    "resume": {
+      "counterpart": "skill resume",
+      "does": "Keeps the resume page and its PDF current.",
+      "behaviour": [
+        "updates the resume source",
+        "regenerates the PDF when the source changes"
+      ]
+    },
+    "import-profile": {
+      "counterpart": "skill import-profile",
+      "does": "Imports content from the person's own profile data export.",
+      "behaviour": [
+        "reads an export file the person downloaded",
+        "never scrapes a profile"
+      ]
+    },
+    "ideas": {
+      "counterpart": "skill ideas",
+      "does": "Asks the brand, portfolio and presence advisors for ideas in parallel and combines what they return.",
+      "behaviour": [
+        "runs several advisors in parallel",
+        "collects their suggestions",
+        "combines them into one set of ideas"
+      ]
+    },
+    "review": {
+      "counterpart": "skill review",
+      "does": "Runs the pre-publish review sequence: the checks, then the reviewers, then a verdict.",
+      "behaviour": [
+        "runs the checks first, then the reviewers",
+        "collects findings",
+        "gives a verdict before publishing"
+      ]
+    },
+    "capture": {
+      "counterpart": "skill capture",
+      "does": "Captures a public post or page as a reference with a preview card.",
+      "behaviour": [
+        "takes a link and captures its text and preview card",
+        "asks whether it joins the home feed or becomes a piece's cover"
+      ]
+    },
+    "portfolio-list": {
+      "counterpart": "script build.py --list (run by the coordinator)",
+      "does": "Lists the portfolio: every piece, its status and its fields.",
+      "behaviour": [
+        "lists the pieces of each portfolio",
+        "shows draft status"
+      ]
+    },
+    "builder": {
+      "counterpart": "script build.py",
+      "does": "Builds the site: strips comments, writes .nojekyll, writes CNAME only after cutover, supports drafts and a listing, expands page tokens, writes the output folder.",
+      "behaviour": [
+        "strips HTML and CSS comments from the output",
+        "writes a .nojekyll file",
+        "writes CNAME only when the site has cut over to its own domain",
+        "supports a drafts mode and a listing mode",
+        "expands {{tokens}} in pages",
+        "writes the built site to a dist folder"
+      ]
+    },
+    "content-loader": {
+      "counterpart": "script content.py (inside the build)",
+      "does": "Loads page content: a small Markdown subset with front matter, video links that embed, drafts that never build, captured references as cards.",
+      "behaviour": [
+        "parses front matter",
+        "renders a small Markdown subset",
+        "turns a video link on its own line into an embed",
+        "never builds a draft"
+      ]
+    },
+    "checker": {
+      "counterpart": "script check_site.py",
+      "does": "Checks a built site: no private paths, no comments, links resolve, no root-absolute links, privacy patterns, domain and cutover pairing, media metadata and size, unfinished markers.",
+      "behaviour": [
+        "refuses private paths in the output",
+        "checks that every link resolves",
+        "refuses root-absolute links",
+        "looks for phone numbers, street addresses and unlisted e-mail addresses",
+        "checks media for hidden metadata and size",
+        "looks for TODO, TBD and lorem"
+      ]
+    },
+    "deploy": {
+      "counterpart": "script deploy.py",
+      "does": "Deploys: builds, runs the gate, clones the public repo, replaces its contents with the built site, refuses forbidden paths, runs the gate again and pushes.",
+      "behaviour": [
+        "clones the public repository",
+        "wipes and replaces its contents with the built site",
+        "refuses forbidden paths",
+        "runs the gate before and after",
+        "commits and pushes"
+      ]
+    },
+    "doctor": {
+      "counterpart": "script doctor.py (SessionStart)",
+      "does": "Reports the state of the machine at session start: the tools present, the GitHub sign-in, a browser. Never installs anything and always exits 0.",
+      "behaviour": [
+        "reports whether the tools are present",
+        "checks the GitHub sign-in",
+        "never installs anything",
+        "always exits 0"
+      ]
+    },
+    "sync_main": {
+      "counterpart": "script sync_main.py (SessionStart)",
+      "does": "Fast-forwards main at session start, never resetting anything, and does nothing when the checkout is dirty.",
+      "behaviour": [
+        "fetches origin",
+        "fast-forwards only",
+        "does nothing when there are uncommitted changes",
+        "always exits 0"
+      ]
+    },
+    "render": {
+      "counterpart": "script render.py",
+      "does": "Takes full-page screenshots at several widths and themes in a browser and warns about horizontal overflow.",
+      "behaviour": [
+        "drives a browser",
+        "takes full-page screenshots",
+        "at several widths and in light and dark themes",
+        "measures horizontal overflow"
+      ]
+    },
+    "images": {
+      "counterpart": "script images.py",
+      "does": "Prepares images: strips hidden metadata (EXIF, APP1 segments), makes responsive size copies, refuses very large files.",
+      "behaviour": [
+        "strips APP1 / EXIF segments from JPEGs",
+        "resizes images to several widths",
+        "keeps originals aside",
+        "refuses files over a size cap"
+      ]
+    },
+    "capture-tool": {
+      "counterpart": "script capture.py",
+      "does": "Fetches a public page, reads its preview tags, writes a reference record and downloads the card image.",
+      "behaviour": [
+        "fetches a page over HTTP",
+        "reads og: preview tags",
+        "writes reference.json and text.md",
+        "downloads the card image"
+      ]
+    },
+    "resume-pdf": {
+      "counterpart": "script resume_pdf.py",
+      "does": "Renders the resume page to a PDF at a paper size and records a hash of the source.",
+      "behaviour": [
+        "prints the resume page to PDF",
+        "at Letter or A4",
+        "records a hash of the source"
+      ]
+    },
+    "playwright-pin": {
+      "counterpart": "none (the plugin needs no npm)",
+      "does": "A package.json whose only job is to pin Playwright for the browser tools.",
+      "behaviour": [
+        "declares Playwright as a dependency"
+      ]
+    }
+  }
+}

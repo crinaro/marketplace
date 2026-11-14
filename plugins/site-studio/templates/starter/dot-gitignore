@@ -1,0 +1,5 @@
+site/dist/
+originals/
+.DS_Store
+.claude/worktrees/
+.site-studio/review/

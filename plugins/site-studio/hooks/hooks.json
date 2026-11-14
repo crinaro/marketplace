@@ -1,0 +1,29 @@
+{
+  "description": "site-studio hooks (dev #835). SessionStart: when the session's own project holds site/site.json that mentions site-studio (a loose grep, so any JSON spelling of the marker starts it; siteconfig.py checks strictly afterwards), runs scripts/doctor.py --hook and scripts/sync_main.py --hook, which make no gh network call, are bounded by timeouts and print one line each; otherwise starts no python at all (named changes S7, S10). PreToolUse: matcher Bash, Monitor and any mcp__*terminal* tool (S3); the shell starts scripts/publish_guard.py ONLY when the payload text contains deploy.py in any case, whatever CLAUDE_PROJECT_DIR is, so every other tool call starts no python (S1); publish_guard.py resolves the target repo from the payload cwd plus any cd in the command and asks the person before a deploy.py --confirm in default, acceptEdits, plan and auto, and denies in every other mode or when the mode is missing (S4); it fails CLOSED: any exception emits deny and exits 2 (M1). \"onFailure\": \"block\" on the PreToolUse hook makes a platform-side failure or timeout block too; it needs Claude Code v2.1.295 or later (DOCUMENTED, hooks reference). CLAUDE_PROJECT_DIR: exported to plugin hook commands (DOCUMENTED, hooks reference: 'the project root where the session started'), which is why only the session-start hook keys on it and the publish guard never does. Whether the harness shows the guard's ask in each permission mode and surface is UNVERIFIED until probe P-7 (see scripts/publish_guard.py); how a scheduled run (P-9) and the cloud (S4) treat these hooks is UNVERIFIED.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=\"${CLAUDE_PROJECT_DIR:-.}/site/site.json\"; [ -f \"$f\" ] && grep -q 'site-studio' \"$f\" && { python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/doctor.py\" --hook; python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/sync_main.py\" --hook; }; exit 0",
+            "timeout": 25
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Monitor|mcp__.*terminal.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "p=$(cat); case \"$p\" in *[dD][eE][pP][lL][oO][yY].[pP][yY]*) printf '%s' \"$p\" | python3 \"${CLAUDE_PLUGIN_ROOT}/scripts/publish_guard.py\"; rc=$?; [ \"$rc\" -eq 0 ] || rc=2; exit $rc;; esac; exit 0",
+            "timeout": 15,
+            "onFailure": "block"
+          }
+        ]
+      }
+    ]
+  }
+}
