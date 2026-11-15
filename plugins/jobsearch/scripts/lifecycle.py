@@ -42,6 +42,13 @@ or, if it was first seen strictly before the cutover, a `legacy-backlog` failure
 failures until read"). A row no rule matches is `unclassified`, a TERM of the conservation line and never
 an exception (N6).
 
+A ROLE AT A COMPANY THE CANDIDATE HAS NOT TARGETED IS HELD (0.86.0, dev #834; design-network-first.md 3.2, 3.5). Stage
+`held-for-company` (`HELD_STAGES`), `detail` one of `HELD_WHY` (`undecided`, `watching`, `passed`): the sighting is recorded,
+and its JD read, screen and research wait until the company is `active-target`. It is derived, never stored, never a failure,
+never admitted and never in pursue-or-pass, and the conservation line counts it. Only a role no read has reached is held
+(`waiting`, or `uncaptured` / `unread` / `read-failed`); work already done is never demoted. INTAKE IS COUNTED IN COMPANIES
+(`search.company_intake_per_run`): `drain_plan` admits every waiting role of each admitted company together.
+
 AN ENVIRONMENT FAULT IS NOT THE ROLE'S FAULT (0.85.0, dev #839 / public #182, dev #840 / public #181; design-hidden-pane-reads.md
 section 7). A browser read that cannot happen because the Browser pane is hidden, or because the reader's tab stays in the
 background, is recorded `not-attempted` with outcome `pane-hidden`: cause class `environment`, a third class beside `run`
@@ -134,7 +141,9 @@ RETRY_STOP_ROLE_CLASS = 2               # section 4.5 IN4: consecutive role-clas
 HELD_ROUTE_AFTER = 3                    # 0.85.0: consecutive environment-class admissions before a role goes to YOUR READ
 SKEW_DAYS = 14
 ENGINE_CUTOVER = "0.82.0"
-INTAKE_KEY = "search.intake_per_run"
+INTAKE_KEY = _ck.SEARCH_COMPANY_INTAKE_PER_RUN      # 0.86.0 (dev #834): intake is counted in COMPANIES (1..100, default 10)
+INTAKE_MIN, INTAKE_MAX, INTAKE_DEFAULT = 1, 100, _ck.SEARCH_COMPANY_INTAKE_PER_RUN_DEFAULT
+INTAKE_ROLES_MAX = 300                  # the journal's ceiling on one plan's role intake (`journal._check_drain_row`)
 INTAKE_NEW_PERCENT_KEY = "search.intake_new_percent"
 
 # the order of the admission classes when there is NO reservation (N8). `new` is the waiting roles
@@ -161,7 +170,13 @@ PROGRESS_STAGES = ("admitted", "captured", "reading", "read", "screened")
 FAILURE_STATES = ("uncaptured", "unread", "read-failed", "unscreened", "unresearched")
 PROGRESS_TO_FAILURE = {"admitted": "uncaptured", "captured": "unread", "reading": "read-failed",
                        "read": "unscreened", "screened": "unresearched"}
-STAGES = SETTLED_STAGES + PROGRESS_STAGES + ("waiting",) + FAILURE_STATES + ("unclassified",)
+# dev #834 (jobsearch 0.86.0, design-network-first.md 3.2): a role at a company the candidate has NOT targeted is HELD, not
+# admitted. Derived, never stored; not a failure; never in pursue-or-pass; counted in the conservation line. Its `detail` is
+# the `why`, one of HELD_WHY: `undecided` (the company is `watching` with no `status_on`: nobody has decided), `watching`
+# (the candidate decided to watch it) or `passed`.
+HELD_STAGES = ("held-for-company",)
+HELD_WHY = ("undecided", "watching", "passed")
+STAGES = SETTLED_STAGES + PROGRESS_STAGES + ("waiting",) + HELD_STAGES + FAILURE_STATES + ("unclassified",)
 
 # cause -> (class, meaning, the action it points at). The CLOSED vocabulary (section 2.3, N4, N7).
 # `retry-stopped`, `legacy-backlog` and `unclassified` are DERIVED: `stage()` produces them, and
@@ -174,7 +189,7 @@ CAUSE_TABLE = collections.OrderedDict([
     ("not-dispatched", ("run", "it was admitted and needed a reader or researcher, and no dispatch "
                               "row names it", "report it; the run skipped a step")),
     ("deadline-reached", ("run", "the run ran out of its time bound before reaching it",
-                          "report it if it repeats; lower search.intake_per_run")),
+                          "report it if it repeats; lower search.company_intake_per_run")),
     ("agent-returned-nothing", ("role", "a reader or researcher was dispatched for it and recorded "
                                        "nothing", "report it; an agent failure")),
     ("capture-refused", ("role", "capture-batch refused the item", "fix the item, or report it")),
@@ -530,6 +545,8 @@ class Ctx(object):
         self._build_admissions()
         self._build_readmits()
         self.index = RoleIndex(self.opps, data.get("companies"))
+        self.companies_by_id = {c.get("id"): c for c in (data.get("companies") or [])
+                                if isinstance(c, dict) and c.get("id")}
         self._build_groups()
         self._stage_cache = {}
         self._unit_cache = None
@@ -864,6 +881,45 @@ class Ctx(object):
             return Stage("waiting", False, seen, None, "readmitted", key)
         return Stage("waiting", False, seen, None, "", key)
 
+    # --- the company question (dev #834, design-network-first.md 3.2) ---------------------------------
+    def company_hold(self, company_id):
+        """Why a role at this company is held, or None when it is not: `passed`, `watching` (the candidate decided to watch
+        it, so `status_on` is on the row) or `undecided` (`watching` with no `status_on`). An `active-target` company holds
+        nothing. A company id that resolves to no row, or a status outside the three, holds nothing either: the engine cannot
+        say the role is at a NON-target company, so its stage is left exactly as it was (and a company a capture makes is
+        always written `watching`, so a real role never lacks the row)."""
+        c = self.companies_by_id.get(company_id) if company_id else None
+        if c is None:
+            return None
+        status = c.get("status")
+        if status == "passed":
+            return "passed"
+        if status == "watching":
+            return "watching" if c.get("status_on") else "undecided"
+        return None
+
+    def item_company_id(self, items):
+        """The company id the open capture item(s) of one role name, through the one resolver every other reader uses
+        (`pipeline_index.resolve_company`), or None when the name resolves to no single company."""
+        for it in items:
+            name, _title = item_company_title(it)
+            if name:
+                cid = _pidx.resolve_company(name, list(self.companies_by_id.values()))
+                if cid:
+                    return cid
+        return None
+
+    def held_for_company(self, st, why, since):
+        """`st` turned into `held-for-company` when it is a stage the rule demotes and `why` says the company is not a target;
+        else `st` unchanged. Only a role NO read has reached is demoted: `waiting` or one of the failure states a never-read
+        role sits in (`uncaptured`, `unread`, `read-failed`). A role already read, screened, decided or researched keeps its
+        stage (work done is never demoted), and so does `unclassified`, `your-read`, `gone`, `removed` and `ended`."""
+        if why is None:
+            return st
+        if st.name == "waiting" or (st.failure and st.name in ("uncaptured", "unread", "read-failed")):
+            return Stage("held-for-company", False, since, None, why, st.key)
+        return st
+
     # --- stage of an opportunity ------------------------------------------------------------------
     def opp_ids(self, opp):
         ids = [opp.get("id")]
@@ -979,6 +1035,9 @@ class Ctx(object):
                 atts = self.page_attempts(opp)
                 st = self.working(progress, self.opp_ids(opp), first_seen(opp), key,
                                   _jd.latest_of(atts), rules_changed=stale)
+                why = self.company_hold(opp.get("company_id"))
+                if why is not None and not any(a["outcome"] == "read" for a in self.attempts(opp)):
+                    st = self.held_for_company(st, why, first_seen(opp))
         except _Unclassified as e:
             st = Stage("unclassified", True, first_seen(opp), "unclassified", e.detail, key)
         self._stage_cache[k] = st
@@ -993,6 +1052,7 @@ class Ctx(object):
         ids = [i["id"] for i in items]
         seen = min((d for d in (_item_first_seen(i) for i in items) if d), default=None)
         st = self.working("admitted", ids, seen, key, None)
+        st = self.held_for_company(st, self.company_hold(self.item_company_id(items)), seen)
         self._stage_cache[k] = st
         return st
 
@@ -1099,9 +1159,10 @@ def _setting(cfg, key):
 
 
 def intake_setting(cfg):
-    """`search.intake_per_run` (1..300, default 40)."""
+    """`search.company_intake_per_run`: the COMPANIES one run admits (1..100, default 10; dev #834, 0.86.0). The retired
+    `search.intake_per_run` (roles) is never read: a profile that still carries it reads the default here."""
     v = _setting(cfg, INTAKE_KEY)
-    return v if isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 300 else 40
+    return v if isinstance(v, int) and not isinstance(v, bool) and INTAKE_MIN <= v <= INTAKE_MAX else INTAKE_DEFAULT
 
 
 def new_percent_setting(cfg):
@@ -1153,6 +1214,14 @@ class Plan(object):
         self.per_role_source = "default estimate"
         self.available = 0
         self.for_fetch = 0
+        # dev #834 (0.86.0): intake is counted in COMPANIES. `intake` and `capacity` above stay ROLE counts (the journal
+        # keeps their 0.83.0 meaning); these are the company figures that sit beside them (`event_fields()["companies"]`)
+        self.company_setting = INTAKE_DEFAULT
+        self.admitted_companies = []
+        self.considered_companies = 0
+        self.capped_companies = 0
+        self.split_companies = []
+        self.chosen_companies = 0               # companies the setting would admit, before any time or ceiling cut
         self.__dict__.update(kw)
 
     @property
@@ -1175,14 +1244,21 @@ class Plan(object):
                     retry_stopped=list(self.retry_stopped), fanout=self.fanout, solo=list(self.solo),
                     fetch_calls=self.fetch_calls, reserved_new=self.reserved_new,
                     admitted_by_class=dict(self.admitted_by_class),
-                    excluded_open=dict(self.excluded_open))
+                    excluded_open=dict(self.excluded_open),
+                    companies={"setting": self.company_setting, "admitted": list(self.admitted_companies),
+                               "considered": self.considered_companies, "capped": self.capped_companies,
+                               "split": list(self.split_companies)})
 
     def lines(self):
-        """The text `lifecycle.py --drain-plan` prints. `fanout: N` is what B8's prose reads."""
+        """The text `lifecycle.py --drain-plan` prints. `fanout: N` is what B8's prose reads. `intake` and `capacity` are
+        ROLES (what the journal stores); the line after them says how many COMPANIES that is (0.86.0)."""
         n = self.admitted_by_class_total()
         out = ["drain-plan run=%s intake=%d capacity=%d render-route=%s attended=%s"
                % (self.run_id, self.intake, self.capacity, self.render_route,
-                  "yes" if self.attended else "no")]
+                  "yes" if self.attended else "no"),
+               "companies: %d of %d admitted (setting %d a run%s)"
+               % (len(self.admitted_companies), self.considered_companies, self.company_setting,
+                  "; %d split" % len(self.split_companies) if self.split_companies else "")]
         out.append("admitted %d roles (%d new · %d retry · %d returned · %d legacy · %d held) "
                    "· reserved_new %d" % (n, self.admitted_by_class["new"],
                                               self.admitted_by_class["retry"],
@@ -1195,8 +1271,11 @@ class Plan(object):
         if self.capacity_reason == "no-render-route":
             out.append("capacity 0: no render route on this surface; run on the desktop")
         elif self.capacity_reason == "time-bound":
-            out.append("intake capped at %d of %d by measured time (%d s/role, %s)"
-                       % (self.capacity, self.intake, self.per_role_s, self.per_role_source))
+            out.append("intake capped at %d of %d companies by measured time (%d s/role, %s)"
+                       % (len(self.admitted_companies), self.chosen_companies, self.per_role_s, self.per_role_source))
+        elif self.capped_companies:
+            out.append("intake capped at %d of %d companies by the %d-role ceiling of one plan"
+                       % (len(self.admitted_companies), self.chosen_companies, INTAKE_ROLES_MAX))
         for run, n_ex in sorted(self.excluded_open.items()):
             out.append("excluded %d held by open run %s" % (n_ex, run))
         out.append("waiting: %d%s · legacy backlog: %d%s" % (
@@ -1221,8 +1300,19 @@ def drain_plan(data, now, intake=None, render_route="yes", attended=False, run_i
     """What this run admits, in order (section 4.5, N2, N7, N8). Pure: it writes nothing; the CLI
     appends the `planned` event under the write lock.
 
-      capacity   min(intake, floor(DRAIN_BUDGET_S / per_role_s)), and 0 with no render route
-      reserve    S = ceil(capacity x intake_new_percent / 100) slots go to NEW roles first while the
+      unit       COMPANIES (0.86.0, dev #834, design-network-first.md 3.5): `intake` is `search.company_intake_per_run`
+                 (1..100, default 10), and the plan admits every waiting role of each company it admits, together, so a
+                 company's roles are never split across runs. A company's class is its EARLIEST-class waiting role. Only a
+                 role at an `active-target` company is a candidate: a role at any other company is `held-for-company` and
+                 never reaches this function's buckets. A role whose company cannot be resolved counts as a company of
+                 its own (it is exactly the role it is). The journal's `intake`, `capacity` and `admitted_by_class` stay
+                 ROLE counts; the company figures sit beside them in `companies`
+      capacity   the roles the plan may admit: while the sum of the admitted companies' roles fits both
+                 floor(DRAIN_BUDGET_S / per_role_s) and the journal's 300-role ceiling. The first company is always
+                 admitted, split (its oldest roles first, named in `companies.split`) when it alone does not fit, so a
+                 big company never stalls the drain; a later company that does not fit stops the plan (never skipped),
+                 and `intake capped at K of N companies` says so. 0 with no render route
+      reserve    S = ceil(intake_new_percent x intake / 100) COMPANIES go to new-class companies first while the
                  legacy backlog OR the held class is non-empty (ruling 8; 0.85.0); unused slots fall through
       order      ADMISSION_ORDER (retry, returned, legacy, held, new), oldest first within a class; the
                  reservation is applied before it. `held` (0.85.0) is a role whose read could not happen for an
@@ -1233,8 +1323,8 @@ def drain_plan(data, now, intake=None, render_route="yes", attended=False, run_i
     ctx = Ctx(data, now)
     cfg = ctx.cfg
     intake = intake_setting(cfg) if intake is None else intake
-    if not isinstance(intake, int) or isinstance(intake, bool) or not 1 <= intake <= 300:
-        raise LifecycleError("intake must be an integer 1..300, got %r" % (intake,))
+    if not isinstance(intake, int) or isinstance(intake, bool) or not INTAKE_MIN <= intake <= INTAKE_MAX:
+        raise LifecycleError("intake must be an integer %d..%d (companies), got %r" % (INTAKE_MIN, INTAKE_MAX, intake))
     route = _yes_no(render_route)
     pct = new_percent_setting(cfg)
     prs, prs_src = per_role_s(ctx.recs)
@@ -1287,34 +1377,64 @@ def drain_plan(data, now, intake=None, render_route="yes", attended=False, run_i
         buckets[c].sort(key=lambda t: (t[0], t[1]))
     plan.retry_stopped = sorted(stopped)
     plan.available = sum(len(b) for b in buckets.values())
-    # --- capacity ---
-    time_cap = DRAIN_BUDGET_S // prs
-    if route == "no":
-        plan.capacity, plan.capacity_reason = 0, "no-render-route"
-    elif time_cap < intake:
-        plan.capacity, plan.capacity_reason = max(time_cap, 0), "time-bound"
-    else:
-        plan.capacity = intake
-    cap = plan.capacity
-    plan.reserved_new = int(math.ceil(cap * pct / 100.0)) if (buckets["legacy"] or buckets["held"]) else 0
-    # --- admit ---
-    chosen = []                                             # (class, unit)
+    # --- the companies the candidates belong to (dev #834, design-network-first.md 3.5) ---
+    by_company = {}                                         # company id -> [(class index, since, key, class, unit)]
+    for ci, cls in enumerate(ADMISSION_ORDER):
+        for since, key, u in buckets[cls]:
+            by_company.setdefault(_company_of(u, ctx), []).append((ci, since, key, cls, u))
+    co_class = {}                                           # company id -> (its earliest class index, oldest since in it)
+    for cid, ents in by_company.items():
+        ents.sort(key=lambda e: (e[1], e[2]))               # a company's own roles: oldest first
+        first = min(e[0] for e in ents)
+        co_class[cid] = (first, min(e[1] for e in ents if e[0] == first))
+    by_cls = {cls: sorted((cid for cid, (ci, _s) in co_class.items() if ci == n),
+                          key=lambda cid: (co_class[cid][1], cid))
+              for n, cls in enumerate(ADMISSION_ORDER)}
+    plan.company_setting = intake
+    plan.considered_companies = len(by_company)
+    plan.reserved_new = int(math.ceil(intake * pct / 100.0)) if (by_cls["legacy"] or by_cls["held"]) else 0
+    chosen_cos = []
 
     def take(cls, limit):
         n = 0
-        while buckets[cls] and n < limit and len(chosen) < cap:
-            chosen.append((cls, buckets[cls].pop(0)[2]))
+        while by_cls[cls] and n < limit and len(chosen_cos) < intake:
+            chosen_cos.append(by_cls[cls].pop(0))
             n += 1
         return n
 
-    if buckets["legacy"] or buckets["held"]:
+    if plan.reserved_new:
         take("new", plan.reserved_new)
-        for cls in ADMISSION_ORDER:
-            take(cls, cap)
+    for cls in ADMISSION_ORDER:
+        take(cls, intake)
+    # --- capacity, in ROLES: the time bound and the journal's 300-role ceiling ---
+    time_cap = DRAIN_BUDGET_S // prs
+    limit = 0 if route == "no" else min(INTAKE_ROLES_MAX, time_cap)
+    intake_roles = sum(len(by_company[c]) for c in chosen_cos)
+    plan.intake = max(1, min(INTAKE_ROLES_MAX, intake_roles))
+    plan.chosen_companies = len(chosen_cos)
+    admitted_ents, admitted_cos, used = [], [], 0
+    for cid in chosen_cos:
+        ents = by_company[cid]
+        if used + len(ents) <= limit:
+            take_ents = ents
+        elif not admitted_cos and limit > 0:
+            take_ents = ents[:limit]                        # the first company alone does not fit: split it, oldest first
+            plan.split_companies.append(cid)
+        else:
+            break
+        admitted_cos.append(cid)
+        admitted_ents += take_ents
+        used += len(take_ents)
+    plan.admitted_companies = admitted_cos
+    plan.capped_companies = len(chosen_cos) - len(admitted_cos)
+    if route == "no":
+        plan.capacity, plan.capacity_reason = 0, "no-render-route"
+    elif time_cap < INTAKE_ROLES_MAX and used < plan.intake and intake_roles > 0:
+        plan.capacity, plan.capacity_reason = used, "time-bound"
     else:
-        for cls in ADMISSION_ORDER:
-            take(cls, cap)
-    for cls, u in chosen:
+        plan.capacity = plan.intake
+    # --- admit ---
+    for _ci, _since, _key, cls, u in admitted_ents:
         plan.admitted_by_class[cls] += 1
         o, i = ctx.unit_ids(u)
         plan.admitted_opps += o
@@ -1325,7 +1445,8 @@ def drain_plan(data, now, intake=None, render_route="yes", attended=False, run_i
         if cls != "returned" and not _has_read(u, ctx):
             plan.for_fetch += 1
     plan.fetch_calls = int(math.ceil(plan.for_fetch * FETCH_WORST_CASE_S / float(FETCH_CALL_S)))
-    left = [u for b in buckets.values() for (_s, _k, u) in b]
+    taken = {id(e[4]) for e in admitted_ents}
+    left = [e[4] for ents in by_company.values() for e in ents if id(e[4]) not in taken]
     wait = [u for u in left if u.stage.name == "waiting"]
     leg = [u for u in left if u.stage.cause == "legacy-backlog"]
     plan.waiting_count = len(wait)
@@ -1333,6 +1454,17 @@ def drain_plan(data, now, intake=None, render_route="yes", attended=False, run_i
     plan.legacy_count = len(leg)
     plan.legacy_oldest = min((u.stage.since for u in leg if u.stage.since), default=None)
     return plan
+
+
+def _company_of(unit, ctx):
+    """The id of the COMPANY a candidate role belongs to, for the company-counted intake: the opportunity's `company_id`, or
+    the company its open capture item(s) name through the one resolver. A role with no company id the engine can read is a
+    company of its own (`role:<key>`, whitespace made `_` so the journal's id check holds)."""
+    if unit.key in ctx.groups:
+        cid = ctx.item_company_id(unit.rows)
+    else:
+        cid = ctx.opps_by_id[unit.key].get("company_id")
+    return cid if isinstance(cid, str) and cid and not re.search(r"\s", cid) else "role:" + re.sub(r"\s+", "_", unit.key)
 
 
 def _has_read(unit, ctx):
@@ -1586,6 +1718,7 @@ class Report(object):
         self.held_oldest = None
         self.held_by_line = 0
         self.held_by_tab = 0
+        self.held_company = collections.OrderedDict((w, 0) for w in HELD_WHY)   # dev #834: `held-for-company`, by why
         self.in_progress = 0
         self.ready = 0
         self.your_read = 0
@@ -1595,7 +1728,7 @@ class Report(object):
         self.coverage_rows = []
         self.coverage = {}
         self.skew = []
-        self.intake = 40
+        self.intake = INTAKE_DEFAULT                  # COMPANIES a run admits (0.86.0)
         self.reserved_new = 0
         self.no_render_route = False
         self.open_runs = []
@@ -1616,6 +1749,11 @@ class Report(object):
         """Every role the pane kept from being read: waiting as `held`, plus those now at YOUR READ by the route."""
         return self.held_failures + self.held_route
 
+    @property
+    def held_for_company(self):
+        """Roles at a company the candidate has not targeted (`held-for-company`, dev #834): counted, never a failure."""
+        return sum(self.held_company.values())
+
     def to_json(self):
         return {"counts": dict(self.counts), "totals": self.totals, "failure": self.failure,
                 "failure_oldest": self.failure_oldest, "failure_causes": dict(self.failure_causes),
@@ -1623,6 +1761,7 @@ class Report(object):
                 "legacy": self.legacy, "legacy_oldest": self.legacy_oldest,
                 "held": self.held, "held_oldest": self.held_oldest, "held_your_read": self.held_route,
                 "held_by_pane_line": self.held_by_line, "held_by_tab_only": self.held_by_tab,
+                "held_for_company": self.held_for_company, "held_for_company_why": dict(self.held_company),
                 "ready": self.ready, "your_read": self.your_read, "in_progress": self.in_progress,
                 "unclassified": self.unclassified, "folded": self.folded, "mismatch": self.mismatch,
                 "did_not_look": self.coverage_rows, "skew": self.skew, "intake": self.intake,
@@ -1703,6 +1842,11 @@ def process_report(data, now, generating_run=None):
             rep.failure_roles.append((u.key, st))
             continue
         rep.counts[st.name] += 1
+        if st.name == "held-for-company":
+            # dev #834: a role at a company the candidate has not targeted. Not a failure, not waiting for intake (intake never
+            # admits it), not in progress: its own term of the conservation line, so every role is still accounted for.
+            rep.held_company[st.detail if st.detail in HELD_WHY else "undecided"] += 1
+            continue
         if CAUSE_CLASS.get(st.cause) == "environment" and (st.failure or st.name == "your-read"):
             # 0.85.0: held roles are counted in the HELD segment, never in PROCESS FAILURE. A routed one is also a
             # `your-read` role (counted there), so only a waiting one adds a term to the conservation line.
@@ -1744,7 +1888,7 @@ def process_report(data, now, generating_run=None):
         sorted(rep.failure_causes.items(), key=lambda t: (-t[1], t[0])))
     staged = (rep.counts["waiting"] + rep.in_progress + rep.failure + rep.your_read + rep.ready
               + rep.counts["decided"] + rep.counts["removed"] + rep.counts["gone"]
-              + rep.counts["ended"] + rep.unclassified + rep.held_failures)
+              + rep.counts["ended"] + rep.unclassified + rep.held_failures + rep.held_for_company)
     raw, raw_source = raw_role_count(data)
     rep.mismatch = raw != staged
     rep.totals = {"roles": staged, "raw": raw, "raw_source": raw_source, "folded": rep.folded,
@@ -1829,7 +1973,7 @@ def _compose(rep, ctx):
     held_seg = held_segment(rep)
     if held_seg:
         parts.append(held_seg)
-    parts.append("intake %d/run%s" % (rep.intake, _reserve_text(rep)))
+    parts.append("intake %d companies/run%s" % (rep.intake, _reserve_text(rep)))
     if rep.unclassified:
         parts.append("UNCLASSIFIED: %s" % _fmt_n(rep.unclassified))
     if rep.mismatch:
@@ -1861,6 +2005,10 @@ def _compose(rep, ctx):
            _fmt_n(c["removed"]), _fmt_n(c["gone"]), _fmt_n(c["ended"]), _fmt_n(rep.unclassified)))
     if rep.held_failures:
         rep.conservation_line += " + HELD %s" % _fmt_n(rep.held_failures)
+    if rep.held_for_company:
+        rep.conservation_line += " + held %s (undecided %s · watching %s · passed %s)" % (
+            _fmt_n(rep.held_for_company), _fmt_n(rep.held_company["undecided"]), _fmt_n(rep.held_company["watching"]),
+            _fmt_n(rep.held_company["passed"]))
     if rep.folded:
         rep.conservation_line += " (+ %s folded duplicates)" % _fmt_n(rep.folded)
     lines = []
@@ -1868,7 +2016,7 @@ def _compose(rep, ctx):
     for cause, n in rep.failure_causes.items():
         lines.append("  %s %s: %s — %s" % (cause, _fmt_n(n), CAUSE_MEANING.get(cause, ""),
                                                 CAUSE_ACTION.get(cause, "")))
-    lines.append("Waiting for intake: %s%s · intake %d/run%s"
+    lines.append("Waiting for intake: %s%s · intake %d companies/run%s"
                  % (_fmt_n(rep.waiting), w_old, rep.intake, _reserve_text(rep)))
     if rep.legacy:
         lines.append("Legacy backlog: %s%s" % (_fmt_n(rep.legacy),
@@ -2058,7 +2206,7 @@ def _cmd_plan(args, root):
         raise LifecycleError("--drain-plan needs --render-route yes|no (the session's own declaration)")
     if args.intake is not None and not args.attended:
         raise LifecycleError("--intake is for an --attended drain: an unattended run uses "
-                             "search.intake_per_run")
+                             "search.company_intake_per_run")
     with _Locked("lifecycle.py drain-plan %s" % args.run, args.already_locked):
         # read the journal INSIDE the lock: two plans cannot both read before either writes (N2)
         _close_the_dead(root, args.run, now, print)
@@ -2125,8 +2273,8 @@ def main(argv=None):
     ap.add_argument("--render-route", dest="render_route", choices=("yes", "no"),
                     help="whether THIS session has a render route (mcp__Claude_Browser__preview_start)")
     ap.add_argument("--attended", action="store_true")
-    ap.add_argument("--intake", type=int, metavar="N", help="with --attended: roles this session admits "
-                    "(1..300), named by the owner")
+    ap.add_argument("--intake", type=int, metavar="N", help="with --attended: COMPANIES this session admits "
+                    "(1..100), named by the owner")
     ap.add_argument("--already-locked", dest="already_locked", action="store_true")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--now", metavar="ISO", help="for tests: the clock")

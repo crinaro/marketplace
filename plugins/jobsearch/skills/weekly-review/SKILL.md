@@ -1,6 +1,6 @@
 ---
 name: weekly-review
-description: 'Weekly strategy review: channel yield, cadence adherence, and config proposals. Invoked by the scheduled routine, or on demand. Not for something broken; that is /jobsearch:checkup.'
+description: 'Weekly strategy review: the network (who to reach, what moved), channel yield, cadence adherence, and config proposals. Invoked by the scheduled routine, or on demand. Not for something broken; that is /jobsearch:checkup.'
 ---
 
 # Weekly strategy review
@@ -127,8 +127,40 @@ Run the weekly strategy review of the candidate's search. Read `CLAUDE.md` first
   re-derive channel yield by hand; the script refuses to print a rate below n=5 and states plainly
   what the data cannot answer.
 
-Then delegate the review to the **`search-strategist`** agent: channel yield, cadence adherence,
-waste, prioritized proposals.
+## 0b. ⭐ THE NETWORK SECTION — people before boards (jobsearch 0.86.0, dev #834)
+
+**The review's evidence leads with the network.** The owner's rulings (network-first): relationships and coffee chats drive the
+search and the boards feed company targets, so the strategist is handed the network's evidence FIRST, ahead of channel yield, on
+every profile and whatever the plan's outcomes say. This is where the network's SUMMARY numbers live: the dashboard is the page of
+decisions and does not carry them. Everything here is a READ, run unlocked (window 1 closed above), and it runs **before the
+strategist dispatch below**, because the strategist never re-derives what a script computes:
+
+```bash
+~/.claude/jobsearch/run access.py --since <the date of the last weekly review, from its entry in log.md>
+~/.claude/jobsearch/run reachouts.py --week
+```
+
+- **`access.py --since`** is the access table, one row per company the candidate targets (alumni, known, contacted, warm, chats held,
+  open introductions, the live postings), with what MOVED since the last review. "No targets declared" printed loudly is a finding
+  for the candidate (name the targets), never an empty table. On a first review omit `--since`.
+- **The NETWORK section of `funnel_report.py`**, which is the first section of the output the START block already printed (do not run
+  it a second time: two runs give two numbers for one question). It carries the reach-outs sent, the bookings and chats held, the
+  unrecorded chats, the introductions, the look-into counts and the proposals sent, each rate withheld below n=5 and each count
+  marked `≥` or `UNRECORDED` where the data cannot say. **An unrecorded chat is reported as unrecorded, never as zero.**
+- **`reachouts.py --week`** is the week's reach-out budget (`network.new_reachouts_per_week`) against what was sent and what is drafted.
+- **The open suggestions**: the `kind: suggestion` rows of `data/asks.jsonl` with no `resolved_on`, each an earlier proposal of the
+  strategist's that the candidate has not answered yet (an ask older than 28 days is stale: say so).
+- **A script that exits 3** prints why: the profile's 0.86.0 migration has not run, or the profile is pinned above this engine. Put
+  that line in the review, file one gap
+  `~/.claude/jobsearch/run journal.py --run <id> --gap jobsearch:network --reason migration-pending`, and go on with the rest of the
+  review. **If a script is refused as unknown** (the install is older than these instructions), file the same gap with
+  `--reason version-skew`, say so, and go on. Neither is a reason to skip the review, and neither is ever read as "nothing to report".
+
+Hand all of it to the strategist as EVIDENCE, with the network section first. **Delegate the review to the `search-strategist` agent:**
+the network (who to reach, who went quiet, where the access table is thin), channel yield, cadence adherence, waste, and prioritized
+proposals. The strategist hands back PROPOSALS and may write SUGGESTIONS (a company to target, a plan, a person's cadence) with
+`record.py suggest`; a suggestion is an ask, and **nothing writes the row until the candidate runs `record.py confirm <ask_id>`**.
+The strategist never confirms, never declines, and never suggests a person (finding people is the candidate's own LinkedIn work).
 
 ## 1. ⭐⭐ THE DEFINING JOB: DRAIN PROCESS DEBT TO ZERO
 
@@ -217,7 +249,9 @@ is a retained-firm touch — a new firm to register with, or a warm reconnect wi
 `type: recruiter` contact. For a search whose configured channels lead elsewhere (direct
 applications, a professional community, a staffing agency), it is the equivalent named touch on
 that channel. Either way: an `outreach-drafter` draft in `outreach/drafts.md` ready to go, and **name
-the specific firm or contact; "do more networking" is not an action.** An earlier version
+the specific firm or contact; "do more networking" is not an action.** (Since 0.86.0 a first touch this step produces to a person
+the candidate has never contacted, with no role attached, is a new reach-out: it counts against the week's
+`network.new_reachouts_per_week` budget like the daily run's, and `reachouts.py --week` shows it.) An earlier version
 mandated a retained-firm touch unconditionally — one person's executive search baked in as
 every installation's standing weekly action.
 
@@ -247,6 +281,8 @@ makes it one.
 
 Append the review summary to `log.md` → regenerate the dashboard
 (`~/.claude/jobsearch/run check_dashboard_fresh.py --fix`; then
+`~/.claude/jobsearch/run strategy_view.py`, which rebuilds `views/network_strategy.md` (the network's summary view, jobsearch 0.86.0;
+derived, never hand-edited); then
 `~/.claude/jobsearch/run presence_set.py --check`, the round trip of the resume and public-profile
 reviews, which are panes now and not a published page) → **grep the OUTPUT for what you added** →
 publish the dashboard via the Artifact tool — `views/dashboard_artifact.html` to the URL in

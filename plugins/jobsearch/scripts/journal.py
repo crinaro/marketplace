@@ -216,7 +216,8 @@ from _root import (profile_root, is_tracked_fixture, transcript_stash_path, is_u
 
 JOURNAL = os.path.join("data", "runs.jsonl")
 EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swept", "probe",
-         "triaged", "dispatch", "pass", "roles", "feeds", "drain", "mail-status", "readmit")
+         "triaged", "dispatch", "pass", "roles", "feeds", "drain", "mail-status", "readmit",
+         "profile-schema", "network", "companies-raised")
 
 # dev #751 (sourcing-feeds; design §3.6 as amended by review B1/B3/B6) -- the company feed poller's
 # failure vocabulary, CLOSED and validated by `record_feeds`: a code, not a sentence, each mapped to
@@ -418,7 +419,12 @@ REASONS = {"browser-unavailable", "credential-missing", "rate-limited", "timeout
            # `route-refused`: `route.py` refused this id (`HAS AN UNREADABLE ROUTE`, `NO SUCH CHANNEL`); written by the
            # sweeper for one id. `run-ended`: `journal --end` found the batch loop open and closed it, so this channel was
            # never handed out; written by the script, never by the sweeper. A cost stop reuses `skipped-for-cost`.
-           "run-budget", "route-refused", "run-ended"}
+           "run-budget", "route-refused", "run-ended",
+           # dev #834 (jobsearch 0.86.0, design-network-first.md 7): the network block (and the weekly review's network section) did not run
+           # because the profile's 0.86.0 migration has not (the pin is absent): scope `jobsearch:network`, the line the script printed is in
+           # the summary. Not `version-skew` (the scripts are NOT older than the prose; the profile is behind both) and not `other`: a
+           # code exists to be counted, and "how many runs went without the network block, waiting on a migration" is the question.
+           "migration-pending"}
 
 # ⭐ dev #321 — a `probe` result is either the literal "empty" or "thread:<ISO timestamp>" (the
 # newest inbound's date/time) — Class C's own vocabulary, settled here since V0 is the first
@@ -562,8 +568,103 @@ def _refuse_if_unwritable(root):
             "scratch copy" % root)
 
 
+# ⭐⭐ dev #834 (jobsearch 0.86.0; design-network-first.md sections 12.1, 13.1, 14.2) -- THE PROFILE PIN.
+#
+# A `profile-schema` journal event, `{event, at, min_engine, by}`, says "this profile carries shapes an engine
+# older than `min_engine` cannot read". It is a JOURNAL event on purpose: the only stop jobsearch 0.83.0-0.85.0
+# honour is `journal.read` raising on an event it does not know, so a pin that is anything else (a stamp, a config
+# key) would stop none of them. 0.86.0 and later consult THIS pin, never the `.jobsearch-schema` stamp, for the
+# forward refusal.
+#
+# THE PIN IS READ TWO WAYS, AND THE DIFFERENCE IS LOAD-BEARING:
+#   `pin_scan(root)`      TOLERANT. Line by line, ignoring every line that does not parse or is not a
+#                         `profile-schema` event, and NOTHING else is validated. Why: a LATER engine may add an event
+#                         this engine does not know, and the strict reader would raise "unknown event" before it
+#                         reached the pin, so the refusal would name the unknown event instead of the pin.
+#   `profile_pin(recs)`   the same answer over rows `read()` already returned (the migration's success condition).
+# `pin_refusal(root)` is the sentence both `read()` and `append()` raise with when the pin is above this engine, so a
+# 0.86.0 machine on a 0.87.0 profile writes nothing and stops at its first journal call (V1).
+PIN_EVENT = "profile-schema"
+PIN_FIELDS = ("event", "at", "min_engine", "by")
+_PIN_VER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+_PIN_CACHE = {}
+
+
+def _pin_ver(v):
+    """`(major, minor, patch)` for an `X.Y.Z` string, else None (never raises: the tolerant scan ignores a pin it
+    cannot parse, and the strict row check refuses one)."""
+    m = _PIN_VER_RE.match(v) if isinstance(v, str) else None
+    return tuple(int(g) for g in m.groups()) if m else None
+
+
+def pin_scan(root):
+    """The highest `min_engine` of any `profile-schema` event in `<root>/data/runs.jsonl`, or None. TOLERANT: a line
+    that does not parse, an event of any other name and a pin whose `min_engine` is not `X.Y.Z` are skipped, and
+    nothing else is validated (see the note above). Cached per process on the file's identity (path, size, mtime),
+    so a pin this engine's own migration writes is seen by the very next call and a hand edit is never missed."""
+    p = path(root)
+    try:
+        st = os.stat(p)
+    except OSError:
+        return None
+    key = (p, st.st_size, st.st_mtime_ns)
+    hit = _PIN_CACHE.get(p)
+    if hit and hit[0] == key:
+        return hit[1]
+    best = None
+    try:
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if PIN_EVENT not in line:                    # cheap pre-filter: most lines are not a pin
+                    continue
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(rec, dict) or rec.get("event") != PIN_EVENT:
+                    continue
+                v = _pin_ver(rec.get("min_engine"))
+                if v is not None and (best is None or v > _pin_ver(best)):
+                    best = rec["min_engine"]
+    except OSError:
+        return None
+    _PIN_CACHE[p] = (key, best)
+    return best
+
+
+def profile_pin(recs):
+    """The highest `min_engine` among already-read `recs` (`read()`'s rows), or None."""
+    best = None
+    for r in recs or ():
+        if isinstance(r, dict) and r.get("event") == PIN_EVENT:
+            v = _pin_ver(r.get("min_engine"))
+            if v is not None and (best is None or v > _pin_ver(best)):
+                best = r["min_engine"]
+    return best
+
+
+def pin_refusal(root):
+    """The refusal sentence when this profile is pinned ABOVE the running engine, else None. An engine whose own
+    version cannot be read has nothing to compare against and refuses nothing (`engine_version()` raises there, and
+    a housekeeping read must not become a second failure)."""
+    pin = pin_scan(root)
+    if pin is None:
+        return None
+    try:
+        engine = engine_version()
+    except JournalError:
+        return None
+    if _pin_ver(pin) > _pin_ver(engine):
+        return ("jobsearch %s on this machine; this profile was upgraded by jobsearch %s. Update the plugin on "
+                "this machine before running it here. Nothing was written." % (engine, pin))
+    return None
+
+
 def append(root, rec):
     _refuse_if_unwritable(root)
+    refusal = pin_refusal(root)                  # dev #834: a profile pinned above this engine is read-only to it
+    if refusal:
+        raise JournalError(refusal)
     p = path(root)
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "a", encoding="utf-8") as fh:
@@ -572,6 +673,9 @@ def append(root, rec):
 
 
 def read(root):
+    refusal = pin_refusal(root)                  # dev #834: before any line is validated (see the pin note above `append`)
+    if refusal:
+        raise JournalError(refusal)
     out = []
     try:
         with open(path(root), encoding="utf-8") as fh:
@@ -588,7 +692,7 @@ def read(root):
                 if rec.get("event") not in EVENTS:
                     raise JournalError("%s line %d has unknown event %r"
                                        % (JOURNAL, n, rec.get("event")))
-                if rec.get("event") in ("drain", "mail-status", "readmit"):
+                if rec.get("event") in _ROW_CHECKS:
                     try:
                         _ROW_CHECKS[rec["event"]](rec)
                     except JournalError as e:
@@ -1855,6 +1959,36 @@ def _id_list(label, v, what="drain"):
                            "whitespace)" % (what, label, v))
 
 
+DRAIN_COMPANIES_FIELDS = ("setting", "admitted", "considered", "capped", "split")
+
+
+def _check_companies_block(c):
+    """dev #834 (design-network-first.md 3.5) -- the shape of the `companies` block a `drain planned` event may carry (0.86.0:
+    intake is counted in COMPANIES, and the figures sit BESIDE the role fields, which keep their 0.83.0 meaning). Exactly the
+    five keys `setting`, `admitted`, `considered`, `capped`, `split`: `setting` an int 1..100; `admitted` and `split` lists of
+    distinct company ids with `split` a subset of `admitted`; `considered` an int >= len(admitted); `capped` an int with
+    0 <= capped <= considered - len(admitted). ONE function, called by the reader (`_check_drain_row`) and by `record_drain`
+    BEFORE it appends, so a row the reader would refuse is never written. A legacy `planned` event with no block is a
+    role-unit plan and reads as before."""
+    if not isinstance(c, dict) or set(c) != set(DRAIN_COMPANIES_FIELDS):
+        raise JournalError("drain planned companies must be exactly {%s} -- got %r"
+                           % (", ".join(DRAIN_COMPANIES_FIELDS), c))
+    if not _is_int(c["setting"], 1, 100):
+        raise JournalError("drain planned companies.setting=%r is not 1..100" % (c["setting"],))
+    _id_list("companies.admitted", c["admitted"])
+    _id_list("companies.split", c["split"])
+    if not set(c["split"]) <= set(c["admitted"]):
+        raise JournalError("drain planned companies.split %r names a company that is not in companies.admitted %r"
+                           % (c["split"], c["admitted"]))
+    n = len(c["admitted"])
+    if not _is_int(c["considered"]) or c["considered"] < n:
+        raise JournalError("drain planned companies.considered=%r is not an integer >= len(admitted) (%d)"
+                           % (c["considered"], n))
+    if not _is_int(c["capped"]) or c["capped"] > c["considered"] - n:
+        raise JournalError("drain planned companies.capped=%r is not 0..considered-admitted (%d)"
+                           % (c["capped"], c["considered"] - n))
+
+
 def _check_drain_row(rec):
     """The shape of a `drain` event, for the writer and the reader alike. Raises `JournalError`."""
     phase = rec.get("phase")
@@ -1912,9 +2046,11 @@ def _check_drain_row(rec):
         for k in ("finished", "left", "elapsed_s", "per_role_s"):
             if rec.get(k) is not None:
                 raise JournalError("drain planned carries %s, which belongs to a close" % k)
+        if "companies" in rec:
+            _check_companies_block(rec["companies"])
         return
     # --- closed ---
-    for k in DRAIN_PLANNED_FIELDS + ("capacity_reason",):
+    for k in DRAIN_PLANNED_FIELDS + ("capacity_reason", "companies"):
         if k != "admitted" and rec.get(k) is not None:       # `admitted` is a count here, a map in a plan
             raise JournalError("drain closed carries %s, which belongs to a plan" % k)
     if not _is_int(rec.get("admitted")) or not _is_int(rec.get("finished")) or rec["finished"] > rec["admitted"]:
@@ -1953,8 +2089,12 @@ def record_drain(root, run_id, phase, *, intake=None, capacity=None, capacity_re
                  render_route=None, attended=None, admitted=None, waiting=None, retry_stopped=None,
                  fanout=None, solo=None, fetch_calls=None, reserved_new=None, admitted_by_class=None,
                  excluded_open=None, finished=None, left=None, elapsed_s=None, per_role_s=None,
-                 on_behalf_of=None, at=None):
+                 on_behalf_of=None, at=None, companies=None):
     """dev #820 / public #175 (design section 4.5, 17 N1, N7) -- the ONE writer of a `drain` event.
+
+      companies (0.86.0, dev #834) an optional `planned` field: `{setting, admitted, considered, capped, split}`, the
+                company figures of a plan whose intake is counted in companies (`_check_companies_block`). The same
+                check the reader runs is run HERE before anything is appended; a `closed` row carrying it is refused.
 
       planned   `lifecycle.Plan.event_fields()`: intake, capacity (+ capacity_reason whenever it is below
                 intake), render_route, attended, admitted {opps, items}, waiting {count, oldest},
@@ -1978,6 +2118,8 @@ def record_drain(root, run_id, phase, *, intake=None, capacity=None, capacity_re
                    solo=solo, fetch_calls=fetch_calls, reserved_new=reserved_new,
                    admitted_by_class=admitted_by_class, excluded_open=excluded_open)
     closed = dict(finished=finished, left=left, elapsed_s=elapsed_s, per_role_s=per_role_s)
+    if companies is not None:
+        rec["companies"] = companies
     if phase == "planned":
         rec.update({k: v for k, v in planned.items()})
         if capacity_reason is not None:
@@ -2087,7 +2229,113 @@ def _check_mail_status_row(rec):
 
 
 # the event -> its row check, read by `read()` (a row of one of these events is validated when it is read)
-_ROW_CHECKS = {"drain": _check_drain_row, "mail-status": _check_mail_status_row, "readmit": _check_readmit_row}
+_ROW_CHECKS = {"drain": _check_drain_row, "mail-status": _check_mail_status_row, "readmit": _check_readmit_row,
+               "profile-schema": lambda rec: _check_profile_schema_row(rec),
+               "network": lambda rec: _check_network_row(rec),
+               "companies-raised": lambda rec: _check_companies_raised_row(rec)}
+
+
+def _check_profile_schema_row(rec):
+    """dev #834 -- the shape of a `profile-schema` (pin) event, for the writer and the reader alike: exactly
+    `{event, at, min_engine, by}`, `min_engine` an `X.Y.Z` string, `by` a name without whitespace."""
+    unknown = sorted(set(rec) - set(PIN_FIELDS))
+    missing = [k for k in PIN_FIELDS if k not in rec]
+    if unknown:
+        raise JournalError("profile-schema has unknown field(s) %s" % ", ".join(unknown))
+    if missing:
+        raise JournalError("profile-schema is missing field(s) %s" % ", ".join(missing))
+    if _pin_ver(rec["min_engine"]) is None:
+        raise JournalError("profile-schema min_engine=%r is not X.Y.Z" % (rec["min_engine"],))
+    at = rec["at"]
+    if not isinstance(at, str) or not _READMIT_AT_RE.match(at):
+        raise JournalError("profile-schema at=%r is not an ISO date and time" % (at,))
+    by = rec["by"]
+    if not isinstance(by, str) or not by or re.search(r"\s", by):
+        raise JournalError("profile-schema by=%r is not a non-empty name without whitespace" % (by,))
+
+
+def record_profile_schema(root, min_engine, by, at=None):
+    """dev #834 -- the ONE writer of the profile pin: `{event: "profile-schema", at, min_engine, by}`. Validated
+    before it is appended; a profile already pinned above this engine refuses it (`append`'s own rule). Returns
+    the row."""
+    rec = {"event": PIN_EVENT, "at": at or now_iso(), "min_engine": min_engine, "by": by}
+    _check_profile_schema_row(rec)
+    return append(root, rec)
+
+
+NETWORK_FIELDS = ("event", "at", "run_id", "week", "budget", "open_drafts", "sent_this_week", "planned")
+_ISO_WEEK_RE = re.compile(r"^\d{4}-W(0[1-9]|[1-4]\d|5[0-3])$")
+
+
+def _check_network_row(rec):
+    """dev #834 -- the shape of a `network` event (one per run that worked the network block): exactly
+    `{event, at, run_id, week, budget, open_drafts, sent_this_week, planned}`, the four counts ints >= 0, `week`
+    an ISO week `YYYY-Www`. The funnel's weeks-at-budget reads these, so a week counts only when the block ran in
+    it, against the budget recorded that week."""
+    unknown = sorted(set(rec) - set(NETWORK_FIELDS))
+    missing = [k for k in NETWORK_FIELDS if k not in rec]
+    if unknown:
+        raise JournalError("network has unknown field(s) %s" % ", ".join(unknown))
+    if missing:
+        raise JournalError("network is missing field(s) %s" % ", ".join(missing))
+    at = rec["at"]
+    if not isinstance(at, str) or not _READMIT_AT_RE.match(at):
+        raise JournalError("network at=%r is not an ISO date and time" % (at,))
+    if not isinstance(rec["run_id"], str) or not rec["run_id"].strip():
+        raise JournalError("network run_id=%r is not a non-empty string" % (rec["run_id"],))
+    if not isinstance(rec["week"], str) or not _ISO_WEEK_RE.match(rec["week"]):
+        raise JournalError("network week=%r is not an ISO week YYYY-Www" % (rec["week"],))
+    for k in ("budget", "open_drafts", "sent_this_week", "planned"):
+        if not _is_int(rec[k]):
+            raise JournalError("network %s=%r is not an int >= 0" % (k, rec[k]))
+
+
+def record_network(root, run_id, at=None, **fields):
+    """dev #834 -- the ONE writer of a `network` event; `fields` are exactly `week`, `budget`, `open_drafts`,
+    `sent_this_week`, `planned`. Validated before it is appended; nothing is written on a refusal. Returns the row."""
+    rec = {"event": "network", "at": at or now_iso(), "run_id": run_id}
+    rec.update(fields)
+    _check_network_row(rec)
+    return append(root, rec)
+
+
+COMPANIES_RAISED_FIELDS = ("event", "at", "run_id", "setting", "raised", "waiting")
+
+
+def _check_companies_raised_row(rec):
+    """dev #834 (design-network-first.md 3.3) -- the shape of a `companies-raised` event, for the writer and the reader alike:
+    exactly `{event, at, run_id, setting, raised, waiting}`. `setting` is `search.company_intake_per_run` as it read when the
+    step ran (int 1..100); `raised` the company ids newly raised this run (distinct, non-empty, whitespace-free, at most
+    `setting`); `waiting` the qualifying companies still unraised (int >= 0). It is written EVEN WHEN `raised` is empty, so
+    "the step ran and raised nothing" differs from "the step never ran"."""
+    unknown = sorted(set(rec) - set(COMPANIES_RAISED_FIELDS))
+    missing = [k for k in COMPANIES_RAISED_FIELDS if k not in rec]
+    if unknown:
+        raise JournalError("companies-raised has unknown field(s) %s" % ", ".join(unknown))
+    if missing:
+        raise JournalError("companies-raised is missing field(s) %s" % ", ".join(missing))
+    at = rec["at"]
+    if not isinstance(at, str) or not _READMIT_AT_RE.match(at):
+        raise JournalError("companies-raised at=%r is not an ISO date and time" % (at,))
+    if not isinstance(rec["run_id"], str) or not rec["run_id"].strip():
+        raise JournalError("companies-raised run_id=%r is not a non-empty string" % (rec["run_id"],))
+    if not _is_int(rec["setting"], 1, 100):
+        raise JournalError("companies-raised setting=%r is not 1..100" % (rec["setting"],))
+    _id_list("raised", rec["raised"], what="companies-raised")
+    if len(rec["raised"]) > rec["setting"]:
+        raise JournalError("companies-raised raised %d companies with a setting of %d: a run never raises more than "
+                           "the setting" % (len(rec["raised"]), rec["setting"]))
+    if not _is_int(rec["waiting"]):
+        raise JournalError("companies-raised waiting=%r is not an int >= 0" % (rec["waiting"],))
+
+
+def record_companies_raised(root, run_id, setting, raised, waiting, at=None):
+    """dev #834 -- the ONE writer of a `companies-raised` event: `{event, at, run_id, setting, raised, waiting}`. Validated
+    before it is appended; nothing is written on a refusal. Returns the row."""
+    rec = {"event": "companies-raised", "at": at or now_iso(), "run_id": run_id, "setting": setting,
+           "raised": list(raised), "waiting": waiting}
+    _check_companies_raised_row(rec)
+    return append(root, rec)
 
 
 def record_mail_status(root, run_id, mailbox, counts, unmatched, at=None):
@@ -3266,6 +3514,12 @@ def _record_fired(root, at):
         if is_unbound(root):
             say_unbound_once("journal.py --fired", root)
             return
+        # dev #834: a profile pinned above this engine is not written to, and the hook says why on stdout (exit 0:
+        # a hook never blocks a session). Checked before stdin is read; `append` would refuse too.
+        refusal = pin_refusal(root)
+        if refusal:
+            print("jobsearch: %s" % refusal)
+            return
         session_id, cwd = "", ""
         try:
             if not sys.stdin.isatty():
@@ -3435,6 +3689,13 @@ def main():
             return 0
 
         if args.start:
+            # dev #834: a profile pinned ABOVE this engine is not started on. Nothing is appended, stdout stays empty
+            # (a caller reads it as the run id), the refusal goes to stderr, and the exit is 3 -- the skill's step 0
+            # prints that line as the run's whole summary and stops.
+            refusal = pin_refusal(root)
+            if refusal:
+                print("⛔ %s" % refusal, file=sys.stderr)
+                return 3
             # dev #703 / public #155: the HEAD this run began on, so run_summary.footprint()
             # can count what the run COMMITTED. Omitted (never null) when git cannot be asked:
             # a `start` without it is the "not measured" case, same as every older `start`.

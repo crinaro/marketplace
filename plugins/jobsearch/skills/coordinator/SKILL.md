@@ -52,9 +52,12 @@ startup is identical every time, rather than depending on what anyone remembers.
 ~/.claude/jobsearch/run coordinator.py    # run from YOUR search directory
 ```
 
-**Its FIRST line is the start line** (`lifecycle.process_report().start_line`): `PIPELINE N ready · N your read ·
-PROCESS FAILURE: N (oldest Dd: causes) · WAITING FOR INTAKE: N (oldest Dd) · …`, the same counts every surface
-prints. Give it to the candidate first, as printed, before anything else. **When it shows `PROCESS FAILURE`
+**Its FIRST line is the start line when the pipeline reports a failure; otherwise it is the run summary's network counts line,
+and the start line is the second** (jobsearch 0.86.0, `coordinator.py`'s `first_lines`; a network-first search may hold no
+application at all, and that is healthy). The start line is `lifecycle.process_report().start_line`: `PIPELINE N ready · N your
+read · PROCESS FAILURE: N (oldest Dd: causes) · WAITING FOR INTAKE: N (oldest Dd) · …`, the same counts every surface prints.
+The network line is counts only: `network: drafted 3 (reach-outs 2 · follow-ups 1) · replies 0 · chats to record 1 · look into 10
+(+10 raised)`. Give the candidate the first line, and then the second, as printed, before anything else. **When the start line shows `PROCESS FAILURE`
 above 0, NEEDS YOU carries the line `PROCESS FAILURE: run the drain (skills/coordinator § Drain) before deciding
 anything`: run § Drain (4c below) before offering any pursue-or-pass decision.**
 
@@ -348,8 +351,10 @@ history is permanent. Full protocol: `marketplace-dev/docs/intake.md`.
 finish them), or the candidate asks to clear roles now. The scheduled daily run drains on its own; this is the
 same drain, run with the candidate present. **While the start line shows failures and this session has not
 run § Drain, do not show the candidate a pursue-or-pass list:** run the drain first, then reprint the start
-line. A run finishes every role it takes on (the owner's ruling: *"it has to complete the process for roles it
-finds"*); anything left is a PROCESS FAILURE, printed, never hidden.
+line. A run finishes every role it takes on, at a company the candidate has targeted (the owner's ruling: *"it has to complete
+the process for roles it finds"*; since 0.86.0 the drain admits COMPANIES, every waiting role of each admitted company together,
+and a role at a company that is not a target is `held-for-company`, named and never a failure); anything left is a PROCESS
+FAILURE, printed, never hidden.
 
 **The render route.** Declare `--render-route yes` when `mcp__Claude_Browser__preview_start` is among your
 tools (a deferred one counts: load it through ToolSearch, then declare `yes`); `no` otherwise, and always
@@ -370,7 +375,7 @@ its own tab; this session renders nothing itself.
    ~/.claude/jobsearch/run record.py capture-batch --run <id> --link-only
    ```
 3. Plan the intake, attended. **`--intake N` only with a number the candidate names in this session; never
-   choose or default one yourself.** Without it the stored `search.intake_per_run` applies:
+   choose or default one yourself.** N counts COMPANIES (0.86.0). Without it the stored `search.company_intake_per_run` applies:
    ```bash
    ~/.claude/jobsearch/run lifecycle.py --drain-plan --run <id> --attended --render-route yes --intake <N the candidate named>
    ```

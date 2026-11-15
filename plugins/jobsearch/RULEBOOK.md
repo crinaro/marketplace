@@ -46,7 +46,7 @@ This repo is the single source of truth for the candidate's executive job search
   reaches a printed variant only VIA `presence/claims.md` — the variant gate turns direct promotion red.**
 - **`configure/strategy.md`** — fit logic and the outreach playbook. **Read one section via
   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/section.py" configure/strategy.md "<heading>"`, not the whole 16,700 words.**
-- **`outreach/network.md`** — warm-intro targets and alumni.
+- **`outreach/network.md`** — warm-intro targets and alumni. **`views/network_strategy.md`**: generated, never hand-edit.
 
 **STATE AND OUTPUT.**
 - **`data/asks.jsonl`** (cross-cutting asks, kind `role`|`system`) · **`data/commitments.jsonl`**

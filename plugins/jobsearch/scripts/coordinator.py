@@ -58,15 +58,23 @@ There are exactly two channels, and only one of them is a wake-up:
 session-handoff letter. That is a feature: a file is inspectable, replayable, and does not depend on any
 session still being alive.
 
-## The first line is the pipeline (dev #820 / public #175, design section 7)
+## The first line is the process-failure line when there is a failure (dev #820 / public #175, design section 7; dev #834)
 
-The FIRST line this prints is `lifecycle.process_report().start_line`: how many roles are ready for a
+`lifecycle.process_report().start_line` is the line that reports the pipeline: how many roles are ready for a
 decision, how many only you can read, how many a run failed to finish (counted, aged, with a cause), how
 many wait for intake, what no pass looked at, and any engine skew. It is the same string the dashboard,
 Your Move, the run headline and the status panel print, because all of them print the report's own text.
 A pipeline that cannot be read prints `PIPELINE NOT CHECKED (...)` on that line, never an empty one. The
 coordinator is the BACKSTOP: when a run did not finish its roles, `skills/coordinator/SKILL.md` § Drain is
 the attended way to finish them.
+
+**That line is FIRST when it reports a failure** (a role a run failed to finish, an unclassified role, a role-count mismatch, or a
+pipeline that could not be read): a defect is the headline (dev #820 CO1). **Since jobsearch 0.86.0 (dev #834, design-network-first.md
+10.4, 3.4 row 11) a healthy pipeline no longer leads with itself:** when the run summary has a network counts line to give
+(`run_summary.network_line(recs, run_id, root)` for the journal's latest run: counts only, one line, never the guarded "no change" phrases), THAT is the first line and the
+pipeline line is the second, so a run whose work was the network is not introduced as a pipeline with nothing in it. With no network line
+(none exists yet, or the profile has not been upgraded) the pipeline line stays first, as before. `first_lines()` is the one rule.
+A pipeline with zero applications is never a failure here.
 
 Usage:
     python3 scripts/coordinator.py          # stand up the session; does NOT take the lock
@@ -116,6 +124,46 @@ def load(name):
         return []
     with open(p, encoding="utf-8") as fh:
         return [json.loads(l) for l in fh if l.strip()]
+
+
+def first_lines(report, error, network_line=None):
+    """The lines this script prints before everything else (dev #834, design-network-first.md 10.4, 3.4 row 11). Pure.
+
+    * the pipeline could not be read: `PIPELINE NOT CHECKED (<why>)`, alone and first, never an empty line;
+    * the pipeline reports a failure (`failure`, `unclassified` or a count `mismatch`): its start line, alone and first, because a
+      defect is the headline (dev #820 CO1);
+    * otherwise, with a network counts line to give: that line first, then the pipeline's start line;
+    * otherwise the pipeline's start line, as before.
+
+    Counting applications is not here and never will be: zero applications in flight is a normal state of a network-first search."""
+    if report is None:
+        return ["PIPELINE NOT CHECKED (%s)" % error]
+    failing = bool(report.failure or report.unclassified or report.mismatch)
+    if failing or not network_line:
+        return [report.start_line]
+    return [network_line, report.start_line]
+
+
+def _network_line(root):
+    """The run summary's network counts line for the latest run, or None when it has none to give. `run_summary.network_line` is
+    the one producer (counts only, one line); until the installed `run_summary.py` has it, the answer is None and the pipeline line
+    stays first. A line that cannot be computed is never allowed to hide the pipeline line, so any failure here is None.
+
+    The signature is `run_summary.network_line(recs, run_id, root)` (dev #834 verify: this call used to pass `root` alone, the
+    TypeError was swallowed here, and the line never printed first). "The latest run" is the last journal `start` event's run id;
+    a journal with none has no run to count, and the answer is None."""
+    try:
+        import journal as _journal
+        import run_summary as _rs
+        fn = getattr(_rs, "network_line", None)
+        if not fn:
+            return None
+        recs = _journal.read(root)
+        starts = [r for r in recs if r.get("event") == "start" and r.get("run_id")]
+        line = fn(recs, starts[-1]["run_id"], root) if starts else None
+    except Exception:                                           # noqa: BLE001 - the pipeline line must still print
+        return None
+    return line if isinstance(line, str) and line.strip() and "\n" not in line.strip() else None
 
 
 def rule(t):
@@ -170,7 +218,8 @@ def main():
                     help="Print every deferred item. The default prints one count per kind.")
     args = ap.parse_args()
 
-    # ---- 0. the pipeline: the FIRST line is process_report's own start line (dev #820, CO1) ------
+    # ---- 0. the pipeline: the FIRST line is process_report's own start line when it reports a failure, else the run summary's
+    # network counts line when there is one (dev #820 CO1; dev #834, design-network-first.md 10.4) -- see `first_lines` ------
     lc_now = datetime.datetime.now()
     lc_data, lc_report, lc_error = None, None, None
     try:
@@ -180,8 +229,8 @@ def main():
         lc_report = _lifecycle.process_report(lc_data, lc_now)
     except Exception as e:                                      # noqa: BLE001 - said, never empty
         lc_error = "%s: %s" % (type(e).__name__, str(e)[:200])
-    print(lc_report.start_line if lc_report is not None
-          else "PIPELINE NOT CHECKED (%s)" % lc_error)
+    for first in first_lines(lc_report, lc_error, _network_line(ROOT) if lc_report is not None else None):
+        print(first)
     print()
     print("COORDINATOR — %s" % lc_now.strftime("%A %Y-%m-%d %H:%M"))
     print("=" * 76)

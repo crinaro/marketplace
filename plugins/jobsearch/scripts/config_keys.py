@@ -679,6 +679,13 @@ def feeds_enabled(cfg):
 # cap (`lifecycle.DRAIN_BUDGET_S`) may lower the effective capacity (N7). It REPLACES
 # `search.triage_per_run`, whose meaning was "reads per run": `m_0_82_0_role_lifecycle` moves the old
 # key aside, carrying a stored 10 to 40 (owner ruling 7) and any other value unchanged.
+#
+# ⚠️ dev #834 (jobsearch 0.86.0, design-network-first.md 3.4 row 10, 3.5): `search.intake_per_run` is RETIRED IN THE READER and
+# UNREGISTERED. Intake is counted in companies now (`search.company_intake_per_run`, below), no 0.86.0 script reads the old
+# key, and `m_0_86_0_network_first` LEAVES IT IN THE PROFILE, byte for byte, because an older engine on a machine that has
+# not updated still reads it. The two constants stay as NAMES only: `m_0_82_0_role_lifecycle` (history, never edited) pins its
+# own default to `SEARCH_INTAKE_PER_RUN_DEFAULT`. They are in neither `READER_KEYS` nor `_METADATA`, so `profile.py --options`
+# and doctor's CONFIG CURRENCY no longer list the key, and `describe()` refuses it like the two triage keys.
 SEARCH_INTAKE_PER_RUN = "search.intake_per_run"
 SEARCH_INTAKE_PER_RUN_DEFAULT = 40
 # `search.intake_new_percent` -- while the pre-0.82.0 backlog is non-empty, this share of each run's
@@ -691,14 +698,8 @@ SEARCH_INTAKE_NEW_PERCENT_DEFAULT = 50
 SOURCING_FEEDS_DEADLINE_S = "sourcing.feeds.deadline_s"
 SOURCING_FEEDS_DEADLINE_S_DEFAULT = 240
 
-READER_KEYS = READER_KEYS | frozenset({SEARCH_INTAKE_PER_RUN, SEARCH_INTAKE_NEW_PERCENT,
-                                       SOURCING_FEEDS_DEADLINE_S})
+READER_KEYS = READER_KEYS | frozenset({SEARCH_INTAKE_NEW_PERCENT, SOURCING_FEEDS_DEADLINE_S})
 
-_METADATA[SEARCH_INTAKE_PER_RUN] = (
-    SEARCH_INTAKE_PER_RUN_DEFAULT, "int", (1, 300),
-    "roles one run admits and finishes -- captured, read, re-screened and (for a keep) researched in "
-    "that run. A role it sees and does not admit waits, visibly. The default comes from one profile's "
-    "measured rate; raise it when the waiting count keeps rising (dev #820)")
 _METADATA[SEARCH_INTAKE_NEW_PERCENT] = (
     SEARCH_INTAKE_NEW_PERCENT_DEFAULT, "int", (0, 100),
     "while old unread roles remain, this percent of each run's intake is kept for newly found roles so "
@@ -748,6 +749,111 @@ _METADATA[SEARCH_POSTING_FETCH] = (
     "whether a LinkedIn role the Browser pane could not read is read from LinkedIn's public posting page instead "
     "(automated access that LinkedIn User Agreement section 8.2 restricts; off unless you turn it on). Set it only "
     "with `posting_fetch.py --set on|off`, which prints the terms first and allows the sandbox host (dev #840)")
+
+# ── network-first (dev #834; jobsearch 0.86.0; design-network-first.md sections 3.5, 9.1, 12.1, 13.1) ─────────────────
+# Every run works the network, whatever the plan's outcomes (owner ruling 1), and speculative outreach is a BUDGET, not a
+# ban (owner ruling 4). The keys below are what that block and its intake read. `m_0_86_0_network_first` seeds each where
+# absent (NETWORK_FIRST_SEEDED, below), never overwriting a value the owner set; an ABSENT key reads the registered default,
+# which EQUALS the seeded value, so a profile between the migration's pin and its completion behaves identically.
+#
+# `search.company_intake_per_run` -- companies one run ADMITS and finishes (every waiting role of each admitted company
+# together). It replaces `search.intake_per_run` (roles) as the drain's setting; that key is LEFT IN PLACE in the profile
+# for older engines (design 12.1) and is unregistered above. `lifecycle.intake_setting` reads THIS key; it also caps how many
+# companies `record.py raise-companies` newly raises per run (design 3.3).
+SEARCH_COMPANY_INTAKE_PER_RUN = "search.company_intake_per_run"
+SEARCH_COMPANY_INTAKE_PER_RUN_DEFAULT = 10
+# `network.new_reachouts_per_week` -- the budget that REPLACES the old invariant "no speculative outreach": the network
+# block drafts up to the week's REMAINING budget of first touches to people at target companies, never more. 0 turns new
+# reach-outs off; 0..50, default 5 (owner ruling 4). The week is the ISO week (Monday start) in the profile's zone.
+NETWORK_NEW_REACHOUTS_PER_WEEK = "network.new_reachouts_per_week"
+NETWORK_NEW_REACHOUTS_PER_WEEK_DEFAULT = 5
+# `network.followup_business_days` -- the 3B7 marks (days after a reach-out at which a second contact and a follow-up are
+# due). Two ints 1..30, strictly increasing; data, so a corrected reading of the method is a setting, not a release.
+NETWORK_FOLLOWUP_BUSINESS_DAYS = "network.followup_business_days"
+NETWORK_FOLLOWUP_BUSINESS_DAYS_DEFAULT = [3, 7]
+# `network.workdays` -- the ISO weekday numbers (1 = Monday .. 7 = Sunday) that count as business days. A non-empty list of
+# unique ints 1..7. The engine assumes no locale's working week; holidays are not modelled.
+NETWORK_WORKDAYS = "network.workdays"
+NETWORK_WORKDAYS_DEFAULT = [1, 2, 3, 4, 5]
+# `network.reachout_max_words` -- the word cap on a network reach-out (whitespace-separated tokens), 25..200, default 75.
+NETWORK_REACHOUT_MAX_WORDS = "network.reachout_max_words"
+NETWORK_REACHOUT_MAX_WORDS_DEFAULT = 75
+# `network.draft_unobserved_days` -- an open first-touch draft older than this is listed as "send unobserved", 7..60.
+NETWORK_DRAFT_UNOBSERVED_DAYS = "network.draft_unobserved_days"
+NETWORK_DRAFT_UNOBSERVED_DAYS_DEFAULT = 14
+# `access.warm_days` -- the window (days) inside which a recorded touch makes a person `warm`, 30..365, default 180 (design-network-first.md 10.2).
+ACCESS_WARM_DAYS = "access.warm_days"
+ACCESS_WARM_DAYS_DEFAULT = 180
+
+READER_KEYS = READER_KEYS | frozenset({SEARCH_COMPANY_INTAKE_PER_RUN, NETWORK_NEW_REACHOUTS_PER_WEEK,
+                                       NETWORK_FOLLOWUP_BUSINESS_DAYS, NETWORK_WORKDAYS,
+                                       NETWORK_REACHOUT_MAX_WORDS, NETWORK_DRAFT_UNOBSERVED_DAYS, ACCESS_WARM_DAYS})
+
+_METADATA[SEARCH_COMPANY_INTAKE_PER_RUN] = (
+    SEARCH_COMPANY_INTAKE_PER_RUN_DEFAULT, "int", (1, 100),
+    "target companies one run admits and finishes (every waiting role of each admitted company together); "
+    "also how many new companies a run raises for you to look into (dev #834)")
+_METADATA[NETWORK_NEW_REACHOUTS_PER_WEEK] = (
+    NETWORK_NEW_REACHOUTS_PER_WEEK_DEFAULT, "int", (0, 50),
+    "new reach-outs the daily run may draft in an ISO week (first touches to people you have not contacted); "
+    "open drafts count until you send or delete them; 0 turns new reach-outs off (dev #834)")
+_METADATA[NETWORK_FOLLOWUP_BUSINESS_DAYS] = (
+    NETWORK_FOLLOWUP_BUSINESS_DAYS_DEFAULT, "list", ("two whole numbers 1-30, increasing",),
+    "business days after a reach-out at which a second contact and then a follow-up are due (3B7: 3 and 7) (dev #834)")
+_METADATA[NETWORK_WORKDAYS] = (
+    NETWORK_WORKDAYS_DEFAULT, "list", ("weekday numbers 1 (Monday) to 7 (Sunday), unique",),
+    "which weekdays count as business days for the follow-up timing; holidays are not modelled (dev #834)")
+_METADATA[NETWORK_REACHOUT_MAX_WORDS] = (
+    NETWORK_REACHOUT_MAX_WORDS_DEFAULT, "int", (25, 200),
+    "word cap for a network reach-out draft (whitespace-separated words) (dev #834)")
+_METADATA[NETWORK_DRAFT_UNOBSERVED_DAYS] = (
+    NETWORK_DRAFT_UNOBSERVED_DAYS_DEFAULT, "int", (7, 60),
+    "an open reach-out draft older than this many days is listed as 'send unobserved' (it still counts against the "
+    "weekly budget) (dev #834)")
+_METADATA[ACCESS_WARM_DAYS] = (
+    ACCESS_WARM_DAYS_DEFAULT, "int", (30, 365),
+    "days within which a recorded touch makes a person warm in the access table (dev #834)")
+
+# What `migrate.m_0_86_0_network_first` seeds where absent: (section, key, default). One place, so the migration and the
+# registry cannot name two different sets. `search.intake_per_run` is NOT here: it is left exactly as it is.
+NETWORK_FIRST_SEEDED = (
+    ("search", "company_intake_per_run", SEARCH_COMPANY_INTAKE_PER_RUN_DEFAULT),
+    ("network", "new_reachouts_per_week", NETWORK_NEW_REACHOUTS_PER_WEEK_DEFAULT),
+    ("network", "followup_business_days", NETWORK_FOLLOWUP_BUSINESS_DAYS_DEFAULT),
+    ("network", "workdays", NETWORK_WORKDAYS_DEFAULT),
+    ("network", "reachout_max_words", NETWORK_REACHOUT_MAX_WORDS_DEFAULT),
+    ("network", "draft_unobserved_days", NETWORK_DRAFT_UNOBSERVED_DAYS_DEFAULT),
+    ("access", "warm_days", ACCESS_WARM_DAYS_DEFAULT),
+)
+
+
+def resolve_followup_days(cfg):
+    """`(first, second)` of `network.followup_business_days`: the configured pair when it is two ints 1..30 strictly
+    increasing, the registered default when the key is absent. Anything else raises `ValueError` naming the key: a typo
+    that silently fell back would read as a timing the candidate never chose."""
+    value, _prov = describe(cfg, NETWORK_FOLLOWUP_BUSINESS_DAYS)
+    ok = (isinstance(value, list) and len(value) == 2
+          and all(isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 30 for v in value)
+          and value[0] < value[1])
+    if not ok:
+        raise ValueError("config.json %s is %r -- not two whole numbers 1-30 in increasing order. Set one, or remove "
+                         "the key to get the default (%s)." % (NETWORK_FOLLOWUP_BUSINESS_DAYS, value,
+                                                              NETWORK_FOLLOWUP_BUSINESS_DAYS_DEFAULT))
+    return (value[0], value[1])
+
+
+def resolve_workdays(cfg):
+    """The set of ISO weekday numbers (1 = Monday .. 7 = Sunday) that count as business days: the configured list when it
+    is a non-empty list of unique ints 1..7, the registered default when the key is absent, else `ValueError`."""
+    value, _prov = describe(cfg, NETWORK_WORKDAYS)
+    ok = (isinstance(value, list) and value
+          and all(isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 7 for v in value)
+          and len(set(value)) == len(value))
+    if not ok:
+        raise ValueError("config.json %s is %r -- not a non-empty list of unique weekday numbers 1-7. Set one, or "
+                         "remove the key to get the default (%s)." % (NETWORK_WORKDAYS, value, NETWORK_WORKDAYS_DEFAULT))
+    return set(value)
+
 
 # What `migrate.m_0_70_0_location_screen_config_keys` seeds where absent: (path to the section, key,
 # default) -- one place, so the migration and the registry cannot name two different sets.

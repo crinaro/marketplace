@@ -67,7 +67,11 @@ DATA = os.path.join(ROOT, "data")
 STORES = ("opportunities.jsonl", "companies.jsonl", "channels.jsonl", "messages.jsonl",
           "inbox.jsonl", "pending_actions.jsonl", "asks.jsonl", "commitments.jsonl",
           "people.jsonl", "involvements.jsonl", "applications.jsonl", "cover_letters.jsonl",
-          "touches.jsonl", "plans.jsonl", "plays.jsonl")
+          "touches.jsonl", "plans.jsonl", "plays.jsonl",
+          # dev #834 (jobsearch 0.86.0, design-network-first.md 12.2): the `proposals` store joins here and
+          # make_fixture.PLACEHOLDER_STORES together (the B1-B4 pattern), so a fresh profile is born current-shape and
+          # `check_store_introduction` never names it missing on a profile scaffolded by 0.86.0 or later.
+          "proposals.jsonl")
 
 # A fresh profile is BORN in the six-phase tree (public #28) — the same shape the 0.32.0
 # migration produces, so a new user never runs (or needs) the migration at all.
@@ -475,6 +479,17 @@ def main():
         ok, err = _migrate.write_stamp(ROOT, _migrate.engine_version())
         if ok:
             created.append(_migrate.STAMP)
+            # dev #834 (design-network-first.md 12.2): a profile scaffolded by 0.86.0 or later carries the 0.86.0 pin
+            # from its first moment, so it is never "pin lost" (`migrate.pending_for`) and an older engine on the same
+            # profile stops at its first journal reader instead of writing as if the profile were its own. Fail open:
+            # a pin that cannot be written leaves the profile pending, and the next hook re-appends it.
+            try:
+                import journal as _journal
+                _journal.record_profile_schema(ROOT, _migrate.NETWORK_FIRST_PIN, "init_profile")
+                created.append("data/runs.jsonl (the jobsearch %s profile pin)" % _migrate.NETWORK_FIRST_PIN)
+            except Exception as e:              # noqa: BLE001
+                print("  ⚠️ could not record the profile pin (%s) — migrate.py will record it on the next hook-firing "
+                      "session." % e)
         else:
             print("  ⚠️ could not write %s (%s) — migrate.py will treat this profile as "
                   "unmigrated and replay its whole chain on the next hook-firing session."

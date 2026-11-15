@@ -277,7 +277,7 @@ class _SyntheticStore(unittest.TestCase):
             a.pop("app_id", None)
         rows = {
             "companies.jsonl": [{"id": "acme", "name": "Acme", "vertical": "other",
-                                 "status": "watching"}],
+                                 "status": "active-target"}],
             "channels.jsonl": [{"id": "board", "label": "Board", "type": "job-board",
                                 "review_cadence": "weekly"}],
             "opportunities.jsonl": [opp],
@@ -449,7 +449,7 @@ class _WriteApiHarness(unittest.TestCase):
             shutil.copy(os.path.join(ROOT, f), os.path.join(self.tmp, f))
         rows = {
             "companies.jsonl": [{"id": "acme", "name": "Acme", "vertical": "other",
-                                 "status": "watching"}],
+                                 "status": "active-target"}],
             "channels.jsonl": [{"id": "board", "label": "Board", "type": "job-board",
                                 "review_cadence": "weekly"}],
             "opportunities.jsonl": [dict(_SyntheticStore.BASE_OPP)],
@@ -575,7 +575,7 @@ def _asks_profile(asks=(), commitments=(), opps=(), handoff=None):
     for rel, recs in (("asks.jsonl", asks), ("commitments.jsonl", commitments),
                       ("opportunities.jsonl", opps), ("companies.jsonl",
                        [{"id": "c1", "name": "Northwind", "vertical": "other",
-                         "status": "watching"}]),
+                         "status": "active-target"}]),
                       ("channels.jsonl", ()), ("messages.jsonl", ())):
         with open(os.path.join(d, "data", rel), "w", encoding="utf-8") as fh:
             for r in recs:
@@ -741,12 +741,15 @@ def _audit_profile(opps=(), asks=(), commitments=(), messages=(), channels=(), p
                                   "review_cadence": "weekly", "access": "public"}]
     with open(os.path.join(d, "data", "companies.jsonl"), "w", encoding="utf-8") as fh:
         fh.write(json.dumps({"id": "c1", "name": "Northwind", "vertical": "other",
-                             "status": "watching"}) + "\n")
+                             "status": "active-target"}) + "\n")
     for rel, recs in (("asks.jsonl", asks), ("commitments.jsonl", commitments),
                       ("messages.jsonl", messages), ("channels.jsonl", channels),
                       ("people.jsonl", people), ("involvements.jsonl", involvements),
                       ("applications.jsonl", app_rows), ("cover_letters.jsonl", ()),
-                      ("touches.jsonl", touch_rows)):
+                      ("touches.jsonl", touch_rows),
+                      # dev #834 (jobsearch 0.86.0): the `proposals` store joins, as every B1-B4 store joined this list, so a profile
+                      # stamped current is not named "missing a store" by `check_store_introduction`
+                      ("proposals.jsonl", ())):
         with open(os.path.join(d, "data", rel), "w", encoding="utf-8") as fh:
             for r in recs:
                 fh.write(json.dumps(r) + "\n")
@@ -1399,6 +1402,10 @@ class _B5Profile(unittest.TestCase):
             for r in rows:
                 fh.write(json.dumps(r) + "\n")
 
+
+# dev #834 (jobsearch 0.86.0): a role at a company the candidate has NOT targeted is `held-for-company`, not admitted, not a
+# failure. The synthetic profiles below model a candidate who is WORKING their roles, so their company is an `active-target`
+# (the tracked fixture's `acme` is one too); a test about a held role builds its own `watching` company.
 
 def scratch_profile(testcase=None):
     """dev #444 — a throwaway copy of the tracked `tests/fixtures/profile` fixture, made

@@ -121,6 +121,14 @@ LAYOUT = {
     # location, and `audit()` reclassifies a root `resumes/` from UNKNOWN (hard fail, nothing
     # self-heals it) to UNMIGRATED (advisory, the tree migration moves it).
     "resumes":               ("presence/resumes",                 ("resumes",)),
+    # ⭐ dev #834 (G2, design-network-first §8.4) — the connection strategy is a GENERATED VIEW
+    # over the rows, `strategy_view.py` writes it whole on every rebuild, and nothing else does.
+    # It sits beside the dashboard in views/ (generated output), NOT at `network` above:
+    # `outreach/network.md` stays the candidate's own notes and several scripts read it (READ by
+    # grep: `check_followups.py`), so repurposing that path would change what they read. A new
+    # path for the view, rather than a migration of a file the candidate writes. No legacy
+    # spelling: nothing predates the name, so the tree migration moves nothing for it.
+    "network_strategy":      ("views/network_strategy.md",        ()),
 }
 
 # Root entries that BELONG at root (see the header for why each stays). Everything else a

@@ -43,8 +43,24 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root, engine_root, is_tracked_fixture, is_engine_root, looks_like_profile
 
-STAMP = "<!-- installed-from: jobsearch %s | do not edit here; edit the plugin's RULEBOOK.md and re-run install_rulebook.py -->"
-MARKER = "<!-- installed-from: jobsearch "
+# ⭐⭐ dev #834 (jobsearch 0.86.0; design-network-first.md section 14.2) -- THE PROVENANCE MARKER CHANGED, ON PURPOSE.
+#
+# An engine older than 0.86.0 reads a CLAUDE.md for `<!-- installed-from: jobsearch ` in its first 400 characters, and
+# a file without it is "unmanaged": its SessionStart hook neither writes nor commits (it prints one line). A file that
+# DID carry the old marker, stamped with a version below the older engine's own, it REWRITES to its own rulebook and
+# COMMITS ("jobsearch: rulebook refreshed to 0.83.0", measured on the extracted v0.83.0 tag). So on a profile shared
+# by two machines, an older machine would silently downgrade this machine's rulebook. 0.86.0 therefore stamps a
+# NEW marker that an older engine reads as unmanaged, and its own reader accepts both.
+#
+# Two invariants, each a test (`test_rulebook_marker.py`): the new stamp does NOT contain `LEGACY_MARKER` (else the
+# older engine recognises it), and it is shorter than 400 characters (both readers read 400). The stamp's own text
+# tells a person on the older machine what to do, because that engine's line ("move it aside and run
+# install_rulebook.py") would be the wrong advice.
+STAMP = ("<!-- jobsearch-rulebook %s | managed by the jobsearch plugin; do not edit here, edit the plugin's "
+         "RULEBOOK.md. A jobsearch older than 0.86.0 reports this file as not installed by the plugin: update "
+         "jobsearch on that machine, do not replace this file. -->")
+MARKER = "<!-- jobsearch-rulebook "
+LEGACY_MARKER = "<!-- installed-from: jobsearch "
 
 # ⭐ dev #81 — a ~38KB CLAUDE.md landed in the checked-in tests/fixtures/profile/ TWICE during
 # the 0.24.0 work. profile_root() legitimately resolves to that fixture when nothing else looks
@@ -124,16 +140,65 @@ def source_text():
         return fh.read()
 
 
-def installed_stamp(dest_file):
+def _read_head(dest_file):
     try:
         with open(dest_file, "r", encoding="utf-8") as fh:
-            head = fh.read(400)
+            return fh.read(400)
     except OSError:
         return None
+
+
+def _stamp_of(head):
+    """`(kind, version)` of a file's first 400 characters: `("new", v)`, `("legacy", v)`, or `(None, "")` when neither
+    marker is there. The new marker is looked for first."""
     i = head.find(MARKER)
-    if i == -1:
-        return ""            # a copy exists but was not made by this script
-    return head[i + len(MARKER):].split("|")[0].strip()
+    if i != -1:
+        return "new", head[i + len(MARKER):].split("|")[0].strip()
+    j = head.find(LEGACY_MARKER)
+    if j != -1:
+        return "legacy", head[j + len(LEGACY_MARKER):].split("|")[0].strip()
+    return None, ""
+
+
+def installed_stamp(dest_file):
+    """The version a CLAUDE.md was installed from, finding EITHER marker: `None` when the file is missing, `""` when
+    it exists but carries neither marker (not made by this script)."""
+    head = _read_head(dest_file)
+    if head is None:
+        return None
+    return _stamp_of(head)[1]
+
+
+def stamp_kind(dest_file):
+    """`"new"` (0.86.0's marker), `"legacy"` (the marker an engine older than 0.86.0 reads) or None (no file, or neither
+    marker). It is the KIND alone that makes a legacy file refresh at the engine's own version."""
+    head = _read_head(dest_file)
+    return None if head is None else _stamp_of(head)[0]
+
+
+def _vt(v):
+    """`(major, minor, patch)` for an `X.Y.Z` string, else None (an `unversioned` engine compares as nothing)."""
+    import re
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)$", v or "")
+    return tuple(int(g) for g in m.groups()) if m else None
+
+
+def _is_ahead(have, version):
+    a, b = _vt(have), _vt(version)
+    return a is not None and b is not None and a > b
+
+
+_AHEAD_LINE = ("  the rulebook was installed by jobsearch %s, newer than this engine (%s); not replaced")
+_PIN_LINE = "  ⛔ %s"
+
+
+def _pin_refusal(dest_dir):
+    """The journal's pin refusal for this profile (a profile pinned above this engine is not written to), or None."""
+    try:
+        import journal
+        return journal.pin_refusal(dest_dir)
+    except Exception:                                   # noqa: BLE001 -- the pin is a guard, never a new way to fail
+        return None
 
 
 def refresh_if_stale(dest_dir=None, apply_it=True):
@@ -183,13 +248,21 @@ def refresh_if_stale(dest_dir=None, apply_it=True):
             % dest_file]
 
     have = installed_stamp(dest_file)
-    if have == version:
-        return "current", []
+    kind = stamp_kind(dest_file)
     if have == "":
         return "unmanaged", [
             "  ⚠️ %s was not installed by this plugin, so it was NOT replaced." % dest_file,
             "     It may hold local edits. Move it aside and run install_rulebook.py to adopt",
             "     the shipped rulebook, or leave it and accept that engine rules are not loaded."]
+    # dev #834: a profile pinned above this engine is read-only to it, and a rulebook installed by a NEWER engine is
+    # never replaced by this older one (it would be the downgrade the new marker exists to prevent).
+    refusal = _pin_refusal(dest_dir)
+    if refusal:
+        return "pinned-ahead", [_PIN_LINE % refusal]
+    if kind == "new" and have == version:
+        return "current", []
+    if kind == "new" and _is_ahead(have, version):
+        return "ahead", [_AHEAD_LINE % (have, version)]
 
     if not apply_it:
         return ("missing" if have is None else "stale"), [
@@ -197,7 +270,7 @@ def refresh_if_stale(dest_dir=None, apply_it=True):
             % (dest_file, have or "nothing", version)]
 
     text = source_text()
-    if MARKER in text[:400]:
+    if MARKER in text[:400] or LEGACY_MARKER in text[:400]:
         return "bad-source", ["  ⛔ the engine's RULEBOOK.md already carries a stamp; not installed"]
     try:
         tmp = dest_file + ".tmp"
@@ -238,6 +311,16 @@ def main():
         return 2
 
     have = installed_stamp(dest_file)
+    kind = stamp_kind(dest_file)
+
+    # dev #834: a writer checks the pin BEFORE it writes, and never replaces a rulebook a NEWER engine installed.
+    refusal = _pin_refusal(dest_dir) if os.path.isdir(dest_dir) else None
+    if refusal and not args.check:
+        print(_PIN_LINE % refusal, file=sys.stderr)
+        return 2
+    if kind == "new" and _is_ahead(have, version) and not args.check:
+        print(_AHEAD_LINE % (have, version), file=sys.stderr)
+        return 2
 
     if args.check:
         if have is None:
@@ -248,9 +331,12 @@ def main():
                   "may be hand-written or a stale copy. Re-run without --check to replace it, or "
                   "move it aside first if it holds local edits." % dest_file)
             return 1
-        if have != version:
-            print("STALE  %s\n  installed from %s, engine is %s. A stale rulebook is worse than an "
-                  "absent one: it is read as authoritative." % (dest_file, have, version))
+        if kind == "new" and _is_ahead(have, version):
+            print("AHEAD  %s\n%s" % (dest_file, _AHEAD_LINE % (have, version)))
+            return 0
+        if have != version or kind != "new":
+            print("STALE  %s\n  installed from %s (%s marker), engine is %s. A stale rulebook is worse than an "
+                  "absent one: it is read as authoritative." % (dest_file, have, kind, version))
             return 1
         print("OK  %s is current (jobsearch %s)." % (dest_file, version))
         return 0
@@ -269,7 +355,7 @@ def main():
         return 2
 
     text = source_text()
-    if MARKER in text[:400]:
+    if MARKER in text[:400] or LEGACY_MARKER in text[:400]:
         print("Refusing to install a copy as the source — %s already carries a provenance stamp."
               % os.path.join(engine_root(), "RULEBOOK.md"), file=sys.stderr)
         return 2

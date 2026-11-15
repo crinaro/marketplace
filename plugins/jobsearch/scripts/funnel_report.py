@@ -87,6 +87,45 @@ PROPOSAL_EVIDENCE_KEYS = {
 DEFAULT_WINDOW_DAYS = 42
 
 
+# ⭐ dev #834 (M2) — the resolution rule, hoisted out of main() so the network section shares it.
+# A WIN is a reply, a booking or an accepted connection request.
+WIN_OUTCOMES = ("replied", "meeting-booked", "accepted")
+NO_RESPONSE_AFTER = 14   # an `awaiting` row older than this is COUNTED as resolved, but the row
+                         # is NEVER mutated — the inference stays in the report
+
+
+def _age_days(d, today=None):
+    """Days from ISO date `d` to `today` (a date), or to the wall clock when `today` is None."""
+    if today is None:
+        return days_since(d)
+    try:
+        return (today - _iso_to_date(d)).days
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def touch_resolution(x, today=None):
+    """resolved / resolved-aged / awaiting / bounced / undeliverable-unknown, for one SENT touch."""
+    if x.get("delivery") == "bounced":
+        return "bounced"
+    oc = x.get("outcome")
+    if oc in TERMINAL_TOUCH_OUTCOMES:
+        return "resolved"
+    age = _age_days(x.get("date"), today)
+    if oc == "awaiting" and age is not None and age >= NO_RESPONSE_AFTER:
+        return "resolved-aged"
+    # A pattern-inferred address with unknown delivery cannot distinguish silence from a bounce.
+    # It is evidence of NOTHING either way and must not sit in a denominator.
+    if (x.get("medium") or "").startswith("email") and \
+       x.get("address_status") == "pattern-inferred" and x.get("delivery") == "unknown":
+        return "undeliverable-unknown"
+    return "awaiting"
+
+
+def touch_is_win(x):
+    return x.get("outcome") in WIN_OUTCOMES
+
+
 def load(name):
     path = os.path.join(DATA, name)
     if not os.path.exists(path):
@@ -454,6 +493,577 @@ def render_age_at_capture(opps, channels):
     return dict(table, _excluded=excluded)
 
 
+# ═══════════════════════════════════════════════════════════════════════════════════════════
+# ⭐ NETWORK (dev #834, M2 + M4) — design-network-first.md §10.3. The section printed FIRST: the
+# relationship is the headline, the application is one source of an opportunity among several.
+#
+# THE RULES THIS SECTION KEEPS, each one a test in test_funnel_report.py:
+#   * EVERY RATE GOES THROUGH MIN_SAMPLE. `_rate()` is the one place a percentage is made; below
+#     MIN_SAMPLE it prints "too few to rate (n<5)" and NO percentage (plant: n=4 prints one).
+#   * THE DENOMINATOR IS RESOLVED SENDS, by `touch_resolution` / `touch_is_win` — the SAME two
+#     functions the application and channel sections below use. Not redefined here.
+#   * AN UNRECORDED CHAT IS NEVER ZERO (M4). A past, non-cancelled `kind: chat` commitment with no
+#     `attendance` is its own count, listed by id with the verb that records it, excluded from every
+#     denominator, and the held count reads "at least N" while any exists (plant: count it as not held).
+#   * EVERY BOOKING AND EVERY CHAT LANDS IN EXACTLY ONE PLACE, and the identity is asserted in the
+#     output (`NOT CHECKED: ... identity broken` when it is not), so a bucket cannot silently drop one.
+#   * A MISSING THING IS NOT AN EMPTY THING. Reply coverage is READ from the journal (`swept` for mail,
+#     `pass` for LinkedIn); a medium with sends and no covered day prints `NOT CHECKED`, never a lower
+#     number as if complete. An unreadable journal says so; it does not read as "no events".
+#
+# READ (reading this dispatch, 2026-11-14): `journal.coverage_intervals` / `_merge_intervals` do the
+# interval, DST and legacy-row logic (dev #807, #711); this section CALLS them and never re-implements
+# them. The journal is read RAW by event name, tolerant of events this script does not use, so a
+# journal that carries a newer engine's event kinds cannot blank the section.
+# INFERRED (design §10.3 flags it): a LinkedIn pass that read the messages list is a `pass` row of
+# kind `linkedin`, phase `recorded`, whose `reached` carries `inbox` and whose `partial` does not.
+# ═══════════════════════════════════════════════════════════════════════════════════════════
+
+BOOKED_BUCKETS = ("held", "no-show", "unrecorded", "upcoming", "cancelled", "no chat recorded")
+UNBOOKED_BUCKETS = ("held", "no-show", "unrecorded", "upcoming")
+_INBOX_SURFACE = "inbox"
+
+
+def _rate(n, d, unit="resolved"):
+    """The ONE place a network percentage is made. Below MIN_SAMPLE it prints no percentage."""
+    if d < MIN_SAMPLE:
+        return "%d of %d %s   too few to rate (n<%d)" % (n, d, unit, MIN_SAMPLE)
+    return "%d of %d %s   rate %d%%" % (n, d, unit, round(100.0 * n / d))
+
+
+def _net_root(ctx_or_root):
+    return str(getattr(ctx_or_root, "root", ctx_or_root))
+
+
+def _net_rows(root, name):
+    """Every row of `<root>/data/<name>`; a missing file is an empty store, a malformed line raises."""
+    out = []
+    try:
+        fh = open(os.path.join(root, "data", name), encoding="utf-8")
+    except OSError:
+        return out
+    with fh:
+        for line in fh:
+            line = line.strip()
+            if line:
+                out.append(json.loads(line))
+    return out
+
+
+def _net_journal(root):
+    """(rows, problem). Every parseable journal row; `problem` is a sentence when the journal could not
+    be read in full, so a caller says NOT CHECKED rather than reading a hole as "no events"."""
+    import journal as _j
+    rows, bad = [], 0
+    try:
+        fh = open(_j.path(root), encoding="utf-8")
+    except FileNotFoundError:
+        return [], None
+    except OSError as e:
+        return [], "journal unreadable (%s)" % e
+    with fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                bad += 1
+                continue
+            if isinstance(rec, dict):
+                rows.append(rec)
+            else:
+                bad += 1
+    return rows, ("%d journal line(s) unreadable" % bad) if bad else None
+
+
+def _resolve_person(people, pid):
+    """`people` merge chain followed to its end (a cycle or a dangling link stops where it is)."""
+    seen = set()
+    while pid and pid not in seen:
+        seen.add(pid)
+        row = people.get(pid)
+        if not row or row.get("status") != "merged" or not row.get("merged_into"):
+            break
+        pid = row["merged_into"]
+    return pid
+
+
+def _date_or_none(v):
+    try:
+        return _iso_to_date(v)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
+def _iso_week(d):
+    y, w, _wd = d.isocalendar()
+    return "%04d-W%02d" % (y, w)
+
+
+def _chat_state(c, today):
+    """cancelled / held / no-show / unrecorded / upcoming for one `kind: chat` commitment. A past chat
+    with no `attendance` is UNRECORDED — a fact nobody has told the engine, never "not held"."""
+    if c.get("status") == "cancelled":
+        return "cancelled"
+    if c.get("attendance") in ("held", "no-show"):
+        return c["attendance"]
+    d = _date_or_none(c.get("date"))
+    return "unrecorded" if d is not None and d < today else "upcoming"
+
+
+def _chat_model(root, as_of, window_from=None):
+    """Everything `chat_buckets` and `network_section` share, computed once (design §10.3 'the join')."""
+    today = _iso_to_date(as_of)
+    wf = window_from or (today - datetime.timedelta(days=DEFAULT_WINDOW_DAYS)).isoformat()
+    people = {p["id"]: p for p in _net_rows(root, "people.jsonl") if p.get("id")}
+    touches = _net_rows(root, "touches.jsonl")
+    commits = _net_rows(root, "commitments.jsonl")
+    chats = [c for c in commits if c.get("kind") == "chat" and c.get("id")]
+    in_scope = lambda c: str(c.get("date") or "") >= wf          # window start; no upper bound (upcoming)
+    bookings = sorted((t for t in touches if t.get("outcome") == "meeting-booked"
+                       and t.get("status") == "sent" and t.get("id")
+                       and wf <= str(t.get("date") or "") <= as_of),
+                      key=lambda t: (str(t.get("date") or ""), t["id"]))
+    match, used = {}, set()                                       # touch id -> chat (or None); chat ids used
+    for t in bookings:                                            # 1. the explicit link
+        c = next((c for c in chats if c.get("touch_id") == t["id"] and c["id"] not in used), None)
+        if c is not None:
+            match[t["id"]] = c
+            used.add(c["id"])
+    for t in bookings:                                            # 2. earliest LIVE, 3. earliest CANCELLED
+        if t["id"] in match:
+            continue
+        who = _resolve_person(people, t.get("person_id"))
+        cands = [c for c in chats if c["id"] not in used and who
+                 and _resolve_person(people, c.get("person_id")) == who
+                 and str(c.get("date") or "") >= str(t.get("date") or "")]
+        live = [c for c in cands if c.get("status") != "cancelled"]
+        pool = live or cands
+        pick = min(pool, key=lambda c: (str(c.get("date") or ""), c["id"])) if pool else None
+        match[t["id"]] = pick
+        if pick is not None:
+            used.add(pick["id"])
+    booked = {b: [] for b in BOOKED_BUCKETS}
+    for t in bookings:
+        c = match.get(t["id"])
+        booked["no chat recorded" if c is None else _chat_state(c, today)].append(t["id"])
+    scoped_live = [c for c in chats if in_scope(c) and c.get("status") != "cancelled"]
+    matched_live = [c for c in scoped_live if c["id"] in used]
+    unbooked = {b: [] for b in UNBOOKED_BUCKETS}
+    for c in scoped_live:
+        if c["id"] not in used:
+            unbooked[_chat_state(c, today)].append(c["id"])
+    unrecorded = sorted((c["id"] for c in scoped_live if _chat_state(c, today) == "unrecorded"))
+    return {"today": today, "window_from": wf, "bookings": bookings, "match": match, "booked": booked,
+            "unbooked": unbooked, "unrecorded": unrecorded, "scoped_live": scoped_live,
+            "matched_live": matched_live, "no_chat_recorded": list(booked["no chat recorded"]),
+            "people": people, "touches": touches, "commits": commits, "chats": chats}
+
+
+def chat_buckets(ctx_or_root, as_of, window_from=None):
+    """{"bookings": {bucket: [touch ids]}, "unbooked": {bucket: [commitment ids]}, "unrecorded":
+    [commitment ids], "no_chat_recorded": [touch ids]} — design §16.1; NF6's 'Chats to record' reads the
+    last two. The join of a `meeting-booked` touch to its chat is DERIVED here, never stored."""
+    m = _chat_model(_net_root(ctx_or_root), as_of, window_from)
+    return {"bookings": m["booked"], "unbooked": m["unbooked"], "unrecorded": m["unrecorded"],
+            "no_chat_recorded": m["no_chat_recorded"]}
+
+
+def chat_identities_hold(m):
+    """The two asserted identities: every booking is in exactly one of six buckets, and every
+    non-cancelled chat is a matched chat or in `chats with no booking`."""
+    n_booked = sum(len(v) for v in m["booked"].values())
+    n_unbooked = sum(len(v) for v in m["unbooked"].values())
+    return (n_booked == len(m["bookings"])
+            and len(m["scoped_live"]) == len(m["matched_live"]) + n_unbooked)
+
+
+def _day_bounds_utc(day):
+    """[00:00, next 00:00) of `day` in the profile's zone, as aware UTC instants."""
+    import journal as _j
+    tz = _j._declared_zone()
+    nxt = day + datetime.timedelta(days=1)
+
+    def at(d):
+        n = datetime.datetime(d.year, d.month, d.day)
+        return n.replace(tzinfo=tz) if tz is not None else n.astimezone()
+    return at(day).astimezone(datetime.timezone.utc), at(nxt).astimezone(datetime.timezone.utc)
+
+
+def _mail_coverage(recs, days):
+    """(mailboxes, {mailbox: [uncovered days]}). A mailbox is covered on day D when the union of its ok
+    `swept` intervals covers the whole day in the profile's zone — `journal.coverage_intervals` and
+    `journal._merge_intervals`, never a second implementation of the interval logic (dev #807)."""
+    import journal as _j
+    boxes = sorted({r.get("mailbox") for r in recs if r.get("event") == "swept" and r.get("mailbox")})
+    gaps = {}
+    for mb in boxes:
+        merged = _j._merge_intervals(_j.coverage_intervals(recs, mb))
+        miss = []
+        for d in days:
+            s, e = _day_bounds_utc(d)
+            if not any(f <= s and t >= e for f, t in merged):
+                miss.append(d)
+        gaps[mb] = miss
+    return boxes, gaps
+
+
+def _linkedin_covered_days(recs):
+    """The ISO days on which a recorded LinkedIn pass read the messages list (`inbox` in `reached`, not
+    in `partial`). `inbox` is taken from `journal.LINKEDIN_REPLY_SURFACES` by name."""
+    import journal as _j
+    if _INBOX_SURFACE not in _j.LINKEDIN_REPLY_SURFACES:
+        return None
+    out = set()
+    for r in recs:
+        if r.get("event") == "pass" and r.get("kind") == "linkedin" and r.get("phase") == "recorded":
+            if _INBOX_SURFACE in (r.get("reached") or []) and _INBOX_SURFACE not in (r.get("partial") or []):
+                out.add(str(r.get("at") or "")[:10])
+    return out
+
+
+def _opp_created(o, commits_by_id):
+    """The date an opportunity entered the record: its earliest sighting, else the chat it came from,
+    else its plan assignment; None when nothing says (never guessed). INFERRED: the schema has no
+    created-on field."""
+    seen = sorted(str(s.get("seen_on")) for s in (o.get("sightings") or []) if s.get("seen_on"))
+    if seen:
+        return seen[0]
+    c = commits_by_id.get(o.get("via_commitment_id"))
+    if c and c.get("date"):
+        return str(c["date"])
+    return str(o["plan_assigned_on"]) if o.get("plan_assigned_on") else None
+
+
+def _unobserved_items(root, as_of):
+    """[(ref, label)] for `reachouts.plan(...)["unobserved"]` (NF3, design §9.1); [] when the engine has
+    no `reachouts` module (an ImportError is the ONLY thing treated as "not built"). Anything else it
+    raises is loud, never an empty list."""
+    try:
+        import reachouts as _r
+    except ImportError:
+        return []
+    out = []
+    # The contract (dev #834 verify): `reachouts.plan` takes a `datetime.date` (it also coerces an ISO string at its own boundary,
+    # `reachouts.as_date`). This module carries ISO strings, so it converts once, here, and passes the documented type.
+    when = _iso_to_date(as_of) if isinstance(as_of, str) else as_of
+    for item in (_r.plan(root, when) or {}).get("unobserved") or []:
+        if isinstance(item, dict):
+            ref = str(item.get("ref") or item.get("id") or "?")
+            out.append((ref, "%s (%s%s)" % (ref, item.get("person") or item.get("person_id") or "?",
+                                            (", %s days" % item["days"]) if item.get("days") is not None else "")))
+        else:
+            out.append((str(item).split(" ", 1)[0], str(item)))
+    return out
+
+
+def _unobserved_sends(root, as_of):
+    return [label for _ref, label in _unobserved_items(root, as_of)]
+
+
+def _age_unknown_drafts(root, as_of):
+    """`["<ref> (<person>): <reason>"]` for `reachouts.plan(...)["age_unknown"]` (design 9.1): open first-touch drafts whose age
+    cannot be read from their `**Brief:**` id. They are neither a send unobserved nor silently absent: the report names them."""
+    try:
+        import reachouts as _r
+    except ImportError:
+        return []
+    when = _iso_to_date(as_of) if isinstance(as_of, str) else as_of
+    return ["%s (%s): %s" % (u.get("ref"), u.get("person"), u.get("reason"))
+            for u in (_r.plan(root, when) or {}).get("age_unknown") or [] if isinstance(u, dict)]
+
+
+def network_section(ctx_or_root, as_of, window_from=None):
+    """The NETWORK section as text (design §10.3), over `[window_from, as_of]` (default the last
+    `DEFAULT_WINDOW_DAYS`) and per ISO week. Pure over the stores and the journal: no wall clock, no
+    write. Every figure is a count of rows or a rate through `_rate` (MIN_SAMPLE); a figure it cannot
+    stand behind prints NOT CHECKED or PARTIAL, never a quiet number."""
+    root = _net_root(ctx_or_root)
+    m = _chat_model(root, as_of, window_from)
+    today, wf = m["today"], m["window_from"]
+    in_win = lambda d: wf <= str(d or "") <= as_of
+    people, touches, commits = m["people"], m["touches"], m["commits"]
+    commits_by_id = {c["id"]: c for c in commits if c.get("id")}
+    opps = _net_rows(root, "opportunities.jsonl")
+    apps = _net_rows(root, "applications.jsonl")
+    companies = {c["id"]: c for c in _net_rows(root, "companies.jsonl") if c.get("id")}
+    proposals = _net_rows(root, "proposals.jsonl")
+    recs, jproblem = _net_journal(root)
+    L = []
+
+    def line(label, text):
+        L.append("  %-27s %s" % (label, text))
+
+    # ---- the window's sends -----------------------------------------------------------------
+    sent = [t for t in touches if t.get("status") == "sent" and in_win(t.get("date"))]
+
+    def earlier_touch(t):
+        who = _resolve_person(people, t.get("person_id"))
+        return bool(who) and any(
+            u is not t and u.get("status") == "sent" and _resolve_person(people, u.get("person_id")) == who
+            and str(u.get("date") or "") < str(t.get("date") or "") for u in touches)
+    firsts = [t for t in sent if t.get("touch_type") == "first-touch"]
+    new_out = [t for t in firsts if not t.get("opp_id") and not earlier_touch(t)]
+    role_specific = [t for t in firsts if t.get("opp_id")]
+    resolved = [t for t in new_out if touch_resolution(t, today) in ("resolved", "resolved-aged")]
+    awaiting = [t for t in new_out if touch_resolution(t, today) == "awaiting"]
+    wins = [t for t in resolved if touch_is_win(t)]
+    unobs = _unobserved_sends(root, as_of)
+
+    # ---- coverage, READ from the journal ----------------------------------------------------
+    days = [wf_d + datetime.timedelta(days=i)
+            for wf_d in [_iso_to_date(wf)] for i in range((today - wf_d).days + 1)]
+    media = {"mail": [t for t in sent if (t.get("medium") or "").startswith("email")],
+             "LinkedIn": [t for t in sent if (t.get("medium") or "").startswith("linkedin")]}
+    cov = {}                                   # medium -> ("full" | "partial" | "none", first uncovered day)
+    cov_text = []
+    if jproblem and not recs:
+        cov_text.append("NOT CHECKED: %s" % jproblem)
+        for k in media:
+            cov[k] = ("none", None)
+    else:
+        boxes, gaps = _mail_coverage(recs, days)
+        full_boxes = [b for b in boxes if not gaps[b]]
+        any_cov = any(len(gaps[b]) < len(days) for b in boxes)
+        first_gap = min((g[0] for g in gaps.values() if g), default=None)
+        cov["mail"] = (("none" if not any_cov else "full" if not first_gap else "partial"), first_gap)
+        if boxes:
+            cov_text.append("mail %d of %d mailbox%s every day" % (len(full_boxes), len(boxes),
+                                                                   "" if len(boxes) == 1 else "es"))
+        else:
+            cov_text.append("mail NOT CHECKED (no sweep recorded)")
+        li = _linkedin_covered_days(recs)
+        if li is None:
+            cov["LinkedIn"] = ("none", None)
+            cov_text.append("LinkedIn NOT CHECKED (journal has no `inbox` surface)")
+        else:
+            li_days = [d for d in days if d.isoformat() in li]
+            li_gap = next((d for d in days if d.isoformat() not in li), None)
+            cov["LinkedIn"] = (("none" if not li_days else "full" if li_gap is None else "partial"), li_gap)
+            cov_text.append("LinkedIn messages read on %d of %d days" % (len(li_days), len(days)))
+        if jproblem:
+            cov_text.append("NOT CHECKED in part: %s" % jproblem)
+    partial_tags = []
+    not_checked = []
+    for k, rows_k in media.items():
+        if not rows_k:
+            continue
+        state, gap = cov.get(k, ("none", None))
+        if state == "none":
+            since = wf
+            not_checked.append("NOT CHECKED: %s replies (no %s since %s)"
+                               % (k, "sweep covered a day" if k == "mail" else "pass read messages", since))
+        elif state == "partial":
+            partial_tags.append("PARTIAL: %s %s" % (k, gap.isoformat()))
+    any_gap = bool(partial_tags or not_checked or jproblem)
+
+    # ---- weeks at budget, from the `network` events ----------------------------------------
+    net_ev = sorted((r for r in recs if r.get("event") == "network" and r.get("week")),
+                    key=lambda r: str(r.get("at") or ""))
+    first_ev = net_ev[0] if net_ev else None
+    since = str(first_ev.get("at") or "")[:10] if first_ev else None
+    by_week = {}
+    for r in net_ev:
+        by_week.setdefault(r["week"], r)                      # the week's FIRST event: its recorded budget
+    win_weeks = []
+    for d in days:
+        w = _iso_week(d)
+        if w not in win_weeks:
+            win_weeks.append(w)
+    run_weeks = [w for w in win_weeks if w in by_week]
+    sent_per_week = collections.Counter(_iso_week(_iso_to_date(t["date"])) for t in new_out if _date_or_none(t.get("date")))
+    at_budget = [w for w in run_weeks if sent_per_week[w] >= int(by_week[w].get("budget") or 0)]
+
+    # ---- print ---------------------------------------------------------------------------
+    L.insert(0, "NETWORK  (window %s .. %s · %s)" % (
+        wf, as_of, ("network-first since %s" % since) if since else "network-first: no `network` event recorded"))
+    line("coverage", (" · ".join(cov_text) or "no journal events") + ("   PARTIAL" if any_gap else ""))
+    tag = ("   " + "; ".join(partial_tags)) if partial_tags else ""
+    line("new reach-outs sent", ("at least %d (+%d send unobserved)" % (len(new_out), len(unobs)) if unobs
+                                 else "%d" % len(new_out)) + tag)
+    line("role-specific first touches", "%d   (carry an opp_id; not budgeted)" % len(role_specific))
+    if run_weeks:
+        line("weeks at budget", "%d of %d run   (each week against the budget recorded that week; %d other "
+             "week%s in the window not run)" % (len(at_budget), len(run_weeks), len(win_weeks) - len(run_weeks),
+                                                "" if len(win_weeks) - len(run_weeks) == 1 else "s"))
+    else:
+        line("weeks at budget", "none run   (no `network` event in the window)")
+    if not_checked:
+        line("replied (a win)", "; ".join(not_checked))
+    else:
+        line("replied (a win)", _rate(len(wins), len(resolved)) + "   (%d awaiting; win = replied · "
+             "meeting-booked · accepted)" % len(awaiting) + tag)
+
+    nb = len(m["bookings"])
+    line("bookings (touches)", "%d   (a subset of replied)" % nb)
+    bk = m["booked"]
+    line("", "= " + " · ".join("%s %d" % (b, len(bk[b])) for b in BOOKED_BUCKETS))
+    ub = m["unbooked"]
+    n_ub = sum(len(v) for v in ub.values())
+    line("chats with no booking", "%d   = %s" % (n_ub, " · ".join("%s %d" % (b, len(ub[b])) for b in UNBOOKED_BUCKETS)))
+    for cid in m["unrecorded"]:
+        line("", "unrecorded: %s — record it: record.py attended %s held|no-show" % (cid, cid))
+    for tid in m["no_chat_recorded"]:
+        t = next((x for x in touches if x.get("id") == tid), {})
+        line("", "no chat recorded: touch %s (%s) — record it: record.py chat %s --on <date> --touch %s"
+             % (tid, t.get("person_id") or "?", t.get("person_id") or "<person>", tid))
+    held = [c for c in m["scoped_live"] if _chat_state(c, today) == "held"]
+    n_unrec = len(m["unrecorded"])
+    line("chats held (all chats)", ("at least %d   (while any is unrecorded)" % len(held)) if n_unrec else "%d" % len(held))
+    if not chat_identities_hold(m):
+        line("", "NOT CHECKED: a chat or booking bucket identity is broken; the counts above do not add up")
+
+    offered = sum(len(c.get("intros_given") or []) for c in m["scoped_live"])
+    landed_refs = {t.get("trigger_ref") for t in touches if t.get("trigger_kind") == "introduction"}
+    landed = sum(len(c.get("intros_given") or []) for c in m["scoped_live"] if "commitment:%s" % c["id"] in landed_refs)
+    line("intros", "offered %d · landed %d   %s" % (offered, landed, _rate(landed, offered, "offered")))
+    win_opps = [o for o in opps if (lambda d: d is not None and in_win(d))(_opp_created(o, commits_by_id))]
+    held_ids = {c["id"] for c in held}
+    from_chat = [o for o in win_opps if o.get("via_commitment_id")]
+    from_person = [o for o in win_opps if not o.get("via_commitment_id") and o.get("via_person_id")]
+    unsourced = [o for o in win_opps if not o.get("via_commitment_id") and not o.get("via_person_id")]
+    chat_opps = [o for o in from_chat if o["via_commitment_id"] in held_ids]
+    line("chat → opportunity", _rate(len(chat_opps), len(held), "held"))
+    line("opportunities in window", "%d: from a chat %d · from a person, no chat %d · source not recorded %d"
+         % (len(win_opps), len(from_chat), len(from_person), len(unsourced)))
+    app_opps = {a.get("opp_id") for a in apps}
+    line("opportunity → application", "%d" % sum(1 for o in win_opps if o.get("id") in app_opps))
+
+    raised_ev = [r for r in recs if r.get("event") == "companies-raised" and in_win(str(r.get("at") or "")[:10])]
+    if raised_ev:
+        raised_ids = [c for r in raised_ev for c in (r.get("raised") or [])]
+        answered = sum(1 for c in raised_ids if (companies.get(c) or {}).get("status_on"))
+        last = sorted(raised_ev, key=lambda r: str(r.get("at") or ""))[-1]
+        line("look into", "raised %d in %d run%s · answered %d · waiting %s"
+             % (len(raised_ids), len(raised_ev), "" if len(raised_ev) == 1 else "s", answered, last.get("waiting", "?")))
+    else:
+        line("look into", "no raise recorded in the window")
+    p_sent = [p for p in proposals if p.get("sent_on") and in_win(p.get("sent_on"))]
+    p_acc = [p for p in p_sent if p.get("status") == "accepted"]
+    line("proposals sent %d · accepted %d" % (len(p_sent), len(p_acc)), _rate(len(p_acc), len(p_sent), "sent"))
+    n_classify = sum(1 for c in commits if not c.get("kind") and c.get("status") != "cancelled"
+                     and wf <= str(c.get("date") or "") < today.isoformat())
+    if n_classify:
+        line("meetings to classify", "%d   (commitments with no kind; record.py set <id> kind chat|interview "
+             "--file commitments)" % n_classify)
+    if unobs:
+        line("send unobserved", " · ".join(unobs))
+    unknown_age = _age_unknown_drafts(root, as_of)
+    if unknown_age:
+        line("draft age unknown", " · ".join(unknown_age) + "   (not counted as a send unobserved; record the send or delete the draft)")
+    return "\n".join(L)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════════════════
+# ⭐ THE NETWORK LIST'S ROWS (dev #834, M4 + M5; design §10.4). ONE derivation, two readers:
+# `generate_dashboard.py` renders exactly these rows and `check_dashboard_coverage.py` expects exactly
+# these keys, so the page and its gate cannot disagree about what the Network list owes the reader.
+#
+# Only rows the owner ACTS ON — status (reach-outs against budget, chats held, intros, targets, the LAMP
+# table) is NOT here: it lives in the weekly review and `views/network_strategy.md`. Each row is
+# `net:<kind>:<id>`, in these sub-groups (each omitted when empty):
+#   look-into   a company raised for "look into this company?" (`your_move.classify_companies`, NF2)
+#   chat        a past `kind: chat` commitment with no `attendance` (the M4 "unrecorded chat")
+#   booking     a `meeting-booked` touch no chat was ever recorded for
+#   suggestion  an open `kind: suggestion` ask (the strategist's proposal, awaiting confirm or decline)
+#   send        a first-touch draft whose send was never observed (`reachouts.plan`, NF3)
+#   proposal    a proposal still `drafting`
+# A module the engine does not have yet (`your_move.classify_companies`, `reachouts`) contributes no rows;
+# any OTHER failure inside one propagates, so a broken derivation is a loud page, never an empty list.
+# ═══════════════════════════════════════════════════════════════════════════════════════════
+
+NETWORK_GROUPS = ("look-into", "chat", "booking", "suggestion", "send", "proposal")
+SUGGESTION_STALE_DAYS = 28
+
+
+def _company_item_id(item):
+    if isinstance(item, dict):
+        return item.get("company_id") or item.get("id") or (item.get("company") or {}).get("id")
+    return str(item) if item else None
+
+
+def _look_into(root, today):
+    """([items], new_count, waiting) from `your_move.classify_companies`; ([], 0, 0) when this engine has
+    no such function (NF2 not built)."""
+    try:
+        import your_move as _ym
+        fn = _ym.classify_companies
+    except (ImportError, AttributeError):
+        return [], 0, 0
+    d = fn(root, today) or {}
+    return (list(d.get("look-into") or []), len(d.get("look-into-new") or []),
+            int(d.get("look-into-waiting") or 0))
+
+
+def network_rows(ctx_or_root, today):
+    """{"rows": [{"key", "group", "title", "detail", "verbs": [str]}], "look_into_new": n,
+    "look_into_waiting": n, "sent_proposals": n} — the Network list's contents as of `today` (an ISO date).
+    Pure over the stores; no write."""
+    root = _net_root(ctx_or_root)
+    companies = {c["id"]: c for c in _net_rows(root, "companies.jsonl") if c.get("id")}
+    people = {p["id"]: p for p in _net_rows(root, "people.jsonl") if p.get("id")}
+    rows = []
+
+    items, n_new, n_wait = _look_into(root, today)
+    li = []
+    for it in items:
+        cid = _company_item_id(it)
+        if not cid:
+            continue
+        co = companies.get(cid) or {}
+        raised = (it.get("raised_on") if isinstance(it, dict) else None) or co.get("raised_on") or ""
+        li.append((str(raised), str(cid), co.get("name") or (it.get("name") if isinstance(it, dict) else None) or cid))
+    for raised, cid, name in sorted(li):
+        rows.append({"key": "net:look-into:%s" % cid, "group": "look-into", "title": name,
+                     "detail": ("raised %s" % raised) if raised else "raised",
+                     "verbs": ["record.py company-status %s %s" % (cid, st)
+                               for st in ("active-target", "watching", "passed")]})
+
+    # a chat is "to record" whatever its age: the window here is the whole record, so an old unrecorded
+    # chat is never aged off the page by a 42-day window.
+    b = chat_buckets(root, today, "0001-01-01")
+    commits = {c["id"]: c for c in _net_rows(root, "commitments.jsonl") if c.get("id")}
+    touches = {t["id"]: t for t in _net_rows(root, "touches.jsonl") if t.get("id")}
+    for cid in b["unrecorded"]:
+        c = commits.get(cid) or {}
+        who = (people.get(c.get("person_id")) or {}).get("name") or c.get("person_id") or "?"
+        rows.append({"key": "net:chat:%s" % cid, "group": "chat", "title": "%s with %s" % (c.get("title") or "Chat", who),
+                     "detail": "on %s, held or not recorded" % (c.get("date") or "?"),
+                     "verbs": ["record.py attended %s held" % cid, "record.py attended %s no-show" % cid]})
+    for tid in b["no_chat_recorded"]:
+        t = touches.get(tid) or {}
+        who = (people.get(t.get("person_id")) or {}).get("name") or t.get("person_id") or "?"
+        rows.append({"key": "net:booking:%s" % tid, "group": "booking", "title": "Booked with %s" % who,
+                     "detail": "booked on %s, no chat recorded" % (t.get("date") or "?"),
+                     "verbs": ["record.py chat %s --on <date> --touch %s" % (t.get("person_id") or "<person>", tid)]})
+
+    for a in _net_rows(root, "asks.jsonl"):
+        if a.get("kind") == "suggestion" and a.get("id") and not a.get("resolved_on"):
+            age = _age_days(a.get("created"), _iso_to_date(today))
+            stale = age is not None and age > SUGGESTION_STALE_DAYS
+            rows.append({"key": "net:suggestion:%s" % a["id"], "group": "suggestion",
+                         "title": a.get("title") or a["id"],
+                         "detail": (a.get("ask") or "") + ("  (stale: open %d days)" % age if stale else ""),
+                         "verbs": ["record.py confirm %s" % a["id"], "record.py decline %s" % a["id"]]})
+
+    for ref, label in _unobserved_items(root, today):
+        rows.append({"key": "net:send:%s" % ref, "group": "send", "title": "Send unobserved: %s" % label,
+                     "detail": "record the send, or delete the draft",
+                     "verbs": ["record.py touch …", "delete the draft from outreach/drafts.md"]})
+
+    props = _net_rows(root, "proposals.jsonl")
+    for p in props:
+        if p.get("status") == "drafting" and p.get("id"):
+            rows.append({"key": "net:proposal:%s" % p["id"], "group": "proposal", "title": "Proposal %s" % p["id"],
+                         "detail": "still drafting", "verbs": ["record.py proposal-status %s sent" % p["id"]]})
+    order = {g: i for i, g in enumerate(NETWORK_GROUPS)}
+    rows.sort(key=lambda r: order[r["group"]])               # stable: each group keeps its own order
+    return {"rows": rows, "look_into_new": n_new, "look_into_waiting": n_wait,
+            "sent_proposals": sum(1 for p in props if p.get("status") == "sent")}
+
+
 def _today():
     """The ONE wall-clock read on the `--by step` path, and only as the CLI default for
     `--as-of` — `step_funnel()`/`render_step_funnel()` never call it (a test freezes this
@@ -470,10 +1080,11 @@ def main():
                          "the standard report (the assessment's arithmetic; weekly-review "
                          "runs the two as separate commands).")
     ap.add_argument("--as-of", default=None, metavar="YYYY-MM-DD",
-                    help="--by step only: the replay's last day (default: today).")
+                    help="the last day of the replay (--by step) or of the NETWORK section's "
+                         "window (the standard report). Default: today.")
     ap.add_argument("--window-from", default=None, metavar="YYYY-MM-DD",
-                    help="--by step only: the replay's first day (default: as-of minus %d days)."
-                         % DEFAULT_WINDOW_DAYS)
+                    help="the first day of the replay or of the NETWORK window (default: as-of "
+                         "minus %d days)." % DEFAULT_WINDOW_DAYS)
     args = ap.parse_args()
 
     if args.by == "step":
@@ -496,6 +1107,16 @@ def main():
 
     print("Funnel report - %s" % datetime.date.today().isoformat())
     print("%d opportunities tracked" % len(opps))
+
+    # ---- 0. NETWORK FIRST (dev #834, M2): the relationship is the headline; the application
+    # sections below stay, unchanged, but are no longer the first thing a reader meets. ------------
+    _net_as_of = args.as_of or _today()
+    for label, v in (("--as-of", _net_as_of), ("--window-from", args.window_from)):
+        if v is not None and not is_iso(v):
+            print("%s must be YYYY-MM-DD, got %r" % (label, v))
+            return 2
+    print("")
+    print(network_section(os.path.dirname(os.path.abspath(DATA)), _net_as_of, args.window_from))
 
     # ---- 1. Channel yield: which sources produce roles worth pursuing? ------
     rule("CHANNEL YIELD - which sources produce roles worth pursuing")
@@ -647,30 +1268,17 @@ def main():
     # 2026-07-31 are all still `awaiting` — that is n=0 for rating, not n=12. Printing
     # "12 connection notes sent" and letting a reader treat it as evidence is exactly the
     # dishonest failure this section has to avoid.
-    NO_RESPONSE_AFTER = 14   # an `awaiting` row older than this is COUNTED as resolved,
-                             # but the row is NEVER mutated — the inference stays in the report
-
     sent_rows = [(o, x) for o, x in rows if x.get("status") == "sent"]
 
+    # ⭐ dev #834 (M2): the resolution rule and the win test are MODULE-level (`touch_resolution`,
+    # `touch_is_win`, `NO_RESPONSE_AFTER`), so the NETWORK section printed first and every cut below
+    # can never disagree about what "resolved" or "a win" means. These are thin names for them.
     def resolution(x):
         """resolved / awaiting / bounced / undeliverable-unknown."""
-        if x.get("delivery") == "bounced":
-            return "bounced"
-        oc = x.get("outcome")
-        if oc in TERMINAL_TOUCH_OUTCOMES:
-            return "resolved"
-        age = days_since(x.get("date"))
-        if oc == "awaiting" and age is not None and age >= NO_RESPONSE_AFTER:
-            return "resolved-aged"
-        # A pattern-inferred address with unknown delivery cannot distinguish silence from
-        # a bounce. It is evidence of NOTHING either way and must not sit in a denominator.
-        if (x.get("medium") or "").startswith("email") and \
-           x.get("address_status") == "pattern-inferred" and x.get("delivery") == "unknown":
-            return "undeliverable-unknown"
-        return "awaiting"
+        return touch_resolution(x)
 
     def is_win(x):
-        return x.get("outcome") in ("replied", "meeting-booked", "accepted")
+        return touch_is_win(x)
 
     def cut(field, title, rows=None, quiet=False):
         rows = sent_rows if rows is None else rows

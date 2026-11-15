@@ -129,6 +129,19 @@ funnel.
 config — if anything reads wrong, it is wrong in the data, and this is the cheapest moment to fix
 it.
 
+## 5b. ⭐ Seed the search plan — every run works the network
+
+A new profile gets one search plan whose outcomes are **`access` and `role`** (jobsearch 0.86.0, owner ruling 1): the daily
+run works the candidate's network on every run, whatever the plan says, and sources roles on top of that. Seed it once:
+
+```bash
+~/.claude/jobsearch/run record.py create default-plan '{"subject_kind":"search","subject_id":"default","outcomes":["access","role"],"status":"active","play_id":null}' --file plans
+```
+
+Then `validate_data.py` must still be clean. Do not seed `outcomes: ["role"]` alone: that is the pre-0.86.0 shape, which the
+migration only exists to carry forward for profiles that already have it. The plan's `goal` and `approach` stay empty; the
+candidate writes those, and no shipped code path writes them.
+
 ## 6. Seed the pipeline with ONE role, end to end
 
 Do not leave them with an empty system. Take one real job posting they care about, walk it all the

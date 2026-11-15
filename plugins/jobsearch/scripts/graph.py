@@ -32,15 +32,40 @@ through merged_into at read time"). The chain must be acyclic; `resolve_person` 
 about it anyway (`MergeCycleError`) so a walker can never hang even if the validator's own
 acyclic-chain check somehow missed one — belt and suspenders, not a substitute for that check.
 
+WARMTH — A PERSON'S REACH STATE, DERIVED, NEVER STORED (ADR-031 B5b, dev #834)
+-------------------------------------------------------------------------------
+`warmth(person_id, as_of)` is the twin of `pursuit_state(opp)`: a property of a person, computed from
+dated rows every time it is asked. It returns one of three words, or None.
+
+    warm       they answer: an INBOUND message from them dated within `warm_days` of `as_of`, OR a
+               HELD chat (a `kind: chat` commitment whose `attendance` is `held`) dated within the
+               same window. The held chat is design-network-first.md section 10.1 (b): a chat booked
+               from a calendar may leave no inbound mail, and it is the strongest evidence a person
+               answers. It counts from the day it is recorded held (`attendance_on`), never earlier,
+               so a replay at an earlier date does not know what had not been recorded yet.
+    contacted  something has passed between you and them, and they are not warm now: a sent touch
+               (`status: sent`), an outbound message, or an exchange older than the window.
+               OURS, filling a gap in the design's table: a stale inbound or an old held chat is
+               `contacted`, never `known`, because `known` is defined as "nothing sent, nothing
+               received" and an old reply is something received.
+    known      a people row, nothing exchanged.
+    None       no such person, or (replay) they were not yet in the profile at `as_of` (`created`).
+
+Merges resolve first, as everywhere in this module (`resolve_person`), so an absorbed id answers for
+its survivor. A touch, message or chat dated AFTER `as_of` does not exist as of `as_of`: that is how
+`access.py --since` replays a table at an earlier date from the same rows, with no stored snapshot.
+`warm_days` is the caller's (`access.warm_days`, 180); this file never reads config.
+
 Usage:
     python3 scripts/graph.py --person <id>          # print what this person touches
     python3 scripts/graph.py --opportunity <opp_id> # print who is involved in this pursuit
 
-    from graph import Graph, MergeCycleError
+    from graph import Graph, MergeCycleError, warmth
 
 Python 3.9+. Standard library only. No network.
 """
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -62,6 +87,36 @@ DATA = os.environ.get("CLAUDESEARCH_DATA_DIR") or os.path.join(ROOT, "data")
 STORES = ("companies", "channels", "opportunities", "people", "involvements", "messages",
           "asks", "commitments", "touches")
 STORES_WITH_ID = tuple(s for s in STORES if s != "involvements")
+
+# ADR-031 section 11 / design-network-first.md section 10.2: how long an answer keeps a person warm. The
+# registered config key is `access.warm_days` (default 180, 30..365); the CALLER resolves it and passes it in.
+WARM_DAYS = 180
+WARMTH_STATES = ("warm", "contacted", "known")
+
+
+def to_date(value):
+    """A `datetime.date` from a date, a datetime or an ISO string (a `YYYY-MM-DD HH:MM` stamp keeps its
+    date). Raises `ValueError` for anything else: an `as_of` nobody can read must be loud, never read as
+    today."""
+    if isinstance(value, datetime.datetime):
+        return value.date()
+    if isinstance(value, datetime.date):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.date.fromisoformat(value.strip()[:10])
+        except ValueError:
+            pass
+    raise ValueError("not a date: %r" % (value,))
+
+
+def date_or_none(value):
+    """`to_date`, or None for a missing or unreadable STORED value (a commitment's literal `unresolved`
+    date, a null). A row whose date cannot be read is not evidence of anything on any day."""
+    try:
+        return to_date(value)
+    except ValueError:
+        return None
 
 
 class MergeCycleError(ValueError):
@@ -178,6 +233,71 @@ class Graph:
         """Every touch that travelled through this channel (design §1: 'unchanged meaning')."""
         return [t for t in self.stores["touches"] if t.get("channel_id") == channel_id]
 
+    # ---- commitments, people at a company, and warmth (ADR-031 B5b, dev #834) ----------------
+
+    def commitments_for_person(self, person_id):
+        """Every commitment (a chat, an interview) whose `person_id` resolves to this survivor, the
+        same resolve-and-match shape as `messages_for_person`. A commitment with no `person_id`
+        (absent on legacy rows) belongs to nobody here."""
+        out = []
+        for c in self.stores["commitments"]:
+            pid = c.get("person_id")
+            if not pid:
+                continue
+            try:
+                resolved = self.resolve_person(pid)
+            except MergeCycleError:
+                continue
+            if resolved is not None and resolved.get("id") == person_id:
+                out.append(c)
+        return out
+
+    def people_for_company(self, company_id):
+        """The living (not merged) people whose `company_id` is this company. An absorbed row is
+        skipped: its survivor is the one person, and counts once."""
+        return [p for p in self.stores["people"]
+                if p.get("company_id") == company_id and p.get("status") != "merged"]
+
+    def warmth(self, person_id, as_of, warm_days=WARM_DAYS):
+        """`warm` · `contacted` · `known` for this person as of `as_of`, or None (see the module
+        docstring, WARMTH). Raises `ValueError` for an unreadable `as_of`, and `MergeCycleError` for
+        a looped merge chain: a state nobody can trust is never defaulted to `known`."""
+        today = to_date(as_of)
+        p = self.resolve_person(person_id)
+        if p is None:
+            return None
+        created = date_or_none(p.get("created"))
+        if created is not None and created > today:
+            return None
+        pid = p["id"]
+        floor = today - datetime.timedelta(days=int(warm_days))
+        exchanged = False
+        for m in self.messages_for_person(pid):
+            d = date_or_none(m.get("sent_on"))
+            if d is None or d > today:
+                continue
+            if m.get("direction") == "inbound" and d >= floor:
+                return "warm"
+            exchanged = True
+        for c in self.commitments_for_person(pid):
+            if c.get("kind") != "chat" or c.get("attendance") != "held" \
+                    or c.get("status") == "cancelled":
+                continue
+            d = date_or_none(c.get("date"))
+            if d is None:
+                continue
+            recorded = date_or_none(c.get("attendance_on")) or d
+            if max(d, recorded) > today:
+                continue
+            if d >= floor:
+                return "warm"
+            exchanged = True
+        for t in self.touches_for_person(pid):
+            d = date_or_none(t.get("date"))
+            if t.get("status") == "sent" and d is not None and d <= today:
+                exchanged = True
+        return "contacted" if exchanged else "known"
+
     # ---- opportunities / channels, the other side of an involvement --------------------------
 
     def involvements_for_opportunity(self, opp_id):
@@ -255,6 +375,13 @@ class Graph:
                 return {}
             return {"company": c, "opportunities": self.opportunities_for_company(id_)}
         return {}
+
+
+def warmth(person_id, as_of, graph=None, warm_days=WARM_DAYS):
+    """`graph.warmth(person_id, as_of)`: `warm` · `contacted` · `known` · None (see the module
+    docstring). Builds a fresh `Graph` over this process's data unless one is passed; a caller that
+    asks about many people passes its own, so the stores load once."""
+    return (graph or Graph()).warmth(person_id, as_of, warm_days=warm_days)
 
 
 def main():

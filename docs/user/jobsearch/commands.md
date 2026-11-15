@@ -109,9 +109,11 @@ healthy. **Shows** only; it changes nothing and is safe to run at any time.
 
 **`/jobsearch:coordinator`**. Listed above; use it when you want to *work* the items, not just see them.
 
-**`/jobsearch:weekly-review`** *(skill)*. Use it for the weekly strategy look: which channels produced
-roles, whether you kept to your own cadence, and proposed setting changes. **Runs** and writes a
-review; any change to your settings is a proposal for you to approve.
+**`/jobsearch:weekly-review`** *(skill)*. Use it for the weekly strategy look: it opens with your network (who
+you can reach and how, the week's reach-out budget, the network funnel and any open suggestions), then which channels
+produced roles, whether you kept to your own cadence, and proposed setting changes. **Runs** and writes a
+review; any change to your settings, and any suggestion it makes about a company, a plan or a person, is a proposal for you
+to confirm.
 
 **`/jobsearch:checkup`**. Use it when something is not working, or you want to know whether the search
 is working well. **Runs** an investigation and tells you whether the cause is a setting here, a decision

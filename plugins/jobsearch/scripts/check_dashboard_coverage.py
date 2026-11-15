@@ -120,6 +120,22 @@ card showing a different state, and a card showing the line for a role that has 
 The line is not a record (it adds no `data-rec`), so it is held to the derivation here rather than to the
 ledger. Plant: omit the line in `generate_dashboard.py` and this check goes red.
 
+## The Network list, and the top that does not grow (dev #834, jobsearch 0.86.0, M4/M5)
+
+The Network list (`<section id="phase-network">`, after Drafts) is covered like every other list: each row the
+owner acts on carries `data-rec="net:<kind>:<id>"` and is EXPECTED from `funnel_report.network_rows`, the one
+derivation the renderer also calls (a look-into company, a past chat nobody has marked held or no-show, a
+booking with no chat recorded, an open suggestion ask, an unobserved send, a drafting proposal). A row the
+page forgot is UNPLACED; a row it invents is `RENDERED, NOT A RECORD`; a SENT proposal is status, not a row,
+and is counted in the "Not on this page" note (`data-net-sent-proposals`), held to the store.
+
+And the owner's 0.84.0 C7 request is held: `TOP REGION GREW` fires when anything other than the jump bar, the
+title, the `Generated` line and at most one `data-pipeline-alert` element precedes the lists. Network status
+(reach-outs against budget, chats held, the access table) is in the weekly review and
+`views/network_strategy.md`, the upgrade notice is the run summary's, and neither is ever added to the top.
+Plants: render a network line above `section.first` (`TOP REGION GREW`); drop `net` rows from
+`expected_records` (a row the page forgot passes).
+
 ## Absence reads as itself
 
 No artifact and no ledger: nothing has been generated yet → `NOT CHECKED`, exit 0 (a new
@@ -296,6 +312,13 @@ def expected_records(root, today=None):
     for person, state, _why in _ymod.network_people_due(root, today.isoformat())["due"]:
         if person.get("id"):
             exp["person:%s" % person["id"]] = {"kind": "person", "state": state}
+    # dev #834 (M4, M5): the Network list. The rows the owner acts on (look-into companies, unrecorded
+    # chats, bookings with no chat, suggestion asks, unobserved sends, drafting proposals) come from
+    # `funnel_report.network_rows`, the ONE derivation the renderer also calls, so a row the page forgot is
+    # UNPLACED here. Not in a try, for the reason above: a derivation that crashes fails the gate loudly.
+    import funnel_report as _fr
+    for r in _fr.network_rows(root, today.isoformat())["rows"]:
+        exp[r["key"]] = {"kind": "net", "group": r["group"]}
     return exp
 
 
@@ -574,6 +597,52 @@ def _alert_gaps(page, rep, not_checked):
             gaps.append("PIPELINE ALERT MISPLACED — the alert must sit between the `Generated` line and the "
                         "first list, above the collapsed process block")
     return gaps
+
+
+# ⭐ dev #834 (M5) — THE TOP REGION IS THE OWNER'S, AND IT DOES NOT GROW. Owner request 0.84.0 C7: between
+# the jump bar and the lists the page shows the title, the `Generated` line and nothing else when healthy,
+# or ONE pipeline alert. Network-first adds a Network LIST after Drafts; it adds no summary line above the
+# lists. The region is everything before the first list (the `<section class="first">`, or, on a page with
+# no lists, the "Not on this page" note or the process block); once the jump bar, the `<title>` and
+# `<style>` the artifact begins with, the `<h1>`, the `.updated` line and at most one alert element are
+# taken out, it must be empty.
+_TOP_END_RE = re.compile(r'<section class="first"|<div class="sub" style="margin-top:26px"|<details class="pstate"')
+_TOP_ALLOWED = (
+    re.compile(r"<title>.*?</title>", re.S), re.compile(r"<style>.*?</style>", re.S),
+    re.compile(r'<nav class="jumpbar".*?</nav>', re.S), re.compile(r"<h1>.*?</h1>", re.S),
+    re.compile(r'<div class="updated"[^>]*>.*?</div>', re.S),
+)
+
+
+def check_top_region(page):
+    """(gaps, summary): `TOP REGION GREW` when anything other than the jump bar, the title, the `Generated`
+    line and one `data-pipeline-alert` element precedes the lists (dev #834, M5)."""
+    end = _TOP_END_RE.search(page)
+    region = page[:end.start()] if end else page
+    for rx in _TOP_ALLOWED:
+        region = rx.sub("", region)
+    region = _ALERT_EL_RE.sub("", region, count=1)
+    extra = _plain(region).strip()
+    if not extra and not region.strip():
+        return [], "top region: jump bar, title, Generated line, at most one alert"
+    shown = (extra or region.strip())[:90]
+    return (["TOP REGION GREW — %r sits between the jump bar and the lists. The owner's 0.84.0 C7 request: "
+             "only the jump bar, the title, the `Generated` line and one pipeline alert are allowed there; "
+             "a network summary lives in the weekly review and views/network_strategy.md, never above the "
+             "lists" % shown], "top region: GREW")
+
+
+def check_network_note(page, root, today):
+    """(gaps, summary): the "Not on this page" note counts the proposals the owner has SENT (they are status,
+    not a row), so a sent proposal is accounted for rather than lost (dev #834, M5; ADR-024 coverage)."""
+    import funnel_report as _fr
+    want = _fr.network_rows(root, today.isoformat())["sent_proposals"]
+    m = re.search(r'data-net-sent-proposals="(\d+)"', page)
+    have = int(m.group(1)) if m else 0
+    if have != want:
+        return (["NETWORK NOTE DISAGREES — the \"Not on this page\" note counts %d sent proposal(s); the store "
+                 "has %d" % (have, want)], "network note: DISAGREES")
+    return [], "network note: %d sent proposal(s) counted" % want
 
 
 def check_process_block(page, root):
@@ -1178,6 +1247,10 @@ def check(root, verbose=False):
     gaps.extend(w_gaps)
     p_gaps, p_line = check_process_block(page, root)
     gaps.extend(p_gaps)
+    t_gaps, t_line = check_top_region(page)
+    gaps.extend(t_gaps)
+    n_gaps, n_line = check_network_note(page, root, today)
+    gaps.extend(n_gaps)
     n_exp = len(exp)
     n_placed = n_exp - sum(1 for g in gaps if g.startswith("UNPLACED"))
     lines = ["covered %d of %d record(s) — %d rendered · %d in counted remainders · "
@@ -1188,6 +1261,8 @@ def check(root, verbose=False):
     lines.append(l_line)
     lines.append(w_line)
     lines.append(p_line)
+    lines.append(t_line)
+    lines.append(n_line)
     if verbose:
         lines.extend("  " + p for p in placements)
     # EXACTLY ONCE is a GAP since design r3 (check_links); nothing is advisory any more. The

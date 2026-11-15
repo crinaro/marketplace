@@ -103,7 +103,7 @@ JITTER_MAX_S = 1.0
 BACKOFF_S = 30                                           # a 429 with no Retry-After: wait this, once
 RETRY_AFTER_CAP_S = _fp.RETRY_AFTER_CAP_S                # the longest Retry-After waited out; a longer one closes the host
 HOST_CLOSE_AFTER = 3                                     # rate-limit answers, or other non-200 answers, in one run
-POSTING_FETCH_CAP = 40                                   # GETs per run per machine (the default `search.intake_per_run`)
+POSTING_FETCH_CAP = 40                                   # GETs per run per machine: a fixed engine cap, read from no setting (40 was the retired `search.intake_per_run` default; intake counts companies now, `search.company_intake_per_run`)
 REQUEST_TIMEOUT_S = _fp.TIMEOUT_S
 # pacing at its maximum + a timeout + the backoff + the retry's timeout: asserted equal to that sum by a test, so a
 # changed constant that forgets this one is red. `--deadline-s` stops between roles below it.

@@ -153,10 +153,12 @@ sequence is worked out from what is recorded about it; nothing is typed in by ha
 **Opportunities to pursue** only when all of that is done. Until then it is not waiting on you, and it is
 not hidden either.
 
-**How a run works.** A daily run takes on up to `search.intake_per_run` roles (40 unless you changed it) and
-finishes every one it takes on. While older unread roles are still waiting, half of those places are held
-for roles found since, so new finds are never starved by a backlog. Every role that is not removed gets its
-job description read. Only the roles the screen keeps (*keep*) are researched. Pay, work setting and
+**How a run works.** A daily run takes on up to `search.company_intake_per_run` target companies (10 unless you
+changed it, since 0.86.0; before it the count was roles, in `search.intake_per_run`) and finishes every waiting role
+of each company it takes on. While older unread roles are still waiting, part of those places is held for roles found
+since, so new finds are never starved by a backlog. Every role at a target company that is not removed gets its
+job description read. A role at a company you have not chosen to target is **held for company**: kept and counted,
+not read (see *Held roles and the Network list*, below). Only the roles the screen keeps (*keep*) are researched. Pay, work setting and
 location that come off a search-result card are **provisional** until the description is read: a card's
 screen never says *keep*, and the description's own pay and setting replace the card's.
 
@@ -175,7 +177,7 @@ Roles not yet taken on are counted and aged as **waiting for intake**, which is 
 run ever tried them. The start line reads like this, with made-up numbers:
 
 ```
-PIPELINE 6 ready · 2 your read · PROCESS FAILURE: 3 (oldest 5d: run-died 2, challenge 1) · WAITING FOR INTAKE: 11 (oldest 2d) · intake 40/run
+PIPELINE 6 ready · 2 your read · PROCESS FAILURE: 3 (oldest 5d: run-died 2, challenge 1) · WAITING FOR INTAKE: 11 (oldest 2d) · intake 10 companies/run
 ```
 
 Each cause in the list says what happened and what to do about it. A few you may see: `run-died` (the run
@@ -247,6 +249,35 @@ note "your screening rules changed" and a later run re-screens them. That is not
 **On upgrade,** roles you had already decided, removed or been shown as ready keep their place. Roles that
 were waiting on a read and never got one appear as old unread roles, as above. What the upgrade changes in
 your files is described in [Your data](your-data.md#one-lifecycle-per-role--since-0820).
+
+### Held roles and the Network list (since 0.86.0)
+
+**Held for company.** A role a board shows you at a company you have not chosen to target is recorded and then left
+alone: it is not read, screened or researched, and it is **not a failure**. The conservation line (the last line of the
+*Pipeline state* block) counts it as `held N (undecided U · watching W · passed P)`, so the roles still add up. A held
+role comes back to life when you target its company.
+
+**The Network list.** Below *Drafts* the page has a **Network** list, with its own entry in the jump bar. It holds only
+what you act on, in up to five groups, each shown only when it has something in it:
+
+- **Look into these companies**: companies a board find raised, oldest first, with how many more are waiting, each row
+  with the three answers (`record.py company-status <company> active-target --motivation <1-5>`, `watching`, `passed`);
+- **Chats to record**: a chat that is past and that you have not recorded as held or not, and a booking with no chat
+  noted, each with the command that answers it;
+- **Suggestions to confirm**: a company, plan or cadence the strategist suggested, with `record.py confirm` and
+  `record.py decline`;
+- **Sends unobserved**: a reach-out draft older than `network.draft_unobserved_days` (14 unless you changed it) that the
+  plugin could not see you send, with the two ways to settle it. A draft's age is counted from the date in the
+  `**Brief:**` line the plugin wrote into it. A draft whose age cannot be read (`**Brief:** none`, no such line, or one
+  that has been edited into something else) is never guessed to be old and never left out: the weekly review and
+  `views/network_strategy.md` list it as "age unknown", with the reason, and it still counts against the week's budget;
+- **Proposals to finish**: a proposal still in drafting.
+
+Nothing was added above the lists: a healthy page still shows only the title and the *Generated* line between the jump
+bar and *Drafts*. The numbers that are status rather than decisions (reach-outs against the weekly budget, chats booked
+and held, introductions, the table of how well you know each target) are in the weekly review and in
+`views/network_strategy.md`, a page the plugin generates from your records. **Edit your records, never that page.**
+`outreach/network.md` is your own notes and is never written by the plugin.
 
 ### A sweep that was held, and the counts under it (since 0.69.0)
 

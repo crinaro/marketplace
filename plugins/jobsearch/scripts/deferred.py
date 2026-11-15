@@ -763,6 +763,14 @@ def _refusal_for_stage(st):
     if name == "waiting":
         return ("it has not been admitted by an intake run yet (lifecycle stage waiting): research "
                 "follows the read, in a run that admitted it")
+    if name == "held-for-company":
+        # dev #834 (jobsearch 0.86.0, design-network-first.md 3.2, 3.4 row 9): the sighting is recorded, and its JD read, screen
+        # and research wait until the company is TARGETED. `detail` is why: undecided | watching | passed.
+        why = {"undecided": "nobody has decided about the company yet; answer its look-into item",
+               "watching": "you decided to keep watching the company",
+               "passed": "you passed on the company"}.get(st.detail, "the company is not a target")
+        return ("it is held for its company (lifecycle stage held-for-company: %s): its JD read, screen and research wait "
+                "until the company is targeted (`record.py company-status <id> active-target --motivation <1-5>`)" % why)
     if name == "unclassified":
         return "its record matches no lifecycle stage (%s)" % (st.detail or "unclassified")
     # admitted · captured · reading · uncaptured · unread · read-failed · read · unscreened: read it

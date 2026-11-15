@@ -89,6 +89,7 @@ import channels_due as _cd
 import conversations as _conv_mod
 import config_keys as _ck
 import warm_path as _warm_path                                   # dev #751: the warm-path next action
+import funnel_report as _funnel                                  # dev #834 (M4, M5): the Network list's rows
 # ⭐ THE ONE DEFINITION OF "CURRENT" — resume_variants.py owns union_hash (the canonicalized,
 # line-ending/trailing-space/trailing-newline-insensitive stamp `--stamp` writes onto
 # union_sha). This file used to recompute a RAW sha256 of the union's bytes, which agreed with
@@ -2111,9 +2112,10 @@ JUMP_TARGETS = (("Drafts", "phase-outreach-approvals"), ("Opportunities", "phase
 
 
 READ_SECTION = "phase-needs-read"
+NETWORK_SECTION = "phase-network"
 
 
-def render_jump_bar(n_drafts, n_opps, n_apply=None, n_flags=None, n_read=None):
+def render_jump_bar(n_drafts, n_opps, n_apply=None, n_flags=None, n_read=None, n_network=None):
     """The pinned jump bar (OWNER REQUEST 2026-10-13, three entries since jobsearch 0.71.0):
     `Drafts (N)`, `Opportunities (N)` and `Applications (N)`, each an in-page link to its list's
     heading. Pinned by CSS `position: sticky` only - no script - and offset by the viewer's top
@@ -2121,11 +2123,16 @@ def render_jump_bar(n_drafts, n_opps, n_apply=None, n_flags=None, n_read=None):
     muted label, never a link to nothing (ANCHOR). The headings it lands on sit outside every
     filtered row set, so a link lands on a visible target whatever chip is checked."""
     out = ['<nav class="jumpbar" aria-label="Jump to the lists read most">']
-    for (label, sid), n in zip(JUMP_TARGETS, (n_drafts, n_opps, n_apply)):
+    for i, ((label, sid), n) in enumerate(zip(JUMP_TARGETS, (n_drafts, n_opps, n_apply))):
         if n is None:
             out.append('<span class="jump off">%s (0)</span>' % label)
         else:
             out.append('<a class="jump" href="#%s">%s (%d)</a>' % (sid, label, n))
+        if i == 0 and n_network is not None:
+            # dev #834 (M5): the Network list follows Drafts on the page and in the bar. Like "Your read" and
+            # "Reconsider" it exists ONLY while the list does, so the bar stays bounded by list count and a
+            # profile with nothing for the network to ask carries no `(0)` label.
+            out.append('<a class="jump" href="#%s">Network (%d)</a>' % (NETWORK_SECTION, n_network))
     if n_read is not None:
         # dev #820: "Needs your read" exists ONLY while a role waits on the candidate's own read.
         out.append('<a class="jump" href="#%s">Your read (%d)</a>' % (READ_SECTION, n_read))
@@ -3151,6 +3158,67 @@ def render_rescreen_flags(flags, unreadable, failed, companies):
            '<div class="card">%s</div>' % "".join(parts) if parts else "")), n
 
 
+NETWORK_HEADINGS = {
+    "chat": "Chats to record", "booking": "Chats to record", "suggestion": "Suggestions to confirm",
+    "send": "Sends unobserved", "proposal": "Proposals to finish",
+}
+
+
+def render_network_list(net, failed=None):
+    """The Network list (dev #834, M5; design 10.4): ONE list after Drafts, rows the owner acts on and nothing
+    else. Returns `(html, n_primary)`; `("", None)` when there is nothing to ask and nothing failed.
+
+    ⭐ It is a LIST, not a summary. The owner's 0.84.0 C7 request held: nothing is added between the jump bar
+    and Drafts, and no network number is printed above the lists. Reach-outs against budget, chats held,
+    introductions, targets and the access table are STATUS; they live in the weekly review and
+    `views/network_strategy.md`, and the "Not on this page" note below names them.
+
+    Sub-groups, each omitted when empty: look into these companies (every raised company, oldest first, so an
+    asked question is never hidden), chats to record (a past chat nobody has marked held or no-show, and a
+    booking no chat was recorded for: an UNRECORDED chat is a fact the engine is waiting for, never a zero),
+    suggestions to confirm, sends unobserved, proposals to finish. Every row is a primary row
+    (`data-rec="net:<kind>:<id>"`) with the verb that answers it. A derivation that FAILED is said on the
+    page (`failed`), never rendered as an empty list. Read-only: nothing here writes."""
+    rows = (net or {}).get("rows") or []
+    if not rows and not failed:
+        return "", None
+    by_group = {}
+    for r in rows:
+        by_group.setdefault(r["group"], []).append(r)
+
+    def row_html(r):
+        return ('<div class="net-row"%s><strong>%s</strong> <span class="sub">%s</span>'
+                '<div class="net-verbs">%s</div></div>'
+                % (_rec_attrs(r["key"]), esc(r["title"]), esc(r["detail"]),
+                   " &middot; ".join("<code>%s</code>" % esc(v) for v in r["verbs"])))
+
+    parts = []
+    if failed:
+        parts.append('<div class="note">&#9940; <strong>The network list could not be computed</strong> (%s): '
+                     'what is waiting on you here is UNKNOWN, not zero.</div>' % esc(failed))
+    li = by_group.get("look-into") or []
+    if li:
+        parts.append('<div class="sub net-head"><strong>look into %d compan%s (%d new today) &middot; %d more '
+                     'waiting</strong></div>%s'
+                     % (len(li), "y" if len(li) == 1 else "ies", (net or {}).get("look_into_new", 0),
+                        (net or {}).get("look_into_waiting", 0), "".join(row_html(r) for r in li)))
+    # `chat` and `booking` rows are one sub-group on the page ("Chats to record") with one heading.
+    chats = (by_group.get("chat") or []) + (by_group.get("booking") or [])
+    if chats:
+        parts.append('<div class="sub net-head"><strong>%s</strong></div>%s'
+                     % (NETWORK_HEADINGS["chat"], "".join(row_html(r) for r in chats)))
+    for g in ("suggestion", "send", "proposal"):
+        if by_group.get(g):
+            parts.append('<div class="sub net-head"><strong>%s</strong></div>%s'
+                         % (NETWORK_HEADINGS[g], "".join(row_html(r) for r in by_group[g])))
+    n = len(rows)
+    return ('<h2 id="%s">&#129309; Network <span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">Only what is waiting on <strong>you</strong>. How the '
+            'network is going (reach-outs against budget, chats held, introductions, targets) is in the weekly '
+            'review and <code>views/network_strategy.md</code>. Nothing here is sent for you.</div>'
+            '<div class="card">%s</div>' % (NETWORK_SECTION, n, "".join(parts))), n
+
+
 def _role_titles(ctx, data):
     """{role key: title} for every role the lifecycle counts: an opportunity's title, and for a role
     that exists only as open capture items, the title its first item names."""
@@ -3600,20 +3668,34 @@ def main(run_id=None):
     _title = _dashboard_title()
 
     n_drafts_primary = len(_drafts_active)
+    # ── Network (dev #834, M4/M5): the ONE list after Drafts. Rows come from funnel_report.network_rows, the
+    # same derivation check_dashboard_coverage.py expects, so the page and its gate cannot disagree.
+    _net, _net_failed = {"rows": [], "sent_proposals": 0}, None
+    try:
+        _net = _funnel.network_rows(str(ROOT), _t.isoformat())
+    except Exception as _e:                                          # noqa: BLE001 - said, never swallowed
+        _net_failed = "%s: %s" % (type(_e).__name__, _e)
+        print("  !! WARNING: the network list could not be computed (%s) - the page says so instead of "
+              "listing what waits on you" % _net_failed)
+    _first_network, n_network = render_network_list(_net, _net_failed)
+    for _r in _net["rows"]:
+        _cover(_r["key"], "rendered", "network")
     # The pinned jump bar (OWNER REQUEST 2026-10-13): one entry per list, each count the PRIMARY
     # rows that list renders (`data-rec="draft:…"` / `data-rec="opp:…"`), never a reference row;
     # a list that is not on the page is a plain, unlinked label, so the bar never links to nothing.
     _first_html = ""
-    if _first_drafts or _first_read or _first_opps or _first_apply or _first_flags:
+    if _first_drafts or _first_network or _first_read or _first_opps or _first_apply or _first_flags:
         _first_html = ('<section class="first" id="first-lists">\n%s\n</section>'
-                       % "\n".join([_first_drafts] + ([_first_read] if _first_read else [])
+                       % "\n".join([_first_drafts] + ([_first_network] if _first_network else [])
+                                   + ([_first_read] if _first_read else [])
                                    + [_first_opps, _first_apply]
                                    + ([_first_flags] if _first_flags else [])))
     jump_html = render_jump_bar(n_drafts_primary if _first_drafts else None,
                                 opp_counts["all"] if _first_opps else None,
                                 n_apply if _first_apply else None,
                                 n_flags if _first_flags else None,
-                                n_read if _first_read else None)
+                                n_read if _first_read else None,
+                                n_network if _first_network else None)
     _process_html = render_process_block(_lc_report, _lc_ctx, _lc_snapshot, _lc_now, _lc_error)
     _conservation_html = render_conservation_line(_lc_report)
     _alert_html = render_pipeline_alert(_lc_report, _lc_error)
@@ -3639,12 +3721,17 @@ def main(run_id=None):
         '· generated by scripts/generate_dashboard.py</div>' % (_gen_attrs, esc(_gen_text)),
         _alert_html,
         _first_html,
-        '<div class="sub" style="margin-top:26px">Not on this page: status and everything in '
+        '<div class="sub" style="margin-top:26px"%s>Not on this page: status and everything in '
         'flight (the jobsearch panel and <code>/jobsearch:status</code>), the resume and '
         'public-profile reviews (<code>/jobsearch:review-resume</code>, '
         '<code>/jobsearch:review-linkedin</code>), the full network (queried in session — '
         '<code class="fileref">data/channels.jsonl</code>, <code class="fileref">%s</code>), '
-        'archives, sent and closed items, and knowledge bodies.</div>' % esc(_tree.rel("network")),
+        'the network\'s numbers, the access table and the proposals you have sent%s '
+        '(<code>views/network_strategy.md</code> and the weekly review), '
+        'archives, sent and closed items, and knowledge bodies.</div>'
+        % ((' data-net-sent-proposals="%d"' % _net["sent_proposals"]) if _net["sent_proposals"] else "",
+           esc(_tree.rel("network")),
+           (" (%d sent)" % _net["sent_proposals"]) if _net["sent_proposals"] else ""),
         _process_html,
         _conservation_html) if x)
 

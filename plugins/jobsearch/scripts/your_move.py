@@ -1375,6 +1375,9 @@ def role_group(st):
       any failure, unclassified     -> process-failure (never asked pursue-or-pass)
       admitted..screened            -> in-progress     (an open run holds it)
       decided                       -> None            (the owner/date rules below decide)
+      held-for-company              -> None            (dev #834: the question is the COMPANY's, not the role's; it is
+                                                        `classify_companies`' "look into this company?" item, and
+                                                        `process_report` counts the role in its `held` term)
       folded, ended, removed, gone  -> None            (settled; nothing is asked)"""
     if st.name == "ready":
         return "decide"
@@ -1690,12 +1693,9 @@ def contact_joinability_gaps(channels, involvements=()):
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CLASSIFY_PEOPLE — ADR-031 B4, design §14: the correction to Part 1's `network_due.py`, folded
-# into this module's own stated ownership of "which group does this row belong in?" A person's
-# `access.py`/`graph.warmth()` reach state (the full warm/contacted/known/thin table) is B5's
-# own deliverable (design §11/§16 item 5); this classifier needs only ONE narrower fact from
-# that future table early — "has this person answered recently" — so it reads it directly here
-# rather than waiting on a module that does not exist yet. `access.py` may fold this in later
-# without changing this function's own contract.
+# into this module's own stated ownership of "which group does this row belong in?" The `quiet` state
+# reads `graph.warmth()`, the ONE owner of "warm" (design-network-first.md 10.2, dev #834): the same answer
+# the access table gives, a held chat included. This module holds no copy of the rule.
 # ─────────────────────────────────────────────────────────────────────────────
 
 PEOPLE_STATES = ("due", "awaiting-intro", "quiet", "fresh")
@@ -1730,22 +1730,6 @@ def _last_touch_date(person_id, g, as_of, ended_ctx=None):
         if d and str(d)[:10] <= as_of:
             dates.append(str(d)[:10])
     return max(dates) if dates else None
-
-
-def _has_recent_inbound(person_id, g, as_of, window_days):
-    for m in g.messages_for_person(person_id):
-        if m.get("direction") != "inbound":
-            continue
-        d = m.get("sent_on")
-        if not d or str(d)[:10] > as_of:
-            continue
-        try:
-            elapsed = (_parse_date(as_of) - _parse_date(str(d)[:10])).days
-        except ValueError:
-            continue
-        if elapsed <= window_days:
-            return True
-    return False
 
 
 def _awaiting_intro_object(person_id, g, as_of):
@@ -1800,11 +1784,100 @@ def classify_people(root, today=None, warm_days=180):
                 out.append((p, "fresh", "touched %s, within the %d-day cadence"
                            % (last, cadence)))
             continue
-        if _has_recent_inbound(pid, g, today, warm_days):
+        # `graph.warmth` is the ONE owner of "warm" (design-network-first.md 10.2): an inbound message OR a held chat
+        # inside `warm_days`. A private copy of the rule read messages only and disagreed with the access table.
+        if g.warmth(pid, today, warm_days=warm_days) == "warm":
             out.append((p, "quiet", "answers within %d days but has no cadence set — the plan "
                        "is missing, not the touch" % warm_days))
         # else: nothing owed, nothing missing — renders nowhere (design §14).
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# "LOOK INTO THIS COMPANY?" - dev #834 (jobsearch 0.86.0; design-network-first.md 3.3, owner answers 6 and 7).
+#
+# A job-board sighting at a company the candidate has not decided about yields ONE question, "look into this company?", never
+# a pile of roles to read. `company_candidates` is the one definition of WHICH companies qualify and in WHAT ORDER; `record.py
+# raise-companies` (the single writer of `companies.raised_on`) takes the first `search.company_intake_per_run` unraised ones,
+# and `classify_companies` is the one owner of the grouping the surfaces render. Both are PURE READS of the stores. The item is
+# DERIVED; only the act of raising it is stored (`raised_on`), because nothing else records which companies were already asked.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _sighting_dates(opp):
+    out = []
+    for s in opp.get("sightings") or []:
+        if isinstance(s, dict) and s.get("seen_on"):
+            try:
+                out.append(_parse_date(s["seen_on"]))
+            except ValueError:
+                pass
+    return out
+
+
+def company_candidates(root, today=None):
+    """Every company that QUALIFIES for a "look into this company?" question, ranked, as a list of item dicts. A company
+    qualifies exactly when its `status` is `watching`, its `status_on` is absent (no owner decision is recorded), and at least one
+    of its opportunities is non-terminal, not folded into another and carries a sighting.
+
+    Rank (the order `raise-companies` takes them in): Alumni desc (non-merged people at the company with a stated `ties`,
+    design 4.2), live roles desc, newest sighting desc, id. Each item:
+
+        {"id", "name", "roles": n, "titles": [title...], "newest_sighting": "YYYY-MM-DD" | None, "alumni": n,
+         "backers": [firm ids], "raised_on": "YYYY-MM-DD" | None, "raised_days_ago": n | None}
+
+    Pure: it reads the stores under `root` and writes nothing, so it answers the same on every call."""
+    import graph as _graph
+    import portfolio_boards as _pb
+    today_d = _parse_date(today) if today else datetime.date.today()
+    g = _graph.Graph(os.path.join(root, "data"))
+    opps_by_co = {}
+    for o in g.stores["opportunities"]:
+        if (o.get("status") in _lc.NON_TERMINAL_STATUSES and not _pidx.is_folded(o) and o.get("company_id")
+                and any(isinstance(s, dict) for s in (o.get("sightings") or []))):
+            opps_by_co.setdefault(o["company_id"], []).append(o)
+    alumni = {}
+    for p in g.stores["people"]:
+        if p.get("status") != "merged" and p.get("company_id") and p.get("ties"):
+            alumni[p["company_id"]] = alumni.get(p["company_id"], 0) + 1
+    out = []
+    for c in g.stores["companies"]:
+        cid = c.get("id")
+        if c.get("status") != "watching" or c.get("status_on") or cid not in opps_by_co:
+            continue
+        roles = opps_by_co[cid]
+        newest = max((d for o in roles for d in _sighting_dates(o)), default=None)
+        raised = c.get("raised_on") or None
+        try:
+            days = (today_d - _parse_date(raised)).days if raised else None
+        except ValueError:
+            days = None
+        out.append(({"id": cid, "name": c.get("name") or cid, "roles": len(roles),
+                     "titles": [str(o.get("title") or o.get("id")) for o in roles],
+                     "newest_sighting": newest.isoformat() if newest else None, "alumni": alumni.get(cid, 0),
+                     "backers": [b["firm_id"] for b in _pb.backers_of(cid, g.stores["companies"], g.stores["channels"],
+                                                                        g.stores["opportunities"])],
+                     "raised_on": raised, "raised_days_ago": days},
+                    newest.toordinal() if newest else 0))
+    out.sort(key=lambda t: (-t[0]["alumni"], -t[0]["roles"], -t[1], t[0]["id"]))
+    return [item for item, _ordinal in out]
+
+
+def classify_companies(root, today=None):
+    """The ONE owner of the "look into this company?" grouping (ADR-031 14; dev #834). A pure read:
+
+        {"look-into": [item],          qualifying AND raised (`raised_on` present): UNCAPPED, a raised question stays
+                                       visible until the owner answers it; oldest raise first, then the rank
+         "look-into-waiting": n,       qualifying and never raised (rendered as `N more waiting`, never as rows)
+         "look-into-new": [id]}        the `look-into` companies raised on `today`
+
+    Answering is the act that removes an item: `record.py company-status <id> active-target|watching|passed` writes `status_on`
+    (and for a target `motivation`), so the first condition of `company_candidates` fails. `raised_on` stays on the row (history)."""
+    today_s = (today.isoformat() if isinstance(today, datetime.date) else today) or datetime.date.today().isoformat()
+    cands = company_candidates(root, today_s)
+    raised = [c for c in cands if c["raised_on"]]
+    raised.sort(key=lambda c: c["raised_on"])                       # stable: the rank order breaks a tie
+    return {"look-into": raised, "look-into-waiting": sum(1 for c in cands if not c["raised_on"]),
+            "look-into-new": [c["id"] for c in raised if c["raised_on"] == today_s]}
 
 
 def network_people_due(root, today=None, warm_days=180):

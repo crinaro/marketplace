@@ -92,15 +92,23 @@ Print its output verbatim. Then say that the sweep runs only from the attended f
    does: `~/.claude/jobsearch/run run_summary.py --run <id>`, and quote its `sourcing (board)` line
    (`PARTIAL` when anything above was listed, `complete` when nothing was).
 
-4. **Drain what it found, now, by the daily run's own steps** (owner ruling O6: a role that is found and passes
-   the screen is researched when it is found, on every posture, `minimal` included; and the owner's ruling for the
-   drain: a run finishes every role it takes on). Read `${CLAUDE_PLUGIN_ROOT}/skills/daily-run/SKILL.md` section
+4. **Drain what it found, now, by the daily run's own steps** (owner ruling O6, scoped to target companies since
+   jobsearch 0.86.0: a role **at a company the candidate has targeted** (`active-target`) that passes the screen is
+   researched when it is found, on every posture, `minimal` included; and the owner's ruling for the drain: a run
+   finishes every role it takes on, and what it takes on is counted in target companies. **A role at a company the
+   candidate has not targeted is not admitted:** its sighting is recorded, it is held (`held-for-company`) with its read,
+   screen and research waiting, and its company becomes a "look into this company?" item, which this command names and
+   never decides). Read `${CLAUDE_PLUGIN_ROOT}/skills/daily-run/SKILL.md` section
    **4b. THE DRAIN** (its research step is **5. RESEARCH**) and follow it as written, with this session's run id and
    this session's own render-route declaration. It is the one definition; this command restates none of its rules, so
    a change to it reaches this command with no edit here. The scripts it runs, in its order, so you know what you are
    about to do:
 
    - link the sightings of roles already known: `record.py capture-batch --run <id> --link-only`;
+   - raise the companies to look into: `record.py raise-companies --run <id>` (at most `search.company_intake_per_run`
+     new ones a run; it decides nothing about a company, the candidate answers with
+     `record.py company-status <id> active-target|watching|passed`; a profile whose 0.86.0 migration has not run is refused
+     with its reason, which you print and go on);
    - plan the intake: `lifecycle.py --drain-plan --run <id> --render-route yes|no`. Read `fanout`, `fetch_calls` and
      `solo` from what it prints, never a number of your own;
    - capture: `record.py capture-batch --run <id> --admitted`, repeated until `deadline-left 0`;
@@ -114,7 +122,9 @@ Print its output verbatim. Then say that the sweep runs only from the attended f
      `opportunity-researcher` dispatch takes those; an exit 2 is a refusal with its reason, quoted to the
      candidate, and a `review:<rule>` role waits for the candidate's look;
    - close: `lifecycle.py --drain-close --run <id>`, and put its `drain:` line, and every `LEFT` line it prints, in
-     what you tell the candidate verbatim. Exit 3 is a role left unfinished: say so; the next run takes it again.
+     what you tell the candidate verbatim. Exit 3 is a role left unfinished: say so; the next run takes it again. A held role
+   is not a failure and is never in `LEFT`: say how many roles are held, from the `held N (...)` term of the `ROLES` line
+   that `lifecycle.py --report` prints, and that each such company waits for the candidate's answer.
 
    This session holds no run lock, so none of these takes `--already-locked`. Do not pass `--attended` to any of
    them: it lifts the drafting gate, and nothing here drafts.

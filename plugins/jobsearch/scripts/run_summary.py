@@ -224,6 +224,8 @@ def footprint(root, run_id, recs=None, at=None):
     probes = [r for r in recs if r.get("event") == "probe" and _in_window(r)]
     notes = [r for r in recs if r.get("event") == "note" and r.get("run_id") == run_id]
     gaps = [g for g in _journal.open_gaps(recs) if g.get("run_id") == run_id]
+    # dev #834 (M5): the network actions THIS run took, by the journal's own `run_id` (exact, like `notes`).
+    net_actions = network_actions(recs, run_id)
 
     porcelain = _git(root, "status", "--porcelain")
     diffstat = _git(root, "diff", "--stat", "HEAD")
@@ -240,7 +242,97 @@ def footprint(root, run_id, recs=None, at=None):
         "probes": len(probes),
         "gaps_open": [g.get("gap_id") for g in gaps],
         "notes": len(notes),
+        "network": net_actions,
     }
+
+
+def network_actions(recs, run_id):
+    """⭐ dev #834 (M5) — how many NETWORK actions this run took: the reach-outs its `network` event planned
+    (`reachouts.py --plan --journal`, design 7) plus the companies its `companies-raised` event raised for
+    the owner to look into (`record.py raise-companies`). Counted from the journal, attributed by `run_id`
+    like `notes`, never from narrative. A run with no applications and a network action is not a quiet run:
+    zero applications in flight is a normal state, and the network is the work."""
+    planned = sum(int(r.get("planned") or 0) for r in recs
+                  if r.get("event") == "network" and r.get("run_id") == run_id)
+    raised = sum(len(r.get("raised") or []) for r in recs
+                 if r.get("event") == "companies-raised" and r.get("run_id") == run_id)
+    return planned + raised
+
+
+def network_line(recs, run_id, root):
+    """⭐ dev #834 (M5; design 10.4) — the run's network line, COUNTS ONLY:
+
+        network: drafted 3 · replies 0 · chats to record 1 · look into 10 (+10 raised)
+
+    It never says "no replies" or any other `NO_CHANGE_PHRASES` entry: `--post` refuses a headline that
+    contains one over a run that changed files, and a run that only drafted changed `outreach/drafts.md`.
+    `replies 0` is a count, not the phrase. `drafted` is what the run's `network` event planned,
+    `+N raised` what its `companies-raised` event raised, `chats to record` and `look into` are the
+    Network list's own rows (`funnel_report.py`'s `network_rows`, the derivation the dashboard also renders)
+    and `replies` the wins whose `responded_on` is the run's day. A figure that cannot be derived prints
+    `not checked`, never a zero."""
+    import funnel_report as _funnel                 # named by file: publish_manifest's closure reads it
+    start_at, _as_of, _kind = _run_window(recs, run_id)
+    day = start_at[:10]
+    planned = sum(int(r.get("planned") or 0) for r in recs
+                  if r.get("event") == "network" and r.get("run_id") == run_id)
+    raised = sum(len(r.get("raised") or []) for r in recs
+                 if r.get("event") == "companies-raised" and r.get("run_id") == run_id)
+    try:
+        rows = _funnel.network_rows(root, day)["rows"]
+        chats = str(sum(1 for r in rows if r["group"] in ("chat", "booking")))
+        look = str(sum(1 for r in rows if r["group"] == "look-into"))
+    except Exception:                                           # noqa: BLE001 - said, never a zero
+        chats = look = "not checked"
+    try:
+        replies = str(sum(1 for t in _funnel._net_rows(root, "touches.jsonl")
+                          if t.get("responded_on") == day and _funnel.touch_is_win(t)))
+    except Exception:                                           # noqa: BLE001
+        replies = "not checked"
+    return ("network: drafted %d · replies %s · chats to record %s · look into %s (+%d raised)"
+            % (planned, replies, chats, look, raised))
+
+
+UPGRADE_NOTICE_DAYS = 7
+
+
+def upgrade_notice(recs, run_id, report=None):
+    """⭐ dev #834 (M5; design 10.4) — the ONE line a migration that landed unattended gives the owner: for
+    `UPGRADE_NOTICE_DAYS` days after the profile's 0.86.0 `profile-schema` pin, the RUN SUMMARY says the
+    profile is on network-first. It is news, not a decision and not a pipeline alert, so it is NOT on the
+    dashboard (`check_dashboard_coverage.py` holds the page's top to the owner's C7 request). Derived at the
+    run, never stored: the age is the pin's own date (no acknowledgement state; a stored "seen" flag would
+    be a second fact for one line). Returns None outside the window or with no pin.
+
+    Only what this run can derive is stated: the company setting and the waiting count come from the last
+    `companies-raised` event; the held-role count only when the pipeline report exposes one (NF4's `held`),
+    otherwise it is left out, never guessed."""
+    def key(v):
+        try:
+            return tuple(int(x) for x in str(v).split("."))
+        except ValueError:
+            return (0,)
+    pins = sorted(str(r.get("at") or "") for r in recs
+                  if r.get("event") == "profile-schema" and key(r.get("min_engine")) >= (0, 86, 0))
+    if not pins:
+        return None
+    start_at, _as_of, _kind = _run_window(recs, run_id)
+    try:
+        age = (datetime.date.fromisoformat(start_at[:10]) - datetime.date.fromisoformat(pins[0][:10])).days
+    except ValueError:
+        return None
+    if not 0 <= age < UPGRADE_NOTICE_DAYS:
+        return None
+    text = "upgraded to network-first on %s" % pins[0][:10]
+    held = getattr(report, "held", None)
+    if isinstance(held, int) and not isinstance(held, bool):
+        text += ": %d role%s held for your company decision" % (held, "" if held == 1 else "s")
+    raises = sorted((r for r in recs if r.get("event") == "companies-raised"), key=lambda r: str(r.get("at") or ""))
+    if raises:
+        setting, waiting = raises[-1].get("setting"), raises[-1].get("waiting")
+        text += "; up to %s companies a run are raised for you to look into (%s waiting); intake is now %s " \
+                "companies a run" % (setting, waiting, setting)
+    return text + "; your roles-per-run setting is left in place for older engines and no longer read"
 
 
 def changed(fp):
@@ -252,6 +344,7 @@ def changed(fp):
         return True
     return bool(fp.get("tree_dirty") or fp.get("notes") or fp.get("probes")
                 or fp.get("swept_failed") or fp.get("gaps_open")
+                or fp.get("network")                # dev #834: a network action is work, never "quiet"
                 or fp.get("committed"))             # dev #703: None (unmeasured) and [] are falsy
 
 
@@ -305,7 +398,7 @@ def _fmt_when(at):
         return at or "unknown time"
 
 
-def render_headline(recs, run_id, fp, report=None, report_error=None):
+def render_headline(recs, run_id, fp, report=None, report_error=None, root=None):
     """The run's one-line headline. `report` is `lifecycle.process_report(...)` (dev #820 / public #175):
     when given, the headline ends with its own text, ` · PROCESS FAILURE: n (oldest Nd)`, ` · WAITING: n`,
     ` · DID NOT LOOK: ...`, and ` · PARTIAL:` also names the feeds, the mail and the drain that the report
@@ -328,6 +421,9 @@ def render_headline(recs, run_id, fp, report=None, report_error=None):
     else:
         head = ("%s %s — NO CHANGE: tree clean · swept %d/%d · %d probe(s) · %d gap(s)"
                 % (label, when, fp["swept_ok"], swept_total, fp["probes"], len(fp["gaps_open"])))
+    if fp.get("network") and root is not None:
+        # dev #834 (M5): a network run's first line COUNTS its network actions (counts only: see network_line).
+        head += " · " + network_line(recs, run_id, root)
     if fp.get("swept_failed"):
         # ⭐ public #85 plant — the headline NAMES the incomplete account; a failure is never
         # folded into a bare count nobody can act on.
@@ -756,7 +852,7 @@ def roles_lines(recs, run_id, root=None, kind=None, at=None):
     return lines
 
 
-def render_detail(recs, run_id, fp, root=None, at=None):
+def render_detail(recs, run_id, fp, root=None, at=None, report=None):
     start_at, as_of, _kind = _run_window(recs, run_id)
 
     def _in_window(r):
@@ -764,6 +860,9 @@ def render_detail(recs, run_id, fp, root=None, at=None):
         return start_at <= when <= as_of
 
     lines = ["  %s" % ln for ln in roles_lines(recs, run_id, root=root, kind=_kind, at=at)]
+    notice = upgrade_notice(recs, run_id, report)          # dev #834 (M5): run summary only, never the page
+    if notice:
+        lines.insert(0, "  %s" % notice)
     swept = [r for r in recs if r.get("event") == "swept" and _in_window(r)]
     if swept:
         parts = ["%s ok" % r.get("mailbox") if r.get("ok")
@@ -869,8 +968,8 @@ def main():
         report = _lifecycle.process_report(_lifecycle.load_data(root), now)
     except Exception as e:                                      # noqa: BLE001 - said, never silent
         report_error = "%s: %s" % (type(e).__name__, str(e)[:160])
-    headline = render_headline(recs, args.run, fp, report, report_error)
-    body = render_detail(recs, args.run, fp, root=root, at=args.at)
+    headline = render_headline(recs, args.run, fp, report, report_error, root=root)
+    body = render_detail(recs, args.run, fp, root=root, at=args.at, report=report)
     detail = body
     if args.annotate:
         detail = (detail + "\n" if detail else "") + "  note: %s" % args.annotate

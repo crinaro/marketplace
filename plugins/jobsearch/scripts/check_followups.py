@@ -42,6 +42,16 @@ OUTREACH class is withheld entirely rather than printed with a wrong number — 
 this fix exists to prevent. A fully-covered profile with genuine silence is unaffected: it still
 reports the real day count, now measured to the end of verified coverage rather than to `now()`.
 
+⭐ dev #834 (O1, jobsearch 0.86.0) — A TOUCH `reachouts.py` TIMES IS NOT FLAGGED HERE TOO
+-----------------------------------------------------------------------------------------
+The network block times a new reach-out on its own 3B7 schedule (a second contact after 3 business days, a follow-up after 7: see
+`reachouts.py`). A touch it governs — the new reach-out itself, or a `chase` to its person after it — is skipped by the SILENT
+OUTREACH class below, so `communications.chase_after_days` (7 calendar days) never tells the candidate a second time what
+`reachouts.py --due` has already put in the day's drafts, and the two clocks cannot disagree. `reachouts.governed()` is False on a
+profile that has not run the 0.86.0 migration (nothing runs 3B7 there) and past the 3B7 window (a thread that has gone cold for a
+month is an ordinary silent thread again), so a touch is never exempted from BOTH checks. A touch exempted here is COUNTED on the
+`(N touch(es) on a 3B7 timetable ...)` line, so exempt never reads as unchecked. Advisory still: exit 0, never wedges a run.
+
 This is deliberately the smallest correct slice (V0 of the states-and-views design, §15.1): it
 fixes the WHOLE-PROFILE version of the defect (are the configured mailboxes covered at all)
 using the same reader V1's finer per-thread/per-medium version will use. It does not yet
@@ -64,9 +74,20 @@ from _root import profile_root as _profile_root
 import _tree
 import journal as _journal
 import mail_client as _mail_client
+import reachouts as _reachouts
 import touches as _touches
 
 ROOT = _profile_root()
+
+
+def governing_context(root, today):
+    """dev #834 (O1) -- the 3B7 context `reachouts.governed()` asks, or `None` when it cannot be built (a store that does not read: this
+    check is advisory and must never wedge a run, and a touch it then fails to exempt is flagged, which is the safe side). The context
+    is inactive on a profile that has not run the 0.86.0 migration, where nothing runs 3B7 and every touch is still this check's."""
+    try:
+        return _reachouts.context(root, today)
+    except (OSError, ValueError, KeyError, ImportError):
+        return None
 
 
 def verified_through(root):
@@ -243,6 +264,7 @@ def check_silent_jsonl(today, days, ended_ctx=None):
     import your_move as _ym
     if ended_ctx is None:
         ended_ctx = _ym.build_ended_context(ROOT)
+    reach = governing_context(ROOT, today)
     findings = []
     for opp in load_opps():
         # Terminal roles (validate_data's ONE set) have no thread to chase. `backlog` is
@@ -253,9 +275,12 @@ def check_silent_jsonl(today, days, ended_ctx=None):
             continue
         if opp.get("stage") == "closed":
             continue
+        # dev #834 (O1): a touch `reachouts.py` already times (3B7: a new reach-out, or a chase to its person after it) is the network
+        # block's to chase, so it is not flagged here a second time by `communications.chase_after_days`.
         sent = [o for o in (opp.get("_touches") or [])
                 if o.get("status") == "sent" and o.get("date")
-                and _ym.touch_state(o, ended_ctx)[0] != "ended"]
+                and _ym.touch_state(o, ended_ctx)[0] != "ended"
+                and not (reach is not None and _reachouts.governed(o, reach))]
         if not sent:
             continue
         when = latest_date(" ".join(o["date"] for o in sent))
@@ -505,6 +530,13 @@ def main():
     stalled = check_pursuits_without_next_action()
 
     print("Follow-up check - %s (silence threshold: %d days)" % (run_today.isoformat(), days))
+    # dev #834 (O1): say what this check is NOT flagging because `reachouts.py` times it, so an exempt touch is never mistaken for an
+    # unchecked one. Counted over the same opportunity touches the silent-outreach class reads.
+    _reach = governing_context(ROOT, run_today)
+    if _reach is not None and _reach.active:
+        _n_gov = sum(1 for _o in load_opps() for _t in (_o.get("_touches") or []) if _reachouts.governed(_t, _reach))
+        if _n_gov:
+            print("(%d touch(es) on a 3B7 timetable -- `reachouts.py --due` times them, so they are not flagged below)" % _n_gov)
     # public #95 — the terminal-transition cascade's checkup line. Always printed, unlike the
     # sections below: it never depends on mailbox coverage, and the whole point is that the
     # owner sees the cascade's effect on the very first run after this ships.

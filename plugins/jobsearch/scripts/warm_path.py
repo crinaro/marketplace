@@ -124,18 +124,28 @@ def eligible(o):
             and o.get("verdict") != "pass")
 
 
-def open_draft_recipients(root):
-    """`{person_id: [entry titles]}` for the OPEN drafts in outreach/drafts.md: an entry with a
-    `**To:** contact:<id>` line whose `**Status:**` does not open with `sent` and does not name it moot or
-    do-not-send (`precondition.py`'s own tests), parsed with its own entry splitter."""
+BRIEF_DATE_RE = re.compile(r"^\*\*Brief:?\*\*:?\s*brief:(\d{4}-\d{2}-\d{2})T", re.M | re.I)
+BRIEF_VALUE_RE = re.compile(r"^\*\*Brief:?\*\*:?[ \t]*(.*?)[ \t]*$", re.M | re.I)
+
+
+def open_draft_entries(root):
+    """`[{"person_id", "title", "drafted_on", "brief"}]` for the OPEN drafts in outreach/drafts.md, in file order: an entry with a
+    `**To:** contact:<id>` line whose `**Status:**` does not open with `sent` and does not name it moot or do-not-send
+    (`precondition.py`'s own tests), parsed with its own entry splitter.
+
+    `drafted_on` is the date in the entry's `**Brief:** brief:<ISO timestamp>-<hex>` id (`brief.new_brief_id` stamps the moment
+    the brief was computed, which is when the drafter wrote the entry: INFERRED, the entry has no date field of its own; the
+    design, 9.1, names none either); None for `**Brief:** none`, an absent `**Brief:**` line or an id that carries no date, so an
+    undated draft is never guessed old. `brief` is the raw text of the `**Brief:**` line, or None when the entry has no such
+    line, so a caller can say WHY an age is unknown (`reachouts.unobserved` does) instead of dropping the draft silently."""
     import _tree
     import precondition as _pc
     try:
         with open(_tree.resolve_rel(root, _tree.rel("drafts")), encoding="utf-8") as fh:
             md = fh.read()
     except OSError:
-        return {}
-    out = {}
+        return []
+    out = []
     for m in _pc.ENTRY_RE.finditer(md):
         title, body = m.group(1).strip(), m.group(2)
         sm = _pc.STATUS_RE.search(body)
@@ -143,7 +153,18 @@ def open_draft_recipients(root):
             continue
         tm = TO_RE.search(body)
         if tm:
-            out.setdefault(tm.group(1), []).append(title)
+            bm = BRIEF_DATE_RE.search(body)
+            vm = BRIEF_VALUE_RE.search(body)
+            out.append({"person_id": tm.group(1), "title": title, "drafted_on": bm.group(1) if bm else None,
+                        "brief": vm.group(1) if vm else None})
+    return out
+
+
+def open_draft_recipients(root):
+    """`{person_id: [entry titles]}` for the OPEN drafts in outreach/drafts.md (`open_draft_entries`, grouped by recipient)."""
+    out = {}
+    for e in open_draft_entries(root):
+        out.setdefault(e["person_id"], []).append(e["title"])
     return out
 
 

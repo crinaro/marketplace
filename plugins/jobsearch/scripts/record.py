@@ -118,6 +118,26 @@ Usage:
                                               # opportunity's `employer_posting` (never argv, never a flag)
                                               # turn shipped catalog boards on (nothing is on by default), and settle
                                               # a board you edited that the catalog also changed (dev #769)
+    python3 scripts/record.py raise-companies --run <id> [--on D]   # the look-into raise (0.86.0, dev #834): the ONE writer of `raised_on`
+    python3 scripts/record.py company-status <company_id> active-target|watching|passed [--motivation 1-5] [--on D]
+                                              # 0.86.0 (dev #834): the candidate's answer to "look into this company?"; the ONE writer
+                                              # of a company's `status` + `status_on` (+ `motivation`, required for a target)
+    python3 scripts/record.py chat <person_id> --on D [--time HH:MM] [--title T] [--opp <opp_id>] [--touch <touch_id>]
+    python3 scripts/record.py attended <commitment_id> held|no-show [--notes <path>] [--on D]   # attendance only (+ notes_ref)
+    python3 scripts/record.py intro-offered <commitment_id> (--person <id> | --company <id>) [--on D]
+    python3 scripts/record.py via <opp_id|app_id> --person <id> [--chat <commitment_id>]       # where a role came from; never inferred
+    python3 scripts/record.py proposal <opp_id> [--scope "<text>"] [--rate 1500/day/USD] [--on D] [--note "<text>"]
+    python3 scripts/record.py proposal-status <proposal_id> sent|accepted|declined|withdrawn|expired [--on D]
+                                              # 0.86.0 (dev #834): a proposal to a prospective client of a fractional / interim / advisory /
+                                              # contract engagement, in the `proposals` store beside `applications`. The candidate's own
+                                              # record: nothing writes a proposal unattended. `status` and `date` have ONE writer
+    python3 scripts/record.py suggest --store companies|plans|people --action set|create --target-id <id> --values '<json>' --ask "<q>"
+    python3 scripts/record.py confirm <ask_id> [--set field=value ...]    # writes the suggested row and resolves its ask, ONE locked write
+    python3 scripts/record.py decline <ask_id> [--why "<text>"]           # resolves the ask `declined`; the suggested row was never written
+                                              # 0.86.0 (dev #834): the strategist SUGGESTS a target company, a plan or a person's cadence as an
+                                              # ask; only the candidate's `confirm` writes the row. `suggest` writes the ask and nothing else
+                                              # 0.86.0 (dev #834): a chat is a `kind: chat` commitment WITH a person; whether it
+                                              # happened is a later `attended`, which only the candidate runs
     ... --file companies|channels to address the other stores. --dry-run to preview.
     ... --already-locked when the calling run already holds the run lock (see above).
 
@@ -186,7 +206,15 @@ STORES = {"opportunities": "opportunities.jsonl",
           # APPENDED by `migrate.py`; `create <id> '<json>' --file asks` / `set-in` / `append`
           # (e.g. a `note` addendum — §4.4's dedup digest) now exist, validator-run like every
           # other store.
-          "asks": "asks.jsonl"}
+          "asks": "asks.jsonl",
+          # dev #834 (jobsearch 0.86.0, design-network-first.md 5.2) -- `commitments` joins STORES so a legacy meeting can be
+          # classified (`set <id> kind interview --file commitments`) and the chat verbs' dry-run validates it. The chat fields are
+          # written by `chat`, `attended` and `intro-offered`; `attendance` without `attendance_on` is refused by the validator.
+          "commitments": "commitments.jsonl",
+          # dev #834 (jobsearch 0.86.0, design-network-first.md 6) -- `proposals` joins STORES so the generic `set` / `set-in` write
+          # `conceptual_agreement` and `doc_ref` and the proposal verbs' dry-run validates it. `proposal` mints the id
+          # (`<opp_id>-pN`); `proposal-status` is the one writer of `status`, `status_on` and `date` of an existing row.
+          "proposals": "proposals.jsonl"}
 # ⭐ dev #764 / public #162 -- THE STORES `create auto` CAN MINT AN ID FOR, and the label the
 # write's report uses for the id it minted. `create auto` on any other store used to write the
 # literal id "auto" (the argument was taken as the id) -- a row no later verb could tell from a
@@ -257,7 +285,19 @@ OPS = ("create", "set", "set-in", "append", "show", "fields",
        # jobsearch 0.85.0 (dev #839 / public #182, dev #840 / public #181) -- record that a browser read could not HAPPEN (the
        # Browser pane was hidden, or the reader's tab stayed in the background): several ids in one call, ALL or none, an
        # early-return verb writing OPPORTUNITIES in one locked, validated, rollback-verified transaction.
-       "not-attempted")
+       "not-attempted",
+       # jobsearch 0.86.0 (dev #834) -- raise the companies to "look into": an early-return verb, the ONE writer of
+       # `companies.raised_on` (at most `search.company_intake_per_run` newly raised per run), one locked, validated,
+       # rollback-verified write of COMPANIES plus one `companies-raised` journal event. `--dry-run` is `--check`.
+       "raise-companies",
+       # jobsearch 0.86.0 (dev #834) -- the network-first verbs: the candidate's answers about a company, a chat, an introduction and
+       # a source. Each writes ONE store in one locked, validated, rollback-verified transaction and is never run unattended; the
+       # `--dry-run` of each is proven in test_record_company_status.py / test_record_chat.py.
+       "company-status", "chat", "attended", "intro-offered", "via",
+       # jobsearch 0.86.0 (dev #834) -- the proposals verbs (a proposal to a prospective client of a non-employee engagement) and the
+       # suggestion verbs (the strategist's proposed row, the candidate's confirm or decline). Each is a locked, validated,
+       # rollback-verified write; `suggest` writes the ASK only, `confirm` writes the suggested row AND resolves the ask in ONE write.
+       "proposal", "proposal-status", "suggest", "confirm", "decline")
 SOURCING_OPS = ("screened", "lean", "listed-pay", "posted")
 LOCK = os.path.join(ENGINE_SCRIPTS, "runlock.py")
 # ⭐ ENGINE, not profile — the data MODEL ships with the code; the DATA belongs to the user.
@@ -735,7 +775,36 @@ def verb_owned_refusal(op, store, before_row, after_row):
     added later without listing them.
 
     A key that is present with a null value differs from an absent key (`set <id> employer_posting null` is a write),
-    and `--force` is not an input: the refusal text says so."""
+    and `--force` is not an input: the refusal text says so.
+
+    A third field is owned on the `companies` store (jobsearch 0.86.0, dev #834, design-network-first.md 3.3):
+    `raised_on`, the date a company was first raised as a "look into this company?" item, is written only by
+    `record.py raise-companies`, which does not pass through this check, so EVERY other op that changes it is refused here:
+    one writer per field, because a hand-set date would silently decide which companies a run still has to raise."""
+    if store == "companies" and isinstance(after_row, dict):
+        out = []
+        if (before_row or {}).get(_RAISED_FIELD) != after_row.get(_RAISED_FIELD):
+            out.append("%s is written only by `record.py raise-companies --run <run id>` (it raises at most "
+                       "`search.company_intake_per_run` companies a run and journals a `companies-raised` event); `%s` cannot "
+                       "change it, and --force does not lift this" % (_RAISED_FIELD, op))
+        # dev #834 (design-network-first.md 3.3, 4.1): an EXISTING company's `status` and `status_on` are the candidate's decision,
+        # written together by `record.py company-status` (which does not pass through this check). `status_on` is what tells an
+        # answered `watching` from an unanswered one, so a hand `set <co> status watching` would leave the question looking handled.
+        # A `create` (before_row None) is not a decision about an existing company, so it is not refused.
+        if isinstance(before_row, dict):
+            for f in _COMPANY_DECISION_FIELDS:
+                if before_row.get(f) != after_row.get(f):
+                    out.append("%s is the candidate's decision about a company and is written only by `record.py company-status "
+                               "<company_id> active-target|watching|passed [--motivation <1-5>]` (it writes `status`, `status_on` "
+                               "and `motivation` together); `%s` cannot change it, and --force does not lift this" % (f, op))
+        return out
+    if store == "proposals" and isinstance(after_row, dict) and isinstance(before_row, dict):
+        # dev #834 (design-network-first.md 6): a proposal's lifecycle is written by `record.py proposal-status`, which dates the
+        # status (`status_on`) and the day it went out (`date`) in ONE write. A hand `set <id> status accepted` would leave a
+        # proposal "accepted" with no date the funnel could count it on. A `create` is not a change to an existing row.
+        return ["%s is the proposal's lifecycle and is written only by `record.py proposal-status <proposal_id> "
+                "sent|accepted|declined|withdrawn|expired [--on <date>]`; `%s` cannot change it, and --force does not lift this"
+                % (f, op) for f in _PROPOSAL_LIFECYCLE_FIELDS if before_row.get(f) != after_row.get(f)]
     if store != "opportunities" or not isinstance(after_row, dict):
         return []
     out = []
@@ -749,6 +818,15 @@ def verb_owned_refusal(op, store, before_row, after_row):
                    "not lift this" % (_JD_READ_FIELD, op))
     return out
 
+
+# ---- dev #834 (jobsearch 0.86.0): `companies.raised_on` HAS ONE WRITER, `record.py raise-companies` ----
+_RAISED_FIELD = "raised_on"
+# dev #834 (design-network-first.md 3.3, 4.1): the two fields of a company the candidate's DECISION writes, in one write, by
+# `record.py company-status`. `motivation` is not listed: it is revised by running the verb again, and a hand edit of a number
+# the candidate states is not the silent-decision hazard `status` without `status_on` is.
+_COMPANY_DECISION_FIELDS = ("status", "status_on")
+# dev #834 (design-network-first.md 6): the three fields of a proposal `record.py proposal-status` owns (one writer).
+_PROPOSAL_LIFECYCLE_FIELDS = ("status", "status_on", "date")
 
 # ---- dev #820 / public #175 (design-role-pipeline.md section 4.2): `jd_read` HAS ONE WRITER FAMILY ----
 _JD_READ_FIELD = "jd_read"
@@ -958,6 +1036,7 @@ def _plans_mod():
 def _enum_registry(_vd):
     return {
         "companies": {"vertical": _vd.VERTICALS, "status": _vd.COMPANY_STATUS},
+        "commitments": {"kind": _vd.COMMITMENT_KINDS, "attendance": _vd.ATTENDANCE},     # dev #834
         "channels": {"type": _vd.CHANNEL_TYPES, "review_cadence": _vd.CADENCES,
                     "access": _vd.ACCESS},
         "opportunities": {"status": _vd.OPP_STATUS, "stage": _vd.STAGES,
@@ -4365,7 +4444,11 @@ def _stage_line(opp_id):
 #   --link-only   before intake, over EVERY open `capture-role` item (quarantined included): an item that is a sighting
 #                 of a known role is linked (its listings join the row; `linked` when the address was already known,
 #                 `folded` when it is another listing of the same company + title) and closed `linked:<opp>`. Those items
-#                 are sightings of known roles, not new roles, so they never consume intake.
+#                 are sightings of known roles, not new roles, so they never consume intake. ALSO (jobsearch 0.86.0, dev #834,
+#                 design-network-first.md 3.1): every open item whose company is NOT an `active-target` company is created as
+#                 a role here, in the same locked write, before the plan: the sighting is RECORDED (the row is kept) and the
+#                 role waits as `held-for-company`; it consumes no intake and is never read, screened or researched until the
+#                 candidate targets the company. It needs no render route, because nothing is read.
 #   --admitted    after `lifecycle.py --drain-plan`: for each role the run's `drain planned` event admitted, create it from
 #                 its OLDEST item (company matched or made, `provenance: card`, `capture: {run, at, item, unverified?}`),
 #                 close that item `created:<opp>` and every SIBLING item (same `lifecycle.role_key`) `linked:<opp>`, and
@@ -4677,6 +4760,21 @@ def _capture_batch_locked(args, run, phase, deadline_s, check, t0, stores):
     new_companies, new_opps = [], []
     skipped = []
 
+    def _not_a_target(item):
+        """dev #834 (design-network-first.md 3.1): True when the item's company is NOT an `active-target` company, so the
+        sighting is recorded before the plan and its read, screen and research wait. A company the store does not know yet is
+        not a target (capture will make it, `watching`). A name that matches SEVERAL companies is left to the plan: `create`
+        refuses it either way, and a refusal every run before anyone is admitted would only add noise."""
+        name, _title = _lc.item_company_title(item)
+        if not name:
+            return False
+        hits = _pidx.company_candidates(name, companies)
+        if len(hits) > 1:
+            return False
+        if not hits:
+            return True
+        return next(c for c in companies if c.get("id") == hits[0]).get("status") != "active-target"
+
     def refuse(item_ids, why):
         state["refused"] += len(item_ids)
         for iid in item_ids:
@@ -4849,7 +4947,9 @@ def _capture_batch_locked(args, run, phase, deadline_s, check, t0, stores):
         k = keys[iid]
         if k in opps_by_id and not k.startswith("item:"):
             groups.append(("known", opps_by_id[k], [item]))
-        elif phase == "admitted":
+        elif phase == "admitted" or (phase == "link-only" and _not_a_target(item)):
+            # dev #834 (0.86.0): a sighting at a company that is not `active-target` is RECORDED here, before the plan, as an
+            # ordinary role (`held-for-company` until the company is targeted); it consumes no intake
             if k not in seen_groups:
                 members = [i for i in open_items if keys[i["id"]] == k and i["id"] not in created_by_item]
                 seen_groups[k] = ("new", None, members)
@@ -5708,6 +5808,1040 @@ def cmd_not_attempted(args):
     return 0
 
 
+# ---- raise-companies: the "look into this company?" raise (dev #834, jobsearch 0.86.0; design-network-first.md 3.3) --------
+#
+# `record.py raise-companies --run <run id> [--on YYYY-MM-DD] [--check|--dry-run] [--already-locked]`
+#
+# A job-board sighting at a company the candidate has not decided about yields one question, "look into this company?". The
+# question is DERIVED (`your_move.classify_companies`); what is STORED is the act of raising it, `companies.raised_on`, because
+# nothing else records which companies were already asked, and "at most `search.company_intake_per_run` companies are newly
+# raised per run" (owner answers 6 and 7, 2026-11-12) needs that count. This verb is the ONE writer of the field:
+#   1. the candidates are the qualifying companies (`your_move.company_candidates`) whose `raised_on` is absent, in its rank;
+#   2. the first `search.company_intake_per_run` (default 10) get `raised_on = --on` (default: today), in ONE locked, validated,
+#      rollback-verified write of data/companies.jsonl;
+#   3. ONE `companies-raised` journal event is appended even when nothing was raised, so "ran and raised nothing" differs from
+#      "never ran";
+#   4. it prints `raised K companies to look into (N waiting)`.
+# A run that already journaled the event raises nothing more (a retried step never raises a second batch). A profile whose
+# 0.86.0 migration has not run, or that is pinned above this engine, is refused with that reason and nothing is written. The
+# step decides nothing about a company: the candidate answers with `record.py company-status`.
+
+RAISE_COMPANIES_USAGE = "raise-companies --run <run id> [--on YYYY-MM-DD] [--check | --dry-run] [--already-locked]"
+
+
+def cmd_raise_companies(args):
+    """Exit 0 on a raise (or a no-op, or a dry run), 1 when a store cannot be read or the write was rolled back, 2 on usage or
+    a bad setting, 3 when the profile is not ready for the network block (the pin's own text is printed)."""
+    import journal as _journal
+    import config_keys as _ck
+    if args.rid or args.rest:
+        print("usage: " + RAISE_COMPANIES_USAGE)
+        return 2
+    run = (args.run_id_arg or "").strip()
+    if not run or re.search(r"\s", run):
+        print("⛔ REFUSED — --run <run id> is required (no whitespace).\nusage: " + RAISE_COMPANIES_USAGE)
+        return 2
+    if args.on_date:
+        try:
+            on = datetime.date.fromisoformat(args.on_date)
+        except ValueError:
+            print("⛔ REFUSED — --on %r is not an ISO date (YYYY-MM-DD)." % args.on_date)
+            return 2
+    else:
+        on = _now().date()
+    import reachouts as _reachouts
+    gate = _reachouts._gate(ROOT)
+    if gate:
+        print(gate)
+        return 3
+    try:
+        setting = _ck.resolve_int(_profile_mod().load(), _ck.SEARCH_COMPANY_INTAKE_PER_RUN)
+    except (ValueError, OSError) as e:
+        print("⛔ REFUSED — %s; nothing written." % e)
+        return 2
+    check = bool(args.check or args.dry_run)
+    if not check:
+        if args.already_locked:
+            if not lock_is_held():
+                print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
+                return 1
+        else:
+            try:
+                take_lock("record.py raise-companies --run %s" % run, wait=args.wait)
+            except LockError as e:
+                print("  REFUSED — %s" % e)
+                return 1
+    try:
+        import your_move as _ym
+        try:
+            recs = _journal.read(ROOT)
+            if any(r.get("event") == "companies-raised" and r.get("run_id") == run for r in recs):
+                print("raise-companies run=%s already raised (nothing written)" % run)
+                return 0
+            companies = load("companies")
+            cands = _ym.company_candidates(ROOT, on.isoformat())
+        except (OSError, ValueError, _journal.JournalError) as e:
+            print("⛔ REFUSED — a store cannot be read (%s); nothing written." % e)
+            return 1
+        unraised = [c for c in cands if not c["raised_on"]]
+        raised = unraised[:setting]
+        waiting = len(unraised) - len(raised)
+        line = "raised %d companies to look into (%d waiting)" % (len(raised), waiting)
+        if check:
+            print("raise-companies --dry-run: would raise %s; nothing written\n%s"
+                  % (", ".join(c["id"] for c in raised) or "nothing", line))
+            return 0
+        if raised:
+            ids = {c["id"] for c in raised}
+            for row in companies:
+                if row.get("id") in ids:
+                    row[_RAISED_FIELD] = on.isoformat()
+            snap = snapshot("companies")
+            pre_problems = validate()[3]
+            save_atomic("companies", companies)
+            rc, out, err, post_problems = validate()
+            added = new_problems(pre_problems, post_problems)
+            if rc != 0 and (added is None or added):
+                ok = restore("companies", snap)
+                print("⛔ the write left the store invalid and was %s."
+                      % ("ROLLED BACK (byte-identical)" if ok else
+                         "NOT VERIFIABLY ROLLED BACK -- restore companies.jsonl from git"))
+                print("  " + "\n  ".join(added if added else _diagnostic_lines(rc, out, err)))
+                return 1
+        try:
+            _journal.record_companies_raised(ROOT, run, setting, [c["id"] for c in raised], waiting)
+        except _journal.JournalError as e:
+            print("⚠️ could not journal the `companies-raised` event (%s)" % e)
+            print(line)
+            return 1
+        print(line)
+        return 0
+    finally:
+        if not check and not args.already_locked:
+            release_lock()
+
+
+# ---- the network-first verbs: company-status, chat, attended, intro-offered, via (dev #834, jobsearch 0.86.0) ----------------
+#
+#   record.py company-status <company_id> active-target|watching|passed [--motivation <1-5>] [--on YYYY-MM-DD]
+#   record.py chat <person_id> --on YYYY-MM-DD [--time HH:MM] [--title "<t>"] [--opp <opp_id>] [--touch <touch_id>]
+#   record.py attended <commitment_id> held|no-show [--notes <relative path>] [--on YYYY-MM-DD]
+#   record.py intro-offered <commitment_id> (--person <person_id> | --company <company_id>) [--on YYYY-MM-DD]
+#   record.py via <opp_id|app_id> --person <person_id> [--chat <commitment_id>]
+#
+# Each is a decision or a fact only the CANDIDATE knows (design-network-first.md 11: what stays manual), so none is ever called by an
+# unattended run and none infers anything: the engine never decides that a company is a target, that a chat was held, whom an
+# introduction was to, or where a role came from. Each writes ONE store (`companies`, `commitments`, `opportunities` or
+# `applications`) in one locked, validated, rollback-verified write, `--dry-run` predicting it with the real validator, and each is
+# refused on a profile whose 0.86.0 migration has not run (or that a newer engine upgraded), before anything is written:
+#
+#   company-status   writes `status`, `status_on` and, for a target, `motivation` TOGETHER (the one writer of `status`/`status_on`:
+#                    `set <co> status ...` is refused naming this verb). An `active-target` without `--motivation` is refused.
+#   chat             creates a `kind: chat` commitment WITH a person (a chat is with someone), optionally joined to the
+#                    `meeting-booked` touch it came from. Writes no attendance: whether it happened is a later `attended`.
+#   attended         writes `attendance` and `attendance_on` (and `notes_ref` when `--notes` is given) and NOTHING else.
+#   intro-offered    appends one `{person_id | company_id, on}` entry to `intros_given`; an entry already there is not repeated.
+#   via              writes `via_person_id` (and `via_commitment_id` with `--chat`) on a role or an application; refuses a chat that
+#                    is with somebody else.
+
+NETWORK_VERB_USAGE = {
+    "company-status": "company-status <company_id> active-target|watching|passed [--motivation <1-5>] [--on YYYY-MM-DD] "
+                      "[--dry-run] [--already-locked]",
+    "chat": "chat <person_id> --on YYYY-MM-DD [--time HH:MM] [--title \"<title>\"] [--opp <opp_id>] [--touch <touch_id>] "
+            "[--dry-run] [--already-locked]",
+    "attended": "attended <commitment_id> held|no-show [--notes <relative path>] [--on YYYY-MM-DD] [--dry-run] [--already-locked]",
+    "intro-offered": "intro-offered <commitment_id> (--person <person_id> | --company <company_id>) [--on YYYY-MM-DD] "
+                     "[--dry-run] [--already-locked]",
+    "via": "via <opp_id|app_id> --person <person_id> [--chat <commitment_id>] [--dry-run] [--already-locked]",
+}
+NETWORK_PENDING_LINE = ("network-first upgrade pending: the jobsearch 0.86.0 migration has not run on this profile (run "
+                        "`~/.claude/jobsearch/run migrate.py` and read what it says); nothing was written")
+_CHAT_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
+
+
+def _network_gate():
+    """`None` when this profile may take a 0.86.0 write, else the line to print: the pin's own refusal when a NEWER engine upgraded
+    the profile, or the pending-migration line when no pin at or above 0.86.0 exists (an unmigrated profile has no pin, and a verb
+    that wrote a 0.86.0 field into it would be a field a pinned-ahead older engine could not have meant)."""
+    import journal as _journal
+    refusal = _journal.pin_refusal(ROOT)
+    if refusal:
+        return refusal
+    pin = _journal.pin_scan(ROOT)
+    if pin is None or tuple(int(x) for x in pin.split(".")) < (0, 86, 0):
+        return NETWORK_PENDING_LINE
+    return None
+
+
+def _parse_on(text, flag="--on", default=None, not_after_today=True):
+    """The ISO date `text` names (or `default` when it is None), as a `datetime.date`. Refuses a malformed date, and a future one
+    unless `not_after_today` is False: every date these verbs write is a day that has happened."""
+    if text is None:
+        return default
+    try:
+        d = datetime.date.fromisoformat(text)
+    except ValueError:
+        raise _Refused("%s %r is not an ISO date (YYYY-MM-DD)." % (flag, text))
+    if not_after_today and d > _now().date():
+        raise _Refused("%s %s is after today: these verbs record what has already happened." % (flag, text))
+    return d
+
+
+def _live_person(people, pid, what="person"):
+    """The people row `pid` names, refused when it resolves to nothing or was merged (the survivor is named: link THAT one)."""
+    row = find(people, pid)
+    if row is None:
+        raise _Refused("%s %r resolves to no people record." % (what, pid))
+    if row.get("status") == "merged":
+        raise _Refused("%s %r was merged into %r; use the survivor: %r." % (what, pid, row.get("merged_into"), row.get("merged_into")))
+    return row
+
+
+def _merged_map(people):
+    return {p.get("id"): p.get("merged_into") for p in people if p.get("merged_into")}
+
+
+def _network_row_write(args, verb, store, edit):
+    """The ONE write path of the five network-first verbs. `edit(rows)` mutates `rows` (the store's rows, a fresh read) in place and
+    returns the lines to print; it raises `_Refused` BEFORE anything is written. Returns the exit code: 0 written (or nothing to
+    change, or a dry run that predicts a clean write), 1 refused or rolled back, 2 usage, 3 the profile is not ready.
+
+    The sequence is the one every row-writing verb here follows: gate, edit a shadow, `--dry-run` runs the real validator over the
+    shadow and stops, then the lock, a re-read INSIDE it, the edit again on what is really there, a snapshot, the atomic write, the
+    validator, and a byte-identical rollback when the write introduced a problem the store did not have before."""
+    gate = _network_gate()
+    if gate:
+        print(gate)
+        return 3
+    try:
+        rows = _load_or_empty(store)
+        shadow =json.loads(json.dumps(rows))
+        lines = edit(shadow)
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+    except (OSError, ValueError) as e:
+        print("⛔ REFUSED — a store cannot be read (%s); nothing written." % e)
+        return 1
+    if shadow == rows:
+        for line in lines:
+            print(line)
+        print("%s: nothing to change." % verb)
+        return 0
+    if args.dry_run:
+        pre_rc, _, _, pre_problems = validate()
+        rc, out, err, problems = dry_run_validate(store, shadow)
+        if rc != 0:
+            added = new_problems(pre_problems, problems)
+            if added is None or added:
+                print("  ⛔ a REAL (non-dry-run) write of this would be REFUSED and rolled back (nothing is written):")
+                print("  " + "\n  ".join("- " + a for a in (added if added else _diagnostic_lines(rc, out, err))))
+                return 1
+        for line in lines:
+            print(line)
+        print("  --dry-run: nothing written.")
+        return 0
+    if args.already_locked:
+        if not lock_is_held():
+            print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
+            return 1
+    else:
+        try:
+            take_lock("record.py %s %s" % (verb, args.rid), wait=args.wait)
+        except LockError as e:
+            print("  REFUSED — %s" % e)
+            return 1
+    try:
+        try:
+            rows = load(store) if os.path.exists(os.path.join(DATA, STORES[store])) else []
+            lines = edit(rows)                     # re-read INSIDE the lock, and edit what is really there
+        except _Refused as e:
+            print("⛔ REFUSED — %s" % e)
+            return 1
+        snap = snapshot(store)
+        pre_problems = validate()[3]
+        save_atomic(store, rows)
+        rc, out, err, post_problems = validate()
+        added = new_problems(pre_problems, post_problems)
+        if rc != 0 and (added is None or added):
+            ok = restore(store, snap) if snap is not None else _remove_new_store(store)
+            print("⛔ the write left the %s store invalid and was %s."
+                  % (store, "ROLLED BACK (byte-identical)" if ok else
+                     "NOT VERIFIABLY ROLLED BACK -- restore %s from git" % STORES[store]))
+            print("  " + "\n  ".join(added if added else _diagnostic_lines(rc, out, err)))
+            return 1
+    finally:
+        if not args.already_locked:
+            release_lock()
+    for line in lines:
+        print(line)
+    return 0
+
+
+def _remove_new_store(store):
+    """Undo the creation of a store file that did not exist before the write (nothing to restore byte for byte). True when gone."""
+    try:
+        os.unlink(os.path.join(DATA, STORES[store]))
+    except OSError:
+        return False
+    return True
+
+
+def cmd_company_status(args):
+    """`record.py company-status <company_id> active-target|watching|passed [--motivation <1-5>] [--on D]`: the candidate's answer to
+    "look into this company?", and the ONE writer of a company's `status` and `status_on` (design-network-first.md 3.3, 4.1).
+
+    `status`, `status_on` (`--on`, default today) and, for a target, `motivation` are written in ONE locked write. A target without
+    `--motivation` is refused (its motivation is the candidate's own statement, LAMP's M, never a default), and `--motivation` beside
+    `watching` or `passed` is refused (it describes a target). Answering removes the company from the look-into item and leaves its
+    `raised_on` byte for byte. Exit 0 written; 1 refused; 2 usage; 3 the profile is not ready."""
+    usage = "usage: " + NETWORK_VERB_USAGE["company-status"]
+    if not args.rid or len(args.rest) != 1:
+        print(usage)
+        return 2
+    cid, status = args.rid, args.rest[0]
+    _vd = _validator_module()
+    try:
+        if status not in _vd.COMPANY_STATUS:
+            raise _Refused("%r is not a status: one of %s.\n%s" % (status, ", ".join(sorted(_vd.COMPANY_STATUS)), usage))
+        mot = None
+        if args.motivation_arg is not None:
+            try:
+                mot = int(args.motivation_arg)
+            except ValueError:
+                raise _Refused("--motivation %r is not a whole number %d-%d." % (args.motivation_arg, _vd.MOTIVATION_MIN,
+                                                                                  _vd.MOTIVATION_MAX))
+            if not _vd.MOTIVATION_MIN <= mot <= _vd.MOTIVATION_MAX:
+                raise _Refused("--motivation %d is outside %d-%d (1 = would not mind, 5 = the company the candidate most wants to "
+                               "work at)." % (mot, _vd.MOTIVATION_MIN, _vd.MOTIVATION_MAX))
+        if status == "active-target" and mot is None:
+            raise _Refused("targeting %s needs `--motivation <%d-%d>`: how much the candidate wants to work there is their own "
+                           "statement, never a default." % (cid, _vd.MOTIVATION_MIN, _vd.MOTIVATION_MAX))
+        if status != "active-target" and mot is not None:
+            raise _Refused("--motivation describes a target; `%s` is not one. Run `company-status %s active-target --motivation "
+                           "<%d-%d>` to target it." % (status, cid, _vd.MOTIVATION_MIN, _vd.MOTIVATION_MAX))
+        on = _parse_on(args.on_date, default=_now().date())
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+
+    def edit(rows):
+        row = find(rows, cid)
+        if row is None:
+            raise _Refused("%r resolves to no companies record." % cid)
+        was = row.get("status")
+        row["status"] = status
+        row["status_on"] = on.isoformat()
+        if mot is not None:
+            row["motivation"] = mot
+        return ["company-status %s: %s -> %s (status_on %s%s)"
+                % (cid, was, status, on.isoformat(), ", motivation %d" % mot if mot is not None else "")]
+    return _network_row_write(args, "company-status", "companies", edit)
+
+
+def cmd_chat(args):
+    """`record.py chat <person_id> --on D [--time HH:MM] [--title T] [--opp <opp_id>] [--touch <touch_id>]`: record a chat with a
+    person as a `kind: chat` commitment (design-network-first.md 5.2). It writes NO attendance: whether the chat happened is a later
+    `record.py attended`, which only the candidate runs. `--touch` joins the chat to the `meeting-booked` touch it came from, and
+    that touch must be to the same person. A second chat with the same person on the same date is refused (the same chat, said
+    twice). Exit 0 written; 1 refused; 2 usage; 3 the profile is not ready."""
+    usage = "usage: " + NETWORK_VERB_USAGE["chat"]
+    if not args.rid or args.rest:
+        print(usage)
+        return 2
+    pid = args.rid
+    try:
+        on = _parse_on(args.on_date, not_after_today=False)
+        if on is None:
+            raise _Refused("--on <date> is required: the day of the chat.\n" + usage)
+        if args.time_arg is not None and not _CHAT_TIME_RE.match(args.time_arg):
+            raise _Refused("--time %r is not HH:MM (24 hours)." % args.time_arg)
+        people = _load_or_empty("people")
+        person = _live_person(people, pid)
+        if args.opp_id and find(_load_or_empty("opportunities"), args.opp_id) is None:
+            raise _Refused("--opp %r resolves to no opportunities record." % args.opp_id)
+        if args.touch_arg:
+            touch = find(_load_or_empty("touches"), args.touch_arg)
+            if touch is None:
+                raise _Refused("--touch %r resolves to no touches record." % args.touch_arg)
+            if touch.get("outcome") != "meeting-booked":
+                raise _Refused("--touch %r is not a `meeting-booked` touch (its outcome is %r): a chat is joined to the booking it "
+                               "came from." % (args.touch_arg, touch.get("outcome")))
+            vd, mm = _validator_module(), _merged_map(people)
+            if vd.resolve_person(touch.get("person_id"), mm) != vd.resolve_person(pid, mm):
+                raise _Refused("--touch %r is a touch to %r, not to %r." % (args.touch_arg, touch.get("person_id"), pid))
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+
+    def edit(rows):
+        for r in rows:
+            if r.get("kind") == "chat" and r.get("person_id") == pid and r.get("date") == on.isoformat() \
+                    and r.get("status") != "cancelled":
+                raise _Refused("%s already records a chat with %s on %s; nothing to add." % (r.get("id"), pid, on.isoformat()))
+        base = "chat-%s-%s" % (pid, on.isoformat())
+        used = {r.get("id") for r in rows}
+        cid, n = base, 2
+        while cid in used:
+            cid, n = "%s-%d" % (base, n), n + 1
+        row = {"id": cid, "date": on.isoformat(), "title": args.title_text or ("Chat with %s" % person.get("name", pid)),
+               "who": person.get("name", pid), "source": "record.py chat", "status": "scheduled",
+               "person_id": pid, "kind": "chat"}
+        if args.time_arg:
+            row["time"] = args.time_arg
+        if args.opp_id:
+            row["opp_id"] = args.opp_id
+        if args.touch_arg:
+            row["touch_id"] = args.touch_arg
+        rows.append(row)
+        return ["chat: %s with %s on %s%s -- no attendance recorded (`record.py attended %s held|no-show` after it happens)"
+                % (cid, pid, on.isoformat(), (" " + args.time_arg) if args.time_arg else "", cid)]
+    return _network_row_write(args, "chat", "commitments", edit)
+
+
+def cmd_attended(args):
+    """`record.py attended <commitment_id> held|no-show [--notes <relative path>] [--on D]`: whether a meeting happened, as the
+    candidate says it did (design-network-first.md 5.2). Writes `attendance` and `attendance_on` (`--on`, default today, never
+    before the meeting's own date and never after today) and, when given, `notes_ref`; it changes no other field of the row. Refused
+    on a cancelled meeting, on one whose date has not come (or is `unresolved`), and for a notes path that is absolute or climbs out
+    of the profile. Exit 0 written; 1 refused; 2 usage; 3 the profile is not ready."""
+    usage = "usage: " + NETWORK_VERB_USAGE["attended"]
+    if not args.rid or len(args.rest) != 1:
+        print(usage)
+        return 2
+    cid, att = args.rid, args.rest[0]
+    _vd = _validator_module()
+    try:
+        if att not in _vd.ATTENDANCE:
+            raise _Refused("%r is not an attendance: one of %s.\n%s" % (att, ", ".join(sorted(_vd.ATTENDANCE)), usage))
+        on = _parse_on(args.on_date, default=_now().date())
+        if args.notes_arg is not None:
+            why = _vd._relative_path_problem(args.notes_arg)
+            if why:
+                raise _Refused("--notes %s -- %r" % (why, args.notes_arg))
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+
+    def edit(rows):
+        row = find(rows, cid)
+        if row is None:
+            raise _Refused("%r resolves to no commitments record." % cid)
+        if row.get("status") == "cancelled":
+            raise _Refused("%s was cancelled: a cancelled meeting has no attendance." % cid)
+        d = row.get("date")
+        if not (_vd.is_date(d) and d <= _now().date().isoformat()):
+            raise _Refused("%s is dated %r: a meeting that has not happened yet has no attendance." % (cid, d))
+        if on.isoformat() < d:
+            raise _Refused("--on %s is before the meeting's own date %s." % (on.isoformat(), d))
+        if row.get("attendance") == att and row.get("attendance_on") == on.isoformat() \
+                and (args.notes_arg is None or row.get("notes_ref") == args.notes_arg):
+            return ["attended: %s is already recorded %s on %s" % (cid, att, on.isoformat())]
+        was = row.get("attendance")
+        row["attendance"], row["attendance_on"] = att, on.isoformat()
+        if args.notes_arg is not None:
+            row["notes_ref"] = args.notes_arg
+        return ["attended: %s %s on %s%s%s" % (cid, att, on.isoformat(), (" (was %s)" % was) if was and was != att else "",
+                                              (", notes %s" % args.notes_arg) if args.notes_arg else "")]
+    return _network_row_write(args, "attended", "commitments", edit)
+
+
+def cmd_intro_offered(args):
+    """`record.py intro-offered <commitment_id> (--person <id> | --company <id>) [--on D]`: one introduction the other person offered
+    in this chat (design-network-first.md 5.2, 5.4): an `intros_given` entry `{person_id | company_id, on}`. An introduction is
+    ASKED for and landed in the ordinary touches, never assumed here (double opt-in). The same entry twice is not repeated. Exit 0
+    written; 1 refused; 2 usage; 3 the profile is not ready."""
+    usage = "usage: " + NETWORK_VERB_USAGE["intro-offered"]
+    if not args.rid or args.rest:
+        print(usage)
+        return 2
+    cid = args.rid
+    pid, coid = args.person_id_arg, args.company_name
+    if bool(pid) == bool(coid):
+        print("⛔ REFUSED — exactly one of --person <person_id> or --company <company_id> is required.\n" + usage)
+        return 1
+    try:
+        on = _parse_on(args.on_date, default=_now().date())
+        if pid:
+            _live_person(_load_or_empty("people"), pid, "--person")
+        elif find(_load_or_empty("companies"), coid) is None:
+            raise _Refused("--company %r resolves to no companies record." % coid)
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+    key, val = ("person_id", pid) if pid else ("company_id", coid)
+
+    def edit(rows):
+        row = find(rows, cid)
+        if row is None:
+            raise _Refused("%r resolves to no commitments record." % cid)
+        given = row.get("intros_given")
+        if given is not None and not isinstance(given, list):
+            raise _Refused("%s carries an `intros_given` that is not a list; fix it with `set` first." % cid)
+        given = list(given or [])
+        if any(isinstance(e, dict) and e.get(key) == val for e in given):
+            return ["intro-offered: %s already lists %s %s" % (cid, key, val)]
+        given.append({key: val, "on": on.isoformat()})
+        row["intros_given"] = given
+        return ["intro-offered: %s -> %s %s (offered on %s); asking for the introduction is a touch, not this" % (cid, key, val,
+                                                                                                                 on.isoformat())]
+    return _network_row_write(args, "intro-offered", "commitments", edit)
+
+
+def cmd_via(args):
+    """`record.py via <opp_id|app_id> --person <id> [--chat <commitment_id>]`: where a role or an application CAME FROM
+    (design-network-first.md 5.3), written as `via_person_id` and, with `--chat`, `via_commitment_id`. NEVER inferred from a recent
+    chat: only this verb (or a hand `create`) sets it. The id names an opportunity or an application (both are tried; an id that is
+    both is refused). The chat must be with that person after merge resolution; a chat naming a different person is refused. Exit
+    0 written; 1 refused; 2 usage; 3 the profile is not ready."""
+    usage = "usage: " + NETWORK_VERB_USAGE["via"]
+    if not args.rid or args.rest or not args.person_id_arg:
+        print(usage)
+        return 2
+    rid, pid, chat = args.rid, args.person_id_arg, args.chat_arg
+    try:
+        people = _load_or_empty("people")
+        _live_person(people, pid, "--person")
+        in_opp = find(_load_or_empty("opportunities"), rid) is not None
+        in_app = find(_load_or_empty("applications"), rid) is not None
+        if in_opp and in_app:
+            raise _Refused("%r names both an opportunity and an application; give the application's own id or rename one." % rid)
+        if not (in_opp or in_app):
+            raise _Refused("%r resolves to no opportunities or applications record." % rid)
+        if chat:
+            cm = find(_load_or_empty("commitments"), chat)
+            if cm is None:
+                raise _Refused("--chat %r resolves to no commitments record." % chat)
+            vd, mm = _validator_module(), _merged_map(people)
+            if not cm.get("person_id"):
+                raise _Refused("--chat %r names no person, so it cannot be the conversation with %r (record the person on the chat "
+                               "first)." % (chat, pid))
+            if vd.resolve_person(cm["person_id"], mm) != vd.resolve_person(pid, mm):
+                raise _Refused("--chat %r is a conversation with %r, not with %r." % (chat, cm["person_id"], pid))
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+    store = "opportunities" if in_opp else "applications"
+
+    def edit(rows):
+        row = find(rows, rid)
+        if row is None:
+            raise _Refused("%r resolves to no %s record." % (rid, store))
+        row["via_person_id"] = pid
+        if chat:
+            row["via_commitment_id"] = chat
+        return ["via: %s (%s) came from %s%s" % (rid, store, pid, (" via chat %s" % chat) if chat else "")]
+    return _network_row_write(args, "via", store, edit)
+
+
+# ---- proposals and suggestions (dev #834, jobsearch 0.86.0, design-network-first.md 6 and 8) ---------------------------------
+#
+#   record.py proposal <opp_id> [--scope "<text>"] [--rate 1500/day/USD] [--on YYYY-MM-DD] [--note "<text>"]
+#   record.py proposal-status <proposal_id> sent|accepted|declined|withdrawn|expired [--on YYYY-MM-DD]
+#   record.py suggest --store companies|plans|people --action set|create --target-id <id> --values '<json>' --ask "<q>"
+#   record.py confirm <ask_id> [--set field=value ...]
+#   record.py decline <ask_id> [--why "<text>"]
+#
+# `proposal` and `proposal-status` are the candidate's own record of a proposal to a prospective client of a fractional, interim,
+# advisory or contract engagement (owner ruling 3): nothing writes one unattended. `suggest` is the strategist's: it writes an ASK
+# and NOTHING else, so the suggested row does not exist until the candidate runs `confirm`, which writes the row and resolves the ask
+# in ONE locked write of two stores (both rolled back, byte for byte, when either write or the validator fails).
+
+PROPOSAL_USAGE = {
+    "proposal": "proposal <opp_id> [--scope \"<text>\"] [--rate <amount>/<hour|day|month|year|project>/<CURRENCY>] [--on YYYY-MM-DD] "
+                "[--note \"<text>\"] [--dry-run] [--already-locked]",
+    "proposal-status": "proposal-status <proposal_id> sent|accepted|declined|withdrawn|expired [--on YYYY-MM-DD] "
+                       "[--dry-run] [--already-locked]",
+    "suggest": "suggest --store companies|plans|people --action set|create --target-id <id> --values '<json object>' "
+               "--ask \"<the question and the reason>\" [--dry-run] [--already-locked]",
+    "confirm": "confirm <ask_id> [--set field=value ...] [--dry-run] [--already-locked]",
+    "decline": "decline <ask_id> [--why \"<text>\"] [--dry-run] [--already-locked]",
+}
+_RATE_RE = re.compile(r"^(\d+(?:\.\d+)?)/([a-z]+)/([A-Za-z]{3})$")
+
+
+def _deep(rows):
+    return json.loads(json.dumps(rows))
+
+
+def _parse_rate(text):
+    """`{amount, per, currency}` for `1500/day/USD`, or `_Refused`. The amount is a positive number (a whole one stays an int), `per`
+    one of `validate_data.RATE_PER`, the currency three letters (upper-cased). Nothing is converted or defaulted."""
+    _vd = _validator_module()
+    m = _RATE_RE.match((text or "").strip())
+    if not m:
+        raise _Refused("--rate %r is not <amount>/<per>/<CURRENCY>, e.g. 1500/day/USD (per is one of %s)."
+                       % (text, ", ".join(_vd.RATE_PER)))
+    amount = float(m.group(1))
+    if amount <= 0:
+        raise _Refused("--rate %r: the amount must be more than zero." % text)
+    if m.group(2) not in _vd.RATE_PER:
+        raise _Refused("--rate %r: %r is not one of %s." % (text, m.group(2), ", ".join(_vd.RATE_PER)))
+    return {"amount": int(amount) if amount == int(amount) else amount, "per": m.group(2), "currency": m.group(3).upper()}
+
+
+def cmd_proposal(args):
+    """`record.py proposal <opp_id> [--scope T] [--rate 1500/day/USD] [--on D] [--note T]`: start a proposal to the prospective client of
+    a non-employee engagement (design-network-first.md 6). The row is minted `<opp_id>-pN`, `status: drafting`, `status_on` (`--on`,
+    default today), `date` null: what the proposal says is the candidate's, and nothing is inferred. The opportunity's own
+    `engagement_type` must be one of `config_keys.ENGAGEMENT_NON_EMPLOYEE` (a full-time role's path is `applications`). Several
+    proposals per engagement are legal. `conceptual_agreement` and `doc_ref` are set afterwards with the generic `set`. Exit 0 written;
+    1 refused; 2 usage; 3 the profile is not ready."""
+    usage = "usage: " + PROPOSAL_USAGE["proposal"]
+    if not args.rid or args.rest:
+        print(usage)
+        return 2
+    oid = args.rid
+    try:
+        import config_keys as _ck
+        opp = find(_load_or_empty("opportunities"), oid)
+        if opp is None:
+            raise _Refused("%r resolves to no opportunities record." % oid)
+        if opp.get("engagement_type") not in _ck.ENGAGEMENT_NON_EMPLOYEE:
+            raise _Refused("%s has engagement_type %r: a proposal belongs to a %s engagement (a full-time role's path is "
+                           "`applications`). If this is one, say so first: `record.py set %s engagement_type <type>`."
+                           % (oid, opp.get("engagement_type"), "/".join(_ck.ENGAGEMENT_NON_EMPLOYEE), oid))
+        rate = _parse_rate(args.rate_arg) if args.rate_arg is not None else None
+        scope = None
+        if args.scope_text is not None:
+            scope = args.scope_text.strip()
+            if not scope:
+                raise _Refused("--scope is empty: leave it off, or say what the proposal covers.")
+        on = _parse_on(args.on_date, default=_now().date())
+        note = None
+        if args.note_text is not None:
+            note = args.note_text.strip() or None
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+
+    def edit(rows):
+        n = 1
+        for r in rows:
+            m = re.match(r"^%s-p(\d+)$" % re.escape(oid), str(r.get("id")))
+            if m:
+                n = max(n, int(m.group(1)) + 1)
+        pid = "%s-p%d" % (oid, n)
+        row = {"id": pid, "opp_id": oid, "conceptual_agreement": None, "scope": scope, "rate": rate, "status": "drafting",
+               "status_on": on.isoformat(), "date": None, "doc_ref": None}
+        if note:
+            row["note"] = note
+        rows.append(row)
+        return ["proposal: %s drafting for %s%s%s -- `record.py proposal-status %s sent` when it goes out"
+                % (pid, oid, (" (%s)" % scope) if scope else "",
+                   (", rate %s/%s %s" % (rate["amount"], rate["per"], rate["currency"])) if rate else "", pid)]
+    return _network_row_write(args, "proposal", "proposals", edit)
+
+
+def cmd_proposal_status(args):
+    """`record.py proposal-status <proposal_id> sent|accepted|declined|withdrawn|expired [--on D]`: the ONE writer of a proposal's
+    `status`, `status_on` and `date` (design-network-first.md 6). `sent` is only from `drafting` and writes `date` (the day it went
+    out); `accepted`, `declined` and `expired` need a `date` already and are not dated before it; `withdrawn` may be a draft never
+    sent. The opportunity's own `status` is untouched: an accepted proposal does not end the opportunity (the candidate decides that).
+    `--on` defaults to today and is never after it. Exit 0 written; 1 refused; 2 usage; 3 the profile is not ready."""
+    usage = "usage: " + PROPOSAL_USAGE["proposal-status"]
+    if not args.rid or len(args.rest) != 1:
+        print(usage)
+        return 2
+    pid, status = args.rid, args.rest[0]
+    _vd = _validator_module()
+    try:
+        if status not in _vd.PROPOSAL_STATUS or status == "drafting":
+            raise _Refused("%r is not a status to move a proposal to: one of %s.\n%s"
+                           % (status, ", ".join(s for s in _vd.PROPOSAL_STATUS if s != "drafting"), usage))
+        on = _parse_on(args.on_date, default=_now().date())
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+
+    def edit(rows):
+        row = find(rows, pid)
+        if row is None:
+            raise _Refused("%r resolves to no proposals record." % pid)
+        was = row.get("status")
+        if status == "sent":
+            if was != "drafting":
+                raise _Refused("%s is %s: only a drafting proposal is marked sent." % (pid, was))
+            row["date"] = on.isoformat()
+        elif status in _vd.PROPOSAL_NEEDS_SENT_ON:
+            if not row.get("date"):
+                raise _Refused("%s was never marked sent, so it cannot be %s: `record.py proposal-status %s sent --on <the day it "
+                               "went out>` first." % (pid, status, pid))
+            if on.isoformat() < row["date"]:
+                raise _Refused("--on %s is before the day the proposal went out (%s)." % (on.isoformat(), row["date"]))
+        if was == status and row.get("status_on") == on.isoformat():
+            return ["proposal-status: %s is already %s on %s" % (pid, status, on.isoformat())]
+        row["status"], row["status_on"] = status, on.isoformat()
+        return ["proposal-status: %s %s -> %s (status_on %s%s)"
+                % (pid, was, status, on.isoformat(), (", date %s" % row["date"]) if row.get("date") else "")]
+    return _network_row_write(args, "proposal-status", "proposals", edit)
+
+
+def _suggest_allowed_keys(store):
+    """The fields a suggestion for `store` may carry (closed; `validate_data` checks the same set on the stored ask)."""
+    _vd = _validator_module()
+    if store == "companies":
+        return set(_vd.SUGGEST_COMPANY_KEYS)
+    if store == "people":
+        return set(_vd.SUGGEST_PERSON_KEYS)
+    return {f for f in model()["stores"]["plans"]["fields"] if f != "assessments"}
+
+
+def _suggested_row(store, op, tid, fields, row, today):
+    """The row `fields` would leave behind, as a NEW dict (`row` is the target as it stands, None for a create). Raises `_Refused`.
+    A company gains `status_on` with its status exactly as `company-status` writes it; a created plan is `active` unless the
+    suggestion says otherwise. Nothing here knows the candidate's motivation: `confirm` supplies it."""
+    if store == "companies":
+        new = dict(row)
+        new["status"], new["status_on"] = fields["status"], today
+        if fields.get("motivation") is not None:
+            new["motivation"] = fields["motivation"]
+        return new
+    if store == "people":
+        new = dict(row)
+        new.update(fields)
+        return new
+    new = {"id": tid, "status": "active"}
+    new.update(fields)
+    new["id"] = tid
+    return new
+
+
+def cmd_suggest(args):
+    """`record.py suggest --store S --action set|create --target-id ID --values '<json>' --ask "<q>"`: the strategist's proposal of ONE
+    row for the candidate to confirm (design-network-first.md 8.1, 8.2). It writes an ASK (`kind: suggestion`, with `suggests`) and
+    NOTHING ELSE: the suggested row is not written, and does not exist until `record.py confirm <ask_id>`. What may be suggested is
+    closed: a company becomes an `active-target` (the candidate supplies the motivation at confirm), a plan is created (subject_kind
+    search, company or person), a person's `cadence` is set; a PERSON row is never suggested. The would-be row is validated on a
+    shadow copy first, and a suggestion that would not validate is refused. `suggests.before` records what the fields held now, so
+    `confirm` can refuse a target that changed in between. The same suggestion twice is not written twice. Exit 0 written (or already
+    open); 1 refused; 2 usage; 3 the profile is not ready."""
+    usage = "usage: " + PROPOSAL_USAGE["suggest"]
+    if args.rid or args.rest:
+        print(usage)
+        return 2
+    store, op, tid, text = args.suggest_store, args.suggest_action, args.suggest_id, (args.ask_text or "").strip()
+    if not (store and op and tid and args.values_json is not None and text):
+        print(usage)
+        return 2
+    gate = _network_gate()               # before anything is read: a profile not ready for a 0.86.0 write reads as "not ready", never "refused"
+    if gate:
+        print(gate)
+        return 3
+    _vd = _validator_module()
+    try:
+        if (store, op) not in _vd.SUGGEST_OPS:
+            raise _Refused("%s %s is not something to suggest: one of %s (a person row itself is never suggested: finding people is a "
+                           "manual LinkedIn step)." % (store, op, ", ".join("%s %s" % (a, b) for a, b in sorted(_vd.SUGGEST_OPS))))
+        try:
+            fields = json.loads(args.values_json)
+        except ValueError as e:
+            raise _Refused("--values is not JSON (%s)." % e)
+        if not (isinstance(fields, dict) and fields):
+            raise _Refused("--values must be a non-empty JSON object of the fields to write.")
+        bad = sorted(set(fields) - _suggest_allowed_keys(store))
+        if bad:
+            raise _Refused("a %s suggestion may not carry %s (allowed: %s)." % (store, ", ".join(bad),
+                                                                                 ", ".join(sorted(_suggest_allowed_keys(store)))))
+        if store == "companies":
+            if fields.get("status") != "active-target":
+                raise _Refused("a company suggestion proposes `status: active-target`; got %r." % fields.get("status"))
+            if fields.get("motivation") is not None:
+                mv = fields["motivation"]
+                if not (isinstance(mv, int) and not isinstance(mv, bool) and _vd.MOTIVATION_MIN <= mv <= _vd.MOTIVATION_MAX):
+                    raise _Refused("motivation is the candidate's own number %d-%d; leave it off and `confirm` asks for it."
+                                   % (_vd.MOTIVATION_MIN, _vd.MOTIVATION_MAX))
+        if store == "plans" and fields.get("subject_kind") not in _vd.SUGGEST_PLAN_SUBJECT_KINDS:
+            raise _Refused("a plan suggestion's subject_kind is one of %s; got %r."
+                           % ("/".join(sorted(_vd.SUGGEST_PLAN_SUBJECT_KINDS)), fields.get("subject_kind")))
+        if store == "plans" and "id" in fields and fields["id"] != tid:
+            raise _Refused("--values id %r is not --target-id %r." % (fields["id"], tid))
+        rows = _load_or_empty(store)
+        target = find(rows, tid)
+        if op == "set":
+            if target is None:
+                raise _Refused("%r resolves to no %s record." % (tid, store))
+            if store == "people":
+                _live_person(rows, tid)
+            if store == "companies" and target.get("status") == "active-target":
+                raise _Refused("%s is already an active-target." % tid)
+        elif target is not None:
+            raise _Refused("%s %r already exists." % (store, tid))
+        before = {k: target.get(k) for k in fields} if op == "set" else None
+        today = _now().date().isoformat()
+        would_be = _suggested_row(store, op, tid, fields, target, today)
+        shadow_target = _deep(rows)
+        if op == "create":
+            shadow_target.append(would_be)
+        else:
+            shadow_target[[r.get("id") for r in rows].index(tid)] = would_be
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+    suggests = {"store": store, "op": op, "id": tid, "fields": fields}
+    if before is not None:
+        suggests["before"] = before
+
+    def new_ask(asks):
+        for a in asks:
+            s = a.get("suggests")
+            if a.get("kind") == "suggestion" and not a.get("resolved_on") and isinstance(s, dict) \
+                    and (s.get("store"), s.get("op"), s.get("id")) == (store, op, tid):
+                if s.get("fields") == fields:
+                    return None, a["id"]
+                raise _Refused("%s already holds an open suggestion for %s %s with different values; confirm or decline it first."
+                               % (a["id"], store, tid))
+        base = "suggest-%s-%s-%s" % (today, store, re.sub(r"[^a-z0-9]+", "-", str(tid).lower()).strip("-"))
+        used, aid, n = {a.get("id") for a in asks}, base, 2
+        while aid in used:
+            aid, n = "%s-%d" % (base, n), n + 1
+        title = {"companies": "Suggested target: %s", "plans": "Suggested plan: %s", "people": "Suggested cadence: %s"}[store] % tid
+        return {"id": aid, "kind": "suggestion", "title": title, "ask": text, "created": today, "suggests": suggests}, aid
+
+    try:
+        asks = _load_or_empty("asks")
+        ask, aid = new_ask(asks)
+        if ask is None:
+            print("suggest: %s already holds this suggestion (nothing written)" % aid)
+            return 0
+        pre_problems = validate()[3]
+        # The WOULD-BE row (and the ask that proposes it) validated together on a shadow copy: nothing real is written by this check.
+        rc, out, err, problems = dry_run_validate(store, shadow_target, extra={"asks": asks + [ask]})
+        if rc != 0:
+            added = new_problems(pre_problems, problems)
+            if added is None or added:
+                print("⛔ REFUSED — the suggested row would not validate (nothing written):")
+                print("  " + "\n  ".join("- " + a for a in (added if added else _diagnostic_lines(rc, out, err))))
+                return 1
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+    except (OSError, ValueError) as e:
+        print("⛔ REFUSED — a store cannot be read (%s); nothing written." % e)
+        return 1
+
+    def edit(rows):
+        a, _aid = new_ask(rows)
+        if a is None:
+            return ["suggest: %s already holds this suggestion" % _aid]
+        rows.append(a)
+        return ["suggest: %s -- %s %s %s awaits the candidate's `record.py confirm %s` (or `decline`); nothing else was written"
+                % (a["id"], op, store, tid, a["id"])]
+    return _network_row_write(args, "suggest", "asks", edit)
+
+
+def _suggestion_ask(asks, ask_id):
+    """The open `kind: suggestion` ask `ask_id`, or `_Refused` naming what it is instead."""
+    ask = find(asks, ask_id)
+    if ask is None:
+        raise _Refused("%r resolves to no asks record." % ask_id)
+    if ask.get("kind") != "suggestion":
+        raise _Refused("%s is a %r ask, not a suggestion: confirm and decline answer suggestions only." % (ask_id, ask.get("kind")))
+    if ask.get("resolved_on"):
+        raise _Refused("%s was already resolved (%s on %s)." % (ask_id, ask.get("resolution"), ask.get("resolved_on")))
+    if not isinstance(ask.get("suggests"), dict):
+        raise _Refused("%s carries no `suggests`: there is nothing to confirm." % ask_id)
+    return ask
+
+
+def _confirm_edit(asks, target_rows, ask_id, overrides, today):
+    """Apply the suggestion `ask_id` names to `target_rows` and resolve its ask in `asks`, both IN PLACE; returns the lines to print.
+    Raises `_Refused` before either is touched in a way that matters (the caller holds shadow copies). The target is RE-READ by the
+    caller and compared with `suggests.before`: a field that changed since the suggestion refuses, naming each difference."""
+    _vd = _validator_module()
+    ask = _suggestion_ask(asks, ask_id)
+    s = ask["suggests"]
+    store, op, tid, fields = s.get("store"), s.get("op"), s.get("id"), dict(s.get("fields") or {})
+    if (store, op) not in _vd.SUGGEST_OPS:
+        raise _Refused("%s suggests %r %r, which is not a suggestable write." % (ask_id, store, op))
+    allowed = _suggest_allowed_keys(store) - ({"id"} if store == "plans" else {"status"} if store == "companies" else set())
+    bad = sorted(set(overrides) - allowed)
+    if bad:
+        raise _Refused("--set %s: a %s suggestion lets the candidate set %s." % (", ".join(bad), store, ", ".join(sorted(allowed))))
+    merged = dict(fields)
+    merged.update(overrides)
+    row = find(target_rows, tid)
+    if op == "set":
+        if row is None:
+            raise _Refused("%s %r no longer exists: `record.py decline %s`." % (store, tid, ask_id))
+        changed = {k: (v, row.get(k)) for k, v in (s.get("before") or {}).items() if row.get(k) != v}
+        if changed:
+            raise _Refused("%s %r changed since it was suggested (%s): `record.py decline %s` and ask again."
+                           % (store, tid, "; ".join("%s was %r, is now %r" % (k, a, b) for k, (a, b) in sorted(changed.items())), ask_id))
+    elif row is not None:
+        raise _Refused("%s %r already exists (it was created after the suggestion): `record.py decline %s`." % (store, tid, ask_id))
+    if store == "companies":
+        mv = merged.get("motivation")
+        if not (isinstance(mv, int) and not isinstance(mv, bool) and _vd.MOTIVATION_MIN <= mv <= _vd.MOTIVATION_MAX):
+            raise _Refused("targeting %s needs `--set motivation=<%d-%d>`: how much the candidate wants to work there is their own "
+                           "statement, never the strategist's." % (tid, _vd.MOTIVATION_MIN, _vd.MOTIVATION_MAX))
+        row["status"], row["status_on"], row["motivation"] = merged["status"], today, mv
+        line = "confirm: %s is an active-target (motivation %d, status_on %s)" % (tid, mv, today)
+    elif store == "people":
+        row["cadence"] = merged["cadence"]
+        line = "confirm: %s cadence set to %r" % (tid, merged["cadence"])
+    else:
+        new = _suggested_row(store, op, tid, merged, None, today)
+        target_rows.append(new)
+        line = "confirm: plan %s created (%s %s, %s)" % (tid, new.get("subject_kind"), new.get("subject_id"), new.get("status"))
+    ask["resolved_on"], ask["resolution"] = today, "confirmed"
+    return [line, "confirm: %s resolved confirmed" % ask_id]
+
+
+def cmd_confirm(args):
+    """`record.py confirm <ask_id> [--set field=value ...]`: the candidate's yes to a suggestion (design-network-first.md 8.2). It writes
+    the suggested row (a company's `status`, `status_on` and the candidate's `motivation`; a plan; a person's `cadence`) and resolves
+    the ask (`resolution: confirmed`) in ONE locked write of two stores, validated and rolled back TOGETHER: when either save fails, or
+    the validator finds a problem the stores did not have, both are put back byte for byte. `--set` is the candidate's own value for any
+    field they may edit (a company's `motivation`, which a target REQUIRES; a person's `cadence`; any field of a plan but its id). A
+    target that changed since it was suggested refuses, naming the difference. Exit 0 written; 1 refused or rolled back; 2 usage; 3 the
+    profile is not ready."""
+    usage = "usage: " + PROPOSAL_USAGE["confirm"]
+    if not args.rid or args.rest:
+        print(usage)
+        return 2
+    overrides = {}
+    for pair in (args.set_pairs or []):
+        k, eq, v = pair.partition("=")
+        if not (k.strip() and eq):
+            print("⛔ REFUSED — --set %r is not field=value.\n%s" % (pair, usage))
+            return 1
+        if k.strip() in overrides:
+            print("⛔ REFUSED — --set %s is given twice." % k.strip())
+            return 1
+        try:
+            overrides[k.strip()] = coerce(v)
+        except ValueError as e:
+            print("⛔ REFUSED — --set %s: %s" % (k.strip(), e))
+            return 1
+    gate = _network_gate()
+    if gate:
+        print(gate)
+        return 3
+    try:
+        ask = _suggestion_ask(_load_or_empty("asks"), args.rid)
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+    except (OSError, ValueError) as e:
+        print("⛔ REFUSED — a store cannot be read (%s); nothing written." % e)
+        return 1
+    store = (ask.get("suggests") or {}).get("store")
+    if store not in ("companies", "plans", "people"):
+        print("⛔ REFUSED — %s suggests store %r, which is not a suggestable store." % (args.rid, store))
+        return 1
+    today = _now().date().isoformat()
+
+    def build(stores):
+        return _confirm_edit(stores["asks"], stores[store], args.rid, overrides, today)
+    return _two_store_write(args, "confirm", store, "asks", build)
+
+
+def _restore_or_remove(store, blob):
+    """Put `store` back as it was: its bytes when it existed, nothing at all when the write created it. True when verifiably back."""
+    return restore(store, blob) if blob is not None else _remove_new_store(store)
+
+
+def _two_store_write(args, verb, store_a, store_b, build):
+    """ONE locked, validated, rollback-verified write of TWO stores. `build(stores)` mutates `{store_a: rows, store_b: rows}` in place and
+    returns the lines to print, or raises `_Refused` (nothing has been written when it does). The sequence is `_network_row_write`'s:
+    a shadow, `--dry-run` runs the real validator over both shadows and stops, the lock, a re-read INSIDE it, the build again on what
+    is really there, a snapshot of both, the two atomic saves, the validator, and a byte-identical rollback of BOTH when either save
+    raised or the write introduced a problem the stores did not have. `--_inject-fault between-stores` raises after the first save and
+    before the second (a test seam: the half-written state must never survive it). Returns the exit code."""
+    gate = _network_gate()
+    if gate:
+        print(gate)
+        return 3
+    try:
+        stores = {store_a: _load_or_empty(store_a), store_b: _load_or_empty(store_b)}
+        shadow = _deep(stores)
+        lines = build(shadow)
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+    except (OSError, ValueError) as e:
+        print("⛔ REFUSED — a store cannot be read (%s); nothing written." % e)
+        return 1
+    pre_rc, _, _, pre_problems = validate()
+    rc, out, err, problems = dry_run_validate(store_a, shadow[store_a], extra={store_b: shadow[store_b]})
+    if rc != 0:
+        added = new_problems(pre_problems, problems)
+        if added is None or added:
+            print("⛔ REFUSED — a real write of this would be refused and rolled back (nothing is written):")
+            print("  " + "\n  ".join("- " + a for a in (added if added else _diagnostic_lines(rc, out, err))))
+            return 1
+    if args.dry_run:
+        for line in lines:
+            print(line)
+        print("  --dry-run: nothing written.")
+        return 0
+    if args.already_locked:
+        if not lock_is_held():
+            print("  REFUSED — --already-locked, but NOBODY holds the run lock.")
+            return 1
+    else:
+        try:
+            take_lock("record.py %s %s" % (verb, args.rid), wait=args.wait)
+        except LockError as e:
+            print("  REFUSED — %s" % e)
+            return 1
+    try:
+        try:
+            stores = {s: (load(s) if os.path.exists(os.path.join(DATA, STORES[s])) else []) for s in (store_a, store_b)}
+            lines = build(stores)               # re-read INSIDE the lock, and build on what is really there
+        except _Refused as e:
+            print("⛔ REFUSED — %s" % e)
+            return 1
+        snaps = {store_a: snapshot(store_a), store_b: snapshot(store_b)}
+        pre_problems = validate()[3]
+        try:
+            save_atomic(store_a, stores[store_a])
+            if args.inject_fault == "between-stores":
+                raise RuntimeError("injected fault: between-stores")
+            save_atomic(store_b, stores[store_b])
+        except Exception as e:                  # noqa: BLE001 -- ANY failure between the two saves must not leave one of them behind
+            ok = all([_restore_or_remove(store_a, snaps[store_a]), _restore_or_remove(store_b, snaps[store_b])])
+            print("⛔ the write of %s and %s failed (%s) and was %s." % (store_a, store_b, e, "ROLLED BACK (both stores byte-identical)"
+                  if ok else "NOT VERIFIABLY ROLLED BACK -- restore %s and %s from git" % (STORES[store_a], STORES[store_b])))
+            return 1
+        rc, out, err, post_problems = validate()
+        added = new_problems(pre_problems, post_problems)
+        if rc != 0 and (added is None or added):
+            ok = all([_restore_or_remove(store_a, snaps[store_a]), _restore_or_remove(store_b, snaps[store_b])])
+            print("⛔ the write left the stores invalid and was %s."
+                  % ("ROLLED BACK (both stores byte-identical)" if ok else
+                     "NOT VERIFIABLY ROLLED BACK -- restore %s and %s from git" % (STORES[store_a], STORES[store_b])))
+            print("  " + "\n  ".join(added if added else _diagnostic_lines(rc, out, err)))
+            return 1
+    finally:
+        if not args.already_locked:
+            release_lock()
+    for line in lines:
+        print(line)
+    return 0
+
+
+def cmd_decline(args):
+    """`record.py decline <ask_id> [--why "<text>"]`: the candidate's no to a suggestion (design-network-first.md 8.2). It resolves the ask
+    `declined` (`resolved_on` today; `--why` is kept in the ask's `note`) and writes nothing else: the suggested row was never written.
+    Exit 0 written; 1 refused; 2 usage; 3 the profile is not ready."""
+    usage = "usage: " + PROPOSAL_USAGE["decline"]
+    if not args.rid or args.rest:
+        print(usage)
+        return 2
+    today = _now().date().isoformat()
+    why = (args.why or "").strip()
+
+    def edit(rows):
+        ask = _suggestion_ask(rows, args.rid)
+        ask["resolved_on"], ask["resolution"] = today, "declined"
+        if why:
+            ask["note"] = ((ask.get("note") + " | ") if ask.get("note") else "") + "declined: " + why
+        return ["decline: %s resolved declined; nothing else was written" % args.rid]
+    return _network_row_write(args, "decline", "asks", edit)
+
+
 # ---- show: the whole record, untruncated (design section 7, SH1) -----------------------------------------------------
 
 def cmd_show(rec, as_json):
@@ -6004,6 +7138,37 @@ def main():
                          "pane-hidden or render-failed). Records only `read` or `closed`; anything else records nothing.")
     ap.add_argument("--ids", dest="ids_arg", nargs="+", default=None, metavar="OPP_ID",
                     help="read-batch --fallback: narrow the fallback to these opportunity ids (it never widens the set).")
+    # jobsearch 0.86.0 (dev #834) -- the network-first verbs' flags (`--on`, `--person`, `--opp`, `--title` and `--company` are the
+    # existing ones: `--company` is a company ID for `intro-offered`, the board's company NAME for `board-sighting`).
+    ap.add_argument("--motivation", dest="motivation_arg", default=None,
+                    help="company-status active-target: how much the candidate wants to work there, a whole number 1-5 "
+                         "(required for a target; refused beside watching or passed).")
+    ap.add_argument("--time", dest="time_arg", default=None,
+                    help="chat: the time of the chat, HH:MM (24 hours).")
+    ap.add_argument("--touch", dest="touch_arg", default=None,
+                    help="chat: the `meeting-booked` touch this chat came from (it must be a touch to the same person).")
+    ap.add_argument("--notes", dest="notes_arg", default=None,
+                    help="attended: the candidate's notes for the chat, a path relative to the profile root (no `..`, never absolute).")
+    ap.add_argument("--chat", dest="chat_arg", default=None,
+                    help="via: the commitments id of the chat that surfaced the role or application (it must be with --person).")
+    # jobsearch 0.86.0 (dev #834) -- the proposal and suggestion verbs' flags. The design (8.2) spells suggest's flags `--op` and
+    # `--fields`; `op` is this CLI's positional verb and `--fields` already lists a store's fields, so they are `--action` and `--values`.
+    ap.add_argument("--scope", dest="scope_text", default=None,
+                    help="proposal: what the proposal covers, in the candidate's words.")
+    ap.add_argument("--rate", dest="rate_arg", default=None,
+                    help="proposal: the rate as <amount>/<hour|day|month|year|project>/<CURRENCY>, e.g. 1500/day/USD.")
+    ap.add_argument("--store", dest="suggest_store", default=None,
+                    help="suggest: the store the suggested row belongs to (companies, plans or people).")
+    ap.add_argument("--action", dest="suggest_action", default=None,
+                    help="suggest: `set` (change fields of an existing row) or `create` (a new row).")
+    ap.add_argument("--target-id", dest="suggest_id", default=None,
+                    help="suggest: the id of the row to set, or of the row a `create` would make.")
+    ap.add_argument("--values", dest="values_json", default=None,
+                    help="suggest: the fields to write, as one JSON object (e.g. '{\"status\": \"active-target\"}').")
+    ap.add_argument("--ask", dest="ask_text", default=None,
+                    help="suggest: the question and the reason, in the strategist's words (it is what the candidate reads).")
+    ap.add_argument("--set", dest="set_pairs", action="append", default=None, metavar="FIELD=VALUE",
+                    help="confirm: the candidate's own value for a field of the suggested row (repeatable), e.g. --set motivation=4.")
     ap.add_argument("--check", dest="check", action="store_true",
                     help="capture-batch / read-batch: compute and print, write nothing (--dry-run is the same).")
     ap.add_argument("--deadline-s", dest="deadline_s", type=int, default=None,
@@ -6013,6 +7178,15 @@ def main():
     ap.add_argument("--json", dest="json_out", action="store_true",
                     help="show: print the whole record as ONE compact JSON line.")
     args = ap.parse_args()
+
+    # dev #834 (design-network-first.md 14.2, V1): a profile pinned ABOVE this engine is read-only to it, so EVERY verb checks the pin
+    # before it dispatches, not only the 0.86.0 ones (`_network_gate`, which adds the "not migrated yet" half for those). Without
+    # this, `set`, `append`, `decide`, `touched` and the rest wrote into a profile a newer engine had upgraded.
+    import journal as _pin_journal
+    pinned_ahead = _pin_journal.pin_refusal(ROOT)
+    if pinned_ahead:
+        print(pinned_ahead)
+        return 3
 
     # These three verbs each own exactly one store — --file is never the caller's to pick for
     # them (a mistaken --file would silently target the wrong record and never be diagnosed).
@@ -6043,6 +7217,16 @@ def main():
         args.file = "channels"           # dev #774: cmd_source names its own stores
     elif args.op == "posting":
         args.file = "opportunities"      # dev #776: cmd_posting names its own stores
+    elif args.op == "company-status":
+        args.file = "companies"          # dev #834: the network-first verbs each name their own store
+    elif args.op in ("chat", "attended", "intro-offered"):
+        args.file = "commitments"
+    elif args.op == "via":
+        args.file = "opportunities"
+    elif args.op in ("proposal", "proposal-status"):
+        args.file = "proposals"          # dev #834: the proposal verbs name their own stores
+    elif args.op in ("suggest", "confirm", "decline"):
+        args.file = "asks"
 
     # §15.3 point 1 — `messages` is append-only; `answered`/`touched`/`received` are its ONLY
     # writers. Refused here, before any generic single-store machinery runs, so the refusal is
@@ -6080,6 +7264,28 @@ def main():
         return cmd_read_batch(args)
     if args.op == "not-attempted":
         return cmd_not_attempted(args)
+    if args.op == "raise-companies":
+        return cmd_raise_companies(args)
+    if args.op == "company-status":
+        return cmd_company_status(args)
+    if args.op == "chat":
+        return cmd_chat(args)
+    if args.op == "attended":
+        return cmd_attended(args)
+    if args.op == "intro-offered":
+        return cmd_intro_offered(args)
+    if args.op == "via":
+        return cmd_via(args)
+    if args.op == "proposal":
+        return cmd_proposal(args)
+    if args.op == "proposal-status":
+        return cmd_proposal_status(args)
+    if args.op == "suggest":
+        return cmd_suggest(args)
+    if args.op == "confirm":
+        return cmd_confirm(args)
+    if args.op == "decline":
+        return cmd_decline(args)
 
     if args.reuse and not (args.op == "create" and args.file == "people"):
         print("⛔ REFUSED — --reuse applies only to `create <id> '<json>' --file people`.")

@@ -28,6 +28,11 @@ profile root in the dispatch prompt — agents refuse pointer-only binding, and 
 Keep the run id it prints. **This is the evidence that a session existed**, and it must be written
 before any work, because its whole value is being there when nothing else is.
 
+**⭐ Exit 3 means STOP (jobsearch 0.86.0).** `--start` exits 3, prints no run id and writes nothing when this
+profile was upgraded by a NEWER jobsearch than this machine runs (the profile pin: another machine sharing the
+profile has the newer plugin). Print the refusal it wrote to stderr as the run's whole summary and stop: no later
+step runs, and nothing is written. Updating the plugin on this machine is the fix.
+
 **Why (GitHub #7).** A scheduled run can advance `lastRunAt` while **never creating a session at
 all** — no step executed, nothing written. From outside that is identical to a quiet run: the task
 shows enabled, correctly scheduled, recently run, and every health check passes. It was caught only
@@ -92,10 +97,11 @@ All state lives in this repo. Be token-frugal.
 3. **USE A SINCE-LAST-RUN WINDOW** (check `log.md` for the last timestamp), never a flat 24h
    lookback — back-to-back runs (`posture.py --cron` sets how many a day) would each re-scan the
    same ground. **A quiet run is the NORMAL outcome at this cadence.** Say so in one line and
-   stop. **Do NOT pad it with make-work** — no re-researching settled roles, no speculative
-   outreach, no padding `data/asks.jsonl` because the summary felt thin. The value of frequency is
-   catching a reply within one run interval, not multiplying the work. A late run (the app was
-   closed) is a "catch-up run"; the window handles the gap.
+   stop. **Do NOT pad it with make-work** — no re-researching settled roles, no padding
+   `data/asks.jsonl` because the summary felt thin. **New reach-outs are drafted only by the network
+   block (§4a), only up to `network.new_reachouts_per_week` (default 5, the ISO week), and never by any
+   other step.** The value of frequency is catching a reply within one run interval, not multiplying
+   the work. A late run (the app was closed) is a "catch-up run"; the window handles the gap.
 
 ---
 
@@ -695,14 +701,86 @@ sweeper the `  worklist:` line in one dispatch.
 **`channels_due.py` and `--board-decision` give one answer:** a channel waiting for its sweep day is listed
 under WAITING FOR ITS SWEEP DAY, never DUE NOW. Do not re-add a retired channel.
 
+## 4a. ⭐ THE NETWORK BLOCK — people before boards (jobsearch 0.86.0, dev #834)
+
+**Every run works the network, and works it before it drains the boards.** The owner's rulings (network-first):
+relationships and coffee chats drive the search, and the boards feed company targets. So this block runs on **every
+profile and every run**, with **no condition on the active plan**: §4's sourcing gate decides whether boards are swept,
+and never whether the network is worked. It runs after §3 and §4 have handed back, so it sees this run's replies, and
+**ahead of §4b's drain**, so a reply, a follow-up that is due or a chat to prepare is never starved by a long board day.
+
+**The pin gates the block.** It runs only on a profile that carries the 0.86.0 profile pin, and `reachouts.py` checks
+that itself. When it exits 3 it prints why (the migration has not run, or the profile is pinned above this engine):
+put that line in the summary, file one gap
+`~/.claude/jobsearch/run journal.py --run <id> --gap jobsearch:network --reason migration-pending`, draft nothing, and go on
+to §4b. **If the scripts are older than these instructions (version skew)** and `reachouts.py` is refused as unknown, file
+one gap `jobsearch:network` with `--reason version-skew`, say so in the summary, and go on.
+
+**Drafting is `outreach-drafter`'s, in ONE dispatch for the whole block** carrying every line the four steps owe (replies,
+follow-ups, reach-outs), never one dispatch per person. Every draft is saved IN FULL to `outreach/drafts.md` (§6 has the
+entry rules) for the candidate to send. **A posture that withholds drafting** (`posture.py --may drafting`) means the block
+drafts nothing and prints what it would have drafted; `reachouts.py` re-derives the same lines next run, so nothing is queued.
+
+**1. Replies.** Every inbound reply that §3 and §4 found and the candidate has not already answered (the thread-completeness
+check of §3b; §7b records it and queues the URGENT finding) is drafted a response now, in the block's one dispatch. A reply
+that closes the thread (a rejection, a "not my search" with no pointer) gets no draft.
+
+**2. Follow-ups.**
+
+```bash
+~/.claude/jobsearch/run reachouts.py --due
+```
+
+The second contacts and follow-ups that the 3B7 timing owes (business days after a reach-out, `network.followup_business_days`
+counted on `network.workdays`), each a line for the drafter: `SECOND-CONTACT` (a first touch to a second person at the company
+where the first reach-out drew no reply), `FOLLOW-UP` (a short `chase` to the person already reached) and `QUIET` (chased and
+unanswered: shown, nothing drafted), plus a `LOOKUP` link when nobody else there is known. The timing is the script's, never a
+count of your own. A reply from the person cancels what was owed. **A `SECOND-CONTACT` is budgeted:** the new-reach-outs plan below lists
+the same person first and counts the draft against the week; draft each person ONCE in the block's one dispatch, whichever list named them.
+
+**3. Chat prep.**
+
+```bash
+~/.claude/jobsearch/run conversations.py
+```
+
+Every `⛔ PREP OWED` row runs `call-prep` (§8 explains the rows). A chat the candidate has not recorded as held is LISTED for
+them in the summary and **never written by the run**: only the candidate says that a chat was held.
+
+**4. New reach-outs.**
+
+```bash
+~/.claude/jobsearch/run reachouts.py --plan --journal <id>
+```
+
+It prints the week's budget (`network.new_reachouts_per_week`, the ISO week, new reach-outs sent plus open first-touch
+drafts of any age) and **at most the REMAINING budget** as `REACH-OUT` lines, each a person the candidate has never contacted
+at a company they target. **Draft exactly those lines and never more, whatever else the run finds; a spent budget is a
+line that says so, and the run drafts nothing new.** A `LOOKUP` line is a link the CANDIDATE opens, listed in the summary: it
+is not budgeted and no LinkedIn step is automated. `--journal <id>` writes the run's one `network` event (its only write).
+
+**What stays the candidate's, always:** sending a message, sending a connection request, any LinkedIn people lookup, writing
+chat notes and confirming that a chat was held. Also theirs, because each is a fact or a decision only they hold: the
+introductions a chat offered (`record.py intro-offered`), a company's status and motivation (`record.py company-status`),
+whether a suggestion becomes a row (`record.py confirm`), a proposal's content and status, and how they know a person
+(`people.ties`). The one writer of a chat's `attendance` and `notes_ref` is `record.py attended`, which the candidate runs:
+**no step of this run runs it**, and nothing infers that a chat was held from a calendar entry, which proves a booking and
+not that anyone came. The block drafts and lists; it sends, requests and looks up nothing.
+
+---
+
 ## 4b. THE DRAIN — capture, read, screen, research, close (jobsearch 0.82.0, dev #820 / public #175)
 
-**⭐ A RUN FINISHES EVERY ROLE IT TAKES ON.** The owner's ruling, verbatim: *"a budget is the number of
-roles it finds, not completing the process. it has to complete the process for roles it finds."* So the
-budget is intake, never effort: the plan admits up to `search.intake_per_run` roles, and this run captures,
-reads, screens and researches **every** role it admitted. A role found and not admitted is counted
-`WAITING FOR INTAKE`, visibly, and a later run takes it. **A role admitted and not finished is a PROCESS
-FAILURE: printed in the summary with its cause, never hidden, never "for next time".** Never stop a step
+**⭐ A RUN FINISHES EVERY ROLE IT TAKES ON, AT A TARGET COMPANY.** The owner's ruling, verbatim: *"a budget is the number of
+roles it finds, not completing the process. it has to complete the process for roles it finds."* It stands for a role at a
+company the candidate has targeted (`active-target`), and since jobsearch 0.86.0 the budget is counted in COMPANIES: the plan
+admits up to `search.company_intake_per_run` target companies, every waiting role of each admitted company together, and this
+run captures, reads, screens and researches **every** role it admitted. A target company's role found and not admitted is
+counted `WAITING FOR INTAKE`, visibly, and a later run takes it. **A role at a company the candidate has not targeted is HELD,
+not admitted** (`held-for-company`): its sighting is recorded and its JD read, screen and research wait until the company is
+targeted. A held role is named in the summary (`held N (undecided U · watching W · passed P)`), is not a failure and never
+consumes intake; the company becomes a "look into this company?" item for the candidate (step 1b). **A role admitted and not
+finished is a PROCESS FAILURE: printed in the summary with its cause, never hidden, never "for next time".** Never stop a step
 early to save time, never skip research for an admitted keep, and never admit more by hand.
 
 **The order is the steps below, in this order, once the passes above have handed back.** It runs in the
@@ -737,7 +815,22 @@ the update is the fix.
 ```
 
 Every open `capture-role` item that is a sighting of a role already in the pipeline is linked to it, and a
-sibling listing folds. They are not new roles and never consume intake.
+sibling listing folds. They are not new roles and never consume intake. **The same call RECORDS every sighting at a company
+the candidate has not targeted** (a company that is not `active-target`, one a capture has just made included): it becomes an
+ordinary role row, `held-for-company`, that no run reads, screens or researches until its company is targeted. It consumes no
+intake and needs no render route, so it is recorded on every surface; step 1b then asks the candidate about the company.
+
+**1b. Raise the companies to look into (at most `search.company_intake_per_run` new ones a run).**
+
+```bash
+~/.claude/jobsearch/run record.py raise-companies --run <id>
+```
+
+A company with live roles that the candidate has not decided about is raised as a "look into this company?" item, at most N
+newly raised per run (the rest follow on later runs); the step journals one `companies-raised` event even when it raises
+nothing. The run decides nothing about them: the candidate answers with `record.py company-status`. **If the scripts are older
+than these instructions** and the verb is refused as unknown, file one gap `jobsearch:network` with `--reason version-skew`.
+A profile whose 0.86.0 migration has not run is refused with its reason: print it and go on.
 
 **2. Plan the intake.**
 
@@ -891,7 +984,9 @@ ruling O6, jobsearch 0.78.0; supersedes O5).** Posture levels gate the sweeps (`
 `board_days`, the `board` and `linkedin` tokens) and drafting. **No posture gates research, `minimal`
 included, and `max_agents_per_run` does not cap it:** every role this run admitted whose JD read screened it
 `keep` is researched in this run (§4b, the research step). Do not ask the posture about research: its `--may` answers yes
-for research on every posture and is kept only for older callers.
+for research on every posture and is kept only for older callers. **Scope (jobsearch 0.86.0):** only a role at an
+`active-target` company is admitted, so only those are researched; a role held for its company (§4b) waits for the candidate
+to target the company, and the posture is not the reason.
 
 **⭐ RESEARCH ONLY A ROLE WHOSE JD READ SCREENED IT `keep` (owner rulings O5, O6; RD1).** A card's facts
 are provisional, so a screen on them is `provisional`, never `keep`, and research never runs before the read.
@@ -941,8 +1036,9 @@ role makes it concrete.**
 
 ## 6. NETWORK CADENCE
 
-From `outreach/network.md`: check warm-intro deadlines. If fewer than 2 network actions in the last 7 days
-(per `log.md`), propose the next 1–2 with drafts.
+The network cadence is **§4a's block**, which runs on every run ahead of the drain (jobsearch 0.86.0). This section keeps
+what the block's drafting relies on: how a draft is saved, and the warm-path derivation whose `draft-owed` lines join the
+block's one drafting dispatch. `outreach/network.md` stays the candidate's own notes: no script writes it.
 
 **Any draft must be saved IN FULL to `outreach/drafts.md`** (its header carries the entry layout — **the
 body MUST be `> `-blockquoted or it publishes EMPTY**; the meta lines the engine parses — `**Status:**`,
@@ -972,8 +1068,8 @@ rung:** nobody usable is known at the company, but a person is known at a firm t
 read through `portfolio_boards.backers_of`). It is an ask for an *introduction* into the company, never a
 referral and never an endorsement claim, and a direct person always outranks it. It is **derived, never stored**, one per (company, person) so a
 relationship is asked once, not once per requisition, and its `state` is the only thing to act on:
-- **`draft-owed`** (a role is `verdict: pursue`, or an application is submitted): dispatch
-  `outreach-drafter` with that one line as its input. Under a posture that withholds drafting queue it with
+- **`draft-owed`** (a role is `verdict: pursue`, or an application is submitted): the line joins §4a's drafting dispatch
+  for `outreach-drafter`. It carries the role, so it is not a new reach-out and spends no budget. Under a posture that withholds drafting queue it with
   `~/.claude/jobsearch/run deferred.py --add-draft <opp_id>` (unchanged). **A draft is saved for the
   candidate to send; nothing here sends.**
 - **`ready`** (every role still undecided): shown on the card, drafted after the pursue decision. **Do not
@@ -1130,7 +1226,9 @@ For every INBOUND reply this run discovers (Gmail or LinkedIn), after the increm
 1. **Queue an URGENT `reply` finding** with the sender, the role, and a ONE-LINE proposed response
    angle — this reaches the candidate's device via the completion notification.
 2. **If the reply plainly calls for an answer** (a question, an objection, proposed times, a
-   referral pointer), **spawn `outreach-drafter` to draft the response into `outreach/drafts.md`**, marked
+   referral pointer), **the response is drafted by §4a's first step, in the network block's one dispatch, ahead of this
+   step; confirm the draft is in `outreach/drafts.md`, and if the block was skipped (version skew, a pending migration)
+   spawn `outreach-drafter` to draft the response now**, marked
    `**AUTO-DRAFT from a background run — review extra carefully before sending.**` A draft is
    inert by design; the send is always the candidate's. Skip drafting only when the reply closes the
    thread (a rejection, a "not my search" with no pointer) — then the queue line says so instead.
@@ -1227,6 +1325,7 @@ to zero.**
 ```bash
 ~/.claude/jobsearch/run check_dashboard_fresh.py --fix --run <id>   # this run's id: the run building the page is not "overlong" against itself
 ~/.claude/jobsearch/run check_dashboard_coverage.py   # the page accounts for every record; a gap here is a renderer defect, never a hand-edit
+~/.claude/jobsearch/run strategy_view.py              # rebuilds views/network_strategy.md from the rows (jobsearch 0.86.0, design 8.4); a derived view, advisory: it never gates the run and is never hand-edited
 ~/.claude/jobsearch/run presence_set.py --check       # the resume / public-profile review (a pane now, no published page) round-trips against its sources (ADR-028 rules 3-7)
 ```
 

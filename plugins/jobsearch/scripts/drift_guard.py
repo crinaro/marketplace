@@ -148,7 +148,9 @@ def main():
         try:
             with open(os.path.join(profile, "CLAUDE.md"), encoding="utf-8") as fh:
                 head = fh.read(400)
-            m = re.search(r"installed-from:\s*jobsearch\s*([0-9][0-9.]*)", head)
+            # dev #834: BOTH provenance markers (install_rulebook.py's STAMP changed in 0.86.0; a legacy copy is
+            # refreshed at the next session start, so one is still read here until then).
+            m = re.search(r"(?:installed-from:\s*jobsearch|jobsearch-rulebook)\s*([0-9][0-9.]*)", head)
             rb = m.group(1) if m else None
         except OSError:
             rb = None

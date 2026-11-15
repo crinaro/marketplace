@@ -88,12 +88,17 @@ Nothing below sends anything or commits anything without you.
    by kind each run (application status, a person writing, a digest, noise), and a status message the
    plugin could not match to a role is listed by sender and subject, not dropped.
 
-3. **Reconcile.** New findings are matched against roles you already track. A role seen twice on
+3. **Work the network (since 0.86.0).** Before it touches a job board, every run works your
+   relationships, whatever your search plan says it is for: replies you owe, follow-ups that have come
+   due, chats to prepare for, and up to a weekly budget of new reach-outs, each *drafted* for you to
+   send. See *Your network comes first*, below. This step sends nothing.
+
+4. **Reconcile.** New findings are matched against roles you already track. A role seen twice on
    two job boards is *one* opportunity with two sightings, not two opportunities. Ambiguous
    matches are surfaced for you to confirm rather than merged automatically, because one job
    title can genuinely be several different roles.
 
-4. **Read and screen.** Each role the run takes on has its job description read, and only then is it
+5. **Read and screen.** Each role the run takes on at a company you target has its job description read, and only then is it
    screened (see *One lifecycle per role*, below). Roles are checked against the floors you set — compensation, geography, work
    setting. A role whose office is far beyond every place you said you would commute from, and is
    not somewhere you would move to, is removed as too far (see *Where a role is, and when it is
@@ -104,11 +109,11 @@ Nothing below sends anything or commits anything without you.
    when you have set them, never the annual ones; without them they are marked for your review,
    not removed. A pay quoted by the hour or day is never removed against an annual floor.
 
-5. **Surface.** What needs a human decision is collected: replies waiting, applications with no
+6. **Surface.** What needs a human decision is collected: replies waiting, applications with no
    acknowledgement, conversations that have gone quiet, questions the assistant needs answered
    to pitch you accurately.
 
-6. **Draft — only if you asked.** Outreach and cover letters are written citing sentences from
+7. **Draft — only if you asked.** Outreach and cover letters are written citing sentences from
    your own resume rather than paraphrasing them. A draft is *staged*. You read it, you edit it,
    you send it.
 
@@ -116,7 +121,9 @@ Nothing below sends anything or commits anything without you.
 
 ## One lifecycle per role (since 0.82.0)
 
-Every role goes through one sequence, and a run does not stop halfway through it:
+Every role at a company you target goes through one sequence, and a run does not stop halfway through it. (A role
+at a company you have not chosen to target is **held**, not worked: see *A board find asks about the company first*,
+below.)
 
 1. **Capture.** A role a sweep found is recorded, or matched to a role you already have. What a search
    result card showed (pay, work setting, location) is kept, but marked as *provisional*, because a card
@@ -135,18 +142,120 @@ A role is ready for your decision when it has been through all four. If you chan
 title floor, your target titles or a likely-pass phrase, roles screened under the old rules go back to
 *waiting* and a later run re-screens them.
 
-**A run takes on a limited number of roles and finishes every one.** The limit is `search.intake_per_run`
-(40 unless you changed it; a number above what the run has time for is trimmed, and the run says so).
-While older unread roles are still waiting, half of the places go to roles found since. Roles found but
-not yet taken on are *waiting*, counted and aged. **Anything a run took on and did not finish is a
+**A run takes on a limited number of target companies and finishes every role of each.** Since 0.86.0 the
+limit counts **companies**, not roles: `search.company_intake_per_run` (10 unless you changed it; a number above
+what the run has time for is trimmed, and the run says so). A run takes on every waiting role of each company it
+admits, together. While older unread roles are still waiting, part of the places is kept for roles found since.
+Roles found but not yet taken on are *waiting*, counted and aged. **Anything a run took on and did not finish is a
 process failure**, shown with its cause and how long it has been there: on the dashboard, in Your Move,
-in the coordinator's start line and in the run's headline. Nothing is hidden, and an old unread role stays
-a failure until it is read. Reading the files that show this is in
+in the coordinator's start line and in the run's headline. Nothing is hidden, and an old unread role at a company
+you target stays a failure until it is read. (Before 0.86.0 the limit was `search.intake_per_run`, counted in roles.
+The upgrade leaves that setting in your file untouched, because a machine still on an older version reads it, and
+this version no longer does.) Reading the files that show this is in
 [Reading what the search produces](reading-your-files.md#one-lifecycle-per-role-since-0820).
+
+## A board find asks about the company first (since 0.86.0)
+
+A role a job board shows you at a company you have not chosen to target is **kept, and not worked**. The run
+records the role (so you can see it was found), and then stops: it does not read the posting, screen it or research
+it. Such a role has its own state, **held for company**. It is not a failure and it is counted, so every role is
+still accounted for, and the line that counts them says how many are held and why (company not decided yet, watched,
+or passed).
+
+What the run does instead is ask about the **company**: *look into this company?* At most
+`search.company_intake_per_run` companies a run are raised this way, newly (10 unless you changed it), and the rest are
+counted as *waiting*, never dropped. Your answer is one command, and it is your decision, never the run's:
+
+- `record.py company-status <company> active-target --motivation <1-5>`: target it. From the next run its roles are read,
+  screened and researched like any other target's. Your motivation, 1 to 5, is your own word for how much you want to
+  work there, and a target needs one.
+- `record.py company-status <company> watching`: keep watching, and stop asking.
+- `record.py company-status <company> passed`: not for you.
+
+A later sighting at a company you answered does not raise it again. Your older held roles are not lost by the upgrade:
+the first runs after it raise the first companies, and the rest follow on later runs.
 
 **What a run looked at and what it did not.** A run that could not look at everything says so in its
 headline as `DID NOT LOOK`, with a count and an age: company feeds it ran out of time for, searches it
 could not reach, mail it could not read.
+
+## Your network comes first (since 0.86.0)
+
+The plugin treats a search as mostly people and conversations, with job boards feeding the list of companies you
+are interested in. So every run works your network **before** it drains a board, on every profile, whatever your
+search plan is for. In order, the run:
+
+1. **Drafts the replies you owe**, from the mail and LinkedIn it just read.
+2. **Drafts the follow-ups that have come due.** The timing is the "3B7" method: after you write to someone and hear
+   nothing, a second person at their company is due on the third **business** day and a short follow-up to the first
+   person on the seventh. The marks are `network.followup_business_days` (3 and 7 unless you changed them) and the
+   days that count are `network.workdays` (Monday to Friday unless you changed them; holidays are not modelled). A
+   reply from the person cancels what was owed.
+3. **Prepares you for chats** that are coming up (`call-prep`).
+4. **Drafts new reach-outs, up to a weekly budget.** `network.new_reachouts_per_week` (5 unless you changed it,
+   counted over the Monday-to-Sunday week) is how many new people the run may draft a first message to. A draft you
+   have not yet sent or deleted counts against it, however old, so the budget cannot grow behind your back; set it to
+   0 to turn new reach-outs off. A reach-out is a short email, at most `network.reachout_max_words` words (75 unless you
+   changed it) that mentions how you found the person, asks for their view and never for a job, and ends in one question
+   with a small next step, such as a short call.
+
+**Everything that sends, connects or looks up a person stays with you.** A run drafts messages for you to read and
+send. It never sends one, never sends a connection request and never searches LinkedIn for a person; where it needs
+someone found, it lists a link for you to open. It also never writes down that a chat happened: that is your word.
+
+### Chats, and what a held chat is worth
+
+A request for a chat is a message like any other. When the person agrees, you record the booking on that message
+(its outcome becomes `meeting-booked`). The chat itself is a calendar commitment with a person:
+
+- `record.py chat <person> --on <date>` records a chat with someone (with `--touch` to say which booking it came from);
+- `record.py attended <chat> held` (or `no-show`) is how you say it happened, and `--notes <file>` points at your notes;
+- `record.py intro-offered <chat> --person <id>` records an introduction someone offered you in it.
+
+A chat you have not recorded is reported as **unrecorded**, never as zero held, and a count that includes it says
+"at least". A held chat makes the person *warm* in your reach table for a while (`access.warm_days`, 180 days unless
+you changed it).
+
+### Targets, and what the plugin works out about them
+
+`active-target` is simply your list of companies. You state how much you want each one (`motivation`, 1 to 5) and, for
+each person, how you know them (`people.ties`: former colleague, alumni, community, friend, introduced, other). From
+those and from what is recorded, the weekly review's reach table works out for each target how many people you know there, how many are
+alumni, how many roles are live and when you last made contact. None of it is stored: change a tie and the table
+changes. A target with no stated motivation is counted, not guessed.
+
+### Suggestions, and the weekly review
+
+The weekly review opens with a network section, and the strategist may suggest a company to target, a plan, or a
+cadence for a person. A suggestion is a question waiting for you in Your Move, with the change it would make written
+out. **Nothing changes until you confirm it** (`record.py confirm <id>`), and `record.py decline <id>` closes it. The
+plugin also writes `views/network_strategy.md`, a generated page of your targets, the people at them, the budget and
+the open suggestions, rebuilt from your records; edit the records, never that page. Your own notes in
+`outreach/network.md` are never touched.
+
+### Proposals for contract and fractional work
+
+For a fractional, interim, advisory or contract engagement the path is a **proposal**, not an application. Each one
+records the agreement reached in conversation first (what the work is for, how it will be measured, what it is
+worth), then the scope and rate, and a status from drafting to accepted or declined. There can be several for one
+engagement. See `record.py proposal` in [Your data](your-data.md).
+
+### On the dashboard
+
+Nothing was added to the top of the dashboard. The network is a **Network** list below Drafts, with its own entry in
+the jump bar, holding only what you act on: companies to look into, chats to record, suggestions to confirm, drafts
+the plugin could not see you send, and proposals to finish. The numbers (reach-outs
+against the budget, chats booked and held, introductions) live in the weekly review and in
+`views/network_strategy.md`. A run that found no roles but worked your network is not a quiet run, and a profile with
+no applications is not a stalled one.
+
+### If you use more than one machine
+
+The upgrade marks your profile as belonging to 0.86.0 or later. A machine still running an older version stops at its
+first read of the run history with a message naming the upgrade, and writes only a short, fixed set of housekeeping
+lines (a session-start record, a run-start record, a status line and diagnostics). It does not rewrite your
+`CLAUDE.md`: this version stamps that file with a new marker which an older version reads as "not installed by this
+plugin" and leaves alone. Update the plugin on that machine and it carries on.
 
 ---
 
@@ -517,9 +626,10 @@ once the search has found it.** Under every posture, including `minimal` and `ec
   title matches one of yours. The title check only marks a role for your review; it never
   removes one. A mandate rule is not scripted, and the screen says so on each role instead of
   staying quiet;
-- **every role that passes the screen (`VERDICT keep`) is researched in that same run**, and a run finishes
-  every role it takes on (up to `search.intake_per_run`, 40 unless you changed it). Roles not yet taken on
-  are counted as waiting, never dropped. A borderline role (`review`) is not researched until you have
+- **every role at a company you target that passes the screen (`VERDICT keep`) is researched in that same run**,
+  and a run finishes every role of the companies it takes on (up to `search.company_intake_per_run` companies, 10
+  unless you changed it). A role at a company you have not targeted is held until you decide about the company.
+  Roles not yet taken on are counted as waiting, never dropped. A borderline role (`review`) is not researched until you have
   looked at it.
 
 Only **drafting** is held by a posture. A draft your posture refuses is **queued, not dropped**: it shows as

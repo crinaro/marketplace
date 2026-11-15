@@ -51,6 +51,7 @@ Python 3.9+. Standard library only.
 
 import argparse
 import datetime
+import email.utils
 import json
 import os
 import re
@@ -77,6 +78,7 @@ ROOT = _profile_root()
 # data/commitments.jsonl; this script reconciles against ALL rows, not the rendered window,
 # because a meeting next month recorded in the store is still reconciled.
 COMMITMENTS = os.path.join(ROOT, "data", "commitments.jsonl")
+PEOPLE = os.path.join(ROOT, "data", "people.jsonl")
 
 # Artifact-shaped, not person-shaped. The 2026-07-20 lesson: when you want a meeting
 # time, search for the SHAPE OF THE RECORD, not for the person — the <a recruiter>/<a firm>
@@ -186,6 +188,46 @@ def tokens(text):
     """Identity-bearing words: who this meeting is with. Names, companies, products."""
     return {w for w in re.findall(r"[A-Za-z][A-Za-z0-9'\-]{2,}", (text or "").lower())
             if w not in STOP and len(w) > 2}
+
+
+def load_people(path=None):
+    """The `people.jsonl` rows, `[]` when the store is absent or unreadable (a missing store is no match, never a crash)."""
+    path = path or PEOPLE
+    out = []
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if line:
+                    try:
+                        row = json.loads(line)
+                    except ValueError:
+                        continue
+                    if isinstance(row, dict):
+                        out.append(row)
+    except OSError:
+        return []
+    return out
+
+
+def person_id_for(address, people):
+    """dev #834 (network-first 5.2, NF1): the `people` id this counterparty is, or None. A person id is offered ONLY when the address
+    EQUALS exactly one living person's `email` (ADR-031 decision 5's identity strength: `people.normalize_email`, a casefolded
+    whole address). `address` is an address or a `From:` header (`Name <a@b>`). Two people sharing an address, a substring of an
+    address, a different local part, a display name and a merged person are all None: a wrong person on a chat is worse than none.
+    This script never sets `kind` or `attendance` and writes nothing; the id is printed for the candidate's `record.py chat`."""
+    import people as _people
+    addr = _people.normalize_email(email.utils.parseaddr(str(address or ""))[1])
+    if not addr or "@" not in addr:
+        return None
+    hits = [p.get("id") for p in people
+            if p.get("status") != "merged" and p.get("id") and _people.normalize_email(p.get("email")) == addr]
+    return hits[0] if len(hits) == 1 else None
+
+
+def _who_line(frm, people):
+    pid = person_id_for(frm, people)
+    return ("      counterparty: %s (an exact match on one person's email)" % pid) if pid else None
 
 
 def this_week_entries(default_year):
@@ -299,6 +341,7 @@ def main():
     accounts = [args.account] if args.account else configured_accounts()
     query = "(%s) newer_than:%dd" % (MEETING_QUERY, args.days)
     known, per_line, present = this_week_entries(today.year)
+    known_people = load_people()
 
     print("Meeting-artifact check — window: last %d day(s), as of %s"
           % (args.days, today.isoformat()))
@@ -363,6 +406,8 @@ def main():
         for account, date, frm, subj, dates, clash in collisions:
             print("\n  - [%s] %s" % (account, subj))
             print("      from %s | received %s" % (frm, date))
+            if _who_line(frm, known_people):
+                print(_who_line(frm, known_people))
             print("      date(s): %s" % ", ".join(dates))
             for d, tk in clash:
                 print("      a commitment already carries %s for: %s"
@@ -393,6 +438,8 @@ def main():
         for account, date, frm, subj, dates in unreconciled:
             print("  - [%s] %s" % (account, subj))
             print("      from %s | received %s" % (frm, date))
+            if _who_line(frm, known_people):
+                print(_who_line(frm, known_people))
             print("      date(s) in subject: %s" % ", ".join(dates))
         print("\n  A SUBJECT LINE IS NOT AUTHORITATIVE — it can be weeks stale while the")
         print("  newest message in the thread schedules something tomorrow. Confirm the real")

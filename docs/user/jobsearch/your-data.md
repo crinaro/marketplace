@@ -33,6 +33,7 @@ shows up as a one-line diff rather than a reformatted file.
 | `involvements.jsonl` | how each person connects to a role or a channel — since 0.44.0, alongside `people.jsonl`. **Not purely hand-set**: since 0.54.0 (dev #479), `record.py touched`/`answered` auto-upserts the recipient's involvements row (`status`, `path_type`) from the touch itself — see *Touches* below |
 | `applications.jsonl` | every application you have submitted, once each — see *Applications* below (since 0.45.0; before that, applications lived nested on the role) |
 | `cover_letters.jsonl` | the link between an application and its cover letter — since 0.45.0, alongside `applications.jsonl`, see *Cover letters* below |
+| `proposals.jsonl` | every proposal you have made to a prospective client of a fractional, interim, advisory or contract engagement, once each, several per engagement — see *Proposals* below (since 0.86.0) |
 | `touches.jsonl` | every outreach touch you have made, once each — see *Touches* below (since 0.48.0; before that, touches lived nested on the role as `outreach[]`) |
 | `asks.jsonl` | things waiting on you — a role decision or a piece of system upkeep |
 | `commitments.jsonl` | what is scheduled — calls, deadlines, follow-ups due on a date |
@@ -96,6 +97,8 @@ copied twelve times.
 | `note` | free text of your own about the company as a whole — a remark that is not a dated finding (those go in `research_log`) |
 | `ats` | since 0.72.0 — the company's public job-board feed, so the daily run can read its openings with a script instead of a browser turn. Three states: **absent** (no feed found yet), **`null`** (you declined a feed for this company; nothing rewrites it) and **an object** `{vendor, slug, region, source, since}`. `vendor` is `greenhouse`, `lever` or `ashby`; `slug` is the board's short name; `region` (`global` or `eu`) is required for Lever only. **Since 0.76.0** a fourth vendor, `workday`, has the shape `{vendor, tenant, wd, site, source, since}` instead, with no `slug` and no `region`: `tenant` and `wd` are the two parts of the company's `<tenant>.wd<N>.myworkdayjobs.com` address and `site` is the career site's name.  `source` says how it was found (`career-url`, `posting-url` or `candidate`). Set it, decline it or clear it with `record.py ats` (see *Company feeds* in [How it works](how-it-works.md)) |
 | `backed_by` | since 0.75.0, optional: a list of company ids of the firms that back this company (an investment firm is an ordinary company row). Use it to state a backing a board sighting cannot show. A non-empty list of non-empty strings, each naming a company you track, never the company's own id, no repeats. Where a role was seen on a firm's portfolio board, the firm link is worked out from that sighting and is not stored. People you know at a backing firm become a `backer-intro` route on the role card, see *Portfolio boards* in [How it works](how-it-works.md) |
+| `raised_on` | since 0.86.0, optional: the date the daily run first asked you "look into this company?" about it. A job-board find at a company you have not decided about is recorded but held, and the run asks you about the company instead of reading the role; it asks about at most `search.company_intake_per_run` new companies a run. You never write this field (`record.py set` refuses it); answer the question with `record.py company-status` and the company leaves your list, while `raised_on` stays as the history. A date, never in the future |
+| `status_on`, `motivation` | since 0.86.0, optional: what you decided about the company and how much you want to work there. **`status: active-target` means the company is on your target list**, and the daily run only reads, screens and researches roles at companies on it. `record.py company-status <company> active-target --motivation <1-5>` (or `watching`, or `passed`) writes the status, the day you decided it (`status_on`) and, for a target, `motivation`, a whole number from 1 (would not mind) to 5 (the company you most want), together. A target needs a motivation, and it is always your own number: nothing guesses it. `record.py set <company> status ...` is refused for that reason. A company with no `status_on` is one you have not decided about yet, which is what lets the run ask you about it; a target from before 0.86.0 with no `motivation` is fine and is simply counted as having none stated |
 | `warm_lookup` | since 0.72.0 — `{on, result}` where `result` is always `none-found`: you looked for a person at this company and found nobody. It is the one stored fact of the warm path; everything else a role card shows about it is worked out from your people, touches, drafts and applications. Absent means you have not looked. Written by `record.py warm-lookup <company_id> --none-found` |
 
 ## Channels — where roles come from
@@ -162,6 +165,7 @@ The main record. Everything about one role hangs off it.
 | `lean` | since 0.67.0 — the system's read of the role (`pursue` · `pass` · `ask`) with a one-line reason. A lean is advice; it never removes a role |
 | `jd_read` | since 0.82.0 — the one record of every attempt to read the role's job description: when it was tried, by which run, which address, how (the plugin's own fetch, a browser page, a company job feed, a job-board interface, or you), and what came of it, with a short quote or note as evidence. Absent means no attempt has been made. See *One lifecycle per role* below |
 | `capture` | since 0.82.0 — only on a role the daily run created from a find a sweep had queued: which run did it, when, and which queued item it came from. If every search that showed the role was a degraded one, it also lists why (`unverified`). Absent means the role did not come in that way |
+| `via_person_id`, `via_commitment_id` | since 0.86.0, optional: where this role came from, as the person (`via_person_id`, a `people.jsonl` id) and/or the conversation that surfaced it (`via_commitment_id`, a chat in `commitments.jsonl`). You record it with `record.py via <role> --person <id> [--chat <commitment>]`; nothing infers it from a recent chat. When both are set the chat must be with that person, and a chat with somebody else is refused. Absent means the source was not recorded, and is reported as such, never as "no source" |
 | `employer_posting` | since 0.80.0 — whether the role was seen on the **employer's own** posting (their careers page or applicant-tracking site) and whether that posting is still up: `confirmed`, `unconfirmed` or `closed`, with the address, the dates and the visible text that was quoted. Absent means *never checked*, and reads as unconfirmed. Only the plugin's own scripts write it, so a hand edit is refused; a role not re-checked within a week reads *NOT CHECKED since* a date, never "live". See *Is the role still open?* in `how-it-works.md` |
 | `status` | what you are **doing** about it |
 | `stage` | where it **is** in the funnel |
@@ -228,10 +232,13 @@ The facts it stores:
   already passed. When the job description is read it replaces the card's pay and setting, except
   anything you set yourself. A role stored before 0.82.0 carries no provenance and is not rewritten.
 
-A run takes on up to `search.intake_per_run` roles and **finishes every role it takes on**: capture it,
+A run takes on up to `search.company_intake_per_run` target companies (since 0.86.0; before that
+`search.intake_per_run` roles) and **finishes every waiting role of each company it takes on**: capture it,
 read the description, screen it, and research it if it is a keeper. Every role that is not removed gets its
-description read; only a keeper (screen *keep*) is researched. Anything a run took on and did not finish is
-a **process failure**, shown with its cause and age, never hidden: see
+description read; only a keeper (screen *keep*) is researched. **A role at a company you have not chosen to target
+is held** (stage *held for company*): the row is kept, and nothing further is done until you decide about the
+company. Anything a run took on and did not finish is
+a **process failure**, shown with its cause and age, never hidden; a held role is counted and is not a failure: see
 [Reading what the search produces](reading-your-files.md#one-lifecycle-per-role-since-0820).
 
 **What the 0.82.0 upgrade does.** It runs the migration `m_0_82_0_role_lifecycle` once, and it is built so
@@ -435,7 +442,7 @@ either way.
 **The one-time re-screen.** A stored screen records `title_keys`, a fingerprint of
 `screen.title_floor`, your `targets.titles` and the title-field signals. When the fingerprint no
 longer matches today's settings, or the screen has none and a floor is now set, the role goes back to
-*waiting* and a daily run re-screens it as part of its intake, within the `search.intake_per_run` count
+*waiting* and a daily run re-screens it as part of its intake, within the `search.company_intake_per_run` count
 (this is not counted as a failure: you changed your settings, nothing went wrong). So setting a floor
 re-screens the existing pile over the next daily runs, once, and changing the floor or those phrases
 later does it again. With no floor set, an old
@@ -451,7 +458,7 @@ pay inputs: the engagement vocabulary, `compensation.non_employee`, the role's e
 period and basis, and whether your current decision accepts the pay. A screen computed without those
 inputs is stale where it could matter. A stale screen on an **undecided** role re-screens
 automatically: it goes back to *waiting* and a daily run re-screens it within the
-`search.intake_per_run` count. Roles you
+`search.company_intake_per_run` count. Roles you
 already decided, or that an earlier screen already removed, do not drain on their own. Count them
 with:
 
@@ -639,6 +646,7 @@ lives on the link, never on the person).
 | `not_same_as` | ids of people you have reviewed and confirmed are **different** humans. Once a pair is listed, `people.py --duplicates` stops surfacing it, so a same-name pair you have already ruled on does not come back on every run |
 | `created` | when the record was made — `null` until you fill it in by hand |
 | `note` | free text of your own about them |
+| `ties` | since 0.86.0, optional: **how you know them**, a list of entries `{kind, via}`. `kind` is one of `former-colleague`, `alumni`, `community`, `friend`, `introduced`, `other`; `via` (optional) says which employer, school or community. Absent means *unknown*, never "no ties". **Only you write it** (for example `record.py set <person> ties '[{"kind":"alumni","via":"Example University"}]' --file people`); nothing is guessed from a profile or an email. The plugin counts the people at each of your target companies who have a tie (the *Alumni* column of the reach table); a malformed entry is refused, and the write rolled back, naming it |
 
 | field (on the link to one role or channel) | what it is |
 |---|---|
@@ -777,7 +785,7 @@ One record per touch. The fields exist to make "which approach actually works?" 
 | `delivery` | `delivered` · `bounced` · `unknown`. **Bounces are excluded from every denominator** — a bounce that looks like a non-reply poisons the metric |
 | `outcome` | `awaiting` · `replied` · `accepted` · `no-response` · `declined` · `meeting-booked` |
 | `message_ref` | points at the full text in `messages.jsonl`, and must resolve |
-| `trigger_kind`, `trigger_ref` | what CAUSED this touch — `application`, `reply`, `elapsed` or `manual`, plus the specific application/message/date it points at. See *Triggers and sequences* below |
+| `trigger_kind`, `trigger_ref` | what CAUSED this touch — `application`, `reply`, `elapsed`, `introduction` (since 0.86.0) or `manual`, plus the specific application/message/date it points at. See *Triggers and sequences* below |
 | `sequence_id`, `sequence_step` | groups this touch into a multi-step play with other outreach and staged drafts under the same `sequence_id`, ordered by `sequence_step` |
 | `plan_id`, `play_step` | since 0.49.0 — which plan this touch counts toward, and which play step it satisfies (`reach-insider`, …), or the marker `unresolved` when the touch predates 0.49.0 and can't be assigned a step automatically. Only set on a touch anchored to a role (`opp_id`); a networking touch has no plan to derive one from. See *Plans and plays* above |
 | `note` | free text of your own about this touch |
@@ -1150,6 +1158,9 @@ what caused it, so a draft never sits unlinked to the application or reply that 
 - `application` → resolves against **this same role's own** applications
 - `reply` → resolves against a message you received
 - `elapsed` → the date a waiting clock started
+- `introduction` (since 0.86.0) → this touch or ask came of an introduction. Its ref says which cause, with a prefix:
+  `touch:<id>` (the touch where you asked for the introduction) or `commitment:<id>` (a chat in which someone offered one).
+  A bare ref, or an id that does not exist, is refused
 - `manual` → you decided this with no recorded cause — carries no ref
 
 A multi-step play — send part A, hold part B until the connection is accepted — used to live only
@@ -1177,6 +1188,7 @@ ones?" is a query across every application at once, rather than a walk over ever
 | `opp_id` | the role this application is for |
 | `date`, `method`, `status` | when and how you applied, and where it stands: `status` runs `not-started` → `started` → `submitted` → `acknowledged` / `rejected` / `advanced` / `withdrawn` / `closed`. `closed` (added 0.47.0) means you gave up on it after ATS silence — see *Endings* below |
 | `status_on` | the date the *current* `status` was written (added 0.47.0). `null` on a row from before this field existed — an honest "we don't know when," never a guessed date |
+| `via_person_id`, `via_commitment_id` | since 0.86.0, optional: where this application came from, with the same meaning and the same rule as on the role (see *Opportunities*): the person and/or the chat that led to it, written with `record.py via <application> --person <id> [--chat <commitment>]`. Absent means not recorded |
 | `url` | the application's own URL, if it has one separate from the posting |
 | `req_id` | the employer's own requisition id, where the posting or portal shows one |
 | `portal_status`, `portal_confirmed_on` | what the employer's applicant portal shows, and when you last checked it |
@@ -1208,6 +1220,33 @@ letters* below for what "attached" means going forward. As with every migration 
 the whole thing only ever writes once it has checked its own result is valid; if anything about
 your data would make it invalid, nothing is written and you keep exactly what you had before,
 with a report of what needs attention first.
+
+### Proposals — what you sent to a prospective client
+
+A full-time role is pursued by an *application*. A fractional, interim, advisory or contract engagement is pursued by a **proposal**:
+a short document you send once the prospective client has agreed, in conversation, what success looks like — what they want to
+achieve, how it will be measured, what it is worth to them. The proposal confirms that agreement; it does not explore it. Since 0.86.0
+each proposal is one row in `data/proposals.jsonl`, linked to its engagement by `opp_id`, and **one engagement can have several** (a
+revised proposal is a new row). These are the "proposal rows"; they are not the proposals a weekly assessment makes about your plan,
+which are a different list. The role must be marked as one of those four engagements first
+(`record.py set <role> engagement_type fractional`); a full-time role is refused, because its path is *Applications*.
+
+**Everything here is yours.** Nothing writes a proposal unattended and nothing is inferred.
+
+| field | what it is |
+|---|---|
+| `id` | the stable handle (`<opp_id>-p1`, `-p2`, ...). **You never mint it**: `record.py proposal <role>` assigns the next number |
+| `opp_id` | the engagement this proposal is for |
+| `status`, `status_on` | where it stands (`drafting`, `sent`, `accepted`, `declined`, `withdrawn`, `expired`) and the day you said so, always written together by `record.py proposal-status <proposal> sent\|accepted\|declined\|withdrawn\|expired [--on <date>]`. A hand edit of either is refused |
+| `date` | the day the proposal **went out**: empty while it is a draft, set when you mark it `sent`, and required for `sent`, `accepted`, `declined` and `expired`. A draft you withdraw without ever sending it has none |
+| `conceptual_agreement` | what the client agreed beforehand: the day (`on`) and three lists, `objectives`, `measures` and `value`, none of them empty. Set with `record.py set <proposal> conceptual_agreement '<json>' --file proposals`; an empty list is rolled back |
+| `scope` | what the proposal covers, in your words |
+| `rate` | your rate as `{amount, per, currency}` — for example `1500/day/USD` — where `per` is `hour`, `day`, `month`, `year` or `project`. Nothing is converted or defaulted |
+| `doc_ref` | where the proposal document is, a path inside your profile folder (never absolute, never with `..`) |
+| `note` | free text of your own |
+
+**An accepted proposal does not end the role**: whether you take it, drop it or keep it on the board stays your decision, on the role
+itself. The 0.86.0 upgrade creates the file empty; nothing from your existing records is read into it.
 
 ### Resume variants — `resume_variants.jsonl`
 
@@ -1321,7 +1360,8 @@ data rather than kept up to date by hand.
 | field | what it is |
 |---|---|
 | `id`, `created` | the ask's stable handle (a fixed slug on a system ask, such as `system-application-endings`), and the date it was raised |
-| `kind` | `role` (about one opportunity) or `system` (tooling, a credential, a setting — for example `system-application-endings`, the one row naming every ended pursuit with no recorded ending, described under *Endings* above) — decides which group it shows in |
+| `kind` | `role` (about one opportunity), `system` (tooling, a credential, a setting — for example `system-application-endings`, the one row naming every ended pursuit with no recorded ending, described under *Endings* above) or, since 0.86.0, `suggestion` (a row the weekly review proposes and **you** confirm — see `suggests` below) — decides which group it shows in |
+| `suggests` | since 0.86.0, only on a `kind: suggestion` ask: the one write it stands for — which store (`companies`, `plans` or `people`), whether it would `set` fields of an existing row or `create` a new one, the row's id, the fields, and what those fields held when it was suggested. **Nothing is written until you say yes:** `record.py confirm <ask>` writes the row (a company you target gets the motivation you give it with `--set motivation=<1-5>`) and resolves the ask in the same write; `record.py decline <ask> --why "..."` closes it and writes nothing else. If the row changed after the suggestion, `confirm` refuses and names what changed. The weekly review can suggest making a company a target, starting a plan, or setting a person's cadence; it never suggests a person, because finding people is yours |
 | `title`, `ask` | what it is, and what is actually being asked |
 | `opp_id`, `channel_id` | the role or channel it concerns, if any |
 | `act_by` | the date by which it needs an answer, if it has one. Open asks sort by it (undated last), so the one with a real deadline leads your queue instead of hiding in prose |
@@ -1347,6 +1387,11 @@ everything else — before this, an ask row could only ever be created by a migr
 | `opp_id`, `channel_id` | the role or channel it concerns, if any |
 | `source` | where the row came from — for example an invite you recorded, or `migrated 0.25.0 from focus.md ## This Week` on a row the upgrade moved for you. Provenance for you, not something the engine acts on |
 | `status` | `scheduled` or `cancelled` — every commitment starts `scheduled`; a called-off meeting is set to `cancelled` rather than deleted or edited into a "cancelled" title |
+| `person_id`, `kind` | since 0.86.0, optional: a chat or an interview is a commitment too. `kind` is `chat` or `interview` (absent on an older row, which is counted as "to classify", never guessed), and a `kind: chat` row **needs `person_id`**, the person it is with (a `people.jsonl` id): a chat is with someone. `record.py chat <person> --on <date>` writes one; `record.py set <commitment> kind interview --file commitments` classifies an older meeting |
+| `touch_id` | since 0.86.0, optional: the touch that asked for the chat and got the answer `meeting-booked`, so a booking can be joined to the chat it became. It must be a touch to the same person. `record.py chat ... --touch <touch>` writes it |
+| `attendance`, `attendance_on` | since 0.86.0, optional: whether a meeting that has already happened was `held` or a `no-show`, and the day you said so, written together by `record.py attended <commitment> held|no-show`. Absent means **not recorded**, never "held" and never "no-show": the engine cannot know whether a chat happened, so only you say, and a chat you never record is reported as unrecorded rather than counted either way |
+| `notes_ref` | since 0.86.0, optional: where your notes for the chat are, a path inside your profile folder (never absolute, never with `..`). `record.py attended <commitment> held --notes <path>` writes it. A file that has moved is a checkup warning, not an error |
+| `intros_given` | since 0.86.0, optional: introductions the other person offered in the chat, each entry naming a `person_id` or a `company_id` you track, with an optional `on` date. `record.py intro-offered <commitment> --person <id>` (or `--company <id>`) adds one. An introduction is something you ask for in a message; recording the offer does not ask for it |
 
 Only commitments on or after today show on your dashboard; past ones stay in the file as a
 record rather than being deleted. **A `cancelled` commitment is excluded from the This Week
@@ -1625,7 +1670,7 @@ profile already carries both; a profile that has not set one gets the default be
 
 | key | what it is |
 |---|---|
-| `chase_after_days` | days after your last message before a thread with no reply stops reading as *waiting* (too soon to chase) and reads as *silent*. Defaults to **7**; accepted range 1–60. **Lower it** and a thread is chase-able sooner, so a follow-up is proposed earlier; **raise it** and you wait longer first. Silence still has to be *verified* against your mailbox before it counts — the number is the earliest a thread can qualify, not a promise a chase will be drafted that day |
+| `chase_after_days` | days after your last message before a thread with no reply stops reading as *waiting* (too soon to chase) and reads as *silent*. Defaults to **7**; accepted range 1–60. **Lower it** and a thread is chase-able sooner, so a follow-up is proposed earlier; **raise it** and you wait longer first. Silence still has to be *verified* against your mailbox before it counts — the number is the earliest a thread can qualify, not a promise a chase will be drafted that day. **Not used for reach-outs the network block times** (since 0.86.0, on an upgraded profile): a new reach-out, and a chase to its person after it, follow the business-day timetable in `network.followup_business_days` while the reach-out is inside its window, and the follow-up check does not flag them on this clock; a thread gone cold past that window is an ordinary silent thread again |
 | `no_response_after_days` | once a thread is verified silent, the days of silence at which the suggested move stops being a **chase** (a nudge on the same thread) and becomes a **reconnect** (a fresh, warmer approach). Defaults to **14**; accepted range 1–90. **Lower it** and you move to a reconnect sooner; **raise it** and the drafter keeps chasing for longer. Read by the brief (see *The brief ledger* above), so changing it changes the `register` on every brief computed afterwards — never a row already written |
 
 Both are written in full as `communications.chase_after_days` and
@@ -1717,9 +1762,62 @@ The upgrade does not write these into your file (absent means the default).
 
 | key | what it is |
 |---|---|
-| `search.intake_per_run` | how many roles one daily run takes on. It reads every role it takes on, screens it, and researches the keepers, so it finishes every one. A whole number from 1 to 300; defaults to **40**. The count is also capped by the time a run has: until the plugin has measured how long a role takes in your runs it assumes a few minutes each, so a larger number may be trimmed, and the run says so. See *One lifecycle per role* |
+| `search.intake_per_run` | **not read since 0.86.0**, replaced by `search.company_intake_per_run` below. The upgrade leaves it in your file untouched, because a machine that has not updated yet still reads it; changing it does nothing on 0.86.0 |
 | `search.posting_fetch` | `on` or `off`; **off unless you turn it on**, and no upgrade ever sets it. With it on, a LinkedIn role the Browser pane could not read (hidden pane, or the page did not draw) is read once from LinkedIn's public posting page, at most 40 requests per run per machine and 3 seconds apart. Set it only with `posting_fetch.py --set on` (or `off`), which prints the terms first. It is automated access that LinkedIn's User Agreement section 8.2 restricts, and turning it on is your decision. See [Posting fetch](posting-fetch.md) |
-| `search.intake_new_percent` | while older unread roles are still waiting, how much of `search.intake_per_run` is held back for roles found since. A whole number from 0 to 100; defaults to **50**, so half. With no older unread roles every slot goes to whoever is next |
+| `search.intake_new_percent` | while older unread roles are still waiting, how much of `search.company_intake_per_run` is held back for roles found since. A whole number from 0 to 100; defaults to **50**, so half. With no older unread roles every slot goes to whoever is next |
+
+### Settings added in 0.86.0 (`config.json.search`, `config.json.network`, `config.json.access`)
+
+The 0.86.0 upgrade seeds each of these where it is missing and never overwrites one you set (`search.intake_per_run`, above, is left exactly as it is, for any machine of yours that still runs an older version).
+
+| key | what it is |
+|---|---|
+| `search.company_intake_per_run` | how many target companies one daily run takes on, every waiting role of each company together, and how many companies a run newly raises for you to look into. A whole number from 1 to 100; defaults to **10** |
+| `network.new_reachouts_per_week` | how many new reach-outs the daily run may draft in a calendar week (Monday to Sunday): first messages to people you have not contacted, at companies you target. Open drafts count until you send or delete them. A whole number from 0 to 50; defaults to **5**; 0 turns new reach-outs off. The run only drafts: it never sends |
+| `network.followup_business_days` | the business days after a reach-out at which a second contact and then a follow-up are due, two whole numbers from 1 to 30, increasing; defaults to **[3, 7]** |
+| `network.workdays` | which weekdays count as business days (1 is Monday, 7 is Sunday), a list of unique numbers; defaults to **[1, 2, 3, 4, 5]**. Holidays are not modelled |
+| `network.reachout_max_words` | the word cap on a network reach-out draft, from 25 to 200; defaults to **75** |
+| `network.draft_unobserved_days` | an open reach-out draft older than this many days is listed as "send unobserved" (it still counts against the week's budget), from 7 to 60; defaults to **14**. The draft's age is read from the date in its `**Brief:**` line; a draft whose age cannot be read is listed as "age unknown" instead |
+| `access.warm_days` | the days within which a recorded touch makes a person warm, from 30 to 365; defaults to **180** |
+
+### What the 0.86.0 upgrade writes
+
+Two steps, both automatic and both keeping what you wrote. Either one that cannot be sure of itself says so, writes nothing
+more, and tries again next session; it never reports "0 done" for work it could not do.
+
+**The profile mark and the plans** (`m_0_86_0_network_first`). In this order:
+
+1. **The mark.** It adds one line to the run history, `data/runs.jsonl`, an event named `profile-schema` that says the profile
+   needs 0.86.0 or later. This is the first thing it writes, and it is how an older copy of the plugin on another of your
+   machines learns not to touch the profile (see *If you use more than one machine*, below).
+2. **Copies first.** `config.json` becomes `config.json.pre-0.86.0` and `data/plans.jsonl` becomes
+   `data/plans.jsonl.pre-0.86.0`, never over a copy already there.
+3. **Plans.** Every *active* search plan that does not list `access` among its outcomes gains it, first. Your other
+   outcomes, a retired plan, and every plan about a company or a person are left exactly as they were. A profile with no active
+   search plan is told so, and no plan is made for you: the network is worked whatever the plans say.
+4. **Settings.** The seven settings above are added where they are missing and never over one you set.
+   `search.intake_per_run` is **left in your file untouched**: nothing in 0.86.0 reads it, and a machine still on an older
+   version does. No arithmetic turns "40 roles" into "10 companies"; the new setting starts at its default.
+   No company, role or chat row is written.
+
+**The proposals file** (`m_0_86_0_proposals`) creates `data/proposals.jsonl`, empty, if it is not there. It is safe to run
+again and says so rather than failing if `data/` cannot be written.
+
+**What the upgrade does not do.** It does not ask about, raise or change any company. The first daily runs after it raise
+the first `search.company_intake_per_run` companies that have a live role and that you have not yet decided about (each
+gets a `raised_on` date, written only by `record.py raise-companies`), and the rest follow on later runs. For the first 7
+days the run summary carries one line saying the profile was upgraded, how many roles are held for your company decision and
+how many companies are waiting to be raised. A profile that has not been upgraded yet reads as *upgrade pending*, never as an
+empty network.
+
+**If you use more than one machine.** A machine still on a version older than 0.86.0 stops at its first read of the run
+history and says the profile was upgraded. Before it stops it writes a fixed, small set of housekeeping lines: a
+session-start record, the start of a run, the schema stamp's last-attempt line, the purity check's ask row and its own
+diagnostics. Those are valid under both versions. It does **not** rewrite `CLAUDE.md`: version 0.86.0 stamps that file with a
+new first line, `<!-- jobsearch-rulebook <version> | managed by the jobsearch plugin; ... -->`, which an older version reads as
+"not installed by this plugin" and leaves alone. (Before 0.86.0 the line began `installed-from: jobsearch`; 0.86.0 reads
+both and re-stamps the old one.) Update the plugin on that machine and it carries on. A machine on 0.86.0 that opens a profile
+a *later* version has upgraded behaves the same way: it names the later version, writes nothing and stops.
 
 ### Setting added in 0.72.0
 
