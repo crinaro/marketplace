@@ -25,6 +25,11 @@ Every script runs as `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/<name>.py"`.
 converts HEIC and TIFF on a Mac, and has `resize.py` make the size copies through Chrome. The
 prepared copies are what get committed.
 
+**The image is the person's own work, and it stays theirs.** Never redraw, retouch, upscale, recolour or
+AI-generate the person's own work; propose a change and let them make it. Preparing an image strips its
+metadata and makes size copies; it never changes what the picture shows. If a photo seems to need a retouch,
+say what you see and let the person decide how.
+
 **Importing images needs Chrome, on every kind of session.** With no Chrome, the import refuses
 and names the install step: say that, and stop the image part. The text of the piece can still be
 written.

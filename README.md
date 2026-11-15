@@ -9,7 +9,7 @@ pinned to any one vertical.
 |---|---|---|
 | **jobsearch** | Sweeps your mailbox and LinkedIn for replies and interview invitations, screens roles against your own compensation floors and geography, tracks every application and conversation, and drafts outreach in your voice. It never sends anything itself. | available |
 | **gmail-multi** | Searches, reads, drafts, sends, replies, and forwards across several Gmail accounts at once, tagging every result with its mailbox. The managed Gmail connector binds to one account; this covers them all in a single query. | available |
-| **site-studio** | Builds, checks, previews and publishes your own portfolio or resume site on GitHub Pages from a private repo, and reviews copy, looks and privacy before anything goes public. Publishing is a command you type, and it asks you to confirm first. | new in 0.1.0; macOS and Linux, not Windows |
+| **site-studio** | Builds, checks, previews and publishes your own portfolio, resume, links-hub or hand-made custom site on GitHub Pages from a private repo, and reviews copy, looks and privacy before anything goes public. Fields can carry display labels, a page can show a link only when another page is built, and `/site-studio:adopt` converts an existing site repo, turning old forwarding pages into redirects. Publishing is a command you type, and it asks you to confirm first. | hub and custom kinds, labels, page sections and redirect conversion new in 0.2.0; macOS and Linux, not Windows |
 
 More are planned. Each plugin lives under `plugins/<name>/` and installs independently — you take
 the ones you want.

@@ -41,7 +41,8 @@ import json
 import posixpath
 import re
 
-from siteconfig import validate_portfolio_settings, SiteConfigError, WORK_KEYS
+from siteconfig import (validate_portfolio_settings, SiteConfigError, WORK_KEYS, labels_nonempty,
+                        make_problem, schema_2_reasons)
 
 
 class ContentError(ValueError):
@@ -124,6 +125,46 @@ def _scalar(s, where):
     return s
 
 
+def _block_map(block, where):
+    """A block map of `k: v` lines; a `k:` line with nothing after it opens ONE more level of the same
+    (dev #853: `labels:` holds `meta:` and `groups:`, each a map of key to display label). `block` is
+    [(line number, indent, stripped line)]."""
+    base = min(ind for _n, ind, _b in block)
+    d = {}
+    i = 0
+    while i < len(block):
+        n, ind, b = block[i]
+        mm = re.match(r"^([^:]+):\s+(.*)$", b)
+        head = re.match(r"^([^:]+):\s*$", b)
+        if ind != base or b.startswith("- ") or not (mm or head):
+            raise ContentError("%s:%d: cannot read this nested line: %s" % (where, n, b))
+        k2 = (mm or head).group(1).strip()
+        if k2 in d:
+            raise ContentError("%s:%d: duplicate key '%s'" % (where, n, k2))
+        i += 1
+        if mm:
+            d[k2] = _scalar(mm.group(2), where)
+            continue
+        sub = []
+        while i < len(block) and block[i][1] > base:
+            sub.append(block[i])
+            i += 1
+        if not sub:
+            raise ContentError("%s:%d: cannot read this nested line: %s" % (where, n, b))
+        sbase = min(x[1] for x in sub)
+        inner = {}
+        for sn, sind, sb in sub:
+            sm = re.match(r"^([^:]+):\s+(.*)$", sb)
+            if sind != sbase or sb.startswith("- ") or not sm:
+                raise ContentError("%s:%d: cannot read this nested line: %s" % (where, sn, sb))
+            k3 = sm.group(1).strip()
+            if k3 in inner:
+                raise ContentError("%s:%d: duplicate key '%s'" % (where, sn, k3))
+            inner[k3] = _scalar(sm.group(2), where)
+        d[k2] = inner
+    return d
+
+
 def parse_front_matter(text, where):
     """Return (meta dict, body text). A subset of YAML: `key: scalar`, `key: [a, b]`, a block
     list of `- item`, or a one-level block map of `k: v`. A duplicate key or a line it cannot
@@ -158,23 +199,14 @@ def parse_front_matter(text, where):
             while i < end and (lines[i].startswith("  ") or lines[i].startswith("\t") or
                                not lines[i].strip()):
                 if lines[i].strip():
-                    block.append((i + 1, lines[i].strip()))
+                    block.append((i + 1, len(lines[i]) - len(lines[i].lstrip(" \t")), lines[i].strip()))
                 i += 1
             if not block:
                 meta[key] = ""
-            elif all(b.startswith("- ") or b == "-" for _n, b in block):
-                meta[key] = [_scalar(b[2:], where) for _n, b in block]
+            elif all(b.startswith("- ") or b == "-" for _n, _ind, b in block):
+                meta[key] = [_scalar(b[2:], where) for _n, _ind, b in block]
             else:
-                d = {}
-                for n, b in block:
-                    mm = re.match(r"^([^:]+):\s+(.*)$", b)
-                    if not mm or b.startswith("- "):
-                        raise ContentError("%s:%d: cannot read this nested line: %s" % (where, n, b))
-                    k2 = mm.group(1).strip()
-                    if k2 in d:
-                        raise ContentError("%s:%d: duplicate key '%s'" % (where, n, k2))
-                    d[k2] = _scalar(mm.group(2), where)
-                meta[key] = d
+                meta[key] = _block_map(block, where)
         elif val.startswith("["):
             if not val.rstrip().endswith("]"):
                 raise ContentError("%s:%d: a list opens with [ but does not close" % (where, lineno))
@@ -318,13 +350,15 @@ def _page(files, path, allowed, where_name):
     return Page(path, meta, body)
 
 
-def _validate_piece(portfolio, slug, path, files, drafts, media_paths):
+def _validate_piece(portfolio, slug, path, files, drafts, media_paths, featured_from="home"):
     meta, body = parse_front_matter(decode_text(files[path], path), path)
     if "draft" in meta and not isinstance(meta["draft"], bool):
         raise ContentError("%s: front matter 'draft' must be true or false" % path)
     if meta.get("draft") and not drafts:
         return None
     _need_str(meta, "title", path, required=True)
+    if featured_from == "flags" and "featured" in meta and not isinstance(meta["featured"], bool):
+        raise ContentError("%s: front matter 'featured' must be true or false (featuredFrom is flags)" % path)
     for k in portfolio.settings["required"]:
         v = meta.get(k)
         if v is None or v == "" or v == []:
@@ -356,6 +390,107 @@ def _validate_piece(portfolio, slug, path, files, drafts, media_paths):
     return Piece(portfolio.slug, slug, path, meta, body)
 
 
+# What a `hub` or `custom` site does not build (design-site-adoption section 4.1), found by path.
+_KIND_REFUSAL = ("only a portfolio site builds this; set siteKind to portfolio, or prefix the "
+                 "folder with _ to keep it as source material")
+
+
+def kind_layout_problems(files, kind):
+    """Every path under `content/` that a `hub` or `custom` site refuses, each with its fix. Empty
+    for a portfolio. A silently unbuilt portfolio would read as an empty one (CLAUDE.md, traps 1-4),
+    so a stray `content/work/` is refused rather than ignored. Folders starting `_`, shared media
+    and captured references stay allowed: nothing builds them on any kind."""
+    if kind == "portfolio":
+        return []
+    out = []
+    seen = set()
+    for path in sorted(p for p in files if p.startswith("content/")):
+        parts = path.split("/")
+        if path in ("content/home.md", "content/about.md"):
+            out.append("%s: %s" % (path, _KIND_REFUSAL.replace("prefix the folder with _",
+                                                                "rename the file with a leading _")))
+            continue
+        if len(parts) >= 3 and not parts[1].startswith("_") and parts[1] not in ("media", "references"):
+            folder = "content/%s/" % parts[1]
+            if folder not in seen:
+                seen.add(folder)
+                what = "a resume source" if parts[1] == "resume" else "a portfolio folder"
+                out.append("%s (%s): %s" % (folder, what, _KIND_REFUSAL))
+    return out
+
+
+def no_page_message(folder):
+    return ("%s has no page.md: a folder under content/ is a portfolio only when it has one (put "
+            "non-portfolio files outside content/, or start the folder name with _)" % folder)
+
+
+def _home_featured_list(files):
+    """True when content/home.md carries a `featured:` entry. An unreadable file is not reported
+    here: the loader refuses it, naming the line."""
+    raw = files.get("content/home.md")
+    if raw is None:
+        return False
+    try:
+        meta, _body = parse_front_matter(decode_text(raw, "content/home.md"), "content/home.md")
+    except ContentError:
+        return False
+    return "featured" in meta
+
+
+def layout_problems(files, site_kind, cfg=None):
+    """Every problem in the content TREE, all at once, each a `siteconfig.Problem` (design-site-adoption
+    sections 7.1, 4.1, 4.3, 6.2 and 3): a folder under content/ with no page.md, a hub or custom site
+    holding portfolio content, two home pages, two featured sources, and (when `cfg` is given) a tree
+    that needs schema 2 under a schema-1 config.
+
+    `files` is {repo path: bytes} (this module reads no file; the design's `root` is this mapping, so
+    adopt can pass a git tree and the build its commit). `cfg` is the parsed site.json, and may be None
+    when only the layout is asked about. Empty means the tree has none of these faults."""
+    out = []
+    if site_kind != "portfolio":
+        for text in kind_layout_problems(files, site_kind):
+            path = text.split(":", 1)[0].split(" ", 1)[0]
+            out.append(make_problem(text, path, "portfolio content", "none, on a %s site" % site_kind,
+                                    "set siteKind to portfolio, or prefix the folder with _ to keep it as "
+                                    "source material"))
+    else:
+        seen = set()
+        for path in sorted(p for p in files if p.startswith("content/")):
+            parts = path.split("/")
+            if len(parts) < 3 or parts[1].startswith("_") or parts[1] in ("media", "resume", "references"):
+                continue
+            name = parts[1]
+            folder = "content/%s/" % name
+            if folder in seen or name == "work" or folder + "page.md" in files:
+                continue
+            seen.add(folder)
+            out.append(make_problem(
+                no_page_message(folder), folder, "no page.md", "a page.md, or a folder name starting _",
+                "rename it to content/_%s (kept as source material, not built), or add a page.md so it "
+                "becomes a portfolio" % name, True))
+        if "site/src/index.html" in files and "content/home.md" in files:
+            out.append(make_problem(HOME_TWICE, "site/src/index.html", "two home pages",
+                                    "one: site/src/index.html or content/home.md",
+                                    "keep one: delete content/home.md to use the hand-made page, or "
+                                    "delete site/src/index.html to use the generated home"))
+        if cfg is not None and cfg.featuredFrom == "flags" and _home_featured_list(files):
+            out.append(make_problem(FEATURED_TWICE, "content/home.md", "a featured: list under flags",
+                                    "no featured: list", "remove the featured: list from content/home.md, "
+                                    "or drop featuredFrom"))
+    if cfg is not None and cfg.schema < 2:
+        for where, what, effect in schema_2_reasons(cfg, files):
+            out.append(make_problem("%s %s, which needs \"schema\": 2 in site/site.json (%s)"
+                                    % (where, what, effect), where, "schema 1", "schema 2",
+                                    "set \"schema\": 2 in site/site.json (a save by site-studio does this)",
+                                    True))
+    return out
+
+
+HOME_TWICE = "two home pages: site/src/index.html and content/home.md; keep one"
+FEATURED_TWICE = ("featuredFrom is flags, so content/home.md's featured: list would be ignored; remove it, "
+                  "or drop featuredFrom")
+
+
 def load_content(files, cfg, drafts=False, check_resume_pdf=False):
     """Build the validated model from {repo path: bytes} (only site/ and content/ paths are
     looked at). `drafts` includes `draft: true` pieces. `check_resume_pdf` is the publish-time
@@ -379,13 +514,13 @@ def load_content(files, cfg, drafts=False, check_resume_pdf=False):
         folder = "content/" + name + "/"
         page_path = folder + "page.md"
         if page_path not in files and name != "work":
-            raise ContentError("%s has no page.md: a folder under content/ is a portfolio only "
-                               "when it has one (put non-portfolio files outside content/, or "
-                               "start the folder name with _)" % folder)
+            raise ContentError(no_page_message(folder))
         if not SLUG_RE.match(name) or name in RESERVED_PORTFOLIO_NAMES:
             raise ContentError("%s: a portfolio folder name must be lower-case letters, digits "
                                "and hyphens (and not %s)" % (folder, ", ".join(RESERVED_PORTFOLIO_NAMES)))
         base = dict(cfg.work) if name == "work" else {}
+        if not labels_nonempty(base.get("labels")):
+            base.pop("labels", None)     # the defaulted, empty map is not an entry in a schema-1 file
         title = None
         intro = ""
         if page_path in files:
@@ -398,13 +533,14 @@ def load_content(files, cfg, drafts=False, check_resume_pdf=False):
                 if name == "work":
                     merged = dict(base)
                     merged.update(overrides)
-                    settings = validate_portfolio_settings(merged, "work")
+                    settings = validate_portfolio_settings(merged, "work", cfg.schema, cfg.featuredFrom)
                 else:
-                    settings = validate_portfolio_settings(overrides, page_path)
+                    settings = validate_portfolio_settings(overrides, page_path, cfg.schema, cfg.featuredFrom)
             except SiteConfigError as e:
-                raise ContentError(str(e).replace("site.json: ", "%s: " % page_path, 1))
+                raise ContentError("; ".join(p.message.replace("site.json: ", "%s: " % page_path, 1)
+                                             for p in e.problems))
         else:
-            settings = validate_portfolio_settings(base, "work")
+            settings = validate_portfolio_settings(base, "work", cfg.schema, cfg.featuredFrom)
         if name != "work" and "label" not in (meta if page_path in files else {}):
             settings["label"] = name.replace("-", " ").title()
         pf = Portfolio(name, settings, title or settings["label"], intro,
@@ -423,7 +559,7 @@ def load_content(files, cfg, drafts=False, check_resume_pdf=False):
             if not SLUG_RE.match(slug):
                 raise ContentError("content/%s/%s: a piece folder name must be lower-case letters, "
                                    "digits and hyphens" % (name, slug))
-            piece = _validate_piece(pf, slug, idx, files, drafts, media_paths)
+            piece = _validate_piece(pf, slug, idx, files, drafts, media_paths, cfg.featuredFrom)
             if piece is None:
                 continue
             pf.pieces.append(piece)

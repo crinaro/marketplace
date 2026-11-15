@@ -1,6 +1,6 @@
 ---
 name: setup
-description: 'Create the site''s two repositories, turn on GitHub Pages and an optional custom domain, and get this computer ready, one plain step at a time. Not for a site repo that already carries its own copy of the tools (adopt).'
+description: 'Create the site''s two repositories, turn on GitHub Pages and an optional custom domain, and get this computer ready, one plain step at a time. Not for a folder that already holds a site, or a repo that carries its own copy of the tools (adopt).'
 disable-model-invocation: true
 ---
 
@@ -11,6 +11,23 @@ does. Ask before every install. Every password is typed by the person into the s
 prompt, never into this chat. Never run `sudo`.
 
 Every script runs as `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/<name>.py"`.
+
+## Step 0: is there already a site here?
+
+Before anything is created, run:
+
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/repos.py" existing-site --dir .`
+
+It only reads. Its exit code decides:
+
+- **0, nothing found in this folder:** go on. This run asked the folder only; Step 2 asks GitHub too,
+  once the owner and the name are known.
+- **4, a site exists** (its line names what it found): **stop here.** Say "this folder already holds a
+  site; type /site-studio:adopt", and do nothing else. Setup never converts a site and never writes
+  over one; adopt is the one way to take an existing site in.
+- **Every other exit (3, and 1 or 2 as well):** NOT CHECKED. Read out its line, say that setup could
+  not check, and ask the person whether this folder already holds a site. Go on only if they say no.
+  An exit that is not 0 or 4 is never read as "nothing here".
 
 ## Step 1: this computer
 
@@ -32,18 +49,34 @@ Run `doctor.py` and read its report. Fix only what it reports, by platform:
 Run `doctor.py` again. Go on only when its report is clean, or the person chooses to go on without
 Chrome (then adding photos and capturing pages will refuse until Chrome is there; say so).
 
-## Step 2: the owner, the name, and the paper size
+## Step 2: the kind, the owner, and the name
 
-- The owner: the person's own GitHub account or an organization.
-- The site name. Explain the two kinds of GitHub Pages site plainly: the account's own site,
-  served at the root of `<owner>.github.io`, or a project site, served under `/<repo>/` until a
-  custom domain is set.
-- The resume paper size, Letter or A4. Ask; do not guess it from the computer's language.
+1. **The kind, first, in plain words:** "a portfolio of your work, a page of links (for you or for a
+   group), or a site you will make by hand". These are `portfolio`, `hub` and `custom`. A person who
+   describes a site they already have is not setting one up: say adopt, and stop.
+   - `portfolio`: the generated home, portfolios, about and resume pages.
+   - `hub`: one hand-written page of links (`site/src/index.html`), built as written, nothing
+     generated. It may concern several people.
+   - `custom`: any other hand-made site, built the same way.
+2. The owner: the person's own GitHub account or an organization.
+3. The site name. Explain the two kinds of GitHub Pages site plainly: the account's own site,
+   served at the root of `<owner>.github.io`, or a project site, served under `/<repo>/` until a
+   custom domain is set.
+4. **The resume paper size, Letter or A4, only for `portfolio`.** Ask; do not guess it from the
+   computer's language. A hub or custom site has no resume, so do not ask.
+5. **Ask GitHub whether a site is already there.** Run
+   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/repos.py" existing-site --dir . --repo <owner>/<name>`
+   and treat its exit exactly as in Step 0: 0 go on, 4 stop and point at `/site-studio:adopt`,
+   anything else NOT CHECKED (ask the person). It asks about two names only, `<owner>/<name>` and
+   `<owner>/<owner>.github.io`, so say what it said: "no site found under <name> or
+   <owner>.github.io", never "no site exists".
 
 ## Step 3: the two repositories
 
-`repos.py create`. It makes the private dev repo (`<name>-dev`) and the public repo (`<name>`),
-fills the dev repo from the plugin's starter site, commits and pushes it.
+`repos.py create --owner <owner> --name <name> --kind <kind>`. It makes the private dev repo
+(`<name>-dev`) and the public repo (`<name>`), fills the dev repo from the plugin's starter site for
+that kind, commits and pushes it. A `hub` or `custom` starter has no `content/` folder: its home
+page is `site/src/index.html`, and `site/site.json` carries `siteKind`.
 
 Then confirm, by reading the files, that the dev repo has:
 
@@ -133,5 +166,5 @@ fixes it, and wait for them.
 GitHub Pages is for a personal or project site, not for running an online business. Say so if the
 person describes a shop or a paid service.
 
-Record in `HANDOFF.md`: the two repos, the Pages URL, whether `main` is protected, the domain
+Record in `HANDOFF.md`: the site kind, the two repos, the Pages URL, whether `main` is protected, the domain
 state, and what `pages_check.py` last said was still to resolve or waiting.

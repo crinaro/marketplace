@@ -19,6 +19,12 @@ are model judgement and are NOT measured; the control is the person at the publi
 (design 7.4). The packet and the store sit in the person's own repo with no signature: this
 record protects against drift and accident, not against a model set on forging it.
 
+THE PACKET carries `siteKind` (packet `v` 2, dev #857, design-site-adoption section 9), so the privacy
+reviewer is TOLD whether it is looking at a portfolio, a links `hub` or a hand-made `custom` site. A
+hub or custom site's build digest also folds the kind in (build.py's module docstring), so changing
+the kind voids every recorded verdict; a portfolio's digest is unchanged, so the 0.2.0 upgrade
+voids none. A `v` 1 packet, left by 0.1.0, is refused with "run begin again".
+
 THE COVERAGE SET (named change M4) is the COMPLEMENT of an allow-list, not a list of kinds
 -----------------------------------------------------------------------------------------
 Every built file that is NEW or CHANGED against the baseline AND is not on the short list of
@@ -73,8 +79,13 @@ IGNORE_LINE = ".site-studio/review/"
 
 VERDICTS = ("clear", "accepted", "blocked")
 ROW_KEYS = ("v", "digest", "baseline", "verdict", "opened", "findings", "accepted", "at")
+# PACKET v2 (dev #857, design-site-adoption section 9): the packet gains `siteKind`, so a reviewer is told
+# the kind of site it is looking at instead of inferring it. A v1 packet (0.1.0) is refused by
+# `_load_packet` with its existing "run begin again" text. The packet is a per-review scratch file that
+# `begin` rebuilds, so no stored record changes shape.
+PACKET_VERSION = 2
 PACKET_KEYS = ("v", "digest", "baseline", "baseline_blobs", "coverage", "types", "files",
-               "not_read_pdfs", "not_read_note")
+               "not_read_pdfs", "not_read_note", "siteKind")
 
 # Pure-text types the pattern families scan completely: the ONLY kinds that may be left out of
 # the coverage set. Everything else, including every unknown type, is in it.
@@ -366,7 +377,7 @@ def begin(repo, baseline_fn=None, not_read_fn=None):
         note = ""
         nr_list = sorted(nr)
     packet = {
-        "v": 1, "digest": res.digest,
+        "v": PACKET_VERSION, "digest": res.digest, "siteKind": res.site_kind,
         "baseline": {"kind": base["kind"], "tree": base.get("tree"), "reason": base.get("reason", "")},
         "baseline_blobs": ({p: blobs[p] for p in sorted(files) if p in blobs} if blobs is not None else {}),
         "coverage": cov, "types": counts, "files": len(files),
@@ -385,6 +396,8 @@ def format_begin(packet, repo):
         lines.append("baseline: the live site (public tree %s)" % (b["tree"] or "?")[:12])
     else:
         lines.append("baseline: NONE (%s); every file that is not plain text is in the set" % b["reason"])
+    if packet.get("siteKind", "portfolio") != "portfolio":
+        lines.append("site kind: %s (a links or hand-made site: no pieces, no resume)" % packet["siteKind"])
     lines.append("built %d files; digest %s" % (packet["files"], packet["digest"]))
     lines.append("coverage set: %d file(s) to open" % len(packet["coverage"]))
     for t in sorted(packet["types"]):
@@ -408,8 +421,10 @@ def _load_packet(path):
             p = json.loads(fh.read().decode("utf-8"))
     except (OSError, ValueError):
         raise ReviewError("the packet %s cannot be read; run begin again" % path)
-    if not isinstance(p, dict) or p.get("v") != 1 or any(k not in p for k in PACKET_KEYS):
+    if not isinstance(p, dict) or p.get("v") != PACKET_VERSION or any(k not in p for k in PACKET_KEYS):
         raise ReviewError("the packet %s is not one this plugin wrote; run begin again" % path)
+    if p["siteKind"] not in ("portfolio", "hub", "custom"):
+        raise ReviewError("the packet's site kind is not one this plugin knows; run begin again")
     if not isinstance(p["digest"], str) or not _HEX64.match(p["digest"]):
         raise ReviewError("the packet's digest is malformed; run begin again")
     return p

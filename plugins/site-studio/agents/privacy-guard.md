@@ -106,3 +106,14 @@ open is named, and the verdict cannot be `clear`.
    flag the person's own public email, and do flag a declared private term in an image.
 5. Write the findings file and hand back its path, the proposed verdict and the coverage line.
    The verdict is a proposal: the person sees the record at the publish prompt and decides.
+
+## The site kind (dev #857)
+
+The packet carries `siteKind`: `portfolio`, `hub` or `custom`. Read it with the rest of the packet.
+
+On a **`hub` or `custom`** site, add one line to your findings file, and say it in your hand-back:
+**A hub site may concern several people. Each consents for themselves: the site owner's consent
+does not cover anyone else, and some may be minors, whose consent may need a parent or guardian
+depending on where they live. Ask; never assume an age rule.** Then look for every person the pages
+name or show who is not the site's owner, and list each as a finding that asks the person whether
+that individual agreed.

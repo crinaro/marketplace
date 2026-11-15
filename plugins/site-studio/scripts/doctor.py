@@ -7,7 +7,9 @@ standard library only. Prints one plain report, installs nothing, and exits 0 AL
 WHAT IT CHECKS: python3 3.9 or newer; git with a name and an email; `gh` installed; the repo's
 `site/site.json` carries the CANONICAL marker line (named change S10: siteconfig.py is the only
 writer of one canonical form, and a hand-edited file whose marker the SessionStart grep might not
-recognise is reported here as "re-save site.json", never silently ignored); Chrome found (design
+recognise is reported here as "re-save site.json", never silently ignored; a `site.json` with NO marker
+at all is not a file to re-save but a site site-studio does not manage yet, and is told to type
+/site-studio:adopt, dev #855); Chrome found (design
 5.2). In the FULL report only (setup, `doctor.py` with no flag) it also checks that `gh` is logged
 in and that the public repo is reachable with this login, that `main` is current, and one summary line
 of the Pages check (below).
@@ -48,6 +50,9 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 WINDOWS_SENTENCE = "site-studio 0.1.0 runs on macOS and Linux; Windows is not supported yet."
+# A site/site.json with no engine marker at all (dev #855, design 7.4): not a file to re-save, a site to adopt.
+UNMANAGED_SENTENCE = ("site/site.json was not made by site-studio: this is a site site-studio does not manage "
+                      "yet. Type /site-studio:adopt to convert it.")
 SUB_TIMEOUT = 3          # seconds, every local subprocess
 GH_TIMEOUT = 15          # seconds, the lazy gh calls of the full report only
 PAGES_BUDGET_S = 30      # seconds, the WHOLE pages line of the full report (AM10)
@@ -120,10 +125,15 @@ def _marker_check(repo):
     try:
         import siteconfig
         with open(path, "r", encoding="utf-8", newline="") as fh:
-            ok, reason = siteconfig.marker_status(fh.read())
+            state, reason = siteconfig.marker_state(fh.read())
     except (OSError, ImportError, UnicodeDecodeError) as e:
         return ("site.json", False, "cannot be read (%s)" % e)
-    return ("site.json", ok, "canonical marker" if ok else "%s; re-save site.json" % reason)
+    if state == siteconfig.MARKER_OK:
+        return ("site.json", True, "canonical marker")
+    if state == siteconfig.MARKER_ABSENT:
+        # a re-save cannot help a file site-studio never made: it is a site to adopt (dev #855)
+        return ("site.json", False, UNMANAGED_SENTENCE)
+    return ("site.json", False, "%s; re-save site.json" % reason)
 
 
 def hook_line(repo):
@@ -131,10 +141,17 @@ def hook_line(repo):
     try:
         if os.name == "nt":
             return WINDOWS_SENTENCE
-        bad = [("%s: %s" % (l, d)) for l, ok, d in local_checks(repo) if not ok]
-        if not bad:
+        found = [(l, d) for l, ok, d in local_checks(repo) if not ok]
+        if not found:
             return "site-studio: this computer is ready"
-        return "site-studio: needs attention - %s. Type /site-studio:setup to fix it." % "; ".join(bad)
+        text = "; ".join("%s: %s" % (l, d) for l, d in found)
+        rest = [1 for _l, d in found if d != UNMANAGED_SENTENCE]
+        if not rest:                  # only the unmanaged site.json: it already says what to type
+            return "site-studio: needs attention - %s" % text
+        if len(rest) < len(found):
+            return "site-studio: needs attention - %s Type /site-studio:setup to fix the rest." % (
+                text if text.endswith(".") else text + ".")
+        return "site-studio: needs attention - %s. Type /site-studio:setup to fix it." % text
     except Exception as e:
         return "site-studio: the machine check could not finish (%s: %s)" % (type(e).__name__, e)
 

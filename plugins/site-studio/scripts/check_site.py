@@ -17,7 +17,13 @@ docstring. (No such note exists yet.)
                site URL is known); files that must never be published (markdown sources, site.json,
                layout.html, *.pdf.json, .site-studio, decisions, originals, OS junk, editor leftovers,
                symlinks); URL-unsafe file names; every page has a doctype, <html lang>, balanced
-               structural tags, and exactly one <h1> (the 404 page and redirect stubs excepted).
+               structural tags, and exactly one <h1> (the 404 page and redirect stubs excepted); and,
+               from 0.2.0 (dev #852, design-site-adoption section 6.3), no unexpanded site-studio token
+               or section in ANY built .html file: a `{{` followed by optional spaces and `#`, `/` or a
+               letter is refused with its file:line. The builder expands or refuses every token it
+               knows, so this catches a builder defect that leaves a section marker behind, and text
+               such as `{{ two words }}` that no token regex matched (write &#123;&#123; to show braces
+               as text). `{{1}}` and `{{ }}` are not matched.
   comments     no HTML comment in a page, no CSS or SVG comment (the build strips the first two; this
                proves it). JavaScript comments are NOT in scope: the build does not strip them, and
                a private term inside one is caught by the privacy family anyway. A sourceMappingURL
@@ -143,6 +149,12 @@ import images  # noqa: E402
 import pdftext  # noqa: E402
 import siteconfig  # noqa: E402
 import platform_check  # noqa: E402
+
+# an unexpanded token or section marker in a built page (section 6.3): `{{`, optional spaces, then `#`, `/`
+# or a letter
+_UNEXPANDED = re.compile(r"\{\{\s*[#/]?[A-Za-z]")
+UNEXPANDED_MESSAGE = ("an unexpanded site-studio token or section; to show braces as text, "
+                      "write &#123;&#123;")
 
 FAMILIES = ("structure", "comments", "links", "reachable", "privacy", "domain", "media",
             "unfinished", "performance", "head", "nav", "basepath", "size")
@@ -699,6 +711,10 @@ class Checker(object):
                 self.r.add(fam, rel, "malformed markup: " + e)
             if rel != "404.html" and p.h1 != 1:
                 self.r.add(fam, rel, "expected exactly one <h1>, found %d" % p.h1)
+        for rel in sorted(self.pages):          # every built page, redirect stubs and the 404 page too
+            for lineno, line in enumerate(t.text(rel).split("\n"), 1):
+                if _UNEXPANDED.search(line):
+                    self.r.add(fam, "%s:%d" % (rel, lineno), UNEXPANDED_MESSAGE)
 
     # -- comments ---------------------------------------------------------------------------
     def comments(self):

@@ -20,6 +20,9 @@ Say it back in one sentence and name which of the three it touches:
 
 ## 2. Dispatch, in parallel when it touches more than one
 
+Call each advisor by its scoped name: `site-studio:brand-advisor`, `site-studio:portfolio-advisor`,
+`site-studio:presence-advisor`. The bare name can be taken over by a file in the person's own
+`.claude/agents/` with the same name, and the scoped name is not (adopt warns about such a file).
 Each brief names the dev repo's root, the scripts directory (`${CLAUDE_PLUGIN_ROOT}/scripts`,
 expanded) and that advisor's own REQUIRES from its definition. Pass on any constraint the person
 said in this session that is not yet in `decisions/`.
@@ -29,6 +32,12 @@ said in this session that is not yet in `decisions/`.
 Read each advisor's file. Give two or three options in all, not three per advisor: what changes,
 what it builds on, a real reference, and what it costs. Then one recommendation and the questions
 the person must answer first.
+
+**Show before you ask.** Show a quick preview of each visual option (a rendered sample or a screenshot)
+before asking the person to choose. Build the option as a sample on the person's own site and look at it with
+`preview.py` and `render.py`, or capture a screenshot of the real reference, and put each beside its option.
+An option about words or order needs no picture; an option about how the site looks does, and it is not
+put to the person as words alone.
 
 ## 4. Record what the person decides
 

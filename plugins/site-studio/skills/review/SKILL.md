@@ -26,15 +26,22 @@ Commit any pending change first: the review is of the committed tree, never the 
 `review_record.py begin`. It builds the publish build into `.site-studio/review/`, computes its
 digest, works out the coverage set (every public image, PDF and capture card that is new or changed
 against the live site, or all of them when there is no baseline), and writes
-`.site-studio/review/packet.json`. It prints the packet's path and which baseline it used.
+`.site-studio/review/packet.json`. It prints the packet's path and which baseline it used. The packet
+also carries `siteKind` (`portfolio`, `hub` or `custom`), and `begin` prints it for a hub or custom
+site.
 
 ## 3. content-editor and privacy-guard, in parallel
+
+Call each agent by its scoped name, `site-studio:privacy-guard` and `site-studio:content-editor`, in
+every dispatch of this skill. The bare name can be taken over by a file in the person's own
+`.claude/agents/` with the same name, and the scoped name is not (adopt warns about such a file).
 
 - **`privacy-guard`**: hand it the packet path **and nothing else**. No summary of the change and
   no reassurance: a fresh view is the point. It writes `.site-studio/review/opened.txt` (every
   file it opened) and a findings file with stable ids `F1`, `F2`, …, and proposes `clear` or
   `blocked`.
-- **`content-editor`**: hand it the changed pages and the build to read them in.
+- **`content-editor`**: hand it the changed pages and the build to read them in, and tell it the
+  site kind: the packet's `siteKind`.
 
 ## 4. The link report
 
@@ -44,7 +51,8 @@ link that moved). Show the list; the person says which to change.
 ## 5. visual-qa
 
 `render.py` on the changed pages (390 and 1440 wide, light and dark, full height). Then hand
-`visual-qa` the screenshot folder and the change in one sentence. With no Chrome, `render.py`
+`visual-qa` the screenshot folder and the change in one sentence, and tell it the site kind: the
+packet's `siteKind`. Call it as `site-studio:visual-qa`. With no Chrome, `render.py`
 refuses: put that in the list as "visual check not run", never as passed.
 
 ## 6. One ordered list

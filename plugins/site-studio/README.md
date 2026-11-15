@@ -1,4 +1,4 @@
-# site-studio: your own portfolio or resume site, kept in a private repo and published on GitHub Pages
+# site-studio: your own portfolio, resume or links site, kept in a private repo and published on GitHub Pages
 
 site-studio helps you build, check, preview and publish a personal site. You keep your content,
 photos, brand notes and decisions in a **private** "dev" repository. When you decide, the plugin
@@ -7,8 +7,10 @@ that GitHub Pages serves. Nothing private ever goes public, because the public r
 
 It does these jobs, each as a command you type or ask for in plain words:
 
-- **Set up** (`/site-studio:setup`): creates the two repositories, turns on GitHub Pages and, if you
-  want one, your own domain, and gets your computer ready, one plain step at a time.
+- **Set up** (`/site-studio:setup`): asks first what kind of site you are making (see below), checks
+  that there is not already a site in the folder or under the name you chose, then creates the two
+  repositories, turns on GitHub Pages and, if you want one, your own domain, and gets your computer
+  ready, one plain step at a time. A folder that already holds a site is sent to adopt instead.
 - **Add work** (`/site-studio:add-work`): takes the files for one piece of work, prepares the
   images, asks you for the story, previews it and saves it.
 - **Resume** (`/site-studio:resume`): one Markdown source makes both the resume page and its PDF.
@@ -23,13 +25,50 @@ It does these jobs, each as a command you type or ask for in plain words:
   concrete options in front of you. Nothing here publishes.
 - **Adopt** (`/site-studio:adopt`): if you already have a site repo that carries its own copy of
   these tools, converts it. Your content stays; the copies are retired on one branch for you to
-  review.
+  review. It lists every problem it finds in what it would write, all at once, and fixes the
+  mechanical ones itself (a clone-style `publicRepo`, a trailing slash, a content folder without a
+  `page.md`, label pairs) and lists each fix in its commit. It turns a hand-made page that only
+  forwards (a meta refresh) into a `redirects` entry, says which features your site uses and what
+  site-studio does about each, and proposes a site kind for you to confirm. It works from your
+  checkout's `HEAD` when that is ahead of `origin/main`, so a fix you just committed is what it
+  measures, and it says so first.
+  If one of your own agent files holds a standing rule of yours, adopt can carry that rule into your
+  site repo's `CLAUDE.md` (under "Standing rules carried by adopt") before it removes the file, so every
+  agent keeps working to it. Files under `.claude/rules/` reach the plugin's agents too, so you may move
+  those rules there if you prefer (measured on one Claude Code version, in a terminal session).
 - **Publish** (`/site-studio:publish`): a dry run first, then a public push after you confirm.
 - **Pages check** (`pages_check.py`, run by setup and publish, and summarised in the doctor report):
   reads your public repo's GitHub Pages settings and tells you, one line each, what still needs
   resolving and who does it. It only reads.
 - **Protect** (`repos.py protect`, offered by setup and publish, always after asking): adds a rule on
   the public repo's `main` that stops anyone force-pushing or deleting it.
+
+## Three kinds of site
+
+`site/site.json` says which, in `siteKind`:
+
+- **`portfolio`** (the default): a generated home page, portfolios of work, an about page and a resume
+  page with its PDF. This is what 0.1.0 made, and a portfolio that uses nothing newer is still written so
+  that 0.1.0 can read it.
+- **`hub`**: one hand-written page of links (`site/src/index.html`), for you or for a group of people.
+  Nothing is generated.
+- **`custom`**: any other hand-made site, built page by page from `site/src/` as you wrote it.
+
+A hub or custom site uses the same checks, preview, review and publish as a portfolio; it only has no
+pieces or resume to check. Newer features that need `"schema": 2` in `site/site.json`, and the plugin
+writes the lowest schema your site needs:
+
+- a **hand-made home page**: a `site/src/index.html` with no `content/home.md` is the home page, as
+  written (both together are refused, naming both files);
+- **display labels**: `work.labels` names what a field is called where it is printed, without changing
+  the plain keys in `meta` and `groups`;
+- a **page section**, `{{#page:resume}}...{{/page}}`, that shows a link only when that page is built, and
+  **`{{featured}}`**, which shows the featured pieces wherever you put it. By default the featured
+  pieces are the `featured:` list in `content/home.md`; with `"featuredFrom": "flags"` they are the
+  pieces whose own front matter says `featured: true`.
+
+`docs/content-model.md` (in the development repository, not the installed plugin) has the details. If you
+used 0.1.0 on another computer, update site-studio there before you build a schema 2 site.
 
 ## Install
 

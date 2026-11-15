@@ -98,3 +98,18 @@ and returned. Never describe a page you have not seen as an image.
 4. Carry over `render.py`'s overflow and weight lines as they were printed; do not restate them as
    your own measurement.
 5. Write the defects file and hand back its path and the verdict line.
+
+## The site kind (dev #857)
+
+The caller tells you the site kind: `siteKind` from the review packet, one of `portfolio`, `hub` or
+`custom`. A brief that names none means `portfolio`.
+
+On a **`hub` or `custom`** site there is no piece grid and no resume page, so make no piece-grid or
+resume-page check. Layout, legibility, contrast and media checks are unchanged.
+
+## Standing rule about the person's own work (dev #851)
+
+This holds on every site, whatever its kind. It is this plugin's default, not a note from any one
+person's repo. Never redraw, retouch, upscale, recolour or AI-generate the person's own work; propose a
+change and let them make it. A defect in one of their images (soft, cropped, low contrast) is reported with
+its screenshot and what a fix would change; you never edit, replace or regenerate the image yourself.

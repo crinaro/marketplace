@@ -4,8 +4,9 @@ publish, and protect the public repo's `main` (dev #835, design 6.2 steps 3 and 
 design amendment 1 sections A3 and A4.2, named changes AM1, AM4, AM6, AM9, AS4).
 Python 3.9, standard library only.
 
-    repos.py create        --owner O --name N [--dest DIR] [--person-name P] [--site-title T]
-    repos.py scaffold      --dest DIR --owner O --name N [--person-name P] [--site-title T]
+    repos.py create        --owner O --name N [--dest DIR] [--person-name P] [--site-title T] [--kind K]
+    repos.py scaffold      --dest DIR --owner O --name N [--person-name P] [--site-title T] [--kind K]
+    repos.py existing-site [--dir DIR] [--repo O/N]
     repos.py first-publish [--repo DIR]
     repos.py protect       [--repo DIR] [--fix] [--classic]
 
@@ -56,6 +57,21 @@ classic protection that falls short exists, because that PUT REPLACES the whole 
 admins are bound by either is UNDETERMINED (U7) until P-10. A null `publicRepo` refuses (AM9), and so does
 a cloud session (`CLAUDE_CODE_REMOTE=true`), as `deploy.py` does.
 
+SITE KINDS (dev #857, design-site-adoption section 8). `--kind` is `portfolio` (the default: the
+starter as 0.1.0), `hub` or `custom`. `templates/starter/` stays the shared base; for a hub or
+custom site the base's `content/` is left out (nothing builds it) and `templates/kinds/<kind>/` is
+laid over it, so `site/src/index.html` is the home page. `site.json` is still written through
+siteconfig.py, with `siteKind` and no `work` or `resume`.
+
+`existing-site` (dev #857, #854) is the check setup runs before it creates anything, and it only
+READS. Exit 0: nothing found (no `site/site.json` in `--dir`, and, with `--repo O/N`, `GET
+repos/O/N/pages` and `GET repos/O/O.github.io/pages` both answered 404). Exit 4: a site exists, and
+the line names the signal (`site/site.json` is present, or a Pages GET answered 200). Exit 3: NOT
+CHECKED (no `gh`, no network, 401, 403, 5xx or any other answer): never read as "nothing here". A
+404 means no Pages site, OR no such repository, OR a repository this login cannot see, so the
+message names exactly what was asked and never says "no site exists". Setup treats every exit other
+than 0 and 4 (1 and 2 included) as NOT CHECKED.
+
 The starter's CLAUDE.md carries the pointer line named change S8 requires (test_repos pins it
 word for word), and its .gitignore carries `.claude/worktrees/` (S2).
 """
@@ -82,6 +98,7 @@ import platform_check  # noqa: E402
 
 PLUGIN = os.path.dirname(HERE)
 STARTER = os.path.join(PLUGIN, "templates", "starter")
+KINDS_DIR = os.path.join(PLUGIN, "templates", "kinds")
 SCAFFOLD_SUBJECT = "site-studio: starter site"
 DEFAULT_BASE = "https://github.com"
 _OWNER = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
@@ -124,9 +141,25 @@ def _dest_name(rel):
     return "/".join("." + p[4:] if p.startswith("dot-") else p for p in rel.split("/"))
 
 
-def scaffold(dest, owner, name, person_name=None, site_title=None):
-    """Write the starter into `dest` (absent or empty). Returns the sorted relative paths written."""
+def _walk_template(root, skip_content=False):
+    """(source path, destination-relative path) for every file under a template folder. A hub or
+    custom site leaves the base's `content/` out: nothing builds it on those kinds."""
+    for d, _dirs, files in os.walk(root):
+        for f in files:
+            src = os.path.join(d, f)
+            rel = os.path.relpath(src, root).replace(os.sep, "/")
+            if skip_content and rel.split("/")[0] == "content":
+                continue
+            yield src, _dest_name(rel)
+
+
+def scaffold(dest, owner, name, person_name=None, site_title=None, kind="portfolio"):
+    """Write the starter into `dest` (absent or empty). Returns the sorted relative paths written.
+    `kind` is the site kind (siteconfig.SITE_KINDS); a hub or custom site gets the shared base
+    without `content/`, with `templates/kinds/<kind>/` laid over it."""
     check_names(owner, name)
+    if kind not in siteconfig.SITE_KINDS:
+        raise RepoError("the site kind must be one of %s" % ", ".join(siteconfig.SITE_KINDS))
     if os.path.exists(dest) and (not os.path.isdir(dest) or os.listdir(dest)):
         raise RepoError("%s already exists and is not empty" % dest)
     person_name = (person_name or owner).strip()
@@ -134,34 +167,44 @@ def scaffold(dest, owner, name, person_name=None, site_title=None):
     public, preview = site_urls(owner, name)
     subs = {"@@NAME@@": person_name, "@@SITE_TITLE@@": site_title, "@@PUBLIC_REPO@@": public,
             "@@OWNER@@": owner}
+    sources = dict((rel, src) for src, rel in _walk_template(STARTER, skip_content=(kind != "portfolio")))
+    if kind != "portfolio":
+        overlay = os.path.join(KINDS_DIR, kind)
+        if not os.path.isdir(overlay):
+            raise RepoError("the plugin carries no starter for a %s site (templates/kinds/%s is missing)"
+                            % (kind, kind))
+        sources.update(dict((rel, src) for src, rel in _walk_template(overlay)))
     written = []
-    for d, _dirs, files in os.walk(STARTER):
-        for f in files:
-            src = os.path.join(d, f)
-            rel = _dest_name(os.path.relpath(src, STARTER).replace(os.sep, "/"))
-            with open(src, "r", encoding="utf-8", newline="") as fh:
-                text = fh.read()
-            for k, v in subs.items():
-                text = text.replace(k, v)
-            out = os.path.join(dest, *rel.split("/"))
-            os.makedirs(os.path.dirname(out), exist_ok=True)
-            with open(out, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(text)
-            written.append(rel)
-    siteconfig.write(os.path.join(dest, "site", "site.json"), {
-        "schema": 1, "engine": "site-studio", "name": person_name, "siteTitle": site_title,
-        "publicRepo": public, "previewUrl": preview, "domain": None, "cutover": False,
-        "publicEmails": [], "privateTerms": [],
-        "work": {"label": "Projects", "description": "Selected projects by %s." % person_name},
-        "redirects": {}, "resume": None, "budgets": {}})
+    for rel in sorted(sources):
+        with open(sources[rel], "r", encoding="utf-8", newline="") as fh:
+            text = fh.read()
+        for k, v in subs.items():
+            text = text.replace(k, v)
+        out = os.path.join(dest, *rel.split("/"))
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        written.append(rel)
+    raw = {"schema": 1, "engine": "site-studio", "name": person_name, "siteTitle": site_title,
+           "publicRepo": public, "previewUrl": preview, "domain": None, "cutover": False,
+           "publicEmails": [], "privateTerms": [], "redirects": {}, "budgets": {}}
+    if kind == "portfolio":
+        raw["work"] = {"label": "Projects", "description": "Selected projects by %s." % person_name}
+        raw["resume"] = None
+    else:
+        raw["schema"] = 2
+        raw["siteKind"] = kind
+    siteconfig.write(os.path.join(dest, "site", "site.json"), raw)
     written.append("site/site.json")
     return sorted(written)
 
 
 def create(owner, name, dest=None, person_name=None, site_title=None, remote_base=DEFAULT_BASE,
-           gh_cmd="gh", out=None):
+           gh_cmd="gh", out=None, kind="portfolio"):
     out = out or sys.stdout
     check_names(owner, name)
+    if kind not in siteconfig.SITE_KINDS:
+        raise RepoError("the site kind must be one of %s" % ", ".join(siteconfig.SITE_KINDS))
     dest = os.path.abspath(dest or "%s-dev" % name)
     if os.path.exists(dest) and (not os.path.isdir(dest) or os.listdir(dest)):
         raise RepoError("%s already exists and is not empty" % dest)
@@ -176,7 +219,7 @@ def create(owner, name, dest=None, person_name=None, site_title=None, remote_bas
         raise RepoError("%s was created, but %s was not: %s" % (dev_repo, public_repo,
                                                                  (err.strip().splitlines() or ["gh failed"])[-1]))
     print("created %s (public)" % public_repo, file=out)
-    written = scaffold(dest, owner, name, person_name, site_title)
+    written = scaffold(dest, owner, name, person_name, site_title, kind)
     deploy._git(dest, "init", "-q", "-b", "main")
     deploy._git(dest, "add", "--", *written)
     deploy._git(dest, "commit", "-q", "-m", SCAFFOLD_SUBJECT)
@@ -238,6 +281,54 @@ def first_publish(repo, public_url=None, gh_cmd="gh", hooks=None, interval=None,
     print("AMBER: pushed and verified; Pages has not finished building after %d minutes (last status: %s)"
           % (max(1, int(timeout // 60)), last or "unknown"), file=out)
     return deploy.EXIT_AMBER
+
+
+# ---------------------------------------------------------------- existing-site (dev #857, #854)
+
+EXISTING_NONE, EXISTING_NOT_CHECKED, EXISTING_FOUND = 0, 3, 4
+
+
+def existing_site(dir_, repo=None, gh_cmd="gh", out=None):
+    """Is there already a site here? Read-only: the one thing it may start is `gh api` with the GET
+    method (and `_api` is the only caller). Returns 0 (nothing found), 4 (a site exists, the line
+    names the signal) or 3 (NOT CHECKED: it could not ask, and 3 is never read as "nothing here")."""
+    out = out or sys.stdout
+    local = os.path.join(dir_, "site", "site.json")
+    if os.path.isfile(local):
+        print("existing-site: a site exists: site/site.json is present in %s" % os.path.abspath(dir_), file=out)
+        return EXISTING_FOUND
+    if not repo:
+        print("existing-site: no site/site.json in %s. The Pages check was not asked (no --repo)."
+              % os.path.abspath(dir_), file=out)
+        return EXISTING_NONE
+    owner, _, name = repo.partition("/")
+    try:
+        check_names(owner, name)
+    except RepoError as e:
+        print("NOT CHECKED: %s" % e, file=out)
+        return EXISTING_NOT_CHECKED
+    names = ["%s/%s" % (owner, name)]
+    user_site = "%s/%s.github.io" % (owner, owner)
+    if user_site.lower() != names[0].lower():
+        names.append(user_site)
+    for n in names:
+        try:
+            r = _api("GET", "repos/%s/pages" % n, gh_cmd=gh_cmd)
+        except RepoError as e:
+            print("NOT CHECKED: could not ask GitHub about %s: %s" % (n, e), file=out)
+            return EXISTING_NOT_CHECKED
+        if r.status == 200:
+            print("existing-site: a site exists: GET repos/%s/pages answered 200 (%s serves GitHub Pages)"
+                  % (n, n), file=out)
+            return EXISTING_FOUND
+        if r.status != 404:
+            print("NOT CHECKED: GET repos/%s/pages answered %s (%s); this is not a 'no site' answer"
+                  % (n, r.status, _one_line(r.message) or "no message"), file=out)
+            return EXISTING_NOT_CHECKED
+    print("existing-site: no site found under %s (GitHub answered 404 for each; a 404 also means no such "
+          "repository, or one this login cannot see, so this is not proof that none exists)"
+          % " or ".join(names), file=out)
+    return EXISTING_NONE
 
 
 # ---------------------------------------------------------------- protect (AM6, AS4)
@@ -432,6 +523,10 @@ def build_parser():
         p.add_argument("--dest")
         p.add_argument("--person-name")
         p.add_argument("--site-title")
+        p.add_argument("--kind", choices=siteconfig.SITE_KINDS, default="portfolio")
+    e = sub.add_parser("existing-site", allow_abbrev=False)
+    e.add_argument("--dir", default=".")
+    e.add_argument("--repo")
     f = sub.add_parser("first-publish", allow_abbrev=False)
     f.add_argument("--repo", default=".")
     q = sub.add_parser("protect", allow_abbrev=False)
@@ -448,15 +543,21 @@ def main(argv=None, **kw):
     args = build_parser().parse_args(argv)
     try:
         if args.cmd == "create":
-            create(args.owner, args.name, args.dest, args.person_name, args.site_title)
+            create(args.owner, args.name, args.dest, args.person_name, args.site_title, kind=args.kind)
         elif args.cmd == "scaffold":
             dest = os.path.abspath(args.dest or "%s-dev" % args.name)
-            files = scaffold(dest, args.owner, args.name, args.person_name, args.site_title)
+            files = scaffold(dest, args.owner, args.name, args.person_name, args.site_title, args.kind)
             print("scaffolded %d files into %s" % (len(files), dest))
+        elif args.cmd == "existing-site":
+            return existing_site(args.dir, args.repo, **kw)
         elif args.cmd == "protect":
             return protect(args.repo, args.fix, args.classic, **kw)
-        else:
+        elif args.cmd == "first-publish":
             return first_publish(args.repo, **kw)
+        else:
+            # A dispatch slip must never turn one subcommand into another (dev #857: the old
+            # trailing `else` ran first-publish for anything it did not know).
+            raise RepoError("unknown subcommand %r" % (args.cmd,))
         return 0
     except (RepoError, deploy.DeployError, siteconfig.SiteConfigError, build.BuildError) as e:
         print("repos refused: %s" % e)

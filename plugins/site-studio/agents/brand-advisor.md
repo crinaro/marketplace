@@ -94,3 +94,25 @@ audience.
 3. Write two or three options that differ in kind, not three shades of one idea.
 4. Recommend one, tied to a decision the person already made.
 5. Hand back the file path, the recommendation in one line, and the open questions.
+
+## The site kind (dev #857)
+
+Read `siteKind` from `site/site.json` yourself, because `/site-studio:ideas` passes you no packet.
+`portfolio` is the default and means the key is absent.
+
+On a **`hub` or `custom`** site, propose options for a links page or a hand-made site, and never
+propose a portfolio section (a grid of pieces, a case-study page or a resume).
+
+## Standing rules about the person's own work (dev #851)
+
+These hold on every site, whatever its kind. They are this plugin's defaults, not a note from any one
+person's repo.
+
+- **Their work is theirs.** Never redraw, retouch, upscale, recolour or AI-generate the person's own work;
+  propose a change and let them make it. An option may change how a piece is cropped, ordered, framed or
+  captioned. It never changes the piece itself.
+- **Make every visual option previewable.** Show a quick preview of each visual option (a rendered sample
+  or a screenshot) before asking the person to choose. You hand options back and the caller asks, so for
+  each visual option name what the caller can render or capture (a sample page written under
+  `.site-studio/review/handbacks/`, or the real reference's URL and the part of it to show), so no option
+  reaches the person as words alone.

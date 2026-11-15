@@ -104,3 +104,13 @@ fill in.
 3. Judge voice against `BRAND.md` only, never against your own taste, and quote the sentence.
 4. Check consistency across the listed pages: the same role, date or name said the same way.
 5. Write the findings file, then hand back its path and the verdict line.
+
+## The site kind (dev #857)
+
+The caller tells you the site kind: `siteKind` from the review packet, one of `portfolio`, `hub` or
+`custom`. A brief that names none means `portfolio`.
+
+On a **`hub` or `custom`** site there are no pieces, no case studies and no resume page, so ask no
+question about any of them. Check instead that each link's text matches its target (a link named for
+one person or page that goes somewhere else is a finding), and trace every claim on a page against
+`decisions/`, as on any site.

@@ -17,7 +17,12 @@ the committed tree at HEAD (only `site/` and `content/` are ever read) and of no
   * no clock, no mtime, no mode, no locale, no TZ, no cwd, no PYTHONHASHSEED, no SOURCE_DATE_EPOCH;
   * every walk is sorted by the UTF-8 bytes of the NFC path; text is LF; JSON (none today) would
     be sort_keys with compact separators;
-  * the digest is the SHA-256 of `<NFC path> NUL <sha256 of content> LF` per file, in that order.
+  * the digest is the SHA-256 of `<NFC path> NUL <sha256 of content> LF` per file, in that order,
+    followed by ONE final line, `siteKind NUL <kind> LF`, when and only when the site's `siteKind`
+    is not `portfolio` (dev #857, design-site-adoption section 9). A `hub` and a `custom` site build
+    identically from the same `site/src`, yet the reviewers' briefs differ by kind, so a kind change
+    must void every recorded verdict. A portfolio's digest has no such line, so it is byte-identical
+    to the 0.1.0 digest and the upgrade voids no recorded review (test_build.PortfolioUnchanged).
 
 BUILD DATES (named changes S6 and M2). A date the build prints comes from the newest commit that
 touched BUILD INPUT -- `git log -1 --format=%ct HEAD -- site content` -- never from HEAD itself,
@@ -35,6 +40,32 @@ digest, and the content must be reviewed again. That is intended: the review is 
 `preview_build` reads the working tree (tracked and untracked-but-not-ignored files), so a draft
 the person is writing shows. It has no digest function and no digest attribute; the CLI's
 `--digest` flag refuses together with `--drafts`.
+
+SITE KINDS (dev #857, design-site-adoption section 4). `site.json` `siteKind` is `portfolio` (the
+default: the generated home, portfolios, about and resume, as 0.1.0), `hub` or `custom`. A `hub` or
+`custom` site builds every page from `site/src/` as written, with tokens expanded, and GENERATES
+NOTHING: no home, no portfolio, no resume. It refuses portfolio content (`content/home.md`,
+`content/about.md`, portfolio folders, a resume source) and the `work`, `resume` and `featuredFrom`
+keys, and it requires `site/src/index.html`. `{{nav}}` on such a site is exactly one Home item.
+Every other site.json key (redirects, budgets, privateTerms, publicEmails, cutover) applies
+unchanged. Before it builds, `siteconfig.check_tree_schema` refuses a schema-1 `site.json` over a
+tree that needs schema 2.
+
+ONE HOME SOURCE (dev #856, design-site-adoption section 4.3). For a portfolio the home page has ONE
+authored source: a hand-made `site/src/index.html` (the generated home is skipped; the site is schema
+2) or `content/home.md` (the generated home, as 0.1.0), never both: two refuse, naming both files. With
+neither, the generated home is built from the site title, as 0.1.0 does.
+
+DISPLAY LABELS (dev #853, section 5). `work.labels` (or a portfolio's `page.md` `labels`) names what a
+meta key and a group are CALLED where they are printed: the `<dt>` on a piece page, a labelled key's
+value on a card (`Label: value`; a bare key prints its value alone, as 0.1.0), and a group heading on
+the index. A key with no label keeps today's derived label.
+
+SECTIONS AND THE FEATURED SELECTION (dev #852, section 6). `{{#page:X}}...{{/page}}` renders its block
+only when page X is built in this build, and nothing otherwise; an X that could not exist for the site,
+an unclosed section and a nested one are refused. `{{featured}}` renders the selection as cards: the
+`content/home.md` `featured:` list (the default, as 0.1.0) or, under `featuredFrom: "flags"`, the pieces
+whose front matter says `featured: true`, in portfolio then piece order, a draft never.
 
 DEFAULT LAYOUT AND TOKENS. `site/templates/layout.html` is the page shell for generated pages and
 must hold `{{content}}`. Tokens, in the layout, in `site/src` HTML pages and in Markdown bodies:
@@ -88,11 +119,12 @@ class BuildResult(object):
 
 
 class PublishResult(BuildResult):
-    """What `publish_build` returns: a BuildResult plus the digest."""
+    """What `publish_build` returns: a BuildResult plus the digest and the site kind it covers."""
 
-    def __init__(self, out_dir, files, pages, site_url, drafts, notes, digest):
+    def __init__(self, out_dir, files, pages, site_url, drafts, notes, digest, site_kind="portfolio"):
         BuildResult.__init__(self, out_dir, files, pages, site_url, drafts, notes)
         self.digest = digest
+        self.site_kind = site_kind
 
 
 # ---------------------------------------------------------------- git access
@@ -241,6 +273,7 @@ _HTML_COMMENT = re.compile(r"<!--.*?-->", re.S)
 _CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
 _STYLE_BLOCK = re.compile(r"(<style\b[^>]*>)(.*?)(</style>)", re.S | re.I)
 _TOKEN = re.compile(r"\{\{\s*([A-Za-z]+)(?::([^{}\s]+))?\s*\}\}")
+_SECTION = re.compile(r"\{\{\s*#page:([^{}\s]+)\s*\}\}|\{\{\s*/page\s*\}\}")
 
 
 def strip_html_comments(text):
@@ -309,6 +342,7 @@ class _Builder(object):
         self.used_refs = set()
         self.notes = []
         self.media_out = dict((p, nfc(o)) for p, o in model.media.items())
+        self._selection = None
 
     # ---- output registry
     def add(self, out_path, data, source):
@@ -338,6 +372,22 @@ class _Builder(object):
             if path.startswith("site/src/") and path.lower().endswith(HTML_EXTS):
                 known.add(nfc(path[len("site/src/"):]))
         self.known = known
+        # what a `{{#page:X}}` may NAME: a page that could exist for this site, built or not (a draft,
+        # a resume not yet committed), so a misspelt X is refused instead of rendering nothing forever
+        exist = {"home"}
+        for path in self.files:
+            if path.startswith("site/src/") and path.lower().endswith(HTML_EXTS):
+                exist.add(_page_dir(nfc(path[len("site/src/"):])))
+        if self.cfg.siteKind == "portfolio":
+            exist |= {"about", "resume", "work"}
+            slugs = set(pf.slug for pf in self.model.portfolios)
+            exist |= slugs
+            for path in self.files:
+                parts = path.split("/")
+                if (len(parts) == 4 and parts[0] == "content" and parts[1] in slugs
+                        and parts[3] == "index.md"):
+                    exist.add("%s/%s" % (parts[1], parts[2]))
+        self.could_exist = exist
 
     def page_key_to_out(self):
         return dict((_page_dir(o), o) for o in self.known)
@@ -357,7 +407,58 @@ class _Builder(object):
             lis.append('<li><a href="%s"%s>%s</a></li>' % (rel_link(current_out, to), cur, esc(label)))
         return '<nav class="site-nav"><ul>%s</ul></nav>' % "".join(lis)
 
-    def expand(self, text, current_out, source, extra=None, escape=True):
+    def sections(self, text, source):
+        """Resolve `{{#page:X}}...{{/page}}` before any token is read: a block whose page is built stays
+        (its markers gone), any other block is dropped whole, so a `{{link:X}}` inside an absent section
+        is never looked up. Refuses an unclosed, a stray and a nested section, and an X that could not
+        exist for this site (design section 6.1)."""
+        keys = self.page_key_to_out()
+        keys.setdefault("home", keys.get(""))
+        out, pos, name = [], 0, None
+        for m in _SECTION.finditer(text):
+            if m.group(1) is not None:
+                if name is not None:
+                    raise BuildError("%s: {{#page:%s}} opens inside the section {{#page:%s}}; sections do "
+                                     "not nest" % (source, m.group(1), name))
+                name = m.group(1).strip("/")
+                if name not in self.could_exist and name not in keys:
+                    raise BuildError("%s: {{#page:%s}} names a page this site cannot have (a misspelt "
+                                     "name would render nothing for ever)" % (source, name))
+                out.append(text[pos:m.start()])
+                pos = m.end()
+            else:
+                if name is None:
+                    raise BuildError("%s: {{/page}} closes a section that was never opened" % source)
+                if name in keys:
+                    out.append(text[pos:m.start()])
+                name, pos = None, m.end()
+        if name is not None:
+            raise BuildError("%s: {{#page:%s}} is never closed with {{/page}}" % (source, name))
+        out.append(text[pos:])
+        return "".join(out)
+
+    def selection(self):
+        """The featured pieces, once per build: `content/home.md`'s `featured:` list in its order
+        (featuredFrom home, as 0.1.0), or the pieces flagged `featured: true` (featuredFrom flags), in
+        portfolio then piece order, a draft never (section 6.2)."""
+        if self._selection is None:
+            if self.cfg.featuredFrom == "flags":
+                self._selection = [pc for pf in self.model.portfolios for pc in pf.pieces
+                                   if pc.meta.get("featured") is True and not pc.draft]
+            else:
+                meta = self.model.home.meta if self.model.home else {}
+                pieces = []
+                for key in meta.get("featured", []):
+                    pc = self.model.piece(key)
+                    if pc is None:
+                        raise BuildError("content/home.md: featured '%s' is not a built piece (a draft "
+                                         "never builds)" % key)
+                    pieces.append(pc)
+                self._selection = pieces
+        return self._selection
+
+    def expand(self, text, current_out, source, extra=None, escape=True, featured=False):
+        text = self.sections(text, source)
         keys = self.page_key_to_out()
         keys.setdefault("home", keys.get(""))
         root = rel_link(current_out, "index.html")
@@ -377,6 +478,15 @@ class _Builder(object):
                 return rel_link(current_out, to)
             if name == "nav":
                 return self.nav_html(current_out)
+            if name == "featured" and arg is None:
+                if self.cfg.siteKind != "portfolio":
+                    raise BuildError("%s: {{featured}} is only for a portfolio site; a %s site has no pieces"
+                                     % (source, self.cfg.siteKind))
+                if not featured:
+                    raise BuildError("%s: {{featured}} is for site/src pages and the layout; a Markdown "
+                                     "body is escaped, so it would print as text" % source)
+                sel = self.selection()
+                return self.cards_html(sel, current_out) if sel else ""
             if name in values:
                 return values[name]
             if extra and name in extra:
@@ -515,7 +625,7 @@ class _Builder(object):
         layout = self.layout()
         extra = {"title": esc(title), "pageTitle": esc(page_title), "description": esc(desc),
                  "content": content_html}
-        text = self.expand(layout, out_path, "site/templates/layout.html", extra=extra)
+        text = self.expand(layout, out_path, "site/templates/layout.html", extra=extra, featured=True)
         text = self.presence(text, out_path, title, desc, image_out, og_type)
         self.pages[out_path] = {"kind": kind, "source": source, "lastmod_src": lastmod_src,
                                 "sitemap": sitemap}
@@ -539,7 +649,9 @@ class _Builder(object):
                  '<span class="card-title">%s</span>' % esc(piece.card_title)]
         if piece.meta.get("teaser"):
             parts.append('<span class="card-teaser">%s</span>' % esc(piece.meta["teaser"]))
-        cm = [C.meta_text(piece.meta[k]) for k in pf.settings["cardMeta"] if k in piece.meta]
+        names = pf.settings["labels"]["meta"]
+        cm = [("%s: %s" % (names[k], C.meta_text(piece.meta[k])) if k in names
+               else C.meta_text(piece.meta[k])) for k in pf.settings["cardMeta"] if k in piece.meta]
         if cm:
             parts.append('<span class="card-meta">%s</span>' % esc(" · ".join(cm)))
         parts.append("</a></li>")
@@ -573,7 +685,7 @@ class _Builder(object):
                     ps = [p for p in pf.pieces if p.meta.get(st["groupBy"]) == g]
                     if ps:
                         body.append('<section class="group"><h2>%s</h2>%s</section>'
-                                    % (esc(g), self.cards_html(ps, out)))
+                                    % (esc(st["labels"]["groups"].get(g, g)), self.cards_html(ps, out)))
                 cards = "".join(body)
             else:
                 cards = self.cards_html(pf.pieces, out) if pf.pieces else ""
@@ -590,7 +702,8 @@ class _Builder(object):
 
     def build_piece(self, pf, piece):
         out = "%s/%s/index.html" % (piece.portfolio, piece.slug)
-        meta_rows = "".join('<div><dt>%s</dt><dd>%s</dd></div>' % (esc(k[:1].upper() + k[1:]),
+        names = pf.settings["labels"]["meta"]
+        meta_rows = "".join('<div><dt>%s</dt><dd>%s</dd></div>' % (esc(names.get(k) or k[:1].upper() + k[1:]),
                             esc(C.meta_text(piece.meta[k]))) for k in pf.settings["meta"]
                             if k in piece.meta)
         dl = '<dl class="meta">%s</dl>' % meta_rows if meta_rows else ""
@@ -638,13 +751,7 @@ class _Builder(object):
         page = self.model.home
         meta = page.meta if page else {}
         title = meta.get("title") or self.cfg.siteTitle
-        pieces = []
-        for key in meta.get("featured", []):
-            pc = self.model.piece(key)
-            if pc is None:
-                raise BuildError("content/home.md: featured '%s' is not a built piece (a draft "
-                                 "never builds)" % key)
-            pieces.append(pc)
+        pieces = self.selection()
         feed = []
         for name in meta.get("feed", []):
             feed.append(self.ref_card(name, out))
@@ -706,7 +813,7 @@ class _Builder(object):
             low = rel.lower()
             if low.endswith(HTML_EXTS):
                 text = strip_html_comments(C.decode_text(raw, path))
-                text = self.expand(text, nfc(rel), path)
+                text = self.expand(text, nfc(rel), path, featured=True)
                 title = _meta_title(text) or rel
                 desc = _meta_description(text) or ""
                 text = self.presence(text, nfc(rel), title, desc, None, "website")
@@ -798,10 +905,11 @@ def _check_out_dir(out_dir):
                          % out_dir)
 
 
-def _digest_tree(out_dir):
+def _digest_tree(out_dir, site_kind="portfolio"):
     """The digest of design 3.5: SHA-256 of `<NFC path> NUL <hex sha256 of content> LF` per
-    regular file, in the order of the UTF-8 bytes of the NFC path. Private: only
-    `publish_build` calls it."""
+    regular file, in the order of the UTF-8 bytes of the NFC path, then `siteKind NUL <kind> LF`
+    when the kind is not `portfolio` (see the module docstring). Private: only `publish_build`
+    calls it."""
     entries = []
     for d, _dirs, names in os.walk(out_dir):
         for n in names:
@@ -812,19 +920,42 @@ def _digest_tree(out_dir):
     h = hashlib.sha256()
     for rel_b, sha in sorted(entries):
         h.update(rel_b + b"\0" + sha.encode("ascii") + b"\n")
+    if site_kind != "portfolio":
+        h.update(b"siteKind\0" + site_kind.encode("ascii") + b"\n")
     return h.hexdigest()
 
 
-def digest_output_tree(path):
+def digest_output_tree(path, site_kind="portfolio"):
     """The design 3.5 digest of an arbitrary DIRECTORY of output files (dev #835, finding F1).
 
     A public wrapper over the private `_digest_tree`, same formula, so `deploy.py` can digest the
     PUBLIC clone's tree (publish step 2.5 and 5.5) without a second implementation that could
     drift. It does NOT build anything and is not reachable from `preview_build`, whose result
-    still has no digest attribute. The caller owns what the directory holds."""
+    still has no digest attribute. The caller owns what the directory holds.
+
+    `site_kind` is the kind of the site the directory was built from (`PublishResult.site_kind`). A
+    `hub` or `custom` site's digest carries one final kind line (module docstring), and a public
+    clone's tree holds no `site.json`, so the CALLER must say the kind or the two digests differ."""
     if not os.path.isdir(path):
         raise BuildError("%s is not a folder" % path)
-    return _digest_tree(path)
+    return _digest_tree(path, site_kind)
+
+
+def _load_model(files, cfg, drafts, check_resume_pdf):
+    """The content model for a site. A `portfolio` loads `content/`; a `hub` or `custom` builds
+    nothing from it, so it gets an empty model after every refusal of design section 4.1 is
+    checked: portfolio-only keys, portfolio content, and a missing `site/src/index.html`."""
+    layout = [p.message for p in C.layout_problems(files, cfg.siteKind, cfg)]
+    if cfg.siteKind == "portfolio":
+        if layout:
+            raise ContentError("; ".join(layout))
+        return C.load_content(files, cfg, drafts=drafts, check_resume_pdf=check_resume_pdf)
+    problems = siteconfig.kind_conflicts(cfg) + layout
+    if "site/src/index.html" not in files:
+        problems.append("a %s site's home page is site/src/index.html, and it is missing" % cfg.siteKind)
+    if problems:
+        raise ContentError("; ".join(problems))
+    return C.Content()
 
 
 def _run(repo, out_dir, drafts):
@@ -843,7 +974,8 @@ def _run(repo, out_dir, drafts):
         raise BuildError("site/site.json is not in the build input")
     try:
         cfg = siteconfig.parse_text(C.decode_text(raw, "site/site.json"))
-        model = C.load_content(files, cfg, drafts=drafts, check_resume_pdf=not drafts)
+        siteconfig.check_tree_schema(cfg, files)
+        model = _load_model(files, cfg, drafts, not drafts)
     except (siteconfig.SiteConfigError, ContentError) as e:
         raise BuildError(str(e))
     site_url = cfg.site_url()
@@ -869,12 +1001,14 @@ def _run(repo, out_dir, drafts):
     b = _Builder(repo, files, cfg, model, site_url, year, repo, drafts)
     b.preregister()
     b.build_site_src()
-    b.build_portfolios()
-    if model.about is not None:
-        b.build_about()
-    if model.resume is not None:
-        b.build_resume()
-    b.build_home()
+    if cfg.siteKind == "portfolio":
+        b.build_portfolios()
+        if model.about is not None:
+            b.build_about()
+        if model.resume is not None:
+            b.build_resume()
+        if "site/src/index.html" not in files:      # a hand-made home is the home page (H1, section 4.3)
+            b.build_home()
     b.build_media()
     b.build_redirects()
     b.build_sitemap(lastmod)
@@ -882,18 +1016,19 @@ def _run(repo, out_dir, drafts):
     _write_outputs(out_dir, b.out)
     files_out = sorted(b.out, key=lambda p: p.encode("utf-8"))
     pages = sorted((p, b.pages[p]["kind"]) for p in b.pages)
-    return out_dir, files_out, pages, site_url, b.notes
+    return out_dir, files_out, pages, site_url, b.notes, cfg.siteKind
 
 
 def publish_build(repo, out_dir):
     """The one digested build: committed tree at HEAD, no drafts. Returns a PublishResult."""
-    out_dir, files, pages, site_url, notes = _run(repo, out_dir, drafts=False)
-    return PublishResult(out_dir, files, pages, site_url, False, notes, _digest_tree(out_dir))
+    out_dir, files, pages, site_url, notes, site_kind = _run(repo, out_dir, drafts=False)
+    return PublishResult(out_dir, files, pages, site_url, False, notes, _digest_tree(out_dir, site_kind),
+                         site_kind)
 
 
 def preview_build(repo, out_dir):
     """A drafts-included build of the working tree. Returns a BuildResult with NO digest."""
-    out_dir, files, pages, site_url, notes = _run(repo, out_dir, drafts=True)
+    out_dir, files, pages, site_url, notes, _kind = _run(repo, out_dir, drafts=True)
     return BuildResult(out_dir, files, pages, site_url, True, notes)
 
 
@@ -908,12 +1043,15 @@ def inventory(repo):
         raise BuildError("site/site.json is not in the working tree")
     try:
         cfg = siteconfig.parse_text(C.decode_text(raw, "site/site.json"))
-        model = C.load_content(files, cfg, drafts=True)
+        siteconfig.check_tree_schema(cfg, files)
+        model = _load_model(files, cfg, True, False)
     except (siteconfig.SiteConfigError, ContentError) as e:
         raise BuildError(str(e))
     inv = {"portfolios": [], "references": sorted(model.references),
            "pages": [n for n, p in (("home", model.home), ("about", model.about),
                                     ("resume", model.resume)) if p is not None]}
+    if cfg.siteKind != "portfolio":
+        inv["siteKind"] = cfg.siteKind
     for pf in model.portfolios:
         inv["portfolios"].append({
             "slug": pf.slug, "label": pf.settings["label"],
@@ -925,6 +1063,9 @@ def inventory(repo):
 
 def format_inventory(inv):
     lines = []
+    if inv.get("siteKind"):
+        lines.append("site kind: %s (every page is site/src as written; nothing is generated)"
+                     % inv["siteKind"])
     for pf in inv["portfolios"]:
         lines.append("portfolio %s (%s): %d piece(s)" % (pf["slug"], pf["label"], len(pf["pieces"])))
         for p in pf["pieces"]:

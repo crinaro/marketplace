@@ -238,10 +238,14 @@ def materialize(clone, rev, dest):
     return sorted(paths)
 
 
-def commit_tree_digest(clone, rev, dest):
+def commit_tree_digest(clone, rev, dest, site_kind="portfolio"):
+    """The build digest of what a commit holds. `site_kind` is the kind the BUILD was made with
+    (`PublishResult.site_kind`): a hub or custom build's digest carries one final `siteKind` line and the
+    public clone holds no `site.json` to say so, so the caller names it, or every hub publish is
+    refused as a tree that does not match its own build (dev #857, site-adoption D2)."""
     os.makedirs(dest, exist_ok=True)
     paths = materialize(clone, rev, dest)
-    return build.digest_output_tree(dest), paths
+    return build.digest_output_tree(dest, site_kind), paths
 
 
 def forbidden(path):
@@ -321,6 +325,7 @@ def stage_and_verify(repo, out_dir, result, public_url, message, work, hooks=Non
     changes = change_list(clone)
     st = Staged()
     st.clone, st.changes, st.had_head = clone, changes, had_head
+    st.site_kind = getattr(result, "site_kind", "portfolio")     # push_and_verify's read-back digests with it
     # The base this publish is built on (guard (b), V4): the public main as cloned, None for an empty repo.
     st.base = _git(clone, "rev-parse", "HEAD").strip() if had_head else None
     st.before = None
@@ -336,7 +341,7 @@ def stage_and_verify(repo, out_dir, result, public_url, message, work, hooks=Non
     if bad:
         raise DeployError("private path(s) in the commit, refusing: %s" % ", ".join(bad[:8]))
     verified = os.path.join(work, "verified")
-    digest, paths = commit_tree_digest(clone, "HEAD", verified)
+    digest, paths = commit_tree_digest(clone, "HEAD", verified, st.site_kind)
     if digest != result.digest:
         missing = sorted(set(result.files) - set(paths))
         extra = sorted(set(paths) - set(result.files))
@@ -664,7 +669,8 @@ def push_and_verify(st, url, digest, work, hooks, out):
         hooks["after_ls_remote"](url)
     reread = os.path.join(work, "reread")
     _git(work, "clone", "-q", "--depth", "1", "--branch", "main", url, os.path.join(work, "reread-clone"))
-    rdigest, _paths = commit_tree_digest(os.path.join(work, "reread-clone"), "HEAD", reread)
+    rdigest, _paths = commit_tree_digest(os.path.join(work, "reread-clone"), "HEAD", reread,
+                                         getattr(st, "site_kind", "portfolio"))
     if rdigest != digest:
         raise DeployError("pushed, but the public tree differs from what you approved "
                           "(approved %s, public now %s)" % (digest[:12], rdigest[:12]))

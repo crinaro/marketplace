@@ -5,10 +5,12 @@ design 6.4; named changes S2, S8, S9, S10 (round 1), M9, M13). Python 3.9, stand
     adopt.py [--repo R] check
     adopt.py [--repo R] inventory [--json]
     adopt.py [--repo R] confirm PATH [--keep] [--as CAPABILITY]
-    adopt.py [--repo R] unit PATH UNIT_ID {person-data|keep} [--kind context|voice|rule] [--name SLUG]
+    adopt.py [--repo R] unit PATH UNIT_ID {person-data|keep|rule} [--kind context|voice|rule] [--name SLUG]
     adopt.py [--repo R] fact PATH --kind context|voice|rule --text TEXT [--name SLUG]
     adopt.py [--repo R] reviewed PATH
     adopt.py [--repo R] paper {Letter|A4}
+    adopt.py [--repo R] folder NAME {source|portfolio}
+    adopt.py [--repo R] kind {portfolio|hub|custom}
     adopt.py [--repo R] parity [--accept]
     adopt.py [--repo R] apply [--date YYYY-MM-DD] [--dry-run]
 
@@ -23,12 +25,43 @@ NOTHING HERE TOUCHES THE PUBLIC REPO, THE DEPLOY PATH OR THE PERSON'S CHECKOUT. 
 code path that pushes, runs `gh`, or imports the deploy script. The only value read from
 `site.json` about the public repo is the file's own text, carried through unchanged.
 
-THE TREE IT CONVERTS (named change S2). Always `origin/main` after a `git fetch origin main`,
-never the checked-out branch: the desktop app starts a session in a worktree on a `claude/<name>`
-branch, so a `main` requirement would refuse the default session. The branch is created with git
+THE TREE IT CONVERTS (named change S2, AMENDED by dev #855, design 7.3). The PARITY BASIS: `HEAD` when
+the tree is clean and `origin/main` is an ancestor of `HEAD`, otherwise `origin/main`, after a `git fetch
+origin main`. It is never a requirement that the checked-out branch be `main`: the desktop app starts a
+session in a worktree on a `claude/<name>` branch, and the fix-commit-run-again loop works on whatever
+branch the session is on. `parity_basis()` returns ONE sha, and every step derives from it: the converted
+tree, the inventory, the local builder's working-copy check, the plugin side of parity, the apply
+branch's parent and the "moved since the inventory" guard. (S2 used to say "always origin/main, never
+the checked-out branch"; with it, a fix the person had just committed was not what adopt measured.) When
+HEAD is ahead, adopt prints the commits it will include before any work, and the apply commit lists each;
+when HEAD has diverged from or fallen behind origin/main, or git cannot compare them, adopt converts
+origin/main as before and says up front that parity will be UNVERIFIED. The branch is created with git
 plumbing (a private index, `commit-tree`, `update-ref`), so the person's working tree, index and
 HEAD are never touched. The precondition is a clean tree; untracked `.claude/worktrees/` (the
 app's own session folders) and this tool's plan file do not count.
+
+EVERY PROBLEM AT ONCE (dev #855, design-site-adoption section 7.1). `check` and `inventory` build the
+site.json adopt WOULD write and run `siteconfig.problems()` over it and `content.layout_problems()` over
+the tree, then print EVERY problem with its fix, each marked `apply fixes this` (mechanical) or `you
+decide`. The converted site.json is written with the lowest schema its tree needs (a `[key, label]`
+pair converted into `work.labels`, or a `{{resumeLink}}` anchor rewritten into a page section, makes it
+schema 2, and the inventory says so).
+
+APPLY NORMALISES THE MECHANICAL PROBLEMS AND LISTS EACH (dev #855, design 7.2). A clone-URL `publicRepo`
+becomes `owner/name` (through `github_url.slug`), a `previewUrl` loses its trailing slash, a `content/<f>/`
+with no `page.md` is renamed `content/_<f>/` (kept as source material, not built; `adopt.py folder <f>
+portfolio` adds a `page.md` instead), and `[key, label]` pairs become the `work.labels` map. Every one is a
+line of the commit. For each replaced value, a literal search of the files the person KEEPS (not the retired
+copies) names `file:line` under "your own script may depend on the old form". Anything that is not
+mechanical (an unknown key, a non-https previewUrl) is never rewritten: it stays `you decide`.
+
+A STANDING RULE OF THE PERSON'S OWN (dev #851, design-site-adoption section 10, criterion O1). A residual unit of
+a file adopt removes can be marked `rule`: "a standing rule of mine, keep it for every agent". Apply appends each
+one, verbatim and with its source path, to the site repo's `CLAUDE.md` under `## Standing rules carried by
+adopt`, after the engine sections are replaced (that heading is not one of them), and lists each in the commit.
+Subagents load the project's CLAUDE.md, and tests/probes/PB-RESULT.md measured that `.claude/rules/` reaches a
+plugin agent too, so the person may move the rules there. A `rule` unit on a file that stays is refused: a rule
+travels only out of a file adopt removes.
 
 THE INPUT DOMAIN (named change S9(b)). Adopt converts a repo built from the examples' engine
 layout: `site/site.json` carrying `name`, `siteTitle` and `publicRepo`. Anything else (a Jekyll or
@@ -48,8 +81,12 @@ all units). Units: a paragraph or list item for Markdown, a top-level function o
 code, a top-level key for package.json. Blank lines, comments, headings and front matter are not
 units. Classes: DUPLICATE, PARTIAL, AMBIGUOUS, CUSTOM, MIXED, DATA (the thresholds live in the
 spec). The file name is one signal, never sufficient and never required (tested for every
-capability). A file named like a plugin agent whose content does a different job is CUSTOM and is
-reported with a SHADOW warning, because the project copy would outrank the plugin's.
+capability). NAMESAKES (dev #851, design 7.6): an agent file named like one of the plugin's agents gets a
+SHADOW warning WHATEVER ITS CLASS, because a project agent outranks a plugin agent of the same name when it
+is called by its bare name (and adopt can see only this repo's `.claude/agents/`, never the person's
+`~/.claude/agents/`). If it also scores at or above the match threshold against that agent's capability it
+is a SELF-MATCH: DUPLICATE or PARTIAL, never AMBIGUOUS. If it does not, it keeps the class it earned and
+carries `namesake` [capability, score]; the name alone never makes a match.
 
 THE PLAN (`.site-studio/adopt-plan.json`, a strict parser) holds only the person's decisions: per
 file, remove or keep; which residual units are person data or kept behaviour; whether the facts
@@ -69,9 +106,9 @@ from the new tree.
 
 PARITY (design 6.4.5, named change M13). The local builder runs on a TEMP COPY of the repo's
 WORKING COPY, which INCLUDES IGNORED FILES (and excludes `.git`, `node_modules`, `site/dist`);
-the plugin's publish_build runs on a second temp repo made from `origin/main`'s committed files
+the plugin's publish_build runs on a second temp repo made from the parity basis's committed files
 with the adopt transform applied, so ignored files never reach it. Parity is only attempted when
-the working copy's tree equals origin/main's. The local builder runs under `node` with a scrubbed
+the working copy's tree equals the basis's (both sides come from the same sha). The local builder runs under `node` with a scrubbed
 environment (PATH reduced, HOME and TMPDIR in a scratch folder, TZ=UTC, no proxy or credentials)
 and a preload that makes any network call or program launch throw: an in-process guard, not an OS
 sandbox. DATES are normalised in both outputs by a stated rule (DATE_RULES): every ISO date or
@@ -101,12 +138,16 @@ import tarfile
 import tempfile
 import time
 import io
+from collections import namedtuple
+from urllib.parse import urlsplit
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import github_url  # noqa: E402
 import siteconfig  # noqa: E402
+import content as site_content  # noqa: E402
 import platform_check  # noqa: E402
 
 PLUGIN = os.path.dirname(HERE)
@@ -125,6 +166,15 @@ EXAMPLE_KEYS = ("name", "siteTitle", "publicRepo")
 RESERVED_FOLDERS = ("media", "resume", "references", "about", "home")
 PLAN_SCHEMA = 1
 FACT_KINDS = ("context", "voice", "rule")
+UNIT_DISPOSITIONS = ("person-data", "keep", "rule")       # `rule` is NOT the `rule` fact kind: it goes to CLAUDE.md
+RULES_HEADING = "## Standing rules carried by adopt"
+# What the person may decide for a content/ folder that has no page.md (design 7.2): the default,
+# `source`, renames it to content/_<name> (kept as source material, not built); `portfolio` adds a page.md.
+FOLDER_CHOICES = ("source", "portfolio")
+# Text files adopt searches for a value it replaced (design 7.2); anything else is left unread.
+_TEXT_EXTS = (".sh", ".bash", ".zsh", ".py", ".js", ".mjs", ".cjs", ".ts", ".rb", ".json", ".md", ".yml",
+              ".yaml", ".toml", ".html", ".htm", ".txt", ".cfg", ".ini", ".mk", ".csv")
+_TEXT_MAX = 512 * 1024
 
 PARITY_IGNORED = {
     "files": ("sitemap.xml", "robots.txt"),
@@ -522,6 +572,55 @@ class Tree(object):
             self.removed.add(path)
 
 
+class TreeFiles(object):
+    """The tree's `site/` and `content/` files, with adopt's pending page rewrites laid over them, as
+    the read-only {repo path: bytes} mapping that `siteconfig.required_schema` and
+    `content.layout_problems` take (they read no file themselves). Built lazily: nothing is read from
+    git until a caller asks for a path's bytes."""
+
+    def __init__(self, tree, overlay=None, removed=()):
+        self.tree = tree
+        self.overlay = dict((p, b) for p, b in (overlay or {}).items() if self._ours(p))
+        self.removed = set(removed)
+        self._keys = None
+
+    @staticmethod
+    def _ours(path):
+        return path.startswith(("site/", "content/"))
+
+    def _paths(self):
+        if self._keys is None:
+            self._keys = sorted((set(p for p in self.tree.paths() if self._ours(p)) | set(self.overlay))
+                                - self.removed)
+        return self._keys
+
+    def __iter__(self):
+        return iter(self._paths())
+
+    def __len__(self):
+        return len(self._paths())
+
+    def __contains__(self, path):
+        if path in self.removed:
+            return False
+        return path in self.overlay or (self._ours(path) and self.tree.exists(path))
+
+    def __getitem__(self, path):
+        if path in self.removed:
+            raise KeyError(path)
+        if path in self.overlay:
+            return self.overlay[path]
+        if self._ours(path):
+            return self.tree.read(path)
+        raise KeyError(path)
+
+    def get(self, path, default=None):
+        try:
+            return self[path]
+        except KeyError:
+            return default
+
+
 # ---------------------------------------------------------------- classification
 
 def file_kind(path):
@@ -548,7 +647,17 @@ def file_kind(path):
     return None
 
 
-def classify_text(spec, path, kind, text, as_cap=None):
+def classify_text(spec, path, kind, text, as_cap=None, shadows=None):
+    """Classify one file. `shadows` is the set of this plugin's agent names (`shadow_names()` when None).
+
+    NAMESAKES (dev #851, design 7.6). An agent file whose STEM equals a plugin agent's name is a
+    SELF-MATCH when its score against that agent's capability (the capability id IS the agent's name:
+    `test_adopt.RosterCapabilities` asserts it for every agent) is at or above `spec.match`. A self-match
+    skips the AMBIGUOUS gap rule and is classified against that capability, DUPLICATE or PARTIAL by the
+    residual rule, never AMBIGUOUS: the name is the one signal the platform acts on, but it is NEVER
+    sufficient (the capability's name weight stays below `match`, `SpecShape`). A same-named file that is
+    NOT a self-match keeps whatever class it earned and gains `namesake`: [capability id, score], however
+    low the score; `candidates` keeps its one meaning (the capabilities at or above `match`)."""
     base = posixpath.basename(path)
     units = units_of(kind, path, text)
     scored = []
@@ -562,12 +671,20 @@ def classify_text(spec, path, kind, text, as_cap=None):
     scored.sort(key=lambda t: (-t[0], t[1]))
     info = {"path": path, "kind": kind, "units": len(units), "capability": None, "score": 0.0,
             "residual": 0.0, "residual_units": [], "signals": [], "class": "CUSTOM", "candidates": [],
-            "needs_parity": False, "best": [(c, round(s, 2)) for s, c, _f in scored[:3]]}
+            "needs_parity": False, "best": [(c, round(s, 2)) for s, c, _f in scored[:3]], "namesake": None}
     matches = [t for t in scored if t[0] >= spec.match - 1e-9]
+    same = None
+    if kind == "agent" and as_cap is None:
+        stem = posixpath.splitext(base)[0]
+        if stem in (shadows if shadows is not None else shadow_names()) and stem in spec.caps:
+            same = stem
+    self_hit = next((t for t in matches if t[1] == same), None) if same else None
+    if same and self_hit is None:
+        info["namesake"] = [same, round(next((s for s, c, _f in scored if c == same), 0.0), 2)]
     if not matches:
         return info
-    top = matches[0]
-    if as_cap is None and len(matches) > 1 and top[0] - matches[1][0] <= spec.gap + 1e-9:
+    top = self_hit or matches[0]
+    if self_hit is None and as_cap is None and len(matches) > 1 and top[0] - matches[1][0] <= spec.gap + 1e-9:
         info["class"] = "AMBIGUOUS"
         info["candidates"] = [(c, round(s, 2)) for s, c, _f in matches]
         info["capability"] = top[1]
@@ -606,6 +723,41 @@ def shadow_names(agents_dir=None):
     return names
 
 
+# The version the scoped-name claim below was measured on (probe P-A, tests/probes/PA-RESULT.md).
+SCOPED_DISPATCH_MEASURED = "Claude Code 2.1.325"
+
+
+def shadow_note(name):
+    """The warning for a kept local agent named like one of this plugin's (design 7.6, dev #851). A project
+    agent outranks a plugin agent of the same name, whatever the project agent does, so this is said for
+    EVERY same-named agent that is kept. It states its own limit: adopt reads this repo's .claude/agents/
+    only. The last sentence is the probe-P-A verdict (scoped-wins): the plugin's own review and ideas steps
+    dispatch the agents by their scoped names, which reached the plugin's agent past a same-named project
+    agent when measured; `test_routing.PluginAgentPrecedence` checks this text against that verdict."""
+    return ("%s would replace site-studio's %s wherever it is called by its bare name, on this machine and on "
+            "any machine this repo is cloned to. Rename it (suggested: %s-local) or remove it. This check "
+            "covers this repo's .claude/agents/ only; a same-named agent in your own ~/.claude/agents/ on any "
+            "computer also replaces it. site-studio's own review and ideas steps call it as site-studio:%s, "
+            "which is not replaced (measured on %s)." % (name, name, name, name, SCOPED_DISPATCH_MEASURED))
+
+
+def namesake_text(info):
+    """How the inventory describes a same-named file next to its class, or None for any other file."""
+    if info.get("namesake"):
+        cid, score = info["namesake"]
+        return "is named like site-studio's %s (score %s, below the match threshold)" % (cid, _fmt_pct(score))
+    if info.get("shadows") and info.get("capability") == info["shadows"]:
+        return "does the same job as site-studio's %s (score %s)" % (info["shadows"], _fmt_pct(info["score"]))
+    return None
+
+
+def shadow_suffix(info):
+    """What the commit's Kept list adds after a kept file's reason when it shares a plugin agent's name."""
+    if not info.get("shadows"):
+        return ""
+    return " (SHADOWS the plugin's %s agent: rename it to %s-local, or remove it)" % (info["shadows"], info["shadows"])
+
+
 def inventory(tree, spec=None):
     """Classify every file adopt looks at. Returns a list of info dicts, sorted by path."""
     spec = spec or load_spec()
@@ -618,14 +770,14 @@ def inventory(tree, spec=None):
         if kind == "mixed":
             out.append({"path": path, "kind": kind, "class": "MIXED", "capability": None, "score": 0.0,
                         "residual": 0.0, "residual_units": [], "signals": [], "units": 0, "candidates": [],
-                        "needs_parity": False, "best": []})
+                        "needs_parity": False, "best": [], "namesake": None, "shadows": None})
             continue
-        info = classify_text(spec, path, kind, tree.text(path))
+        info = classify_text(spec, path, kind, tree.text(path), shadows=shadows)
         info["shadows"] = None
-        if kind == "agent" and info["class"] == "CUSTOM":
+        if kind == "agent":
             stem = posixpath.splitext(posixpath.basename(path))[0]
             if stem in shadows:
-                info["shadows"] = stem
+                info["shadows"] = stem                    # whatever its class: precedence ignores class (7.6)
         out.append(info)
     return out
 
@@ -657,8 +809,70 @@ def example_site_json(tree):
     return data
 
 
+class Basis(namedtuple("Basis", "sha kind ahead reason branch origin")):
+    """THE ONE SHA every step of adopt derives from (dev #855, design 7.3). `sha` is what is converted;
+    `kind` is "origin/main" or "HEAD"; `ahead` is [(sha, subject)] of the commits HEAD holds that
+    origin/main does not (oldest first; only when `kind` is "HEAD"); `reason` is None while parity can run,
+    else why it will be UNVERIFIED (adopt then converts origin/main exactly as 0.1.0 did); `branch` is the
+    checked-out branch's name, `origin` is origin/main's sha."""
+    __slots__ = ()
+
+    def label(self):
+        return "HEAD" if self.kind == "HEAD" else "origin/main"
+
+    def up_front(self):
+        """The lines `check` and `inventory` print before anything else (none when HEAD is origin/main)."""
+        if self.kind == "HEAD":
+            n = len(self.ahead)
+            return ["adopt converts HEAD %s on %s, %d commit%s ahead of origin/main %s; the live site is "
+                    "still origin/main. The apply branch will include %s: %s"
+                    % (self.sha[:7], self.branch, n, "" if n == 1 else "s", self.origin[:7],
+                       "this commit" if n == 1 else "these %d commits" % n,
+                       ", ".join("%s %s" % (s[:7], subj) for s, subj in self.ahead))]
+        if self.reason:
+            return ["parity will be UNVERIFIED: %s" % self.reason]
+        return []
+
+
+def parity_basis(repo, origin=None):
+    """The ONE sha adopt converts and measures parity on (design 7.3; dev #855). Local `HEAD` when it is a
+    fast-forward of `origin/main` (so the fix-commit-run-again loop works on a session branch AND on
+    `main`), else `origin/main` with `reason` set, because parity then compares a tree nobody is
+    converting. `git merge-base --is-ancestor` exits 0 for a fast-forward and 1 for "not an ancestor"; any
+    OTHER status is an error and is never read as "not a fast-forward" (it is UNVERIFIED, with git's own
+    message). The tree must already be known clean (`preconditions`). Raises Refused when origin/main does
+    not resolve."""
+    origin = origin or gitt(repo, "rev-parse", "--verify", "-q", "refs/remotes/origin/main", check=False)
+    if not origin:
+        raise Refused("origin/main does not resolve")
+    head = gitt(repo, "rev-parse", "--verify", "-q", "HEAD^{commit}", check=False)
+    branch = gitt(repo, "branch", "--show-current", check=False) or "(detached HEAD)"
+
+    def unverified(why):
+        return Basis(origin, "origin/main", (), why, branch, origin)
+    if not head:
+        return unverified("HEAD does not resolve to a commit, so there is no working copy to build")
+    if head == origin:
+        return Basis(origin, "origin/main", (), None, branch, origin)
+    p = git(repo, "merge-base", "--is-ancestor", origin, head, check=False)
+    if p.returncode == 0:
+        log = gitt(repo, "log", "--reverse", "--format=%H%x09%s", "%s..%s" % (origin, head), check=False)
+        ahead = tuple(tuple(line.split("\t", 1)) for line in log.split("\n") if "\t" in line)
+        return Basis(head, "HEAD", ahead, None, branch, origin)
+    if p.returncode == 1:
+        if git(repo, "merge-base", "--is-ancestor", head, origin, check=False).returncode == 0:
+            return unverified("HEAD %s on %s is behind origin/main %s; update this branch first"
+                              % (head[:7], branch, origin[:7]))
+        return unverified("HEAD %s on %s has diverged from origin/main %s; bring them together first"
+                          % (head[:7], branch, origin[:7]))
+    err = p.stderr.decode("utf-8", "replace").strip().split("\n")[0] or "exit status %d" % p.returncode
+    return unverified("git could not compare HEAD %s with origin/main %s (%s)" % (head[:7], origin[:7], err))
+
+
 def preconditions(repo):
-    """Return (base sha, Tree at origin/main, site.json dict). Raises Refused."""
+    """Return (Basis, Tree at the basis, site.json dict). Raises Refused. Every later step derives from
+    `Basis.sha`: the converted tree, the inventory, both sides of parity, the apply branch's parent and the
+    "moved since the inventory" guard (design 7.3)."""
     if os.environ.get("CLAUDE_CODE_REMOTE") == "true":
         raise Refused("adopt runs on your own computer, not in a cloud session; open the repo there")
     if git(repo, "rev-parse", "--is-inside-work-tree", check=False).returncode != 0:
@@ -668,10 +882,8 @@ def preconditions(repo):
     f = git(repo, "fetch", "--quiet", "origin", "main", check=False, timeout=60)
     if f.returncode != 0:
         raise Refused("git fetch origin main failed; adopt needs origin/main")
-    base = gitt(repo, "rev-parse", "--verify", "-q", "refs/remotes/origin/main", check=False)
-    if not base:
-        raise Refused("origin/main does not resolve")
-    tree = Tree(repo, base)
+    basis = parity_basis(repo)
+    tree = Tree(repo, basis.sha)
     data = example_site_json(tree)
     status = git(repo, "status", "--porcelain", "-z", "--untracked-files=all").decode("utf-8", "replace")
     dirty = []
@@ -685,7 +897,7 @@ def preconditions(repo):
     if dirty:
         raise Refused("the repo has uncommitted changes (%d paths, first: %s); commit or discard them first"
                       % (len(dirty), dirty[0]))
-    return base, tree, data
+    return basis, tree, data
 
 
 # ---------------------------------------------------------------- resume and paper size
@@ -752,15 +964,37 @@ def portfolio_folders(tree):
     return sorted(names)
 
 
+# `<a href="{{resumeLink}}">TEXT</a>`: the anchor whose href is exactly the old resume token (section 6.1)
+_RESUME_ANCHOR = re.compile(r"<a\b([^>]*?)\bhref=([\"'])\{\{\s*resumeLink\s*\}\}\2([^>]*)>((?:(?!<a\b).)*?)</a>",
+                            re.S | re.I)
+
+
+def section_for_resume(inner):
+    """The page section adopt writes around a resume anchor, for the inventory to show."""
+    return "{{#page:resume}}%s{{/page}}" % inner
+
+
 def rewrite_tokens(text, folders, layout=False):
     """(new text, [(old, new)], [unknown tokens]). Old site-specific `{{<folder>Link}}` forms become
-    `{{link:<folder>}}`; anything else the plugin's build would refuse is listed, never guessed."""
+    `{{link:<folder>}}`; an anchor whose href is exactly `{{resumeLink}}` becomes a `{{#page:resume}}`
+    section (a link that is there when the resume is built and gone when it is not); anything else the
+    plugin's build would refuse is listed, never guessed."""
     norm = dict((re.sub(r"[-_]", "", f).lower(), f) for f in folders)
     changes, unknown = [], []
+
+    def anchor(m):
+        old = m.group(0)
+        new = section_for_resume('<a%shref=%s{{link:resume}}%s%s>%s</a>' % (
+            m.group(1), m.group(2), m.group(2), m.group(3), m.group(4)))
+        changes.append((old, new))
+        return new
+    text = _RESUME_ANCHOR.sub(anchor, text)
 
     def sub(m):
         tok = m.group(1).strip()
         if tok in _KNOWN_TOKENS or tok.startswith("link:") or (layout and tok in _LAYOUT_TOKENS):
+            return m.group(0)
+        if tok.startswith("#page:") or tok == "/page":      # a section marker, ours or the person's
             return m.group(0)
         om = _OLD_TOKEN.match(tok)
         if om:
@@ -779,10 +1013,384 @@ def token_files(tree):
             or p == "site/templates/layout.html"]
 
 
+# ---------------------------------------------------------------- meta-refresh pages (design 7.5)
+
+STUB_MAX_WORDS = 12     # the words a redirect page may carry in its paragraph and link ("This page has moved: continue")
+_STUB_QUOTES = "\"'"
+
+
+class _Stub(html.parser.HTMLParser):
+    """What a page is made of, for the one question: is it NOTHING BUT a redirect? It records the
+    refresh, the canonical link, the anchors, the scripts, and everything else it finds (`foreign`: a tag the
+    list does not allow; `stray`: text outside a paragraph, a link, the title and a script)."""
+
+    ALLOWED = ("html", "head", "body", "meta", "title", "link", "a", "p", "script")
+
+    def __init__(self):
+        html.parser.HTMLParser.__init__(self, convert_charrefs=True)
+        self.refresh, self.canon, self.anchors, self.scripts = [], [], [], []
+        self.title = ""
+        self.foreign, self.stray, self.words, self.texts, self.bare_p = [], [], 0, [], []
+        self._mode = None
+        self._p = None
+        self._in_a = 0
+
+    def handle_starttag(self, tag, attrs):
+        tag = tag.lower()
+        a = dict((k.lower(), v or "") for k, v in attrs)
+        if tag == "meta":
+            if a.get("http-equiv", "").strip().lower() == "refresh":
+                self.refresh.append(a.get("content", ""))
+            elif not ("charset" in a or a.get("name", "").strip().lower() in ("viewport", "robots")):
+                self.foreign.append("a <meta> that is not charset, viewport, robots or the refresh")
+        elif tag == "link":
+            if a.get("rel", "").strip().lower() == "canonical":
+                self.canon.append(a.get("href", ""))
+            else:
+                self.foreign.append("a <link rel=%s>" % (a.get("rel", "") or "?"))
+        elif tag == "a":
+            self.anchors.append(a.get("href", ""))
+            self._in_a += 1
+            if self._p is not None:
+                self._p["anchor"] = True
+        elif tag == "p":
+            self._p = {"text": [], "anchor": False}
+        elif tag == "title":
+            self._mode = "title"
+        elif tag == "script":
+            if "src" in a:
+                self.foreign.append("a <script src>")
+            self._mode = "script"
+            self.scripts.append("")
+        elif tag not in self.ALLOWED:
+            self.foreign.append("a <%s>" % tag)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag == "a" and self._in_a:
+            self._in_a -= 1
+        elif tag == "p" and self._p is not None:
+            p, self._p = self._p, None
+            text = " ".join(" ".join(p["text"]).split())
+            if text and not p["anchor"]:
+                self.bare_p.append(text)
+        elif tag in ("title", "script"):
+            self._mode = None
+
+    def handle_data(self, data):
+        if self._mode == "title":
+            self.title += data
+        elif self._mode == "script":
+            self.scripts[-1] += data
+        elif self._p is not None or self._in_a:
+            if self._p is not None:
+                self._p["text"].append(data)
+            self.words += len(data.split())
+            self.texts.append(data)
+        elif data.strip():
+            self.stray.append(" ".join(data.split()))
+
+
+_SCRIPT_GO = re.compile(r"""^\s*(?:window\.|self\.|top\.)?(?:location(?:\.href)?\s*=\s*|location\.(?:replace|assign)\s*\(\s*)"""
+                        r"""(["'])(.*?)\1\s*\)?\s*;?\s*$""", re.S)
+
+
+def page_key(rel):
+    """The `redirects` key (and `{{#page:X}}` / link key) of a `site/src` page, the way the build serves it
+    (`build._page_dir`): `old/index.html` is `old`, `old.html` is `old.html`, the root index is ''."""
+    if rel in ("index.html", "index.htm"):
+        return ""
+    for tail in ("/index.html", "/index.htm"):
+        if rel.endswith(tail):
+            return rel[:-len(tail)]
+    return rel
+
+
+def _refresh_parts(content):
+    """(delay seconds as a float or None, target string or None) from a refresh `content` value."""
+    m = re.match(r"^\s*(\d+(?:\.\d+)?)\s*(?:[;,]\s*(.*?))?\s*$", content or "", re.S)
+    if not m:
+        return None, None
+    target = m.group(2)
+    if target is not None:
+        target = re.sub(r"^url\s*=\s*", "", target.strip(), flags=re.I).strip()
+        if len(target) > 1 and target[0] in _STUB_QUOTES and target[-1] == target[0]:
+            target = target[1:-1].strip()
+    return float(m.group(1)), (target or None)
+
+
+def resolve_redirect_target(page_rel, raw):
+    """(value, None) or (None, reason). `value` is what a `redirects` entry holds for a refresh target as
+    written on the page at `site/src/<page_rel>`: an `http(s)://` address as it stands, or the page key of
+    a site-relative address resolved the way a browser would (against the page's own folder)."""
+    t = (raw or "").strip()
+    if re.match(r"^https?://", t):
+        return t, None
+    if not t:
+        return None, "it names no address to go to"
+    if t.startswith("//") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", t):
+        return None, "its target %s is neither a page on this site nor an http(s):// address" % t
+    if "#" in t or "?" in t:
+        return None, "its target %s carries a query or a fragment, which a redirects entry cannot" % t
+    path = t.lstrip("/") if t.startswith("/") else posixpath.join(posixpath.dirname(page_rel), t)
+    path = posixpath.normpath(path)
+    if path == ".." or path.startswith("../"):
+        return None, "its target %s points outside the site" % t
+    if posixpath.basename(path) in ("index.html", "index.htm"):
+        path = posixpath.dirname(path)
+    if path in ("", "."):
+        return None, ("its target is the home page, which a site.json redirects entry cannot name "
+                      "(leave the page, or point it at a page)")
+    return path, None
+
+
+def _same_target(main, other):
+    """True when `other` (a canonical link, an anchor, a script's address, already resolved) is `main`."""
+    if other == main or other.rstrip("/") == main.rstrip("/"):
+        return True
+    web_m, web_o = main.startswith(("http://", "https://")), other.startswith(("http://", "https://"))
+    if web_m != web_o:      # an absolute address that ends in the site-relative key (a base path ahead of it)
+        url, key = (main, other) if web_m else (other, main)
+        path = urlsplit(url).path
+        if posixpath.basename(path) in ("index.html", "index.htm"):
+            path = posixpath.dirname(path)
+        path = path.strip("/")
+        return path == key or path.endswith("/" + key)
+    return False
+
+
+def built_page_keys(tree, skip=()):
+    """The page keys a `redirects` target may name in the converted tree: every `site/src` HTML page that
+    stays, the portfolio folders and their pieces, about and resume. A target the plugin's build would not
+    find is not in this set (an honest approximation: a page left out here is left as a hand page, never
+    converted wrongly)."""
+    keys = set()
+    for p in tree.paths():
+        if p.startswith("site/src/") and p.lower().endswith((".html", ".htm")) and p not in skip:
+            keys.add(page_key(p[len("site/src/"):]))
+    folders = portfolio_folders(tree)
+    keys.update(folders)
+    for p in tree.paths():
+        parts = p.split("/")
+        if len(parts) == 4 and parts[0] == "content" and parts[1] in folders and parts[3] == "index.md":
+            keys.add("%s/%s" % (parts[1], parts[2]))
+    if detect_resume(tree)["md"]:
+        keys.add("resume")
+    if tree.exists("content/about.md"):
+        keys.add("about")
+    return keys
+
+
+RedirectPage = namedtuple("RedirectPage", "path key target dropped")
+
+
+def _stub_verdict(rel, text):
+    """None when the page is not a meta-refresh page at all; else ('left', reason) or ('ok', target value,
+    the page text a conversion drops), before the checks that need the rest of the tree."""
+    s = _Stub()
+    try:
+        s.feed(text)
+        s.close()
+    except Exception:       # a page the parser cannot read is content, never a redirect
+        return None
+    if not s.refresh:
+        return None
+    parts = [_refresh_parts(c) for c in s.refresh]
+    if any(d is None or t is None for d, t in parts):
+        return ("left", "its refresh names no address to go to, or is not read as `0; url=...`")
+    if len(set(parts)) > 1:
+        return ("left", "it holds more than one refresh")
+    delay, raw = parts[0]
+    if delay != 0:
+        return ("left", "its refresh waits %g second(s), not 0, so the page is content a visitor reads" % delay)
+    extra = (s.foreign[:1] or (["text outside its link: \"%s\"" % s.stray[0][:40]] if s.stray else [])
+             or (["a paragraph of its own: \"%s\"" % s.bare_p[0][:40]] if s.bare_p else [])
+             or (["more than %d words of text" % STUB_MAX_WORDS] if s.words > STUB_MAX_WORDS else []))
+    if extra:
+        return ("left", "it carries more than the redirect (%s)" % extra[0])
+    value, why = resolve_redirect_target(rel, raw)
+    if why:
+        return ("left", why)
+    for what, urls in (("its canonical link", s.canon), ("its link", s.anchors)):
+        for u in urls:
+            v, w = resolve_redirect_target(rel, u)
+            if w or not _same_target(value, v):
+                return ("left", "%s goes to %s, not to %s" % (what, u, raw))
+    for code in s.scripts:
+        m = _SCRIPT_GO.match(code)
+        v = resolve_redirect_target(rel, m.group(2))[0] if m else None
+        if v is None or not _same_target(value, v):
+            return ("left", "its script does more than send the visitor to %s" % raw)
+    title = " ".join(s.title.split())
+    dropped = " ".join(x for x in ["" if title.lower() == "redirecting" else title, " ".join("".join(s.texts).split())] if x)
+    return ("ok", value, dropped[:80])
+
+
+def redirect_pages(tree, existing=None):
+    """(convert, left) for every `site/src` page that carries a meta refresh (design 7.5). `convert` is a list
+    of RedirectPage (path, redirects key, redirects value, the page text adopt drops); `left` is [(path, reason)]
+    for a refresh page that stays a hand page. A page converts only when NOTHING else is on it, its key and
+    target are ones `siteconfig` accepts, its target is a page the build will have (or an http(s) address) and
+    `existing` (the site.json `redirects`) does not already send that key elsewhere."""
+    existing = existing if isinstance(existing, dict) else {}
+    cand, left = [], []
+    for p in tree.paths():
+        if not (p.startswith("site/src/") and p.lower().endswith((".html", ".htm"))):
+            continue
+        rel = p[len("site/src/"):]
+        v = _stub_verdict(rel, tree.text(p))
+        if v is None:
+            continue
+        if v[0] == "left":
+            left.append((p, v[1]))
+        elif posixpath.basename(rel) == "404.html":
+            left.append((p, "it is the 404 page"))
+        elif page_key(rel) == "":
+            left.append((p, "it is the home page"))
+        else:
+            cand.append((p, page_key(rel), v[1], v[2]))
+    moving = set(c[0] for c in cand)
+    keys = built_page_keys(tree, skip=moving)
+    convert = []
+    for p, key, value, dropped in sorted(cand):
+        try:
+            siteconfig._redirect_entry(key, value)
+        except siteconfig.SiteConfigError as e:
+            left.append((p, str(e).replace("site.json: ", "", 1)))
+            continue
+        if not value.startswith(("http://", "https://")) and value not in keys:
+            chained = any(c[1] == value for c in cand)
+            left.append((p, "its target is another redirect page that adopt also converts" if chained else
+                         "the build has no page '%s' to point it at" % value))
+            continue
+        if key in existing and existing[key] != value:
+            left.append((p, "site.json already sends '%s' to '%s'" % (key, existing[key])))
+            continue
+        convert.append(RedirectPage(p, key, value, dropped))
+    return convert, sorted(left)
+
+
+def redirect_problems(convert):
+    """One mechanical `siteconfig.Problem` per page adopt will turn into a redirects entry, so `check` and
+    `inventory` list it beside the others, marked `apply fixes this`."""
+    out = []
+    for r in convert:
+        out.append(siteconfig.make_problem(
+            "%s is a meta-refresh page: it belongs in site.json redirects as '%s'" % (r.path, r.key),
+            path=r.path, found="a hand-made meta-refresh page", expected="a site.json redirects entry",
+            fix="move it into site.json redirects ('%s' -> '%s'); the build writes the page" % (r.key, r.target),
+            mechanical=True))
+    return out
+
+
+# ---------------------------------------------------------------- features and the inferred kind (design 7.7)
+
+Feature = namedtuple("Feature", "key signal sentence answer")
+
+# ONE table: what the person's site does -> what that is called -> what the plugin does about it. A signal
+# the inventory finds that has no row here prints the fallback line, so the table is what the inventory says.
+FEATURES = (
+    Feature("token:resumeLink", "{{resumeLink}}",
+            "a resume link that disappears when there is no resume",
+            "a page section, {{#page:resume}}...{{/page}}: adopt rewrites an anchor whose whole href is the "
+            "token, and lists any other placement for you to wrap by hand"),
+    Feature("featured-flag", "featured: true in a piece's front matter",
+            "the home page shows pieces marked featured: true",
+            "set \"featuredFrom\": \"flags\" in site/site.json (schema 2); adopt does not set it for you, "
+            "because it changes which pieces the home page shows"),
+    Feature("hand-home", "site/src/index.html with no content/home.md",
+            "a hand-made home page",
+            "kept as written: a site/src/index.html with no content/home.md is the home page (schema 2)"),
+    Feature("meta-refresh", "a meta-refresh page under site/src",
+            "an old address that forwards to a new one",
+            "a site.json redirects entry: adopt converts the simple ones and lists the rest"),
+    Feature("labels", "a [key, label] pair in work.meta, cardMeta or groups",
+            "custom field names on piece pages",
+            "the work.labels map (schema 2): adopt converts each pair and lists it"),
+)
+
+_TOKEN_NAME = {"resumeLink": "token:resumeLink"}
+_FEATURED_FLAG = re.compile(r"^featured:\s*(?:true|yes)\s*(?:#.*)?$", re.I | re.M)
+
+
+def detect_signals(tree, data, redirect_found=None):
+    """[(key, where)] for every feature signal the person's tree carries (design 7.7). `key` is a FEATURES key,
+    or `token:<the refused token>` for a local token the plugin's build would refuse; each appears once, with
+    the first place it was seen."""
+    seen, out = set(), []
+
+    def add(key, where):
+        if key not in seen:
+            seen.add(key)
+            out.append((key, where))
+    folders = portfolio_folders(tree)
+    for p in token_files(tree):
+        text = tree.text(p)
+        for m in _TOKEN.finditer(text):
+            if m.group(1).strip() in _TOKEN_NAME:
+                add(_TOKEN_NAME[m.group(1).strip()], p)
+        for tok in rewrite_tokens(text, folders, layout=(p == "site/templates/layout.html"))[2]:
+            add("token:" + re.sub(r"\s", "", tok), p)
+    for p in tree.paths():
+        if p.startswith("content/") and p.lower().endswith(".md") and not posixpath.basename(p).startswith("_"):
+            m = re.match(r"\A---\r?\n(.*?)\r?\n---\r?\n", tree.text(p), re.S)
+            if m and _FEATURED_FLAG.search(m.group(1)):
+                add("featured-flag", p)
+                break
+    if tree.exists("site/src/index.html") and not tree.exists("content/home.md"):
+        add("hand-home", "site/src/index.html")
+    convert, left = redirect_found if redirect_found is not None else redirect_pages(tree, (data or {}).get("redirects"))
+    if convert or left:
+        add("meta-refresh", (convert[0].path if convert else left[0][0]))
+    work = (data or {}).get("work")
+    if isinstance(work, dict) and label_conversions(work)[1]:
+        add("labels", "site/site.json")
+    return out
+
+
+def feature_lines(signals):
+    """The inventory's feature list, one line per signal: the feature's sentence and the plugin's answer from
+    FEATURES, or the fallback for a signal with no row."""
+    table = dict((f.key, f) for f in FEATURES)
+    out = []
+    for key, where in signals:
+        f = table.get(key)
+        if f:
+            out.append("  - %s (%s): %s" % (f.sentence, where, f.answer))
+        elif key.startswith("token:"):
+            out.append("  - a local token %s (%s); site-studio has no equivalent" % (key[len("token:"):], where))
+        else:
+            out.append("  - a local signal %s (%s); site-studio has no equivalent" % (key, where))
+    return out
+
+
+def infer_kind(tree):
+    """(kind, why): the site kind adopt PROPOSES for the person to confirm (design 7.7). `portfolio` when
+    `content/` has portfolio folders, a resume source or a `home.md` (only the portfolio build reads it), else
+    `hub` when the links on `site/src/index.html` are mostly outbound, else `custom`."""
+    folders = portfolio_folders(tree)
+    resume = detect_resume(tree)["md"]
+    if folders or resume or tree.exists("content/home.md"):
+        what = ("portfolio folder%s %s" % ("s" if len(folders) > 1 else "", ", ".join(folders)) if folders else
+                "a resume source (%s)" % resume if resume else "content/home.md")
+        return "portfolio", "content/ holds %s" % what
+    idx = "site/src/index.html"
+    if tree.exists(idx):
+        hrefs = [h.strip() for h in re.findall(r"""<a\b[^>]*?\bhref\s*=\s*["']([^"']*)["']""", tree.text(idx), re.I)]
+        hrefs = [h for h in hrefs if h and not h.startswith(("#", "mailto:", "tel:", "{{"))]
+        out = [h for h in hrefs if re.match(r"^(?:https?:)?//", h)]
+        if hrefs and len(out) * 2 > len(hrefs):
+            return "hub", "%d of the %d links on %s go to other sites" % (len(out), len(hrefs), idx)
+        return "custom", "%s has %s" % (idx, "%d of %d links to other sites" % (len(out), len(hrefs)) if hrefs
+                                         else "no links to read")
+    return "custom", "there is no content/ portfolio and no site/src/index.html to read"
+
+
 # ---------------------------------------------------------------- the plan (decisions only)
 
 def empty_plan(base):
-    return {"schema": PLAN_SCHEMA, "base": base, "files": {}, "facts": [], "paper": None, "parity": None}
+    return {"schema": PLAN_SCHEMA, "base": base, "files": {}, "facts": [], "paper": None, "parity": None,
+            "folders": {}, "siteKind": None}
 
 
 def parse_plan(text):
@@ -792,13 +1400,23 @@ def parse_plan(text):
         raise PlanError("adopt plan is not valid JSON: %s" % e)
     if not isinstance(d, dict):
         raise PlanError("adopt plan: the top level must be an object")
-    allowed = ("schema", "base", "files", "facts", "paper", "parity")
+    allowed = ("schema", "base", "files", "facts", "paper", "parity", "folders", "siteKind")
     for k in d:
         if k not in allowed:
             raise PlanError("adopt plan: unknown key '%s'" % k)
     for k in allowed:
-        if k not in d:
+        if k not in d and k not in ("folders", "siteKind"):
             raise PlanError("adopt plan: '%s' is missing" % k)
+    d.setdefault("folders", {})
+    d.setdefault("siteKind", None)
+    if d["siteKind"] not in (None,) + siteconfig.SITE_KINDS:
+        raise PlanError("adopt plan: 'siteKind' must be null or one of %s" % ", ".join(siteconfig.SITE_KINDS))
+    if not isinstance(d["folders"], dict):
+        raise PlanError("adopt plan: 'folders' must be an object")
+    for name, choice in d["folders"].items():
+        if not re.match(r"^[^/\s]+$", name) or choice not in FOLDER_CHOICES:
+            raise PlanError("adopt plan: folders[%r] must name one folder under content/ and be %s"
+                            % (name, " or ".join("'%s'" % c for c in FOLDER_CHOICES)))
     if d["schema"] != PLAN_SCHEMA:
         raise PlanError("adopt plan: schema %r is not understood (this adopt reads %d)" % (d["schema"], PLAN_SCHEMA))
     if not isinstance(d["base"], str) or not re.match(r"^[0-9a-f]{40}$", d["base"]):
@@ -818,8 +1436,8 @@ def parse_plan(text):
         if not isinstance(f.get("units", {}), dict):
             raise PlanError("adopt plan: files[%r].units must be an object" % path)
         for uid, u in f.get("units", {}).items():
-            if not isinstance(u, dict) or u.get("disposition") not in ("person-data", "keep"):
-                raise PlanError("adopt plan: files[%r].units[%r].disposition must be 'person-data' or 'keep'"
+            if not isinstance(u, dict) or u.get("disposition") not in UNIT_DISPOSITIONS:
+                raise PlanError("adopt plan: files[%r].units[%r].disposition must be 'person-data', 'keep' or 'rule'"
                                 % (path, uid))
             if u["disposition"] == "person-data" and u.get("kind") not in FACT_KINDS:
                 raise PlanError("adopt plan: files[%r].units[%r].kind must be one of %s"
@@ -1056,55 +1674,293 @@ def builder_entry(infos):
     return cands[0]["path"]
 
 
-def converted_site_files(tree, data, paper):
-    """{path: bytes} of site.json and the token-rewritten pages that the adopt transform produces;
-    shared by apply and by the plugin side of parity. Returns (files, notes)."""
-    files, notes = {}, {"tokens": [], "unknown": [], "resume": None}
+def _converted_dict(tree, data, paper, kind=None):
+    """The dict adopt would hand `siteconfig.parse_data`: the person's own site.json keys, plus the
+    schema, the engine marker and `resume`, and the site kind the person CONFIRMED (design 7.7: `hub` or
+    `custom` is written, `portfolio` is the default and is not, and nothing confirmed writes nothing). Its
+    labels, if any, are still in the form they were written in. Returns (dict, detect_resume result)."""
     resume = detect_resume(tree)
-    notes["resume"] = resume
     d = dict(data)
     d["schema"] = siteconfig.SCHEMA_MAX
     d["engine"] = siteconfig.ENGINE_MARKER
+    if kind in ("hub", "custom"):
+        d["siteKind"] = kind
     if resume["md"]:
         d["resume"] = {"path": resume["md"], "pdf": resume["pdf"], "paper": paper or resume["paper"] or "Letter"}
     else:
         d["resume"] = None
+    return d, resume
+
+
+def label_conversions(work):
+    """Normalise a local site.json `work` object (design-site-adoption section 5): a `[key, label]`
+    pair, or a `{"key": ..., "label": ...}` object, in `meta`, `cardMeta` or `groups` becomes the plain
+    key, and its label goes into the sibling `labels` map. Returns (new work, [(where, found, key,
+    label)]), one row per conversion, for the inventory and the commit to list. Anything that is not
+    one of those two shapes is left alone for the parser to refuse."""
+    if not isinstance(work, dict):
+        return work, []
+    out, conv = dict(work), []
+    labels = {"meta": {}, "groups": {}}
+    existing = work.get("labels")
+    if isinstance(existing, dict):
+        for part in siteconfig.LABEL_PARTS:
+            if isinstance(existing.get(part), dict):
+                labels[part].update(existing[part])
+    for k in ("meta", "cardMeta", "groups"):
+        v = work.get(k)
+        if not isinstance(v, list):
+            continue
+        plain = []
+        for i, item in enumerate(v):
+            pl = None if isinstance(item, str) else siteconfig.pair_label(item)
+            if pl is None:
+                plain.append(item)
+                continue
+            key, label = pl
+            labels["groups" if k == "groups" else "meta"].setdefault(key, label)
+            conv.append(("work.%s[%d]" % (k, i), json.dumps(item), key, label))
+            plain.append(key)
+        out[k] = plain
+    if conv:
+        out["labels"] = dict((part, m) for part, m in labels.items() if m)
+    return out, conv
+
+
+def normalise_values(d):
+    """The mechanical fixes to two site.json values (design 7.2), made IN PLACE on the dict adopt is about
+    to parse: a `publicRepo` that is a GitHub clone URL becomes `owner/name` (through `github_url.slug`,
+    the one normaliser, never re-parsed here), and a `previewUrl` ending `/` loses the slash. Anything
+    else the parser objects to is not touched: it stays `you decide`. Returns [(key, old, new, line)];
+    `line` is what the commit lists, with any credential in the old URL removed."""
+    out = []
+    pr = d.get("publicRepo")
+    if isinstance(pr, str) and not siteconfig._REPO_RE.match(pr):
+        try:
+            slug = github_url.slug(pr)
+        except github_url.GithubUrlError:
+            slug = None
+        if slug and siteconfig._REPO_RE.match(slug):
+            d["publicRepo"] = slug
+            out.append(("publicRepo", pr, slug, "publicRepo: %s -> %s" % (github_url.redact(pr), slug)))
+    pu = d.get("previewUrl")
+    if isinstance(pu, str) and pu.startswith("https://") and pu.endswith("/"):
+        d["previewUrl"] = pu.rstrip("/")
+        out.append(("previewUrl", pu, d["previewUrl"], "previewUrl: dropped trailing slash"))
+    return out
+
+
+def pageless_folders(tree_files, kind="portfolio"):
+    """The names of the `content/` folders that have no `page.md` (T9), the way the content layer
+    reports them (`layout_problems`, so adopt and the build cannot disagree on what counts)."""
+    return [p.path[len("content/"):].rstrip("/")
+            for p in site_content.layout_problems(tree_files, kind)
+            if p.found == "no page.md" and p.path.startswith("content/")]
+
+
+def _title_of(name):
+    return re.sub(r"[-_]+", " ", name).strip().title() or name
+
+
+def layout_changes(tree, choices, kind="portfolio"):
+    """What adopt does about each `content/<f>/` that has no `page.md`, as the person decided (default
+    `source`): ({path: bytes} written, [paths] removed, [(old, new, line)] listed). `source` MOVES the
+    folder to `content/_<f>/` (not built; every byte kept); `portfolio` adds a `page.md` so it is one.
+    Raises Refused for a decision that names no such folder, a destination that exists, or a symlink
+    (a move would lose it)."""
+    writes, removed, listed = {}, [], []
+    names = pageless_folders(TreeFiles(tree), kind)
+    for name in sorted(choices or {}):
+        if name not in names:
+            raise Refused("your decision names content/%s, which is not a folder without a page.md "
+                          "(run `adopt.py inventory` again)" % name)
+    for name in names:
+        choice = (choices or {}).get(name, "source")
+        folder = "content/%s/" % name
+        if choice == "portfolio":
+            writes[folder + "page.md"] = ("---\ntitle: %s\n---\n" % _title_of(name)).encode("utf-8")
+            listed.append((folder, folder + "page.md", "content/%s: page.md added, so it is a portfolio" % name))
+            continue
+        dest = "content/_%s/" % name
+        moving = [p for p in tree.paths() if p.startswith(folder)]
+        if any(p.startswith(dest) for p in tree.paths()):
+            raise Refused("content/_%s already exists, so content/%s cannot be renamed to it; move one of "
+                          "them yourself first" % (name, name))
+        for p in moving:
+            if tree.mode(p) == "120000":
+                raise Refused("%s is a symlink, which a rename would lose; move content/%s yourself" % (p, name))
+            writes[dest + p[len(folder):]] = tree.read(p)
+            removed.append(p)
+        listed.append((folder, dest, "content/%s -> content/_%s (source material, not built)" % (name, name)))
+    return writes, removed, listed
+
+
+def converted_site_files(tree, data, paper, folders=None, kind=None):
+    """{path: bytes} of site.json and the token-rewritten pages that the adopt transform produces;
+    shared by apply and by the plugin side of parity. Returns (files, notes). site.json is written
+    with the lowest schema the CONVERTED tree needs (a label map, a page section), so a plain site
+    stays schema 1 and `notes["schema"]` / `notes["schemaReasons"]` say when it is not.
+
+    The mechanical problems are fixed here (design 7.2): `notes["normalised"]` lists each changed
+    value, `notes["labels"]` each label conversion, `notes["layout"]` each folder move or page.md, and
+    `notes["removed"]` the paths a move takes away (a caller that writes `files` removes those too).
+    `notes["olds"]` is [(what, old string)] for the kept-file search that warns a script may depend on
+    the old form. `folders` is the person's {name: choice} for the folders without a page.md. A hand-made
+    meta-refresh page that is nothing but a redirect becomes a `redirects` entry and is removed
+    (design 7.5): `notes["redirects"]` lists each (a RedirectPage) and `notes["redirectsLeft"]` the refresh
+    pages that stay, with the reason. `kind` is the site kind the person confirmed (design 7.7)."""
+    files, notes = {}, {"tokens": [], "unknown": [], "resume": None, "labels": [], "schema": 1,
+                        "schemaReasons": [], "normalised": [], "layout": [], "removed": [], "olds": [],
+                        "redirects": [], "redirectsLeft": [], "kind": kind}
+    d, resume = _converted_dict(tree, data, paper, kind)
+    notes["resume"] = resume
+    notes["normalised"] = normalise_values(d)
+    if "work" in d:
+        d["work"], notes["labels"] = label_conversions(d["work"])
+    notes["redirects"], notes["redirectsLeft"] = redirect_pages(tree, d.get("redirects"))
+    if notes["redirects"]:
+        rd = dict(d["redirects"]) if isinstance(d.get("redirects"), dict) else {}
+        rd.update((r.key, r.target) for r in notes["redirects"])
+        d["redirects"] = rd
     try:
         cfg = siteconfig.parse_data(d)
     except siteconfig.SiteConfigError as e:
         raise Refused("the converted site.json is not valid: %s" % e)
-    files["site/site.json"] = siteconfig.canonical_text(cfg).encode("utf-8")
-    folders = portfolio_folders(tree)
+    lw, notes["removed"], notes["layout"] = layout_changes(tree, folders, cfg.siteKind)
+    files.update(lw)
+    notes["removed"] = list(notes["removed"]) + [r.path for r in notes["redirects"]]
+    names = portfolio_folders(tree) + sorted(n for n, c in (folders or {}).items() if c == "portfolio")
     for p in token_files(tree):
+        if p in notes["removed"]:
+            continue
         text = tree.text(p)
-        new, ch, unk = rewrite_tokens(text, folders, layout=(p == "site/templates/layout.html"))
+        new, ch, unk = rewrite_tokens(text, names, layout=(p == "site/templates/layout.html"))
         notes["tokens"].extend((p, a, b) for a, b in ch)
         notes["unknown"].extend((p, t) for t in unk)
         if new != text:
             files[p] = new.encode("utf-8")
+    seen = TreeFiles(tree, files, notes["removed"])
+    notes["schemaReasons"] = siteconfig.schema_2_reasons(cfg, seen)
+    notes["schema"] = siteconfig.required_schema(cfg, seen)
+    files["site/site.json"] = siteconfig.canonical_text(cfg, seen).encode("utf-8")
+    for key, old, _new, _line in notes["normalised"]:
+        notes["olds"].append((key, old))
+    for old, new, _line in notes["layout"]:
+        if not new.endswith("/page.md"):               # a move: a script may name the old folder path
+            notes["olds"].append(("folder", old.rstrip("/")))
     return files, notes
 
 
-def run_parity(repo, infos, base, tree, data, which=None, run=None):
+def old_form_hits(tree, olds, skip=("site/site.json",)):
+    """[(path, line number, old string, what)]: where a file the person KEEPS still holds a value adopt
+    replaced (design 7.2: "your own script may depend on the old form"). The search is a literal substring
+    over the tree as it will stand after apply (so a retired copy is not searched), in text files only, and
+    a hit must end where the value ends (`content/news` is not found inside `content/newsletter`). The
+    first match on a line is the hit."""
+    hits = []
+    pats = [(what, old, re.compile(re.escape(old) + r"(?![A-Za-z0-9_-])")) for what, old in olds if old]
+    if not pats:
+        return hits
+    for p in tree.paths():
+        if p in skip or p.startswith(("site/dist/", ".git/", ".site-studio/")) or "node_modules" in p.split("/"):
+            continue
+        base = posixpath.basename(p)
+        ext = posixpath.splitext(base)[1].lower()
+        if ext and ext not in _TEXT_EXTS:
+            continue
+        if tree.mode(p) == "120000":
+            continue
+        try:
+            raw = tree.read(p)
+        except KeyError:
+            continue
+        if len(raw) > _TEXT_MAX or b"\0" in raw:
+            continue
+        for n, line in enumerate(raw.decode("utf-8", "replace").split("\n"), 1):
+            for what, old, rx in pats:
+                if old in line and rx.search(line):
+                    hits.append((p, n, old, what))
+    return hits
+
+
+def site_problems(tree, data, paper=None, kind=None):
+    """Every problem in what adopt WOULD write, all at once: `siteconfig.problems()` over the
+    converted site.json (BEFORE the mechanical label conversion, so a pair-form label is reported and
+    marked `apply fixes this`), then `content.layout_problems()` over the tree. A list of
+    `siteconfig.Problem`; empty means nothing stands in the way (design section 7.1). A meta-refresh page
+    adopt will turn into a redirect is one more mechanical problem (design 7.5)."""
+    d, _resume = _converted_dict(tree, data, paper, kind)
+    probs = list(siteconfig.problems(d))
+    cfg = None
+    if not probs:
+        try:
+            cfg = siteconfig.parse_data(d)
+        except siteconfig.SiteConfigError:
+            cfg = None
+    else:
+        fixed = dict(d)
+        if "work" in fixed:
+            fixed["work"], _conv = label_conversions(fixed["work"])
+        try:
+            cfg = siteconfig.parse_data(fixed)
+        except siteconfig.SiteConfigError:
+            cfg = None
+    files = {}
+    for p in token_files(tree):
+        text = tree.text(p)
+        new = rewrite_tokens(text, portfolio_folders(tree), layout=(p == "site/templates/layout.html"))[0]
+        if new != text:
+            files[p] = new.encode("utf-8")
+    probs += site_content.layout_problems(TreeFiles(tree, files), cfg.siteKind if cfg else "portfolio", cfg)
+    probs += redirect_problems(redirect_pages(tree, d.get("redirects"))[0])
+    return probs
+
+
+def format_problems(probs):
+    """The lines `check` and `inventory` print for a list of problems."""
+    if not probs:
+        return []
+    fixes = sum(1 for p in probs if p.mechanical)
+    L = ["%d problem(s) in what adopt would write: apply fixes %d, you decide %d" % (len(probs), fixes,
+                                                                                  len(probs) - fixes)]
+    L += ["  - %s" % p.line() for p in probs]
+    return L
+
+
+def problem_dicts(probs):
+    return [{"path": p.path, "found": p.found, "expected": p.expected, "fix": p.fix,
+             "mechanical": p.mechanical, "message": p.message} for p in probs]
+
+
+def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=None, kind=None):
     """Build both ways and compare (named change M13). Returns a dict with `verdict`
-    (EQUAL / DIFFERENT / UNVERIFIED / NOT APPLICABLE), `reason`, `differences`, `notes`."""
+    (EQUAL / DIFFERENT / UNVERIFIED / NOT APPLICABLE), `reason`, `differences`, `notes`.
+
+    BOTH SIDES COME FROM `basis.sha` (dev #855, design 7.3): the local builder runs on a copy of the working
+    copy, which must hold `basis.sha`'s tree, and the plugin side is built from `basis.sha`'s committed files
+    with the adopt transform. A basis that is not buildable (`basis.reason`: HEAD diverged from, or behind,
+    origin/main) is UNVERIFIED up front."""
+    base = basis.sha
     res = {"verdict": "UNVERIFIED", "reason": "", "differences": [], "notes": []}
     entry = builder_entry(infos)
     if entry is None:
         res.update(verdict="NOT APPLICABLE", reason="no local builder was found (no JavaScript file classified as a builder)")
+        return res
+    if basis.reason:
+        res["reason"] = "%s; the builder is kept" % basis.reason
         return res
     node = (which or shutil.which)("node")
     if not node:
         res["reason"] = "no Node on this computer, so the local builder cannot run; the builder is kept"
         return res
     if gitt(repo, "rev-parse", "HEAD^{tree}", check=False) != gitt(repo, "rev-parse", base + "^{tree}"):
-        res["reason"] = ("the working copy differs from origin/main (parity builds the working copy, which must "
-                         "be what origin/main holds); the builder is kept")
+        res["reason"] = ("the working copy differs from the parity basis %s %s (parity builds the working copy, "
+                         "which must be what the basis holds); the builder is kept" % (basis.label(), base[:7]))
         return res
     ignored_present = gitt(repo, "ls-files", "-o", "-i", "--exclude-standard", "--directory", check=False).split("\n")
     ignored_present = [p for p in ignored_present if p and not p.startswith(("node_modules", "site/dist", ".claude/worktrees"))]
-    res["notes"].append("the local build ran on a COPY of the working copy of %s, which includes ignored files%s"
-                        % (base[:7], (" (present: %s)" % ", ".join(ignored_present[:6])) if ignored_present else " (none present)"))
+    res["notes"].append("the local build ran on a COPY of the working copy of %s %s, which includes ignored files%s"
+                        % (basis.label(), base[:7],(" (present: %s)" % ", ".join(ignored_present[:6])) if ignored_present else " (none present)"))
     scratch = tempfile.mkdtemp(prefix="adopt-parity-")
     try:
         a_dir = os.path.join(scratch, "local")
@@ -1143,8 +1999,14 @@ def run_parity(repo, infos, base, tree, data, which=None, run=None):
         git(b_dir, "init", "-q", "-b", "main", env=ident)
         git(b_dir, "add", "-A", "-f", ".", env=ident)
         git(b_dir, "commit", "-q", "-m", "origin/main", "--allow-empty", env=ident)
-        files, _notes = converted_site_files(tree, data, None)
+        files, cnotes = converted_site_files(tree, data, None, folders, kind)
+        for rel in cnotes["removed"]:
+            try:
+                os.remove(os.path.join(b_dir, rel))
+            except OSError:
+                pass
         for rel, blob in files.items():
+            os.makedirs(os.path.dirname(os.path.join(b_dir, rel)), exist_ok=True)
             with open(os.path.join(b_dir, rel), "wb") as fh:
                 fh.write(blob)
         cfg = siteconfig.parse_text(files["site/site.json"].decode("utf-8"))
@@ -1337,6 +2199,22 @@ def transform_claude_md(text):
     return body.rstrip("\n") + "\n"
 
 
+def append_rules(text, rules):
+    """Carry each `rule` unit, verbatim, into CLAUDE.md under RULES_HEADING with the path it came from
+    (design 10). The heading is added when it is missing; when it is already there the new blocks go at the end
+    of ITS section. Returns the new text (unchanged when there is nothing to carry)."""
+    if not rules:
+        return text
+    blocks = "".join("\n### From %s\n\n%s\n" % (r["source"], r["text"].strip("\n")) for r in rules)
+    body = text if text.endswith("\n") else text + "\n"
+    m = re.search(r"^%s[ \t]*$" % re.escape(RULES_HEADING), body, re.M)
+    if not m:
+        return body + "\n" + RULES_HEADING + "\n" + blocks
+    nxt = re.compile(r"^## ", re.M).search(body, m.end())
+    cut = nxt.start() if nxt else len(body)
+    return body[:cut].rstrip("\n") + "\n" + blocks + ("\n" + body[cut:] if nxt else "")
+
+
 # ---------------------------------------------------------------- .gitignore, facts, handoff
 
 def update_gitignore(text):
@@ -1439,7 +2317,8 @@ def _fmt_pct(x):
 def prepare(repo, date, spec=None):
     """Everything apply will commit, computed without writing anything. Raises Refused."""
     spec = spec or load_spec()
-    base, tree, data = preconditions(repo)
+    basis, tree, data = preconditions(repo)
+    base = basis.sha
     try:
         plan = load_plan(repo)
     except PlanError as e:
@@ -1447,7 +2326,7 @@ def prepare(repo, date, spec=None):
     if plan is None:
         raise Refused("there is no plan yet; run `adopt.py inventory` and make your decisions first")
     if plan["base"] != base:
-        raise Refused("origin/main moved since the inventory (%s -> %s); run `adopt.py inventory` again"
+        raise Refused("the parity basis moved since the inventory (%s -> %s); run `adopt.py inventory` again"
                       % (plan["base"][:7], base[:7]))
     infos = inventory(tree, spec)
     by_path = dict((i["path"], i) for i in infos)
@@ -1463,17 +2342,18 @@ def prepare(repo, date, spec=None):
     if resume["needsAnswer"] and paper is None:
         raise NeedsAnswer("resume.paper needs your answer: there is no resume PDF to read the paper size from; "
                           "run `adopt.py paper Letter` or `adopt.py paper A4`")
-    removals, kept, facts, reasons, unit_facts = {}, [], [], {}, []
+    removals, kept, facts, reasons, unit_facts, rule_units = {}, [], [], {}, [], []
     parity = plan["parity"]
     for i in infos:
         d = decisions.get(i["path"]) or {}
         cls = i["class"]
         if cls in ("CUSTOM", "MIXED"):
             if cls == "CUSTOM":
-                kept.append((i["path"], "no plugin counterpart" + (" (SHADOWS the plugin's %s agent: rename it)" % i["shadows"] if i.get("shadows") else "")))
+                kept.append((i["path"], "no plugin counterpart" + shadow_suffix(i)))
             continue
         if d.get("removal") == "keep":
-            kept.append((i["path"], "kept by your decision (%s, score %s)" % (cls, _fmt_pct(i["score"]))))
+            kept.append((i["path"], "kept by your decision (%s, score %s)" % (cls, _fmt_pct(i["score"]))
+                         + shadow_suffix(i)))
             continue
         # a decision to remove
         eff = i
@@ -1498,6 +2378,9 @@ def prepare(repo, date, spec=None):
                 if ud["disposition"] == "keep":
                     raise Refused("%s: unit %s is marked keep, so the file stays; run `adopt.py confirm %s --keep`"
                                   % (i["path"], u["id"], i["path"]))
+                if ud["disposition"] == "rule":
+                    rule_units.append({"source": i["path"], "id": u["id"], "text": u["text"]})
+                    continue
                 unit_facts.append({"source": i["path"], "kind": ud["kind"], "text": u["text"], "name": ud.get("name")})
         else:
             if spec.caps[eff["capability"]].get("needsParity"):
@@ -1519,16 +2402,39 @@ def prepare(repo, date, spec=None):
     moved = write_facts(tree, facts, date)
     # 3. config second
     changes = []
-    site_files, notes = converted_site_files(tree, data, plan["paper"])
+    site_files, notes = converted_site_files(tree, data, plan["paper"], plan["folders"], plan.get("siteKind"))
     for p, blob in sorted(site_files.items()):
         tree.write(p, blob)
-    changes.append("site/site.json: added schema, engine and resume; every other key kept")
+    for p in notes["removed"]:
+        tree.remove(p)
+    changes.append("site/site.json: added schema, engine and resume; every other key kept"
+                   + ("; written as schema %d (%s)" % (notes["schema"], "; ".join(
+                       "%s %s" % (w, what) for w, what, _e in notes["schemaReasons"]))
+                      if notes["schema"] > 1 else ""))
+    for _key, _old, _new, line in notes["normalised"]:
+        changes.append(line)
+    for _old, _new, line in notes["layout"]:
+        changes.append(line)
+    for r in notes["redirects"]:
+        changes.append("redirects: %s -> '%s': %s (the page is deleted and the build writes one at the same "
+                       "address%s)" % (r.path, r.key, json.dumps(r.target),
+                                       "; its own text is dropped: %s" % json.dumps(r.dropped) if r.dropped else ""))
+    changes.append(kind_change_line(tree, plan.get("siteKind")))
+    changes = [c for c in changes if c]
+    if notes["labels"]:
+        changes.append("work.labels: converted %d labels" % len(notes["labels"]))
+        for where, found, key, label in notes["labels"]:
+            changes.append("%s: %s -> key %s, label %s" % (where, found, key, json.dumps(label)))
     for p, a, b in notes["tokens"]:
         changes.append("%s: token %s -> %s" % (p, a, b))
     claude_old = tree.text("CLAUDE.md") if tree.exists("CLAUDE.md") else "# Rules for this repo\n"
     claude_new = transform_claude_md(claude_old)
+    claude_new = append_rules(claude_new, rule_units)
     tree.write("CLAUDE.md", claude_new)
     changes.append("CLAUDE.md: person sections kept, engine sections replaced by one pointer to the plugin")
+    for r in rule_units:
+        changes.append("CLAUDE.md: standing rule carried from %s (unit %s) under \"%s\""
+                       % (r["source"], r["id"], RULES_HEADING))
     gi_old = tree.text(".gitignore") if tree.exists(".gitignore") else ""
     gi_new, gi_add = update_gitignore(gi_old)
     if gi_add:
@@ -1551,7 +2457,7 @@ def prepare(repo, date, spec=None):
             break
         for p in sorted(blocked):
             removals.pop(p, None)
-            kept.append((p, "a hook still calls it and no plugin hook replaces it"))
+            kept.append((p, "a hook still calls it and no plugin hook replaces it" + shadow_suffix(by_path.get(p, {}))))
     else:
         raise Refused("hooks still name files adopt would remove")
     settings = trial
@@ -1569,27 +2475,61 @@ def prepare(repo, date, spec=None):
             lock = posixpath.dirname(p) + "/package-lock.json"
             if tree.exists(lock):
                 tree.remove(lock)
+    for path, d in sorted(decisions.items()):
+        ruled = sorted(uid for uid, u in (d.get("units") or {}).items() if u.get("disposition") == "rule")
+        if not ruled:
+            continue
+        if path not in removals:
+            raise Refused("%s: unit %s is marked rule, but the file stays; a standing rule is carried only out of "
+                          "a file adopt removes. Mark the unit person-data or keep, or confirm the file for removal"
+                          % (path, ruled[0]))
+        if removals[path]["kind"] not in ("agent", "command", "skill"):
+            raise Refused("%s: unit %s is marked rule, but only an agent, command or skill file carries a "
+                          "standing rule" % (path, ruled[0]))
     post = set(tree.paths())
     dangling = dangling_hook_paths(settings, post)
     if dangling:
         raise Refused("a hook would still name %s, which is not in the new tree; apply finished nothing"
                       % ", ".join(sorted(set(p for _e, p in dangling))))
+    notes["oldFormHits"] = old_form_hits(tree, notes["olds"])
     # 5. HANDOFF.md entry
     branch = BRANCH_PREFIX + date
     handoff_old = tree.text("HANDOFF.md") if tree.exists("HANDOFF.md") else "# Handoff\n"
-    entry = ("\n## Adopt site-studio (%s)\n\n- Branch `%s`, one commit, from origin/main %s. Not merged and not pushed.\n"
+    entry = ("\n## Adopt site-studio (%s)\n\n- Branch `%s`, one commit, from %s %s. Not merged and not pushed.\n"
              "- Removed %d local file(s); moved %d fact group(s) into the data files; kept %d file(s) as customisations or by decision.\n"
-             % (date, branch, base[:7], len(removals), len(moved), len(kept)))
+             % (date, branch, basis.label(), base[:7], len(removals), len(moved), len(kept)))
     tree.write("HANDOFF.md", (handoff_old if handoff_old.endswith("\n") else handoff_old + "\n") + entry)
-    message = build_message(date, base, removals, reasons, spec, moved, changes, hook_list, kept, parity, notes)
-    return {"base": base, "tree": tree, "branch": branch, "message": message, "removals": removals,
+    message = build_message(date, basis, removals, reasons, spec, moved, changes, hook_list, kept, parity, notes)
+    return {"base": base, "basis": basis, "tree": tree, "branch": branch, "message": message, "removals": removals,
             "kept": kept, "claude": (claude_old, claude_new), "hooks": hook_list, "moved": moved,
             "notes": notes}
 
 
-def build_message(date, base, removals, reasons, spec, moved, changes, hook_list, kept, parity, notes):
+def kind_change_line(tree, confirmed):
+    """The commit line about the site kind (design 7.7): what the person confirmed, or, when nothing was
+    confirmed and the tree does not look like a portfolio, that none was written and how to set one."""
+    if confirmed:
+        return "siteKind: %s (you confirmed it%s)" % (confirmed, "" if confirmed != "portfolio" else
+                                                      "; it is the default, so site.json does not carry it")
+    inferred, why = infer_kind(tree)
+    if inferred == "portfolio":
+        return ""
+    return ("siteKind: not set, so this builds as a portfolio; it looks like a %s site (%s): run `adopt.py kind "
+            "%s` and apply again to write it" % (inferred, why, inferred))
+
+
+def build_message(date, basis, removals, reasons, spec, moved, changes, hook_list, kept, parity, notes):
+    if basis.kind == "HEAD":
+        src = "Converted from HEAD %s on %s." % (basis.sha[:7], basis.branch)
+    else:
+        src = "Converted from origin/main %s." % basis.sha[:7]
     L = ["site-studio adopt: retire this repo's local copies of the plugin's tools (%s)" % date, "",
-         "Converted from origin/main %s. One commit on a new branch; main is untouched; nothing is pushed." % base[:7], ""]
+         "%s One commit on a new branch; main is untouched; nothing is pushed." % src]
+    if basis.ahead:
+        L.append("Includes %d commit%s not on origin/main %s:" % (len(basis.ahead), "" if len(basis.ahead) == 1 else "s",
+                                                                  basis.origin[:7]))
+        L += ["- %s %s" % (s[:7], subj) for s, subj in basis.ahead]
+    L.append("")
     L.append("Removed (file | counterpart | why):")
     if removals:
         for p in sorted(removals):
@@ -1599,10 +2539,18 @@ def build_message(date, base, removals, reasons, spec, moved, changes, hook_list
     L += ["", "Moved data (from | to):"]
     L += ["- %s | %s" % (a, b) for a, b in moved] or ["- (nothing)"]
     L += ["", "Transformed config:"] + ["- %s" % c for c in changes]
+    if notes.get("oldFormHits"):
+        L += ["", "Your own script may depend on the old form (kept files that still hold a value adopt "
+                  "replaced):"]
+        L += ["- %s:%d: %s (the old %s)" % (p, n, github_url.redact(old), what)
+              for p, n, old, what in notes["oldFormHits"]]
     L += ["", "Hooks removed or rewritten:"]
     L += (["- %s: `%s` -> %s" % (e, o, ("`%s`" % n) if n else "removed (the plugin's own hook does this job)")
            for e, o, n in hook_list] or ["- (none)"])
     L += ["", "Kept (customisations and decisions):"] + (["- %s | %s" % (p, why) for p, why in sorted(kept)] or ["- (none)"])
+    if notes.get("redirectsLeft"):
+        L += ["", "Meta-refresh pages left as hand pages (adopt could not turn them into redirects):"]
+        L += ["- %s: %s" % t for t in notes["redirectsLeft"]]
     if notes["unknown"]:
         L += ["", "Tokens the plugin's build will refuse (fix by hand):"] + ["- %s: %s" % t for t in notes["unknown"]]
     L += ["", "Parity: %s" % (("%s (%s)" % (parity["verdict"], parity.get("reason", ""))) if parity else "not run")]
@@ -1613,15 +2561,16 @@ def do_apply(repo, date, dry_run=False):
     p = prepare(repo, date)
     out = []
     old, new = p["claude"]
-    diff = "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), "CLAUDE.md (origin/main)", "CLAUDE.md (adopt)"))
+    diff = "".join(difflib.unified_diff(old.splitlines(True), new.splitlines(True), "CLAUDE.md (%s)" % p["basis"].label(), "CLAUDE.md (adopt)"))
     if dry_run:
-        out.append("adopt dry run: would create %s from origin/main %s with ONE commit; nothing written." % (p["branch"], p["base"][:7]))
+        out.append("adopt dry run: would create %s from %s %s with ONE commit; nothing written."
+                   % (p["branch"], p["basis"].label(), p["base"][:7]))
         out.append(p["message"])
         out.append("CLAUDE.md diff:\n" + (diff or "(no change)"))
         return "\n".join(out), None
     commit = commit_branch(repo, p["tree"], p["base"], p["branch"], p["message"])
-    out.append("adopt: created %s (commit %s) from origin/main %s. Review it with `git show %s`; main is untouched, "
-               "nothing was pushed." % (p["branch"], commit[:7], p["base"][:7], p["branch"]))
+    out.append("adopt: created %s (commit %s) from %s %s. Review it with `git show %s`; main is untouched, "
+               "nothing was pushed." % (p["branch"], commit[:7], p["basis"].label(), p["base"][:7], p["branch"]))
     out.append(p["message"])
     out.append("CLAUDE.md diff:\n" + (diff or "(no change)"))
     return "\n".join(out), commit
@@ -1635,7 +2584,8 @@ def _need_plan(repo, base):
 
 
 def cmd_inventory(repo, as_json):
-    base, tree, data = preconditions(repo)
+    basis, tree, data = preconditions(repo)
+    base = basis.sha
     spec = load_spec()
     infos = inventory(tree, spec)
     resume = detect_resume(tree)
@@ -1646,34 +2596,58 @@ def cmd_inventory(repo, as_json):
         del plan["files"][stale]
     save_plan(repo, plan)
     folders = portfolio_folders(tree)
-    unknown = []
+    unknown, sections = [], []
     for p in token_files(tree):
-        _t, _c, u = rewrite_tokens(tree.text(p), folders, layout=(p == "site/templates/layout.html"))
+        _t, ch, u = rewrite_tokens(tree.text(p), folders, layout=(p == "site/templates/layout.html"))
         unknown += [(p, t) for t in u]
+        sections += [(p, a, b) for a, b in ch if "{{#page:" in b]
+    kind = plan.get("siteKind")
+    probs = site_problems(tree, data, plan["paper"], kind)
+    redirects = redirect_pages(tree, data.get("redirects"))
+    signals = detect_signals(tree, data, redirects)
+    known = set(f.key for f in FEATURES)
+    inferred, inferred_why = infer_kind(tree)
     if as_json:
-        return json.dumps({"base": base, "files": infos, "resume": resume, "unknownTokens": unknown},
+        return json.dumps({"base": base,
+                           "basis": {"sha": base, "kind": basis.kind, "branch": basis.branch,
+                                     "origin": basis.origin, "reason": basis.reason,
+                                     "ahead": [{"sha": s, "subject": subj} for s, subj in basis.ahead]},
+                           "files": infos, "resume": resume, "unknownTokens": unknown,
+                           "problems": problem_dicts(probs),
+                           "redirects": {"convert": [{"path": r.path, "key": r.key, "target": r.target,
+                                                      "dropped": r.dropped} for r in redirects[0]],
+                                         "left": [{"path": p, "reason": why} for p, why in redirects[1]]},
+                           "features": [{"key": k, "where": w, "known": k in known,
+                                         "line": feature_lines([(k, w)])[0].strip("- ").strip()}
+                                        for k, w in signals],
+                           "inferredKind": {"kind": inferred, "why": inferred_why}, "siteKind": kind,
+                           "sections": [{"path": p, "found": a, "section": b} for p, a, b in sections]},
                           indent=2, default=list)
-    L = ["adopt inventory (origin/main %s)" % base[:7], "",
+    L = ["adopt inventory (%s %s)" % (basis.label(), base[:7])] + basis.up_front() + [
+         "",
          "%-10s %-38s %-34s %5s %8s  %s" % ("class", "file", "plugin counterpart", "score", "residual", "evidence")]
     for i in infos:
         L.append("%-10s %-38s %-34s %5s %8s  %s" % (
             i["class"], i["path"], counterpart_of(spec, i["capability"])[:34] if i["class"] != "CUSTOM" else "none",
             _fmt_pct(i["score"]) if i["class"] != "MIXED" else "-",
             _fmt_pct(i["residual"]) if i["class"] in ("DUPLICATE", "PARTIAL") else "-",
-            ", ".join(i["signals"]) if i["signals"] else (
+            (", ".join(i["signals"]) if i["signals"] else (
                 "best: " + ", ".join("%s %s" % b for b in i["best"]) if i["class"] == "CUSTOM" and i["best"] else
-                ("candidates: " + ", ".join("%s %s" % c for c in i["candidates"]) if i["candidates"] else ""))))
+                ("candidates: " + ", ".join("%s %s" % c for c in i["candidates"]) if i["candidates"] else "")))
+            + ("; " + namesake_text(i) if i.get("namesake") else "")))
     for i in infos:
         if i["residual_units"]:
             L.append("")
-            L.append("Residual units in %s (person data to move, or behaviour to keep):" % i["path"])
+            L.append("Residual units in %s (person data to move, a standing rule to carry, or behaviour to keep):"
+                     % i["path"])
             for u in i["residual_units"]:
                 L.append("  %s: %s" % (u["id"], u["text"].split("\n")[0][:90]))
     for i in infos:
         if i.get("shadows"):
             L.append("")
-            L.append("SHADOW: %s has the name of the plugin's %s agent but does a different job; a project agent "
-                     "outranks the plugin's, so rename it." % (i["path"], i["shadows"]))
+            L.append("SHADOW: %s %s. While it is kept, %s"
+                     % (i["path"], namesake_text(i) or "has the name of site-studio's %s agent" % i["shadows"],
+                        shadow_note(i["shadows"])))
     L.append("")
     if resume["md"]:
         L.append("resume: %s%s; paper: %s" % (resume["md"], (" + " + resume["pdf"]) if resume["pdf"] else "",
@@ -1683,6 +2657,48 @@ def cmd_inventory(repo, as_json):
         L.append("resume: none found; site.json gets resume: null")
     if unknown:
         L.append("tokens the plugin's build will refuse: " + ", ".join("%s in %s" % (t, p) for p, t in unknown))
+    for p, t in unknown:
+        if re.sub(r"\s", "", t) == "{{resumeLink}}":
+            L.append("step for you: %s holds %s somewhere other than as an anchor's whole href. The plugin "
+                     "has no such token: wrap the link in %s, and point it at {{link:resume}}, by hand."
+                     % (p, t, section_for_resume("<a href=\"{{link:resume}}\">...</a>")))
+    if sections:
+        L.append("page sections adopt will write (a link that is there when the resume is built, gone when "
+                 "it is not):")
+        for p, a, b in sections:
+            L.append("  %s: %s -> %s" % (p, " ".join(a.split()), " ".join(b.split())))
+    if probs:
+        L.append("")
+        L += format_problems(probs)
+        L.append("")
+    for name in pageless_folders(TreeFiles(tree)):
+        choice = plan["folders"].get(name, "source")
+        L.append("content/%s/ has no page.md: apply will %s. %s" % (
+            name,
+            "add a page.md, so it becomes a portfolio" if choice == "portfolio" else
+            "rename it to content/_%s (kept as source material, not built)" % name,
+            "To rename it instead: `adopt.py folder %s source`." % name if choice == "portfolio" else
+            "To make it a portfolio instead: `adopt.py folder %s portfolio`." % name))
+    sch = site_json_schema_line(tree, data, plan["paper"], plan["folders"], kind)
+    if sch:
+        L.append(sch)
+    if redirects[0]:
+        L.append("meta-refresh pages adopt will turn into site.json redirects (the build writes an equivalent "
+                 "page at the same address):")
+        L += ["  %s -> redirects '%s': %s" % (r.path, r.key, json.dumps(r.target)) for r in redirects[0]]
+    if redirects[1]:
+        L.append("meta-refresh pages that stay hand pages (adopt will not turn them into redirects):")
+        L += ["  %s: %s" % t for t in redirects[1]]
+    if signals:
+        L.append("")
+        L.append("what this site does, and what site-studio does about it:")
+        L += feature_lines(signals)
+    L.append("")
+    L.append("this looks like a %s site (%s); %s" % (
+        inferred, inferred_why,
+        ("you confirmed %s" % kind) if kind else
+        "confirm it with `adopt.py kind %s`, or choose portfolio, hub or custom; apply writes only a kind you "
+        "confirmed" % inferred))
     counts = {}
     for i in infos:
         counts[i["class"]] = counts.get(i["class"], 0) + 1
@@ -1690,12 +2706,27 @@ def cmd_inventory(repo, as_json):
     return "\n".join(L)
 
 
+def site_json_schema_line(tree, data, paper, folders=None, kind=None):
+    """The inventory line that says site.json will be written as schema 2, and why (so a person on a
+    second machine with an older site-studio is not surprised); None while schema 1 holds the site."""
+    try:
+        _files, notes = converted_site_files(tree, data, paper, folders, kind)
+    except Refused:
+        return None
+    if notes["schema"] < 2:
+        return None
+    return ("site.json will be written as schema %d, because %s; a site-studio older than 0.2.0 will say "
+            "it is newer than it understands, and ask to be updated"
+            % (notes["schema"], "; ".join("%s %s" % (w, what) for w, what, _e in notes["schemaReasons"])))
+
+
 def _current_base(repo):
-    """origin/main as last fetched (the plan commands make no network call)."""
-    base = gitt(repo, "rev-parse", "--verify", "-q", "refs/remotes/origin/main", check=False)
-    if not base:
+    """The parity basis as of the last fetch (the plan commands make no network call): HEAD when it is a
+    fast-forward of origin/main as last fetched, else origin/main. A commit made after the inventory
+    changes it, which is the point: the plan was made for another tree."""
+    if not gitt(repo, "rev-parse", "--verify", "-q", "refs/remotes/origin/main", check=False):
         raise Refused("origin/main does not resolve; run `adopt.py inventory` first")
-    return base
+    return parity_basis(repo).sha
 
 
 def _set(repo, path, fn):
@@ -1725,7 +2756,7 @@ def main(argv=None):
     s = sub.add_parser("unit")
     s.add_argument("path")
     s.add_argument("unit_id")
-    s.add_argument("disposition", choices=("person-data", "keep"))
+    s.add_argument("disposition", choices=UNIT_DISPOSITIONS)
     s.add_argument("--kind", choices=FACT_KINDS)
     s.add_argument("--name")
     s = sub.add_parser("fact")
@@ -1737,6 +2768,11 @@ def main(argv=None):
     s.add_argument("path")
     s = sub.add_parser("paper")
     s.add_argument("size", choices=("Letter", "A4"))
+    s = sub.add_parser("folder")
+    s.add_argument("name")
+    s.add_argument("choice", choices=FOLDER_CHOICES)
+    s = sub.add_parser("kind")
+    s.add_argument("site_kind", choices=siteconfig.SITE_KINDS)
     s = sub.add_parser("parity")
     s.add_argument("--accept", action="store_true")
     s = sub.add_parser("apply")
@@ -1746,8 +2782,18 @@ def main(argv=None):
     repo = os.path.abspath(args.repo)
     try:
         if args.cmd == "check":
-            base, _t, _d = preconditions(repo)
-            print("adopt ok: origin/main %s can be converted" % base[:7])
+            basis, tree, data = preconditions(repo)
+            for line in basis.up_front():
+                print(line)
+            probs = site_problems(tree, data, None, _plan_for(repo, basis.sha).get("siteKind"))
+            for line in format_problems(probs):
+                print(line)
+            blocked = [p for p in probs if not p.mechanical]
+            if blocked:
+                print("adopt check: %s %s cannot be converted until the %d problem(s) marked "
+                      "`you decide` are settled" % (basis.label(), basis.sha[:7], len(blocked)))
+                return 1
+            print("adopt ok: %s %s can be converted" % (basis.label(), basis.sha[:7]))
         elif args.cmd == "inventory":
             print(cmd_inventory(repo, args.json))
         elif args.cmd == "confirm":
@@ -1789,10 +2835,30 @@ def main(argv=None):
             plan["paper"] = args.size
             save_plan(repo, plan)
             print("adopt: resume.paper will be %s" % args.size)
+        elif args.cmd == "folder":
+            name = args.name.strip("/")
+            if name.startswith("content/"):
+                name = name[len("content/"):]
+            if not name or "/" in name:
+                raise Refused("name one folder directly under content/, for example `adopt.py folder news "
+                              "portfolio`")
+            plan = _plan_for(repo, _current_base(repo))
+            plan["folders"][name] = args.choice
+            save_plan(repo, plan)
+            print("adopt: content/%s -> %s" % (name, "renamed to content/_%s (source material)" % name
+                                                if args.choice == "source" else "gets a page.md and is a portfolio"))
+        elif args.cmd == "kind":
+            plan = _plan_for(repo, _current_base(repo))
+            plan["siteKind"] = args.site_kind
+            save_plan(repo, plan)
+            print("adopt: the site kind is %s%s" % (args.site_kind, " (the default; site.json will not carry it)"
+                                                    if args.site_kind == "portfolio" else
+                                                    " (apply writes siteKind: %s, schema 2)" % args.site_kind))
         elif args.cmd == "parity":
-            base, tree, data = preconditions(repo)
-            plan = _plan_for(repo, base)
-            res = run_parity(repo, inventory(tree), base, tree, data)
+            basis, tree, data = preconditions(repo)
+            plan = _plan_for(repo, basis.sha)
+            res = run_parity(repo, inventory(tree), basis, tree, data, folders=plan["folders"],
+                             kind=plan.get("siteKind"))
             if args.accept:
                 if res["verdict"] != "DIFFERENT":
                     raise Refused("there are no differences to accept (parity is %s)" % res["verdict"])
