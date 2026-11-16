@@ -40,6 +40,24 @@ Bring in `portfolio-advisor` with the piece's folder: it drafts the story only f
 the folder and returns the questions for every gap. Ask the person those questions. Write the
 piece's text from their answers; a fact they did not give is not written.
 
+### Order and blocks (schema 3 only; offer, never assume)
+
+- **Order.** A piece may carry `order: <whole number>` in its front matter, and it is read **only** when
+  the portfolio's `page.md` sets `sort: "order"`: pieces with an `order` come first, ascending, then the
+  rest by date. Ask before you add either; without `sort: "order"` the number does nothing.
+- **Blocks.** On a site whose `site/site.json` says `"schema": 3`, the piece's Markdown may hold
+  `:::tiles` (rows `figure | label`), `:::quote` (the words, then `— Name, Role, *Title*`),
+  `:::gallery` (image lines), `:::videos` (rows `title | url`, and `| media/poster.jpg` for a photo that
+  plays the video) and `:::carousel`, each closed by a line holding only `:::`. Write one only when the
+  person asks for it. **A video's poster is an image they commit under `media/`; a web address is
+  refused**, so ask for the photo. Nothing loads from the video's host until the visitor clicks. A line
+  that merely starts with `:::` and is meant as text takes a backslash in front: `\:::`.
+- **The first block on a site that is not yet schema 3.** Run
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/build.py" raise-schema --repo <dev repo>` and **show the person
+  its report**: each page that would change, and each problem (an unknown block, a built-in key in a
+  `meta` list). The person decides: `--keep-text PATH:LINE` leaves a line as text, and only after they say
+  yes do you run it again with `--confirm`. A site already at schema 3 needs no raise.
+
 ## 4. Preview
 
 `preview.py`, then show the piece as `/site-studio:preview` does. Change what the person asks.

@@ -44,7 +44,13 @@ docstring. (No such note exists yet.)
                width/height equal to the file header's, srcset widths equal to each file's real
                width and a sizes attribute; an alt text that is a file name; formats the web will
                not show (heic, tiff, bmp); a long edge over 2000 px; every <iframe> has a title and
-               comes from a recognised video host (youtube-nocookie, player.vimeo, drive.google).
+               comes from a recognised video host (youtube-nocookie, player.vimeo, drive.google); and,
+               from 0.3.0 (dev #865, site-fidelity section 7.3), the FACADE RULE: inside a `.ss-video` or
+               `.ss-videos` block no `src`, `srcset`, `poster`, `data` or `<link href>` is remote, and
+               the shipped `site-studio/blocks.css` has no remote `url()`. `href` and `data-embed`
+               are exempt (they hold the video's address and load nothing before a click). SHAPE ONLY:
+               it reads the markup the build wrote, not what a browser fetches; the behavioural half
+               is test_build.py's `video.js` case, run under node.
   unfinished   TODO/FIXME/TBD/lorem ipsum/coming soon/under construction in visible text, empty or
                "#" links, development URLs (localhost, 127.0.0.1, file://), a noindex page that is
                not a redirect stub, an untitled or empty page.
@@ -478,6 +484,65 @@ def parse_page(rel, text):
     return p
 
 
+_REMOTE_LOAD = re.compile(r"^\s*(?:https?:|ftp:|//)", re.I)
+
+
+class FacadeScan(HTMLParser):
+    """The facade loading-attribute rule (site-fidelity section 7.3, dev #865). Inside an element whose class
+    list holds `ss-video` or `ss-videos`, no element may carry a LOADING attribute with a remote value: `src`
+    and `srcset` (an <img>, an <iframe>, a <source>, a <video>), `poster`, `data` (an <object>), or `href` on a
+    <link>. `href` on an <a> and `data-embed` are exempt: they hold the video's address by design and load
+    nothing until a click.
+
+    SHAPE ONLY, and it says so: it reads the markup the build wrote, not what a browser fetches. A script that
+    adds a request, a CSS rule the page's own stylesheet adds, or an attribute spelled some other way is not
+    seen. The behavioural half is one case in test_build.py that runs `video.js` under node with a stub DOM.
+    `found` is [(tag, attribute, value)]."""
+
+    LOADING = ("src", "srcset", "poster", "data")
+
+    def __init__(self):
+        HTMLParser.__init__(self, convert_charrefs=True)
+        self.stack = []             # (tag, is a facade root)
+        self.found = []
+
+    def handle_starttag(self, tag, attrs):
+        a = dict((k, (v if v is not None else "")) for k, v in attrs)
+        classes = a.get("class", "").split()
+        root = "ss-video" in classes or "ss-videos" in classes
+        if root or any(r for _t, r in self.stack):
+            names = list(self.LOADING) + (["href"] if tag == "link" else [])
+            for k in names:
+                v = a.get(k)
+                if v is None:
+                    continue
+                cands = [u for u, _d in parse_srcset(v)] if k == "srcset" else [v]
+                for u in cands:
+                    if _REMOTE_LOAD.match(u):
+                        self.found.append((tag, k, u))
+        if tag not in _VOID:
+            self.stack.append((tag, root))
+
+    def handle_endtag(self, tag):
+        for i in range(len(self.stack) - 1, -1, -1):
+            if self.stack[i][0] == tag:
+                del self.stack[i:]
+                break
+
+
+def facade_loads(text):
+    """[(tag, attribute, value)]: every loading attribute inside a video facade that points off the site."""
+    if "ss-video" not in text:
+        return []
+    scan = FacadeScan()
+    try:
+        scan.feed(text)
+        scan.close()
+    except Exception:       # noqa: BLE001 -- malformed markup is the `structure` family's finding
+        pass
+    return scan.found
+
+
 def parse_srcset(s):
     out = []
     for part in (s or "").split(","):
@@ -560,6 +625,12 @@ def classify(url, base):
     if u.startswith("#"):
         return ("fragment", u[1:])
     return ("rel", u)
+
+
+def _size_copy_of(rel, files):
+    """True when `rel` is a `<stem>.w<NNN>.<ext>` copy whose original `<stem>.<ext>` is in `files` (schema 3, F4)."""
+    m = re.match(r"^(?P<stem>.+)\.w\d+(?P<ext>\.\w+)$", rel)
+    return bool(m) and (m.group("stem") + m.group("ext")) in files
 
 
 class Checker(object):
@@ -977,6 +1048,17 @@ class Checker(object):
                     self.r.add(fam, rel, "<iframe src=%s> has no title" % src)
                 if host not in VIDEO_HOSTS:
                     self.r.add(fam, rel, "<iframe> from %s, which is not a recognised video host" % (host or src))
+            for tag, attr, val in facade_loads(p.source):
+                n += 1
+                self.r.add(fam, rel, "a video facade loads %s from another address before any click (<%s %s>); "
+                           "a facade may load only a poster committed under media/" % (val, tag, attr))
+        css = "site-studio/blocks.css"
+        if css in t.files:
+            n += 1
+            for m in _CSS_URL.finditer(_CSS_COMMENT.sub("", t.text(css))):
+                if _REMOTE_LOAD.match(m.group(2)):
+                    self.r.add(fam, css, "the block stylesheet loads %s from another address; it may load "
+                               "nothing from outside the site" % m.group(2))
         self.r.count(fam, n)
 
     # -- unfinished --------------------------------------------------------------------------
@@ -1039,9 +1121,12 @@ class Checker(object):
         b = self.cfg.effective_budgets()
         n = 0
         over_kb = b["sizeCopyOverKB"]
+        schema3 = getattr(self.cfg, "schema", 1) >= 3
         for rel in sorted(self.t.files):
             if not rel.lower().endswith(IMAGE_EXTS) or re.search(r"-\d+w\.\w+$", rel):
                 continue
+            if schema3 and _size_copy_of(rel, self.t.files):
+                continue            # a `.wNNN` size copy (schema 3, F4) is a copy of its original, not an original
             n += 1
             d = images.read_dimensions(self.t.read(rel))
             if not d:
@@ -1049,6 +1134,9 @@ class Checker(object):
             stem, ext = os.path.splitext(rel)
             has_copy = any(f.startswith(stem + "-") and re.match(r"-\d+w" + re.escape(ext) + "$", f[len(stem):])
                            for f in self.t.files)
+            if schema3 and not has_copy:
+                has_copy = any(f.startswith(stem + ".w") and re.match(r"\.w\d+" + re.escape(ext) + "$", f[len(stem):])
+                               for f in self.t.files)
             if images.plan_copies(d[0], self.t.files[rel], over_kb) and not has_copy:
                 self.r.add(fam, rel, "%d KB is over the %s KB budget and the image has no size copies "
                                      "(<stem>-<width>w.<ext>); import it again" % (self.t.files[rel] // 1024, over_kb))

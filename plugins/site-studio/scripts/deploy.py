@@ -108,6 +108,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import adopt  # noqa: E402     (the one strict reader of the adopt parity record)
 import build  # noqa: E402
 import github_url  # noqa: E402
 import publish_guard  # noqa: E402
@@ -522,6 +523,56 @@ def push_main(clone, sha):
         raise DeployError("the push to the public main was refused or not a fast-forward: %s" % detail)
 
 
+# ---------------------------------------------------------------- the adopt publish gate (site-fidelity 5.0.4)
+
+def check_adopt_record(repo):
+    """Refuse to publish over a site whose adopt measured a difference from the person's own builder. When
+    HEAD carries `.site-studio/adopt-parity.json` and its verdict is not EQUAL or ACCEPTED, site-studio's
+    build differs from what that builder publishes, so the builder stays the publisher until `adopt.py
+    remeasure` says otherwise. No record is 0.2.0's behaviour (a site made by setup, or adopted by 0.2.0); an
+    unreadable record refuses, naming the file."""
+    shown = _git(repo, "show", "HEAD:" + adopt.PARITY_RECORD_REL, check=False, full=True)
+    if shown.returncode != 0:
+        return
+    try:
+        rec = adopt.parse_parity_record(shown.stdout.decode("utf-8", "replace"))
+    except adopt.PlanError as e:
+        raise DeployError("%s (fix or delete the file, or run `adopt.py remeasure`)" % e)
+    if rec["verdict"] in ("EQUAL", "ACCEPTED"):
+        return
+    raise DeployError(adopt_refusal(rec))
+
+
+def adopt_refusal(rec):
+    """The refusal sentence for a record whose verdict is not EQUAL or ACCEPTED. One per verdict, because each has
+    a different truth and a different way out (design-site-fidelity 5.0.4 and 8.3; deployment-auditor gap 15):
+    DIFFERENT was measured and listed (`remeasure --accept` after reading it); NOT APPLICABLE measured nothing
+    because no builder was found (`remeasure --accept` is "site-studio's build replaces my site, unmeasured");
+    UNVERIFIED could not measure and `--accept` refuses it, so the only way out is to make it measurable (install
+    node) and run `remeasure` again. The gate itself is unchanged: all three refuse."""
+    verdict = rec["verdict"]
+    if verdict == "NOT APPLICABLE":
+        return ("this site was adopted with parity NOT APPLICABLE: adopt found no builder of your own to compare "
+                "site-studio's build against, so nothing was measured, and publishing with site-studio would "
+                "replace what your site publishes today, unmeasured. If you accept that, run `adopt.py remeasure "
+                "--accept`. If a builder of yours should be compared, put it in the repo and run `adopt.py "
+                "remeasure`.")
+    if verdict == "UNVERIFIED":
+        return ("this site was adopted with parity UNVERIFIED: adopt could not measure (there is no node on this "
+                "computer, your builder failed, or site-studio's build refused the converted tree; `adopt.py "
+                "remeasure` prints which), so it is not known whether site-studio's build differs from what your "
+                "builder publishes. Your builder stays your publisher. `adopt.py remeasure --accept` refuses "
+                "UNVERIFIED, because nothing was measured to show you. Install node if it is missing, fix the "
+                "builder if it failed, or settle what site-studio's build refuses, then run `adopt.py remeasure` "
+                "again.")
+    diffs = rec["differences"]
+    first = ("; first: %s %s" % (diffs[0][1], diffs[0][0])) if diffs else ""
+    return ("this site was adopted with parity %s: site-studio's build differs from what your own builder "
+            "publishes (%d difference%s%s). Your builder stays your publisher. Run `adopt.py remeasure`, "
+            "or accept the listed differences with `adopt.py remeasure --accept`."
+            % (verdict, len(diffs), "" if len(diffs) == 1 else "s", first))
+
+
 # ---------------------------------------------------------------- shared start of both modes
 
 def prepare(repo, hooks=None, build_fn=None):
@@ -534,6 +585,7 @@ def prepare(repo, hooks=None, build_fn=None):
     except (siteconfig.SiteConfigError, OSError) as e:
         raise DeployError(str(e))
     public_target(cfg)      # a null publicRepo refuses here, before any build (dev #835, AM9)
+    check_adopt_record(repo)
     work = tempfile.mkdtemp(prefix="ss-deploy-")
     out_dir = os.path.join(work, "out")
     try:

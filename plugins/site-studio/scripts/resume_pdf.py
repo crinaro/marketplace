@@ -95,6 +95,9 @@ def make_resume_pdf(repo, log=print, quiet=False):
         raise ResumeError("site.json has no resume (set it, or ask for one with the resume skill)")
     if not res.get("pdf"):
         raise ResumeError("site.json resume.pdf is null: this site publishes no resume PDF")
+    if not res.get("paper"):
+        raise ResumeError("resume.paper needs your answer (Letter or A4): set \"paper\" in site.json resume, then "
+                          "make the PDF again")
     src_path = os.path.join(repo, *res["path"].split("/"))
     pdf_path = os.path.join(repo, *res["pdf"].split("/"))
     if not os.path.isfile(src_path):

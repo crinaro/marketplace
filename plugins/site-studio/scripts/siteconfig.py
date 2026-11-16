@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""siteconfig.py -- the strict parser, and the ONLY writer, of `site/site.json` (schemas 1 and 2).
+"""siteconfig.py -- the strict parser, and the ONLY writer, of `site/site.json` (schemas 1, 2 and 3).
 
 dev #835, design section 3.2 and named change S10. Python 3.9, standard library only.
 
@@ -41,6 +41,20 @@ migration, by one rule: the writer writes the LOWEST schema that holds the site,
   emit that schema and only that schema's keys, so a portfolio with no 0.2.0 feature stays
   schema 1 and stays readable by a 0.1.0 install. `check_tree_schema` is the build's refusal of a
   schema-1 file over a tree that needs 2. git's `repositoryformatversion` is the model.
+
+SCHEMA 3 (site-fidelity, 0.3.0; design-site-fidelity section 3). No migration, by the same rule, and
+the owner invariant behind it: site-studio never changes how a published site looks or works. A
+schema-3 reason is one of two kinds. K: a key or form 0.2.0 REFUSED, so no tree 0.2.0 accepted can hold
+one (the resume with no PDF and no `paper`; a `page.md` carrying `order`, `tagline`, `sort`, `menuLinks`
+or `view`; a `{{home:` token in `site/src`; `content/home/index.md` or `content/about/index.md`; a
+`contact` key on the resume page). A K reason below schema 3 is refused by `check_tree_schema`. I: a new
+interpretation of text 0.2.0 ACCEPTED (a block fence line, a titled image line, a `.wNNN` size copy).
+An I reason below schema 3 is NEVER refused: the build keeps 0.2.0's reading of it byte for byte, so a tree
+0.2.0 accepted builds identically under 0.3.0. `build.py raise-schema` is the one way a site gets to
+schema 3, and it lists every output difference first. `required_schema(cfg, files, interpretations=...)`
+takes the I-1 and I-2 reasons from its caller (`content.interpretation_reasons`), because `siteconfig`
+cannot import `content`; it refuses to run with `files` and no `interpretations`, so no caller can forget
+the scan.
 """
 import json
 import os
@@ -49,7 +63,7 @@ import sys
 import tempfile
 from collections import namedtuple
 
-SCHEMA_MAX = 2
+SCHEMA_MAX = 3
 ENGINE_MARKER = "site-studio"
 CANONICAL_MARKER_LINE = '  "engine": "site-studio",'
 
@@ -88,24 +102,36 @@ _DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[
 _KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
 
-class Problem(namedtuple("Problem", "path found expected fix mechanical")):
+class Problem(namedtuple("Problem", "path found expected fix mechanical lineno")):
     """One thing wrong in a config or a content tree (design-site-adoption section 7.1).
 
     `path` where it is ('work.meta[0]', 'content/news/'), `found` what is there, `expected` what
     would be right, `fix` the one-line remedy, `mechanical` True when adopt's `apply` makes the
     fix itself (it prints `apply fixes this`) and False when only the person can decide (`you
-    decide`). `message` is the one-line text `parse_data` raises with; it is not a tuple field, so
-    two Problems that differ only in wording compare equal."""
+    decide`), `lineno` the 1-based line in `path` when the check knows it (else None; design-site-
+    fidelity section 4.1: the field is `lineno`, never `line`, which would shadow the method below).
+    `message` is the one-line text `parse_data` raises with; it is not a tuple field, so two Problems
+    that differ only in wording compare equal."""
     message = ""
 
     def line(self):
-        return "%s -- fix: %s (%s)" % (self.message, self.fix,
-                                       "apply fixes this" if self.mechanical else "you decide")
+        message = self.message
+        if self.lineno and self.path:
+            at = "%s:%d: " % (self.path, self.lineno)
+            if message.startswith(self.path + ": "):
+                message = at + message[len(self.path) + 2:]         # `path: text` becomes `path:line: text`
+            elif not message.startswith(at):
+                message = at + message
+        return "%s -- fix: %s (%s)" % (message, self.fix, "apply fixes this" if self.mechanical else "you decide")
 
 
-def make_problem(message, path=None, found=None, expected=None, fix=None, mechanical=False):
+Problem.__new__.__defaults__ = (None,)
+
+
+def make_problem(message, path=None, found=None, expected=None, fix=None, mechanical=False, lineno=None):
     p = Problem(path, found, expected,
-                fix or ("edit %s in site/site.json" % ("'%s'" % path if path else "it")), bool(mechanical))
+                fix or ("edit %s in site/site.json" % ("'%s'" % path if path else "it")), bool(mechanical),
+                lineno)
     p.message = message
     return p
 
@@ -115,9 +141,10 @@ class SiteConfigError(ValueError):
     structured form of ONE refusal (None when the error was not raised by a check); `problems` is the
     whole list when `parse_data` raised for several at once."""
 
-    def __init__(self, message, path=None, found=None, expected=None, fix=None, mechanical=False):
+    def __init__(self, message, path=None, found=None, expected=None, fix=None, mechanical=False,
+                 lineno=None):
         ValueError.__init__(self, message)
-        self.problem = make_problem(message, path, found, expected, fix, mechanical)
+        self.problem = make_problem(message, path, found, expected, fix, mechanical, lineno)
         self.problems = [self.problem]
 
     @classmethod
@@ -439,7 +466,7 @@ def validate_portfolio_settings(raw, where, schema=SCHEMA_MAX, featured_from="ho
     return out
 
 
-def _resume_check(raw, col):
+def _resume_check(raw, col, schema=SCHEMA_MAX):
     if raw is None:
         return None
     if not isinstance(raw, dict):
@@ -451,10 +478,16 @@ def _resume_check(raw, col):
             col.add("site.json: unknown key 'resume.%s'" % k, "resume.%s" % k, "unknown key",
                     "one of: " + ", ".join(RESUME_KEYS), "remove 'resume.%s'" % k)
     paper = None
-    if "paper" not in raw:
+    # K-1 (schema 3): a resume with no PDF has no paper size to ask about. Below schema 3 the answer is
+    # always required, exactly as 0.2.0 reads it.
+    no_pdf = "pdf" in raw and raw["pdf"] is None
+    if "paper" not in raw and no_pdf and schema >= 3:
+        pass
+    elif "paper" not in raw:
         col.add("site.json: 'resume.paper' is required (\"Letter\" or \"A4\"); no default is guessed from a "
                 "locale", "resume.paper", "missing", "\"Letter\" or \"A4\"",
-                "add \"paper\": \"Letter\" or \"A4\" to resume")
+                "add \"paper\": \"Letter\" or \"A4\" to resume (or, with no resume PDF, set \"pdf\": null "
+                "and \"schema\": 3)")
     elif raw["paper"] not in PAPERS:
         col.add("site.json: 'resume.paper' must be \"Letter\" or \"A4\"", "resume.paper", raw["paper"],
                 "\"Letter\" or \"A4\"", "set resume.paper to \"Letter\" or \"A4\"")
@@ -596,8 +629,8 @@ def _check(data):
                 "make site/site.json one JSON object")
         return col.problems, None
     if "schema" not in data:
-        col.add("site.json: 'schema' is missing", "schema", "missing", "1 or 2",
-                "add \"schema\": 1 (or 2 when the site uses a schema-2 feature)")
+        col.add("site.json: 'schema' is missing", "schema", "missing", "1, 2 or 3",
+                "add \"schema\": 1 (or 2 or 3 when the site uses a feature that needs it)")
         return col.problems, None
     schema = data["schema"]
     if isinstance(schema, bool) or not isinstance(schema, int):
@@ -609,7 +642,7 @@ def _check(data):
                 "update site-studio")
         return col.problems, None
     if schema < 1:
-        col.add("site.json: 'schema' must be 1 or more", "schema", schema, "1 or 2", "set \"schema\" to 1 or 2")
+        col.add("site.json: 'schema' must be 1 or more", "schema", schema, "1, 2 or 3", "set \"schema\" to 1, 2 or 3")
         return col.problems, None
     for k in data:
         if k not in KEY_ORDER and k not in V2_TOP_KEYS:
@@ -672,7 +705,7 @@ def _check(data):
     featured_from = d["featuredFrom"] if d["featuredFrom"] in FEATURED_FROM else "home"
     d["work"] = _portfolio_check(data.get("work", {}), "work", schema, featured_from, col)
     d["redirects"] = _redirects_check(data.get("redirects", {}), col)
-    d["resume"] = _resume_check(data.get("resume"), col)
+    d["resume"] = _resume_check(data.get("resume"), col, schema)
     d["budgets"] = _budgets_check(data.get("budgets", {}), col)
     if col.problems:
         return col.problems, None
@@ -696,14 +729,20 @@ def parse_data(data):
     return SiteConfig(d)
 
 
-def parse_text(text):
+def decode(text):
+    """The decoded value of a site.json text: JSON, with a duplicate key refused. Raises one
+    `SiteConfigError` for text that is not JSON. `parse_text` is `decode` plus `parse_data`; `build.accept`
+    calls `decode`, `problems` and `parse_data` itself so it can report every problem."""
     try:
-        data = json.loads(text, object_pairs_hook=_no_dupes)
+        return json.loads(text, object_pairs_hook=_no_dupes)
     except SiteConfigError:
         raise
     except ValueError as e:
         raise SiteConfigError("site.json is not valid JSON: %s" % e)
-    return parse_data(data)
+
+
+def parse_text(text):
+    return parse_data(decode(text))
 
 
 def load(path):
@@ -800,23 +839,164 @@ def schema_2_reasons(cfg, files=None):
     return out
 
 
-def required_schema(cfg, files=None):
-    """The lowest schema that holds the site: 2 when any of five conditions holds (see
-    `schema_2_reasons`), else 1. `files` is the tree the caller holds (adopt: the converted tree);
-    None means no tree feature is known."""
+# ---- schema 3 (site-fidelity, design section 3): K reasons (keys 0.2.0 refused) and I reasons
+# (interpretations of text 0.2.0 accepted). See the module docstring.
+
+V3_PAGE_KEYS = ("order", "tagline", "sort", "menuLinks", "view")
+# What each key takes, and what a portfolio is without it (0.2.0's behaviour; design-site-fidelity section 6.2).
+PAGE_SORTS = ("date", "order")
+PAGE_MENU_LINKS = ("index", "single-piece")
+PAGE_VIEWS = ("grid", "page")
+V3_PAGE_DEFAULTS = {"order": None, "tagline": "", "sort": "date", "menuLinks": "index", "view": "grid"}
+# A piece key the build already reads or shows, so a `meta`/`cardMeta` list that names one is refused at
+# schema 3 (the build shows it already, and a second copy would print it twice). `featured` is reserved
+# separately, only under `featuredFrom: flags`.
+BUILTIN_PIECE_KEYS = ("shortTitle", "teaser", "coverPosition", "cover", "order", "title", "date", "draft")
+
+
+def page_settings_problems(raw, where):
+    """Every problem in the schema-3 portfolio keys of a `page.md` (`order`, `tagline`, `sort`, `menuLinks`,
+    `view`), as (problems, settings). `raw` holds only those keys; `where` is the page's path. `settings` is
+    fully defaulted. The value rules are the design's section 6.2 table, and every refusal names its fix."""
+    out = dict(V3_PAGE_DEFAULTS)
+    probs = []
+
+    def bad(key, found, expected, fix):
+        probs.append(make_problem("%s: '%s' %s" % (where, key, expected), where, found, expected, fix))
+    for key, val in raw.items():
+        if key == "order":
+            if isinstance(val, bool) or not isinstance(val, int):
+                bad(key, repr(val), "must be a whole number, such as 2", "write order as a whole number, such as order: 2")
+            else:
+                out[key] = val
+        elif key == "tagline":
+            if not isinstance(val, str) or not val.strip() or "\n" in val:
+                bad(key, repr(val), "must be one line of text", "write tagline as one line of text")
+            else:
+                out[key] = val.strip()
+        else:
+            allowed = {"sort": PAGE_SORTS, "menuLinks": PAGE_MENU_LINKS, "view": PAGE_VIEWS}.get(key)
+            if allowed is None:
+                continue
+            if val not in allowed:
+                names = " or ".join('"%s"' % a for a in allowed)
+                bad(key, repr(val), "must be %s" % names, "set %s to %s" % (key, names))
+            else:
+                out[key] = val
+    return probs, out
+_HOME_TOKEN_RE = re.compile(r"\{\{\s*home\s*:")
+_FM_KEY_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*):(?:\s|$)")
+_SIZE_COPY_RE = re.compile(r"^(?P<stem>.+)\.w(?P<w>\d+)(?P<ext>\.\w+)$")
+_EFFECT_K = "site-studio 0.2.0 would refuse it"
+_EFFECT_I_TEXT = "site-studio 0.2.0 publishes it as text"
+_EFFECT_I_FILE = "site-studio 0.2.0 publishes it as a plain media file"
+
+Reason = namedtuple("Reason", "where what effect lineno kind")
+
+
+def front_matter_keys(text):
+    """[(key, lineno)] for the top-level keys of a file's front matter (an unreadable block yields what
+    was read). Lines are numbered from 1 over the whole file. No front matter yields []."""
+    text = _text_of(text).replace("\r\n", "\n")
+    if not text.startswith("---\n"):
+        return []
+    out = []
+    for i, line in enumerate(text.split("\n")[1:], 2):
+        if line.rstrip() == "---":
+            break
+        m = _FM_KEY_RE.match(line)
+        if m:
+            out.append((m.group(1), i))
+    return out
+
+
+def schema_3_reasons(cfg, files=None, interpretations=None, kinds=("K", "I")):
+    """Every reason this site needs schema 3, as [Reason(where, what, effect, lineno, kind)]. `kind` is
+    "K" (a key or form 0.2.0 refused) or "I" (a new reading of text 0.2.0 accepted). `files` is the
+    tree as {repo path: bytes or str}; `interpretations` is `content.interpretation_reasons(files)`,
+    [(path, lineno, form)] (I-1 and I-2), which this module cannot compute (it cannot import `content`).
+    `kinds` narrows the answer: `check_tree_schema` asks for K only, because an I reason is never
+    refused below schema 3."""
+    out = []
+    if "K" in kinds:
+        if (cfg.resume is not None and cfg.resume.get("pdf") is None and cfg.resume.get("paper") is None):
+            out.append(Reason("site/site.json", "has a resume with no PDF and no paper size", _EFFECT_K,
+                              None, "K"))
+        for path in sorted(files or ()):
+            low = path.lower()
+            parts = path.split("/")
+            if path.startswith("content/") and path.endswith("/page.md") and len(parts) == 3:
+                for key, n in front_matter_keys(files[path]):
+                    if key in V3_PAGE_KEYS:
+                        out.append(Reason(path, "sets %s" % key, _EFFECT_K, n, "K"))
+            if path.startswith("site/src/") and low.endswith((".html", ".htm")):
+                m = _HOME_TOKEN_RE.search(_text_of(files[path]))
+                if m:
+                    n = _text_of(files[path])[:m.start()].count("\n") + 1
+                    out.append(Reason(path, "uses a {{home:...}} token", _EFFECT_K, n, "K"))
+            if path in ("content/home/index.md", "content/about/index.md"):
+                out.append(Reason(path, "is a home or about page in folder form", _EFFECT_K, None, "K"))
+        if cfg.resume is not None and files and cfg.resume.get("path") in files:
+            for key, n in front_matter_keys(files[cfg.resume["path"]]):
+                if key == "contact":
+                    out.append(Reason(cfg.resume["path"], "sets contact on the resume page", _EFFECT_K, n, "K"))
+    if "I" in kinds:
+        for path, n, form in (interpretations or ()):
+            out.append(Reason(path, "holds %s" % form, _EFFECT_I_TEXT, n, "I"))
+        for path in sorted(files or ()):
+            if not path.startswith("content/") or "/media/" not in path:
+                continue
+            folder, _, base = path.rpartition("/")
+            m = _SIZE_COPY_RE.match(base)
+            if m and (folder + "/" + m.group("stem") + m.group("ext")) in files:
+                out.append(Reason(path, "is a .w%s size copy of %s%s" % (m.group("w"), m.group("stem"),
+                                                                        m.group("ext")),
+                                  _EFFECT_I_FILE, None, "I"))
+    return out
+
+
+def required_schema(cfg, files=None, interpretations=None):
+    """The lowest schema that holds the site: 3 when any schema-3 reason holds (`schema_3_reasons`), 2
+    when any of five conditions holds (`schema_2_reasons`), else 1. `files` is the tree the caller
+    holds (adopt: the converted tree); None means no tree feature is known. When `files` is given,
+    `interpretations` MUST be too (`content.interpretation_reasons(files)`; [] when there are none): a
+    caller that held a tree and forgot the scan would write a schema too low (design section 3.3)."""
+    if files is not None and interpretations is None:
+        raise ValueError("required_schema(cfg, files) needs interpretations= (content.interpretation_reasons"
+                         "(files)); pass [] only when you know the tree holds none")
+    if schema_3_reasons(cfg, files, interpretations):
+        return 3
     return 2 if schema_2_reasons(cfg, files) else 1
 
 
+def tree_schema_problems(cfg, files):
+    """Every Problem the declared schema of `site.json` has with the tree: the schema-2 reasons under a
+    schema-1 file, then the K schema-3 reasons under a file below 3. An I reason is never a problem
+    (design section 3.2). Each carries `path` and `lineno`; none is mechanical."""
+    out = []
+    if cfg.schema < 2:
+        for where, what, effect in schema_2_reasons(cfg, files):
+            out.append(make_problem("%s %s, which needs \"schema\": 2 in site/site.json (%s)"
+                                    % (where, what, effect), where, "schema 1", "schema 2",
+                                    "set \"schema\": 2 in site/site.json (a save by site-studio does this)"))
+    if cfg.schema < 3:
+        for r in schema_3_reasons(cfg, files, kinds=("K",)):
+            at = "%s:%d:" % (r.where, r.lineno) if r.lineno else r.where
+            out.append(make_problem("%s %s, which needs \"schema\": 3 in site/site.json (run `build.py "
+                                    "raise-schema`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
+                                    "schema 3", "run `python3 build.py raise-schema`, which lists what the "
+                                    "page changes before it writes schema 3", False, r.lineno))
+    return out
+
+
 def check_tree_schema(cfg, files):
-    """The build's refusal of a schema-1 `site.json` over a tree that needs schema 2, naming the
-    file and the feature (the hand-edit case: a person typed a section into a layout)."""
-    if cfg.schema >= 2:
-        return
-    reasons = schema_2_reasons(cfg, files)
-    if reasons:
-        where, what, effect = reasons[0]
-        raise SiteConfigError("%s %s, which needs \"schema\": 2 in site/site.json (%s)"
-                              % (where, what, effect))
+    """The build's refusal of a `site.json` whose schema is lower than the tree needs, naming the file
+    and the feature (the hand-edit case: a person typed a section into a layout, or a `page.md` key
+    from 0.3.0). Raises ONE error that carries every reason (`.problems`); with one reason its message
+    is exactly that reason's."""
+    probs = tree_schema_problems(cfg, files)
+    if probs:
+        raise SiteConfigError.of(probs)
 
 
 def kind_conflicts(cfg):
@@ -836,19 +1016,21 @@ def kind_conflicts(cfg):
 
 # ---------------------------------------------------------------- the one writer
 
-def canonical_text(cfg, files=None):
+def canonical_text(cfg, files=None, interpretations=None, at_least=None):
     """The one canonical form of a config: schema order, indent 2, one trailing LF. It writes the
     LOWEST schema that holds the site (`required_schema(cfg, files)`) and only that schema's keys:
     `siteKind` only when it is not `portfolio`, `labels` only when non-empty, `featuredFrom` only
     when `flags`. A `hub` or `custom` config leaves out `work` and `resume` when they hold
-    nothing. `files` is the tree the caller holds (None: no tree feature is known)."""
+    nothing. `files` is the tree the caller holds (None: no tree feature is known); when it is given,
+    so must `interpretations` be (see `required_schema`)."""
     if not isinstance(cfg, SiteConfig):
         cfg = parse_data(cfg)
     d = cfg.to_dict()
-    d["schema"] = required_schema(cfg, files)
+    d["schema"] = max(required_schema(cfg, files, interpretations), at_least or 1)
     d["work"] = dict((k, d["work"][k]) for k in WORK_KEYS if k in d["work"])
     if d["resume"] is not None:
-        d["resume"] = dict((k, d["resume"][k]) for k in RESUME_KEYS)
+        d["resume"] = dict((k, d["resume"][k]) for k in RESUME_KEYS
+                           if not (k == "paper" and d["resume"][k] is None))
     if cfg.siteKind != "portfolio":
         if cfg.work == validate_portfolio_settings({}, "work"):
             del d["work"]
@@ -858,12 +1040,13 @@ def canonical_text(cfg, files=None):
     return json.dumps(ordered, indent=2, ensure_ascii=False) + "\n"
 
 
-def write(path, cfg, files=None):
+def write(path, cfg, files=None, interpretations=None, at_least=None):
     """Validate, then write `site.json` in canonical form, atomically. The only writer. `files` is
-    the tree the caller holds, so the schema written is the one the whole site needs."""
+    the tree the caller holds, so the schema written is the one the whole site needs (with `files`,
+    pass `interpretations` too: `content.interpretation_reasons(files)`)."""
     if not isinstance(cfg, SiteConfig):
         cfg = parse_data(cfg)
-    text = canonical_text(cfg, files)
+    text = canonical_text(cfg, files, interpretations, at_least)
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".site.json.", dir=directory)

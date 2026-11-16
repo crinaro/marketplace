@@ -31,7 +31,12 @@ It does these jobs, each as a command you type or ask for in plain words:
   forwards (a meta refresh) into a `redirects` entry, says which features your site uses and what
   site-studio does about each, and proposes a site kind for you to confirm. It works from your
   checkout's `HEAD` when that is ahead of `origin/main`, so a fix you just committed is what it
-  measures, and it says so first.
+  measures, and it says so first. It asks the plugin's own build whether your converted site would
+  build, so `check` never says "can be converted" about a site the build would refuse. A conversion is
+  made for you only when a comparison with what your own builder publishes finds no page a visitor
+  would see changed; anything else is listed for you to decide, with the difference named. While that
+  comparison is not equal, your own builder stays the publisher and `/site-studio:publish` refuses to
+  replace it (see "A published site never changes under you").
   If one of your own agent files holds a standing rule of yours, adopt can carry that rule into your
   site repo's `CLAUDE.md` (under "Standing rules carried by adopt") before it removes the file, so every
   agent keeps working to it. Files under `.claude/rules/` reach the plugin's agents too, so you may move
@@ -59,7 +64,8 @@ pieces or resume to check. Newer features that need `"schema": 2` in `site/site.
 writes the lowest schema your site needs:
 
 - a **hand-made home page**: a `site/src/index.html` with no `content/home.md` is the home page, as
-  written (both together are refused, naming both files);
+  written (both together are refused, naming both files, unless the hand page takes its copy from
+  `content/home.md` with `{{home:<part>}}`, a 0.3.0 feature below);
 - **display labels**: `work.labels` names what a field is called where it is printed, without changing
   the plain keys in `meta` and `groups`;
 - a **page section**, `{{#page:resume}}...{{/page}}`, that shows a link only when that page is built, and
@@ -69,6 +75,54 @@ writes the lowest schema your site needs:
 
 `docs/content-model.md` (in the development repository, not the installed plugin) has the details. If you
 used 0.1.0 on another computer, update site-studio there before you build a schema 2 site.
+
+## What 0.3.0 adds (schema 3, all opt-in)
+
+Nothing here changes a site that does not use it. A site moves to `"schema": 3` only through
+`python3 build.py raise-schema`, which lists every page that would change first and writes nothing
+until you confirm each one or keep a line as text:
+
+- **a hand-made home fed by your home page.** Keep `site/src/index.html` as you wrote it and put
+  `{{home:title}}`, `{{home:intro}}`, `{{home:photo}}`, `{{home:endorsement}}`, `{{home:feed}}`,
+  `{{home:contact}}` (and `{{featured}}`) where the copy belongs; a `:::part stats` block in
+  `content/home.md` is a part of its own, `{{home:stats}}`. Both files together are still refused unless
+  the hand page uses one of these.
+- **portfolio page keys**: `order` (the menu order), `tagline`, `sort` (`"order"` sorts pieces by their own
+  `order`), `menuLinks` (`"single-piece"` links the one piece) and `view` (`"page"` serves your own index
+  page). A resume page may carry `contact`, and a site with no resume PDF is not asked for a paper size.
+  Under `"single-piece"` with exactly one piece, the portfolio's index address is served as a redirect to that
+  piece (and your own `view: "page"` index is never replaced).
+- **six Markdown blocks**: `:::tiles`, `:::quote`, `:::gallery`, `:::videos`, `:::carousel` and
+  `:::part`, and a titled image. A video is a poster you committed that plays the video **after a click**;
+  nothing loads from the video's host before it. Each block works without JavaScript.
+- **`content/home/index.md` and `content/about/index.md`**, each with its own `media/`, as the home and
+  about pages, so nothing in an adopted repo has to move; and `<name>.w400.jpg` size copies beside an
+  original, which keep their names and their addresses.
+
+### A published site never changes under you
+
+The promise: **site-studio may change how it builds a site, never how your published site looks or works
+for a visitor.** In practice:
+
+- A new site-studio version builds any site its predecessor built to **the same bytes**. A new key, block
+  or reading applies only at the schema that introduces it, and a tree that holds text 0.2.0 showed as text
+  stays text until you raise it, line by line.
+- Every plugin style is in one cascade layer (`@layer site-studio`) with `ss-` class names, and a page links
+  the stylesheet only where it uses a block. Whatever CSS you wrote beats it, and your own pages and layout
+  are never edited.
+- An adopted site records what the comparison found in `.site-studio/adopt-parity.json`. Unless it says
+  EQUAL or ACCEPTED, `/site-studio:publish` refuses and leaves your own builder as the publisher, and what it
+  says depends on the verdict. DIFFERENT names the first difference: run `python3 adopt.py remeasure` to
+  measure again, or `--accept` to record that you accept the differences you were shown. NOT APPLICABLE
+  (no builder of yours was found, so nothing was compared): `--accept` records that site-studio's build
+  replaces your site, unmeasured. UNVERIFIED (the comparison could not run, for example there is no node):
+  `--accept` refuses it, because nothing was measured to show you. Install node, then run `adopt.py remeasure`
+  again.
+- Something site-studio does not build (a roles or map index, a project-specific block renderer) is not
+  removed: your own builder keeps publishing it, or you keep that page as your own file in `site/src`
+  (`view: "page"` for an index).
+
+If you used 0.2.0, update site-studio on every computer you build from before you raise a site to schema 3.
 
 ## Install
 
@@ -88,7 +142,7 @@ used 0.1.0 on another computer, update site-studio there before you build a sche
 | **Python 3.9 or newer** and **git** (on a Mac, the Command Line Tools bring both) | everything; the plugin is Python standard library only, with no npm or pip install |
 | **gh**, the GitHub command line, signed in | setup and publish |
 | **Google Chrome** (Chromium on Linux) | importing photos, visual checks, capturing a page, making the resume PDF. Building, checking and publishing do not need it |
-| **node** (optional) | adopt only, to compare a repo's own builder with this one |
+| **node** (needed only for an adopted site that has its own builder) | adopt, to compare a repo's own builder with this one, and `adopt.py remeasure`. Without node that comparison is UNVERIFIED, and an adopted site with a builder cannot be published by site-studio until node is installed and `adopt.py remeasure` is run again |
 
 `setup` runs a check and tells you what is missing, in plain words, and asks before it installs
 anything. Every password is typed by you into your system's own prompt, never into the chat.

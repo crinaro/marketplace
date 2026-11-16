@@ -31,7 +31,7 @@ it found in what it would write, all at once, each marked `apply fixes this` or 
   file do not count.
 - **adopt fetches for itself.** `check`, `inventory`, `parity` and `apply` run
   `git fetch origin main` and refuse if the fetch fails. Do not fetch on its behalf. The steps that
-  record a decision (`confirm`, `unit`, `fact`, `reviewed`, `paper`, `folder`, `kind`) make no network
+  record a decision (`confirm`, `unit`, `fact`, `reviewed`, `paper`, `folder`, `convert`, `kind`) make no network
   call. They work against the `origin/main` that the last `inventory` fetched, so run `inventory`
   first.
 - **The parity basis: one commit, which every step uses.** It is the checkout's `HEAD` when `HEAD`
@@ -74,7 +74,8 @@ Record each decision as the person makes it:
 
 - **DUPLICATE:** removed only after the person confirms: `adopt.py confirm <path>`. To keep it:
   `adopt.py confirm <path> --keep`. Any residual units are shown first.
-- **PARTIAL:** kept by default. Go through every residual unit the inventory lists, by its id:
+- **PARTIAL:** kept by default: with no decision at all, `apply` keeps the file and lists it as "kept
+  by default (no decision)". Go through every residual unit the inventory lists, by its id:
   `adopt.py unit <path> <unit-id> person-data --kind context|voice|rule [--name <slug>]` ("person
   data, move it"), `adopt.py unit <path> <unit-id> rule` ("a standing rule of mine, keep it for
   every agent": see **Standing rules** below) or `adopt.py unit <path> <unit-id> keep` ("behaviour
@@ -86,17 +87,29 @@ Record each decision as the person makes it:
 - **MIXED** (`CLAUDE.md`, settings): split, in step 4.
 - **DATA:** never removed.
 
-`apply` refuses while any file proposed for removal has no decision.
+`apply` refuses while a DUPLICATE or AMBIGUOUS file (the ones adopt proposes to remove) has no
+decision; an undecided PARTIAL is kept. `apply --dry-run` never refuses on undecided files: it
+previews, and says which a real apply would stop on.
 
 **Problems in what adopt would write.** The inventory (and `check`) lists every problem at once,
-each with its fix. **`apply fixes this`** are the mechanical ones: adopt makes the change itself
+each with its fix. **The list comes from the plugin build's own acceptance**, run in memory over the
+converted tree, not from rules adopt keeps: so anything the build would refuse (an unknown token, a dead
+link, a missing image, a key it does not read, a block it cannot parse) is listed up front with
+`path:line` and its fix, and `check` never says "can be converted" about a site the build then refuses. An
+unexpected failure inside that build prints `NOT CHECKED`, never a traceback; read it to the person and
+report it. **`apply fixes this`** are the mechanical ones: adopt makes the change itself
 and lists it in the commit (a clone-URL `publicRepo` becomes `owner/name`; a `previewUrl` loses its
 trailing slash; `[key, label]` pairs become the `work.labels` map; a `content/<name>/` folder with
-no `page.md` is renamed `content/_<name>/`, kept as source material and not built). **`you
-decide`** problems are never rewritten, and `apply` refuses until the person settles them. For a
-folder with no `page.md`, ask whether it should be source material (the default) or a portfolio;
-for a portfolio run `adopt.py folder <name> portfolio`, and `adopt.py folder <name> source` undoes
-it. When apply replaces a value, it also names each file the person keeps that still holds the old
+no `page.md` and no Markdown in it is renamed `content/_<name>/`, kept as source material and not
+built; a trailing slash on a `redirects` key or target is dropped, and the same address is served).
+**`you decide`** problems are never rewritten, and `apply` refuses until the person settles them. For a
+folder with no `page.md`, ask whether it should be source material or a portfolio; for a portfolio run
+`adopt.py folder <name> portfolio`, and `adopt.py folder <name> source` renames it to
+`content/_<name>/`. **A folder that holds Markdown is never moved without that answer** (it may be pages
+the person's own builder publishes), and **a reserved name** (`home`, `about`, `media`, `resume`,
+`references`) is never moved at all: at schema 3 `content/home/index.md` and `content/about/index.md`,
+each with its own `media/`, are the home and about pages, so nothing in the repo moves (parity measures
+whether their media addresses match the old builder's). When apply replaces a value, it also names each file the person keeps that still holds the old
 text (`file:line`, under "Your own script may depend on the old form"): read that list to the
 person, because adopt cannot tell whether their script needs updating.
 
@@ -111,10 +124,46 @@ the person. If the site has a local builder, its parity will show the generated 
 difference from the hand-made one; that is expected: the local builder does not write that page, so parity reports DIFFERENT, and the person
 decides whether to accept it with `adopt.py parity --accept` (step 3).
 
+**Conversions that depend on the site's own builder.** The `check` and `inventory` output ends with a
+`conversions` list: each conversion, whether it is `GENERAL` (follows from site-studio's own model) or
+`TEMPLATE` (follows from the template this plugin replaces), and `apply fixes this`, `waits on parity`
+or `you decide`. A conversion is made only when parity measures that it changes no page a visitor
+loads, and, while the person's builder is kept, that it does not change what that builder publishes.
+For a site made from the old template, a piece file named `work.md` is renamed `index.md` on those
+terms (the commit lists each rename, content untouched), and a piece's `tilePhoto` key is written as `cover`
+when the piece has none (the value is untouched). The template's local home tokens in a hand-made home
+page (`{{homeTitle}}`, `{{homeIntro}}`) are rewritten to the build's own `{{home:<part>}}` on the same
+terms, so the hand page is fed by the home copy: `{{homeIntro}}` alone in a paragraph becomes
+`{{home:intro}}`, and anywhere else (a meta description) it is frozen, replaced by the first line of
+the copy as the text a builder writes there, so it does not update when the home copy changes; the
+commit marks each frozen one, and parity measures the page. Three conversions are `you decide` by their
+nature, and apply leaves the page as written unless the person chooses them: a portfolio `view` the
+plugin does not model (the template's roles index) is removed so that index becomes the plugin's grid
+(`adopt.py convert viewKeys`; until then the build refuses the key and the site stays on the person's
+builder); a meta-refresh page with
+**head boilerplate** (an icon, a manifest, a theme colour) is recognised as a redirect, but the
+build's redirect page drops those, so the line names each dropped element (`adopt.py convert
+redirectBoiler` converts it); and **other resume front-matter fields** become body paragraphs, which
+adds visible text, so each field is named and a list has no default (`adopt.py convert resumeFields`;
+`adopt.py convert <name> --keep` undoes the choice). Read each line to the person. Parity names the
+page that differs once a chosen conversion is part of what it builds.
+
+**A `{{home:<part>}}` token the person wrote, and what adopt leaves as the person's own.** adopt
+rewrites only the template's local tokens (above); a `{{home:<part>}}` the person already wrote is the
+build's own token (schema 3, a hand-made home page fed by `content/home.md`), so it is listed as
+covered, once, and left exactly as written; the
+build then refuses a part the home page does not have, naming the file and line. A site whose own builder
+prints something site-studio does not build (a roles or map index, a resume as cards, a block renderer of
+its own) is not changed: the builder keeps publishing it. adopt does not write `view: "page"` or freeze a
+section for the person in this version; if they want an index to stay their own file under `site/src`,
+they set `view: "page"` in that portfolio's `page.md` themselves, and adopt's parity measures the result.
+
 **What the site does, and its kind.** After the problems, the inventory lists the features it found
 (a resume link that disappears when there is no resume, pieces marked `featured: true`, a hand-made
 home page, an old address that forwards, custom field names) and what site-studio does about each; a
-local token with no row says "site-studio has no equivalent". Read that list to the person. It then
+local token is classified by the build's own token table: one the build accepts is "covered"
+(`{{featured}}` renders the featured selection), and one it refuses says so, with the fix. "site-studio
+has no equivalent" is said only for a signal that is not a token. Read that list to the person. It then
 says which **site kind** it infers (`portfolio`, `hub` or `custom`): that is only a proposal. Ask the
 person which kind the site is, and record the answer with `adopt.py kind portfolio|hub|custom`.
 **Apply writes only a kind the person confirmed**: with none, it writes none and says in the commit
@@ -145,10 +194,11 @@ file is recorded, or the person says it has none: `adopt.py reviewed <path>`.
 `adopt.py apply` refuses while any removal's facts are unreviewed, so nothing is removed before
 its facts are moved.
 
-**Resume paper size.** Adopt reads it from the repo's existing resume PDF. When it cannot (no PDF,
-or one it cannot read), inventory reports that it needs the answer and `apply` exits `3`. Ask the
-person whether their resume is Letter or A4, then run `adopt.py paper Letter` or
-`adopt.py paper A4`. Never pick one for them.
+**Resume paper size.** Adopt reads it from the repo's existing resume PDF. When it cannot (a PDF it
+cannot read), inventory reports that it needs the answer and `apply` exits `3`. Ask the person whether
+their resume is Letter or A4, then run `adopt.py paper Letter` or `adopt.py paper A4`. Never pick one
+for them. **A site with no resume PDF is not asked**: apply writes `"pdf": null` and no paper size
+(the site is then schema 3), since no page is printed to a paper size.
 
 ## 3. Parity: build it both ways
 
@@ -168,7 +218,24 @@ side**. Neither build touches the repo.
   `adopt.py parity --accept`, which accepts the listed differences together. Otherwise the local
   builder is kept and the agents and commands can still be retired.
 - **UNVERIFIED** (no Node on this computer, the local builder failed, or the plugin build
-  refused): never a pass, and the local builder stays.
+  refused): never a pass, and the local builder stays. When the plugin build refuses, parity lists what
+  it needs in the same `path:line` and fix form `check` prints.
+
+Parity makes two measurements, and both are named in what it prints:
+
+- **P2, the plugin against the local builder** (the comparison above): does the converted site print what
+  the person's own builder prints?
+- **P1, the local builder against itself** (run when P2 is not EQUAL, because the builder is then kept):
+  the person's builder on the original, against the same builder on the **converted** tree. It proves adopt's
+  changes did not change what that builder publishes. When P1 differs, adopt runs it again with each
+  conversion class alone (at most eight runs) and names each class that differs, with the paths.
+
+A conversion is **`apply fixes this`** only when it changes no page a visitor loads. Where P2 is not equal, or
+P1 shows the person's builder would publish differently, it is `you decide`, with the difference named, and
+the page stays as written. A `TEMPLATE` conversion also needs the template's fingerprint in the repo (at
+least two piece folders holding `work.md` and none holding `index.md`); without it, it is `you decide`.
+When parity cannot run, every conversion that changes a file is `you decide`: "parity could not measure
+this".
 
 ## 4. Apply: one branch, one commit
 
@@ -210,6 +277,9 @@ Configuration it changes, for you to show as a diff:
   confirmed (`hub` or `custom`) becomes `siteKind`. It is written as schema 1 unless the converted
   site needs 2 (a label map, a page section, a hand-made home page, a kind other than `portfolio`),
   and the inventory says when it does and why.
+- **`.site-studio/adopt-parity.json`:** apply commits the parity verdict (`EQUAL`, `ACCEPTED`,
+  `DIFFERENT`, `UNVERIFIED` or `NOT APPLICABLE`), the basis commit and each difference, with no date.
+  `/site-studio:publish` reads it (see "6. After apply: the publish gate").
 - **`HANDOFF.md`:** apply adds the entry itself, **inside the same commit**: the branch name, what
   moved, and what is kept. Do not edit `HANDOFF.md` afterwards, because that would be a second
   commit.
@@ -224,3 +294,32 @@ Adopt has no push step. Offer to push the branch to the **private** dev repo. If
 yes, run `git push origin site-studio/adopt-<date>` yourself (the dev repo's own ask rule applies),
 and offer a pull request there. Reverting is deleting the branch. Nothing is merged until the
 person approves.
+
+## 6. After apply: the publish gate
+
+**While parity is not EQUAL or ACCEPTED, the person's own builder stays the publisher, and
+`/site-studio:publish` refuses to replace it.** `deploy.py` reads `.site-studio/adopt-parity.json` from `HEAD`,
+in a dry run and before a confirmed publish, and when its verdict is anything else it stops, with a sentence
+that is true of that verdict and names a way out that works:
+
+- **DIFFERENT**: site-studio's build differs from what the person's builder publishes (`<n>` differences, the
+  first named), and their builder stays their publisher. Way out: `adopt.py remeasure`, or `--accept` once
+  they have been shown the differences.
+- **NOT APPLICABLE**: adopt found no builder of the person's own, so nothing was measured, and publishing
+  would replace what their site publishes today, unmeasured. Way out: `adopt.py remeasure --accept` if they
+  accept that; if a builder of theirs should be compared, put it in the repo and run `adopt.py remeasure`.
+- **UNVERIFIED**: adopt could not measure: there is no node on this computer, the person's builder failed,
+  or site-studio's build refused the converted tree (`adopt.py remeasure` prints which). So it is not known
+  whether the two differ. `--accept` refuses UNVERIFIED, because nothing was measured to show them. Way out:
+  install node, fix the builder, or settle what site-studio's build refuses, then run `adopt.py remeasure` again.
+  Without node, an adopted site with a builder cannot be published by site-studio.
+
+An unreadable record stops it too, naming the file. No record (a site made by setup, or adopted by an older site-studio) is the old
+behaviour: nothing is read. Tell the person plainly that publishing here is held by design, not broken.
+
+`adopt.py remeasure` is how it is released: it measures again against the plugin build of `HEAD`,
+prints each difference, rewrites the record and commits that one file. `adopt.py remeasure --accept` records
+`ACCEPTED`, and **only after the person has just been shown the differences and said yes**; it never accepts
+UNVERIFIED. For a site with no local builder at all, `--accept` means "site-studio's build replaces my site, unmeasured". It refuses
+in a cloud session, as adopt does. The gate runs only the one builder file adopt classified: any other step
+of the person's pipeline (a CI workflow, a hosting build) is not run, and the inventory says so.
