@@ -1,6 +1,6 @@
 ---
 name: coordinator
-description: 'Run a person''s site work in their private dev repo: read where things stand, route a request to the right skill or advisor, and record what was decided. Use when a session opens in a site-studio dev repo or the person asks what to do next. Publishing, setup and adopt are typed by the person. Not for doing the work it routes (review, add-work, ideas and the other skills).'
+description: 'Help with a person''s site and run their site work: say what site-studio can do, what to do next, and what an error or refusal means; read where things stand, route a request to the right skill or advisor, and record what was decided. Use when a session opens in a site-studio dev repo, or whenever the person asks for help with their site, even before one exists. Publishing, setup and adopt are typed by the person. Not for doing the work it routes (review, add-work, ideas and the other skills).'
 ---
 
 # site-studio coordinator
@@ -26,7 +26,10 @@ Every script runs as `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/<name>.py"`, from t
 
 If `site/site.json` is missing or is not a site-studio site, this is not a site-studio dev repo:
 say so, and offer `/site-studio:setup` for a new site or `/site-studio:adopt` for a repo that
-carries its own copy of the tools. Both are typed by the person.
+carries its own copy of the tools. Both are typed by the person. A hand-made site with no
+`site/site.json` fits neither as it is: adopt refuses it, and setup starts a new site in new
+repositories (it stops if the account's own `<owner>.github.io` already serves a site). Say so
+plainly rather than offering adopt.
 
 ## DRAIN — what blocks before any new work
 
@@ -65,6 +68,42 @@ Everything here comes from the ORIENT output.
 
 `publish`, `setup` and `adopt` cannot be started by you: each is marked so only the person can
 type it. Say the command for them to type. Never reproduce their steps another way.
+
+## HELP — "what can I do", "what next", "what does this error mean"
+
+Answer in plain words, from this plugin as it is installed. Never send the person to a `docs/`
+path or to the plugin's source repository: neither is on their computer.
+
+- **"What can I do?"** Answer from the DECIDE table, as a short list in the person's terms: start
+  a new site, move an existing one over (adopt), add work, save a page as a card, update the resume
+  and its PDF, bring in a downloaded profile, get ideas, preview, review, publish. Say which three
+  they type themselves (`/site-studio:setup`, `/site-studio:adopt`, `/site-studio:publish`). If
+  ORIENT found no site here, lead with setup and adopt.
+- **"What next?"** Run ORIENT and DRAIN, then name ONE next step: anything DRAIN found comes
+  first; then the next step `HANDOFF.md` names; then, for changes not yet reviewed, `review`; for
+  reviewed work not yet live, the person types `/site-studio:publish`.
+- **"What does this error mean?"** Ask for, or read, the exact line the script printed. A refusal
+  line says what was refused and, where it can, the fix: restate both in one plain sentence. Then:
+  - it names a `site.json` setting, a front-matter key, a block, a layout token, a reference or
+    an image size: read the matching section of the installed reference,
+    `${CLAUDE_PLUGIN_ROOT}/reference/content-model.md` (expand the variable to its real path
+    before reading or quoting it). Its sections: Where things live, site.json, Portfolio settings,
+    Page front matter, A piece's front matter, References, Layout tokens, Markdown, Images and size
+    copies. Quote the rule that applies and the fix;
+  - it came from `doctor.py` (the computer, git, `gh`, Chrome): `/site-studio:setup` fixes it one
+    step at a time;
+  - `site.json` is newer than this plugin understands: the plugin needs updating on this computer;
+  - it came from `adopt.py`: its own lines list every problem with its fix; work through them
+    with the person.
+
+  Never edit `site/site.json` to get past a refusal, with one exception. When the refusal itself
+  names a `site.json` key and says what it should hold (for example a publish refusal that says to
+  set `publicRepo` to the public site repo), set that one key, to the value the person gives you
+  (never one you guessed), then run
+  `python3 ${CLAUDE_PLUGIN_ROOT}/scripts/siteconfig.py check site/site.json` (expand the variable)
+  and the step that refused, again. Never change `schema` or `engine`, and never loosen a rule
+  (`privateTerms`, `publicEmails`, `budgets`) to make a refusal go away. If neither the line nor the
+  reference explains it, say so, show the line, and do not guess.
 
 ## ROUTE — how to dispatch an advisor or reviewer
 

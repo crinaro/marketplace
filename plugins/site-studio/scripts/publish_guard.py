@@ -107,7 +107,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-REMOTE_POLICY = ("site-studio 0.1.0 publishes only from a session on your own computer. "
+REMOTE_POLICY = ("site-studio publishes only from a session on your own computer. "
                  "Open this repo there and type /site-studio:publish.")
 ASK_MODES = ("default", "acceptEdits", "plan", "auto")
 NOT_ASKED_MODES = ("bypassPermissions", "dontAsk")

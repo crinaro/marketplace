@@ -1,6 +1,6 @@
 ---
 name: adopt
-description: 'Convert a site repo that carries its own copy of these tools: keep its content, retire the copies, all on one branch for you to review. Not for starting a new site (setup).'
+description: 'Move an existing site repo onto site-studio when it carries its own copy of site-studio''s scripts: your content stays, the copies are retired, and the whole change sits on one branch for you to review. Not for starting a new site (setup).'
 disable-model-invocation: true
 ---
 
@@ -70,7 +70,7 @@ cannot see it. The plugin's own review and ideas steps call its agents by their 
 (`site-studio:<name>`), which a same-named file does not replace. Show any `tokens the plugin's
 build will refuse` line as well.
 
-**The template's `{{<folder>Link}}` token (dev #889).** adopt renames it to `{{link:<folder>}}` only where it is an
+**The template's `{{<folder>Link}}` token ** adopt renames it to `{{link:<folder>}}` only where it is an
 `<a>` tag's whole `href` value. A bare one (`<nav>{{workLink}}</nav>`) stood for a whole anchor, so adopt wraps it as
 `{{#page:<folder>}}<a href="{{link:<folder>}}">LABEL</a>{{/page}}`, with the label from `site/site.json` (`work.label`),
 and the inventory shows that section. Where it has no label (another portfolio, a piece name, no `work.label`) or the
@@ -120,7 +120,7 @@ whether their media addresses match the old builder's). When apply replaces a va
 text (`file:line`, under "Your own script may depend on the old form"): read that list to the
 person, because adopt cannot tell whether their script needs updating.
 
-**The list is by cause, not by count (0.3.1).** `check` reports **every** refusal in a file, not the first (every
+**The list is by cause, not by count.** `check` reports **every** refusal in a file, not the first (every
 unknown key in each `reference.json`, every unknown token in a page, every unknown front-matter key), each with its
 line. It then groups them: problems that say the same thing about the same kind of file are **one cause** on one line
 ("35 places, one cause: ...", with the first few named), and a redirect or `{{link:X}}` that names a portfolio the
@@ -130,9 +130,9 @@ settle**: read it that way to the person, and settle the cause (the consequences
 itself is never grouped. A decision recorded with `adopt.py folder`, `convert` or `paper` is read by `check` the same
 way parity reads it: a folder the person has decided is not listed as undecided again.
 
-**Strays the build only warns about (0.3.1, dev #885, dev #882).** The build and preview print a named warning for a `.md` other than `index.md` or a sub-folder other than `media/` or `_*` in a piece folder, and for a piece front matter key that is neither built in nor in the portfolio's `meta`/`cardMeta`; the published bytes do not change. Where nothing has been converted yet, `check` lists each as a problem with its fix and refuses (`you decide`), so `adopt ok` is not said over a page that would go unpublished. Read each fix to the person.
+**Strays the build only warns about.** The build and preview print a named warning for a `.md` other than `index.md` or a sub-folder other than `media/` or `_*` in a piece folder, and for a piece front matter key that is neither built in nor in the portfolio's `meta`/`cardMeta`; the published bytes do not change. Where nothing has been converted yet, `check` lists each as a problem with its fix and refuses (`you decide`), so `adopt ok` is not said over a page that would go unpublished. Read each fix to the person.
 
-**When the basis moves,** the decisions do not all go with it (0.3.1). After the person commits a hand fix and runs
+**When the basis moves,** the decisions do not all go with it. After the person commits a hand fix and runs
 `inventory` again, a decision about a path that still exists and did not change is **kept**; every one cleared is
 printed by name ("2 decision(s) cleared because the basis moved: content/notes -> source; the parity result ..."). Read
 that line to the person: the cleared ones are the ones to decide again, and the parity result is always one of them,
@@ -200,8 +200,8 @@ schema 2.
 into the site repo's `CLAUDE.md` under `## Standing rules carried by adopt`, after the file it came
 from is removed, and the commit lists each. It is refused on a file that stays: a rule travels only
 out of a file adopt removes. Every agent the plugin dispatches loads the project's `CLAUDE.md`, and
-probe P-B (`tests/probes/PB-RESULT.md`, Claude Code 2.1.325, a terminal session) measured that a file
-under `.claude/rules/` reaches a plugin agent as well. Tell the person they may move those rules
+a file under `.claude/rules/` reaches a plugin agent as well (measured on Claude Code 2.1.325, in a
+terminal session; not measured elsewhere). Tell the person they may move those rules
 there if they prefer; adopt itself writes `CLAUDE.md` only.
 
 ## 2. Keep the person's data, before anything is removed
@@ -238,7 +238,7 @@ side**. Neither build touches the repo.
   diverged from or fallen behind `origin/main`, parity is **UNVERIFIED** and the local builder
   stays; adopt says so before it does any work.
 - **EQUAL:** the local builder is a duplicate.
-- **DIFFERENT:** it is kept, and the differences are listed **by cause** (0.3.1): every differing hunk of
+- **DIFFERENT:** it is kept, and the differences are listed **by cause**: every differing hunk of
   every file is read, and a change that is the same on many pages is one line with its page count and a few of
   the pages named. A difference that is only an **addition inside `<head>`** (a meta tag, a link) is its own
   class, listed after the body differences and never in place of one: a page with both shows both. A file with
@@ -265,7 +265,7 @@ Parity makes two measurements, and both are named in what it prints:
   the person's builder on the original, against the same builder on the **converted** tree. It proves adopt's
   changes did not change what that builder publishes. When P1 differs, adopt runs it again with each
   conversion class alone (at most eight runs) and names each class that differs, with the paths. **P1 can also say
-  FAILS** (0.3.1): the person's builder does not merely publish something else on the converted tree, it
+  FAILS**: the person's builder does not merely publish something else on the converted tree, it
   **exits non-zero**. adopt then runs each class alone, and the class that makes it fail is `you decide` with the
   builder's own failure line named ("your own builder FAILS on the tree this conversion makes (...)"). A
   conversion the person has **chosen** (`adopt.py convert <class>`) that does this is not written: `apply` and

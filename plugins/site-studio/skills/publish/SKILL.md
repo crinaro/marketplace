@@ -16,7 +16,7 @@ Every script runs as `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/<name>.py"`.
 
 - **The person's own computer** (the desktop app or a terminal, macOS or Linux): yes.
 - **A cloud session** (`CLAUDE_CODE_REMOTE` is `true`): no. `deploy.py` and the guard refuse with:
-  "site-studio 0.1.0 publishes only from a session on your own computer. Open this repo there and
+  "site-studio publishes only from a session on your own computer. Open this repo there and
   type /site-studio:publish." That is policy; say it and stop.
 - **A scheduled run or `claude -p`:** no one can answer the prompt, so it never publishes.
 
@@ -63,13 +63,13 @@ and the commit message you propose, and let the person change the message.
 | permission mode | the guard |
 |---|---|
 | `default`, `acceptEdits`, `plan` | **asks** the person, showing the file count, the review row and the digest |
-| `auto` | **asks**, conditional on probe P-7: in auto mode a hook's ask *normally* goes to the permission prompt. Until P-7 passes, "publish asks you first" is UNVERIFIED in auto mode |
+| `auto` | **asks**: in auto mode a hook's ask normally goes to the permission prompt, but that has not been verified, so "publish asks you first" is UNVERIFIED in auto mode |
 | `bypassPermissions`, `dontAsk`, **any other value, or no mode at all** | **denies**, naming the reason: publishing asks every time, and this session is set not to ask, or its mode is unknown. Switch the permission mode and type /site-studio:publish again |
 | a cloud session | **denies**, with the policy sentence above |
 
 The ask is the person's act. Never try to get past a denial.
 
-The hook reads only a command that names `deploy.py`. Heredoc bodies (a commit message passed as `<<'EOF'`) are data and are removed before the command is read, so a body that merely mentions `deploy.py` is not a publish and is not blocked; a heredoc fed to a shell (`bash <<EOF`) is still read as commands. A command that names `deploy.py` and cannot be read is denied, and the message says what was blocked without pointing at this command (0.3.1, dev #875).
+The hook reads only a command that names `deploy.py`. Heredoc bodies (a commit message passed as `<<'EOF'`) are data and are removed before the command is read, so a body that merely mentions `deploy.py` is not a publish and is not blocked; a heredoc fed to a shell (`bash <<EOF`) is still read as commands. A command that names `deploy.py` and cannot be read is denied, and the message says what was blocked without pointing at this command.
 
 `--confirm` then repeats the dry run's checks and refuses if the digest differs from the one
 confirmed, pushes, checks the remote head is the pushed commit, and re-reads the public repo from a

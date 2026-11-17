@@ -219,11 +219,11 @@ def _get(path, paginate=False):
         p = subprocess.run(argv, env=env, timeout=GET_TIMEOUT, stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE)
     except FileNotFoundError:
-        raise GhError("gh is not installed")
+        raise GhError("gh is not installed; install the GitHub CLI from https://cli.github.com")
     except subprocess.TimeoutExpired:
-        raise GhError("gh did not answer within %d s" % GET_TIMEOUT)
+        raise GhError("gh did not answer within %d s; check your connection, then run the check again" % GET_TIMEOUT)
     except OSError as e:
-        raise GhError("could not run gh (%s)" % e)
+        raise GhError("could not run gh (%s); reinstall the GitHub CLI from https://cli.github.com, then run the check again" % e)
     out = p.stdout.decode("utf-8", "replace")
     err = p.stderr.decode("utf-8", "replace").strip()
     status, body = None, out
@@ -245,7 +245,7 @@ def _get(path, paginate=False):
             if m:
                 status = int(m.group(1))
             elif "gh auth login" in err or "not logged" in err.lower() or "authentication" in err.lower():
-                raise GhError("gh is not logged in")
+                raise GhError("gh is not logged in; run `gh auth login`")
             else:
                 raise GhError(err.splitlines()[-1] if err else "gh exited %d" % p.returncode)
     message = data.get("message") if isinstance(data, dict) and isinstance(data.get("message"), str) else None
@@ -661,7 +661,7 @@ def main(argv=None):
     if rc is not None:
         return rc
     ap = argparse.ArgumentParser(prog="pages_check.py", allow_abbrev=False,
-                                 description="Report the public repo's Pages configuration (read-only; dev #835).")
+                                 description="Report the public repo's Pages configuration (read-only).")
     ap.add_argument("--repo", default=".", help="the dev repo (default: the current folder)")
     ap.add_argument("--json", action="store_true", help="print one JSON object instead of lines")
     ap.add_argument("--raw", action="store_true", help="with --json: include every raw GitHub response")

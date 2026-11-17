@@ -30,6 +30,9 @@ _URL = re.compile(r"^(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*)://(?:(?P<user>[^@/]*)@)
                   r"(?::(?P<port>[^/]*))?(?P<path>/.*)?$")
 
 
+GHFORM = "; use the https://github.com/<owner>/<name> address"
+
+
 class GithubUrlError(ValueError):
     """The URL is not a github.com owner/name URL. `.host` is the host found, when there was one:
     the caller names it as a probable SSH host alias."""
@@ -60,7 +63,7 @@ def parse(url):
     text = (url or "").strip()
     shown = "'%s'" % redact(text)
     if not text:
-        raise GithubUrlError("the URL is empty")
+        raise GithubUrlError("the URL is empty" + GHFORM)
     m = _URL.match(text)
     if m:
         scheme, host = m.group("scheme").lower(), m.group("host").lower()
@@ -68,19 +71,19 @@ def parse(url):
             raise GithubUrlError("%s uses %s://, and only https and ssh github.com URLs are accepted"
                                  % (shown, scheme), host or None)
         if host != GITHUB_HOST:
-            raise GithubUrlError("%s has host '%s', not github.com%s"
+            raise GithubUrlError(("%s has host '%s', not github.com%s" + GHFORM)
                                  % (shown, host, " (an SSH host alias?)" if scheme == "ssh" else ""),
                                  host or None)
         if m.group("port"):
-            raise GithubUrlError("%s carries a port, which is not a plain github.com URL" % shown, host)
+            raise GithubUrlError("%s carries a port, which is not a plain github.com URL" % shown + GHFORM, host)
         return _owner_name(m.group("path") or "", shown)
     m = _SCP.match(text)
     if m and "\\" not in text:
         host = m.group("host").lower()
         if host != GITHUB_HOST:
-            raise GithubUrlError("%s has host '%s', not github.com (an SSH host alias?)" % (shown, host), host)
+            raise GithubUrlError("%s has host '%s', not github.com (an SSH host alias?)" % (shown, host) + GHFORM, host)
         return _owner_name(m.group("path"), shown)
-    raise GithubUrlError("%s is not a github.com URL (a local path or an unknown form)" % shown)
+    raise GithubUrlError("%s is not a github.com URL (a local path or an unknown form)" % shown + GHFORM)
 
 
 def slug(url):

@@ -29,7 +29,7 @@
     },
     {
       "name": "site-studio",
-      "description": "Set up, build, check, preview and publish a person's own portfolio, resume or links (hub) site on GitHub Pages, from their private dev repo. Adds work, captures references, imports a public profile, and reviews copy, looks and privacy before anything goes public; it publishes only when the person types /site-studio:publish and confirms. Use for any work on a personal site. Not for job applications, outreach or tracking a search (jobsearch).",
+      "description": "Build your own portfolio, resume or link-hub site (one page of your links) on GitHub Pages. Needs a Mac or Linux computer (not Windows) and a GitHub account with gh, its command line. Content stays in a private repo; only the finished site goes public, when you type /site-studio:publish and approve a dry run. Start a site, add work, keep your resume and its PDF current, preview, and get a privacy and quality review. Not for job applications, outreach or tracking a search (jobsearch).",
       "author": {
         "name": "Crinaro",
         "email": "marketplace@crinaro.ai"

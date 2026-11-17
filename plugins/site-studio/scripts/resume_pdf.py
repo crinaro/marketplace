@@ -79,7 +79,7 @@ def print_pdf(url, paper):
         p = b.new_page(width=1000, height=1200, scale=1)
         p.goto(url)
         if p.status != 200:
-            raise ResumeError("the resume page answered HTTP %s" % p.status)
+            raise ResumeError("the resume page answered HTTP %s; run /site-studio:preview to see why the page does not build, then try again" % p.status)
         p.scroll_through()
         p.evaluate("(function(){var s=document.createElement('style');s.textContent=%s;"
                    "document.head.appendChild(s);return true;})()" % json.dumps(PRINT_STYLE))
@@ -94,14 +94,14 @@ def make_resume_pdf(repo, log=print, quiet=False):
     if not res:
         raise ResumeError("site.json has no resume (set it, or ask for one with the resume skill)")
     if not res.get("pdf"):
-        raise ResumeError("site.json resume.pdf is null: this site publishes no resume PDF")
+        raise ResumeError("site.json resume.pdf is null: this site publishes no resume PDF; set resume.pdf in site.json to publish one")
     if not res.get("paper"):
         raise ResumeError("resume.paper needs your answer (Letter or A4): set \"paper\" in site.json resume, then "
                           "make the PDF again")
     src_path = os.path.join(repo, *res["path"].split("/"))
     pdf_path = os.path.join(repo, *res["pdf"].split("/"))
     if not os.path.isfile(src_path):
-        raise ResumeError("the resume source %s does not exist" % res["path"])
+        raise ResumeError("the resume source %s does not exist; fix the resume path in site.json, or run /site-studio:resume" % res["path"])
     with open(src_path, "rb") as fh:
         source_bytes = fh.read()
     with preview.Preview(repo) as pv:
@@ -110,7 +110,7 @@ def make_resume_pdf(repo, log=print, quiet=False):
         main_text = page_main_text(pv.out_dir)
         pdf, packet = print_pdf(pv.page_url(RESUME_PAGE), res["paper"])
     if not pdftext.words(main_text):
-        raise ResumeError("the built resume page has no text, so a PDF of it could never be checked")
+        raise ResumeError("the built resume page has no text, so a PDF of it could never be checked; add the resume text to the page, then run /site-studio:resume again")
     read = pdftext.read_pdf(pdf)
     cov = pdftext.word_coverage(main_text, read.text) if read.status == "read" else None
     if read.status != "read" or cov is None or cov < COVERAGE_NEEDED:

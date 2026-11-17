@@ -1,6 +1,6 @@
 ---
 name: review
-description: 'Check the built site before publishing: run the gates, then content-editor and privacy-guard in parallel, then the link report, then visual-qa, and report one ordered list. Use before every publish or after a large change. Not for proposing new directions (ideas); it never publishes (publish).'
+description: 'Check the built site before publishing: run its checks, then a copy edit, a privacy pass, the link report and a visual check, reported as one ordered list of what to fix. Use before every publish, after a large change, or when the person asks whether the site is ready. Not for proposing new directions (ideas); it never publishes (publish).'
 ---
 
 # Review

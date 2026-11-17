@@ -145,12 +145,12 @@ def _git(cwd, *args, **kw):
         p = subprocess.run(("git", "-C", cwd) + args, input=inp, env=env, timeout=timeout,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.TimeoutExpired:
-        raise DeployError("git %s timed out after %ds" % (args[0], timeout))
+        raise DeployError("git %s timed out after %ds; check that git works in this repo (no prompt waiting for a credential), then publish again" % (args[0], timeout))
     except OSError as e:
-        raise DeployError("could not run git (%s)" % e)
+        raise DeployError("could not run git (%s); install git, or check that `git --version` works in a terminal, then publish again" % e)
     if check and p.returncode != 0:
         msg = p.stderr.decode("utf-8", "replace").strip().splitlines()
-        raise DeployError("git %s failed: %s" % (args[0], msg[-1] if msg else "exit %d" % p.returncode))
+        raise DeployError("git %s failed: %s; fix what git reports, then publish again" % (args[0], msg[-1] if msg else "exit %d" % p.returncode))
     if kw.get("full"):
         return p
     return p.stdout if kw.get("raw") else p.stdout.decode("utf-8", "replace")
@@ -180,7 +180,7 @@ def require_head_on_origin_main(repo):
         raise DeployError("HEAD (%s, on %s) is not on origin/main: push the reviewed commit to main "
                           "first (a pull request merge), then publish" % (head, branch))
     if r.returncode != 0:
-        raise DeployError("could not compare HEAD with origin/main")
+        raise DeployError("could not compare HEAD with origin/main; run `git fetch origin` in the dev repo, then publish again")
     tip = _git(repo, "rev-parse", "origin/main").strip()
     full_head = _git(repo, "rev-parse", "HEAD").strip()
     if tip != full_head:
@@ -194,12 +194,12 @@ def require_head_on_origin_main(repo):
 def run_gates(tree, repo, label):
     if not os.path.isfile(GATE_SCRIPT):
         raise DeployError("NOT CHECKED: %s is not present, so the gates (%s) cannot run, and "
-                          "publishing is refused" % (os.path.basename(GATE_SCRIPT), label))
+                          "publishing is refused; update or reinstall the plugin, then publish again" % (os.path.basename(GATE_SCRIPT), label))
     p = subprocess.run([sys.executable, GATE_SCRIPT, "--out", tree, "--repo", repo], stdout=subprocess.PIPE,
                        stderr=subprocess.STDOUT, universal_newlines=True, timeout=GIT_TIMEOUT)
     if p.returncode != 0:
         first = "; ".join(l for l in p.stdout.strip().splitlines()[:5])
-        raise DeployError("a gate failed on %s: %s" % (label, first or "exit %d" % p.returncode))
+        raise DeployError("a gate failed on %s: %s; fix what it reports, then publish again" % (label, first or "exit %d" % p.returncode))
 
 
 # ---------------------------------------------------------------- materialising a commit's tree
@@ -227,7 +227,7 @@ def materialize(clone, rev, dest):
             nl = out.index(b"\n", pos)
             head = out[pos:nl].split()
             if len(head) != 3 or head[1] != b"blob":
-                raise DeployError("could not read blob %s from the commit" % sha)
+                raise DeployError("could not read blob %s from the commit; run the dry run again, and if it repeats, check the dev repo with `git fsck`" % sha)
             size = int(head[2])
             data = out[nl + 1:nl + 1 + size]
             pos = nl + 1 + size + 1
@@ -340,7 +340,7 @@ def stage_and_verify(repo, out_dir, result, public_url, message, work, hooks=Non
         "utf-8", "surrogateescape").split("\0") if p]
     bad = sorted(p for p in names if forbidden(p))
     if bad:
-        raise DeployError("private path(s) in the commit, refusing: %s" % ", ".join(bad[:8]))
+        raise DeployError("private path(s) in the commit, refusing: %s; nothing was pushed. Run the dry run again, and if it names the same path, do not publish: this is a plugin fault to report" % ", ".join(bad[:8]))
     verified = os.path.join(work, "verified")
     digest, paths = commit_tree_digest(clone, "HEAD", verified, st.site_kind)
     if digest != result.digest:
@@ -370,7 +370,7 @@ def public_target(cfg):
     `publicRepo` only. A null publicRepo refuses: a missing value must not read as a repo name."""
     repo = cfg.publicRepo
     if not repo:
-        raise DeployError("site.json has no publicRepo: nothing to publish to")
+        raise DeployError("site.json has no publicRepo: nothing to publish to; set publicRepo to the public site repo (owner/name)")
     return repo, "https://github.com/%s.git" % repo, PUBLIC_REF
 
 
@@ -388,10 +388,10 @@ def check_not_dev_repo(repo, public_repo, dev_origin=None):
         else:
             fix = "publishing compares the dev repo's origin with publicRepo by name. Set it: %s" % FIX_ORIGIN
         raise DeployError("cannot tell whether publicRepo (%s) is this dev repo: the origin is not a "
-                          "github.com repository (%s). %s" % (public_repo, e, fix))
+                          "github.com repository (%s). Fix: %s" % (public_repo, e, fix))
     if dev.lower() == public_repo.lower():
         raise DeployError("site.json's publicRepo is this dev repo. Publishing would overwrite your "
-                          "private repo's main.")
+                          "private repo's main; set publicRepo to the separate public site repo.")
 
 
 def check_public_repo(public_repo, gh="gh"):
@@ -423,13 +423,14 @@ def check_public_repo(public_repo, gh="gh"):
         raise DeployError("the public repo is now %s. Update publicRepo in site.json"
                           % (full if isinstance(full, str) else "unreadable (no full_name)"))
     if d.get("visibility") != "public":
-        raise DeployError("%s is not public (visibility: %s); publishing there would not publish a site"
+        raise DeployError("%s is not public (visibility: %s); publishing there would not publish a site; make the repo public in its "
+                          "GitHub settings, or set publicRepo to the public site repo"
                           % (public_repo, d.get("visibility")))
     if d.get("archived") is not False:
-        raise DeployError("%s is archived, so it cannot be pushed to" % public_repo)
+        raise DeployError("%s is archived, so it cannot be pushed to; unarchive it in its GitHub settings, or set publicRepo to another repo" % public_repo)
     perms = d.get("permissions")
     if not isinstance(perms, dict) or perms.get("push") is not True:
-        raise DeployError("the GitHub login gh uses cannot push to %s" % public_repo)
+        raise DeployError("the GitHub login gh uses cannot push to %s; sign in as an account that can push (`gh auth login`), or ask the repo's owner for write access" % public_repo)
 
 
 def _rewrite_lines(clone):
@@ -447,7 +448,7 @@ def check_push_url(clone, pinned):
         pinned_slug = github_url.slug(pinned)
     except github_url.GithubUrlError:
         if push != pinned:
-            raise DeployError("git would push to %s, not the pinned target %s" % (push, pinned))
+            raise DeployError("git would push to %s, not the pinned target %s; remove the git `url.<base>.insteadOf` setting that rewrites the address, then publish again" % (push, pinned))
         return
     try:
         same = github_url.slug_equals(push, pinned_slug)
@@ -520,7 +521,7 @@ def push_main(clone, sha):
     if r.returncode != 0 or not flags or any(f not in (" ", "*") for f, _s in flags):
         err = r.stderr.decode("utf-8", "replace").strip().splitlines()
         detail = (flags[0][1] if flags and flags[0][1] else (err[-1] if err else "exit %d" % r.returncode))
-        raise DeployError("the push to the public main was refused or not a fast-forward: %s" % detail)
+        raise DeployError("the push to the public main was refused or not a fast-forward: %s; run the dry run again, then publish, and if it repeats act on the reason above" % detail)
 
 
 # ---------------------------------------------------------------- the adopt publish gate (site-fidelity 5.0.4)
@@ -711,7 +712,7 @@ def push_and_verify(st, url, digest, work, hooks, out):
     listing is compared with the one taken just before it: DETECTION, not prevention."""
     if not getattr(st, "verified", False):
         raise DeployError("refusing to push: verify_public_target has not passed for this publish "
-                          "(the pinned-target checks V1-V4 are not optional)")
+                          "(the pinned-target checks V1-V4 are not optional); run the dry run again, then publish with the digest it prints")
     if hooks.get("before_push"):
         hooks["before_push"](url)
     before = check_remote_main(url, st)
@@ -726,7 +727,7 @@ def push_and_verify(st, url, digest, work, hooks, out):
     changed = sorted(r for r in set(before) | set(after) if r != PUBLIC_REF and before.get(r) != after.get(r))
     if changed:
         raise DeployError("pushed, but another ref changed in the public repo while it was being "
-                          "published (detected after the push, not prevented): %s" % ", ".join(changed[:5]))
+                          "published (detected after the push, not prevented): %s; check those refs on GitHub before you publish again" % ", ".join(changed[:5]))
     if hooks.get("after_ls_remote"):
         hooks["after_ls_remote"](url)
     reread = os.path.join(work, "reread")
@@ -735,7 +736,7 @@ def push_and_verify(st, url, digest, work, hooks, out):
                                          getattr(st, "site_kind", "portfolio"))
     if rdigest != digest:
         raise DeployError("pushed, but the public tree differs from what you approved "
-                          "(approved %s, public now %s)" % (digest[:12], rdigest[:12]))
+                          "(approved %s, public now %s); run /site-studio:publish again to review what is public now" % (digest[:12], rdigest[:12]))
     print("pushed %s and verified: the public tree has digest %s" % (st.commit[:12], digest), file=out)
 
 
@@ -766,7 +767,7 @@ def run_confirm(repo, digest, message, public_url=None, hooks=None, build_fn=Non
                               "again and confirm the digest it prints" % (result.digest[:12], digest[:12]))
         status, review = review_summary(repo, result.digest)
         if status == "none":
-            raise DeployError("no privacy review covers this digest: run the review step first")
+            raise DeployError("no privacy review covers this digest: run /site-studio:review first")
         if status == "blocked":
             raise DeployError("the privacy review for this digest is BLOCKED: resolve it and review again")
         url = public_url or public_target(cfg)[1]
@@ -807,7 +808,7 @@ def main(argv=None, public_url=None, hooks=None, build_fn=None, interval=None, t
     if rc is not None:
         return rc
     ap = argparse.ArgumentParser(prog="deploy.py", allow_abbrev=False,
-                                 description="Verify and publish the site (dev #835).")
+                                 description="Verify and publish the site.")
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true", help="build, stage and verify; push nothing")
     mode.add_argument("--confirm", metavar="DIGEST", help="publish the build with this digest")

@@ -117,7 +117,7 @@ def gh(args, input=None, timeout=120, gh_cmd="gh"):
         p = subprocess.run([exe] + list(args), input=input, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                            timeout=timeout, env=dict(os.environ, GH_PROMPT_DISABLED="1"))
     except subprocess.TimeoutExpired:
-        raise RepoError("gh %s timed out after %ds" % (args[0], timeout))
+        raise RepoError("gh %s timed out after %ds; check that gh works (gh auth status), then try again" % (args[0], timeout))
     return p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
 
 
@@ -161,7 +161,7 @@ def scaffold(dest, owner, name, person_name=None, site_title=None, kind="portfol
     if kind not in siteconfig.SITE_KINDS:
         raise RepoError("the site kind must be one of %s" % ", ".join(siteconfig.SITE_KINDS))
     if os.path.exists(dest) and (not os.path.isdir(dest) or os.listdir(dest)):
-        raise RepoError("%s already exists and is not empty" % dest)
+        raise RepoError("%s already exists and is not empty; choose a folder that does not exist yet, or empty it" % dest)
     person_name = (person_name or owner).strip()
     site_title = (site_title or person_name).strip()
     public, preview = site_urls(owner, name)
@@ -171,7 +171,7 @@ def scaffold(dest, owner, name, person_name=None, site_title=None, kind="portfol
     if kind != "portfolio":
         overlay = os.path.join(KINDS_DIR, kind)
         if not os.path.isdir(overlay):
-            raise RepoError("the plugin carries no starter for a %s site (templates/kinds/%s is missing)"
+            raise RepoError("the plugin carries no starter for a %s site (templates/kinds/%s is missing); reinstall the site-studio plugin"
                             % (kind, kind))
         sources.update(dict((rel, src) for src, rel in _walk_template(overlay)))
     written = []
@@ -207,16 +207,16 @@ def create(owner, name, dest=None, person_name=None, site_title=None, remote_bas
         raise RepoError("the site kind must be one of %s" % ", ".join(siteconfig.SITE_KINDS))
     dest = os.path.abspath(dest or "%s-dev" % name)
     if os.path.exists(dest) and (not os.path.isdir(dest) or os.listdir(dest)):
-        raise RepoError("%s already exists and is not empty" % dest)
+        raise RepoError("%s already exists and is not empty; choose a folder that does not exist yet, or empty it" % dest)
     dev_repo = "%s/%s-dev" % (owner, name)
     public_repo, preview = site_urls(owner, name)
     rc, _o, err = gh(["repo", "create", dev_repo, "--private"], gh_cmd=gh_cmd)
     if rc != 0:
-        raise RepoError("could not create %s: %s" % (dev_repo, (err.strip().splitlines() or ["gh failed"])[-1]))
+        raise RepoError("could not create %s: %s; fix what gh reports, then run it again" % (dev_repo, (err.strip().splitlines() or ["gh failed"])[-1]))
     print("created %s (private)" % dev_repo, file=out)
     rc, _o, err = gh(["repo", "create", public_repo, "--public"], gh_cmd=gh_cmd)
     if rc != 0:
-        raise RepoError("%s was created, but %s was not: %s" % (dev_repo, public_repo,
+        raise RepoError("%s was created, but %s was not: %s; create the missing repo on GitHub, or remove the first, then try again" % (dev_repo, public_repo,
                                                                  (err.strip().splitlines() or ["gh failed"])[-1]))
     print("created %s (public)" % public_repo, file=out)
     written = scaffold(dest, owner, name, person_name, site_title, kind)
@@ -269,7 +269,7 @@ def first_publish(repo, public_url=None, gh_cmd="gh", hooks=None, interval=None,
     rc, _o, err = gh(["api", "--method", "POST", "repos/%s/pages" % cfg.publicRepo, "--input", "-"],
                      input=body, gh_cmd=gh_cmd)
     if rc != 0 and "409" not in err and "already" not in err.lower():
-        raise RepoError("pushed, but Pages could not be enabled: %s"
+        raise RepoError("pushed, but Pages could not be enabled: %s; turn GitHub Pages on in the public repo's settings"
                         % (err.strip().splitlines() or ["gh failed"])[-1])
     verdict, last = deploy.poll_pages(cfg.publicRepo, st.commit, interval, timeout, sleep, now)
     if verdict == "published":
@@ -371,7 +371,7 @@ def _api(method, path, body=None, gh_cmd="gh"):
         elif "gh auth login" in err or "not logged" in err.lower():
             raise RepoError("gh is not logged in: run /site-studio:setup first")
         else:
-            raise RepoError("gh failed: %s" % ((err.strip().splitlines() or ["no answer"])[-1]))
+            raise RepoError("gh failed: %s; run `gh auth status` to check the login, then try again" % ((err.strip().splitlines() or ["no answer"])[-1]))
     try:
         data = json.loads(text) if text.strip() else None
     except ValueError:

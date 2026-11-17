@@ -123,12 +123,12 @@ def git(repo, *args, **kw):
         p = subprocess.run(("git", "-C", repo) + tuple(args), input=inp, env=env, timeout=timeout,
                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except subprocess.TimeoutExpired:
-        raise ReviewError("git %s timed out after %ds" % (args[0], timeout))
+        raise ReviewError("git %s timed out after %ds; check that git works in this repo, then record the review again" % (args[0], timeout))
     except OSError as e:
-        raise ReviewError("could not run git (%s)" % e)
+        raise ReviewError("could not run git (%s); install git, or check that `git --version` works in a terminal, then record the review again" % e)
     if check and p.returncode != 0:
         msg = p.stderr.decode("utf-8", "replace").strip().splitlines()
-        raise ReviewError("git %s failed: %s" % (args[0], msg[-1] if msg else "exit %d" % p.returncode))
+        raise ReviewError("git %s failed: %s; fix what git reports, then record the review again" % (args[0], msg[-1] if msg else "exit %d" % p.returncode))
     out = p.stdout
     return out if kw.get("raw") else out.decode("utf-8", "replace")
 
@@ -209,13 +209,13 @@ def _validate_row(row, n):
     if not isinstance(row, dict):
         raise ReviewError("%s: a row must be an object" % where)
     if row.get("v") != 1 or isinstance(row.get("v"), bool):
-        raise ReviewError("%s: unknown row version %r (this plugin reads v 1)" % (where, row.get("v")))
+        raise ReviewError("%s: unknown row version %r (this plugin reads v 1); update the site-studio plugin" % (where, row.get("v")))
     for k in ROW_KEYS:
         if k not in row:
-            raise ReviewError("%s: missing field '%s'" % (where, k))
+            raise ReviewError("%s: missing field '%s'; this file is written by review_record.py, never edited by hand: restore it from git history" % (where, k))
     for k in row:
         if k not in ROW_KEYS:
-            raise ReviewError("%s: unknown field '%s'" % (where, k))
+            raise ReviewError("%s: unknown field '%s'; this file is written by review_record.py, never edited by hand: restore it from git history" % (where, k))
     if not isinstance(row["digest"], str) or not _HEX64.match(row["digest"]):
         raise ReviewError("%s: 'digest' must be 64 lower-case hex characters" % where)
     if row["verdict"] not in VERDICTS:
@@ -300,7 +300,7 @@ def read_dryrun(repo):
         obj = json.loads(fh.read().decode("utf-8"))
     if (not isinstance(obj, dict) or obj.get("v") != 1 or not isinstance(obj.get("files"), int)
             or not isinstance(obj.get("digest"), str) or not _HEX64.match(obj["digest"])):
-        raise ReviewError("%s is not a dry-run record this plugin wrote" % DRYRUN_REL)
+        raise ReviewError("%s is not a dry-run record this plugin wrote; run the publish dry run again to write a new one" % DRYRUN_REL)
     return obj
 
 
@@ -501,7 +501,7 @@ def add(repo, packet_path, verdict, opened, accept=(), findings_path=None, now=N
     if verdict in ("clear", "accepted"):
         missing = sorted(required - opened_set)
         if missing:
-            raise ReviewError("%d file(s) of the coverage set were not opened, so %s is refused: %s"
+            raise ReviewError("%d file(s) of the coverage set were not opened, so %s is refused: %s; open each of them in the review, then record it again"
                               % (len(missing), verdict, ", ".join(missing)))
     if verdict == "clear" and findings:
         raise ReviewError("'clear' carries no findings; use accepted (naming each) or blocked")
@@ -564,7 +564,7 @@ def main(argv=None):
     if rc is not None:
         return rc
     ap = argparse.ArgumentParser(prog="review_record.py", allow_abbrev=False,
-                                 description="The privacy-review record (dev #835).")
+                                 description="The privacy-review record.")
     sub = ap.add_subparsers(dest="cmd")
     sub.required = True
     b = sub.add_parser("begin", allow_abbrev=False)

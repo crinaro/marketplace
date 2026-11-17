@@ -656,7 +656,7 @@ def import_media(src, dest, resizer, platform=None, sips=None, overwrite=False,
         with open(src, "rb") as fh:
             raw = fh.read()
     except OSError as e:
-        raise ImageError("cannot read %s: %s" % (src, e.strerror or e))
+        raise ImageError("cannot read %s: %s; check that the file exists and can be opened, then import it again" % (src, e.strerror or e))
     res = ImportResult()
     fmt = detect_format(raw)
     if fmt in ("heic", "tiff"):
@@ -666,7 +666,7 @@ def import_media(src, dest, resizer, platform=None, sips=None, overwrite=False,
         fmt = "jpeg"
     if fmt is None:
         raise ImageError("%s is not an image this plugin imports (JPEG, PNG, WebP, GIF, or HEIC/TIFF "
-                         "on a Mac)" % os.path.basename(src))
+                         "on a Mac); convert it to one of those first" % os.path.basename(src))
     # 1. READ the orientation from the source, BEFORE anything is stripped (M12(b))
     orientation = read_orientation(raw)
     # 2. strip
@@ -680,7 +680,7 @@ def import_media(src, dest, resizer, platform=None, sips=None, overwrite=False,
     main_w, main_h = capped_size(dw, dh)
     path = resolve_dest(src, dest, fmt)
     if os.path.exists(path) and not overwrite:
-        raise ImageError("%s already exists; not overwritten" % path)
+        raise ImageError("%s already exists; not overwritten; delete or rename it, or choose another name" % path)
     # 3. decide what needs pixels
     needs_main = orientation != 1 or (main_w, main_h) != (dw, dh)
     est_bytes = len(clean) if not needs_main else len(clean) * (main_w * main_h) // max(1, w * h)
@@ -743,7 +743,7 @@ def import_media(src, dest, resizer, platform=None, sips=None, overwrite=False,
                 os.remove(t)
             except OSError:
                 pass
-        raise ImageError("could not write %s: %s" % (path, e.strerror or e))
+        raise ImageError("could not write %s: %s; check that the folder can be written to and the disk has room, then import again" % (path, e.strerror or e))
     res.path = path
     res.copies = [copy_name(path, cw) for cw in sorted(copies)]
     res.width, res.height = main_w2, main_h2

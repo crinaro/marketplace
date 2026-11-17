@@ -1,6 +1,6 @@
 ---
 name: setup
-description: 'Create the site''s two repositories, turn on GitHub Pages and an optional custom domain, and get this computer ready, one plain step at a time. Not for a folder that already holds a site, or a repo that carries its own copy of the tools (adopt).'
+description: 'Start a new site from nothing: get this computer ready, create the two repositories (a private one for your content, a public one for the published site), and turn on GitHub Pages and an optional custom domain, one plain step at a time. Not for a folder that already holds a site, or a site repo with its own copy of site-studio''s scripts (adopt).'
 disable-model-invocation: true
 ---
 
@@ -42,9 +42,6 @@ Run `doctor.py` and read its report. Fix only what it reports, by platform:
   GitHub CLI's Linux install page; Chrome or Chromium on `PATH`, or `CHROME_PATH` set. The person
   runs the install. Then `gh auth login` and `gh auth setup-git`.
 - **Windows:** say `doctor.py`'s one sentence (Windows is not supported yet) and stop setup here.
-- **1b, only if this plugin's browser tools are the Node fallback** (ADR-001 says whether): say
-  that it installs Node's Playwright library into the plugin's own data folder and how large it
-  is, and ask. Install on yes; on no, install nothing.
 
 Run `doctor.py` again. Go on only when its report is clean, or the person chooses to go on without
 Chrome (then adding photos and capturing pages will refuse until Chrome is there; say so).
@@ -53,7 +50,11 @@ Chrome (then adding photos and capturing pages will refuse until Chrome is there
 
 1. **The kind, first, in plain words:** "a portfolio of your work, a page of links (for you or for a
    group), or a site you will make by hand". These are `portfolio`, `hub` and `custom`. A person who
-   describes a site they already have is not setting one up: say adopt, and stop.
+   describes a site they already have is not setting one up: stop, and say which way in fits.
+   `/site-studio:adopt` takes a site only if its repository has `site/site.json` (its own copy of
+   these tools). A hand-made site without one cannot be taken in by this version; the person can
+   instead start a new `custom` site here, under a name where no site is served yet, and copy
+   their pages into `site/src/` (see step 5 for which names are free).
    - `portfolio`: the generated home, portfolios, about and resume pages.
    - `hub`: one hand-written page of links (`site/src/index.html`), built as written, nothing
      generated. It may concern several people.
@@ -66,10 +67,14 @@ Chrome (then adding photos and capturing pages will refuse until Chrome is there
    computer's language. A hub or custom site has no resume, so do not ask.
 5. **Ask GitHub whether a site is already there.** Run
    `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/repos.py" existing-site --dir . --repo <owner>/<name>`
-   and treat its exit exactly as in Step 0: 0 go on, 4 stop and point at `/site-studio:adopt`,
-   anything else NOT CHECKED (ask the person). It asks about two names only, `<owner>/<name>` and
-   `<owner>/<owner>.github.io`, so say what it said: "no site found under <name> or
-   <owner>.github.io", never "no site exists".
+   and treat its exit exactly as in Step 0: 0 go on, 4 stop, anything else NOT CHECKED (ask the
+   person). It asks about two names only, `<owner>/<name>` and `<owner>/<owner>.github.io`, so say
+   what it said: "no site found under <name> or <owner>.github.io", never "no site exists".
+   On 4, read out its line, which names the repository it found. Point at `/site-studio:adopt`
+   only if that repository has `site/site.json`; otherwise say adopt cannot take it either. If the
+   site found is the account's own `<owner>.github.io`, every name under this owner stops here, so
+   say that plainly: setup can go on only under another owner (an organization the person runs)
+   whose own site is not served yet. Never suggest writing to the repository that was found.
 
 ## Step 3: the two repositories
 
