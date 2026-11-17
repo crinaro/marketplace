@@ -101,6 +101,11 @@ from siteconfig import SiteConfigError  # noqa: E402
 # touch the person's source. Each is `{kind: (path under templates/output/ and in the output)}`.
 OUTPUT_TEMPLATES = os.path.normpath(os.path.join(HERE, "..", "templates", "output"))
 PLUGIN_ASSETS = {"css": "site-studio/blocks.css", "js": "site-studio/video.js"}
+# The content model that SHIPS (dev #876): `reference/content-model.md`, generated from the code's own tables by
+# tests/gen_content_model.py and checked against them by tests/test_content_model_generated.py. It is found from this
+# file's own location, never from ${CLAUDE_PLUGIN_ROOT}, which Claude Code does not set in the environment of a
+# command run through the Bash tool. A message that points a person at it names this absolute, installed path.
+CONTENT_MODEL = os.path.normpath(os.path.join(HERE, "..", "reference", "content-model.md"))
 
 JUNK_NAMES = (".DS_Store", "Thumbs.db")
 HTML_EXTS = (".html", ".htm")
@@ -127,11 +132,16 @@ class BuildError(ValueError):
 
 class Acceptance(object):
     """What `accept` returns: every `problem` (a `siteconfig.Problem`, ordered by path), the `notes`, and
-    what was built in memory when it got that far (`cfg`, `model`, `output` {output path: bytes}, `pages`)."""
+    what was built in memory when it got that far (`cfg`, `model`, `output` {output path: bytes}, `pages`).
+    `warnings` is a list of the same `make_problem` shape, kept APART from `problems`: `problems` means the
+    build refuses, a warning means it builds and says what it does not publish (a stray `.md` or folder in a
+    piece folder, an unknown piece key; dev #885, dev #882). Empty `problems` with warnings is still an
+    accepted tree whose output bytes the warnings never change; `adopt check` may refuse one."""
 
-    def __init__(self, problems, notes, cfg, model, output, pages):
+    def __init__(self, problems, notes, cfg, model, output, pages, warnings=None):
         self.problems = problems
         self.notes = notes
+        self.warnings = list(warnings or [])
         self.cfg = cfg
         self.model = model
         self.output = output
@@ -141,20 +151,22 @@ class Acceptance(object):
 class BuildResult(object):
     """What a build produced. `preview_build` returns exactly this: it has no digest."""
 
-    def __init__(self, out_dir, files, pages, site_url, drafts, notes):
+    def __init__(self, out_dir, files, pages, site_url, drafts, notes, warnings=None):
         self.out_dir = out_dir
         self.files = files          # sorted output paths (NFC, relative)
         self.pages = pages          # sorted [(output path, kind)]
         self.site_url = site_url
         self.drafts = drafts
         self.notes = notes
+        self.warnings = list(warnings or [])      # `Acceptance.warnings` of this build (dev #885, dev #882)
 
 
 class PublishResult(BuildResult):
     """What `publish_build` returns: a BuildResult plus the digest and the site kind it covers."""
 
-    def __init__(self, out_dir, files, pages, site_url, drafts, notes, digest, site_kind="portfolio"):
-        BuildResult.__init__(self, out_dir, files, pages, site_url, drafts, notes)
+    def __init__(self, out_dir, files, pages, site_url, drafts, notes, digest, site_kind="portfolio",
+                 warnings=None):
+        BuildResult.__init__(self, out_dir, files, pages, site_url, drafts, notes, warnings)
         self.digest = digest
         self.site_kind = site_kind
 
@@ -601,7 +613,7 @@ class _Builder(object):
                 raise BuildError("%s: unknown token {{%s}}" % (source, name),
                                  lineno=(origin.count("\n", 0, at) + 1) if origin and at >= 0 else None,
                                  fix="check the spelling of the token, or remove it (the tokens are listed in "
-                                     "docs/content-model.md)")
+                                     "%s)" % CONTENT_MODEL)
             if name == "home":
                 nth = text.count(m.group(0), 0, m.start())
                 return self.home_part(arg, current_out, source, _line_of(origin, m.group(0), nth) if origin else None, home)
@@ -628,7 +640,7 @@ class _Builder(object):
                 return values[name]
             if extra and name in extra:
                 return extra[name]
-            raise BuildError("%s: unknown token {{%s}}" % (source, name), fix="check the spelling of the token, or remove it (the tokens are listed in docs/content-model.md)")
+            raise BuildError("%s: unknown token {{%s}}" % (source, name), fix="check the spelling of the token, or remove it (the tokens are listed in %s)" % CONTENT_MODEL)
         return _TOKEN.sub(sub, text)
 
     # ---- images
@@ -1264,6 +1276,15 @@ def _meta_key_problems(model, cfg):
     return out
 
 
+def warning_line(w):
+    """One warning as the build prints it: where (with the line when known), what is not published, the fix."""
+    at = "%s:%d: " % (w.path, w.lineno) if (w.lineno and w.path) else ""
+    msg = w.message
+    if at and msg.startswith(w.path + ": "):
+        msg = msg[len(w.path) + 2:]
+    return "%s%s -- fix: %s" % (at, msg, w.fix)
+
+
 def _refusal(problems):
     """One `BuildError` that carries every problem; its message is the join of theirs (exactly the one
     problem's message when there is one)."""
@@ -1277,7 +1298,7 @@ def _accept(files, drafts, year, lastmod, grammar=None):
     fidelity section 4.1): five stages, each collecting what it refuses, over {repo path: bytes}.
     Nothing is written, no git call is made. `year` and `lastmod` are what a real build prints; `accept`
     passes placeholders."""
-    problems, notes = [], []
+    problems, notes, warnings = [], [], []
     seen = set()
 
     def add(p):
@@ -1301,7 +1322,7 @@ def _accept(files, drafts, year, lastmod, grammar=None):
 
     def finish(cfg=None, model=None, out=None, pages=None):
         ordered = sorted(problems, key=lambda p: (p.path or "", p.lineno or 0, p.message))
-        return Acceptance(ordered, notes, cfg, model, out if out is not None else {}, pages or {})
+        return Acceptance(ordered, notes, cfg, model, out if out is not None else {}, pages or {}, warnings)
 
     raw = files.get("site/site.json")
     if raw is None:
@@ -1347,6 +1368,9 @@ def _accept(files, drafts, year, lastmod, grammar=None):
         model = C.Content()
     if model is None:
         return finish(cfg)
+    if cfg.siteKind == "portfolio":      # never a refusal and never a change to the output (the owner invariant)
+        _ok, found = stage("content.stray_warnings", "content/", C.stray_warnings, files, model, cfg)
+        warnings.extend(found or ())
     if cfg.siteKind == "portfolio" and (cfg.schema if grammar is None else grammar) >= 3:
         for p in _meta_key_problems(model, cfg):         # the schema-3 reading only: 0.2.0 trees build as they did
             add(p)
@@ -1435,20 +1459,21 @@ def _run(repo, out_dir, drafts):
     _write_outputs(out_dir, acc.output)
     files_out = sorted(acc.output, key=lambda p: p.encode("utf-8"))
     pages = sorted((p, acc.pages[p]["kind"]) for p in acc.pages)
-    return out_dir, files_out, pages, acc.cfg.site_url() or PREVIEW_SITE_URL, acc.notes, acc.cfg.siteKind
+    return (out_dir, files_out, pages, acc.cfg.site_url() or PREVIEW_SITE_URL, acc.notes, acc.cfg.siteKind,
+            acc.warnings)
 
 
 def publish_build(repo, out_dir):
     """The one digested build: committed tree at HEAD, no drafts. Returns a PublishResult."""
-    out_dir, files, pages, site_url, notes, site_kind = _run(repo, out_dir, drafts=False)
+    out_dir, files, pages, site_url, notes, site_kind, warnings = _run(repo, out_dir, drafts=False)
     return PublishResult(out_dir, files, pages, site_url, False, notes, _digest_tree(out_dir, site_kind),
-                         site_kind)
+                         site_kind, warnings)
 
 
 def preview_build(repo, out_dir):
     """A drafts-included build of the working tree. Returns a BuildResult with NO digest."""
-    out_dir, files, pages, site_url, notes, _kind = _run(repo, out_dir, drafts=True)
-    return BuildResult(out_dir, files, pages, site_url, True, notes)
+    out_dir, files, pages, site_url, notes, _kind, warnings = _run(repo, out_dir, drafts=True)
+    return BuildResult(out_dir, files, pages, site_url, True, notes, warnings)
 
 
 # ---------------------------------------------------------------- the raise to schema 3 (design section 3.4)
@@ -1676,6 +1701,8 @@ def main(argv=None):
         print("built %d files into %s" % (len(res.files), res.out_dir))
         for n in res.notes:
             print("note: " + n)
+        for w in res.warnings:      # printed on every build, at every schema; the output is the same without them
+            print("warning: " + warning_line(w))
         if args.digest:
             print("digest: %s" % res.digest)
         return 0

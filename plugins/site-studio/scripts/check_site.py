@@ -11,7 +11,10 @@ with build.publish_build into a temp dir: the gate checks what would be PUBLISHE
 
 THE FAMILIES (design 4.3). A finding names its family. There is NO command-line way to skip, waive
 or ignore a family or a finding: a false positive is fixed in this file, with a dated note in this
-docstring. (No such note exists yet.)
+docstring.
+  Dated note, 2026-11-16 (dev #891): the `reachable` family flagged OFL.txt / LICENSE* beside a published
+  font as "published but not referenced". The licence has to travel with the font and nothing links to it,
+  so the flag was a false positive; such a file is now exempt ONLY in a folder that holds a font file.
 
   structure    required files (index.html, 404.html, .nojekyll, and robots.txt + sitemap.xml once a
                site URL is known); files that must never be published (markdown sources, site.json,
@@ -34,7 +37,9 @@ docstring. (No such note exists yet.)
                listed by --report (they are never fetched: the gate has no network).
   reachable    every page is reachable from the home page by links (redirect stubs and the 404 page
                excepted) and every published non-page file is referenced by a page or stylesheet
-               (the root files robots.txt, sitemap.xml, CNAME, .nojekyll and favicon.* excepted).
+               (the root files robots.txt, sitemap.xml, CNAME, .nojekyll and favicon.* excepted;
+               and, from 0.3.1, a font licence file -- OFL.txt, LICENSE*, *.license -- in a folder
+               that also holds a .woff2, .woff, .ttf or .otf file).
   privacy      design 7.1, below.
   domain       CNAME present and equal to `domain` after cutover, absent before; canonical, og:url,
                sitemap <loc> and robots Sitemap all start with the site URL; no absolute URL to the
@@ -190,6 +195,15 @@ BAD_IMAGE_EXTS = (".heic", ".heif", ".tif", ".tiff", ".bmp", ".raw", ".cr2", ".n
 KNOWN_GENERATORS = ("chromium", "chrome", "skia/pdf", "headlesschrome", "google chrome")
 VIDEO_HOSTS = ("www.youtube-nocookie.com", "player.vimeo.com", "drive.google.com")
 ROOT_EXEMPT = ("robots.txt", "sitemap.xml", "CNAME", ".nojekyll", "404.html")
+FONT_EXTS = (".woff2", ".woff", ".ttf", ".otf")
+
+
+def is_font_licence(name):
+    """A licence file a font's licence requires to travel with it: OFL.txt, LICENSE*, *.license
+    (case-insensitive, on the file's base name). Only the NAME is judged here; the caller also
+    requires a font file in the same folder (dev #891)."""
+    low = name.lower()
+    return low == "ofl.txt" or low.startswith("license") or low.endswith(".license")
 FORBIDDEN_NAMES = ("CLAUDE.md", "HANDOFF.md", "BRAND.md", "site.json", "layout.html", "text.md",
                    "reference.json", "package.json", "package-lock.json")
 FORBIDDEN_DIRS = (".git", ".site-studio", ".github", "decisions", "originals", "node_modules",
@@ -892,12 +906,15 @@ class Checker(object):
             if rel == "404.html" or rel in seen:
                 continue
             self.r.add(fam, rel, "page cannot be reached from the home page by following links")
+        font_dirs = set(posixpath.dirname(r) for r in self.t.files if r.lower().endswith(FONT_EXTS))
         for rel in sorted(self.t.files):
             low = rel.lower()
             name = posixpath.basename(rel)
             if low.endswith((".html", ".htm")) or ("/" not in rel and name in ROOT_EXEMPT):
                 continue
             if "/" not in rel and name.lower().startswith(("favicon", "apple-touch-icon")):
+                continue
+            if is_font_licence(name) and posixpath.dirname(rel) in font_dirs:
                 continue
             if rel in self.flagged:
                 continue

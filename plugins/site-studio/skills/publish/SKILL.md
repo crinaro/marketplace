@@ -69,6 +69,8 @@ and the commit message you propose, and let the person change the message.
 
 The ask is the person's act. Never try to get past a denial.
 
+The hook reads only a command that names `deploy.py`. Heredoc bodies (a commit message passed as `<<'EOF'`) are data and are removed before the command is read, so a body that merely mentions `deploy.py` is not a publish and is not blocked; a heredoc fed to a shell (`bash <<EOF`) is still read as commands. A command that names `deploy.py` and cannot be read is denied, and the message says what was blocked without pointing at this command (0.3.1, dev #875).
+
 `--confirm` then repeats the dry run's checks and refuses if the digest differs from the one
 confirmed, pushes, checks the remote head is the pushed commit, and re-reads the public repo from a
 fresh clone. A mismatch is red: "pushed, but the public tree differs from what you approved".

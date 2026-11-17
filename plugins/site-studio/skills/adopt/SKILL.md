@@ -70,6 +70,13 @@ cannot see it. The plugin's own review and ideas steps call its agents by their 
 (`site-studio:<name>`), which a same-named file does not replace. Show any `tokens the plugin's
 build will refuse` line as well.
 
+**The template's `{{<folder>Link}}` token (dev #889).** adopt renames it to `{{link:<folder>}}` only where it is an
+`<a>` tag's whole `href` value. A bare one (`<nav>{{workLink}}</nav>`) stood for a whole anchor, so adopt wraps it as
+`{{#page:<folder>}}<a href="{{link:<folder>}}">LABEL</a>{{/page}}`, with the label from `site/site.json` (`work.label`),
+and the inventory shows that section. Where it has no label (another portfolio, a piece name, no `work.label`) or the
+token sits inside another tag or anchor, it is left as written and the inventory prints a `step for you` line: read
+that line to the person, who writes the anchor by hand. It is never listed as converted.
+
 Record each decision as the person makes it:
 
 - **DUPLICATE:** removed only after the person confirms: `adopt.py confirm <path>`. To keep it:
@@ -113,6 +120,25 @@ whether their media addresses match the old builder's). When apply replaces a va
 text (`file:line`, under "Your own script may depend on the old form"): read that list to the
 person, because adopt cannot tell whether their script needs updating.
 
+**The list is by cause, not by count (0.3.1).** `check` reports **every** refusal in a file, not the first (every
+unknown key in each `reference.json`, every unknown token in a page, every unknown front-matter key), each with its
+line. It then groups them: problems that say the same thing about the same kind of file are **one cause** on one line
+("35 places, one cause: ...", with the first few named), and a redirect or `{{link:X}}` that names a portfolio the
+build refuses is listed as **following from** that portfolio's own problem ("follows from content/work/page.md:4;
+resolves with it"). **The number after `you decide` is the number of causes, so it is the number of decisions to
+settle**: read it that way to the person, and settle the cause (the consequences go with it). A fix adopt makes
+itself is never grouped. A decision recorded with `adopt.py folder`, `convert` or `paper` is read by `check` the same
+way parity reads it: a folder the person has decided is not listed as undecided again.
+
+**Strays the build only warns about (0.3.1, dev #885, dev #882).** The build and preview print a named warning for a `.md` other than `index.md` or a sub-folder other than `media/` or `_*` in a piece folder, and for a piece front matter key that is neither built in nor in the portfolio's `meta`/`cardMeta`; the published bytes do not change. Where nothing has been converted yet, `check` lists each as a problem with its fix and refuses (`you decide`), so `adopt ok` is not said over a page that would go unpublished. Read each fix to the person.
+
+**When the basis moves,** the decisions do not all go with it (0.3.1). After the person commits a hand fix and runs
+`inventory` again, a decision about a path that still exists and did not change is **kept**; every one cleared is
+printed by name ("2 decision(s) cleared because the basis moved: content/notes -> source; the parity result ..."). Read
+that line to the person: the cleared ones are the ones to decide again, and the parity result is always one of them,
+because it measured another tree. If the old basis is no longer in the repo, nothing can be compared, so all are
+cleared and the line says why.
+
 **Old addresses (meta-refresh pages).** A hand-made page under `site/src/` that is nothing but a
 redirect (a refresh with a delay of 0, a canonical link, a link or a script to the same place, and a
 few words) is listed as a problem `apply fixes`: apply writes it into `site.json` `redirects`, keyed the
@@ -122,7 +148,7 @@ then writes an equivalent page at the same address. A refresh page that is more 
 elsewhere) stays a hand page. The inventory and the commit list each one with its reason: read those to
 the person. If the site has a local builder, its parity will show the generated redirect page as a
 difference from the hand-made one; that is expected: the local builder does not write that page, so parity reports DIFFERENT, and the person
-decides whether to accept it with `adopt.py parity --accept` (step 3).
+decides whether to accept it with `adopt.py parity --accept`, after reading what `parity` listed (step 3).
 
 **Conversions that depend on the site's own builder.** The `check` and `inventory` output ends with a
 `conversions` list: each conversion, whether it is `GENERAL` (follows from site-studio's own model) or
@@ -212,10 +238,20 @@ side**. Neither build touches the repo.
   diverged from or fallen behind `origin/main`, parity is **UNVERIFIED** and the local builder
   stays; adopt says so before it does any work.
 - **EQUAL:** the local builder is a duplicate.
-- **DIFFERENT:** it is kept, and each difference is listed as a path and its first differing
-  line. An ignored file in the working copy is named when it is the likely cause. Show every
-  difference. If the person accepts them, so the build becomes the plugin's, run
-  `adopt.py parity --accept`, which accepts the listed differences together. Otherwise the local
+- **DIFFERENT:** it is kept, and the differences are listed **by cause** (0.3.1): every differing hunk of
+  every file is read, and a change that is the same on many pages is one line with its page count and a few of
+  the pages named. A difference that is only an **addition inside `<head>`** (a meta tag, a link) is its own
+  class, listed after the body differences and never in place of one: a page with both shows both. A file with
+  more hunks than are listed says how many it did not list. A path present in only one build is listed as it
+  always was. An ignored file in the working copy is named when it is the likely cause. Show every
+  difference. `adopt.py parity --keep <dir>` leaves the two builds in `<dir>/local` and `<dir>/plugin` as the
+  builders wrote them, so a difference can be opened and read (`<dir>` must not exist, or be empty, and must be
+  outside the repo). If the person accepts the differences, so the build becomes the plugin's, run
+  `adopt.py parity --accept`. It accepts only what an earlier `parity` on the same commit already showed:
+  it prints those differences (one line per cause) before it records `ACCEPTED`. If you run it before the
+  person has seen them (no earlier `parity` on this commit, or the differences are not the ones the last
+  run showed), it lists the differences, records `DIFFERENT`, says it did not accept, and the person is asked
+  again; run `parity --accept` once more to accept exactly those. Otherwise the local
   builder is kept and the agents and commands can still be retired.
 - **UNVERIFIED** (no Node on this computer, the local builder failed, or the plugin build
   refused): never a pass, and the local builder stays. When the plugin build refuses, parity lists what
@@ -228,7 +264,15 @@ Parity makes two measurements, and both are named in what it prints:
 - **P1, the local builder against itself** (run when P2 is not EQUAL, because the builder is then kept):
   the person's builder on the original, against the same builder on the **converted** tree. It proves adopt's
   changes did not change what that builder publishes. When P1 differs, adopt runs it again with each
-  conversion class alone (at most eight runs) and names each class that differs, with the paths.
+  conversion class alone (at most eight runs) and names each class that differs, with the paths. **P1 can also say
+  FAILS** (0.3.1): the person's builder does not merely publish something else on the converted tree, it
+  **exits non-zero**. adopt then runs each class alone, and the class that makes it fail is `you decide` with the
+  builder's own failure line named ("your own builder FAILS on the tree this conversion makes (...)"). A
+  conversion the person has **chosen** (`adopt.py convert <class>`) that does this is not written: `apply` and
+  `apply --dry-run` refuse it, naming the line, while parity is not EQUAL or ACCEPTED. Tell the person the
+  choices: `adopt.py convert <class> --keep` leaves the page as written, or they fix the builder and run
+  `adopt.py parity` again. A builder that fails with no conversion made is not the conversion's doing: that stays
+  UNVERIFIED.
 
 A conversion is **`apply fixes this`** only when it changes no page a visitor loads. Where P2 is not equal, or
 P1 shows the person's builder would publish differently, it is `you decide`, with the difference named, and
@@ -318,8 +362,8 @@ An unreadable record stops it too, naming the file. No record (a site made by se
 behaviour: nothing is read. Tell the person plainly that publishing here is held by design, not broken.
 
 `adopt.py remeasure` is how it is released: it measures again against the plugin build of `HEAD`,
-prints each difference, rewrites the record and commits that one file. `adopt.py remeasure --accept` records
-`ACCEPTED`, and **only after the person has just been shown the differences and said yes**; it never accepts
+prints each difference (by cause, as `parity` does), rewrites the record and commits that one file. `adopt.py remeasure --accept` records
+`ACCEPTED`, and **only after the person has just been shown the differences and said yes**: it prints the differences it is accepting (one line per cause) **before** it writes the record, so what is accepted is in front of them in the same run; it never accepts
 UNVERIFIED. For a site with no local builder at all, `--accept` means "site-studio's build replaces my site, unmeasured". It refuses
 in a cloud session, as adopt does. The gate runs only the one builder file adopt classified: any other step
 of the person's pipeline (a CI workflow, a hosting build) is not run, and the inventory says so.

@@ -5,7 +5,8 @@ library only; no browser needed (a person opens the printed URL, or the preview 
 the desktop app's pane).
 
     python3 preview.py [--repo R] [--port N] [--seconds N]
-    prints:  preview: http://127.0.0.1:PORT/<base>/     (and how many drafts it shows)
+    prints:  preview: http://127.0.0.1:PORT/<base>/     (and how many drafts it shows), then each note and
+             each build warning (a stray file or unknown front matter key) exactly as build.py prints it
 
 THE PATH IS THE POINT. A GitHub Pages project site lives at https://<user>.github.io/<repo>/, so
 the preview is served under that same base path (taken from the site's own address: site.json
@@ -120,6 +121,8 @@ def main(argv=None):
             print("pages: %d (drafts included; this is the working tree, not the publish build)" % len(pv.result.pages))
             for n in pv.result.notes:
                 print("note: %s" % n)
+            for w in pv.result.warnings:      # the same line build.py prints; the served output is the same without them
+                print("warning: " + build.warning_line(w))
             sys.stdout.flush()
             end = time.time() + args.seconds if args.seconds else None
             try:

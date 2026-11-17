@@ -12,7 +12,8 @@ design 6.4; named changes S2, S8, S9, S10 (round 1), M9, M13). Python 3.9, stand
     adopt.py [--repo R] folder NAME {source|portfolio}
     adopt.py [--repo R] convert {redirectBoiler|resumeFields} [--keep]
     adopt.py [--repo R] kind {portfolio|hub|custom}
-    adopt.py [--repo R] parity [--accept]
+    adopt.py [--repo R] parity [--accept] [--keep DIR]
+    adopt.py [--repo R] remeasure [--accept]
     adopt.py [--repo R] apply [--date YYYY-MM-DD] [--dry-run]
 
 WHAT IT IS FOR. The person's dev repo may hold local copies of what the plugin now does (agents,
@@ -115,9 +116,33 @@ environment (PATH reduced, HOME and TMPDIR in a scratch folder, TZ=UTC, no proxy
 and a preload that makes any network call or program launch throw: an in-process guard, not an OS
 sandbox. DATES are normalised in both outputs by a stated rule (DATE_RULES): every ISO date or
 datetime becomes `<date>` and a copyright year after (c) / the copyright sign / &copy; becomes
-`<year>`. Differences are listed as path and first differing line; an ignored file present in the
+`<year>`. Differences are reported as hunks grouped by cause across files (one change repeated on 27 pages is one
+line with its page count; a hunk that is only an addition inside `<head>` is its own class, listed after the body
+causes; dev #879, see REPORTS THAT TELL THE WHOLE TRUTH below); an ignored file present in the
 working copy is listed as the likely cause. No Node, a builder that fails, or a plugin build that
 refuses: UNVERIFIED, never a pass, and the builder is kept.
+
+REPORTS THAT TELL THE WHOLE TRUTH (0.3.1; dev #879, #893, #887, #890). None of this changes what adopt converts or what
+parity measures; it changes what is SAID, and what is kept.
+- PARITY NAMES CAUSES (#879). Every hunk of every differing file is read (`file_hunks`), and the hunks are grouped
+  across files by their own text (`difference_report`): one change repeated on 27 pages is one line with its page count,
+  and a file past HUNKS_PER_FILE hunks says how many it did not list. A hunk that is only an ADDITION inside `<head>` is
+  its own class, listed after the body causes and never in place of one. `parity --keep DIR` leaves the two builds in
+  DIR/local and DIR/plugin (refused when DIR exists and is not empty); `remeasure --accept` prints the causes it accepts
+  BEFORE it writes the record that says ACCEPTED. `parity --accept` accepts only the differences a previous `parity`
+  on the SAME basis already stored as DIFFERENT (`differences_were_shown`): it prints them before the plan that says
+  ACCEPTED is saved; otherwise it lists them, records DIFFERENT and says to run `parity --accept` again. The plan's `differences` keep their three strings: the report is
+  transient, never stored.
+- CHECK SAYS EVERY REFUSAL, ONCE PER CAUSE (#893). `every_refusal` re-reads each file the build refused at its FIRST
+  unknown key or token and lists all of them, with lines. `format_problems` groups problems that share a cause and marks
+  a redirect or `{{link:X}}` to a refused portfolio as following from that portfolio's own problem, so the count of
+  `you decide` is the count of causes. A fix adopt makes is never grouped.
+- DECISIONS SURVIVE A MOVING BASIS (#887). `check` no longer lists a folder the person decided; a plan made for another
+  basis is CARRIED (`carry_plan`): a decision about a path that exists and did not change is kept, the rest are cleared
+  and printed by name. The plan's keys are unchanged.
+- A BUILDER THAT FAILS IS NOT A BUILDER THAT DIFFERS (#890). When P1 shows the kept builder exits non-zero on the converted
+  tree, P1 says FAILS, each conversion that does it is named with the builder's own failure line, and `apply` (and
+  `apply --dry-run`) refuse a chosen conversion that does it while parity is not EQUAL or ACCEPTED.
 
 PARITY_IGNORED lists what the plugin adds and the examples never wrote. It follows the design's
 list plus ONE addition: the `decoding` attribute on `<img>`, because build.py writes
@@ -1042,11 +1067,69 @@ def home_feed(tree):
     return None
 
 
-def rewrite_tokens(text, folders, layout=False, home=None, frozen=None):
+_ANCHOR_HREF_OPEN = re.compile(r"<a\b[^<>]*?\bhref\s*=\s*([\"'])$", re.I | re.S)
+_ANCHOR_OPEN = re.compile(r"<a\b", re.I)
+_ANCHOR_CLOSE = re.compile(r"</a\s*>", re.I)
+
+
+def link_token_context(m):
+    """Where a regex match `m` of a token stands in the text it was found in (dev #889): `href` when it is an
+    `<a>` tag's WHOLE `href` value (quote, token, the same quote), `tag` when it is anywhere else inside a tag (another
+    attribute, or part of an href), `anchor` when it is the content of an open `<a>`, else `text`. A `{{<folder>Link}}`
+    token means a URL only in `href`; in `text` the template's builder rendered something else there (a whole anchor)."""
+    s, a, b = m.string, m.start(), m.end()
+    lt, gt = s.rfind("<", 0, a), s.rfind(">", 0, a)
+    if lt > gt:
+        q = _ANCHOR_HREF_OPEN.search(s[lt:a])
+        return "href" if (q and s[b:b + 1] == q.group(1)) else "tag"
+    before = s[:a]
+    return "anchor" if len(_ANCHOR_OPEN.findall(before)) > len(_ANCHOR_CLOSE.findall(before)) else "text"
+
+
+def link_token_folder(token, folders):
+    """The portfolio folder an old `{{<folder>Link}}` token (or `{{<folder>Link:<slug>}}`) names, or None."""
+    m = site_build.TOKEN_RE.fullmatch(token.strip())
+    if not m:
+        return None
+    om = _OLD_TOKEN.match(m.group(1) + (":" + m.group(2) if m.group(2) else ""))
+    norm = dict((re.sub(r"[-_]", "", f).lower(), f) for f in folders)
+    return norm.get(om.group(1).lower()) if om else None
+
+
+def link_step_reason(token, folder, data):
+    """Why adopt did not rewrite an old `{{<folder>Link}}` token the inventory lists as a step (dev #889)."""
+    if ":" in token:
+        return "it names a piece, and no label for that piece is known"
+    if folder not in site_json_labels(data):
+        return ("site/site.json has no work.label" if folder == "work"
+                else "site/site.json states no label for the %s portfolio" % folder)
+    return "it is inside a tag or the text of another anchor"
+
+
+def section_for_link(folder, label):
+    """The page section adopt writes around a bare `{{<folder>Link}}` the template's builder rendered as a whole anchor
+    (dev #889): an anchor that is there when the page is built and gone when it is not."""
+    return '{{#page:%s}}<a href="{{link:%s}}">%s</a>{{/page}}' % (folder, folder, html.escape(label, quote=False))
+
+
+def site_json_labels(data):
+    """{folder: label} for the portfolios whose label `site/site.json` states: `work.label`, the one portfolio the file
+    configures. A portfolio the file says nothing about has no label here (its label is `page.md`'s, or the folder's name
+    in title case, and adopt does not guess which one the person's builder printed)."""
+    work = (data or {}).get("work") if isinstance(data, dict) else None
+    label = work.get("label") if isinstance(work, dict) else None
+    return {"work": label.strip()} if isinstance(label, str) and label.strip() else {}
+
+
+def rewrite_tokens(text, folders, layout=False, home=None, frozen=None, labels=None):
     """(new text, [(old, new)], [unknown tokens]). Old site-specific `{{<folder>Link}}` forms become
-    `{{link:<folder>}}`; an anchor whose href is exactly `{{resumeLink}}` becomes a `{{#page:resume}}`
-    section (a link that is there when the resume is built and gone when it is not); anything else the
-    plugin's build would refuse is listed, never guessed.
+    `{{link:<folder>}}` only where the token is an `<a>` tag's whole `href` value (dev #889); a BARE one (in text, as
+    `<nav>{{workLink}}</nav>`) was rendered by the template's builder as a whole anchor, so with the portfolio's label
+    in `labels` (`site_json_labels`) it becomes `{{#page:<folder>}}<a href="{{link:<folder>}}">LABEL</a>{{/page}}`, and
+    without one, or anywhere else (another attribute, the text of an anchor), it is left as written and listed as
+    unknown, a step for the person, never a silent rename; an anchor whose href is exactly `{{resumeLink}}` becomes a
+    `{{#page:resume}}` section (a link that is there when the resume is built and gone when it is not); anything else
+    the plugin's build would refuse is listed, never guessed.
 
     `home` is `home_feed(tree)` (design-site-fidelity section 6.1, C1): a local `{{home<Part>}}` token in a
     site/src page names a part of the home copy, and becomes `{{home:<part>}}` when the copy holds that part
@@ -1099,9 +1182,15 @@ def rewrite_tokens(text, folders, layout=False, home=None, frozen=None):
         if om:
             f = norm.get(om.group(1).lower())
             if f:
-                new = "{{link:%s%s}}" % (f, "/" + om.group(2) if om.group(2) else "")
-                changes.append((m.group(0), new))
-                return new
+                where = link_token_context(m)
+                if where == "href":
+                    new = "{{link:%s%s}}" % (f, "/" + om.group(2) if om.group(2) else "")
+                    changes.append((m.group(0), new))
+                    return new
+                if where == "text" and not om.group(2) and (labels or {}).get(f):
+                    new = section_for_link(f, labels[f])
+                    changes.append((m.group(0), new))
+                    return new
         unknown.append(m.group(0))
         return m.group(0)
     return site_build.TOKEN_RE.sub(sub, text), changes, unknown
@@ -1445,7 +1534,8 @@ def detect_signals(tree, data, redirect_found=None):
                 add("token:featured", p)
             if m.group(1) == "home" and m.group(2) and site_build.token_known("home", p == "site/templates/layout.html"):
                 add("token:home", p)
-        for tok in rewrite_tokens(text, folders, layout=(p == "site/templates/layout.html"), home=home_feed(tree))[2]:
+        for tok in rewrite_tokens(text, folders, layout=(p == "site/templates/layout.html"), home=home_feed(tree),
+                                  labels=site_json_labels(data))[2]:
             add("token:" + re.sub(r"\s", "", tok), p)
     for p in tree.paths():
         if p.startswith("content/") and p.lower().endswith(".md") and not posixpath.basename(p).startswith("_"):
@@ -1601,12 +1691,81 @@ def save_plan(repo, plan):
     os.replace(tmp, p)
 
 
-def _plan_for(repo, base):
+def carry_plan(repo, old, base):
+    """(the plan for `base`, [what was cleared, each by name]) when the parity basis moved since `old` was made (dev
+    #887, D2). A decision is KEPT when the path it is about exists on the new basis and its bytes are the same as on
+    the old one (a file's removal, review and unit decisions; a fact, by the file it came from; a folder's
+    `source`/`portfolio`, by every file under it; the paper size, by the resume PDF it was asked about). What is
+    about the whole repo and no path (`convert`, `siteKind`) is kept. Everything else is CLEARED and returned by
+    name for the caller to print: the parity result always (it measured another tree), and a decision about a path
+    that changed or is gone. The old basis commit not being in this repo means nothing can be compared, so every
+    decision is cleared and said to be. The stored shape is the same: only values move between the same keys."""
+    new = empty_plan(base)
+    new["convert"], new["siteKind"] = list(old.get("convert") or []), old.get("siteKind")
+    cleared = []
+    try:
+        was = Tree(repo, old["base"]).entries
+    except Refused:
+        was = None
+    now = Tree(repo, base).entries
+
+    def same(path):
+        return was is not None and path in now and was.get(path) == now[path]
+
+    def same_under(prefix):
+        a = dict((p, e) for p, e in (was or {}).items() if p.startswith(prefix))
+        b = dict((p, e) for p, e in now.items() if p.startswith(prefix))
+        return was is not None and bool(b) and a == b
+    for path, d in sorted(old["files"].items()):
+        what = [w for w, on in (("removal %s" % d.get("removal"), d.get("removal")), ("--as %s" % d.get("as"), d.get("as")),
+                                ("reviewed", d.get("reviewed")), ("%d unit decision(s)" % len(d.get("units") or {}),
+                                                                 d.get("units"))) if on]
+        if not what:
+            continue
+        if same(path):
+            new["files"][path] = d
+        else:
+            cleared.append("%s (%s)" % (path, ", ".join(what)))
+    for fa in old["facts"]:
+        if same(fa["source"]):
+            new["facts"].append(fa)
+        else:
+            cleared.append("the %s fact from %s" % (fa["kind"], fa["source"]))
+    for name, choice in sorted(old["folders"].items()):
+        if same_under("content/%s/" % name):
+            new["folders"][name] = choice
+        else:
+            cleared.append("content/%s -> %s" % (name, choice))
+    if old["paper"] is not None:
+        pdf = detect_resume(Tree(repo, base))["pdf"]
+        if pdf and same(pdf):
+            new["paper"] = old["paper"]
+        else:
+            cleared.append("the paper size %s (the resume PDF changed or is gone)" % old["paper"])
+    if old["parity"] is not None:
+        cleared.append("the parity result %s (measured on %s; run `adopt.py parity` again)"
+                       % (old["parity"].get("verdict"), old["base"][:7]))
+    if was is None and cleared:
+        cleared.append("(the old basis %s is not in this repo, so nothing could be compared)" % old["base"][:7])
+    return new, cleared
+
+
+def cleared_line(old_base, base, cleared):
+    return ("%d decision(s) cleared because the basis moved (%s -> %s): %s"
+            % (len([c for c in cleared if not c.startswith("(")]), old_base[:7], base[:7], "; ".join(cleared)))
+
+
+def _plan_for(repo, base, say=None):
+    """The plan for `base`. A plan made for another basis is CARRIED (`carry_plan`), not dropped, and `say` (when
+    given) is called with the one line naming every decision that was cleared."""
     plan = load_plan(repo)
     if plan is None:
         return empty_plan(base)
     if plan["base"] != base:
-        return empty_plan(base)
+        old_base = plan["base"]
+        plan, cleared = carry_plan(repo, plan, base)
+        if cleared and say:
+            say(cleared_line(old_base, base, cleared))
     return plan
 
 
@@ -1703,6 +1862,19 @@ def normalise_file(rel, data):
     return normalise_dates(text).encode("utf-8")
 
 
+def write_kept(dest, local, plugin):
+    """`parity --keep <dir>` (dev #879, P2): the two builds parity compared, as they came out of the builders (not the
+    normalised forms), in `<dir>/local` and `<dir>/plugin`, so a difference can be opened and read instead of inferred.
+    Returns `dest`."""
+    for name, files in (("local", local), ("plugin", plugin)):
+        for rel, blob in sorted(files.items()):
+            target = os.path.join(dest, name, *rel.split("/"))
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            with open(target, "wb") as fh:
+                fh.write(blob)
+    return dest
+
+
 def _walk(root):
     out = {}
     for d, _dirs, files in os.walk(root):
@@ -1726,11 +1898,7 @@ def compare_builds(local, plugin, ignored=None):
     for p in sorted(set(b) - set(a)):
         diffs.append(("only in the plugin build", p, ""))
     for p in sorted(set(a) & set(b)):
-        if p.lower().endswith((".html", ".htm")):
-            na = normalise_dates(normalise_html(a[p].decode("utf-8", "replace"), ignored)).encode("utf-8")
-            nb = normalise_dates(normalise_html(b[p].decode("utf-8", "replace"), ignored)).encode("utf-8")
-        else:
-            na, nb = normalise_file(p, a[p]), normalise_file(p, b[p])
+        na, nb = _comparable(p, a[p], b[p], ignored)
         if na != nb:
             la = na.decode("utf-8", "replace").split("\n")
             lb = nb.decode("utf-8", "replace").split("\n")
@@ -1743,6 +1911,134 @@ def compare_builds(local, plugin, ignored=None):
                     break
             diffs.append(("differs", p, first or "binary content differs"))
     return diffs
+
+
+def _comparable(p, a, b, ignored):
+    """The two comparison forms (bytes) of one output file present in both builds."""
+    if p.lower().endswith((".html", ".htm")):
+        na = normalise_dates(normalise_html(a.decode("utf-8", "replace"), ignored)).encode("utf-8")
+        nb = normalise_dates(normalise_html(b.decode("utf-8", "replace"), ignored)).encode("utf-8")
+        return na, nb
+    return normalise_file(p, a), normalise_file(p, b)
+
+
+# ---------------------------------------------------------------- the difference report (dev #879)
+# `compare_builds` says WHICH files differ, with the first differing line of each. That is a list of files, and it
+# hid every later difference in a file behind the first (a head addition masked a body change) and printed one line
+# per page for a change repeated on all of them. The report below is built from the same normalised forms, but
+# reads every hunk of every differing file, classes each hunk, and groups the hunks across files by what they say:
+# one cause is one line with its page count. It is TRANSIENT: nothing here is stored (the plan's `differences`
+# keep the three strings `compare_builds` returns, so the plan file and the parity record are unchanged).
+HUNKS_PER_FILE = 20        # hunks read per file; a file with more says how many it did not list
+CAUSE_LINES_MAX = 40       # cause lines printed; more says how many it did not list
+CAUSE_EXAMPLES = 3         # pages named on a cause that spans several
+HUNK_CLASSES = {
+    "head": "an addition inside <head>, apart from the body",
+    "body": "body",
+    "file": "file content",
+}
+
+
+def _head_span(lines):
+    """(index of `<head>`, index of `</head>`) in a normalised page's token lines, or None."""
+    start = next((i for i, l in enumerate(lines) if l == "<head>" or l.startswith("<head ")), None)
+    end = next((i for i, l in enumerate(lines) if l == "</head>"), None)
+    return (start, end) if start is not None and end is not None and start < end else None
+
+
+def _inside(span, k1, k2):
+    """True when tokens [k1, k2) (an insertion point when k1 == k2) lie between a page's `<head>` and `</head>`."""
+    return span is not None and span[0] < k1 and k2 <= span[1]
+
+
+def file_hunks(rel, na, nb):
+    """[(class, local lines, plugin lines, 1-based line in the local form)] for every differing hunk of one file,
+    from the two normalised forms. The class is per HUNK, never per page: `head` is a hunk that only ADDS lines (on
+    either side) inside `<head>`; any other hunk of a page is `body`; a file that is not a page is `file`. So a
+    page carrying both a head addition and a body change reports two hunks in two classes (dev #879, P3)."""
+    try:
+        ta, tb = na.decode("utf-8"), nb.decode("utf-8")
+    except UnicodeDecodeError:
+        return [("file", ["(binary content)"], ["(different binary content)"], 0)]
+    la, lb = ta.split("\n"), tb.split("\n")
+    page = rel.lower().endswith((".html", ".htm"))
+    ha, hb = (_head_span(la), _head_span(lb)) if page else (None, None)
+    out = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, la, lb, autojunk=False).get_opcodes():
+        if tag == "equal":
+            continue
+        # a whitespace token on one side is no content: a meta line one build writes against a bare newline in the
+        # other is an ADDITION, however the diff happened to align the two
+        a = [l for l in la[i1:i2] if l != "<ws>"]
+        b = [l for l in lb[j1:j2] if l != "<ws>"]
+        cls = "file" if not page else "body"
+        if page and (bool(a) != bool(b)) and _inside(ha, i1, i2) and _inside(hb, j1, j2):
+            cls = "head"
+        out.append((cls, a, b, i1 + 1))
+    return out
+
+
+def _clip(lines, n=80):
+    s = " ".join(l for l in lines if l != "<ws>") or "(whitespace only)"
+    return s if len(s) <= n else s[:n - 3] + "..."
+
+
+def hunk_text(a, b):
+    if not a and not b:
+        return "the two differ in whitespace only"
+    if not a:
+        return "the plugin build adds %s" % _clip(b)
+    if not b:
+        return "the local build has %s and the plugin build does not" % _clip(a)
+    return "local %s vs plugin %s" % (_clip(a, 50), _clip(b, 50))
+
+
+def difference_groups(local, plugin, diffs, ignored=None):
+    """({(class, local lines, plugin lines): [(path, line)]}, [(path, hunks not read)]): every hunk of every file
+    `diffs` says differs, up to HUNKS_PER_FILE per file, grouped across files by the hunk's own text."""
+    ignored = ignored or PARITY_IGNORED
+    groups, omitted = {}, []
+    for kind, p, _detail in diffs:
+        if kind != "differs" or p not in local or p not in plugin:
+            continue
+        na, nb = _comparable(p, local[p], plugin[p], ignored)
+        hunks = file_hunks(p, na, nb)
+        for cls, a, b, line in hunks[:HUNKS_PER_FILE]:
+            places = groups.setdefault((cls, tuple(a), tuple(b)), [])
+            if p not in [q for q, _l in places]:
+                places.append((p, line))
+        if len(hunks) > HUNKS_PER_FILE:
+            omitted.append((p, len(hunks) - HUNKS_PER_FILE))
+    return groups, omitted
+
+
+def difference_report(local, plugin, diffs, ignored=None):
+    """The lines `parity` and `remeasure` print for a list of differences (`compare_builds`' output): the files
+    present in only one build, then ONE LINE PER CAUSE (a hunk's text, however many pages carry it) with its page
+    count, body causes before the causes that are only an addition inside `<head>`, and a count of what was not
+    read (a file past HUNKS_PER_FILE hunks, causes past CAUSE_LINES_MAX). Empty when nothing differs."""
+    lines = []
+    for kind, p, detail in diffs:
+        if kind != "differs":
+            lines.append("  %s: %s%s" % (kind, p, (" (%s)" % detail) if detail else ""))
+    groups, omitted = difference_groups(local, plugin, diffs, ignored)
+    if groups:
+        order = {"body": 0, "file": 1, "head": 2}
+        rows = sorted(groups.items(), key=lambda kv: (order[kv[0][0]], kv[1][0][0], kv[0][1], kv[0][2]))
+        pages = set(p for places in groups.values() for p, _l in places)
+        n_head = sum(1 for k in groups if k[0] == "head")
+        lines.append("  differences by cause: %d cause(s) over %d file(s); %d only an addition inside <head> (listed after "
+                     "the body causes, and never in place of one)" % (len(groups), len(pages), n_head))
+        for (cls, a, b), places in rows[:CAUSE_LINES_MAX]:
+            who = ("%s (line %d)" % places[0]) if len(places) == 1 else (
+                "%d pages (%s%s)" % (len(places), ", ".join(p for p, _l in places[:CAUSE_EXAMPLES]),
+                                     ", and %d more" % (len(places) - CAUSE_EXAMPLES) if len(places) > CAUSE_EXAMPLES else ""))
+            lines.append("  differs: %s -- %s: %s" % (who, HUNK_CLASSES[cls], hunk_text(a, b)))
+        if len(rows) > CAUSE_LINES_MAX:
+            lines.append("  ... and %d more cause(s) not listed" % (len(rows) - CAUSE_LINES_MAX))
+    for p, n in omitted:
+        lines.append("  differs: %s -- %d more hunk(s) not listed (the first %d are)" % (p, n, HUNKS_PER_FILE))
+    return lines
 
 
 _NET_BLOCK = r"""
@@ -2184,7 +2480,8 @@ def converted_site_files(tree, data, paper, folders=None, kind=None, only=None, 
             continue
         text = tree.text(p)
         frz = []
-        new, ch, unk = rewrite_tokens(text, names, layout=(p == "site/templates/layout.html"), home=home, frozen=frz)
+        new, ch, unk = rewrite_tokens(text, names, layout=(p == "site/templates/layout.html"), home=home, frozen=frz,
+                                      labels=site_json_labels(data))
         notes["tokens"].extend((p, a, b) for a, b in ch)
         notes["tokensFrozen"].extend((p, a, b) for a, b in frz)
         notes["unknown"].extend((p, t) for t in unk)
@@ -2284,7 +2581,105 @@ def accept_problems(tree, data, paper=None, folders=None, kind=None, only=None):
         acc = site_build.accept(snap)
     except Exception as e:      # noqa: BLE001 -- accept does not raise; this is the belt to its braces
         return [site_build._not_checked("build.accept", e)], None
-    return list(acc.problems), acc
+    return every_refusal(snap, acc.problems), acc
+
+
+def accept_warnings(acc):
+    """The build's WARNINGS over the tree adopt would write, as problems (dev #885, dev #882; adopt-honesty W1): a stray
+    `.md` or sub-folder in a piece folder, a piece key neither built in nor in meta or cardMeta. They never change what
+    the build publishes, so the build says them and builds, and PARITY still measures such a tree. Where nothing has been
+    converted yet, `check`, `inventory` and `apply` list each with its path and fix and refuse until it is settled: never
+    a quiet "adopt ok" over a page that is not published. `acc` is None when the build could not run."""
+    return list(getattr(acc, "warnings", ()) or ()) if acc is not None else []
+
+
+_UNKNOWN_KEY = re.compile(r"^(content/references/[^/]+/reference\.json): unknown key '")
+_UNKNOWN_FM_KEY = re.compile(r"^(\S+): unknown front matter key '[^']*' \(allowed: (.*)\)$")
+_UNKNOWN_TOKEN = re.compile(r"^(\S+): unknown token \{\{[^{}]*\}\}$")
+_BLOCK = re.compile(r"\{\{\s*#page:[^{}\s]+\s*\}\}.*?\{\{\s*/page\s*\}\}", re.S)
+_COMMENT = re.compile(r"<!--.*?-->", re.S)
+
+
+def _blank(m):
+    """The matched text with every character but a newline made a space, so a position in the result is the same
+    line as in the original."""
+    return re.sub(r"[^\n]", " ", m.group(0))
+
+
+def every_refusal(files, problems):
+    """`build.accept`'s problems, with EVERY refusal in a file reported, not the first (dev #893, K1). The build stops
+    a unit at its first refusal: a `reference.json` at its first unknown key, a page at its first unknown token. A
+    person fixing a captured-references folder or a hand-made home then ran `check` once per key. Here, for each file
+    the build named such a refusal in, the file is read again and every one of its kind is listed, each with its
+    line, in the form the build words it (so the two agree, and a problem the build already reported is not
+    listed twice). `files` is the converted tree as `build.accept` was given it.
+
+    A token inside a `{{#page:X}}` block is not read here (the build removes the block when X is not built, and
+    adopt does not know that), so a token only there is reported by the build or not at all, never invented."""
+    out = list(problems)
+    have = set((p.path, p.message) for p in out)
+    done = set()
+    for p in problems:
+        m = _UNKNOWN_KEY.match(p.message)
+        if m and m.group(1) not in done and m.group(1) in files:
+            done.add(m.group(1))
+            rj = m.group(1)
+            try:
+                text = files[rj].decode("utf-8")
+                data = json.loads(text)
+            except (ValueError, UnicodeDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            out = [q for q in out if q.path != rj or not _UNKNOWN_KEY.match(q.message)]
+            for k in data:
+                if k in site_content.REFERENCE_KEYS:
+                    continue
+                at = re.search(r'"%s"\s*:' % re.escape(k), text)
+                out.append(siteconfig.make_problem("%s: unknown key '%s'" % (rj, k), rj, "refused by the build",
+                                                   "accepted by the build", p.fix, False,
+                                                   text.count("\n", 0, at.start()) + 1 if at else None))
+            have = set((q.path, q.message) for q in out)
+            continue
+        m = _UNKNOWN_FM_KEY.match(p.message)
+        if m and m.group(1) not in done and m.group(1) in files:
+            path, allowed = m.group(1), m.group(2).split(", ")
+            done.add(path)
+            try:
+                text = files[path].decode("utf-8")
+                meta, _body = site_content.parse_front_matter(text, path)
+            except (site_content.ContentError, UnicodeDecodeError):
+                continue
+            out = [q for q in out if q.path != path or not _UNKNOWN_FM_KEY.match(q.message)]
+            for k in meta:
+                if k in allowed:
+                    continue
+                at = re.search(r"^%s:" % re.escape(k), text, re.M)
+                out.append(siteconfig.make_problem("%s: unknown front matter key '%s' (allowed: %s)" % (path, k, m.group(2)),
+                                                   path, "refused by the build", "accepted by the build", p.fix, False,
+                                                   text.count("\n", 0, at.start()) + 1 if at else None))
+            have = set((q.path, q.message) for q in out)
+            continue
+        m = _UNKNOWN_TOKEN.match(p.message)
+        if m and m.group(1) not in done and m.group(1) in files:
+            path = m.group(1)
+            done.add(path)
+            try:
+                origin = files[path].decode("utf-8")
+            except UnicodeDecodeError:
+                continue
+            masked = _BLOCK.sub(_blank, _COMMENT.sub(_blank, origin))
+            layout = path == "site/templates/layout.html"
+            for tm in site_build.TOKEN_RE.finditer(masked):
+                if site_build.token_known(tm.group(1), layout):
+                    continue
+                msg = "%s: unknown token {{%s}}" % (path, tm.group(1))
+                if (path, msg) in have:
+                    continue
+                have.add((path, msg))
+                out.append(siteconfig.make_problem(msg, path, "refused by the build", "accepted by the build", p.fix,
+                                                   False, masked.count("\n", 0, tm.start()) + 1))
+    return sorted(out, key=lambda q: (q.path or "", q.lineno or 0, q.message))
 
 
 def size_copy_note(tree):
@@ -2343,14 +2738,20 @@ def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=()):
     files = {}
     for p in token_files(tree):
         text = tree.text(p)
-        new = rewrite_tokens(text, portfolio_folders(tree), layout=(p == "site/templates/layout.html"), home=home_feed(tree))[0]
+        new = rewrite_tokens(text, portfolio_folders(tree), layout=(p == "site/templates/layout.html"), home=home_feed(tree),
+                             labels=site_json_labels(data))[0]
         if new != text:
             files[p] = new.encode("utf-8")
-    probs += site_content.layout_problems(TreeFiles(tree, files), cfg.siteKind if cfg else "portfolio", cfg)
+    # a folder the person has DECIDED (`adopt.py folder <name> source|portfolio`) is settled: apply makes the move or
+    # writes the page.md, and `accept_problems` below judges the tree with it made. It is not listed as undecided
+    # (dev #887, D1: `check` read the layout of the tree as it stands, so a decided folder was still on the list).
+    probs += [p for p in site_content.layout_problems(TreeFiles(tree, files), cfg.siteKind if cfg else "portfolio", cfg)
+             if not (p.found == "no page.md" and (p.path or "").startswith("content/")
+                     and p.path[len("content/"):].rstrip("/") in (folders or {}))]
     probs += redirect_problems([r for r in redirect_pages(tree, d.get("redirects"))[0] if not r.boiler])
     have = set((p.path, p.message) for p in probs)
-    probs += [p for p in accept_problems(tree, data, paper, folders, kind, check_only(chosen))[0]
-              if (p.path, p.message) not in have]
+    refusals, acc = accept_problems(tree, data, paper, folders, kind, check_only(chosen))
+    probs += [p for p in refusals + accept_warnings(acc) if (p.path, p.message) not in have]
     probs += piece_both_problems(tree, folders) + redirect_collision_problems(tree, d)
     return probs
 
@@ -2367,20 +2768,36 @@ def held_problems(tree, data, plan):
     except Refused:
         return []
     rows = decide_conversions(notes, plan["parity"], template_fingerprint(tree), plan["convert"])
+    # dev #890, B1: a conversion the person CHOSE, on which P1 showed the kept builder FAILS, is a problem here: the one
+    # `apply` refuses on, so `check` never says "adopt ok" over a tree `apply` will not write
+    out = [siteconfig.make_problem(
+        "%s is chosen, but your own builder FAILS on the tree it makes (%s) and parity is %s"
+        % (r["class"], r["failure"], (plan["parity"] or {}).get("verdict", "not run")),
+        None, "a chosen conversion that breaks your own builder", "one your builder still builds",
+        "`adopt.py convert %s --keep` leaves it as written; or fix the builder, run `adopt.py parity` again, and "
+        "accept it once parity is EQUAL or ACCEPTED" % r["class"]) for r in broken_chosen(rows, plan)]
     held = [r for r in rows if r["status"] == "you decide"]
     if not held:
-        return []
+        return out
     only = set(c for c, _l, _w in CONVERSION_CLASSES) - set(r["class"] for r in held)
     try:
         converted_site_files(tree, data, plan["paper"], plan["folders"], plan.get("siteKind"), only)
     except Refused as e:
         if str(e).startswith("the converted site.json is not valid"):
-            return [siteconfig.make_problem(
+            return out + [siteconfig.make_problem(
                 "site.json cannot be converted while a conversion it needs is held back: %s" % str(e)[len("the converted site.json is not valid: "):],
                 "site/site.json", "a site.json the build refuses", "one it reads",
                 "settle the held conversion(s) first: %s" % "; ".join("%s (%s)" % (r["class"], r["reason"]) for r in held
                                                                      if r["class"] not in OPT_IN_CLASSES))]
-    return []
+    return out
+
+
+def broken_chosen(rows, plan):
+    """The rows of a conversion the person CHOSE on which P1 showed the kept builder FAILS (dev #890, B1), while parity
+    is not EQUAL or ACCEPTED: the ones `apply` refuses on. One definition, so `check`, `inventory` and `apply` agree."""
+    if (plan["parity"] or {}).get("verdict") in ("EQUAL", "ACCEPTED"):
+        return []
+    return [r for r in rows if r.get("failure") and r["class"] in OPT_IN_CLASSES and r["class"] in plan["convert"]]
 
 
 def piece_both_problems(tree, folders=None):
@@ -2402,14 +2819,95 @@ def redirect_collision_problems(tree, d):
                                     "keep one of them in site/site.json") for pair in collide]
 
 
+_FOLLOW_REDIRECT = re.compile(r"^redirect '[^']*' points at '(?P<t>[^']*)', which is not a built page$")
+_FOLLOW_LINK = re.compile(r"\{\{link:(?P<t>[^{}\s]+)\}\} names no built page")
+
+
+def _follows(p, probs):
+    """The `you decide` problem that `p` is a CONSEQUENCE of, or None (dev #893, K2). A redirect or a `{{link:X}}`
+    that names a portfolio `X` the build refuses is not a second thing to decide: the portfolio is not built, so
+    nothing can point at it, and the pointer resolves the moment the portfolio does. The cause is the first problem
+    that is not itself such a pointer, is not mechanical, and sits under `content/X/`."""
+    m = _FOLLOW_REDIRECT.match(p.message) or _FOLLOW_LINK.search(p.message)
+    if not m or p.mechanical:
+        return None
+    first = m.group("t").strip("/").split("/")[0]
+    if not first:
+        return None
+    for r in probs:
+        if (r is not p and not r.mechanical and (r.path or "").startswith("content/%s/" % first)
+                and not (_FOLLOW_REDIRECT.match(r.message) or _FOLLOW_LINK.search(r.message))):
+            return r
+    return None
+
+
+_FILE_COUNT = re.compile(r" \(\d+ files? in it\)")      # a stray folder's own size is not its cause (dev #885)
+
+
+def _cause_key(p):
+    """Problems with the same key are one cause: the same message once the file they are in is taken out, the same
+    fix, the same standing. A message that names anything else of its own (a folder's name, a redirect's key) keeps
+    its name, so two such problems stay two."""
+    msg = p.message.replace(p.path, "<path>") if p.path else p.message
+    return (_FILE_COUNT.sub("", msg), p.fix, p.mechanical)
+
+
+def _at(p):
+    return "%s:%d" % (p.path, p.lineno) if p.path and p.lineno else (p.path or "the site")
+
+
+def analyse_problems(probs):
+    """{items, fixes, decisions, follow}: `probs` as CAUSES (dev #893, K2). `items` is [(problems that share one
+    cause, the problem they follow from or None)] in the order the first of each appeared; `fixes` and `decisions`
+    count causes, not problems, so a count of `you decide` is a count of things to settle: 35 captured references in
+    the template's format are one, and a redirect to a portfolio that is refused is not counted at all (it is listed
+    as following from the portfolio's own problem and resolves with it)."""
+    items, index, follow = [], {}, 0
+    for p in probs:
+        cause = _follows(p, probs)
+        if cause is not None:
+            items.append(([p], cause))
+            follow += 1
+            continue
+        key = _cause_key(p)
+        if p.mechanical:             # a fix adopt makes is not a decision: each is listed and counted as it always was
+            items.append(([p], None))
+            continue
+        if key in index:
+            items[index[key]][0].append(p)
+        else:
+            index[key] = len(items)
+            items.append(([p], None))
+    own = [it for it in items if it[1] is None]
+    fixes = sum(1 for g, _c in own if g[0].mechanical)
+    return {"items": items, "fixes": fixes, "decisions": len(own) - fixes, "follow": follow}
+
+
 def format_problems(probs):
-    """The lines `check` and `inventory` print for a list of problems."""
+    """The lines `check` and `inventory` print for a list of problems: one line per cause (a cause shared by several
+    places is one line naming how many), a consequence marked with what it follows from, and counts of causes. A
+    list with no shared cause and no consequence prints exactly as it always did."""
     if not probs:
         return []
-    fixes = sum(1 for p in probs if p.mechanical)
-    L = ["%d problem(s) in what adopt would write: apply fixes %d, you decide %d" % (len(probs), fixes,
-                                                                                  len(probs) - fixes)]
-    L += ["  - %s" % p.line() for p in probs]
+    a = analyse_problems(probs)
+    plain = all(len(g) == 1 and c is None for g, c in a["items"])
+    if plain:
+        L = ["%d problem(s) in what adopt would write: apply fixes %d, you decide %d" % (len(probs), a["fixes"],
+                                                                                      a["decisions"])]
+    else:
+        L = ["%d problem(s) from %d cause(s) in what adopt would write: apply fixes %d, you decide %d%s" % (
+            len(probs), len(a["items"]) - a["follow"], a["fixes"], a["decisions"],
+            (" (%d more follow from a cause above and resolve with it)" % a["follow"]) if a["follow"] else "")]
+    for group, cause in a["items"]:
+        p = group[0]
+        if cause is not None:
+            L.append("  - %s -- follows from %s; resolves with it" % (p.line().rsplit(" -- fix: ", 1)[0], _at(cause)))
+        elif len(group) == 1:
+            L.append("  - %s" % p.line())
+        else:
+            where = ", ".join(_at(q) for q in group[:3]) + (", and %d more" % (len(group) - 3) if len(group) > 3 else "")
+            L.append("  - %d places, one cause: %s -- fix: %s (%s) [%s]" % (
+                len(group), _cause_key(p)[0], p.fix, "apply fixes this" if p.mechanical else "you decide", where))
     return L
 
 
@@ -2425,6 +2923,15 @@ def problems_from_dicts(dicts):
                                     d["mechanical"], d.get("lineno")) for d in dicts]
 
 
+BUILDER_FAILS = "builder fails"      # the `kind` of a P1 class entry whose builder EXITED NON-ZERO (dev #890), not one that differs
+
+
+def builder_failed(why):
+    """True when `why` (from `_run_builder`) says the local builder exited non-zero: it ran and failed, which is not
+    a timeout, a missing output folder or a build that was never attempted."""
+    return why.startswith("the local builder failed (exit")
+
+
 def _run_builder(workdir, entry, node, guard, env):
     """Run the person's local builder in `workdir` under parity's scrubbed, network-blocked node. Returns
     (the output folder, "") or (None, why it did not build). Shared by P2's local build and by each P1 run."""
@@ -2435,7 +2942,10 @@ def _run_builder(workdir, entry, node, guard, env):
         return None, "the local builder did not finish in 120 seconds"
     if p.returncode != 0:
         err = [l for l in p.stderr.decode("utf-8", "replace").strip().split("\n") if l.strip()]
-        why = next((l for l in err if re.search(r"error", l, re.I)), err[-1] if err else "")
+        # the failure line is the one node prints as `Error: <message>` (a line of source that mentions `Error` comes
+        # before it in node's output), else the first line that mentions an error, else the last line
+        why = (next((l for l in err if re.match(r"^\s*(?:[A-Za-z]+\.)*[A-Za-z]*Error\b[^\n]*:", l)), None)
+               or next((l for l in err if re.search(r"error", l, re.I)), err[-1] if err else ""))
         return None, "the local builder failed (exit %d: %s)" % (p.returncode, why.strip()[:120])
     out = os.path.join(workdir, "site", "dist")
     if not os.path.isdir(out):
@@ -2532,6 +3042,12 @@ def _opt_in_reason(cls, notes, diffs, paths):
     return base + (("; parity shows %s differs" % hit[0]) if hit else "")
 
 
+def _builder_failure(p1, cls):
+    """The failure line of the kept builder when P1 ran `cls` alone and the builder EXITED NON-ZERO (dev #890), else ''."""
+    ds = ((p1 or {}).get("classes") or {}).get(cls) or []
+    return ds[0][1] if ds and ds[0][0] == BUILDER_FAILS else ""
+
+
 def decide_conversions(notes, parity, fingerprint=False, chosen=()):
     """Every conversion `notes` records, each with its label and its status under design-site-fidelity section
     5.0.3: `apply fixes this` only when parity MEASURES no visitor-facing difference; `you decide`, with the
@@ -2546,10 +3062,17 @@ def decide_conversions(notes, parity, fingerprint=False, chosen=()):
         if cls not in active_classes(notes):
             continue
         paths = _output_paths(cls, notes)
-        row = {"class": cls, "label": label, "what": what, "status": "apply fixes this", "reason": ""}
+        row = {"class": cls, "label": label, "what": what, "status": "apply fixes this", "reason": "", "failure": ""}
+        fail = _builder_failure(p1, cls)
         if cls in OPT_IN_CLASSES:
             row.update(status="you chose" if cls in chosen else "you decide",
                        reason=_opt_in_reason(cls, notes, diffs, paths))
+            if fail and cls in chosen:       # dev #890, B1: chosen, and the kept builder exits non-zero on the tree it makes
+                row.update(status="you decide", failure=fail,
+                           reason="your own builder FAILS on the tree this conversion makes (%s), so choosing it would "
+                                  "break the builder that stays your publisher: apply refuses it while parity is not "
+                                  "EQUAL or ACCEPTED, and `adopt.py convert %s --keep` leaves the page as written; %s"
+                                  % (fail, cls, row["reason"]))
         elif label == "TEMPLATE" and not fingerprint:
             row.update(status="you decide", reason="the repo does not carry the template's fingerprint, so this "
                        "reading of it is a guess")
@@ -2565,11 +3088,18 @@ def decide_conversions(notes, parity, fingerprint=False, chosen=()):
         else:                                               # DIFFERENT: the builder is kept
             hit = [d for d in diffs if _touches(paths, d)]
             reasons = []
-            if p1.get("verdict") == "DIFFERENT" and p1.get("classes", {}).get(cls):
+            if fail:                  # dev #890, B1: not a difference, a failure, named with the builder's own line
+                row["failure"] = fail
+                reasons.append("your own builder FAILS on the tree this conversion makes (%s)" % fail)
+            elif p1.get("verdict") in ("DIFFERENT", "FAILS") and p1.get("classes", {}).get(cls):
                 first = p1["classes"][cls][0]
                 reasons.append("it would change what your own builder publishes (%s %s)" % (first[0], first[1]))
             if hit:
                 reasons.append("parity found a difference on %s, which this conversion touches" % hit[0])
+            if (not reasons and p1.get("verdict") == "FAILS"
+                    and not any(ds and ds[0][0] == BUILDER_FAILS for ds in (p1.get("classes") or {}).values())):
+                reasons.append("your own builder FAILS on the converted tree (%s), though no one conversion alone makes "
+                               "it fail" % p1.get("reason"))
             if not reasons and p1.get("verdict") in (None, "UNVERIFIED"):
                 reasons.append("parity could not measure whether this changes what your own builder publishes (%s)"
                                % (p1.get("reason") or "P1 was not run"))
@@ -2646,20 +3176,29 @@ def _measure_p1(a_dir, local, entry, node, guard, env, scratch, tree, data, fold
             return None, why
         return compare_builds(local, _walk(out)), ""
     diffs, why = variant("all", files, cnotes["removed"])
-    if diffs is None:
+    failed = diffs is None and builder_failed(why)
+    if diffs is None and not failed:
         return {"verdict": "UNVERIFIED", "reason": why, "differences": [], "classes": {}}
-    if not diffs:
+    if diffs is not None and not diffs:
         return {"verdict": "SAME", "reason": "", "differences": [], "classes": {}}
     classes = {}
     for cls in ["base"] + active_classes(cnotes):
         sf, sn = converted_site_files(tree, data, None, folders, kind, only=set() if cls == "base" else {cls},
                                       strict=False)
-        d, why = variant(cls, sf, sn["removed"])
-        classes[cls] = [list(x) for x in d] if d is not None else [["unverified", why, ""]]
+        d, w = variant(cls, sf, sn["removed"])
+        classes[cls] = ([list(x) for x in d] if d is not None
+                        else [[BUILDER_FAILS if builder_failed(w) else "unverified", w, ""]])
+    if failed:
+        # dev #890, B1: the kept builder does not merely differ on the converted tree, it EXITS NON-ZERO. Each class
+        # was run alone above, so the one(s) that make it fail are named with the builder's own failure line. A builder
+        # that fails with NO conversion made is not the conversion's doing: that stays UNVERIFIED, as it was.
+        if classes["base"] and classes["base"][0][0] == BUILDER_FAILS:
+            return {"verdict": "UNVERIFIED", "reason": why, "differences": [], "classes": {}}
+        return {"verdict": "FAILS", "reason": why, "differences": [], "classes": classes}
     return {"verdict": "DIFFERENT", "reason": "", "differences": [list(x) for x in diffs], "classes": classes}
 
 
-def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=None, kind=None, chosen=()):
+def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=None, kind=None, chosen=(), keep=None):
     """Build both ways and compare (named change M13). Returns a dict with `verdict`
     (EQUAL / DIFFERENT / UNVERIFIED / NOT APPLICABLE), `reason`, `differences`, `notes`.
 
@@ -2668,7 +3207,8 @@ def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=Non
     with the adopt transform. A basis that is not buildable (`basis.reason`: HEAD diverged from, or behind,
     origin/main) is UNVERIFIED up front."""
     base = basis.sha
-    res = {"verdict": "UNVERIFIED", "reason": "", "differences": [], "notes": [], "problems": [], "p1": None}
+    res = {"verdict": "UNVERIFIED", "reason": "", "differences": [], "notes": [], "problems": [], "p1": None,
+           "report": [], "kept": None}
     entry = builder_entry(infos)
     if entry is None:
         res.update(verdict="NOT APPLICABLE", reason="no local builder was found (no JavaScript file classified as a builder)")
@@ -2751,8 +3291,12 @@ def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=Non
             res["reason"] = "the plugin's build refused this repo (%s); the builder is kept" % e
             res["problems"] = problem_dicts(e.problems)
             return res
-        diffs = compare_builds(local, _walk(out_dir))
+        plugin_files = _walk(out_dir)
+        diffs = compare_builds(local, plugin_files)
         res["differences"] = diffs
+        res["report"] = difference_report(local, plugin_files, diffs)
+        if keep:
+            res["kept"] = write_kept(keep, local, plugin_files)
         res["verdict"] = "EQUAL" if not diffs else "DIFFERENT"
         if diffs:                  # P2 is not equal, so the builder is kept: does the CONVERSION change what it publishes?
             res["p1"] = _measure_p1(a_dir, local, entry, node, guard, env, scratch, tree, data, folders, kind,
@@ -3068,8 +3612,19 @@ def prepare(repo, date, spec=None, dry_run=False):
         rows = []
     held = set(r["class"] for r in rows if r["status"] == "you decide")
     only = None if not held else set(c for c, _l, _w in CONVERSION_CLASSES if c not in held)
+    # dev #890, B1: a conversion the person CHOSE, on which P1 showed the kept builder exits non-zero, is not written
+    # while parity is not EQUAL or ACCEPTED (the builder stays the publisher, and the tree would break it). `--dry-run`
+    # asks `prepare` too, so its verdict is the same refusal.
+    broken = broken_chosen(rows, plan)
+    if broken:
+        raise Refused("%s is chosen, but your own builder FAILS on the tree it makes (%s) and parity is %s: apply will not "
+                      "write a conversion that breaks the builder that stays your publisher. `adopt.py convert %s --keep` "
+                      "leaves it as written; or fix the builder, run `adopt.py parity` again, and accept it once parity "
+                      "is EQUAL or ACCEPTED" % (broken[0]["class"], broken[0]["failure"],
+                                                (plan["parity"] or {}).get("verdict", "not run"), broken[0]["class"]))
     # what the plugin's own build refuses in the tree adopt would write (before anything is written)
-    refusals, _acc = accept_problems(tree, data, plan["paper"], plan["folders"], plan.get("siteKind"), only)
+    refusals, acc = accept_problems(tree, data, plan["paper"], plan["folders"], plan.get("siteKind"), only)
+    refusals = refusals + accept_warnings(acc)
     # 1. every file proposed for removal needs a decision
     # An undecided PARTIAL is KEPT (the skill says so: it is removable only when its units are decided or parity
     # passes). An undecided DUPLICATE or AMBIGUOUS proposes a removal, so a real apply refuses; a dry run previews
@@ -3374,7 +3929,8 @@ def do_apply(repo, date, dry_run=False):
 def measure_adopted(repo, which=None):
     """Parity for a repo adopt ALREADY converted: the person's kept builder, run on the working copy, against
     the plugin's build of HEAD. Returns the `run_parity` dict (verdict, reason, differences, notes)."""
-    res = {"verdict": "UNVERIFIED", "reason": "", "differences": [], "notes": [], "problems": [], "p1": None}
+    res = {"verdict": "UNVERIFIED", "reason": "", "differences": [], "notes": [], "problems": [], "p1": None,
+           "report": [], "kept": None}
     tree = Tree(repo, "HEAD")
     entry = builder_entry(inventory(tree))
     if entry is None:
@@ -3418,13 +3974,27 @@ def measure_adopted(repo, which=None):
             res["reason"] = "the plugin's build refuses HEAD (%s)" % e
             res["problems"] = problem_dicts(e.problems)
             return res
-        diffs = compare_builds(local, _walk(out_dir))
+        plugin_files = _walk(out_dir)
+        diffs = compare_builds(local, plugin_files)
+        res["report"] = difference_report(local, plugin_files, diffs)
         res.update(differences=diffs, verdict="EQUAL" if not diffs else "DIFFERENT",
                    reason="the two builds are equal after the stated exclusions and normalisation" if not diffs
                    else "%d difference(s)" % len(diffs))
         return res
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+def differences_were_shown(prev, res):
+    """True when `parity --accept` may record ACCEPTED: the differences it just measured are, triple for triple, the
+    ones a previous `parity` ON THIS BASIS stored in the plan as DIFFERENT, so the person was shown them in an earlier
+    run (dev #879, P4: `parity --accept` once saved ACCEPTED and only then printed the differences, so a person could
+    accept differences they never saw). `prev` is `plan["parity"]`; `carry_plan` clears it when the basis moved, so
+    `None` here also covers another basis. A stored ACCEPTED is not a showing: it may predate this rule. Nothing new is
+    stored: the three-string `differences` the plan always kept are the comparison."""
+    if not prev or prev.get("verdict") != "DIFFERENT" or not res["differences"]:
+        return False
+    return [list(d) for d in prev.get("differences", [])] == [list(d) for d in res["differences"]]
 
 
 def cmd_remeasure(repo, accept=False, which=None):
@@ -3450,6 +4020,7 @@ def cmd_remeasure(repo, accept=False, which=None):
         raise Refused("the repo has uncommitted changes; commit or discard them first (parity builds the working copy)")
     res = measure_adopted(repo, which)
     verdict = res["verdict"]
+    causes = res.get("report") or ["  %s: %s%s" % (k, p, (" (%s)" % d) if d else "") for k, p, d in res["differences"]]
     if accept:
         if verdict == "DIFFERENT":
             verdict = "ACCEPTED"
@@ -3458,6 +4029,11 @@ def cmd_remeasure(repo, accept=False, which=None):
         else:
             raise Refused("there is nothing to accept: parity is %s%s" % (
                 res["verdict"], " (it could not measure, so nothing was shown to you)" if res["verdict"] == "UNVERIFIED" else ""))
+        # dev #879, P4: what is being accepted is printed BEFORE the record that says ACCEPTED is written, grouped by
+        # cause exactly as `parity` prints it, so the person has read the differences in the same run that accepts them
+        print("\n".join(["remeasure --accept: you are accepting %s, and the record will say ACCEPTED:" % (
+            "these differences (one line per cause)" if res["differences"] else
+            "no measured difference (there is no local builder: site-studio's build replaces your site, unmeasured)")] + causes))
     text = json.dumps({"schema": RECORD_SCHEMA, "verdict": verdict, "basis": gitt(repo, "rev-parse", "HEAD"),
                        "differences": [list(d) for d in res["differences"]]}, indent=2, sort_keys=True) + "\n"
     path = os.path.join(repo, *PARITY_RECORD_REL.split("/"))
@@ -3470,8 +4046,8 @@ def cmd_remeasure(repo, accept=False, which=None):
         git(repo, "add", "--", PARITY_RECORD_REL)
         git(repo, "commit", "-q", "-m", "adopt remeasure: parity is %s" % verdict, "--", PARITY_RECORD_REL)
     out = ["remeasure: parity is %s -- %s" % (res["verdict"], res["reason"])]
-    for kind, p, detail in res["differences"]:
-        out.append("  %s: %s%s" % (kind, p, (" (%s)" % detail) if detail else ""))
+    if not accept:                  # with --accept they were printed above, before the record was written
+        out += causes
     out += ["  " + l for l in format_problems(problems_from_dicts(res.get("problems", [])))]
     if verdict in ("EQUAL", "ACCEPTED"):
         tail = "; site-studio may publish this site"
@@ -3499,7 +4075,8 @@ def cmd_inventory(repo, as_json):
     spec = load_spec()
     infos = inventory(tree, spec)
     resume = detect_resume(tree)
-    plan = _plan_for(repo, base)
+    cleared_msgs = []
+    plan = _plan_for(repo, base, cleared_msgs.append)
     for i in infos:
         plan["files"].setdefault(i["path"], {"removal": None, "reviewed": False, "units": {}})
     for stale in [p for p in plan["files"] if p not in set(i["path"] for i in infos)]:
@@ -3508,7 +4085,8 @@ def cmd_inventory(repo, as_json):
     folders = portfolio_folders(tree)
     unknown, sections = [], []
     for p in token_files(tree):
-        _t, ch, u = rewrite_tokens(tree.text(p), folders, layout=(p == "site/templates/layout.html"), home=home_feed(tree))
+        _t, ch, u = rewrite_tokens(tree.text(p), folders, layout=(p == "site/templates/layout.html"), home=home_feed(tree),
+                                   labels=site_json_labels(data))
         unknown += [(p, t) for t in u]
         sections += [(p, a, b) for a, b in ch if "{{#page:" in b]
     kind = plan.get("siteKind")
@@ -3523,7 +4101,7 @@ def cmd_inventory(repo, as_json):
                                      "origin": basis.origin, "reason": basis.reason,
                                      "ahead": [{"sha": s, "subject": subj} for s, subj in basis.ahead]},
                            "files": infos, "resume": resume, "unknownTokens": unknown,
-                           "problems": problem_dicts(probs),
+                           "problems": problem_dicts(probs), "cleared": cleared_msgs,
                            "redirects": {"convert": [{"path": r.path, "key": r.key, "target": r.target,
                                                       "dropped": r.dropped, "boiler": list(r.boiler)}
                                                      for r in redirects[0]],
@@ -3534,7 +4112,7 @@ def cmd_inventory(repo, as_json):
                            "inferredKind": {"kind": inferred, "why": inferred_why}, "siteKind": kind,
                            "sections": [{"path": p, "found": a, "section": b} for p, a, b in sections]},
                           indent=2, default=list)
-    L = ["adopt inventory (%s %s)" % (basis.label(), base[:7])] + basis.up_front() + [
+    L = ["adopt inventory (%s %s)" % (basis.label(), base[:7])] + basis.up_front() + cleared_msgs + [
          "",
          "%-10s %-38s %-34s %5s %8s  %s" % ("class", "file", "plugin counterpart", "score", "residual", "evidence")]
     for i in infos:
@@ -3575,6 +4153,14 @@ def cmd_inventory(repo, as_json):
             L.append("step for you: %s holds %s somewhere other than as an anchor's whole href. The plugin "
                      "has no such token: wrap the link in %s, and point it at {{link:resume}}, by hand."
                      % (p, t, section_for_resume("<a href=\"{{link:resume}}\">...</a>")))
+            continue
+        folder = link_token_folder(t, folders)
+        if folder:
+            # dev #889: a `{{<folder>Link}}` that is not an anchor's whole href is a STEP, never reported as converted
+            L.append("step for you: %s holds %s somewhere other than as an anchor's whole href, and adopt did not "
+                     "rewrite it: your builder rendered a whole anchor there, and %s. The plugin has no such token: "
+                     "write %s by hand, with your own label."
+                     % (p, t, link_step_reason(t, folder, data), section_for_link(folder, "LABEL")))
     if sections:
         L.append("page sections adopt will write (a link that is there when the resume is built, gone when "
                  "it is not):")
@@ -3666,6 +4252,36 @@ def site_json_schema_line(tree, data, paper, folders=None, kind=None):
                "0.3.0" if notes["schema"] >= 3 else "0.2.0"))
 
 
+def keep_dir(repo, given):
+    """`parity --keep <dir>` (dev #879, P2): the absolute folder the two builds will be left in. REFUSED, with nothing
+    touched, when it exists and is not an empty folder (a build is never mixed into what is already there), when
+    it is inside the repo (the working copy would then be dirty, and the next `check` would refuse it), or when it is
+    inside ANOTHER worktree of the same repository (dev #879, gap 18: the primary checkout would gain untracked files
+    and `sync_main` would stop fast-forwarding `main`; the refusal names that worktree)."""
+    dest = os.path.abspath(given)
+    if os.path.exists(dest) and (not os.path.isdir(dest) or os.listdir(dest)):
+        raise Refused("--keep %s exists and is not an empty folder; name one that does not exist yet (or is empty): "
+                      "nothing in it was touched" % given)
+    if os.path.realpath(dest) == os.path.realpath(repo) or os.path.realpath(dest).startswith(
+            os.path.realpath(repo) + os.sep):
+        raise Refused("--keep %s is inside the repo, which would leave it with uncommitted files; name a folder "
+                      "outside it" % given)
+    real = os.path.realpath(dest)
+    for wt in _worktree_roots(repo):
+        wt = os.path.realpath(wt)
+        if real == wt or real.startswith(wt + os.sep):
+            raise Refused("--keep %s is inside a worktree of this repository (%s), which would leave that checkout "
+                          "with untracked files; choose a directory outside the repository" % (given, wt))
+    return dest
+
+
+def _worktree_roots(repo):
+    """Every worktree of the repository `repo` belongs to (`git worktree list --porcelain`), the primary checkout
+    first; empty when git cannot say (dev #879, gap 18)."""
+    listing = gitt(repo, "worktree", "list", "--porcelain", check=False)
+    return [line[len("worktree "):] for line in listing.splitlines() if line.startswith("worktree ")]
+
+
 def _current_base(repo):
     """The parity basis as of the last fetch (the plan commands make no network call): HEAD when it is a
     fast-forward of origin/main as last fetched, else origin/main. A commit made after the inventory
@@ -3677,7 +4293,7 @@ def _current_base(repo):
 
 def _set(repo, path, fn):
     tree = None
-    plan = _plan_for(repo, _current_base(repo))
+    plan = _plan_for(repo, _current_base(repo), print)
     entry = plan["files"].get(path)
     if entry is None:
         raise Refused("%s is not in the plan; run `adopt.py inventory` first" % path)
@@ -3724,6 +4340,7 @@ def main(argv=None):
     s.add_argument("site_kind", choices=siteconfig.SITE_KINDS)
     s = sub.add_parser("parity")
     s.add_argument("--accept", action="store_true")
+    s.add_argument("--keep", metavar="DIR")
     s = sub.add_parser("remeasure")
     s.add_argument("--accept", action="store_true")
     s = sub.add_parser("apply")
@@ -3736,14 +4353,19 @@ def main(argv=None):
             basis, tree, data = preconditions(repo)
             for line in basis.up_front():
                 print(line)
-            plan = _plan_for(repo, basis.sha)
+            plan = _plan_for(repo, basis.sha, print)
             probs = site_problems(tree, data, None, plan.get("siteKind"), plan["folders"], plan["convert"]) + held_problems(tree, data, plan)
             for line in format_problems(probs):
                 print(line)
             blocked = [p for p in probs if not p.mechanical]
             if blocked:
-                print("adopt check: %s %s cannot be converted until the %d problem(s) marked "
-                      "`you decide` are settled" % (basis.label(), basis.sha[:7], len(blocked)))
+                n = analyse_problems(probs)["decisions"]
+                print("adopt check: %s %s cannot be converted until the %d %s marked "
+                      "`you decide` are settled%s" % (basis.label(), basis.sha[:7], n,
+                                                      "problem(s)" if n == len(blocked) else "cause(s)",
+                                                      "" if n == len(blocked) else
+                                                      " (%d problem(s) in all; the rest follow from them or share their cause)"
+                                                      % len(blocked)))
                 for line in _conversion_block(tree, data, plan):
                     print(line)
                 if size_copy_note(tree):
@@ -3791,7 +4413,7 @@ def main(argv=None):
             _set(repo, args.path, fn)
             print("adopt: facts in %s marked reviewed" % args.path)
         elif args.cmd == "paper":
-            plan = _plan_for(repo, _current_base(repo))
+            plan = _plan_for(repo, _current_base(repo), print)
             plan["paper"] = args.size
             save_plan(repo, plan)
             print("adopt: resume.paper will be %s" % args.size)
@@ -3806,13 +4428,13 @@ def main(argv=None):
                 raise Refused("content/%s is a reserved name (the build reads it as a page or as shared files, "
                               "never as a portfolio), so adopt never moves it and there is no decision to make "
                               "about it" % name)
-            plan = _plan_for(repo, _current_base(repo))
+            plan = _plan_for(repo, _current_base(repo), print)
             plan["folders"][name] = args.choice
             save_plan(repo, plan)
             print("adopt: content/%s -> %s" % (name, "renamed to content/_%s (source material)" % name
                                                 if args.choice == "source" else "gets a page.md and is a portfolio"))
         elif args.cmd == "convert":
-            plan = _plan_for(repo, _current_base(repo))
+            plan = _plan_for(repo, _current_base(repo), print)
             if args.keep:
                 plan["convert"] = [c for c in plan["convert"] if c != args.conversion]
             elif args.conversion not in plan["convert"]:
@@ -3822,7 +4444,7 @@ def main(argv=None):
                                          "be converted (it changes what a visitor loads or reads: parity names "
                                          "the page that differs)"))
         elif args.cmd == "kind":
-            plan = _plan_for(repo, _current_base(repo))
+            plan = _plan_for(repo, _current_base(repo), print)
             plan["siteKind"] = args.site_kind
             save_plan(repo, plan)
             print("adopt: the site kind is %s%s" % (args.site_kind, " (the default; site.json will not carry it)"
@@ -3830,12 +4452,24 @@ def main(argv=None):
                                                     " (apply writes siteKind: %s, schema 2)" % args.site_kind))
         elif args.cmd == "parity":
             basis, tree, data = preconditions(repo)
-            plan = _plan_for(repo, basis.sha)
+            keep = keep_dir(repo, args.keep) if args.keep else None
+            plan = _plan_for(repo, basis.sha, print)
             res = run_parity(repo, inventory(tree), basis, tree, data, folders=plan["folders"],
-                             kind=plan.get("siteKind"), chosen=plan["convert"])
+                             kind=plan.get("siteKind"), chosen=plan["convert"], keep=keep)
+            causes = res.get("report") or ["  %s: %s%s" % (k, p, (" (%s)" % d) if d else "")
+                                           for k, p, d in res["differences"]]
+            prev = plan["parity"]               # what the last `parity` on this basis stored (a moved basis cleared it)
+            accepted_now = shown_first = False
             if args.accept:
                 if res["verdict"] != "DIFFERENT":
                     raise Refused("there are no differences to accept (parity is %s)" % res["verdict"])
+                accepted_now = differences_were_shown(prev, res)
+                shown_first = not accepted_now
+            if accepted_now:
+                # dev #879, P4: what is being accepted is printed BEFORE the plan that says ACCEPTED is saved
+                print("\n".join(["parity --accept: you are accepting these differences (one line per cause), the "
+                                 "ones a previous `parity` on this basis showed, and the plan will say ACCEPTED:"]
+                                + causes))
                 res["verdict"] = "ACCEPTED"
             plan["parity"] = {"verdict": res["verdict"], "reason": res["reason"],
                               "differences": [list(d) for d in res["differences"]], "p1": res.get("p1")}
@@ -3843,8 +4477,12 @@ def main(argv=None):
             print("parity: %s -- %s" % (res["verdict"], res["reason"]))
             for n in res["notes"]:
                 print("  note: %s" % n)
-            for kind, path, detail in res["differences"]:
-                print("  %s: %s%s" % (kind, path, (" (%s)" % detail) if detail else ""))
+            for line in ([] if accepted_now else causes):       # accepted: printed above, before the plan was saved
+                print(line)
+            if keep:
+                print("  kept: the local build is in %s and the plugin build in %s (as the builders wrote them)"
+                      % (os.path.join(keep, "local"), os.path.join(keep, "plugin")) if res.get("kept") else
+                      "  --keep: nothing was kept, because the two builds did not both run (the line above says why)")
             for line in format_problems(problems_from_dicts(res.get("problems", []))):
                 print("  " + line)
             p1 = res.get("p1")
@@ -3852,8 +4490,16 @@ def main(argv=None):
                 print("P1 (does the conversion change what your own builder publishes?): %s%s"
                       % (p1["verdict"], (" -- " + p1["reason"]) if p1.get("reason") else ""))
                 for cls, ds in sorted(p1.get("classes", {}).items()):
-                    print("  %s: %s" % (cls, ("%d difference(s), first %s %s" % (len(ds), ds[0][0], ds[0][1]))
+                    print("  %s: %s" % (cls, ("your own builder FAILS on it: %s" % ds[0][1]) if ds and ds[0][0] == BUILDER_FAILS else
+                                        ("%d difference(s), first %s %s" % (len(ds), ds[0][0], ds[0][1]))
                                         if ds else "no difference"))
+            if shown_first:
+                print("parity --accept did NOT accept: %s Run `adopt.py parity --accept` again to accept exactly "
+                      "these." % ("no earlier `parity` on this basis had shown you differences, so the ones listed "
+                                  "above are shown now, and the plan says DIFFERENT as plain `parity` records it."
+                                  if not (prev and prev.get("verdict") == "DIFFERENT") else
+                                  "they are not the differences the last `parity` on this basis showed you, so the "
+                                  "ones listed above are what is measured now, and the plan says DIFFERENT."))
         elif args.cmd == "remeasure":
             print(cmd_remeasure(repo, args.accept))
         elif args.cmd == "apply":

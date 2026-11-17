@@ -37,6 +37,18 @@ It does these jobs, each as a command you type or ask for in plain words:
   would see changed; anything else is listed for you to decide, with the difference named. While that
   comparison is not equal, your own builder stays the publisher and `/site-studio:publish` refuses to
   replace it (see "A published site never changes under you").
+  Since 0.3.1 `check` reports every refusal in a file, not the first; groups problems by cause, so the number of
+  decisions is the number of causes, and marks a consequence as following from its cause; keeps your decisions
+  when a hand fix moves the basis and names each one it cleared; and refuses a stray `.md` or sub-folder in a piece
+  folder and an unlisted piece front matter key, which the build only warns about, so "adopt ok" means nothing is
+  quietly left unpublished. `parity` lists every differing hunk grouped by cause (one change repeated on 27 pages is one
+  line with its page count), keeps additions inside `<head>` as their own class, and `parity --keep <dir>` leaves both
+  builds in `<dir>` to open; `remeasure --accept` prints what it accepts before it records it, and `parity --accept` accepts only the
+  differences an earlier `parity` on the same commit already showed you: it prints them, one line per cause, before
+  it records ACCEPTED, and when you have not yet seen what it measured it shows them, records DIFFERENT, and asks you
+  to run `parity --accept` again.
+  A conversion you chose that makes your own builder fail is refused by `apply`, naming the builder's failure line.
+  A bare `{{workLink}}`-style token is wrapped as a whole anchor with your `site.json` label, or listed as a step.
   If one of your own agent files holds a standing rule of yours, adopt can carry that rule into your
   site repo's `CLAUDE.md` (under "Standing rules carried by adopt") before it removes the file, so every
   agent keeps working to it. Files under `.claude/rules/` reach the plugin's agents too, so you may move
@@ -73,8 +85,15 @@ writes the lowest schema your site needs:
   pieces are the `featured:` list in `content/home.md`; with `"featuredFrom": "flags"` they are the
   pieces whose own front matter says `featured: true`.
 
-`docs/content-model.md` (in the development repository, not the installed plugin) has the details. If you
-used 0.1.0 on another computer, update site-studio there before you build a schema 2 site.
+Since 0.3.1 a build and a preview print a named `warning:` for a stray `.md` or sub-folder in a piece folder (not
+published; start its name with `_` to keep it as source) and for a piece front matter key the portfolio's `meta` or
+`cardMeta` does not list. They never change what is published, and a tree the previous version built still builds to
+the same bytes.
+
+`reference/content-model.md` (in the installed plugin, next to `scripts/`; the build's messages name its full
+path) lists every key, token, block and setting the build reads. It is generated from the build's own tables,
+so it cannot name one the build does not know. If you used 0.1.0 on another computer, update site-studio there
+before you build a schema 2 site.
 
 ## What 0.3.0 adds (schema 3, all opt-in)
 

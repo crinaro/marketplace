@@ -53,6 +53,25 @@ scanned recursively. `--dry-run` and everything else: no decision. RESIDUAL, sta
 `$VAR` holding the name, or a hand `git push` are not matched; no mechanism here contains a model
 set on routing around a hook, and none is claimed.
 
+HEREDOC BODIES ARE DATA, NOT COMMANDS (dev #875, 0.3.1). `shlex` has no here-document handling
+(DOCUMENTED, Python docs: "short of a full parser for shells"), so a heredoc body holding an
+apostrophe (a commit message: `git commit -F - <<'EOF' ... don't ... EOF`) used to raise `No
+closing quotation`; the guard blocked a command that was not a publish and told the person to run
+/site-studio:publish. Now `strip_heredocs` removes every body (`<<X`, `<<'X'`, `<<"X"`, `<<-X`,
+from the line after the operator up to the delimiter line, POSIX 2.7.4: quoting any part of the
+delimiter is removed from the word, and `<<-` strips leading tabs from body and delimiter lines)
+BEFORE the text reaches the lexer, and the decision follows from what is left:
+  - no token names `deploy.py` outside a body -> no decision (a body that merely MENTIONS it, as a
+    commit message does, is not a publish);
+  - it names `deploy.py` and cannot be lexed -> deny, fail closed, and the message says what was
+    blocked and why, WITHOUT pointing at /site-studio:publish (the command may not be a publish);
+  - a real `deploy.py --confirm`, with or without a heredoc, is decided exactly as before.
+One body is NOT stripped: a heredoc on a line that feeds a shell (`bash <<EOF`, `sh`, `zsh`, `eval`,
+`source`, `... | bash`): that body IS commands and is scanned. `<<` inside `$(( ))` / `(( ))`
+arithmetic, `<<<`, and a "delimiter" that does not start with a letter, underscore or quote are not
+heredocs. RESIDUAL: `python3 - <<EOF` with a publish inside the Python source is not matched, as
+`python3 -c` is not (see WHAT MATCHES).
+
 N COMES FROM A RECORD, NOT FROM THE GUARD (M5(c)). This script never builds. `deploy.py --dry-run`
 writes `.site-studio/review/dryrun.json` ({digest, files, ...}); the guard reads it and requires
 its digest to equal the digest in the command. No record, or a record for another digest, is a
@@ -78,6 +97,7 @@ it never changes the decision.
 """
 import json
 import os
+import re
 import shlex
 import signal
 import sys
@@ -127,20 +147,151 @@ def _newlines_to_semicolons(cmd):
     return "".join(out)
 
 
+class CommandParseError(ValueError):
+    """The command names deploy.py and could not be lexed (an unbalanced quote). A ValueError, so
+    the caller's fail-closed handling still applies; a class of its own so the message can say the
+    command may not be a publish."""
+
+
+_SHELLS = ("sh", "bash", "zsh", "dash", "ksh", "ash", "eval", "source", ".")
+_DELIM_END = set(" \t\n;&|<>()")
+
+
+def _heredoc_delimiter(cmd, j):
+    """(delimiter word after quote removal, index after the raw word) from `cmd[j:]`, or None when
+    what follows `<<` is not a delimiter this scanner trusts (it must start with a letter,
+    underscore, quote or backslash: `1 << 2` is arithmetic, not a heredoc)."""
+    n = len(cmd)
+    if j >= n or not (cmd[j].isalpha() or cmd[j] in "_'\"\\"):
+        return None
+    word = []
+    while j < n and cmd[j] not in _DELIM_END:
+        ch = cmd[j]
+        if ch in "'\"":
+            k = cmd.find(ch, j + 1)
+            if k < 0:
+                return None
+            word.append(cmd[j + 1:k])
+            j = k + 1
+        elif ch == "\\" and j + 1 < n:
+            word.append(cmd[j + 1])
+            j += 2
+        else:
+            word.append(ch)
+            j += 1
+    return "".join(word), j
+
+
+def _line_feeds_a_shell(out, cmd, i):
+    """True when the physical line that holds the heredoc operator at cmd[i] runs a shell on its
+    input (`bash <<EOF`, `cat <<EOF | sh`): that body is commands, not data."""
+    start = "".join(out).rsplit("\n", 1)[-1]
+    end = cmd.find("\n", i)
+    line = start + cmd[i:(len(cmd) if end < 0 else end)]
+    for seg in re.split(r"[;&|()]", line):
+        for w in seg.split():
+            if "=" in w and not w.startswith(("-", "=")):
+                continue                    # a VAR=value prefix
+            if os.path.basename(w) in _SHELLS:
+                return True
+            break
+    return False
+
+
+def strip_heredocs(cmd):
+    """`cmd` with every heredoc body (and its delimiter line) removed; see HEREDOC BODIES. Quote
+    aware: an operator inside quotes is text. Never raises."""
+    out, pending = [], []
+    i, n = 0, len(cmd)
+    quote, arith = None, 0
+    while i < n:
+        ch = cmd[i]
+        if quote:
+            out.append(ch)
+            if ch == "\\" and quote == '"' and i + 1 < n:
+                out.append(cmd[i + 1])
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(cmd[i:i + 2])
+            i += 2
+            continue
+        if ch in "'\"":
+            quote = ch
+            out.append(ch)
+            i += 1
+            continue
+        if arith:
+            arith += (ch == "(") - (ch == ")")
+            out.append(ch)
+            i += 1
+            continue
+        if cmd.startswith("$((", i) or cmd.startswith("((", i):
+            k = 3 if cmd[i] == "$" else 2
+            out.append(cmd[i:i + k])
+            arith = 2
+            i += k
+            continue
+        if ch == "\n":
+            out.append(ch)
+            i += 1
+            for delim, tabs in pending:
+                while i < n:
+                    end = cmd.find("\n", i)
+                    line = cmd[i:(n if end < 0 else end)]
+                    i = n if end < 0 else end + 1
+                    if (line.lstrip("\t") if tabs else line) == delim:
+                        break
+            pending = []
+            continue
+        if cmd.startswith("<<<", i):
+            out.append("<<<")
+            i += 3
+            continue
+        if cmd.startswith("<<", i):
+            j = i + 2
+            tabs = j < n and cmd[j] == "-"
+            if tabs:
+                j += 1
+            while j < n and cmd[j] in " \t":
+                j += 1
+            parsed = _heredoc_delimiter(cmd, j)
+            if parsed is None:
+                out.append("<<")
+                i += 2
+                continue
+            delim, j2 = parsed
+            if not _line_feeds_a_shell(out, cmd, i):
+                pending.append((delim, tabs))
+            out.append(cmd[i:j2])
+            i = j2
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def split_subcommands(cmd):
-    """The command as a list of token lists. ValueError on an unbalanced quote: the caller lets
-    it propagate, which fails closed."""
-    lex = shlex.shlex(_newlines_to_semicolons(cmd), posix=True, punctuation_chars=True)
+    """The command as a list of token lists, heredoc bodies removed first. CommandParseError (a
+    ValueError) on an unbalanced quote: the caller lets it propagate, which fails closed."""
+    lex = shlex.shlex(_newlines_to_semicolons(strip_heredocs(cmd)), posix=True, punctuation_chars=True)
     lex.whitespace_split = True
     lex.commenters = ""
     subs, cur = [], []
-    for tok in lex:
-        if tok in SEPARATORS or (tok and set(tok) <= set("();&|")):
-            if cur:
-                subs.append(cur)
-            cur = []
-        else:
-            cur.append(tok)
+    try:
+        for tok in lex:
+            if tok in SEPARATORS or (tok and set(tok) <= set("();&|")):
+                if cur:
+                    subs.append(cur)
+                cur = []
+            else:
+                cur.append(tok)
+    except ValueError as exc:
+        raise CommandParseError(str(exc))
     if cur:
         subs.append(cur)
     return subs
@@ -290,18 +441,22 @@ def _is_hex64(s):
     return isinstance(s, str) and len(s) == 64 and all(c in "0123456789abcdef" for c in s)
 
 
-def decide(payload, env):
+def decide(payload, env, ctx=None):
     """Returns (decision, reason, matched): decision is 'ask', 'deny' or None; matched is a short
-    label for the decision log. Raises on anything it cannot read (the caller fails closed)."""
+    label for the decision log. Raises on anything it cannot read (the caller fails closed). `ctx`,
+    when given, gets `publish` = True once a deploy.py --confirm has matched, so the caller's error
+    message can tell a blocked publish from a blocked command that only names deploy.py."""
     if not isinstance(payload, dict):
         raise ValueError("the hook payload is not a JSON object")
     text = command_text(payload)
-    if not _mentions_deploy(text):
+    if not _mentions_deploy(strip_heredocs(text)):      # a body that only mentions it is not a publish
         return None, "", "none"
     cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) and payload.get("cwd") else None
     matches = scan(text, cwd)
     if not matches:
         return None, "", "none"
+    if ctx is not None:
+        ctx["publish"] = True
     repo = None
     unresolved = False
     for mcwd, tokens in matches:
@@ -400,6 +555,7 @@ def _on_alarm(signum, frame):
 def main(stdin=None, env=None):
     env = os.environ if env is None else env
     mode = None
+    ctx = {}
     try:
         if hasattr(signal, "SIGALRM"):
             signal.signal(signal.SIGALRM, _on_alarm)
@@ -408,7 +564,7 @@ def main(stdin=None, env=None):
         payload = json.loads(raw)
         if isinstance(payload, dict):
             mode = payload.get("permission_mode")
-        decision, reason, matched = decide(payload, env)
+        decision, reason, matched = decide(payload, env, ctx)
         if hasattr(signal, "SIGALRM"):
             signal.alarm(0)
     except BaseException as exc:                      # fail CLOSED: see the docstring
@@ -417,8 +573,16 @@ def main(stdin=None, env=None):
                 signal.alarm(0)
         except Exception:
             pass
+        if isinstance(exc, CommandParseError):
+            tail = ("It names deploy.py, so it is blocked in case it publishes. If it is not a "
+                    "publish, take the name deploy.py out of the command line (long text belongs "
+                    "in a file or a heredoc body) and run it again.")
+        elif ctx.get("publish"):
+            tail = "Fix that and run /site-studio:publish."
+        else:
+            tail = "Fix that and run the command again."
         reason = ("The publish guard could not finish checking this command (%s: %s), so it is "
-                  "blocked. Fix that and run /site-studio:publish." % (type(exc).__name__, exc))
+                  "blocked. %s" % (type(exc).__name__, exc, tail))
         _emit("deny", reason)
         sys.stderr.write(reason + "\n")
         _log(env, mode, "deny-error", "error")

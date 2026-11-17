@@ -601,6 +601,15 @@ def prepare(repo, hooks=None, build_fn=None):
     return repo, cfg, work, out_dir, result, note
 
 
+def print_warnings(result, out):
+    """Every `BuildResult.warnings` entry, one `warning: ` line each, as build.py and preview.py print them (dev #885,
+    dev #882, gap 19): a publish run names a file the build left out (a stray .md, a sub-folder, an unknown piece key)
+    instead of leaving the person to find it missing from the live site. Printing only: a warning never refuses and
+    never changes a byte of the output or its digest."""
+    for w in getattr(result, "warnings", None) or ():
+        print("warning: " + build.warning_line(w), file=out)
+
+
 def review_summary(repo, digest):
     status, row = review_record.verdict_for(digest, repo)
     if row is None:
@@ -616,6 +625,7 @@ def run_dry(repo, public_url=None, hooks=None, build_fn=None, out=None, dev_orig
     out = out or sys.stdout
     repo, cfg, work, out_dir, result, note = prepare(repo, hooks, build_fn)
     try:
+        print_warnings(result, out)
         url = public_url or public_target(cfg)[1]
         st = stage_and_verify(repo, out_dir, result, url, "site-studio dry run", work, hooks)
         verify_public_target(repo, cfg, st, public_url, dev_origin)
@@ -750,6 +760,7 @@ def run_confirm(repo, digest, message, public_url=None, hooks=None, build_fn=Non
     timeout = POLL_TIMEOUT if timeout is None else timeout
     repo, cfg, work, out_dir, result, note = prepare(repo, hooks, build_fn)
     try:
+        print_warnings(result, out)
         if result.digest != digest:
             raise DeployError("wrong digest: this build is %s but %s was confirmed; run --dry-run "
                               "again and confirm the digest it prints" % (result.digest[:12], digest[:12]))
