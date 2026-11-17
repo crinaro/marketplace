@@ -156,6 +156,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
+import content  # noqa: E402
 import images  # noqa: E402
 import pdftext  # noqa: E402
 import siteconfig  # noqa: E402
@@ -614,8 +615,10 @@ def site_base(cfg):
 
 
 def classify(url, base):
-    """(kind, rest) with kind in empty fragment mail tel special external internal protorel rootabs rel"""
-    u = url.strip()
+    """(kind, rest) with kind in empty fragment mail tel special external internal protorel rootabs rel. The
+    URL is read as a browser reads it (`content.url_as_browser_reads`), so ' java<TAB>script:x' is a
+    javascript: link here as it is on a click (dev #912)."""
+    u = content.url_as_browser_reads(url.strip())
     if u == "":
         return ("empty", "")
     m = re.match(r"^([A-Za-z][A-Za-z0-9+.\-]*):", u)

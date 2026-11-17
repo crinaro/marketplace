@@ -721,6 +721,7 @@ def _load_reference(name, files, paths):
     if not re.match(r"^https?://", data["url"]):
         raise ContentError("%s: 'url' must start with http:// or https://" % rj, path=rj,
                            fix="start the url with https://")
+    check_href(data["url"], "%s: 'url'" % rj)   # dev #912: the one href check, as every link takes
     for k in REFERENCE_KEYS:
         if k in data and not isinstance(data[k], str):
             raise ContentError("%s: '%s' must be a string" % (rj, k), path=rj,
@@ -1025,14 +1026,37 @@ def interpretation_reasons(files):
     return out
 
 
+_URL_EDGE = re.compile(r"^[\x00-\x20]+|[\x00-\x20]+$")
+_URL_TAB_NL = re.compile(r"[\t\n\r]")
+
+
+def url_as_browser_reads(url):
+    """`url` as a browser's URL parser sees it before reading its scheme (WHATWG URL standard, basic URL
+    parser): leading and trailing C0 controls and spaces stripped, and ASCII tab and newline removed
+    anywhere. A scheme decided on the raw text is not the scheme a click follows: ' javascript:x',
+    'java<TAB>script:x' and '<U+0001>javascript:x' all run script (dev #912). Used only to DECIDE; what
+    is written into the page is the person's text, unchanged."""
+    return _URL_TAB_NL.sub("", _URL_EDGE.sub("", url))
+
+
+def url_scheme(url):
+    """The scheme a browser reads from `url`, lower-cased, or None for a relative or #anchor link."""
+    m = _SCHEME.match(url_as_browser_reads(url))
+    return m.group(1).lower() if m else None
+
+
 def check_href(url, where):
-    scheme = _SCHEME.match(url)
+    """Refuse a person-supplied link a page may not carry: any scheme but http, https and mailto (read as
+    a browser reads it, `url_as_browser_reads`), and a root-absolute path. Every person-supplied URL that
+    reaches an `href` goes through here (dev #912)."""
+    seen = url_as_browser_reads(url)
+    scheme = _SCHEME.match(seen)
     if scheme:
         if scheme.group(1).lower() not in ("http", "https", "mailto"):
             raise ContentError("%s: a link may be http(s), mailto, #anchor or relative, not '%s:'"
                                % (where, scheme.group(1)), fix="use an http(s), mailto, #anchor or relative link")
         return
-    if url.startswith("/"):
+    if seen.startswith("/"):
         raise ContentError("%s: root-absolute link '%s'; links must be relative so one build serves "
                            "at /<repo>/ and at /" % (where, url), fix="make the link relative, such as ../work/ or media/photo.jpg")
 

@@ -1,7 +1,7 @@
 {
   "name": "site-studio",
   "description": "Set up, build, check, preview and publish a person's own portfolio, resume or links (hub) site on GitHub Pages, from their private dev repo. Adds work, captures references, imports a public profile, and reviews copy, looks and privacy before anything goes public; it publishes only when the person types /site-studio:publish and confirms. Use for any work on a personal site. Not for job applications, outreach or tracking a search (jobsearch).",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "author": {
     "name": "Crinaro",
     "email": "marketplace@crinaro.ai"

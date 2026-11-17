@@ -728,7 +728,8 @@ class _Builder(object):
             def image(self, src, alt):
                 if re.match(r"^https?://", src):
                     return '<img src="%s" alt="%s" loading="lazy" decoding="async">' % (esc(src), esc(alt))
-                if src.startswith("/") or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", src):
+                seen = C.url_as_browser_reads(src)   # dev #912: decide as a browser reads it
+                if seen.startswith("/") or C.url_scheme(src):
                     raise ContentError("%s: image '%s' must be a relative path or an https URL"
                                        % (source, src), fix="use a relative path to a file in media/, or an https URL")
                 full = posixpath.normpath(posixpath.join(base_dir, src))
@@ -959,6 +960,7 @@ class _Builder(object):
             if re.match(r"^[^@\s]+@[^@\s]+$", value):
                 v = '<a href="mailto:%s">%s</a>' % (esc(value), esc(value))
             elif re.match(r"^https?://", value):
+                C.check_href(value, "contact '%s'" % label)   # dev #912: the one href check
                 v = '<a href="%s" rel="noopener">%s</a>' % (esc(value), esc(value))
             else:
                 v = esc(value)
