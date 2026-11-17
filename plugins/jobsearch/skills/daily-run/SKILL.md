@@ -1024,11 +1024,29 @@ and a shell would change it. A refusal is quoted in the run summary with its rem
 retried with an edited line. A role with no line, or with `not-found`, stays unconfirmed, and the
 pursue review flags it; that is the correct state, not a gap to fill by hand.
 
-**⭐ ANY ROLE THAT BECOMES A PURSUIT GETS A `fit` ANALYSIS** (`fit.requirements[]` — run
+**⭐ EVERY RESEARCHED ROLE'S `fit` GOES IN BY FILE (dev #861, public #194).** A researched role is `ready` only once its
+`fit` is on record, and the fit is written BEFORE the candidate decides, not after it becomes a pursuit. The researcher's
+hand-back names a second file under `<profile root>/.jobsearch/handbacks/` (`fit-<run id>-<first opp_id>.jsonl`), one JSON
+line per role. Pass it, whole, to the one strict writer, **after the `posting --from-file` call above and BEFORE
+`lifecycle.py --drain-close`**:
+
+```bash
+~/.claude/jobsearch/run record.py fit --from-file <the fit file>
+```
+
+No `--already-locked`: it takes its own lock. Each applied line prints `<opp_id>: fit written (N requirements) → stage: ready`;
+a refused line is quoted in the run summary (its line number and reason) and is never retried edited, and a role whose line
+was refused stays `screened` and the close names it `agent-returned-nothing`, which is correct: nothing usable came back.
+**Never put a line on a command line.** If the script answers `invalid choice: 'fit'`, it is an older engine: quote that exit in
+the run summary and carry on to `--drain-close`; the role closes `agent-returned-nothing` and is re-admitted once the engine is
+current (the lifecycle derives it).
+
+The `fit` itself (`fit.requirements[]` — run
 `~/.claude/jobsearch/run record.py fields --file opportunities` for the exact shape):
 requirement → aligned/partial/not-aligned/unknown, each with cited evidence and a `pitch_line`.
 **Every `unknown` carries a targeted question, and a dated one carries `act_by`.** Run
-`~/.claude/jobsearch/run fit_report.py --gaps` and put the open questions on Your Move — the answers file
+`~/.claude/jobsearch/run fit_report.py --gaps` and put the open questions on Your Move (it lists a question only for a role the
+candidate has decided; an undecided role's open questions are on its own card) — the answers file
 into `presence/projects.md`, `presence/claims.md`'s addenda, or `kb_<company>.md`, so the NEXT role's analysis starts
 fuller. **The resume is deliberately incomplete; this is the loop that closes that gap while a live
 role makes it concrete.**

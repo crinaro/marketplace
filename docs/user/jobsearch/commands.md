@@ -131,6 +131,9 @@ you can leave them alone unless something looks wrong.
   `--json` for a machine-readable version. **Shows** only.
 - **`record.py show <role id>`**. Prints the whole stored record of one role, including its read attempts,
   its research notes and its fit. Nothing is cut short. **Shows** only.
+- **`record.py fit --from-file <file>`** (since 0.87.0). The run uses it after research to store the researcher's fit
+  analysis for each role; a line it cannot read is refused with its reason and nothing is written for that role. You
+  do not normally run it. **Runs**: it writes `fit` onto the role.
 - **`record.py read-jd <role id> --via candidate`**. Use it when a role is waiting as *your read*: you open
   the posting yourself, then record what it says, quoting a short line that names the role. **Runs**: it
   writes the read onto the role, and the next run screens the role on it.

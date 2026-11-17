@@ -483,10 +483,11 @@ def pursuit_by_id(opps, roles=None, stages=None):
 
     ⭐ dev #820 / public #175: a role nobody has read is not the candidate's decision ANYWHERE on the
     page. `pursuit_state` projects it as `new` (it is an undecided role), but only the lifecycle knows
-    whether it is READ, so a `new` role whose stage is not `ready` or `decided` is moved to its
-    lifecycle partition option by `your_move.pursuit_with_stage` (`your-read`, `process-failure`,
-    `waiting-intake`, `in-progress`, `removed` or `gone`): it is counted under that option and `New`
-    neither lists nor counts it. `stages` is {opp id: lifecycle.Stage}, derived from `opps` when the
+    whether it is READ, so a `new` role whose stage is not `ready` is moved to its lifecycle
+    partition option by `your_move.pursuit_with_stage` (an ALLOW-list, dev #899: `your-read`,
+    `process-failure`, `waiting-intake`, `in-progress`, `removed`, `gone`, `held-for-company`, `folded`,
+    `ended`, `not-sent` for a decided one, `unclassifiable` for no stage): it is counted under that
+    option and `New` neither lists nor counts it. `stages` is {opp id: lifecycle.Stage}, derived from `opps` when the
     caller passes none. `roles` is accepted for the old signature and unused: the stage says it all."""
     if stages is None:
         stages = _ym.stage_by_id(opps, data=_lc_data(opps))
@@ -1799,6 +1800,8 @@ _FILTER_VALUE_LABELS = {
     ("pursuit", "in-progress"): "In progress — a run has these open",
     ("pursuit", "removed"): "Screened out",
     ("pursuit", "gone"): "Posting gone",
+    ("pursuit", "held-for-company"): "Held — the company comes first",    # dev #899
+    ("pursuit", "folded"): "Folded — a duplicate of another role",        # dev #899
     ("pursuit", "new"): "New — pursue or pass?",
     ("pursuit", "conversation"): "In live conversation",
     ("pursuit", "sent"): "Sent — awaiting a reply",

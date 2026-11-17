@@ -213,7 +213,10 @@ The facts it stores:
   `outcome`, plus `evidence`. A successful read quotes a short passage that names the role (or, when the plugin fetched the page itself, records a fingerprint of what it got). A failed one
   says why in a short sentence. The outcomes fall into four groups:
   - **read**: the description was read;
-  - **gone**: `closed` or `dead-link`. The posting is down, and the role leaves the live list;
+  - **gone**: `closed` or `dead-link`. The posting is down, and the role leaves the live list. Since 0.87.0 a
+    rendered page that says the role is closed or filled is recorded as `closed` (the reader quotes the status
+    words, and the quote must name the role), and a role whose `employer_posting` is `closed` is gone too. A page
+    that did not load is never `closed`;
   - **your read**: `manual-board`, `no-url` or `login-wall`, which only you can open (see *Roles only you
     can open* in [Reading what the search produces](reading-your-files.md#one-lifecycle-per-role-since-0820));
   - **unfinished**: `challenge`, `render-failed`, `surface-cannot-read` or `site-not-allowed`. The run's
@@ -1325,6 +1328,11 @@ The one place you actually see its effect is a checkup line counting how many le
 
 This is the role's `fit` field. Optional. Absent means the job description has not been analysed yet.
 
+Since 0.87.0 the research step writes `fit`, not the pursuit step: the researcher hands the analysis back in a file,
+and the plugin's own `record.py fit` command checks it and stores it. A researched role is *ready* for your
+decision only once its `fit` is stored, and `analyzed_on` is stamped by the script with the date of the write (a hand
+edit that sets it is refused). Every `unknown` requirement is stored with `question_status: open`.
+
 Each material requirement from the posting becomes a row in `fit.requirements[]`: the
 `requirement` in the posting's own words, a `verdict` of `aligned` · `partial` · `not-aligned` ·
 `unknown`, and then:
@@ -1337,7 +1345,8 @@ Each material requirement from the posting becomes a row in `fit.requirements[]`
   the answer would change the pitch.
 - **`landed_in`** — where your answer was filed, so the same question is never asked twice.
 - **`question_status`** — `n/a` · `open` · `answered`. Only an `open` question is put to you; once
-  it is `answered` it stops appearing anywhere you are asked.
+  it is `answered` it stops appearing anywhere you are asked. Since 0.87.0 a question is put to you as a question only once you have decided the role; before that,
+  an undecided role's open questions are shown on that role's own card.
 - **`act_by`** — the date an open question needs its answer by, when the fact that makes it
   urgent has one (an interview slot, a deadline). Open questions sort by it, earliest first and
   undated last, on the coordinator's list and on the dashboard's fit section — the date used to

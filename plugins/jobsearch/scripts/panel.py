@@ -216,7 +216,15 @@ def sec_needs_you(root, today, now=None):
                         "title": "%s: %s" % (names.get(o.get("company_id"), "?"),
                                              o.get("title") or ""),
                         "act_by": o.get("next_action_date") or None})
-    qs, _excluded = coordinator.open_fit_questions(opps)
+    # dev #861: an owner question is surfaced only for a role whose lifecycle stage is `decided`; an undecided role's
+    # unknowns stay on its card. With no lifecycle snapshot none is listed, and the pipeline row above says NOT CHECKED.
+    stage_names = {}
+    try:
+        _qctx = ctx
+        stage_names = {o.get("id"): _qctx.stage_of_opp(o).name for o in data["opportunities"]}
+    except Exception:                                           # noqa: BLE001 - the pipeline row already says so, loudly
+        stage_names = {}
+    qs, _excluded, _undecided = coordinator.open_fit_questions(opps, lambda o: stage_names.get(o.get("id")))
     for by, o, r in qs:
         out.append({"kind": "question", "id": o.get("id"),
                     "title": "%s: %s" % (names.get(o.get("company_id"), "?"),

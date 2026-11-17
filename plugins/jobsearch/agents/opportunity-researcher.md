@@ -248,6 +248,8 @@ For each role, a compact structured block:
 - Original posting URL (the real source, not the aggregator wrapper)
 - Employer-posting confirmation: the path of the file holding this role's `EMPLOYER-POSTING` line (step 2),
   and in one clause whether the role is confirmed on the employer's own posting or not
+- JD fit: the path of the file holding this role's `fit` line (the fit-analysis section below), one path
+  for the whole batch beside the `EMPLOYER-POSTING` file's path. Never the analysis itself, inline
 - Comp (JD's own figure; note if it conflicts with the alert's)
 - Location / work setting (as stated in the JD)
 - Reporting line / team-scope signals, if stated
@@ -283,14 +285,37 @@ When you find a person, record them as a `contacts[]` entry with a `contact_id`,
 prose is invisible to every query; that is how one contact's address ended up known to the
 repo but absent from their contact record for 11 days.
 
-## ⭐ PRODUCE A JD FIT ANALYSIS FOR EVERY ROLE THAT BECOMES A PURSUIT
+## ⭐ PRODUCE A JD FIT ANALYSIS FOR EVERY ROLE YOU RESEARCH: IT IS WHAT MAKES THE ROLE `ready`
 
 **Added 2026-08-02, per the candidate:** *"How is the candidate match to the JD? How would you present
 the candidate is a fit and what are items that don't align? … I personally don't have
 everything on my resume and it helps build context for what the candidate has done so the
 knowledge base for the candidate builds."*
 
-Emit a `fit` object for the opportunity record — one `fit.requirements[]` row per material JD
+**The fit is written BEFORE the candidate decides, not after.** A researched role is `ready` (a pursue-or-pass
+is owed) only once its `fit` is on record, so research that returns no fit leaves the role unfinished: it closes
+`agent-returned-nothing` however good the research was (dev #861 / public #194). The fit is not a field you write
+(you do not write the pipeline): it travels in a FILE, and the dispatching session passes the file to
+`record.py fit --from-file`, the one strict writer.
+
+**Write ONE file per dispatch** at `<profile root>/.jobsearch/handbacks/fit-<run id>-<first opp_id of your batch>.jsonl`
+(rule 6's folder; create it if missing), through a single-quoted heredoc so nothing in your quoted evidence is
+expanded by the shell, and hand back its path (ten lines or fewer, beside the `EMPLOYER-POSTING` file's path).
+One line per role, one JSON object per line, this shape and no other keys:
+
+```bash
+cat > "<profile root>/.jobsearch/handbacks/fit-<run id>-<first opp_id>.jsonl" <<'EOF'
+{"opp": "<opp_id>", "jd_source": "<what you read, e.g. full JD, employer ATS>", "requirements": [{"requirement": "<one material JD requirement>", "verdict": "partial", "evidence": "presence/claims.md: <what it says>", "pitch_line": "<how to present the match>", "question_for_candidate": null, "question_status": "n/a", "act_by": null}]}
+EOF
+```
+
+- **Never type `analyzed_on`:** the script stamps it with the date of the write, and a line that carries it is refused.
+- **Every `unknown` requirement carries `question_status: "open"`** and its `question_for_candidate`, or the line is
+  refused. An undecided role's open questions are shown on the role's own card, not asked as owner questions.
+- A line the script refuses is quoted in the run summary and never retried edited. You never run `record.py fit`
+  yourself.
+
+Each line's `requirements` is one `fit.requirements[]` row per material JD
 requirement (run `~/.claude/jobsearch/run record.py fields --file opportunities` for the exact
 shape and its enums):
 

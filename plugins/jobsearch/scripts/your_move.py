@@ -870,11 +870,14 @@ def workflow_state(root, opp, apps, today=None, window=None):
 #   in-progress     a PARTITION option: an open run holds it.
 #   removed, gone   PARTITION options: the screen removed it / the posting is closed. The row is still
 #                   an undecided backlog row, and nothing is asked about it.
+#   held-for-company, folded   PARTITION options (dev #899): the question is the company's / the role is a
+#                   duplicate of a counted one. Undecided rows, and nothing is asked about them as roles.
 #                   `pursuit_state` still projects each of these roles as `new` (it is an undecided
 #                   role); `pursuit_with_stage` moves it to its token, because only the lifecycle
-#                   knows the role is not a decision owed. A role is in `new` or in one of them.
-#   new             cell 1 - the application axis `undecided`, READ and screened (lifecycle `ready`
-#                   or `decided`)
+#                   knows the role is not a decision owed. It is an ALLOW-list (dev #899): a role stays
+#                   `new` only at lifecycle stage `ready`; every other stage, or none, takes a token.
+#   new             cell 1 - the application axis `undecided`, READ and screened (lifecycle `ready`, and
+#                   only `ready`: `new` is a subset of `process_report`'s ready count, dev #899)
 #   conversation    cells 4, A and cell 6 where an inbound has EVER arrived
 #   sent            cells 3, 6 (no inbound ever), 7, 8 - an application or a touch is out
 #   not-sent        cell 2 - verdict pursue, nothing submitted: "queued to apply" (r3's label)
@@ -898,6 +901,8 @@ PURSUIT_STATES = {
     "in-progress": ("in-progress",),
     "removed": ("removed",),
     "gone": ("gone",),
+    "held-for-company": ("held-for-company",),
+    "folded": ("folded",),
     "new": ("new",),
     "conversation": ("reply-owed", "accepted-your-move", "awaiting-reply+inbound-ever"),
     "sent": ("applied-no-outreach", "awaiting-reply", "silent-decide", "ats-only"),
@@ -1004,15 +1009,30 @@ def pursuit_state(root, opp, apps, today=None, window=None, ws=None):
 
 
 def pursuit_with_stage(p, st):
-    """`p` (a `pursuit_state` dict) with a pursuit-`new` role moved to its lifecycle token when the
-    stage says the role is not a decision owed (`pursuit_token`): `your-read`, `process-failure`,
-    `waiting-intake`, `in-progress`, `removed` or `gone`. Every other pursuit state, and a `new` role
-    that is `ready` or `decided`, is returned unchanged. The dashboard and the status panel both call
-    this, so a role is on one side or the other of the pursue-or-pass line for both."""
-    tok = pursuit_token(st) if st is not None else None
-    if p.get("state") == "new" and tok:
-        return dict(p, state=tok, cell=tok)
-    return p
+    """`p` (a `pursuit_state` dict) with a pursuit-`new` role kept `new` ONLY when the lifecycle stage is
+    `ready`; every other stage moves it to its own partition token (`stage_token`). An ALLOW-list, not
+    the deny-list it replaced (dev #899): a role is a decision owed when `lifecycle.stage()` says so and
+    never because no rule named it. `held-for-company`, `folded`, `ended` and a role with no stage are
+    therefore never `new`; a stage nobody mapped is a loud `unclassifiable`, not a silent `new`. Every
+    other pursuit state is returned unchanged. The dashboard and the status panel both call this, so a
+    role is on one side or the other of the pursue-or-pass line for both."""
+    if p.get("state") != "new":
+        return p
+    if st is not None and st.name == "ready":
+        return p                                     # THE allow-list: the one way to stay `new`
+    tok = stage_token(st)
+    if tok == "ended":
+        return dict(p, state=tok, cell=tok, ended_because="lifecycle: ended")
+    if tok == "not-sent":
+        # `decided` + pursuit `new`: a live status with the verdict still `undecided` (nothing refuses the
+        # pair). The status says it is being pursued and nothing is owed as a decision: it sits where a
+        # pursued, unapplied role does. Never `new`, never loud (design N4).
+        return dict(p, state=tok, cell="pursue-unapplied")
+    if tok == "unclassifiable":
+        return dict(p, state=tok, cell=None,
+                    missing="lifecycle stage" if st is None
+                    else "stage %s has no partition token" % st.name)
+    return dict(p, state=tok, cell=tok)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1392,16 +1412,26 @@ def role_group(st):
     return None
 
 
-def pursuit_token(st):
-    """The `pursuit` partition token a pursuit-`new` role moves to when the lifecycle says it is NOT a
-    decision owed: its group for the four system/candidate groups, `removed` and `gone` for the two settled
-    stages that leave an undecided row behind, else None (it stays `new`)."""
+def stage_token(st):
+    """The `pursuit` partition token a pursuit-`new` role takes when its lifecycle stage is NOT `ready`
+    (dev #899). Total over `lifecycle.STAGES` plus None, so a stage added later is `unclassifiable` until
+    it is given a token here, never silently `new`:
+
+      your-read, waiting, any failure, a progress stage -> `role_group` (your-read, waiting-intake,
+                                                           process-failure, in-progress)
+      removed, gone, held-for-company, folded, ended     -> the stage name
+      decided                                            -> not-sent (see `pursuit_with_stage`)
+      None, or any stage not named above                 -> unclassifiable (loud)"""
+    if st is None:
+        return "unclassifiable"
     g = role_group(st)
     if g in PRE_DECISION_GROUPS:
         return g
-    if st.name in ("removed", "gone"):
+    if st.name in ("removed", "gone", "held-for-company", "folded", "ended"):
         return st.name
-    return None
+    if st.name == "decided":
+        return "not-sent"
+    return "unclassifiable"
 
 
 def failure_text(st):

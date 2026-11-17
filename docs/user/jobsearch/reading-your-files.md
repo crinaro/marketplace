@@ -134,7 +134,7 @@ something that is on the page.
   who is due each appear as a short row ("no draft yet, <why>") that links to the channel, role or
   person it is about. The list can be narrowed by when a message is due, whether it is ready to send, and its medium; a choice
   that would show exactly the same rows as *All* is not drawn.
-- **Opportunities to pursue** lists only roles where a pursue-or-pass decision is owed. The older
+- **Opportunities to pursue** lists only roles where a pursue-or-pass decision is owed. Since 0.87.0 that means roles the plugin has finished reading and researching (*ready*); a role held for its company, a duplicate of another role, or one still being read or researched is not listed. The older
   **Show** and **Whose** choices (your move, in live conversation, sent, in interviews, parked,
   ended) are gone, because those roles are not on this page: roles in flight are in the status
   pane, *In flight*, and an ended role is simply not shown.
@@ -198,7 +198,12 @@ with `record.py read-jd <id> --via candidate`, quoting a line that names the rol
 with your read.
 
 **Postings that are down.** A posting that is closed or a dead link ends the role's progress as *gone*; the
-role leaves the live list and nothing is asked of you.
+role leaves the live list and nothing is asked of you. Since 0.87.0 a role is *gone* in two more cases: when the
+reader sees the posting page itself say the role is closed, filled or no longer accepting applications (a job board's
+"No longer accepting applications" counts, and the reader records the quoted words), and when the employer-posting
+check has closed it on two agreeing signals (see *Is the role still open?* in
+[How it works](how-it-works.md)). A page that failed to load, or a redirect to a search page, never makes a role
+*gone*. If a later read finds the posting open again, the role comes back.
 
 **The conservation line.** The last line on the page adds every role to exactly one group, so nothing can be
 lost between lists, for example:

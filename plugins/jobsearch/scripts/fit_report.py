@@ -29,6 +29,11 @@ Two outputs, and the second is the durable one:
 `funnel_report.py` came to print a hardcoded "stage never advances past contacted" claim that
 was true when written and false when read.
 
+The OPEN GAPS list is the questions whose role the candidate has DECIDED (lifecycle stage `decided`, read through
+`lifecycle.py` (`load_data`) and `your_move.py` (`lifecycle_context`): the one stage function, never re-derived here). The
+fit is written at research time, before any decision, so an undecided role's unknowns are stored `open` and are counted
+as "on their cards", not listed as questions for the candidate (dev #861).
+
 Usage:
     python3 scripts/fit_report.py                 # register + open gaps
     python3 scripts/fit_report.py --gaps          # ONLY the open questions (for Your Move)
@@ -39,6 +44,7 @@ Python 3.9+. Standard library only.
 """
 
 import argparse
+import datetime
 import json
 import os
 import sys
@@ -80,6 +86,19 @@ def counts(reqs):
     for q in reqs:
         out[q.get("verdict")] = out.get(q.get("verdict"), 0) + 1
     return out
+
+
+def _stage_names():
+    """`({opp id: lifecycle stage name}, None)`, or `(None, reason)` when the snapshot cannot be built. NEVER a silent
+    fall-back to "every role": a harvest that cannot say which roles are decided says NOT CHECKED."""
+    try:
+        import lifecycle
+        import your_move
+        data = lifecycle.load_data(ROOT)
+        ctx = your_move.lifecycle_context(data["opportunities"], datetime.datetime.now(), data)
+        return {o["id"]: ctx.stage_of_opp(o).name for o in data["opportunities"] if o.get("id")}, None
+    except Exception as e:                                      # noqa: BLE001 - said, never an empty list
+        return None, "%s: %s" % (type(e).__name__, " ".join(str(e).split())[:160])
 
 
 def main():
@@ -154,7 +173,7 @@ def main():
     if not args.gaps:
         rule("JD FIT REGISTER — %d of %d role(s) analyzed" % (len(analyzed), len(opps)))
         if not analyzed:
-            print("  No fit analyses yet. The analysis runs when a role becomes a pursuit.")
+            print("  No fit analyses yet. The analysis runs when a role is researched.")
 
         for o in sorted(analyzed, key=lambda x: x["id"]):
             c = counts(o["fit"]["requirements"])
@@ -165,23 +184,40 @@ def main():
                 ("   ❓ %d open" % openq) if openq else ""))
 
     # ---- the harvest: open questions -------------------------------------------
-    gaps, excluded_q = [], 0
+    gaps, excluded_q, undecided_q = [], 0, 0
+    any_open = any(q.get("question_status") == "open" and q.get("question_for_candidate")
+                   for o in analyzed for q in o["fit"]["requirements"])
+    stages, not_checked = (_stage_names() if any_open else ({}, None))
     for o in analyzed:
         for q in o["fit"]["requirements"]:
             if q.get("question_status") == "open" and q.get("question_for_candidate"):
                 if _is_excluded(o):
                     excluded_q += 1      # the role is decided; the question is moot
                     continue
+                if not_checked is not None:
+                    continue             # cannot say which roles are decided: list nothing (said below)
+                if (stages or {}).get(o.get("id")) != "decided":
+                    undecided_q += 1     # not yet a decision: the question is on the role's card
+                    continue
                 gaps.append((o, q))
 
     rule("OPEN GAPS — targeted questions whose answers grow the knowledge base")
+    if not_checked is not None:
+        print("  OPEN GAPS NOT CHECKED (%s): nothing is listed, which is not the same as none open." % not_checked)
+    if undecided_q:
+        print("  (%d question(s) on roles you have not decided are on their cards, not listed here — a fit is written"
+              % undecided_q)
+        print("   at research time, before any decision.)\n")
     if excluded_q:
         # Say what was withheld and why. A count that silently shrinks is its own puzzle.
         print("  (%d question(s) on passed/closed roles are not counted — the role is decided,"
               % excluded_q)
         print("   so the question is moot. pipeline_index.is_excluded is the predicate.)\n")
-    if not gaps:
-        print("  None open. Every gap surfaced so far has been answered and filed.")
+    if not_checked is not None:
+        pass
+    elif not gaps:
+        print("  None open. Every gap surfaced so far has been answered and filed." if not undecided_q
+              else "  None open for a role you have decided.")
     else:
         print("  %d question(s). Each answer is filed into an EXISTING store —" % len(gaps))
         print("  projects.md · the claim union's addenda (presence/claims.md; label 'resume.md') · kb_<company>.md —")
@@ -199,12 +235,12 @@ def main():
     answered = [(o, q) for o in analyzed for q in o["fit"]["requirements"]
                 if q.get("question_status") == "answered"]
     rule("KNOWLEDGE-BASE ACCUMULATION")
-    total_q = len(gaps) + len(answered)
+    total_q = len(gaps) + undecided_q + len(answered)
     if not total_q:
         print("  No questions raised yet — nothing to measure.")
     else:
         print("  %d of %d gap question(s) answered and filed (%d still open)."
-              % (len(answered), total_q, len(gaps)))
+              % (len(answered), total_q, len(gaps) + undecided_q))
         where = {}
         for _o, q in answered:
             where[q.get("landed_in")] = where.get(q.get("landed_in"), 0) + 1

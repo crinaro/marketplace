@@ -172,10 +172,17 @@ def rule(t):
     print("=" * 76)
 
 
-def open_fit_questions(opps):
-    """(qs, excluded_q) — qs is [(act_by_or_9999, o, r)] for every OPEN fit question on a role
-    that is NOT already decided; excluded_q counts how many open questions were withheld
-    because the role IS decided.
+def open_fit_questions(opps, stage_of):
+    """(qs, excluded_q, undecided_q) — qs is [(act_by_or_9999, o, r)] for every OPEN fit question on a role
+    that is NOT ruled out AND whose lifecycle stage is `decided`; excluded_q counts the open questions withheld
+    because the role IS ruled out (passed); undecided_q counts those withheld because the role is not decided
+    yet (dev #861: the fit is written at research time, before any decision, so an undecided role's unknowns
+    are stored `open` but are not owner questions; they sit on the role's own card).
+
+    `stage_of(o)` is the role's lifecycle stage NAME (or None when it cannot be known): REQUIRED, no default,
+    so no caller silently keeps the old behaviour of asking about every researched role. A role whose stage is
+    not `decided` is counted in `undecided_q`, never listed. The stage is the ONE function
+    `lifecycle.stage()` (through `Ctx.stage_of_opp`), never re-derived here.
 
     public #66 — this used to list a question regardless of whether its role had already been
     decided, disagreeing with fit_report.py's own "OPEN GAPS" view, which excludes exactly this
@@ -185,15 +192,18 @@ def open_fit_questions(opps):
     passed, can carry no LIVE question — asking it again is exactly the already-ruled-out
     resurfacing pipeline_index.is_excluded exists to prevent.
     """
-    qs, excluded_q = [], 0
+    qs, excluded_q, undecided_q = [], 0, 0
     for o in opps:
         for r in ((o.get("fit") or {}).get("requirements") or []):
             if r.get("question_status") == "open" and r.get("question_for_candidate"):
                 if _is_excluded(o):
                     excluded_q += 1      # the role is decided; the question is moot
                     continue
+                if stage_of(o) != "decided":
+                    undecided_q += 1     # not yet a decision: the question is on the role's card, not the owner's list
+                    continue
                 qs.append((r.get("act_by") or "9999-99-99", o, r))
-    return qs, excluded_q
+    return qs, excluded_q, undecided_q
 
 
 def main():
@@ -430,7 +440,21 @@ def main():
     # the only kind that can be missed by waiting. <a recruiter>'s out-of-office said she returns
     # Monday August 3; that was sitting in the question text as prose, which nothing can sort.
     rule("3b. OPEN QUESTIONS — from the JD fit analysis")
-    qs, excluded_q = open_fit_questions(opps)
+    stage_names = None
+    if lc_data is not None:
+        try:
+            _q_ctx = _your_move.lifecycle_context(lc_data["opportunities"], lc_now, lc_data)
+            stage_names = {o.get("id"): _q_ctx.stage_of_opp(o).name for o in lc_data["opportunities"]}
+        except Exception as e:                                  # noqa: BLE001 - said, never an empty list
+            print("  NOT CHECKED — the open questions could not be staged (%s: %s)" % (type(e).__name__, str(e)[:120]))
+    if stage_names is None:
+        qs, excluded_q, undecided_q = [], 0, 0
+        print("  OPEN QUESTIONS NOT CHECKED — no lifecycle snapshot, so none is listed (never an empty list).")
+    else:
+        qs, excluded_q, undecided_q = open_fit_questions(opps, lambda o: stage_names.get(o.get("id")))
+    if undecided_q:
+        print("  %d question(s) on roles you have not decided are on their cards (the dashboard), not listed here."
+              % undecided_q)
     today = datetime.date.today().isoformat()
     due = [x for x in qs if x[0] <= today]
     dated = [x for x in qs if today < x[0] < "9999-99-99"]

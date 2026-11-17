@@ -131,12 +131,13 @@ below.)
 2. **Read.** The job description is read for **every** role that has not been removed. A script tries a
    plain fetch first for a remote posting that states its pay; anything else, or anything the fetch could
    not read, goes to a reader agent working in a browser tab of its own. A posting only you can open comes to you
-   as **your read**, and a posting that is down ends there as *gone*. The description's own pay and work
+   as **your read**, and a posting that is down ends there as *gone*. Since 0.87.0 that includes a page that renders but says the role is closed, filled or no longer accepting applications: the reader records it as closed with the status words quoted, not as a read. The description's own pay and work
    setting replace the card's.
 3. **Screen.** Your floors and rules are applied to the facts from the description. A screen that rests
    only on card facts can never say *keep*.
 4. **Research.** Only a role the screen **keeps** is researched. A role marked for your review, or one the
-   screen removed, is not.
+   screen removed, is not. Research includes the fit analysis against the posting's requirements; since 0.87.0 it is
+   stored when the role is researched (not later, when you pursue it), and the role is not *ready* without it.
 
 A role is ready for your decision when it has been through all four. If you change a pay floor, your
 title floor, your target titles or a likely-pass phrase, roles screened under the old rules go back to
@@ -535,7 +536,8 @@ employer's own posting** (their careers page or applicant-tracking site), with t
   run that has the browser, attended or not.
 - **One sign that a posting is gone is not enough.** A single failed fetch or one "unavailable" page
   records a pending signal and the role shows "could not confirm". Only a second, agreeing signal marks it
-  closed, and you still decide what to do with the role: nothing is expired automatically.
+  closed. Since 0.87.0 a role marked closed this way is *gone* and leaves the list of roles awaiting your decision
+  (a role you have already decided on keeps its place), and a later read that finds the posting open brings it back.
 - **A check that did not happen says so.** If the machine was off, the browser was unavailable or a site
   was refused, the role shows `NOT CHECKED since <date>`. It is never shown as live.
 

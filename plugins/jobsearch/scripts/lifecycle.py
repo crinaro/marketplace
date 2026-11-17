@@ -85,7 +85,8 @@ role that no unfinished admission is holding is `waiting` with `detail == "rules
 (`Ctx.working`). The merged profile is read ONCE per snapshot, by `load_data` (`data["profile"]`); an unreadable
 or absent profile is None and makes nothing stale.
 
-Imports `jd_read.py` (the read record's parser), `coverage.py` ("did not look") and, only when a snapshot carries a
+Imports `jd_read.py` (the read record's parser), `posting_check.py` (the `employer_posting` parser: a recorded `closed`
+state settles a role `gone`, dev #871), `coverage.py` ("did not look") and, only when a snapshot carries a
 profile, `profile.py` (the staleness hashes); all are named here by file because a bare `import` is invisible to
 `publish_manifest.py`'s reachability closure, and a shipped script that imports an unpublished one crashes on the
 user's machine.
@@ -111,6 +112,7 @@ import coverage as _coverage
 import journal as _journal
 import pipeline_index as _pidx
 import config_keys as _ck
+import posting_check as _pc
 
 # ----------------------------------------------------------------------------------------------
 # constants
@@ -141,6 +143,12 @@ RETRY_STOP_ROLE_CLASS = 2               # section 4.5 IN4: consecutive role-clas
 HELD_ROUTE_AFTER = 3                    # 0.85.0: consecutive environment-class admissions before a role goes to YOUR READ
 SKEW_DAYS = 14
 ENGINE_CUTOVER = "0.82.0"
+# dev #861 / public #194 (jobsearch 0.87.0): the release that FIRST shipped `record.py fit --from-file`, the one writer of a
+# researched role's `fit`. Before it nothing wrote `fit`, so a role the researcher was dispatched for closed
+# `agent-returned-nothing` however well the researcher did. `Ctx.working` re-admits those roles by a DERIVED rule keyed on this
+# literal (no migration: the journal says which runs were pre-0.87.0). It names the release that first shipped the verb and so
+# never follows `plugin.json` afterwards; `test_lifecycle` ties it to the plugin version and to the group file that introduced it.
+FIT_VERB_ENGINE = "0.87.0"
 INTAKE_KEY = _ck.SEARCH_COMPANY_INTAKE_PER_RUN      # 0.86.0 (dev #834): intake is counted in COMPANIES (1..100, default 10)
 INTAKE_MIN, INTAKE_MAX, INTAKE_DEFAULT = 1, 100, _ck.SEARCH_COMPANY_INTAKE_PER_RUN_DEFAULT
 INTAKE_ROLES_MAX = 300                  # the journal's ceiling on one plan's role intake (`journal._check_drain_row`)
@@ -812,6 +820,27 @@ class Ctx(object):
                 break
         return chain
 
+    def fit_victim(self, rid, ids):
+        """Was the admission by run `rid` of the role identified by `ids` one that dev #861 stopped for no fault of the role's?
+        ALL of: the run is done and its close left the role as `agent-returned-nothing`; its `start` record names a READABLE
+        engine older than `FIT_VERB_ENGINE` (a missing or unreadable engine is NOT older here, unlike the cutover's reading:
+        counting it as older would drop that run's closes on every evaluation, so a role that really keeps failing would never
+        retry-stop, and the attended `## Drain` recovery reaches it instead); and the run's research dispatch named the role,
+        so the researcher could not have written `fit` through any path. The caller adds the fourth condition, that the role is
+        still exactly where #861 left it (`screened`)."""
+        run = self.runs[rid]
+        if not run["done"] or self.outcome(rid, ids) != "agent-returned-nothing":
+            return False
+        engine = (run["start"] or {}).get("engine")
+        if not engine:
+            return False
+        try:
+            if not version_tuple(engine) < version_tuple(FIT_VERB_ENGINE):
+                return False
+        except ValueError:
+            return False
+        return bool(set(ids) & _agent_rows(self.recs, rid, ("research",)))
+
     def working(self, progress, ids, seen, key, latest_attempt, rules_changed=False):
         """Turn a role's PROGRESS stage into what a surface shows (section 2.2, "the admission rule").
 
@@ -836,6 +865,14 @@ class Ctx(object):
                     readmitted = True
                 else:
                     kept.append(rid)
+            adm = kept
+        if progress == "screened":
+            # dev #861: a role the researcher was dispatched for under an engine that had no `fit` writer was closed
+            # `agent-returned-nothing` through no fault of its own. Those admissions no longer count, so the role is
+            # `waiting` (`readmitted`) and is researched again unattended (the same derived shape as the `readmit` drop above).
+            kept = [rid for rid in adm if not self.fit_victim(rid, ids)]
+            if len(kept) != len(adm):
+                readmitted = True
             adm = kept
         if rules_changed:
             last_finished = -1
@@ -989,6 +1026,23 @@ class Ctx(object):
                     if not self.rules_stale(opp):
                         return Stage("removed", False, None, None, ",".join(rules), key), None, False
                     stale_removal = True           # removed under other rules: re-screen it, do not trust it
+        # dev #871: a role the employer-posting check has CLOSED (two signals of different classes, one a render:
+        # `posting_check.closed_by`) is `gone`. The strict parser refuses a `closed` value whose signals fail that
+        # rule, so this cannot settle on one signal. Placed after `folded`, `ended`, `decided` and `removed`, so a
+        # pursued role is never demoted by it.
+        # A value the parser REFUSES settles nothing here: it is not read as closed (a one-signal `closed` never
+        # makes `gone`) and it does not move the role out of its group (`your_move.posting_label` flags it
+        # `unreadable`, and a flag is information, never a group change; `validate_data` names it too). The design
+        # asked for `unclassified` (design-stage-honesty.md 4.4), which would take a ready role out of Decide for a
+        # field only the label surface reads; that conflicts with test_posting_label_surfaces and is reported.
+        try:
+            ep = _pc.parse(opp.get("employer_posting"))
+        except _pc.PostingFieldError:
+            ep = None
+        if ep is not None and ep.state == "closed":
+            newest = max(ep.signals, key=lambda sg: sg.get("on") or "") if ep.signals else {}
+            return (Stage("gone", False, _parse_date(ep.closed_on), "closed",
+                          str(newest.get("evidence") or ""), key), None, False)
         if latest is not None and latest["outcome"] != "read":
             cls = _jd.outcome_class(latest["outcome"])
             since = _jd.parse_at(latest["at"]).date()

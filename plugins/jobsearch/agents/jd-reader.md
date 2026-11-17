@@ -189,10 +189,12 @@ A brief that does not say which is unattended.
 1. `~/.claude/jobsearch/run record.py show <opp_id> --json`: note the title, the company and the address.
 2. Navigate your one tab to that address (the first role opens it, see above), run the pane and tab check, and
    read the page with `get_page_text` (your `tabId`).
-3. **The posting rendered.** Record what it says, in one call:
+3. **The posting rendered and shows no closed status.** Look at the words where the Apply control is (and at any
+   status line near the title) BEFORE you record a read: a page that says the role is closed is step 4, never this
+   one. Then record what it says, in one call:
 
    ```bash
-   ~/.claude/jobsearch/run record.py read-jd <opp_id> --run <run id> --url <the address you read> --via render --pay <pay> --setting "<setting>" --location "<place>" --evidence "<quote>"
+   ~/.claude/jobsearch/run record.py read-jd <opp_id> --run <run id> --url <the address you read> --via render --pay <pay> --setting "<setting>" --location "<place>" --evidence "<quote>" --status-text "<the words where the Apply control is, verbatim, or the page's status line; none shown>"
    ```
 
    - `--pay` in the ROLE grammar: `none` when the posting shows no pay; `stated:<min>-<max>/<unit>/<CUR>` for
@@ -207,10 +209,30 @@ A brief that does not say which is unattended.
      `read-failed --outcome render-failed --evidence "quote did not match the role"` (with the page, pane and
      probe flags of the render-failed form below) and move on. A wrong-tab read must fail loudly, never settle
      a role.
+   - **`--status-text` is required by this step.** It is the page's own words where the Apply control is, verbatim
+     (or its status line), or the literal `none shown` when the page shows none. The script checks it for a closed
+     status and never stores it: a read whose `--status-text` or `--evidence` says the posting is no longer accepting
+     applications is refused (exit 2, nothing written) and the script prints the `read-failed --outcome closed` line to
+     run instead. If the script answers `unrecognized arguments: --status-text`, it is an older engine: re-issue the
+     same call ONCE without that flag and carry on.
    - Replace any `"` in a field with `'`. Fields are 1 to 200 characters; nothing is truncated for you.
 
    The call prints `stage: <name>`. Keep that line for your hand-back.
-4. **The posting did not render as a posting.** Record why, in one call, and move on:
+4. **The posting rendered and says it is closed.** The page names this role and shows an explicit closed status:
+   LinkedIn's "No longer accepting applications" where the Apply control would be, or the employer's own page saying
+   the role is closed or filled. It is not a read, whatever else the page shows. Record it in one call, quoting the
+   role's title together with the status words:
+
+   ```bash
+   ~/.claude/jobsearch/run record.py read-failed <opp_id> --run <run id> --url <the address you read> --via render --outcome closed --page-result "chars=<N>" --evidence "<the title> - <the status words>"
+   ```
+
+   The quote must name this role (it shares a word with the title or company), or the call is refused and you record
+   `render-failed --evidence "quote did not match the role"` instead. A closed status makes the role `gone`; if the
+   page is later read as open, a later `read-jd` reopens it. **A page that did not load, a fetch, a redirect to a
+   search or job-list page, or a page that names another role is never `closed`.** It says nothing about this role's
+   posting; record it as step 5 says.
+5. **The posting did not render as a posting.** Record why, in one call, and move on:
 
    ```bash
    ~/.claude/jobsearch/run record.py read-failed <opp_id> --run <run id> --url <the address you tried> --via render --outcome <outcome> --evidence "<the page's own words or the error text>" --page-result "chars=<N>"
@@ -223,7 +245,7 @@ A brief that does not say which is unattended.
 
    | what the rendered page shows | `--outcome` |
    |---|---|
-   | the employer's own page says the role is closed or filled | `closed` |
+   | the page names this role and says it is closed, filled or no longer accepting applications (the employer's own words, or the board's status line where Apply would be): step 4 | `closed` |
    | a not-found or removed page | `dead-link` |
    | a sign-in demanded before the posting shows | `login-wall` |
    | an interstitial or challenge (prove you are human, wait while the browser is checked) | `challenge` |
@@ -244,7 +266,7 @@ A brief that does not say which is unattended.
    access) and names `read-failed --outcome manual-board`: record exactly that, and open nothing. **Never
    bypass a challenge, sign in, or switch to another route to get past one.** The candidate reads the roles
    only a person can open (`manual-board`, `no-url`, `login-wall`); you hand them over by recording the outcome.
-5. **The pane check stopped you.** Record every unread `(render)` role, this one included, in ONE call:
+6. **The pane check stopped you.** Record every unread `(render)` role, this one included, in ONE call:
 
    ```bash
    ~/.claude/jobsearch/run record.py not-attempted <the opp ids, space-separated> --run <run id> --via render --reason pane-hidden --pane "<the last line of tabs_context>" --tab-active {yes,no} --evidence "<the status line>"
@@ -253,7 +275,7 @@ A brief that does not say which is unattended.
    `--tab-active` is your own word about whether your tab was in front, and is stored as that. The script refuses the
    call (writes nothing, for any id) unless the pane line says hidden or you say your tab was not in front. It is
    not a failed read and never counts toward retry-stop.
-6. **A saved body (the fallback printed `RESIDUE <opp_id> (body): <reason> file=<path> sha1=<sha1>`).** `Read` the
+7. **A saved body (the fallback printed `RESIDUE <opp_id> (body): <reason> file=<path> sha1=<sha1>`).** `Read` the
    file, and record what it says in one call:
 
    ```bash

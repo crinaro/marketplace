@@ -322,11 +322,14 @@ parallelism, and a subagent staging `git add -A` bundles this session's in-fligh
 only for read-only work. **A dispatched agent inherits no conversation** — put what it needs in
 the prompt.
 
-**When `opportunity-researcher` hands back (dev #776, public #166),** its hand-back names a file holding one
-`EMPLOYER-POSTING` line per role. Pass the file, whole, to
-`~/.claude/jobsearch/run record.py posting --from-file <the file>`; it takes its own lock, and a line is never
-put on a command line. A refusal is quoted to the candidate with its remedy line. A role with no line stays
-unconfirmed, and the pursue review flags it; never mark one confirmed by hand.
+**When `opportunity-researcher` hands back (dev #776, public #166; dev #861, public #194),** its hand-back names TWO files: one
+holding one `EMPLOYER-POSTING` line per role, one holding the role's `fit` (one JSON line per role). Pass each, whole, in
+this order, to its one writer: `~/.claude/jobsearch/run record.py posting --from-file <the posting file>`, then
+`~/.claude/jobsearch/run record.py fit --from-file <the fit file>`. Each takes its own lock, and a line is never put on a
+command line. A refusal is quoted to the candidate with its remedy line. A role with no posting line stays unconfirmed, and
+the pursue review flags it; never mark one confirmed by hand. A role is `ready` only once its fit is on record, which is
+written before the candidate decides, not after a pursuit; if `record.py fit` answers `invalid choice: 'fit'` it is an
+older engine: quote that exit and continue.
 
 **You route. You do not do the roster's work yourself** — the moment you do, every CONTEXT BUDGET
 in `agents/` stops meaning anything.
@@ -398,7 +401,10 @@ its own tab; this session renders nothing itself.
 7. Research the keeps: for each admitted role, `~/.claude/jobsearch/run deferred.py --add-research <opp_id>`
    is the gate (exit 0: research it; exit 2: refused, with the reason). Dispatch `opportunity-researcher`
    for the keeps, briefed `attended: yes`, each written with `--pass research --phase dispatched --ids` and
-   `--phase returned --ids`.
+   `--phase returned --ids`. When it hands back, pass its two files in this order, before step 8: `record.py posting
+   --from-file <the posting file>`, then `record.py fit --from-file <the fit file>` (the fit makes the role `ready`).
+   A refusal is quoted in the summary, never retried edited; an older engine's `invalid choice: 'fit'` is quoted and the
+   drain continues to step 8.
 8. Close the drain, and show the candidate its `drain:` line and every `LEFT` line as printed:
    ```bash
    ~/.claude/jobsearch/run lifecycle.py --drain-close --run <id>

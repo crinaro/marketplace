@@ -129,9 +129,12 @@ Print its output verbatim. Then say that the sweep runs only from the attended f
    This session holds no run lock, so none of these takes `--already-locked`. Do not pass `--attended` to any of
    them: it lifts the drafting gate, and nothing here drafts.
 
-   The researcher's `EMPLOYER-POSTING` lines (dev #776): its hand-back names a file holding one line per role.
-   Pass the file, whole, to `~/.claude/jobsearch/run record.py posting --from-file <the file>` (no
+   The researcher's hand-back (dev #776, dev #861) names TWO files: an `EMPLOYER-POSTING` file (one line per role) and a
+   `fit` file (one JSON line per role). Pass each, whole, in this order: `~/.claude/jobsearch/run record.py posting
+   --from-file <the posting file>`, then `~/.claude/jobsearch/run record.py fit --from-file <the fit file>` (no
    `--already-locked`; never a line on a command line). A refusal is quoted to the candidate with its remedy line.
+   A role is `ready` only once its `fit` is on record. If `record.py fit` answers `invalid choice: 'fit'` it is an older
+   engine: quote that exit and continue.
 
 5. Close the journal: `~/.claude/jobsearch/run journal.py --run <id> --end`. Tell the candidate how many roles came
    back and how many are new (from the `--add-roles` output), the `drain:` line step 4's close printed (admitted, finished, left, waiting for
