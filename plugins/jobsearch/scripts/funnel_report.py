@@ -998,9 +998,14 @@ def _look_into(root, today):
 
 
 def network_rows(ctx_or_root, today):
-    """{"rows": [{"key", "group", "title", "detail", "verbs": [str]}], "look_into_new": n,
-    "look_into_waiting": n, "sent_proposals": n} — the Network list's contents as of `today` (an ISO date).
-    Pure over the stores; no write."""
+    """{"rows": [{"key", "group", "title", "detail", "verbs": [str], "subject", "actions": [{"action", "rec_id",
+    "label"}]}], "look_into_new": n, "look_into_waiting": n, "sent_proposals": n} — the Network list's contents as of
+    `today` (an ISO date). Pure over the stores; no write.
+
+    `verbs` is the ENGINE's own record of the write each row asks for (a `record.py` string); it is never rendered on
+    the candidate-facing page (jobsearch 0.88.0, dev #915). The page renders `actions`: `dashboard_actions.block`
+    inputs, plain words and a copy-as-prompt block, never a command. `subject` is the row's one subject
+    (`person:<id>` when an unrecorded chat or a booking names a person, else the row's own key)."""
     root = _net_root(ctx_or_root)
     companies = {c["id"]: c for c in _net_rows(root, "companies.jsonl") if c.get("id")}
     people = {p["id"]: p for p in _net_rows(root, "people.jsonl") if p.get("id")}
@@ -1019,7 +1024,13 @@ def network_rows(ctx_or_root, today):
         rows.append({"key": "net:look-into:%s" % cid, "group": "look-into", "title": name,
                      "detail": ("raised %s" % raised) if raised else "raised",
                      "verbs": ["record.py company-status %s %s" % (cid, st)
-                               for st in ("active-target", "watching", "passed")]})
+                               for st in ("active-target", "watching", "passed")],
+                     "subject": "net:look-into:%s" % cid, "next_step": "decide: yes, no or later",
+                     "actions": [{"action": "target-yes", "rec_id": "company:%s" % cid, "label": "Yes"},
+                                 {"action": "target-no", "rec_id": "company:%s" % cid, "label": "No"},
+                                 {"action": "target-later", "rec_id": "company:%s" % cid, "label": "Later"},
+                                 {"action": "company-kind-staffing", "rec_id": "company:%s" % cid,
+                                  "label": "This is a staffing firm or aggregator"}]})
 
     # a chat is "to record" whatever its age: the window here is the whole record, so an old unrecorded
     # chat is never aged off the page by a 42-day window.
@@ -1031,13 +1042,20 @@ def network_rows(ctx_or_root, today):
         who = (people.get(c.get("person_id")) or {}).get("name") or c.get("person_id") or "?"
         rows.append({"key": "net:chat:%s" % cid, "group": "chat", "title": "%s with %s" % (c.get("title") or "Chat", who),
                      "detail": "on %s, held or not recorded" % (c.get("date") or "?"),
-                     "verbs": ["record.py attended %s held" % cid, "record.py attended %s no-show" % cid]})
+                     "verbs": ["record.py attended %s held" % cid, "record.py attended %s no-show" % cid],
+                     "subject": ("person:%s" % c["person_id"]) if c.get("person_id") else "net:chat:%s" % cid,
+                     "next_step": "record whether it happened",
+                     "actions": [{"action": "chat-held", "rec_id": "commit:%s" % cid, "label": "It happened"},
+                                 {"action": "chat-no-show", "rec_id": "commit:%s" % cid, "label": "No-show"}]})
     for tid in b["no_chat_recorded"]:
         t = touches.get(tid) or {}
         who = (people.get(t.get("person_id")) or {}).get("name") or t.get("person_id") or "?"
         rows.append({"key": "net:booking:%s" % tid, "group": "booking", "title": "Booked with %s" % who,
                      "detail": "booked on %s, no chat recorded" % (t.get("date") or "?"),
-                     "verbs": ["record.py chat %s --on <date> --touch %s" % (t.get("person_id") or "<person>", tid)]})
+                     "verbs": ["record.py chat %s --on <date> --touch %s" % (t.get("person_id") or "<person>", tid)],
+                     "subject": ("person:%s" % t["person_id"]) if t.get("person_id") else "net:booking:%s" % tid,
+                     "next_step": "record the chat you had",
+                     "actions": [{"action": "booking-chat", "rec_id": "touch:%s" % tid, "label": "Record the chat"}]})
 
     for a in _net_rows(root, "asks.jsonl"):
         if a.get("kind") == "suggestion" and a.get("id") and not a.get("resolved_on"):
@@ -1046,18 +1064,26 @@ def network_rows(ctx_or_root, today):
             rows.append({"key": "net:suggestion:%s" % a["id"], "group": "suggestion",
                          "title": a.get("title") or a["id"],
                          "detail": (a.get("ask") or "") + ("  (stale: open %d days)" % age if stale else ""),
-                         "verbs": ["record.py confirm %s" % a["id"], "record.py decline %s" % a["id"]]})
+                         "verbs": ["record.py confirm %s" % a["id"], "record.py decline %s" % a["id"]],
+                         "subject": "net:suggestion:%s" % a["id"], "next_step": "confirm or decline",
+                         "actions": [{"action": "suggestion-yes", "rec_id": "ask:%s" % a["id"], "label": "Yes"},
+                                     {"action": "suggestion-no", "rec_id": "ask:%s" % a["id"], "label": "No"}]})
 
     for ref, label in _unobserved_items(root, today):
         rows.append({"key": "net:send:%s" % ref, "group": "send", "title": "Send unobserved: %s" % label,
                      "detail": "record the send, or delete the draft",
-                     "verbs": ["record.py touch …", "delete the draft from outreach/drafts.md"]})
+                     "verbs": ["record.py touch …", "delete the draft from outreach/drafts.md"],
+                     "subject": "net:send:%s" % ref, "next_step": "record the send, or delete the draft",
+                     "actions": [{"action": "send-observed", "rec_id": "send:%s" % ref, "label": "I sent it"}]})
 
     props = _net_rows(root, "proposals.jsonl")
     for p in props:
         if p.get("status") == "drafting" and p.get("id"):
             rows.append({"key": "net:proposal:%s" % p["id"], "group": "proposal", "title": "Proposal %s" % p["id"],
-                         "detail": "still drafting", "verbs": ["record.py proposal-status %s sent" % p["id"]]})
+                         "detail": "still drafting", "verbs": ["record.py proposal-status %s sent" % p["id"]],
+                         "subject": "net:proposal:%s" % p["id"], "next_step": "mark it sent when it goes out",
+                         "actions": [{"action": "proposal-sent", "rec_id": "proposal:%s" % p["id"],
+                                      "label": "I sent it"}]})
     order = {g: i for i, g in enumerate(NETWORK_GROUPS)}
     rows.sort(key=lambda r: order[r["group"]])               # stable: each group keeps its own order
     return {"rows": rows, "look_into_new": n_new, "look_into_waiting": n_wait,

@@ -177,18 +177,111 @@ def _start_sha(recs, run_id):
     return None
 
 
-def committed_paths(root, start_sha):
+def drop_journal(paths):
+    """The ONE definition of "the journal is not a file the run left": `paths` deduplicated, sorted, minus the journal
+    itself (a run writes it by running, so listing it would blame every run for the ledger). Used by `committed_paths`
+    (dev #703) and by `dead_run_paths` for both of its parts (dev #836), never copied."""
+    journal = _journal.JOURNAL.replace(os.sep, "/")
+    return sorted({p for p in paths if p and p != journal})
+
+
+def until_instant(last_at, utc_offset=None):
+    """`(git instant, exact)` for a naive local `last_at` (dev #836, N3). `at` is local time with no zone, and `git log
+    --before` takes an INSTANT, so the writer's recorded `utc_offset` (`+HH:MM`) turns it into `<epoch> +0000`. With no
+    offset recorded the instant is read in THIS machine's zone and `exact` is False: the bound is approximate (the
+    writer's zone is unknown). `(None, False)` when `last_at` is unreadable."""
+    try:
+        naive = datetime.datetime.fromisoformat(str(last_at))
+    except (TypeError, ValueError):
+        return None, False
+    if utc_offset and re.match(r"^[+-]\d\d:\d\d$", str(utc_offset)):
+        sign = -1 if utc_offset[0] == "-" else 1
+        tz = datetime.timezone(sign * datetime.timedelta(hours=int(utc_offset[1:3]), minutes=int(utc_offset[4:6])))
+        return "%d +0000" % int(naive.replace(tzinfo=tz).timestamp()), True
+    return "%d +0000" % int(naive.astimezone().timestamp()), False
+
+
+def committed_paths(root, start_sha, until=None, utc_offset=None):
     """dev #703 / public #155 — the paths this run committed: `git diff --name-only <start_sha>
     HEAD`, minus the journal file (see the module docstring for both limits). None means NOT
     MEASURED — no start sha, or git cannot resolve it — and is never an empty list: an
-    unmeasured value must not read as "nothing was committed"."""
+    unmeasured value must not read as "nothing was committed".
+
+    dev #836 (0.88.0): with `until` (a dead run's own last journal record, naive local), the answer is bounded by that
+    run's OWN last activity: `git log --name-only -z --format= --before=<instant> <start_sha>..HEAD`, so a later
+    SessionStart migrate commit, a later interactive session and the next run's commits are not blamed on it. The
+    paths are de-duplicated (`git log` repeats a file once per commit). The no-`until` path is unchanged."""
     if not start_sha:
         return None
-    out = _git(root, "diff", "--name-only", "-z", start_sha, "HEAD", "--")
+    if until is None:
+        out = _git(root, "diff", "--name-only", "-z", start_sha, "HEAD", "--")
+    else:
+        instant, _exact = until_instant(until, utc_offset)
+        if instant is None:
+            return None
+        out = _git(root, "log", "--name-only", "-z", "--format=", "--before=%s" % instant,
+                   "%s..HEAD" % start_sha, "--")
     if out is None:
         return None
-    journal = _journal.JOURNAL.replace(os.sep, "/")
-    return sorted(p for p in out.split("\0") if p and p != journal)
+    return drop_journal(out.split("\0"))
+
+
+def dead_run_paths(root, dead, recs):
+    """dev #836 (design 9.3): what a run that DIED left, from its `run_states` row `dead` and the journal `recs`.
+
+        {"committed":   [paths] | None,  "committed_note":   str | None,
+         "uncommitted": [paths] | None,  "uncommitted_note": str}
+
+    COMMITTED: `committed_paths(root, start_sha, until=last_at)`, so only commits at or before the run's own last record.
+    None is `not measured` (no start sha, no readable last record time, git could not answer), never an empty list. Its note
+    says `bound approximate: writer's zone unknown` when the start recorded no UTC offset, and `as pushed by its machine`
+    when another machine wrote the run (commits that machine never pushed are invisible here).
+    UNCOMMITTED, only on the dead run's OWN machine: the `dirty_at_start` of the next start on that machine, else the live
+    tracked status (`uncommitted on this machine now (no later run here)`). On another machine, or with no machine id
+    recorded, it is `not measured` and says why: another machine's dirty files are never blamed on this run.
+    STATED LIMITS: a commit the run made after its last journal record is not named; committer time is compared across
+    machines, so clock skew moves the bound by the skew; a profile directory COPIED between machines shares one id."""
+    res = {"committed": None, "committed_note": None, "uncommitted": None, "uncommitted_note": ""}
+    sha, last_at = dead.get("start_sha"), dead.get("last_at")
+    me, theirs = _journal.machine_id(root, create=False), dead.get("machine")
+    if not sha:
+        res["committed_note"] = "not measured (no start sha)"
+    elif until_instant(last_at, dead.get("utc_offset"))[0] is None:
+        res["committed_note"] = "not measured (no readable last record time)"
+    else:
+        paths = committed_paths(root, sha, until=last_at, utc_offset=dead.get("utc_offset"))
+        if paths is None:
+            res["committed_note"] = "not measured (git could not answer)"
+        else:
+            res["committed"] = paths
+            notes = []
+            if not until_instant(last_at, dead.get("utc_offset"))[1]:
+                notes.append("bound approximate: writer's zone unknown")
+            if theirs and me != theirs:
+                notes.append("as pushed by its machine")
+            res["committed_note"] = "; ".join(notes) or None
+    if not theirs:
+        res["uncommitted_note"] = "not measured (no machine id)"
+    elif me != theirs:
+        res["uncommitted_note"] = "on another machine: not measured here"
+    else:
+        later = sorted((r for r in recs if r.get("event") == "start" and r.get("machine") == theirs
+                        and (r.get("at") or "") > (dead.get("at") or "")), key=lambda r: r.get("at") or "")
+        if later:
+            d0 = later[0].get("dirty_at_start")
+            if isinstance(d0, list):
+                res["uncommitted"] = drop_journal(d0)
+                res["uncommitted_note"] = "left uncommitted before the next run on this machine began"
+            else:
+                res["uncommitted_note"] = "not measured (the next run here recorded no dirty list)"
+        else:
+            now_paths = _journal.dirty_paths(root)
+            if now_paths is None:
+                res["uncommitted_note"] = "not measured (git could not answer)"
+            else:
+                res["uncommitted"] = drop_journal(now_paths)
+                res["uncommitted_note"] = "uncommitted on this machine now (no later run here)"
+    return res
 
 
 def footprint(root, run_id, recs=None, at=None):
@@ -852,6 +945,70 @@ def roles_lines(recs, run_id, root=None, kind=None, at=None):
     return lines
 
 
+# dev #914 (design 5.3): an owed follow-up that expired is SAID ONCE, by the first run that
+# COMPLETES after its expiry date, and only a run of a kind whose close writes this summary can say
+# it. Those are the two kinds that call run_summary.py at their close (skills/daily-run, commands/
+# search). THE STATED LIMIT: with no completed daily or search run, nothing says it here; the
+# coordinator's startup line (coordinator.py) reads the same interval, so it is not lost.
+SAYS_EXPIRY_KINDS = ("daily", "search")
+EXPIRY_TITLES_SHOWN = 5
+
+
+def expiry_since(recs, run_id):
+    """The start `at` of the most recent EARLIER run of a summary-writing kind that has an `end`
+    (None = unbounded). A run with no end - a dead run - is never anyone's `since`, so its
+    interval stays open and the next completed run's interval covers it."""
+    start_at = None
+    for r in recs:
+        if r.get("event") == "start" and r.get("run_id") == run_id:
+            start_at = r.get("at")
+            break
+    if not start_at:
+        return None
+    ended = {r.get("run_id") for r in recs if r.get("event") == "end"}
+    best = None
+    for r in recs:
+        if (r.get("event") == "start" and r.get("run_id") != run_id
+                and r.get("kind") in SAYS_EXPIRY_KINDS and r.get("run_id") in ended
+                and (r.get("at") or "") < start_at):
+            if best is None or r["at"] > best:
+                best = r["at"]
+    return best
+
+
+def last_completed_sayer_start(recs):
+    """The start `at` of the newest run of a summary-writing kind that has an `end` (None when no
+    such run exists). The coordinator's startup line reads the expiries past this point, the same
+    interval `expiry_since` gives the next completed run (dev #914, N9)."""
+    ended = {r.get("run_id") for r in recs if r.get("event") == "end"}
+    ats = [r.get("at") for r in recs
+           if r.get("event") == "start" and r.get("kind") in SAYS_EXPIRY_KINDS
+           and r.get("run_id") in ended and r.get("at")]
+    return max(ats) if ats else None
+
+
+def expiry_line(recs, run_id, root, kind=None):
+    """The one EXPIRED line for run `run_id` (dev #914), or None when this kind does not say it or
+    nothing expired in its interval. A failed read is said, never silent: it returns a line that
+    reads `EXPIRED: not checked (...)`."""
+    if kind not in SAYS_EXPIRY_KINDS or root is None:
+        return None
+    start_at = _run_window(recs, run_id)[0]
+    try:
+        import trigger as _trigger
+        rows = _trigger.expired_between(root, expiry_since(recs, run_id), start_at)
+        days = _trigger.owed_window_days(root)
+    except Exception as e:                                      # noqa: BLE001 - said, never silent
+        return "EXPIRED: not checked (%s: %s)" % (type(e).__name__, str(e)[:100])
+    if not rows:
+        return None
+    names = [r.get("title") or r.get("opp_id") or "?" for r in rows]
+    shown = ", ".join(names[:EXPIRY_TITLES_SHOWN])
+    more = len(names) - EXPIRY_TITLES_SHOWN
+    return ("EXPIRED (no human contact in %d days): %d application(s) -- %s%s"
+            % (days, len(rows), shown, " (+%d more)" % more if more > 0 else ""))
+
+
 def render_detail(recs, run_id, fp, root=None, at=None, report=None):
     start_at, as_of, _kind = _run_window(recs, run_id)
 
@@ -892,6 +1049,9 @@ def render_detail(recs, run_id, fp, root=None, at=None, report=None):
         lines.append("  committed: not measured (no start sha)")
     elif committed:
         lines.append("  committed: %s" % ", ".join(committed))
+    expired = expiry_line(recs, run_id, root, kind=_kind)       # dev #914: said once, in --post too
+    if expired:
+        lines.append("  %s" % expired)
     return "\n".join(lines)
 
 

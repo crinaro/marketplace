@@ -166,6 +166,57 @@ def _network_line(root):
     return line if isinstance(line, str) and line.strip() and "\n" not in line.strip() else None
 
 
+# gates whose GAP no regeneration can clear: the page is wrong by construction, so the advice is to report it
+# (dev #915 / #902, N12). A lost or mis-windowed RECORD is the other kind, and a regeneration does fix it.
+ENGINE_GAPS = ("NO CLI", "PURSUE COUNT", "SUBJECT TWICE", "THEIRS WRAPS ENGINE MARKUP", "THEIRS SITE UNKNOWN")
+
+
+def coverage_line(rc, output):
+    """The startup line for `check_dashboard_coverage.py` (design 7.2, N12), from its exit code and its stdout.
+
+        rc 0, last line `NOT CHECKED ...`  `OK (no page yet: not checked)`: no page is a state, not a pass
+        rc 0                                `OK`
+        rc 1, an engine gap among the gaps `GAP ... report it - regeneration will not clear it`
+        rc 1                                the lost-record advice: regenerate and re-check
+        rc 2                                `NOT CHECKED - <the checker's last line>; a regeneration cannot fix this: report it`
+        any other rc                        `NOT CHECKED - the checker exited <rc>`, never a quiet OK"""
+    lines = [ln.strip() for ln in (output or "").splitlines() if ln.strip()]
+    last = lines[-1] if lines else ""
+    if rc == 0:
+        return "OK (no page yet: not checked)" if last.startswith("NOT CHECKED") or "NOT CHECKED —" in last else "OK"
+    if rc == 1:
+        hit = [g for g in ENGINE_GAPS if any(g in ln for ln in lines)]
+        if hit:
+            return ("❌ GAP — %s: the page is wrong by construction; report it - regeneration will not clear it"
+                    % ", ".join(hit))
+        return ("❌ GAP — a record the page lost or rendered out of window; "
+                "regenerate (check_dashboard_fresh.py --fix) and re-check")
+    if rc == 2:
+        return "⚠️ NOT CHECKED — %s; a regeneration cannot fix this: report it" % (last or "no reason given")
+    return "⚠️ NOT CHECKED — the checker exited %s; a regeneration cannot fix this: report it" % rc
+
+
+def expiry_line(root):
+    """The coordinator's own startup line for owed follow-ups that expired since the last COMPLETED daily or search run
+    (dev #914, N9): the expiry is said once by that run's summary, so a profile whose runs are not completing (or that
+    never ran one) would otherwise never hear it. Same interval as `run_summary.expiry_line`: (the last completed
+    summary-writing run's start, today]. Returns None when nothing expired; a failed read says so."""
+    try:
+        import journal as _journal
+        import run_summary as _rs
+        import trigger as _trigger
+        since = _rs.last_completed_sayer_start(_journal.read(root))
+        rows = _trigger.expired_between(root, since, datetime.date.today().isoformat())
+        days = _trigger.owed_window_days(root)
+    except Exception as e:                                          # noqa: BLE001 - said, never silent
+        return "EXPIRED: not checked (%s: %s)" % (type(e).__name__, str(e)[:100])
+    if not rows:
+        return None
+    names = [r.get("title") or r.get("opp_id") or "?" for r in rows]
+    return ("EXPIRED (no human contact in %d days) since the last completed run: %d application(s) -- %s%s"
+            % (days, len(rows), ", ".join(names[:5]), " (+%d more)" % (len(names) - 5) if len(names) > 5 else ""))
+
+
 def rule(t):
     print("\n" + "=" * 76)
     print(t)
@@ -530,13 +581,13 @@ def main():
     # Class C (dev/audit 2026-09-02) — the page must ACCOUNT for every record: rendered,
     # counted in a remainder, or terminal, and nothing outside its window. A gap is a
     # renderer defect surfaced at startup; the remedy is a regeneration, never a hand-edit.
-    rc = subprocess.run([sys.executable,
-                         os.path.join(ENGINE_SCRIPTS, "check_dashboard_coverage.py")],
-                        capture_output=True, text=True).returncode
-    print("  %-26s %s" % ("dashboard coverage",
-                          "OK" if rc == 0 else
-                          "❌ GAP — a record the page lost or rendered out of window; "
-                          "regenerate (check_dashboard_fresh.py --fix) and re-check"))
+    cov = subprocess.run([sys.executable,
+                          os.path.join(ENGINE_SCRIPTS, "check_dashboard_coverage.py")],
+                         capture_output=True, text=True)
+    print("  %-26s %s" % ("dashboard coverage", coverage_line(cov.returncode, cov.stdout)))
+    expired = expiry_line(_profile_root())
+    if expired:
+        print("  %-26s %s" % ("owed follow-ups", expired))
     # gate-keeper dispatch — D5 says a generated view is declared AND gated; views/applying.md
     # was only ever declared. 'never generated' is informational (rc 0, see the script's own
     # docstring) so a profile that has not yet run application-session is not nagged forever —

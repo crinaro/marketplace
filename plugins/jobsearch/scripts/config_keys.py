@@ -57,6 +57,27 @@ NO_RESPONSE_AFTER_DAYS_DEFAULT = 14
 ATS_SILENCE_DAYS = "ats.silence_days"
 ATS_SILENCE_DAYS_DEFAULT = 30
 ATS_CLOSE = "ats.close"
+
+# dev #914 / #915 (jobsearch 0.88.0, design D3/D4). Home is a `network` section: the
+# communication plan's own two numbers. The anchor for the first default is `ats.silence_days`
+# (30); the second is the weekly review a person can do in one sitting (10). Neither has
+# external support: each is OURS (the design's "What this section does not claim").
+OWED_FOLLOWUP_DAYS = "network.owed_followup_days"
+OWED_FOLLOWUP_DAYS_DEFAULT = ATS_SILENCE_DAYS_DEFAULT
+TARGETS_PER_WEEK = "network.targets_per_week"
+TARGETS_PER_WEEK_DEFAULT = 10
+
+# dev #836 (jobsearch 0.88.0, design 9.1, D5): ONE liveness window, defined once in the leaf. `lifecycle.py` (the role
+# pipeline's run-over rule), `journal.run_states` (through its callers), `check_runs.py` and `panel.py` all read it, so
+# "still running" and "died mid-run" are told apart the same way everywhere. The two inputs of the invariant live HERE
+# (moved from lifecycle.py, which binds its names to these): a window shorter than a drain plus the longest whole run
+# would call a healthy run dead, so the key's FLOOR is derived from them, never typed.
+DRAIN_BUDGET_S = 10800                  # 3 h: the most a drain may be asked to do (lifecycle N7)
+LONGEST_RUN_S = 8100                    # 2 h 15 min: the longest whole run measured (runlock.py docstring)
+RUN_LIVENESS_HOURS_DEFAULT = 8
+RUN_LIVENESS_MIN_HOURS = (DRAIN_BUDGET_S + LONGEST_RUN_S) // 3600 + 1       # = 6
+RUN_LIVENESS_MAX_HOURS = 72
+RUNS_LIVENESS_HOURS = "runs.liveness_hours"
 ATS_CLOSE_DEFAULT = "propose"
 ATS_CLOSE_VALUES = ("propose", "auto")
 
@@ -137,7 +158,8 @@ READER_KEYS = frozenset({CHASE_AFTER_DAYS, NO_RESPONSE_AFTER_DAYS, ATS_SILENCE_D
                          LINKLESS_GRACE_DAYS, ATS_PARSED_STATUS, ATS_SWEEP_DAYS,
                          ATS_MAX_ASKS_PER_RUN, LINKEDIN_PANE_STALE_MINUTES, GEOGRAPHY_REMOTE_OK,
                          GEOGRAPHY_RELOCATION_OPEN, GEOGRAPHY_AFFIRMATIVE_DESTINATIONS,
-                         GEOGRAPHY_COMMUTE_ANCHORS})
+                         GEOGRAPHY_COMMUTE_ANCHORS, OWED_FOLLOWUP_DAYS, TARGETS_PER_WEEK,
+                         RUNS_LIVENESS_HOURS})
 
 # {key: (default, kind, bounds_or_values, why)} — the metadata `profile.py --options` and
 # `doctor.py` render alongside the value/provenance `describe()` returns. `kind` is "int" or
@@ -152,6 +174,17 @@ _METADATA = {
     ATS_SILENCE_DAYS: (ATS_SILENCE_DAYS_DEFAULT, "int", (7, 180),
                        "days of ATS silence, measured to verified mailbox coverage — never "
                        "to today — before a close is PROPOSED (check_followups.py)"),
+    OWED_FOLLOWUP_DAYS: (OWED_FOLLOWUP_DAYS_DEFAULT, "int", (7, 90),
+                         "days an application may sit with no human contact before its owed "
+                         "follow-up row EXPIRES (said once, never silently dropped) - "
+                         "trigger.owed_applications (dev #914)"),
+    RUNS_LIVENESS_HOURS: (RUN_LIVENESS_HOURS_DEFAULT, "int", (RUN_LIVENESS_MIN_HOURS, RUN_LIVENESS_MAX_HOURS),
+                          "hours of silence after which a run that started and never ended is DIED MID-RUN, not "
+                          "still running (lifecycle, journal.run_states, check_runs, the status view) - never below "
+                          "a drain plus the longest whole run"),
+    TARGETS_PER_WEEK: (TARGETS_PER_WEEK_DEFAULT, "int", (3, 25),
+                       "the most companies the weekly 'Targets to review' list shows; the rest "
+                       "are counted, not hidden (your_move.classify_companies, dev #915)"),
     ATS_CLOSE: (ATS_CLOSE_DEFAULT, "enum", ATS_CLOSE_VALUES,
                "whether the run only PROPOSES a close ('propose') or writes it itself "
                "('auto') — a window is a guess about the employer's clock; the owner's confirmation "
@@ -1228,6 +1261,16 @@ def _get_dotted(cfg, dotted):
             return None
         node = node.get(part)
     return node
+
+
+def liveness_hours(cfg):
+    """The run-liveness window in hours for a loaded `config.json` dict (dev #836): `runs.liveness_hours` when it is an
+    int inside its bounds, else the default. An out-of-range or wrong-typed value is the default, never a guess and
+    never a crash (a window below the floor would call a healthy run dead)."""
+    v, _prov = describe(cfg, RUNS_LIVENESS_HOURS)
+    if isinstance(v, bool) or not isinstance(v, int) or not RUN_LIVENESS_MIN_HOURS <= v <= RUN_LIVENESS_MAX_HOURS:
+        return RUN_LIVENESS_HOURS_DEFAULT
+    return v
 
 
 def describe(cfg, key):

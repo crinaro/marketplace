@@ -121,19 +121,37 @@ something that is on the page.
 
 - **A bar pinned to the top of the page** has three entries, **Drafts to review (N)**,
   **Opportunities to pursue (N)** and **Applications to finish (N)**, and jumps to a list from
-  anywhere on the page. A list with nothing in it shows its entry greyed, with no link. A fourth
-  entry, **Reconsider (N)**, appears only when a role is flagged (below).
+  anywhere on the page. A list with nothing in it shows its entry greyed, with no link. Since
+  0.88.0, **Network (N)** and **Targets (N)** follow the first entry and, like **Reconsider (N)**
+  (only when a role is flagged, below), appear only while their list exists.
 - **Roles to reconsider** (since 0.74.0) is a fourth section that exists only when there is
   something to say. Each entry shows a removed or decided role, the verdict stored on it, the
-  verdict today's pay rule would give, why, and the command to reopen it
-  (`record.py decide <id> pursue|park`) or to dismiss it (`record.py screened <id>`). The page
+  verdict today's pay rule would give, why, and, in plain words, what to tell Claude to reopen it
+  (as pursue or parked) and to record that you screened it. The page
   changes nothing itself. If the check could not run, or could not read a role, the section says so
   rather than disappearing.
 - **Drafts to review** shows each staged message with its full text and a **Copy as prompt**
-  button (see below). A touch that is due, an application with no follow-up drafted, and a person
-  who is due each appear as a short row ("no draft yet, <why>") that links to the channel, role or
-  person it is about. The list can be narrowed by when a message is due, whether it is ready to send, and its medium; a choice
+  button (see below). Since 0.88.0 it lists drafts only: the "no draft yet, <why>" rows for a
+  touch that is due, an application with no follow-up drafted, and a person who is due are gone,
+  and **People due** is retired. Who needs a next step is the **Network** list. The list can be narrowed by when a message is due, whether it is ready to send, and its medium; a choice
   that would show exactly the same rows as *All* is not drawn.
+- **Network** (since 0.88.0) is your communication plan: one row for each person or role that
+  needs a next step, in groups (To record; Applied, no one contacted yet; Awaiting a reply;
+  Referral handoffs; Relationships due this week), each with who, why, the last touch and a
+  suggested next step. Contact with a person by any route clears an owed follow-up on an
+  application, and one that nobody answers expires after `network.owed_followup_days` days
+  (7 to 90, default 30). An expiry is listed once under that week's "Expired" line and said once in
+  the first run summary after it. How the network is going (reach-outs against budget, chats held,
+  introductions) is in the weekly review, not here. Nothing on the page sends anything.
+- **Targets to review** (since 0.88.0) is a short weekly list of companies you have not yet
+  answered, each with **yes**, **no** and **later**, and "this is a staffing firm or aggregator".
+  Aggregators and staffing firms are left out, **later** hides a company for the rest of the
+  week, and a counted line says how many more are waiting or snoozed.
+- **Every action on the page is plain words, never a command.** A button copies a block that names
+  the record, says what you are asking, and starts by naming the jobsearch coordinator. Paste it
+  into Claude Code on the machine that holds your search. Pasted anywhere else (claude.ai, or a
+  second machine on an older version), nothing is written, because that session cannot see your
+  files.
 - **Opportunities to pursue** lists only roles where a pursue-or-pass decision is owed. Since 0.87.0 that means roles the plugin has finished reading and researching (*ready*); a role held for its company, a duplicate of another role, or one still being read or researched is not listed. The older
   **Show** and **Whose** choices (your move, in live conversation, sent, in interviews, parked,
   ended) are gone, because those roles are not on this page: roles in flight are in the status

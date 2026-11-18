@@ -1122,6 +1122,106 @@ def parse_pay_slot(slot):
     return {"state": state, "ranges": ranges, "source": PAY_SOURCES[state]}, None
 
 
+# ---- dev #846 (jobsearch 0.88.0, design-jobsearch-0.88.0.md section 3.3): the ONE detector of a pay phrase in a posting --------
+#
+# `none shown` may be recorded only when the whole description was read AND states no pay. A reader that did not find pay used to
+# have only the word `none` to say so, and `record.py read-jd --via fetch` checked only that the figures it was GIVEN appear in
+# the saved body, never that a `none` is true of it. `pay_phrase` is what the refusal asks: does this text state a pay at all?
+#
+# It FINDS a phrase and never PARSES a value (`45.000` is forty-five thousand in one locale and forty-five in another; the
+# detector only needs to know a figure is there, so the ambiguity costs nothing). The error direction, stated:
+#   * a FALSE NEGATIVE is the dev #846 behaviour (a none-shown is accepted): a listing in a currency or language outside the
+#     lists below stays exposed, and the rule then rests on the agent text (`jd-reader.md`). PARTIAL, by construction.
+#   * a FALSE POSITIVE is a RECURRING cost: a posting that states no salary but says "salary ... a $20 per month perk" makes
+#     every fetch `--pay none` on it refused, so the role stays NOT captured after every read. It is never a removal. Nothing
+#     measures the rate.
+# OURS (the closed subset); the notation variance is documented (Unicode CLDR number patterns, ISO 4217).
+PAY_CURRENCY_SYMBOLS = ("R$", "$", "£", "€", "¥", "₹", "₩", "₪", "₺")
+PAY_CURRENCY_CODES = ("USD", "GBP", "EUR", "CAD", "AUD", "NZD", "CHF", "SEK", "NOK", "DKK", "PLN", "CZK", "JPY", "CNY", "INR",
+                      "SGD", "HKD", "ZAR", "BRL", "MXN", "ILS", "AED")
+PAY_SALARY_WORDS = ("salary", "base", "pay", "compensation", "OTE", "wage", "Gehalt", "salaire", "salario", "stipendio",
+                    "salaris", "lön", "lønn", "pensja")
+PAY_RANGE_CONNECTORS = ("-", "–", "—", "to", "bis", "à")
+PAY_PHRASE_CLIP = 80
+PAY_RANGE_SPAN = 40             # a range's first mark to its second amount, in characters
+PAY_WORD_SPAN = 30              # a single marked amount to the nearest salary word, in characters
+# One amount: digits grouped by `,` `.` a space or `'`, or a plain number with an optional decimal part, then an optional
+# `k`/`K`. An amount followed by `M`/`B`/million/billion is a company size or a raise, never a pay (`$5M raised`).
+_PAY_AMOUNT = (r"(?:\d{1,3}(?:[,.   '’]\d{3})+|\d+(?:[.,]\d+)?)(?:\s?[kK](?!\w))?"
+               r"(?!\s?(?:[MmBb]\b|[Mm]illion|[Bb]illion|bn\b))")
+# the closed tuple of pattern TEMPLATES; `%(mark)s` is the alternation of currency marks, `%(amount)s` one amount
+PAY_PHRASE_PATTERNS = (
+    ("range", r"(?:(?:%(mark)s)\s?%(amount)s|%(amount)s\s?(?:%(mark)s))\s*(?:%(conn)s)\s*"
+              r"(?:(?:%(mark)s)\s?)?%(amount)s(?:\s?(?:%(mark)s))?"),
+    ("marked-amount", r"(?:(?:%(mark)s)\s?%(amount)s|%(amount)s\s?(?:%(mark)s))"),
+)
+_PAY_PATTERN_CACHE = {}
+
+
+def _pay_mark_alternation(marks):
+    """The regex alternation of every currency mark: the closed symbols and ISO codes, then the profile's own (`marks`).
+    A mark made of letters needs a letter boundary on both sides (`CAD` is not the start of `CADENCE`); a symbol does not."""
+    seen, parts = set(), []
+    for m in tuple(PAY_CURRENCY_SYMBOLS) + tuple(PAY_CURRENCY_CODES) + tuple(str(x) for x in (marks or ())):
+        m = m.strip()
+        if not m or m in seen:
+            continue
+        seen.add(m)
+        parts.append((r"(?<![A-Za-z])%s(?![A-Za-z])" % re.escape(m)) if re.match(r"^[A-Za-z]+$", m) else re.escape(m))
+    parts.sort(key=len, reverse=True)           # `R$` before `$`
+    return "|".join(parts)
+
+
+def _pay_patterns(marks):
+    key = tuple(sorted(str(x) for x in (marks or ()) if str(x).strip()))
+    got = _PAY_PATTERN_CACHE.get(key)
+    if got is None:
+        sub = {"mark": _pay_mark_alternation(marks), "amount": _PAY_AMOUNT,
+               "conn": "|".join(re.escape(c) for c in PAY_RANGE_CONNECTORS)}
+        got = {name: re.compile(tpl % sub) for name, tpl in PAY_PHRASE_PATTERNS}
+        got["word"] = re.compile(r"(?<!\w)(?:%s)(?!\w)" % "|".join(re.escape(w) for w in PAY_SALARY_WORDS), re.IGNORECASE)
+        _PAY_PATTERN_CACHE[key] = got
+    return got
+
+
+def pay_phrase(text, marks=()):
+    """The FIRST pay phrase in `text`, verbatim (whitespace collapsed, clipped to `PAY_PHRASE_CLIP` characters), or `None`
+    (dev #846; design 3.3). It matches either of two shapes:
+
+      1. a RANGE: a marked amount, a connector (`-` `–` `—` `to` `bis` `à`) and a second amount, all within
+         `PAY_RANGE_SPAN` characters (a dollar range, `45.000 € – 55.000 €`, `60k€ - 70k€`, `CHF 120'000 to 140'000`);
+      2. a single MARKED amount within `PAY_WORD_SPAN` characters of a salary word (`PAY_SALARY_WORDS`, whole word, case
+         folded): `salary of <a dollar amount>`, `Gehalt: 70.000 EUR`.
+
+    A MARK is a symbol or an ISO code from the closed lists above, or one of `marks` (the profile's own currency code and
+    symbol, which `record.py` passes). A lone amount with a unit and no salary word near it ("$100 per month wellness stipend")
+    is NOT a pay phrase, and neither is a company size ("$5M raised"). The value is never parsed. Text that is not a string
+    has no phrase. See the block comment above for the error direction."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    text = text.replace(" ", " ").replace(" ", " ")
+    pats = _pay_patterns(marks)
+    found = []
+    for m in pats["range"].finditer(text):
+        if m.end() - m.start() <= PAY_RANGE_SPAN:
+            found.append((m.start(), m.end()))
+    words = [(w.start(), w.end()) for w in pats["word"].finditer(text)]
+    for m in pats["marked-amount"].finditer(text):
+        for ws, we in words:
+            gap = ws - m.end() if ws >= m.end() else (m.start() - we if we <= m.start() else 0)
+            if gap <= PAY_WORD_SPAN:
+                found.append((min(ws, m.start()), max(we, m.end())))
+                break
+    if not found:
+        return None
+    found.sort()
+    start, end = found[0]
+    for s2, e2 in found[1:]:                    # a salary word before a range quotes the whole range, not half of it
+        if s2 <= end:
+            end = max(end, e2)
+    return " ".join(text[start:end].split())[:PAY_PHRASE_CLIP]
+
+
 def parse_posted_slot(slot):
     """`(kind, value, None)` or `(None, None, why)` for the `posted=` slot: kind `unknown` (`?`),
     `board-relative` (a bare `YYYY-MM-DD`), `ats-posted` (`ats:YYYY-MM-DD`) or `age` (`<n>d`, a
@@ -1263,7 +1363,8 @@ def role_payload(r, run_date):
     script already parsed.
 
       listed_pay         the `opportunities.listed_pay` object (state, ranges, source, captured_on),
-                         or None when `pay=?` (not read: the opportunity field is left ABSENT)
+                         or None when `pay=?` (not read: the opportunity field is left ABSENT) or `pay=none` (dev #846: a
+                         card showing no pay is not evidence the listing states none, so nothing is stored)
       posted             the `opportunities.posted` object (date, source, recorded_on), or None for
                          `posted=?` (age unknown = absent). `<n>d` is `run date - n`, computed here
                          and never by the model
@@ -1276,7 +1377,11 @@ def role_payload(r, run_date):
                          `location.primary` and reads the onsite inference off it
       slots              the three slots verbatim, for the audit trail
     """
-    lp = dict(r["pay"], captured_on=run_date) if r.get("pay") else None
+    # dev #846 (0.88.0, design 3.1): a ROLE line is a CARD capture by construction -- the sweep read a results card, never the
+    # description -- so its `pay=none` is "the card shows no pay", which is NOT evidence the listing states none. It stores
+    # NO `listed_pay` (NOT captured: the screen asks for a re-read); the queue item keeps the verbatim `slots.pay`.
+    pay = r.get("pay")
+    lp = dict(pay, captured_on=run_date) if pay and pay.get("state") != "none-shown" else None
     posted = None
     kind, value = r.get("posted_parsed") or ("unknown", None)
     if kind == "age":

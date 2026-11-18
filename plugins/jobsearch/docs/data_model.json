@@ -29,6 +29,7 @@
     "plan_assigned_on",
     "note",
     "listed_pay",
+    "listed_pay_prior",
     "posted",
     "screen",
     "lean",
@@ -119,7 +120,9 @@
     "backed_by",
     "raised_on",
     "status_on",
-    "motivation"
+    "motivation",
+    "kind",
+    "later_on"
    ],
    "required": [
     "id",

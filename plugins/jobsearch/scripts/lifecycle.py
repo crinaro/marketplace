@@ -118,8 +118,11 @@ import posting_check as _pc
 # constants
 # ----------------------------------------------------------------------------------------------
 
-RUN_LIVENESS_HOURS = 8
-DRAIN_BUDGET_S = 10800                  # 3 h: the most a drain may be asked to do (N7)
+# dev #836 (0.88.0, D5): the three numbers of the liveness invariant are defined ONCE, in config_keys (the leaf this
+# module already imports); these are names bound to them, never literals. The window a profile uses is its
+# `runs.liveness_hours` (`_ck.liveness_hours(cfg)`), read where a run is judged over; RUN_LIVENESS_HOURS is the default.
+RUN_LIVENESS_HOURS = _ck.RUN_LIVENESS_HOURS_DEFAULT
+DRAIN_BUDGET_S = _ck.DRAIN_BUDGET_S     # 3 h: the most a drain may be asked to do (N7)
 PER_ROLE_S_DEFAULT = 270                # an ESTIMATE until `per_role_s` is measured (N7)
 PER_ROLE_MIN_FINISHED = 5               # a close counts toward the measured rate only with this many finished
 PER_ROLE_WINDOW = 5                     # the last N own closes whose median is the measured rate
@@ -128,7 +131,7 @@ PER_ROLE_WINDOW = 5                     # the last N own closes whose median is 
 # outlast it: the figure UNDERSTATES a healthy run and is a "worth a look" line, not a bound. That is why the
 # run generating the page is left out of `overlong_runs` (C7 / S5, `--run`); a DIFFERENT open run past it
 # still alerts. The value is unchanged.
-LONGEST_RUN_S = 8100
+LONGEST_RUN_S = _ck.LONGEST_RUN_S
 DRAIN_FANOUT = 1                        # readers/researchers at once. Raising it needs P-RP-1a (N3), and a design for the
                                         # browser path: a second reader would compete for the one FRONT tab the first
                                         # reader's pages need to render (0.85.0, design-hidden-pane-reads.md section 5.2)
@@ -581,7 +584,8 @@ class Ctx(object):
                 run["end"] = r
             elif ev == "drain" and r.get("phase") == "planned":
                 run["planned"] = r
-        horizon = self.now - datetime.timedelta(hours=RUN_LIVENESS_HOURS)
+        self.liveness_hours = _ck.liveness_hours(self.cfg)         # dev #836: the profile's own window (default 8)
+        horizon = self.now - datetime.timedelta(hours=self.liveness_hours)
         for rid, run in runs.items():
             closed = closed_event(self.recs, rid)
             run["closed"] = closed
@@ -1599,7 +1603,7 @@ def close_result(data, run_id, now, by=None):
     if by is not None and by != run_id and not run["over"]:
         raise LifecycleError(
             "run %r is not over (its own latest event is inside the %d-hour window and it has no end "
-            "event), so run %r may not close it on its behalf" % (run_id, RUN_LIVENESS_HOURS, by))
+            "event), so run %r may not close it on its behalf" % (run_id, ctx.liveness_hours, by))
     res = CloseResult()
     adm = run["planned"].get("admitted") or {}
     recs = ctx.recs

@@ -144,13 +144,12 @@ before they were centralized — a value stated twice is a value that disagrees 
 
 1. **There are FOUR settings, and `location.type: onsite` does NOT mean relocation.** An office
    inside the commute radius is the separate, LOWER **local-onsite** tier — a local discount that
-   costs the candidate nothing. A re-scoring pass once failed a role against the RELOCATION bar
-   when the office was 25 minutes from the house. `effective_setting()` encodes this; an
+   costs the candidate nothing. `effective_setting()` encodes this; an
    unrecognized onsite location returns **NEEDS-COMMUTE-CHECK, never relocation-by-default.**
-2. **Undisclosed comp is KEPT, never screened** — comp is the first question, not a filter. But a
-   band whose **TOP** is below the applicable floor is **REMOVED, not merely flagged**, unless the
-   candidate accepts it (`decide <id> pursue --why-kind comp-acceptable`). Fractional, interim, advisory and
-   contract roles use `compensation.non_employee`, never removal. `--screen-all` is the arbiter; never re-derive a tier.
+2. **Undisclosed comp is KEPT, never screened** — comp is the first question, not a filter. A
+   band whose **TOP** is below the applicable floor of the same `basis` (base or total; unlike bases are a review) is **REMOVED, not merely flagged**, unless the
+   candidate accepts it (`decide <id> pursue --why-kind comp-acceptable`). Non-employee engagements
+   use `compensation.non_employee`, never removal. `--screen-all` is the arbiter; never re-derive a tier.
 3. **A stated boundary is data, not a gap to write around.** `config.positioning.scope_boundaries`
    lists capabilities confirmed absent. Naming a limit makes everything before it more credible;
    stretching one loses the room.

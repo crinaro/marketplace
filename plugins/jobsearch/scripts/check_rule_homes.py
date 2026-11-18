@@ -79,7 +79,7 @@ ARCHIVE = os.path.join(ROOT, "docs", "incident_archive.md")
 #   the library — a distinction every run loads and must not get backwards. The old, SHORTER
 #   sentence it replaces ("`account` defaults to `all` on both") was also WRONG once the guard
 #   shipped, so this is a correction that happens to cost words, not narrative.
-MAX_CLAUDE_WORDS = 5793
+MAX_CLAUDE_WORDS = 5780
 
 # Where a rule is allowed to live. Deliberately broader than focus.md's original list, which
 # named only CLAUDE.md and agent definitions — that is precisely why data-shaped lessons (the

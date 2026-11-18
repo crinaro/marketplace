@@ -1105,7 +1105,16 @@ PAY_INTERVALS = ("year", "month", "day", "hour")          # R2: the four units p
 # dev #820 / public #175 (0.82.0): WHERE a figure came from -- the capture card, the JD read, or the
 # candidate. Absent on a legacy row (not rewritten). `source` says what FORM the figure took.
 PROVENANCES = ("card", "jd", "candidate")
-LISTED_PAY_KEYS = ("state", "ranges", "source", "captured_on", "inferred_from", "provenance")
+LISTED_PAY_KEYS = ("state", "ranges", "source", "captured_on", "inferred_from", "provenance", "none_basis")
+# dev #846 (0.88.0, design 4.4): `none_basis` says HOW a `none-shown` was earned -- the route of the read (`record.py read-jd --via`)
+# that stated the description holds no pay. Legal only on a `none-shown` whose source is `listing-text`: a legacy none-shown has
+# none (the 0.88.0 migration moves those to `listed_pay_prior`), and the candidate's own none (`source: candidate`) needs no basis.
+NONE_BASES = ("fetch", "render", "feed", "ats-api")
+# A superseded `listed_pay` kept in `listed_pay_prior` (append-only) carries two more keys: when and by what it was moved.
+SUPERSEDED_KEYS = ("superseded_on", "superseded_by")
+# dev #915 (0.88.0, design 6.3, 6.4): what a company IS, by the candidate's own word (`record.py company-kind`). Absent means
+# `your_move.company_kind()` derives it from a channel of that name, then a name heuristic, else `employer`.
+COMPANY_KINDS = ("employer", "staffing", "aggregator")
 INFERRED_FROM = ("description",)             # dev #775: how a figure was READ, not what the listing showed
 PAY_RANGE_KEYS = ("min", "max", "currency", "interval", "label")
 CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
@@ -1165,18 +1174,34 @@ def _unknown_keys(obj, allowed, label, problems):
             problems.append("%s: unknown key %r (known: %s)" % (label, k, ", ".join(allowed)))
 
 
-def check_listed_pay(lp, label, problems):
+def check_listed_pay(lp, label, problems, prior=False):
     """`listed_pay` (design §3.1, R2): `{state, ranges?, source, captured_on}`. Refuses an unknown
     state, source or interval; an empty `ranges` on a stated or estimated pay; ranges on a
     none-shown pay; `min` above `max`; a range with neither figure; a currency that is not three
     capitals; `board-estimate` from anywhere but a board's own widget; `ats-api` or `json-ld`
-    behind anything but an employer-stated pay."""
+    behind anything but an employer-stated pay.
+
+    dev #846 (0.88.0): `none_basis` is one of `NONE_BASES` and legal only on a `none-shown` read from `listing-text`. With
+    `prior=True` the object is an entry of `listed_pay_prior` (a superseded `listed_pay`): it also carries `superseded_on` (an ISO
+    date) and `superseded_by` (a non-empty string), both REQUIRED there and refused anywhere else."""
     if not isinstance(lp, dict):
         problems.append("%s: listed_pay must be an object (state, ranges, source, captured_on) -- "
                         "got %s" % (label, type(lp).__name__))
         return
-    _unknown_keys(lp, LISTED_PAY_KEYS, label + " listed_pay", problems)
+    _unknown_keys(lp, LISTED_PAY_KEYS + (SUPERSEDED_KEYS if prior else ()), label + " listed_pay", problems)
+    if prior:
+        if not _real_date(lp.get("superseded_on")):
+            problems.append("%s: listed_pay_prior entry superseded_on not an ISO date -- %r" % (label, lp.get("superseded_on")))
+        if not (isinstance(lp.get("superseded_by"), str) and lp["superseded_by"].strip()):
+            problems.append("%s: listed_pay_prior entry superseded_by must be a non-empty string (the migration or the read that "
+                            "moved it) -- %r" % (label, lp.get("superseded_by")))
     state, source = lp.get("state"), lp.get("source")
+    if "none_basis" in lp:
+        if lp["none_basis"] not in NONE_BASES:
+            problems.append("%s: listed_pay.none_basis %r not in {%s}" % (label, lp["none_basis"], ", ".join(NONE_BASES)))
+        elif state != "none-shown" or source != "listing-text":
+            problems.append("%s: listed_pay.none_basis is legal only with state 'none-shown' and source 'listing-text' -- got %r "
+                            "and %r" % (label, state, source))
     if state not in LISTED_PAY_STATES:
         problems.append("%s: listed_pay.state %r not in {%s}" % (label, state,
                                                                  ", ".join(LISTED_PAY_STATES)))
@@ -1833,6 +1858,21 @@ def check_company_fields(c, label, problems):
         elif ro > datetime.date.today().isoformat():
             problems.append("%s: raised_on %s is after today: a company is raised on the day a run raised it (it is "
                             "written only by `record.py raise-companies`)" % (label, ro))
+    # dev #915 (jobsearch 0.88.0, design-jobsearch-0.88.0.md 6.3, 6.4): `kind`, what the candidate says a company IS, and
+    # `later_on`, the day they asked to hear about it later (a derived snooze on the Targets-to-review list, never a status).
+    # Both are optional and absent has a defined meaning; a PRESENT one must be well formed. Their writers are `record.py
+    # company-kind` and `record.py company-later`.
+    if "kind" in c and c["kind"] not in COMPANY_KINDS:
+        problems.append("%s: kind must be one of %s -- %r (written by `record.py company-kind %s <kind>`)"
+                        % (label, ", ".join(COMPANY_KINDS), c["kind"], cid))
+    if "later_on" in c:
+        lo = c["later_on"]
+        if not (isinstance(lo, str) and DATE_RE.match(lo)):
+            problems.append("%s: later_on must be an ISO date (YYYY-MM-DD) -- %r (it is written only by `record.py "
+                            "company-later %s`)" % (label, lo, cid))
+        elif lo > datetime.date.today().isoformat():
+            problems.append("%s: later_on %s is after today: \"later\" is the day the candidate said it (written only by "
+                            "`record.py company-later %s`)" % (label, lo, cid))
 
 
 def resolve_person(pid, merged_into):
@@ -3460,6 +3500,15 @@ def _main():
         # optional and ABSENT has a defined meaning, so only a PRESENT value is checked.
         if "listed_pay" in r:
             check_listed_pay(r["listed_pay"], label, problems)
+        if "listed_pay_prior" in r:
+            # dev #846 (0.88.0, design 4.2): the append-only list of every `listed_pay` a supersede moved aside
+            prior = r["listed_pay_prior"]
+            if not isinstance(prior, list) or not prior:
+                problems.append("%s: listed_pay_prior must be a non-empty list of superseded listed_pay objects (absent means "
+                                "nothing was superseded) -- got %r" % (label, prior))
+            else:
+                for i, entry in enumerate(prior):
+                    check_listed_pay(entry, "%s listed_pay_prior[%d]" % (label, i), problems, prior=True)
         if "posted" in r:
             check_posted(r["posted"], label, problems)
         if "screen" in r:

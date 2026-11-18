@@ -335,6 +335,12 @@ def sec_runs_effect(root, today):
     if not starts:
         return {"verdict": "no-runs-recorded",
                 "detail": "no run has recorded a start in the journal"}
+    # dev #836: a run that started and died names what it left, and the verdict says so before any other (a bare
+    # "did work" line must never hide a dead run). A run already reviewed (`journal.py --dispose`) is listed, not alarmed.
+    died = [d for d in (fp.get("died_mid_run") or []) if not d.get("disposed")]
+    if died:
+        return {"verdict": "died-mid-run",
+                "detail": "; ".join(check_runs.format_died_run(d) for d in died[:2])}
     last_day = str(starts[0].get("at") or "")[:10]
     latest = str(fp.get("latest") or "")
     flags = []
@@ -538,7 +544,7 @@ def band_line(obj):
     rn = obj.get("runs")
     if isinstance(rn, dict) and rn.get("last_at"):
         eff = obj.get("runs_effect")
-        verdict = {"did-work": "did work", "ran-quiet": "quiet"}.get(
+        verdict = {"did-work": "did work", "ran-quiet": "quiet", "died-mid-run": "DIED MID-RUN"}.get(
             (eff or {}).get("verdict"), "") if isinstance(eff, dict) else ""
         parts.append("last run %s%s" % (str(rn["last_at"])[11:16] or str(rn["last_at"]),
                                         " " + verdict if verdict else ""))

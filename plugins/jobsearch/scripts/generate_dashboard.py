@@ -90,6 +90,7 @@ import conversations as _conv_mod
 import config_keys as _ck
 import warm_path as _warm_path                                   # dev #751: the warm-path next action
 import funnel_report as _funnel                                  # dev #834 (M4, M5): the Network list's rows
+import dashboard_actions as _actions                             # dev #915: the copy-as-prompt action blocks
 # ⭐ THE ONE DEFINITION OF "CURRENT" — resume_variants.py owns union_hash (the canonicalized,
 # line-ending/trailing-space/trailing-newline-insensitive stamp `--stamp` writes onto
 # union_sha). This file used to recompute a RAW sha256 of the union's bytes, which agreed with
@@ -182,6 +183,61 @@ def read(name: str) -> str:
 
 def esc(s: str) -> str:
     return html.escape(s, quote=False)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# jobsearch 0.88.0 (dev #915, design 7.1-7.2): THE PAGE CARRIES NO COMMAND.
+#
+# `plain(text)` is the ONE choke point for ENGINE text written for the engine (a `record.py ...` hint, a
+# `plays.py --check` pointer): each CLI span becomes plain words, a verb in `PLAIN_VERBS` its own phrase and anything
+# else "ask Claude to ...". `THEIRS_SITES` is the closed list of spans the renderer did NOT author (the candidate's own
+# role titles, names, draft bodies, snippets): `theirs()` wraps each in `data-theirs`, which check_dashboard_coverage's
+# NO CLI gate does not scan, so a draft that says "python3" never turns the page red. An action is a copy-as-prompt
+# BLOCK (`dashboard_actions.block`), never a command.
+# ─────────────────────────────────────────────────────────────────────────────
+THEIRS_SITES = _actions.THEIRS_SITES
+
+PLAIN_VERBS = {
+    "company-status": "answer it in your session", "decide": "tell Claude your decision",
+    "screened": "tell Claude you have screened it", "read-jd": "tell Claude you read the posting yourself",
+    "attended": "tell Claude whether the chat happened", "chat": "tell Claude about the chat",
+    "confirm": "tell Claude yes", "decline": "tell Claude no", "proposal-status": "tell Claude it was sent",
+    "touch": "tell Claude you sent it",
+}
+_CLI_SPAN_RE = re.compile(
+    r"`?(?:~/\.claude/jobsearch/run\s+)?(?:python3\s+)?(?:scripts/)?\b([a-z_][a-z0-9_]*)\.py\b"
+    r"(?:\s+([a-z][a-z-]*))?"
+    r"((?:\s+(?:--?[a-z][\w-]*(?:\s+(?!(?:and|or|then|to|for|the|a|on|in|is|if|but|so)\b)[\w:.-]+)?"
+    r"|<[^>]*>|\[[^\]]*\]|%s|[\w.:-]*[-\d_:][\w.:-]*))*)`?")
+
+
+def plain(text):
+    """Engine text with every CLI span turned into plain words (see the banner above). Never raises."""
+    def _one(m):
+        name, verb, flags = m.group(1), m.group(2), m.group(3) or ""
+        if name == "record":
+            return PLAIN_VERBS.get(verb or "", "ask Claude to record this")
+        if "check" in flags or "audit" in flags or verb in ("check", "audit"):
+            return "ask Claude to check this"
+        return "ask Claude to run this"
+    out = _CLI_SPAN_RE.sub(_one, str(text))
+    out = re.sub(r"~/\.claude/jobsearch/run", "the plugin", out)
+    return re.sub(r"\bpython3\b", "Claude", out)
+
+
+def theirs(text, site):
+    """`text` escaped and wrapped in `data-theirs="<site>"`: the candidate's own words, which the NO CLI gate skips.
+    `site` must be one of `THEIRS_SITES` (a closed tuple, so the exclusion cannot grow by accident)."""
+    if site not in THEIRS_SITES:
+        raise ValueError("unknown data-theirs site %r" % site)
+    return '<span data-theirs="%s">%s</span>' % (site, esc(str(text)))
+
+
+def theirs_html(fragment, site):
+    """An already-escaped fragment (a `md_inline` result) wrapped as the candidate's own words (`THEIRS_SITES`)."""
+    if site not in THEIRS_SITES:
+        raise ValueError("unknown data-theirs site %r" % site)
+    return '<span data-theirs="%s">%s</span>' % (site, fragment)
 
 
 def md_inline(s: str) -> str:
@@ -583,9 +639,9 @@ def _lean_html(o, role_state, stage=None):
                 % (esc(ln["lean"]), esc(ln["line"]), sigs))
     if role_state == _ym.GROUP_YOUR_READ and stage is not None:
         return ('<div class="opp-lean opp-read" data-read="%s"><strong>YOUR READ</strong> &middot; %s'
-                ' &middot; <code>%s</code></div>'
+                ' &middot; %s</div>'
                 % (esc(str(stage.cause or "")), esc(_ym.your_read_reason(stage)),
-                   esc(_ym.YOUR_READ_REMEDY % (o.get("id") or "<id>"))))
+                   esc(plain(_ym.YOUR_READ_REMEDY % (o.get("id") or "<id>")))))
     if role_state in (_ym.GROUP_FAILURE, _ym.GROUP_INTAKE, _ym.GROUP_PROGRESS) and stage is not None:
         return ('<div class="opp-lean opp-process" data-process="%s">%s</div>'
                 % (esc(role_state), esc(_ym.group_why(role_state, stage, o))))
@@ -805,8 +861,8 @@ def render_opportunity_list(opps, companies, attention=None, owner=None, involve
         rows.append((o.get("id"),
             f'<div class="opp"{_rec_attrs(_key)}{_dim_attrs(dims)}>'
             f'  <div class="opp-head">'
-            f'    <div class="opp-title">{esc(str(o.get("title") or "Untitled role"))}'
-            f'      <span class="opp-co">{esc(comp.get("name", o.get("company_id", "")))}</span>'
+            f'    <div class="opp-title">{theirs(str(o.get("title") or "Untitled role"), "role-title")}'
+            f'      <span class="opp-co">{theirs(str(comp.get("name", o.get("company_id", ""))), "company-name")}</span>'
             f'      {jd}{_pursuit_chip(_p)}</div>'
             f'    <div class="opp-rail">{stage_rail(o)}</div>'
             f'  </div>'
@@ -1018,7 +1074,8 @@ def render_draft_entries(entries, empty_msg):
         return '<div class="sub">%s</div>' % empty_msg
     out = []
     for title, blocks in entries:
-        parts = ['<div class="draft"><div class="draft-title">%s</div>' % md_inline(title)]
+        parts = ['<div class="draft"><div class="draft-title">%s</div>'
+                 % theirs_html(md_inline(title), "message-snippet")]
         for kind, val in blocks:
             if kind == "meta":
                 parts.append('<div class="draft-meta">%s</div>'
@@ -1150,7 +1207,7 @@ def render_knowledge_docs(docs, empty_msg):
         _cover("prep:%s" % rel, "rendered", "preps")
         out.append('<details class="kdoc"%s data-full="1"><summary><strong>%s'
                    '</strong> <code class="fileref">%s</code></summary>'
-                   '<div class="kdoc-body">%s</div></details>'
+                   '<div class="kdoc-body" data-theirs="kdoc-body">%s</div></details>'
                    % (_rec_attrs("prep:%s" % rel), md_inline(title), esc(rel), inner))
     return "".join(out)
 
@@ -1212,8 +1269,8 @@ _SEND_WHERE = {
     "unreadable": "needs YOU — rewrite the **Blocked until:** line as contact:<id> "
                   "outcome:<...>; the strict parser refuses it",
     "unaddressed": "needs YOU — no recipient identified; add a **To:** contact:<id> line",
-    "unbriefed": "needs YOU — drafted without reading the thread; run "
-                "brief.py --rebrief",
+    "unbriefed": "needs YOU — drafted without reading the thread; ask Claude to refresh "
+                "the brief",
     "brief-mismatch": "needs YOU — the cited brief names someone else; rebrief this entry",
     "stale-brief": "needs YOU — they wrote since this was drafted; rebrief, or redraft if "
                   "the register moved",
@@ -1294,12 +1351,12 @@ def copy_prompt_text(key, title, blocks, filename="outreach/drafts.md"):
             quoted.extend("> " + ln for ln in p.split("\n"))
     n = draft_ordinal(key, title)
     return "\n".join(
-        ["Apply a correction to one of my staged drafts (copied from the dashboard).",
+        ["Apply a correction to one of my staged drafts (copied from the dashboard; "
+         "send it to /jobsearch:coordinator).",
          "Draft key: %s" % key,
          "Title: %s" % title,
          "Ordinal: %d (among entries titled exactly this, in %s order)" % (n, filename),
-         "Use the Apply review comments step: apply_correction.py --draft %s --ordinal %d "
-         "--source chat, dry run first, show me the diff." % (json.dumps(title), n),
+         "Use the Apply review comments step: dry run first, show me the diff.",
          "Current text:"]
         + (quoted or ["> (this draft has no quoted text yet)"])
         + ["Correction: <describe the change here>"])
@@ -1317,8 +1374,22 @@ def render_copy_as_prompt(key, title, blocks, filename):
                html.escape(copy_prompt_text(key, title, blocks, filename), quote=True)))
 
 
+ACTION_HINT = "Paste into Claude Code on the machine that holds your search."
+
+
+def render_action_button(action, rec_id, label, name=None, **fields):
+    """One page action as a copy-as-prompt button (dev #915, design 7.3): the textarea holds the
+    `dashboard_actions.block`, which names the coordinator skill and carries a `Record id:`, never a command."""
+    text = _actions.block(action, rec_id, name=name, **fields)
+    return ('<div class="cap act"><button type="button" class="cap-btn" data-cap-key="%s" data-action="%s">%s'
+            '</button><span class="cap-hint sub" hidden>Press Cmd/Ctrl+C to copy, then paste it in your '
+            'session.</span><textarea class="cap-text" readonly hidden rows="5">%s</textarea></div>'
+            % (html.escape("%s %s" % (action, rec_id), quote=True), esc(action), esc(label),
+               html.escape(text, quote=True)))
+
+
 def render_message_list(set_name, kind, entries, states, filename, dims, empty_msg, keys=None,
-                        whens=None, refs=None):
+                        whens=None):
     """ONE list per file of the staged pair (public #48, stage 1): every OPEN entry — never
     a terminal one (public #29) — as a row carrying its precondition state chip, its meta
     line, where its full text lives, and the full body inline and collapsed — for EVERY open
@@ -1347,12 +1418,10 @@ def render_message_list(set_name, kind, entries, states, filename, dims, empty_m
     (a direct unit call) gets the title-only keys the old shape had.
 
     ⭐ dev #539 / public #133 (design r3 §4) - `whens` is {key: when} from
-    `your_move.outreach_due` (a draft is `waiting` when held or queued; else `now`) and `refs`
-    its reference rows: each other subject that owes a message (a relationship touch, an
-    application with no follow-up, a person due) is a `data-ref` row IN THIS LIST with the same
-    dimension attributes, a link to its primary row elsewhere, and `sendability: undrafted`.
-    A reference carries no body (the 1b floor is about drafts) and no ledger placement."""
-    if not entries and not refs:
+    `your_move.outreach_due` (a draft is `waiting` when held or queued; else `now`). jobsearch 0.88.0
+    (dev #915): the `refs` this list used to carry (a subject that owes a message and has no draft yet)
+    are the Network section's rows now; Drafts lists only drafts (ready, held, queued)."""
+    if not entries:
         return '<div class="sub">%s</div>' % empty_msg
     dim_names = [d for d, _src, _v in dims]
     if keys is None:
@@ -1414,100 +1483,28 @@ def render_message_list(set_name, kind, entries, states, filename, dims, empty_m
         # open entries only (terminal ones are filtered before this function).
         summary = "full text" if st == "sendable" else "full text — %s, not sendable" % label
         body = ('<details class="kdoc"><summary>%s</summary>'
-                '<div class="kdoc-body">%s</div></details>'
+                '<div class="kdoc-body" data-theirs="kdoc-body">%s</div></details>'
                 % (esc(summary), render_draft_entries([(title, blocks)], "")))
         # OWNER REQUEST 2026-10-13 - "Copy as prompt", on a DRAFT row only (never a cover
         # letter, never a reference row).
         if kind == "draft":
             body += render_copy_as_prompt(key, title, blocks, filename)
+        # dev #915: the row's SUBJECT (who the message is to, else the role it follows up, else itself) - the
+        # attribute check_dashboard_coverage's SUBJECT TWICE reads. Several drafts to one person are one section.
+        m_to = re.search(r"To:\s*contact:(\S+)", meta)
+        m_opp = re.search(r"Triggered by:\s*opp:(\S+)", meta)
+        subject = ("person:%s" % m_to.group(1)) if m_to else (("opp:%s" % m_opp.group(1)) if m_opp else key)
         out.append(
-            '<div class="draft%s"%s%s><div class="draft-title">%s '
+            '<div class="draft%s"%s%s data-subject="%s"><div class="draft-title">%s '
             '<span class="chip %s">%s</span>%s</div>'
             '%s%s'
             '<div class="sub">%s › %s · %s%s</div></div>'
-            % (" ws-loud" if loud else "", _rec_attrs(key), _dim_attrs(dims_here),
-               md_inline(title), cls, label, medium_flag,
-               ('<div class="draft-meta">%s</div>' % esc(meta)) if meta else "", body,
-               '<code class="fileref">%s</code>' % esc(filename), esc(title[:60]),
-               md_inline(_SEND_WHERE.get(st, st)), esc(queued_note)))
-    ref_members, ref_rows = {}, []
-    for rf in sorted(refs or [], key=lambda r: (_ym.OUTREACH_WHEN.index(r["when"]),
-                                                str(r.get("due") or "9999"), r["key"])):
-        d = {"sendability": "undrafted"}
-        if "when" in dim_names:
-            d["when"] = rf["when"]
-        if "medium" in dim_names:
-            d["medium"] = "unknown"
-        if rf.get("primary"):
-            # jobsearch 0.71.0 (dev #750): the subject's own row is no longer on this page (a channel
-            # or an in-flight role lives in the jobsearch panel), so this row IS its primary row here -
-            # `data-rec`, placed RENDERED in this list - and points at the panel instead of a link to
-            # nothing. "Touches due" are primary Drafts-to-review rows (design section 4).
-            members[rf["key"]] = d
-            keys.append(rf["key"])
-            _cover(rf["key"], "rendered", set_name)
-            ref_rows.append(
-                '<div class="draft draft-ref"%s%s><div class="draft-title">%s '
-                '<span class="chip action">no draft yet</span></div>'
-                '<div class="sub">%s%s · its full row is in the jobsearch panel '
-                '(<code>/jobsearch:status</code>)</div></div>'
-                % (_rec_attrs(rf["key"]), _dim_attrs(d), md_inline(rf["label"]), esc(rf["why"]),
-                   (" · due %s" % esc(str(rf["due"]))) if rf.get("due") else ""))
-            continue
-        ref_members[rf["key"]] = d
-        go = {"chan": "the channel ↓", "opp": "the role ↓", "person": "the person ↓"}.get(
-            rf["kind"], "the full row ↓")
-        ref_rows.append(
-            '<div class="draft draft-ref"%s%s><div class="draft-title">%s '
-            '<span class="chip action">no draft yet</span></div>'
-            '<div class="sub">%s%s · %s</div></div>'
-            % (_ref_attrs(rf["key"]), _dim_attrs(d), md_inline(rf["label"]), esc(rf["why"]),
-               (" · due %s" % esc(str(rf["due"]))) if rf.get("due") else "",
-               _ref_link(rf["key"], go)))
-    return render_filtered_list(set_name, dims, members, keys, "".join(out) + "".join(ref_rows),
-                                "", cls="", refs=ref_members)
-
-
-def render_people_due(root, today):
-    """dev #686 / public #139 (E1) — the NETWORK VIEW: people with NO opportunity who are due.
-
-    `your_move.network_people_due` is the ONE membership definition (it wraps
-    `classify_people`, the one owner of people-due, and drops anyone a pursuit already
-    carries); this renders its rows and computes nothing of its own. Each due row is
-    `data-rec="person:<id>"`: name, the state chip, and classify_people's own `why`. One sub
-    line counts the person-only people still `fresh` within their cadence, so a relationship
-    that is not due is acknowledged rather than silently absent. Returns (html, n_listed);
-    empty HTML when there is nothing to say (no due person and no fresh one), so a profile
-    with no cadence set sees no change to its page.
-
-    Every listed person is placed in the coverage ledger as RENDERED (`people-due`), and
-    `check_dashboard_coverage.py` expects exactly this membership, so a due person the page
-    forgot is a GAP, not a silence."""
-    try:
-        net = _ym.network_people_due(str(root), today)
-    except Exception:                                        # noqa: BLE001 — never takes the page down
-        return "", 0
-    due, n_fresh = net["due"], net["fresh"]
-    if not due and not n_fresh:
-        return "", 0
-    out = []
-    for person, state, why in due:
-        key = "person:%s" % person.get("id")
-        _cover(key, "rendered", "people-due")
-        out.append('<div class="draft"%s><div class="draft-title">%s '
-                   '<span class="chip %s">%s</span></div><div class="sub">%s</div></div>'
-                   % (_rec_attrs(key), md_inline(person.get("name") or person.get("id") or "?"),
-                      "action" if state == "due" else "waiting", esc(state), esc(why)))
-    if not out:
-        out.append('<div class="sub">No one is due.</div>')
-    if n_fresh:
-        out.append('<div class="sub">%d other relationship%s with no opportunity %s within '
-                   'cadence.</div>' % (n_fresh, "" if n_fresh == 1 else "s",
-                                       "is" if n_fresh == 1 else "are"))
-    return ('<h2 id="phase-outreach-people">👥 People due <span class="tcount">%d</span></h2>'
-            '<div class="sub" style="margin:-6px 0 10px">People you keep in touch with who are '
-            'not tied to a role — from each person\'s own cadence.</div>'
-            '<div class="card">%s</div>' % (len(due), "".join(out))), len(due)
+            % (" ws-loud" if loud else "", _rec_attrs(key), _dim_attrs(dims_here), esc(subject),
+               theirs_html(md_inline(title), "message-snippet"), cls, label, medium_flag,
+               ('<div class="draft-meta">%s</div>' % theirs(meta, "message-snippet")) if meta else "", body,
+               '<code class="fileref">%s</code>' % esc(filename), theirs(title[:60], "message-snippet"),
+               md_inline(plain(_SEND_WHERE.get(st, st))), esc(queued_note)))
+    return render_filtered_list(set_name, dims, members, keys, "".join(out), "", cls="")
 
 
 def render_knowledge_index(docs, empty_msg, where, cap=None, rec_kind=None, chip=""):
@@ -2118,7 +2115,7 @@ READ_SECTION = "phase-needs-read"
 NETWORK_SECTION = "phase-network"
 
 
-def render_jump_bar(n_drafts, n_opps, n_apply=None, n_flags=None, n_read=None, n_network=None):
+def render_jump_bar(n_drafts, n_opps, n_apply=None, n_flags=None, n_read=None, n_network=None, n_targets=None):
     """The pinned jump bar (OWNER REQUEST 2026-10-13, three entries since jobsearch 0.71.0):
     `Drafts (N)`, `Opportunities (N)` and `Applications (N)`, each an in-page link to its list's
     heading. Pinned by CSS `position: sticky` only - no script - and offset by the viewer's top
@@ -2136,6 +2133,8 @@ def render_jump_bar(n_drafts, n_opps, n_apply=None, n_flags=None, n_read=None, n
             # "Reconsider" it exists ONLY while the list does, so the bar stays bounded by list count and a
             # profile with nothing for the network to ask carries no `(0)` label.
             out.append('<a class="jump" href="#%s">Network (%d)</a>' % (NETWORK_SECTION, n_network))
+        if i == 0 and n_targets is not None:
+            out.append('<a class="jump" href="#%s">Targets (%d)</a>' % (TARGETS_SECTION, n_targets))
     if n_read is not None:
         # dev #820: "Needs your read" exists ONLY while a role waits on the candidate's own read.
         out.append('<a class="jump" href="#%s">Your read (%d)</a>' % (READ_SECTION, n_read))
@@ -2715,7 +2714,7 @@ def your_move_callouts():
             continue
         ns = _play_next_step(o, _play_ctx, _today_iso)
         if ns.kind == "stalled":
-            ask = "The play is stalled: %s — see `plays.py --check`." % ns.why
+            ask = "The play is stalled: %s — ask Claude to check the plays." % ns.why
             stalled.append((_role_title(o, companies, "🎬"), ask, o.get("id")))
 
     return ([(t, a, oid) for (t, a, oid, _d) in unresolved],
@@ -2763,7 +2762,7 @@ def render_your_move_callouts(unresolved, waiting, fulfilled, stalled_plays, lin
             '<h2 style="font-size:16px;margin-top:22px">🎬 Stalled plays '
             '<span class="tcount">%d</span></h2>'
             '<div class="sub" style="margin:-6px 0 10px">No runnable step, and no known clock '
-            'will flip one (<code>plays.py --check</code>). The play is the authority for '
+            'will flip one (ask Claude to check the plays). The play is the authority for '
             "what's next — this is what it found nothing to do about.</div>"
             '<div class="card">%s</div>'
             % (len(stalled_plays), render_your_move(stalled_plays, links,
@@ -3136,10 +3135,11 @@ def render_rescreen_flags(flags, unreadable, failed, companies):
             '<div class="rs-line">Stored verdict <code>%s</code>; jobsearch 0.73.0 would give '
             '<code>%s</code> (%s).</div>'
             '<div class="rs-line sub">Why: %s</div>'
-            '<div class="rs-act">To reopen: <code>%s</code></div></div>'
+            '<div class="rs-act">To reopen: %s</div></div>'
             % (html.escape("rescreen:%s" % f["id"], quote=True), esc(co), esc(f.get("title") or ""),
                esc(f.get("status") or ""), esc(f.get("old_verdict") or ""), esc(f.get("new_verdict") or ""),
-               esc(f.get("new_comp") or ""), esc(f.get("why") or ""), esc(f.get("action") or "")))
+               esc(f.get("new_comp") or ""), esc(plain(f.get("why") or "")),
+               esc(plain(f.get("action_plain") or "nothing to reopen"))))
     notes = []
     if failed:
         notes.append('<div class="note">&#9940; <strong>The re-screen check failed</strong> (%s): whether '
@@ -3155,71 +3155,133 @@ def render_rescreen_flags(flags, unreadable, failed, companies):
         '<h2 id="%s">&#8617;&#65039; Roles to reconsider <span class="tcount">%d</span></h2>'
         '<div class="sub" style="margin:-6px 0 10px">A stored <strong>comp removal</strong> that '
         'jobsearch 0.73.0 would not repeat. <strong>Nothing was changed</strong>: these roles are as '
-        'you left them, and only you reopen one (<code>record.py decide</code>) or dismiss it '
-        '(<code>record.py screened</code>); either one ends its flag.</div>%s%s'
+        'you left them, and only you reopen one or dismiss it, by telling Claude; either one '
+        'ends its flag.</div>%s%s'
         % (RESCREEN_SECTION, n, "".join(notes),
            '<div class="card">%s</div>' % "".join(parts) if parts else "")), n
 
 
-NETWORK_HEADINGS = {
-    "chat": "Chats to record", "booking": "Chats to record", "suggestion": "Suggestions to confirm",
-    "send": "Sends unobserved", "proposal": "Proposals to finish",
+PLAN_HEADINGS = {
+    "to-record": "To record", "applied-no-contact": "Applied, no one contacted yet",
+    "awaiting-reply": "Awaiting a reply", "referral-handoff": "Referral handoffs",
+    "relationships-due": "Relationships due this week",
 }
+TARGETS_SECTION = "phase-targets"
 
 
-def render_network_list(net, failed=None):
-    """The Network list (dev #834, M5; design 10.4): ONE list after Drafts, rows the owner acts on and nothing
-    else. Returns `(html, n_primary)`; `("", None)` when there is nothing to ask and nothing failed.
+def _who_site(row):
+    return {"applied-no-contact": "role-title", "to-record": "person-name"}.get(row["group"], "person-name")
 
-    ⭐ It is a LIST, not a summary. The owner's 0.84.0 C7 request held: nothing is added between the jump bar
-    and Drafts, and no network number is printed above the lists. Reach-outs against budget, chats held,
-    introductions, targets and the access table are STATUS; they live in the weekly review and
-    `views/network_strategy.md`, and the "Not on this page" note below names them.
 
-    Sub-groups, each omitted when empty: look into these companies (every raised company, oldest first, so an
-    asked question is never hidden), chats to record (a past chat nobody has marked held or no-show, and a
-    booking no chat was recorded for: an UNRECORDED chat is a fact the engine is waiting for, never a zero),
-    suggestions to confirm, sends unobserved, proposals to finish. Every row is a primary row
-    (`data-rec="net:<kind>:<id>"`) with the verb that answers it. A derivation that FAILED is said on the
-    page (`failed`), never rendered as an empty list. Read-only: nothing here writes."""
-    rows = (net or {}).get("rows") or []
-    if not rows and not failed:
+def render_network_list(plan, failed=None, page_opp_keys=()):
+    """The Network list is the COMMUNICATION PLAN (dev #914, #915; design 6.1): one row per person or role that needs a
+    next step, in the five groups of `your_move.communication_plan`, the ONE owner of membership. Each row shows
+    WHO, WHY, the last touch, the suggested next step and its action buttons (copy-as-prompt blocks, no command).
+    Returns `(html, n_rows)`; `("", None)` when there is nothing to say and nothing failed.
+
+    A row is a PRIMARY row (`data-rec`) unless its key names a role the page already renders under Opportunities
+    or Applications (`page_opp_keys`): then it is a reference (`data-ref`) with a link, so a record is never two
+    primary rows. Every row carries `data-subject`, which `check_dashboard_coverage`'s SUBJECT TWICE reads. Footer of
+    the applied group: the applications that expired this ISO week, each once, never silently dropped.
+    Read-only: nothing here writes."""
+    rows = (plan or {}).get("rows") or []
+    expired = (plan or {}).get("expired_this_week") or []
+    if not rows and not expired and not failed:
         return "", None
-    by_group = {}
-    for r in rows:
-        by_group.setdefault(r["group"], []).append(r)
-
-    def row_html(r):
-        return ('<div class="net-row"%s><strong>%s</strong> <span class="sub">%s</span>'
-                '<div class="net-verbs">%s</div></div>'
-                % (_rec_attrs(r["key"]), esc(r["title"]), esc(r["detail"]),
-                   " &middot; ".join("<code>%s</code>" % esc(v) for v in r["verbs"])))
-
     parts = []
     if failed:
         parts.append('<div class="note">&#9940; <strong>The network list could not be computed</strong> (%s): '
-                     'what is waiting on you here is UNKNOWN, not zero.</div>' % esc(failed))
-    li = by_group.get("look-into") or []
-    if li:
-        parts.append('<div class="sub net-head"><strong>look into %d compan%s (%d new today) &middot; %d more '
-                     'waiting</strong></div>%s'
-                     % (len(li), "y" if len(li) == 1 else "ies", (net or {}).get("look_into_new", 0),
-                        (net or {}).get("look_into_waiting", 0), "".join(row_html(r) for r in li)))
-    # `chat` and `booking` rows are one sub-group on the page ("Chats to record") with one heading.
-    chats = (by_group.get("chat") or []) + (by_group.get("booking") or [])
-    if chats:
-        parts.append('<div class="sub net-head"><strong>%s</strong></div>%s'
-                     % (NETWORK_HEADINGS["chat"], "".join(row_html(r) for r in chats)))
-    for g in ("suggestion", "send", "proposal"):
-        if by_group.get(g):
-            parts.append('<div class="sub net-head"><strong>%s</strong></div>%s'
-                         % (NETWORK_HEADINGS[g], "".join(row_html(r) for r in by_group[g])))
+                     'what is waiting on you here is UNKNOWN, not zero.</div>' % esc(plain(failed)))
+
+    def row_html(r):
+        is_ref = r["key"] in page_opp_keys
+        if is_ref:
+            attrs = _ref_attrs(r["key"])
+        else:
+            attrs = _rec_attrs(r["key"])
+            _cover(r["key"], "rendered", "network")
+        bits = ['<div class="net-row"%s data-subject="%s" data-group="%s"><strong>%s</strong> '
+                '<span class="sub">%s</span>'
+                % (attrs, esc(r["subject"]), esc(r["group"]), theirs(r["who"], _who_site(r)), esc(plain(r["why"])))]
+        if r.get("last_touch"):
+            bits.append('<div class="sub">last touch %s</div>' % esc(str(r["last_touch"])))
+        bits.append('<div class="sub">next: %s</div>' % esc(plain(r["next_step"])))
+        if is_ref:
+            bits.append(_ref_link(r["key"], "the role below"))
+        acts = r.get("actions") or []
+        if acts:
+            bits.append('<div class="net-actions">%s<span class="sub">%s</span></div>'
+                        % ("".join(render_action_button(a["action"], a["rec_id"], a["label"], name=r["who"])
+                                   for a in acts), esc(ACTION_HINT)))
+        bits.append("</div>")
+        return "".join(bits)
+
+    for g in _ym.PLAN_GROUPS:
+        members = [r for r in rows if r["group"] == g]
+        if not members:
+            continue
+        parts.append('<div class="sub net-head"><strong>%s (%d)</strong></div>%s'
+                     % (esc(PLAN_HEADINGS[g]), len(members), "".join(row_html(r) for r in members)))
+        if g == "applied-no-contact" and expired:
+            parts.append('<div class="sub net-expired">Expired this week (no contact made): %s</div>'
+                         % ", ".join(theirs("%s at %s" % (e["title"], e["company"]) if e["company"] else e["title"],
+                                            "role-title") for e in expired))
+    if expired and not any(r["group"] == "applied-no-contact" for r in rows):
+        parts.append('<div class="sub net-expired">Expired this week (no contact made): %s</div>'
+                     % ", ".join(theirs("%s at %s" % (e["title"], e["company"]) if e["company"] else e["title"],
+                                        "role-title") for e in expired))
     n = len(rows)
-    return ('<h2 id="%s">&#129309; Network <span class="tcount">%d</span></h2>'
-            '<div class="sub" style="margin:-6px 0 10px">Only what is waiting on <strong>you</strong>. How the '
-            'network is going (reach-outs against budget, chats held, introductions, targets) is in the weekly '
-            'review and <code>views/network_strategy.md</code>. Nothing here is sent for you.</div>'
+    return ('<span id="phase-outreach-people"></span>'   # D6: the retired People-due block's anchor, kept empty
+            '<h2 id="%s">&#129309; Network <span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">One row for each person or role that needs a next step. '
+            'How the network is going (reach-outs against budget, chats held, introductions) is in the weekly '
+            'review. Nothing here is sent for you.</div>'
             '<div class="card">%s</div>' % (NETWORK_SECTION, n, "".join(parts))), n
+
+
+def render_targets_list(tr, net_rows):
+    """The weekly "Targets to review" list (dev #915 C7, design 6.3): the capped, un-snoozed companies a person has not
+    yet answered, each with yes / no / later and "this is a staffing firm or aggregator", plus ONE counted line for the rest
+    (`N more waiting`, `M snoozed`, `K excluded as aggregator or staffing`). The rows are the network list's own
+    `net:look-into:<id>` records (so the coverage contract holds); the rest rest on the `targets-review` remainder.
+    Returns `(html, n_listed)`; `("", None)` when there is nothing to review."""
+    if not tr or not (tr["rows"] or tr["waiting"] or tr["snoozed"] or tr["excluded"]):
+        return "", None
+    by_cid = {r["key"].split(":", 2)[2]: r for r in (net_rows or []) if r["group"] == "look-into"}
+    shown = [it for it in tr["rows"] if it["id"] in by_cid]
+    rest = [it for it in tr["waiting"] + tr["snoozed"] if it["id"] in by_cid]
+    _cover_set("targets-review", [by_cid[it["id"]]["key"] for it in shown], [by_cid[it["id"]]["key"] for it in rest])
+    out = []
+    for it in shown:
+        r = by_cid[it["id"]]
+        roles = it.get("roles") or 0
+        out.append('<div class="net-row"%s data-subject="company:%s"><strong>%s</strong> <span class="sub">%s%s</span>'
+                   '<div class="net-actions">%s<span class="sub">%s</span></div></div>'
+                   % (_rec_attrs(r["key"]), esc(it["id"]), theirs(it["name"], "company-name"), esc(r["detail"]),
+                      esc(" · %d open role%s" % (roles, "" if roles == 1 else "s")) if roles else "",
+                      "".join(render_action_button(a["action"], a["rec_id"], a["label"], name=it["name"])
+                              for a in r["actions"]), esc(ACTION_HINT)))
+    foot = []
+    if tr["waiting"]:
+        foot.append("%d more waiting" % len(tr["waiting"]))
+    if tr["snoozed"]:
+        foot.append("%d snoozed until next week" % len(tr["snoozed"]))
+    if tr["excluded"]:
+        foot.append("%d excluded as aggregator or staffing" % len(tr["excluded"]))
+    if foot:
+        out.append('<div class="sub ws-more"%s>%s &middot; the weekly list shows at most %d</div>'
+                   % ((' data-more="targets-review:%d"' % len(rest)) if rest else "", esc(" · ".join(foot)),
+                      tr["per_week"]))
+    for e in tr["excluded"]:
+        out.append('<div class="net-row net-excluded" data-subject="company:%s"><span class="sub">%s is listed as %s '
+                   '(%s)</span><div class="net-actions">%s<span class="sub">%s</span></div></div>'
+                   % (esc(e["id"]), theirs(e["name"], "company-name"), esc(e["kind"]), esc(e["how"]),
+                      render_action_button("company-kind-employer", "company:%s" % e["id"], "This is an employer",
+                                           name=e["name"]), esc(ACTION_HINT)))
+    return ('<h2 id="%s">&#127919; Targets to review <span class="tcount">%d</span></h2>'
+            '<div class="sub" style="margin:-6px 0 10px">Companies a role was sighted at that you have not '
+            'answered. A few each week: say yes, no or later. Aggregators and staffing firms are never listed '
+            'as targets.</div><div class="card">%s</div>' % (TARGETS_SECTION, len(shown), "".join(out))), len(shown)
 
 
 def _role_titles(ctx, data):
@@ -3295,8 +3357,7 @@ def render_process_block(rep, ctx, data, now, error=None):
         more = ""
         if len(ordered) > len(shown):
             more = ('<li>+%d more, oldest first above. Every live role is also listed in the status '
-                    'pane (<code>/jobsearch:status</code>) and by <code>lifecycle.py --report --json'
-                    '</code>.</li>' % (len(ordered) - len(shown)))
+                    'pane (<code>/jobsearch:status</code>).</li>' % (len(ordered) - len(shown)))
         drill = ('<details class="pdrill" open><summary>The oldest %d of %d failed roles, with their '
                  'cause</summary><ul>%s%s</ul></details>'
                  % (len(shown), len(ordered), "".join(lis), more))
@@ -3500,12 +3561,10 @@ def main(run_id=None):
     _read_opps = [o for o in _live if (_pursuit.get(o.get("id")) or {}).get("state") == "your-read"]
     _unsent_opps = [o for o in _live if (_pursuit.get(o.get("id")) or {}).get("state") == "not-sent"]
 
-    # A follow-up row whose subject is NOT rendered on this page (a channel, a role in flight) is a
-    # PRIMARY row of the Drafts list (render_message_list `primary`); one whose subject IS on the page
-    # (a role under Opportunities / Applications) stays a reference with a link to it.
+    # jobsearch 0.88.0 (dev #915): Drafts holds DRAFTS. A subject that owes a message and has none is a row of the
+    # Network section (`your_move.communication_plan`); a role the page renders under Opportunities or Applications
+    # is referenced there (`_page_opp_keys`), never given a second primary row.
     _page_opp_keys = set("opp:%s" % o.get("id") for o in _new_opps + _unsent_opps + _read_opps)
-    _od_refs = [dict(r, primary=(r["kind"] in ("chan", "opp") and r["key"] not in _page_opp_keys))
-                for r in _od["refs"]]
 
     # dev #751 -- the warm-path next action per role, DERIVED by warm_path.py (no stored copy). A failed
     # derivation must NEVER read as "nobody to ask": it is said on the page and in the log.
@@ -3609,43 +3668,38 @@ def main(run_id=None):
 
     # ── Drafts to review: the follow-up view, with people due promoted into it ──
     _trig_note =('<div class="note">⛔ <strong>Trigger scan failed</strong> — sequence and '
-                  'follow-up counts on this page are UNKNOWN, not zero. Run '
-                  '<code>trigger.py --check</code>.</div>') if _trep is None else ""
-    _view = bool(_drafts_active or _od_refs)
-    _people_due_html, _n_people_due = render_people_due(ROOT, _today_iso)
+                  'follow-up counts on this page are UNKNOWN, not zero. '
+                  'Ask Claude to check the trigger links.</div>') if _trep is None else ""
+    _view = bool(_drafts_active)
     _first_drafts = ""
-    if _view or _people_due_html or _trig_note:
+    if _view or _trig_note:
         seq_bits = []
         if _trep is not None and _n_unblocked:
             seq_bits.append("%d sequence%s unblocked — the next step is sendable"
                             % (_n_unblocked, "" if _n_unblocked == 1 else "s"))
         if _trep is not None and _n_waiting_seqs:
             seq_bits.append("%d waiting on a trigger" % _n_waiting_seqs)
-        n_now = (sum(1 for d in _od["drafts"] if d["when"] == "now")
-                 + sum(1 for r in _od["refs"] if r["when"] == "now"))
+        n_now = sum(1 for d in _od["drafts"] if d["when"] == "now")
         _drafts_body = (render_message_list("drafts", "draft", _drafts_active, _states,
                                             _DRAFTS_REL, DRAFT_DIMS, "No pending drafts.",
-                                            keys=_drafts_active_keys, whens=_od_whens,
-                                            refs=_od_refs)
+                                            keys=_drafts_active_keys, whens=_od_whens)
                         if _view else '<div class="sub">No pending drafts.</div>')
         _first_drafts = _trig_note + (
             '<h2 id="phase-outreach-approvals">✉️ Drafts to review '
             '<span class="tcount">%d</span>%s%s</h2>'
             '<div class="sub" style="margin:-6px 0 10px">Nothing is ever sent without your '
             'explicit approval. The full text of every message you have staged is right here '
-            '— read it on this page, never off a transcript. A row marked <em>no draft yet</em> '
-            'is someone who owes a message in the next %d days: it links to the channel, role '
-            'or person it is about. Held messages wait on the other side and move to ready by '
-            'themselves; a hold nobody can read waits on YOU; a queued one waits on a session '
-            'with a keychain (Query or Citation C1).%s</div>'
+            '— read it on this page, never off a transcript. Someone who owes a message and has no '
+            'draft yet is in the Network list below. Held messages wait on the other side and '
+            'move to ready by themselves; a hold nobody can read waits on YOU; a queued one waits '
+            'on a session with a keychain (Query or Citation C1).%s</div>'
             '<div class="card">%s</div>'
-            % (n_now + _n_people_due,
+            % (n_now,
                (' <span class="ct2f">· %d held</span>' % n_blocked) if n_blocked else "",
                (' <span class="ct2f">· %d queued</span>' % n_queued) if n_queued else "",
-               _ck.OUTREACH_HORIZON_DAYS,
-               (" " + esc("; ".join(seq_bits)) + " (trigger.py owns the derivation).")
+               (" " + esc("; ".join(seq_bits)) + ".")
                if seq_bits else "",
-               _drafts_body)) + _people_due_html
+               _drafts_body))
 
     # ── LEDGER: everything the page no longer renders lives ELSEWHERE, with its home ──
     for o in _live:
@@ -3680,16 +3734,46 @@ def main(run_id=None):
         _net_failed = "%s: %s" % (type(_e).__name__, _e)
         print("  !! WARNING: the network list could not be computed (%s) - the page says so instead of "
               "listing what waits on you" % _net_failed)
-    _first_network, n_network = render_network_list(_net, _net_failed)
-    for _r in _net["rows"]:
-        _cover(_r["key"], "rendered", "network")
+    # jobsearch 0.88.0 (dev #914, #915): the Network list is the communication plan; Targets to review is its own
+    # capped weekly list. Both read `your_move`, the one owner of membership, and the owed rows trigger.py already
+    # computed for this page (so a failed scan is never re-run as an empty one).
+    _plan, _plan_failed = {"rows": [], "expired_this_week": [], "failed": None}, _net_failed
+    if _net_failed is None:
+        try:
+            _owed_in = ({"owed": _trep["untriggered"], "expired": _trep["expired"]} if _trep is not None else None)
+            _plan = _ym.communication_plan(str(ROOT), _t.isoformat(), net=_net, owed=_owed_in)
+            _plan_failed = _plan["failed"]
+        except Exception as _e:                                      # noqa: BLE001 - said, never swallowed
+            _plan_failed = "%s: %s" % (type(_e).__name__, _e)
+            print("  !! WARNING: the communication plan could not be computed (%s) - the page says so instead of "
+                  "listing what waits on you" % _plan_failed)
+    _first_network, n_network = render_network_list(_plan, _plan_failed, _page_opp_keys)
+    _tr, _tr_failed = None, None
+    try:
+        _tr = _ym.targets_review(str(ROOT), _t.isoformat())
+    except Exception as _e:                                          # noqa: BLE001 - said, never swallowed
+        _tr_failed = "%s: %s" % (type(_e).__name__, _e)
+        print("  !! WARNING: the targets list could not be computed (%s)" % _tr_failed)
+    _first_targets, n_targets = render_targets_list(_tr, _net["rows"])
+    if _tr_failed:
+        # a raised company the targets list could not carry is still counted (one remainder), never lost
+        _lost = [_r["key"] for _r in _net["rows"] if _r["group"] == "look-into"]
+        _cover_set("targets-review", [], _lost)
+        _first_targets = ('<h2 id="%s">&#127919; Targets to review</h2><div class="note">&#9940; <strong>The targets list '
+                          'could not be computed</strong> (%s): what is waiting here is UNKNOWN, not zero.</div>'
+                          '<div class="sub ws-more"%s>%d raised compan%s waiting.</div>'
+                          % (TARGETS_SECTION, esc(plain(_tr_failed)),
+                             (' data-more="targets-review:%d"' % len(_lost)) if _lost else "", len(_lost),
+                             "y" if len(_lost) == 1 else "ies"))
     # The pinned jump bar (OWNER REQUEST 2026-10-13): one entry per list, each count the PRIMARY
     # rows that list renders (`data-rec="draft:…"` / `data-rec="opp:…"`), never a reference row;
     # a list that is not on the page is a plain, unlinked label, so the bar never links to nothing.
     _first_html = ""
-    if _first_drafts or _first_network or _first_read or _first_opps or _first_apply or _first_flags:
+    if (_first_drafts or _first_network or _first_targets or _first_read or _first_opps or _first_apply
+            or _first_flags):
         _first_html = ('<section class="first" id="first-lists">\n%s\n</section>'
                        % "\n".join([_first_drafts] + ([_first_network] if _first_network else [])
+                                    + ([_first_targets] if _first_targets else [])
                                    + ([_first_read] if _first_read else [])
                                    + [_first_opps, _first_apply]
                                    + ([_first_flags] if _first_flags else [])))
@@ -3698,7 +3782,8 @@ def main(run_id=None):
                                 n_apply if _first_apply else None,
                                 n_flags if _first_flags else None,
                                 n_read if _first_read else None,
-                                n_network if _first_network else None)
+                                n_network if _first_network else None,
+                                n_targets if _first_targets else None)
     _process_html = render_process_block(_lc_report, _lc_ctx, _lc_snapshot, _lc_now, _lc_error)
     _conservation_html = render_conservation_line(_lc_report)
     _alert_html = render_pipeline_alert(_lc_report, _lc_error)

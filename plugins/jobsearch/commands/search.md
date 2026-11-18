@@ -91,6 +91,10 @@ Print its output verbatim. Then say that the sweep runs only from the attended f
    Then print the run's own coverage line, so an attended run reads partial the way an unattended one
    does: `~/.claude/jobsearch/run run_summary.py --run <id>`, and quote its `sourcing (board)` line
    (`PARTIAL` when anything above was listed, `complete` when nothing was).
+   That summary is **stdout-only** for this command: `kind search` does not call `run_summary.py --post`, so nothing here
+   reaches the coordinator inbox. If the summary prints an `EXPIRED (no human contact in N days)` line (applications whose
+   owed follow-up expired since the last completed daily or search run, dev #914), quote it to the person present; it is said
+   once, by the first completed run after the expiry.
 
 4. **Drain what it found, now, by the daily run's own steps** (owner ruling O6, scoped to target companies since
    jobsearch 0.86.0: a role **at a company the candidate has targeted** (`active-target`) that passes the screen is

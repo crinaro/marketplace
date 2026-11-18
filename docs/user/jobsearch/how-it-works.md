@@ -258,6 +258,9 @@ lines (a session-start record, a run-start record, a status line and diagnostics
 `CLAUDE.md`: this version stamps that file with a new marker which an older version reads as "not installed by this
 plugin" and leaves alone. Update the plugin on that machine and it carries on.
 
+Since 0.88.0 the upgrade writes a second mark, and a machine on 0.87.0 or older refuses the profile: it says "Update the plugin on this
+machine before running it here" and writes nothing. Update it and it carries on.
+
 ---
 
 ## Finding roles beyond the boards (since 0.72.0)

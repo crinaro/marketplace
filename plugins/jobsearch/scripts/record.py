@@ -105,7 +105,7 @@ Usage:
                                               # read-jd / read-failed / not-attempted / read-batch are the ONLY writers of `jd_read`
     python3 scripts/record.py screened <opp_id>            # store the minimal screen it computes
     python3 scripts/record.py lean <opp_id> --lean pursue|pass|ask --line "<one line>" [--jd-file P]
-    python3 scripts/record.py listed-pay <opp_id> --none-shown | --stated R[;R] | --estimate R[;R]
+    python3 scripts/record.py listed-pay <opp_id> --none-shown --pay-source candidate | --stated R[;R] | --estimate R[;R]
     python3 scripts/record.py posted <opp_id> --document-date D | --shown-age N | --ats-date D | --unknown
     python3 scripts/record.py board-sighting <channel_id> --company "<name>" --title "<title>" --url <posting URL>
                                               # one role seen on a job board (dev #765): the company is matched or
@@ -124,6 +124,10 @@ Usage:
     python3 scripts/record.py company-status <company_id> active-target|watching|passed [--motivation 1-5] [--on D]
                                               # 0.86.0 (dev #834): the candidate's answer to "look into this company?"; the ONE writer
                                               # of a company's `status` + `status_on` (+ `motivation`, required for a target)
+    python3 scripts/record.py company-later <company_id> [--on D]                        # 0.88.0 (dev #915): "ask me next week" -- writes
+                                              # `later_on` only (a derived snooze on the Targets-to-review list, never a status)
+    python3 scripts/record.py company-kind <company_id> employer|staffing|aggregator       # 0.88.0 (dev #915): the candidate's own word
+                                              # for what the company is; written as `kind`, read before any name heuristic
     python3 scripts/record.py chat <person_id> --on D [--time HH:MM] [--title T] [--opp <opp_id>] [--touch <touch_id>]
     python3 scripts/record.py attended <commitment_id> held|no-show [--notes <path>] [--on D]   # attendance only (+ notes_ref)
     python3 scripts/record.py intro-offered <commitment_id> (--person <id> | --company <id>) [--on D]
@@ -299,6 +303,10 @@ OPS = ("create", "set", "set-in", "append", "show", "fields",
        # a source. Each writes ONE store in one locked, validated, rollback-verified transaction and is never run unattended; the
        # `--dry-run` of each is proven in test_record_company_status.py / test_record_chat.py.
        "company-status", "chat", "attended", "intro-offered", "via",
+       # jobsearch 0.88.0 (dev #915) -- the two writers of the Targets-to-review list's stored fields (`later_on`, `kind`), each ONE
+       # field of ONE company in one locked, validated, rollback-verified write, behind the 0.88.0 pin. `--dry-run` is proven in
+       # test_record.py's VERB_ARGS and test_record_pay_evidence.py.
+       "company-later", "company-kind",
        # jobsearch 0.86.0 (dev #834) -- the proposals verbs (a proposal to a prospective client of a non-employee engagement) and the
        # suggestion verbs (the strategist's proposed row, the candidate's confirm or decline). Each is a locked, validated,
        # rollback-verified write; `suggest` writes the ASK only, `confirm` writes the suggested row AND resolves the ask in ONE write.
@@ -3541,7 +3549,7 @@ def _help_epilog():
         "      onto the new role; a slot the sweep did not read stays absent.",
         "  screened <opp_id> [--on D]                 re-run the minimal screen and store it",
         "  lean <opp_id> --lean pursue|pass|ask --line \"<one line>\" [--jd-file P] [--on D]",
-        "  listed-pay <opp_id> --none-shown | --stated R[;R] | --estimate R[;R] [--pay-source S]",
+        "  listed-pay <opp_id> --none-shown --pay-source candidate | --stated R[;R] | --estimate R[;R] [--pay-source S]",
         "      R is <min>-<max>/<yr|mo|day|hr>/<CUR> or <min>+/<unit>/<CUR>",
         "  posted <opp_id> --document-date D | --ats-date D | --board-date D | --shown-age N | "
         "--unknown",
@@ -3912,7 +3920,10 @@ def copy_capture_item_facts(new_row, item_id, rid=None, item=None, profile=None)
     if not isinstance(role, dict):
         return copied, None
     wanted = []
-    if role.get("listed_pay") is not None:
+    # dev #846 (0.88.0, design 3.1): a card's `none-shown` is never copied. `deferred.role_payload` stores none now; an item queued
+    # by 0.87.0 and earlier still carries one, and a card showing no pay is not evidence the listing states none.
+    card_pay = role.get("listed_pay")
+    if card_pay is not None and not (isinstance(card_pay, dict) and card_pay.get("state") == "none-shown"):
         wanted.append(("listed_pay", role["listed_pay"]))
     if role.get("posted") is not None:
         wanted.append(("posted", role["posted"]))
@@ -4022,7 +4033,7 @@ def _sourcing_mutation(args, rec):
                     "(--lean may be omitted on an age-flagged recruiter role: ask, and on a "
                     "role whose title is below screen.title_floor: pursue when pay clears, "
                     "otherwise ask)",
-            "listed-pay": "--none-shown | --stated R[;R] | --estimate R[;R] [--pay-source S] "
+            "listed-pay": "--none-shown --pay-source candidate | --stated R[;R] | --estimate R[;R] [--pay-source S] "
                           "[--on D]",
             "posted": "--document-date D | --shown-age N | --ats-date D | --board-date D | "
                       "--unknown [--on D]"}[op]))
@@ -4113,6 +4124,14 @@ def _sourcing_mutation(args, rec):
         else:
             sources, state = ("board-widget",), "board-estimate"
         source = args.pay_source or sources[0]
+        if mode == "none-shown" and source != "candidate":
+            # dev #846 (0.88.0, design 3.1): "none shown" is a statement about the whole description. The CANDIDATE can make it
+            # (they read the posting themselves); a `listing-text` none-shown has to come from a read that checked the body
+            # (`read-jd`, which stamps `none_basis`), never from this verb, which has nothing to check it against.
+            raise _Refused("listed-pay --none-shown needs --pay-source candidate: only the candidate's own read of the posting "
+                           "records \"none shown\" by hand. A reader that did not find pay records `read-jd --pay ?` (NOT "
+                           "captured, re-read before the role is surfaced); one that read the whole description and found none "
+                           "records `read-jd --pay none`. Nothing written.")
         if source not in sources:
             raise _Refused("--pay-source %r is not valid for %s (allowed: %s)"
                            % (source, state, ", ".join(sources)))
@@ -4352,17 +4371,40 @@ _VIA_PAY_SOURCE = {"fetch": "json-ld", "feed": "json-ld", "ats-api": "ats-api", 
                    "candidate": "candidate"}
 
 
+def supersede_listed_pay(row, on_iso, by):
+    """dev #846 (0.88.0, design 4.2): move a row's `listed_pay` to the END of its append-only `listed_pay_prior` list, stamped
+    `superseded_on` / `superseded_by`, and delete `listed_pay`, so the field is ABSENT (NOT captured: the screen asks for a
+    re-read before the role is surfaced). Touches nothing else. The old value is never lost (the expand step of an
+    expand-and-contract change: the contract step is not in this release). Returns True when a `listed_pay` was moved, False when
+    the row had none. The ONE transform: its callers are the migration (`by="m_0_88_0_pay_evidence"`) and `read-jd --pay ?`
+    (`by="read-jd:<run id>"`), so the two can never disagree about what a supersede keeps."""
+    old = row.get("listed_pay")
+    if not isinstance(old, dict):
+        return False
+    prior = row.get("listed_pay_prior")
+    prior = list(prior) if isinstance(prior, list) else []
+    prior.append(dict(old, superseded_on=on_iso, superseded_by=by))
+    row["listed_pay_prior"] = prior
+    del row["listed_pay"]
+    return True
+
+
 def jd_pay(slot, via, on_iso, provenance):
     """The `listed_pay` object a JD read stores, from the ROLE line's own pay grammar (`none` |
-    `stated:<range>[;<range>]` | `estimate:<range>[;<range>]`, parsed by `deferred.parse_pay_slot`, the one parser).
-    `?` is refused: a read states the pay or states there is none. The `source` is the form the figure took, by how
-    it was read; `provenance` says WHERE (`jd`, or `candidate`)."""
+    `stated:<range>[;<range>]` | `estimate:<range>[;<range>]`, parsed by `deferred.parse_pay_slot`, the one parser), or
+    `None` for `?` (dev #846, 0.88.0: "I read it and did not find or parse pay" -- the field is NOT captured, never a
+    `none`). The `source` is the form the figure took, by how it was read; `provenance` says WHERE (`jd`, or `candidate`).
+    A `none` read by a script-checkable or rendered route carries `none_basis: <via>` so a later reader can tell a none-shown
+    this engine earned from a legacy one (the 0.88.0 migration selects the legacy ones, which have none)."""
     import deferred as _deferred
     slot = str(slot or "").strip()
     if not slot:
-        raise _Usage("--pay is required: none | stated:<min>-<max>/<yr|mo|day|hr>/<CUR> | estimate:<range>")
+        raise _Usage("--pay is required: none | ? | stated:<min>-<max>/<yr|mo|day|hr>/<CUR> | estimate:<range>")
     if slot == "?":
-        raise _Refused("--pay ? is a card's word. A read states the pay or states there is none: --pay none")
+        if via == "candidate":
+            raise _Refused("--pay ? is the reader's word for \"I did not find or parse the pay\". The candidate's own read states "
+                           "the pay or states there is none: --pay none | stated:<range>")
+        return None
     lp, why = _deferred.parse_pay_slot(slot)
     if why:
         raise _Refused(why)
@@ -4372,7 +4414,10 @@ def jd_pay(slot, via, on_iso, provenance):
         source = "candidate" if via == "candidate" else "listing-text"
     else:
         source = _VIA_PAY_SOURCE[via]
-    return dict(lp, source=source, captured_on=on_iso, provenance=provenance)
+    out = dict(lp, source=source, captured_on=on_iso, provenance=provenance)
+    if lp["state"] == "none-shown" and source == "listing-text":
+        out["none_basis"] = via
+    return out
 
 
 def jd_location(old, setting, place, provenance):
@@ -4400,7 +4445,7 @@ def jd_location(old, setting, place, provenance):
 
 
 JD_READ_USAGE = ("read-jd <opp> --run <id> --url <u|-> --via fetch|render|feed|ats-api|candidate "
-                 "--pay none|stated:<range>|estimate:<range> --setting \"<verbatim|none stated>\" "
+                 "--pay none|?|stated:<range>|estimate:<range> --setting \"<verbatim|none stated>\" "
                  "--location \"<text|?>\" --evidence \"<1-200 characters>\" [--status-text \"<the page's status line, or "
                  "none shown>\": --via render only] [--body-sha1 <sha1>: required with --via "
                  "fetch] [--dry-run] [--already-locked]\n"
@@ -4599,9 +4644,36 @@ def _fetch_body_read(args, rec, evidence, place):
     missing = sorted(_figures(args.pay_slot) - _figures(body))
     if missing:
         raise _Refused("--pay names figure(s) the saved body does not contain (normalised %s): a pay figure is quoted from the "
-                       "body, never estimated or remembered. Use --pay none if the posting states none; nothing written"
-                       % ", ".join(missing))
+                       "body, never estimated or remembered. Use --pay none if the posting states none, or --pay ? if you "
+                       "could not find it; nothing written" % ", ".join(missing))
+    # dev #846 (0.88.0, design 3.1): `none` is a statement about the WHOLE description, so it is refused when the saved body
+    # states a pay (`deferred.pay_phrase`, the one detector). This is the check the figure test above could never make: it
+    # confirms the figures a reader GAVE appear in the body, and a `none` gives none. PARTIAL: a currency or language outside
+    # `pay_phrase`'s lists passes, and the rule then rests on `jd-reader.md`.
+    if str(args.pay_slot or "").strip() == "none":
+        import deferred as _deferred
+        phrase = _deferred.pay_phrase(body, _pay_marks())
+        if phrase:
+            raise _Refused("--pay none, but the saved body states pay: \"%s\". Record --pay stated:<range>, or --pay ? if you "
+                           "cannot read it; nothing written" % phrase)
     return entry_url, {"sha1": sha1, "chars": len(body)}
+
+
+def _pay_marks():
+    """The profile's own currency marks for `deferred.pay_phrase`: its `compensation.currency` code and `currency_symbol`. An
+    unreadable config contributes none (the closed symbol and code lists still apply), never an error: this only widens what is
+    detected."""
+    marks = []
+    try:
+        comp = _profile_mod().config().get("compensation")
+    except (OSError, ValueError, KeyError, AttributeError):
+        return marks
+    if isinstance(comp, dict):
+        for key in ("currency", "currency_symbol"):
+            v = comp.get(key)
+            if isinstance(v, str) and v.strip():
+                marks.append(v.strip())
+    return marks
 
 
 def _jd_read_mutation(args, rec):
@@ -4716,7 +4788,7 @@ def _jd_read_mutation(args, rec):
     if via == "fetch":
         url, body_evidence = _fetch_body_read(args, rec, evidence, place)
         read_evidence.update(body_evidence)
-        if pay.get("state") == "employer-stated":
+        if pay is not None and pay.get("state") == "employer-stated":
             # a figure the reader took out of the saved description's PROSE, not out of JSON-LD: the same shape the fallback's
             # own scripted read stores (`listing-text`, `inferred_from: description`), so the screen weighs it the same way
             pay = dict(pay, source="listing-text")
@@ -4728,6 +4800,10 @@ def _jd_read_mutation(args, rec):
                     place=place, at_iso=at_iso, on=on, engine=engine, profile=_profile_mod().load(),
                     company=company, pay_inferred=body_pay_inferred)
 
+    if pay is None:
+        return ("read-jd via %s: location re-read from the posting (provenance %s), screen re-run; pay: NOT captured (the reader "
+                "did not find or parse pay: a range already stored stays, a legacy `none shown` moves to listed_pay_prior)"
+                % (via, provenance)), apply_read
     return ("read-jd via %s: location and listed_pay re-read from the posting (provenance %s), screen re-run"
             % (via, provenance)), apply_read
 
@@ -5507,7 +5583,15 @@ def _apply_read(r, *, run, url, via, evidence, pay, setting, place, at_iso, on, 
         if isinstance(old_loc, dict) and old_loc:
             replaced["location"] = old_loc
         r["location"] = jd_location(old_loc, setting, place, provenance)
-    if not keep_pay:
+    if pay is None:
+        # dev #846 (0.88.0, design 3.2): `read-jd --pay ?` -- the reader read the posting and did not find or parse pay. A stored
+        # RANGE stays (a read that missed a figure does not erase one); a stored `none shown` the candidate did not write is
+        # superseded (moved to `listed_pay_prior`, so the field is NOT captured and the role is re-read before it is
+        # surfaced); nothing stored stays nothing. The CANDIDATE's own none (`source: candidate`) is never touched here.
+        if (isinstance(old_pay, dict) and old_pay.get("state") == "none-shown" and old_pay.get("source") != "candidate"
+                and not keep_pay):
+            supersede_listed_pay(r, on.isoformat(), "read-jd:%s" % run)
+    elif not keep_pay:
         if isinstance(old_pay, dict) and old_pay:
             replaced["listed_pay"] = old_pay
         new_pay = dict(pay)
@@ -6262,6 +6346,10 @@ def cmd_raise_companies(args):
 NETWORK_VERB_USAGE = {
     "company-status": "company-status <company_id> active-target|watching|passed [--motivation <1-5>] [--on YYYY-MM-DD] "
                       "[--dry-run] [--already-locked]",
+    # jobsearch 0.88.0 (dev #915, design-jobsearch-0.88.0.md 6.3, 6.4, 7.3): the two writers of the Targets-to-review list's stored
+    # fields, called by the dashboard's action blocks through `dashboard_actions.py` (never typed on the page).
+    "company-later": "company-later <company_id> [--on YYYY-MM-DD] [--dry-run] [--already-locked]",
+    "company-kind": "company-kind <company_id> employer|staffing|aggregator [--dry-run] [--already-locked]",
     "chat": "chat <person_id> --on YYYY-MM-DD [--time HH:MM] [--title \"<title>\"] [--opp <opp_id>] [--touch <touch_id>] "
             "[--dry-run] [--already-locked]",
     "attended": "attended <commitment_id> held|no-show [--notes <relative path>] [--on YYYY-MM-DD] [--dry-run] [--already-locked]",
@@ -6274,17 +6362,22 @@ NETWORK_PENDING_LINE = ("network-first upgrade pending: the jobsearch 0.86.0 mig
 _CHAT_TIME_RE = re.compile(r"^(?:[01]\d|2[0-3]):[0-5]\d$")
 
 
-def _network_gate():
-    """`None` when this profile may take a 0.86.0 write, else the line to print: the pin's own refusal when a NEWER engine upgraded
-    the profile, or the pending-migration line when no pin at or above 0.86.0 exists (an unmigrated profile has no pin, and a verb
-    that wrote a 0.86.0 field into it would be a field a pinned-ahead older engine could not have meant)."""
+PLAN_PENDING_LINE = ("jobsearch 0.88.0 upgrade pending: the 0.88.0 migration has not run on this profile (run "
+                     "`~/.claude/jobsearch/run migrate.py` and read what it says); nothing was written")
+
+
+def _network_gate(minimum=(0, 86, 0)):
+    """`None` when this profile may take a write of the release `minimum` (default 0.86.0), else the line to print: the pin's own
+    refusal when a NEWER engine upgraded the profile, or the pending-migration line when no pin at or above `minimum` exists (an
+    unmigrated profile has no pin, and a verb that wrote a newer field into it would be a field a pinned-ahead older engine
+    could not have meant). The two 0.88.0 company verbs pass `(0, 88, 0)`: their fields (`later_on`, `kind`) are new in it."""
     import journal as _journal
     refusal = _journal.pin_refusal(ROOT)
     if refusal:
         return refusal
     pin = _journal.pin_scan(ROOT)
-    if pin is None or tuple(int(x) for x in pin.split(".")) < (0, 86, 0):
-        return NETWORK_PENDING_LINE
+    if pin is None or tuple(int(x) for x in pin.split(".")) < minimum:
+        return NETWORK_PENDING_LINE if minimum <= (0, 86, 0) else PLAN_PENDING_LINE
     return None
 
 
@@ -6316,7 +6409,7 @@ def _merged_map(people):
     return {p.get("id"): p.get("merged_into") for p in people if p.get("merged_into")}
 
 
-def _network_row_write(args, verb, store, edit):
+def _network_row_write(args, verb, store, edit, minimum=(0, 86, 0)):
     """The ONE write path of the five network-first verbs. `edit(rows)` mutates `rows` (the store's rows, a fresh read) in place and
     returns the lines to print; it raises `_Refused` BEFORE anything is written. Returns the exit code: 0 written (or nothing to
     change, or a dry run that predicts a clean write), 1 refused or rolled back, 2 usage, 3 the profile is not ready.
@@ -6324,7 +6417,7 @@ def _network_row_write(args, verb, store, edit):
     The sequence is the one every row-writing verb here follows: gate, edit a shadow, `--dry-run` runs the real validator over the
     shadow and stops, then the lock, a re-read INSIDE it, the edit again on what is really there, a snapshot, the atomic write, the
     validator, and a byte-identical rollback when the write introduced a problem the store did not have before."""
-    gate = _network_gate()
+    gate = _network_gate(minimum)
     if gate:
         print(gate)
         return 3
@@ -6452,6 +6545,60 @@ def cmd_company_status(args):
         return ["company-status %s: %s -> %s (status_on %s%s)"
                 % (cid, was, status, on.isoformat(), ", motivation %d" % mot if mot is not None else "")]
     return _network_row_write(args, "company-status", "companies", edit)
+
+
+def cmd_company_later(args):
+    """`record.py company-later <company_id> [--on D]` (dev #915; design-jobsearch-0.88.0.md 6.3, D4): the candidate's "ask me about
+    this company next week" on the Targets-to-review list. It writes ONE field, `later_on` (the day, default today), and nothing
+    else: "later" is a derived snooze (a `later_on` in the current ISO week hides the company from the list for the rest of the
+    week), never a company status, so `status`, `status_on` and `motivation` are untouched and the company is still unanswered.
+    Run again it moves the date. Refused on a company that does not exist and on a profile whose 0.88.0 migration has not run.
+    Exit 0 written; 1 refused; 2 usage; 3 the profile is not ready."""
+    usage = "usage: " + NETWORK_VERB_USAGE["company-later"]
+    if not args.rid or args.rest:
+        print(usage)
+        return 2
+    cid = args.rid
+    try:
+        on = _parse_on(args.on_date, default=_now().date())
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
+
+    def edit(rows):
+        row = find(rows, cid)
+        if row is None:
+            raise _Refused("%r resolves to no companies record." % cid)
+        was = row.get("later_on")
+        row["later_on"] = on.isoformat()
+        return ["company-later %s: later_on %s -> %s" % (cid, was, on.isoformat())]
+    return _network_row_write(args, "company-later", "companies", edit, minimum=(0, 88, 0))
+
+
+def cmd_company_kind(args):
+    """`record.py company-kind <company_id> employer|staffing|aggregator` (dev #915; design 6.4): the candidate's own word for what
+    a company is, written as `kind` on the company. `your_move.company_kind()` reads it FIRST (`how: stated`), before a channel of
+    that name or the staffing-name heuristic, so one click fixes a wrong exclusion in either direction ("this is a staffing firm
+    or aggregator", "this is an employer") and nothing is lost or removed. It writes ONE field. Refused on an unknown kind, a company
+    that does not exist and a profile whose 0.88.0 migration has not run. Exit 0 written; 1 refused; 2 usage; 3 not ready."""
+    usage = "usage: " + NETWORK_VERB_USAGE["company-kind"]
+    if not args.rid or len(args.rest) != 1:
+        print(usage)
+        return 2
+    cid, kind = args.rid, args.rest[0]
+    _vd = _validator_module()
+    if kind not in _vd.COMPANY_KINDS:
+        print("⛔ REFUSED — %r is not a company kind: one of %s.\n%s" % (kind, ", ".join(_vd.COMPANY_KINDS), usage))
+        return 1
+
+    def edit(rows):
+        row = find(rows, cid)
+        if row is None:
+            raise _Refused("%r resolves to no companies record." % cid)
+        was = row.get("kind")
+        row["kind"] = kind
+        return ["company-kind %s: kind %s -> %s" % (cid, was, kind)]
+    return _network_row_write(args, "company-kind", "companies", edit, minimum=(0, 88, 0))
 
 
 def cmd_chat(args):
@@ -7324,8 +7471,8 @@ def main():
                     help="lean: a file holding the JD text the run read; the likely-pass "
                          "signals are matched against it as well as the title and company.")
     ap.add_argument("--none-shown", dest="none_shown", action="store_true",
-                    help="listed-pay: the listing showed NO pay (recorded, so it is not "
-                         "'never captured').")
+                    help="listed-pay: the CANDIDATE read the posting and it showed NO pay (recorded, so it is not "
+                         "'never captured'); needs --pay-source candidate.")
     ap.add_argument("--stated", dest="stated", default=None,
                     help="listed-pay: the EMPLOYER's range(s), <min>-<max>/<yr|mo|day|hr>/<CUR> "
                          "or <min>+/<unit>/<CUR>, separated by ';'.")
@@ -7400,9 +7547,11 @@ def main():
                          "(stored on the attempt and the capture record; the drain's `drain planned` event is found "
                          "by it).")
     ap.add_argument("--pay", dest="pay_slot", default=None,
-                    help="read-jd: the pay the posting states, in the ROLE line's grammar: none | "
-                         "stated:<min>-<max>/<yr|mo|day|hr>/<CUR> | estimate:<range>  (? is refused: a read states "
-                         "the pay or states there is none).")
+                    help="read-jd: the pay the posting states, in the ROLE line's grammar: none | ? | "
+                         "stated:<min>-<max>/<yr|mo|day|hr>/<CUR> | estimate:<range>. `none` means you read the WHOLE "
+                         "description and it states no pay (refused with --via fetch when the saved body states one); `?` means "
+                         "you did not find or could not parse pay, and records NOT captured (re-read before the role is "
+                         "surfaced).")
     ap.add_argument("--setting", dest="setting_text", default=None,
                     help="read-jd: the posting's own work-setting text, verbatim, or the literal `none stated`.")
     ap.add_argument("--location", dest="location_text", default=None,
@@ -7539,7 +7688,7 @@ def main():
         args.file = "opportunities"      # dev #776: cmd_posting names its own stores
     elif args.op == "fit":
         args.file = "opportunities"      # dev #861: cmd_fit names its own store
-    elif args.op == "company-status":
+    elif args.op in ("company-status", "company-later", "company-kind"):
         args.file = "companies"          # dev #834: the network-first verbs each name their own store
     elif args.op in ("chat", "attended", "intro-offered"):
         args.file = "commitments"
@@ -7592,6 +7741,10 @@ def main():
         return cmd_raise_companies(args)
     if args.op == "company-status":
         return cmd_company_status(args)
+    if args.op == "company-later":
+        return cmd_company_later(args)
+    if args.op == "company-kind":
+        return cmd_company_kind(args)
     if args.op == "chat":
         return cmd_chat(args)
     if args.op == "attended":

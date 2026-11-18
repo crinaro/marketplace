@@ -51,6 +51,11 @@ except Exception:                                  # pragma: no cover - diag is 
     _diag = None
 
 try:
+    import config_keys as _config_keys
+except Exception:                                  # pragma: no cover - the leaf is always shipped
+    _config_keys = None
+
+try:
     import inbox as _inbox
     import run_summary as _run_summary
 except Exception:                                  # pragma: no cover - both optional
@@ -289,10 +294,65 @@ def _loop_left_open(recs, run_id):
         term is not None and term.get("state") == "abandoned")
 
 
-def footprints(root):
+def liveness_hours(root):
+    """The profile's `runs.liveness_hours` (dev #836, D5): the ONE window `lifecycle` also uses, read through
+    `config_keys.liveness_hours`. An unreadable config is the default window, never a crash."""
+    if _config_keys is None:
+        return 8
+    try:
+        with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError):
+        cfg = {}
+    return _config_keys.liveness_hours(cfg if isinstance(cfg, dict) else {})
+
+
+def died_mid_run(root, recs, now=None):
+    """dev #836 (design 9.4): every `start` with no `end` that is strictly past the liveness window, with what it left
+    behind: `[{run_id, at, last_at, why, disposed, committed, committed_note, uncommitted, uncommitted_note}]`, oldest
+    first. A list is a measurement; None is `not measured`, and its note says why. A run still inside the window is not
+    here (it is running, or lifecycle will say so). When `run_summary` cannot be imported the dead runs are STILL listed,
+    each part `not measured (run_summary unavailable)`: a failed import never reads as no dead run (N8)."""
+    if _journal is None:
+        return []
+    now = now or datetime.now()
+    out = []
+    for d in _journal.run_states(recs, now, liveness_hours(root)):
+        if d["state"] != "died-mid-run":
+            continue
+        if _run_summary is None:
+            left = {"committed": None, "committed_note": "not measured (run_summary unavailable)",
+                    "uncommitted": None, "uncommitted_note": "not measured (run_summary unavailable)"}
+        else:
+            try:
+                left = _run_summary.dead_run_paths(root, d, recs)
+            except Exception as e:                            # noqa: BLE001 - said, never a quiet empty list
+                why = "not measured (%s: %s)" % (type(e).__name__, str(e)[:80])
+                left = {"committed": None, "committed_note": why, "uncommitted": None, "uncommitted_note": why}
+        out.append({"run_id": d["run_id"], "at": d["at"], "last_at": d["last_at"], "why": d["why"],
+                    "disposed": d["disposed"], "committed": left["committed"], "committed_note": left["committed_note"],
+                    "uncommitted": left["uncommitted"], "uncommitted_note": left["uncommitted_note"]})
+    return out
+
+
+def format_died_run(d):
+    """The one line `check_runs.py` prints for a dead run: `DIED MID-RUN <id> (started <at>, silent since <last_at>):
+    committed while it ran: <a>, <b>; uncommitted: <...>`. A part that was not measured says so and why."""
+    def part(label, paths, note):
+        if paths is None:
+            return "%s: %s" % (label, note)
+        return "%s: %s%s" % (label, ", ".join(paths) or "nothing", (" (%s)" % note) if note else "")
+    return ("DIED MID-RUN %s (started %s, silent since %s): %s; %s%s"
+            % (d["run_id"], d["at"], d["last_at"] or "(unreadable)",
+               part("committed while it ran", d["committed"], d["committed_note"]),
+               part("uncommitted", d["uncommitted"], d["uncommitted_note"]),
+               "  [reviewed]" if d.get("disposed") else ""))
+
+
+def footprints(root, now=None):
     """Every dated trace a run leaves, newest first. Three independent sources on purpose —
     a run can fail after writing one and before writing another, and the gap localises it."""
-    out = {"log_entries": [], "inbox_posts": [], "latest": None}
+    out = {"log_entries": [], "inbox_posts": [], "latest": None, "died_mid_run": []}
 
     path = os.path.join(root, "log.md")
     try:
@@ -363,6 +423,7 @@ def footprints(root):
                            key=lambda r: r.get("at") or "", reverse=True)
         except Exception:
             starts, fired, recs = [], [], []
+    out["died_mid_run"] = died_mid_run(root, recs, now)          # dev #836
     streak = all_clean_board_streak(recs)
     out["board_all_clean_streak"] = streak
     out["board_all_clean_flag"] = streak >= ALL_CLEAN_STREAK
@@ -462,6 +523,9 @@ def main():
     print("\n  last journalled START: %s" % (fp.get("last_start") or "none recorded"))
     for s2 in fp.get("run_starts", [])[:3]:
         print("    %s  %s" % (s2.get("at"), s2.get("run_id")))
+    # dev #836: a start with no end, silent past the liveness window (runs.liveness_hours), named with what it left.
+    for d in fp.get("died_mid_run") or []:
+        print("\n  \u26a0\ufe0f %s" % format_died_run(d))
 
     # ⭐ design-manifest-heal.md § The boundary, item 1 (#67) — one line per profile-session
     # that hit `guard_mail_scope.py`'s blind branch (`tool_input` absent from the payload). A

@@ -197,10 +197,13 @@ A brief that does not say which is unattended.
    ~/.claude/jobsearch/run record.py read-jd <opp_id> --run <run id> --url <the address you read> --via render --pay <pay> --setting "<setting>" --location "<place>" --evidence "<quote>" --status-text "<the words where the Apply control is, verbatim, or the page's status line; none shown>"
    ```
 
-   - `--pay` in the ROLE grammar: `none` when the posting shows no pay; `stated:<min>-<max>/<unit>/<CUR>` for
-     the employer's own figure (`stated:<min>+/<unit>/<CUR>` when open-ended; several ranges `;`-separated);
-     `estimate:<range>` for a board's estimate. Whole numbers, the unit (`yr`, `mo`, `day`, `hr`) exactly as the
-     posting prices it, never converted. `?` is refused: a read states the pay or states there is none.
+   - `--pay` in the ROLE grammar: `stated:<min>-<max>/<unit>/<CUR>` for the employer's own figure
+     (`stated:<min>+/<unit>/<CUR>` when open-ended; several ranges `;`-separated); `estimate:<range>` for a board's
+     estimate. Whole numbers, the unit (`yr`, `mo`, `day`, `hr`) exactly as the posting prices it, never converted.
+     **`none` means you read the WHOLE description and it states no pay.** Not seeing pay in the part of the page
+     you looked at is not that. **`?` means you did not find pay or could not parse what you found**; it records
+     NOT captured (the role is re-read before it is surfaced), never "none shown", and it never erases a range
+     already stored. When in doubt, `?` (dev #846, 0.88.0).
    - `--setting`: the posting's own work-setting words, verbatim, or the literal `none stated`.
    - `--location`: the posting's place text, verbatim, or `?` when it states none.
    - **`--evidence` quotes the rendered posting's own title or Apply text, and the quote must name this role
@@ -283,8 +286,9 @@ A brief that does not say which is unattended.
    ```
 
    `--url -` takes the address the saved body was fetched from. The script refuses the read unless the sha1 matches
-   the saved body, the evidence and the location are found in it, and every figure in `--pay` is found in it
-   (`--pay none` when it states none). Quote from the file, never from memory; do not retry with an edited quote:
+   the saved body, the evidence and the location are found in it, and every figure in `--pay` is found in it.
+   `--pay none` is refused when the saved body states a pay range (the refusal quotes the phrase it found): record
+   that range with `--pay stated:<range>`, or `--pay ?` if you cannot read it. Quote from the file, never from memory; do not retry with an edited quote:
    leave the role in your hand-back with the refusal line.
 7. Close the tab when your last browser role is done. Next role.
 

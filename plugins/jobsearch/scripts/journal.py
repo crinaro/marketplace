@@ -515,6 +515,96 @@ def head_sha(root):
     return sha if r.returncode == 0 and re.match(r"^[0-9a-f]{7,64}$", sha) else None
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# dev #836 (jobsearch 0.88.0, design 9.3): WHAT A RUN THAT DIED LEFT. A `start` event now also carries
+#   `machine`        a random hex id of THIS machine's checkout (never a hostname or a user name), so a report read on
+#                    another machine says "not measured here" instead of blaming this machine's dirty files on that run;
+#   `dirty_at_start` the tracked profile paths that were already modified when the run began, so the NEXT start on the
+#                    same machine can say what was left uncommitted before it;
+#   `utc_offset`     the writer's offset (`+HH:MM`), because `at` is a naive local time and `git --before` takes an instant.
+# Each is OMITTED when it cannot be had (never null, never a guess): absence is "not measured". `journal.py` never
+# imports config_keys (config_keys imports check_followups, which imports this module): the liveness window is a PARAMETER
+# of `run_states`, passed by lifecycle, check_runs and panel.
+# ─────────────────────────────────────────────────────────────────────────────
+MACHINE_FILE = "jobsearch-machine"
+_MACHINE_RE = re.compile(r"^[0-9a-f]{32}$")
+_OFFSET_RE = re.compile(r"^[+-](?:[01]\d|2[0-3]):[0-5]\d$")
+
+
+def _git_common_dir(root):
+    """The absolute `git rev-parse --git-common-dir` of the profile, or None when git cannot answer (not a repository, no
+    git on PATH, a timeout). The machine file lives THERE, which is never pushed, so a synced profile has one id per
+    machine."""
+    try:
+        r = subprocess.run(["git", "-C", root, "rev-parse", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    out = (r.stdout or "").strip()
+    if r.returncode != 0 or not out:
+        return None
+    return out if os.path.isabs(out) else os.path.normpath(os.path.join(root, out))
+
+
+def machine_id(root, create=False):
+    """This machine's id for the profile at `root`: the content of `<git common dir>/jobsearch-machine` (a random
+    `uuid4().hex`), or None when absent / unreadable / not a repository. `create=True` writes it when absent, only
+    when git names a common dir (N10); a write that fails is None, never fatal. STATED LIMIT: a profile directory COPIED
+    to another machine copies this file with it, so two machines can share an id; only the profile's git remote
+    (ADR-012) is the supported way to move a profile."""
+    gdir = _git_common_dir(root)
+    if gdir is None:
+        return None
+    p = os.path.join(gdir, MACHINE_FILE)
+    try:
+        with open(p, encoding="utf-8") as fh:
+            v = fh.read().strip()
+        if _MACHINE_RE.match(v):
+            return v
+    except OSError:
+        pass
+    if not create:
+        return None
+    try:
+        import uuid
+        v = uuid.uuid4().hex
+        with open(p, "w", encoding="utf-8") as fh:
+            fh.write(v + "\n")
+        return v
+    except OSError:
+        return None
+
+
+def dirty_paths(root):
+    """The TRACKED paths the profile has modified right now (`git status --porcelain --untracked-files=no -z`), minus the
+    journal file itself, sorted; None when git cannot answer. None is "could not ask": the caller omits the field."""
+    try:
+        r = subprocess.run(["git", "-C", root, "status", "--porcelain", "--untracked-files=no", "-z"],
+                           capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    paths, parts = [], (r.stdout or "").split("\0")
+    i = 0
+    while i < len(parts):
+        ent = parts[i]
+        i += 1
+        if len(ent) < 4:
+            continue
+        if ent[0] in "RC":                      # a rename or copy carries its source as the next NUL field
+            i += 1
+        paths.append(ent[3:])
+    journal = JOURNAL.replace(os.sep, "/")
+    return sorted(p for p in set(paths) if p != journal)
+
+
+def utc_offset(now=None):
+    """The writer's UTC offset as `+HH:MM`, from the local clock (`at` is local and naive)."""
+    z = (now or datetime.datetime.now()).astimezone().strftime("%z")
+    return "%s%s:%s" % (z[0], z[1:3], z[3:5]) if len(z) == 5 else None
+
+
 def path(root):
     return os.path.join(root, JOURNAL)
 
@@ -746,6 +836,44 @@ def unfinished(recs):
                     "disposed": bool(d), "disposed_at": d.get("at") if d else None,
                     "disposed_because": d.get("because") if d else None})
     return sorted(out, key=lambda x: x.get("at") or "")
+
+
+def _parse_at(raw):
+    try:
+        return datetime.datetime.fromisoformat(str(raw)) if raw else None
+    except ValueError:
+        return None
+
+
+def run_states(recs, now, hours):
+    """dev #836 (design 9.2): every `start` with no `end`, classified against the liveness window `hours` (a PARAMETER,
+    passed by the caller from `config_keys`; this module never imports it). One classifier, lifecycle's own edge:
+
+        `last_at` readable and `last_at >= now - hours`      running
+        `last_at < now - hours` (strictly past the window)   died-mid-run
+        `last_at` unreadable or no record at all              died-mid-run, `last record time unreadable`
+
+    `last_at` is the run's newest OWN record (`run_events`: never a `fired` record, never a close written on its behalf),
+    the rule `lifecycle.Ctx` uses. Each row: {run_id, at, kind, last_at, state, why, start_sha, machine, utc_offset,
+    dirty_at_start, notes, gaps, disposed}. Oldest first."""
+    horizon = now - datetime.timedelta(hours=hours)
+    out = []
+    for u in unfinished(recs):
+        rid = u["run_id"]
+        start = next(r for r in recs if r.get("event") == "start" and r.get("run_id") == rid)
+        times = [t for t in (_parse_at(r.get("at")) for r in run_events(recs, rid)) if t is not None]
+        last = max(times) if times else None
+        if last is None:
+            state, why = "died-mid-run", "last record time unreadable"
+        elif last < horizon:
+            state, why = "died-mid-run", "silent since %s" % last.isoformat()
+        else:
+            state, why = "running", None
+        out.append({"run_id": rid, "at": u["at"], "kind": u["kind"], "last_at": last.isoformat() if last else None,
+                    "state": state, "why": why, "start_sha": start.get("start_sha"), "machine": start.get("machine"),
+                    "utc_offset": start.get("utc_offset"), "dirty_at_start": start.get("dirty_at_start"),
+                    "notes": u["notes"], "gaps": u["gaps"], "disposed": u["disposed"]})
+    return out
 
 
 def open_gaps(recs, run_id=None):
@@ -1897,7 +2025,8 @@ def engine_version():
     return v
 
 
-def record_start(root, kind, at=None, engine=None, start_sha=None):
+def record_start(root, kind, at=None, engine=None, start_sha=None, machine=None, dirty_at_start=None,
+                 offset=None):
     """dev #820 / public #175 -- the ONE writer of a `start` event. It carries `engine`, the plugin
     version that began the run (read from `plugin.json` when not given), which `lifecycle` reads for the
     cutover (nothing is legacy before the first 0.82.0 start) and for ENGINE SKEW. A missing or
@@ -1912,6 +2041,13 @@ def record_start(root, kind, at=None, engine=None, start_sha=None):
     rec = {"event": "start", "run_id": rid, "kind": kind, "at": at, "engine": engine}
     if start_sha:
         rec["start_sha"] = start_sha
+    if machine:
+        rec["machine"] = machine
+    if dirty_at_start is not None:
+        rec["dirty_at_start"] = dirty_at_start
+    if offset:
+        rec["utc_offset"] = offset
+    _check_start_row(rec)                        # dev #836: a malformed field is refused at the writer, never stored
     append(root, rec)
     return rid
 
@@ -2228,8 +2364,24 @@ def _check_mail_status_row(rec):
                            % (len(un), counts["ats-status"]))
 
 
+def _check_start_row(rec):
+    """dev #836 (N14): the three optional fields a `start` carries. TOLERANT OF ABSENCE (every older start lacks them, and
+    a missing field means "not measured"), STRICT ON SHAPE: `machine` a 32-hex id, `dirty_at_start` a list of non-empty
+    strings, `utc_offset` `+HH:MM`. A malformed one is refused at write and at read, naming the field, so a hand edit never
+    turns into a quiet "nothing was left"."""
+    m = rec.get("machine")
+    if "machine" in rec and not (isinstance(m, str) and _MACHINE_RE.match(m)):
+        raise JournalError("start machine=%r is not a 32-character hex id" % (m,))
+    d = rec.get("dirty_at_start")
+    if "dirty_at_start" in rec and not (isinstance(d, list) and all(isinstance(x, str) and x for x in d)):
+        raise JournalError("start dirty_at_start must be a list of non-empty path strings -- got %r" % (d,))
+    o = rec.get("utc_offset")
+    if "utc_offset" in rec and not (isinstance(o, str) and _OFFSET_RE.match(o)):
+        raise JournalError("start utc_offset=%r is not +HH:MM" % (o,))
+
+
 # the event -> its row check, read by `read()` (a row of one of these events is validated when it is read)
-_ROW_CHECKS = {"drain": _check_drain_row, "mail-status": _check_mail_status_row, "readmit": _check_readmit_row,
+_ROW_CHECKS = {"start": _check_start_row, "drain": _check_drain_row, "mail-status": _check_mail_status_row, "readmit": _check_readmit_row,
                "profile-schema": lambda rec: _check_profile_schema_row(rec),
                "network": lambda rec: _check_network_row(rec),
                "companies-raised": lambda rec: _check_companies_raised_row(rec)}
@@ -3561,6 +3713,8 @@ def main():
                          "write (public #72)")
     ap.add_argument("--because", help="optional free text: why --dispose needed no write")
     ap.add_argument("--unfinished", action="store_true")
+    ap.add_argument("--liveness-hours", type=int, default=None,
+                    help="with --unfinished: the liveness window (config runs.liveness_hours) to classify each run against")
     ap.add_argument("--open-gaps", dest="open_gaps", action="store_true")
     ap.add_argument("--close-gap", dest="close_gap", metavar="GAP_ID")
     ap.add_argument("--check", action="store_true")
@@ -3701,7 +3855,9 @@ def main():
             # a `start` without it is the "not measured" case, same as every older `start`.
             # dev #820 / public #175: and the ENGINE that began it, from plugin.json -- refused
             # when unreadable (record_start), never written without.
-            rid = record_start(root, args.start, at=at, start_sha=head_sha(root))
+            rid = record_start(root, args.start, at=at, start_sha=head_sha(root),
+                               machine=machine_id(root, create=True), dirty_at_start=dirty_paths(root),
+                               offset=utc_offset())
             print(rid)
             return 0
 
@@ -3946,10 +4102,16 @@ def main():
                       % cache_problem)
         elif args.unfinished:
             print("RUNS THAT STARTED AND NEVER ENDED\n")
+            states = {}
+            if args.liveness_hours:
+                states = {x["run_id"]: x for x in run_states(read(root), datetime.datetime.now(), args.liveness_hours)}
             for d in dead:
                 tag = "  [reviewed — no write needed]" if d.get("disposed") else ""
-                print("  %s  (%s)  %d note(s), %d gap(s)%s"
-                      % (d["run_id"], d.get("at"), len(d["notes"]), d["gaps"], tag))
+                st = states.get(d["run_id"])
+                state = (" [%s%s]" % (st["state"], (": " + st["why"]) if st["why"] else "")) if st else \
+                    " [state not measured: pass --liveness-hours, runs.liveness_hours]"
+                print("  %s  (%s)  %d note(s), %d gap(s)%s%s"
+                      % (d["run_id"], d.get("at"), len(d["notes"]), d["gaps"], state, tag))
                 for n in d["notes"][:5]:
                     print("      · %s" % str(n)[:110])
             if not dead:

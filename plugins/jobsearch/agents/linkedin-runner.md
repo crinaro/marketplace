@@ -807,7 +807,10 @@ showed it, so list them all: a role one clean search showed is not held back by 
 Read them off the result card or the listing, and copy what the page shows. A slot you did not
 read is `?`, which the script stores as *not captured*; it is never the same as the listing showing
 nothing.
-- **`pay=`** is `none` only when you read the listing and it shows no pay at all. Otherwise
+- **`pay=`** is `none` only when the card or listing you read shows no pay at all, and **a card's
+  `pay=none` stores NOT captured, never "none shown"** (dev #846, 0.88.0): a results card is not the full
+  description, so the script keeps no `listed_pay` and the role is re-read before it is surfaced. Write
+  `pay=?` when you did not look. Otherwise
   `stated:<range>` for the employer's own figure, or `estimate:<range>` for a board's estimate
   panel, which is a different fact and is never written as `stated:`. A `<range>` is
   `<min>-<max>/<unit>/<CUR>`, or `<min>+/<unit>/<CUR>` for an open-ended one: whole numbers with no

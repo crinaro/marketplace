@@ -153,6 +153,7 @@ Python 3.9+. Standard library only.
 """
 
 import argparse
+from html.parser import HTMLParser
 import collections
 import datetime
 import hashlib
@@ -169,6 +170,7 @@ import _tree                                                        # noqa: E402
 import channels_due as _cd                                          # noqa: E402
 import knowledge as _kn                                             # noqa: E402
 import precondition as _pre                                         # noqa: E402
+import dashboard_actions as _actions                                # noqa: E402
 import validate_data as _vd                                         # noqa: E402
 
 LEDGER_NAME = "dashboard_coverage.json"
@@ -302,16 +304,13 @@ def expected_records(root, today=None):
             _jsonl(root, "involvements.jsonl")):
         if c.get("id") and state in ("now", "scheduled"):
             exp.setdefault("chan:%s" % c["id"], {"kind": "chan", "review": None})
-    # dev #686 / public #139 (E1) — the People due block. NOT "every person": only the
-    # person-only people `your_move.network_people_due` says are due (the ONE membership
-    # definition the renderer also uses), so a due person the page forgot is UNPLACED here.
-    # A person with no cadence, a fresh one, or one a pursuit carries is not expected.
-    # Not wrapped in a try: a derivation that crashes must fail the gate loudly, never
-    # shrink the expected set to nothing and read as CLEAN.
+    # jobsearch 0.88.0 (dev #914, #915): the Network section is `your_move.communication_plan`, the ONE
+    # owner of its membership, so a person, role or channel it lists is EXPECTED here (a row the page forgot is
+    # UNPLACED). This proves rendered == derived; that the derivation is RIGHT rests on test_communication_plan.py.
+    # Not wrapped in a try: a derivation that crashes must fail the gate loudly, never shrink the expected set.
     import your_move as _ymod
-    for person, state, _why in _ymod.network_people_due(root, today.isoformat())["due"]:
-        if person.get("id"):
-            exp["person:%s" % person["id"]] = {"kind": "person", "state": state}
+    for r in _ymod.communication_plan(root, today.isoformat())["rows"]:
+        exp.setdefault(r["key"], {"kind": r["key"].split(":", 1)[0], "group": r["group"]})
     # dev #834 (M4, M5): the Network list. The rows the owner acts on (look-into companies, unrecorded
     # chats, bookings with no chat, suggestion asks, unobserved sends, drafting proposals) come from
     # `funnel_report.network_rows`, the ONE derivation the renderer also calls, so a row the page forgot is
@@ -643,6 +642,215 @@ def check_network_note(page, root, today):
         return (["NETWORK NOTE DISAGREES — the \"Not on this page\" note counts %d sent proposal(s); the store "
                  "has %d" % (have, want)], "network note: DISAGREES")
     return [], "network note: %d sent proposal(s) counted" % want
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# jobsearch 0.88.0 (dev #915, #902; design 7.2, 8): THREE NEW GATES.
+#
+#   NO CLI          the candidate-facing page renders no command. Only ENGINE-AUTHORED markup is scanned: every
+#                   element carrying `data-theirs` (the closed `dashboard_actions.THEIRS_SITES`, set by the
+#                   renderer around the candidate's own words) is removed with its subtree, as is every
+#                   <script>/<style> body, and in a copy-as-prompt textarea every line that is quoted candidate
+#                   text (`> `) or one of the draft block's two data lines (`Draft key:`, `Title:`). A `data-theirs`
+#                   element holding a button, a textarea, a `data-rec`/`data-ref` row or a `data-action` is its own
+#                   GAP (`THEIRS WRAPS ENGINE MARKUP`): the exclusion cannot become a hiding place.
+#                   It reports `scanned N engine-authored chars, excluded M data-theirs spans` and cannot pass on
+#                   N == 0 (NOT CHECKED, exit 2): a page it read nothing of is not a clean page.
+#   SUBJECT TWICE   a subject (`data-subject`) on two primary rows across Network, Drafts and Targets. Several drafts
+#                   to one person are ONE appearance (Drafts is a list of messages); two Network rows, or a subject in
+#                   two sections, are a GAP. It proves rendered == derived, never derived == correct: membership
+#                   rests on tests/test_communication_plan.py.
+#   PURSUE COUNT    the page's Opportunities-to-pursue count equals `process_report`'s ready count minus the ready
+#                   roles docs/design-stage-honesty.md 3.2 enumerates (a reply owed, ended/withdrawn). A ready role in
+#                   any OTHER non-`new` cell is its own GAP. The expected side reads the RAW `pursuit_state` cell, never
+#                   `pursuit_with_stage`, so a regression in that function moves only the page side.
+#
+# EXIT CODES: 0 clean (and 0 for "no page yet", whose last line is `NOT CHECKED`), 1 a GAP, 2 a gate that could not
+# look (its last line `NOT CHECKED: <check> (<why>)`). `NOT_CHECKED` collects those reasons during `check()`.
+# ─────────────────────────────────────────────────────────────────────────────
+NOT_CHECKED = []
+NO_CLI_PATTERNS = (re.compile(r"\brecord\.py\b"), re.compile(r"\bpython3\b"),
+                   re.compile(r"~/\.claude/jobsearch/run"), re.compile(r"\b[a-z_]+\.py\s+--?[a-z]"))
+DATA_LINE_PREFIXES = ("> ", "Draft key: ", "Title: ")
+# attributes whose value is a record key or a link, which may carry the candidate's own title (`draft:<title>`)
+_KEY_ATTRS = frozenset({"data-rec", "data-ref", "data-subject", "data-cap-key", "id", "href", "for", "name",
+                        "data-flist", "data-more", "data-full", "data-theirs"})
+_VOID_TAGS = frozenset("area base br col embed hr img input link meta param source track wbr".split())
+
+
+class _Scrub(HTMLParser):
+    """Collects the engine-authored text and attribute values of a page, with `data-theirs` subtrees removed."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.stack, self.skip_at, self.engine = [], None, []
+        self.theirs_spans, self.wraps, self.unknown_sites = 0, [], []
+        self.in_textarea = False
+
+    def _push(self, tag):
+        if tag not in _VOID_TAGS:
+            self.stack.append(tag)
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        inside = self.skip_at is not None
+        if "data-theirs" in a and any(k in a for k in ("data-rec", "data-ref", "data-action")):
+            self.wraps.append("<%s data-theirs> is itself a record row or an action" % tag)
+        if inside:
+            if tag in ("button", "textarea") or any(k in a for k in ("data-rec", "data-ref", "data-action")):
+                self.wraps.append("<%s> inside data-theirs" % tag)
+            self._push(tag)
+            return
+        for k, v in attrs:
+            if k not in _KEY_ATTRS and v:
+                self.engine.append(v)
+        if "data-theirs" in a:
+            if a["data-theirs"] not in _actions.THEIRS_SITES:
+                self.unknown_sites.append(a["data-theirs"])
+            self.theirs_spans += 1
+            self._push(tag)
+            if tag not in _VOID_TAGS:
+                self.skip_at = len(self.stack)
+            return
+        self._push(tag)
+        if tag == "textarea":
+            self.in_textarea = True
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        if tag not in _VOID_TAGS and self.stack and self.stack[-1] == tag:
+            self.stack.pop()
+            if self.skip_at is not None and len(self.stack) < self.skip_at:
+                self.skip_at = None
+
+    def handle_endtag(self, tag):
+        if tag in _VOID_TAGS or tag not in self.stack:
+            return
+        while self.stack:
+            if self.stack.pop() == tag:
+                break
+        if self.skip_at is not None and len(self.stack) < self.skip_at:
+            self.skip_at = None
+        if tag == "textarea":
+            self.in_textarea = False
+
+    def handle_data(self, data):
+        if self.skip_at is not None or (self.stack and self.stack[-1] in ("script", "style")):
+            return
+        if self.in_textarea:
+            data = "\n".join(ln for ln in data.split("\n") if not ln.startswith(DATA_LINE_PREFIXES))
+        self.engine.append(data)
+
+
+def check_no_cli(page):
+    """(gaps, line): NO CLI over the engine-authored part of `page` (see the banner above)."""
+    sc = _Scrub()
+    try:
+        sc.feed(page)
+        sc.close()
+    except Exception as e:                                       # noqa: BLE001 - said, never a pass
+        NOT_CHECKED.append("no CLI (the page could not be parsed: %s: %s)" % (type(e).__name__, str(e)[:80]))
+        return [], "no CLI: NOT CHECKED"
+    gaps = []
+    for site in sc.unknown_sites:
+        gaps.append("THEIRS SITE UNKNOWN -- data-theirs=%r is not one of dashboard_actions.THEIRS_SITES" % site)
+    for w in sc.wraps:
+        gaps.append("THEIRS WRAPS ENGINE MARKUP -- %s: the exclusion may wrap the candidate's words, never a button, "
+                    "a record row or an action" % w)
+    text = "\n".join(sc.engine)
+    n = len(text.strip())
+    if n == 0:
+        NOT_CHECKED.append("no CLI (0 engine-authored characters were scanned)")
+        return gaps, "no CLI: NOT CHECKED (0 engine-authored chars)"
+    for pat in NO_CLI_PATTERNS:
+        for m in pat.finditer(text):
+            ctx = text[max(0, m.start() - 30):m.end() + 40].replace("\n", " ")
+            gaps.append("NO CLI -- the page shows a command: ...%s... (engine-authored text: reword it in plain "
+                        "words, or wrap the candidate's own text in data-theirs)" % ctx)
+            break
+    return gaps, ("no CLI: scanned %d engine-authored chars, excluded %d data-theirs spans" % (n, sc.theirs_spans))
+
+
+_H2_RE = re.compile(r'<h2 id="([^"]+)"')
+_SUBJECT_SECTIONS = {"phase-network": "network", "phase-targets": "targets", "phase-outreach-approvals": "drafts"}
+
+
+def check_subject_twice(page):
+    """(gaps, line): SUBJECT TWICE. A subject on two primary rows across Network, Drafts and Targets is a GAP. Several
+    Drafts rows for one subject count once: a person may have two drafts staged."""
+    heads = [(m.start(), m.group(1)) for m in _H2_RE.finditer(page)]
+    seen = {}
+    for m in _ROW_RE.finditer(page):
+        if m.group(3) != "rec":
+            continue
+        attrs = m.group(2) + " " + m.group(5)
+        subj = dict(_DATA_ATTR_RE.findall(attrs)).get("subject")
+        if not subj:
+            continue
+        sect = None
+        for pos, hid in heads:
+            if pos <= m.start():
+                sect = hid
+        name = _SUBJECT_SECTIONS.get(sect)
+        if name:
+            seen.setdefault(_html.unescape(subj), []).append(name)
+    gaps = []
+    for subj, where in sorted(seen.items()):
+        sections = sorted(set(where))
+        rows_outside_drafts = [w for w in where if w != "drafts"]
+        if len(sections) > 1 or len(rows_outside_drafts) > 1:
+            gaps.append("SUBJECT TWICE -- %s is a primary row %d time(s) across %s; a subject has ONE primary row "
+                        "on the page" % (subj, len(where), ", ".join(sections)))
+    return gaps, "subjects: %d on primary rows, %d twice" % (len(seen), len(gaps))
+
+
+_PURSUE_RE = re.compile(r'id="phase-pipeline-roles">[^<]*<span class="tcount">(\d+)</span>')
+
+
+def check_pursue_count(page, root):
+    """(gaps, line): PURSUE COUNT (dev #902). See the banner above for the rule."""
+    m_gen = _PGEN_RE.search(page)
+    try:
+        now = datetime.datetime.fromisoformat(_html.unescape(m_gen.group(1)))
+    except (AttributeError, ValueError):
+        NOT_CHECKED.append("pursue count (the page carries no readable generation time)")
+        return [], "pursue count: NOT CHECKED"
+    m = _PURSUE_RE.search(page)
+    if m:
+        shown = int(m.group(1))
+    elif "Opportunities (0)" in page and 'id="phase-pipeline-roles"' not in page:
+        shown = 0
+    else:
+        NOT_CHECKED.append("pursue count (no Opportunities heading and no empty-state label on the page)")
+        return [], "pursue count: NOT CHECKED"
+    try:
+        import lifecycle as _lifecycle
+        import your_move as _ym
+        data = _lifecycle.load_data(root)
+        rep = _lifecycle.process_report(data, now)
+        ctx = _ym.lifecycle_context(data["opportunities"], now, data)
+        ready = [o for o in data["opportunities"] if ctx.stage_of_opp(o).name == "ready"]
+        cells = {}
+        for o in ready:
+            p = _ym.pursuit_state(root, o, o.get("_applications") or [])      # RAW: never pursuit_with_stage
+            cells[o.get("id")] = (p.get("state"), p.get("cell"), p.get("ended_because"))
+    except Exception as e:                                       # noqa: BLE001 - said, never a pass
+        NOT_CHECKED.append("pursue count (%s: %s)" % (type(e).__name__, str(e)[:100]))
+        return [], "pursue count: NOT CHECKED"
+    gaps, exempt = [], 0
+    for oid, (state, cell, because) in sorted(cells.items()):
+        if state == "new":
+            continue
+        if cell == "reply-owed" or (state == "ended" and because == "withdrawn"):
+            exempt += 1                    # docs/design-stage-honesty.md 3.2: the enumerated cells
+        else:
+            gaps.append("PURSUE COUNT -- ready role %s sits in pursuit cell %r/%r, which design-stage-honesty 3.2 does "
+                        "not enumerate" % (oid, state, cell))
+    expected = rep.ready - exempt
+    if shown != expected:
+        gaps.append("PURSUE COUNT -- the page shows %d; process_report's ready count (%d) minus the 3.2 exceptions (%d)"
+                    " is %d" % (shown, rep.ready, exempt, expected))
+    return gaps, "pursue count: page %d, process_report ready %d less %d enumerated" % (shown, rep.ready, exempt)
 
 
 def check_process_block(page, root):
@@ -1105,6 +1313,7 @@ def check_warm_path(page, root, today):
 def check(root, verbose=False):
     """(gaps, summary_lines, advisories). Empty gaps means the contract holds; advisories
     are measurements that do not fail the check (EXACTLY ONCE, until stage 2)."""
+    del NOT_CHECKED[:]
     html_path = _tree.path(root, "dashboard_artifact")
     ledger_path = os.path.join(root, "views", LEDGER_NAME)
     have_html, have_ledger = os.path.isfile(html_path), os.path.isfile(ledger_path)
@@ -1251,6 +1460,12 @@ def check(root, verbose=False):
     gaps.extend(t_gaps)
     n_gaps, n_line = check_network_note(page, root, today)
     gaps.extend(n_gaps)
+    c_gaps, c_line = check_no_cli(page)
+    gaps.extend(c_gaps)
+    st_gaps, st_line = check_subject_twice(page)
+    gaps.extend(st_gaps)
+    pc_gaps, pc_line = check_pursue_count(page, root)
+    gaps.extend(pc_gaps)
     n_exp = len(exp)
     n_placed = n_exp - sum(1 for g in gaps if g.startswith("UNPLACED"))
     lines = ["covered %d of %d record(s) — %d rendered · %d in counted remainders · "
@@ -1263,6 +1478,9 @@ def check(root, verbose=False):
     lines.append(p_line)
     lines.append(t_line)
     lines.append(n_line)
+    lines.append(c_line)
+    lines.append(st_line)
+    lines.append(pc_line)
     if verbose:
         lines.extend("  " + p for p in placements)
     # EXACTLY ONCE is a GAP since design r3 (check_links); nothing is advisory any more. The
@@ -1284,6 +1502,11 @@ def main():
         return 0
     for a in advisories:
         print("  - " + a)
+    if not gaps and NOT_CHECKED:
+        for why in NOT_CHECKED:
+            print("  - NOT CHECKED: %s" % why)
+        print("NOT CHECKED: %s" % NOT_CHECKED[-1])
+        return 2
     if not gaps:
         print("  CLEAN — every record is rendered, counted, or terminal; nothing renders "
               "outside its window; every record has ONE primary row and every reference and "
@@ -1295,6 +1518,8 @@ def main():
     print("=" * 72)
     for g in gaps:
         print("  - " + g)
+    for why in NOT_CHECKED:
+        print("  - NOT CHECKED: %s" % why)
     print("\n  Remedy: regenerate (generate_dashboard.py) and re-check; a gap that survives a "
           "regeneration is a renderer defect — report it, never hand-edit the page.")
     return 1

@@ -202,9 +202,13 @@ CONFIG_SKELETON = {
     "geography": {"commute_anchors": [], "remote_ok": True,
                   "relocation": {"open": False, "affirmative_destinations": []}},
     "compensation": {
-        "_basis_note": "FLOORS ARE BASE SALARY. A band whose TOP is below the applicable floor is "
-                       "removed, not flagged. Undisclosed comp is KEPT - it is the first question, "
-                       "not a filter.",
+        # dev #916: the note used to say every floor is base salary while the same seed wrote a
+        # per-tier `basis` that nothing read. The screen now reads it (`profile.floor_basis`).
+        "_basis_note": "FLOORS ARE ANNUAL. Each tier's `basis` says whether its floor is base "
+                       "salary or total pay; a band is compared only on a like basis. A band whose "
+                       "TOP is below a floor of the same basis is removed, not flagged; a base band "
+                       "under a TOTAL floor is flagged for review (the bonus is not stated), never "
+                       "removed. Undisclosed comp is KEPT - it is the first question, not a filter.",
         # ⭐ `tiers` is a LIST of tier objects, not a dict (issue #34, part 1). profile.py's
         # `tiers()` does `{t["setting"]: t for t in ...}` and `screen_comp()`/`main()` read
         # `t["floor"]` unconditionally — a dict of {name: None} TypeErrors on the first read,

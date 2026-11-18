@@ -239,7 +239,9 @@ value is refused, never read as the default.
 - **[Reading what the search produces](../../docs/user/jobsearch/reading-your-files.md)** — which file
   opens in which tool. There is **one published page**, `views/dashboard_artifact.html`, and since
   0.71.0 it holds only what is waiting on a decision from you: drafts to review (a pending message in
-  full), opportunities to pursue, and applications to finish with their cover letters. Each record is
+  full), since 0.88.0 your network (who needs a next step) and a short list of companies to
+  review, then opportunities to pursue, and applications to finish with their cover letters. Its
+  actions are plain words you paste into Claude Code, never a command. Each record is
   shown in full in exactly one list and is a linked one-line reference elsewhere. A reviewer's comment
   on that page is applied to the draft through the session (before-and-after, your yes), never by
   editing the page. Where the rest went: **`/jobsearch:status`** shows where things stand (what needs

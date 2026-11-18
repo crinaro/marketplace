@@ -71,6 +71,10 @@ import unittest
 # take/release contract needs to exercise, while giving every concurrently-running process (two
 # full-suite runs, or a full-suite run plus a gate's own re-run) its own — no shared resource
 # left to contend over.
+# dev #926: the variables below that THIS import defaulted (rather than inherited) are per
+# process by design; `_shard_env` drops them so every shard worker defaults its own.
+_SUITE_DEFAULTED_ENV = [_k for _k in ("CLAUDESEARCH_LOCK_PATH", "CLAUDESEARCH_DIAG_LOG",
+                                      "CLAUDESEARCH_MACHINE_DIAG_LOG") if _k not in os.environ]
 os.environ.setdefault("CLAUDESEARCH_LOCK_PATH",
                       os.path.join(tempfile.gettempdir(),
                                    "claudesearch-test-lock-%d.json" % os.getpid()))
@@ -164,7 +168,25 @@ def _self_heal_fixture_writability():
             print("jobsearch: could not repair %s: %s" % (p, exc), file=sys.stderr)
 
 
-if os.path.isdir(_FIXTURE):
+# ⭐ dev #926: the roots a LIVE `_fixture_locked_for_run()` holds, in this process or an ancestor
+# (it names them in this variable for as long as it holds them). Read-only there is the lock
+# working, never a stale one: healing it would silently release a running suite's dev #444
+# tripwire for the rest of that run. Before dev #926 every test whose child process imported
+# this module did exactly that to a serial run (`TestFixtureLockSelfHeals`' child, for one).
+FIXTURE_LOCK_ENV = "TEST_CHECKS_FIXTURE_LOCKED"
+
+
+def _held_fixture_roots():
+    return [r for r in os.environ.get(FIXTURE_LOCK_ENV, "").split(os.pathsep) if r]
+
+
+def _under_held_lock(path, held=None):
+    held = _held_fixture_roots() if held is None else held
+    real = os.path.realpath(path)
+    return any(real == r or real.startswith(r.rstrip(os.sep) + os.sep) for r in held)
+
+
+if os.path.isdir(_FIXTURE) and not _under_held_lock(_FIXTURE):
     _self_heal_fixture_writability()
 
 # ⭐ SOME TESTS ASSERT THE MAINTAINER'S LAYOUT, NOT THE PRODUCT — GitHub #56.
@@ -788,6 +810,145 @@ def _live_role(rid, title, **kw):
          "sightings": [{"channel_id": "ch-board", "seen_on": "2026-01-01"}]}
     r.update(kw)
     return r
+
+
+# dev #915 (0.88.0, N16): lifted from test_generate_dashboard.py so the Network, Targets and coverage cases build
+# the SAME synthesized profiles (the owner-volume profile plus what the network owes).
+def _ready_fields():
+    """dev #820 / public #175: what makes a backlog+undecided role READ and screened, the lifecycle's
+    `ready` (the only pursue-or-pass): one `read` attempt and a JD-input screen written after it."""
+    return {"jd_read": {"attempts": [{"at": "2026-01-02T08:00:00", "run": "run-x", "url": None,
+                                      "via": "render", "outcome": "read",
+                                      "evidence": {"quote": "Role - Apply now"}}]},
+            "screen": {"on": "2026-01-02", "verdict": "review:comp", "rules": {"comp": "BELOW"},
+                       "engine": "0.82.0", "inputs": "jd"}}
+
+
+def _ready_live_role(rid, title, **kw):
+    """`_live_role` with test_generate_dashboard.py's defaults (dev #750, dev #899): an undecided role is a READY
+    backlog role unless the test names its own `status`; `ready=False` opts out. Lifted so the owner-volume,
+    network and pursue-count profiles are built the SAME way in every file that needs them."""
+    kw.setdefault("verdict", "undecided")
+    ready = kw.pop("ready", None)
+    if ready is None:
+        ready = kw["verdict"] == "undecided" and "status" not in kw
+    if ready:
+        kw.setdefault("status", "backlog")
+        kw.setdefault("stage", "sourced")
+        for k, v in _ready_fields().items():
+            kw.setdefault(k, v)
+    return _live_role(rid, title, **kw)
+
+
+def _days_ago(n):
+    return (datetime.date.today() - datetime.timedelta(days=n)).isoformat()
+
+
+def _owner_volume_profile():
+    """A synthesized profile at the volume the owner reads (OWNER REQUEST 2026-10-13): 25 live
+    roles across every pursuit state, 15 staged drafts, four channels (one due, one current, one
+    retired, one recruiter touch), three scheduled commitments and two asks. Every identifier is
+    invented. This is the profile the design's before/after measurement was taken on."""
+    sub = lambda n: [{"date": _days_ago(n), "method": "company-ats", "status": "submitted"}]
+    opps = []
+    for i in range(25):
+        rid, title, k = "v%02d" % i, "Volume role %02d" % i, i % 5
+        if k == 0:
+            opps.append(_ready_live_role(rid, title, next_action_owner="ada"))
+        elif k == 1:
+            opps.append(_ready_live_role(rid, title, status="backlog", stage="sourced",
+                                   verdict="undecided", next_action_owner="ada"))
+        elif k == 2:
+            opps.append(_ready_live_role(rid, title, next_action_owner="me", applications=sub(3 + i)))
+        elif k == 3:
+            opps.append(_ready_live_role(rid, title, stage="interviewing", next_action_owner="me"))
+        else:
+            opps.append(_ready_live_role(rid, title, next_action_owner="me"))
+    drafts = "# drafts.md\n\n" + "".join(
+        "## Follow-up note %02d\n**Medium:** %s\n**To:** unaddressed\n\n"
+        "> Hello, body of note %02d.\n\n" % (i, ("email-cold", "linkedin-dm", "email-warm")[i % 3], i)
+        for i in range(15))
+    future = lambda n: (datetime.date.today() + datetime.timedelta(days=n)).isoformat()
+    commits = [{"id": "cm%d" % i, "date": future(i + 1), "title": "Screen %d" % i, "who": "you",
+                "opp_id": "v%02d" % (i * 5 + 3), "status": "scheduled"} for i in range(3)]
+    asks = [{"id": "a1", "kind": "system", "title": "Approve the tool", "ask": "approve?",
+             "created": _days_ago(3)},
+            {"id": "a2", "kind": "role", "title": "Role ask", "ask": "pursue or pass?",
+             "created": _days_ago(3)}]
+    prof = _audit_profile(opps=opps, drafts=drafts, commitments=commits, asks=asks)
+    chans = [
+        {"id": "ch-due", "label": "Due Board", "type": "job-board", "review_cadence": "weekly",
+         "access": "public", "last_reviewed": _days_ago(30)},
+        {"id": "ch-cur", "label": "Current Board", "type": "job-board",
+         "review_cadence": "weekly", "access": "public", "last_reviewed": _days_ago(1)},
+        {"id": "ch-ret", "label": "Retired Board", "type": "job-board",
+         "review_cadence": "weekly", "access": "public", "relationship_status": "retired"},
+        {"id": "rec-now", "label": "Recruiter Now", "type": "recruiter",
+         "next_touch": {"date": _days_ago(2), "note": "Ask about the opening"}},
+    ]
+    with open(os.path.join(prof, "data", "channels.jsonl"), "w", encoding="utf-8") as fh:
+        for c in chans:
+            fh.write(json.dumps(c) + "\n")
+    return prof
+
+
+def _pursue_count_snapshot(testcase):
+    """dev #899 / #902 (0.88.0, N2): the SYNTHESIZED snapshot whose Opportunities count must equal `process_report`'s
+    ready count less the enumerated cells: two ready roles, one ready role with a reply owed, one ready role whose
+    application was withdrawn, one role held for an untargeted company, one folded duplicate and one ended role.
+    The tracked fixture has none of the held, folded or reply-owed classes, so a count equality there reads 0 == 0 before
+    and after any change. Lifted from test_generate_dashboard.TestOpportunitiesAreTheReadyStage so the coverage gate's
+    PURSUE COUNT cases build the SAME profile. Cleanup is registered on `testcase`."""
+    sub = [{"date": _days_ago(5), "method": "company-ats", "status": "withdrawn"}]
+    touch = [{"person_id": "pat-1", "date": _days_ago(9), "status": "sent", "medium": "email-cold",
+              "outcome": "awaiting"}]
+    inbound = [{"opp_id": "rdreply", "person_id": "pat-1", "direction": "inbound",
+                "sent_on": _days_ago(2), "medium": "email-cold"}]
+    recent = [{"channel_id": "ch-board", "seen_on": _days_ago(1)}]
+    opps = [
+        _ready_live_role("rd1", "Ready One"),
+        _ready_live_role("rd2", "Ready Two"),
+        _ready_live_role("rdreply", "Ready Reply Owed", outreach=touch),
+        _ready_live_role("rdwd", "Ready Withdrawn", applications=sub),
+        # never read, at a company the candidate has not targeted
+        _ready_live_role("held1", "Held One", ready=False, status="backlog", stage="sourced",
+                         company_id="c2", sightings=recent),
+        # a duplicate of a counted role
+        _ready_live_role("fold1", "Folded One", duplicate_of="rd1"),
+        # ended by a pass verdict
+        _ready_live_role("end1", "Ended One", status="passed", stage="closed", verdict="pass"),
+    ]
+    prof = _audit_profile(opps=opps, messages=inbound, people=[{"id": "pat-1"}])
+    testcase.addCleanup(shutil.rmtree, prof, True)
+    with open(os.path.join(prof, "data", "companies.jsonl"), "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"id": "c2", "name": "Globex", "vertical": "other", "status": "watching"}) + "\n")
+    return prof
+
+
+def _net_write(prof, name, rows):
+    with open(os.path.join(prof, "data", name + ".jsonl"), "a", encoding="utf-8") as fh:
+        for r in rows:
+            fh.write(json.dumps(r) + "\n")
+
+
+def _network_profile():
+    """The owner-volume profile plus what the network owes the owner: a chat in the past nobody has marked,
+    a booking no chat was recorded for, an open suggestion, a proposal still drafting and one sent."""
+    prof = _owner_volume_profile()
+    _net_write(prof, "people", [{"id": "p-ada", "name": "Ada Example", "status": "active"},
+                                {"id": "p-bo", "name": "Bo Example", "status": "active"}])
+    _net_write(prof, "commitments", [{"id": "c-open", "date": "2020-01-10", "title": "Coffee", "status": "scheduled",
+                                      "kind": "chat", "person_id": "p-ada"}])
+    _net_write(prof, "touches", [{"id": "t-book", "person_id": "p-bo", "opp_id": None, "channel_id": None,
+                                  "to": "bo@example.com", "status": "sent", "date": "2020-01-05",
+                                  "outcome": "meeting-booked", "medium": "email-cold",
+                                  "touch_type": "first-touch"}])
+    _net_write(prof, "asks", [{"id": "ask-s1", "kind": "suggestion", "title": "Target Globex?",
+                               "ask": "Two roles sighted, one known colleague.", "created": "2020-01-01"}])
+    _net_write(prof, "proposals", [{"id": "o1-p1", "opp_id": "v00", "status": "drafting", "status_on": "2020-01-02"},
+                                   {"id": "o1-p2", "opp_id": "v00", "status": "sent", "status_on": "2020-01-03",
+                                    "sent_on": "2020-01-03"}])
+    return prof
 
 
 def _removed_fractional_role(rid, title="Fractional CTO", **kw):
@@ -1587,6 +1748,40 @@ def force_tree_writable(path):
 
 
 @contextlib.contextmanager
+def _copies_stay_writable():
+    """The `shutil.copystat`/`copymode` patch `_fixture_locked_for_run()` needs (see its
+    docstring): a copy keeps everything a copy normally keeps, then its owner-write bit is forced
+    back on. Its own context manager since dev #926, because a shard worker
+    (`_shard_worker_main`) runs its tests in ANOTHER process while the parent holds the lock, and
+    the patch is per process."""
+    _orig_copystat = shutil.copystat
+    _orig_copymode = shutil.copymode
+
+    def _force_writable(path):
+        try:
+            st = os.stat(path)
+            os.chmod(path, st.st_mode | 0o200)
+        except OSError:
+            pass
+
+    def _copystat_then_writable(src, dst, *, follow_symlinks=True):
+        _orig_copystat(src, dst, follow_symlinks=follow_symlinks)
+        _force_writable(dst)
+
+    def _copymode_then_writable(src, dst, *, follow_symlinks=True):
+        _orig_copymode(src, dst, follow_symlinks=follow_symlinks)
+        _force_writable(dst)
+
+    shutil.copystat = _copystat_then_writable
+    shutil.copymode = _copymode_then_writable
+    try:
+        yield
+    finally:
+        shutil.copystat = _orig_copystat
+        shutil.copymode = _orig_copymode
+
+
+@contextlib.contextmanager
 def _fixture_locked_for_run():
     """dev #444's tripwire. Strips the write bit from every file AND directory under
     `_fixture_roots()` for the duration of the `with` block — restored (original mode,
@@ -1638,8 +1833,14 @@ def _fixture_locked_for_run():
     killed, which is itself worth knowing. This does not weaken what the lock protects —
     dev #444's write-during-the-run tripwire below is unchanged; only what a NEW run does
     about a PREVIOUS run's leftover state is new."""
+    # dev #926: a root an enclosing lock holds (this process or an ancestor) is read-only
+    # because that lock is live, not because a run was killed; it is neither healed nor
+    # restored to anything but what it was found as.
+    held = _held_fixture_roots()
     stale = []
     for root in _fixture_roots():
+        if _under_held_lock(root, held):
+            continue
         if os.path.exists(root) and not (os.stat(root).st_mode & 0o200):
             stale.append(root)
         for dirpath, dirs, files in os.walk(root):
@@ -1659,7 +1860,7 @@ def _fixture_locked_for_run():
         if len(stale) > 10:
             print("     ... and %d more" % (len(stale) - 10))
         for root in _fixture_roots():
-            if os.path.exists(root):
+            if os.path.exists(root) and not _under_held_lock(root, held):
                 force_tree_writable(root)
 
     saved = []
@@ -1674,31 +1875,17 @@ def _fixture_locked_for_run():
         saved.append((root, mode))
         os.chmod(root, mode & ~0o222)
 
-    _orig_copystat = shutil.copystat
-    _orig_copymode = shutil.copymode
-
-    def _force_writable(path):
-        try:
-            st = os.stat(path)
-            os.chmod(path, st.st_mode | 0o200)
-        except OSError:
-            pass
-
-    def _copystat_then_writable(src, dst, *, follow_symlinks=True):
-        _orig_copystat(src, dst, follow_symlinks=follow_symlinks)
-        _force_writable(dst)
-
-    def _copymode_then_writable(src, dst, *, follow_symlinks=True):
-        _orig_copymode(src, dst, follow_symlinks=follow_symlinks)
-        _force_writable(dst)
-
-    shutil.copystat = _copystat_then_writable
-    shutil.copymode = _copymode_then_writable
+    previous = os.environ.get(FIXTURE_LOCK_ENV)
+    os.environ[FIXTURE_LOCK_ENV] = os.pathsep.join(
+        held + [os.path.realpath(r) for r in _fixture_roots()])
     try:
-        yield
+        with _copies_stay_writable():
+            yield
     finally:
-        shutil.copystat = _orig_copystat
-        shutil.copymode = _orig_copymode
+        if previous is None:
+            os.environ.pop(FIXTURE_LOCK_ENV, None)
+        else:
+            os.environ[FIXTURE_LOCK_ENV] = previous
         for p, mode in saved:
             try:
                 os.chmod(p, mode)
@@ -1816,20 +2003,44 @@ def _run_with_skip_accounting():
     selective = bool(select_path)
     if record_path:
         _write_tests_record(record_path, {"tests_dir": TESTS_DIR})
+    select_ids = None
     if selective:
         with open(select_path, encoding="utf-8") as fh:
             select_ids = json.load(fh)
         if TESTS_DIR not in sys.path:
             sys.path.insert(0, TESTS_DIR)
-        suite = unittest.TestSuite([loader.loadTestsFromName(i) for i in select_ids])
         print("SELECTIVE RUN (dev #530, TEST_CHECKS_SELECT): %d selection(s), not the whole suite"
               % len(select_ids))
-    else:
-        suite = loader.discover(TESTS_DIR, pattern="test_*.py", top_level_dir=TESTS_DIR)
-    runner = unittest.TextTestRunner(verbosity=2)
+    # dev #926: sharded across `TEST_CHECKS_JOBS` worker processes (default: the CPU count);
+    # `TEST_CHECKS_JOBS=1` is the serial in-process run, unchanged. See `_shard.py`.
+    import _shard
+    jobs = _shard.requested_jobs()
+    units = sizes = None
+    if jobs > 1:
+        units, expected_ids = _shard.plan_units(loader, TESTS_DIR, select_ids)
+        problem, sizes = _shard.coverage_problem(loader, units, expected_ids)
+        if problem:
+            print("!! dev #926: %s. Refusing to run a different suite than discovery would; "
+                  "TEST_CHECKS_JOBS=1 runs it serially." % problem)
+            return False
+        if len(units) < 2:
+            jobs = 1
+    if jobs <= 1:
+        if selective:
+            suite = unittest.TestSuite([loader.loadTestsFromName(i) for i in select_ids])
+        else:
+            suite = loader.discover(TESTS_DIR, pattern="test_*.py", top_level_dir=TESTS_DIR)
+        runner = unittest.TextTestRunner(verbosity=2)
     before_fixture = _fixture_snapshot()
     with _fixture_locked_for_run():
-        result = runner.run(suite)
+        if jobs <= 1:
+            result = runner.run(suite)
+        else:
+            print("SHARDED RUN (dev #926): %d unit(s) on %d worker process(es); "
+                  "TEST_CHECKS_JOBS=1 runs serially" % (len(units), min(jobs, len(units))))
+            sys.stdout.flush()
+            result = _shard.run_sharded(loader, TESTS_DIR, units, sizes, jobs,
+                                        _SUITE_DEFAULTED_ENV)
     if record_path:
         failed_ids = []
         for test, _tb in list(result.failures) + list(result.errors):
@@ -2066,6 +2277,13 @@ __all__ = [
     '_audit_page',
     '_audit_ledger',
     '_live_role',
+    '_days_ago',
+    '_ready_fields',
+    '_ready_live_role',
+    '_owner_volume_profile',
+    '_net_write',
+    '_pursue_count_snapshot',
+    '_network_profile',
     '_removed_fractional_role',
     '_root_env',
     '_stamp_brief',

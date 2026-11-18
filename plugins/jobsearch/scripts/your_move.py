@@ -1019,7 +1019,7 @@ def pursuit_with_stage(p, st):
     if p.get("state") != "new":
         return p
     if st is not None and st.name == "ready":
-        return p                                     # THE allow-list: the one way to stay `new`
+        return p                                    # THE allow-list: the one way to stay `new`
     tok = stage_token(st)
     if tok == "ended":
         return dict(p, state=tok, cell=tok, ended_because="lifecycle: ended")
@@ -1844,7 +1844,7 @@ def _sighting_dates(opp):
     return out
 
 
-def company_candidates(root, today=None):
+def company_candidates(root, today=None, with_excluded=False):
     """Every company that QUALIFIES for a "look into this company?" question, ranked, as a list of item dicts. A company
     qualifies exactly when its `status` is `watching`, its `status_on` is absent (no owner decision is recorded), and at least one
     of its opportunities is non-terminal, not folded into another and carries a sighting.
@@ -1854,6 +1854,10 @@ def company_candidates(root, today=None):
 
         {"id", "name", "roles": n, "titles": [title...], "newest_sighting": "YYYY-MM-DD" | None, "alumni": n,
          "backers": [firm ids], "raised_on": "YYYY-MM-DD" | None, "raised_days_ago": n | None}
+
+    dev #915 (0.88.0): a company whose `company_kind` is `aggregator` or `staffing` NEVER qualifies, so `raise-companies`
+    never raises one. `with_excluded=True` returns `(items, excluded)`, `excluded` being `[{"id","name","kind","how"}]`
+    for the companies that would have qualified but for their kind.
 
     Pure: it reads the stores under `root` and writes nothing, so it answers the same on every call."""
     import graph as _graph
@@ -1869,10 +1873,14 @@ def company_candidates(root, today=None):
     for p in g.stores["people"]:
         if p.get("status") != "merged" and p.get("company_id") and p.get("ties"):
             alumni[p["company_id"]] = alumni.get(p["company_id"], 0) + 1
-    out = []
+    out, excluded = [], []
     for c in g.stores["companies"]:
         cid = c.get("id")
         if c.get("status") != "watching" or c.get("status_on") or cid not in opps_by_co:
+            continue
+        kind, how = company_kind(c, g.stores["channels"])
+        if kind in ("aggregator", "staffing"):
+            excluded.append({"id": cid, "name": c.get("name") or cid, "kind": kind, "how": how})
             continue
         roles = opps_by_co[cid]
         newest = max((d for o in roles for d in _sighting_dates(o)), default=None)
@@ -1889,7 +1897,8 @@ def company_candidates(root, today=None):
                      "raised_on": raised, "raised_days_ago": days},
                     newest.toordinal() if newest else 0))
     out.sort(key=lambda t: (-t[0]["alumni"], -t[0]["roles"], -t[1], t[0]["id"]))
-    return [item for item, _ordinal in out]
+    items = [item for item, _ordinal in out]
+    return (items, sorted(excluded, key=lambda e: e["id"])) if with_excluded else items
 
 
 def classify_companies(root, today=None):
@@ -2042,6 +2051,296 @@ def outreach_due(root, today=None, horizon=None, pre_rows=None, untriggered=None
                          "when": "now", "sendability": "undrafted",
                          "why": "no draft yet: %s" % why})
     return {"drafts": drafts, "refs": refs}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# jobsearch 0.88.0 (dev #914, #915; design-jobsearch-0.88.0.md 6): THE COMMUNICATION PLAN.
+#
+# The Network section is not a CLI queue and Drafts is not a list of "no draft yet" placeholders. Drafts holds
+# DRAFTS (a message staged for the candidate's send); the Network section is ONE ROW PER PERSON OR ROLE NEEDING A
+# NEXT STEP, in five groups, and `communication_plan` is the ONE owner of its membership. A row carries a
+# `subject` (`opp:<id>`, `person:<id>`, `chan:<id>`, or `net:<key>` when a row names no resolvable subject), and a
+# subject is placed in the FIRST group it qualifies for, so one person is never two primary rows. The gate that holds
+# the page to this is check_dashboard_coverage's SUBJECT TWICE; membership itself rests on
+# tests/test_communication_plan.py (the gate proves rendered == derived, never derived == correct).
+# ─────────────────────────────────────────────────────────────────────────────
+
+PLAN_GROUPS = ("to-record", "applied-no-contact", "awaiting-reply", "referral-handoff", "relationships-due")
+STAFFING_NAME_PATTERNS = ("staffing", "recruiting", "recruitment", "talent solutions", "headhunt")
+COMPANY_KINDS = ("employer", "staffing", "aggregator")
+_STAFFING_RE = re.compile(r"\b(?:%s)\b" % "|".join(re.escape(p) for p in STAFFING_NAME_PATTERNS), re.I)
+
+
+def _host(url):
+    import urllib.parse
+    try:
+        h = urllib.parse.urlparse(str(url or "")).netloc.lower()
+    except ValueError:
+        return ""
+    return h[4:] if h.startswith("www.") else h
+
+
+def company_kind(company, channels):
+    """`(kind, how)` for a company row (dev #915, design 6.4), the first rule that matches wins:
+    1. `company["kind"]` (employer|staffing|aggregator) is `stated`;
+    2. a channel of `type` aggregator or recruiter whose casefolded name, label or URL host equals the company's
+       gives that type (a recruiter maps to `staffing`), `channel`;
+    3. a name matching `STAFFING_NAME_PATTERNS` (whole word, casefold) is `staffing`, `name`. ⭐ RULE 3 IS
+       ENGLISH-ONLY, stated: a market that names staffing firms in another language sees them as targets until
+       rule 1 or 2 names them; the row's "this is a staffing firm" action records `company-kind` once;
+    4. otherwise `("employer", "default")`."""
+    stated = (company or {}).get("kind")
+    if stated in COMPANY_KINDS:
+        return stated, "stated"
+    name = str((company or {}).get("name") or "").strip().casefold()
+    host = _host((company or {}).get("url") or (company or {}).get("website"))
+    for ch in channels or []:
+        if ch.get("type") not in ("aggregator", "recruiter"):
+            continue
+        names = {str(ch.get(k) or "").strip().casefold() for k in ("name", "label")} - {""}
+        chost = _host(ch.get("url") or ch.get("base_url"))
+        if (name and name in names) or (host and chost and host == chost):
+            return ("staffing" if ch["type"] == "recruiter" else "aggregator"), "channel"
+    if name and _STAFFING_RE.search(name):
+        return "staffing", "name"
+    return "employer", "default"
+
+
+def _root_cfg(root):
+    try:
+        with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        return cfg if isinstance(cfg, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _cfg_int(root, key):
+    """The registered int for `key` from the profile's config.json at `root`: the default when absent, unreadable or
+    out of its bounds (never a guess, never a crash)."""
+    value, _prov = config_keys.describe(_root_cfg(root), key)
+    lo, hi = config_keys.metadata(key)[2]
+    if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+        return config_keys.metadata(key)[0]
+    return value
+
+
+def targets_review(root, today=None, per_week=None):
+    """The weekly "Targets to review" list (dev #915 C7, design 6.3): `classify_companies`' raised companies, minus the
+    ones snoozed this ISO week (`later_on`), capped at `network.targets_per_week` (oldest raise first). Pure.
+
+        {"rows": [item],            what the page lists (capped)
+         "waiting": [item],         raised, not snoozed, over the cap: counted, never hidden
+         "snoozed": [item],         a `later_on` in the current ISO week
+         "excluded": [{"id","name","kind","how"}],   aggregator / staffing companies `company_candidates` dropped
+         "per_week": n}"""
+    today_s = (today.isoformat() if isinstance(today, datetime.date) else today) or datetime.date.today().isoformat()
+    cap = _cfg_int(root, config_keys.TARGETS_PER_WEEK) if per_week is None else per_week
+    wk = _parse_date(today_s).isocalendar()[:2]
+    later = {c.get("id"): c.get("later_on") for c in _load_jsonl(root, "companies.jsonl") if c.get("id")}
+    rows, snoozed = [], []
+    for item in classify_companies(root, today_s)["look-into"]:
+        lo = later.get(item["id"])
+        try:
+            in_week = bool(lo) and _parse_date(lo).isocalendar()[:2] == wk
+        except ValueError:
+            in_week = False                       # an unreadable snooze never hides a company
+        (snoozed if in_week else rows).append(item)
+    excluded = company_candidates(root, today_s, with_excluded=True)[1]
+    return {"rows": rows[:cap], "waiting": rows[cap:], "snoozed": snoozed, "excluded": excluded, "per_week": cap}
+
+
+def drafted_subjects(root):
+    """The subjects a STAGED draft already covers (Drafts is their one home): `opp:<id>` from a `**Triggered by:**` line
+    and `person:<id>` from a `**To:** contact:<id>` line. A subject with a draft is never a Network row too."""
+    import trigger as _trig
+    subjects = set()
+    for fname in _pre.FILES:
+        for _title, body in _trig.entries(root, fname):
+            m = _trig.TRIGGER_FIELD_RE.search(body)
+            if m:
+                try:
+                    opp = _trig.parse_trigger(m.group(1))["opp"]
+                except _trig.TriggerError:
+                    opp = None
+                if opp:
+                    subjects.add("opp:%s" % opp)
+            for pid in re.findall(r"^\*\*To:\*\*\s*contact:(\S+)", body, re.M | re.I):
+                subjects.add("person:%s" % pid)
+    return subjects
+
+
+def _is_recruiter(p):
+    return any("recruiter" in str(p.get(k) or "").casefold() for k in ("kind", "role", "type"))
+
+
+def communication_plan(root, today=None, net=None, owed=None):
+    """`{"rows": [...], "expired_this_week": [...], "failed": None | str}` - the Network section's ONE membership
+    (dev #914 C4/C6, #915). A row: `{"key", "subject", "group", "who", "why", "last_touch", "next_step", "actions"}`.
+    `actions` are `{"action", "rec_id", "label"}` for `dashboard_actions.block`. Pure: it writes nothing.
+
+    Groups, in precedence order (a subject lands in the FIRST one it qualifies for):
+      to-record            `funnel_report.network_rows` (chat, booking, suggestion, send, proposal), each with its
+                           subject resolved: an unrecorded chat or a booking is the PERSON's row;
+      applied-no-contact   `trigger.owed_applications` owed rows: an application with no human contact yet,
+                           newest first, naming the suggested path;
+      awaiting-reply       a person thread whose conversation axis says a nudge is due (`silent`,
+                           `silence-unverified`) or a connection was `accepted`, due date ascending;
+      referral-handoff     `classify_people` state `awaiting-intro`, oldest request first;
+      relationships-due    a recruiter or relationship channel with a `next_touch` inside OUTREACH_HORIZON_DAYS, and a
+                           person-only person whose cadence is `due`, recruiters first then due date.
+    A subject that has a staged draft is dropped from groups a-d (Drafts is its home); a to-record row is never
+    dropped, because an unrecorded fact is owed whether or not a draft exists. Two seams (`net`, `owed`) let the
+    renderer pass what it already computed."""
+    import funnel_report as _fr
+    import graph as _graph
+    import trigger as _trig
+    today = today or datetime.date.today().isoformat()
+    today_d = _parse_date(today)
+    cfg = _root_cfg(root)
+    rows, seen = [], set()
+    failed = []
+
+    def add(r):
+        if r["subject"] in seen:
+            return
+        seen.add(r["subject"])
+        rows.append(r)
+
+    g = _graph.Graph(os.path.join(root, "data"))
+    people = {p["id"]: p for p in g.stores["people"] if p.get("id")}
+    companies = {c["id"]: c for c in g.stores["companies"] if c.get("id")}
+
+    def pname(pid):
+        return (people.get(pid) or {}).get("name") or pid
+
+    # (r) to-record
+    net = _fr.network_rows(root, today) if net is None else net
+    for r in net["rows"]:
+        if r["group"] == "look-into":
+            continue                                   # a company question is a Target, never a Network row
+        add({"key": r["key"], "subject": r.get("subject") or r["key"], "group": "to-record",
+             "who": r["title"], "why": r["detail"], "last_touch": None,
+             "next_step": r.get("next_step") or "record it", "actions": list(r.get("actions") or [])})
+    drafted = drafted_subjects(root)
+
+    # (a) applied, no human contact yet
+    if owed is None:
+        opps = _trig._load_opps(root)
+        owed = _trig.owed_applications(root, opps, [], _trig.load_jsonl(root, "asks.jsonl"), today=today)
+    opps_by_id = {o.get("id"): o for o in _trig.load_jsonl(root, "opportunities.jsonl")}
+    a_rows = []
+    for u in owed["owed"]:
+        oid = u.get("opp_id")
+        o = opps_by_id.get(oid) or {}
+        if not oid or o.get("status") in _vd.TERMINAL_OPP_STATUSES or "opp:%s" % oid in drafted:
+            continue
+        co = companies.get(o.get("company_id")) or {}
+        involved = g.people_for_opportunity(oid)
+        if involved:
+            p, inv = involved[0]
+            path = inv.get("path_type") or inv.get("role") or "contact"
+            step = "write to %s (%s)" % (p.get("name") or p.get("id"), path)
+        else:
+            step = "find a hiring owner, recruiter or insider at %s" % (co.get("name") or "the company")
+        a_rows.append((str(u.get("date") or ""), {
+            "key": "opp:%s" % oid, "subject": "opp:%s" % oid, "group": "applied-no-contact",
+            "who": "%s at %s" % (u.get("title") or oid, co.get("name") or o.get("company_id") or "?"),
+            "why": "no human contact since you applied on %s; this expires on %s"
+                   % (u.get("date") or "?", u.get("expires_on") or "(never: the application date is unreadable)"),
+            "last_touch": None, "next_step": step,
+            "actions": [{"action": "draft-message", "rec_id": "opp:%s" % oid, "label": "Draft it"}]}))
+    for _d, r in sorted(a_rows, key=lambda t: (t[0], t[1]["key"]), reverse=True):
+        add(r)
+
+    # (b) awaiting a reply: a nudge is due, or a connection was accepted
+    chase = _cfg_int(root, config_keys.CHASE_AFTER_DAYS)
+    talked = {t.get("person_id") for t in g.stores["touches"]} | {m.get("person_id") for m in g.stores["messages"]}
+    b_rows = []
+    for pid in sorted(x for x in talked if x in people and people[x].get("status") != "merged"):
+        if "person:%s" % pid in drafted or "person:%s" % pid in seen:
+            continue
+        try:
+            axes = conversation_axis(root, pid, today=today, window=chase)
+        except Exception as e:                                     # noqa: BLE001 - said, never an empty group
+            failed.append("awaiting-reply %s: %s: %s" % (pid, type(e).__name__, str(e)[:80]))
+            continue
+        pick = None
+        for _tid, (axis, events) in axes.items():
+            if axis in ("accepted", "silent", "silence-unverified") and (pick is None or axis == "accepted"):
+                pick = (axis, events)
+        if pick is None:
+            continue
+        axis, events = pick
+        last = max((str(e.get("date") or "") for e in events), default="") or None
+        b_rows.append((last or "9999", {
+            "key": "person:%s" % pid, "subject": "person:%s" % pid, "group": "awaiting-reply",
+            "who": pname(pid),
+            "why": ("they accepted your connection" if axis == "accepted" else
+                    "no reply in %d days%s" % (chase, "" if axis == "silent" else " (not yet verified in your mailbox)")),
+            "last_touch": last,
+            "next_step": ("send the note now that they accepted" if axis == "accepted" else "nudge"),
+            "actions": [{"action": "draft-message", "rec_id": "person:%s" % pid, "label": "Draft it"}]}))
+    for _d, r in sorted(b_rows, key=lambda t: (t[0], t[1]["key"])):
+        add(r)
+
+    # (c) referral handoffs
+    intro = {}
+    for t in g.stores["touches"]:
+        if t.get("touch_type") == "intro-request" and t.get("outcome") == "awaiting" and t.get("object_person_id"):
+            intro.setdefault(t["object_person_id"], t)
+    c_rows = []
+    for p, state, _why in classify_people(root, today):
+        if state != "awaiting-intro" or "person:%s" % p.get("id") in drafted:
+            continue
+        t = intro.get(p.get("id")) or {}
+        c_rows.append((str(t.get("date") or "9999"), {
+            "key": "person:%s" % p["id"], "subject": "person:%s" % p["id"], "group": "referral-handoff",
+            "who": p.get("name") or p["id"],
+            "why": "an introduction to them, requested of %s, has not been confirmed" % pname(t.get("person_id")),
+            "last_touch": t.get("date"), "next_step": "ask %s whether the introduction went out" % pname(t.get("person_id")),
+            "actions": [{"action": "draft-message", "rec_id": "person:%s" % p["id"], "label": "Draft it"}]}))
+    for _d, r in sorted(c_rows, key=lambda t: (t[0], t[1]["key"])):
+        add(r)
+
+    # (d) relationships due this week: recruiter channels and cadence-due people, recruiters first
+    horizon = config_keys.OUTREACH_HORIZON_DAYS
+    limit = (today_d + datetime.timedelta(days=horizon)).isoformat()
+    d_rows = []
+    channels = list(g.stores["channels"])
+    for c, state, _touch, _ev in classify_channels(channels, g.stores["messages"], today, g.stores["involvements"]):
+        nt = c.get("next_touch") or {}
+        due = str(nt.get("date"))
+        if state not in ("now", "scheduled") or not c.get("id") or due > limit or "chan:%s" % c["id"] in drafted:
+            continue
+        note = " · ".join(str(b) for b in (nt.get("time"), nt.get("note")) if b)
+        d_rows.append((0 if c.get("type") == "recruiter" else 1, due, {
+            "key": "chan:%s" % c["id"], "subject": "chan:%s" % c["id"], "group": "relationships-due",
+            "who": c.get("label") or c["id"],
+            "why": "a touch is planned for %s%s" % (due, (": %s" % note) if note else ""), "last_touch": None,
+            "next_step": "touch base", "actions": [{"action": "draft-message", "rec_id": "chan:%s" % c["id"],
+                                                    "label": "Draft it"}]}))
+    for p, state, why in network_people_due(root, today)["due"]:
+        if state != "due" or "person:%s" % p.get("id") in drafted:
+            continue
+        d_rows.append((0 if _is_recruiter(p) else 1, "0000", {
+            "key": "person:%s" % p["id"], "subject": "person:%s" % p["id"], "group": "relationships-due",
+            "who": p.get("name") or p["id"], "why": why, "last_touch": None, "next_step": "touch base",
+            "actions": [{"action": "draft-message", "rec_id": "person:%s" % p["id"], "label": "Draft it"}]}))
+    for _r, _d, r in sorted(d_rows, key=lambda t: (t[0], t[1], t[2]["key"])):
+        add(r)
+
+    wk = today_d.isocalendar()[:2]
+    expired_week = []
+    for u in owed["expired"]:
+        try:
+            if _parse_date(u["expires_on"]).isocalendar()[:2] == wk:
+                co = companies.get((opps_by_id.get(u.get("opp_id")) or {}).get("company_id")) or {}
+                expired_week.append({"opp_id": u.get("opp_id"), "title": u.get("title") or u.get("opp_id"),
+                                     "company": co.get("name") or ""})
+        except (ValueError, TypeError):
+            continue
+    return {"rows": rows, "expired_this_week": expired_week, "failed": "; ".join(failed) or None}
 
 
 def _role_row(o, state, why, posting, ctx):

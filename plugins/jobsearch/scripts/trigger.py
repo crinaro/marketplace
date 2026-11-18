@@ -68,6 +68,7 @@ Python 3.9+. Standard library only.
 """
 
 import argparse
+import datetime
 import json
 import os
 import re
@@ -280,9 +281,76 @@ def sequence_report(root, opps, drafts):
     return out
 
 
-def untriggered_applications(root, opps, drafts, asks):
-    """Submitted applications that NO follow-up work names as its trigger — the feed for
-    'you applied to X, so ask Y': generated, not remembered."""
+def _day(value):
+    """A readable ISO day from `value` (a date or a timestamp that starts with one), else None.
+    An unreadable date is never guessed: a caller that gets None says so."""
+    try:
+        return datetime.datetime.strptime(str(value)[:10], "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
+
+
+def owed_window_days(root):
+    """`network.owed_followup_days` for the profile at `root` (dev #914, D3): the number of days
+    an application may sit with no human contact before its owed row expires. Read from the
+    profile's own config.json; an absent, unreadable or out-of-range value is the registered
+    default, never a guess and never a crash."""
+    import config_keys as _ck
+    try:
+        with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError):
+        cfg = {}
+    value, _prov = _ck.describe(cfg, _ck.OWED_FOLLOWUP_DAYS)
+    lo, hi = _ck.metadata(_ck.OWED_FOLLOWUP_DAYS)[2]
+    if isinstance(value, bool) or not isinstance(value, int) or not lo <= value <= hi:
+        return _ck.OWED_FOLLOWUP_DAYS_DEFAULT
+    return value
+
+
+def _contact_clears(opp, d, messages, graph):
+    """True when ANY human contact on opportunity `opp` is dated on or after `d` (the
+    application date): a completed touch on the opportunity (whatever its trigger_kind), or a
+    message, outbound or inbound, anchored to it or to a person involved in it (merges resolved
+    through graph.Graph). An unreadable date on the contact itself is not counted (dev #914)."""
+    oid = opp.get("id")
+    for t in opp.get("_touches") or []:
+        if t.get("status") != "sent":
+            continue
+        td = _day(t.get("date"))
+        if td is not None and td >= d:
+            return True
+    involved = set()
+    if graph is not None:
+        try:
+            involved = {p.get("id") for p, _inv in graph.people_for_opportunity(oid)}
+        except Exception:                                       # noqa: BLE001 - a bad graph is not contact
+            involved = set()
+    for m in messages:
+        if m.get("direction") not in ("outbound", "inbound"):
+            continue
+        md = _day(m.get("sent_on"))
+        if md is None or md < d:
+            continue
+        if m.get("opp_id") == oid:
+            return True
+        pid = m.get("person_id")
+        if pid and graph is not None:
+            try:
+                p = graph.resolve_person(pid)
+            except Exception:                                   # noqa: BLE001
+                p = None
+            if p is not None and p.get("id") in involved:
+                return True
+    return False
+
+
+def _uncleared_applications(root, opps, drafts, asks, window=None):
+    """Every submitted application nothing has answered yet, each with the date it expires on
+    (`expires_on`, an ISO day, or None when the application date is unreadable - such a row never
+    expires). The ONE selection `owed_applications` and `expired_between` both read."""
+    import graph as _graph
+    window = owed_window_days(root) if window is None else window
     named = set()          # (opp_id, handle) pairs any trigger anywhere points at
     for opp in opps:
         for o in opp.get("_touches") or []:
@@ -295,6 +363,11 @@ def untriggered_applications(root, opps, drafts, asks):
         if d.get("trigger") == "linked" and d.get("trigger_kind") == "application":
             # a linked draft names a resolvable app; count every handle of that opp's rows
             named.add((d.get("trigger_opp"), "*"))
+    messages = load_jsonl(root, "messages.jsonl")
+    try:
+        graph = _graph.Graph(os.path.join(root, "data"))
+    except Exception:                                           # noqa: BLE001 - no graph: touches still count
+        graph = None
     rows = []
     for opp in opps:
         for ap in opp.get("_applications") or []:
@@ -305,13 +378,72 @@ def untriggered_applications(root, opps, drafts, asks):
             oid = opp.get("id")
             if (oid, "*") in named or any((oid, h) in named for h in handles):
                 continue
+            d = _day(ap.get("date"))
+            if d is not None and _contact_clears(opp, d, messages, graph):
+                continue
             rows.append({"opp_id": oid, "title": opp.get("title"),
                          "app_id": ap.get("id"), "date": ap.get("date"),
-                         "status": ap.get("status")})
+                         "status": ap.get("status"),
+                         "company_id": opp.get("company_id"),
+                         "expires_on": ((d + datetime.timedelta(days=window)).isoformat()
+                                        if d is not None else None),
+                         "why": ("application date unreadable" if d is None else
+                                 "no human contact since the application")})
     return rows
 
 
-def report(root):
+def owed_applications(root, opps, drafts, asks, today=None):
+    """Submitted applications that no follow-up work and no human contact has answered - the feed
+    for 'you applied to X, so ask Y': generated, not remembered. Returns
+    {"owed": [...], "expired": [...]}: a row whose `expires_on` is today or earlier is EXPIRED
+    (dev #914) - listed apart, never silently dropped. An unreadable application date never
+    expires."""
+    today = _day(today) or datetime.date.today()
+    owed, expired = [], []
+    for r in _uncleared_applications(root, opps, drafts, asks):
+        e = _day(r["expires_on"])
+        (expired if (e is not None and today >= e) else owed).append(r)
+    return {"owed": owed, "expired": expired}
+
+
+def untriggered_applications(root, opps, drafts, asks):
+    """The owed rows only - the name this function has always had, for callers that predate the
+    expiry (`report()["untriggered"]`)."""
+    return owed_applications(root, opps, drafts, asks)["owed"]
+
+
+def _load_opps(root):
+    opps = load_jsonl(root, "opportunities.jsonl")
+    _apps.enrich_opportunities(root, opps)
+    _touches.enrich_opportunities(root, opps)
+    return opps
+
+
+def expired_between(root, since, until):
+    """The application rows whose expiry date E falls in (since, until] (dev #914, design 5.3):
+    the interval one COMPLETED run says. `since` is the start of the last earlier completed
+    run of a summary-writing kind (None = unbounded); `until` is this run's start. Dates, not
+    instants: E is a day. A dead run has no end, so it is never anyone's `since`, and its
+    interval stays open for the next completed run."""
+    until_d = _day(until)
+    if until_d is None:
+        return []
+    since_d = _day(since) if since else None
+    opps = _load_opps(root)
+    asks = load_jsonl(root, "asks.jsonl")
+    message_ids = {m.get("id") for m in load_jsonl(root, "messages.jsonl") if m.get("id")}
+    drafts = draft_rows(root, {o.get("id"): o for o in opps}, message_ids)
+    out = []
+    for r in _uncleared_applications(root, opps, drafts, asks):
+        e = _day(r["expires_on"])
+        if e is None or e > until_d or (since_d is not None and e <= since_d):
+            continue
+        out.append(r)
+    out.sort(key=lambda r: (r["expires_on"], r["opp_id"] or ""))
+    return out
+
+
+def report(root, today=None):
     opps = load_jsonl(root, "opportunities.jsonl")
     _apps.enrich_opportunities(root, opps)   # ADR-031 B2 — o["_applications"], never nested
     _touches.enrich_opportunities(root, opps)  # ADR-031 B3 — o["_touches"], never nested
@@ -319,9 +451,10 @@ def report(root):
     message_ids = {m.get("id") for m in load_jsonl(root, "messages.jsonl") if m.get("id")}
     opps_by_id = {o.get("id"): o for o in opps}
     drafts = draft_rows(root, opps_by_id, message_ids)
+    owed = owed_applications(root, opps, drafts, asks, today=today)
     return {"drafts": drafts,
             "sequences": sequence_report(root, opps, drafts),
-            "untriggered": untriggered_applications(root, opps, drafts, asks)}
+            "untriggered": owed["owed"], "expired": owed["expired"]}
 
 
 def main():

@@ -261,6 +261,19 @@ def tiers(profile):
     return {t["setting"]: t for t in profile["compensation"]["tiers"]}
 
 
+def floor_basis(tier):
+    """What a comp tier's floor is a floor OF (dev #916): `"base"` when `basis` is absent (every tier
+    written before the key was read), the lowercased value when it is `base` or `total`, and None
+    (UNREADABLE) for anything else. The screen reads None as PAY-UNCOMPARABLE, never as a guess. A
+    commute band's floor (`resolve_floor`) inherits its tier's basis, so this is read off the tier."""
+    if not isinstance(tier, dict) or tier.get("basis") is None:
+        return "base"
+    v = tier["basis"]
+    if isinstance(v, str) and v.strip().lower() in ("base", "total"):
+        return v.strip().lower()
+    return None
+
+
 def effective_setting(location, profile, commute_ok=None, table=None):
     """Map an opportunity's `location` object to a COMP TIER name.
 
@@ -971,17 +984,27 @@ def _screen_comp(opp, profile, commute_ok=None, table=None, honour_decision=True
     if resolved["band"]:
         label = "%s band (%d min, within %d)" % (setting, resolved["band"]["minutes"],
                                                  resolved["band"]["max_minutes"])
+    sym = currency_symbol()
+    # dev #916: the tier's own `basis` is READ. A basis the screen cannot read is a review, checked
+    # once, here, before any figure is looked at: no verdict is built on a floor of unknown kind.
+    fbasis = floor_basis(tier)
+    if fbasis is None:
+        return PAY_UNCOMPARABLE, (
+            "the %s tier's floor basis is %r, which is not 'base' or 'total' -- the floor cannot be "
+            "compared with any pay figure, and a guessed basis that removes is the defect class. "
+            "KEEP for review; correct compensation.tiers[%s].basis in config.json."
+            % (setting, tier.get("basis"), setting))
 
     if comp and comp.get("max") is not None:
         pass                              # §5.2 step 1: the candidate's own figure screens, as before
     elif isinstance(opp.get("listed_pay"), dict):
         return _screen_listed_pay(opp["listed_pay"], opp, profile, label, floor,
-                                  resolved.get("anchor"), honour_decision)
+                                  resolved.get("anchor"), honour_decision, fbasis)
     else:
         return NOT_CAPTURED, (
             "no pay was ever recorded for this role (no listed_pay, no comp figure) — that is NOT "
             "the same as the listing showing none. RE-READ THE LISTING before surfacing it. "
-            "Applicable tier would be %s (floor $%sK base)." % (label, floor // 1000))
+            "Applicable tier would be %s (floor %s%sK %s)." % (label, sym, floor // 1000, fbasis))
 
     top = comp["max"]
     # dev #740 / public #160 (E3): the floor is an ANNUAL BASE figure. A band stated per hour, day or
@@ -994,26 +1017,43 @@ def _screen_comp(opp, profile, commute_ok=None, table=None, honour_decision=True
         return PAY_UNCOMPARABLE, (
             "comp %s is per %s, not per year -- not converted (hours or days per year is a guess, and "
             "a guessed conversion that removes is the defect class). Applicable tier would be %s "
-            "(floor $%sK base). KEEP for review; ask the employer for the annual figure."
-            % (top, period, label, floor // 1000))
+            "(floor %s%sK %s). KEEP for review; ask the employer for the annual figure."
+            % (top, period, label, sym, floor // 1000, fbasis))
     basis = str(comp.get("basis") or "base").lower()
     if basis not in ("base", "total"):
         return PAY_UNCOMPARABLE, (
-            "comp is stated as %r; the floor is annual BASE -- not comparable, not converted. "
-            "Applicable tier would be %s (floor $%sK base). KEEP for review; ask what the base is."
-            % (basis, label, floor // 1000))
+            "comp is stated as %r; the floor is annual %s -- not comparable, not converted. "
+            "Applicable tier would be %s (floor %s%sK %s). KEEP for review; ask what the base is."
+            % (basis, fbasis.upper(), label, sym, floor // 1000, fbasis))
+    # dev #916: the band's basis and the floor's basis are two facts. A total-pay band under a BASE
+    # floor keeps its note and its verdict (base <= total, so a top below the floor puts the base
+    # below it too: the removal is certain). A BASE band under a TOTAL floor is not comparable: the
+    # bonus is not stated, so the total could clear. A total band on a total floor is like with like.
     note = ""
-    if basis != "base":
+    if basis == "total" and fbasis == "base":
         note = (" ⚠️ band is stated as %r, but the floor is BASE — compare like with like "
                 "before trusting this verdict." % basis)
 
     if top >= floor:
-        return CLEARS, ("top of band $%sK >= %s floor $%sK.%s"
-                        % (int(top) // 1000, label, floor // 1000, note))
+        return CLEARS, ("top of band %s%sK >= %s floor %s%sK.%s"
+                        % (sym, int(top) // 1000, label, sym, floor // 1000, note))
     gap = floor - top
+    if basis == "base" and fbasis == "total":
+        return PAY_UNCOMPARABLE, _base_under_total(
+            "top of band %s%sK (base)" % (sym, int(top) // 1000), label, sym, floor)
     return _below(
-        "top of band $%sK is $%sK BELOW the %s floor ($%sK)."
-        % (int(top) // 1000, int(gap) // 1000, label, floor // 1000), opp, note, honour_decision)
+        "top of band %s%sK is %s%sK BELOW the %s floor (%s%sK%s)."
+        % (sym, int(top) // 1000, sym, int(gap) // 1000, label, sym, floor // 1000,
+           ", TOTAL" if fbasis == "total" else ""),
+        opp, note, honour_decision)
+
+
+def _base_under_total(top_text, label, sym, floor):
+    """The ONE sentence for a base-pay top below a TOTAL-pay floor (dev #916), shared by the
+    `comp.max` and `listed_pay` paths so they cannot drift: a review, never a removal."""
+    return ("%s is below the %s floor %s%sK (TOTAL) -- base pay is not comparable with a total-pay "
+            "floor: the bonus is not stated. KEEP for review; ask what the total is."
+            % (top_text, label, sym, floor // 1000))
 
 
 def parse_pay_ranges(text):
@@ -1084,21 +1124,27 @@ def _label_matches(label, loc, anchor):
     return False
 
 
-def _screen_listed_pay(lp, opp, profile, label, floor, anchor=None, honour_decision=True):
+def _screen_listed_pay(lp, opp, profile, label, floor, anchor=None, honour_decision=True,
+                       fbasis="base"):
     """`screen_comp`'s §5.3: one `listed_pay` object against `floor` (the tier or band already
     chosen). Returns `(verdict, detail)`.
 
     REMOVE must be certain. So: no profile currency -> PAY-UNCOMPARABLE (R1); a non-annual interval
     or another currency -> PAY-UNCOMPARABLE, never converted (R2); a board's estimate NEVER says
     BELOW-FLOOR; several employer-stated ranges remove only when EVERY selected range's top is below
-    the floor, and a range whose label names this role's anchor or place is screened alone."""
+    the floor, and a range whose label names this role's anchor or place is screened alone.
+
+    dev #916: `fbasis` is the tier's floor basis (`floor_basis`, already known readable). An
+    employer-stated range is read as BASE pay; a range whose top is below a TOTAL floor is
+    PAY-UNCOMPARABLE (the bonus is not stated), never BELOW-FLOOR."""
     import config_keys as _ck
+    sym = currency_symbol()
     state = lp.get("state")
     if state == "none-shown":
         return UNDISCLOSED, (
             "the listing showed NO pay (recorded none-shown, not merely uncaptured) — KEEP (comp is "
             "the first question; it cannot be screened on). Applicable tier would be %s (floor "
-            "$%sK base)." % (label, floor // 1000))
+            "%s%sK %s)." % (label, sym, floor // 1000, fbasis))
     ranges = [r for r in (lp.get("ranges") or []) if isinstance(r, dict)]
     if state not in ("employer-stated", "board-estimate") or not ranges or any(
             _num(r.get("min")) is None and _num(r.get("max")) is None for r in ranges):
@@ -1135,24 +1181,30 @@ def _screen_listed_pay(lp, opp, profile, label, floor, anchor=None, honour_decis
     estimate = state == "board-estimate"
     if clearing:
         best = max(clearing, key=reach)
-        return CLEARS, ("top of listed pay %s%s >= %s floor $%sK."
+        return CLEARS, ("top of listed pay %s%s >= %s floor %s%sK."
                         % (_range_text(best), " (board estimate)" if estimate else "", label,
-                           floor // 1000))
+                           sym, floor // 1000))
     if estimate:
         return PAY_UNCOMPARABLE, (
-            "board estimate %s is below the %s floor ($%sK) — an estimate is not the employer's "
-            "figure, so it never removes. Ask the employer." % (shown, label, floor // 1000))
+            "board estimate %s is below the %s floor (%s%sK%s) — an estimate is not the employer's "
+            "figure, so it never removes. Ask the employer."
+            % (shown, label, sym, floor // 1000, ", TOTAL" if fbasis == "total" else ""))
     open_ended = [r for r in selected if _num(r.get("max")) is None]
     if open_ended:
         r = open_ended[0]
         return UNDISCLOSED, (
             "open-ended range from %s; the top is not stated — KEEP. Applicable tier would be %s "
-            "(floor $%sK base)." % (format(_num(r.get("min")), ","), label, floor // 1000))
+            "(floor %s%sK %s)." % (format(_num(r.get("min")), ","), label, sym, floor // 1000,
+                                  fbasis))
     best = max(selected, key=reach)
+    if fbasis == "total":
+        return PAY_UNCOMPARABLE, _base_under_total(
+            "employer-stated top %s (source %s, read as base)"
+            % (_range_text(best), lp.get("source") or "unrecorded"), label, sym, floor)
     return _below(
-        "employer-stated top %s (source %s) is $%sK BELOW the %s floor ($%sK)."
-        % (_range_text(best), lp.get("source") or "unrecorded", int(floor - reach(best)) // 1000,
-           label, floor // 1000), opp, "", honour_decision)
+        "employer-stated top %s (source %s) is %s%sK BELOW the %s floor (%s%sK)."
+        % (_range_text(best), lp.get("source") or "unrecorded", sym,
+           int(floor - reach(best)) // 1000, label, sym, floor // 1000), opp, "", honour_decision)
 
 
 def _load_opps():
@@ -1290,6 +1342,18 @@ def title_scope_count(opps, profile):
     return out
 
 
+def _floor_bases(profile):
+    """`{setting: floor_basis}` over the profile's comp tiers; `{}` when the profile has none to read
+    (a malformed `compensation` is the validator's finding, never this hash's crash)."""
+    comp = (profile or {}).get("compensation")
+    rows = comp.get("tiers") if isinstance(comp, dict) else None
+    out = {}
+    for t in rows if isinstance(rows, list) else ():
+        if isinstance(t, dict) and isinstance(t.get("setting"), str):
+            out[t["setting"]] = floor_basis(t)
+    return out
+
+
 def comp_keys(opp, profile):
     """A short hash of everything the comp screen reads that a stored screen could not have known
     (dev #739 / public #161 and dev #740 / public #160; design R2, the SIBLING of `title_keys`):
@@ -1298,6 +1362,8 @@ def comp_keys(opp, profile):
       * `compensation.non_employee` (the profile's non-employee floors, as written)
       * the role's own routing: `engagement(opp)` -- the stated type or the title's inference
       * the role's `comp.period` and `comp.basis` (the E3 downgrade reads both)
+      * each tier's floor basis (`floor_basis`, dev #916), added ONLY when some tier's is not
+        `base`, so an all-base profile keeps its hash byte for byte
       * `comp_accepted(opp)` -- whether the CURRENT decision is pursue + comp-acceptable
 
     `record.py screened` stores it as `screen.comp_keys`; `screen_is_comp_stale` compares it. It is a
@@ -1308,10 +1374,16 @@ def comp_keys(opp, profile):
     comp = opp.get("comp") if isinstance(opp.get("comp"), dict) else {}
     cfg_comp = (profile or {}).get("compensation")
     block = cfg_comp.get("non_employee") if isinstance(cfg_comp, dict) else None
-    raw = json.dumps({"vocab": _ck.engagement_vocab_hash(), "block": block,
-                      "engagement": list(engagement(opp)), "period": comp.get("period"),
-                      "basis": comp.get("basis"), "accepted": comp_accepted(opp)},
-                     sort_keys=True, ensure_ascii=False, default=str)
+    payload = {"vocab": _ck.engagement_vocab_hash(), "block": block,
+               "engagement": list(engagement(opp)), "period": comp.get("period"),
+               "basis": comp.get("basis"), "accepted": comp_accepted(opp)}
+    # dev #916: the screen reads each tier's floor basis. Hashed ONLY when some tier's basis is not
+    # base, so a profile whose tiers are all base keeps a byte-identical hash and a profile with a
+    # total (or unreadable) tier goes stale exactly once.
+    fbases = _floor_bases(profile)
+    if any(b != "base" for b in fbases.values()):
+        payload["floor_bases"] = fbases
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
 
 
@@ -1416,6 +1488,20 @@ def comp_reopen_action(opp):
     return ("nothing to reopen: record.py screened %s stores the verdict today's screen gives" % oid)
 
 
+def comp_reopen_plain(opp):
+    """`comp_reopen_action` in plain words, for the candidate-facing PAGE (jobsearch 0.88.0, dev 915, N1: the page
+    carries no command). Same three shapes, no script name and no flag: the panel keeps the terminal text above, the
+    page says what to tell Claude. NOTHING here is run by the engine."""
+    if opp.get("status") == "passed":
+        if isinstance(opp.get("passed_from"), dict):
+            return ("tell Claude to reopen this role as pursue or parked (it may ask why), then to record that "
+                    "you screened it")
+        return ("this role was passed with no way back recorded, so it cannot be reopened in one step: ask Claude "
+                "to set its status and stage first, then to reopen it as pursue or parked, then to record that "
+                "you screened it")
+    return "nothing to reopen: tell Claude you screened it and it stores the verdict today's screen gives"
+
+
 def comp_rescreen_flags(opps, profile):
     """`{"flags": [...], "unreadable": [id, ...]}`: the roles a stored comp REMOVAL which jobsearch
     0.73.0 would not repeat (dev #761, owner decision 2026-10-23: FLAG, NEVER REOPEN).
@@ -1479,7 +1565,7 @@ def comp_rescreen_flags(opps, profile):
             "old_verdict": sc.get("verdict"), "old_on": sc.get("on"), "old_engine": sc.get("engine"),
             "new_comp": token,
             "new_verdict": "review:comp" if token in COMP_REVIEW_TOKENS else "keep",
-            "why": detail, "action": comp_reopen_action(o)})
+            "why": detail, "action": comp_reopen_action(o), "action_plain": comp_reopen_plain(o)})
     return {"flags": flags, "unreadable": unreadable}
 
 
@@ -2186,10 +2272,13 @@ def main():
     print("  titles:    %s" % "; ".join(profile["targets"]["titles"]))
     print("             org-structure-is-a-filter = %s"
           % (profile["targets"]["org_structure_is_not_a_filter"] is False))
-    print("\n  comp tiers (base/yr):")
+    print("\n  comp tiers (annual):")
     for t in profile["compensation"]["tiers"]:
         flag = "" if t.get("basis_confirmed", True) else "   ⚠️ basis UNCONFIRMED — ask the candidate"
-        print("    %-14s %s%sK%s" % (t["setting"], currency_symbol(), t["floor"] // 1000, flag))
+        fb = floor_basis(t)       # dev #916: the tier's REAL basis, never a hard-coded "base"
+        print("    %-14s %s%sK %s%s" % (
+            t["setting"], currency_symbol(), t["floor"] // 1000,
+            fb if fb is not None else "basis UNREADABLE (%s)" % (t.get("basis"),), flag))
     cm = comms()
     print("\n  communications (config.json is the single source):")
     print("    default sequence : %s  (sent TOGETHER)" % " + ".join(cm["default_sequence"]))
