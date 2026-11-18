@@ -40,6 +40,17 @@ docstring.
                (the root files robots.txt, sitemap.xml, CNAME, .nojekyll and favicon.* excepted;
                and, from 0.3.1, a font licence file -- OFL.txt, LICENSE*, *.license -- in a folder
                that also holds a .woff2, .woff, .ttf or .otf file).
+               THE ONE EXCEPTION to "every page is reachable" (0.4.0, template-fidelity, dated note 2026-11-18,
+               owner ruling): the index of a one-piece portfolio built under `onePieceIndex: listing`. Under
+               `menuLinks: "single-piece"` the menu links the piece, so that listing is a page nothing links, as
+               on the site the person came from, and refusing it would make a faithful conversion unpublishable.
+               It is exempt (and a `reachable:` note names it, never a quiet pass) ONLY when ALL of these hold:
+               (1) its portfolio's content/<folder>/page.md in the repo says `onePieceIndex: listing` and
+               `menuLinks: single-piece` and the build holds exactly one piece page of it; (2) every link inside
+               its <main> resolves to that one piece; (3) nothing else in the build is unreachable: if any other
+               page is, NO page gets the exception. Without the repo to read, no page gets it. A listing without
+               the key, a listing that links another page, an unpublished path or an external address, and any
+               extra unlinked page in the same build are each still refused (test_check_site.OnePieceListing).
   privacy      design 7.1, below.
   domain       CNAME present and equal to `domain` after cutover, absent before; canonical, og:url,
                sitemap <loc> and robots Sitemap all start with the site URL; no absolute URL to the
@@ -56,6 +67,13 @@ docstring.
                are exempt (they hold the video's address and load nothing before a click). SHAPE ONLY:
                it reads the markup the build wrote, not what a browser fetches; the behavioural half
                is test_build.py's `video.js` case, run under node.
+               Since 0.4.0 (template-fidelity step 1.10, design 8 INV (d)) the rule's roots also
+               include `.ss-map`, `.ss-showcase` and `.ss-gallery-video` (the schema-4 views and the
+               gallery video item), the SVG elements `<image>` and `<use>` count their `href` and
+               `xlink:href` as loading attributes (the map is an SVG), and the shipped
+               `site-studio/schema-4.css` is held to the same no-remote-`url()` rule as `blocks.css`.
+               A planted `<image href="https://...">` inside the map goes red (test_check_site.py
+               SchemaFourFacades).
   unfinished   TODO/FIXME/TBD/lorem ipsum/coming soon/under construction in visible text, empty or
                "#" links, development URLs (localhost, 127.0.0.1, file://), a noindex page that is
                not a redirect stub, an untitled or empty page.
@@ -400,7 +418,7 @@ class Page(HTMLParser):
         elif tag == "base":
             self.base = a.get("href", "")
         elif tag == "a":
-            self._cur_a = {"href": a.get("href"), "text": [], "attrs": a}
+            self._cur_a = {"href": a.get("href"), "text": [], "attrs": a, "in_main": bool(self._main_depth)}
             self.anchors.append(self._cur_a)
             if self._in_primary_nav and a.get("href") is not None:
                 self.nav_hrefs.append(a["href"])
@@ -502,12 +520,16 @@ def parse_page(rel, text):
 _REMOTE_LOAD = re.compile(r"^\s*(?:https?:|ftp:|//)", re.I)
 
 
+FACADE_ROOTS = ("ss-video", "ss-videos", "ss-map", "ss-showcase", "ss-gallery-video")
+
+
 class FacadeScan(HTMLParser):
-    """The facade loading-attribute rule (site-fidelity section 7.3, dev #865). Inside an element whose class
-    list holds `ss-video` or `ss-videos`, no element may carry a LOADING attribute with a remote value: `src`
-    and `srcset` (an <img>, an <iframe>, a <source>, a <video>), `poster`, `data` (an <object>), or `href` on a
-    <link>. `href` on an <a> and `data-embed` are exempt: they hold the video's address by design and load
-    nothing until a click.
+    """The facade loading-attribute rule (site-fidelity section 7.3, dev #865; extended at 0.4.0). Inside an
+    element whose class list holds one of `FACADE_ROOTS` (`ss-video`, `ss-videos`, and the schema-4 `ss-map`,
+    `ss-showcase`, `ss-gallery-video`), no element may carry a LOADING attribute with a remote value: `src` and
+    `srcset` (an <img>, an <iframe>, a <source>, a <video>), `poster`, `data` (an <object>), `href` on a <link>,
+    and `href` or `xlink:href` on an SVG <image> or <use>. `href` on an <a> and `data-embed` are exempt: they hold
+    the video's address, or the piece a pin or tile links to, and load nothing until a click.
 
     SHAPE ONLY, and it says so: it reads the markup the build wrote, not what a browser fetches. A script that
     adds a request, a CSS rule the page's own stylesheet adds, or an attribute spelled some other way is not
@@ -524,9 +546,10 @@ class FacadeScan(HTMLParser):
     def handle_starttag(self, tag, attrs):
         a = dict((k, (v if v is not None else "")) for k, v in attrs)
         classes = a.get("class", "").split()
-        root = "ss-video" in classes or "ss-videos" in classes
+        root = any(c in FACADE_ROOTS for c in classes)
         if root or any(r for _t, r in self.stack):
-            names = list(self.LOADING) + (["href"] if tag == "link" else [])
+            names = list(self.LOADING) + (["href"] if tag == "link" else []) + (
+                ["href", "xlink:href"] if tag in ("image", "use") else [])
             for k in names:
                 v = a.get(k)
                 if v is None:
@@ -547,7 +570,7 @@ class FacadeScan(HTMLParser):
 
 def facade_loads(text):
     """[(tag, attribute, value)]: every loading attribute inside a video facade that points off the site."""
-    if "ss-video" not in text:
+    if not any(root in text for root in FACADE_ROOTS):
         return []
     scan = FacadeScan()
     try:
@@ -884,6 +907,56 @@ class Checker(object):
             self.r.add("links", from_rel, "fragment #%s is not an id on %s" % (frag, target))
 
     # -- reachable ---------------------------------------------------------------------------
+    def one_piece_listings(self, unreached):
+        """{index page: portfolio folder} for the pages `unreached` that the `reachable` family does NOT refuse: the one exception to
+        "every page is reachable from the home page" (the module docstring, dated note 2026-11-18). It holds only when ALL of these
+        are true, and when one is not, NO page of the build gets it:
+          1. the page is the index of a portfolio built under `onePieceIndex: listing` (its page.md says so, with `menuLinks:
+             "single-piece"`, and the build holds exactly one piece page of that portfolio and no redirect in place of the index);
+          2. the page links nothing beyond published pieces: every link inside its <main> resolves to that one piece;
+          3. nothing else in the build is unreachable: every other unreached page is such a listing too.
+        Without the repo (`--out` with no source to read) nothing is exempt: a missing fact reads as a refusal, never as a pass."""
+        if not unreached or not self.repo:
+            return {}
+        found = {}
+        for rel in unreached:
+            folder = rel[:-len("/index.html")] if rel.endswith("/index.html") and rel.count("/") == 1 else None
+            if folder is None or not self._says_listing(folder):
+                return {}                                    # condition 1 fails for this page, and 3 for every other
+            pieces = [r for r in self.content_pages if r.startswith(folder + "/") and r.count("/") == 2 and r.endswith("/index.html")]
+            if len(pieces) != 1 or not self._links_only(rel, pieces[0]):
+                return {}                                    # the build holds no single piece, or condition 2 fails
+            found[rel] = folder
+        return found
+
+    def _says_listing(self, folder):
+        """True when `content/<folder>/page.md` in the repo sets `onePieceIndex: listing` and `menuLinks: single-piece`, and does not
+        set `view: page` (the build's own rule: `single_piece` and `onePieceIndex`)."""
+        try:
+            with open(os.path.join(self.repo, "content", folder, "page.md"), "r", encoding="utf-8", errors="replace") as fh:
+                text = fh.read()
+        except OSError:
+            return False
+        pairs = dict((k, v) for k, v, _n in siteconfig.front_matter_pairs(text))
+        return (pairs.get("onePieceIndex") == "listing" and pairs.get("menuLinks") == "single-piece"
+                and pairs.get("view") != "page")
+
+    def _links_only(self, rel, piece):
+        """True when every link inside the <main> of page `rel` resolves to the page `piece`."""
+        for a in self.pages[rel].anchors:
+            if not a["in_main"]:
+                continue
+            href = a["href"]
+            if href is None:
+                continue
+            k, rest = classify(href, self.base)
+            if k not in ("rel", "internal"):
+                return False
+            target, _frag, problem = self.resolve(rel, rest if k == "internal" else href)
+            if problem or target != piece:
+                return False
+        return True
+
     def reachable(self):
         fam = "reachable"
         if "index.html" not in self.pages:
@@ -905,8 +978,13 @@ class Checker(object):
                     seen.add(target)
                     queue.append(target)
         self.r.count(fam, len(self.pages) + len(self.t.files))
-        for rel in self.content_pages:
-            if rel == "404.html" or rel in seen:
+        unreached = [rel for rel in self.content_pages if rel != "404.html" and rel not in seen]
+        listings = self.one_piece_listings(unreached)
+        for rel in unreached:
+            if rel in listings:
+                self.r.notes.append("reachable: %s is the index of the one-piece portfolio %s, built under `onePieceIndex: listing`: "
+                                    "nothing links it (as on the old site) and it links only its piece, so it is not refused"
+                                    % (rel, listings[rel]))
                 continue
             self.r.add(fam, rel, "page cannot be reached from the home page by following links")
         font_dirs = set(posixpath.dirname(r) for r in self.t.files if r.lower().endswith(FONT_EXTS))
@@ -1072,13 +1150,13 @@ class Checker(object):
                 n += 1
                 self.r.add(fam, rel, "a video facade loads %s from another address before any click (<%s %s>); "
                            "a facade may load only a poster committed under media/" % (val, tag, attr))
-        css = "site-studio/blocks.css"
-        if css in t.files:
-            n += 1
-            for m in _CSS_URL.finditer(_CSS_COMMENT.sub("", t.text(css))):
-                if _REMOTE_LOAD.match(m.group(2)):
-                    self.r.add(fam, css, "the block stylesheet loads %s from another address; it may load "
-                               "nothing from outside the site" % m.group(2))
+        for css in ("site-studio/blocks.css", "site-studio/schema-4.css"):
+            if css in t.files:
+                n += 1
+                for m in _CSS_URL.finditer(_CSS_COMMENT.sub("", t.text(css))):
+                    if _REMOTE_LOAD.match(m.group(2)):
+                        self.r.add(fam, css, "the block stylesheet loads %s from another address; it may load "
+                                   "nothing from outside the site" % m.group(2))
         self.r.count(fam, n)
 
     # -- unfinished --------------------------------------------------------------------------

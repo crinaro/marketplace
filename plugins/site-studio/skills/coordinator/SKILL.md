@@ -58,6 +58,7 @@ Everything here comes from the ORIENT output.
 | make the resume match a profile the person downloaded | `import-profile` |
 | an open question about the look, the content or the presence | `ideas` (it brings in the advisors) |
 | "how does it look", see a change | `preview` |
+| the pages' HTML structure and class names should match another site's, or "which look does it use" | `look` |
 | "is it ready", "is anything too personal", before publishing | `review` (it runs `content-editor`, `privacy-guard` and `visual-qa`) |
 | which pieces lead, in what order | `portfolio-advisor` |
 | titles, social previews, making profiles match the site | `presence-advisor` |
@@ -76,7 +77,8 @@ path or to the plugin's source repository: neither is on their computer.
 
 - **"What can I do?"** Answer from the DECIDE table, as a short list in the person's terms: start
   a new site, move an existing one over (adopt), add work, save a page as a card, update the resume
-  and its PDF, bring in a downloaded profile, get ideas, preview, review, publish. Say which three
+  and its PDF, bring in a downloaded profile, choose or derive the site's look (the markup its pages
+  print through), get ideas, preview, review, publish. Say which three
   they type themselves (`/site-studio:setup`, `/site-studio:adopt`, `/site-studio:publish`). If
   ORIENT found no site here, lead with setup and adopt.
 - **"What next?"** Run ORIENT and DRAIN, then name ONE next step: anything DRAIN found comes
@@ -93,8 +95,15 @@ path or to the plugin's source repository: neither is on their computer.
   - it came from `doctor.py` (the computer, git, `gh`, Chrome): `/site-studio:setup` fixes it one
     step at a time;
   - `site.json` is newer than this plugin understands: the plugin needs updating on this computer;
-  - it came from `adopt.py`: its own lines list every problem with its fix; work through them
-    with the person.
+  - it came from `adopt.py`: `check` and `inventory` list every problem with its fix, so work
+    through them with the person. `adopt refused:` says what to do first; `adopt needs an answer:`
+    is a question only the person can answer. `adopt blocked at step N of 5` (exit code 4) means
+    nothing was moved and the old builder is still the publisher: read the `cause:` line and the
+    next step as printed, and never run one of `apply`'s steps by hand to get past it. In this
+    version an `apply` with no privacy review covering the build stops at step 3 and names
+    `/site-studio:review`: say that plainly. `/site-studio:adopt` holds the detail;
+  - it came from the look skill (`/site-studio:look`): the line says what to do (commit or discard
+    first, raise the site, name the file); say it and do that one step.
 
   Never edit `site/site.json` to get past a refusal, with one exception. When the refusal itself
   names a `site.json` key and says what it should hold (for example a publish refusal that says to

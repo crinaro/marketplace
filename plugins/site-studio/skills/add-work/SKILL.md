@@ -40,7 +40,7 @@ Bring in `portfolio-advisor` with the piece's folder: it drafts the story only f
 the folder and returns the questions for every gap. Ask the person those questions. Write the
 piece's text from their answers; a fact they did not give is not written.
 
-### Order and blocks (schema 3 only; offer, never assume)
+### Order and blocks (schema 3 and 4; offer, never assume)
 
 - **Order.** A piece may carry `order: <whole number>` in its front matter, and it is read **only** when
   the portfolio's `page.md` sets `sort: "order"`: pieces with an `order` come first, ascending, then the
@@ -57,6 +57,46 @@ piece's text from their answers; a fact they did not give is not written.
   its report**: each page that would change, and each problem (an unknown block, a built-in key in a
   `meta` list). The person decides: `--keep-text PATH:LINE` leaves a line as text, and only after they say
   yes do you run it again with `--confirm`. A site already at schema 3 needs no raise.
+
+### Schema 4: more blocks, and keys a view reads (offer, never assume)
+
+On a site at schema 4 (`"schema": 4` in `site/site.json`) the piece's Markdown may also hold:
+
+- **`:::quotes`**: several quotes in a grid. Each quote is its words, then a line
+  `— Name, Role, *Title*` that ends it.
+- **A gallery item that plays a video:** an image line followed by a space and a YouTube, Vimeo or
+  public Drive address (the image's own caption still goes in its quotes). Without a script the item
+  is a link to the video; with the plugin's script it plays in place. Nothing loads from the video's
+  host until the visitor clicks. The image is a file the person commits under `media/`.
+- **Any number of blocks in a home-page `:::part`** (a part held one at a time before schema 4).
+
+A piece may carry front-matter keys that only a portfolio's index view reads: `employer`, `role`,
+`current: true` and `period` (the `roles` view), `pin: lat, lon` (the `map` view), `tileImage`, `tileAlt`
+and `tileRole` (the `showcase` view), and `year` (the card number). Ask for one only when the portfolio's
+`page.md` sets that view or card number, and write only what the person gives you: a role, a period or a
+coordinate you guessed is a wrong fact on a public page. `employer` is required of every piece under the
+`roles` view. A piece the person is still working on takes `draft: true`: the preview shows it, a publish
+build leaves it out.
+
+A site at schema 3 gets none of this until the person asks. To raise it, run `build.py raise-schema --to 4`
+the way the block raise above runs: show its report, and only after their yes run it again with `--confirm`.
+Raising to 4 changes no page, and a 0.3.x install of the plugin on another computer then refuses the tree
+until it is updated: say so first.
+
+### Moving a piece to another portfolio
+
+When the person wants an existing piece under another portfolio, do not move the folder by hand:
+`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/move.py" <portfolio>/<slug> <target portfolio> --repo <dev repo>`. It needs
+a clean `site/`, `content/` and `.site-studio/` (an uncommitted `HANDOFF.md` does not count), and a site at
+schema 3 (otherwise it names `build.py raise-schema` and writes nothing). It computes the whole move in
+memory first and writes nothing unless the finished site builds and keeps or releases every address the piece
+had published: each page gets a redirect, every other file (an image, a PDF) is recorded as released in
+`.site-studio/addresses.json` with the reason "moved with <slug>", and `{{link:...}}` and the home
+page's `featured` and `showcase` names follow the piece. **A move writes the site at schema 4** (the
+address record is a schema-4 file, so a 0.3.x install refuses the tree instead of publishing it without
+the address guard): tell the person that before you run it. Read its output to the person, then commit
+exactly the paths it printed (it never commits). The released files are named at the next publish's dry run,
+and the person approves them there.
 
 ## 4. Preview
 

@@ -136,22 +136,45 @@ def _marker_check(repo):
     return ("site.json", False, "%s; re-save site.json" % reason)
 
 
+def adopt_line(repo):
+    """"site-studio <v> may resolve N adopt blockers: run adopt again", or None (template-fidelity step 1.9f; R3N-12 as the owner's
+    rulings changed it). N counts the recorded blockers in `.site-studio/adopt-reports.json` this install MAY clear: an unresolved
+    row raised in an OLDER version than the install, or an `upgrade` row whose fix this install has reached
+    (`report_issue.may_resolve`). It reads the record only, runs no `gh`, and imports neither `adopt` nor `build` (R3N-16). A
+    missing, unreadable or unrecognised record, or a count of zero, is no line: a doctor line never raises."""
+    try:
+        path = os.path.join(repo, ".site-studio", "adopt-reports.json")
+        if not os.path.isfile(path):
+            return None
+        import report_issue
+        with open(path, "r", encoding="utf-8") as fh:
+            rows = report_issue.parse_reports(fh.read())
+        installed = report_issue.plugin_version()
+        n = report_issue.may_resolve(rows, installed)
+        return "site-studio %s may resolve %d adopt blockers: run adopt again" % (installed, n) if n else None
+    except Exception:
+        return None
+
+
 def hook_line(repo):
     """The ONE line the SessionStart hook prints. Never raises."""
     try:
         if os.name == "nt":
             return WINDOWS_SENTENCE
         found = [(l, d) for l, ok, d in local_checks(repo) if not ok]
+        adopt = adopt_line(repo)
         if not found:
-            return "site-studio: this computer is ready"
+            return "site-studio: this computer is ready" + ("; " + adopt if adopt else "")
         text = "; ".join("%s: %s" % (l, d) for l, d in found)
         rest = [1 for _l, d in found if d != UNMANAGED_SENTENCE]
         if not rest:                  # only the unmanaged site.json: it already says what to type
             return "site-studio: needs attention - %s" % text
         if len(rest) < len(found):
-            return "site-studio: needs attention - %s Type /site-studio:setup to fix the rest." % (
+            line = "site-studio: needs attention - %s Type /site-studio:setup to fix the rest." % (
                 text if text.endswith(".") else text + ".")
-        return "site-studio: needs attention - %s. Type /site-studio:setup to fix it." % text
+        else:
+            line = "site-studio: needs attention - %s. Type /site-studio:setup to fix it." % text
+        return line + (" " + adopt if adopt else "")
     except Exception as e:
         return "site-studio: the machine check could not finish (%s: %s)" % (type(e).__name__, e)
 

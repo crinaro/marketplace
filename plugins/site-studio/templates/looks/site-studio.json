@@ -1,0 +1,231 @@
+{
+  "look": 1,
+  "constructs": {
+    "tagline": {
+      "wrap": "<p class=\"ss-tagline\">{{text}}</p>"
+    },
+    "tiles": {
+      "wrap": "<ul class=\"ss-tiles\">{{items}}</ul>",
+      "item": "<li class=\"ss-tile\"><span class=\"ss-tile-figure\">{{figure}}</span><span class=\"ss-tile-label\">{{text}}</span></li>"
+    },
+    "quote": {
+      "wrap": "<figure class=\"ss-quote\"><blockquote class=\"ss-quote-text\">{{body}}</blockquote>{{by}}</figure>",
+      "by": "<figcaption class=\"ss-quote-by\">{{who}}</figcaption>"
+    },
+    "gallery": {
+      "wrap": "<div class=\"ss-gallery\" data-count=\"{{count}}\">{{items}}</div>",
+      "wrap-labelled": "<div class=\"ss-gallery\" data-count=\"{{count}}\" role=\"group\" aria-label=\"{{label}}\">{{items}}</div>",
+      "item": "<figure class=\"ss-gallery-item\">{{image}}{{caption}}</figure>",
+      "caption": "<figcaption class=\"ss-caption\">{{text}}</figcaption>"
+    },
+    "videos": {
+      "wrap": "<div class=\"ss-videos\">{{items}}</div>",
+      "wrap-labelled": "<div class=\"ss-videos\" role=\"group\" aria-label=\"{{label}}\">{{items}}</div>",
+      "item-poster": "<a class=\"ss-video\" href=\"{{url}}\" data-embed=\"{{embed}}\" rel=\"noopener\">{{image}}<span class=\"ss-play\" aria-hidden=\"true\"></span><span class=\"ss-video-title\">{{title}}</span></a>",
+      "item": "<a class=\"ss-video\" href=\"{{url}}\" data-embed=\"{{embed}}\" rel=\"noopener\"><span class=\"ss-video-title\">{{title}}</span><span class=\"ss-video-host\">{{host}}</span></a>"
+    },
+    "carousel": {
+      "wrap": "<div class=\"ss-carousel\" role=\"region\" aria-label=\"{{label}}\" tabindex=\"0\"><ul class=\"ss-track\">{{items}}</ul></div>",
+      "item": "<li class=\"ss-slide\">{{body}}</li>"
+    },
+    "video-embed": {
+      "wrap": "<div class=\"video\"><iframe src=\"{{embed}}\" title=\"Video\" loading=\"lazy\" allowfullscreen referrerpolicy=\"strict-origin-when-cross-origin\"></iframe></div>"
+    },
+    "figure": {
+      "wrap": "<figure class=\"media\">{{image}}{{caption}}</figure>",
+      "caption": "<figcaption>{{text}}</figcaption>"
+    },
+    "image": {
+      "plain": "<img src=\"{{src}}\" alt=\"{{alt}}\" loading=\"lazy\" decoding=\"async\">",
+      "sized": "<img src=\"{{src}}\" alt=\"{{alt}}\" width=\"{{width}}\" height=\"{{height}}\" loading=\"lazy\" decoding=\"async\">",
+      "sized-set": "<img src=\"{{src}}\" alt=\"{{alt}}\" width=\"{{width}}\" height=\"{{height}}\" srcset=\"{{srcset}}\" sizes=\"{{sizes}}\" loading=\"lazy\" decoding=\"async\">",
+      "plain-pos": "<img src=\"{{src}}\" alt=\"{{alt}}\" loading=\"lazy\" decoding=\"async\" style=\"object-position: {{focus}}\">",
+      "sized-pos": "<img src=\"{{src}}\" alt=\"{{alt}}\" width=\"{{width}}\" height=\"{{height}}\" loading=\"lazy\" decoding=\"async\" style=\"object-position: {{focus}}\">",
+      "sized-set-pos": "<img src=\"{{src}}\" alt=\"{{alt}}\" width=\"{{width}}\" height=\"{{height}}\" srcset=\"{{srcset}}\" sizes=\"{{sizes}}\" loading=\"lazy\" decoding=\"async\" style=\"object-position: {{focus}}\">"
+    },
+    "block-image": {
+      "plain": "<img class=\"ss-img\" src=\"{{src}}\" alt=\"{{alt}}\" loading=\"lazy\" decoding=\"async\">",
+      "sized": "<img class=\"ss-img\" src=\"{{src}}\" alt=\"{{alt}}\" width=\"{{width}}\" height=\"{{height}}\" loading=\"lazy\" decoding=\"async\">",
+      "sized-set": "<img class=\"ss-img\" src=\"{{src}}\" alt=\"{{alt}}\" width=\"{{width}}\" height=\"{{height}}\" srcset=\"{{srcset}}\" sizes=\"{{sizes}}\" loading=\"lazy\" decoding=\"async\">"
+    },
+    "reference-card": {
+      "wrap": "<a class=\"ref-card\" href=\"{{url}}\" rel=\"noopener\">{{image}}<span class=\"ref-title\">{{title}}</span>{{site}}{{description}}{{role}}</a>",
+      "site": "<span class=\"ref-site\">{{text}}</span>",
+      "description": "<span class=\"ref-desc\">{{text}}</span>",
+      "role": "<span class=\"ss-ref-role\">{{text}}</span>"
+    },
+    "reference-grid": {
+      "wrap": "<div class=\"ref-grid\">{{items}}</div>"
+    },
+    "card": {
+      "wrap": "<li class=\"card\"><a href=\"{{url}}\">{{image}}{{number}}<span class=\"card-title\">{{title}}</span>{{teaser}}{{meta}}</a></li>",
+      "teaser": "<span class=\"card-teaser\">{{text}}</span>",
+      "meta": "<span class=\"card-meta\">{{text}}</span>",
+      "number": "<span class=\"ss-card-number\">{{n}}</span>"
+    },
+    "cards": {
+      "wrap": "<ul class=\"cards\">{{items}}</ul>"
+    },
+    "group": {
+      "wrap": "<section class=\"group\"><h2>{{title}}</h2>{{cards}}</section>"
+    },
+    "portfolio": {
+      "wrap": "<article class=\"portfolio\"><h1>{{title}}</h1>{{tagline}}{{intro}}{{cards}}</article>"
+    },
+    "piece": {
+      "wrap": "<article class=\"piece\">{{back}}<h1>{{title}}</h1>{{meta}}{{body}}</article>"
+    },
+    "meta-list": {
+      "wrap": "<dl class=\"meta\">{{items}}</dl>",
+      "item": "<div><dt>{{name}}</dt><dd>{{value}}</dd></div>"
+    },
+    "nav": {
+      "wrap": "<nav class=\"site-nav\"><ul>{{items}}</ul></nav>",
+      "item": "<li><a href=\"{{url}}\">{{label}}</a></li>",
+      "item-current": "<li><a href=\"{{url}}\" aria-current=\"page\">{{label}}</a></li>",
+      "link": "<a href=\"{{url}}\">{{label}}</a>",
+      "link-current": "<a href=\"{{url}}\" aria-current=\"page\">{{label}}</a>"
+    },
+    "contact": {
+      "wrap": "<dl class=\"contact\">{{items}}</dl>",
+      "heading": "<h2>Contact</h2>",
+      "item-mail": "<div><dt>{{label}}</dt><dd><a href=\"{{href}}\">{{text}}</a></dd></div>",
+      "item-link": "<div><dt>{{label}}</dt><dd><a href=\"{{url}}\" rel=\"noopener\">{{text}}</a></dd></div>",
+      "item-text": "<div><dt>{{label}}</dt><dd>{{text}}</dd></div>"
+    },
+    "photo": {
+      "wrap": "<figure class=\"photo\">{{image}}</figure>"
+    },
+    "endorsement": {
+      "wrap": "<blockquote class=\"endorsement\"><p>{{quote}}</p>{{by}}</blockquote>",
+      "by": "<footer>{{who}}</footer>"
+    },
+    "feed": {
+      "wrap": "<section class=\"feed\"><h2>Elsewhere</h2>{{grid}}</section>"
+    },
+    "home": {
+      "wrap": "<article class=\"home\">{{eyebrow}}<h1>{{title}}</h1>{{role}}{{body}}</article>",
+      "intro": "<section class=\"intro\">{{photo}}{{intro}}</section>{{endorsement}}",
+      "featured": "<section class=\"featured\"><h2>Featured</h2>{{cards}}</section>",
+      "eyebrow": "<p class=\"ss-eyebrow\">{{text}}</p>",
+      "role": "<p class=\"ss-home-role\">{{text}}</p>"
+    },
+    "about": {
+      "wrap": "<article class=\"about\"><h1>{{title}}</h1>{{photo}}{{intro}}{{endorsement}}{{contact}}</article>"
+    },
+    "resume": {
+      "wrap": "<article class=\"resume\"><h1>{{title}}</h1>{{links}}{{download}}{{body}}{{contact}}</article>",
+      "download": "<p class=\"download\"><a href=\"{{url}}\">Download as PDF</a></p>"
+    },
+    "quotes": {
+      "wrap": "<div class=\"ss-quotes\" role=\"group\" aria-label=\"{{label}}\" data-count=\"{{count}}\">{{items}}</div>",
+      "item": "<figure class=\"ss-quote\"><blockquote class=\"ss-quote-text\">{{body}}</blockquote>{{by}}</figure>",
+      "by": "<figcaption class=\"ss-quote-by\">{{who}}</figcaption>"
+    },
+    "gallery-video": {
+      "item": "<figure class=\"ss-gallery-item ss-gallery-video\"><a class=\"ss-video\" href=\"{{url}}\" data-embed=\"{{embed}}\" rel=\"noopener\">{{image}}<span class=\"ss-play\" aria-hidden=\"true\"></span><span class=\"ss-video-title\">{{title}}</span></a>{{caption}}</figure>",
+      "caption": "<figcaption class=\"ss-caption\">{{text}}</figcaption>"
+    },
+    "resume-role": {
+      "wrap": "<section class=\"ss-role\"><h3><span class=\"ss-role-title\">{{role}}</span> <span class=\"ss-role-org\">{{org}}</span></h3>{{body}}</section>",
+      "wrap-bare": "<section class=\"ss-role\"><h3><span class=\"ss-role-title\">{{role}}</span></h3>{{body}}</section>"
+    },
+    "back-link": {
+      "wrap": "<p class=\"ss-back\"><a href=\"{{url}}\">{{label}}</a></p>"
+    },
+    "roles-view": {
+      "wrap": "<div class=\"ss-roles\">{{items}}</div>",
+      "item": "<article class=\"ss-employer\"><h2 class=\"ss-employer-heading\">{{heading}}</h2><p class=\"ss-employer-role\"><a href=\"{{url}}\">{{titles}}</a><span class=\"ss-employer-period\">{{period}}</span></p>{{previously}}</article>",
+      "item-current": "<article class=\"ss-employer ss-employer-current\"><h2 class=\"ss-employer-heading\">{{heading}}</h2><p class=\"ss-employer-role\"><a href=\"{{url}}\">{{titles}}</a><span class=\"ss-employer-period\">{{period}}</span></p>{{previously}}</article>",
+      "heading": "<span class=\"ss-employer-name\">{{employer}}</span>",
+      "heading-multi": "<span class=\"ss-employer-count\">{{count}} roles at</span> <span class=\"ss-employer-name\">{{employer}}</span>",
+      "previously": "<p class=\"ss-previously\"><span class=\"ss-previously-label\">Previously:</span> {{items}}</p>",
+      "previously-item": "<span class=\"ss-previously-item\"><a href=\"{{url}}\">{{title}}</a><span class=\"ss-previously-period\">{{period}}</span></span>"
+    },
+    "showcase-view": {
+      "wrap": "<ul class=\"ss-showcase\" aria-label=\"{{label}}\">{{items}}</ul>",
+      "item": "<li class=\"ss-showcase-tile\"><a class=\"ss-showcase-link\" href=\"{{url}}\"><span class=\"ss-showcase-media\">{{image}}</span><span class=\"ss-showcase-title\">{{title}}</span>{{role}}</a></li>",
+      "role": "<span class=\"ss-showcase-role\">{{text}}</span>"
+    },
+    "map-view": {
+      "wrap": "<div class=\"ss-map-wrap\">{{map}}{{list}}</div>",
+      "list": "<ul class=\"ss-map-list\">{{items}}</ul>",
+      "list-item": "<li><a href=\"{{url}}\">{{title}}</a></li>"
+    },
+    "home-showcase": {
+      "wrap": "<ul class=\"ss-showcase\">{{items}}</ul>",
+      "item": "<li class=\"ss-showcase-tile\"><a class=\"ss-showcase-link\" href=\"{{url}}\"><span class=\"ss-showcase-media\">{{image}}</span><span class=\"ss-showcase-title\">{{title}}</span>{{role}}</a></li>",
+      "role": "<span class=\"ss-showcase-role\">{{text}}</span>"
+    },
+    "home-samples": {
+      "wrap": "<div class=\"ref-grid ss-samples\">{{items}}</div>"
+    },
+    "home-links": {
+      "wrap": "<ul class=\"ss-links\">{{items}}</ul>",
+      "item": "<li><a href=\"{{url}}\" rel=\"noopener\">{{label}}</a></li>"
+    }
+  },
+  "assets": {
+    "tagline": [
+      "css"
+    ],
+    "tiles": [
+      "css"
+    ],
+    "quote": [
+      "css"
+    ],
+    "gallery": [
+      "css"
+    ],
+    "videos": [
+      "css",
+      "js"
+    ],
+    "carousel": [
+      "css"
+    ],
+    "quotes": [
+      "css",
+      "schema-4"
+    ],
+    "gallery-video": [
+      "css",
+      "schema-4",
+      "js"
+    ],
+    "resume-role": [
+      "schema-4"
+    ],
+    "card": [
+      "schema-4"
+    ],
+    "reference-card": [
+      "schema-4"
+    ],
+    "home": [
+      "schema-4"
+    ],
+    "back-link": [
+      "schema-4"
+    ],
+    "home-samples": [
+      "schema-4"
+    ],
+    "home-links": [
+      "schema-4"
+    ],
+    "roles-view": [
+      "schema-4"
+    ],
+    "showcase-view": [
+      "schema-4"
+    ],
+    "map-view": [
+      "schema-4"
+    ],
+    "home-showcase": [
+      "schema-4"
+    ]
+  }
+}

@@ -1,0 +1,205 @@
+/* site-studio schema-4 block styles (template-fidelity 0.4.0, design sections 3.1 rule 6 and 3.4). Linked from a
+   page only when the page holds a plugin construct that schema 4 adds: a quote grid, a gallery item that plays a
+   video, a resume role card, a card number, a back link, a reference's role line, the home page's eyebrow, role
+   line, showcase, samples and links, or a portfolio index under the roles, map or showcase view. blocks.css and
+   video.js are frozen at their 0.3.0 bytes, so these rules live in their own file. The same three rules keep it
+   from touching anything else on the site:
+   1. the whole file is ONE cascade layer, so any style the person writes outside a layer beats it;
+   2. every selector's last compound carries an ss- class, so it can only reach an element the plugin made;
+   3. no declaration here is marked important, and nothing loads from another address. */
+@layer site-studio {
+  .ss-quotes {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  .ss-quotes .ss-quote {
+    margin: 0;
+  }
+
+  .ss-gallery-video .ss-video-title {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+  }
+
+  .ss-role {
+    margin: 1.25rem 0;
+  }
+  .ss-role-title {
+    font-weight: 600;
+  }
+  .ss-role-org {
+    opacity: 0.8;
+  }
+
+  .ss-card-number {
+    display: block;
+    font-size: 0.8rem;
+    letter-spacing: 0.08em;
+    opacity: 0.7;
+  }
+
+  .ss-back {
+    margin: 0 0 1rem;
+    font-size: 0.9rem;
+  }
+
+  .ss-ref-role {
+    display: block;
+    font-size: 0.85rem;
+    opacity: 0.8;
+  }
+
+  .ss-eyebrow {
+    margin: 0 0 0.5rem;
+    font-size: 0.85rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    opacity: 0.8;
+  }
+  .ss-home-role {
+    margin: 0.25rem 0 1.25rem;
+    font-size: 1.15em;
+    opacity: 0.85;
+  }
+
+  .ss-samples {
+    margin: 1.5rem 0;
+  }
+
+  .ss-links {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.25rem;
+    list-style: none;
+    margin: 1.25rem 0;
+    padding: 0;
+  }
+
+  .ss-roles {
+    display: grid;
+    gap: 1rem;
+    margin: 1.5rem 0;
+  }
+  .ss-employer {
+    padding: 1rem 1.25rem;
+    border: 1px solid currentColor;
+    border-radius: 0.5rem;
+  }
+  .ss-employer-heading {
+    margin: 0 0 0.25rem;
+    font-size: 1.1rem;
+  }
+  .ss-employer-count {
+    opacity: 0.8;
+  }
+  .ss-employer-name {
+    font-weight: 600;
+  }
+  .ss-employer-current {
+    padding: 1.5rem;
+    border-width: 2px;
+  }
+  .ss-employer-current .ss-employer-heading {
+    font-size: 1.5rem;
+  }
+  .ss-employer-role {
+    margin: 0;
+  }
+  .ss-employer-period {
+    margin-left: 0.5rem;
+    opacity: 0.8;
+  }
+  .ss-employer-period:empty {
+    display: none;
+  }
+  .ss-previously {
+    margin: 0.75rem 0 0;
+    font-size: 0.9rem;
+    opacity: 0.85;
+  }
+  .ss-previously-label {
+    font-weight: 600;
+  }
+  .ss-previously-item:not(:last-child)::after {
+    content: "; ";
+  }
+  .ss-previously-period:not(:empty)::before {
+    content: ", ";
+  }
+
+  .ss-map-wrap {
+    margin: 1.5rem 0;
+  }
+  .ss-map {
+    display: block;
+    width: 100%;
+    height: auto;
+  }
+  .ss-map-land {
+    fill: currentColor;
+    opacity: 0.35;
+  }
+  .ss-map-pin {
+    fill: currentColor;
+    stroke: none;
+  }
+  .ss-map-list {
+    margin: 1rem 0 0;
+    padding-left: 1.25rem;
+  }
+
+  .ss-showcase {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+    gap: 1rem;
+    list-style: none;
+    margin: 1.5rem 0;
+    padding: 0;
+  }
+  .ss-showcase-tile {
+    margin: 0;
+    padding: 0;
+  }
+  .ss-showcase-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+  }
+  .ss-showcase-media {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+  }
+  .ss-showcase-media:empty {
+    display: none;
+  }
+  .ss-showcase-title {
+    display: block;
+    margin-top: 0.5rem;
+    font-weight: 600;
+  }
+  .ss-showcase-role {
+    display: block;
+    font-size: 0.85rem;
+    opacity: 0.8;
+  }
+
+  @media print {
+    .ss-role {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+    .ss-employer {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+  }
+}

@@ -1,0 +1,97 @@
+"""The warnings about files a piece folder holds that nothing publishes, and the keys that are read where they
+are used."""
+
+from siteconfig import BUILTIN_PIECE_KEYS, front_matter_keys, make_problem
+
+from contentmodel.frontmatter import decode_text
+from contentmodel.keytables import VIEW_PIECE_KEYS
+from contentmodel.pagefiles import parse_showcase_entry
+
+
+# ---------------------------------------------------------------- strays a piece folder carries (dev #885, dev #882)
+
+STRAY_FILE_FIX = "pieces have one page; put this in index.md, or start the name with _ to keep it as source"
+
+UNKNOWN_KEY_FIX = "add the key to meta or cardMeta, or remove it"
+
+
+def piece_known_keys(portfolio, featured_from="home", showcased=False):
+    """The front matter keys of a piece that the build reads or shows: the built-in ones, `description` (the
+    page's meta description), the portfolio's `groupBy` key, every key `meta` or `cardMeta` lists, `featured`
+    under `featuredFrom: flags` (where the piece's own flag picks the featured pieces), and the keys a setting
+    reads (`VIEW_PIECE_KEYS`: those of the portfolio's `view` and of `cardNumber` when it is on). `showcased`
+    is True for a piece the home page's `showcase` names: its tile keys are read wherever its portfolio's view
+    is (design R4 row 6)."""
+    known = set(BUILTIN_PIECE_KEYS) | {"description"}
+    known.update(portfolio.settings["meta"])
+    known.update(portfolio.settings["cardMeta"])
+    if portfolio.settings["groupBy"]:
+        known.add(portfolio.settings["groupBy"])
+    if featured_from == "flags":
+        known.add("featured")
+    known.update(VIEW_PIECE_KEYS.get(portfolio.settings.get("view"), ()))
+    if portfolio.settings.get("cardNumber"):
+        known.update(VIEW_PIECE_KEYS["cardNumber"])
+    if showcased:
+        known.update(VIEW_PIECE_KEYS["showcase"])
+    return known
+
+
+def stray_warnings(files, model, cfg):
+    """WARNINGS (never refusals) for what a piece folder holds that the build does not publish, as
+    `make_problem`-shaped items sorted by (path, line, message). Two classes, both named, both with a fix:
+
+    - dev #885: a `.md` in a piece folder other than `index.md` (the piece is ONE page), and a sub-folder
+      other than `media/`. A name starting with `_` is the way to keep something as source (the loader's own
+      rule for folders; applied to the stray `.md` file too, so the fix this warning names clears it).
+    - dev #882 (the unknown-key part): a front matter key that is neither built in nor named in the portfolio's
+      `meta` or `cardMeta` (see `piece_known_keys`): the build publishes nothing of it.
+
+    This is the OWNER INVARIANT's shape: the tree 0.3.0 built still builds, to the same bytes, at every schema,
+    so the build says it and never refuses it. `build.accept` carries these as `.warnings`, apart from
+    `.problems`, so `adopt check` can refuse them where nothing has been converted yet. Pure: it reads only
+    `files` ({repo path: bytes}) and the loaded `model`."""
+    below = {}      # "content/<portfolio>/<slug>" -> [path parts under the piece folder]
+    for p in files:
+        parts = p.split("/")
+        if len(parts) >= 4 and parts[0] == "content":
+            below.setdefault("/".join(parts[:3]), []).append(parts[3:])
+    out = []
+    showcased = set()       # the pieces the home page's `showcase` names: their tile keys are read (schema 4)
+    if model.home is not None and isinstance(model.home.meta.get("showcase"), list):
+        for entry in model.home.meta["showcase"]:
+            parsed = parse_showcase_entry(entry) if isinstance(entry, str) else None
+            if parsed:
+                showcased.add(parsed[0])
+    for pf in model.portfolios:
+        for piece in pf.pieces:
+            known = piece_known_keys(pf, cfg.featuredFrom, piece.key in showcased)
+            rels = below.get(piece.folder, [])
+            for rel in sorted(r for r in rels if len(r) == 1):
+                name = rel[0]
+                if name.lower().endswith(".md") and name != "index.md" and not name.startswith("_"):
+                    path = "%s/%s" % (piece.folder, name)
+                    out.append(make_problem(
+                        "%s: this file is not published; a piece is one page, its index.md" % path, path,
+                        name, "index.md as the only page", STRAY_FILE_FIX))
+            subs = {}
+            for rel in rels:
+                if len(rel) >= 2 and rel[0] != "media" and not rel[0].startswith("_"):
+                    subs[rel[0]] = subs.get(rel[0], 0) + 1
+            for sub in sorted(subs):
+                path = "%s/%s/" % (piece.folder, sub)
+                n = subs[sub]
+                out.append(make_problem(
+                    "%s: this folder is not published (%d file%s in it); a piece is one page, its index.md, "
+                    "and its media/ folder" % (path, n, "" if n == 1 else "s"), path, sub,
+                    "media/ or a folder starting with _", STRAY_FILE_FIX))
+            lines = dict(front_matter_keys(decode_text(files[piece.source], piece.source)))
+            for key in piece.meta:
+                if key in known:
+                    continue
+                out.append(make_problem(
+                    "%s: front matter key '%s' is not published; it is not a built-in key and the %s "
+                    "portfolio's meta and cardMeta do not list it" % (piece.source, key, pf.slug),
+                    piece.source, key, "a built-in key, or one listed in meta or cardMeta", UNKNOWN_KEY_FIX,
+                    lineno=lines.get(key)))
+    return sorted(out, key=lambda p: (p.path or "", p.lineno or 0, p.message))

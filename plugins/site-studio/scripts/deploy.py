@@ -41,19 +41,16 @@ published to HANDOFF.md (left uncommitted: nothing here pushes the dev repo).
   exit 3  AMBER: "pushed and verified; Pages has not finished building after 10 minutes" -- never
           reported as live
 
-ARGUMENTS (M5(a)): argparse with allow_abbrev=False, so `--conf <digest>` is REFUSED (usage error,
-exit 2) rather than accepted by the script and missed by the hook. `--confirm=<digest>` and a
-reordered command line are accepted, and the hook matches them. `--dry-run` and `--confirm` are
-mutually exclusive.
+ARGUMENTS (M5(a)): argparse with allow_abbrev=False, so `--conf <digest>` is REFUSED (usage error, exit 2) rather than
+accepted by the script and missed by the hook. `--confirm=<digest>` and a reordered command line are accepted, and the
+hook matches them. `--dry-run` and `--confirm` are mutually exclusive. `--adopt` (with either) is `adopt.py apply`'s own:
+HEAD may be one fast-forward ahead of origin/main instead of on it (adopt_head.py; 1.9f).
 
-THE GATES are `check_site.py`, run as a subprocess: `python3 check_site.py <built tree> --repo
-<dev repo>`, exit 0 = pass, anything else = a refusal carrying its first lines. That interface is
-the SEAM with phase 1b (not merged when this was written): if `check_site.py` is not beside this
-file the run is refused with "NOT CHECKED" -- a gate that cannot run is never a pass. Tests point
-GATE_SCRIPT at a fake.
+THE GATES are `check_site.py`, run as a subprocess: `python3 check_site.py <built tree> --repo <dev repo>`, exit 0 =
+pass, anything else = a refusal carrying its first lines. If `check_site.py` is not beside this file the run is refused
+with "NOT CHECKED" -- a gate that cannot run is never a pass. Tests point GATE_SCRIPT at a fake.
 
-NO BROWSER (M6). Nothing here imports or launches one; test_deploy.py patches `subprocess.Popen`
-to record every launch and `browser.find_chrome` to raise, and asserts none.
+NO BROWSER (M6). Nothing here launches one; test_deploy.py patches `subprocess.Popen` and `browser.find_chrome`.
 
 The public clone URL is `https://github.com/<publicRepo>.git`; `main(..., public_url=...)` overrides
 it for tests (a local bare repo). The CLI exposes no such override.
@@ -92,8 +89,50 @@ GUARD (b) -- ONE TARGET, VERIFIED BEFORE THE PUSH, NEVER FORCED (amendment 1 sec
   Test seams (never CLI flags): `public_url=` (a local bare repo), `dev_origin=` (V1's origin string),
   and the hooks `before_push`, `after_push`, `after_ls_remote`.
 
-Imports github_url.py, publish_guard.py, review_record.py, siteconfig.py and platform_check.py as
-plain modules; the names are written here so the package's reachable-script closure ships them.
+THE ADDRESS GUARD (template-fidelity step 1.6, design section 8 A1; `addresses.py` is its rules and its record).
+  Every path the public repo's `main` serves today is an address someone may hold. In `run_dry` and `run_confirm`,
+  right after `clone_public` and BEFORE `stage` (inside `stage_and_verify`), `guard_addresses` compares the
+  clone's tracked paths with the build's output paths and REFUSES while any public path is neither built nor
+  released in the committed `.site-studio/addresses.json` (read from HEAD, which `require_head_on_origin_main` has
+  already put on origin/main, so a drop that was never pushed is not honoured and the existing "push the commit"
+  line is what the person sees: R2-8). The refusal names each path's own fix. The guard applies to every site at
+  every schema once 0.4.0 publishes (owner decision 6) and changes no byte of the build.
+  WHICH TREE IS SERVED (R2-5, amends decision 14). The public `main /` is the served tree only when Pages says so.
+  Before the guard, `check_pages_source` reads `gh api --method GET repos/<o>/<r>/pages` ONCE, with `pages_status`'s
+  60 s timeout, and classifies it with `pages_check.pages_source` (C4 a workflow, C5 another branch or folder):
+  either refuses with that item's own fix. A source that cannot be READ (no gh, no login, an API error, a timeout)
+  REFUSES too, naming the error and "retry": publishing already needs `gh`, so an unread source is a stop, never a
+  quiet assumption. A 404 is a read: Pages is off, nothing is served yet, and the guard says so and goes on.
+  `deploy.py` never calls `pages_check.check()`. Both steps are skipped for an EMPTY public repo (nothing is
+  public, so nothing can be released); `repos.py first-publish` is such a call.
+  THE DRY RUN names what a publish ends on purpose: `released` (path and reason, a moved piece's files included), and
+  records it in `dryrun.json` v2 (review_record.write_dryrun, step 1.6r). The publish ask names those addresses
+  (publish_guard) and `run_confirm` refuses a list that is not the recorded one (review_record.released_refusal).
+  `deploy.py drop <path>... --reason TEXT` releases addresses (U-8 answered: a subcommand dispatched before
+  argparse, as `build.py raise-schema` is, so `--dry-run` and `--confirm` and the hook's reading of them are
+  untouched; the publish guard decides nothing on it because it names no `--confirm`). It writes the record and
+  `site.json` at the schema the tree then needs, commits exactly those two paths, and publishes nothing.
+  THE MARKUP-ONLY RE-CHECK (R2-12). `check_adopt_record` hands back a MARKUP-ONLY record, and `prepare` re-runs
+  `parity_classes.recheck` for its tokens against the build it has just made (so it needs `out_dir`): any token a
+  stylesheet or script now names, any attribute selector or `attr(` now present, any off-origin stylesheet or script
+  now loaded refuses, naming the token, with the fix `adopt.py remeasure`.
+
+PREFLIGHT, `deploy.py --preflight OUT [--repo DEV] [--tree TREE]` (R3N-9, R3N-13): the dry run's refusal set,
+read-only, against a build someone else made (section 8 AO step 2). `OUT` is a built output folder, `TREE` the
+folder whose `site/site.json` and `.site-studio/addresses.json` that build used (the scratch tree adopt converted,
+NOT HEAD; default DEV), `DEV` the dev repo whose `origin` V1 reads. It pushes nothing, writes no `dryrun.json` and
+does not need HEAD on origin/main. It prints ONE JSON object, `{"v": 1, "causes": [{"cause", "state", "detail"}]}`,
+and exits 1 when any cause BLOCKS, else 0. The causes, each from a plugin enumeration and never the site's text:
+`publish/gate/<family>` (check_site's findings), `publish/address` (the guard), `publish/pages-workflow` (C4/C5, a
+person cause), `publish/serves-dev-repo` (the DEV repo itself serves Pages, a person cause) and `env/public-target`
+(no publicRepo, V1, V3, a V2 refusal: blocking, never filed). `state` is `blocks` or `not-checked`; ONLY a network
+or `gh` that cannot answer (gh missing or not logged in, a timeout, an unreachable public repo) reads
+`not-checked` (`env/public-target`, `env/pages-source`, `env/gates`) and lets the hand-over proceed: the first
+publish runs the same checks for real.
+
+Imports adopt_head.py, addresses.py, github_url.py, pages_check.py, parity_classes.py, publish_guard.py,
+review_record.py, siteconfig.py and platform_check.py as plain modules; the names are written here so the package's
+reachable-script closure ships them.
 """
 import argparse
 import json
@@ -108,9 +147,13 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-import adopt  # noqa: E402     (the one strict reader of the adopt parity record)
+from adoption import parity as adopt  # noqa: E402     (the one strict reader of the adopt parity record: adoption/parity.py, which holds PARITY_RECORD_REL and PlanError by name too)
+import adopt_head  # noqa: E402     (`--adopt`: the check that replaces "HEAD is on origin/main", step 1.9f)
+import addresses  # noqa: E402     (the address record and the guard's rules, step 1.6)
 import build  # noqa: E402
 import github_url  # noqa: E402
+import pages_check  # noqa: E402     (`pages_source`, the one classifier of the Pages source: R2-5)
+import parity_classes  # noqa: E402     (the MARKUP-ONLY re-check: R2-12)
 import publish_guard  # noqa: E402
 import review_record  # noqa: E402
 import siteconfig  # noqa: E402
@@ -121,6 +164,7 @@ POLL_INTERVAL = 10
 POLL_TIMEOUT = 600
 GIT_TIMEOUT = 300
 LIST_CAP = 60
+PAGES_TIMEOUT = 60       # one `gh api .../pages` read, the same bound as `pages_status`
 
 # Paths that must never reach the public repo: private notes, the review store, the app's folders.
 PRIVATE_SEGMENTS = (".site-studio", "decisions", ".claude", ".git", "originals")
@@ -130,6 +174,12 @@ EXIT_OK, EXIT_RED, EXIT_USAGE, EXIT_AMBER = 0, 1, 2, 3
 
 class DeployError(Exception):
     """A refusal or a red result. The message is the line the person reads."""
+
+
+class NotChecked(DeployError):
+    """A read that could not be made (no `gh`, not logged in, a timeout, an unreadable answer): the question was
+    never answered. A DeployError to `run_dry` and `run_confirm`, which refuse on it; `--preflight` alone tells it
+    apart, because there it is NOT CHECKED rather than a refusal."""
 
 
 # ---------------------------------------------------------------- git, small
@@ -317,15 +367,116 @@ class Staged(object):
     pass
 
 
-def stage_and_verify(repo, out_dir, result, public_url, message, work, hooks=None):
-    """Design 7.3 step 2, items 2-6. Returns a Staged (clone, commit, changes, tree_digest)."""
+# ---------------------------------------------------------------- the address guard (design section 8 A1)
+
+def read_pages(owner_repo, gh="gh"):
+    """The decoded `GET repos/<o>/<r>/pages` object, or None when Pages is OFF (a 404: a read, not a failure).
+    Raises `NotChecked` when the question cannot be answered: no `gh`, a login that is not there, a timeout, or an
+    answer that is not the Pages settings. One call, `PAGES_TIMEOUT` seconds, GET only (R2-5)."""
+    exe = shutil.which(gh)
+    if not exe:
+        raise NotChecked("gh is not installed; install the GitHub CLI from https://cli.github.com")
+    try:
+        p = subprocess.run([exe, "api", "--method", "GET", "repos/%s/pages" % owner_repo], stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=PAGES_TIMEOUT, env=dict(os.environ, GH_PROMPT_DISABLED="1"))
+    except subprocess.TimeoutExpired:
+        raise NotChecked("gh did not answer within %d s; check the connection, then retry" % PAGES_TIMEOUT)
+    except OSError as e:
+        raise NotChecked("could not run gh (%s); reinstall the GitHub CLI, then retry" % e.__class__.__name__)
+    if p.returncode != 0:
+        err = p.stderr.decode("utf-8", "replace").strip().splitlines()
+        last = err[-1] if err else "gh exited %d" % p.returncode
+        if "HTTP 404" in last:
+            return None
+        raise NotChecked(last)
+    try:
+        d = json.loads(p.stdout.decode("utf-8"))
+        if not isinstance(d, dict):
+            raise ValueError("not an object")
+    except ValueError:
+        raise NotChecked("gh returned something that is not the Pages settings; run `gh auth status`, then retry")
+    return d
+
+
+def check_pages_source(owner_repo, gh="gh"):
+    """Refuse unless Pages serves `main` at the root, the tree publish pushes (R2-5). Returns a one-line note when
+    Pages is off, else None. An unread source REFUSES, naming the error and "retry"; a workflow source (C4) or
+    another branch or folder (C5) refuses with the check's own fix."""
+    try:
+        pages = read_pages(owner_repo, gh)
+    except NotChecked as e:
+        raise NotChecked("the Pages source of %s was not read (%s), and the address guard needs it: the public "
+                         "repo's main is the served tree only when Pages serves it; retry the publish once gh "
+                         "answers (`gh auth status` shows the login)" % (owner_repo, e))
+    if pages is None:
+        return ("Pages is not turned on for %s, so nothing is served from it yet; the address guard compared the "
+                "build with the repo's main at the root" % owner_repo)
+    item = pages_check.pages_source(pages)
+    if item is not None:
+        raise DeployError("the public site is not served from main at the root, so the address guard cannot tell "
+                          "which pages are live; the Pages source must be main at the root (%s): %s"
+                          % (item.key, item.line))
+    return None
+
+
+def public_paths(clone):
+    """Every path the clone's HEAD tracks: the addresses the public repo serves."""
+    raw = _git(clone, "ls-tree", "-r", "-z", "--name-only", "HEAD", raw=True)
+    return [p.decode("utf-8", "surrogateescape") for p in raw.split(b"\0") if p]
+
+
+def committed_record(repo):
+    """`.site-studio/addresses.json` as HEAD holds it (empty when HEAD has none). HEAD is on origin/main by now
+    (`require_head_on_origin_main`), so a drop that was never pushed is not honoured. A record the strict reader
+    refuses refuses the publish."""
+    if not _git(repo, "ls-tree", "--name-only", "HEAD", "--", addresses.RECORD_REL).strip():
+        return addresses.empty()
+    try:
+        return addresses.parse(_git(repo, "show", "HEAD:" + addresses.RECORD_REL))
+    except addresses.AddressError as e:
+        raise DeployError(str(e))
+
+
+def guard_addresses(repo, clone, build_paths, cfg=None, gh="gh"):
+    """Pages source (when `cfg` names the public repo), then the address guard. Returns (released, note): the
+    `[[path, reason]]` this publish ends on purpose, and the Pages note, if any. Refuses, listing each path with its
+    own fix, while a public path is neither in the build nor released."""
+    note = check_pages_source(cfg.publicRepo, gh) if cfg is not None else None
+    record = committed_record(repo)
+    public = public_paths(clone)
+    left = addresses.dropped(public, build_paths, record)
+    if left:
+        raise DeployError(addresses.refusal(left, sorted(cfg.redirects) if cfg is not None else ()))
+    return addresses.released(public, build_paths, record), note
+
+
+def print_released(st, out):
+    """What this publish ends on purpose: one line per released address, so the dry run names them and the person's
+    approval of the publish can be an approval of them."""
+    rel = getattr(st, "released", None) or []
+    if not rel:
+        return
+    print("releases %d published address%s (recorded in .site-studio/addresses.json):"
+          % (len(rel), "" if len(rel) == 1 else "es"), file=out)
+    for path, reason in rel[:LIST_CAP]:
+        print("  ! %s (%s)" % (path, reason), file=out)
+    if len(rel) > LIST_CAP:
+        print("  ... and %d more" % (len(rel) - LIST_CAP), file=out)
+
+
+def stage_and_verify(repo, out_dir, result, public_url, message, work, hooks=None, cfg=None, gh="gh"):
+    """Design 7.3 step 2, items 2-6. Returns a Staged (clone, commit, changes, tree_digest). `cfg` is the site
+    config: with it, and a public repo that holds something, the Pages source is read first (R2-5). The address
+    guard runs right after the clone, before anything is staged (section 8 A1)."""
     clone = os.path.join(work, "public")
     had_head = clone_public(public_url, clone)
+    released, pages_note = guard_addresses(repo, clone, result.files, cfg, gh) if had_head else ([], None)
     replace_tree(clone, out_dir, result.files)
     stage(clone, result.files, had_head)
     changes = change_list(clone)
     st = Staged()
     st.clone, st.changes, st.had_head = clone, changes, had_head
+    st.released, st.pages_note = released, pages_note
     st.site_kind = getattr(result, "site_kind", "portfolio")     # push_and_verify's read-back digests with it
     # The base this publish is built on (guard (b), V4): the public main as cloned, None for an empty repo.
     st.base = _git(clone, "rev-parse", "HEAD").strip() if had_head else None
@@ -399,24 +550,24 @@ def check_public_repo(public_repo, gh="gh"):
     is about the gh login, not the pushing key (module docstring)."""
     exe = shutil.which(gh)
     if not exe:
-        raise DeployError("cannot check the public repo before pushing (gh is not installed). "
+        raise NotChecked("cannot check the public repo before pushing (gh is not installed). "
                           "Run /site-studio:setup's step 1.")
     try:
         p = subprocess.run([exe, "api", "--method", "GET", "repos/%s" % public_repo], stdout=subprocess.PIPE,
                            stderr=subprocess.PIPE, timeout=60, env=dict(os.environ, GH_PROMPT_DISABLED="1"))
     except (OSError, subprocess.TimeoutExpired) as e:
-        raise DeployError("cannot check the public repo before pushing (%s). Run /site-studio:setup's "
+        raise NotChecked("cannot check the public repo before pushing (%s). Run /site-studio:setup's "
                           "step 1." % e.__class__.__name__)
     if p.returncode != 0:
         err = p.stderr.decode("utf-8", "replace").strip().splitlines()
-        raise DeployError("cannot check the public repo before pushing (%s). Run /site-studio:setup's "
+        raise NotChecked("cannot check the public repo before pushing (%s). Run /site-studio:setup's "
                           "step 1." % (err[-1] if err else "gh exit %d" % p.returncode))
     try:
         d = json.loads(p.stdout.decode("utf-8"))
         if not isinstance(d, dict):
             raise ValueError("not an object")
     except ValueError:
-        raise DeployError("cannot check the public repo before pushing (gh returned something that is "
+        raise NotChecked("cannot check the public repo before pushing (gh returned something that is "
                           "not the repository). Run /site-studio:setup's step 1.")
     full = d.get("full_name")
     if not isinstance(full, str) or full.lower() != public_repo.lower():
@@ -528,20 +679,50 @@ def push_main(clone, sha):
 
 def check_adopt_record(repo):
     """Refuse to publish over a site whose adopt measured a difference from the person's own builder. When
-    HEAD carries `.site-studio/adopt-parity.json` and its verdict is not EQUAL or ACCEPTED, site-studio's
-    build differs from what that builder publishes, so the builder stays the publisher until `adopt.py
-    remeasure` says otherwise. No record is 0.2.0's behaviour (a site made by setup, or adopted by 0.2.0); an
-    unreadable record refuses, naming the file."""
+    HEAD carries `.site-studio/adopt-parity.json` and its verdict is not EQUAL, ACCEPTED or MARKUP-ONLY,
+    site-studio's build differs from what that builder publishes, so the builder stays the publisher until
+    `adopt.py remeasure` says otherwise. No record is 0.2.0's behaviour (a site made by setup, or adopted by
+    0.2.0); an unreadable record refuses, naming the file. Returns the record when its verdict is MARKUP-ONLY, for
+    `recheck_markup_only` to hold against the build once it is made (R2-12), else None."""
     shown = _git(repo, "show", "HEAD:" + adopt.PARITY_RECORD_REL, check=False, full=True)
     if shown.returncode != 0:
-        return
+        return None
     try:
         rec = adopt.parse_parity_record(shown.stdout.decode("utf-8", "replace"))
     except adopt.PlanError as e:
         raise DeployError("%s (fix or delete the file, or run `adopt.py remeasure`)" % e)
     if rec["verdict"] in ("EQUAL", "ACCEPTED"):
-        return
+        return None
+    if rec["verdict"] == "MARKUP-ONLY":
+        return rec
     raise DeployError(adopt_refusal(rec))
+
+
+def recheck_markup_only(rec, out_dir):
+    """R2-12. MARKUP-ONLY is a property of the CSS and scripts PRESENT, not of the class names alone, so an
+    unrelated later commit can make a recorded token visible. Re-run rules 3 to 5 (`parity_classes.recheck`) for
+    the record's `tokens` against the build just made, in `out_dir`, and refuse on any token a stylesheet or script
+    now names, an attribute selector or `attr(` now present, or an off-origin stylesheet or script now loaded. The
+    cheap record parse and the refusal of every other verdict stay in `check_adopt_record`, before the build."""
+    if rec is None:
+        return
+    files = {}
+    for dirpath, _dirs, names in os.walk(out_dir):
+        for name in names:
+            full = os.path.join(dirpath, name)
+            with open(full, "rb") as fh:
+                files[os.path.relpath(full, out_dir).replace(os.sep, "/")] = fh.read()
+    tokens = rec.get("tokens")
+    if not isinstance(tokens, dict):
+        raise DeployError("the adopt parity record says MARKUP-ONLY but lists no tokens to hold against the build; "
+                          "run `adopt.py remeasure`")
+    now = parity_classes.recheck(tokens, files)
+    if now:
+        first = ["%s %s: %s" % (k, n, why) if n else why for k, n, why in now[:3]]
+        raise DeployError("this site was adopted with parity MARKUP-ONLY, but the build now has %d reason%s a "
+                          "recorded difference is visible (%s%s); the record no longer holds. Run `adopt.py "
+                          "remeasure`" % (len(now), "" if len(now) == 1 else "s", "; ".join(first),
+                                          "; ..." if len(now) > 3 else ""))
 
 
 def adopt_refusal(rec):
@@ -576,17 +757,17 @@ def adopt_refusal(rec):
 
 # ---------------------------------------------------------------- shared start of both modes
 
-def prepare(repo, hooks=None, build_fn=None):
+def prepare(repo, hooks=None, build_fn=None, adopt=False):
     """Steps 1-3 and the gates on the build output. Returns (cfg, tmp dir, out_dir, result, note)."""
     refuse_if_remote()
     repo = _toplevel(repo)
-    note = require_head_on_origin_main(repo)
+    note = adopt_head.require_head_ahead_of_origin_main(_git, repo, DeployError) if adopt else require_head_on_origin_main(repo)
     try:
         cfg = siteconfig.load(os.path.join(repo, "site", "site.json"))
     except (siteconfig.SiteConfigError, OSError) as e:
         raise DeployError(str(e))
     public_target(cfg)      # a null publicRepo refuses here, before any build (dev #835, AM9)
-    check_adopt_record(repo)
+    markup_only = check_adopt_record(repo)
     work = tempfile.mkdtemp(prefix="ss-deploy-")
     out_dir = os.path.join(work, "out")
     try:
@@ -595,6 +776,7 @@ def prepare(repo, hooks=None, build_fn=None):
         shutil.rmtree(work, ignore_errors=True)
         raise DeployError("build refused: %s" % e)
     try:
+        recheck_markup_only(markup_only, out_dir)       # after the build: it holds the record against THIS output
         run_gates(out_dir, repo, "the build")
     except DeployError:
         shutil.rmtree(work, ignore_errors=True)
@@ -604,9 +786,8 @@ def prepare(repo, hooks=None, build_fn=None):
 
 def print_warnings(result, out):
     """Every `BuildResult.warnings` entry, one `warning: ` line each, as build.py and preview.py print them (dev #885,
-    dev #882, gap 19): a publish run names a file the build left out (a stray .md, a sub-folder, an unknown piece key)
-    instead of leaving the person to find it missing from the live site. Printing only: a warning never refuses and
-    never changes a byte of the output or its digest."""
+    dev #882, gap 19): a publish run names a file the build left out (a stray .md, a sub-folder, an unknown piece key).
+    Printing only: a warning never refuses and never changes a byte of the output or its digest."""
     for w in getattr(result, "warnings", None) or ():
         print("warning: " + build.warning_line(w), file=out)
 
@@ -615,24 +796,24 @@ def review_summary(repo, digest):
     status, row = review_record.verdict_for(digest, repo)
     if row is None:
         return status, "review: NONE for this digest (run the review step)"
-    ids = ", ".join(row["accepted"]) if row["accepted"] else "none"
-    return status, "review: %s on %s, %d files opened, accepted %s" % (
-        status, row["at"][:10], len(row["opened"]), ids)
+    return status, "review: " + review_record.review_rows.describe(status, row)      # a stand-in row says so (reviews.rows)
 
 
 # ---------------------------------------------------------------- --dry-run
 
-def run_dry(repo, public_url=None, hooks=None, build_fn=None, out=None, dev_origin=None):
+def run_dry(repo, public_url=None, hooks=None, build_fn=None, out=None, dev_origin=None, adopt=False):
     out = out or sys.stdout
-    repo, cfg, work, out_dir, result, note = prepare(repo, hooks, build_fn)
+    repo, cfg, work, out_dir, result, note = prepare(repo, hooks, build_fn, adopt)
     try:
         print_warnings(result, out)
         url = public_url or public_target(cfg)[1]
-        st = stage_and_verify(repo, out_dir, result, url, "site-studio dry run", work, hooks)
+        st = stage_and_verify(repo, out_dir, result, url, "site-studio dry run", work, hooks, cfg=cfg)
         verify_public_target(repo, cfg, st, public_url, dev_origin)
         status, review = review_summary(repo, result.digest)
         if note:
             print(note, file=out)
+        if st.pages_note:
+            print(st.pages_note, file=out)
         if st.commit is None:
             print("nothing to publish: the public repo already holds this exact build (digest %s)"
                   % result.digest, file=out)
@@ -646,16 +827,13 @@ def run_dry(repo, public_url=None, hooks=None, build_fn=None, out=None, dev_orig
             print("  %s %s" % ({"A": "+", "M": "~", "D": "-"}.get(code[0], "?"), path), file=out)
         if len(st.changes) > LIST_CAP:
             print("  ... and %d more" % (len(st.changes) - LIST_CAP), file=out)
+        print_released(st, out)
         print(review, file=out)
         print("digest: %s" % result.digest, file=out)
-        record = {"v": 1, "digest": result.digest, "files": len(result.files), "added": counts["A"],
-                  "changed": counts["M"], "removed": counts["D"], "publicRepo": cfg.publicRepo,
-                  "head": _git(repo, "rev-parse", "HEAD").strip(),
-                  "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
-        path = os.path.join(repo, review_record.DRYRUN_REL)
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8", newline="\n") as fh:
-            fh.write(json.dumps(record, indent=2, sort_keys=True) + "\n")
+        review_record.write_dryrun(repo, {
+            "v": review_record.DRYRUN_VERSION, "digest": result.digest, "files": len(result.files), "added": counts["A"],
+            "changed": counts["M"], "removed": counts["D"], "publicRepo": cfg.publicRepo, "released": st.released,
+            "head": _git(repo, "rev-parse", "HEAD").strip(), "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
         if status in ("clear", "accepted"):
             print("confirm: %s" % result.digest, file=out)
         else:
@@ -754,12 +932,12 @@ def write_handoff(repo, cfg, sha, digest, files, pages):
 
 
 def run_confirm(repo, digest, message, public_url=None, hooks=None, build_fn=None, out=None,
-                interval=None, timeout=None, sleep=time.sleep, now=time.time, dev_origin=None):
+                interval=None, timeout=None, sleep=time.sleep, now=time.time, dev_origin=None, adopt=False):
     out = out or sys.stdout
     hooks = hooks or {}
     interval = POLL_INTERVAL if interval is None else interval
     timeout = POLL_TIMEOUT if timeout is None else timeout
-    repo, cfg, work, out_dir, result, note = prepare(repo, hooks, build_fn)
+    repo, cfg, work, out_dir, result, note = prepare(repo, hooks, build_fn, adopt)
     try:
         print_warnings(result, out)
         if result.digest != digest:
@@ -771,8 +949,14 @@ def run_confirm(repo, digest, message, public_url=None, hooks=None, build_fn=Non
         if status == "blocked":
             raise DeployError("the privacy review for this digest is BLOCKED: resolve it and review again")
         url = public_url or public_target(cfg)[1]
-        st = stage_and_verify(repo, out_dir, result, url, message, work, hooks)
+        st = stage_and_verify(repo, out_dir, result, url, message, work, hooks, cfg=cfg)
         verify_public_target(repo, cfg, st, public_url, dev_origin)
+        if st.pages_note:
+            print(st.pages_note, file=out)
+        print_released(st, out)
+        refusal = review_record.released_refusal(repo, digest, st.released)
+        if refusal:
+            raise DeployError(refusal)
         if st.commit is None:
             print("nothing to publish: the public repo already holds this exact build", file=out)
             return EXIT_OK
@@ -800,6 +984,199 @@ def run_confirm(repo, digest, message, public_url=None, hooks=None, build_fn=Non
         shutil.rmtree(work, ignore_errors=True)
 
 
+# ---------------------------------------------------------------- drop: release a published address on purpose
+
+def run_drop(repo, paths, reason, out=None):
+    """`deploy.py drop <path>... --reason TEXT` (design section 8 A1). Records each path as released in
+    `.site-studio/addresses.json`, writes `site.json` at the schema that then needs (4: the guard reason, so every
+    0.3.x install refuses the tree), and COMMITS those two paths and nothing else. It publishes nothing and asks
+    nothing: the next dry run lists the released addresses and the publish ask names them. It refuses, writing
+    nothing, on a dirty `site/`, `content/` or `.site-studio/`, a tree below schema 3 or holding a part name schema
+    4 fixes (the raise-schema pre-write check, R2-3), a path that is not an output path, and a tree the build would
+    refuse once the record exists. A cloud session is NOT refused (R2-6): this is a content edit."""
+    out = out or sys.stdout
+    reason = (reason or "").strip()
+    if not reason or "\n" in reason:
+        raise DeployError("--reason needs one line saying why the address is released (a visitor or a search "
+                          "result may still use it)")
+    try:
+        repo = _toplevel(repo)
+        for path in paths:
+            addresses.check_path(path, "the path")
+        addresses.require_clean(repo)
+        files = build._disk_files(repo)
+        raw = files.get("site/site.json")
+        if raw is None:
+            raise DeployError("site/site.json is not in this folder; run this inside the dev repo")
+        cfg = siteconfig.parse_text(raw.decode("utf-8", "replace"))
+        addresses.check_prewrite(cfg, files)
+        before = addresses.read_record_file(repo)
+        after = addresses.merge(before, dropped=[(p, reason) for p in sorted(set(paths))])
+        if after == before:
+            print("nothing to record: %s already released" % ", ".join(sorted(set(paths))), file=out)
+            return EXIT_OK
+        text = addresses.dump(after)
+        site_json = addresses.site_json_text(cfg, files, text)
+        tree = dict(files)
+        tree["site/site.json"] = site_json.encode("utf-8")
+        tree[addresses.RECORD_REL] = text.encode("utf-8")
+        acc = build.accept(dict((k, v) for k, v in tree.items() if k.startswith(("site/", "content/"))))
+        if acc.problems:
+            raise DeployError("the site would not build once the address record exists (%s); fix that first, "
+                              "then run drop again" % acc.problems[0].line())
+    except (addresses.AddressError, build.BuildError, siteconfig.SiteConfigError) as e:
+        raise DeployError(str(e))
+    addresses.write_text(repo, addresses.RECORD_REL, text)
+    addresses.write_text(repo, "site/site.json", site_json)
+    new = sorted(set(paths) - set(d["path"] for d in before["dropped"]))
+    _git(repo, "add", "--", addresses.RECORD_REL, "site/site.json")
+    _git(repo, "commit", "-q", "-m", "site-studio: release %d published address%s" % (
+        len(new), "" if len(new) == 1 else "es"), "--", addresses.RECORD_REL, "site/site.json")
+    print("released %d published address%s, committed (%s and site/site.json):"
+          % (len(new), "" if len(new) == 1 else "es", addresses.RECORD_REL), file=out)
+    for path in new:
+        print("  ! %s (%s)" % (path, reason), file=out)
+    print("nothing is published yet. Push this commit to the main branch (a pull request merge), run the dry run, "
+          "which lists these addresses, then confirm.", file=out)
+    return EXIT_OK
+
+
+def drop_main(argv):
+    ap = argparse.ArgumentParser(prog="deploy.py drop", allow_abbrev=False,
+                                 description="Release published addresses on purpose; publishes nothing.")
+    ap.add_argument("paths", nargs="+", metavar="PATH", help="an output path the live site serves today")
+    ap.add_argument("--reason", required=True, help="one line: why the address is released")
+    ap.add_argument("--repo", default=".", help="the dev repo (default: the current folder)")
+    args = ap.parse_args(argv)
+    try:
+        return run_drop(args.repo, args.paths, args.reason)
+    except DeployError as e:
+        print("drop refused: %s" % e)
+        return EXIT_RED
+
+
+# ---------------------------------------------------------------- --preflight
+
+def _gate_families(out_dir, tree):
+    """(families that have findings, NOT CHECKED reason or None) from `check_site.py --out --json`, offline."""
+    if not os.path.isfile(GATE_SCRIPT):
+        return [], "%s is not present" % os.path.basename(GATE_SCRIPT)
+    p = subprocess.run([sys.executable, GATE_SCRIPT, "--out", out_dir, "--repo", tree, "--json"],
+                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True, timeout=GIT_TIMEOUT)
+    if p.returncode not in (0, 1):
+        return [], "the gates exited %d" % p.returncode
+    fams = set()
+    for line in p.stdout.splitlines():
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get("level") == "error" and isinstance(rec.get("family"), str):
+            fams.add(rec["family"])
+    return sorted(fams), None
+
+
+def run_preflight(out_dir, repo, tree=None, public_url=None, dev_origin=None, gh="gh", out=None):
+    """The dry run's refusal set, read-only, against a build someone else made (module docstring, PREFLIGHT).
+    Never raises for a cause: every refusal and every unanswered read becomes a row of the printed object."""
+    out = out or sys.stdout
+    repo = _toplevel(repo)
+    tree = os.path.abspath(tree or repo)
+    out_dir = os.path.abspath(out_dir)
+    if not os.path.isdir(out_dir):
+        raise DeployError("%s is not a built output folder; build the site, then pass its folder" % out_dir)
+    causes = []
+
+    def cause(name, state, detail):
+        causes.append({"cause": name, "state": state, "detail": detail})
+    try:
+        cfg = siteconfig.load(os.path.join(tree, "site", "site.json"))
+    except (siteconfig.SiteConfigError, OSError) as e:
+        raise DeployError("cannot read site/site.json in %s: %s; point --tree at the folder that holds it" % (tree, e))
+    build_paths = []
+    for dirpath, _dirs, names in os.walk(out_dir):
+        for name in names:
+            build_paths.append(os.path.relpath(os.path.join(dirpath, name), out_dir).replace(os.sep, "/"))
+    build_paths.sort()
+    # the gates, offline, on the output as built
+    fams, why = _gate_families(out_dir, tree)
+    if why:
+        cause("env/gates", "not-checked", "NOT CHECKED: %s, so the publish gates did not run" % why)
+    for fam in fams:
+        cause("publish/gate/%s" % fam, "blocks", "the %s gate has findings on this build; run check_site.py on it" % fam)
+    # the publish target: no publicRepo, V1, V2, V3
+    try:
+        public_repo, pinned, _ref = public_target(cfg)
+    except DeployError as e:
+        cause("env/public-target", "blocks", str(e))
+        return _print_preflight(causes, out)
+    url = public_url or pinned
+    dev_slug = None
+    try:
+        check_not_dev_repo(repo, public_repo, dev_origin)
+        dev_slug = github_url.slug(dev_origin if dev_origin is not None else _git(repo, "remote", "get-url", "origin").strip())
+    except github_url.GithubUrlError:
+        pass
+    except NotChecked as e:
+        cause("env/public-target", "not-checked", "NOT CHECKED: %s" % e)
+    except DeployError as e:
+        cause("env/public-target", "blocks", str(e))
+    try:
+        check_public_repo(public_repo, gh)
+    except NotChecked as e:
+        cause("env/public-target", "not-checked", "NOT CHECKED: %s" % e)
+    except DeployError as e:
+        cause("env/public-target", "blocks", str(e))
+    # which tree Pages serves: the public repo's, then the dev repo's own (a dev repo that serves Pages blocks)
+    pages_readable = True
+    try:
+        check_pages_source(public_repo, gh)
+    except NotChecked as e:
+        pages_readable = False
+        cause("env/pages-source", "not-checked", "NOT CHECKED: %s" % e)
+    except DeployError as e:
+        cause("publish/pages-workflow", "blocks", str(e))
+    if dev_slug:
+        try:
+            if read_pages(dev_slug, gh) is not None:
+                cause("publish/serves-dev-repo", "blocks", "the dev repo %s serves a Pages site itself, so the old "
+                      "setup publishes from the repo that holds your source; move the source to a new private repo "
+                      "and keep only the published site in %s, then run adopt again" % (dev_slug, public_repo))
+        except NotChecked as e:
+            if pages_readable:
+                cause("env/pages-source", "not-checked", "NOT CHECKED: the dev repo's own Pages was not read (%s)" % e)
+    # the address guard, against a fresh clone of the public repo
+    work = tempfile.mkdtemp(prefix="ss-preflight-")
+    try:
+        clone = os.path.join(work, "public")
+        try:
+            had_head = clone_public(url, clone)
+        except DeployError as e:
+            cause("env/public-target", "not-checked", "NOT CHECKED: the public repo was not cloned (%s)" % e)
+            return _print_preflight(causes, out)
+        try:
+            check_push_url(clone, url)
+        except DeployError as e:
+            cause("env/public-target", "blocks", str(e))
+        if had_head:
+            try:
+                record = addresses.read_record_file(tree)
+            except addresses.AddressError as e:
+                cause("publish/address", "blocks", str(e))
+            else:
+                left = addresses.dropped(public_paths(clone), build_paths, record)
+                if left:
+                    cause("publish/address", "blocks", addresses.refusal(left, sorted(cfg.redirects)))
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+    return _print_preflight(causes, out)
+
+
+def _print_preflight(causes, out):
+    print(json.dumps({"v": 1, "causes": causes}, sort_keys=True), file=out)
+    return EXIT_RED if any(c["state"] == "blocks" for c in causes) else EXIT_OK
+
+
 # ---------------------------------------------------------------- CLI
 
 def main(argv=None, public_url=None, hooks=None, build_fn=None, interval=None, timeout=None,
@@ -807,23 +1184,40 @@ def main(argv=None, public_url=None, hooks=None, build_fn=None, interval=None, t
     rc = platform_check.windows_refusal_rc("deploy.py")
     if rc is not None:
         return rc
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "drop":          # a subcommand, dispatched as `build.py raise-schema` is (U-8)
+        return drop_main(argv[1:])
     ap = argparse.ArgumentParser(prog="deploy.py", allow_abbrev=False,
-                                 description="Verify and publish the site.")
+                                 description="Verify and publish the site. `deploy.py drop PATH...` releases a "
+                                             "published address on purpose and publishes nothing.")
     mode = ap.add_mutually_exclusive_group(required=True)
     mode.add_argument("--dry-run", action="store_true", help="build, stage and verify; push nothing")
     mode.add_argument("--confirm", metavar="DIGEST", help="publish the build with this digest")
+    mode.add_argument("--preflight", metavar="OUT", help="the dry run's refusals against a build in OUT; read-only")
     ap.add_argument("--repo", default=".", help="the dev repo (default: the current folder)")
+    ap.add_argument("--tree", default=None, help="with --preflight: the folder holding the site/site.json and "
+                                                 ".site-studio/addresses.json the build used (default: --repo)")
+    ap.add_argument("--adopt", action="store_true", help="adopt.py apply only: HEAD may be one fast-forward ahead of origin/main")
     ap.add_argument("message", nargs="?", help="the public commit message (with --confirm)")
     args = ap.parse_args(argv)
+    if args.adopt and args.preflight is not None:
+        ap.error("--adopt is for --dry-run and --confirm")
+    if args.tree is not None and args.preflight is None:
+        ap.error("--tree is only for --preflight")
+    if args.preflight is not None and args.message:
+        ap.error("--preflight takes no message")
     if args.confirm is not None and not (args.message or "").strip():
         ap.error("--confirm needs the commit message as the last argument")
     if args.dry_run and args.message:
         ap.error("--dry-run takes no message")
     try:
+        if args.preflight is not None:
+            return run_preflight(args.preflight, args.repo, args.tree, public_url, dev_origin)
         if args.dry_run:
-            return run_dry(args.repo, public_url, hooks, build_fn, dev_origin=dev_origin)
-        return run_confirm(args.repo, args.confirm, args.message.strip(), public_url, hooks, build_fn,
-                           interval=interval, timeout=timeout, sleep=sleep, now=now, dev_origin=dev_origin)
+            return run_dry(args.repo, public_url, hooks, build_fn, dev_origin=dev_origin, adopt=args.adopt)
+        return run_confirm(args.repo, args.confirm, args.message.strip(), public_url, hooks, build_fn, interval=interval,
+                           timeout=timeout, sleep=sleep, now=now, dev_origin=dev_origin, adopt=args.adopt)
     except (DeployError, review_record.ReviewError) as e:
         print("deploy refused: %s" % e)
         return EXIT_RED

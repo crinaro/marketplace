@@ -1,19 +1,36 @@
 ---
 name: adopt
-description: 'Move an existing site repo onto site-studio when it carries its own copy of site-studio''s scripts: your content stays, the copies are retired, and the whole change sits on one branch for you to review. Not for starting a new site (setup).'
+description: 'Move an existing site repo onto site-studio when it carries its own copy of site-studio''s scripts: your content stays, site-studio publishes the converted site after you say yes and archives the old builder, or it stops and says what blocks it. Not for starting a new site (setup).'
 disable-model-invocation: true
 ---
 
 # Adopt an existing site repo
 
 The person typed this. Adopt keeps everything that is the person's (content, decisions, brand,
-media, their own customisations), retires the local copies of what this plugin now does, and puts
-the whole change on **one branch** for the person to review. `main` is untouched until they merge
-it. Adopt never touches the public repo, never publishes, and never pushes.
+media, their own customisations) and moves the site's building and publishing onto this plugin. It
+measures first, on a copy, and changes nothing the person's site publishes until a measurement says
+a visitor would see no difference. Then `adopt.py apply` does the rest in **one process, behind one
+ask**: it publishes the converted site, waits for GitHub Pages to build it, archives the old
+builder, and pushes that to the dev repo's `main`. **After that, pushing to the dev repo publishes
+nothing, and the person must be told so.** `apply` ends in exactly one of two states, and you say
+which:
+
+- **completed:** site-studio has published the converted site, and the old builder is archived under
+  `archive/` (nothing is deleted);
+- **blocked:** something stopped it. `main` is unchanged, nothing of the old builder moved, **the old
+  builder keeps publishing**, and the line says what to do next.
+
+Adopt reads the public repo in steps 1 and 2 of `apply` (one clone, `gh` reads only) and writes to it
+only in step 3, only through `deploy.py`, the path `/site-studio:publish` takes.
 
 Every step runs as `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/adopt.py" [--repo <dev repo>] <step>`
-(the repo defaults to the current directory). Exit codes: `0` done, `1` refused (the line says
-why; nothing changed), `3` adopt needs an answer from the person (ask it, record it, re-run).
+(the repo defaults to the current directory). Exit codes: `0` done (for `apply`: **completed**), `1`
+refused (the line says why; nothing changed), `2` a usage error, or `report` found a report it would
+not file, `3` adopt needs an answer from the person (ask it, record it, re-run), `4` **`apply` ended
+blocked**. For `apply` the first line says which: `adopt completed`, or `adopt blocked at step N of
+5`; from step 3 on, a `cause:` line names the stop's cause id (`ss-adopt/apply/<stop>`, or
+`ss-adopt/env/...` for what only the person's own environment can answer). Quote that line to the
+person. The exit code alone tells a completed `apply` from a blocked one.
 
 The person's decisions are kept in `.site-studio/adopt-plan.json`, written only by the `adopt.py`
 steps below. Never edit that file by hand.
@@ -29,6 +46,9 @@ it found in what it would write, all at once, each marked `apply fixes this` or 
   adopt runs on their own computer.
 - The dev repo has no uncommitted changes. Untracked `.claude/worktrees/` and adopt's own plan
   file do not count.
+- **`apply` needs `gh`, logged in, and the network:** it reads the public repo to check that a
+  publish would be accepted, then publishes. `check`, `inventory` and `parity` need neither. A read
+  that cannot be answered (no `gh`, no network) is printed as `NOT CHECKED`, never as a pass.
 - **adopt fetches for itself.** `check`, `inventory`, `parity` and `apply` run
   `git fetch origin main` and refuse if the fetch fails. Do not fetch on its behalf. The steps that
   record a decision (`confirm`, `unit`, `fact`, `reviewed`, `paper`, `folder`, `convert`, `kind`) make no network
@@ -79,7 +99,8 @@ that line to the person, who writes the anchor by hand. It is never listed as co
 
 Record each decision as the person makes it:
 
-- **DUPLICATE:** removed only after the person confirms: `adopt.py confirm <path>`. To keep it:
+- **DUPLICATE:** archived (moved under `archive/`, never deleted) only after the person confirms:
+  `adopt.py confirm <path>`. To keep it:
   `adopt.py confirm <path> --keep`. Any residual units are shown first.
 - **PARTIAL:** kept by default: with no decision at all, `apply` keeps the file and lists it as "kept
   by default (no decision)". Go through every residual unit the inventory lists, by its id:
@@ -162,11 +183,21 @@ page (`{{homeTitle}}`, `{{homeIntro}}`) are rewritten to the build's own `{{home
 terms, so the hand page is fed by the home copy: `{{homeIntro}}` alone in a paragraph becomes
 `{{home:intro}}`, and anywhere else (a meta description) it is frozen, replaced by the first line of
 the copy as the text a builder writes there, so it does not update when the home copy changes; the
-commit marks each frozen one, and parity measures the page. Three conversions are `you decide` by their
+commit marks each frozen one, and parity measures the page. The other template conversions follow the
+same terms and are each measured by parity before they are `apply fixes this`: a reference in the
+template's format (`myRole` becomes the visible `role` line, `captured_from` becomes `fetched`; no file
+moves, so no image address changes), the home page's own keys (the headline, intro, stats, quote,
+showcase and contact become the build's home keys and `:::part` blocks), the resume header (`name`,
+`headline` and `linkedin` become the title, tagline and a contact link), the `<nav>{{nav}}</nav>` wrapper
+(rewritten to `{{navLinks}}`, so the nav is not nested), the person's name on the resume when
+`site.json`'s `name` is a domain, the resume PDF renamed to the name the old builder published it
+under, and the template's `tile:`, quote, `video:` and image lines as the plugin's `:::tiles`, `:::quote`,
+`:::videos` and `:::gallery` blocks. Three conversions are `you decide` by their
 nature, and apply leaves the page as written unless the person chooses them: a portfolio `view` the
-plugin does not model (the template's roles index) is removed so that index becomes the plugin's grid
-(`adopt.py convert viewKeys`; until then the build refuses the key and the site stays on the person's
-builder); a meta-refresh page with
+plugin does not model is removed so that index becomes the plugin's grid (`adopt.py convert viewKeys`; the
+`roles`, `map` and `showcase` views are modelled at schema 4 and are kept, not removed; until the person
+chooses, the build refuses a view it does not know and the site stays on the person's builder); a
+meta-refresh page with
 **head boilerplate** (an icon, a manifest, a theme colour) is recognised as a redirect, but the
 build's redirect page drops those, so the line names each dropped element (`adopt.py convert
 redirectBoiler` converts it); and **other resume front-matter fields** become body paragraphs, which
@@ -178,11 +209,13 @@ page that differs once a chosen conversion is part of what it builds.
 rewrites only the template's local tokens (above); a `{{home:<part>}}` the person already wrote is the
 build's own token (schema 3, a hand-made home page fed by `content/home.md`), so it is listed as
 covered, once, and left exactly as written; the
-build then refuses a part the home page does not have, naming the file and line. A site whose own builder
-prints something site-studio does not build (a roles or map index, a resume as cards, a block renderer of
-its own) is not changed: the builder keeps publishing it. adopt does not write `view: "page"` or freeze a
-section for the person in this version; if they want an index to stay their own file under `site/src`,
-they set `view: "page"` in that portfolio's `page.md` themselves, and adopt's parity measures the result.
+build then refuses a part the home page does not have, naming the file and line. Since 0.4.0 the plugin
+builds roles, map and showcase indexes, the resume's role cards, a few more blocks and a per-site markup
+look from content, so a site whose own builder printed those can be converted and measured. What the
+plugin still does not build (a block renderer of the person's own, an index it has no view for) is not
+changed: the person's builder keeps publishing it. adopt does not write `view: "page"` or freeze a section
+for the person; if they want an index to stay their own file under `site/src`, they set `view: "page"` in
+that portfolio's `page.md` themselves, and adopt's parity measures the result.
 
 **What the site does, and its kind.** After the problems, the inventory lists the features it found
 (a resume link that disappears when there is no resume, pieces marked `featured: true`, a hand-made
@@ -203,6 +236,74 @@ out of a file adopt removes. Every agent the plugin dispatches loads the project
 a file under `.claude/rules/` reaches a plugin agent as well (measured on Claude Code 2.1.325, in a
 terminal session; not measured elsewhere). Tell the person they may move those rules
 there if they prefer; adopt itself writes `CLAUDE.md` only.
+
+**Every tracked file gets one disposition.** The inventory (and `apply`) lists each file as:
+
+- **published:** the old builder used it and the plugin's build puts it on a page or uses it as an input;
+- **draft:** a piece the old builder did not publish; it is marked `draft: true` and its folder stays
+  together;
+- **archived:** nothing builds or reads it any more. It moves under `archive/` (a leading `.claude/` is
+  written `_claude/`, so no skill can load from it) and is listed in `archive/ARCHIVE.json`. Nothing is
+  deleted;
+- **engine:** the old builder itself; it moves to `archive/` only in `apply`'s last step, after
+  site-studio has published;
+- **kept:** repository files that are not content (the README, licence, `CLAUDE.md`, `HANDOFF.md`,
+  `.site-studio/`) and anything the person chose to keep;
+- **no landing spot:** the old builder used it and the plugin's build cannot hold it, so a visitor
+  would lose it. **This blocks `apply`.**
+
+"Used" is measured from what each build outputs and from what changes when a file is removed, never
+guessed. A file that cannot be measured (for example, no `node`) blocks, or waits for the person.
+Show the person the list by disposition and ask about every file in the last group. To record a
+choice for one file: `adopt.py file <path> archive|draft|keep|engine`.
+
+**Measured settings.** A conversion that picks one value from a short list is a *setting*. adopt
+measures these, in this order: the site's `look`; whether the home page's featured pieces come from each
+piece's `featured: true` (`featuredFrom`); a portfolio's piece order (`sort.<portfolio>`); a nav without
+a Home item (`nav.home`); resume headings as written (`resume.headings`) and the resume's role cards
+(`resume.layout`); whether site.json's `work` keys apply to every portfolio (`workKeys`); card values
+without their labels (`cardLabels`); a number on each card (`cardNumber`) and how it prints
+(`cardNumberFormat`: `padded`, `plain` or `order`); a back link above each piece title (`backLink`); a
+menu link that goes straight to a one-piece portfolio (`menuLinks.<portfolio>`) and what that
+portfolio's index is (`onePieceIndex.<portfolio>`: a redirect page, or the listing it was); the
+heading level inside a carousel slide (`blocks.headingLevel`); whether a lone reference card sits in the
+reference grid (`blocks.loneReferenceGrid`); the home page's `<title>` form
+(`titleForm`), whether its intro holds the whole body or its first block (`introScope`) and the order of
+its parts (`partOrder`); and a portfolio's index view (`view.<portfolio>`).
+
+- **How a value is chosen.** adopt builds the plugin's side once per candidate and compares only the
+  pages that setting can change. It keeps the first value that makes those pages equal (or markup-only),
+  and otherwise the one with **strictly fewer** visitor-visible differences than the default, saying so.
+  A tie is `you decide`, naming each candidate's first difference, and the default stays.
+- **Settings are judged together.** Each setting is judged with every other at its chosen value, in up
+  to three passes, because a setting such as a card number only helps under the right look. When a
+  derived look is in play, each candidate is judged under the look derived for it.
+- **Two differences never decide a choice,** because every candidate has them: the text of
+  `<meta name="description">` (the description a search result shows; no page does) and the plugin's own
+  stylesheet and script files under `site-studio/`. Both are still differences: the description is
+  VISIBLE and ends the run as an ACCEPT (see "Page descriptions" in step 3), and the verdict can be
+  `DIFFERENT` for it alone.
+- **`blocks.videoEmbed`** (`facade`, the default, or `live`) is offered only where the converted tree
+  holds a `:::videos` block or a gallery video row, and is judged last, on every page, under the look
+  derived for each candidate. `live` keeps a video's own address (Vimeo's without `dnt=1`), which is the
+  value the look derive finds in the old player, so with it the look maps `videos` and `gallery-video`.
+  The key is only the address; whether a player loads with the page is the look's markup.
+- Each is `apply fixes this` when parity measures no visitor-visible difference, and otherwise `you
+  decide`, with the difference named. **Without `node` nothing is measured**: every setting reads `you
+  decide: not measured`, and none is filled in with a default; the `look` in particular is never
+  guessed. The person may choose a value (`adopt.py setting <name> <value>`; a chosen value is kept and
+  never measured, so say that) or forget the choice so the next parity measures it again
+  (`adopt.py setting <name> --clear`).
+
+**The look.** When the plugin's own markup does not match the old site's, adopt derives a look from the
+old builder's own pages and the converted content (`site/looks/derived.json`, the same work as
+`/site-studio:look derive`) and keeps it only if parity then measures no visitor-visible difference.
+A construct it cannot map keeps the plugin's own markup and is reported as `look/unmapped/<construct>`
+or `look/ambiguous/<construct>`. **Measured on the plugin's template fixture, this version's derive maps
+every construct the fixture uses**, and the only visible difference left is the page descriptions a
+search result shows (named for the person to accept). What a real site needs is not known until adopt
+runs on it; say that plainly. A construct derive cannot map is a limit of this version, not something
+the person did.
 
 ## 2. Keep the person's data, before anything is removed
 
@@ -252,7 +353,7 @@ side**. Neither build touches the repo.
   person has seen them (no earlier `parity` on this commit, or the differences are not the ones the last
   run showed), it lists the differences, records `DIFFERENT`, says it did not accept, and the person is asked
   again; run `parity --accept` once more to accept exactly those. Otherwise the local
-  builder is kept and the agents and commands can still be retired.
+  builder is kept and the agents and commands can still be archived.
 - **UNVERIFIED** (no Node on this computer, the local builder failed, or the plugin build
   refused): never a pass, and the local builder stays. When the plugin build refuses, parity lists what
   it needs in the same `path:line` and fix form `check` prints.
@@ -274,6 +375,37 @@ Parity makes two measurements, and both are named in what it prints:
   `adopt.py parity` again. A builder that fails with no conversion made is not the conversion's doing: that stays
   UNVERIFIED.
 
+**What a visitor can see, and what parity counts.** Every difference is sorted as one a visitor can see
+(content, layout, appearance, behaviour, a link that resolves differently, missing media) or markup
+that a visitor does not (attribute order, build metadata, an asset path that serves the same bytes,
+whitespace a browser collapses). **Whitespace that exists in only one build** is markup only when a
+static read of both builds' markup, stylesheets and scripts says a browser would collapse it: it
+touches the edge of a block box, nothing around it preserves whitespace, and no script or off-origin
+stylesheet could change that. Otherwise it is a visible `text` difference. The read errs toward
+visible, and the publish re-check cannot repeat it for whitespace (it exists only in the old build).
+**Page descriptions** (owner ruling): the `<meta name="description">` a search result shows is a VISIBLE
+difference, even though no page shows it, because a person reads it before the page. `parity`, and
+`check` after it, name it once, before anything is published, as an ACCEPT: one line per page, with the
+old and the new words ("to accept: the description a search result shows will read differently on N
+pages ..."), and say when it is the only difference. A site whose only difference is that ends
+`DIFFERENT` and is kept by its builder until the person has read the list and runs `adopt.py parity
+--accept`; the result is `ACCEPTED`, never `EQUAL`, by design. Say that plainly, and that a page's
+`description:` can be edited afterwards. The setting choice still ignores the description and the
+plugin's own `site-studio/` stylesheet and script files, because every candidate has them.
+
+**Video embeds.** An old site's video is often a live player on the page. The plugin's video block is a
+click-to-load image: with no script it is a link, and nothing loads from the video's host until the
+visitor clicks (a Vimeo address carries `dnt=1`). That is the default for every site that does not set
+`blocks.videoEmbed` and for every new site. Adopt measures the key (see step 2): where the old pages
+hold live players it sets `blocks.videoEmbed: live` and the derived look places the player, so the
+video pages reach `EQUAL` apart from their descriptions. The plugin's own look never loads a player
+with the page. Do not describe the click-to-load form as equal to a live player.
+
+**What adopt does not promise.** `EQUAL` is measured here only for the fixtures the plugin's tests
+build. A real template site ends `EQUAL` or `MARKUP-ONLY` (the converted site publishes), `ACCEPTED`
+with the differences named (the person was shown them and said yes), or blocked with the old builder
+still publishing. It is never silently changed, and you never describe a real site as identical.
+
 A conversion is **`apply fixes this`** only when it changes no page a visitor loads. Where P2 is not equal, or
 P1 shows the person's builder would publish differently, it is `you decide`, with the difference named, and
 the page stays as written. A `TEMPLATE` conversion also needs the template's fingerprint in the repo (at
@@ -281,18 +413,57 @@ least two piece folders holding `work.md` and none holding `index.md`); without 
 When parity cannot run, every conversion that changes a file is `you decide`: "parity could not measure
 this".
 
-## 4. Apply: one branch, one commit
+## 4. Apply: one process, behind one ask
 
-Run `adopt.py apply --dry-run` first and show the person what it would do. Then run
-`adopt.py apply`. It creates `site-studio/adopt-<date>` **from the parity basis** (`HEAD` when it is
-a fast-forward of origin/main, else `origin/main`) in the dev repo, with git plumbing. **The branch
-is not checked out**: the person's working tree, index and current branch do not move. It makes one commit, in this order: data files first, configuration second,
-removals last. Its message lists what was removed and why, what data moved where, what
-configuration changed (every value it normalised, and which kept files still hold the old form),
-which hooks were removed or rewritten, what customisations were kept, which commits not yet on
-`origin/main` it includes, and the parity result.
+Run `adopt.py apply --dry-run` first and show the person what it would do. It writes, publishes and
+pushes nothing, and says whether a real `apply` would stop, blocked. Then `adopt.py apply`. **Ask the
+person before you run it, and tell them what it does**: it publishes the converted site (public
+forever), waits for GitHub Pages, archives the old builder and pushes to the dev repo's `main`. The
+plugin's guard then asks once more (see "The guard" below); that one yes covers every step.
 
-Configuration it changes, for you to show as a diff:
+`apply` runs five steps in one process and says which one it is on:
+
+1. **Measure and convert**: the check, the conversions, the file dispositions and parity, on the parity
+   basis, as above. It makes the conversion as one commit on the branch `site-studio/adopt-<date>`,
+   made with git plumbing, so the person's own checkout, index and branch never move. Its message
+   lists what was archived and why, what data moved where, what configuration changed (every value it
+   normalised, and which kept files still hold the old form), which hooks were rewritten, what
+   customisations were kept, which commits not yet on `origin/main` it includes, and the parity result.
+2. **The publish preconditions**: the dry run's own refusals, run read-only on the build it just made:
+   the site gates, the address guard against the live public repo, the publish target (V1 to V3), and
+   the Pages source. A site that cannot be published stops here, blocked, with the cause. **A dev repo
+   that serves a GitHub Pages site itself** (one repo doing both jobs) blocks here as
+   `publish/serves-dev-repo`: it is the person's to resolve, never filed. Tell them the way out: create
+   a new private repo for the source, move the dev items there, and keep only the published site in the
+   existing public repo, which already serves it; then run adopt again. Adopt never archives a workflow
+   that publishes the dev repo's own Pages.
+3. **Publish**, through `deploy.py` (the same build, gates, address guard, privacy review, push and
+   verification as `/site-studio:publish`). A review is bound to the build's digest and is made by an
+   agent that opens the files, which a script cannot do. So when `deploy.py` says no review covers the
+   build, `apply` does exactly two things before it gives up, and says which in the output and in
+   `HANDOFF.md`:
+   - **A review carries over when the digest is unchanged.** It looks for a row for the SAME digest in
+     `.site-studio/reviews.jsonl` on every earlier adopt branch (`site-studio/adopt-*`), on `HEAD` and on
+     `origin/main`. A row for any other build never carries, and a BLOCKED review that carries stops
+     the run. This is why the stop's next step is "review a checkout of that branch, keep it, run `apply`
+     again with another `--date`".
+   - **Parity EQUAL stands in for the FIRST review, only when every automated privacy scan passes on the
+     exact built tree:** the shape scan (phones, street addresses, emails), image metadata (EXIF and
+     GPS) and unreferenced files, all `check_site`'s own. The row is recorded as `parity-EQUAL+scans`
+     with a summary of the scans. It is never silent: the output says "NO AGENT REVIEW" and that
+     nothing was opened by an agent, and `HANDOFF.md` carries the same line. Say that plainly when it
+     happens, and offer `/site-studio:review` for a real one.
+   **Only parity EQUAL qualifies.** An ACCEPTED or MARKUP-ONLY verdict always needs the normal review,
+   and so does any scan finding, a PDF the scan could not read, or a scan that looked at nothing. Then
+   `apply` stops here: the stop names the scan finding or the verdict and `/site-studio:review`, and
+   says nothing was published. Relay the line as printed (cause `ss-adopt/apply/no-review`), and do not
+   suggest a way around the review.
+4. **Wait for Pages** to report that publish built.
+5. **Archive the old builder** (its code, the modules it loads, its deploy script, a `package.json`
+   only it uses, and every CI workflow that publishes) under `archive/`, check that the tree after the
+   move still builds the published digest, make **one** commit, and push it to the dev repo's `main`.
+
+Configuration the conversion changes, for you to show as a diff:
 
 - **`CLAUDE.md`:** every section about the person is kept. The engine sections are replaced by
   one pointer to the plugin, and this line, exactly:
@@ -305,7 +476,7 @@ Configuration it changes, for you to show as a diff:
 - **`.gitignore`:** gains `.claude/worktrees/` (the desktop app keeps session worktrees inside
   the repo), `site/dist/` and `.site-studio/review/` if they are missing.
 - **`.claude/settings.json`:** gains this plugin's registration and ask rules, and keeps every
-  rule the person added. For a hook that pointed at a file being removed:
+  rule the person added. For a hook that pointed at a file being moved to the archive:
   - it is **removed** when the plugin's own hook does the same job;
   - it is **rewritten** to `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/<script>"` when the plugin has a
     counterpart script. Its old arguments are kept;
@@ -318,33 +489,65 @@ Configuration it changes, for you to show as a diff:
 - **`site/site.json`:** gains `schema`, `engine` and `resume`; every other key is kept, except the
   mechanical fixes listed under "Problems in what adopt would write", each of which is a line of
   the commit. A meta-refresh page it converted becomes a `redirects` entry, and the kind the person
-  confirmed (`hub` or `custom`) becomes `siteKind`. It is written as schema 1 unless the converted
-  site needs 2 (a label map, a page section, a hand-made home page, a kind other than `portfolio`),
-  and the inventory says when it does and why.
-- **`.site-studio/adopt-parity.json`:** apply commits the parity verdict (`EQUAL`, `ACCEPTED`,
+  confirmed (`hub` or `custom`) becomes `siteKind`. It is written at the lowest schema the converted
+  site needs (up to 4), and the inventory says when it is more than 1 and why.
+- **`.site-studio/adopt-parity.json`:** the parity verdict (`EQUAL`, `MARKUP-ONLY`, `ACCEPTED`,
   `DIFFERENT`, `UNVERIFIED` or `NOT APPLICABLE`), the basis commit and each difference, with no date.
-  `/site-studio:publish` reads it (see "6. After apply: the publish gate").
-- **`HANDOFF.md`:** apply adds the entry itself, **inside the same commit**: the branch name, what
-  moved, and what is kept. Do not edit `HANDOFF.md` afterwards, because that would be a second
-  commit.
+  `/site-studio:publish` reads it (see "7. After apply: the publish gate").
+- **`HANDOFF.md`:** the run adds its own entry (what moved, what is kept, and, for a stop, what
+  stopped it). Do not edit `HANDOFF.md` afterwards, because that would be a second commit.
 
-## 5. Review and merge
+## 5. The two outcomes
 
-Show the commit without checking anything out:
-`git show --stat site-studio/adopt-<date>`, then `git show site-studio/adopt-<date>` for the full
-diff. Never `git checkout` or `git switch` to it.
+Read the last lines of `apply` to the person.
 
-Adopt has no push step. Offer to push the branch to the **private** dev repo. If the person says
-yes, run `git push origin site-studio/adopt-<date>` yourself (the dev repo's own ask rule applies),
-and offer a pull request there. Reverting is deleting the branch. Nothing is merged until the
-person approves.
+- **completed.** Site-studio has published the converted site, the old builder is archived, and the
+  dev repo's `main` carries the result. Tell the person, in these words or close to them: **pushing
+  to this repo no longer publishes anything; publishing is `/site-studio:publish`.** The branch
+  `site-studio/adopt-<date>` is the run's own commit; read it with `git show --stat site-studio/adopt-<date>`
+  (never `git checkout` or `git switch` to it).
+- **blocked** (exit code `4`). The line begins `adopt blocked at step N of 5`, names the cause, and says
+  whether the public repo has the new site. `main` is unchanged and **the person's old builder is still
+  their publisher**. The conversion sits on the branch `site-studio/adopt-<date>` for them to read. To
+  run `apply` again, the branch must be gone first (`git branch -D site-studio/adopt-<date>`); show
+  the person that command and wait for their yes. A blocked `apply` also names any plugin cause as a
+  pending report (next section).
+  - **The one stop after the site is live:** step 5's push can be refused (a token without the
+    `workflow` scope, or a protected `main`). The public repo then has the new site and the visitor
+    sees no change, but the old publisher would run again on the next push. So this is **blocked**,
+    on a cause only the person can resolve: the line names the one command left (`gh auth refresh -s
+    workflow`, then the `git push` it prints). Say both: the site is live, and the old builder will
+    publish again until that push is made.
 
-## 6. After apply: the publish gate
+Reverting a completed adopt is the dev repo's own history: nothing was deleted, and every moved
+file is under `archive/`.
 
-**While parity is not EQUAL or ACCEPTED, the person's own builder stays the publisher, and
-`/site-studio:publish` refuses to replace it.** `deploy.py` reads `.site-studio/adopt-parity.json` from `HEAD`,
-in a dry run and before a confirmed publish, and when its verdict is anything else it stops, with a sentence
-that is true of that verdict and names a way out that works:
+## 6. Blockers become reports
+
+When `apply` or `remeasure` ends blocked, every plugin cause is written as a `pending` row in
+`.site-studio/adopt-reports.json` (one row per cause id, never per occurrence), and the run prints
+`blocked: N cause(s); run adopt.py report to read them`. A cause only the person can resolve (a Pages
+source set to a workflow, say) or one in the person's environment is printed with its fix and never
+filed.
+
+- `adopt.py report` prints every pending report exactly as it would be filed: a cause id, a count and
+  the versions, with no path, file name, class, text or address from the person's site. **Print them
+  and show the person first.**
+- `adopt.py report --file` files them as public issues on the marketplace, after checking the open
+  and closed issues for the same cause, and commits only the reports record. It is a publish to the
+  guard, so it asks the person; **ask once, then run it only on their yes.**
+- `adopt.py report --decline` records every pending cause as declined; a declined cause is offered
+  again only for a newer plugin version.
+
+After the plugin is updated, a session start line says "site-studio <v> may resolve N adopt blockers:
+run adopt again". Then run `adopt.py remeasure` (below), or `apply` again if the run never completed.
+
+## 7. After apply: the publish gate
+
+**While parity is not EQUAL, MARKUP-ONLY or ACCEPTED, the person's own builder stays the publisher,
+and `/site-studio:publish` refuses to replace it.** `deploy.py` reads `.site-studio/adopt-parity.json`
+from `HEAD`, in a dry run and before a confirmed publish, and when its verdict is anything else it
+stops, with a sentence that is true of that verdict and names a way out that works:
 
 - **DIFFERENT**: site-studio's build differs from what the person's builder publishes (`<n>` differences, the
   first named), and their builder stays their publisher. Way out: `adopt.py remeasure`, or `--accept` once
@@ -357,13 +560,63 @@ that is true of that verdict and names a way out that works:
   whether the two differ. `--accept` refuses UNVERIFIED, because nothing was measured to show them. Way out:
   install node, fix the builder, or settle what site-studio's build refuses, then run `adopt.py remeasure` again.
   Without node, an adopted site with a builder cannot be published by site-studio.
+- **MARKUP-ONLY**: the pages differ only in markup a visitor does not see. It passes. For a class, `data-*`
+  or added `id` difference, each publish checks again that no stylesheet or script now names what differs.
+  Two kinds of difference are judged invisible once, at measure time, and are not re-checked at publish:
+  - whitespace a browser collapses between block elements;
+  - a `noopener` or `noreferrer` `rel` on a link that opens in the same window.
 
 An unreadable record stops it too, naming the file. No record (a site made by setup, or adopted by an older site-studio) is the old
 behaviour: nothing is read. Tell the person plainly that publishing here is held by design, not broken.
 
-`adopt.py remeasure` is how it is released: it measures again against the plugin build of `HEAD`,
-prints each difference (by cause, as `parity` does), rewrites the record and commits that one file. `adopt.py remeasure --accept` records
-`ACCEPTED`, and **only after the person has just been shown the differences and said yes**: it prints the differences it is accepting (one line per cause) **before** it writes the record, so what is accepted is in front of them in the same run; it never accepts
-UNVERIFIED. For a site with no local builder at all, `--accept` means "site-studio's build replaces my site, unmeasured". It refuses
-in a cloud session, as adopt does. The gate runs only the one builder file adopt classified: any other step
-of the person's pipeline (a CI workflow, a hosting build) is not run, and the inventory says so.
+`adopt.py remeasure` is how it is released, and how a blocked run is retried after an upgrade: it
+converts again, accounts for every file again and measures again against the plugin build of `HEAD`,
+prints each difference (by cause, as `parity` does), rewrites the record and commits that one file.
+`adopt.py remeasure --accept` records `ACCEPTED`, and **only after the person has just been shown the
+differences and said yes**: it prints the differences it is accepting (one line per cause) **before**
+it writes the record, so what is accepted is in front of them in the same run; it never accepts
+UNVERIFIED. For a site with no local builder at all, `--accept` means "site-studio's build replaces my
+site, unmeasured". It refuses in a cloud session, as adopt does. The gate runs only the one builder
+file adopt classified: any other step of the person's pipeline (a CI workflow, a hosting build) is not
+run, and the inventory says so.
+
+## The guard, and when `apply` cannot ask
+
+`adopt.py apply` (without `--dry-run`) and `adopt.py report --file` are publishes to the plugin's
+guard, which decides from the session's permission mode, as it does for `deploy.py --confirm`:
+
+| session | the guard |
+|---|---|
+| permission mode `default`, `acceptEdits`, `plan` | **asks** the person; their yes is the yes to the whole run |
+| `auto` | **asks**; that the ask reaches the person in `auto` is UNVERIFIED |
+| `bypassPermissions`, `dontAsk`, any other mode, or none | **denies**: this session is set not to ask |
+| a cloud session | **denies**: adopt runs only on the person's own computer |
+
+`apply --dry-run`, `adopt.py report` (print) and `--decline` are never held. Never try to get past a
+denial, and never run the steps of `apply` yourself another way.
+
+**When the guard denies `apply` (a scheduled run, `claude -p`, a session set not to ask), write the
+hand-over yourself, because the script never ran.** Do this, in order:
+
+1. Run `adopt.py apply --dry-run` and read it to the person. Note its verdict line and whether a real
+   `apply` would stop blocked, and why.
+2. Add this entry to the end of `HANDOFF.md`, in plain words, filling in what you read and nothing
+   else:
+
+   ```
+   ### Adopt: waiting for you (<date>)
+
+   - Adopt measured this site (parity: <verdict>) but did not run `adopt.py apply`: it publishes the
+     converted site and retires the old builder, and this session cannot ask you first
+     (permission mode: <mode>).
+   - Nothing was published or pushed. Your old builder is still your publisher.
+   - <If the dry run said a real apply would stop: "A real apply would stop at <step>: <why>. Fix
+     that first.">
+   - Next: on your own computer, in a session that asks (default or acceptEdits), type
+     /site-studio:adopt and run `adopt.py apply`.
+   ```
+3. Commit `HANDOFF.md` alone, by its explicit path. Do not push it; `apply` includes that commit and
+   lists it.
+4. Tell the person the same thing in two sentences: what stopped, and the one next action. If
+   `adopt.py report` printed pending reports, say they stay pending until a session that asks runs
+   `adopt.py report --file`.

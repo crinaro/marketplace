@@ -38,9 +38,40 @@ Then confirm `git merge-base --is-ancestor HEAD origin/main` exits 0 before goin
 ## 2. Dry run
 
 `deploy.py --dry-run`. It builds the publish build, runs every gate, clones the public repo into a
-temporary folder, makes a local commit of exactly the build's files, refuses if any private path
+temporary folder, reads the repo's Pages source with one `gh` call, checks the published addresses
+(next section), makes a local commit of exactly the build's files, refuses if any private path
 is in it, recomputes the digest from that commit's own tree, runs every gate again on it, and
-prints the file list, the privacy review row and `confirm: <digest>`. It needs no Chrome.
+prints the file list, the addresses this publish ends on purpose, the privacy review row and
+`confirm: <digest>`. It needs no Chrome. It records what it printed in
+`.site-studio/review/dryrun.json`, and the guard and `--confirm` read that record.
+
+## 2b. Published addresses are protected
+
+Every path the public repo serves today is an address a visitor, a bookmark or a search result may
+hold. **The dry run refuses while any of them is neither built nor kept on purpose**, listing each
+with its own fix:
+
+- **A page** (HTML) is kept by a redirect: add it to `site/site.json`'s `redirects`.
+- **Any other file** (a PDF, an image) cannot be kept by a redirect page. Keep it by a file at that
+  path (the same name, or a copy under `site/src/`), or release it on purpose.
+- **To release addresses on purpose:** `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/deploy.py" drop <path>...
+  --reason "<why>"`. It writes the record `.site-studio/addresses.json` and `site/site.json`, commits
+  exactly those two paths, and publishes nothing. The person decides each release; never drop an
+  address to get a refusal out of the way.
+- **The order is: drop (or move), then push that commit to `origin/main`, then the dry run, then
+  confirm.** A drop that is not on `origin/main` is not honoured, and the dry run says to push it.
+- `/site-studio:add-work` moves a piece with `move.py`, which keeps every address the piece had and
+  records the files it releases.
+
+The same read of the Pages source also refuses when Pages is set to publish from a workflow or from
+another branch or folder than `main` at the root (the published tree is then not what the dry run
+checked), and when `gh` cannot read it: publishing already needs `gh`, so an unread source is a
+stop, with the error named and "retry". Pages switched off is a read, not a failure: nothing is
+served yet. An empty public repo has nothing to protect, so neither check runs.
+
+A site adopted with parity `MARKUP-ONLY` is checked again at every publish: if a stylesheet or
+script now names something the two builds differed on, the dry run refuses naming it, and the way out
+is `adopt.py remeasure`.
 
 ## 3. The privacy record
 
@@ -50,8 +81,11 @@ changed since means a new digest and a new review.
 
 ## 4. The person's yes
 
-Show the file count, the review row (verdict, date, how many files were opened, accepted findings)
-and the commit message you propose, and let the person change the message.
+Show the file count, the review row (verdict, date, how many files were opened, accepted findings),
+**the addresses this publish releases, if any (the dry run names them with their reasons)** and the
+commit message you propose, and let the person change the message. Their yes is a yes to those
+addresses: the ask names them, and `--confirm` refuses a list that is not the one the dry run
+recorded.
 
 ## 5. Confirm
 
@@ -67,7 +101,11 @@ and the commit message you propose, and let the person change the message.
 | `bypassPermissions`, `dontAsk`, **any other value, or no mode at all** | **denies**, naming the reason: publishing asks every time, and this session is set not to ask, or its mode is unknown. Switch the permission mode and type /site-studio:publish again |
 | a cloud session | **denies**, with the policy sentence above |
 
-The ask is the person's act. Never try to get past a denial.
+The ask is the person's act. Never try to get past a denial. The same guard, by the same table,
+asks before `adopt.py apply` (it publishes the converted site through this same `deploy.py`) and
+before `adopt.py report --file` (it opens public issues). `deploy.py --adopt` is `adopt.py apply`'s
+own flag: it lets HEAD be one fast-forward ahead of `origin/main`, because `apply` pushes that
+commit. Never pass it by hand.
 
 The hook reads only a command that names `deploy.py`. Heredoc bodies (a commit message passed as `<<'EOF'`) are data and are removed before the command is read, so a body that merely mentions `deploy.py` is not a publish and is not blocked; a heredoc fed to a shell (`bash <<EOF`) is still read as commands. A command that names `deploy.py` and cannot be read is denied, and the message says what was blocked without pointing at this command.
 
@@ -75,8 +113,9 @@ The hook reads only a command that names `deploy.py`. Heredoc bodies (a commit m
 confirmed, pushes, checks the remote head is the pushed commit, and re-reads the public repo from a
 fresh clone. A mismatch is red: "pushed, but the public tree differs from what you approved".
 
-**If `deploy.py` refuses before pushing, it is one of four checks on the target; nothing was
-pushed.** Say which, in its own words:
+**If `deploy.py` refuses before pushing, nothing was pushed.** A refusal about published addresses or
+the Pages source is covered in 2b above. Otherwise it is one of four checks on the target. Say which,
+in its own words:
 
 - **V1, the dev repo's own address:** `publicRepo` in `site.json` is the private dev repo, so
   publishing would overwrite it. Or the dev repo's `origin` is an SSH host alias (such as

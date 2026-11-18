@@ -13,7 +13,10 @@ WHAT IT GUARANTEES (and what it does not)
 the digest ITSELF, then the COVERAGE SET, and writes `.site-studio/review/packet.json`. `add` has
 NO `--digest` argument: it rebuilds, recomputes the digest, and refuses unless it equals the
 packet's. So a verdict is bound to a build this script computed, and any later byte change voids
-it. A `blocked` row for a digest wins over any `clear`. Whether the reviewing agent REALLY looked
+it. A `blocked` row for a digest wins over any `clear`. ONE ROW KIND IS NOT A REVIEW (0.4.0, owner
+ruling 2026-11-18): the one-process `adopt.py apply` records a `parity-EQUAL+scans` stand-in when
+parity is EQUAL and every automated privacy scan passed on the exact built tree; `reviews/rows.py`
+reads it, refuses any other shape of it, and every reader says it is not an agent's review. Whether the reviewing agent REALLY looked
 at each file it lists as opened, whether its judgement is right, and which PAGES it actually read
 are model judgement and are NOT measured; the control is the person at the publish prompt
 (design 7.4). The packet and the store sit in the person's own repo with no signature: this
@@ -70,15 +73,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-STORE_REL = ".site-studio/reviews.jsonl"
 REVIEW_DIR_REL = ".site-studio/review"
 BUILD_REL = ".site-studio/review/build"
 PACKET_REL = ".site-studio/review/packet.json"
 DRYRUN_REL = ".site-studio/review/dryrun.json"
 IGNORE_LINE = ".site-studio/review/"
 
-VERDICTS = ("clear", "accepted", "blocked")
-ROW_KEYS = ("v", "digest", "baseline", "verdict", "opened", "findings", "accepted", "at")
 # PACKET v2 (dev #857, design-site-adoption section 9): the packet gains `siteKind`, so a reviewer is told
 # the kind of site it is looking at instead of inferring it. A v1 packet (0.1.0) is refused by
 # `_load_packet` with its existing "run begin again" text. The packet is a per-review scratch file that
@@ -100,6 +100,8 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 if _HERE not in sys.path:
     sys.path.insert(0, _HERE)
 import platform_check  # noqa: E402
+from reviews import rows as review_rows  # noqa: E402
+from reviews.rows import STORE_REL, VERDICTS  # noqa: E402
 
 
 class ReviewError(ValueError):
@@ -205,35 +207,10 @@ def fetch_baseline(public_repo, gh="gh", timeout=60):
 # ---------------------------------------------------------------- the store, read strictly
 
 def _validate_row(row, n):
-    where = "%s line %d" % (STORE_REL, n)
-    if not isinstance(row, dict):
-        raise ReviewError("%s: a row must be an object" % where)
-    if row.get("v") != 1 or isinstance(row.get("v"), bool):
-        raise ReviewError("%s: unknown row version %r (this plugin reads v 1); update the site-studio plugin" % (where, row.get("v")))
-    for k in ROW_KEYS:
-        if k not in row:
-            raise ReviewError("%s: missing field '%s'; this file is written by review_record.py, never edited by hand: restore it from git history" % (where, k))
-    for k in row:
-        if k not in ROW_KEYS:
-            raise ReviewError("%s: unknown field '%s'; this file is written by review_record.py, never edited by hand: restore it from git history" % (where, k))
-    if not isinstance(row["digest"], str) or not _HEX64.match(row["digest"]):
-        raise ReviewError("%s: 'digest' must be 64 lower-case hex characters" % where)
-    if row["verdict"] not in VERDICTS:
-        raise ReviewError("%s: 'verdict' must be clear, accepted or blocked" % where)
-    if not isinstance(row["baseline"], dict) or "kind" not in row["baseline"]:
-        raise ReviewError("%s: 'baseline' must be an object with a 'kind'" % where)
-    for k in ("opened", "accepted"):
-        if not isinstance(row[k], list) or not all(isinstance(x, str) for x in row[k]):
-            raise ReviewError("%s: '%s' must be a list of strings" % (where, k))
-    if not isinstance(row["findings"], list):
-        raise ReviewError("%s: 'findings' must be a list" % where)
-    for f in row["findings"]:
-        if (not isinstance(f, dict) or set(f) != {"id", "path", "summary"}
-                or not all(isinstance(f[k], str) for k in f)):
-            raise ReviewError("%s: each finding needs exactly id, path and summary (strings)" % where)
-    if not isinstance(row["at"], str):
-        raise ReviewError("%s: 'at' must be a string" % where)
-    return row
+    try:
+        return review_rows.validate_row(row, n)
+    except review_rows.RowError as e:
+        raise ReviewError(str(e))
 
 
 def load_rows(repo):
@@ -247,16 +224,10 @@ def load_rows(repo):
             raw = fh.read()
     except OSError as e:
         raise ReviewError("%s cannot be read (%s)" % (STORE_REL, e.strerror))
-    rows = []
-    for n, line in enumerate(raw.decode("utf-8", "replace").split("\n"), 1):
-        if not line.strip():
-            continue
-        try:
-            obj = json.loads(line)
-        except ValueError:
-            raise ReviewError("%s line %d is not valid JSON; fix or remove that line" % (STORE_REL, n))
-        rows.append(_validate_row(obj, n))
-    return rows
+    try:
+        return review_rows.parse_text(raw.decode("utf-8", "replace"))
+    except review_rows.RowError as e:
+        raise ReviewError(str(e))
 
 
 def verdict_for(digest, repo="."):
@@ -265,43 +236,101 @@ def verdict_for(digest, repo="."):
     A `blocked` row wins over any `clear`, before or after it. The only way past one is a LATER
     `accepted` row whose `accepted` list covers every finding id of every `blocked` row for the
     digest so far. A new `blocked` row after that re-blocks."""
-    blocked = False
-    blocked_ids = set()
-    best = None
-    for row in load_rows(repo):
-        if row["digest"] != digest:
-            continue
-        v = row["verdict"]
-        if v == "blocked":
-            blocked = True
-            blocked_ids |= set(f["id"] for f in row["findings"])
-            best = row
-        elif v == "accepted":
-            if blocked:
-                if set(row["accepted"]) >= blocked_ids:
-                    blocked = False
-                    best = row
-            else:
-                best = row
-        else:                                   # clear
-            if not blocked:
-                best = row
-    if best is None:
-        return "none", None
-    return ("blocked" if blocked else best["verdict"]), best
+    return review_rows.verdict_of(load_rows(repo), digest)          # the rule moved to reviews.rows, so the adopt carry reads it too
+
+
+# THE DRY-RUN RECORD, v2 (template-fidelity step 1.6r; design R2-1, R2-4; R4 row 21). `deploy.py --dry-run` writes it,
+# the publish guard and `deploy.py --confirm` read it, all through the two functions below, so what one side writes
+# the other can read. v2 adds `released`: `[[path, reason], ...]`, the published addresses this publish ends on
+# purpose (a moved piece's files included), sorted by path, `[]` when none. The person's yes at the publish ask is
+# then a yes to THOSE addresses (the guard's ask names them), and `deploy.py --confirm` refuses a list that is not
+# the one the dry run recorded. A v1 record (0.3.x) is refused, loud: run the dry run again. The record may also
+# carry `live` (the NOT APPLICABLE live comparison, a later step of the same group), which this reader passes through.
+DRYRUN_VERSION = 2
+
+
+def _released_pairs(value):
+    """`value` as a list of `(path, reason)` tuples, or None when it is not the v2 shape: a list of two-text lists,
+    each path non-empty and free of control characters, each reason one non-blank line (the rule
+    `addresses.parse` holds the committed record to, so anything that record carries can be written here)."""
+    if not isinstance(value, list):
+        return None
+    out = []
+    for item in value:
+        if (not isinstance(item, (list, tuple)) or len(item) != 2 or not all(isinstance(x, str) for x in item)
+                or not item[0] or not item[1].strip() or "\n" in item[1]
+                or any(ord(c) < 32 or ord(c) == 127 for c in item[0])):
+            return None
+        out.append((item[0], item[1]))
+    return out
+
+
+def check_dryrun(obj):
+    """Raises ReviewError unless `obj` is a v2 dry-run record: an integer `files`, a 64-hex `digest`, and `released`
+    in the shape above."""
+    if (not isinstance(obj, dict) or obj.get("v") != DRYRUN_VERSION or isinstance(obj.get("files"), bool)
+            or not isinstance(obj.get("files"), int) or not isinstance(obj.get("digest"), str)
+            or not _HEX64.match(obj["digest"]) or _released_pairs(obj.get("released")) is None):
+        raise ReviewError("%s is not a v%d dry-run record this plugin wrote; run the publish dry run again to write a "
+                          "new one" % (DRYRUN_REL, DRYRUN_VERSION))
+    return obj
 
 
 def read_dryrun(repo):
-    """The dry-run record `deploy.py --dry-run` writes. None when absent. Strict on shape."""
+    """The dry-run record `deploy.py --dry-run` writes. None when absent. Strict on shape (`check_dryrun`); a file that
+    is not JSON is the same refusal."""
     path = os.path.join(repo, DRYRUN_REL)
     if not os.path.exists(path):
         return None
     with open(path, "rb") as fh:
-        obj = json.loads(fh.read().decode("utf-8"))
-    if (not isinstance(obj, dict) or obj.get("v") != 1 or not isinstance(obj.get("files"), int)
-            or not isinstance(obj.get("digest"), str) or not _HEX64.match(obj["digest"])):
-        raise ReviewError("%s is not a dry-run record this plugin wrote; run the publish dry run again to write a new one" % DRYRUN_REL)
-    return obj
+        try:
+            obj = json.loads(fh.read().decode("utf-8"))
+        except ValueError:
+            obj = None
+    return check_dryrun(obj)
+
+
+def write_dryrun(repo, record):
+    """Writes `record` (checked first: nothing this module cannot read back reaches the disk) to the dry-run path."""
+    check_dryrun(record)
+    path = os.path.join(repo, DRYRUN_REL)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(json.dumps(record, indent=2, sort_keys=True) + "\n")
+
+
+def _some(pairs, cap=4):
+    shown = ", ".join("%s (%s)" % (p, r if len(r) <= 60 else r[:57] + "...") for p, r in pairs[:cap])
+    return shown + (", +%d more" % (len(pairs) - cap) if len(pairs) > cap else "")
+
+
+def released_refusal(repo, digest, released):
+    """The refusal `deploy.py --confirm` makes, or None: the addresses this publish releases (`released`, as
+    `[[path, reason]]`) must be the ones the dry run for THIS digest recorded, which is what the person's yes named
+    (R2-1, R2-4). A record that cannot be read refuses; a missing record, or one for another digest, refuses only when
+    this publish releases something (nothing was then approved to release)."""
+    try:
+        rec = read_dryrun(repo)
+    except ReviewError as e:
+        return str(e)
+    now = sorted(_released_pairs(released) or [])
+    if rec is None or rec["digest"] != digest:
+        if not now:
+            return None
+        return ("this publish releases %d published address%s (%s) and no dry run for this digest recorded %s; run "
+                "`deploy.py --dry-run` and approve the list it prints" % (
+                    len(now), "" if len(now) == 1 else "es", _some(now), "it" if len(now) == 1 else "them"))
+    then = sorted(_released_pairs(rec["released"]))
+    if now == then:
+        return None
+    new, gone = [x for x in now if x not in then], [x for x in then if x not in now]
+    parts = []
+    if new:
+        parts.append("now released and not in the dry run: %s" % _some(new))
+    if gone:
+        parts.append("in the dry run and no longer released: %s" % _some(gone))
+    return ("the addresses this publish releases changed since the dry run you approved (%s); run `deploy.py --dry-run` "
+            "again and approve the list it prints" % "; ".join(parts))
 
 
 # ---------------------------------------------------------------- begin

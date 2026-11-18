@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""siteconfig.py -- the strict parser, and the ONLY writer, of `site/site.json` (schemas 1, 2 and 3).
+"""siteconfig.py -- the strict parser, and the ONLY writer, of `site/site.json` (schemas 1 to 4).
 
 dev #835, design section 3.2 and named change S10. Python 3.9, standard library only.
 
@@ -55,6 +55,27 @@ schema 3, and it lists every output difference first. `required_schema(cfg, file
 takes the I-1 and I-2 reasons from its caller (`content.interpretation_reasons`), because `siteconfig`
 cannot import `content`; it refuses to run with `files` and no `interpretations`, so no caller can forget
 the scan.
+
+SCHEMA 4 (template-fidelity, 0.4.0; design-template-fidelity section 3). No migration, by the same rule, and
+the same owner invariant. Schema 4 has K reasons ONLY (design section 3.1 rule 2): every 0.4.0 construct is a
+key, value, token or form that 0.3.x REFUSES, so no tree 0.3.x accepted can hold one and raising a tree from 3
+to 4 changes no output. `schema_4_reasons(cfg, files)` lists them: the site.json keys `nav`, `look` and `blocks`,
+`resume.headings` and `resume.layout`, the portfolio keys `cardNumber`, `cardNumberFormat`, `cardLabels` and
+`backLink` (site.json `work` and a `page.md`), `blocks.headingLevel`, `blocks.loneReferenceGrid`, `blocks.videoEmbed`, a `page.md` `mapMask` and `onePieceIndex` and a
+`view` of `roles`, `map` or `showcase`, the home keys
+`eyebrow`, `role`, `showcase`, `samples`, `links`, `titleForm`, `introScope` and `partOrder`, the resume keys `tagline` and `links`, the reference keys
+`image`, `role`, `fetched` and `author`, the token `{{navLinks}}`, and, in a tree read as schema 3 or above, a
+`:::quotes` block and a `:::part` holding more than one block (`multi_block_part_lines`). A key written with its DEFAULT value in site.json is accepted at 4 and normalised away, so it
+is no reason (the `featuredFrom: "home"` rule; `blocks.headingLevel` has no default VALUE, absent is its default,
+so every number is a setting and a reason; `blocks.loneReferenceGrid: false` and `blocks.videoEmbed: "facade"` are their defaults and are normalised away); the same key in a `page.md` is the person's file text and is a
+reason by presence. THE GUARD REASON (rule 8): a committed `.site-studio/addresses.json` is a schema-4 reason
+that changes no output; it exists so that every 0.3.x install refuses the tree with `newer_schema_message`
+instead of publishing it without the address guard. PART-NAME PRECEDENCE (rule 7): the home parts `eyebrow`,
+`role`, `showcase`, `samples` and `links` are fixed ONLY at schema 4 and above (`fixed_part_names`). Below 4 a
+custom `:::part showcase` is accepted and renders as in 0.3.x; at 4 it is refused naming both, and
+`part_collision_problems` is the one function that says so, for the build, `raise-schema --to 4` and the
+address commands. `required_schema` returns 4 when any schema-4 reason holds. `files` must carry
+`.site-studio/addresses.json` when the tree has one (the build's tree listing reads only `site` and `content`).
 """
 import json
 import os
@@ -63,7 +84,7 @@ import sys
 import tempfile
 from collections import namedtuple
 
-SCHEMA_MAX = 3
+SCHEMA_MAX = 4
 ENGINE_MARKER = "site-studio"
 CANONICAL_MARKER_LINE = '  "engine": "site-studio",'
 
@@ -76,14 +97,37 @@ KEY_ORDER = (
 V2_TOP_KEYS = ("siteKind", "featuredFrom")
 CANON_ORDER = (
     "schema", "engine", "name", "siteTitle", "siteKind", "publicRepo", "previewUrl", "domain",
-    "cutover", "publicEmails", "privateTerms", "work", "featuredFrom", "redirects", "resume",
-    "budgets",
+    "cutover", "publicEmails", "privateTerms", "work", "featuredFrom", "nav", "look", "blocks", "redirects",
+    "resume", "budgets",
 )
+# Schema 4 adds these top-level keys (design-template-fidelity section 3.2), refused below 4.
+V4_TOP_KEYS = ("nav", "look", "blocks")
 SITE_KINDS = ("portfolio", "hub", "custom")
 FEATURED_FROM = ("home", "flags")
-WORK_KEYS = ("label", "description", "required", "meta", "cardMeta", "groupBy", "groups", "labels")
+WORK_KEYS = ("label", "description", "required", "meta", "cardMeta", "groupBy", "groups", "labels",
+             "cardNumber", "cardNumberFormat", "cardLabels", "backLink")
+# The portfolio keys schema 4 adds (the last four of WORK_KEYS). Each is stored in a parsed `work` ONLY when it is
+# not its default (cardNumber false, cardNumberFormat "padded", cardLabels true, no backLink), the way `labels` is,
+# so a schema-3 site's settings stay what they were and `content.py`'s merge of site.json `work` with a page.md
+# never carries a default key down to a schema that refuses it.
+V4_WORK_KEYS = ("cardNumber", "cardNumberFormat", "cardLabels", "backLink")
+# How the card's number prints: "padded" (the default) the order to two digits and the year, `02 / 2025`; "plain" the
+# order as it is and the year, `2 / 2025`; "order" the order as it is and nothing else, `2`. The key says WHAT the
+# card prints, so the third value is one more word for it, not a second key that only means something beside "plain".
+CARD_NUMBER_FORMATS = ("padded", "plain", "order")
+# `blocks` (schema 4, a top-level object): the settings of the plugin's `:::` blocks and of the `ref:` lines a body holds. Its
+# keys are `headingLevel` (the h-level of a heading inside a block), `loneReferenceGrid` (a lone `ref:` line prints inside
+# the reference grid, as two or more do; the default, false, is a bare card) and `videoEmbed` (the address a video block and a gallery
+# video carry: "facade", the default, adds Vimeo's `dnt=1`; "live" keeps the player's own address, as a site built elsewhere wrote it).
+BLOCKS_KEYS = ("headingLevel", "loneReferenceGrid", "videoEmbed")
+VIDEO_EMBED_FORMS = ("facade", "live")
+BLOCK_HEADING_LEVELS = (2, 3, 4, 5, 6)
 LABEL_PARTS = ("meta", "groups")
-RESUME_KEYS = ("path", "pdf", "paper")
+RESUME_KEYS = ("path", "pdf", "paper", "headings", "layout")
+V4_RESUME_KEYS = ("headings", "layout")          # schema 4; stored only when not the default
+RESUME_HEADINGS = ("shift", "as-written")
+RESUME_LAYOUTS = ("plain", "cards")
+NAV_KEYS = ("home",)
 PAPERS = ("Letter", "A4")
 
 # The performance limits of design 4.3 (B's numbers), overridable in `budgets`.
@@ -100,6 +144,8 @@ DEFAULT_RESUME_PDF = "content/resume/resume.pdf"
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _DOMAIN_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$")
 _KEY_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
+_LOOK_RE = re.compile(r"^site/looks/[a-z0-9][a-z0-9-]*\.json$")
+ADDRESSES_RECORD = ".site-studio/addresses.json"
 
 
 class Problem(namedtuple("Problem", "path found expected fix mechanical lineno")):
@@ -249,6 +295,15 @@ def _text(v, where):
     return v
 
 
+def _one_line(v, where):
+    """A non-empty single line of text (no line break)."""
+    v = _str(v, where)
+    if "\n" in v or "\r" in v:
+        raise SiteConfigError("site.json: '%s' must be one line" % where, path=where, found="several lines",
+                              expected="one line of text", fix="write '%s' on one line" % where)
+    return v
+
+
 def _bool(v, where):
     if not isinstance(v, bool):
         _bad(where, "true or false", v)
@@ -296,6 +351,14 @@ def _needs_schema_2(where):
     return SiteConfigError("site.json: '%s' needs \"schema\": 2" % where, path=where,
                            found="schema 1", expected="schema 2",
                            fix="set \"schema\": 2 in site/site.json (a save by site-studio does this)")
+
+
+def _needs_schema_4(where, have):
+    """A schema-4 key under a lower declared schema: 0.3.x refuses it as an unknown key, and 0.4.0 refuses it
+    naming the schema (a hand edit cannot quietly make a file an older install then misreads)."""
+    return SiteConfigError("site.json: '%s' needs \"schema\": 4" % where, path=where,
+                           found="schema %d" % have, expected="schema 4",
+                           fix="set \"schema\": 4 in site/site.json (a save by site-studio does this)")
 
 
 def _pair_key(item):
@@ -408,6 +471,26 @@ def _portfolio_check(raw, where, schema, featured_from, col):
     for k in ("required", "meta", "cardMeta", "groups"):
         if k in raw:
             out[k] = _list_of_keys(raw, k, where, col)
+    for k in V4_WORK_KEYS:
+        if k not in raw:
+            continue
+        if schema < 4:
+            col.problems.append(_needs_schema_4("%s.%s" % (where, k), schema).problem)
+        elif k == "backLink":
+            ok, val = col.run(_one_line, raw[k], "%s.%s" % (where, k))
+            if ok:
+                out[k] = val
+        elif k == "cardNumberFormat":
+            if raw[k] not in CARD_NUMBER_FORMATS:
+                names = ", ".join('"%s"' % f for f in CARD_NUMBER_FORMATS[:-1]) + ' or "%s"' % CARD_NUMBER_FORMATS[-1]
+                col.add("site.json: '%s.%s' must be %s" % (where, k, names), "%s.%s" % (where, k),
+                        _shown(repr(raw[k])), names, "set %s.%s to %s" % (where, k, names))
+            elif raw[k] != CARD_NUMBER_FORMATS[0]:
+                out[k] = raw[k]
+        else:
+            ok, val = col.run(_bool, raw[k], "%s.%s" % (where, k))
+            if ok and val != (k == "cardLabels"):          # the defaults are cardNumber false, cardLabels true
+                out[k] = val
     if "groupBy" in raw:
         ok, val = col.run(_str, raw["groupBy"], where + ".groupBy", optional=True)
         if ok:
@@ -477,6 +560,18 @@ def _resume_check(raw, col, schema=SCHEMA_MAX):
         if k not in RESUME_KEYS:
             col.add("site.json: unknown key 'resume.%s'" % k, "resume.%s" % k, "unknown key",
                     "one of: " + ", ".join(RESUME_KEYS), "remove 'resume.%s'" % k)
+    extra = {}
+    for k, allowed, default in (("headings", RESUME_HEADINGS, "shift"), ("layout", RESUME_LAYOUTS, "plain")):
+        if k not in raw:
+            continue
+        if schema < 4:
+            col.problems.append(_needs_schema_4("resume." + k, schema).problem)
+        elif raw[k] not in allowed:
+            names = " or ".join('"%s"' % a for a in allowed)
+            col.add("site.json: 'resume.%s' must be %s" % (k, names), "resume." + k, _shown(repr(raw[k])),
+                    names, "set resume.%s to %s" % (k, names))
+        elif raw[k] != default:
+            extra[k] = raw[k]
     paper = None
     # K-1 (schema 3): a resume with no PDF has no paper size to ask about. Below schema 3 the answer is
     # always required, exactly as 0.2.0 reads it.
@@ -505,7 +600,96 @@ def _resume_check(raw, col, schema=SCHEMA_MAX):
                     "a .pdf file under content/", "point resume.pdf at the resume's .pdf under content/")
     if len(col.problems) > n:
         return None
-    return {"path": path, "pdf": pdf, "paper": paper}
+    out = {"path": path, "pdf": pdf, "paper": paper}
+    out.update(extra)
+    return out
+
+
+def resume_pdf_output(resume):
+    """The path the build publishes the resume PDF at, `resume/<basename of resume.pdf>`, or None when the resume
+    publishes none (design A1, #888: an existing mechanism, no new key). `resume` is `cfg.resume`. The live address of a
+    site adopted from another builder is whatever that builder named the file, so adopt's `resumePdfName` conversion
+    renames the committed source PDF to the live basename and sets `resume.pdf`; this is the one function that says where
+    the build puts it, so the conversion, the build and the address guard cannot disagree."""
+    pdf = (resume or {}).get("pdf")
+    return "resume/" + pdf.rsplit("/", 1)[-1] if pdf else None
+
+
+def _nav_check(raw, col):
+    """`nav` (schema 4): an object whose only key is `home`, a boolean. `{}` and `{"home": true}` are the default
+    and normalise to `{}`; `{"home": false}` is the one setting."""
+    if not isinstance(raw, dict):
+        col.run(_bad, "nav", "an object", raw)
+        return {}
+    out = {}
+    for k in raw:
+        if k not in NAV_KEYS:
+            col.add("site.json: unknown key 'nav.%s'" % k, "nav.%s" % k, "unknown key",
+                    "one of: " + ", ".join(NAV_KEYS), "remove 'nav.%s'" % k)
+    if "home" in raw:
+        ok, val = col.run(_bool, raw["home"], "nav.home")
+        if ok and val is False:
+            out["home"] = False
+    return out
+
+
+def _blocks_check(raw, col):
+    """`blocks` (schema 4): an object whose keys are `headingLevel` and `loneReferenceGrid`. `headingLevel` is a whole number from 2 to 6: the h-level a
+    heading INSIDE a plugin block prints at, the way the person's old page printed it (today only `:::carousel`
+    slides hold headings: tiles, quote, quotes, gallery and videos hold none). The number is the level a `###`
+    (the heading that opens a slide) prints at; a deeper heading keeps its distance from it. ABSENT is the
+    default, and means a block's headings follow the page (one deeper than written, or the resume's own
+    `headings`); every number, 4 included, is a setting, so a `4` is kept and a site that writes it gets h4.
+    `loneReferenceGrid` is a boolean: true prints a LONE `ref:` line inside `<div class="ref-grid">`, the way two or more
+    print, because a site built elsewhere wrapped one (a grid track bounds a card's width, which a visitor sees); false,
+    the default, is today's bare card, so it is accepted at 4 and normalised away, like `nav.home: true`.
+    `videoEmbed` is "facade" or "live" (template-fidelity 0.4.0, the owner's video ruling, 2026-11-18). "facade", the
+    default, is the privacy form the plugin has always written: a Vimeo address carries `dnt=1`. "live" keeps the
+    player's own address with nothing added, the form a site built elsewhere put in its pages (`player.vimeo.com/video/ID`),
+    so a look that places the player in `videos.item` can match those pages. Only the ADDRESS changes: whether a player
+    loads with the page or after a click is the look's markup (decision 34). "facade" is accepted at 4 and normalised
+    away; any other value is refused, naming the two."""
+    if not isinstance(raw, dict):
+        col.run(_bad, "blocks", "an object", raw)
+        return {}
+    out = {}
+    for k in raw:
+        if k not in BLOCKS_KEYS:
+            col.add("site.json: unknown key 'blocks.%s'" % k, "blocks.%s" % k, "unknown key",
+                    "one of: " + ", ".join(BLOCKS_KEYS), "remove 'blocks.%s'" % k)
+    if "headingLevel" in raw:
+        v = raw["headingLevel"]
+        if type(v) is not int or v not in BLOCK_HEADING_LEVELS:        # a bool is an int, and 3.0 equals 3: neither is one
+            col.add("site.json: 'blocks.headingLevel' must be a whole number from 2 to 6", "blocks.headingLevel",
+                    _shown(repr(v)), "a whole number from 2 to 6",
+                    "set blocks.headingLevel to the h-level the old page's block headings had, 2 to 6")
+        else:
+            out["headingLevel"] = v
+    if "loneReferenceGrid" in raw:
+        ok, val = col.run(_bool, raw["loneReferenceGrid"], "blocks.loneReferenceGrid")
+        if ok and val is True:
+            out["loneReferenceGrid"] = True
+    if "videoEmbed" in raw:
+        v = raw["videoEmbed"]
+        if type(v) is not str or v not in VIDEO_EMBED_FORMS:
+            col.add("site.json: 'blocks.videoEmbed' must be \"facade\" or \"live\"", "blocks.videoEmbed",
+                    _shown(repr(v)), "\"facade\" or \"live\"",
+                    "set blocks.videoEmbed to \"live\" to keep the player's own address, or remove it for the click-to-load default")
+        elif v == "live":
+            out["videoEmbed"] = "live"
+    return out
+
+
+def _look(v):
+    """`look` (schema 4): the vendored look file, `site/looks/<name>.json`, `<name>` a slug. That the file exists
+    at HEAD is the build's check (design section R5.2); this is the shape."""
+    v = _str(v, "look")
+    if not _LOOK_RE.match(v):
+        raise SiteConfigError("site.json: 'look' must be a path such as site/looks/<name>.json, <name> lower-case "
+                              "letters, digits and hyphens", path="look", found=v,
+                              expected="site/looks/<name>.json",
+                              fix="point look at a file under site/looks/, or remove it for the default look")
+    return v
 
 
 def _redirect_entry(old, new):
@@ -567,6 +751,9 @@ class SiteConfig(object):
         self.budgets = d["budgets"]
         self.siteKind = d.get("siteKind", "portfolio")
         self.featuredFrom = d.get("featuredFrom", "home")
+        self.nav = d.get("nav", {})
+        self.look = d.get("look")
+        self.blocks = d.get("blocks", {})
 
     def to_dict(self):
         """The config as a plain dict that `parse_data` reads back. A schema-2 key appears only when
@@ -581,6 +768,12 @@ class SiteConfig(object):
             d["siteKind"] = self.siteKind
         if self.featuredFrom != "home":
             d["featuredFrom"] = self.featuredFrom
+        if self.nav:
+            d["nav"] = dict(self.nav)
+        if self.look is not None:
+            d["look"] = self.look
+        if self.blocks:
+            d["blocks"] = dict(self.blocks)
         return d
 
     def effective_budgets(self):
@@ -606,7 +799,7 @@ def _no_dupes(pairs):
     out = {}
     for k, v in pairs:
         if k in out:
-            raise SiteConfigError("site.json: duplicate key '%s'" % k)
+            raise SiteConfigError("site.json: duplicate key '%s'; remove the repeated key from site/site.json" % k)
         out[k] = v
     return out
 
@@ -629,8 +822,8 @@ def _check(data):
                 "make site/site.json one JSON object")
         return col.problems, None
     if "schema" not in data:
-        col.add("site.json: 'schema' is missing", "schema", "missing", "1, 2 or 3",
-                "add \"schema\": 1 (or 2 or 3 when the site uses a feature that needs it)")
+        col.add("site.json: 'schema' is missing", "schema", "missing", "1, 2, 3 or 4",
+                "add \"schema\": 1 (or 2, 3 or 4 when the site uses a feature that needs it)")
         return col.problems, None
     schema = data["schema"]
     if isinstance(schema, bool) or not isinstance(schema, int):
@@ -642,14 +835,17 @@ def _check(data):
                 "update site-studio")
         return col.problems, None
     if schema < 1:
-        col.add("site.json: 'schema' must be 1 or more", "schema", schema, "1, 2 or 3", "set \"schema\" to 1, 2 or 3")
+        col.add("site.json: 'schema' must be 1 or more", "schema", schema, "1, 2, 3 or 4",
+                "set \"schema\" to 1, 2, 3 or 4")
         return col.problems, None
     for k in data:
-        if k not in KEY_ORDER and k not in V2_TOP_KEYS:
+        if k not in KEY_ORDER and k not in V2_TOP_KEYS and k not in V4_TOP_KEYS:
             col.add("site.json: unknown key '%s'" % k, k, "unknown key", "one of: " + ", ".join(CANON_ORDER),
                     "remove '%s'" % k)
         elif k in V2_TOP_KEYS and schema < 2:
             col.problems.append(_needs_schema_2(k).problem)
+        elif k in V4_TOP_KEYS and schema < 4:
+            col.problems.append(_needs_schema_4(k, schema).problem)
     for k in ("engine", "name", "siteTitle"):
         if k not in data:
             col.add("site.json: '%s' is missing" % k, k, "missing", "a value", "add '%s' to site/site.json" % k)
@@ -705,6 +901,14 @@ def _check(data):
     featured_from = d["featuredFrom"] if d["featuredFrom"] in FEATURED_FROM else "home"
     d["work"] = _portfolio_check(data.get("work", {}), "work", schema, featured_from, col)
     d["redirects"] = _redirects_check(data.get("redirects", {}), col)
+    if schema >= 4 and "nav" in data:
+        d["nav"] = _nav_check(data["nav"], col)
+    if schema >= 4 and "look" in data:
+        ok, look = col.run(_look, data["look"])
+        if ok:
+            d["look"] = look
+    if schema >= 4 and "blocks" in data:
+        d["blocks"] = _blocks_check(data["blocks"], col)
     d["resume"] = _resume_check(data.get("resume"), col, schema)
     d["budgets"] = _budgets_check(data.get("budgets", {}), col)
     if col.problems:
@@ -738,7 +942,7 @@ def decode(text):
     except SiteConfigError:
         raise
     except ValueError as e:
-        raise SiteConfigError("site.json is not valid JSON: %s" % e)
+        raise SiteConfigError("site.json is not valid JSON: %s; fix the JSON in site/site.json at the place it names" % e)
 
 
 def parse_text(text):
@@ -750,9 +954,9 @@ def load(path):
         with open(path, "r", encoding="utf-8") as fh:
             text = fh.read()
     except OSError as e:
-        raise SiteConfigError("site.json cannot be read: %s" % e)
+        raise SiteConfigError("site.json cannot be read: %s; check that site/site.json exists and your account can read it" % e)
     except UnicodeDecodeError:
-        raise SiteConfigError("site.json is not UTF-8")
+        raise SiteConfigError("site.json is not UTF-8; save site/site.json as UTF-8")
     return parse_text(text)
 
 
@@ -847,6 +1051,39 @@ V3_PAGE_KEYS = ("order", "tagline", "sort", "menuLinks", "view")
 PAGE_SORTS = ("date", "order")
 PAGE_MENU_LINKS = ("index", "single-piece")
 PAGE_VIEWS = ("grid", "page")
+# Schema 4 (design-template-fidelity section 3.2): three more `view` values, and one more page.md key. The 0.3.x
+# tuple above is NOT extended, so what reads PAGE_VIEWS keeps the schema-3 meaning (adopt's page.md check).
+V4_PAGE_VIEWS = ("roles", "map", "showcase")
+V4_PAGE_KEYS = ("mapMask", "onePieceIndex")
+V4_PAGE_DEFAULTS = {"mapMask": None, "onePieceIndex": "redirect"}
+# `onePieceIndex` (schema 4): what a portfolio's index is when `menuLinks: "single-piece"` has the menu link its one
+# piece. "redirect" (the default, and what schema 3 always does) serves the index address as a redirect page to the
+# piece; "listing" builds the index as the listing it is for any other portfolio, so a site whose old index listed its
+# one piece keeps that page. The menu links the piece either way. Read only where `menuLinks` is "single-piece" and
+# exactly one piece builds.
+ONE_PIECE_INDEXES = ("redirect", "listing")
+# The home, resume and reference keys schema 4 adds. `content.py` owns reading them; they are listed here only so
+# that `schema_4_reasons` can say a tree holding one needs schema 4 (this module cannot import content).
+V4_HOME_KEYS = ("eyebrow", "role", "showcase", "samples", "links")
+# The home key that is a SETTING, not a part: `titleForm` chooses the form of the home page's `<title>`. "site" (the
+# default, and what every schema writes) is the site title alone; "page" is `<home title> | <site title>`, the form
+# every other page's title has. It is not in V4_HOME_KEYS, which is the list of fixed PART names (`{{home:<part>}}`).
+V4_HOME_SETTING_KEYS = ("titleForm", "introScope", "partOrder")
+V4_HOME_PAGE_KEYS = V4_HOME_KEYS + V4_HOME_SETTING_KEYS
+HOME_TITLE_FORMS = ("site", "page")
+# `introScope` (schema 4) is what the generated home's intro holds: "body" (the default, and the only reading below 4)
+# is the whole body, a `:::part` block printed where it stands; "first-block" is the body's first block, with every other
+# block outside the `:::part` blocks the part `rest`. `partOrder` (schema 4) is the order the generated home prints its
+# parts in: the names below, and the name of each `:::part` block of the body. Either key makes a `:::part` block a part
+# of its own (placed by the order, or after `rest` in the file's order), instead of printing where it stands. A part the
+# order does not name follows the named ones, in the default order below, with the body's own parts after `rest`.
+HOME_INTRO_SCOPES = ("body", "first-block")
+HOME_SECTIONS = ("intro", "rest", "featured", "showcase", "feed", "samples", "links", "contact")
+V4_RESUME_PAGE_KEYS = ("tagline", "links")
+V4_REFERENCE_KEYS = ("image", "role", "fetched", "author")
+# The home parts fixed at schema 4 and above: `{{home:<part>}}` names them without a `:::part` container, so they
+# are the home KEYS' names. Below 4 each is a name a person may use for a custom part (design rule 7).
+V4_PART_FIXED = V4_HOME_KEYS
 V3_PAGE_DEFAULTS = {"order": None, "tagline": "", "sort": "date", "menuLinks": "index", "view": "grid"}
 # A piece key the build already reads or shows, so a `meta`/`cardMeta` list that names one is refused at
 # schema 3 (the build shows it already, and a second copy would print it twice). `featured` is reserved
@@ -854,10 +1091,15 @@ V3_PAGE_DEFAULTS = {"order": None, "tagline": "", "sort": "date", "menuLinks": "
 BUILTIN_PIECE_KEYS = ("shortTitle", "teaser", "coverPosition", "cover", "order", "title", "date", "draft")
 
 
-def page_settings_problems(raw, where):
+def page_settings_problems(raw, where, schema=3):
     """Every problem in the schema-3 portfolio keys of a `page.md` (`order`, `tagline`, `sort`, `menuLinks`,
-    `view`), as (problems, settings). `raw` holds only those keys; `where` is the page's path. `settings` is
-    fully defaulted. The value rules are the design's section 6.2 table, and every refusal names its fix."""
+    `view`) and, at `schema` 4 and above, `mapMask`, `onePieceIndex` and the three further `view` values, as (problems,
+    settings). `raw` holds only those keys; `where` is the page's path. `settings` is fully defaulted (a
+    schema-4 key is in it only when `raw` holds it, so a schema-3 settings dict is what it was). The value rules
+    are the design's section 6.2 table, and every refusal names its fix. `schema` is the declared schema of the
+    site, DEFAULT 3 so a caller that does not pass it keeps the schema-3 reading (`content.py` passes the site's
+    schema once it builds the schema-4 views): below 4 a `mapMask` or `onePieceIndex` is ignored here (the tree check refuses it
+    with the schema named) and the `view` values stay `grid` and `page`."""
     out = dict(V3_PAGE_DEFAULTS)
     probs = []
 
@@ -874,10 +1116,29 @@ def page_settings_problems(raw, where):
                 bad(key, repr(val), "must be one line of text", "write tagline as one line of text")
             else:
                 out[key] = val.strip()
+        elif key == "mapMask":
+            if schema < 4:
+                continue
+            if (not isinstance(val, str) or not val.strip() or val != val.strip() or val.startswith("/")
+                    or "\\" in val or ".." in val.split("/") or "//" in val or val.endswith("/")):
+                bad(key, repr(val), "must be a path inside the portfolio folder, such as media/land.txt",
+                    "write mapMask as a relative path with no .. and no leading or trailing /")
+            else:
+                out[key] = val
+        elif key == "onePieceIndex":
+            if schema < 4:
+                continue
+            if val not in ONE_PIECE_INDEXES:
+                names = " or ".join('"%s"' % a for a in ONE_PIECE_INDEXES)
+                bad(key, repr(val), "must be %s" % names, "set %s to %s" % (key, names))
+            else:
+                out[key] = val
         else:
             allowed = {"sort": PAGE_SORTS, "menuLinks": PAGE_MENU_LINKS, "view": PAGE_VIEWS}.get(key)
             if allowed is None:
                 continue
+            if key == "view" and schema >= 4:
+                allowed = PAGE_VIEWS + V4_PAGE_VIEWS
             if val not in allowed:
                 names = " or ".join('"%s"' % a for a in allowed)
                 bad(key, repr(val), "must be %s" % names, "set %s to %s" % (key, names))
@@ -955,8 +1216,170 @@ def schema_3_reasons(cfg, files=None, interpretations=None, kinds=("K", "I")):
     return out
 
 
+_EFFECT_K4 = "site-studio 0.3 would refuse it"
+_EFFECT_GUARD = "no page changes; older site-studio installs will refuse to publish this site"
+_NAVLINKS_RE = re.compile(r"\{\{\s*navLinks\s*\}\}")
+_QUOTES_OPEN_RE = re.compile(r"^:::quotes(?:[ \t].*)?$")
+_PART_OPEN_RE = re.compile(r"^:::part[ \t]+(\S+)")
+_BLOCK_OPEN_RE = re.compile(r"^:::([A-Za-z][A-Za-z0-9_-]*)(?:[ \t].*)?$")
+_BLOCK_CLOSE_RE = re.compile(r"^:::[ \t]*$")
+_FM_PAIR_RE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*):(?:[ \t]+(.*))?$")
+
+
+def front_matter_pairs(text):
+    """[(key, value text, lineno)] for the top-level `key: value` lines of a file's front matter, the value
+    unquoted and stripped (None for a key with nothing after the colon). Same line numbering and tolerance as
+    `front_matter_keys`; a nested or list value yields its first line only."""
+    text = _text_of(text).replace("\r\n", "\n")
+    if not text.startswith("---\n"):
+        return []
+    out = []
+    for i, line in enumerate(text.split("\n")[1:], 2):
+        if line.rstrip() == "---":
+            break
+        m = _FM_PAIR_RE.match(line)
+        if m:
+            val = (m.group(2) or "").strip()
+            if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+                val = val[1:-1]
+            out.append((m.group(1), val or None, i))
+    return out
+
+
+def fixed_part_names(schema):
+    """The home parts schema `schema` adds to the fixed names (`content.PART_FIXED` holds the 0.3.x ones): the
+    five home keys at 4 and above, none below. This is the part-name precedence of design section 3.1 rule 7."""
+    return V4_PART_FIXED if schema >= 4 else ()
+
+
+def part_collision_problems(files):
+    """One Problem per `:::part <name>` line in the content Markdown whose name is a part fixed at schema 4
+    ("`:::part showcase` collides with the home key `showcase`; rename the part"). The ONE function that says so:
+    the build at schema 4 and above refuses with these, and `build.py raise-schema --to 4` and the address
+    commands run it before they write anything. Below schema 4 nothing calls it: such a part is accepted and
+    renders as in 0.3.x."""
+    out = []
+    for path in sorted(files or ()):
+        if not (path.startswith("content/") and path.lower().endswith(".md")):
+            continue
+        for n, line in enumerate(_text_of(files[path]).replace("\r\n", "\n").split("\n"), 1):
+            m = _PART_OPEN_RE.match(line)
+            if m and m.group(1) in V4_PART_FIXED:
+                name = m.group(1)
+                out.append(make_problem("%s:%d: ':::part %s' collides with the home key '%s'; rename the part"
+                                        % (path, n, name, name), path, ":::part %s" % name,
+                                        "a part name that is not one of %s" % ", ".join(V4_PART_FIXED),
+                                        "rename the part (the home keys %s are fixed names at schema 4)"
+                                        % ", ".join(V4_PART_FIXED), False, n))
+    return out
+
+
+def multi_block_part_lines(text):
+    """The 1-based line of every block that is the SECOND (or later) one inside a `:::part` in `text`: 0.3.x
+    refused a part holding more than one block, and schema 4 reads any number (design R3 C), so such a part is a
+    schema-4 K reason. A line starting with a backslash is text and never matches. The scan follows the grammar's
+    own nesting (one block open at a time inside a part), so a part with one block, and blocks outside any part,
+    are not reasons."""
+    out = []
+    in_part = inner = in_other = False
+    seen = 0
+    for n, line in enumerate(text.replace("\r\n", "\n").split("\n"), 1):
+        line = line.rstrip()
+        m = _BLOCK_OPEN_RE.match(line)
+        if m:
+            if in_part:
+                if not inner and m.group(1) != "part":
+                    inner = True
+                    seen += 1
+                    if seen == 2:
+                        out.append(n)
+            elif not in_other:
+                if m.group(1) == "part":
+                    in_part, seen = True, 0
+                else:
+                    in_other = True
+        elif _BLOCK_CLOSE_RE.match(line):
+            if inner:
+                inner = False
+            elif in_part:
+                in_part = False
+            elif in_other:
+                in_other = False
+    return out
+
+
+def schema_4_reasons(cfg, files=None):
+    """Every reason this site needs schema 4, as [Reason(where, what, effect, lineno, "K")]. All are K reasons
+    (design section 3.1 rule 2): a key, value, token or form 0.3.x refuses, plus the guard reason (rule 8), so no
+    tree 0.3.x accepted holds one and no output changes. `files` is the tree as {repo path: bytes or str}; it must
+    include `.site-studio/addresses.json` when the tree has one."""
+    out = []
+    here = "site/site.json"
+
+    def add(where, what, lineno=None, effect=_EFFECT_K4):
+        out.append(Reason(where, what, effect, lineno, "K"))
+    if cfg.nav:
+        add(here, "sets nav.home false")
+    if cfg.look is not None:
+        add(here, "sets look")
+    for k in cfg.blocks:
+        add(here, "sets blocks.%s" % k)
+    for k in V4_RESUME_KEYS:
+        if cfg.resume is not None and k in cfg.resume:
+            add(here, "sets resume.%s" % k)
+    for k in V4_WORK_KEYS:
+        if k in cfg.work:
+            add(here, "sets work.%s" % k)
+    for path in sorted(files or ()):
+        low = path.lower()
+        parts = path.split("/")
+        text = None
+        if path == ADDRESSES_RECORD:
+            add(path, "is the address record (the guard reason)", None, _EFFECT_GUARD)
+            continue
+        if path.startswith("content/") and path.endswith("/page.md") and len(parts) == 3:
+            for key, val, n in front_matter_pairs(files[path]):
+                if key in V4_WORK_KEYS or key in V4_PAGE_KEYS:
+                    add(path, "sets %s" % key, n)
+                elif key == "view" and val in V4_PAGE_VIEWS:
+                    add(path, "sets view %s" % val, n)
+        if path in ("content/home.md", "content/home/index.md"):
+            for key, n in front_matter_keys(files[path]):
+                if key in V4_HOME_PAGE_KEYS:
+                    add(path, "sets %s" % key, n)
+        if cfg.resume is not None and path == cfg.resume.get("path"):
+            for key, n in front_matter_keys(files[path]):
+                if key in V4_RESUME_PAGE_KEYS:
+                    add(path, "sets %s on the resume page" % key, n)
+        if (len(parts) == 4 and parts[0] == "content" and parts[1] == "references"
+                and parts[3] == "reference.json"):
+            try:
+                data = json.loads(_text_of(files[path]))
+            except ValueError:
+                data = None
+            if isinstance(data, dict):
+                for key in V4_REFERENCE_KEYS:
+                    if key in data:
+                        add(path, "sets %s" % key)
+        if not _expanded_file(path):
+            continue
+        text = _text_of(files[path])
+        m = _NAVLINKS_RE.search(text)
+        if m:
+            add(path, "uses the {{navLinks}} token", text[:m.start()].count("\n") + 1)
+        if cfg.schema >= 3 and path.startswith("content/") and low.endswith(".md"):
+            # A `:::` line is a block only where the grammar is 3 or above; below that it is text 0.3.x accepts.
+            for n, line in enumerate(text.replace("\r\n", "\n").split("\n"), 1):
+                if _QUOTES_OPEN_RE.match(line):
+                    add(path, "holds a :::quotes block", n)
+            for n in multi_block_part_lines(text):
+                add(path, "holds a :::part with more than one block", n)
+    return out
+
+
 def required_schema(cfg, files=None, interpretations=None):
-    """The lowest schema that holds the site: 3 when any schema-3 reason holds (`schema_3_reasons`), 2
+    """The lowest schema that holds the site: 4 when any schema-4 reason holds (`schema_4_reasons`), 3 when
+    any schema-3 reason holds (`schema_3_reasons`), 2
     when any of five conditions holds (`schema_2_reasons`), else 1. `files` is the tree the caller
     holds (adopt: the converted tree); None means no tree feature is known. When `files` is given,
     `interpretations` MUST be too (`content.interpretation_reasons(files)`; [] when there are none): a
@@ -964,6 +1387,8 @@ def required_schema(cfg, files=None, interpretations=None):
     if files is not None and interpretations is None:
         raise ValueError("required_schema(cfg, files) needs interpretations= (content.interpretation_reasons"
                          "(files)); pass [] only when you know the tree holds none")
+    if schema_4_reasons(cfg, files):
+        return 4
     if schema_3_reasons(cfg, files, interpretations):
         return 3
     return 2 if schema_2_reasons(cfg, files) else 1
@@ -972,7 +1397,9 @@ def required_schema(cfg, files=None, interpretations=None):
 def tree_schema_problems(cfg, files):
     """Every Problem the declared schema of `site.json` has with the tree: the schema-2 reasons under a
     schema-1 file, then the K schema-3 reasons under a file below 3. An I reason is never a problem
-    (design section 3.2). Each carries `path` and `lineno`; none is mechanical."""
+    (design section 3.2), then the schema-4 K reasons (and the guard reason) under a file below 4, and at 4 and
+    above the part-name collisions (design section 3.1 rule 7). Each carries `path` and `lineno`; none is
+    mechanical."""
     out = []
     if cfg.schema < 2:
         for where, what, effect in schema_2_reasons(cfg, files):
@@ -986,6 +1413,15 @@ def tree_schema_problems(cfg, files):
                                     "raise-schema`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
                                     "schema 3", "run `python3 build.py raise-schema`, which lists what the "
                                     "page changes before it writes schema 3", False, r.lineno))
+    if cfg.schema < 4:
+        for r in schema_4_reasons(cfg, files):
+            at = "%s:%d:" % (r.where, r.lineno) if r.lineno else r.where
+            out.append(make_problem("%s %s, which needs \"schema\": 4 in site/site.json (run `build.py "
+                                    "raise-schema --to 4`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
+                                    "schema 4", "run `python3 build.py raise-schema --to 4`, which lists what "
+                                    "the page changes before it writes schema 4", False, r.lineno))
+    else:
+        out.extend(part_collision_problems(files))
     return out
 
 
@@ -1030,7 +1466,7 @@ def canonical_text(cfg, files=None, interpretations=None, at_least=None):
     d["work"] = dict((k, d["work"][k]) for k in WORK_KEYS if k in d["work"])
     if d["resume"] is not None:
         d["resume"] = dict((k, d["resume"][k]) for k in RESUME_KEYS
-                           if not (k == "paper" and d["resume"][k] is None))
+                           if k in d["resume"] and not (k == "paper" and d["resume"][k] is None))
     if cfg.siteKind != "portfolio":
         if cfg.work == validate_portfolio_settings({}, "work"):
             del d["work"]

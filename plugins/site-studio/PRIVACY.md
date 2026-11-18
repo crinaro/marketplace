@@ -10,6 +10,13 @@ it reads, what it writes, where that goes, and who sees it.
 - Files you point it at: media for a piece of work, a profile export you downloaded yourself.
 - A public web page, only when you name its address for a capture. It loads that page in a fresh
   Chrome profile, signed out, one page per address. It never crawls and never signs in.
+- **When you adopt an existing site:** every tracked file of that repository, to say what each one
+  does. Your own site builder is **run on your computer**, on a temporary copy of the repository, so
+  the two builds can be compared. The public repository is read (one clone and `gh` reads) to check
+  that a publish would be accepted. A look derived from your site (`/site-studio:look derive`) reads
+  your built pages from a folder on your computer, or fetches your published pages from your own
+  GitHub Pages address (at most 40 pages, never a script, stylesheet or image, and `robots.txt` is
+  honoured).
 - Your git settings (name, email) and whether `gh` is signed in, to tell you what is missing. It does
   not read your credentials.
 
@@ -19,6 +26,9 @@ it reads, what it writes, where that goes, and who sees it.
   `.site-studio/`, and the built site in `site/dist/` (not committed).
 - In your **public repo**: the generated site files, and only after the publish step you confirm.
   Everything there is public.
+- In your dev repo, when you adopt a site: the converted site, an `archive/` folder holding what was
+  moved out of the way, and records under `.site-studio/` (your choices, the comparison result, and
+  the blocker reports described below). Adopt publishes and pushes only after you say yes.
 - Temporary Chrome profiles and a local preview on `127.0.0.1`, both removed or private to your
   computer.
 - On request, a small decision log under the plugin's data folder, for testing the publish
@@ -30,6 +40,14 @@ it reads, what it writes, where that goes, and who sees it.
   the publish push and its status check. Your content reaches the public repo only by publishing.
   Publishing uses your own login; the plugin holds no separate key.
 - **To the public address you name**, when you ask for a capture.
+- **To the marketplace's issue tracker, only if you say yes.** When adopt is blocked by something in
+  the plugin itself, it prints the reports it would file and asks. A report is public, and it holds only
+  a cause name from a fixed list, how many times it occurred, the names of the plugin's own parts, the
+  plugin's version and schema numbers, and whether Node is installed. It never holds a file name, text,
+  address or anything else from your site; the plugin checks each report against your own file names and text
+  before it prints or files it, and files none if one fails. Before filing, it reads the tracker's open
+  and closed issues (a read-only `gh` query) so a cause is not reported twice. A report you decline is
+  not filed. The tracker is public, so anything filed there is public.
 - **To nobody else.** There is no server of ours, no telemetry and no analytics. The plugin's
   authors, and the marketplace's owner, never receive your data, your content or your site.
 
@@ -46,7 +64,8 @@ and not stored by the plugin. The check never runs from a start-up hook.
 Before a publish push, the publish script also reads the public repo's details and its remote
 branch and tag list (`gh api` and `git ls-remote`), to confirm it is pushing where `publicRepo` says.
 
-**Nothing is written to GitHub except where you say yes:** `POST /pages` once, at the first publish,
+**Nothing is written to GitHub except where you say yes:** the issue reports above, only on your yes;
+`POST /pages` once, at the first publish,
 to turn Pages on; the ruleset on `main` or, on a plan without rulesets, classic branch protection,
 only when you confirm `protect` or `protect --classic` (and `protect --fix`, to restore it); and the
 publish push to `main`, after you confirm it.

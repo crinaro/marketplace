@@ -77,3 +77,13 @@ is missing from the opened list, and refuses `accepted` unless every finding id 
 appends the row and commits `.site-studio/reviews.jsonl` locally; publish pushes it.
 
 Record in `HANDOFF.md`: the verdict, the digest's first 12 characters, and what is still open.
+
+**A review you record here can be carried into an adopt run, and it can be stood in for.** When
+`adopt.py apply` stopped at step 3 because no review covers the build it would publish, this skill
+is run on a checkout of the adopt branch it named. That row is carried into the next `apply` only
+when the build's digest is the same, so do not change the site in between. When parity is EQUAL and
+every automated privacy scan passed on the exact built tree, `apply` records a row whose `source`
+is `parity-EQUAL+scans` instead: no agent opened a file for it, and every reader says so. That row
+is a stand-in for the FIRST review only. It never replaces a review of an ACCEPTED or MARKUP-ONLY
+adoption, and a BLOCKED row you record for the same digest still wins over it. Run this skill when
+you want a real review of a build that went out on a stand-in.

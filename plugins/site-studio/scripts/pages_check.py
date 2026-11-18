@@ -348,22 +348,35 @@ def check(public_repo, cfg, get=_get, sleep=time.sleep):
     return items
 
 
+def pages_source(pages):
+    """The Pages SOURCE (C4, C5) of one `GET .../pages` answer, as an `Item`, or None when Pages serves the
+    branch publish pushes to: `main` at the root. The ONE function that classifies it (template-fidelity R2-5):
+    `_pages_items` below adds its item, and `deploy.py` reads the same answer itself (a 60 s call of its own)
+    and refuses on it before the address guard, because the public repo's `main /` is the tree a visitor sees
+    only when Pages says so. It does no I/O, starts no process, and imports nothing from `deploy` or `adopt`.
+    `pages` must be the decoded object; anything else is the caller's `NOT CHECKED`."""
+    build_type = pages.get("build_type")
+    src = pages.get("source") if isinstance(pages.get("source"), dict) else {}
+    if build_type == "workflow":
+        return Item("C4", "resolve", "Pages builds from a GitHub Actions workflow, so the files publish pushes "
+                    "are not what is served. Set the source to 'Deploy from a branch'.", YOU_SETTINGS)
+    if src.get("branch") != "main" or src.get("path") != "/":
+        got = "%s%s" % (src.get("branch") or "no branch", src.get("path") or "")
+        return Item("C5", "resolve", "Pages serves %s, but publish pushes to main at the root. Set the source "
+                    "to main, / (root)." % got, YOU_SETTINGS)
+    return None
+
+
 def _pages_items(pages, cfg, owner, where, base, rd, sleep, add):
     domain = getattr(cfg, "domain", None)
     cutover = bool(getattr(cfg, "cutover", False))
     preview = getattr(cfg, "previewUrl", None) or "its github.io address"
     cname = pages.get("cname") or None
-    build_type = pages.get("build_type")
-    src = pages.get("source") if isinstance(pages.get("source"), dict) else {}
 
     # -- source and build
-    if build_type == "workflow":
-        add("C4", "resolve", "Pages builds from a GitHub Actions workflow, so the files publish pushes are "
-            "not what is served. Set the source to 'Deploy from a branch'.", YOU_SETTINGS)
-    elif src.get("branch") != "main" or src.get("path") != "/":
-        got = "%s%s" % (src.get("branch") or "no branch", src.get("path") or "")
-        add("C5", "resolve", "Pages serves %s, but publish pushes to main at the root. Set the source to "
-            "main, / (root)." % got, YOU_SETTINGS)
+    source = pages_source(pages)
+    if source is not None:
+        add(*source)
     status = pages.get("status")
     if status == "errored":
         add("C6", "resolve", "The last Pages build failed. Open the repo's Actions tab, run 'pages build "
