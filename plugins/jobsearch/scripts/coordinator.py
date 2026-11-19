@@ -166,9 +166,10 @@ def _network_line(root):
     return line if isinstance(line, str) and line.strip() and "\n" not in line.strip() else None
 
 
-# gates whose GAP no regeneration can clear: the page is wrong by construction, so the advice is to report it
-# (dev #915 / #902, N12). A lost or mis-windowed RECORD is the other kind, and a regeneration does fix it.
-ENGINE_GAPS = ("NO CLI", "PURSUE COUNT", "SUBJECT TWICE", "THEIRS WRAPS ENGINE MARKUP", "THEIRS SITE UNKNOWN")
+# gates whose GAP no regeneration can clear: the page is wrong by construction, so report it (dev #915/#902, N12;
+# dashboard-redesign §10.3). A lost RECORD, or `LEDGER PREDATES TODAY` (§12), is the other kind: regenerate.
+ENGINE_GAPS = ("NO CLI", "PURSUE COUNT", "SUBJECT TWICE", "THEIRS WRAPS ENGINE MARKUP", "THEIRS SITE UNKNOWN",
+               "TODAY OVER CAP", "TODAY ROW FOLDED", "FOLD OVER CAP", "TICK BOX IS A ROW", "BUTTON WITHOUT A HEAD")
 
 
 def coverage_line(rc, output):
@@ -581,8 +582,7 @@ def main():
     # Class C (dev/audit 2026-09-02) — the page must ACCOUNT for every record: rendered,
     # counted in a remainder, or terminal, and nothing outside its window. A gap is a
     # renderer defect surfaced at startup; the remedy is a regeneration, never a hand-edit.
-    cov = subprocess.run([sys.executable,
-                          os.path.join(ENGINE_SCRIPTS, "check_dashboard_coverage.py")],
+    cov = subprocess.run([sys.executable, os.path.join(ENGINE_SCRIPTS, "check_dashboard_coverage.py")],
                          capture_output=True, text=True)
     print("  %-26s %s" % ("dashboard coverage", coverage_line(cov.returncode, cov.stdout)))
     expired = expiry_line(_profile_root())

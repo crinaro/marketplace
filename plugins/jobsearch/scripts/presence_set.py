@@ -32,7 +32,7 @@ declared variants that all failed to render (a bad path, a retired status, a bro
 told by its OWN presence page "No variants are declared." The store's declaration and the
 page's claim about that declaration must never disagree: `n_active` now counts DECLARED
 variants (status != "retired", classify_variants() below), whether they render or not — the
-same definition `generate_dashboard._variant_staleness()` already used (public #74). And a
+same definition the dashboard's variant check used (public #74; that function is deleted). And a
 variant that cannot render gets a tab anyway, carrying a notice that names exactly why
 (retired, file missing, file unreadable, no file declared, or an unreadable row) — visible
 where the reader is already looking, not only summarized on the Open items tab.
@@ -75,8 +75,8 @@ zero-variant profile exactly as it does on five.
    the preview instead of hidden), and a blank line ENDS a paragraph (never joined). This is a
    check, not a normaliser: a multi-line paragraph is reported as an open item under
    `paragraph`, because the file cannot say whether it is an editor wrap or missing blank
-   lines, and the renderer refuses to guess. `generate_dashboard.render_md_doc` joins with
-   `<br>` — the defect, live in shipped code; deliberately not reused.
+   lines, and the renderer refuses to guess. The old `generate_dashboard.render_md_doc` joined with
+   `<br>` (the defect; deleted since) and was deliberately not reused.
 
 ## The union tab's title answers public #60
 
@@ -652,9 +652,9 @@ def build(root, today=None):
     vrows = classify_variants(root, rep, rows)
     # ⭐ public report: `n_active` used to count PANES THAT RENDERED, so a profile whose
     # declared variants all failed to render was told the store had none — a claim the store
-    # never made. `active` here is DECLARED (status != "retired"), the same definition
-    # generate_dashboard._variant_staleness() already uses (public #74's fix), so the two
-    # surfaces cannot disagree about how many variants exist.
+    # never made. `active` here is DECLARED (status != "retired"), the definition public #74's
+    # fix gave the dashboard's variant check (since deleted), so a count of variants never
+    # disagrees with the store's declaration.
     n_active = sum(1 for vr in vrows if vr["rec"].get("status") != "retired")
     absent = [vr for vr in vrows if not vr["renders"]]
     retired = sorted(vr["vid"] for vr in vrows if vr["cause"] == "retired")

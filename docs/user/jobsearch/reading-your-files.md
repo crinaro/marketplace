@@ -26,7 +26,7 @@ you before you notice.
 
 | file | what it is | format |
 |---|---|---|
-| `views/dashboard_artifact.html` | **the one published page.** Since 0.71.0 it is cut to what is waiting on a decision from you: *Drafts to review*, *Opportunities to pursue* and *Applications to finish*, with a short summary at the top that links to each. Everything else it used to carry has a new home — see *What is on the page since 0.71.0*, below. **A record is shown in full in exactly one place; anywhere else it is a one-line reference that links to that place** | HTML |
+| `views/dashboard_artifact.html` | **the one published page.** Since 0.71.0 it is cut to what is waiting on a decision from you. Since 0.89.0 it opens with *Today*, the few things that need you now, and every list shows a few rows open, the next ones folded, and the rest counted — see *The page since 0.89.0*, below. Everything else it used to carry has a new home — see *What is on the page since 0.71.0*, below. **A record is shown in full in exactly one place; anywhere else it is a one-line reference that links to that place** | HTML |
 | `views/dashboard_artifact_url.txt` | the URL of the published dashboard Artifact above — a link, not a page | plain text |
 | `views/presence_set_url.txt` | **retired in 0.71.0.** If you have one it is a leftover: the upgrade queues a "this page is retired" note at that address and then removes the file once the note is confirmed published. Nothing to read there | plain text |
 | `presence/rules.md` | **authored by you, not generated** — the settled decisions shown on the *Rules* tab of the resume and LinkedIn reviews. Created once, seeded with three starting rules, the first time you open a session after upgrading to 0.39.0. Unchanged by 0.71.0 | markdown |
@@ -97,6 +97,54 @@ works over Remote Control has not been tested, so do not rely on it. One loss is
 prep's text is no longer on the page, so before a call you need a chat turn (ask for the prep by
 date or company) or the file itself.
 
+### The page since 0.89.0: Today first, three levels, tick boxes
+
+**Today leads the page**, and `Today` is the first entry in the bar pinned to the top. It shows at most five things,
+in a fixed order: someone is waiting on you first (they wrote back, they accepted, a draft is ready, a chat only you
+can record), then what unblocks the search (a role to decide, a posting only you can read, an application to finish,
+companies to answer), then upkeep. Each line links to its row further down. When one kind has more than two members,
+it is one line ("Did it happen? Coffee with ... and 14 more"); what does not fit is one *Also below* line with each
+remaining kind's count. The heading says when the page was made (`Today · as of 18 Nov, 09:12`), because on a phone
+you may read it hours later. When nothing needs you, Today is one sentence instead, made only of counts above zero,
+for example "Nothing needs a decision from you right now. 41 unread roles are at companies not yet put to you."
+
+**Every list has three levels.** The first few rows are open (5 drafts, 3 per Network group, 5 opportunities, 5
+applications, 3 roles to read, 3 to reconsider; Targets shows your weekly number). The next 20 are one-line rows in
+one closed fold under the list. Past that, a line says "+ N more ... that are not on this page" and gives the
+sentence to say to the coordinator to see them. A row Today links to is always open, never folded. Each heading says
+"showing N of M", and the bar shows each list's whole count. The filter chips are gone: with short lists there is
+nothing left to filter.
+
+**Drafts are grouped by who they wait on:** *Ready to send*, *Needs you* (with the reason in plain words), and one
+closed fold for drafts **waiting, with nothing for you to do** ("2 held, waiting on their reply · 7 queued, waiting
+for a mailbox check"). Every draft's text is on the page once, in a closed fold on its row.
+
+**Network groups:** *They wrote back* (a person replied and no reply is drafted), *To record*, *Applied, no one
+contacted yet*, *Awaiting a reply*, *Introductions* and *Relationships due this week*. A person who wrote back is
+under *They wrote back* even when they are also an introduction you are waiting on. *Awaiting a reply* is split by
+how long it has been: *They accepted*, *Went quiet recently* (your last message is at most 21 days old with the default
+settings),
+*Quiet for a long time* (a fold and a count only, never on Today), and *Not checked yet* (one line: those wait for a
+mailbox check, and there is nothing for you to do).
+
+**Targets** is one line per company: its name, its open roles and when it was raised. The staffing question is asked
+only when there is a reason to doubt the company is an employer (every sighting came through a job board or a
+recruiter, or it has many open roles in unrelated kinds of job). Then the rows it applies to carry one extra button,
+**These are staffing firms**. Companies already left out as staffing firms or aggregators are one counted, closed fold;
+those left out only because of their name carry a tick box and one button, **These are employers**. **Yes asks how
+motivated you are about each company, 1 to 5**, before anything is recorded: the coordinator asks you, and never
+picks the number (on 0.88, every Yes from the page failed and recorded nothing).
+
+**Acting on the page: tick boxes and one button per list.** Each row you can act on has a tick box, and each list or
+group has one button (*Work through* for most lists, *Draft replies* or *Draft messages* in the Network, *Yes*, *No*
+and *Later* in Targets). With nothing ticked, the button takes the open rows; tick rows, including folded ones, and it
+takes exactly those. Today's items start ticked. The button copies one block naming every record. Paste it into your
+coordinator session: for *Work through*, the coordinator goes through the records one at a time, asks the one
+question each needs, and records your answer; for a write such as *No*, it ends with one line, for example
+`applied 3 of 4 (1 refused)`, and tells you why the refused one was refused. Rows past the fold are not in the block,
+and the block says how many. If your browser will not let the page copy, the block appears in a box below, already
+selected: "Copy the selected text, then paste it into your session." Nothing is sent from the page.
+
 ### The resume and LinkedIn reviews (since 0.71.0)
 
 `/jobsearch:review-resume` and `/jobsearch:review-linkedin` replace the second published page. Each
@@ -123,32 +171,35 @@ something that is on the page.
   **Opportunities to pursue (N)** and **Applications to finish (N)**, and jumps to a list from
   anywhere on the page. A list with nothing in it shows its entry greyed, with no link. Since
   0.88.0, **Network (N)** and **Targets (N)** follow the first entry and, like **Reconsider (N)**
-  (only when a role is flagged, below), appear only while their list exists.
+  (only when a role is flagged, below), appear only while their list exists. Since 0.89.0 **Today**
+  comes first; it is greyed, with no link, when Today is the one sentence.
 - **Roles to reconsider** (since 0.74.0) is a fourth section that exists only when there is
   something to say. Each entry shows a removed or decided role, the verdict stored on it, the
   verdict today's pay rule would give, why, and, in plain words, what to tell Claude to reopen it
   (as pursue or parked) and to record that you screened it. The page
   changes nothing itself. If the check could not run, or could not read a role, the section says so
   rather than disappearing.
-- **Drafts to review** shows each staged message with its full text and a **Copy as prompt**
-  button (see below). Since 0.88.0 it lists drafts only: the "no draft yet, <why>" rows for a
+- **Drafts to review** shows each staged message, its full text in a closed fold, grouped by who it
+  waits on since 0.89.0 (see *The page since 0.89.0*, above). Since 0.88.0 it lists drafts only: the "no draft yet, <why>" rows for a
   touch that is due, an application with no follow-up drafted, and a person who is due are gone,
-  and **People due** is retired. Who needs a next step is the **Network** list. The list can be narrowed by when a message is due, whether it is ready to send, and its medium; a choice
-  that would show exactly the same rows as *All* is not drawn.
+  and **People due** is retired. Who needs a next step is the **Network** list. The filter chips that narrowed the list are
+  gone since 0.89.0.
 - **Network** (since 0.88.0) is your communication plan: one row for each person or role that
-  needs a next step, in groups (To record; Applied, no one contacted yet; Awaiting a reply;
-  Referral handoffs; Relationships due this week), each with who, why, the last touch and a
-  suggested next step. Contact with a person by any route clears an owed follow-up on an
+  needs a next step, in groups (since 0.89.0: They wrote back; To record; Applied, no one
+  contacted yet; Awaiting a reply, split four ways; Introductions; Relationships due this week),
+  each with who, why, the last touch and a suggested next step. Contact with a person by any route clears an owed follow-up on an
   application, and one that nobody answers expires after `network.owed_followup_days` days
   (7 to 90, default 30). An expiry is listed once under that week's "Expired" line and said once in
   the first run summary after it. How the network is going (reach-outs against budget, chats held,
   introductions) is in the weekly review, not here. Nothing on the page sends anything.
 - **Targets to review** (since 0.88.0) is a short weekly list of companies you have not yet
-  answered, each with **yes**, **no** and **later**, and "this is a staffing firm or aggregator".
+  answered: tick companies, then **Yes**, **No** or **Later** (Yes asks how motivated you are, 1 to
+  5). The staffing question is asked only when there is a reason to doubt (see above).
   Aggregators and staffing firms are left out, **later** hides a company for the rest of the
   week, and a counted line says how many more are waiting or snoozed.
 - **Every action on the page is plain words, never a command.** A button copies a block that names
-  the record, says what you are asking, and starts by naming the jobsearch coordinator. Paste it
+  the records (since 0.89.0, the rows you ticked), says what you are asking, and starts by naming
+  the jobsearch coordinator. Paste it
   into Claude Code on the machine that holds your search. Pasted anywhere else (claude.ai, or a
   second machine on an older version), nothing is written, because that session cannot see your
   files.
@@ -281,7 +332,8 @@ alone: it is not read, screened or researched, and it is **not a failure**. The 
 role comes back to life when you target its company.
 
 **The Network list.** Below *Drafts* the page has a **Network** list, with its own entry in the jump bar. It holds only
-what you act on, in up to five groups, each shown only when it has something in it:
+what you act on. The groups below are 0.86.0's; the current ones are in *The page since 0.89.0*, above. In 0.86.0 there
+were up to five groups, each shown only when it has something in it:
 
 - **Look into these companies**: companies a board find raised, oldest first, with how many more are waiting, each row
   with the three answers (`record.py company-status <company> active-target --motivation <1-5>`, `watching`, `passed`);
@@ -392,11 +444,13 @@ artifact or a bare public link. **Where any of that is missing, paste the correc
 session instead** (*"in the Corvid Labs draft, change 'next week' to 'this month'"*) and it goes
 through the same before-and-after and the same yes.
 
-**Or use the Copy as prompt button.** Each draft on the dashboard has a **Copy as prompt** button.
-It copies a short block that names that exact draft, even when two drafts share a title, and quotes
-its current text. Paste it into your session, replace `<describe the change here>` with what
-should change, and send it. If your browser blocks copying, the block appears selected under the
-button; press Cmd+C (Mac) or Ctrl+C. The button only copies text; nothing is sent from the page.
+**Or use the page's button.** Since 0.89.0, tick the draft and press *Work through* under *Drafts*.
+Paste the block into your session: the coordinator shows you each draft and asks whether to send,
+change or drop it, and records what you decide. If your
+browser blocks copying, the block appears selected below; copy it and paste it. The button only
+copies text; nothing is sent from the page. (A page made before 0.89.0 has a **Copy as prompt**
+button on each draft, whose block quotes the draft and ends with `<describe the change here>`:
+replace that with what should change. The coordinator still reads it.)
 
 **`views/presence_set.html` (0.39.0 to 0.70.0) was retired in 0.71.0.** It was a second published
 page that showed what `presence/` looks like rendered. The review it carried is now

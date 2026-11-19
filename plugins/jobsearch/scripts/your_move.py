@@ -2065,7 +2065,7 @@ def outreach_due(root, today=None, horizon=None, pre_rows=None, untriggered=None
 # tests/test_communication_plan.py (the gate proves rendered == derived, never derived == correct).
 # ─────────────────────────────────────────────────────────────────────────────
 
-PLAN_GROUPS = ("to-record", "applied-no-contact", "awaiting-reply", "referral-handoff", "relationships-due")
+PLAN_GROUPS = ("reply-owed", "to-record", "applied-no-contact", "awaiting-reply", "referral-handoff", "relationships-due")
 STAFFING_NAME_PATTERNS = ("staffing", "recruiting", "recruitment", "talent solutions", "headhunt")
 COMPANY_KINDS = ("employer", "staffing", "aggregator")
 _STAFFING_RE = re.compile(r"\b(?:%s)\b" % "|".join(re.escape(p) for p in STAFFING_NAME_PATTERNS), re.I)
@@ -2174,61 +2174,20 @@ def _is_recruiter(p):
     return any("recruiter" in str(p.get(k) or "").casefold() for k in ("kind", "role", "type"))
 
 
-def communication_plan(root, today=None, net=None, owed=None):
-    """`{"rows": [...], "expired_this_week": [...], "failed": None | str}` - the Network section's ONE membership
-    (dev #914 C4/C6, #915). A row: `{"key", "subject", "group", "who", "why", "last_touch", "next_step", "actions"}`.
-    `actions` are `{"action", "rec_id", "label"}` for `dashboard_actions.block`. Pure: it writes nothing.
+def _draft_it(rec_id):
+    return [{"action": "draft-message", "rec_id": rec_id, "label": "Draft it"}]
 
-    Groups, in precedence order (a subject lands in the FIRST one it qualifies for):
-      to-record            `funnel_report.network_rows` (chat, booking, suggestion, send, proposal), each with its
-                           subject resolved: an unrecorded chat or a booking is the PERSON's row;
-      applied-no-contact   `trigger.owed_applications` owed rows: an application with no human contact yet,
-                           newest first, naming the suggested path;
-      awaiting-reply       a person thread whose conversation axis says a nudge is due (`silent`,
-                           `silence-unverified`) or a connection was `accepted`, due date ascending;
-      referral-handoff     `classify_people` state `awaiting-intro`, oldest request first;
-      relationships-due    a recruiter or relationship channel with a `next_touch` inside OUTREACH_HORIZON_DAYS, and a
-                           person-only person whose cadence is `due`, recruiters first then due date.
-    A subject that has a staged draft is dropped from groups a-d (Drafts is its home); a to-record row is never
-    dropped, because an unrecorded fact is owed whether or not a draft exists. Two seams (`net`, `owed`) let the
-    renderer pass what it already computed."""
-    import funnel_report as _fr
-    import graph as _graph
-    import trigger as _trig
-    today = today or datetime.date.today().isoformat()
-    today_d = _parse_date(today)
-    cfg = _root_cfg(root)
-    rows, seen = [], set()
-    failed = []
 
-    def add(r):
-        if r["subject"] in seen:
-            return
-        seen.add(r["subject"])
-        rows.append(r)
+def _plan_to_record(net):
+    """(r) to-record: `funnel_report.network_rows`, each subject resolved (an unrecorded chat or a booking is the
+    PERSON's row). A company question is a Target, never a Network row."""
+    return [{"key": r["key"], "subject": r.get("subject") or r["key"], "group": "to-record", "who": r["title"],
+             "why": r["detail"], "last_touch": None, "next_step": r.get("next_step") or "record it",
+             "actions": list(r.get("actions") or [])} for r in net["rows"] if r["group"] != "look-into"]
 
-    g = _graph.Graph(os.path.join(root, "data"))
-    people = {p["id"]: p for p in g.stores["people"] if p.get("id")}
-    companies = {c["id"]: c for c in g.stores["companies"] if c.get("id")}
 
-    def pname(pid):
-        return (people.get(pid) or {}).get("name") or pid
-
-    # (r) to-record
-    net = _fr.network_rows(root, today) if net is None else net
-    for r in net["rows"]:
-        if r["group"] == "look-into":
-            continue                                   # a company question is a Target, never a Network row
-        add({"key": r["key"], "subject": r.get("subject") or r["key"], "group": "to-record",
-             "who": r["title"], "why": r["detail"], "last_touch": None,
-             "next_step": r.get("next_step") or "record it", "actions": list(r.get("actions") or [])})
-    drafted = drafted_subjects(root)
-
-    # (a) applied, no human contact yet
-    if owed is None:
-        opps = _trig._load_opps(root)
-        owed = _trig.owed_applications(root, opps, [], _trig.load_jsonl(root, "asks.jsonl"), today=today)
-    opps_by_id = {o.get("id"): o for o in _trig.load_jsonl(root, "opportunities.jsonl")}
+def _plan_applied(g, owed, opps_by_id, companies, drafted):
+    """(a) applied, no human contact yet: the owed rows of a live role with no staged draft, newest first."""
     a_rows = []
     for u in owed["owed"]:
         oid = u.get("opp_id")
@@ -2248,43 +2207,54 @@ def communication_plan(root, today=None, net=None, owed=None):
             "who": "%s at %s" % (u.get("title") or oid, co.get("name") or o.get("company_id") or "?"),
             "why": "no human contact since you applied on %s; this expires on %s"
                    % (u.get("date") or "?", u.get("expires_on") or "(never: the application date is unreadable)"),
-            "last_touch": None, "next_step": step,
-            "actions": [{"action": "draft-message", "rec_id": "opp:%s" % oid, "label": "Draft it"}]}))
-    for _d, r in sorted(a_rows, key=lambda t: (t[0], t[1]["key"]), reverse=True):
-        add(r)
+            "last_touch": None, "next_step": step, "actions": _draft_it("opp:%s" % oid)}))
+    return [r for _d, r in sorted(a_rows, key=lambda t: (t[0], t[1]["key"]), reverse=True)]
 
-    # (b) awaiting a reply: a nudge is due, or a connection was accepted
+
+_PLAN_AXES = {"reply-owed": 0, "accepted": 1, "silent": 2, "silence-unverified": 2}   # the pick, best first
+
+
+def _plan_people(root, g, people, skip, today, failed):
+    """(o) reply-owed and (b) awaiting-reply, from ONE pass over the person threads: `(owed_rows, awaiting_rows)`,
+    each oldest last message first. A person with any thread whose newest event is inbound is `reply-owed` (dev #952:
+    they wrote back and no reply is drafted); else a thread whose axis says a nudge is due (`silent`,
+    `silence-unverified`) or a connection was `accepted` makes them `awaiting-reply`. A row's `state` is that axis."""
     chase = _cfg_int(root, config_keys.CHASE_AFTER_DAYS)
     talked = {t.get("person_id") for t in g.stores["touches"]} | {m.get("person_id") for m in g.stores["messages"]}
-    b_rows = []
+    out = {"reply-owed": [], "awaiting-reply": []}
     for pid in sorted(x for x in talked if x in people and people[x].get("status") != "merged"):
-        if "person:%s" % pid in drafted or "person:%s" % pid in seen:
+        if "person:%s" % pid in skip:
             continue
         try:
             axes = conversation_axis(root, pid, today=today, window=chase)
         except Exception as e:                                     # noqa: BLE001 - said, never an empty group
             failed.append("awaiting-reply %s: %s: %s" % (pid, type(e).__name__, str(e)[:80]))
             continue
-        pick = None
-        for _tid, (axis, events) in axes.items():
-            if axis in ("accepted", "silent", "silence-unverified") and (pick is None or axis == "accepted"):
-                pick = (axis, events)
-        if pick is None:
+        # the axis rank, then the newest event, then the thread id: never the hash-seeded order of `axes` (review R)
+        cand = sorted(((str(t), a, ev) for t, (a, ev) in axes.items() if a in _PLAN_AXES), key=lambda c: c[0])
+        cand.sort(key=lambda c: max((str(e.get("date") or "") for e in c[2]), default=""), reverse=True)
+        cand.sort(key=lambda c: _PLAN_AXES[c[1]])
+        if not cand:
             continue
-        axis, events = pick
+        _tid, axis, events = cand[0]
         last = max((str(e.get("date") or "") for e in events), default="") or None
-        b_rows.append((last or "9999", {
-            "key": "person:%s" % pid, "subject": "person:%s" % pid, "group": "awaiting-reply",
-            "who": pname(pid),
-            "why": ("they accepted your connection" if axis == "accepted" else
-                    "no reply in %d days%s" % (chase, "" if axis == "silent" else " (not yet verified in your mailbox)")),
-            "last_touch": last,
-            "next_step": ("send the note now that they accepted" if axis == "accepted" else "nudge"),
-            "actions": [{"action": "draft-message", "rec_id": "person:%s" % pid, "label": "Draft it"}]}))
-    for _d, r in sorted(b_rows, key=lambda t: (t[0], t[1]["key"])):
-        add(r)
+        group = "reply-owed" if axis == "reply-owed" else "awaiting-reply"
+        why, step = {"reply-owed": ("they wrote back on %s and no reply is drafted" % (last or "?"), "reply"),
+                     "accepted": ("they accepted your connection", "send the note now that they accepted")}.get(
+            axis, ("no reply in %d days%s" % (chase, "" if axis == "silent" else
+                                              " (not yet verified in your mailbox)"), "nudge"))
+        out[group].append((last or "9999", {
+            "key": "person:%s" % pid, "subject": "person:%s" % pid, "group": group, "state": axis,
+            "who": (people.get(pid) or {}).get("name") or pid, "why": why, "last_touch": last, "next_step": step,
+            "actions": _draft_it("person:%s" % pid)}))
+    return tuple([r for _d, r in sorted(out[k], key=lambda t: (t[0], t[1]["key"]))]
+                 for k in ("reply-owed", "awaiting-reply"))
 
-    # (c) referral handoffs
+
+def _plan_handoff(root, g, people, drafted, today):
+    """(c) referral handoffs: a person an introduction is still awaited to, oldest request first."""
+    def pname(pid):
+        return (people.get(pid) or {}).get("name") or pid
     intro = {}
     for t in g.stores["touches"]:
         if t.get("touch_type") == "intro-request" and t.get("outcome") == "awaiting" and t.get("object_person_id"):
@@ -2299,16 +2269,16 @@ def communication_plan(root, today=None, net=None, owed=None):
             "who": p.get("name") or p["id"],
             "why": "an introduction to them, requested of %s, has not been confirmed" % pname(t.get("person_id")),
             "last_touch": t.get("date"), "next_step": "ask %s whether the introduction went out" % pname(t.get("person_id")),
-            "actions": [{"action": "draft-message", "rec_id": "person:%s" % p["id"], "label": "Draft it"}]}))
-    for _d, r in sorted(c_rows, key=lambda t: (t[0], t[1]["key"])):
-        add(r)
+            "actions": _draft_it("person:%s" % p["id"])}))
+    return [r for _d, r in sorted(c_rows, key=lambda t: (t[0], t[1]["key"]))]
 
-    # (d) relationships due this week: recruiter channels and cadence-due people, recruiters first
-    horizon = config_keys.OUTREACH_HORIZON_DAYS
-    limit = (today_d + datetime.timedelta(days=horizon)).isoformat()
+
+def _plan_relationships(root, g, drafted, today):
+    """(d) relationships due this week: recruiter channels and cadence-due people, recruiters first, then due date."""
+    limit = (_parse_date(today) + datetime.timedelta(days=config_keys.OUTREACH_HORIZON_DAYS)).isoformat()
     d_rows = []
-    channels = list(g.stores["channels"])
-    for c, state, _touch, _ev in classify_channels(channels, g.stores["messages"], today, g.stores["involvements"]):
+    for c, state, _touch, _ev in classify_channels(list(g.stores["channels"]), g.stores["messages"], today,
+                                                   g.stores["involvements"]):
         nt = c.get("next_touch") or {}
         due = str(nt.get("date"))
         if state not in ("now", "scheduled") or not c.get("id") or due > limit or "chan:%s" % c["id"] in drafted:
@@ -2318,29 +2288,81 @@ def communication_plan(root, today=None, net=None, owed=None):
             "key": "chan:%s" % c["id"], "subject": "chan:%s" % c["id"], "group": "relationships-due",
             "who": c.get("label") or c["id"],
             "why": "a touch is planned for %s%s" % (due, (": %s" % note) if note else ""), "last_touch": None,
-            "next_step": "touch base", "actions": [{"action": "draft-message", "rec_id": "chan:%s" % c["id"],
-                                                    "label": "Draft it"}]}))
+            "next_step": "touch base", "actions": _draft_it("chan:%s" % c["id"])}))
     for p, state, why in network_people_due(root, today)["due"]:
         if state != "due" or "person:%s" % p.get("id") in drafted:
             continue
         d_rows.append((0 if _is_recruiter(p) else 1, "0000", {
             "key": "person:%s" % p["id"], "subject": "person:%s" % p["id"], "group": "relationships-due",
             "who": p.get("name") or p["id"], "why": why, "last_touch": None, "next_step": "touch base",
-            "actions": [{"action": "draft-message", "rec_id": "person:%s" % p["id"], "label": "Draft it"}]}))
-    for _r, _d, r in sorted(d_rows, key=lambda t: (t[0], t[1], t[2]["key"])):
-        add(r)
+            "actions": _draft_it("person:%s" % p["id"])}))
+    return [r for _r, _d, r in sorted(d_rows, key=lambda t: (t[0], t[1], t[2]["key"]))]
 
-    wk = today_d.isocalendar()[:2]
-    expired_week = []
+
+def _plan_expired(owed, opps_by_id, companies, today):
+    """The applications whose no-contact window ends in today's ISO week, each named once."""
+    wk, out = _parse_date(today).isocalendar()[:2], []
     for u in owed["expired"]:
         try:
             if _parse_date(u["expires_on"]).isocalendar()[:2] == wk:
                 co = companies.get((opps_by_id.get(u.get("opp_id")) or {}).get("company_id")) or {}
-                expired_week.append({"opp_id": u.get("opp_id"), "title": u.get("title") or u.get("opp_id"),
-                                     "company": co.get("name") or ""})
+                out.append({"opp_id": u.get("opp_id"), "title": u.get("title") or u.get("opp_id"),
+                            "company": co.get("name") or ""})
         except (ValueError, TypeError):
             continue
-    return {"rows": rows, "expired_this_week": expired_week, "failed": "; ".join(failed) or None}
+    return out
+
+
+def communication_plan(root, today=None, net=None, owed=None):
+    """`{"rows": [...], "expired_this_week": [...], "failed": None | str}` - the Network section's ONE membership
+    (dev #914 C4/C6, #915, #952). A row: `{"key", "subject", "group", "state", "who", "why", "last_touch",
+    "next_step", "actions"}`. `state` is the conversation axis token of a reply-owed or awaiting-reply row (`reply-owed`,
+    `accepted`, `silent`, `silence-unverified`; design-dashboard-redesign 7.5), None elsewhere. `actions` are
+    `{"action", "rec_id", "label"}` for `dashboard_actions.block`. Pure: it writes nothing.
+
+    Groups, in `PLAN_GROUPS` order (each built by its own helper above):
+      reply-owed           a person thread whose newest event is inbound (they wrote back), with no staged draft;
+      to-record            `funnel_report.network_rows` (chat, booking, suggestion, send, proposal);
+      applied-no-contact   `trigger.owed_applications` owed rows: an application with no human contact yet;
+      awaiting-reply       a person thread whose axis says a nudge is due, or a connection was `accepted`;
+      referral-handoff     `classify_people` state `awaiting-intro`, oldest request first;
+      relationships-due    a recruiter or relationship channel with a `next_touch` inside OUTREACH_HORIZON_DAYS, and a
+                           person-only person whose cadence is `due`, recruiters first then due date.
+    A subject is placed ONCE, in the first group it qualifies for in the order to-record, applied-no-contact,
+    reply-owed, awaiting-reply, referral-handoff, relationships-due: reply-owed is LISTED first but never takes a
+    to-record row's subject, because an unrecorded fact is owed whether or not a draft exists (a to-record row is
+    never dropped). A subject that has a staged draft is dropped from every other group (Drafts is its home). Two
+    seams (`net`, `owed`) let the renderer pass what it already computed."""
+    import funnel_report as _fr
+    import graph as _graph
+    import trigger as _trig
+    today = today or datetime.date.today().isoformat()
+    g = _graph.Graph(os.path.join(root, "data"))
+    people = {p["id"]: p for p in g.stores["people"] if p.get("id")}
+    companies = {c["id"]: c for c in g.stores["companies"] if c.get("id")}
+    seen, failed = set(), []
+
+    def add(group_rows):
+        kept = []
+        for r in group_rows:
+            if r["subject"] not in seen:
+                seen.add(r["subject"])
+                kept.append(dict({"state": None}, **r))
+        return kept
+
+    to_record = add(_plan_to_record(_fr.network_rows(root, today) if net is None else net))
+    drafted = drafted_subjects(root)
+    if owed is None:
+        owed = _trig.owed_applications(root, _trig._load_opps(root), [], _trig.load_jsonl(root, "asks.jsonl"),
+                                       today=today)
+    opps_by_id = {o.get("id"): o for o in _trig.load_jsonl(root, "opportunities.jsonl")}
+    applied = add(_plan_applied(g, owed, opps_by_id, companies, drafted))
+    owed_rows, awaiting = _plan_people(root, g, people, drafted | seen, today, failed)
+    owed_rows, awaiting = add(owed_rows), add(awaiting)
+    rest = add(_plan_handoff(root, g, people, drafted, today))
+    rest += add(_plan_relationships(root, g, drafted, today))
+    return {"rows": owed_rows + to_record + applied + awaiting + rest,
+            "expired_this_week": _plan_expired(owed, opps_by_id, companies, today), "failed": "; ".join(failed) or None}
 
 
 def _role_row(o, state, why, posting, ctx):

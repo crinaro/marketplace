@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-"""Does the published page ACCOUNT FOR every record — render nothing its window excludes —
-and keep its row set whole under every filter?
+"""Does the published page ACCOUNT FOR every record — and render nothing its window excludes?
 
 ⭐ THE TWO-SIDED COVERAGE CONTRACT (dev/audit 2026-09-02, Class C)
 -------------------------------------------------------------------
@@ -27,21 +26,9 @@ the pipeline on the profile measured) with nothing on the page or in any count t
 SCOPE: nothing renders that the window excludes — a terminal opportunity must not appear as
 a row, and a call prep renders IN FULL only inside the PREP-OWED horizon.
 
-⭐ MEMBERSHIP UNDER NARROWING (public #48, stage 1 — the per-section filters)
-------------------------------------------------------------------------------
-Filtering is CSS visibility only: the HTML row set is identical in every filter state. That
-is the same contract one level down, so it is checked HERE rather than by a second script
-that would grow a second meaning. For every filtered list the ledger declares:
-  * DIMENSION COMPLETE — every `[data-rec]` row in the list carries every dimension the
-                  ledger declares for it, with a value in the ledger's vocabulary, and that
-                  vocabulary equals its ENUM SOURCE (the owning module's constant, resolved
-                  here independently). Catches a row visible only under `all`, which is the
-                  `backlog` shape one level down.
-  * COUNT AGREES — every label carries both numbers (rendered and population); each equals
-                  the rows carrying that value / the members declared with it, the per-value
-                  counts sum to `all`, and the population reconciles to the ledger's placed
-                  records (rendered here + this set's counted remainder). The router's
-                  pipeline "in flight" number must equal the opportunity list's own label.
+The per-section filter chips (public #48 stage 1) and their checks (DIMENSION COMPLETE, COUNT AGREES, DEFAULT,
+TRIMMED BEHIND A FILTER, UNREACHABLE UNDER FILTER, ROUTER DISAGREES) are RETIRED with the chips (dashboard-redesign D2,
+D-6): every list is three levels (design §4), and a row past level 2 is a counted REMAINDER like any other.
 
 ⭐ ONE PRIMARY ROW PER RECORD (dev #496 / public #48, dev #540 / public #132 — the 2026-10
    stage-2 build; design-one-dashboard-surface.md r3 §2). EXACTLY ONCE used to be ADVISORY
@@ -57,51 +44,28 @@ that would grow a second meaning. For every filtered list the ledger declares:
                   `id` occurs twice (a draft title is not unique — the key carries an
                   ordinal, your_move.entry_keys).
   * ANCHOR      — every `href="#x"` resolves to an `id="x"` on the page, and every
-                  `<label for="x">` to an `id="x"` (the router's count is such a label). The
-                  base case shipped `#phase-outreach-approvals` with no section behind it.
+                  `<label for="x">` to an `id="x"`. The base case shipped
+                  `#phase-outreach-approvals` with no section behind it.
   * SCRIPT      — the page carries at most ONE script, the allowlisted copy-as-prompt one
-                  (OWNER REQUEST 2026-10-13), and it touches no network, storage or navigation;
-                  any other script, inline handler or `javascript:` URL is a gap.
-  * DEFAULT     — exactly one radio per filter group carries `checked`, and it is the first
-                  entry of the ledger's declared default order that has a DRAWN chip (a
-                  population that is neither empty nor the whole list), else `All`; recomputed
-                  here from the HTML rows, never from the ledger's own claim.
+                  (OWNER REQUEST 2026-10-13), which copies text already on the page: attribute
+                  values, joined by newlines (design-dashboard-redesign §6.1); it touches no network,
+                  storage or navigation and builds no markup. Any other script, inline handler or
+                  `javascript:` URL is a gap (`coverage_checks/script.py`).
 
-⭐ DEGENERACY AND CROSS-CUTS (design r3 D3/D4). A chip whose row set equals `All`'s is not
-   drawn, and a dimension left with only `All` draws no bar — but the RADIO of a suppressed
-   chip stays, so a router label can still activate it. So LABEL MISSING tolerates a missing
-   chip only when an independent recount from the HTML rows proves its row set IS `All`'s, and
-   a DRAWN degenerate chip is itself a gap (DEGENERATE CHIP DRAWN). A CROSS-CUT option (the
-   ledger's `dims[dim]["cross"]`, e.g. `pursuit=your-move`) is carried in `data-<dim>-also`, not
-   in `data-<dim>`: it is counted from that attribute in COUNT and REACHABLE and left out of the
-   SUM, which is over the partition. ROUTER DISAGREES compares the router's pipeline in-flight
-   number with the opportunity rows that do NOT carry the `your-move` cross-cut, and every
-   router count that is a `<label for=…>` with the rows its radio selects.
+## Today, the levels and the tick boxes (dashboard-redesign E; design §3.6, §4, §6.1, §12)
 
-⭐ REACHABLE (public #54 / #58 point 3 — counted is not reachable)
---------------------------------------------------------------------
-The 0.37.0 page hid three candidate-owned roles and this check said CLEAN: the working-set
-cap trimmed them into the opportunity list's "+K more" remainder, COVERAGE was satisfied
-(every record accounted for), and nothing asked whether a reader could GET TO one.
-Under CSS-only narrowing a filtered list has ONE rendered row set, so a trimmed row is
-reachable under no filter state, and a chip whose population counts it promises a row
-selecting the chip cannot show. So, for every filtered list the ledger declares:
-  * TRIMMED BEHIND A FILTER — the list has no remainder: no `remainders` entry in the
-                  ledger, no `data-more="<set>:K"` on the page, and no record whose final
-                  disposition is a remainder in that set. REMAINDER stays a legitimate
-                  disposition for an UNFILTERED working set (one ordering, sorted then
-                  capped, the tail named), never for a filtered one.
-  * UNREACHABLE UNDER FILTER — for every chip, the rows on the page carrying its value
-                  equal the members the ledger counts with it (shown == population),
-                  computed from the HTML and the ledger independently, so a chip can never
-                  count a record no filter state can reach.
-These are independent of COUNT AGREES on purpose: a label that honestly reads "(2 shown
-of 17)" passes COUNT AGREES and is exactly the page this side exists to refuse.
+Pure page checks in the package `coverage_checks/`, each `(page, ledger, expected) -> (gaps, line)`:
+`TODAY OVER CAP` (more than 5 items, an item with no link, a primary row inside Today) and `TODAY ROW
+FOLDED` (a row Today references is folded) in `today_gaps.py`; `FOLD OVER CAP` (a level-2 fold holding more
+than 20 rows) in `folds.py`; `TICK BOX IS A ROW` and `BUTTON WITHOUT A HEAD` in `picks.py`. Each is an
+ENGINE gap (`coordinator.ENGINE_GAPS`): a regeneration cannot clear it. `LEDGER PREDATES TODAY` (a ledger
+with no `today` block, the first run after an upgrade) is the one REGENERATE gap: exit 1, and nothing
+else is checked against a ledger that cannot describe the page.
 
 ## Verify the artifact, not the plan (CLAUDE.md trap 6)
 
 `generate_dashboard.py` writes a ledger beside the artifact (`views/dashboard_coverage.json`)
-saying where it placed each record and what every filtered list holds. That ledger is a
+saying where it placed each record and what each list counted past its fold. That ledger is a
 CLAIM. This check reads the STORES for what exists, the LEDGER for what the renderer
 believes it did, and the HTML for what is actually on the page — and fails on any
 disagreement among the three. It prints `covered N of M` and refuses to be green when that
@@ -140,8 +104,7 @@ Plants: render a network line above `section.first` (`TOP REGION GREW`); drop `n
 
 No artifact and no ledger: nothing has been generated yet → `NOT CHECKED`, exit 0 (a new
 profile is not nagged). An artifact with NO ledger: generated by a renderer that keeps
-none → FAIL, regenerate. A ledger with no `filters` block: generated by a renderer older
-than the filters (0.36.0) → FAIL, regenerate. A ledger whose window does not name today's
+none → FAIL, regenerate. A ledger whose window does not name today's
 date is still checked against its OWN generation day — staleness is check_dashboard_fresh's
 dimension.
 
@@ -158,7 +121,6 @@ import collections
 import datetime
 import hashlib
 import html as _html
-import importlib
 import json
 import os
 import re
@@ -170,7 +132,11 @@ import _tree                                                        # noqa: E402
 import channels_due as _cd                                          # noqa: E402
 import knowledge as _kn                                             # noqa: E402
 import precondition as _pre                                         # noqa: E402
-import dashboard_actions as _actions                                # noqa: E402
+from coverage_checks.folds import check_folds                       # noqa: E402
+from coverage_checks.picks import check_picks                       # noqa: E402
+from coverage_checks.script import check_scripts                    # noqa: E402
+from coverage_checks.today_gaps import check_today, ledger_predates_today  # noqa: E402
+from dashboard.markup import THEIRS_SITES                           # noqa: E402
 import validate_data as _vd                                         # noqa: E402
 
 LEDGER_NAME = "dashboard_coverage.json"
@@ -188,30 +154,11 @@ _REF_RE = re.compile(r'data-ref="([^"]+)"')
 _ID_RE = re.compile(r'\sid="([^"]+)"')
 _HREF_RE = re.compile(r'\shref="#([^"]+)"')
 _LABEL_FOR_RE = re.compile(r'<label for="([^"]+)"')
-_RADIO_RE = re.compile(r'<input type="radio" name="([^"]+)" id="([^"]+)" class="fctl"( checked)?>')
-_ROUTER_LABEL_RE = re.compile(r'<span class="ct"><label for="([^"]+)"[^>]*>(\d+)</label></span>')
 _FULL_REC_RE = re.compile(r'data-rec="([^"]+)" data-full="1"')
 _MORE_RE = re.compile(r'data-more="([^"]+):(\d+)"')
-# A filtered list's container, a row's opening tag, and a filter label.
-_FLIST_RE = re.compile(r'<div class="[^"]*\bflist\b[^"]*" data-flist="([^"]+)">')
+# A row's opening tag, and its data attributes.
 _ROW_RE = re.compile(r'<(\w+)\b([^>]*?)\sdata-(rec|ref)="([^"]+)"([^>]*)>')
 _DATA_ATTR_RE = re.compile(r'\sdata-([a-z][a-z0-9-]*)="([^"]*)"')
-_LABEL_RE = re.compile(r'<label for="([^"]+)" data-flabel="([^"]+)">(.*?)</label>', re.S)
-_DIV_RE = re.compile(r'<div\b|</div>')
-# ⭐ dev/audit 2026-09-03 — the digit group is OPTIONAL on purpose: render_router_rows()
-# renders an empty `<span class="ct2"></span>` when n_flight is 0 (no "N in flight" text at
-# all), which is a legitimate, common state, not markup drift. The old pattern hardcoded the
-# digit as required, so this same "0 in flight" case matched nothing and the ROUTER DISAGREES
-# comparison below silently never ran for it — a router that claimed 0 while the opportunity
-# list actually held some in-flight members would have passed CLEAN. Matching the span
-# unconditionally (digit optional) closes that gap too, not just the loud-failure one.
-_ROUTER_FLIGHT_RE = re.compile(r'<span class="ct2">(?:(\d+) in flight)?</span><a class="ph" '
-                               r'href="#phase-pipeline"')
-# The anchor alone, with none of the ct2/flight markup around it required. Used only to tell
-# apart "the pipeline phase legitimately collapsed to nothing" (this doesn't match either —
-# NOT CHECKED, the row plain doesn't exist) from "the row is there but its in-flight markup
-# changed shape" (this matches, _ROUTER_FLIGHT_RE above does not — a GAP, never a silent skip).
-_ROUTER_PIPELINE_ANCHOR_RE = re.compile(r'<a class="ph" href="#phase-pipeline"')
 # dev #820 / public #175 (design 2.4, N14): the process-state block and the conservation line. The page
 # renders `lifecycle.process_report`'s own lines; this check recomputes the report from the stores at the
 # page's own generation time and holds the page to it.
@@ -235,10 +182,6 @@ _ALERT_EL_RE = re.compile(r'<div class="palert[^"]*" data-pipeline-alert="[^"]*"
 _SCRIPT_BLOCK_RE = re.compile(r'<script\b.*?</script>', re.S | re.I)
 _ALERT_GLYPH = "⚠ "
 _ALERT_TAIL = " — details"
-# The modules a ledger may name as a vocabulary's owner. A source outside this list is a
-# gap, not an import: the check resolves enums, it does not run arbitrary code.
-_ENUM_MODULES = frozenset({"validate_data", "your_move", "applying", "precondition",
-                           "knowledge", "channels_due", "conversations"})
 
 
 def _jsonl(root, name):
@@ -375,49 +318,6 @@ def _is_terminal(meta, terminal, today):
     return False        # preps and channels never end by omission
 
 
-def _resolve_enum(source):
-    """The vocabulary a ledger names, resolved from the owning module — or None."""
-    mod, _sep, attr = str(source).partition(".")
-    if mod not in _ENUM_MODULES or not attr:
-        return None
-    try:
-        return set(getattr(importlib.import_module(mod), attr))
-    except (ImportError, AttributeError, TypeError):
-        return None
-
-
-def _flist_regions(page):
-    """{set name: html inside its `.flist` container}. Depth-counted over <div> tags so a
-    row's own nested markup never ends the region early."""
-    out = {}
-    for m in _FLIST_RE.finditer(page):
-        depth, pos, end = 1, m.end(), None
-        for t in _DIV_RE.finditer(page, m.end()):
-            depth += 1 if t.group() == "<div" else -1
-            if depth == 0:
-                end = t.start()
-                break
-        out[_html.unescape(m.group(1))] = page[pos:end] if end is not None else page[pos:]
-    return out
-
-
-def _rows_in(region, kinds=("rec",)):
-    """[(key, {data-attr: value})] for every `[data-rec]` row in a region, in order. With
-    `kinds=("rec", "ref")` the reference rows too, as (key, attrs, kind) triples via
-    `_rows_with_kind`."""
-    return [(k, a) for k, a, kind in _rows_with_kind(region) if kind in kinds]
-
-
-def _rows_with_kind(region):
-    """[(key, {data-attr: value}, 'rec'|'ref')] for every primary and reference row."""
-    rows = []
-    for m in _ROW_RE.finditer(region):
-        attrs = dict((k, _html.unescape(v))
-                     for k, v in _DATA_ATTR_RE.findall(" " + m.group(2) + " " + m.group(5)))
-        rows.append((_html.unescape(m.group(4)), attrs, m.group(3)))
-    return rows
-
-
 def rec_id(key):
     """The id a primary row for `key` must carry - the first 12 hex digits of sha1(key),
     computed HERE independently of generate_dashboard.rec_id on purpose: a renderer that
@@ -425,24 +325,7 @@ def rec_id(key):
     return "rec-" + hashlib.sha1(str(key).encode("utf-8")).hexdigest()[:12]
 
 
-def _count_label(shown, pop):
-    return "(%d)" % pop if shown == pop else "(%d shown of %d)" % (shown, pop)
-
-
 _ID_ATTR_RE = re.compile(r'\sid="([^"]*)"')
-
-
-def _tokens(attrs, dim):
-    """The cross-cut tokens a row/member carries for `dim` (`data-<dim>-also`)."""
-    return set((attrs.get(dim + "-also") or "").split())
-
-
-def _has(vals, dim, value, cross):
-    """Does a row/member (a {dim: value, dim-also: tokens} dict) carry `value` for `dim`? A
-    cross-cut value is looked up in `data-<dim>-also`, every other value in `data-<dim>`."""
-    if value in cross:
-        return value in _tokens(vals, dim)
-    return vals.get(dim) == value
 
 
 def _element_span(page, m):
@@ -456,45 +339,6 @@ def _element_span(page, m):
             end = m.end() + t.end()
             break
     return page[m.start():end if end is not None else len(page)]
-
-
-# ⭐ SCRIPT (OWNER REQUEST 2026-10-13, "Copy as prompt"). The page was script-free by choice
-# (design r3 Prior art: the page survives being saved and mailed; every filter is CSS). The
-# owner chose ONE script: the draft rows' copy button. So the rule is an allowlist of exactly
-# that one, keyed by its marker, never "any script": a second script, an external `src`, an
-# inline `on…=` handler, a `javascript:` URL, or a network or storage API inside the allowed
-# one is a gap. The script must only copy text that is already on the page.
-_ALLOWED_SCRIPT_OPEN = '<script data-dashboard-script="copy-as-prompt">'
-_SCRIPT_OPEN_RE = re.compile(r"<script\b[^>]*>", re.I)
-_SCRIPT_BODY_RE = re.compile(r"<script\b[^>]*>(.*?)</script\s*>", re.I | re.S)
-_INLINE_HANDLER_RE = re.compile(r"<[a-z][^>]*\son[a-z]+\s*=", re.I)
-_SCRIPT_FORBIDDEN = ("fetch(", "XMLHttpRequest", "sendBeacon", "WebSocket", "EventSource",
-                     "import(", "localStorage", "sessionStorage", "indexedDB", "document.cookie",
-                     "window.open", "location.", "postMessage", "eval(", "new Function")
-
-
-def check_scripts(page):
-    """(gaps, summary) — at most ONE script, the allowlisted copy-as-prompt one."""
-    gaps = []
-    opens = _SCRIPT_OPEN_RE.findall(page)
-    others = [o for o in opens if o != _ALLOWED_SCRIPT_OPEN]
-    for o in others:
-        gaps.append("SCRIPT — %s is not the one script this page allows (%s); the page is "
-                    "otherwise script-free" % (o[:80], _ALLOWED_SCRIPT_OPEN))
-    n_allowed = len(opens) - len(others)
-    if n_allowed > 1:
-        gaps.append("SCRIPT — the copy-as-prompt script appears %d times; exactly one is allowed"
-                    % n_allowed)
-    for body in _SCRIPT_BODY_RE.findall(page):
-        for tok in _SCRIPT_FORBIDDEN:
-            if tok in body:
-                gaps.append("SCRIPT — the page's script uses %r; it may only copy text already "
-                            "on the page (no network, no storage, no navigation)" % tok)
-    if _INLINE_HANDLER_RE.search(page):
-        gaps.append("SCRIPT — an inline event handler attribute (on…=) is on the page")
-    if re.search(r'href="\s*javascript:', page, re.I):
-        gaps.append("SCRIPT — a javascript: URL is on the page")
-    return gaps, "script: %d (allowed: the copy-as-prompt script, at most once)" % len(opens)
 
 
 def _plain(fragment):
@@ -674,7 +518,12 @@ NO_CLI_PATTERNS = (re.compile(r"\brecord\.py\b"), re.compile(r"\bpython3\b"),
 DATA_LINE_PREFIXES = ("> ", "Draft key: ", "Title: ")
 # attributes whose value is a record key or a link, which may carry the candidate's own title (`draft:<title>`)
 _KEY_ATTRS = frozenset({"data-rec", "data-ref", "data-subject", "data-cap-key", "id", "href", "for", "name",
-                        "data-flist", "data-more", "data-full", "data-theirs"})
+                        "data-more", "data-full", "data-theirs"})
+# 2026-11-19 (dashboard-redesign D2, design §6.1): a tick box (`class="pick"`) and a group button (`class="pick-go"`)
+# carry a record key (`data-pick`), the Python-written record line with the reader's label (`data-line`), the block's
+# head and tail (`data-head`, `data-tail`) and the reader's label (`aria-label`): keys and the candidate's own words,
+# never engine prose. Skipped on those two elements only; visible text and every other attribute are still scanned.
+_PICK_ATTRS = {"pick": ("data-pick", "data-line", "aria-label"), "pick-go": ("data-head", "data-tail")}
 _VOID_TAGS = frozenset("area base br col embed hr img input link meta param source track wbr".split())
 
 
@@ -701,11 +550,12 @@ class _Scrub(HTMLParser):
                 self.wraps.append("<%s> inside data-theirs" % tag)
             self._push(tag)
             return
+        skip = _PICK_ATTRS.get(a.get("class"), ())
         for k, v in attrs:
-            if k not in _KEY_ATTRS and v:
+            if k not in _KEY_ATTRS and k not in skip and v:
                 self.engine.append(v)
         if "data-theirs" in a:
-            if a["data-theirs"] not in _actions.THEIRS_SITES:
+            if a["data-theirs"] not in THEIRS_SITES:
                 self.unknown_sites.append(a["data-theirs"])
             self.theirs_spans += 1
             self._push(tag)
@@ -981,283 +831,6 @@ def check_links(page, exp):
         n_ids, n_refs, len(id_set))
 
 
-def check_filters(page, ledger, exp, remainders, more_on_page=None):
-    """(gaps, summary_lines) for MEMBERSHIP UNDER NARROWING — DIMENSION COMPLETE and
-    COUNT AGREES over every filtered list the ledger declares — and for REACHABLE:
-    TRIMMED BEHIND A FILTER and UNREACHABLE UNDER FILTER (public #54), plus (design r3) the
-    cross-cut, degeneracy, radio and default contracts described in the module docstring."""
-    more_on_page = more_on_page or {}
-    gaps, lines = [], []
-    groups = ledger.get("filters")
-    if groups is None:
-        return ["LEDGER PREDATES FILTERS — views/%s has no `filters` block, so the page was "
-                "generated by a renderer older than the per-section filters; regenerate with "
-                "the current generate_dashboard.py" % LEDGER_NAME], []
-    regions = _flist_regions(page)
-    for name in sorted(set(regions) - set(groups)):
-        gaps.append("FILTERED LIST NOT IN LEDGER — the page carries a `.flist` %r the ledger "
-                    "declares nothing about" % name)
-    for name in sorted(set(groups) - set(regions)):
-        gaps.append("FILTERED LIST NOT ON PAGE — the ledger declares list %r and the page "
-                    "has no `.flist` for it" % name)
-    labels = {}
-    for fid, spec, text in _LABEL_RE.findall(page):
-        try:
-            set_name, dim, value, sh, pop = spec.split(":")
-            labels[(set_name, dim, value)] = (int(sh), int(pop), re.sub(r"<[^>]+>", "", text).strip())
-        except ValueError:
-            gaps.append("LABEL UNREADABLE — data-flabel=%r on label %r" % (spec, fid))
-    radios = collections.defaultdict(list)
-    for rname, rid, chk in _RADIO_RE.findall(page):
-        radios[_html.unescape(rname)].append((_html.unescape(rid), bool(chk)))
-    need_note = False
-    n_dims = n_labels = 0
-    for name in sorted(set(groups) & set(regions)):
-        g = groups[name]
-        dims = g.get("dims") or {}
-        members = g.get("members") or {}
-        refs = g.get("refs") or {}
-        shown_claim = list(g.get("shown") or [])
-        shown_refs_claim = list(g.get("shown_refs") or [])
-        vocab, cross, excl = {}, {}, {}
-        # DIMENSION COMPLETE, ledger side: the vocabulary IS the enum source's.
-        for dim, spec in sorted(dims.items()):
-            n_dims += 1
-            declared = list(spec.get("values") or [])
-            resolved = _resolve_enum(spec.get("source"))
-            if resolved is None:
-                gaps.append("VOCABULARY SOURCE UNRESOLVED — list %s dimension %s names %r, "
-                            "which is not a constant in an owning module"
-                            % (name, dim, spec.get("source")))
-            elif set(declared) != resolved or len(set(declared)) != len(declared):
-                gaps.append("VOCABULARY DRIFT — list %s dimension %s declares %s but %s is %s"
-                            % (name, dim, sorted(declared), spec.get("source"),
-                               sorted(resolved)))
-            vocab[dim] = set(declared)
-            cross[dim] = set(spec.get("cross") or [])
-            if not cross[dim] <= vocab[dim]:
-                gaps.append("CROSS-CUT OUTSIDE VOCABULARY — list %s dimension %s declares "
-                            "cross-cut %s that is not one of its values"
-                            % (name, dim, sorted(cross[dim] - vocab[dim])))
-            excl[dim] = vocab[dim] - cross[dim]
-
-        def _ledger_rows(rows, what):
-            for key, vals in sorted(rows.items()):
-                if key not in exp:
-                    gaps.append("FILTER %s NOT A RECORD — list %s counts %s, and no such "
-                                "record exists" % (what, name, key))
-                for dim in dims:
-                    if vals.get(dim) not in excl.get(dim, set()):
-                        gaps.append("MEMBER VALUE OUTSIDE VOCABULARY — list %s %s %s has "
-                                    "%s=%r" % (name, what.lower(), key, dim, vals.get(dim)))
-                    bad = _tokens(vals, dim) - cross.get(dim, set())
-                    if bad:
-                        gaps.append("MEMBER VALUE OUTSIDE VOCABULARY — list %s %s %s carries "
-                                    "cross-cut %s the dimension does not declare"
-                                    % (name, what.lower(), key, sorted(bad)))
-        _ledger_rows(members, "MEMBER")
-        _ledger_rows(refs, "REF")
-        # DIMENSION COMPLETE, page side: every row, every dimension, a vocabulary value that
-        # matches what the ledger claimed for it.
-        all_rows = _rows_with_kind(regions[name])
-        row_keys = [k for k, _a, t in all_rows if t == "rec"]
-        ref_keys = [k for k, _a, t in all_rows if t == "ref"]
-        row_vals, ref_vals = {}, {}
-        for key, attrs, kind in all_rows:
-            ledger_rows, store = (members, row_vals) if kind == "rec" else (refs, ref_vals)
-            if key not in ledger_rows:
-                gaps.append("ROW NOT A MEMBER — list %s renders %s%s, which its ledger entry "
-                            "does not count" % (name, key, " (a reference)" if kind == "ref" else ""))
-                continue
-            store[key] = {}
-            for dim in dims:
-                v = attrs.get(dim)
-                if v is None:
-                    gaps.append("DIMENSION MISSING — list %s row %s carries no data-%s, so it "
-                                "is visible only under `all`" % (name, key, dim))
-                elif v not in excl.get(dim, set()):
-                    gaps.append("VALUE OUTSIDE VOCABULARY — list %s row %s has data-%s=%r"
-                                % (name, key, dim, v))
-                elif v != ledger_rows[key].get(dim):
-                    gaps.append("ROW DISAGREES WITH LEDGER — list %s row %s has data-%s=%r; "
-                                "the ledger says %r" % (name, key, dim, v,
-                                                        ledger_rows[key].get(dim)))
-                store[key][dim] = v
-                if _tokens(attrs, dim) != _tokens(ledger_rows[key], dim):
-                    gaps.append("ROW DISAGREES WITH LEDGER — list %s row %s has data-%s-also=%r;"
-                                " the ledger says %r" % (name, key, dim,
-                                                         attrs.get(dim + "-also"),
-                                                         ledger_rows[key].get(dim + "-also")))
-                if _tokens(attrs, dim):
-                    store[key][dim + "-also"] = attrs.get(dim + "-also")
-        if sorted(row_keys) != sorted(shown_claim):
-            gaps.append("SHOWN DISAGREES — list %s: the ledger says %d row(s) shown, the page "
-                        "carries %d" % (name, len(shown_claim), len(row_keys)))
-        if sorted(ref_keys) != sorted(shown_refs_claim):
-            gaps.append("SHOWN DISAGREES — list %s: the ledger says %d reference row(s) shown, "
-                        "the page carries %d" % (name, len(shown_refs_claim), len(ref_keys)))
-        k_rem = int(remainders.get(name) or 0)
-        if len(members) != len(row_keys) + k_rem:
-            gaps.append("POPULATION DOES NOT RECONCILE — list %s counts %d member(s) but the "
-                        "page carries %d row(s) and the remainder trims %d"
-                        % (name, len(members), len(row_keys), k_rem))
-        # REACHABLE, ledger and page side: a filtered list never trims. Either signal alone
-        # is a gap — the ledger's remainder count and the page's "+K more" line are two
-        # claims, and a regression may carry one without the other.
-        k_page = more_on_page.get(name)
-        if k_rem or k_page:
-            gaps.append("TRIMMED BEHIND A FILTER — list %s trims %s record(s) into a "
-                        "remainder (ledger +%s, page +%s); a member of a filtered list is "
-                        "reachable only if rendered, so a filtered list has no remainder "
-                        "(ADR-024 REACHABLE, public #54)"
-                        % (name, k_rem or k_page, k_rem, "none" if k_page is None else k_page))
-        # COUNT AGREES: every label, both numbers, against the rows and the members. Reference
-        # rows count: a chip that advertises a reference must be able to show it.
-        n_rows_all = len(row_keys) + len(ref_keys)
-        n_pop_all = len(members) + len(refs)
-        pop_rows = list(members.values()) + list(refs.values())
-        shown_rows = list(row_vals.values()) + list(ref_vals.values())
-        for dim in sorted(dims):
-            cr = cross.get(dim, set())
-            expect = {"all": (n_rows_all, n_pop_all)}
-            for v in vocab[dim]:
-                pop = sum(1 for m in pop_rows if _has(m, dim, v, cr))
-                sh = sum(1 for m in shown_rows if _has(m, dim, v, cr))
-                if pop:
-                    expect[v] = (sh, pop)
-            # REACHABLE, chip side: shown == population for every chip, from the HTML rows
-            # and the ledger members independently — never from the label, which may
-            # honestly say "(2 shown of 17)" and still describe an unreachable fifteen.
-            for v, (sh, pop) in sorted(expect.items()):
-                if sh != pop:
-                    gaps.append("UNREACHABLE UNDER FILTER — list %s chip %s=%s counts %d "
-                                "member(s) and the page renders %d of them; a member with no "
-                                "row is reachable under no filter state (public #58 point 3)"
-                                % (name, dim, v, pop, sh))
-            # DEGENERACY: a value whose HTML-recounted row set IS `All`'s selects nothing
-            # `All` does not. Its chip is not drawn (its RADIO still is); drawing it is a gap.
-            degenerate = {v for v, (sh, _p) in expect.items()
-                          if v != "all" and n_rows_all and sh == n_rows_all}
-            drawn_others = [v for v in expect if v != "all" and (name, dim, v) in labels]
-            gname = "f-%s-%s" % (name, dim)
-            have_radios = {rid for rid, _c in radios.get(gname, [])}
-            for v in sorted(expect):
-                if "%s-%s" % (gname, v) not in have_radios:
-                    gaps.append("RADIO MISSING — list %s dimension %s has %d member(s) with "
-                                "value %r and no radio %s-%s; a suppressed chip keeps its "
-                                "radio so a router label can still activate it"
-                                % (name, dim, expect[v][1], v, gname, v))
-            for v, (sh, pop) in sorted(expect.items()):
-                lab = labels.get((name, dim, v))
-                if lab is None:
-                    if v in degenerate:
-                        continue            # suppressed: its rows ARE `All`'s (recounted above)
-                    if v == "all" and not drawn_others and all(
-                            x in degenerate for x in expect if x != "all"):
-                        continue            # a dimension left with only `All` draws no bar
-                    gaps.append("LABEL MISSING — list %s dimension %s has %d member(s) with "
-                                "value %r and no chip for it" % (name, dim, pop, v))
-                    continue
-                n_labels += 1
-                if v in degenerate:
-                    gaps.append("DEGENERATE CHIP DRAWN — list %s chip %s=%s selects the very "
-                                "rows `All` does (%d of %d); a chip that narrows nothing is "
-                                "not drawn" % (name, dim, v, sh, n_rows_all))
-                if v == "all" and not drawn_others:
-                    gaps.append("DEGENERATE CHIP DRAWN — list %s dimension %s draws only "
-                                "`All`; a dimension left with only `All` is not drawn"
-                                % (name, dim))
-                l_sh, l_pop, text = lab
-                if (l_sh, l_pop) != (sh, pop):
-                    gaps.append("COUNT DISAGREES — list %s chip %s=%s says %d shown of %d; the "
-                                "page carries %d row(s) and the ledger %d member(s) with it"
-                                % (name, dim, v, l_sh, l_pop, sh, pop))
-                if not text.endswith(_count_label(l_sh, l_pop)):
-                    gaps.append("LABEL TEXT DISAGREES — list %s chip %s=%s reads %r but its "
-                                "counts are %d shown of %d" % (name, dim, v, text, l_sh, l_pop))
-            for v in sorted(vocab[dim]):
-                if v not in expect and (name, dim, v) in labels:
-                    gaps.append("LABEL WITHOUT MEMBERS — list %s has a chip for %s=%s and no "
-                                "member carries it" % (name, dim, v))
-            # The SUM is over the PARTITION: a cross-cut option overlaps it by definition.
-            sums = [sum(x[i] for v, x in expect.items() if v != "all" and v not in cr)
-                    for i in (0, 1)]
-            if tuple(sums) != expect["all"]:
-                gaps.append("COUNTS DO NOT SUM — list %s dimension %s: per-value counts sum to "
-                            "%d shown of %d, `all` is %d of %d"
-                            % (name, dim, sums[0], sums[1], expect["all"][0], expect["all"][1]))
-            # DEFAULT: exactly one checked radio, and it is the declared order's first DRAWN
-            # value (recomputed from the HTML rows), else `All`.
-            order = list((g.get("defaults") or {}).get(dim, {}).get("order") or [])
-            checked = [rid for rid, c in radios.get(gname, []) if c]
-            want = next((v for v in order if v in expect and v != "all" and v not in degenerate),
-                        "all")
-            if len(checked) != 1:
-                gaps.append("DEFAULT NOT UNIQUE — list %s dimension %s has %d checked radio(s); "
-                            "exactly one must carry `checked` (a default with nothing checked "
-                            "renders the unfiltered list with no chip selected)"
-                            % (name, dim, len(checked)))
-            elif checked[0] != "%s-%s" % (gname, want):
-                gaps.append("DEFAULT WRONG — list %s dimension %s opens on %s; the declared "
-                            "order %s resolves to %r on this page's rows"
-                            % (name, dim, checked[0][len(gname) + 1:], order or ["all"], want))
-            if order and order[0] not in expect and want != order[0]:
-                need_note = True
-    if need_note and 'class="sub fdefault"' not in page:
-        gaps.append("DEFAULT UNANNOUNCED — a filter's first default had no members and the "
-                    "page fell back, but says nowhere that it did (a default that quietly did "
-                    "not apply is the defect; design r2 §5)")
-    # The router's pipeline in-flight number and the opportunity rows it must equal. dev #494:
-    # `state` left the opportunity bar, so the comparison is against the HTML rows that do NOT
-    # carry the `your-move` cross-cut (needs-you's complement), recounted from the page.
-    # ⭐ A NO-MATCH here must be LOUD, never a silent skip (dev/audit 2026-09-03) — a router
-    # row can legitimately match nothing (the pipeline phase collapsed to nothing, ZERO
-    # COLLAPSES), but it can also fail to match because a later feature reshaped the row's
-    # markup, and those two cases must not look the same.
-    m = _ROUTER_FLIGHT_RE.search(page)
-    if m:
-        n_router = int(m.group(1) or 0)
-        opp_rows = _rows_in(regions.get("opportunities", ""))
-        n_label = sum(1 for _k, a in opp_rows if "your-move" not in _tokens(a, "pursuit"))
-        if n_router != n_label:
-            gaps.append("ROUTER DISAGREES — the pipeline row says %d in flight; the "
-                        "opportunity list's rows outside `Your move` number %d"
-                        % (n_router, n_label))
-    elif _ROUTER_PIPELINE_ANCHOR_RE.search(page):
-        gaps.append("ROUTER ROW UNRECOGNIZED — the page links #phase-pipeline but its "
-                    "in-flight markup does not match the shape this check knows "
-                    "(class=\"ct2\">...</span> immediately before the link); the router's "
-                    "count was NOT CHECKED against the opportunity list")
-    else:
-        lines.append("filters: router in-flight count NOT CHECKED — no #phase-pipeline row "
-                     "on the page (the pipeline phase has collapsed to nothing)")
-    # A router count that is a LABEL for a filter radio promises the population that radio
-    # selects (design r3 R540): its number must equal the rows the radio shows.
-    n_router_labels = 0
-    for target, num in _ROUTER_LABEL_RE.findall(page):
-        target = _html.unescape(target)
-        hit = None
-        for gname_, g_ in groups.items():
-            for dim_ in (g_.get("dims") or {}):
-                pre = "f-%s-%s-" % (gname_, dim_)
-                if target.startswith(pre) and gname_ in regions:
-                    hit = (gname_, dim_, target[len(pre):])
-        if hit is None:
-            continue                  # LABEL TARGET UNRESOLVED (check_links) owns a bad id
-        gname_, dim_, value = hit
-        cr = set(((groups[gname_].get("dims") or {}).get(dim_) or {}).get("cross") or [])
-        rows_ = [dict(a) for _k, a, _t in _rows_with_kind(regions[gname_])]
-        n_rows = sum(1 for a in rows_ if _has(a, dim_, value, cr))
-        n_router_labels += 1
-        if int(num) != n_rows:
-            gaps.append("ROUTER DISAGREES — a router count of %s is a label for %s, which "
-                        "selects %d row(s) of list %s" % (num, target, n_rows, gname_))
-    lines.append("filters: %d list(s) · %d dimension(s) · %d label(s) checked · %d router "
-                 "label(s)" % (len(set(groups) & set(regions)), n_dims, n_labels,
-                               n_router_labels))
-    return gaps, lines
-
-
 _WARM_RE = re.compile(r'<div class="opp-warm" data-warm="([a-z-]+)"')
 _OPP_CARD_RE = re.compile(r'\bclass="(?:[^"]*\s)?opp(?:\s[^"]*)?"')
 
@@ -1340,6 +913,9 @@ def check(root, verbose=False):
         return ["LEDGER VOCABULARY DRIFT — the ledger's terminal set %s is not validate_data's "
                 "%s; the page was generated by a renderer with a different vocabulary"
                 % (sorted(terminal), sorted(_vd.TERMINAL_OPP_STATUSES))], [], []
+    predates = ledger_predates_today(ledger)
+    if predates:
+        return predates, [], []
     try:
         with open(html_path, encoding="utf-8") as fh:
             page = fh.read()
@@ -1409,13 +985,6 @@ def check(root, verbose=False):
         if k_ledger is None or k_ledger < len(members):
             gaps.append("REMAINDER MISCOUNT — set %s: ledger says +%s more but %d record(s) "
                         "rest on that count" % (set_name, k_ledger, len(members)))
-        # REACHABLE, record side: a record whose FINAL placement is a filtered list's
-        # remainder is on no part of the page and reachable under no chip.
-        if set_name in (ledger.get("filters") or {}):
-            for key in members:
-                gaps.append("TRIMMED BEHIND A FILTER — %s rests in list %s's remainder and "
-                            "renders nowhere; a filtered list has no remainder (ADR-024 "
-                            "REACHABLE, public #54)" % (key, set_name))
     # Every "+K more" the ledger recorded must be on the page with the same K, and vice
     # versa — whichever side disagrees, the reader is being told a wrong count.
     for set_name in sorted(set(remainders) | set(more_on_page)):
@@ -1445,13 +1014,18 @@ def check(root, verbose=False):
             if d is None or d < today or d > limit:
                 gaps.append("PREP IN FULL OUTSIDE THE WINDOW — %s (call date %s) renders in "
                             "full; the window is %s..%s" % (key, d, today, limit))
-    # MEMBERSHIP UNDER NARROWING — the filtered lists.
-    f_gaps, f_lines = check_filters(page, ledger, exp, remainders, more_on_page)
-    gaps.extend(f_gaps)
     l_gaps, l_line = check_links(page, exp)
     gaps.extend(l_gaps)
-    s_gaps, _s_line = check_scripts(page)
+    s_gaps, _s_line = check_scripts(page, ledger, exp)
     gaps.extend(s_gaps)
+    # dashboard-redesign E (design §3.6, §4, §6.1): the page checks of `coverage_checks/`, each pure.
+    td_line = f_line = pk_line = "today, folds, picks: NOT CHECKED"
+    try:
+        (td_gaps, td_line), (f_gaps, f_line), (pk_gaps, pk_line) = (
+            check_today(page, ledger, exp), check_folds(page, ledger, exp), check_picks(page, ledger, exp))
+        gaps.extend(td_gaps + f_gaps + pk_gaps)
+    except Exception as e:                                       # noqa: BLE001 - said, never a pass
+        NOT_CHECKED.append("today, folds, picks (the page could not be walked: %s: %s)" % (type(e).__name__, e))
     w_gaps, w_line = check_warm_path(page, root, today)
     gaps.extend(w_gaps)
     p_gaps, p_line = check_process_block(page, root)
@@ -1472,7 +1046,6 @@ def check(root, verbose=False):
              "%d terminal · %d elsewhere (generated %s, prep window %d days)"
              % (n_placed, n_exp, counts["rendered"], counts["remainder"],
                 counts["terminal"], counts["elsewhere"], today.isoformat(), horizon)]
-    lines.extend(f_lines)
     lines.append(l_line)
     lines.append(w_line)
     lines.append(p_line)
@@ -1480,7 +1053,7 @@ def check(root, verbose=False):
     lines.append(n_line)
     lines.append(c_line)
     lines.append(st_line)
-    lines.append(pc_line)
+    lines.extend([pc_line, td_line, f_line, pk_line])
     if verbose:
         lines.extend("  " + p for p in placements)
     # EXACTLY ONCE is a GAP since design r3 (check_links); nothing is advisory any more. The
@@ -1510,8 +1083,7 @@ def main():
     if not gaps:
         print("  CLEAN — every record is rendered, counted, or terminal; nothing renders "
               "outside its window; every record has ONE primary row and every reference and "
-              "link resolves; every filtered list is whole under every filter and every chip "
-              "shows every row it counts")
+              "link resolves")
         return 0
     print("\n" + "=" * 72)
     print("%d GAP(S)" % len(gaps))

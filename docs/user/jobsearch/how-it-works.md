@@ -243,9 +243,12 @@ engagement. See `record.py proposal` in [Your data](your-data.md).
 
 ### On the dashboard
 
-Nothing was added to the top of the dashboard. The network is a **Network** list below Drafts, with its own entry in
-the jump bar, holding only what you act on: companies to look into, chats to record, suggestions to confirm, drafts
-the plugin could not see you send, and proposals to finish. The numbers (reach-outs
+Since 0.89.0 the dashboard opens with **Today**, at most five things that need you now, each linking to its row; a
+reply someone is waiting for comes first. When nothing needs you, Today is one sentence. The network is a **Network**
+list below Drafts, with its own entry in the jump bar, holding only what you act on, in groups: *They wrote back*, *To
+record*, *Applied, no one contacted yet*, *Awaiting a reply* (split into they accepted, went quiet recently, quiet for
+a long time, and not checked yet), *Introductions* and *Relationships due this week*. Every list shows its first few
+rows, folds the next 20 into one line each, and counts the rest. The numbers (reach-outs
 against the budget, chats booked and held, introductions) live in the weekly review and in
 `views/network_strategy.md`. A run that found no roles but worked your network is not a quiet run, and a profile with
 no applications is not a stalled one.
@@ -582,9 +585,9 @@ when read.
 channel or person is shown in full in exactly one list. Anywhere else it matters, you get a
 one-line reference that links back to that row, so two copies can never disagree. Because the
 page is generated from your data, a correction to a draft is made in the data — in a session, with a
-before-and-after and your yes — never by editing the page. Each draft's **Copy as prompt** button
-copies a ready-made request naming that draft, so you only add what should change and paste it in
-your session.
+before-and-after and your yes — never by editing the page. Since 0.89.0 each row you can act on has a
+tick box and each list one button: it copies one request naming the rows you ticked, and you paste
+it in your session, where the coordinator records each one and asks you what it needs.
 
 **When it does not know, it says `unknown`.** A deliberate `unknown` is countable — a report can
 tell you "12 unclassified". A guess folded quietly into a bucket cannot.
