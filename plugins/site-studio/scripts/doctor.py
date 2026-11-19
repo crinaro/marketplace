@@ -123,14 +123,14 @@ def _marker_check(repo):
     if not os.path.isfile(path):
         return ("site.json", False, "not found at %s" % path)
     try:
-        import siteconfig
+        from configschema import canonical
         with open(path, "r", encoding="utf-8", newline="") as fh:
-            state, reason = siteconfig.marker_state(fh.read())
+            state, reason = canonical.marker_state(fh.read())
     except (OSError, ImportError, UnicodeDecodeError) as e:
         return ("site.json", False, "cannot be read (%s)" % e)
-    if state == siteconfig.MARKER_OK:
+    if state == canonical.MARKER_OK:
         return ("site.json", True, "canonical marker")
-    if state == siteconfig.MARKER_ABSENT:
+    if state == canonical.MARKER_ABSENT:
         # a re-save cannot help a file site-studio never made: it is a site to adopt (dev #855)
         return ("site.json", False, UNMANAGED_SENTENCE)
     return ("site.json", False, "%s; re-save site.json" % reason)
@@ -225,27 +225,27 @@ def pages_line(repo, logged_in=True, budget_s=None, now=time.monotonic):
     if not logged_in or not slug:
         return "pages: NOT CHECKED (needs gh logged in and a publicRepo in site.json)"
     try:
-        import pages_check
-        import siteconfig
-        cfg = siteconfig.load(os.path.join(repo, "site", "site.json"))
+        from pagesaudit import ghget, reporting, runcheck, values
+        from configschema import model
+        cfg = model.load(os.path.join(repo, "site", "site.json"))
         deadline = now() + budget_s
 
         def get(path, paginate=False):
             left = deadline - now()
             if left <= 0:
-                raise pages_check.GhError("time budget spent")
-            saved = pages_check.GET_TIMEOUT
-            pages_check.GET_TIMEOUT = max(1, min(saved, left))
+                raise values.GhError("time budget spent")
+            saved = ghget.GET_TIMEOUT
+            ghget.GET_TIMEOUT = max(1, min(saved, left))
             try:
-                return pages_check._get(path, paginate)
+                return ghget._get(path, paginate)
             finally:
-                pages_check.GET_TIMEOUT = saved
+                ghget.GET_TIMEOUT = saved
 
         def sleep(seconds):
             time.sleep(max(0, min(seconds, deadline - now())))
 
-        items = pages_check.check(slug, cfg, get=get, sleep=sleep)
-        n = pages_check.counts(items)
+        items = runcheck.check(slug, cfg, get=get, sleep=sleep)
+        n = reporting.counts(items)
         extra = ", %d not checked" % n["not_checked"] if n["not_checked"] else ""
         return "pages: %d to resolve, %d waiting%s (run pages_check.py)" % (n["resolve"], n["wait"], extra)
     except Exception as e:  # PagesCheckError, a bad site.json, anything: one line, never a traceback
@@ -254,8 +254,8 @@ def pages_line(repo, logged_in=True, budget_s=None, now=time.monotonic):
 
 def _public_repo(repo):
     try:
-        import siteconfig
-        return siteconfig.load(os.path.join(repo, "site", "site.json")).publicRepo
+        from configschema import model
+        return model.load(os.path.join(repo, "site", "site.json")).publicRepo
     except Exception:
         return None
 

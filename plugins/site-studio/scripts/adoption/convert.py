@@ -16,9 +16,9 @@ import json
 import posixpath
 import re
 
-import content as site_content  # noqa: E402
+from contentmodel import grammar, keytables, layout  # noqa: E402
 import github_url  # noqa: E402
-import siteconfig  # noqa: E402
+from configschema import canonical, configkeys, diagnostics, model, treeschema, workcheck  # noqa: E402
 
 from adoption.base import Refused
 from adoption.dispose import apply_dispositions, conv_name
@@ -48,8 +48,8 @@ def _converted_dict(tree, data, paper, kind=None):
     labels, if any, are still in the form they were written in. Returns (dict, detect_resume result)."""
     resume = detect_resume(tree)
     d = dict(data)
-    d["schema"] = siteconfig.SCHEMA_MAX
-    d["engine"] = siteconfig.ENGINE_MARKER
+    d["schema"] = configkeys.SCHEMA_MAX
+    d["engine"] = configkeys.ENGINE_MARKER
     if kind in ("hub", "custom"):
         d["siteKind"] = kind
     if resume["md"]:
@@ -76,7 +76,7 @@ def label_conversions(work):
     labels = {"meta": {}, "groups": {}}
     existing = work.get("labels")
     if isinstance(existing, dict):
-        for part in siteconfig.LABEL_PARTS:
+        for part in configkeys.LABEL_PARTS:
             if isinstance(existing.get(part), dict):
                 labels[part].update(existing[part])
     for k in ("meta", "cardMeta", "groups"):
@@ -85,7 +85,7 @@ def label_conversions(work):
             continue
         plain = []
         for i, item in enumerate(v):
-            pl = None if isinstance(item, str) else siteconfig.pair_label(item)
+            pl = None if isinstance(item, str) else workcheck.pair_label(item)
             if pl is None:
                 plain.append(item)
                 continue
@@ -107,12 +107,12 @@ def normalise_values(d):
     `line` is what the commit lists, with any credential in the old URL removed."""
     out = []
     pr = d.get("publicRepo")
-    if isinstance(pr, str) and not siteconfig._REPO_RE.match(pr):
+    if isinstance(pr, str) and not configkeys._REPO_RE.match(pr):
         try:
             slug = github_url.slug(pr)
         except github_url.GithubUrlError:
             slug = None
-        if slug and siteconfig._REPO_RE.match(slug):
+        if slug and configkeys._REPO_RE.match(slug):
             d["publicRepo"] = slug
             out.append(("publicRepo", pr, slug, "publicRepo: %s -> %s" % (github_url.redact(pr), slug)))
     pu = d.get("previewUrl")
@@ -201,7 +201,7 @@ def view_key_rewrites(tree, portfolios):
             m = _FM_LINE.match(lines[i].rstrip("\r"))
             if m and m.group(1) == "view":
                 val = (m.group(2) or "").strip().strip("\"'")
-                if val not in siteconfig.PAGE_VIEWS + siteconfig.V4_PAGE_VIEWS:
+                if val not in configkeys.PAGE_VIEWS + configkeys.V4_PAGE_VIEWS:
                     out[path] = ("\n".join(lines[:i] + lines[i + 1:]), val)
                 break
     return out
@@ -271,7 +271,7 @@ def resume_field_conversion(tree, md):          # `tree` is anything with `.text
         line = lines[i]
         m = _FM_LINE.match(line)
         nxt_indented = i + 1 < end and lines[i + 1][:1] in (" ", "\t", "-")
-        if not m or m.group(1) in site_content.resume_page_keys(siteconfig.SCHEMA_MAX):
+        if not m or m.group(1) in keytables.resume_page_keys(configkeys.SCHEMA_MAX):
             keep.append(line)
         elif m.group(2) in (None, "") or nxt_indented or m.group(2)[:1] in "[{|>":
             left.append((m.group(1), "it holds a list or a map, which has no paragraph form"))
@@ -300,7 +300,7 @@ def pageless_folders(tree_files, kind="portfolio"):
     """The names of the `content/` folders that have no `page.md` (T9), the way the content layer
     reports them (`layout_problems`, so adopt and the build cannot disagree on what counts)."""
     return [p.path[len("content/"):].rstrip("/")
-            for p in site_content.layout_problems(tree_files, kind)
+            for p in layout.layout_problems(tree_files, kind)
             if p.found == "no page.md" and p.path.startswith("content/")]
 
 
@@ -323,7 +323,7 @@ def layout_changes(tree, choices, kind="portfolio"):
     writes, removed, listed = {}, [], []
     names = pageless_folders(TreeFiles(tree), kind)
     for name in sorted(choices or {}):
-        if name in site_content.RESERVED_PORTFOLIO_NAMES:
+        if name in keytables.RESERVED_PORTFOLIO_NAMES:
             raise Refused("content/%s is a reserved name (the build reads it as a page or as shared files, never as "
                           "a portfolio), so adopt never moves it and there is no decision to make about it; "
                           "choose a different folder name if you meant a new portfolio" % name)
@@ -439,8 +439,8 @@ def converted_site_files(tree, data, paper, folders=None, kind=None, only=None, 
                         if (v[0] == "archived" and want("archive")) or (v[0] == "draft" and want("draft")))
         apply_dispositions(view, files, gone, notes, chosen_d, persons, lambda p: conv_name(p, notes))
     try:
-        cfg = siteconfig.parse_data(d)
-    except siteconfig.SiteConfigError as e:
+        cfg = model.parse_data(d)
+    except diagnostics.SiteConfigError as e:
         if strict:
             raise Refused("the converted site.json is not valid: %s; if it names a setting you chose, "
                           "forget it with `adopt.py setting <name> --clear` and run adopt again" % e)
@@ -470,12 +470,12 @@ def converted_site_files(tree, data, paper, folders=None, kind=None, only=None, 
     if cfg is None:
         files["site/site.json"] = (json.dumps(d, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
         return files, notes
-    interps = site_content.interpretation_reasons(seen)
-    notes["schemaReasons"] = (siteconfig.schema_2_reasons(cfg, seen)
+    interps = grammar.interpretation_reasons(seen)
+    notes["schemaReasons"] = (treeschema.schema_2_reasons(cfg, seen)
                               + [(r.where, r.what, r.effect) for r in
-                                 siteconfig.schema_3_reasons(cfg, seen, interps)])
-    notes["schema"] = siteconfig.required_schema(cfg, seen, interps)
-    files["site/site.json"] = siteconfig.canonical_text(cfg, seen, interps).encode("utf-8")
+                                 treeschema.schema_3_reasons(cfg, seen, interps)])
+    notes["schema"] = treeschema.required_schema(cfg, seen, interps)
+    files["site/site.json"] = canonical.canonical_text(cfg, seen, interps).encode("utf-8")
     for key, old, _new, _line in notes["normalised"]:
         notes["olds"].append((key, old))
     for old, new, _line in notes["layout"]:
@@ -584,8 +584,8 @@ def _give_resume_sidecar(files):
     check, so a missing sidecar is not reported as a refusal the person cannot yet act on (the first publish
     after adopt asks for the PDF to be made again, by the resume skill)."""
     try:
-        cfg = siteconfig.parse_text(files["site/site.json"].decode("utf-8"))
-    except (KeyError, UnicodeDecodeError, siteconfig.SiteConfigError):
+        cfg = model.parse_text(files["site/site.json"].decode("utf-8"))
+    except (KeyError, UnicodeDecodeError, diagnostics.SiteConfigError):
         return
     pdf = cfg.resume.get("pdf") if cfg.resume else None
     if pdf and pdf in files and (pdf + ".json") not in files and cfg.resume["path"] in files:

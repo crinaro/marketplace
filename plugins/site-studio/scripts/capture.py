@@ -57,10 +57,10 @@ import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import browser  # noqa: E402
-import content  # noqa: E402
-import images   # noqa: E402
+from contentmodel import links  # noqa: E402
+from imaging import errors, importer   # noqa: E402
 import resize   # noqa: E402
-import siteconfig  # noqa: E402
+from configschema import diagnostics, model  # noqa: E402
 
 NOT_PUBLIC = (401, 403, 404, 410, 451)
 SIGN_IN = re.compile(r"/(log-?in|sign-?in|signin|sign_in|accounts?/login|sso|auth(enticate)?)(/|$|\?)", re.I)
@@ -91,7 +91,7 @@ class CaptureError(ValueError):
 
 def embed_url(url):
     """The official embed view for a YouTube or Vimeo URL, else None (Drive is not a platform here)."""
-    e = content.video_embed(url)
+    e = links.video_embed(url)
     if e and (e.startswith("https://www.youtube-nocookie.com/") or e.startswith("https://player.vimeo.com/")):
         return e
     return None
@@ -132,8 +132,8 @@ def role_schema_problem(out_root):
         return None, ("NOT CHECKED: no site/site.json beside %s, so the site's schema is unknown; the role is "
                       "stored, and the build refuses it unless the site is at schema %d" % (out_root, ROLE_SCHEMA))
     try:
-        cfg = siteconfig.load(cfg_path)
-    except siteconfig.SiteConfigError as e:
+        cfg = model.load(cfg_path)
+    except diagnostics.SiteConfigError as e:
         return None, ("NOT CHECKED: %s could not be read (%s), so the site's schema is unknown; the role is stored"
                       % (cfg_path, e))
     if cfg.schema < ROLE_SCHEMA:
@@ -193,8 +193,8 @@ def capture_one(b, resizer, url, out_root, name=None, captured=None, force=False
         src = os.path.join(tmp, "card.jpg")
         with open(src, "wb") as fh:
             fh.write(jpeg)
-        card = images.import_media(src, os.path.join(folder, "card.jpg"), resizer, overwrite=force)
-    except images.ImageError as e:
+        card = importer.import_media(src, os.path.join(folder, "card.jpg"), resizer, overwrite=force)
+    except errors.ImageError as e:
         res.update(status="error", reason="the card image could not be imported: %s" % e)
         return res
     finally:

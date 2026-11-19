@@ -3,8 +3,8 @@
 import posixpath
 import re
 
-import content as C
-import siteconfig
+from contentmodel import frontmatter, grammar
+from configschema import configkeys
 
 from building.outcomes import BuildError
 from building.tokens import rel_link
@@ -58,8 +58,8 @@ class _Portfolios(object):
                   if piece.meta.get("teaser") else "")
         names = pf.settings["labels"]["meta"]
         labelled = pf.settings.get("cardLabels", True)      # schema 4 `cardLabels: false`: values only on a card
-        cm = [("%s: %s" % (names[k], C.meta_text(piece.meta[k])) if (k in names and labelled)
-               else C.meta_text(piece.meta[k])) for k in pf.settings["cardMeta"] if k in piece.meta]
+        cm = [("%s: %s" % (names[k], frontmatter.meta_text(piece.meta[k])) if (k in names and labelled)
+               else frontmatter.meta_text(piece.meta[k])) for k in pf.settings["cardMeta"] if k in piece.meta]
         meta = self.r("card", "meta", {"text": " \u00b7 ".join(cm)}, piece.source) if cm else ""
         return self.r("card", "wrap", {"url": rel_link(from_out, to), "image": img, "title": piece.card_title,
                                        "teaser": teaser, "meta": meta,
@@ -104,7 +104,7 @@ class _Portfolios(object):
         if self.single_piece_redirect(pf):     # schema 3: the nav links the piece; the index URL redirects to it (no orphan page)
             self.build_index_redirect(out, "%s/%s/index.html" % (pf.slug, pf.pieces[0].slug))
             return
-        if st["view"] in siteconfig.V4_PAGE_VIEWS:        # schema 4: roles, map or showcase, built by the views module
+        if st["view"] in configkeys.V4_PAGE_VIEWS:        # schema 4: roles, map or showcase, built by the views module
             cards = self.views().index_html(self, pf, out)
         elif st["groupBy"]:
             body = []
@@ -118,7 +118,7 @@ class _Portfolios(object):
             cards = self.cards_html(pf.pieces, out) if pf.pieces else ""
         intro = self.markdown(pf.intro, pf.page_source or "content/%s" % pf.slug, out,
                               "content/" + pf.slug, pf.intro_line) if pf.intro.strip() else ""
-        desc = st["description"] or C.plain_excerpt(pf.intro, grammar=self.grammar) or \
+        desc = st["description"] or grammar.plain_excerpt(pf.intro, grammar=self.grammar) or \
             "%s: %s" % (self.cfg.siteTitle, st["label"])
         tagline = (self.assets(out, "tagline") + self.r("tagline", "wrap", {"text": st["tagline"]})
                    if st["tagline"] else "")
@@ -141,12 +141,12 @@ class _Portfolios(object):
         out = "%s/%s/index.html" % (piece.portfolio, piece.slug)
         names = pf.settings["labels"]["meta"]
         meta_rows = "".join(self.r("meta-list", "item", {"name": names.get(k) or k[:1].upper() + k[1:],
-                                                         "value": C.meta_text(piece.meta[k])}, piece.source)
+                                                         "value": frontmatter.meta_text(piece.meta[k])}, piece.source)
                             for k in pf.settings["meta"] if k in piece.meta)
         dl = self.r("meta-list", "wrap", {"items": meta_rows}) if meta_rows else ""
         body = self.markdown(piece.body, piece.source, out, piece.folder, piece.first_line)
         desc = piece.meta.get("description") or piece.meta.get("teaser") or \
-            C.plain_excerpt(piece.body, grammar=self.grammar) or "%s: %s" % (piece.title, self.cfg.siteTitle)
+            grammar.plain_excerpt(piece.body, grammar=self.grammar) or "%s: %s" % (piece.title, self.cfg.siteTitle)
         cover = self.cover_of(piece)
         group = piece.meta.get(pf.settings["groupBy"]) if pf.settings["groupBy"] else None
         self.emit_page(out, "piece", piece.source, self.full_title(piece.title), piece.title, desc,

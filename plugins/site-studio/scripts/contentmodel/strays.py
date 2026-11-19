@@ -1,7 +1,9 @@
 """The warnings about files a piece folder holds that nothing publishes, and the keys that are read where they
 are used."""
 
-from siteconfig import BUILTIN_PIECE_KEYS, front_matter_keys, make_problem
+from configschema.configkeys import BUILTIN_PIECE_KEYS
+from configschema.diagnostics import make_problem
+from configschema.frontmatter import front_matter_keys
 
 from contentmodel.frontmatter import decode_text
 from contentmodel.keytables import VIEW_PIECE_KEYS

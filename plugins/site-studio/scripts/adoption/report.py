@@ -150,20 +150,7 @@ def cmd_inventory(repo, as_json):
         L.append("")
         L += format_problems(probs)
         L.append("")
-    for name in pageless_folders(TreeFiles(tree)):
-        choice = plan["folders"].get(name)
-        if choice is None and holds_markdown(tree, "content/%s/" % name):
-            L.append("content/%s/ has no page.md and holds Markdown: apply leaves it where it is until you decide "
-                     "(you decide). `adopt.py folder %s source` renames it to content/_%s (source material, not "
-                     "built); `adopt.py folder %s portfolio` gives it a page.md." % (name, name, name, name))
-            continue
-        choice = choice or "source"
-        L.append("content/%s/ has no page.md: apply will %s. %s" % (
-            name,
-            "add a page.md, so it becomes a portfolio" if choice == "portfolio" else
-            "rename it to content/_%s (kept as source material, not built)" % name,
-            "To rename it instead: `adopt.py folder %s source`." % name if choice == "portfolio" else
-            "To make it a portfolio instead: `adopt.py folder %s portfolio`." % name))
+    L += _pageless_lines(tree, plan)
     sch = site_json_schema_line(tree, data, plan["paper"], plan["folders"], kind)
     if sch:
         L.append(sch)
@@ -202,6 +189,26 @@ def cmd_inventory(repo, as_json):
         counts[i["class"]] = counts.get(i["class"], 0) + 1
     L.append("summary: " + ", ".join("%s %d" % kv for kv in sorted(counts.items())))
     return "\n".join(L)
+
+
+def _pageless_lines(tree, plan):
+    """What apply does with each folder under content/ that has no page.md, and how to choose the other way."""
+    L = []
+    for name in pageless_folders(TreeFiles(tree)):
+        choice = plan["folders"].get(name)
+        if choice is None and holds_markdown(tree, "content/%s/" % name):
+            L.append("content/%s/ has no page.md and holds Markdown: apply leaves it where it is until you decide "
+                     "(you decide). `adopt.py folder %s source` renames it to content/_%s (source material, not "
+                     "built); `adopt.py folder %s portfolio` gives it a page.md." % (name, name, name, name))
+            continue
+        choice = choice or "source"
+        L.append("content/%s/ has no page.md: apply will %s. %s" % (
+            name,
+            "add a page.md, so it becomes a portfolio" if choice == "portfolio" else
+            "rename it to content/_%s (kept as source material, not built)" % name,
+            "To rename it instead: `adopt.py folder %s source`." % name if choice == "portfolio" else
+            "To make it a portfolio instead: `adopt.py folder %s portfolio`." % name))
+    return L
 
 
 ACCEPT_PAGES_MAX = 40          # pages named one by one; the rest are counted (the plan keeps them all)

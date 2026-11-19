@@ -14,9 +14,9 @@ import json
 import posixpath
 import re
 
-import build as site_build  # noqa: E402
-import content as site_content  # noqa: E402
-import siteconfig  # noqa: E402
+from building import acceptance, running, tokens  # noqa: E402
+from contentmodel import errors, frontmatter, keytables, layout as layout_mod  # noqa: E402
+from configschema import configkeys, diagnostics, model, treeschema  # noqa: E402
 
 from adoption.base import Refused
 from adoption.spec import CONVERSION_CLASSES, OPT_IN_CLASSES
@@ -43,16 +43,16 @@ def accept_problems(tree, data, paper=None, folders=None, kind=None, only=None, 
         msg = str(e)
         if msg.startswith("the converted site.json is not valid"):
             return [], None                   # `site_problems` lists those one by one already
-        return [siteconfig.make_problem("adopt cannot convert this tree: %s" % msg, None, "a tree adopt "
+        return [diagnostics.make_problem("adopt cannot convert this tree: %s" % msg, None, "a tree adopt "
                                         "cannot convert", "one it can", "settle what the message names, "
                                         "then run the check again")], None
     seen = TreeFiles(tree, files, notes["removed"])
     snap = _snapshot(tree, seen)
     _give_resume_sidecar(snap)
     try:
-        acc = site_build.accept(snap)
+        acc = running.accept(snap)
     except Exception as e:      # noqa: BLE001 -- accept does not raise; this is the belt to its braces
-        return [site_build._not_checked("build.accept", e)], None
+        return [acceptance._not_checked("build.accept", e)], None
     return every_refusal(snap, acc.problems), acc
 
 
@@ -84,7 +84,7 @@ def _tree_schema(files):
     try:
         return int(json.loads(files["site/site.json"].decode("utf-8")).get("schema", 1))
     except (KeyError, ValueError, TypeError, AttributeError, UnicodeDecodeError):
-        return siteconfig.SCHEMA_MAX
+        return configkeys.SCHEMA_MAX
 
 
 def every_refusal(files, problems):
@@ -115,10 +115,10 @@ def every_refusal(files, problems):
                 continue
             out = [q for q in out if q.path != rj or not _UNKNOWN_KEY.match(q.message)]
             for k in data:
-                if k in site_content.reference_keys(schema):      # the converted tree's own schema (R4 row 8)
+                if k in keytables.reference_keys(schema):      # the converted tree's own schema (R4 row 8)
                     continue
                 at = re.search(r'"%s"\s*:' % re.escape(k), text)
-                out.append(siteconfig.make_problem("%s: unknown key '%s'" % (rj, k), rj, "refused by the build",
+                out.append(diagnostics.make_problem("%s: unknown key '%s'" % (rj, k), rj, "refused by the build",
                                                    "accepted by the build", p.fix, False,
                                                    text.count("\n", 0, at.start()) + 1 if at else None))
             have = set((q.path, q.message) for q in out)
@@ -129,15 +129,15 @@ def every_refusal(files, problems):
             done.add(path)
             try:
                 text = files[path].decode("utf-8")
-                meta, _body = site_content.parse_front_matter(text, path)
-            except (site_content.ContentError, UnicodeDecodeError):
+                meta, _body = frontmatter.parse_front_matter(text, path)
+            except (errors.ContentError, UnicodeDecodeError):
                 continue
             out = [q for q in out if q.path != path or not _UNKNOWN_FM_KEY.match(q.message)]
             for k in meta:
                 if k in allowed:
                     continue
                 at = re.search(r"^%s:" % re.escape(k), text, re.M)
-                out.append(siteconfig.make_problem("%s: unknown front matter key '%s' (allowed: %s)" % (path, k, m.group(2)),
+                out.append(diagnostics.make_problem("%s: unknown front matter key '%s' (allowed: %s)" % (path, k, m.group(2)),
                                                    path, "refused by the build", "accepted by the build", p.fix, False,
                                                    text.count("\n", 0, at.start()) + 1 if at else None))
             have = set((q.path, q.message) for q in out)
@@ -153,10 +153,10 @@ def every_refusal(files, problems):
             masked = _BLOCK.sub(_blank, _COMMENT.sub(_blank, origin))
             layout = path == "site/templates/layout.html"
             listed = []
-            for tm in site_build.TOKEN_RE.finditer(masked):
-                if site_build.token_known(tm.group(1), layout, schema):
+            for tm in tokens.TOKEN_RE.finditer(masked):
+                if tokens.token_known(tm.group(1), layout, schema):
                     continue
-                listed.append(siteconfig.make_problem("%s: unknown token {{%s}}" % (path, tm.group(1)), path,
+                listed.append(diagnostics.make_problem("%s: unknown token {{%s}}" % (path, tm.group(1)), path,
                                                       "refused by the build", "accepted by the build", p.fix, False,
                                                       masked.count("\n", 0, tm.start()) + 1))
             # every PLACE a token is unknown is listed, each at its line (R4 row 8: a schema-3 page with two
@@ -177,7 +177,7 @@ def size_copy_note(tree):
     n = 0
     for p in paths:
         if p.startswith("content/") and "/media/" in p:
-            m = siteconfig._SIZE_COPY_RE.match(posixpath.basename(p))
+            m = treeschema._SIZE_COPY_RE.match(posixpath.basename(p))
             if m and posixpath.dirname(p) + "/" + m.group("stem") + m.group("ext") in paths:
                 n += 1
     if not n:
@@ -200,27 +200,27 @@ def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=()):
     `siteconfig.Problem`; empty means nothing stands in the way (design section 7.1). A meta-refresh page
     adopt will turn into a redirect is one more mechanical problem (design 7.5)."""
     d, _resume = _converted_dict(tree, data, paper, kind)
-    probs = list(siteconfig.problems(d))
+    probs = list(model.problems(d))
     cfg = None
     if not probs:
         try:
-            cfg = siteconfig.parse_data(d)
-        except siteconfig.SiteConfigError:
+            cfg = model.parse_data(d)
+        except diagnostics.SiteConfigError:
             cfg = None
     else:
         fixed = dict(d)
         if "work" in fixed:
             fixed["work"], _conv = label_conversions(fixed["work"])
         normalise_redirect_keys(fixed)          # F4: a trailing slash on a redirect key is the one thing adopt fixes
-        still = set((p.path, p.message) for p in siteconfig.problems(fixed))
-        probs = [siteconfig.make_problem(p.message, p.path, p.found, p.expected,
+        still = set((p.path, p.message) for p in model.problems(fixed))
+        probs = [diagnostics.make_problem(p.message, p.path, p.found, p.expected,
                                          "drop the trailing slash (adopt does; the build writes the same address)",
                                          True, p.lineno)
                  if (p.path or "").startswith("redirects") and (p.path, p.message) not in still else p
                  for p in probs]
         try:
-            cfg = siteconfig.parse_data(fixed)
-        except siteconfig.SiteConfigError:
+            cfg = model.parse_data(fixed)
+        except diagnostics.SiteConfigError:
             cfg = None
     # the layout is judged over the tree as the classes that CHANGE what a folder holds (page files, the home keys, the
     # references, the token rewrites) leave it: a home written as `home.md` is converted by `pageFiles`, so it is not also
@@ -242,7 +242,7 @@ def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=()):
     # a folder the person has DECIDED (`adopt.py folder <name> source|portfolio`) is settled: apply makes the move or
     # writes the page.md, and `accept_problems` below judges the tree with it made. It is not listed as undecided
     # (dev #887, D1: `check` read the layout of the tree as it stands, so a decided folder was still on the list).
-    probs += [p for p in site_content.layout_problems(TreeFiles(tree, files, removed), cfg.siteKind if cfg else "portfolio", cfg)
+    probs += [p for p in layout_mod.layout_problems(TreeFiles(tree, files, removed), cfg.siteKind if cfg else "portfolio", cfg)
              if not (p.found == "no page.md" and (p.path or "").startswith("content/")
                      and p.path[len("content/"):].rstrip("/") in (folders or {}))]
     probs += redirect_problems([r for r in redirect_pages(tree, d.get("redirects"))[0] if not r.boiler])
@@ -267,7 +267,7 @@ def held_problems(tree, data, plan):
     rows = decide_conversions(notes, plan["parity"], template_fingerprint(tree), plan["convert"])
     # dev #890, B1: a conversion the person CHOSE, on which P1 showed the kept builder FAILS, is a problem here: the one
     # `apply` refuses on, so `check` never says "adopt ok" over a tree `apply` will not write
-    out = [siteconfig.make_problem(
+    out = [diagnostics.make_problem(
         "%s is chosen, but your own builder FAILS on the tree it makes (%s) and parity is %s"
         % (r["class"], r["failure"], (plan["parity"] or {}).get("verdict", "not run")),
         None, "a chosen conversion that breaks your own builder", "one your builder still builds",
@@ -281,7 +281,7 @@ def held_problems(tree, data, plan):
         converted_site_files(tree, data, plan["paper"], plan["folders"], plan.get("siteKind"), only)
     except Refused as e:
         if str(e).startswith("the converted site.json is not valid"):
-            return out + [siteconfig.make_problem(
+            return out + [diagnostics.make_problem(
                 "site.json cannot be converted while a conversion it needs is held back: %s" % str(e)[len("the converted site.json is not valid: "):],
                 "site/site.json", "a site.json the build refuses", "one it reads",
                 "settle the held conversion(s) first: %s" % "; ".join("%s (%s)" % (r["class"], r["reason"]) for r in held
@@ -302,7 +302,7 @@ def piece_both_problems(tree, folders=None):
     over a file, and the plugin's build reads only `index.md`."""
     _pairs, both = piece_renames(tree, portfolio_folders(tree) + sorted(n for n, c in (folders or {}).items()
                                                                         if c == "portfolio"))
-    return [siteconfig.make_problem("%s/ holds both work.md and index.md" % posixpath.dirname(p), posixpath.dirname(p) + "/",
+    return [diagnostics.make_problem("%s/ holds both work.md and index.md" % posixpath.dirname(p), posixpath.dirname(p) + "/",
                                     "two piece files", "one: index.md", "keep one of the two by hand: the plugin's "
                                     "build reads index.md, and adopt never renames over a file") for p in both]
 
@@ -311,7 +311,7 @@ def redirect_collision_problems(tree, d):
     """One `you decide` problem per pair of `redirects` keys that name the same page once their trailing slash is
     stripped but point at different targets (F4): adopt leaves both as written."""
     _changes, collide = normalise_redirect_keys(dict(d))
-    return [siteconfig.make_problem("site.json redirects '%s' and '%s' are the same address with different targets"
+    return [diagnostics.make_problem("site.json redirects '%s' and '%s' are the same address with different targets"
                                     % pair, "redirects", "two entries for one address", "one entry",
                                     "keep one of them in site/site.json") for pair in collide]
 
@@ -416,5 +416,5 @@ def problem_dicts(probs):
 def problems_from_dicts(dicts):
     """The `Problem`s `problem_dicts` made, so a result that crossed a JSON boundary prints through
     `format_problems` exactly as the check does."""
-    return [siteconfig.make_problem(d["message"], d["path"], d["found"], d["expected"], d["fix"],
+    return [diagnostics.make_problem(d["message"], d["path"], d["found"], d["expected"], d["fix"],
                                     d["mechanical"], d.get("lineno")) for d in dicts]

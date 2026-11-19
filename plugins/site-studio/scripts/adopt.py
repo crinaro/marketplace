@@ -45,7 +45,8 @@ THE MODULES. This file is the entry point: the argument grammar, one dispatch, p
 logic is in the `adoption` package next to it (`adoption/<module>.py`; each module's docstring carries the part of
 this file's former documentation that is about its code):
 base (shared constants, exceptions, git) - spec - units - classify - tree - tokens - redirects - convert -
-features - parity - problems - measure - plan - apply (steps 1 and 2) - finish and publish (steps 3 to 5) - report.
+features - parity - problems - measure - plan - apply (steps 1 and 2) - finish and publish (steps 3 to 5) - report -
+verbs (one function per verb but `apply`, loaded when a verb runs, never for `--help`).
 """
 import argparse
 import os
@@ -57,8 +58,7 @@ if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
 import platform_check  # noqa: E402
-import siteconfig  # noqa: E402
-import content as site_content  # noqa: E402
+from configschema import configkeys  # noqa: E402
 from adoption.base import FACT_KINDS, FOLDER_CHOICES, UNIT_DISPOSITIONS, NeedsAnswer, PlanError, Refused  # noqa: E402
 from adoption.spec import OPT_IN_CLASSES  # noqa: E402
 
@@ -66,11 +66,8 @@ from adoption.spec import OPT_IN_CLASSES  # noqa: E402
 EXIT_APPLY_BLOCKED = 4           # `apply` ended blocked (never 3: that is NeedsAnswer, a question to the person)
 
 
-def main(argv=None, hooks=None):
-    """`hooks` is the tests' seam for `apply` (`deploy`, `gh`, `dev_slug`: adoption/publish.py); the command line has none."""
-    rc = platform_check.windows_refusal_rc("adopt.py")
-    if rc is not None:
-        return rc
+def _build_parser():
+    """The argument grammar: every verb and its flags (what `--help` prints comes from here)."""
     ap = argparse.ArgumentParser(prog="adopt.py", allow_abbrev=False)
     ap.add_argument("--repo", default=os.getcwd())
     sub = ap.add_subparsers(dest="cmd")
@@ -103,7 +100,7 @@ def main(argv=None, hooks=None):
     s.add_argument("conversion", choices=OPT_IN_CLASSES)
     s.add_argument("--keep", action="store_true")
     s = sub.add_parser("kind")
-    s.add_argument("site_kind", choices=siteconfig.SITE_KINDS)
+    s.add_argument("site_kind", choices=configkeys.SITE_KINDS)
     s = sub.add_parser("parity")
     s.add_argument("--accept", action="store_true")
     s.add_argument("--keep", metavar="DIR")
@@ -123,151 +120,32 @@ def main(argv=None, hooks=None):
     s = sub.add_parser("apply", allow_abbrev=False)     # the guard reads `--dry-run` literally: no abbreviation may mean it
     s.add_argument("--date", default=time.strftime("%Y-%m-%d"))
     s.add_argument("--dry-run", action="store_true")
+    return ap
+
+
+def main(argv=None, hooks=None):
+    """`hooks` is the tests' seam for `apply` (`deploy`, `gh`, `dev_slug`: adoption/publish.py); the command line has none."""
+    rc = platform_check.windows_refusal_rc("adopt.py")
+    if rc is not None:
+        return rc
+    ap = _build_parser()
     args = ap.parse_args(argv)
     repo = os.path.abspath(args.repo)
     try:
-        if args.cmd == "check":
-            from adoption.parity import preconditions
-            from adoption.plan import _plan_for
-            from adoption.problems import analyse_problems, format_problems, held_problems, site_problems, size_copy_note
-            from adoption.report import _conversion_block
-            basis, tree, data = preconditions(repo)
-            for line in basis.up_front():
-                print(line)
-            plan = _plan_for(repo, basis.sha, print)
-            probs = site_problems(tree, data, None, plan.get("siteKind"), plan["folders"], plan["convert"]) + held_problems(tree, data, plan)
-            for line in format_problems(probs):
-                print(line)
-            blocked = [p for p in probs if not p.mechanical]
-            if blocked:
-                n = analyse_problems(probs)["decisions"]
-                print("adopt check: %s %s cannot be converted until the %d %s marked "
-                      "`you decide` are settled%s" % (basis.label(), basis.sha[:7], n,
-                                                      "problem(s)" if n == len(blocked) else "cause(s)",
-                                                      "" if n == len(blocked) else
-                                                      " (%d problem(s) in all; the rest follow from them or share their cause)"
-                                                      % len(blocked)))
-                for line in _conversion_block(tree, data, plan):
-                    print(line)
-                if size_copy_note(tree):
-                    print(size_copy_note(tree))
-                return 1
-            print("adopt ok: %s %s can be converted" % (basis.label(), basis.sha[:7]))
-            for line in _conversion_block(tree, data, plan):
-                print(line)
-            if size_copy_note(tree):
-                print(size_copy_note(tree))
-        elif args.cmd == "inventory":
-            from adoption.report import cmd_inventory
-            print(cmd_inventory(repo, args.json))
-        elif args.cmd == "confirm":
-            from adoption.plan import _set
-            from adoption.spec import load_spec
-            def fn(plan, e, tree):
-                e["removal"] = "keep" if args.keep else "confirm"
-                if args.as_cap:
-                    if args.as_cap not in load_spec().caps:
-                        raise Refused("unknown capability %s; pass one of %s to --as"
-                                      % (args.as_cap, ", ".join(sorted(load_spec().caps))))
-                    e["as"] = args.as_cap
-            _set(repo, args.path, fn)
-            print("adopt: %s -> %s" % (args.path, "keep" if args.keep else "remove (after apply)"))
-        elif args.cmd == "unit":
-            from adoption.plan import _set
-            def fn(plan, e, tree):
-                if args.disposition == "person-data" and not args.kind:
-                    raise Refused("--kind context|voice|rule is required for person data")
-                u = {"disposition": args.disposition}
-                if args.disposition == "person-data":
-                    u["kind"] = args.kind
-                    if args.name:
-                        u["name"] = args.name
-                e.setdefault("units", {})[args.unit_id] = u
-            _set(repo, args.path, fn)
-            print("adopt: %s %s -> %s" % (args.path, args.unit_id, args.disposition))
-        elif args.cmd == "fact":
-            from adoption.plan import _set
-            def fn(plan, e, tree):
-                fa = {"source": args.path, "kind": args.kind, "text": args.text}
-                if args.name:
-                    fa["name"] = args.name
-                plan["facts"].append(fa)
-            _set(repo, args.path, fn)
-            print("adopt: recorded a %s fact from %s" % (args.kind, args.path))
-        elif args.cmd == "reviewed":
-            from adoption.plan import _set
-            def fn(plan, e, tree):
-                e["reviewed"] = True
-            _set(repo, args.path, fn)
-            print("adopt: facts in %s marked reviewed" % args.path)
-        elif args.cmd == "paper":
-            from adoption.plan import _current_base, _plan_for, save_plan
-            plan = _plan_for(repo, _current_base(repo), print)
-            plan["paper"] = args.size
-            save_plan(repo, plan)
-            print("adopt: resume.paper will be %s" % args.size)
-        elif args.cmd == "folder":
-            from adoption.plan import _current_base, _plan_for, save_plan
-            name = args.name.strip("/")
-            if name.startswith("content/"):
-                name = name[len("content/"):]
-            if not name or "/" in name:
-                raise Refused("name one folder directly under content/, for example `adopt.py folder news "
-                              "portfolio`")
-            if name in site_content.RESERVED_PORTFOLIO_NAMES:
-                raise Refused("content/%s is a reserved name (the build reads it as a page or as shared files, "
-                              "never as a portfolio), so adopt never moves it and there is no decision to make "
-                              "about it; choose a different folder name if you meant a new portfolio" % name)
-            plan = _plan_for(repo, _current_base(repo), print)
-            plan["folders"][name] = args.choice
-            save_plan(repo, plan)
-            print("adopt: content/%s -> %s" % (name, "renamed to content/_%s (source material)" % name
-                                                if args.choice == "source" else "gets a page.md and is a portfolio"))
-        elif args.cmd == "convert":
-            from adoption.plan import _current_base, _plan_for, save_plan
-            plan = _plan_for(repo, _current_base(repo), print)
-            if args.keep:
-                plan["convert"] = [c for c in plan["convert"] if c != args.conversion]
-            elif args.conversion not in plan["convert"]:
-                plan["convert"].append(args.conversion)
-            save_plan(repo, plan)
-            print("adopt: %s will %s" % (args.conversion, "stay as written" if args.keep else
-                                         "be converted (it changes what a visitor loads or reads: parity names "
-                                         "the page that differs)"))
-        elif args.cmd == "kind":
-            from adoption.plan import _current_base, _plan_for, save_plan
-            plan = _plan_for(repo, _current_base(repo), print)
-            plan["siteKind"] = args.site_kind
-            save_plan(repo, plan)
-            print("adopt: the site kind is %s%s" % (args.site_kind, " (the default; site.json will not carry it)"
-                                                    if args.site_kind == "portfolio" else
-                                                    " (apply writes siteKind: %s, schema 2)" % args.site_kind))
-        elif args.cmd == "parity":
-            from adoption.measure import cmd_parity
-            cmd_parity(repo, args.accept, args.keep)
-        elif args.cmd == "report":
-            from adoption.reports import cmd_report
-            return cmd_report(repo, args.file, args.decline)
-        elif args.cmd == "file":
-            from adoption.accounting import cmd_file
-            print(cmd_file(repo, args.path, args.disposition))
-        elif args.cmd == "setting":
-            from adoption.settings import cmd_setting
-            if args.clear == (args.value is not None):
-                raise Refused("name the value (`adopt.py setting cardNumber true`), or `--clear` to forget a chosen one")
-            print(cmd_setting(repo, args.name, args.value, args.clear))
-        elif args.cmd == "remeasure":
-            from adoption.measure import cmd_remeasure
-            print(cmd_remeasure(repo, args.accept))
-        elif args.cmd == "apply":
+        if args.cmd is None:
+            ap.print_usage()
+            return 2
+        if args.cmd == "apply":
             from adoption.apply import do_apply
             text, _tip, outcome = do_apply(repo, args.date, args.dry_run, hooks)
             print(text)
             if outcome == "blocked":
                 return EXIT_APPLY_BLOCKED
         else:
-            ap.print_usage()
-            return 2
+            from adoption import verbs
+            rc = verbs.VERBS[args.cmd](repo, args)
+            if rc is not None:
+                return rc
     except NeedsAnswer as e:
         print("adopt needs an answer: %s" % e)
         return 3

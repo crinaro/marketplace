@@ -46,8 +46,9 @@ import os
 import posixpath
 import re
 
-import content as C
-from content import ContentError, esc
+from contentmodel import frontmatter
+from contentmodel.errors import ContentError
+from contentmodel.links import esc
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -114,7 +115,7 @@ def plugin_mask():
     except OSError:
         raise ContentError("the site-studio install is missing %s, which the map view draws" % MASK_REL,
                            fix="reinstall the site-studio plugin, which ships that file")
-    return parse_mask(C.decode_text(raw, MASK_REL), MASK_REL)
+    return parse_mask(frontmatter.decode_text(raw, MASK_REL), MASK_REL)
 
 
 def mask_for(builder, portfolio):
@@ -129,7 +130,7 @@ def mask_for(builder, portfolio):
     if raw is None:
         raise ContentError("%s: mapMask %s is not a file in the build input" % (page, ref), path=page,
                            fix="commit the file at %s, or remove mapMask from the page for the plugin's own map" % path)
-    return parse_mask(C.decode_text(raw, path), path)
+    return parse_mask(frontmatter.decode_text(raw, path), path)
 
 
 def parse_pin(value, where):

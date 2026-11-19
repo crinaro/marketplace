@@ -10,7 +10,7 @@ import re
 from collections import namedtuple
 from urllib.parse import urlsplit
 
-import siteconfig  # noqa: E402
+from configschema import diagnostics, sectioncheck  # noqa: E402
 
 from adoption.spec import HEAD_BOILERPLATE_LINKS, HEAD_BOILERPLATE_METAS
 from adoption.tokens import detect_resume, portfolio_folders
@@ -260,8 +260,8 @@ def redirect_pages(tree, existing=None):
     convert = []
     for p, key, value, dropped, boiler in sorted(cand):
         try:
-            siteconfig._redirect_entry(key, value)
-        except siteconfig.SiteConfigError as e:
+            sectioncheck._redirect_entry(key, value)
+        except diagnostics.SiteConfigError as e:
             left.append((p, str(e).replace("site.json: ", "", 1)))
             continue
         if not value.startswith(("http://", "https://")) and value not in keys:
@@ -281,7 +281,7 @@ def redirect_problems(convert):
     `inventory` list it beside the others, marked `apply fixes this`."""
     out = []
     for r in convert:
-        out.append(siteconfig.make_problem(
+        out.append(diagnostics.make_problem(
             "%s is a meta-refresh page: it belongs in site.json redirects as '%s'" % (r.path, r.key),
             path=r.path, found="a hand-made meta-refresh page", expected="a site.json redirects entry",
             fix="move it into site.json redirects ('%s' -> '%s'); the build writes the page" % (r.key, r.target),

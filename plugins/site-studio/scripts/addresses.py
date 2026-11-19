@@ -48,10 +48,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-import content as C  # noqa: E402
-import siteconfig  # noqa: E402
+from contentmodel import grammar, keytables  # noqa: E402
+from configschema import canonical, configkeys, partblocks  # noqa: E402
 
-RECORD_REL = siteconfig.ADDRESSES_RECORD
+RECORD_REL = configkeys.ADDRESSES_RECORD
 RECORD_SCHEMA = 1
 LIST_CAP = 12                     # paths a refusal or a dry run names before "and N more"
 HTML_EXTS = (".html", ".htm")
@@ -98,7 +98,7 @@ def is_html(path):
 
 def _piece_key(value, where):
     parts = value.split("/") if isinstance(value, str) else []
-    if len(parts) != 2 or not all(C.SLUG_RE.match(p) for p in parts):
+    if len(parts) != 2 or not all(keytables.SLUG_RE.match(p) for p in parts):
         raise AddressError("%s must be <portfolio>/<piece> in lower-case letters, digits and hyphens, not %r"
                            % (where, value if not isinstance(value, str) else value[:60]))
     return value
@@ -261,7 +261,7 @@ def check_prewrite(cfg, files):
         raise AddressError("this site is at schema %d, and recording an address needs schema 4, which is reached "
                            "through schema 3: run `build.py raise-schema` (it lists what changes before it writes), "
                            "commit, then try again" % cfg.schema)
-    probs = siteconfig.part_collision_problems(files)
+    probs = partblocks.part_collision_problems(files)
     if probs:
         raise AddressError("%s; a site with that part cannot be raised to schema 4, so rename it, then run `build.py "
                            "raise-schema` and try again" % probs[0].line())
@@ -272,7 +272,7 @@ def site_json_text(cfg, files, record_text):
     `files` is the tree without the record; this adds it, so `required_schema` sees the reason."""
     tree = dict(files)
     tree[RECORD_REL] = record_text.encode("utf-8")
-    return siteconfig.canonical_text(cfg, tree, C.interpretation_reasons(tree), at_least=4)
+    return canonical.canonical_text(cfg, tree, grammar.interpretation_reasons(tree), at_least=4)
 
 
 def read_record_file(repo):

@@ -42,12 +42,12 @@ import functools
 import html.parser
 import json
 import os
-import posixpath
 import re
-import stat
-import urllib.parse
 
-from contentmodel.links import esc, url_as_browser_reads, url_scheme
+from contentmodel.links import esc
+from lookgrammar.errors import LookError
+from lookgrammar.slotvalues import _INTLIT, safe_embed, safe_int, safe_position, safe_srcset, safe_url
+from lookgrammar.stylesheets import check_stylesheet_path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -62,14 +62,6 @@ SLOT_KINDS = (TEXT, HTML, URL, SRCSET, POSITION, INT, EMBED, CONTACT)
 # The plugin's own output files a look's `assets` may keep linked (R5.2). `css` and `js` are 0.3.1's
 # `site-studio/blocks.css` and `site-studio/video.js`; `schema-4` is 0.4.0's `site-studio/schema-4.css`.
 ASSET_KINDS = ("css", "js", "schema-4")
-
-
-class LookError(ValueError):
-    """A look that is refused, or a render that cannot be made. `fix` says what to do."""
-
-    def __init__(self, message, fix=None):
-        ValueError.__init__(self, message)
-        self.fix = fix
 
 
 # --------------------------------------------------------------------------------- the construct table
@@ -295,111 +287,11 @@ CLOSED_VALUES = {
     "allow": ("fullscreen", "picture-in-picture", "encrypted-media", "autoplay", "clipboard-write"),
 }
 _LANG = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
-_INTLIT = re.compile(r"^\d{1,6}$")
 _TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
 _DIGITS3 = re.compile(r"\d{3,}")
-POSITION_RE = re.compile(r"^[a-z0-9% .-]{1,40}$")      # equals content.POSITION_RE (a test pins it)
-EMBED_HOSTS = {"www.youtube-nocookie.com": "/embed/", "player.vimeo.com": "/video/",
-               "drive.google.com": "/file/d/"}
 
 _SENT_OPEN, _SENT_CLOSE = "", ""
 _SENT = re.compile(_SENT_OPEN + r"(\d+)" + _SENT_CLOSE)
-
-
-# ------------------------------------------------------------------------------------- the URL rule
-_BASE = urllib.parse.urlsplit("https://base.invalid/a/")
-
-
-def url_text(value):
-    """`value` as a browser's URL parser reads it before looking for a scheme: leading and trailing C0
-    control and space stripped, tab and newline removed (`contentmodel.links.url_as_browser_reads`, the WHATWG
-    steps), and a backslash read as a slash, as a browser does for http and https (R5N-4)."""
-    return url_as_browser_reads(value).replace("\\", "/")
-
-
-def classify_url(value):
-    """('relative' | 'http' | 'https' | 'mailto' | 'other:<scheme>' | 'off-origin', text). 'relative' means no
-    scheme AND, resolved against a fixed base, the result keeps the base's origin (so `//host/x`, `/\\host/x`
-    and `\\\\host` are 'off-origin', R5N-4)."""
-    seen = url_text(value)
-    scheme = url_scheme(seen)
-    if scheme is not None:
-        return (scheme if scheme in ("http", "https", "mailto") else "other:" + scheme), seen
-    joined = urllib.parse.urlsplit(urllib.parse.urljoin(_BASE.geturl(), seen))
-    if (joined.scheme, joined.netloc) != (_BASE.scheme, _BASE.netloc):
-        return "off-origin", seen
-    return "relative", seen
-
-
-def safe_url(value, allow_mailto=False, relative_only=False):
-    """Return `value` unchanged when a browser would read it as a relative link, or an http(s) link (or
-    mailto, when `allow_mailto`); raise LookError otherwise. Decided on the normalised text, as a browser
-    reads it (dev #912); what is written into the page is the person's own text. `relative_only` refuses
-    every scheme (a literal in a look file, and every `srcset` candidate)."""
-    if not isinstance(value, str):
-        raise LookError("a url slot needs text, not %s" % type(value).__name__)
-    kind, _seen = classify_url(value)
-    if kind == "relative":
-        return value
-    if kind == "off-origin":
-        raise LookError("the link %r reads as a link to another host (a protocol-relative or backslash "
-                        "form)" % value[:60], fix="make the link relative, such as ../work/ or media/photo.jpg")
-    if relative_only:
-        raise LookError("the link %r is not relative; a look file may carry only relative links" % value[:60],
-                        fix="use a {{url}} slot, or a relative path")
-    if kind in ("http", "https") or (kind == "mailto" and allow_mailto):
-        return value
-    scheme = kind.split(":", 1)[1] if kind.startswith("other:") else kind
-    raise LookError("a link may be http(s) or relative%s, not '%s:'" % (", or mailto here" if allow_mailto else "", scheme),
-                    fix="use an http(s) or relative link")
-
-
-def safe_srcset(value):
-    """A `srcset` value: comma-separated candidates, each a RELATIVE url with an optional `Nw` or `Nx`
-    descriptor. Every candidate is checked (R5N-4: an off-origin second candidate is refused)."""
-    if not isinstance(value, str) or not value.strip():
-        raise LookError("a srcset slot needs a non-empty list of candidates")
-    for cand in value.split(","):
-        bits = cand.split()
-        if not bits:
-            raise LookError("a srcset candidate is empty in %r; remove the stray comma or fill the candidate in" % value[:80])
-        safe_url(bits[0], relative_only=True)
-        if len(bits) > 2 or (len(bits) == 2 and not re.match(r"^\d+(\.\d+)?[wx]$", bits[1])):
-            raise LookError("a srcset candidate %r has a descriptor that is not like 480w or 2x; write a whole number "
-                            "followed by w or x" % cand.strip()[:60])
-    return value
-
-
-def safe_embed(value):
-    """An https embed address on one of the three embed hosts (`content.video_embed`'s forms), nothing else."""
-    if not isinstance(value, str):
-        raise LookError("an embed slot needs text")
-    seen = url_text(value)
-    p = urllib.parse.urlsplit(seen)
-    host = (p.hostname or "").lower()
-    ok = (p.scheme == "https" and host in EMBED_HOSTS and p.username is None and p.port is None
-          and p.path.startswith(EMBED_HOSTS[host]) and seen == value)
-    if not ok:
-        raise LookError("the embed address %r is not an https YouTube, Vimeo or Google Drive embed" % value[:80],
-                        fix="the embed address comes from content.video_embed, never from a look or a person's text")
-    return value
-
-
-def safe_position(value):
-    if not isinstance(value, str) or not POSITION_RE.match(value):
-        raise LookError("the position %r is not a CSS position such as 'center 30%%'" % (value if isinstance(value, str) else "")[:60],
-                        fix="write a CSS position such as center 30%")
-    return value
-
-
-def safe_int(value):
-    if isinstance(value, bool):
-        raise LookError("an int slot needs a whole number, not a boolean")
-    if isinstance(value, int) and 0 <= value <= 999999:
-        return str(value)
-    if isinstance(value, str) and _INTLIT.match(value):
-        return value
-    raise LookError("an int slot needs a whole number from 0 to 999999, got %r" % (value,))
 
 
 # ---------------------------------------------------------------------------------------------- parse
@@ -709,68 +601,6 @@ class Look(object):
     def omitted(self):
         """Construct ids this look has no entry for (rendered with the default look's)."""
         return sorted(c for c in CONSTRUCTS if c not in self.constructs)
-
-
-def check_stylesheet_path(path, where="stylesheets"):
-    """A look's stylesheet path, normalised and held under `site/src/` (R5N-11). Returns the normal form."""
-    if not isinstance(path, str) or not path:
-        raise LookError("%s: a stylesheet path is a non-empty string" % where, fix="write site/src/looks/<name>.css")
-    if "\\" in path or "\x00" in path:
-        raise LookError("%s: the stylesheet path %r holds a backslash" % (where, path), fix="use forward slashes")
-    if path.startswith("/"):
-        raise LookError("%s: the stylesheet path %r starts with '/'" % (where, path), fix="start it with site/src/")
-    if ".." in path.split("/"):
-        raise LookError("%s: the stylesheet path %r climbs out of its folder with '..'" % (where, path), fix="name the file under site/src/")
-    norm = posixpath.normpath(path)
-    if norm != path or not norm.startswith("site/src/") or not norm.endswith(".css") or norm == "site/src/":
-        raise LookError("%s: the stylesheet path %r is not a normalised site/src/**.css path" % (where, path),
-                        fix="write it as site/src/looks/<name>.css")
-    return norm
-
-
-def check_stylesheet_file(root, rel, where="stylesheets"):
-    """The file a `stylesheets` path names must exist under `root` as a regular file, never a symlink, with
-    no symlink among the folders above it (R5N-11)."""
-    norm = check_stylesheet_path(rel, where)
-    cur = root
-    for part in norm.split("/"):
-        cur = os.path.join(cur, part)
-        try:
-            st = os.lstat(cur)
-        except OSError:
-            raise LookError("%s: %s does not exist" % (where, norm), fix="add the file, or remove it from stylesheets")
-        if stat.S_ISLNK(st.st_mode):
-            raise LookError("%s: %s goes through a symlink" % (where, norm), fix="make it a regular file")
-    if not stat.S_ISREG(os.lstat(cur).st_mode):
-        raise LookError("%s: %s is not a regular file" % (where, norm), fix="make it a regular file")
-    return norm
-
-
-_CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
-_CSS_STRING = re.compile(r"\"(?:[^\"\\\n]|\\.)*\"|'(?:[^'\\\n]|\\.)*'", re.S)
-_CSS_URL = re.compile(r"url\(\s*(?:\"([^\"]*)\"|'([^']*)'|([^)\s\"']*))\s*\)", re.I)
-
-
-def scan_stylesheet(css, where="stylesheet"):
-    """Refuse a stylesheet that loads another host's file (R5N-11): `@import`, a `url(...)` or an
-    `@font-face src` whose address is not relative, and a CSS escape that could spell one of those past
-    this scan. Returns None when clean."""
-    text = _CSS_COMMENT.sub("", css)
-    for m in _CSS_URL.finditer(text):
-        arg = next(g for g in m.groups() if g is not None) if any(g is not None for g in m.groups()) else ""
-        if "\\" in arg:
-            raise LookError("%s: a url(%s) holds a backslash, which could hide a scheme" % (where, arg[:40]), fix="write the address plainly")
-        try:
-            safe_url(arg, relative_only=True)
-        except LookError as e:
-            raise LookError("%s: url(%s) is refused: %s" % (where, arg[:40], e), fix="use a file the site carries, by a relative path")
-    bare = _CSS_STRING.sub('""', text)
-    if re.search(r"@import", bare, re.I):
-        raise LookError("%s: @import loads another file" % where, fix="link the stylesheet from the layout instead")
-    if "\\" in bare:
-        raise LookError("%s: a CSS escape outside a string could spell @import or url(" % where,
-                        fix="write the rule without an escape")
-    return None
 
 
 def parse(text, where="look", shipped=False, template=None):

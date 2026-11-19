@@ -34,8 +34,8 @@ import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import browser    # noqa: E402
-import build      # noqa: E402
-import siteconfig  # noqa: E402
+from building import acceptance, outcomes, running      # noqa: E402
+from configschema import diagnostics, model  # noqa: E402
 import platform_check  # noqa: E402
 
 
@@ -64,8 +64,8 @@ class Preview(object):
         self.tmp = tempfile.mkdtemp(prefix="site-studio-preview-")
         try:
             out = os.path.join(self.tmp, "site")
-            self.result = build.preview_build(self.repo, out)
-            self.cfg = siteconfig.load(os.path.join(self.repo, "site", "site.json"))
+            self.result = running.preview_build(self.repo, out)
+            self.cfg = model.load(os.path.join(self.repo, "site", "site.json"))
             self.base = base_path(self.cfg)
             self.out_dir = out
             self.server = browser.LocalServer(out, base=self.base, port=self.port).start()
@@ -122,7 +122,7 @@ def main(argv=None):
             for n in pv.result.notes:
                 print("note: %s" % n)
             for w in pv.result.warnings:      # the same line build.py prints; the served output is the same without them
-                print("warning: " + build.warning_line(w))
+                print("warning: " + acceptance.warning_line(w))
             sys.stdout.flush()
             end = time.time() + args.seconds if args.seconds else None
             try:
@@ -131,7 +131,7 @@ def main(argv=None):
             except KeyboardInterrupt:
                 pass
         return 0
-    except (build.BuildError, siteconfig.SiteConfigError, browser.BrowserError, OSError) as e:
+    except (outcomes.BuildError, diagnostics.SiteConfigError, browser.BrowserError, OSError) as e:
         print("preview refused: %s" % e)
         return 1
 

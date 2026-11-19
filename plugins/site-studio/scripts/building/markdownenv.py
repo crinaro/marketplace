@@ -5,7 +5,8 @@ import posixpath
 import re
 
 import content as C
-from content import ContentError
+from contentmodel import links
+from contentmodel.errors import ContentError
 
 from building.constants import IMAGE_EXTS, SIZES_ATTR
 from building.imagesize import image_size
@@ -117,8 +118,8 @@ class _MarkdownEnv(object):
                         return builder.r(construct, "plain", {"src": src, "alt": alt}, source)
                     except BuildError as e:
                         raise ContentError(str(e), path=source, fix=getattr(e, "fix", None) or "fix the address")
-                seen = C.url_as_browser_reads(src)   # dev #912: decide as a browser reads it
-                if seen.startswith("/") or C.url_scheme(src):
+                seen = links.url_as_browser_reads(src)   # dev #912: decide as a browser reads it
+                if seen.startswith("/") or links.url_scheme(src):
                     raise ContentError("%s: image '%s' must be a relative path or an https URL"
                                        % (source, src), fix="use a relative path to a file in media/, or an https URL")
                 full = posixpath.normpath(posixpath.join(base_dir, src))

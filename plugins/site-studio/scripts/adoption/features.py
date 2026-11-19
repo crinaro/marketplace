@@ -7,7 +7,7 @@ import posixpath
 import re
 from collections import namedtuple
 
-import build as site_build  # noqa: E402
+from building import tokens  # noqa: E402
 
 from adoption.tokens import (
     detect_resume, home_feed, portfolio_folders, rewrite_tokens,
@@ -61,13 +61,13 @@ def detect_signals(tree, data, redirect_found=None):
     folders = portfolio_folders(tree)
     for p in token_files(tree):
         text = tree.text(p)
-        for m in site_build.TOKEN_RE.finditer(text):
+        for m in tokens.TOKEN_RE.finditer(text):
             if m.group(1) in _TOKEN_NAME:
                 add(_TOKEN_NAME[m.group(1)], p)
-        for m in site_build.TOKEN_RE.finditer(text):
-            if m.group(1) == "featured" and site_build.token_known("featured", p == "site/templates/layout.html"):
+        for m in tokens.TOKEN_RE.finditer(text):
+            if m.group(1) == "featured" and tokens.token_known("featured", p == "site/templates/layout.html"):
                 add("token:featured", p)
-            if m.group(1) == "home" and m.group(2) and site_build.token_known("home", p == "site/templates/layout.html"):
+            if m.group(1) == "home" and m.group(2) and tokens.token_known("home", p == "site/templates/layout.html"):
                 add("token:home", p)
         for tok in rewrite_tokens(text, folders, layout=(p == "site/templates/layout.html"), home=home_feed(tree),
                                   labels=site_json_labels(data))[2]:

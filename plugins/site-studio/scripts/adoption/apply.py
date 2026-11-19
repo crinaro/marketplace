@@ -49,6 +49,7 @@ from adoption.engine import compute_engine
 from adoption.outcome import assess
 from adoption.blockers import is_stray_warning
 from adoption.reports import REPORTS_REL
+from adoption.hookpaths import dangling_hook_paths, process_hooks
 
 STARTER_SETTINGS = os.path.join(PLUGIN, "templates", "starter", "dot-claude", "settings.json")
 # Named change S8: pinned word for word in tests/test_adopt.py and the starter's test_repos.
@@ -58,13 +59,6 @@ BRANCH_PREFIX = "site-studio/adopt-"
 # Named change S2: the app keeps session worktrees inside the repo.
 GITIGNORE_LINES = (".claude/worktrees/", "site/dist/", ".site-studio/review/")
 RULES_HEADING = "## Standing rules carried by adopt"
-_PATH_TOKEN = re.compile(r"(?<![\w./}$-])(?:\$\{?CLAUDE_PROJECT_DIR\}?/|\./)?((?:scripts|tools|site|\.claude)/[A-Za-z0-9_.@+-]+(?:/[A-Za-z0-9_.@+-]+)*)")
-_SEGMENT_SPLIT = re.compile(r"\s*(?:;|&&|\|\|)\s*")
-_INTERP = re.compile(r"^(?:(?:bash|sh|zsh|node|python3?)\s+)?(?:\$\{?CLAUDE_PROJECT_DIR\}?/|\./)?")
-
-
-def _segments(command):
-    return [s for s in _SEGMENT_SPLIT.split(command) if s.strip()]
 
 
 def merge_settings(text, starter_text):
@@ -84,96 +78,6 @@ def merge_settings(text, starter_text):
         if rule not in ask:
             ask.append(rule)
     return cur
-
-
-def process_hooks(settings, removed, cap_of, spec):
-    """Handle hook commands that name a removed file. Returns (settings, listed, blocked) where
-    `listed` is [(event, old command, new command or None)] and `blocked` the set of removed paths
-    that a remaining hook still needs (they must be kept)."""
-    listed, blocked = [], set()
-    hooks = settings.get("hooks")
-    if not isinstance(hooks, dict):
-        return settings, listed, blocked
-    for event in list(hooks):
-        groups = hooks[event]
-        if not isinstance(groups, list):
-            continue
-        new_groups = []
-        for g in groups:
-            if not isinstance(g, dict) or not isinstance(g.get("hooks"), list):
-                new_groups.append(g)
-                continue
-            kept = []
-            for h in g["hooks"]:
-                cmd = h.get("command") if isinstance(h, dict) else None
-                if not isinstance(cmd, str):
-                    kept.append(h)
-                    continue
-                new_segs, changed = [], False
-                for seg in _segments(cmd):
-                    m = [x for x in _PATH_TOKEN.finditer(seg) if x.group(1) in removed]
-                    if not m:
-                        new_segs.append(seg)
-                        continue
-                    path = m[0].group(1)
-                    cap = spec.caps.get(cap_of.get(path) or "", {})
-                    if cap.get("hook") == "plugin":
-                        changed = True
-                        continue
-                    if cap.get("hook") == "rewrite" and cap.get("script"):
-                        script = 'python3 "${CLAUDE_PLUGIN_ROOT}/scripts/%s"' % cap["script"]
-                        new_segs.append(_rewrite_segment(seg, m[0], script))
-                        changed = True
-                        continue
-                    blocked.add(path)
-                    new_segs.append(seg)
-                if changed:
-                    new = "; ".join(new_segs)
-                    listed.append((event, cmd, new or None))
-                    if new:
-                        h2 = dict(h)
-                        h2["command"] = new
-                        kept.append(h2)
-                else:
-                    kept.append(h)
-            if kept:
-                g2 = dict(g)
-                g2["hooks"] = kept
-                new_groups.append(g2)
-        if new_groups:
-            hooks[event] = new_groups
-        else:
-            del hooks[event]
-    if not hooks:
-        del settings["hooks"]
-    return settings, listed, blocked
-
-
-def _rewrite_segment(seg, m, script):
-    """Replace `<interpreter> <path>` with the plugin script, keeping the arguments."""
-    start = m.start()
-    pre = seg[:start]
-    im = re.search(r"(?:bash|sh|zsh|node|python3?)\s+$", pre)
-    if im:
-        start = im.start()
-    return seg[:start] + script + seg[m.end():]
-
-
-def dangling_hook_paths(settings, post_paths):
-    """Repo paths named by remaining hook commands that are absent from the new tree."""
-    out = []
-    hooks = settings.get("hooks")
-    if not isinstance(hooks, dict):
-        return out
-    for event, groups in hooks.items():
-        for g in groups if isinstance(groups, list) else []:
-            for h in (g.get("hooks") or []) if isinstance(g, dict) else []:
-                cmd = h.get("command") if isinstance(h, dict) else None
-                if isinstance(cmd, str):
-                    for m in _PATH_TOKEN.finditer(cmd):
-                        if m.group(1) not in post_paths:
-                            out.append((event, m.group(1)))
-    return out
 
 
 _ENGINE_HEADING = re.compile(
@@ -338,12 +242,8 @@ def commit_object(repo, tree, base, message):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def prepare(repo, date, spec=None, dry_run=False):
-    """Everything apply will commit, computed without writing anything. Raises Refused. `dry_run` previews with
-    undecided files: a real apply refuses on an undecided DUPLICATE or AMBIGUOUS, a dry run keeps it and says so."""
-    spec = spec or load_spec()
-    basis, tree, data = preconditions(repo)
-    base = basis.sha
+def _checked_plan(repo, base):
+    """The plan the person made. Raises Refused when there is none, or when the parity basis moved since the inventory."""
     try:
         plan = load_plan(repo)
     except PlanError as e:
@@ -353,16 +253,11 @@ def prepare(repo, date, spec=None, dry_run=False):
     if plan["base"] != base:
         raise Refused("the parity basis moved since the inventory (%s -> %s); run `adopt.py inventory` again"
                       % (plan["base"][:7], base[:7]))
-    infos = inventory(tree, spec)
-    by_path = dict((i["path"], i) for i in infos)
-    decisions = plan["files"]
-    # the measured settings, and the dispositions the last `parity` measured (design 8: every class measured, every file accounted
-    # for); what `parity` did not measure is not written
-    settings = dict((k, v["value"]) for k, v in (plan.get("settings") or {}).items() if v["how"] in ("measured", "chosen"))
-    measured = plan["parity"] or {}
-    dispositions = (measured.get("accounting") or {}).get("dispositions") or None
-    persons = dict((p, e["disposition"]) for p, e in decisions.items() if e.get("disposition"))
-    kw = {"settings": settings, "dispositions": dispositions, "persons": persons, "hints": measured.get("hints") or None}
+    return plan
+
+
+def _decided_conversions(tree, data, plan, kw):
+    """Which classes of conversion are made. Returns (rows, held, only); raises Refused when a chosen conversion breaks the kept builder."""
     # which classes of conversion are made: one that parity measured as changing a page, or what the person's
     # own builder publishes, is NOT made (design-site-fidelity section 5.0.3): the site stays on its builder
     try:
@@ -382,11 +277,21 @@ def prepare(repo, date, spec=None, dry_run=False):
                       "leaves it as written; or fix the builder, run `adopt.py parity` again, and accept it once parity "
                       "is EQUAL or ACCEPTED" % (broken[0]["class"], broken[0]["failure"],
                                                 (plan["parity"] or {}).get("verdict", "not run"), broken[0]["class"]))
+    return rows, held, only
+
+
+def _build_refusals(tree, data, plan, only, kw, dispositions):
+    """What the plugin's own build refuses in the tree adopt would write, as problems."""
     # what the plugin's own build refuses in the tree adopt would write (before anything is written)
     refusals, acc = accept_problems(tree, data, plan["paper"], plan["folders"], plan.get("siteKind"), only, **kw)
     refusals = refusals + accept_warnings(acc)
     if dispositions:             # a stray file is disposed by the file accounting, never also a refusal (design R4 row 16 (a))
         refusals = [p for p in refusals if not is_stray_warning(p)]
+    return refusals
+
+
+def _refuse_undecided(tree, infos, decisions, plan, dry_run):
+    """Every file proposed for removal needs a decision, and the resume's paper size must be known. Raises Refused or NeedsAnswer."""
     # 1. every file proposed for removal needs a decision
     # An undecided PARTIAL is KEPT (the skill says so: it is removable only when its units are decided or parity
     # passes). An undecided DUPLICATE or AMBIGUOUS proposes a removal, so a real apply refuses; a dry run previews
@@ -401,8 +306,11 @@ def prepare(repo, date, spec=None, dry_run=False):
     if resume["needsAnswer"] and paper is None:
         raise NeedsAnswer("resume.paper needs your answer: the resume PDF's paper size cannot be read from it; "
                           "run `adopt.py paper Letter` or `adopt.py paper A4`")
+
+
+def _collect_removals(spec, tree, infos, decisions, plan, parity):
+    """The files a decision removes, what is kept and why, the facts to move and the standing-rule units. Raises Refused for a decision that is not safe to act on."""
     removals, kept, facts, reasons, unit_facts, rule_units = {}, [], [], {}, [], []
-    parity = plan["parity"]
     for i in infos:
         d = decisions.get(i["path"]) or {}
         cls = i["class"]
@@ -464,10 +372,11 @@ def prepare(repo, date, spec=None, dry_run=False):
         if fa["source"] in removals:
             facts.append(fa)
     facts = unit_facts + facts
-    # 2. data files first
-    moved = write_facts(tree, facts, date)
-    # 3. config second
-    changes = []
+    return removals, kept, facts, reasons, rule_units
+
+
+def _write_site(tree, data, plan, only, kw, held, rows, infos, base, parity):
+    """Write the converted site files and the parity record into the tree. Returns (notes, record)."""
     try:
         site_files, notes = converted_site_files(tree, data, plan["paper"], plan["folders"], plan.get("siteKind"), only, **kw)
     except Refused as e:
@@ -480,6 +389,12 @@ def prepare(repo, date, spec=None, dry_run=False):
         tree.write(p, blob)
     record = parity_record_text(parity, builder_entry(infos) is not None, base)
     tree.write(PARITY_RECORD_REL, record)
+    return notes, record
+
+
+def _site_changes(tree, notes, record, plan):
+    """The change lines for what was converted in the site files, in the order the message lists them."""
+    changes = []
     changes.append("%s: parity %s%s" % (PARITY_RECORD_REL, json.loads(record)["verdict"],
                                         "" if json.loads(record)["verdict"] in ("EQUAL", "MARKUP-ONLY", "ACCEPTED") else
                                         "; site-studio will not publish this site until `adopt.py remeasure` says "
@@ -530,6 +445,11 @@ def prepare(repo, date, spec=None, dry_run=False):
         changes.append("%s: token %s -> %s%s" % (p, a, b, " (frozen as text, as your builder wrote it: it does not update "
                                                  "when content/home changes, and parity measures the page)"
                                                  if (p, a, b) in frozen else ""))
+    return changes
+
+
+def _carry_claude_and_gitignore(tree, rule_units, changes):
+    """Replace the engine sections of CLAUDE.md, carry the standing rules, update .gitignore. Returns (old, new) CLAUDE.md."""
     claude_old = tree.text("CLAUDE.md") if tree.exists("CLAUDE.md") else "# Rules for this repo\n"
     claude_new = transform_claude_md(claude_old)
     claude_new = append_rules(claude_new, rule_units)
@@ -543,6 +463,11 @@ def prepare(repo, date, spec=None, dry_run=False):
     if gi_add:
         tree.write(".gitignore", gi_new)
         changes.append(".gitignore: added %s" % ", ".join(gi_add))
+    return claude_old, claude_new
+
+
+def _settings_and_hooks(tree, spec, removals, kept, by_path, changes):
+    """Merge the plugin's registration into .claude/settings.json and handle hooks that name a removed file. Returns (settings, hook_list)."""
     # settings and hooks
     cap_of = dict((p, e["capability"]) for p, e in removals.items())
     st_old = tree.text(".claude/settings.json") if tree.exists(".claude/settings.json") else ""
@@ -568,6 +493,11 @@ def prepare(repo, date, spec=None, dry_run=False):
     settings = trial
     tree.write(".claude/settings.json", json.dumps(settings, indent=2, ensure_ascii=False) + "\n")
     changes.append(".claude/settings.json: plugin registration and ask rules added; your own rules kept")
+    return settings, hook_list
+
+
+def _archive_removals(tree, removals, changes):
+    """Archive each confirmed removal under archive/ (never delete) and list them in archive/ARCHIVE.json."""
     # 4. removals last
     # decision 18: a confirmed removal is ARCHIVED under archive/ (a leading `.claude/` written `_claude/`, so a skill cannot load
     # again), never deleted, and listed in archive/ARCHIVE.json: rule `claude-config` for what was under `.claude/`, else `person`
@@ -600,6 +530,10 @@ def prepare(repo, date, spec=None, dry_run=False):
         changes.append("%d file(s) you confirmed for removal are archived, not deleted: %s (listed in %s; nothing under archive/ is "
                        "built or read)" % (len(archived_here), ", ".join("%s -> %s" % m for m in archived_here[:4])
                                            + (", ..." if len(archived_here) > 4 else ""), ARCHIVE_REL))
+
+
+def _refuse_stray_rules(decisions, removals):
+    """A standing rule travels only out of an agent, command or skill file adopt removes."""
     for path, d in sorted(decisions.items()):
         ruled = sorted(uid for uid, u in (d.get("units") or {}).items() if u.get("disposition") == "rule")
         if not ruled:
@@ -611,11 +545,10 @@ def prepare(repo, date, spec=None, dry_run=False):
         if removals[path]["kind"] not in ("agent", "command", "skill"):
             raise Refused("%s: unit %s is marked rule, but only an agent, command or skill file carries a "
                           "standing rule" % (path, ruled[0]))
-    post = set(tree.paths())
-    dangling = dangling_hook_paths(settings, post)
-    if dangling:
-        raise Refused("a hook would still name %s, which is not in the new tree; apply finished nothing"
-                      % ", ".join(sorted(set(p for _e, p in dangling))))
+
+
+def _assess_outcome(repo, tree, base, data, spec, plan, decisions, parity, refusals, notes, dry_run):
+    """Record the leftovers in `notes` and assess the outcome. Returns (engine, outcome)."""
     notes["oldFormHits"] = old_form_hits(tree, notes["olds"])
     notes["refusals"] = [p.line() for p in refusals]
     # the outcome (design 8 AO): blocked or ready, every cause a row, the publish preconditions asked of `deploy.py --preflight`
@@ -624,6 +557,11 @@ def prepare(repo, date, spec=None, dry_run=False):
     outcome = assess(repo, plan, parity, refusals, engine, report_issue.plugin_version(), reports_at(tree),
                      snapshot=snapshot, run_preflight=not dry_run)
     notes["outcome"] = outcome
+    return engine, outcome
+
+
+def _outcome_changes(tree, notes, outcome, changes):
+    """The change lines for the outcome record and the conversions `converted_site_files` noted after the first pass."""
     if outcome["rows"]:
         tree.write(REPORTS_REL, report_issue.dump_reports(outcome["rows"]))
         changes.append("%s: %d cause(s) recorded (%s)" % (REPORTS_REL, len(outcome["rows"]),
@@ -650,6 +588,10 @@ def prepare(repo, date, spec=None, dry_run=False):
         changes.append("%s -> %s: renamed to the name your builder publishes it under" % (old, new))
     for line in notes.get("settings") or []:
         changes.append("setting %s" % line)
+
+
+def _write_handoff(tree, date, basis, base, removals, moved, kept, outcome):
+    """Write the HANDOFF.md entry for the run so far. Returns (branch, handoff), `handoff(status)` being what `finish` rewrites it with."""
     # 5. HANDOFF.md entry: written with the status of the run so far; `finish` rewrites it when the run stops later
     branch = BRANCH_PREFIX + date
     handoff_old = tree.text("HANDOFF.md") if tree.exists("HANDOFF.md") else "# Handoff\n"
@@ -669,6 +611,49 @@ def prepare(repo, date, spec=None, dry_run=False):
         status = ["- The run goes on to publish the site, wait for Pages, archive the old builder and push this branch to main; "
                   "an `Adopt run` entry below says how it ended.\n"]
     tree.write("HANDOFF.md", handoff(status))
+    return branch, handoff
+
+
+def prepare(repo, date, spec=None, dry_run=False):
+    """Everything apply will commit, computed without writing anything. Raises Refused. `dry_run` previews with
+    undecided files: a real apply refuses on an undecided DUPLICATE or AMBIGUOUS, a dry run keeps it and says so."""
+    spec = spec or load_spec()
+    basis, tree, data = preconditions(repo)
+    base = basis.sha
+    plan = _checked_plan(repo, base)
+    infos = inventory(tree, spec)
+    by_path = dict((i["path"], i) for i in infos)
+    decisions = plan["files"]
+    # the measured settings, and the dispositions the last `parity` measured (design 8: every class measured, every file accounted
+    # for); what `parity` did not measure is not written
+    settings = dict((k, v["value"]) for k, v in (plan.get("settings") or {}).items() if v["how"] in ("measured", "chosen"))
+    measured = plan["parity"] or {}
+    dispositions = (measured.get("accounting") or {}).get("dispositions") or None
+    persons = dict((p, e["disposition"]) for p, e in decisions.items() if e.get("disposition"))
+    kw = {"settings": settings, "dispositions": dispositions, "persons": persons, "hints": measured.get("hints") or None}
+    rows, held, only = _decided_conversions(tree, data, plan, kw)
+    refusals = _build_refusals(tree, data, plan, only, kw, dispositions)
+    _refuse_undecided(tree, infos, decisions, plan, dry_run)
+    parity = plan["parity"]
+    removals, kept, facts, reasons, rule_units = _collect_removals(spec, tree, infos, decisions, plan, parity)
+    # 2. data files first
+    moved = write_facts(tree, facts, date)
+    # 3. config second
+    notes, record = _write_site(tree, data, plan, only, kw, held, rows, infos, base, parity)
+    changes = _site_changes(tree, notes, record, plan)
+    claude_old, claude_new = _carry_claude_and_gitignore(tree, rule_units, changes)
+    settings, hook_list = _settings_and_hooks(tree, spec, removals, kept, by_path, changes)
+    # 4. removals last
+    _archive_removals(tree, removals, changes)
+    _refuse_stray_rules(decisions, removals)
+    post = set(tree.paths())
+    dangling = dangling_hook_paths(settings, post)
+    if dangling:
+        raise Refused("a hook would still name %s, which is not in the new tree; apply finished nothing"
+                      % ", ".join(sorted(set(p for _e, p in dangling))))
+    engine, outcome = _assess_outcome(repo, tree, base, data, spec, plan, decisions, parity, refusals, notes, dry_run)
+    _outcome_changes(tree, notes, outcome, changes)
+    branch, handoff = _write_handoff(tree, date, basis, base, removals, moved, kept, outcome)
     message = build_message(date, basis, removals, reasons, spec, moved, changes, hook_list, kept, parity, notes)
     return {"base": base, "basis": basis, "tree": tree, "branch": branch, "message": message, "removals": removals,
             "kept": kept, "claude": (claude_old, claude_new), "hooks": hook_list, "moved": moved,

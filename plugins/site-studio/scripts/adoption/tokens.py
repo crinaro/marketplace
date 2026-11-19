@@ -15,8 +15,8 @@ import html.parser
 import posixpath
 import re
 
-import build as site_build  # noqa: E402
-import content as site_content  # noqa: E402
+from building import tokens  # noqa: E402
+from contentmodel import errors, frontmatter, keytables  # noqa: E402
 
 _BOX = re.compile(rb"/MediaBox\s*\[\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s*\]")
 
@@ -68,7 +68,7 @@ def portfolio_folders(tree):
         parts = p.split("/")
         if parts[0] == "content" and len(parts) >= 3:
             f = parts[1]
-            if f in site_content.RESERVED_PORTFOLIO_NAMES or f.startswith("_"):
+            if f in keytables.RESERVED_PORTFOLIO_NAMES or f.startswith("_"):
                 continue
             if f == "work" or (len(parts) == 3 and parts[2] == "page.md"):
                 names.add(f)
@@ -97,8 +97,8 @@ def home_feed(tree):
     for path in ("content/home/index.md", "content/home.md"):
         if tree.exists(path):
             try:
-                return site_content.parse_front_matter(site_content.decode_text(tree.read(path), path), path)
-            except site_content.ContentError:
+                return frontmatter.parse_front_matter(frontmatter.decode_text(tree.read(path), path), path)
+            except errors.ContentError:
                 return None
     return None
 
@@ -124,7 +124,7 @@ def link_token_context(m):
 
 def link_token_folder(token, folders):
     """The portfolio folder an old `{{<folder>Link}}` token (or `{{<folder>Link:<slug>}}`) names, or None."""
-    m = site_build.TOKEN_RE.fullmatch(token.strip())
+    m = tokens.TOKEN_RE.fullmatch(token.strip())
     if not m:
         return None
     om = _OLD_TOKEN.match(m.group(1) + (":" + m.group(2) if m.group(2) else ""))
@@ -216,7 +216,7 @@ def rewrite_tokens(text, folders, layout=False, home=None, frozen=None, labels=N
                 new = "{{%s}}" % row[name]
                 changes.append((m.group(0), new))
                 return new
-        if site_build.token_known(name, layout):
+        if tokens.token_known(name, layout):
             return m.group(0)
         hm = _HOME_LOCAL.match(name) if (home is not None and not layout and not arg) else None
         if hm:
@@ -245,7 +245,7 @@ def rewrite_tokens(text, folders, layout=False, home=None, frozen=None, labels=N
                     return new
         unknown.append(m.group(0))
         return m.group(0)
-    return site_build.TOKEN_RE.sub(sub, text), changes, unknown
+    return tokens.TOKEN_RE.sub(sub, text), changes, unknown
 
 
 def token_files(tree):

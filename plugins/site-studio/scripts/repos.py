@@ -90,10 +90,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-import build  # noqa: E402
-import deploy  # noqa: E402
+from building import outcomes  # noqa: E402
+from deploying import confirm, constants, gitrun, headcheck, prepare, pushing, staging, target  # noqa: E402
 import rulesets  # noqa: E402
-import siteconfig  # noqa: E402
+from configschema import canonical, configkeys, diagnostics, model  # noqa: E402
 import platform_check  # noqa: E402
 
 PLUGIN = os.path.dirname(HERE)
@@ -158,8 +158,8 @@ def scaffold(dest, owner, name, person_name=None, site_title=None, kind="portfol
     `kind` is the site kind (siteconfig.SITE_KINDS); a hub or custom site gets the shared base
     without `content/`, with `templates/kinds/<kind>/` laid over it."""
     check_names(owner, name)
-    if kind not in siteconfig.SITE_KINDS:
-        raise RepoError("the site kind must be one of %s" % ", ".join(siteconfig.SITE_KINDS))
+    if kind not in configkeys.SITE_KINDS:
+        raise RepoError("the site kind must be one of %s" % ", ".join(configkeys.SITE_KINDS))
     if os.path.exists(dest) and (not os.path.isdir(dest) or os.listdir(dest)):
         raise RepoError("%s already exists and is not empty; choose a folder that does not exist yet, or empty it" % dest)
     person_name = (person_name or owner).strip()
@@ -194,7 +194,7 @@ def scaffold(dest, owner, name, person_name=None, site_title=None, kind="portfol
     else:
         raw["schema"] = 2
         raw["siteKind"] = kind
-    siteconfig.write(os.path.join(dest, "site", "site.json"), raw)
+    canonical.write(os.path.join(dest, "site", "site.json"), raw)
     written.append("site/site.json")
     return sorted(written)
 
@@ -203,8 +203,8 @@ def create(owner, name, dest=None, person_name=None, site_title=None, remote_bas
            gh_cmd="gh", out=None, kind="portfolio"):
     out = out or sys.stdout
     check_names(owner, name)
-    if kind not in siteconfig.SITE_KINDS:
-        raise RepoError("the site kind must be one of %s" % ", ".join(siteconfig.SITE_KINDS))
+    if kind not in configkeys.SITE_KINDS:
+        raise RepoError("the site kind must be one of %s" % ", ".join(configkeys.SITE_KINDS))
     dest = os.path.abspath(dest or "%s-dev" % name)
     if os.path.exists(dest) and (not os.path.isdir(dest) or os.listdir(dest)):
         raise RepoError("%s already exists and is not empty; choose a folder that does not exist yet, or empty it" % dest)
@@ -220,11 +220,11 @@ def create(owner, name, dest=None, person_name=None, site_title=None, remote_bas
                                                                  (err.strip().splitlines() or ["gh failed"])[-1]))
     print("created %s (public)" % public_repo, file=out)
     written = scaffold(dest, owner, name, person_name, site_title, kind)
-    deploy._git(dest, "init", "-q", "-b", "main")
-    deploy._git(dest, "add", "--", *written)
-    deploy._git(dest, "commit", "-q", "-m", SCAFFOLD_SUBJECT)
-    deploy._git(dest, "remote", "add", "origin", "%s/%s.git" % (remote_base.rstrip("/"), dev_repo))
-    deploy._git(dest, "push", "-q", "-u", "origin", "main")
+    gitrun._git(dest, "init", "-q", "-b", "main")
+    gitrun._git(dest, "add", "--", *written)
+    gitrun._git(dest, "commit", "-q", "-m", SCAFFOLD_SUBJECT)
+    gitrun._git(dest, "remote", "add", "origin", "%s/%s.git" % (remote_base.rstrip("/"), dev_repo))
+    gitrun._git(dest, "push", "-q", "-u", "origin", "main")
     print("scaffolded the starter into %s (%d files), committed and pushed" % (dest, len(written)), file=out)
     print("the public site will be at %s" % preview, file=out)
     return dest
@@ -233,36 +233,36 @@ def create(owner, name, dest=None, person_name=None, site_title=None, remote_bas
 def first_publish(repo, public_url=None, gh_cmd="gh", hooks=None, interval=None, timeout=None,
                   sleep=time.sleep, now=time.time, out=None, dev_origin=None):
     """The starter, once, into an empty public repo (module docstring). `public_url` and `dev_origin`
-    are test-only seams (never CLI flags): the URL replaces `deploy.public_target(cfg)[1]`, and
+    are test-only seams (never CLI flags): the URL replaces `target.public_target(cfg)[1]`, and
     `dev_origin` is the string V1 reads in place of the dev repo's `git remote get-url origin`. The PUT
     that once set the custom domain after enabling Pages is DROPPED (design amendment 1 section A2.4);
     only the `POST /pages` that turns Pages on remains."""
     out = out or sys.stdout
-    interval = deploy.POLL_INTERVAL if interval is None else interval
-    timeout = deploy.POLL_TIMEOUT if timeout is None else timeout
-    repo = deploy._toplevel(repo)
-    count = deploy._git(repo, "rev-list", "--count", "HEAD").strip()
-    subject = deploy._git(repo, "log", "-1", "--format=%s", "HEAD").strip()
+    interval = constants.POLL_INTERVAL if interval is None else interval
+    timeout = constants.POLL_TIMEOUT if timeout is None else timeout
+    repo = gitrun._toplevel(repo)
+    count = gitrun._git(repo, "rev-list", "--count", "HEAD").strip()
+    subject = gitrun._git(repo, "log", "-1", "--format=%s", "HEAD").strip()
     if count != "1" or subject != SCAFFOLD_SUBJECT:
         raise RepoError("first-publish only publishes the untouched starter (one commit, \"%s\"); "
                         "every later publish goes through /site-studio:publish and a review" % SCAFFOLD_SUBJECT)
-    if deploy._git(repo, "status", "--porcelain").strip():
+    if gitrun._git(repo, "status", "--porcelain").strip():
         raise RepoError("the dev repo has uncommitted changes; first-publish publishes the starter as committed")
-    cfg = siteconfig.load(os.path.join(repo, "site", "site.json"))
+    cfg = model.load(os.path.join(repo, "site", "site.json"))
     # The one place the target is computed. A null publicRepo raises here, before any clone or gh call.
-    _public, pinned, _ref = deploy.public_target(cfg)
+    _public, pinned, _ref = target.public_target(cfg)
     url = public_url or pinned
-    heads = deploy._git(repo, "ls-remote", "--heads", url, "main").strip()
+    heads = gitrun._git(repo, "ls-remote", "--heads", url, "main").strip()
     if heads:
         raise RepoError("%s already has a main branch; first-publish only fills an empty public repo"
                         % cfg.publicRepo)
-    repo, cfg, work, out_dir, result, _note = deploy.prepare(repo)
+    repo, cfg, work, out_dir, result, _note = prepare.prepare(repo)
     try:
-        st = deploy.stage_and_verify(repo, out_dir, result, url, "First publish: starter site", work)
+        st = staging.stage_and_verify(repo, out_dir, result, url, "First publish: starter site", work)
         if st.commit is None:
             raise RepoError("nothing to publish")
-        deploy.verify_public_target(repo, cfg, st, public_url, dev_origin, gh_cmd)      # guard (b): V1-V4
-        deploy.push_and_verify(st, url, result.digest, work, hooks or {}, out)           # -> push_main
+        target.verify_public_target(repo, cfg, st, public_url, dev_origin, gh_cmd)      # guard (b): V1-V4
+        pushing.push_and_verify(st, url, result.digest, work, hooks or {}, out)           # -> push_main
     finally:
         shutil.rmtree(work, ignore_errors=True)
     body = json.dumps({"build_type": "legacy", "source": {"branch": "main", "path": "/"}}).encode("utf-8")
@@ -271,16 +271,16 @@ def first_publish(repo, public_url=None, gh_cmd="gh", hooks=None, interval=None,
     if rc != 0 and "409" not in err and "already" not in err.lower():
         raise RepoError("pushed, but Pages could not be enabled: %s; turn GitHub Pages on in the public repo's settings"
                         % (err.strip().splitlines() or ["gh failed"])[-1])
-    verdict, last = deploy.poll_pages(cfg.publicRepo, st.commit, interval, timeout, sleep, now)
+    verdict, last = confirm.poll_pages(cfg.publicRepo, st.commit, interval, timeout, sleep, now)
     if verdict == "published":
         print("published: Pages built %s; the site is at %s" % (st.commit[:12], cfg.site_url()), file=out)
-        return deploy.EXIT_OK
+        return constants.EXIT_OK
     if verdict == "errored":
         print("RED: the Pages build errored", file=out)
-        return deploy.EXIT_RED
+        return constants.EXIT_RED
     print("AMBER: pushed and verified; Pages has not finished building after %d minutes (last status: %s)"
           % (max(1, int(timeout // 60)), last or "unknown"), file=out)
-    return deploy.EXIT_AMBER
+    return constants.EXIT_AMBER
 
 
 # ---------------------------------------------------------------- existing-site (dev #857, #854)
@@ -425,10 +425,10 @@ def protect(repo, fix=False, classic=False, gh_cmd="gh", out=None):
     if fix and classic:
         raise RepoError("--fix repairs the ruleset; --classic never replaces protection that exists. "
                         "Use one or the other")
-    deploy.refuse_if_remote()
-    repo = deploy._toplevel(repo)
-    cfg = siteconfig.load(os.path.join(repo, "site", "site.json"))
-    public_repo = deploy.public_target(cfg)[0]      # a null publicRepo refuses here (AM9)
+    headcheck.refuse_if_remote()
+    repo = gitrun._toplevel(repo)
+    cfg = model.load(os.path.join(repo, "site", "site.json"))
+    public_repo = target.public_target(cfg)[0]      # a null publicRepo refuses here (AM9)
     base = "repos/%s" % public_repo
 
     def api(method, path, body=None):
@@ -523,7 +523,7 @@ def build_parser():
         p.add_argument("--dest")
         p.add_argument("--person-name")
         p.add_argument("--site-title")
-        p.add_argument("--kind", choices=siteconfig.SITE_KINDS, default="portfolio")
+        p.add_argument("--kind", choices=configkeys.SITE_KINDS, default="portfolio")
     e = sub.add_parser("existing-site", allow_abbrev=False)
     e.add_argument("--dir", default=".")
     e.add_argument("--repo")
@@ -559,7 +559,7 @@ def main(argv=None, **kw):
             # trailing `else` ran first-publish for anything it did not know).
             raise RepoError("unknown subcommand %r" % (args.cmd,))
         return 0
-    except (RepoError, deploy.DeployError, siteconfig.SiteConfigError, build.BuildError) as e:
+    except (RepoError, gitrun.DeployError, diagnostics.SiteConfigError, outcomes.BuildError) as e:
         print("repos refused: %s" % e)
         return 1
 

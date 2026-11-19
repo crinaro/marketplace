@@ -19,7 +19,7 @@ every file but those rules 1 to 4 settle stays where it is, undisposed.
 import posixpath
 import re
 
-import build as site_build  # noqa: E402
+from building import running  # noqa: E402
 
 from adoption.accounting import account, counts, piece_folder_of
 from adoption.base import Refused
@@ -47,7 +47,7 @@ def pass_one(tree, data, plan, chosen=(), settings=None, hints=None):
     drafted = []
     for _attempt in range(2):
         try:
-            acc = site_build.accept(snap)
+            acc = running.accept(snap)
         except Exception:      # noqa: BLE001 -- accept does not raise; the belt to its braces
             return files, notes, snap, None, drafted
         pieces = sorted(set(m.group(1) + "/index.md" for p in acc.problems

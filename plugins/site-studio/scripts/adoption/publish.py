@@ -23,7 +23,7 @@ repo, or a fake `gh`, and every other line here runs for real.
 
 A STOP is `Stop(step, why, next, cause=...)`: the run ended BLOCKED at that step, the dev repo's main is unchanged, the old builder
 stays the publisher, and the person is told what to do. Every stop carries a CAUSE ID of the reporter's closed grammar
-(`report_issue.cause_id`: `ss-adopt/apply/<stop>`, or `ss-adopt/env/pages-*` for what only Pages can answer), printed with the stop
+(`grammar.cause_id`: `ss-adopt/apply/<stop>`, or `ss-adopt/env/pages-*` for what only Pages can answer), printed with the stop
 and written in HANDOFF.md, so the reporter names it and says whether it is the person's, the environment's or the plugin's to resolve. The privacy review is a step of `/site-studio:publish` that a script cannot
 take (an agent opens the files; the record is bound to the build's digest), so a build no review covers is handled by
 `adoption.review_cover` (owner ruling 2026-11-18, F-1): a review made for the SAME digest carries over; failing that, parity EQUAL
@@ -40,6 +40,7 @@ import sys
 
 import github_url  # noqa: E402
 import report_issue  # noqa: E402
+from reportcause import grammar
 
 from adoption import review_cover
 from adoption.base import PLUGIN, git, gitt
@@ -72,7 +73,7 @@ class Stop(Exception):
     def __init__(self, step, why, next_action, lines=(), published=False, *, cause):
         Exception.__init__(self, why)
         self.step, self.why, self.next_action, self.lines, self.published = step, why, next_action, list(lines), published
-        report_issue.parse_cause(cause)           # a stop names a cause of the closed grammar, or it is not built
+        grammar.parse_cause(cause)           # a stop names a cause of the closed grammar, or it is not built
         self.cause = cause
         self.cover = None                         # the sentence about a carried or stood-in review, when this stop followed one
 
@@ -151,7 +152,7 @@ def check_no_run_in_progress(gh, dev_slug):
         raise Stop(3, "%d workflow run(s) are in progress on %s, and your old publisher may be one of them, so site-studio "
                       "would publish over it" % (len(runs), dev_slug),
                    "let them finish, then run `adopt.py apply` again (delete the branch first: `git branch -D <branch>`)",
-                   cause=report_issue.cause_id("apply", "run-in-progress"))
+                   cause=grammar.cause_id("apply", "run-in-progress"))
     return []
 
 
@@ -166,12 +167,12 @@ def pages_built(gh, public_repo):
         latest = {}
     if rc != 0 or rc2 != 0 or not isinstance(latest, dict) or "status" not in latest:
         raise Stop(4, "Pages' state for %s could not be read (gh), so it is not known that this build is live" % public_repo,
-                   NEXT_PAGES, published=True, cause=report_issue.cause_id("env", "pages-unread"))
+                   NEXT_PAGES, published=True, cause=grammar.cause_id("env", "pages-unread"))
     if latest.get("status") == "built" and latest.get("commit") == head.strip():
         return None
     raise Stop(4, "the public repo already holds this exact build, but Pages has not reported it built (its latest build is "
                   "%s)" % latest.get("status"), NEXT_PAGES, published=True,
-          cause=report_issue.cause_id("env", "pages-not-built"))
+          cause=grammar.cause_id("env", "pages-not-built"))
 
 
 def covered(repo, clone, digest, out, cover):
@@ -182,10 +183,10 @@ def covered(repo, clone, digest, out, cover):
     except review_cover.CoverRefused as e:
         if e.blocked:
             raise Stop(3, "the build cannot be published yet: %s" % e.reason, NEXT_RETRY, e.lines + _tail(out, 6),
-                       cause=report_issue.cause_id("apply", "not-publishable"))
+                       cause=grammar.cause_id("apply", "not-publishable"))
         raise Stop(3, "the build cannot be published yet: no review covers this digest, and neither a carried review nor the "
                       "parity-EQUAL stand-in applies (%s)" % e.reason, NEXT_REVIEW, e.lines + _tail(out, 6),
-                   cause=report_issue.cause_id("apply", "no-review"))
+                   cause=grammar.cause_id("apply", "no-review"))
 
 
 def publish(repo, commit, work, deploy=None, gh=None, dev_slug=None, message=PUBLIC_MESSAGE, cover=None):
@@ -199,7 +200,7 @@ def publish(repo, commit, work, deploy=None, gh=None, dev_slug=None, message=PUB
     rc, out = deploy(["--dry-run", "--adopt", "--repo", clone], clone)
     if rc != 0 or _REFUSED.search(out):
         raise Stop(3, "deploy.py --dry-run refused: %s" % _reason(out, rc), NEXT_RETRY, _tail(out, 6),
-                   cause=report_issue.cause_id("apply", "publish-refused"))
+                   cause=grammar.cause_id("apply", "publish-refused"))
     try:
         with open(os.path.join(clone, "site", "site.json"), encoding="utf-8") as fh:
             public_repo = json.load(fh).get("publicRepo")
@@ -219,7 +220,7 @@ def publish(repo, commit, work, deploy=None, gh=None, dev_slug=None, message=PUB
         printed = _PRINTED.search(out)
         if "no review" not in why or not printed:
             raise Stop(3, "the build cannot be published yet: %s" % why, NEXT_REVIEW if "no review" in why else NEXT_RETRY,
-                       _tail(out, 6), cause=report_issue.cause_id("apply", "no-review" if "no review" in why else "not-publishable"))
+                       _tail(out, 6), cause=grammar.cause_id("apply", "no-review" if "no review" in why else "not-publishable"))
         got = covered(repo, clone, printed.group(1), out, cover or review_cover.cover)
         lines += got["lines"]
         found = printed
@@ -244,9 +245,9 @@ def _confirm(clone, digest, message, deploy, gh, public_repo, lines, got):
         return {"clone": clone, "digest": digest, "cover": got, "lines": lines + ["step 4: Pages reports it built"]}
     if rc == 3 or _AMBER.search(out):
         raise Stop(4, "site-studio published digest %s, and Pages has not finished building it" % digest[:12], NEXT_PAGES,
-                   _tail(out, 4), published=True, cause=report_issue.cause_id("env", "pages-not-built"))
+                   _tail(out, 4), published=True, cause=grammar.cause_id("env", "pages-not-built"))
     if _RED.search(out):
         raise Stop(4, "site-studio published digest %s, and the Pages build errored" % digest[:12], NEXT_PAGES, _tail(out, 4),
-                   published=True, cause=report_issue.cause_id("env", "pages-errored"))
+                   published=True, cause=grammar.cause_id("env", "pages-errored"))
     raise Stop(3, "deploy.py --confirm refused: %s" % _reason(out, rc), NEXT_RETRY, _tail(out, 6),
-               cause=report_issue.cause_id("apply", "publish-refused"))
+               cause=grammar.cause_id("apply", "publish-refused"))

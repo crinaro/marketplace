@@ -9,7 +9,7 @@ from contentmodel.grammar import body_start_line
 from contentmodel.keytables import DATE_RE, POSITION_RE
 from contentmodel.links import check_href
 from contentmodel.models import Page, Piece
-from siteconfig import HOME_INTRO_SCOPES, HOME_TITLE_FORMS
+from configschema.configkeys import HOME_INTRO_SCOPES, HOME_TITLE_FORMS
 
 
 def _check_contact(meta, path):

@@ -1,7 +1,7 @@
 """adoption.blockers -- every blocker as a cause id, from the plugin's own enumerations (design 8 RP, R4 rows 9, 10, 13, 16;
 step 1.9r).
 
-Part of the `adoption` package behind the entry point `adopt.py`. `report_issue` owns the grammar and the enumerations (`CAUSE_RE`,
+Part of the `adoption` package behind the entry point `adopt.py`. `reportcause.grammar` owns the grammar and the enumerations (`CAUSE_RE`,
 `SHAPES`, `REFUSAL_CODE_IDS`, `cause_id`); this module maps what adopt MEASURES onto them, from structure only. Nothing here reads a
 captured group, a path, a key, a token or a block name into an id: a value outside an enumeration becomes that enumeration's
 `other` / `unclassified` member and is counted (Q1.8). Sources, and the id each gives:
@@ -22,12 +22,13 @@ captured group, a path, a key, a token or a block name into an id: a value outsi
                                               publish/serves-dev-repo; `publish/other-publisher` from a `keep` on a publisher
   the environment                             env/<cause>: printed with their fix, never filed
 
-`classify(cid)` says plugin / person / environment (`report_issue.cause_kind`); only a plugin cause is ever filed.
+`classify(cid)` says plugin / person / environment (`grammar.cause_kind`); only a plugin cause is ever filed.
 """
 
 import re
 
 import report_issue
+from reportcause import grammar
 
 from adoption.problems import analyse_problems
 
@@ -72,21 +73,21 @@ def refusal_occurrences(problems):
         for p in group:
             if getattr(p, "mechanical", False) or is_stray_warning(p):
                 continue
-            out.append({"id": report_issue.cause_id("refusal", refusal_code(p)), "row": None})
+            out.append({"id": grammar.cause_id("refusal", refusal_code(p)), "row": None})
     return out
 
 
 def classify(cid):
-    return report_issue.cause_kind(cid)
+    return grammar.cause_kind(cid)
 
 
 def parity_occurrences(differences, kinds, row="unattributed"):
     """`kinds` is a Counter-like {parity kind label: how many}; every visible difference is counted under its kind. A label
-    outside the closed set cannot be built (`report_issue.cause_id` maps an unknown element or attribute to `other`)."""
+    outside the closed set cannot be built (`grammar.cause_id` maps an unknown element or attribute to `other`)."""
     out = []
     for kind, n in sorted(kinds.items()):
         for _ in range(n):
-            out.append({"id": report_issue.cause_id("parity", kind, row=row), "row": None if row == "unattributed" else row})
+            out.append({"id": grammar.cause_id("parity", kind, row=row), "row": None if row == "unattributed" else row})
     return out
 
 
@@ -97,10 +98,10 @@ def look_occurrences(look_status):
     (a page the derive never read) is no finding about the construct. Only a verdict DIFFERENT raises them (`outcome.assess`): a
     construct nothing in the pages differs by is no blocker."""
     out = []
-    known = report_issue.constructs()
+    known = grammar.constructs()
     for cid, status in sorted((look_status or {}).items()):
         if status in ("unmapped", "ambiguous") and cid in known:
-            out.append({"id": report_issue.cause_id("look", status, cid), "row": cid})
+            out.append({"id": grammar.cause_id("look", status, cid), "row": cid})
     return out
 
 
@@ -109,24 +110,24 @@ def accounting_occurrences(accounting, family_of, area_of):
     out = []
     for path, (disp, _why) in sorted((accounting.get("dispositions") or {}).items()):
         if disp == "no-landing":
-            out.append({"id": report_issue.cause_id("no-landing", family_of(path), area_of(path)), "row": None})
+            out.append({"id": grammar.cause_id("no-landing", family_of(path), area_of(path)), "row": None})
     for group in accounting.get("unsettled") or []:
         for path in group:
-            out.append({"id": report_issue.cause_id("unobservable", family_of(path)), "row": None})
+            out.append({"id": grammar.cause_id("unobservable", family_of(path)), "row": None})
     return out
 
 
 def engine_occurrences(engine_causes, cause=None):
     """`builder/unmeasurable/<language>` and `builder/invocation-differs` (from parity's `cause`), and the person causes the
     engine computation found (`publish/serves-dev-repo`, `publish/other-publisher`)."""
-    out = [{"id": report_issue.cause_id(*group_key), "row": None} for group_key in engine_causes]
+    out = [{"id": grammar.cause_id(*group_key), "row": None} for group_key in engine_causes]
     if cause:
         if cause.startswith("builder/unmeasurable/"):
-            out.append({"id": report_issue.cause_id("builder", "unmeasurable", cause.split("/")[2]), "row": None})
+            out.append({"id": grammar.cause_id("builder", "unmeasurable", cause.split("/")[2]), "row": None})
         elif cause == "builder/invocation-differs":
-            out.append({"id": report_issue.cause_id("builder", "invocation-differs"), "row": None})
+            out.append({"id": grammar.cause_id("builder", "invocation-differs"), "row": None})
         elif cause.startswith("env/"):
-            out.append({"id": report_issue.cause_id(*cause.split("/")), "row": None})
+            out.append({"id": grammar.cause_id(*cause.split("/")), "row": None})
         elif cause == "unobservable":
             pass
     return out
@@ -142,9 +143,9 @@ def preflight_occurrences(causes):
             continue
         parts = c["cause"].split("/")
         try:
-            out.append({"id": report_issue.cause_id(*parts), "row": None})
-        except report_issue.CauseError:
-            out.append({"id": report_issue.cause_id("refusal", "unclassified"), "row": None})
+            out.append({"id": grammar.cause_id(*parts), "row": None})
+        except grammar.CauseError:
+            out.append({"id": grammar.cause_id("refusal", "unclassified"), "row": None})
     return out, notes
 
 

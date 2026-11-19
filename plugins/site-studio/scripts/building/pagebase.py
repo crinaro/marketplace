@@ -3,10 +3,12 @@ selection and the page shell."""
 
 import re
 
-import content as C
+from contentmodel import frontmatter
 import looks
-from content import ContentError, esc
-from looks import LookError
+from lookgrammar import stylesheets
+from contentmodel.errors import ContentError
+from contentmodel.links import esc
+from lookgrammar.errors import LookError
 
 from building.constants import HTML_EXTS
 from building.outcomes import BuildError
@@ -54,13 +56,13 @@ class _PageBase(object):
             raise BuildError("site.json: look '%s' is not a file in the build input" % ref, path="site/site.json",
                              fix="commit %s, or remove the look key from site/site.json for the plugin's own look" % ref)
         try:
-            look = looks.parse(C.decode_text(raw, ref), ref)
+            look = looks.parse(frontmatter.decode_text(raw, ref), ref)
             for rel in look.stylesheets:        # a regular file at HEAD (symlinks never reach the build input)
                 sheet = self.files.get(rel)
                 if sheet is None:
                     raise LookError("%s: stylesheets names %s, which is not a file in the build input" % (ref, rel),
                                     fix="commit the file, or remove it from the look's stylesheets")
-                looks.scan_stylesheet(C.decode_text(sheet, rel), rel)
+                stylesheets.scan_stylesheet(frontmatter.decode_text(sheet, rel), rel)
             self.look = look
         except LookError as e:
             raise BuildError(str(e), path=ref, fix=e.fix or "fix the look file named above")
@@ -237,7 +239,7 @@ class _PageBase(object):
         raw = self.files.get("site/templates/layout.html")
         if raw is None:
             raise BuildError("site/templates/layout.html is missing (the page shell for generated pages)", fix="add site/templates/layout.html, which holds {{content}}")
-        text = strip_html_comments(C.decode_text(raw, "site/templates/layout.html"))
+        text = strip_html_comments(frontmatter.decode_text(raw, "site/templates/layout.html"))
         if "{{content}}" not in text and not re.search(r"\{\{\s*content\s*\}\}", text):
             raise BuildError("site/templates/layout.html must contain {{content}}", fix="put {{content}} in site/templates/layout.html where the page body goes")
         return text

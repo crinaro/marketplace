@@ -15,7 +15,7 @@ import json
 import os
 import re
 
-import siteconfig  # noqa: E402
+from configschema import configkeys  # noqa: E402
 
 from adoption.base import FACT_KINDS, FOLDER_CHOICES, PLAN_REL, PlanError, Refused, UNIT_DISPOSITIONS, gitt
 from adoption.spec import OPT_IN_CLASSES
@@ -63,8 +63,8 @@ def parse_plan(text):
     if not isinstance(d["convert"], list) or any(c not in OPT_IN_CLASSES for c in d["convert"]):
         raise PlanError("adopt plan: 'convert' must be a list of conversions you may choose (%s)"
                         % ", ".join(OPT_IN_CLASSES))
-    if d["siteKind"] not in (None,) + siteconfig.SITE_KINDS:
-        raise PlanError("adopt plan: 'siteKind' must be null or one of %s" % ", ".join(siteconfig.SITE_KINDS))
+    if d["siteKind"] not in (None,) + configkeys.SITE_KINDS:
+        raise PlanError("adopt plan: 'siteKind' must be null or one of %s" % ", ".join(configkeys.SITE_KINDS))
     if not isinstance(d["folders"], dict):
         raise PlanError("adopt plan: 'folders' must be an object")
     for name, choice in d["folders"].items():

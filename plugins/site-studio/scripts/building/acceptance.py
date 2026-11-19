@@ -4,8 +4,9 @@ meta-key rule, the carriage-return check."""
 import re
 
 import content as C
-import siteconfig
-from content import ContentError
+from contentmodel import keytables, layout as layout_mod, models
+from configschema import configkeys, diagnostics, treeschema
+from contentmodel.errors import ContentError
 
 from building.constants import HTML_EXTS
 from building.outcomes import BuildError
@@ -15,17 +16,17 @@ def _load_model(files, cfg, drafts, check_resume_pdf):
     """The content model for a site. A `portfolio` loads `content/`; a `hub` or `custom` builds
     nothing from it, so it gets an empty model after every refusal of design section 4.1 is
     checked: portfolio-only keys, portfolio content, and a missing `site/src/index.html`."""
-    layout = [p.message for p in C.layout_problems(files, cfg.siteKind, cfg)]
+    layout = [p.message for p in layout_mod.layout_problems(files, cfg.siteKind, cfg)]
     if cfg.siteKind == "portfolio":
         if layout:
             raise ContentError("; ".join(layout), fix="fix each problem listed, then build again")
         return C.load_content(files, cfg, drafts=drafts, check_resume_pdf=check_resume_pdf)
-    problems = siteconfig.kind_conflicts(cfg) + layout
+    problems = treeschema.kind_conflicts(cfg) + layout
     if "site/src/index.html" not in files:
         problems.append("a %s site's home page is site/src/index.html, and it is missing" % cfg.siteKind)
     if problems:
         raise ContentError("; ".join(problems), fix="fix each problem listed, then build again")
-    return C.Content()
+    return models.Content()
 
 
 def _problem_from(e, default_path=None):
@@ -42,14 +43,14 @@ def _problem_from(e, default_path=None):
             if lineno is None and m.group(2):
                 lineno = int(m.group(2))
     fix = getattr(e, "fix", None) or "fix the problem named here, then run the check again"
-    return siteconfig.make_problem(msg, path or default_path, "refused by the build", "accepted by the build",
+    return diagnostics.make_problem(msg, path or default_path, "refused by the build", "accepted by the build",
                                    fix, False, lineno)
 
 
 def _not_checked(stage_name, e, default_path=None):
     """A refusal that is not a refusal: an exception the build did not mean to raise. It is loud, never a
     traceback and never a quiet pass (CLAUDE.md: a missing thing reads as an empty thing)."""
-    return siteconfig.make_problem("NOT CHECKED: %s raised %s: %s" % (stage_name, type(e).__name__, e),
+    return diagnostics.make_problem("NOT CHECKED: %s raised %s: %s" % (stage_name, type(e).__name__, e),
                                    default_path, "an exception the build did not mean to raise",
                                    "a refusal with a fix", "report this to site-studio, with the file named "
                                    "here", False)
@@ -58,9 +59,9 @@ def _not_checked(stage_name, e, default_path=None):
 def _cr_problems(out):
     probs = []
     for rel in sorted(out, key=lambda p: p.encode("utf-8")):
-        if (rel.lower().endswith(C.TEXT_EXTS) or rel in ("CNAME", "robots.txt")
+        if (rel.lower().endswith(keytables.TEXT_EXTS) or rel in ("CNAME", "robots.txt")
                 or rel.lower().endswith(HTML_EXTS)) and b"\r" in out[rel]:
-            probs.append(siteconfig.make_problem("%s would be written with a carriage return" % rel, rel,
+            probs.append(diagnostics.make_problem("%s would be written with a carriage return" % rel, rel,
                                                  "a carriage return", "LF line endings",
                                                  "save the file with LF line endings"))
     return probs
@@ -76,10 +77,10 @@ def _meta_key_problems(model, cfg):
     for pf in model.portfolios:
         for part in ("meta", "cardMeta"):
             for key in pf.settings[part]:
-                if key not in siteconfig.BUILTIN_PIECE_KEYS:
+                if key not in configkeys.BUILTIN_PIECE_KEYS:
                     continue
                 path = pf.page_source if (pf.page_source and part in pf.page_keys) else "site/site.json"
-                out.append(siteconfig.make_problem(
+                out.append(diagnostics.make_problem(
                     "%s: '%s' lists the built-in key '%s', which the build shows already" % (path, part, key),
                     path, "'%s' in %s" % (key, part), "no built-in key in %s" % part,
                     "remove '%s' from %s; the build shows it already" % (key, part)))

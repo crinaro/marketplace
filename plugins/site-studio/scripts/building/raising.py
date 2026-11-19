@@ -1,6 +1,6 @@
 """The raise-to-schema-3 report's record and the text it keeps when it rewrites `site.json`."""
 
-import content as C
+from contentmodel import frontmatter, grammar
 
 from building.outcomes import BuildError
 
@@ -35,7 +35,7 @@ def _keep_text(files, specs):
     """The tree with a `\\` put at the start of each PATH:LINE the person wants kept as text. Raises
     BuildError naming a line that is not one schema 3 reads differently."""
     out = dict(files)
-    reasons = set((p, n) for p, n, _form in C.interpretation_reasons(files))
+    reasons = set((p, n) for p, n, _form in grammar.interpretation_reasons(files))
     for spec in specs:
         path, _, n = spec.rpartition(":")
         if not n.isdigit() or path not in files:
@@ -44,7 +44,7 @@ def _keep_text(files, specs):
         if (path, int(n)) not in reasons:
             raise BuildError("%s is not a line schema 3 reads differently, so there is nothing to keep as text"
                              % spec, fix="run raise-schema without --keep-text to see the lines it lists")
-        lines = C.decode_text(out[path], path).split("\n")
+        lines = frontmatter.decode_text(out[path], path).split("\n")
         lines[int(n) - 1] = "\\" + lines[int(n) - 1]
         out[path] = "\n".join(lines).encode("utf-8")
     return out

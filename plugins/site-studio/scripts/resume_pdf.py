@@ -45,10 +45,10 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import browser    # noqa: E402
-import check_site  # noqa: E402
-import pdftext    # noqa: E402
+from sitechecks import page as page_mod  # noqa: E402
+from pdfreading import reader, wordcoverage    # noqa: E402
 import preview    # noqa: E402
-import siteconfig  # noqa: E402
+from configschema import diagnostics, model  # noqa: E402
 
 COVERAGE_NEEDED = 0.95      # design 7.1 rule 2; check_site.py's bound
 RESUME_PAGE = "resume/index.html"
@@ -69,7 +69,7 @@ def page_main_text(out_dir):
     PDF' caption excluded, exactly as check_site.py derives it."""
     path = os.path.join(out_dir, *RESUME_PAGE.split("/"))
     with open(path, "r", encoding="utf-8") as fh:
-        page = check_site.parse_page(RESUME_PAGE, fh.read())
+        page = page_mod.parse_page(RESUME_PAGE, fh.read())
     return " ".join(page.main_text)
 
 
@@ -89,7 +89,7 @@ def print_pdf(url, paper):
 def make_resume_pdf(repo, log=print, quiet=False):
     """Print, verify and write. Returns the sidecar dict plus paths. Raises ResumeError."""
     repo = os.path.abspath(repo)
-    cfg = siteconfig.load(os.path.join(repo, "site", "site.json"))
+    cfg = model.load(os.path.join(repo, "site", "site.json"))
     res = cfg.resume
     if not res:
         raise ResumeError("site.json has no resume (set it, or ask for one with the resume skill)")
@@ -109,10 +109,10 @@ def make_resume_pdf(repo, log=print, quiet=False):
             raise ResumeError("the build has no resume page; check site.json resume and %s" % res["path"])
         main_text = page_main_text(pv.out_dir)
         pdf, packet = print_pdf(pv.page_url(RESUME_PAGE), res["paper"])
-    if not pdftext.words(main_text):
+    if not wordcoverage.words(main_text):
         raise ResumeError("the built resume page has no text, so a PDF of it could never be checked; add the resume text to the page, then run /site-studio:resume again")
-    read = pdftext.read_pdf(pdf)
-    cov = pdftext.word_coverage(main_text, read.text) if read.status == "read" else None
+    read = reader.read_pdf(pdf)
+    cov = wordcoverage.word_coverage(main_text, read.text) if read.status == "read" else None
     if read.status != "read" or cov is None or cov < COVERAGE_NEEDED:
         raise ResumeError(
             "the printed PDF would not pass the privacy gate (rule 2): %s; nothing was written" % (
@@ -120,7 +120,7 @@ def make_resume_pdf(repo, log=print, quiet=False):
                 "its text covers %s of the resume page's words (needs 95%%)" % (
                     "none" if cov is None else "%d%%" % int(cov * 100))))
     sidecar = {"pdf_sha256": sha256_hex(pdf), "source_sha256": sha256_hex(source_bytes),
-               "text_sha256": sha256_hex(pdftext.normalise_text(main_text).encode("utf-8"))}
+               "text_sha256": sha256_hex(wordcoverage.normalise_text(main_text).encode("utf-8"))}
     os.makedirs(os.path.dirname(pdf_path), exist_ok=True)
     for path, data in ((pdf_path, pdf),
                        (pdf_path + ".json",
@@ -137,7 +137,7 @@ def make_resume_pdf(repo, log=print, quiet=False):
     log("pdf_sha256: %s" % sidecar["pdf_sha256"])
     log("text_sha256: %s" % sidecar["text_sha256"])
     log("text: %d words in the resume page's <main>; the PDF decodes to %d%% of them (the gate needs 95%%)" % (
-        len(pdftext.words(main_text)), int(cov * 100)))
+        len(wordcoverage.words(main_text)), int(cov * 100)))
     if dirty:
         log("note: %s has uncommitted changes; commit it, then the publish build (which reads the commit) "
             "will match this PDF" % res["path"])
@@ -169,7 +169,7 @@ def main(argv=None):
     try:
         make_resume_pdf(args.repo, print, args.quiet)
         return 0
-    except (ResumeError, browser.BrowserError, siteconfig.SiteConfigError, OSError, ValueError) as e:
+    except (ResumeError, browser.BrowserError, diagnostics.SiteConfigError, OSError, ValueError) as e:
         print("resume PDF refused: %s" % e)
         return 1
 

@@ -3,7 +3,7 @@ names and the fragment the renderer walks."""
 
 import re
 
-from siteconfig import V4_PART_FIXED
+from configschema.configkeys import V4_PART_FIXED
 
 from contentmodel.errors import ContentError
 from contentmodel.frontmatter import decode_text

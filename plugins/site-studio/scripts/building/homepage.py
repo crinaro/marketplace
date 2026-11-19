@@ -4,8 +4,10 @@ import posixpath
 import re
 
 import content as C
+from contentmodel import grammar, links as links_mod, pagefiles
 import views
-from content import ContentError, esc
+from contentmodel.errors import ContentError
+from contentmodel.links import esc
 
 from building import homeorder
 from building.outcomes import BuildError
@@ -40,7 +42,7 @@ class _HomePage(object):
                              fix="move the token to a page under site/src, or remove it")
         if part is None:
             raise BuildError("%s: {{home}} needs the part it names, such as {{home:intro}}" % at, path=source, lineno=lineno,
-                             fix="write {{home:<part>}} with one of: %s" % ", ".join(C.PART_FIXED))
+                             fix="write {{home:<part>}} with one of: %s" % ", ".join(grammar.PART_FIXED))
         page = self.model.home
         if self.cfg.siteKind != "portfolio" or page is None:
             raise BuildError("%s: {{home:%s}} is fed by content/home.md, and this site has none" % (at, part),
@@ -77,7 +79,7 @@ class _HomePage(object):
             html = render(parts[part]) or None
         else:
             raise BuildError("%s: {{home:%s}} names no part of %s (its parts are %s)"
-                             % (at, part, page.source, ", ".join(list(C.PART_FIXED) + sorted(parts))),
+                             % (at, part, page.source, ", ".join(list(grammar.PART_FIXED) + sorted(parts))),
                              path=source, lineno=lineno,
                              fix="write :::part %s ... ::: in %s, or use one of the parts listed" % (part, page.source))
         if html is None:
@@ -130,7 +132,7 @@ class _HomePage(object):
             return ""
         entries = []
         for entry in meta["showcase"]:
-            key, image = C.parse_showcase_entry(entry)
+            key, image = pagefiles.parse_showcase_entry(entry)
             pc = self.model.piece(key)
             if pc is None:
                 raise BuildError("%s: showcase '%s' is not a built piece (a draft never builds)" % (source, key),
@@ -145,7 +147,7 @@ class _HomePage(object):
                 rows.append(self.r("contact", "item-mail", {"label": label, "href": "mailto:" + value,
                                                             "text": value}))
             elif re.match(r"^https?://", value):
-                C.check_href(value, "contact '%s'" % label)   # dev #912: the one href check
+                links_mod.check_href(value, "contact '%s'" % label)   # dev #912: the one href check
                 rows.append(self.r("contact", "item-link", {"label": label, "url": value, "text": value}))
             else:
                 rows.append(self.r("contact", "item-text", {"label": label, "text": value}))
@@ -199,7 +201,7 @@ class _HomePage(object):
                 body += self.samples_html(meta.get("samples", []), out)
                 body += self.links_html(meta.get("links", {}), out, page.source)
             body += extras["contact"]
-        desc = meta.get("description") or (C.plain_excerpt(page.body, grammar=self.grammar) if page else "") \
+        desc = meta.get("description") or (grammar.plain_excerpt(page.body, grammar=self.grammar) if page else "") \
             or self.cfg.siteTitle
         image = (self.media_out.get(posixpath.normpath(posixpath.dirname(page.source) + "/" + meta["photo"]))
                  if (page and "photo" in meta) else None)
@@ -217,7 +219,7 @@ class _HomePage(object):
         title = meta.get("title") or "About"
         extras = self.page_extras(page, out)
         intro = self.markdown(page.body, page.source, out, posixpath.dirname(page.source), page.first_line)
-        desc = meta.get("description") or C.plain_excerpt(page.body, grammar=self.grammar) or \
+        desc = meta.get("description") or grammar.plain_excerpt(page.body, grammar=self.grammar) or \
             "About %s" % self.cfg.name
         image = (self.media_out.get(posixpath.normpath(posixpath.dirname(page.source) + "/" + meta["photo"]))
                  if "photo" in meta else None)

@@ -19,7 +19,7 @@ import html.parser
 import json
 import re
 
-import siteconfig
+from configschema import configkeys
 
 from adoption.template import entries, scalar, split_front
 
@@ -182,7 +182,7 @@ def parts(snap, scope="body"):
     out["contact"] = [str(v) for v in (contact.values() if isinstance(contact, dict) else contact or [])]
     for name, lines in named.items():
         out[name] = anchors_of(lines)
-    order = ["intro", "rest"] + list(named) + [n for n in siteconfig.HOME_SECTIONS if n not in ("intro", "rest")]
+    order = ["intro", "rest"] + list(named) + [n for n in configkeys.HOME_SECTIONS if n not in ("intro", "rest")]
     shown = dict((n, [a for a in out.get(n, ()) if len(a) >= MIN_ANCHOR]) for n in order)
     return dict((n, a) for n, a in shown.items() if a)
 

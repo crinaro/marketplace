@@ -3,7 +3,7 @@
 import hashlib
 import os
 
-import content as C
+from contentmodel import keytables
 
 from building.constants import HTML_EXTS
 from building.outcomes import BuildError
@@ -15,7 +15,7 @@ def _write_outputs(out_dir, out):
         full = os.path.join(out_dir, *rel.split("/"))
         os.makedirs(os.path.dirname(full), exist_ok=True)
         data = out[rel]
-        if rel.lower().endswith(C.TEXT_EXTS) or rel in ("CNAME", "robots.txt") or \
+        if rel.lower().endswith(keytables.TEXT_EXTS) or rel in ("CNAME", "robots.txt") or \
                 rel.lower().endswith(HTML_EXTS):
             if b"\r" in data:
                 raise BuildError("%s would be written with a carriage return" % rel, fix="save the file with LF line endings")

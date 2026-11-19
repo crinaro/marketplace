@@ -38,7 +38,7 @@ import os
 import shutil
 import tempfile
 
-import build as site_build  # noqa: E402
+from building import digest, outcomes, running  # noqa: E402
 
 from adoption.accounting import ARCHIVE_REL, archive_path, dump_archive, parse_archive
 from adoption.base import PARITY_RECORD_REL, PlanError, Refused, git, gitt
@@ -140,14 +140,14 @@ def engine_shas(repo, ref="HEAD", spec=None, engine=None):
 def output_digest(files):
     """The design 3.5 digest of the plugin's build of an in-memory tree (`{path: bytes}` of site/ and content/), or raises
     Refused when the build refuses it. The same formula the publish uses (`digest_output_tree`)."""
-    acc = site_build.accept(files)
+    acc = running.accept(files)
     if acc.problems:
         raise Refused("the plugin's build refuses the tree after the move: %s; fix what it names, then run adopt again"
                       % acc.problems[0].message)
     out = tempfile.mkdtemp(prefix="adopt-digest-")
     try:
         _write(out, acc.output)
-        return site_build.digest_output_tree(out, acc.cfg.siteKind)
+        return digest.digest_output_tree(out, acc.cfg.siteKind)
     finally:
         shutil.rmtree(out, ignore_errors=True)
 
@@ -175,8 +175,8 @@ def digest_after_move(repo, want):
             git(probe, "mv", "--", p, archive_path(p))
         git(probe, "-c", "user.name=adopt", "-c", "user.email=adopt-probe", "commit", "-q", "-m", "probe")
         try:
-            return site_build.publish_build(probe, os.path.join(work, "out")).digest
-        except site_build.BuildError as e:
+            return running.publish_build(probe, os.path.join(work, "out")).digest
+        except outcomes.BuildError as e:
             raise Refused("the plugin's build refuses the tree after the move: %s; fix what it names, then run adopt again" % e)
     finally:
         shutil.rmtree(work, ignore_errors=True)

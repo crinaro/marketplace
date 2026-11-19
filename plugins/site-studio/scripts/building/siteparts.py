@@ -3,7 +3,7 @@
 import posixpath
 import re
 
-import content as C
+from contentmodel import frontmatter, keytables
 
 from building.constants import HTML_EXTS
 from building.outcomes import BuildError
@@ -23,7 +23,7 @@ class _SiteParts(object):
         raw = self.files[path]
         low = rel.lower()
         if low.endswith(HTML_EXTS):
-            origin = C.decode_text(raw, path)
+            origin = frontmatter.decode_text(raw, path)
             text = strip_html_comments(origin)
             text = self.expand(text, nfc(rel), path, featured=True, origin=origin, home=True)
             title = _meta_title(text) or rel
@@ -33,9 +33,9 @@ class _SiteParts(object):
                                     "sitemap": posixpath.basename(rel) != "404.html"}
             self.add(rel, text.encode("utf-8"), path)
         elif low.endswith(".css"):
-            self.add(rel, strip_css_comments(C.decode_text(raw, path)).encode("utf-8"), path)
-        elif low.endswith(C.TEXT_EXTS):
-            self.add(rel, C.decode_text(raw, path).encode("utf-8"), path)
+            self.add(rel, strip_css_comments(frontmatter.decode_text(raw, path)).encode("utf-8"), path)
+        elif low.endswith(keytables.TEXT_EXTS):
+            self.add(rel, frontmatter.decode_text(raw, path).encode("utf-8"), path)
         else:
             self.add(rel, raw, path)
 

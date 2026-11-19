@@ -63,42 +63,21 @@ import posixpath
 import re
 
 import looks
-from looks import LookError
-from siteconfig import (validate_portfolio_settings, SiteConfigError, WORK_KEYS, labels_nonempty,
-                        make_problem, schema_2_reasons, V3_PAGE_KEYS, V4_PAGE_KEYS, page_settings_problems, front_matter_keys,
-                        BUILTIN_PIECE_KEYS, V4_HOME_KEYS, V4_RESUME_PAGE_KEYS, V4_REFERENCE_KEYS, V4_PART_FIXED)
+from lookgrammar.errors import LookError
+from configschema.configkeys import WORK_KEYS, V3_PAGE_KEYS, V4_PAGE_KEYS
+from configschema.diagnostics import SiteConfigError
+from configschema.pagesettings import page_settings_problems
+from configschema.workcheck import validate_portfolio_settings, labels_nonempty
 
-# The capability modules live in the `contentmodel` package (segmentation standard, docs/design-component-segmentation.md):
-# this file keeps the loaders that tests patch by name, the inline renderer and the block renderer's class,
-# and re-exports every name its importers read, by explicit named import (never a star). Importers are
-# repointed in a later step; until then `import content; content.X` keeps working.
 from contentmodel.errors import ContentError
-from contentmodel.keytables import (
-    SLUG_RE, KEY_RE, DATE_RE, POSITION_RE, SHA_RE, RESERVED_PORTFOLIO_NAMES, CARD_EXTS,
-    REFERENCE_KEYS, REFERENCE_KEYS_V4, TEXT_EXTS, HOME_KEYS, HOME_KEYS_V4, ABOUT_KEYS,
-    RESUME_PAGE_KEYS, RESUME_PAGE_KEYS_V4, PORTFOLIO_PAGE_KEYS, VIEW_PIECE_KEYS, home_keys,
-    resume_page_keys, reference_keys)
-from contentmodel.frontmatter import (
-    decode_text, _split_flow, _scalar, _block_map, parse_front_matter, _check_keys, _need_str,
-    _str_list, meta_text)
-from contentmodel.models import Page, Piece, Portfolio, Reference, Content
-from contentmodel.pagefiles import (
-    _check_contact, _SHOWCASE_ENTRY, parse_showcase_entry, _one_line, _check_links,
-    _check_v4_page_keys, _page, _validate_piece)
-from contentmodel.layout import (
-    _KIND_REFUSAL, kind_layout_problems, no_page_message, _home_featured_list, FOLDER_PAGES,
-    folder_form_problems, _HOME_TOKEN, _HTML_COMMENT, hand_home_is_fed, layout_problems, HOME_TWICE,
-    FEATURED_TWICE)
-from contentmodel.loading import _unit, _key_line, _reference_image, _load_resume, _check_resume_pdf
-from contentmodel.strays import STRAY_FILE_FIX, UNKNOWN_KEY_FIX, piece_known_keys, stray_warnings
-from contentmodel.links import (
-    _YT, _VIMEO, _DRIVE, video_embed, esc, _SCHEME, _URL_EDGE, _URL_TAB_NL, url_as_browser_reads,
-    url_scheme, check_href, _URL_SCHEME_OR_PROTOREL)
-from contentmodel.grammar import (
-    _INLINE, _HEADING, _ULI, _OLI, _REFLINE, _IMGLINE, _HR, LEAD_INS, body_start_line,
-    interpretation_reasons, _IMGLINE3, _OPEN, _PART_NAME, BLOCK_NAMES, BLOCK_NAMES_V4, PART_FIXED,
-    block_names, fixed_part_names, _lead_kind, _is_lead_in, _starts_block, Fragment, _fragment,
-    _GALLERY_ROW_TRAIL, CARD_SEPARATOR, _drop_containers, plain_excerpt)
+from contentmodel.keytables import SLUG_RE, RESERVED_PORTFOLIO_NAMES, CARD_EXTS, ABOUT_KEYS, PORTFOLIO_PAGE_KEYS, home_keys, reference_keys
+from contentmodel.frontmatter import decode_text, parse_front_matter, _check_keys, _need_str
+from contentmodel.models import Portfolio, Reference, Content
+from contentmodel.pagefiles import _page, _validate_piece
+from contentmodel.layout import no_page_message, FOLDER_PAGES
+from contentmodel.loading import _unit, _key_line, _reference_image, _load_resume
+from contentmodel.links import video_embed, esc, check_href
+from contentmodel.grammar import _INLINE, _HEADING, _ULI, _OLI, _REFLINE, _IMGLINE, _HR, body_start_line, _IMGLINE3, _OPEN, _lead_kind, Fragment, _fragment, CARD_SEPARATOR
 from contentmodel.blockbase import _BlockBase
 from contentmodel.blockkinds import _BlockKinds
 

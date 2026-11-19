@@ -26,7 +26,7 @@ import subprocess
 import sys
 import tempfile
 
-import build as site_build  # noqa: E402
+from building import running  # noqa: E402
 import report_issue  # noqa: E402
 
 from adoption.accounting import path_area, path_family
@@ -44,7 +44,7 @@ def preflight(repo, snapshot, runner=None):
     converted tree). Never raises: a failure to run is one NOT CHECKED line."""
     work = tempfile.mkdtemp(prefix="adopt-preflight-")
     try:
-        acc = site_build.accept(snapshot)
+        acc = running.accept(snapshot)
         if acc.problems:
             return [], ["publish preconditions: the plugin's build refuses the tree, so they were not run"]
         out_dir, tree_dir = os.path.join(work, "out"), os.path.join(work, "tree")

@@ -1,0 +1,277 @@
+"""treeschema: which schema a site needs. The schema-2, 3 and 4 reasons a tree can hold, `required_schema` (the one
+place that says), `tree_schema_problems` and `check_tree_schema` (the build's refusal of a file whose schema is
+below what its tree needs) and `kind_conflicts`. K reasons are keys older plugins refused; I reasons are new
+readings of text they accepted (see the `siteconfig.py` docstring)."""
+
+import json
+import re
+from collections import namedtuple
+from configschema.configkeys import (
+    ADDRESSES_RECORD,
+    V3_PAGE_KEYS,
+    V4_HOME_PAGE_KEYS,
+    V4_PAGE_KEYS,
+    V4_PAGE_VIEWS,
+    V4_REFERENCE_KEYS,
+    V4_RESUME_KEYS,
+    V4_RESUME_PAGE_KEYS,
+    V4_WORK_KEYS,
+)
+from configschema.diagnostics import SiteConfigError, make_problem
+from configschema.frontmatter import (
+    _expanded_file,
+    _page_md_labels,
+    _text_of,
+    front_matter_keys,
+    front_matter_pairs,
+)
+from configschema.partblocks import multi_block_part_lines, part_collision_problems
+from configschema.workcheck import labels_nonempty, validate_portfolio_settings
+
+
+_SECTION_RE = re.compile(r"\{\{\s*#page:")
+_FEATURED_RE = re.compile(r"\{\{\s*featured\s*\}\}")
+
+
+# What a 0.1.0 install would do with each tree feature: the clause the refusal names.
+_EFFECT_SECTION = "site-studio 0.1.0 would publish it as text"
+_EFFECT_FEATURED = "site-studio 0.1.0 would refuse it as an unknown token"
+_EFFECT_HOME = "site-studio 0.1.0 would refuse the build as two pages writing index.html"
+
+
+def schema_2_reasons(cfg, files=None):
+    """Every reason this site needs schema 2, as [(where, feature, effect on 0.1.0)]. `files` is the
+    site's tree as {repo path: bytes or str} (None: only `site.json` is known). Empty when schema 1
+    holds the site. The five conditions of design-site-adoption section 3."""
+    out = []
+    if cfg.siteKind != "portfolio":
+        out.append(("site/site.json", "sets siteKind %s" % cfg.siteKind,
+                    "site-studio 0.1.0 would refuse the unknown key"))
+    if labels_nonempty(cfg.work.get("labels")):
+        out.append(("site/site.json", "sets display labels", "site-studio 0.1.0 would refuse the unknown key"))
+    if cfg.featuredFrom != "home":
+        out.append(("site/site.json", "sets featuredFrom %s" % cfg.featuredFrom,
+                    "site-studio 0.1.0 would refuse the unknown key"))
+    if files:
+        for path in sorted(files):
+            text = None
+            if path.startswith("content/") and path.endswith("/page.md") and path.count("/") == 2:
+                text = _text_of(files[path])
+                if _page_md_labels(path, text):
+                    out.append((path, "sets display labels", "site-studio 0.1.0 would refuse the unknown key"))
+            if not _expanded_file(path):
+                continue
+            text = _text_of(files[path]) if text is None else text
+            for rx, name, effect in ((_SECTION_RE, "uses {{#page:...}}", _EFFECT_SECTION),
+                                     (_FEATURED_RE, "uses {{featured}}", _EFFECT_FEATURED)):
+                if rx.search(text):
+                    out.append((path, name, effect))
+        if (cfg.siteKind == "portfolio" and "site/src/index.html" in files
+                and "content/home.md" not in files):
+            out.append(("site/src/index.html", "is the home page, with no content/home.md",
+                        _EFFECT_HOME))
+    return out
+
+
+_HOME_TOKEN_RE = re.compile(r"\{\{\s*home\s*:")
+
+
+_SIZE_COPY_RE = re.compile(r"^(?P<stem>.+)\.w(?P<w>\d+)(?P<ext>\.\w+)$")
+_EFFECT_K = "site-studio 0.2.0 would refuse it"
+_EFFECT_I_TEXT = "site-studio 0.2.0 publishes it as text"
+_EFFECT_I_FILE = "site-studio 0.2.0 publishes it as a plain media file"
+
+Reason = namedtuple("Reason", "where what effect lineno kind")
+
+
+def schema_3_reasons(cfg, files=None, interpretations=None, kinds=("K", "I")):
+    """Every reason this site needs schema 3, as [Reason(where, what, effect, lineno, kind)]. `kind` is
+    "K" (a key or form 0.2.0 refused) or "I" (a new reading of text 0.2.0 accepted). `files` is the
+    tree as {repo path: bytes or str}; `interpretations` is `content.interpretation_reasons(files)`,
+    [(path, lineno, form)] (I-1 and I-2), which this module cannot compute (it cannot import `content`).
+    `kinds` narrows the answer: `check_tree_schema` asks for K only, because an I reason is never
+    refused below schema 3."""
+    out = []
+    if "K" in kinds:
+        if (cfg.resume is not None and cfg.resume.get("pdf") is None and cfg.resume.get("paper") is None):
+            out.append(Reason("site/site.json", "has a resume with no PDF and no paper size", _EFFECT_K,
+                              None, "K"))
+        for path in sorted(files or ()):
+            low = path.lower()
+            parts = path.split("/")
+            if path.startswith("content/") and path.endswith("/page.md") and len(parts) == 3:
+                for key, n in front_matter_keys(files[path]):
+                    if key in V3_PAGE_KEYS:
+                        out.append(Reason(path, "sets %s" % key, _EFFECT_K, n, "K"))
+            if path.startswith("site/src/") and low.endswith((".html", ".htm")):
+                m = _HOME_TOKEN_RE.search(_text_of(files[path]))
+                if m:
+                    n = _text_of(files[path])[:m.start()].count("\n") + 1
+                    out.append(Reason(path, "uses a {{home:...}} token", _EFFECT_K, n, "K"))
+            if path in ("content/home/index.md", "content/about/index.md"):
+                out.append(Reason(path, "is a home or about page in folder form", _EFFECT_K, None, "K"))
+        if cfg.resume is not None and files and cfg.resume.get("path") in files:
+            for key, n in front_matter_keys(files[cfg.resume["path"]]):
+                if key == "contact":
+                    out.append(Reason(cfg.resume["path"], "sets contact on the resume page", _EFFECT_K, n, "K"))
+    if "I" in kinds:
+        for path, n, form in (interpretations or ()):
+            out.append(Reason(path, "holds %s" % form, _EFFECT_I_TEXT, n, "I"))
+        for path in sorted(files or ()):
+            if not path.startswith("content/") or "/media/" not in path:
+                continue
+            folder, _, base = path.rpartition("/")
+            m = _SIZE_COPY_RE.match(base)
+            if m and (folder + "/" + m.group("stem") + m.group("ext")) in files:
+                out.append(Reason(path, "is a .w%s size copy of %s%s" % (m.group("w"), m.group("stem"),
+                                                                        m.group("ext")),
+                                  _EFFECT_I_FILE, None, "I"))
+    return out
+
+
+_EFFECT_K4 = "site-studio 0.3 would refuse it"
+_EFFECT_GUARD = "no page changes; older site-studio installs will refuse to publish this site"
+_NAVLINKS_RE = re.compile(r"\{\{\s*navLinks\s*\}\}")
+_QUOTES_OPEN_RE = re.compile(r"^:::quotes(?:[ \t].*)?$")
+
+
+def schema_4_reasons(cfg, files=None):
+    """Every reason this site needs schema 4, as [Reason(where, what, effect, lineno, "K")]. All are K reasons
+    (design section 3.1 rule 2): a key, value, token or form 0.3.x refuses, plus the guard reason (rule 8), so no
+    tree 0.3.x accepted holds one and no output changes. `files` is the tree as {repo path: bytes or str}; it must
+    include `.site-studio/addresses.json` when the tree has one."""
+    out = []
+    here = "site/site.json"
+
+    def add(where, what, lineno=None, effect=_EFFECT_K4):
+        out.append(Reason(where, what, effect, lineno, "K"))
+    if cfg.nav:
+        add(here, "sets nav.home false")
+    if cfg.look is not None:
+        add(here, "sets look")
+    for k in cfg.blocks:
+        add(here, "sets blocks.%s" % k)
+    for k in V4_RESUME_KEYS:
+        if cfg.resume is not None and k in cfg.resume:
+            add(here, "sets resume.%s" % k)
+    for k in V4_WORK_KEYS:
+        if k in cfg.work:
+            add(here, "sets work.%s" % k)
+    for path in sorted(files or ()):
+        low = path.lower()
+        parts = path.split("/")
+        text = None
+        if path == ADDRESSES_RECORD:
+            add(path, "is the address record (the guard reason)", None, _EFFECT_GUARD)
+            continue
+        if path.startswith("content/") and path.endswith("/page.md") and len(parts) == 3:
+            for key, val, n in front_matter_pairs(files[path]):
+                if key in V4_WORK_KEYS or key in V4_PAGE_KEYS:
+                    add(path, "sets %s" % key, n)
+                elif key == "view" and val in V4_PAGE_VIEWS:
+                    add(path, "sets view %s" % val, n)
+        if path in ("content/home.md", "content/home/index.md"):
+            for key, n in front_matter_keys(files[path]):
+                if key in V4_HOME_PAGE_KEYS:
+                    add(path, "sets %s" % key, n)
+        if cfg.resume is not None and path == cfg.resume.get("path"):
+            for key, n in front_matter_keys(files[path]):
+                if key in V4_RESUME_PAGE_KEYS:
+                    add(path, "sets %s on the resume page" % key, n)
+        if (len(parts) == 4 and parts[0] == "content" and parts[1] == "references"
+                and parts[3] == "reference.json"):
+            try:
+                data = json.loads(_text_of(files[path]))
+            except ValueError:
+                data = None
+            if isinstance(data, dict):
+                for key in V4_REFERENCE_KEYS:
+                    if key in data:
+                        add(path, "sets %s" % key)
+        if not _expanded_file(path):
+            continue
+        text = _text_of(files[path])
+        m = _NAVLINKS_RE.search(text)
+        if m:
+            add(path, "uses the {{navLinks}} token", text[:m.start()].count("\n") + 1)
+        if cfg.schema >= 3 and path.startswith("content/") and low.endswith(".md"):
+            # A `:::` line is a block only where the grammar is 3 or above; below that it is text 0.3.x accepts.
+            for n, line in enumerate(text.replace("\r\n", "\n").split("\n"), 1):
+                if _QUOTES_OPEN_RE.match(line):
+                    add(path, "holds a :::quotes block", n)
+            for n in multi_block_part_lines(text):
+                add(path, "holds a :::part with more than one block", n)
+    return out
+
+
+def required_schema(cfg, files=None, interpretations=None):
+    """The lowest schema that holds the site: 4 when any schema-4 reason holds (`schema_4_reasons`), 3 when
+    any schema-3 reason holds (`schema_3_reasons`), 2
+    when any of five conditions holds (`schema_2_reasons`), else 1. `files` is the tree the caller
+    holds (adopt: the converted tree); None means no tree feature is known. When `files` is given,
+    `interpretations` MUST be too (`content.interpretation_reasons(files)`; [] when there are none): a
+    caller that held a tree and forgot the scan would write a schema too low (design section 3.3)."""
+    if files is not None and interpretations is None:
+        raise ValueError("required_schema(cfg, files) needs interpretations= (content.interpretation_reasons"
+                         "(files)); pass [] only when you know the tree holds none")
+    if schema_4_reasons(cfg, files):
+        return 4
+    if schema_3_reasons(cfg, files, interpretations):
+        return 3
+    return 2 if schema_2_reasons(cfg, files) else 1
+
+
+def tree_schema_problems(cfg, files):
+    """Every Problem the declared schema of `site.json` has with the tree: the schema-2 reasons under a
+    schema-1 file, then the K schema-3 reasons under a file below 3. An I reason is never a problem
+    (design section 3.2), then the schema-4 K reasons (and the guard reason) under a file below 4, and at 4 and
+    above the part-name collisions (design section 3.1 rule 7). Each carries `path` and `lineno`; none is
+    mechanical."""
+    out = []
+    if cfg.schema < 2:
+        for where, what, effect in schema_2_reasons(cfg, files):
+            out.append(make_problem("%s %s, which needs \"schema\": 2 in site/site.json (%s)"
+                                    % (where, what, effect), where, "schema 1", "schema 2",
+                                    "set \"schema\": 2 in site/site.json (a save by site-studio does this)"))
+    if cfg.schema < 3:
+        for r in schema_3_reasons(cfg, files, kinds=("K",)):
+            at = "%s:%d:" % (r.where, r.lineno) if r.lineno else r.where
+            out.append(make_problem("%s %s, which needs \"schema\": 3 in site/site.json (run `build.py "
+                                    "raise-schema`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
+                                    "schema 3", "run `python3 build.py raise-schema`, which lists what the "
+                                    "page changes before it writes schema 3", False, r.lineno))
+    if cfg.schema < 4:
+        for r in schema_4_reasons(cfg, files):
+            at = "%s:%d:" % (r.where, r.lineno) if r.lineno else r.where
+            out.append(make_problem("%s %s, which needs \"schema\": 4 in site/site.json (run `build.py "
+                                    "raise-schema --to 4`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
+                                    "schema 4", "run `python3 build.py raise-schema --to 4`, which lists what "
+                                    "the page changes before it writes schema 4", False, r.lineno))
+    else:
+        out.extend(part_collision_problems(files))
+    return out
+
+
+def check_tree_schema(cfg, files):
+    """The build's refusal of a `site.json` whose schema is lower than the tree needs, naming the file
+    and the feature (the hand-edit case: a person typed a section into a layout, or a `page.md` key
+    from 0.3.0). Raises ONE error that carries every reason (`.problems`); with one reason its message
+    is exactly that reason's."""
+    probs = tree_schema_problems(cfg, files)
+    if probs:
+        raise SiteConfigError.of(probs)
+
+
+def kind_conflicts(cfg):
+    """What a `hub` or `custom` site's config may not carry (design section 4.1): the portfolio-only
+    keys, when set. Empty for a portfolio."""
+    if cfg.siteKind == "portfolio":
+        return []
+    out = []
+    if cfg.work != validate_portfolio_settings({}, "work"):
+        out.append("site.json 'work' is only for siteKind portfolio")
+    if cfg.resume is not None:
+        out.append("site.json 'resume' is only for siteKind portfolio")
+    if cfg.featuredFrom != "home":
+        out.append("site.json 'featuredFrom' is only for siteKind portfolio")
+    return out

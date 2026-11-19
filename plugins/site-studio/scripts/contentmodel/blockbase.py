@@ -2,8 +2,8 @@
 the rows of a block and the video embed."""
 
 import looks
-from looks import LookError
-from siteconfig import V4_PART_FIXED
+from lookgrammar.errors import LookError
+from configschema.configkeys import V4_PART_FIXED
 
 from contentmodel.errors import ContentError
 from contentmodel.grammar import Fragment, PART_FIXED, _HEADING, _OPEN, _PART_NAME, _lead_kind, _starts_block, block_names, fixed_part_names

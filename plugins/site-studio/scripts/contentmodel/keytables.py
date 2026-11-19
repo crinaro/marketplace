@@ -3,7 +3,7 @@ at each schema."""
 
 import re
 
-from siteconfig import V4_HOME_PAGE_KEYS, V4_REFERENCE_KEYS, V4_RESUME_PAGE_KEYS
+from configschema.configkeys import V4_HOME_PAGE_KEYS, V4_REFERENCE_KEYS, V4_RESUME_PAGE_KEYS
 
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")

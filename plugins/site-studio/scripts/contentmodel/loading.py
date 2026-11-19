@@ -5,7 +5,8 @@ import hashlib
 import json
 import posixpath
 
-from siteconfig import SiteConfigError, front_matter_keys
+from configschema.diagnostics import SiteConfigError
+from configschema.frontmatter import front_matter_keys
 
 from contentmodel.errors import ContentError
 from contentmodel.frontmatter import _check_keys, decode_text, parse_front_matter

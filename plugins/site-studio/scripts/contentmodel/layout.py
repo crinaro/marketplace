@@ -2,7 +2,8 @@
 
 import re
 
-from siteconfig import make_problem, schema_2_reasons
+from configschema.diagnostics import make_problem
+from configschema.treeschema import schema_2_reasons
 
 from contentmodel.errors import ContentError
 from contentmodel.frontmatter import decode_text, parse_front_matter

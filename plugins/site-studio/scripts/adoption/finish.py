@@ -29,6 +29,7 @@ import shutil
 import tempfile
 
 import report_issue  # noqa: E402
+from reportcause import grammar
 
 from adoption import publish as pub
 from adoption import state
@@ -65,14 +66,14 @@ def stop_lines(stop, branch):
     """The lines printed for a stop, and the HANDOFF.md entry text for it: (printed, entry)."""
     nxt = stop.next_action.replace("<branch>", branch)
     printed = ["adopt blocked at step %d of 5: %s." % (stop.step, stop.why),
-               "  cause: %s (%s)" % (stop.cause, report_issue.cause_kind(stop.cause))]
+               "  cause: %s (%s)" % (stop.cause, grammar.cause_kind(stop.cause))]
     printed += ["  " + l for l in ([("step 3: " + stop.cover)] if stop.cover else []) + stop.lines]
     printed.append("  %s. %s." % ("The public repo has the new site and your old builder still publishes on the next push"
                                   if stop.published else
                                   "Nothing was published or pushed, and your old builder is still your publisher",
                                   "Next: " + nxt))
     entry = ("\n### Adopt run: blocked at step %d of 5\n\n- %s.\n- Cause: `%s` (%s).\n%s- %s.\n- Next: %s.\n"
-             % (stop.step, stop.why, stop.cause, report_issue.cause_kind(stop.cause), review_bullet(stop.cover),
+             % (stop.step, stop.why, stop.cause, grammar.cause_kind(stop.cause), review_bullet(stop.cover),
                 "The public repo has the new site and the old builder still publishes on the next push" if stop.published
                 else "Nothing was published or pushed; the old builder is still the publisher", nxt))
     return printed, entry
@@ -109,7 +110,7 @@ def run(repo, p, commit, date, hooks=None):
             stop = pub.Stop(5, "site-studio published, but the old builder could not be archived: %s" % e,
                             "fix that, delete the branch (`git branch -D <branch>`) and run `adopt.py apply` again; it finds "
                             "the public repo already holding this build", published=True,
-                            cause=report_issue.cause_id("apply", "archive-refused"))
+                            cause=grammar.cause_id("apply", "archive-refused"))
             return {"completed": False, "lines": stop_lines(stop, branch)[0], "tip": None, "stop": stop}
         tip = gitt(clone, "rev-parse", "HEAD")
         git(repo, "fetch", "-q", "--no-tags", clone, "HEAD:refs/heads/" + branch)
@@ -119,7 +120,7 @@ def run(repo, p, commit, date, hooks=None):
             stop = pub.Stop(5, "site-studio published and archived your old builder on branch %s, but the push to main was "
                                "refused (%s)" % (branch, why or "no reason given"),
                             PUSH_REFUSED_FIX % branch, lines, published=True,
-                            cause=report_issue.cause_id("apply", "push-refused"))
+                            cause=grammar.cause_id("apply", "push-refused"))
             printed, _entry = stop_lines(stop, branch)
             return {"completed": False, "lines": printed, "tip": tip, "stop": stop}
         git(repo, "fetch", "-q", "origin", "main", check=False, timeout=120)

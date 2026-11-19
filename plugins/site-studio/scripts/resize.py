@@ -46,7 +46,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import browser  # noqa: E402
-import images   # noqa: E402
+from imaging import errors, importer, sniff   # noqa: E402
 
 QUALITY = 0.85
 MIME = {"jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
@@ -96,14 +96,14 @@ window.run = async function (job) {
 </script></body></html>"""
 
 
-class ResizeError(images.ImageError):
+class ResizeError(errors.ImageError):
     pass
 
 
 def _decode(url, fmt, what):
     head, _, b64 = url.partition(",")
     data = base64.b64decode(b64)
-    got = images.detect_format(data)
+    got = sniff.detect_format(data)
     if got != fmt:
         raise ResizeError("Chrome could not encode the %s as %s (it produced %s)" % (what, fmt.upper(), got))
     return data
@@ -177,8 +177,8 @@ def main(argv=None):
         print("usage: resize.py import <src> <dest>")
         return 2
     try:
-        res = images.import_media(argv[1], argv[2], make_sizes)
-    except (images.ImageError, browser.BrowserError) as e:
+        res = importer.import_media(argv[1], argv[2], make_sizes)
+    except (errors.ImageError, browser.BrowserError) as e:
         print("import refused: %s" % e)
         return 1
     print("imported %s (%dx%d %s, %d bytes); %d size copies%s" % (

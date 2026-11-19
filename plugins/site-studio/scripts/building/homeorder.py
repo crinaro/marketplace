@@ -16,8 +16,8 @@ a part that is NAMED must be one the page holds, and anything else is refused wi
 import posixpath
 
 import content as C
-import siteconfig
-from content import ContentError
+from configschema import configkeys
+from contentmodel.errors import ContentError
 
 from building.outcomes import BuildError
 
@@ -54,7 +54,7 @@ def arranged_body(b, page, out, extras, pieces, feed_cards):
     intro_frag, parts = b.home_split(out)
     for name in ("rest", "featured"):
         if name in parts:
-            raise BuildError("%s: ':::part %s' is a name of the home page's own parts (%s)" % (source, name, ", ".join(siteconfig.HOME_SECTIONS)),
+            raise BuildError("%s: ':::part %s' is a name of the home page's own parts (%s)" % (source, name, ", ".join(configkeys.HOME_SECTIONS)),
                              path=source, fix="rename the part, such as :::part %s-text, then build again" % name)
     env = b.md_env(source, out, posixpath.dirname(source))
     state = {}
@@ -94,8 +94,8 @@ def arranged_body(b, page, out, extras, pieces, feed_cards):
             raise BuildError("%s: partOrder names '%s', which is not a part of this page (its parts are %s)"
                              % (source, name, ", ".join(sorted(makers))), path=source,
                              fix="name only parts this page has: the home's own (%s) and the :::part blocks of the body%s"
-                                 % (", ".join(siteconfig.HOME_SECTIONS), " (here: %s)" % ", ".join(sorted(parts)) if parts else ""))
-    default = ["intro", "rest"] + list(parts) + [n for n in siteconfig.HOME_SECTIONS if n not in ("intro", "rest")]
+                                 % (", ".join(configkeys.HOME_SECTIONS), " (here: %s)" % ", ".join(sorted(parts)) if parts else ""))
+    default = ["intro", "rest"] + list(parts) + [n for n in configkeys.HOME_SECTIONS if n not in ("intro", "rest")]
     for name in named:
         _check_configured(name, meta, source)
     return "".join(makers[name]() for name in named + [n for n in default if n not in named])

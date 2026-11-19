@@ -10,10 +10,10 @@ import re
 import shutil
 import tempfile
 
-import build as site_build  # noqa: E402
-import look as look_mod  # noqa: E402
+from building import outcomes, running  # noqa: E402
+from lookfiles import derive as look_mod  # noqa: E402
 import parity_classes  # noqa: E402
-import siteconfig  # noqa: E402
+from configschema import model  # noqa: E402
 
 from adoption.base import PARITY_RECORD_REL, PlanError, Refused, git, gitt
 from adoption.choose import choose
@@ -179,44 +179,11 @@ def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=Non
                 settings.update(picked.values())
             elif plan.get("settings"):
                 settings.update(dict((k, v["value"]) for k, v in plan["settings"].items()))
-        # the plugin side: committed files of origin/main + the adopt transform, in a fresh repo
-        b_dir = os.path.join(scratch, "plugin")
-        os.makedirs(b_dir)
-        _archive_to(repo, base, b_dir)
-        date = gitt(repo, "log", "-1", "--format=%cI", base)
-        ident = {"GIT_AUTHOR_NAME": "adopt parity", "GIT_AUTHOR_EMAIL": "parity@example.invalid",
-                 "GIT_COMMITTER_NAME": "adopt parity", "GIT_COMMITTER_EMAIL": "parity@example.invalid",
-                 "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date, "GIT_CONFIG_NOSYSTEM": "1",
-                 "GIT_CONFIG_GLOBAL": os.devnull}
-        git(b_dir, "init", "-q", "-b", "main", env=ident)
-        git(b_dir, "add", "-A", "-f", ".", env=ident)
-        git(b_dir, "commit", "-q", "-m", "origin/main", "--allow-empty", env=ident)
-        files, cnotes = converted_site_files(tree, data, None, folders, kind, only, settings=settings,
-                                             dispositions=dispositions, persons=persons, hints=hints)
-        for rel in cnotes["removed"]:
-            try:
-                os.remove(os.path.join(b_dir, rel))
-            except OSError:
-                pass
-        for rel, blob in files.items():
-            os.makedirs(os.path.dirname(os.path.join(b_dir, rel)), exist_ok=True)
-            with open(os.path.join(b_dir, rel), "wb") as fh:
-                fh.write(blob)
-        cfg = siteconfig.parse_text(files["site/site.json"].decode("utf-8"))
-        if cfg.resume and cfg.resume.get("pdf") and os.path.isfile(os.path.join(b_dir, cfg.resume["pdf"])):
-            side = os.path.join(b_dir, cfg.resume["pdf"] + ".json")
-            if not os.path.exists(side):
-                sha = lambda p: hashlib.sha256(open(os.path.join(b_dir, p), "rb").read()).hexdigest()  # noqa: E731
-                with open(side, "w", encoding="utf-8") as fh:
-                    json.dump({"source_sha256": sha(cfg.resume["path"]), "pdf_sha256": sha(cfg.resume["pdf"]),
-                               "text_sha256": "0" * 64}, fh)
-                res["notes"].append("the plugin side was given the resume PDF sidecar the examples never wrote")
-        git(b_dir, "add", "-A", "-f", ".", env=ident)
-        git(b_dir, "commit", "-q", "-m", "adopt transform", "--allow-empty", env=ident)
+        b_dir, files, cnotes = _plugin_side(repo, base, scratch, tree, data, folders, kind, only, settings, dispositions, persons, hints, res)
         out_dir = os.path.join(scratch, "plugin-out")
         try:
-            site_build.publish_build(b_dir, out_dir)
-        except site_build.BuildError as e:
+            running.publish_build(b_dir, out_dir)
+        except outcomes.BuildError as e:
             res["reason"] = "the plugin's build refused this repo (%s); the builder is kept" % e
             res["problems"] = problem_dicts(e.problems)
             return res
@@ -233,6 +200,45 @@ def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=Non
         return res
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
+
+
+def _plugin_side(repo, base, scratch, tree, data, folders, kind, only, settings, dispositions, persons, hints, res):
+    """Build the plugin side of parity in a fresh repo: the committed files of the basis plus the adopt transform. Returns (b_dir, files, cnotes)."""
+    # the plugin side: committed files of origin/main + the adopt transform, in a fresh repo
+    b_dir = os.path.join(scratch, "plugin")
+    os.makedirs(b_dir)
+    _archive_to(repo, base, b_dir)
+    date = gitt(repo, "log", "-1", "--format=%cI", base)
+    ident = {"GIT_AUTHOR_NAME": "adopt parity", "GIT_AUTHOR_EMAIL": "parity@example.invalid",
+             "GIT_COMMITTER_NAME": "adopt parity", "GIT_COMMITTER_EMAIL": "parity@example.invalid",
+             "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date, "GIT_CONFIG_NOSYSTEM": "1",
+             "GIT_CONFIG_GLOBAL": os.devnull}
+    git(b_dir, "init", "-q", "-b", "main", env=ident)
+    git(b_dir, "add", "-A", "-f", ".", env=ident)
+    git(b_dir, "commit", "-q", "-m", "origin/main", "--allow-empty", env=ident)
+    files, cnotes = converted_site_files(tree, data, None, folders, kind, only, settings=settings,
+                                         dispositions=dispositions, persons=persons, hints=hints)
+    for rel in cnotes["removed"]:
+        try:
+            os.remove(os.path.join(b_dir, rel))
+        except OSError:
+            pass
+    for rel, blob in files.items():
+        os.makedirs(os.path.dirname(os.path.join(b_dir, rel)), exist_ok=True)
+        with open(os.path.join(b_dir, rel), "wb") as fh:
+            fh.write(blob)
+    cfg = model.parse_text(files["site/site.json"].decode("utf-8"))
+    if cfg.resume and cfg.resume.get("pdf") and os.path.isfile(os.path.join(b_dir, cfg.resume["pdf"])):
+        side = os.path.join(b_dir, cfg.resume["pdf"] + ".json")
+        if not os.path.exists(side):
+            sha = lambda p: hashlib.sha256(open(os.path.join(b_dir, p), "rb").read()).hexdigest()  # noqa: E731
+            with open(side, "w", encoding="utf-8") as fh:
+                json.dump({"source_sha256": sha(cfg.resume["path"]), "pdf_sha256": sha(cfg.resume["pdf"]),
+                           "text_sha256": "0" * 64}, fh)
+            res["notes"].append("the plugin side was given the resume PDF sidecar the examples never wrote")
+    git(b_dir, "add", "-A", "-f", ".", env=ident)
+    git(b_dir, "commit", "-q", "-m", "adopt transform", "--allow-empty", env=ident)
+    return b_dir, files, cnotes
 
 
 def _choose_settings(tree, data, plan, local, folders, kind, chosen, dispositions, persons, hints):
@@ -255,7 +261,7 @@ def _choose_settings(tree, data, plan, local, folders, kind, chosen, disposition
     def evaluate(settings):
         key = json.dumps(sorted(settings.items()), default=repr)
         if key not in built:
-            built[key] = dict(site_build.accept(snapshot(settings)).output)
+            built[key] = dict(running.accept(snapshot(settings)).output)
         return built[key]
 
     def derive_under(settings, refine=True):
@@ -339,8 +345,8 @@ def measure_adopted(repo, which=None):
         git(b_dir, "commit", "-q", "-m", "HEAD", "--allow-empty", env=ident)
         out_dir = os.path.join(scratch, "plugin-out")
         try:
-            site_build.publish_build(b_dir, out_dir)
-        except site_build.BuildError as e:
+            running.publish_build(b_dir, out_dir)
+        except outcomes.BuildError as e:
             res["reason"] = "the plugin's build refuses HEAD (%s)" % e
             res["problems"] = problem_dicts(e.problems)
             return res
