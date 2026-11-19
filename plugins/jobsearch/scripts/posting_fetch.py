@@ -657,8 +657,8 @@ def set_key(root, value, out=print):
     for line in TERMS_LINES:                                 # the terms, BEFORE anything is written (R2-S2)
         out(line)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import migrate as _migrate
-    ok, line = _migrate._ats_feeds_settings_step(root, True, hosts=(HOST,), label="posting-fetch",
+    from migrations import support_ats_feeds as _ats_feeds
+    ok, line = _ats_feeds._ats_feeds_settings_step(root, True, hosts=(HOST,), label="posting-fetch",
                                                  pre_copy=SANDBOX_PRE_COPY)
     if line:
         out(line)

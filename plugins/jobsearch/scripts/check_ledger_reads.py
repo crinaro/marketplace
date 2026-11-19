@@ -99,7 +99,7 @@ DERIVED_FIELDS = frozenset({"days_since_in", "last_word", "latest_in", "latest_o
 # tracked tree after the split: exactly these four, zero others.
 KNOWN_EXCEPTIONS = (
     ("tests/_common.py", LEDGER_FILENAME),
-    ("tests/test_migrate_2.py", LEDGER_FILENAME),
+    ("tests/migrations/test_m_0_46_0_brief_line.py", LEDGER_FILENAME), ("tests/migrations/test_stores.py", LEDGER_FILENAME),  # S2
     ("tests/test_record.py", LEDGER_FILENAME),
     ("tests/test_profile.py", "register"),
 )

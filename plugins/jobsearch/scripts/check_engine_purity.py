@@ -462,12 +462,10 @@ def _profile_terms(root=None):
     # staffing-agency example — are Title-case real entities used generically, the one shape
     # `_shape_exempt()` deliberately leaves strict; see its own docstring for the residual this
     # narrows the treadmill to, and why that residual is acceptable in this repo's threat model.
-    try:
-        import importlib as _importlib
-        _migrate = _importlib.import_module("migrate")
-        platforms.update(k.lower() for k in getattr(_migrate, "LEGACY_ALERT_SENDERS", {}))
-    except Exception:
-        pass                                    # best-effort: never break the gate over this
+    # A named import, never a lookup with a `{}` default: when the table moved out of `migrate.py` (S2), the lookup kept
+    # "succeeding" with nothing, and the platforms it names stopped being exempt in silence.
+    from migrations import m_0_27_0_alert_sender_backfill as _m0270
+    platforms.update(k.lower() for k in _m0270.LEGACY_ALERT_SENDERS)
 
     # ⭐ A MASKED EMPLOYER NAMES NO ENTITY — found auditing GitHub #19's blast radius. Several
     # company records here are recruiter-fronted searches where the end client was never

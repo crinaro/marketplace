@@ -2,6 +2,9 @@
 
 Generated from fixes confirmed shipped — public reports and internal fixes alike, each verified against its release tag on the published remote; older releases after their push, the newest one by the publish that pushed it, so the section for the version you installed is in the file that came with it. Sections are grouped by plugin, then by version. Newest first.
 
+## jobsearch 0.88.2
+Internal restructuring only: nothing changes in how jobsearch works.
+
 ## jobsearch 0.88.1
 An internal test file that was published by mistake is no longer shipped. Nothing changes in how jobsearch works.
 

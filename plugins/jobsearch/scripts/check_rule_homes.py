@@ -125,8 +125,8 @@ def rule_homes():
                     # label so every archive back-pointer that ever resolved against the
                     # suite's content keeps resolving, regardless of which file inside the
                     # suite the asserting class physically lives in today.
-                    for tp in sorted(glob.glob(os.path.join(ENGINE_SCRIPTS, "tests",
-                                                             "test_*.py"))):
+                    for tp in sorted(glob.glob(os.path.join(ENGINE_SCRIPTS, "tests", "test_*.py"))   # S2: + tests/<package>/
+                                     + glob.glob(os.path.join(ENGINE_SCRIPTS, "tests", "*", "test_*.py"))):
                         with open(tp, encoding="utf-8") as tfh:
                             text += "\n" + tfh.read()
                 homes[key] = text

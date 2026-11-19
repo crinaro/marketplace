@@ -71,7 +71,7 @@ from _root import profile_root as _profile_root
 import _tree
 # dev #544 — the canonical registry of governed stores, so the freshness inventory below is
 # DERIVED from it rather than hand-maintained beside it. Import-time cost measured at ~18ms.
-import migrate as _migrate
+from migrations import stores as _stores
 ENGINE_SCRIPTS = os.path.dirname(os.path.realpath(__file__))
 
 ROOT = _profile_root()
@@ -158,7 +158,7 @@ STORES_NOT_RENDERED = {}
 # registry — same shape, and same reason, as migrate.py's own import-time check that every
 # STORE_INTRODUCED value names a real migration: wrong at the moment it is written, loud
 # immediately, rather than a silent assertion buried in a test.
-_stale_exclusions = set(STORES_NOT_RENDERED) - set(_migrate.STORE_INTRODUCED)
+_stale_exclusions = set(STORES_NOT_RENDERED) - set(_stores.STORE_INTRODUCED)
 if _stale_exclusions:
     raise AssertionError(
         "check_dashboard_fresh.STORES_NOT_RENDERED excludes store(s) migrate.STORE_INTRODUCED "
@@ -175,7 +175,7 @@ def store_sources():
     can never make the set look stale. Gating it would add a failure mode (a mis-stamped
     profile silently narrowing its own freshness coverage) to buy nothing.
     """
-    return ["data/" + s for s in sorted(_migrate.STORE_INTRODUCED)
+    return ["data/" + s for s in sorted(_stores.STORE_INTRODUCED)
             if s not in STORES_NOT_RENDERED]
 
 

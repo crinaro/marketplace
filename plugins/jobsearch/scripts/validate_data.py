@@ -2427,14 +2427,14 @@ def check_store_introduction(problems):
     stores actually belong to — identical to `ROOT` whenever `DATA` is the ordinary
     `<profile>/data`, and correct instead of stale whenever a caller (a test, or a future
     script) points `DATA` somewhere else without also repointing `ROOT`."""
-    import migrate as _migrate
-    stamp = _migrate.read_stamp(os.path.dirname(DATA))
-    for store, introduced_at in sorted(_migrate.STORE_INTRODUCED.items()):
+    from migrations import stamp as _stamp, stores as _stores
+    stamp = _stamp.read_stamp(os.path.dirname(DATA))
+    for store, introduced_at in sorted(_stores.STORE_INTRODUCED.items()):
         if store in _STORE_INTRODUCTION_EXEMPT:
             continue
         if os.path.exists(os.path.join(DATA, store)):
             continue
-        if _migrate.store_absence_legal(stamp, store):
+        if _stores.store_absence_legal(stamp, store):
             continue
         problems.append(
             "%s: absent, but the profile is stamped %s and %s introduced this store at or "

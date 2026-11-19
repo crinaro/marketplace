@@ -219,8 +219,8 @@ def main():
         # A warning that always fires is one its reader learns to dismiss, which destroys the
         # only mid-session signal there is.
         try:
-            import migrate
-            pending = migrate.pending_for(profile, engine)
+            from migrations import registry
+            pending = registry.pending_for(profile, engine)
         except Exception:                               # noqa: BLE001
             _quiet_exit()          # cannot ask the remedy -> say nothing, never guess
         if not pending:

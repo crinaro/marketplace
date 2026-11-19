@@ -107,7 +107,9 @@ MARKETPLACE_SCRIPTS = os.path.join(os.path.dirname(os.path.dirname(ENGINE_ROOT))
 # as keys and invents failures.
 CONFIG_RE = re.compile(r"`?\bconfig(?:\.json)?\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)")
 USER_RE = re.compile(r"`?\buser\.json\.([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)")
-SCRIPT_RE = re.compile(r"scripts/([A-Za-z0-9_]+\.(?:py|sh))")
+# segmentation S2: `scripts/<name>.py` and, one level down, `scripts/<package>/<name>.py` (a package
+# module, e.g. `scripts/migrations/registry.py`); never `scripts/tests/...`, which does not ship.
+SCRIPT_RE = re.compile(r"scripts/((?:(?!tests/)[A-Za-z0-9_]+/)?[A-Za-z0-9_]+\.(?:py|sh))")
 
 
 def load(name):

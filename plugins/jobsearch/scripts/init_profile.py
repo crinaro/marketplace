@@ -477,27 +477,27 @@ def main():
     # genuinely have pending migrations, so stamping it "current" here would hide exactly the
     # backlog migrate.py exists to run. `os.path.exists` is the same is-it-really-fresh signal
     # every other line in this function already uses.
-    import migrate as _migrate
-    stamp_path = os.path.join(ROOT, _migrate.STAMP)
+    from migrations import stamp as _stamp, support_pins as _pins
+    stamp_path = os.path.join(ROOT, _stamp.STAMP)
     if not os.path.exists(stamp_path):
-        ok, err = _migrate.write_stamp(ROOT, _migrate.engine_version())
+        ok, err = _stamp.write_stamp(ROOT, _stamp.engine_version())
         if ok:
-            created.append(_migrate.STAMP)
+            created.append(_stamp.STAMP)
             # dev #834 (design-network-first.md 12.2): a profile scaffolded by 0.86.0 or later carries the 0.86.0 pin
             # from its first moment, so it is never "pin lost" (`migrate.pending_for`) and an older engine on the same
             # profile stops at its first journal reader instead of writing as if the profile were its own. Fail open:
             # a pin that cannot be written leaves the profile pending, and the next hook re-appends it.
             try:
                 import journal as _journal
-                _journal.record_profile_schema(ROOT, _migrate.NETWORK_FIRST_PIN, "init_profile")
-                created.append("data/runs.jsonl (the jobsearch %s profile pin)" % _migrate.NETWORK_FIRST_PIN)
+                _journal.record_profile_schema(ROOT, _pins.NETWORK_FIRST_PIN, "init_profile")
+                created.append("data/runs.jsonl (the jobsearch %s profile pin)" % _pins.NETWORK_FIRST_PIN)
             except Exception as e:              # noqa: BLE001
                 print("  ⚠️ could not record the profile pin (%s) — migrate.py will record it on the next hook-firing "
                       "session." % e)
         else:
             print("  ⚠️ could not write %s (%s) — migrate.py will treat this profile as "
                   "unmigrated and replay its whole chain on the next hook-firing session."
-                  % (_migrate.STAMP, err))
+                  % (_stamp.STAMP, err))
 
     # adr-012: a new profile is a git repository FROM THE FIRST MOMENT, seeded local-only
     # (the config skeleton above carries the declaration). Explicit paths only, and best-effort:
@@ -517,7 +517,7 @@ def main():
                 created.append(".git/ (adr-012: the profile is always a git repository)")
         if _sp.run(["git", "-C", ROOT, "rev-parse", "-q", "--verify", "HEAD"],
                    capture_output=True).returncode != 0:
-            paths = [x for x in ("config.json", "user.json", "CREDENTIALS.md", _migrate.STAMP)
+            paths = [x for x in ("config.json", "user.json", "CREDENTIALS.md", _stamp.STAMP)
                      + DIRS if os.path.exists(os.path.join(ROOT, x))]
             _sp.run(["git", "-C", ROOT, "add", "--"] + paths, capture_output=True)
             ident = []
