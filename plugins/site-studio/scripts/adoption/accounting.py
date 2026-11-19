@@ -135,7 +135,8 @@ def disposition_of(path, ev):
     if path in ev["old"] and path in ev["plugin"]:
         return "published", "the old builder and the plugin's build both use it"
     if path in ev["old"]:
-        return "no-landing", "the old builder uses it and the plugin's build cannot hold it"
+        how = (ev.get("usedWhy") or {}).get(path)          # N1: how the old builder was judged to use it, so the person can check
+        return "no-landing", "the old builder uses it%s and the plugin's build cannot hold it" % ((" (%s)" % how) if how else "")
     if is_piece_index(path) and path in ev["plugin"]:
         return "draft", "the plugin would publish a piece the old builder did not"
     return "archived", "nothing builds or reads it"
@@ -153,6 +154,35 @@ def account(paths, ev):
                 if folder and q.startswith(folder) and q != p and out[q][0] in ("archived", "published"):
                     out[q] = ("draft", "inside a draft piece's folder")
     return out
+
+
+def no_landing_rows(accounting):
+    """[(path, why)] for every `no-landing` file of a stored accounting (`plan["parity"]["accounting"]`), sorted by path (N1)."""
+    return sorted((p, v[1]) for p, v in ((accounting or {}).get("dispositions") or {}).items() if v[0] == "no-landing")
+
+
+def no_landing_lines(accounting):
+    """The printed block for the `no-landing` files, each named by path with why it was judged used (N1: every place that
+    prints the count names them too; `parity`, `inventory`, `apply`). Empty when there are none. Never goes into a public
+    report: `blockers` writes the causes without paths."""
+    rows = no_landing_rows(accounting)
+    if not rows:
+        return []
+    return ["%d no-landing file(s), which the old builder uses and the plugin's build cannot hold (apply is blocked until each "
+            "has a place or is decided):" % len(rows)] + ["  %s: %s" % row for row in rows]
+
+
+def wholly_archived(paths, name, dispositions):
+    """True when every tracked file of `content/<name>/` is `archived` by the measured accounting (F1, F2)."""
+    files = [p for p in paths if p.startswith("content/%s/" % name)]
+    return bool(files) and all(((dispositions or {}).get(p) or ("",))[0] == "archived" for p in files)
+
+
+def open_folders(folders, paths, dispositions):
+    """The folder decisions that still name a folder in the converted tree (F1): a `source` decision whose folder the file
+    accounting wholly archived is satisfied, because the archive has already taken every file out of `content/<name>/` (nothing
+    builds or reads it), so the layout class has nothing left to move and must not refuse the decision as naming no folder."""
+    return dict((n, c) for n, c in (folders or {}).items() if not (c == "source" and wholly_archived(paths, n, dispositions)))
 
 
 def counts(accounted):

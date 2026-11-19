@@ -31,7 +31,7 @@ import github_url  # noqa: E402
 import report_issue  # noqa: E402
 
 from adoption import finish
-from adoption.accounting import ARCHIVE_REL, archive_path, dump_archive, parse_archive
+from adoption.accounting import ARCHIVE_REL, archive_path, dump_archive, open_folders, parse_archive
 from adoption.base import NeedsAnswer, PARITY_RECORD_REL, PLUGIN, PlanError, Refused, git
 from adoption.spec import CONVERSION_CLASSES, load_spec
 from adoption.classify import _fmt_pct, classify_text, shadow_suffix
@@ -46,7 +46,7 @@ from adoption.parity import (
 from adoption.problems import accept_problems, accept_warnings, broken_chosen
 from adoption.plan import load_plan
 from adoption.engine import compute_engine
-from adoption.outcome import assess
+from adoption.outcome import assess, dry_run_line
 from adoption.blockers import is_stray_warning
 from adoption.reports import REPORTS_REL
 from adoption.hookpaths import dangling_hook_paths, process_hooks
@@ -629,6 +629,7 @@ def prepare(repo, date, spec=None, dry_run=False):
     settings = dict((k, v["value"]) for k, v in (plan.get("settings") or {}).items() if v["how"] in ("measured", "chosen"))
     measured = plan["parity"] or {}
     dispositions = (measured.get("accounting") or {}).get("dispositions") or None
+    plan = dict(plan, folders=open_folders(plan["folders"], tree.paths(), dispositions))      # F1: the archive already settled these
     persons = dict((p, e["disposition"]) for p, e in decisions.items() if e.get("disposition"))
     kw = {"settings": settings, "dispositions": dispositions, "persons": persons, "hints": measured.get("hints") or None}
     rows, held, only = _decided_conversions(tree, data, plan, kw)
@@ -730,6 +731,7 @@ def build_message(date, basis, removals, reasons, spec, moved, changes, hook_lis
         L += ["- %s" % r for r in notes["refusals"]]
     L += ["", "Parity: %s" % (("%s (%s)" % (parity["verdict"], parity.get("reason", ""))) if parity else "not run")]
     out = notes.get("outcome")
+    L += ([""] + out["noLanding"]) if out and out.get("noLanding") else []          # N1: every no-landing file by path
     if out:
         L += ["", "Outcome: %s%s" % ("blocked" if out["blocked"] else "every check passed",
                                        (" -- " + "; ".join(out["lines"])) if out["lines"] else
@@ -752,9 +754,7 @@ def do_apply(repo, date, dry_run=False, hooks=None):
     if dry_run:
         out.append("adopt dry run: would create %s from %s %s; nothing written, published or pushed."
                    % (p["branch"], p["basis"].label(), p["base"][:7]))
-        out.append("Then, without --dry-run, apply would%s: publish the converted site through deploy.py (it asks you first), "
-                   "wait for Pages to build it, archive %d old-builder file(s), and push the result to this repo's main."
-                   % (" stop here, blocked" if blocked else "", len(p["engine"]["files"])))
+        out.append(dry_run_line(p["notes"]["outcome"], len(p["engine"]["files"])))
         out.append(p["message"])
         out.append("CLAUDE.md diff:\n" + (diff or "(no change)"))
         return "\n".join(out), None, None

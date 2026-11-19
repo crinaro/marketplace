@@ -16,7 +16,7 @@ import re
 
 from building import acceptance, running, tokens  # noqa: E402
 from contentmodel import errors, frontmatter, keytables, layout as layout_mod  # noqa: E402
-from configschema import configkeys, diagnostics, model, treeschema  # noqa: E402
+from configschema import configkeys, diagnostics, model, treeschema, workcheck  # noqa: E402
 
 from adoption.base import Refused
 from adoption.spec import CONVERSION_CLASSES, OPT_IN_CLASSES
@@ -53,8 +53,89 @@ def accept_problems(tree, data, paper=None, folders=None, kind=None, only=None, 
         acc = running.accept(snap)
     except Exception as e:      # noqa: BLE001 -- accept does not raise; this is the belt to its braces
         return [acceptance._not_checked("build.accept", e)], None
-    return every_refusal(snap, acc.problems), acc
+    return reword_unmodelled(every_refusal(snap, acc.problems), snap), acc
 
+
+# What a template site uses that the plugin does not model yet, by the issue that tracks it (dev 942, 944, 945). The build
+# says "unknown key" or "must be grid or page", and a fix of "remove it": true for a typo, wrong for a template's own key,
+# which the person's builder still renders and a visitor still sees. `check` says what is so instead.
+UNMODELLED_PIECE_KEYS = {"coverAlt": 942, "industry": 942, "photo": 942, "photoAlt": 942, "photoPosition": 942,
+                         "linkLabel": 942}
+UNMODELLED_REFERENCE_KEYS = {"alt": 944, "imagePosition": 944}
+UNMODELLED_VIEWS = {"movement": 945}
+_STAYS = "your builder stays your publisher"
+_PIECE_KEY = re.compile(r"^(?P<f>\S+): front matter key '(?P<k>[^']+)' is not published; ")
+_REFERENCE_KEY = re.compile(r"^(?P<f>content/references/[^/]+/reference\.json): unknown key '(?P<k>[^']+)'$")
+_VIEW_VALUE = re.compile(r"^view:[ \t]*[\"']?([^\"'\s#]+)", re.M)
+
+
+def _reworded(p, message, fix):
+    return diagnostics.make_problem(message, p.path, p.found, p.expected, fix, False, p.lineno)
+
+
+def reword_unmodelled(probs, files=None):
+    """`probs` with each refusal or warning about a template construct the plugin does not model yet worded as that
+    (dev 945, 942, 944; U1): "not modelled yet (dev N); your builder stays your publisher", and a fix that never says to
+    remove what a visitor sees. Same path, line and standing (`you decide`), so grouping and counts are unchanged.
+    `files` ({path: bytes}) lets a `view` refusal read the page's own value; without it that refusal is left as it is."""
+    out = []
+    for p in probs:
+        m = _PIECE_KEY.match(p.message)
+        if m and UNMODELLED_PIECE_KEYS.get(m.group("k")) and not p.mechanical:
+            n = UNMODELLED_PIECE_KEYS[m.group("k")]
+            out.append(_reworded(p, "%s: the template's front matter key '%s' is not modelled yet (dev %d); %s"
+                                 % (m.group("f"), m.group("k"), n, _STAYS),
+                                 "nothing to change in this file: the plugin does not print '%s' yet (dev %d), so the key "
+                                 "stays as written, for your builder, until the plugin does" % (m.group("k"), n)))
+            continue
+        m = _REFERENCE_KEY.match(p.message)
+        if m and UNMODELLED_REFERENCE_KEYS.get(m.group("k")) and not p.mechanical:
+            n = UNMODELLED_REFERENCE_KEYS[m.group("k")]
+            out.append(_reworded(p, "%s: the template's key '%s' is not modelled yet (dev %d); %s"
+                                 % (m.group("f"), m.group("k"), n, _STAYS),
+                                 "nothing to change in this file: the plugin has no reference '%s' yet (dev %d), so the key "
+                                 "stays as written, for your builder, until the plugin does" % (m.group("k"), n)))
+            continue
+        if files and p.path and p.path in files and p.message.endswith("'view' must be \"grid\" or \"page\"") and not p.mechanical:
+            v = _VIEW_VALUE.search(files[p.path].decode("utf-8", "replace"))
+            n = UNMODELLED_VIEWS.get(v.group(1)) if v else None
+            if n:
+                out.append(_reworded(p, "%s: the template's %s view is not modelled yet (dev %d); %s"
+                                     % (p.path, v.group(1), n, _STAYS),
+                                     "nothing to change in this file: your builder still renders this index. `adopt.py convert "
+                                     "viewKeys` is the one way to leave the view behind: the index becomes the plugin's grid, "
+                                     "which a visitor sees as a different page"))
+                continue
+        out.append(p)
+    return out
+
+
+
+_OTHER_PORTFOLIO = re.compile(r"the (?P<p>[^ ]+) portfolio's meta and cardMeta do not list it")
+
+
+def waits_on_work_keys(probs, data, settings):
+    """`probs` with each "not published" key of a portfolio other than `work` that site.json's `work.meta` or `work.cardMeta`
+    lists reworded while the setting `workKeys` is unmeasured (dev #942, K1): a template applies `work`'s lists to every
+    portfolio, and `adopt.py parity` measures `workKeys: all`, which writes them into each other portfolio's page.md; once
+    measured, `check` judges the tree with it (`plan_settings`) and the warning is gone. Same path, line and standing."""
+    if "workKeys" in (settings or {}):
+        return probs
+    work = (data or {}).get("work") if isinstance(data, dict) else None
+    listed = set()
+    for k in ("meta", "cardMeta"):
+        for item in (work or {}).get(k) or () if isinstance(work, dict) else ():
+            listed.add(item if isinstance(item, str) else (workcheck.pair_label(item) or (None,))[0])
+    out = []
+    for p in probs:
+        m, o = _PIECE_KEY.match(p.message), _OTHER_PORTFOLIO.search(p.message)
+        if m and o and o.group("p") != "work" and m.group("k") in listed and not p.mechanical:
+            out.append(_reworded(p, p.message, "run `adopt.py parity`: site.json's work.meta or work.cardMeta lists '%s', your "
+                                 "builder applies those lists to every portfolio, and parity measures `workKeys: all`, which "
+                                 "lists them in this portfolio's page.md" % m.group("k")))
+            continue
+        out.append(p)
+    return out
 
 def accept_warnings(acc):
     """The build's WARNINGS over the tree adopt would write, as problems (dev #885, dev #882; adopt-honesty W1): a stray
@@ -62,7 +143,7 @@ def accept_warnings(acc):
     the build publishes, so the build says them and builds, and PARITY still measures such a tree. Where nothing has been
     converted yet, `check`, `inventory` and `apply` list each with its path and fix and refuse until it is settled: never
     a quiet "adopt ok" over a page that is not published. `acc` is None when the build could not run."""
-    return list(getattr(acc, "warnings", ()) or ()) if acc is not None else []
+    return reword_unmodelled(list(getattr(acc, "warnings", ()) or ())) if acc is not None else []
 
 
 _UNKNOWN_KEY = re.compile(r"^(content/references/[^/]+/reference\.json): unknown key '")
@@ -193,12 +274,14 @@ def check_only(chosen=()):
     return set(c for c, _l, _w in CONVERSION_CLASSES if c not in OPT_IN_CLASSES or c in chosen)
 
 
-def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=()):
+def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=(), settings=None):
     """Every problem in what adopt WOULD write, all at once: `siteconfig.problems()` over the
     converted site.json (BEFORE the mechanical label conversion, so a pair-form label is reported and
     marked `apply fixes this`), then `content.layout_problems()` over the tree. A list of
     `siteconfig.Problem`; empty means nothing stands in the way (design section 7.1). A meta-refresh page
-    adopt will turn into a redirect is one more mechanical problem (design 7.5)."""
+    adopt will turn into a redirect is one more mechanical problem (design 7.5). `settings` are the plan's measured and
+    chosen settings (`plan_settings`): the tree is judged as apply would write it (dev #942, K1: `workKeys: all`, measured
+    by parity, puts `work`'s meta into every portfolio's page.md, and `check` still called those keys unlisted)."""
     d, _resume = _converted_dict(tree, data, paper, kind)
     probs = list(model.problems(d))
     cfg = None
@@ -247,11 +330,17 @@ def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=()):
                      and p.path[len("content/"):].rstrip("/") in (folders or {}))]
     probs += redirect_problems([r for r in redirect_pages(tree, d.get("redirects"))[0] if not r.boiler])
     have = set((p.path, p.message) for p in probs)
-    refusals, acc = accept_problems(tree, data, paper, folders, kind, check_only(chosen))
-    probs += [p for p in refusals + accept_warnings(acc) if (p.path, p.message) not in have]
+    refusals, acc = accept_problems(tree, data, paper, folders, kind, check_only(chosen), settings=settings)
+    probs += [p for p in waits_on_work_keys(refusals + accept_warnings(acc), data, settings)
+              if (p.path, p.message) not in have]
     probs += piece_both_problems(tree, folders) + redirect_collision_problems(tree, d)
     return probs
 
+
+
+def plan_settings(plan):
+    """The settings apply writes: those the last `parity` measured and those the person chose (`apply.prepare` reads the same)."""
+    return dict((k, v["value"]) for k, v in (plan.get("settings") or {}).items() if v["how"] in ("measured", "chosen"))
 
 def held_problems(tree, data, plan):
     """`you decide` problems that `check` and `inventory` must not leave out (dev #864 verify, F4): when a conversion
@@ -318,22 +407,42 @@ def redirect_collision_problems(tree, d):
 
 _FOLLOW_REDIRECT = re.compile(r"^redirect '[^']*' points at '(?P<t>[^']*)', which is not a built page$")
 _FOLLOW_LINK = re.compile(r"\{\{link:(?P<t>[^{}\s]+)\}\} names no built page")
+_FOLLOW_REF = re.compile(r"^\S+: (?:ref: (?P<n>[^\s]+) names no reference under content/references/"
+                         r"|\w+ ref:(?P<c>[^\s]+) names no reference with a card image)")   # a `ref:` line; a `cover: ref:X`
+_FOLLOW_HOME = re.compile(r"\{\{home:[^{}]*\}\} is fed by (?P<f>\S+), which the build refuses")
+
+
+def _is_pointer(q):
+    return bool(_FOLLOW_REDIRECT.match(q.message) or _FOLLOW_LINK.search(q.message) or _FOLLOW_REF.match(q.message)
+                or _FOLLOW_HOME.search(q.message))
 
 
 def _follows(p, probs):
-    """The `you decide` problem that `p` is a CONSEQUENCE of, or None (dev #893, K2). A redirect or a `{{link:X}}`
-    that names a portfolio `X` the build refuses is not a second thing to decide: the portfolio is not built, so
-    nothing can point at it, and the pointer resolves the moment the portfolio does. The cause is the first problem
-    that is not itself such a pointer, is not mechanical, and sits under `content/X/`."""
-    m = _FOLLOW_REDIRECT.match(p.message) or _FOLLOW_LINK.search(p.message)
-    if not m or p.mechanical:
+    """The `you decide` problem that `p` is a CONSEQUENCE of, or None (dev #893, K2; dev 943, 944). A pointer at a thing
+    the build refuses is not a second thing to decide: the thing is not built, so nothing can point at it, and the
+    pointer resolves the moment it does. The pointers: a redirect or a `{{link:X}}` that names a portfolio `X`; a
+    `ref: X` line when `content/references/X/` is there and refused; a `{{home:<part>}}` token when the home page is
+    there and refused (the message names the file). The cause is the first problem that is not itself a pointer, is not
+    mechanical, and sits under that portfolio or reference folder, or is in that very file."""
+    if p.mechanical:
         return None
-    first = m.group("t").strip("/").split("/")[0]
-    if not first:
+    m = _FOLLOW_REDIRECT.match(p.message) or _FOLLOW_LINK.search(p.message)
+    if m:
+        first = m.group("t").strip("/").split("/")[0]
+        under = "content/%s/" % first if first else None
+        exact = None
+    elif _FOLLOW_REF.match(p.message):
+        m = _FOLLOW_REF.match(p.message)
+        under, exact = "content/references/%s/" % (m.group("n") or m.group("c")), None
+    elif _FOLLOW_HOME.search(p.message):
+        under, exact = None, _FOLLOW_HOME.search(p.message).group("f")
+    else:
+        return None
+    if not under and not exact:
         return None
     for r in probs:
-        if (r is not p and not r.mechanical and (r.path or "").startswith("content/%s/" % first)
-                and not (_FOLLOW_REDIRECT.match(r.message) or _FOLLOW_LINK.search(r.message))):
+        if (r is not p and not r.mechanical and not _is_pointer(r)
+                and ((exact is not None and r.path == exact) or (under is not None and (r.path or "").startswith(under)))):
             return r
     return None
 

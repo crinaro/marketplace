@@ -21,14 +21,14 @@ import re
 
 from building import running  # noqa: E402
 
-from adoption.accounting import account, counts, piece_folder_of
+from adoption.accounting import account, counts, piece_folder_of, wholly_archived
 from adoption.base import Refused
 from adoption.dispose import conv_name
-from adoption.convert import _give_resume_sidecar, _snapshot, converted_site_files
+from adoption.convert import _give_resume_sidecar, _snapshot, converted_site_files, holds_markdown, pageless_folders
 from adoption.parity import compare_builds
 from adoption.problems import check_only
 from adoption.tree import TreeFiles
-from adoption.usage import counterfactual, old_attribution, plugin_attribution
+from adoption.usage import counterfactual, old_attribution_why, plugin_attribution
 
 PASS_ONE_SKIP = ("archive", "draft")
 _PIECE = re.compile(r"^(content/[^/]+/[^/]+)/index\.md$")
@@ -39,7 +39,9 @@ def pass_one(tree, data, plan, chosen=(), settings=None, hints=None):
     """(files overlay, notes, snapshot {path: bytes}, Acceptance or None, drafted [piece index.md]): the converted tree without
     `archive` and `draft`, and what the plugin's build says of it. `drafted` lists the pieces tried again as drafts."""
     only = check_only(chosen) - set(PASS_ONE_SKIP)
-    files, notes = converted_site_files(tree, data, plan["paper"], plan["folders"], plan.get("siteKind"), only,
+    folders = dict((n, "source") for n in undecided_folders(tree, plan))      # F2: a question the measurement is about to answer
+    folders.update(plan["folders"])                                         # is read as `source` for this tree only
+    files, notes = converted_site_files(tree, data, plan["paper"], folders, plan.get("siteKind"), only,
                                         settings=settings, hints=hints)
     seen = TreeFiles(tree, files, notes["removed"])
     snap = _snapshot(tree, seen)
@@ -85,14 +87,36 @@ def evidence(basis_paths, notes, snap, acc, local_out, engine_files, kept, archi
     stands) is one the plugin WOULD publish: it counts as attributed."""
     plugin_c = plugin_attribution(acc, snap, named_inputs(snap, acc.cfg)) if acc is not None else set()
     plugin_c = plugin_c | set(drafted)
-    old_c = old_attribution(local_out, snap, acc) if acc is not None else set()
-    if acc is not None:
-        old_c = old_c | named_inputs(snap, acc.cfg)      # a build input lands as "build input": the build needs it, whatever the old builder read
+    old_why = old_attribution_why(local_out, snap, acc) if acc is not None else {}
+    if acc is not None:       # a build input lands as "build input": the build needs it, whatever the old builder read
+        for p in named_inputs(snap, acc.cfg):
+            old_why.setdefault(p, "site-studio's build reads it as an input")
     plugin = set(p for p in basis_paths if conv_name(p, notes) in plugin_c)
-    old = set(p for p in basis_paths if conv_name(p, notes) in old_c) | set(counter.used if counter else ())
+    old = set(p for p in basis_paths if conv_name(p, notes) in old_why) | set(counter.used if counter else ())
+    why = dict((p, old_why[conv_name(p, notes)]) for p in basis_paths if conv_name(p, notes) in old_why)
+    for p in (counter.used if counter else ()):          # N1: how each file the counterfactual found used was judged so
+        why.setdefault(p, "your builder exits non-zero when it is missing" if p in counter.failed else
+                       "your builder publishes something different when it is missing")
     return {"engine": set(engine_files), "kept": set(kept), "archived": set(archived), "person": dict(person), "old": old,
             "plugin": plugin, "unsettled": set(p for g in (counter.unsettled if counter else []) for p in g),
-            "measured": measured}
+            "measured": measured, "usedWhy": why}
+
+
+def undecided_folders(tree, plan, kind=None):
+    """The page-less `content/<name>/` folders that hold Markdown and have no decision (F2): the ones `layout_changes` leaves
+    where they are until the person says `folder NAME source|portfolio`, and that the MEASURED accounting may settle."""
+    return [n for n in pageless_folders(TreeFiles(tree), kind or plan.get("siteKind") or "portfolio")
+            if n not in plan["folders"] and holds_markdown(tree, "content/%s/" % n)]
+
+
+def measured_folders(tree, plan, kind=None):
+    """`plan["folders"]` plus a `source` decision for every undecided folder the plan's last measured accounting wholly
+    archived (F2): what `check` judges by after `parity`, so it asks no question the measurement has already answered."""
+    disp = (((plan.get("parity") or {}).get("accounting") or {}).get("dispositions")) or {}
+    paths = list(tree.paths())
+    out = dict(plan["folders"])
+    out.update((n, "source") for n in undecided_folders(tree, plan, kind) if wholly_archived(paths, n, disp))
+    return out
 
 
 def open_candidates(basis_paths, notes, snap, acc, local_out, engine_files, kept, archived, person):

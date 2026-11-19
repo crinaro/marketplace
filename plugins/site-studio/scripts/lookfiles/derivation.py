@@ -7,6 +7,7 @@ from lookfiles.anchors import (
     _SHARE,
     _SUBST_SKIP,
     _above,
+    _attr_only,
     _can_go,
     _fixed_beside,
     _full_needles,
@@ -75,7 +76,9 @@ class _Derivation(object):
                     continue
                 out.append(el)
             return out
-        if not hard:
+        if not hard or (soft and _attr_only(call)):
+            # dev #941: a part the page can find only by an alt (a picture, or a figure or gallery item holding only one) is found by
+            # its address: the `h1` whose text is the same words as the alt is the piece's title, and reading the picture there drops it
             hard = list(soft)
         # a value the page does not show at all (a host name, a count the template leaves out) cannot place the
         # instance: the template simply has no slot for it. A needle found nowhere in `scope` is left out; the anchor

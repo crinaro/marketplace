@@ -163,14 +163,24 @@ def _full_needles(call):
         return call.cache["full"]
     hard, soft = _own_needles(call)
     hard, soft = list(hard), list(soft)
+    attr_only = not hard
     for k in kids_of(call):
         h, s = _full_needles(k)
         hard += h
         soft += s
+        attr_only = attr_only and (not h or k.cache["attr-only"])
     if not hard:
         hard = list(call.cache["own-opt"])      # nothing else at or under this part to anchor on: its attribute values
     call.cache["full"] = (hard, soft)
+    call.cache["attr-only"] = bool(hard) and attr_only
     return hard, soft
+
+
+def _attr_only(call):
+    """Does `call` anchor only on values the recording look writes into attributes (a picture's alt, at or under it)? Such a part is the
+    element that also carries its address: the same words as a heading's text are not the picture (dev #941)."""
+    _full_needles(call)
+    return call.cache["attr-only"]
 
 
 def _tops(call):

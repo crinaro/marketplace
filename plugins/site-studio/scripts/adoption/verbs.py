@@ -6,14 +6,17 @@ an exit code, and returns an exit code only where the verb has its own (`check` 
 `apply` is not here: its exit code 4 is the entry point's own constant. `VERBS` maps a verb's name to its function.
 """
 
+import json
+
 from contentmodel import keytables  # noqa: E402
 
-from adoption.accounting import cmd_file
+from adoption.accounting import cmd_file, no_landing_lines, no_landing_rows
+from adoption.fileacct import measured_folders
 from adoption.base import Refused
 from adoption.measure import cmd_parity, cmd_remeasure
 from adoption.parity import preconditions
 from adoption.plan import _current_base, _plan_for, _set, save_plan
-from adoption.problems import analyse_problems, format_problems, held_problems, site_problems, size_copy_note
+from adoption.problems import plan_settings, analyse_problems, format_problems, held_problems, site_problems, size_copy_note
 from adoption.report import _conversion_block, cmd_inventory
 from adoption.reports import cmd_report
 from adoption.settings import cmd_setting
@@ -26,7 +29,8 @@ def verb_check(repo, args):
     for line in basis.up_front():
         print(line)
     plan = _plan_for(repo, basis.sha, print)
-    probs = site_problems(tree, data, None, plan.get("siteKind"), plan["folders"], plan["convert"]) + held_problems(tree, data, plan)
+    probs = (site_problems(tree, data, None, plan.get("siteKind"), measured_folders(tree, plan), plan["convert"], plan_settings(plan))
+             + held_problems(tree, data, plan))               # F2: a folder the last `parity` archived wholly is no question
     for line in format_problems(probs):
         print(line)
     blocked = [p for p in probs if not p.mechanical]
@@ -52,7 +56,15 @@ def verb_check(repo, args):
 
 def verb_inventory(repo, args):
     """`adopt.py inventory`: classify every local file by what it does and write the plan."""
-    print(cmd_inventory(repo, args.json))
+    out = cmd_inventory(repo, args.json)
+    acct = ((_plan_for(repo, _current_base(repo)).get("parity")) or {}).get("accounting")     # N1: what the last `parity` measured
+    if args.json:
+        d = json.loads(out)
+        d["noLanding"] = [{"path": p, "why": w} for p, w in no_landing_rows(acct)]
+        out = json.dumps(d, indent=2, default=list)
+    elif no_landing_rows(acct):
+        out += "\n" + "\n".join(no_landing_lines(acct))
+    print(out)
 
 
 def verb_confirm(repo, args):
@@ -111,7 +123,7 @@ def verb_paper(repo, args):
 
 
 def verb_folder(repo, args):
-    """`adopt.py folder NAME {source|portfolio}`: what a content folder is."""
+    """`adopt.py folder NAME {source|portfolio}`: what a content folder is; `folder NAME --clear` forgets the decision (F3)."""
     name = args.name.strip("/")
     if name.startswith("content/"):
         name = name[len("content/"):]
@@ -123,6 +135,20 @@ def verb_folder(repo, args):
                       "never as a portfolio), so adopt never moves it and there is no decision to make "
                       "about it; choose a different folder name if you meant a new portfolio" % name)
     plan = _plan_for(repo, _current_base(repo), print)
+    if args.clear:                          # F3: forget the decision, as `setting --clear` and `convert --keep` do
+        if args.choice:
+            raise Refused("--clear forgets the decision about content/%s, so it takes no choice: `adopt.py folder %s --clear`"
+                          % (name, name))
+        if name not in plan["folders"]:
+            raise Refused("content/%s has no decision to clear (decisions: %s); decide it with `adopt.py folder %s "
+                          "source|portfolio`" % (name, ", ".join(sorted(plan["folders"])) or "none", name))
+        del plan["folders"][name]
+        save_plan(repo, plan)
+        print("adopt: content/%s: your decision is forgotten; the next `parity` measures it again" % name)
+        return
+    if not args.choice:
+        raise Refused("say what content/%s is: `adopt.py folder %s source` or `portfolio`, or forget a decision with "
+                      "`adopt.py folder %s --clear`" % (name, name, name))
     plan["folders"][name] = args.choice
     save_plan(repo, plan)
     print("adopt: content/%s -> %s" % (name, "renamed to content/_%s (source material)" % name

@@ -10,7 +10,7 @@ design 6.4; named changes S2, S8, S9, S10 (round 1), M9, M13). Python 3.9, stand
     adopt.py [--repo R] fact PATH --kind context|voice|rule --text TEXT [--name SLUG]
     adopt.py [--repo R] reviewed PATH
     adopt.py [--repo R] paper {Letter|A4}
-    adopt.py [--repo R] folder NAME {source|portfolio}
+    adopt.py [--repo R] folder NAME {source|portfolio} | --clear
     adopt.py [--repo R] convert {redirectBoiler|resumeFields} [--keep]
     adopt.py [--repo R] kind {portfolio|hub|custom}
     adopt.py [--repo R] setting NAME VALUE | --clear
@@ -95,7 +95,8 @@ def _build_parser():
     s.add_argument("size", choices=("Letter", "A4"))
     s = sub.add_parser("folder")
     s.add_argument("name")
-    s.add_argument("choice", choices=FOLDER_CHOICES)
+    s.add_argument("choice", choices=FOLDER_CHOICES, nargs="?")
+    s.add_argument("--clear", action="store_true", help="forget the decision about this folder: the next parity measures it again")
     s = sub.add_parser("convert")
     s.add_argument("conversion", choices=OPT_IN_CLASSES)
     s.add_argument("--keep", action="store_true")

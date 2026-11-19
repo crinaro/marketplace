@@ -29,7 +29,7 @@ import tempfile
 from building import running  # noqa: E402
 import report_issue  # noqa: E402
 
-from adoption.accounting import path_area, path_family
+from adoption.accounting import no_landing_lines, path_area, path_family
 from adoption.base import PLUGIN
 from adoption.blockers import (
     accounting_occurrences, classify, engine_occurrences, grouped, look_occurrences, parity_occurrences, preflight_occurrences,
@@ -107,4 +107,19 @@ def assess(repo, plan, parity, refusals, engine, installed, previous_rows, snaps
     for n in notchecked:
         lines.append("  " + n)
     return {"blocked": blocked, "causes": groups, "rows": rows, "lines": lines,
-            "notchecked": notchecked, "undisposed": undisposed}
+            "notchecked": notchecked, "undisposed": undisposed, "noLanding": no_landing_lines(acct)}
+
+
+def dry_run_line(outcome, n_engine):
+    """Line 2 of `apply --dry-run` (N2): what a real apply does. Blocked, it says where it STOPS and why, in the words of the
+    real stop (`adopt blocked at step 2 of 5`), and describes the rest as what follows once nothing blocks; never "apply would stop
+    here" over a list of steps the run does not get to."""
+    if not outcome["blocked"]:
+        return ("Then, without --dry-run, apply would: publish the converted site through deploy.py (it asks you first), wait for "
+                "Pages to build it, archive %d old-builder file(s), and push the result to this repo's main." % n_engine)
+    cause = next((l.strip() for l in outcome["lines"] if l.strip().startswith("blocked:")), "something before the publish blocks")
+    return ("Then, without --dry-run, a real apply would stop at step 2 of 5 (the checks before publishing): %s. Nothing would be "
+            "published or pushed, and your old builder stays your publisher. Once nothing blocks, the run goes on: step 2 is the "
+            "publish preconditions (a dry run does not run them), then 3 publish the converted site through deploy.py (it asks "
+            "you first), 4 wait for Pages to build it, 5 archive %d old-builder file(s) and push the result to this repo's main."
+            % (cause, n_engine))

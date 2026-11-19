@@ -63,34 +63,45 @@ METADATA. `read_pdf()` also returns the document /Info strings and a few XMP fie
 Creator, Producer, Title, Subject, Keywords, Company; dc:creator, dc:title, pdf:Producer,
 xmp:CreatorTool), because the privacy family judges them (check_site.py).
 
-CLI: python3 pdftext.py <file.pdf> [--json]   prints READ / NOT READ and the reason(s).
+CLI: python3 pdftext.py <file.pdf> [--json]   prints READ / NOT READ and the reason(s); exit 0 READ, 1 NOT READ, 2 a
+usage error or an unreadable file. `--help` prints the usage and exits 0.
 
 WHERE THE CODE IS (S1b, dev 939). This file is the command line; the reader lives in the package pdfreading/: values
 (limits, object types), lexer, document (the object table, stream decoding), cmap (ToUnicode), fonts, streamrun (content
 streams, the word-gap measure), result (PdfReadResult), reader (`read_pdf`), wordcoverage (`normalise_text`, `words`,
 `word_coverage`). Nothing imports this file.
 """
+import argparse
 import json
 import sys
 
 from pdfreading.reader import read_pdf
 
 
+def parser():
+    """The command line (finding 1058: before 0.4.2 there was no parser, and `--help` was read as a file path)."""
+    p = argparse.ArgumentParser(prog="pdftext.py",
+                                description="Read the text of a PDF and say whether it was READ or NOT READ, with the reason(s).")
+    p.add_argument("pdf", help="the PDF file to read")
+    p.add_argument("--json", action="store_true", help="print the whole result as JSON")
+    return p
+
+
 def main(argv=None):
-    argv = list(sys.argv[1:] if argv is None else argv)
-    as_json = "--json" in argv
-    paths = [a for a in argv if a != "--json"]
-    if len(paths) != 1:
-        print("usage: pdftext.py <file.pdf> [--json]")
+    args = parser().parse_args(sys.argv[1:] if argv is None else argv)
+    try:
+        with open(args.pdf, "rb") as fh:
+            data = fh.read()
+    except OSError as e:
+        print("pdftext.py: cannot read %s: %s -- fix: give the path of a PDF file that exists and you can read" % (args.pdf, e.strerror or e),
+              file=sys.stderr)
         return 2
-    with open(paths[0], "rb") as fh:
-        r = read_pdf(fh.read())
-    if as_json:
+    r = read_pdf(data)
+    if args.json:
         print(json.dumps(r.to_dict(), sort_keys=True))
     else:
         print("READ" if r.read else "NOT READ: " + "; ".join(r.reasons))
     return 0 if r.read else 1
-
 
 if __name__ == "__main__":
     sys.exit(main())

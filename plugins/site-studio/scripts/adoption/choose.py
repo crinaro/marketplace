@@ -65,6 +65,13 @@ module DECIDES them:
     under the look derived FOR the candidate. Only the live address lets the look derive map a player (the page's own address is the
     value a slot is found by), so the plugin's click-to-load address (`facade`, the default) is judged first and the live one wins
     when it leaves fewer visible differences. The key is the ADDRESS; the look's markup says whether a player loads with the page.
+  * A LOOK THAT LOSES CONTENT IS NOT THE CONVERSION (D2, dev 941). A derived look is a look of FEWEST differences when no candidate is
+    EQUAL, and fewest is not the same as nothing taken away: a look that leaves out a piece's summary or an `<img>` leaves few
+    differences and a visitor with less to see. Once every other setting has its value, the look the plan keeps is checked with
+    `lost_content` (an image or video of an old page that the plugin's page has fewer of, or a text of the old page's content, `main`
+    or the body without its chrome, that the plugin's page does not hold); one that loses any is `you decide`, never kept, and says
+    what it loses. It is judged LAST, never while the look is a candidate: a card number, a label or a featured piece's picture is
+    another setting's to put back, and a look judged before them would lose what they supply.
   * COST. One `accept` per candidate per pass, and a second pass runs only when the first moved a value off its default: the cost case
     (`test_choose.Cost`) bounds the whole at `3 x (candidates + 1) x` one `accept`, which is the pass cap times one pass.
 
@@ -72,6 +79,7 @@ module DECIDES them:
 over fakes and the real one is `accept`-backed in `adoption.measure`).
 """
 
+import html.parser
 import json
 import posixpath
 import re
@@ -354,6 +362,71 @@ def score(local, plugin, name):
             built, seen)
 
 
+_MEDIA = ("img", "video")
+_SKIP_TEXT = ("script", "style", "title", "head", "template", "noscript")
+_CHROME = ("nav", "footer")             # the menu and footer are the nav's and the footer's settings; a look is not judged on them here
+
+
+class _Reading(html.parser.HTMLParser):
+    """What one page SHOWS in its content area: the text nodes and the number of images and videos. The area is `<main>` where the page
+    has one, else the body without its `header`, `nav` and `footer` elements (the page's chrome, never its content)."""
+
+    def __init__(self, page):
+        html.parser.HTMLParser.__init__(self, convert_charrefs=True)
+        self.stack, self.texts, self.media, self.has_main = [], [], 0, "<main" in page.lower()
+        self.feed(page)
+        self.close()
+
+    def live(self):
+        tags = self.stack
+        if any(t in _SKIP_TEXT or t in _CHROME for t in tags):
+            return False
+        if self.has_main:
+            return "main" in tags
+        return "header" not in tags or any(t in ("article", "section", "aside") for t in tags)
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _MEDIA and self.live():
+            self.media += 1
+        if tag not in ("br", "hr", "img", "input", "meta", "link", "source", "wbr"):
+            self.stack.append(tag)
+
+    def handle_startendtag(self, tag, attrs):
+        if tag in _MEDIA and self.live():
+            self.media += 1
+
+    def handle_endtag(self, tag):
+        if tag in self.stack:
+            while self.stack and self.stack.pop() != tag:
+                pass
+
+    def handle_data(self, data):
+        text = " ".join(data.split())
+        if text and re.search(r"[A-Za-z0-9]", text) and self.live():
+            self.texts.append(text)
+
+
+def lost_content(local, plugin, name):
+    """The first thing the plugin's pages LOSE that the old builder's pages show, as a sentence, or "" when nothing is lost (D2, dev 941):
+    on each page both builds write that the setting touches, an `<img>` or `<video>` the old page has and the plugin's page has no
+    counterpart for (fewer of them), or a piece of text of the old page's content that the plugin's page does not hold. A candidate that
+    loses content is never the one with 'fewest differences': a page that is missing what a visitor saw is not a page that differs a
+    little. Asked last (`choose`), with every other setting at its chosen value: a card number, a label or a featured piece's picture is
+    another setting's to supply, so a look judged earlier would lose what a setting not yet chosen puts back."""
+    paths = setting_paths(name)
+    for path in sorted(_subset(local, paths)):
+        if not path.lower().endswith((".html", ".htm")) or path not in plugin:
+            continue
+        old, new = (_Reading(b[path].decode("utf-8", "replace")) for b in (local, plugin))
+        if old.media > new.media:
+            return "%s: %d image(s) or video(s) of the old page are not on the plugin's page" % (path, old.media - new.media)
+        held = " ".join(new.texts)
+        for words in old.texts:
+            if words not in held:
+                return "%s: the old page's text %r is not on the plugin's page" % (path, words[:40])
+    return ""
+
+
 _PIECE_HREF = re.compile(r"<a\b[^>]*\bhref=\"([^\"#?]+)\"", re.I)
 
 
@@ -385,6 +458,22 @@ def score_order(local, plugin, name):
         return True, "", 0, frozenset((page,)), ()
     n = sum(1 for a, b in zip(want, got) if a != b)
     return False, "%s: the pieces are in another order" % page, n, frozenset((page,)), (tuple(got),)
+
+
+def drop_lossy_look(res, local, evaluate):
+    """A LOOK THAT LOSES CONTENT IS NOT THE CONVERSION (D2, dev 941): with every other setting at its chosen value, a derived look whose
+    pages still miss a picture or a text the old pages show is not kept, however few differences it leaves: `look` becomes `you decide`
+    and says what is lost. Changes `res` in place."""
+    row = res.rows.get("look")
+    if local is None or row is None or row.how != "measured" or not isinstance(row.value, dict):
+        return
+    final = dict((k, r.value) for k, r in res.rows.items()
+                 if k != "look" and r.how in ("measured", "chosen") and r.value is not None and r.value != DEFAULTS.get(k))
+    plugin = evaluate(dict(final, look=row.value))
+    lost = "" if score(local, plugin, "look")[0] else lost_content(local, plugin, "look")
+    if lost:
+        res.rows["look"] = Row("look", None, "not measured", "the derived look loses content: " + lost, [("derived", "loses content: " + lost)])
+        res.lines.append("you decide: look -- %s" % res.rows["look"].reason)
 
 
 def judge(local, plugin, name):
@@ -549,4 +638,5 @@ def choose(snap, data, evaluate, local, previous=None, no_local_reason=None, der
                 default_n = score(local, evaluate(dict(final)), "look")[2]
                 res.rows["look"] = Row("look", look, "measured", _reason("look", look, False, snap, None if ok else (n, default_n)))
                 res.look_status = status or {}
+    drop_lossy_look(res, local, evaluate)
     return res

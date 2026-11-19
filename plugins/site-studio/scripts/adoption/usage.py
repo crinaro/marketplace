@@ -59,19 +59,28 @@ def plugin_attribution(acc, files, extra_inputs=()):
     return used & set(files)
 
 
+def old_attribution_why(old_out, files, acc):
+    """{path: why} the old builder is shown to use WITHOUT running it again: a file whose bytes it published (named by the
+    first output path that holds them), and the source of a plugin page whose output path it also wrote (N1: the `why` is what
+    `no-landing` prints beside the path)."""
+    used = {}
+    out_by_sha = {}
+    for out_path in sorted(old_out):
+        out_by_sha.setdefault(sha(old_out[out_path]), out_path)
+    for p, b in files.items():
+        if sha(b) in out_by_sha:
+            used[p] = "its bytes are published as %s" % out_by_sha[sha(b)]
+    for out_path, info in sorted(acc.pages.items()):
+        src = (info or {}).get("source")
+        if src and out_path in old_out and src in files:
+            used.setdefault(src, "it is the source of %s, a page the old builder also writes" % out_path)
+    return dict((p, w) for p, w in used.items() if p in files)
+
+
 def old_attribution(old_out, files, acc):
     """{path} the old builder is shown to use WITHOUT running it again: a file whose bytes it published, and the source of a
     plugin page whose output path it also wrote."""
-    used = set()
-    out_shas = set(sha(b) for b in old_out.values())
-    for p, b in files.items():
-        if sha(b) in out_shas:
-            used.add(p)
-    for out_path, info in acc.pages.items():
-        src = (info or {}).get("source")
-        if src and out_path in old_out:
-            used.add(src)
-    return used & set(files)
+    return set(old_attribution_why(old_out, files, acc))
 
 
 def groups_of(paths):
@@ -84,10 +93,12 @@ def groups_of(paths):
 
 class Counterfactual(object):
     """The result: `used` (removing it changed the output), `unused` (a group whose removal changed nothing), `unsettled`
-    (a group the run cap, the time bound or a crash left unsplit), `runs`, `cause` (a closed id or None) and `lines` (printed)."""
+    (a group the run cap, the time bound or a crash left unsplit), `runs`, `cause` (a closed id or None) and `lines` (printed).
+    `failed` is the part of `used` whose removal made the builder exit non-zero (it threw on the missing read)."""
 
     def __init__(self):
         self.used, self.unused, self.unsettled, self.runs, self.cause, self.lines = set(), set(), [], 0, None, []
+        self.failed = set()
 
 
 def counterfactual(candidates, run, same, runs=COUNTERFACTUAL_RUNS, seconds=COUNTERFACTUAL_SECONDS, clock=time.monotonic):
@@ -125,6 +136,7 @@ def counterfactual(candidates, run, same, runs=COUNTERFACTUAL_RUNS, seconds=COUN
                 todo[0:0] = [group[:mid], group[mid:]]
             elif len(group) == 1 and outcome == "fails":
                 res.used.add(group[0])             # the builder threw when this one file was gone: it reads it
+                res.failed.add(group[0])
             else:
                 res.unsettled.append(group)
             continue

@@ -389,6 +389,17 @@ def _opt_in_reason(cls, notes, diffs, paths):
     return base + (("; parity shows %s differs" % hit[0]) if hit else "")
 
 
+TAKEOVER = "applies once parity is EQUAL or ACCEPTED (site-studio takes over publishing)"
+
+
+def takeover_class(cls):
+    """True for a TEMPLATE rename the kept builder may be unable to read (`resumeHeader`, `pieces`, `pageFiles`, `pieceKeys`, ...):
+    the template's own builder reads the template's names, so a failure it shows on the renamed tree is the point of the
+    rename, not a blocker. It is held while that builder publishes and made once site-studio takes over (P1R). An OPT_IN
+    class is never one: choosing it is the person's say, and `broken_chosen` refuses it while parity is not EQUAL or ACCEPTED."""
+    return cls not in OPT_IN_CLASSES and any(c == cls and label == "TEMPLATE" for c, label, _w in CONVERSION_CLASSES)
+
+
 def _builder_failure(p1, cls):
     """The failure line of the kept builder when P1 ran `cls` alone and the builder EXITED NON-ZERO (dev #890), else ''."""
     ds = ((p1 or {}).get("classes") or {}).get(cls) or []
@@ -414,7 +425,7 @@ def decide_conversions(notes, parity, fingerprint=False, chosen=()):
         if cls in OPT_IN_CLASSES:
             row.update(status="you chose" if cls in chosen else "you decide",
                        reason=_opt_in_reason(cls, notes, diffs, paths))
-            if fail and cls in chosen:       # dev #890, B1: chosen, and the kept builder exits non-zero on the tree it makes
+            if fail and cls in chosen and p2 not in ("EQUAL", "MARKUP-ONLY", "ACCEPTED"):   # dev #890, B1 (P1R: not once site-studio publishes)
                 row.update(status="you decide", failure=fail,
                            reason="your own builder FAILS on the tree this conversion makes (%s), so choosing it would "
                                   "break the builder that stays your publisher: apply refuses it while parity is not "
@@ -437,7 +448,9 @@ def decide_conversions(notes, parity, fingerprint=False, chosen=()):
             # be blamed for a difference some other class or an unconverted construct made
             hit = [] if paths == ["*"] else [d for d in diffs if _touches(paths, d)]
             reasons = []
-            if fail:                  # dev #890, B1: not a difference, a failure, named with the builder's own line
+            if fail and takeover_class(cls):      # P1R: a rename the kept builder cannot read is made at takeover, not a blocker
+                reasons.append("%s: your own builder cannot read what it makes (%s)" % (TAKEOVER, fail))
+            elif fail:                # dev #890, B1: not a difference, a failure, named with the builder's own line
                 row["failure"] = fail
                 reasons.append("your own builder FAILS on the tree this conversion makes (%s)" % fail)
             elif p1.get("verdict") in ("DIFFERENT", "FAILS") and p1.get("classes", {}).get(cls):

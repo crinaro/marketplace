@@ -8,15 +8,19 @@ file but through that object, so `converted_site_files` can lay one class's resu
 THE CLASSES.
   references   (TEMPLATE)  a `reference.json` with the template's `myRole` / `captured_from`: `myRole` is `role`,
                            `captured_from` is `fetched`; `image` and `author` are the plugin's own keys at schema 4 and
-                           stay. NO FILE MOVES, so no image address changes (R1).
+                           stay. A `published: null` is "no date": the key is dropped (dev 944). NO FILE MOVES, so no
+                           image address changes (R1).
   pageFiles    (TEMPLATE)  `content/home/home.md` -> `content/home/index.md`, `content/about/about.md` -> `content/about/
                            index.md`; the bytes are unchanged (the reserved folders' form of 0.3.0's `work.md` rule, H1).
   homeKeys     (TEMPLATE)  the home page's keys (H1): `headline` is `title`; the front-matter `intro` is the body's first
                            paragraph; `stats` is a `:::part stats` holding `:::tiles`; `quote` and `quoteBy` are
                            `endorsement`; a template `feed: a; b` is a list; the template's reference `featured` is
                            `samples`; `contact` text is a `:::part reach`; `linkedin` is `links`; the showcase is a list
-                           of `portfolio/piece | image`. `eyebrow`, `role` and `photo` stay (keys at schema 4).
-  resumeHeader (TEMPLATE)  the resume's `name` is `title`, `headline` is `tagline`, `linkedin` is `links` (RS1).
+                           of `portfolio/piece | image`; a list the template wrote comma-separated (`showcase`, `feed`,
+                           `featured`) is a list (dev 943). `eyebrow`, `role` and `photo` stay (keys at schema 4).
+  resumeHeader (TEMPLATE)  the resume's `name` is `title`, `headline` is `tagline`, `linkedin` and `website` are ONE `links`
+                           map (the website's label is its host, as the template prints it), `email` and `location` are
+                           `contact` (RS1, dev 947).
   navTokens    (GENERAL)   `<nav ...>{{nav}}</nav>` is `<nav ...>{{navLinks}}</nav>`: the person's wrapper is kept and
                            the plugin's own `{{nav}}` wrapper is not added inside it (N1).
   personName   (GENERAL)   when site.json `name` has the shape of a domain or a repository name and the resume holds a
@@ -31,6 +35,7 @@ A class whose reading is a guess without the template's fingerprint is `you deci
 import json
 import posixpath
 import re
+from urllib.parse import urlsplit
 
 _KEY_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*):(?:[ \t]+(.*?))?[ \t]*$")
 _WORD_NAME = re.compile(r"^[A-Za-z][A-Za-z.'-]*(?: [A-Za-z][A-Za-z.'-]*)+$")
@@ -84,9 +89,13 @@ def _yaml(value):
 
 
 def _emit(front_entries, body, had=True):
+    """The file: its fenced front matter, then the body. No entry left means NO fence, never an empty `---` / `---`
+    block (dev 946): a file with nothing to say in its front matter has none."""
     lines = ["---"]
     for _k, raw in front_entries:
         lines.extend(raw)
+    if len(lines) == 1:
+        return "\n".join(body)
     lines.append("---")
     return "\n".join(lines + body)
 
@@ -128,9 +137,31 @@ def reference_rewrites(tree):
                 if n == 1:
                     text = new_text
                     done.append((old, new))
+        if "published" in data and data["published"] is None:       # null is "no date" (dev 944, R1): the key is simply absent
+            dropped = _drop_null_member(text, "published")
+            if dropped is not None:
+                text = dropped
+                done.append(("published: null", "(no key: null means no date)"))
         if done:
             out[p] = (text, done)
     return out
+
+
+def _drop_null_member(text, key):
+    """`text` (a JSON object) without the member `"key": null`, with its comma, every other byte kept; None when the
+    result would not parse as the same object less that key (then nothing is changed)."""
+    member = r'"%s"\s*:\s*null' % re.escape(key)
+    want = json.loads(text)
+    want.pop(key, None)
+    for pattern in (r",\s*" + member, member + r"\s*,\s*", member):       # after another member, before one, or alone
+        new, n = re.subn(pattern, "", text, count=1)
+        if n == 1:
+            try:
+                if json.loads(new) == want:
+                    return new
+            except ValueError:
+                pass
+    return None
 
 
 # ---------------------------------------------------------------- pageFiles (H1)
@@ -152,6 +183,13 @@ TEMPLATE_HOME_KEYS = ("headline", "intro", "stats", "quote", "quoteBy", "linkedi
 
 def _split_items(value):
     return [x.strip() for x in value.split(";") if x.strip()]
+
+
+def _split_list(value):
+    """The items of a list the template wrote on one line: `a; b` (semicolons), or `a, b` (commas, the template's own
+    documented "lists are comma-separated", dev 943). A value holding a semicolon splits on semicolons only, so an item
+    that holds a comma stays whole."""
+    return _split_items(value) if ";" in value else [x.strip() for x in value.split(",") if x.strip()]
 
 
 def _piece_key(tree, slug):
@@ -196,7 +234,7 @@ def _template_shaped(vals, refs):
         if vals.get(k) not in (None, "") and not vals[k].startswith("["):
             return True
     feat = vals.get("featured")
-    return bool(feat) and not feat.startswith("[") and all(n in refs for n in _split_items(feat))
+    return bool(feat) and not feat.startswith("[") and all(n in refs for n in _split_list(feat))
 
 
 def home_key_rewrite(tree, path):
@@ -236,14 +274,14 @@ def home_key_rewrite(tree, path):
             elif not vals.get("quote"):
                 out.append(ent)
         elif key == "feed" and v and not v.startswith("["):
-            out.append(_list_entry("feed", _split_items(v)))
+            out.append(_list_entry("feed", _split_list(v)))
             notes.append("feed -> a list")
-        elif key == "featured" and v and not v.startswith("[") and all(n in refs for n in _split_items(v)):
-            out.append(_list_entry("samples", _split_items(v)))
+        elif key == "featured" and v and not v.startswith("[") and all(n in refs for n in _split_list(v)):
+            out.append(_list_entry("samples", _split_list(v)))
             notes.append("featured (references) -> samples")
         elif key == "showcase" and v and not v.startswith("["):
             items = []
-            for item in _split_items(v):
+            for item in _split_list(v):
                 name, _bar, image = [x.strip() for x in item.partition("|")]
                 piece = name if "/" in name else _piece_key(tree, name)
                 if piece is None:
@@ -282,15 +320,36 @@ def home_key_rewrite(tree, path):
 
 # ---------------------------------------------------------------- resumeHeader (RS1)
 
+RESUME_OWNED_KEYS = ("name", "headline", "linkedin", "website", "email", "location")   # the keys `resumeHeader` converts
+
+
+def _https_host(url):
+    """The host of an `https://` address as the template prints it (no port, no credentials), else None: the plugin's
+    `links` map holds https addresses only, so another form is left for the build to refuse by name."""
+    parts = urlsplit(url)
+    return parts.hostname if parts.scheme == "https" and parts.hostname and not parts.username else None
+
+
 def resume_header_rewrite(text):
-    """(new text, [(old key, new key)]): `name` is `title`, `headline` is `tagline`, `linkedin` is `links` (a map holding
-    LinkedIn). A key whose plugin form is already there is left."""
+    """(new text, [(old key, new key)]): `name` is `title`, `headline` is `tagline`, `linkedin` and `website` are ONE `links`
+    map (LinkedIn, and the website under its host as the label the template prints), `email` and `location` are one
+    `contact` map (labels Email and Location; dev 947). A key whose plugin form is already there is left, and so is a
+    `website` that is not an https address."""
     front, body, had = split_front(text)
     if not had:
         return text, []
     ents = entries(front)
     have = set(e[0] for e in ents if e[0])
-    out, done = [], []
+    pairs = {"links": [], "contact": []}                  # the maps, each in the source's own order
+    for ent in ents:
+        key, v = ent[0], (scalar(ent) if ent[0] else None)
+        if key == "linkedin" and v and "links" not in have:
+            pairs["links"].append((key, "LinkedIn", v))
+        elif key == "website" and v and "links" not in have and _https_host(v):
+            pairs["links"].append((key, _https_host(v), v))
+        elif key in ("email", "location") and v and "contact" not in have:
+            pairs["contact"].append((key, key.capitalize(), v))
+    out, done, placed = [], [], set()
     for ent in ents:
         key, v = ent[0], (scalar(ent) if ent[0] else None)
         if key == "name" and v and "title" not in have:
@@ -299,9 +358,12 @@ def resume_header_rewrite(text):
         elif key == "headline" and v and "tagline" not in have:
             out.append(["tagline", ["tagline: %s" % _yaml(v)]])
             done.append(("headline", "tagline"))
-        elif key == "linkedin" and v and "links" not in have:
-            out.append(_map_entry("links", [("LinkedIn", v)]))
-            done.append(("linkedin", "links"))
+        elif key in ("linkedin", "website", "email", "location") and any(key == k for k, _l, _v in pairs["links"] + pairs["contact"]):
+            target = "links" if key in ("linkedin", "website") else "contact"
+            if target not in placed:                          # the one map stands where its first source key stood
+                placed.add(target)
+                out.append(_map_entry(target, [(label, val) for _k, label, val in pairs[target]]))
+            done.append((key, target))
         else:
             out.append(ent)
     if not done:

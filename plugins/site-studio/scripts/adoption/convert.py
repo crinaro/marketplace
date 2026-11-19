@@ -25,8 +25,8 @@ from adoption.dispose import apply_dispositions, conv_name
 from adoption.blocks import block_rewrites, blocks_left
 from adoption.settings import apply_settings, showcase_pieces
 from adoption.template import (
-    home_key_rewrite, home_path, nav_token_rewrites, page_file_renames, person_name_change, reference_rewrites,
-    resume_header_rewrite, resume_pdf_rename,
+    RESUME_OWNED_KEYS, home_key_rewrite, home_path, nav_token_rewrites, page_file_renames, person_name_change,
+    reference_rewrites, resume_header_rewrite, resume_pdf_rename,
 )
 from adoption.tree import Overlay, TreeFiles
 from adoption.tokens import (
@@ -251,12 +251,65 @@ def piece_key_rewrites(tree, portfolios, showcase=frozenset()):
     return out
 
 
+TEMPLATE_VIEW_FOLDERS = {"roles": "roles", "experience": "roles"}   # folder -> the view the template renders it as when its page.md names none
+
+
+def _all_pieces_have_employer(tree, name):
+    """True when `content/<name>/` holds at least one built piece and every one carries a one-line `employer` in its front
+    matter (a draft is not built, so it is not asked)."""
+    seen = 0
+    for path in tree.paths():
+        parts = path.split("/")
+        if not (len(parts) == 4 and parts[:2] == ["content", name] and not parts[2].startswith("_")
+                and parts[3] in ("work.md", "index.md")):
+            continue
+        lines = tree.text(path).replace("\r\n", "\n").split("\n")
+        end = next((i for i, l in enumerate(lines[1:], 1) if l.rstrip() == "---"), None) if lines[0].rstrip() == "---" else None
+        if end is None:
+            return False
+        fm = dict((m.group(1), (m.group(2) or "").strip()) for m in (_FM_LINE.match(l) for l in lines[1:end]) if m)
+        if fm.get("draft") == "true":
+            continue
+        seen += 1
+        if not fm.get("employer"):
+            return False
+    return seen > 0
+
+
+def portfolio_view_rewrites(tree, portfolios):
+    """{content/<folder>/page.md: (new text, view)} for each portfolio folder the template renders as a view BY ITS FOLDER
+    (`TEMPLATE_VIEW_FOLDERS`: `roles`) whose page.md names no `view` (dev 942, K4): the converted page says the view the
+    old builder chose, `view: roles`, an existing key and value at schema 4. The line goes last in the front matter and
+    nothing else changes. A page that names any `view` (even one the plugin does not model) is left, and so is a folder
+    where any built piece has no `employer` (the roles view groups by it and the plugin's build refuses a piece without
+    one, so the template cannot have rendered that folder as roles). It changes the portfolio's index, so parity
+    measures it and the class (`pieceKeys`, TEMPLATE) is `apply fixes this` only if it finds no difference."""
+    out = {}
+    for name in portfolios:
+        path = "content/%s/page.md" % name
+        if name not in TEMPLATE_VIEW_FOLDERS or not tree.exists(path) or not _all_pieces_have_employer(tree, name):
+            continue
+        text = tree.text(path)
+        if not text.startswith("---\n"):
+            continue
+        lines = text.split("\n")
+        end = next((i for i, l in enumerate(lines[1:], 1) if l.rstrip() == "---"), None)
+        keys = [m.group(1) for m in (_FM_LINE.match(l.rstrip("\r")) for l in lines[1:end or 1]) if m]
+        if end is None or "view" in keys:
+            continue
+        out[path] = ("\n".join(lines[:end] + ["view: %s" % TEMPLATE_VIEW_FOLDERS[name]] + lines[end:]), TEMPLATE_VIEW_FOLDERS[name])
+    return out
+
+
 def resume_field_conversion(tree, md):          # `tree` is anything with `.text(path)`: the Overlay the classes read
     """(new text or None, [(key, value)] converted, [(key, why)] left) for the resume's front matter fields that the
     plugin's build refuses (design-site-fidelity section 5.5, TEMPLATE, always `you decide`). A one-line scalar
     `key: value` outside `title`, `description` and `contact` becomes a body paragraph `**Key:** value` at the top of
     the body, which adds visible text in the plugin's markup (so it cannot equal the person's builder). A key that
-    opens a block (a list or a map) is left, with its reason: it has no default."""
+    opens a block (a list or a map) is left, with its reason: it has no default. A key another conversion owns
+    (`RESUME_OWNED_KEYS`: name, headline, linkedin, website, email, location) is never made a paragraph, in the full run
+    or alone (dev 946: `name` became `**Name:**` when this class ran by itself), and a front matter with nothing left
+    in it loses its fence."""
     text = tree.text(md)
     flat = text.replace("\r\n", "\n")
     if not flat.startswith("---\n"):
@@ -271,8 +324,8 @@ def resume_field_conversion(tree, md):          # `tree` is anything with `.text
         line = lines[i]
         m = _FM_LINE.match(line)
         nxt_indented = i + 1 < end and lines[i + 1][:1] in (" ", "\t", "-")
-        if not m or m.group(1) in keytables.resume_page_keys(configkeys.SCHEMA_MAX):
-            keep.append(line)
+        if not m or m.group(1) in keytables.resume_page_keys(configkeys.SCHEMA_MAX) or m.group(1) in RESUME_OWNED_KEYS:
+            keep.append(line)                 # a key `resumeHeader` owns is never a paragraph, whether or not it is also applied (dev 946)
         elif m.group(2) in (None, "") or nxt_indented or m.group(2)[:1] in "[{|>":
             left.append((m.group(1), "it holds a list or a map, which has no paragraph form"))
             keep.append(line)
@@ -293,6 +346,8 @@ def resume_field_conversion(tree, md):          # `tree` is anything with `.text
     paras = []
     for k, v in converted:
         paras += ["**%s:** %s" % (label(k), v), ""]
+    if len(keep) == 2:                        # nothing left to say in the front matter: no fence, never an empty `---` block
+        return "\n".join(paras + body), converted, left
     return "\n".join(keep + [""] + paras + body), converted, left
 
 
@@ -429,6 +484,11 @@ def converted_site_files(tree, data, paper, folders=None, kind=None, only=None, 
         for path, (new_text, done) in piece_key_rewrites(view, portfolios, showcase_pieces(view, settings or {})).items():
             files[path] = new_text.encode("utf-8")
             notes["pieceKeys"].extend((posixpath.dirname(path) + "/", a, b) for a, b in done)
+        # K4: a roles folder's own view. Read from the tree as the person wrote it, never from `view`: a page whose `view` the
+        # `viewKeys` class removed DID name one, and the person's choice to leave it is not an absent key to fill
+        for path, (new_text, val) in portfolio_view_rewrites(tree, portfolios).items():
+            files[path] = new_text.encode("utf-8")
+            notes["pieceKeys"].append((posixpath.dirname(path) + "/", "(no view key)", "view: %s" % val))
     if want("resumeFields") and resume["md"]:
         new_text, notes["resumeFields"], notes["resumeFieldsLeft"] = resume_field_conversion(view, resume["md"])
         if new_text is not None:

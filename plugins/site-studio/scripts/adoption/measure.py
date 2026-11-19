@@ -23,9 +23,10 @@ from adoption.tokens import detect_resume
 from adoption.spec import load_spec
 from adoption.tree import Tree, TreeFiles, inventory
 from adoption.convert import _give_resume_sidecar, _snapshot, converted_site_files
-from adoption.fileacct import pass_one, run_accounting
+from adoption.accounting import no_landing_lines, open_folders
+from adoption.fileacct import pass_one, run_accounting, undecided_folders
 from adoption.parity import (
-    BUILDER_FAILS, OUTPUT_DIRS, _NET_BLOCK, _archive_to, _copy_working_copy,
+    BUILDER_FAILS, TAKEOVER, takeover_class, OUTPUT_DIRS, _NET_BLOCK, _archive_to, _copy_working_copy,
     _run_builder, _walk, active_classes, builder_entry,
     builder_failed, classify_p2, compare_builds, parse_parity_record, preconditions, record_text,
     scrubbed_env, write_kept,
@@ -125,6 +126,10 @@ def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=Non
         return res
     only = check_only(chosen)         # the tree apply WILL make: an OPT_IN conversion the person has not chosen is not in it
     probs, _acc = accept_problems(tree, data, None, folders, kind, only)
+    if plan is not None:      # F2: a page-less folder with no decision is the measured accounting's to settle (archived, or the question stays)
+        asked = set(undecided_folders(tree, plan, kind))
+        probs = [p for p in probs if not (p.found == "no page.md" and (p.path or "").startswith("content/")
+                                          and p.path[len("content/"):].rstrip("/") in asked)]
     if probs and plan is not None and all(re.match(r"^content/[^/]+/[^/]+/index\.md$", p.path or "")
                                           and "is required in" in p.message for p in probs):
         probs = []            # a piece the plugin refuses may be work in progress the old builder never read: the file accounting decides
@@ -169,6 +174,7 @@ def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=Non
                                                inv.args, scratch, chosen, settings)
             if not res["accounting"].get("refused"):
                 dispositions = res["accounting"]["dispositions"]
+                folders = open_folders(folders, tree.paths(), dispositions)      # F1: a decision the archive already satisfied
             if res["accounting"].get("cause"):
                 res["cause"] = res["cause"] or res["accounting"]["cause"]
             picked = _choose_settings(tree, data, plan, local, folders, kind, chosen, dispositions, persons, hints)
@@ -521,7 +527,7 @@ def cmd_parity(repo, accept=False, keep=None):
     if acct:
         print("file accounting: " + ", ".join("%d %s" % (n, d) for d, n in sorted(acct["counts"].items()) if n)
               if acct.get("counts") else "file accounting: " + (acct.get("refused") or "not run"))
-        for line in acct["lines"]:
+        for line in acct["lines"] + no_landing_lines(acct):         # N1: the count, then every no-landing path with why
             print("  " + line)
     if res.get("engine"):
         print("the old builder's own files (moved only after site-studio has published): %d" % len(res["engine"]))
@@ -538,7 +544,9 @@ def cmd_parity(repo, accept=False, keep=None):
         print("P1 (does the conversion change what your own builder publishes?): %s%s"
               % (p1["verdict"], (" -- " + p1["reason"]) if p1.get("reason") else ""))
         for cls, ds in sorted(p1.get("classes", {}).items()):
-            print("  %s: %s" % (cls, ("your own builder FAILS on it: %s" % ds[0][1]) if ds and ds[0][0] == BUILDER_FAILS else
+            print("  %s: %s" % (cls, ("%s: your own builder cannot read what it makes (%s)" % (TAKEOVER, ds[0][1]))
+                                if ds and ds[0][0] == BUILDER_FAILS and takeover_class(cls) else
+                                ("your own builder FAILS on it: %s" % ds[0][1]) if ds and ds[0][0] == BUILDER_FAILS else
                                 ("%d difference(s), first %s %s" % (len(ds), ds[0][0], ds[0][1])) if ds else "no difference"))
     if shown_first:
         print("parity --accept did NOT accept: %s Run `adopt.py parity --accept` again to accept exactly "

@@ -44,6 +44,11 @@ class _HomePage(object):
             raise BuildError("%s: {{home}} needs the part it names, such as {{home:intro}}" % at, path=source, lineno=lineno,
                              fix="write {{home:<part>}} with one of: %s" % ", ".join(grammar.PART_FIXED))
         page = self.model.home
+        refused = [p for p in ("content/home/index.md", "content/home.md") if p in self.files] if self.cfg.siteKind == "portfolio" else []
+        if page is None and refused:           # the home page is there and the build refused it: the token follows from that (dev 943)
+            raise BuildError("%s: {{home:%s}} is fed by %s, which the build refuses; it resolves once that file is accepted"
+                             % (at, part, refused[0]), path=source, lineno=lineno,
+                             fix="fix the problem the build names for %s, then this token resolves" % refused[0])
         if self.cfg.siteKind != "portfolio" or page is None:
             raise BuildError("%s: {{home:%s}} is fed by content/home.md, and this site has none" % (at, part),
                              path=source, lineno=lineno,

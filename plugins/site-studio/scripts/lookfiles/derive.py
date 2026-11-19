@@ -5,6 +5,7 @@ import json
 import looks
 import re
 from lookfiles.anchors import _Fail
+from lookfiles import literals
 from lookfiles.derivation import _Derivation
 from lookfiles.pagedom import Page, Tx, _STOP_UP, walk
 from lookfiles.refusals import LookCommandError
@@ -103,8 +104,9 @@ class _Reading(object):
     of it, run in this order: `anchor_roots`, `count_support`, `place_pending`, `place_salvaged`, `merge_templates`, `count_statuses`,
     `finish`."""
 
-    def __init__(self, calls, built, parsed, never, state):
+    def __init__(self, calls, built, parsed, never, state, values=()):
         self.calls, self.built, self.parsed = calls, built, parsed
+        self.values = values                    # the pieces' own values (`literals.content_values`): none is a look's fixed text
         self.by_key = dict((p.key, p) for p in parsed)
         self.never = set(never)
         self.state = state
@@ -381,6 +383,10 @@ class _Reading(object):
             if problems:
                 bad.setdefault(cid, ("unmapped", _sanitise(problems[0][0])))
                 continue
+            if cid in literals.PER_ITEM and literals.literal_hits(tpl, self.values):
+                # dev 941 (D1): one instance's own value written as the template's fixed text would print it on every instance's page
+                bad.setdefault(cid, ("unmapped", "this template writes a value of one piece's own data as fixed text"))
+                continue
             result.look["constructs"].setdefault(cid, {})[pn] = tpl
             result.consensus[(cid, pn)] = (tpl, entries[0][1])
         return bad
@@ -437,7 +443,7 @@ def _derive_look(files, pages, never, recorded, prefer_parent, prior=None):
                                "--build <folder of built pages>, or check the address")
     result = Derivation()
     result.pages_read = len(parsed)
-    rd = _Reading(calls, built, parsed, never, _Derivation(prefer_parent, prior))
+    rd = _Reading(calls, built, parsed, never, _Derivation(prefer_parent, prior), literals.content_values(files))
     rd.anchor_roots()
     rd.count_support()
     rd.place_pending()

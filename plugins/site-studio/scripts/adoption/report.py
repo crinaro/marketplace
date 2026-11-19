@@ -44,9 +44,10 @@ from adoption.tokens import (
 )
 from adoption.redirects import redirect_pages
 from adoption.convert import converted_site_files, holds_markdown, pageless_folders
+from adoption.fileacct import measured_folders
 from adoption.features import FEATURES, detect_signals, feature_lines, infer_kind
 from adoption.parity import conversion_lines, decide_conversions, preconditions, template_fingerprint
-from adoption.problems import format_problems, held_problems, problem_dicts, site_problems, size_copy_note
+from adoption.problems import plan_settings, format_problems, held_problems, problem_dicts, site_problems, size_copy_note
 from adoption.plan import _plan_for, save_plan
 
 def cmd_inventory(repo, as_json):
@@ -70,7 +71,7 @@ def cmd_inventory(repo, as_json):
         unknown += [(p, t) for t in u]
         sections += [(p, a, b) for a, b in ch if "{{#page:" in b]
     kind = plan.get("siteKind")
-    probs = site_problems(tree, data, plan["paper"], kind, plan["folders"], plan["convert"]) + held_problems(tree, data, plan)
+    probs = site_problems(tree, data, plan["paper"], kind, measured_folders(tree, plan), plan["convert"], plan_settings(plan)) + held_problems(tree, data, plan)
     redirects = redirect_pages(tree, data.get("redirects"))
     signals = detect_signals(tree, data, redirects)
     known = set(f.key for f in FEATURES)
@@ -194,8 +195,9 @@ def cmd_inventory(repo, as_json):
 def _pageless_lines(tree, plan):
     """What apply does with each folder under content/ that has no page.md, and how to choose the other way."""
     L = []
+    folders = measured_folders(tree, plan)
     for name in pageless_folders(TreeFiles(tree)):
-        choice = plan["folders"].get(name)
+        choice = folders.get(name)
         if choice is None and holds_markdown(tree, "content/%s/" % name):
             L.append("content/%s/ has no page.md and holds Markdown: apply leaves it where it is until you decide "
                      "(you decide). `adopt.py folder %s source` renames it to content/_%s (source material, not "
