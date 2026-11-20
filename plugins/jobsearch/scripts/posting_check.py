@@ -94,7 +94,7 @@ SIGNAL_CLASS = {"feed-absent": "feed", "http-404": "http", "http-410": "http",
 
 
 def terminal_statuses():
-    """`validate_data.TERMINAL_OPP_STATUSES`, the ONE terminal vocabulary (test_validate_data
+    """`validate_data.TERMINAL_OPP_STATUSES`, the ONE terminal vocabulary (test_validate_data_records
     `test_no_script_carries_a_private_terminal_literal` refuses a private copy). Imported on first use,
     inside this function, so that importing this module pulls in neither `validate_data` nor `your_move`
     (N8: no import cycle at load time)."""

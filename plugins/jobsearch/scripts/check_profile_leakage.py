@@ -50,7 +50,7 @@ import sys
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import (profile_root as _profile_root, engine_root as _engine_root,
-                   profile_or_fixture as _pof, is_tracked_fixture as _is_tracked_fixture)
+                   profile_or_fixture as _pof, is_tracked_fixture as _is_tracked_fixture); import _script_files   # S4a: the one definition of "every shipped script"
 ENGINE_SCRIPTS = os.path.dirname(os.path.realpath(__file__))
 
 ROOT = _pof()
@@ -64,9 +64,9 @@ if ROOT != _profile_root():
 # dev #399 §1: the glob is non-recursive on purpose (declare-what-you-scan), so the split
 # regression suite's own directory (scripts/tests/) needs its own explicit entry or its
 # fixture content would go unscanned by silent omission rather than by a stated exemption.
-ENGINE = (["CLAUDE.md", "docs/schema.md"]   # S2: and scripts/migrations/, scripts/tests/<package>/, one level down, below; S3: and scripts/recording/
-          + sorted(glob.glob(os.path.join(ENGINE_SCRIPTS, "*.py")))
-          + sorted(glob.glob(os.path.join(ENGINE_SCRIPTS, "tests", "*.py")) + glob.glob(os.path.join(ENGINE_SCRIPTS, "migrations", "*.py")) + glob.glob(os.path.join(ENGINE_SCRIPTS, "recording", "*.py")) + glob.glob(os.path.join(ENGINE_SCRIPTS, "tests", "*", "*.py")))
+ENGINE = (["CLAUDE.md", "docs/schema.md"]   # S4a (finding 1113): the shipped scripts are `_script_files.paths` (top-level + every package module), not a hand list; scripts/tests/<package>/, one level down, below
+          + sorted(_script_files.paths(ENGINE_SCRIPTS))
+          + sorted(glob.glob(os.path.join(ENGINE_SCRIPTS, "tests", "*.py")) + glob.glob(os.path.join(ENGINE_SCRIPTS, "tests", "*", "*.py")))
           + sorted(glob.glob(os.path.join(_engine_root(), "agents", "*.md")))
           + sorted(glob.glob(os.path.join(_engine_root(), "skills", "*", "SKILL.md")))
           + sorted(glob.glob(os.path.join(_engine_root(), "commands", "*.md"))))

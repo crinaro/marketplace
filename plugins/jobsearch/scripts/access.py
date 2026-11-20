@@ -77,7 +77,7 @@ WARM_DAYS_KEY = _ck.ACCESS_WARM_DAYS
 WARM_DAYS_DEFAULT = _graph.WARM_DAYS     # test_access pins this equal to the registered default
 
 # A role is live while its status is not terminal. The LIVE side is mirrored, never the terminal side
-# (test_validate_data refuses a private copy of the terminal set), and never imported: `validate_data`
+# (test_validate_data_records refuses a private copy of the terminal set), and never imported: `validate_data`
 # needs a profile's user.json at import, and importing `lifecycle` would make this module a registered
 # lifecycle surface. test_access pins this equal to `OPP_STATUS - TERMINAL_OPP_STATUSES`, and to
 # `lifecycle.NON_TERMINAL_STATUSES`.

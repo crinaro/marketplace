@@ -23,7 +23,7 @@ incident that produced them. So files are classified, and only two classes must 
 
     ENGINE   must be PORTABLE — zero personal data. A different candidate could use these
              unchanged.  agents/*.md · skills/*/SKILL.md · commands/*.md · scripts/*.py
-             · scripts/recording/*.py · docs/*.md · RULEBOOK.md   (see ENGINE_FAMILIES — the authoritative list)
+             · scripts/<package>/*.py (every package, derived) · docs/*.md · RULEBOOK.md   (see ENGINE_FAMILIES — the authoritative list)
 
     PROFILE  IS the personal data, by design.  user.json · config.json · resume.md
              · projects.md · strategy.md · network.md · data/*
@@ -63,7 +63,7 @@ _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import (engine_root as _engine_root, profile_root as _profile_root,
                     is_tracked_fixture as _is_tracked_fixture,
                     is_installed_engine as _is_installed_engine,
-                    looks_like_profile as _looks_like_profile)
+                    looks_like_profile as _looks_like_profile); import _script_files   # S4a: the one definition of "every shipped script"
 
 # ⭐⭐ TWO ROOTS, AND CONFLATING THEM IS TRAP #2 IN THE MARKETPLACE RULEBOOK.
 #
@@ -107,15 +107,15 @@ ENGINE_FAMILIES = (
     # ⭐ scripts/*.py was in the docstring taxonomy from day one and was never in the glob. It
     # is where the data actually accumulated — docstrings carry the incident that produced each
     # rule, and those incidents name real people, employers and cities.
-    ("scripts", os.path.join(ENGINE_ROOT, "scripts", "*.py")), ("recording", os.path.join(ENGINE_ROOT, "scripts", "recording", "*.py")),  # S3: record.py's code and docstrings moved there; the glob is non-recursive, so the family must be named or `FAMILY_FILES` loses them
+    ("scripts", os.path.join(ENGINE_ROOT, "scripts", "*.py")),
     # ⭐ THE WHOLE docs/ TREE, not just the ADRs — widened 2026-08-09. `schema.md`,
     # `architecture.md` and `deployment.md` describe the ENGINE and ship with it, and a real
     # employer name survived in schema.md precisely because only `adr-*.md` was globbed. The
     # profile's own `incident_archive.md` is RECORD and lives in the PROFILE, not here.
     ("docs", os.path.join(ENGINE_ROOT, "docs", "*.md")),
-)
+) + tuple((_p, os.path.join(ENGINE_ROOT, "scripts", _p, "*.py")) for _p in _script_files.packages(os.path.join(ENGINE_ROOT, "scripts")))   # ⭐ S4a (finding 1113): every package beside the scripts is a family, DERIVED through `_script_files` (S3 named `recording` by hand; `migrations/`, `dashboard/`, `validation/` stayed outside), so the empty-family guard covers it
 
-FAMILY_FILES = (sorted(sum((glob.glob(pat) for _n, pat in ENGINE_FAMILIES), []))
+FAMILY_FILES = (sorted(set(sum((glob.glob(pat) for _n, pat in ENGINE_FAMILIES), [])) | set(_script_files.paths(os.path.join(ENGINE_ROOT, "scripts"), top=False)))   # + the nested modules a non-recursive family glob cannot reach
           # ⭐ THE RULEBOOK IS IN THE GATE — added 2026-08-04 (then named CLAUDE.md; it is now
           # RULEBOOK.md, the template installed as the profile's CLAUDE.md). The candidate: *"we should be able to
           # copy the claude.md from one person to another and it works (yes the config items will

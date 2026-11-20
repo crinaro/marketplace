@@ -19,7 +19,7 @@ import os
 import re
 import sys
 
-import os, sys as _sys
+import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 import route as _route
@@ -38,16 +38,18 @@ import config_keys as _config_keys
 # dev #820 / public #175 -- the ONE parser of `opportunities[].jd_read` (jd_read.py, a stdlib-only leaf; named here
 # by file because a bare `import` is invisible to publish_manifest's reachability closure).
 import jd_read as _jd_read
+# S4a: the profile root and the dataset directory have one owner, `validation/data_root.py`; bound here, at import,
+# the moment `ROOT` and `DATA` used to be resolved.
+from validation import data_root as _data_root
 # ⚠️ `your_move` is imported BELOW the vocabulary block, not here — see the note above
 # `def load`. It reads this module's TERMINAL_OPP_STATUSES at import time, so a top-of-file
 # import would hand it a half-initialised module whenever validate_data is imported first.
 
-ROOT = _profile_root()
 # ⭐ Overridable so a FRESH INSTALL can be verified (2026-08-05). A new user's very first gate run
 # must pass against an EMPTY profile; if it fails they conclude the system is broken before they
 # have entered anything. Same override as init_profile.py, and the same reason as
 # CLAUDESEARCH_DATA_DIR on funnel_report.py: a guarantee nobody tests is a guarantee nobody has.
-DATA = os.environ.get("CLAUDESEARCH_DATA_DIR") or os.path.join(ROOT, "data")
+_data_root.bind(_profile_root(), os.environ.get("CLAUDESEARCH_DATA_DIR"))
 # ⭐ THE PROBLEM LIST AS DATA, NOT PROSE (dev/audit 2026-09-02, G9). record.py decides whether
 # a write is kept or rolled back by comparing the problems BEFORE the write with the problems
 # AFTER it — a set comparison, which needs the list itself, never a re-parse of the printed
@@ -58,453 +60,17 @@ DATA = os.environ.get("CLAUDESEARCH_DATA_DIR") or os.path.join(ROOT, "data")
 # the validator never finished (it crashed), which the reader treats as unknown, not as clean.
 PROBLEMS_OUT = os.environ.get("CLAUDESEARCH_PROBLEMS_OUT")
 
-DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-# ADR-031 B5 (design-b5-assessment.md §2) — `plans.assessments[]`, the weekly assessment's one
-# stored row, and its `proposals[]`. The engine writes the dates, the window, the version and the
-# proposals; `working`/`not_working`/`next_steps`/`note` are the owner's words only.
-ASSESSMENT_PROPOSAL_STATUS = {"proposed", "accepted", "declined", "reported", "superseded"}
-# The key decides the direction mechanically (design §27.2): a `parameter` proposal names a value
-# the owner controls (a declared parameter of the plan's play, or a `config:<dotted>` key that
-# config_keys registers); a `construct` proposal names `<signal>:<step|token>` with the signal in
-# funnel_report.CONSTRUCT_SIGNALS — the shape is the engine's. There is no third kind.
-ASSESSMENT_PROPOSAL_KINDS = {"parameter", "construct"}
-ASSESSMENT_OWNER_PROSE = ("working", "not_working", "next_steps", "note")
-
-
-def check_assessments(plan, play, model, label, problems):
-    """`plans[<id>].assessments[]` — every check the row's own contract states, each a PROBLEM
-    with the legal set named (the `enum()` shape, #73): entry key set and dates; proposal key
-    set; `kind`/`status` enums; `key` shape BY KIND; `evidence` keys EXACTLY the kind's declared
-    set (funnel_report.PROPOSAL_EVIDENCE_KEYS — an undeclared key is refused, never dropped,
-    §28.2); `decided_on`/`decision` both-or-neither (the asks contract). Field lists come from
-    docs/data_model.json (`model`) so this cannot drift from what record.py enforces; with the
-    model unreadable the key-set half is skipped (the caller has already said the guard is OFF)
-    and every other check still runs."""
-    entries = plan.get("assessments")
-    if entries is None:
-        return
-    if not isinstance(entries, list):
-        problems.append("%s: assessments must be a list of entries — got %s"
-                        % (label, type(entries).__name__))
-        return
-    import funnel_report as _fr                    # lazy: resolves the profile at import
-    import config_keys as _ck
-    spec = (((model or {}).get("stores") or {}).get("plans") or {}).get("arrays") or {}
-    spec = spec.get("assessments") or {}
-    entry_fields = set(spec.get("fields") or [])
-    prop_fields = set((((spec.get("arrays") or {}).get("proposals") or {}).get("fields")) or [])
-    declared = set(((play or {}).get("params") or {}).keys())
-    for i, e in enumerate(entries):
-        el = "%s.assessments[%d]" % (label, i)
-        if not isinstance(e, dict):
-            problems.append("%s: entry must be an object — got %s" % (el, type(e).__name__))
-            continue
-        if entry_fields:
-            for k in sorted(set(e) - entry_fields):
-                problems.append("%s: unknown key %r (known: %s)"
-                                % (el, k, ", ".join(sorted(entry_fields))))
-        for f in ("date", "as_of", "window_from"):
-            v = e.get(f)
-            if not is_date(v or ""):
-                problems.append("%s: %s must be an ISO date — %r" % (el, f, v))
-        if is_date(e.get("as_of") or "") and is_date(e.get("window_from") or "") \
-                and e["window_from"] > e["as_of"]:
-            problems.append("%s: window_from %s is after as_of %s — the window runs backwards"
-                            % (el, e["window_from"], e["as_of"]))
-        for f in ASSESSMENT_OWNER_PROSE + ("engine_version",):
-            v = e.get(f)
-            if v is not None and not isinstance(v, str):
-                problems.append("%s: %s must be a string or null — %r" % (el, f, v))
-        props = e.get("proposals")
-        if not isinstance(props, list):
-            problems.append("%s: proposals must be a list (empty is fine) — got %s"
-                            % (el, type(props).__name__))
-            continue
-        seen_ids = set()
-        for j, p in enumerate(props):
-            pl = "%s.proposals[%d]" % (el, j)
-            if not isinstance(p, dict):
-                problems.append("%s: must be an object — got %s" % (pl, type(p).__name__))
-                continue
-            if prop_fields:
-                for k in sorted(set(p) - prop_fields):
-                    problems.append("%s: unknown key %r (known: %s)"
-                                    % (pl, k, ", ".join(sorted(prop_fields))))
-            pid = p.get("id")
-            if not isinstance(pid, str) or not pid.strip():
-                problems.append("%s: id must be a non-empty string (<plan>:<as_of>:<n>)" % pl)
-            elif pid in seen_ids:
-                problems.append("%s: duplicate proposal id %r within one entry" % (pl, pid))
-            seen_ids.add(pid)
-            enum(p, "kind", ASSESSMENT_PROPOSAL_KINDS, pl, problems)
-            enum(p, "status", ASSESSMENT_PROPOSAL_STATUS, pl, problems)
-            kind, key = p.get("kind"), p.get("key")
-            if not isinstance(key, str) or not key:
-                problems.append("%s: key must be a non-empty string" % pl)
-            elif kind == "parameter":
-                if key.startswith("config:"):
-                    dotted = key[len("config:"):]
-                    if dotted not in _ck.READER_KEYS:
-                        problems.append("%s: key %r names a config key config_keys does not "
-                                        "register (READER_KEYS: %s)"
-                                        % (pl, key, ", ".join(sorted(_ck.READER_KEYS))))
-                elif play is None:
-                    problems.append("%s: key %r is a parameter name but the plan has no play "
-                                    "that could declare it — a parameter proposal needs a "
-                                    "resolving play or a config:<dotted> key" % (pl, key))
-                elif key not in declared:
-                    problems.append("%s: key %r is not a parameter play %r declares (declared: "
-                                    "%s)" % (pl, key, play.get("id"),
-                                             ", ".join(sorted(declared)) or "none"))
-            elif kind == "construct":
-                sig, _sep, ident = key.partition(":")
-                if not _sep or not ident or sig not in _fr.CONSTRUCT_SIGNALS:
-                    problems.append("%s: key %r must be <signal>:<step|token> with the signal "
-                                    "in the closed catalogue {%s}"
-                                    % (pl, key, ", ".join(_fr.CONSTRUCT_SIGNALS)))
-            ev = p.get("evidence")
-            if not isinstance(ev, dict):
-                problems.append("%s: evidence must be an object" % pl)
-            elif kind in _fr.PROPOSAL_EVIDENCE_KEYS:
-                want = _fr.PROPOSAL_EVIDENCE_KEYS[kind]
-                extra, missing = sorted(set(ev) - want), sorted(want - set(ev))
-                if extra:
-                    problems.append("%s: evidence key(s) %s not declared for kind %r — an "
-                                    "undeclared key is refused, never dropped (declared: %s)"
-                                    % (pl, ", ".join(extra), kind, ", ".join(sorted(want))))
-                if missing:
-                    problems.append("%s: evidence is missing declared key(s) %s for kind %r"
-                                    % (pl, ", ".join(missing), kind))
-            txt = p.get("text")
-            if txt is not None and not isinstance(txt, str):
-                problems.append("%s: text must be a string or null — %r" % (pl, txt))
-            don, dec = p.get("decided_on"), p.get("decision")
-            if (don is None) != (dec is None):
-                problems.append("%s: decided_on and decision come together — one without the "
-                                "other cannot be audited (the asks contract, copied)" % pl)
-            if don is not None and not is_date(don):
-                problems.append("%s: decided_on not ISO — %r" % (pl, don))
-            if dec is not None and not isinstance(dec, str):
-                problems.append("%s: decision must be a string or null — %r" % (pl, dec))
-            rep = p.get("reported")
-            if rep is not None and not isinstance(rep, str):
-                problems.append("%s: reported must be a string (the issue url) or null — %r"
-                                % (pl, rep))
-
-VERTICALS = {"healthcare-payer", "healthcare-provider", "healthtech", "saas",
-             "fintech", "insurtech", "other"}
-COMPANY_STATUS = {"active-target", "watching", "passed"}
-CHANNEL_TYPES = {"job-board", "aggregator", "company-site", "recruiter",
-                 "referral", "alert-email"}
-# ⭐ public #83 rule 1 — channel TYPES that carry "a public URL was available at the moment of
-# sighting". Recruiter/referral/company-site/alert-email sightings do not carry that guarantee
-# (a recruiter can tell you about a role with no public posting at all), so a sighting from any
-# other type is never in scope for either half of #83: doctor.py's run-start advisory (#360,
-# `check_linkless_sightings`) and record.py's capture-time refusal (this rule's other half)
-# both import THIS set rather than re-typing it — it is the one place it is spelled.
-URL_BEARING_CHANNEL_TYPES = {"job-board", "aggregator"}
-# public #83 rule 1's effective date — the day the capture-time refusal in record.py shipped.
-# A sighting dated BEFORE this could not have been refused at write time (it predates the code
-# that refuses it), so it stays doctor.py's advisory's business (WARN, non-fatal, and excluded
-# there by the same recruiter-sourced/receipt-backed/grace-period rules). Only a sighting dated
-# ON OR AFTER this date turns a missing source_url into a hard PROBLEM here — pinned to a
-# constant, never "today", so a profile is never turned red retroactively for history it could
-# not have prevented.
-SOURCE_URL_REQUIRED_SINCE = "2026-09-14"
-CADENCES = {"daily", "weekly", "biweekly", "monthly", "on-inbound"}
-# `expired` added 2026-08-11 (issue #6): the posting vanished/closed before any decision was
-# recorded. TERMINAL, and distinct from `passed` — "I declined this" and "it disappeared before
-# I decided" are different signals wanting different remedies, and recording an expiry as a pass
-# overstates the pass rate while hiding that the pipeline loses roles to expiry. Existing
-# `parked` rows written as an expiry workaround are deliberately NOT reclassified: nothing can
-# retroactively distinguish a genuine park from the workaround (adr-013).
-OPP_STATUS = {"active-pursuit", "needs-resolution", "in-motion", "backlog", "passed", "expired"}
-# ⭐⭐ THE ONE TERMINAL SET — owned HERE, imported by every renderer and check (dev/audit
-# 2026-09-02, build item 1). A role is TERMINAL when it has left the funnel for good:
-# declined (`passed`) or vanished (`expired`). Everything else — including `backlog`, which
-# is a shelved-but-reopenable state that a newly sourced role STARTS in (your_move.py's
-# `decide` group) — is live data the surfaces must still account for.
-#
-# The measured defect this closes: generate_dashboard.py carried its own per-file
-# `_CLOSED_STATUSES = {passed, backlog, expired}` and dropped every backlog row as closed,
-# while your_move.py treated backlog+undecided as the entry state and the same renderer's own
-# sort key four lines below ranked backlog as live. Two files, two silent answers to one
-# question. A per-file "closed" set is the inversion that let them disagree: each file named
-# what IT wanted to hide. A shared TERMINAL set names what has actually ended, and anything
-# a surface still wants to omit has to be a deliberate, visible choice on that surface.
-TERMINAL_OPP_STATUSES = frozenset({"passed", "expired"})
-STAGES = {"sourced", "contacted", "screening", "interviewing", "offer", "closed"}
-# ⭐⭐ `play_stage`, `PLAY_SEQUENCE`, `PLAY_STAGES`, `POST_APPLICATION_PLAY` — RETIRED in
-# ADR-031 B4 (design §19). `play_stage` was a HAND-SET cursor over a fixed sequence; a
-# hand-set position not backed by a record is exactly "looks handled and is not". `plays.py`'s
-# `next_step()` now DERIVES the position from the stores every time it is asked — the play is
-# the authority for content, `plans.jsonl`/`plays.jsonl` the store. The field itself, and
-# `next_action` (free text), join `banned_aliases` below (docs/data_model.json); a write of
-# either is refused, not merely unknown. See RETIRED_KEYS/`active_retired_keys()` for the B4
-# structural-marker gate and `check_retired_reads.py` for the source-code half of the same
-# retirement. `record.py set <id> play_stage ...` disappears with it — the way to advance the
-# play is to record the act.
-# applications[].status values that prove a submission actually happened. States & Views V1
-# (design-states-and-views.md §3c) adds `closed` here — a close PRESUPPOSES a submission (you
-# cannot close what was never sent), which is exactly what SUBMITTED_APP_STATUS already means
-# for every other status in this set. `_CLOSED_STATUSES` scar (§14): this is spelled by hand in
-# TWO other places (check_sent_drafts.py, funnel_report.py) and mirrored behind an equality
-# test in a third (applications.py) — see APPLICATION_ENDINGS below for the ending vocabulary,
-# which is a DIFFERENT set (a subset of statuses that mean "the pursuit is over", not "a
-# submission happened").
-SUBMITTED_APP_STATUS = {"submitted", "acknowledged", "rejected", "advanced", "closed"}
-# ⭐ States & Views V1 §2b/§3c — the ONE imported definition of "an application status that
-# means the pursuit through this application is OVER" (the `TERMINAL_OPP_STATUSES` move, one
-# layer down). `rejected` (the employer said no), `withdrawn` (they did, after applying) and
-# `closed` (we gave up on ATS silence — §3c) are the three; `advanced`/`submitted`/`acknowledged`
-# are live, and `not-started`/`started` never reached a submission to end. Read by
-# `your_move.ended_because()` and `funnel_report.py`; never re-spelled.
-APPLICATION_ENDINGS = frozenset({"rejected", "withdrawn", "closed"})
-# States & Views V1 §3a — `opportunities.decision.reason_kind`, required whenever a written
-# verdict diverges from `triage_suggestion()`'s own reading at decision time. Proposed by the
-# design, not yet vetoed or extended by the owner (§3a's own note).
-DECISION_REASON_KINDS = frozenset({"comp-acceptable", "setting-acceptable", "fit-misjudged",
-                                   "company-priority", "not-interested", "timing", "other"})
-VERDICTS = {"pursue", "pass", "parked", "undecided"}
-# `unresolved` added 2026-08-11 (issue #4): a posting that declares two settings at once (e.g.
-# tagged both hybrid and remote) previously forced a silent pick, and the pick selected which
-# comp floor applied. `unresolved` makes "contested — ask the employer" a representable value
-# instead of an absence; the verbatim declared text goes in `location.declared` (required for
-# this type), and profile.screen_comp() DECLINES to pick a tier for it (adr-013).
-LOC_TYPES = {"remote", "hybrid", "onsite", "relocation", "unresolved"}
 # ⭐ Never a hardcoded name. `next_action_owner` ∈ {this candidate's own token, "me"} — "me"
 # means the engine/assistant acts next, the candidate's own token (read from user.json via
 # profile.owner_token(), never typed here) means the human does. A previous version spelled
 # that first value out as one specific candidate's own literal name — correct for exactly one
 # installation and silently wrong for anyone whose profile names them anything else.
 OWNERS = {_profile.owner_token(), "me"}
-CONTACT_EMAIL_STATUS = {"verified-published", "verified-received", "pattern-inferred", "unknown"}
-OUTREACH_STATUS = {"drafted", "staged", "sent", "declined"}
-# Added 2026-07-21, per the candidate: "We should be tracking who we connected with & when
-# i applied to analyze what works and what doesnt." Applications were previously
-# stuffed into outreach[] with a person-shaped `to` field reading e.g.
-# "<a recognizable employer> careers (direct ATS application)" -- so counting them meant string-matching
-# a free-text name, and an ATS submission was indistinguishable from a networking
-# note. They are different funnels with different success measures; they get
-# different arrays.
-APPLICATION_METHODS = {"company-ats", "linkedin-easy-apply", "recruiter-submitted",
-                       "email", "referral"}
-APPLICATION_STATUS = {"not-started", "started", "submitted", "acknowledged",
-                      "rejected", "advanced", "withdrawn", "closed"}
-# ADR-031 B2 (design §1/§9, §16 item 3) — a fact about the OPPORTUNITY, not the plan: one
-# vocabulary per fact is the rule, shared with the future plans.outcomes. `consulting` was the
-# pre-Part-3 wording; amended to `contract`, one word, before anything shipped.
-# jobsearch 0.73.0 (dev #740 / public #160) widens it: fractional, interim and advisory route the pay
-# away from the annual tiers (profile.engagement). The ONE list is config_keys.ENGAGEMENT_TYPES.
-ENGAGEMENT_TYPES = set(_config_keys.ENGAGEMENT_TYPES)
-# ADR-031 B2 (design §1) — `cover_letters`, "resume_variants' twin": a status with a terminal
-# value, same shape as VARIANT_STATUS. `retired` is TERMINAL, same contract as a resolved ask
-# and a retired resume variant. Nullable: a row the 0.45.0 migration preserves verbatim from a
-# legacy applications[] row may carry no status at all — the migration cannot know one and must
-# not invent it (design §4/§28.2, the gate review's own B2 plant).
-COVER_LETTER_STATUS = {"draft", "sent", "retired"}
-# Whether outreach got a reply -- the other half of "what works".
-OUTREACH_OUTCOME = {"awaiting", "replied", "no-response", "declined",
-                    "meeting-booked", "accepted", "n/a"}
 # `accepted` added 2026-08-02 (the candidate's Decision 2). An accepted connection request that drew
 # no reply is a REAL positive signal for the connection-note medium — the candidate's own stated
 # mechanism is that the accept is what unlocks a better second touch. Scoring it identically
 # to "ignored" made the medium the candidate believes in look weaker than it is. Reported on its own
 # line, never merged into `replied`.
-
-# ---- Communications: HOW a message was sent, and what kind it was (added 2026-08-02) ----
-# WHY: `channel_id` was carrying three meanings at once — relationship (firm:halloway-partners),
-# medium (linkedin-direct), and implicitly purpose. Worse, `linkedin-direct`'s own label read
-# "exec-to-exec InMail" while the 12 rows stamped with it on 7/31 were CONNECTION-REQUEST NOTES.
-# Every question the candidate asked about which comms work turns on distinctions that field erased.
-MEDIA = {"linkedin-connection-note", "linkedin-inmail", "linkedin-message",
-         "email-cold", "email-reply", "phone", "sms", "other", "unknown"}
-# ⭐ Channel ids that still EXIST in channels.jsonl but must never be used again. They resolve,
-# so a referential check cannot catch them; only naming them can. Kept as rows rather than
-# deleted because historical outreach still points at them and a dangling pointer is worse.
-RETIRED_CHANNEL_IDS = {"linkedin-direct", "email-direct"}
-
-# ⭐⭐ RETIRED NESTED-ARRAY KEYS — ADR-031 §28.1 item 3 / gates-connected-entities.md §1 & Ordering.
-# Each connected-entities stage promotes one nested array to its own store and retires the old
-# key. This is the ONE place that mapping is declared — check_retired_reads.py's AST scanner
-# imports `active_retired_keys()` from here rather than hand-duplicating the three strings, the
-# same discipline the field-list guard just above already states: "restating the field list here
-# would be the same drift the banned_aliases exist to stop" (line 548 in this file).
-#
-# `RETIRED_KEYS` names every key ANY stage will eventually retire — declared once, in full, so
-# nothing ever hand-types a second copy of these three strings. It is NOT the active refusal set.
-#
-# ⭐⭐ STAGE-AWARE, ON PURPOSE (the ordering correction this dispatch made — ADR-031 §28.1 item 3,
-# re-verified against this file's own guard and against gates-connected-entities.md's Ordering
-# section, which requires check_retired_reads.py's own RETIRED_KEYS to "resolve to {} before B1
-# ships" for the identical reason). Naming a key here must not REFUSE it before its own stage has
-# actually shipped: every tracked profile — including THIS repo's own
-# tests/fixtures/profile, read directly by gates.yml's "Data integrity" step — still carries
-# `opportunities.contacts[]` until the B1 migration runs, and that migration is explicitly the
-# NEXT dispatch's work (ADR-031 §28.1 item 6), not this one's. Confirmed empirically before this
-# guard was wired in: patching an unconditional "refuse contacts unconditionally" guard into this
-# file flips `validate_data.py` from CLEAN to a hard failure against the tracked fixture, today,
-# with no migration yet built to fix the data it would be refusing. ADR-031's own stage rule
-# already says why this must not happen: "a store is promoted, its nested source removed, every
-# reader re-pointed, the validator and record.py updated, and the migration shipped — in one
-# version" (design-connected-entities.md §1) — the validator's refusal and the migration that
-# makes the refusal survivable are ONE change, never two commits with a gap between them where
-# every existing profile (and this repo's own fixture) fails a validator nobody gave it a way to
-# satisfy.
-#
-# `active_retired_keys()` is that gate: it reads the STAGE'S OWN SHIPPED-NESS FROM THE TREE —
-# never a flag a human sets and might forget to update (gates-connected-entities.md's CI-parity
-# finding #2, made about check_retired_reads.py but equally true here, since its set must equal
-# this one). B1's structural marker is `graph.py`: both the design (§2, "what keeps it honest")
-# and the gate review name it as B1's OTHER precondition alongside this guard, and it does not
-# exist in this tree until the B1 migration dispatch adds it alongside the migration itself — so
-# its presence is exactly the fact that should flip `contacts` from legal to refused. Whoever
-# builds B2/B3 names their own analogous marker here (the module or store their own migration
-# adds) the same way; the constant grows, the mechanism does not need reinventing.
-# ⭐⭐ B4 EXTENDS THE MECHANISM PAST NESTED-ARRAY PROMOTION (2026-09-14). `play_stage` and
-# `next_action` are not a nested array being promoted to a store — they are two plain fields on
-# `opportunities` being DROPPED outright, their content relocated (design §19: prose to `note`,
-# the position to a derivation). The same "the fixture already carries the old shape until the
-# migration lands in the same commit" problem applies: `active_retired_keys()` must not refuse
-# them until B4's migration (and the fixture regeneration that goes with it) has actually
-# shipped. Reusing RETIRED_KEYS/`active_retired_keys()` rather than inventing a second
-# mechanism for "a field, not an array" keeps `check_retired_reads.py` a single scanner for
-# both retirement shapes — it was already written generically ("every ast.Subscript ... every
-# X.get(...) call") and never assumed the key named an array.
-RETIRED_KEYS = {"contacts": "B1", "applications": "B2", "outreach": "B3",
-               "play_stage": "B4", "next_action": "B4"}
-
-_GRAPH_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "graph.py")
-# ⭐ B2's OWN structural marker (ADR-031 §29.3's amendment: "each stage names its own structural
-# marker"). B2 has no cross-store WALKER the way B1's graph.py was already a required
-# deliverable — every applications/cover_letters FK is a simple owned pointer, not a
-# many-direction graph — so B2's marker is applications.py: the module that owns the
-# applications/cover_letters joins every reader used to hand-roll against the nested array (see
-# applications.py's own module docstring for the full reasoning). It lands in the SAME commit as
-# the 0.45.0 migration and this guard, never ahead of either — exactly graph.py's own timing.
-_APPLICATIONS_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "applications.py")
-
-# ⭐ B3's OWN structural marker (ADR-031 §29.3's amendment: "each stage names its own structural
-# marker"). Unlike B2, B3's `touches` store IS genuinely multi-directional (person, opportunity,
-# channel, and §12's object person/company) — exactly the shape `graph.py` exists to walk, and
-# `graph.py` gains `touches_for_person()`/`touches_for_opportunity()`/`touches_for_channel()`
-# accordingly. But `graph.py` already exists on disk (shipped with B1), so its mere presence
-# cannot newly prove B3 shipped the way it proved B1 did — B3 needs its OWN marker file the same
-# reason B2 did, even though its join IS a "real" walker this time. `touches.py` is that file:
-# the flat load/group module every simple per-opportunity reader (`applying.py`,
-# `pipeline_index.py`, `trigger.py`, `precondition.py`, `check_sent_drafts.py`,
-# `check_action_claims.py`, `channels_due.py`, `check_followups.py`, `funnel_report.py`,
-# `watch.py`, `generate_dashboard.py`) now calls instead of hand-rolling the nested array (see
-# touches.py's own module docstring for the full "graph.py vs touches.py" reasoning). It lands
-# in the SAME commit as the 0.48.0 migration and this guard, never ahead of either — exactly
-# graph.py's own timing for B1, applications.py's for B2.
-_TOUCHES_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "touches.py")
-
-# ⭐ B4's OWN structural marker (ADR-031 §29.3's amendment: "each stage names its own structural
-# marker"). `plans.py` is B4's flat load/join module (`opportunities.plan_id` is a simple owned
-# pointer, not a many-direction graph — the same B2 reasoning `applications.py`'s own docstring
-# states). It lands in the SAME commit as the 0.49.0 migration and this guard.
-_PLANS_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)), "plans.py")
-
-
-def active_retired_keys():
-    """The subset of RETIRED_KEYS whose stage has actually shipped in THIS tree — read structurally,
-    never all of RETIRED_KEYS and never a human-set flag. Resolves to {} until B1 ships (graph.py
-    lands, with the migration, in one commit); see the block comment above RETIRED_KEYS."""
-    active = {}
-    # ⭐ `_b1_key`/`_b2_key`/`_b3_key` hold the string in a NAME, never a literal subscript on
-    # RETIRED_KEYS here — `check_retired_reads.py`'s own scanner matches a Subscript/`.get()`
-    # call whose slice is the STRING CONSTANT "contacts"/"applications"/"outreach" (it cannot
-    # tell a data-row read from a constant-dict read apart, by design — see its module
-    # docstring). `RETIRED_KEYS["contacts"]` would be a real, if harmless, hit on THIS module;
-    # reading it through a local variable is not the checker avoided, it is the checker's own
-    # documented boundary — a data row is never keyed by a variable holding a compile-time
-    # constant a checker can trace back to this exact line.
-    _b1_key = "contacts"
-    if os.path.exists(_GRAPH_PY):
-        active[_b1_key] = RETIRED_KEYS[_b1_key]
-    _b2_key = "applications"
-    if os.path.exists(_APPLICATIONS_PY):
-        active[_b2_key] = RETIRED_KEYS[_b2_key]
-    _b3_key = "outreach"
-    if os.path.exists(_TOUCHES_PY):
-        active[_b3_key] = RETIRED_KEYS[_b3_key]
-    _b4_key_1, _b4_key_2 = "play_stage", "next_action"
-    if os.path.exists(_PLANS_PY):
-        active[_b4_key_1] = RETIRED_KEYS[_b4_key_1]
-        active[_b4_key_2] = RETIRED_KEYS[_b4_key_2]
-    return active
-TOUCH_TYPES = {"first-touch", "chase", "reply", "referral-ask", "intro-request",
-               "thank-you", "reconnect", "apply-path", "unknown"}
-RECIPIENT_ROLES = {"hiring-manager", "hiring-line", "talent-acquisition", "recruiter-agency",
-                   "warm-contact", "peer-network", "other", "unknown"}
-ADDRESS_STATUS = {"verified-published", "verified-received", "pattern-inferred", "unknown"}
-# A bounce that looks like a non-reply silently poisons the only comms metric there is.
-DELIVERY = {"delivered", "bounced", "unknown"}
-# ---- Triggers and sequences (public #27, 2026-08-25) -------------------------------------
-# WHAT CAUSED THIS TOUCH OR ASK. The measured defect: a drafted ask generated by an application
-# sat in drafts.md unlinked to the opportunity whose application generated it, and stayed
-# correct only because a human remembered. `trigger_kind` names the cause class; `trigger_ref`
-# names the instance. 'application' resolves against the OWN record's applications[] (app_id,
-# or date for pre-migration rows) — the blocked_until own-record rule, because a join to
-# another record's application would say this role moved when it did not. 'reply' resolves
-# against data/messages.jsonl. 'elapsed' carries the ISO date the clock started. 'manual'
-# means a human decided with no recorded cause — a manual trigger carrying a ref is a
-# contradiction, refused rather than guessed over.
-TRIGGER_KINDS = {"application", "reply", "elapsed", "manual", "introduction"}   # `introduction`: dev #834, design-network-first.md 5.4
-# design-inbound-resolution.md §2 (ADR-029/030) — `messages[].resolved_by`: which of ADR-030's
-# three deterministic tiers matched when a message resolves an application. Recorded so the
-# EVIDENCE for a status change is auditable later, not just the fact of the change.
-RESOLVED_BY = {"req-id", "url", "company-single"}
-# A multi-step play ("part A sent, part B held until the connection is accepted") was a state
-# machine living in a markdown heading — nothing could query "which sequences are unblocked
-# today". sequence_id groups the steps; sequence_step orders them (int, 1-based). The HOLD on
-# a staged step stays in **Blocked until:** (precondition.py) — a sequence adds grouping,
-# never a second way to spell a hold. scripts/trigger.py owns the joins and the daily query.
-# ---- Form answers (public #27, 2026-08-25) ------------------------------------------------
-# What was actually answered on an application form's own questions — reasoned out once, at
-# length, and previously lost to prose, so the next equivalent form re-derived it and
-# consistency across two applications to the same employer was a matter of memory. Entry keys
-# are REJECTED-unknown like OUTREACH_KEYS; question_key is a shared slug so precedent is a
-# join, not a search.
-FORM_ANSWER_KEYS = {"question_key", "question", "answer", "answered_on"}
-# Unknown keys are REJECTED. Four alias keys (sent_on, replied_on, channel, notes) drifted
-# into the data precisely because nothing rejected them.
-# ⭐ ADR-031 B1: `contact_id` -> `person_id` (docs/data_model.json's banned_aliases carries the
-# rename globally). A row still writing `contact_id` is caught by the SAME banned-alias branch
-# every unknown-key guard already runs, not a special case here.
-# ⭐ ADR-031 B3 — OUTREACH_KEYS retired along with the nested array it governed. `touches` is
-# now a top-level store (docs/data_model.json's own field list, gaining `id` and the two §12
-# object FKs no nested row ever had) checked by the GENERIC model-driven unknown-key guard
-# every other top-level store added since B2 uses — never a second, dedicated set here.
-# New required fields apply only from the cutover — backfilled history carries "unknown"
-# where no contemporaneous record supports a value. Without this the validator would fail
-# against 46 legacy rows on day one and get ignored.
-COMMS_CUTOVER = "2026-08-02"
-# dev #686 / public #139 — the touch rules that were typed inline in the validator and so
-# invisible to `record.py fields --file touches`. Named once here; the validator and the
-# `fields` listing both read these, never a typed copy.
-COMMS_REQUIRED_FIELDS = ("medium", "touch_type", "recipient_role", "delivery")
-SENT_REQUIRES_FIELD = "to"            # status='sent' requires a non-empty 'to'
-SENT_REQUIRES_DATE_FIELD = "date"     # ... and an ISO 'date'
-EMAIL_MEDIUM_PREFIX = "email"         # an email-* medium requires 'address_status'
-EMAIL_REQUIRES_FIELD = "address_status"
-# dev #427 — what counts as evidence that a pre-cutover delivery value was ESTABLISHED, not
-# inferred. Substring match on the lowercased note, so "repl" covers reply/replied/auto-reply
-# (a reply is conclusive proof of delivery); "auto-reply" stays listed so the message names it.
-DELIVERY_EVIDENCE_WORDS = ("ndr", "bounce", "confirmed", "repl", "auto-reply")
-
-
-def delivery_evidence(touch):
-    """True when a touch carries evidence for a non-'unknown' delivery: a note naming how it
-    was established, or a recorded reply (`responded_on` — the structured form of the same
-    fact, which a run already knows and so must not have to restate in prose)."""
-    if touch.get("responded_on"):
-        return True
-    note = (touch.get("note") or "").lower() if isinstance(touch.get("note"), str) else ""
-    return any(w in note for w in DELIVERY_EVIDENCE_WORDS)
-
 
 # ══ INTRODUCED-ONLY ROW RULES (dev #644 item 5, dev #427) ═══════════════════════════════════
 # Some rules are true of a row but must NEVER be allowed to refuse a row that already exists:
@@ -526,71 +92,6 @@ def delivery_evidence(touch):
 # every later insert/update, existing rows left alone until an explicit VALIDATE. Diverged: there
 # is no VALIDATE step here — validating a user's existing rows would be a migration.
 
-# RFC 2606 §3 reserves these three names so documentation and tests cannot collide with a real
-# registrant. An address under one is a placeholder on EVERY install, never a person
-# (owner decision A on dev #427, 2026-09-30). ⚠️ DELIBERATELY NOT the reserved TLDs (`.test`,
-# `.invalid`, ...): the fixture's synthetic contacts live under `fixture.invalid`, which can
-# never resolve to a real registrant yet is outside this set, so the rule and the fixture do not
-# collide. The label match is a whole domain or a subdomain of it, never a substring
-# (`counterexample.com` is not `example.com`).
-PLACEHOLDER_EMAIL_DOMAINS = ("example.com", "example.net", "example.org")
-# Template-shaped addresses — a literal pattern sitting in the structured field READS AS
-# POPULATED to every query and to the dashboard (the 2026-08-03 incident the regression test's
-# docstring names). Substring match on the lowercased address, as the test always did.
-PLACEHOLDER_EMAIL_TEMPLATES = ("first.last@", "firstname.lastname@", "@company.com",
-                               "@domain.com")
-
-
-def placeholder_email_violation(email):
-    """The refusal text for an address that is a placeholder, else None. Label-free, so the
-    writer can compare the text before and after a change (see record.py)."""
-    if not isinstance(email, str) or not email.strip():
-        return None
-    e = email.strip().lower()
-    dom = e.rpartition("@")[2]
-    reserved = any(dom == d or dom.endswith("." + d) for d in PLACEHOLDER_EMAIL_DOMAINS)
-    if reserved or any(t in e for t in PLACEHOLDER_EMAIL_TEMPLATES):
-        return ("email %r is a placeholder, not an address — empty is honest, a plausible fake "
-                "is not (a reserved example domain or a first.last-style template)" % email)
-    return None
-
-
-def delivery_violation(touch):
-    """dev #427 — DELIVERY IS EVIDENCE, NEVER INFERENCE. The refusal text when a pre-cutover
-    touch carries a delivery value off 'unknown' with no cited evidence, else None."""
-    d = date_part(touch.get("date"))
-    if (touch.get("delivery") not in (None, "unknown") and d and d < COMMS_CUTOVER
-            and not delivery_evidence(touch)):
-        return ("delivery=%r on a row dated before %s with no evidence — a note citing how it "
-                "was established (%s) or a recorded reply is required; delivery must never be "
-                "inferred" % (touch.get("delivery"), COMMS_CUTOVER,
-                              ", ".join(DELIVERY_EVIDENCE_WORDS)))
-    return None
-
-
-def _people_email_violation(person):
-    return placeholder_email_violation(person.get("email"))
-
-
-# store -> the rules that apply only to rows being WRITTEN or CHANGED (see the block above).
-INTRODUCED_ONLY_RULES = {"touches": (delivery_violation,),
-                         "people": (_people_email_violation,)}
-
-
-def row_rule_violations(store, row):
-    """Every introduced-only rule `row` violates, as label-free messages (possibly empty)."""
-    if not isinstance(row, dict):
-        return []
-    return [m for m in (fn(row) for fn in INTRODUCED_ONLY_RULES.get(store, ())) if m]
-PATH_TYPES = {"warm-referral", "recruiter", "hiring-manager", "hiring-context", "internal", "cold"}
-# ADR-031 B1 — `people.status`. `merged` is the ONLY non-active state a person can be in;
-# `merged_into` is required iff status is `merged` (checked below, not restated as an enum).
-PEOPLE_STATUS = {"active", "merged"}
-# JD fit analysis (added 2026-08-02, per the candidate: "how is the candidate match to the JD?").
-# DATA, not a document — requirement/verdict/evidence/question is a dataset, so it lives on
-# the opportunity record and is validated like everything else.
-FIT_VERDICTS = {"aligned", "partial", "not-aligned", "unknown"}
-FIT_Q_STATUS = {"n/a", "open", "answered"}
 # ⭐ Issue #34, part 2. This used to be a hand-maintained copy of `route.py`'s vocabulary and it
 # drifted: `migrate.py`'s `m_0_14_0` rewrites legacy `access` values to route.py's canonical
 # requirements (`login-chrome` -> `login`, `public-bot-limited` -> `bot-limited`, per
@@ -604,489 +105,191 @@ FIT_Q_STATUS = {"n/a", "open", "answered"}
 # candidate's own name literally: zero live records used that value, so this was a rename with
 # no data to migrate, not a schema change.
 ACCESS = set(_route.REQUIREMENTS) | set(_route.LEGACY)
-# dev #751 (design D5, F3): `manual-candidate` was a hand-kept extra HERE while `route.py` did not know
-# it, so a channel carrying it passed validation and then raised `RouteError` in `route.py --check`.
-# `route.REQUIREMENTS` carries it now; the derivation above is the whole definition.
-# ---- Asks and commitments (dev #93 / public #21) ----------------------------------------
-# The hand-authored tail of Your Move and the This Week schedule were the last state living in
-# focus.md prose, where a hand-written copy of a record went stale beside the generated row.
-# They are stores now: an ask is OPEN until `resolved_on` is set (views filter, so expulsion is
-# structural), and a commitment's `date` may be the literal `unresolved` — the migration marker
-# for a date that could not be parsed, same precedent as blocked_until and play_stage.
-ASK_KINDS = {"role", "system", "suggestion"}
-# dev #834 (jobsearch 0.86.0, design-network-first.md 8.1, 8.2) -- `kind: suggestion` is a row the strategist PROPOSES and the owner
-# CONFIRMS. `suggests` names the one write the ask stands for: `{store, op, id, fields, before}`. What may be suggested is closed and
-# small: a company becomes an `active-target` (the owner supplies the motivation at confirm), a plan is created for a search, a company
-# or a person, and a person's `cadence` is set. A PERSON row itself is never suggested (finding people is a manual LinkedIn step, and the
-# engine never invents a person). `fields` of a plan are checked by the plan validator once the row exists; here only the key set.
-SUGGEST_COMPANY_KEYS = frozenset({"status", "motivation"})
-SUGGEST_PLAN_SUBJECT_KINDS = frozenset({"search", "company", "person"})
-SUGGEST_PERSON_KEYS = frozenset({"cadence"})
-SUGGEST_OPS = {("companies", "set"), ("plans", "create"), ("people", "set")}
-SUGGEST_SHAPE_KEYS = frozenset({"store", "op", "id", "fields", "before"})
-# dev #834 (design-network-first.md 6) -- the `proposals` store: one row per proposal to a prospective client of a non-employee
-# engagement, several per engagement. `drafting` is the only status before the proposal went out; `date` is required for every
-# status that presupposes it did (`withdrawn` may be a draft the candidate never sent, so it may carry none).
-# ⚠️ THE FIELD IS `date`, NOT `sent_on` (design-network-first.md 6 spelled it `sent_on`): `sent_on` is a BANNED ALIAS for `date` in
-# docs/data_model.json (`banned_aliases`, "the same meaning under two spellings silently splits a query"), and `applications` and
-# `touches` already name the day an action went out `date`. The unknown-key guard refused the design's spelling on the first write.
-PROPOSAL_STATUS = ("drafting", "sent", "accepted", "declined", "withdrawn", "expired")
-PROPOSAL_NEEDS_SENT_ON = frozenset({"sent", "accepted", "declined", "expired"})
-RATE_PER = ("hour", "day", "month", "year", "project")
-CONCEPTUAL_AGREEMENT_LISTS = ("objectives", "measures", "value")
-CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
-# dev #133 / public #22 — the actions record.py can resolve an ask against atomically. An
-# unparseable value must be LOUD (the precondition.py rule): a resolves_when nobody can act on
-# means an ask that claims it will self-resolve and never does — it looks handled and is not.
-ASK_RESOLVES_WHEN = {"application", "outreach"}
-UNRESOLVED = "unresolved"
-# public #50 — same shape as ADR-013's `expired` and the asks store's `resolved_on`: a fact
-# the run knows (a meeting was called off) goes into the queryable store, never into prose.
-# Additive; absent means `scheduled` until the 0.40.0 seed migration stamps every existing row
-# explicitly (this store's siblings prefer an explicit value over a reader having to know that
-# a missing key means the default).
-COMMITMENT_STATUS = {"scheduled", "cancelled"}
-# dev #834 (jobsearch 0.86.0, design-network-first.md 5.2, 13.1) -- a CHAT widens `commitments`. `kind` classifies a meeting
-# (absent on a legacy row = unclassified, counted and never guessed); `attendance` records whether a past one HAPPENED (absent =
-# unrecorded, never "held" and never "no-show"). `status` stays scheduled/cancelled: attendance is a second fact, not a third state.
-COMMITMENT_KINDS = {"chat", "interview"}
-ATTENDANCE = {"held", "no-show"}
-# dev #834 (design-network-first.md 4.3, accepted by the owner 2026-11-12) -- `people.ties`: how the candidate knows a person, one STATED
-# field, `[{kind, via?}]`. `kind` is a closed set, `via` an optional non-empty string (which employer, school or community). Absent means
-# unknown, never "no ties": LAMP's Alumni is derived by counting people with a non-empty `ties`, and nothing infers one (ADR-031 decision 5).
-TIE_KINDS = ("former-colleague", "alumni", "community", "friend", "introduced", "other")
-# dev #834 (design-network-first.md 5.4) -- the cause of a touch or ask that came of an INTRODUCTION has two possible homes, so its
-# `trigger_ref` is prefixed: `touch:<id>` (the intro-request touch that produced it) or `commitment:<id>` (an intro offered in a chat).
-INTRODUCTION_REF_PREFIXES = ("touch", "commitment")
-# `companies.motivation` (design 4.1): the candidate's own stated hunger to work at a company, 1..5 (LAMP's M).
-MOTIVATION_MIN, MOTIVATION_MAX = 1, 5
-# ---- Resume variants (public #26) --------------------------------------------------------
-# The declared printed-resume set. The variant FILES and resume.md (the claim union) are
-# authored prose; the RECORDS — which variants exist, which archetype each serves, which one
-# an opportunity should receive, which one an application actually sent — live here and are
-# validated like everything else. `retired` is TERMINAL: applications[] history may reference
-# a retired variant forever, but an opportunity cannot PLAN to send one. Prose-level hygiene
-# (claim containment against the union, staleness, orphan claims) is resume_variants.py's job;
-# this validator is structure and referential integrity only.
-VARIANT_STATUS = {"active", "retired"}
-SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
-SHA12_RE = re.compile(r"^[0-9a-f]{12}$")
 
-# ---- briefs (Query or Citation C1, design-query-or-citation.md §3.3/§3.7/§4.1) ---------------
-# Mirrored as LITERALS — never imported from `your_move.AXIS_FOLD` or `brief.py`'s own module
-# constants, because `your_move` imports THIS module and `brief` imports `your_move`; importing
-# either back here is the exact load-time cycle `precondition.py`'s lazy import of `brief`
-# already exists to avoid. TestBriefVocabularyMirrorsTheReader holds this identical to the
-# reader's own tuples, so the copy cannot drift silently. dev #680: the suffix is 4+ hex (old
-# rows carry 4, new ids carry 16), as brief.py's own BRIEF_ID_RE.
-BRIEF_ID_RE = re.compile(
-    r"^brief:\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{2}:\d{2}-[0-9a-f]{4,}$")
-BRIEF_AXES = {"reply-owed", "accepted", "waiting", "silence-unverified", "silent",
-             "nothing-sent"}
-BRIEF_REGISTERS = {"reply-owed", "accepted", "premature", "chase", "reconnect",
-                   "unverified-silent", "cold", "unverified-cold"}
-BRIEF_EVIDENCE_RE = re.compile(
-    r"^(?:none-recorded|not-configured|confirmed-empty(?:\(owner, \d{4}-\d{2}-\d{2}\))?|"
-    r"confirmed \d+ thread\(s\), latest \d{4}-\d{2}-\d{2}.*|"
-    r"candidate \d+ \(by name\)|"
-    r"unreachable\([\w-]+\)|"
-    r"not-permitted\([\w.-]+\))$")
-
-
-# ── dev #704 / public #154 -- the mail source tag: ONE grammar, ONE normalizer ───────────────
-# `mail_client.Mailbox.search()` used to hand callers `bytes` uids, and every `"%s:%s:%s"` that
-# built a source tag wrote the bytes' REPR -- `gmail:acct:b'101'` -- beside the clean
-# `gmail:acct:101` the same message gets on a later run. The two keys name one message, so a
-# "do I already hold this?" check that compared them raw said no and wrote a duplicate.
-#
-# The grammar below is also DECLARED in docs/data_model.json (`source_tag`), which the validator's
-# V1 rule reads; a test pins the two to each other so they cannot drift.
-SOURCE_TAG_PATTERN = r"^(gmail|mail|ats):[^:]+:\d+$"          # the clean shape (anchored)
-SOURCE_TAG_PREFIX = r"^(gmail|mail|ats):"                      # "this value IS a mail tag"
-# The repr of a bytes uid INSIDE a mail tag. Deliberately the TAG, not the bare `b'123'`: a message
-# id minted before 0.66.0 may end in the repr (`<opp>-<person>-b'101'`), and the owner's id policy
-# (dev #704 R1) is that ids are OPAQUE -- they keep their value, nothing is re-minted -- so a bare
-# match would hold every such profile red after the migration that repaired it.
-SOURCE_TAG_WRAPPED = r"(?:gmail|mail|ats):[^:\s|]+:b'\d+'"
-SOURCE_TAG_PREFIXES = ("gmail", "mail", "ats")
-# A tag inside FREE TEXT (an ask's `note`): the account is any run of non-space, non-`:`, non-`|`.
-TAG_TOKEN_RE = re.compile(r"(?<!\w)(?:gmail|mail|ats):[^:\s|]+:(?:b'\d+'|\d+)")
-_WRAPPED_UID_RE = re.compile(r"^b'(\d+)'$")
-_TAG_RES = {}
-
-
-def normalize_uid(uid):
-    """A bare uid, with a `b'123'` wrapper stripped. Anything else is returned unchanged."""
-    if isinstance(uid, str):
-        m = _WRAPPED_UID_RE.match(uid)
-        if m:
-            return m.group(1)
-    return uid
-
-
-def normalize_source_tag(s, prefixes=SOURCE_TAG_PREFIXES):
-    """The ONE key every "do I already hold this message" check compares (D1): a value of the
-    shape `<tag>:<account>:<uid>` where `<uid>` is digits or the wrapped `b'<digits>'` is returned
-    as `<tag>:<account>:<digits>`; ANY other value is returned unchanged (a LinkedIn thread URL,
-    `record.py touched`, a path), so the function is safe to call on every `source`.
-
-    `prefixes` widens the tag word for a caller whose keys carry another (`watch.py` queues
-    `alert:`/`meet:`/`reply:` keys in `data/inbox.jsonl`); the default is the three mail tags."""
-    if not isinstance(s, str):
-        return s
-    rx = _TAG_RES.get(prefixes)
-    if rx is None:
-        rx = _TAG_RES[prefixes] = re.compile(
-            r"^(%s):([^:]+):(?:b'(\d+)'|(\d+))$" % "|".join(re.escape(p) for p in prefixes))
-    m = rx.match(s)
-    if not m:
-        return s
-    return "%s:%s:%s" % (m.group(1), m.group(2), m.group(3) or m.group(4))
-
-
-def is_mail_tag(s):
-    """True when `s` claims to be a mail source tag (clean OR wrapped) -- the gate that keeps a
-    LinkedIn thread URL or `record.py touched` out of any source comparison."""
-    return isinstance(s, str) and re.match(SOURCE_TAG_PREFIX, s) is not None
-
-
-def tags_in_text(text):
-    """The set of NORMALIZED mail tags found in free text (an ask's `note`)."""
-    if not isinstance(text, str):
-        return set()
-    return {normalize_source_tag(t) for t in TAG_TOKEN_RE.findall(text)}
-
-
-SOURCE_TAG_MODES = ("whole", "embedded")
-SOURCE_TAG_MIGRATION = "m_0_66_0_uid_text"
-
-
-def _strings_in(value):
-    """Every string in `value`, descending into dicts (values) and lists."""
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for v in value.values():
-            for x in _strings_in(v):
-                yield x
-    elif isinstance(value, (list, tuple)):
-        for v in value:
-            for x in _strings_in(v):
-                yield x
-
-
-def source_tag_spec(model):
-    """(spec, defects) -- `docs/data_model.json`'s `source_tag` block, compiled, or the reasons it
-    cannot be used. dev #704 / public #154 (V1) + R3: a rule whose declaration is missing, malformed
-    or empty must say so LOUDLY, never read as a rule with nothing to check (a missing thing reads
-    as an empty thing and gets reported as fact). `defects` is a list of sentences; `spec` is None
-    unless it is empty.
-
-    The block declares, per store, the fields that can carry a mail tag and HOW each is checked:
-      whole     the value IS a tag (or legitimately something else: `messages.source` may be a
-                path or a LinkedIn thread URL). If it starts with the mail prefix it must
-                fullmatch `pattern`.
-      embedded  the value, or any string nested in it, must contain no wrapped uid (`b'123'`):
-                message ids that embed a uid, references to them, and free text (`asks.note`)
-                into which a sweep writes a dedup tag."""
-    block = (model or {}).get("source_tag") if isinstance(model, dict) else None
-    if block is None:
-        return None, ["docs/data_model.json has no `source_tag` block"]
-    if not isinstance(block, dict):
-        return None, ["docs/data_model.json `source_tag` is not an object"]
-    defects, rx = [], {}
-    for key in ("pattern", "prefix", "wrapped"):
-        v = block.get(key)
-        if not isinstance(v, str) or not v:
-            defects.append("`source_tag.%s` is missing or not a non-empty string" % key)
-            continue
-        try:
-            rx[key] = re.compile(v)
-        except re.error as exc:
-            defects.append("`source_tag.%s` is not a valid regex (%s)" % (key, exc))
-    fields = block.get("fields")
-    stores = (model.get("stores") or {}) if isinstance(model, dict) else {}
-    declared = []
-    if not isinstance(fields, dict):
-        defects.append("`source_tag.fields` is missing or not an object")
-    else:
-        for store, flds in sorted(fields.items()):
-            if store.startswith("_"):
-                continue
-            if store not in stores:
-                defects.append("`source_tag.fields` names store %r, which docs/data_model.json "
-                               "does not declare" % store)
-                continue
-            if not isinstance(flds, dict):
-                defects.append("`source_tag.fields.%s` is not an object" % store)
-                continue
-            for fld, mode in sorted(flds.items()):
-                if fld.startswith("_"):
-                    continue
-                if mode not in SOURCE_TAG_MODES:
-                    defects.append("`source_tag.fields.%s.%s` has mode %r, not one of %s"
-                                   % (store, fld, mode, "/".join(SOURCE_TAG_MODES)))
-                elif fld not in (stores[store].get("fields") or []):
-                    defects.append("`source_tag.fields.%s.%s` names a field the store does not "
-                                   "declare" % (store, fld))
-                else:
-                    declared.append((store, fld, mode))
-        if not declared and not defects:
-            defects.append("`source_tag.fields` declares zero fields")
-    if defects:
-        return None, defects
-    return {"declared": declared, "pattern": rx["pattern"], "prefix": rx["prefix"],
-            "wrapped": rx["wrapped"]}, []
-
-
-def check_source_tags(model, problems, loader=None):
-    """dev #704 / public #154 (V1) -- refuse a wrapped uid (`b'123'`) in every declared field,
-    naming the store, the row and the field. Returns `(stores, fields, rows)` actually checked, or
-    None when the rule could not run (the reason is in `problems`, loudly -- R3).
-
-    `loader(name)` returns `(rows, errors)` like this module's `load()`; the default reads the
-    profile's own data directory. A store file that is legitimately absent (`briefs.jsonl`) is
-    skipped and not counted."""
-    spec, defects = source_tag_spec(model)
-    if spec is None:
-        for d in defects:
-            problems.append("%s -- the wrapped-uid rule (V1) is OFF, so it checks NOTHING; declare "
-                            "it in docs/data_model.json" % d)
-        return None
-    loader = loader or load
-    loaded, fields_checked = {}, 0
-    for store, fld, mode in spec["declared"]:
-        if store not in loaded:
-            loaded[store], _errs = loader("%s.jsonl" % store)
-        rows = loaded[store]
-        if rows is None:
-            continue
-        fields_checked += 1
-        for i, row in enumerate(rows, 1):
-            if not isinstance(row, dict) or fld not in row:
-                continue
-            label = "%s[%s]" % (store, row.get("id") if row.get("id") else "line %d" % i)
-            value = row[fld]
-            if mode == "whole":
-                if isinstance(value, str) and spec["prefix"].match(value) \
-                        and not spec["pattern"].fullmatch(value):
-                    problems.append(
-                        "%s: %s %r is a mail source tag that does not match %s -- a uid is "
-                        "digits, never the repr of a bytes object; repaired by migration %s, "
-                        "and a new write of this shape is refused"
-                        % (label, fld, value, spec["pattern"].pattern, SOURCE_TAG_MIGRATION))
-            else:
-                bad = next((s for s in _strings_in(value) if spec["wrapped"].search(s)), None)
-                if bad is not None:
-                    problems.append(
-                        "%s: %s carries a wrapped uid in %r -- a uid is digits, never the repr "
-                        "of a bytes object; repaired by migration %s, and a new write of this "
-                        "shape is refused" % (label, fld, bad, SOURCE_TAG_MIGRATION))
-    n_stores = len([s for s in loaded if loaded[s] is not None])
-    rows_checked = sum(len(loaded[s]) for s in loaded if loaded[s] is not None)
-    return n_stores, fields_checked, rows_checked
-
-
-# dev #764 / public #162 (criterion 764-3) -- RESERVED IDS. `record.py create auto` is a create-time
-# sentinel meaning "mint me an id"; on a store with no minting branch it used to be written LITERALLY,
-# and a dependent row then pointed at the string "auto". The id of a stored row is never the sentinel
-# and never empty. ONE rule over every id-keyed store, the store list DERIVED from the model's own
-# `id_field` declarations (never hand-listed: a store added to docs/data_model.json is covered the day
-# it is declared). A missing `id` key is the required-field rule's finding, not this one.
-RESERVED_IDS = ("auto",)
-
-
-def id_keyed_stores(model):
-    """(store names, defects) -- every store `docs/data_model.json` declares with a non-null
-    `id_field`, as `(name, id_field)` pairs sorted by name. `defects` is a list of sentences; the
-    store list is empty when the model cannot be used, and an empty list is itself a defect (a
-    rule whose declaration yields nothing must say so, never read as a rule with nothing to
-    check)."""
-    stores = (model or {}).get("stores") if isinstance(model, dict) else None
-    if not isinstance(stores, dict):
-        return [], ["docs/data_model.json has no `stores` object"]
-    found = []
-    for name, spec in sorted(stores.items()):
-        if name.startswith("_") or not isinstance(spec, dict):
-            continue
-        fld = spec.get("id_field")
-        if isinstance(fld, str) and fld:
-            found.append((name, fld))
-    if not found:
-        return [], ["docs/data_model.json declares zero id-keyed stores"]
-    return found, []
-
-
-def check_reserved_ids(model, problems, loader=None):
-    """dev #764 (764-3) -- refuse the reserved id `auto` and an empty id in every id-keyed store,
-    naming the store and the row. Returns `(stores, rows)` actually checked, or None when the rule
-    could not run (the reason is in `problems`, loudly). `loader(name)` returns `(rows, errors)`
-    like this module's `load()`; a store file that is legitimately absent is skipped, not counted."""
-    declared, defects = id_keyed_stores(model)
-    if defects:
-        for d in defects:
-            problems.append("%s -- the reserved-id rule (764-3) is OFF, so it checks NOTHING; "
-                            "declare each store's `id_field` in docs/data_model.json" % d)
-        return None
-    loader = loader or load
-    n_stores = n_rows = 0
-    for store, fld in declared:
-        rows, _errs = loader("%s.jsonl" % store)
-        if rows is None:
-            continue
-        n_stores += 1
-        for i, row in enumerate(rows, 1):
-            if not isinstance(row, dict) or fld not in row:
-                continue
-            n_rows += 1
-            v = row[fld]
-            if v is None or (isinstance(v, str) and not v.strip()):
-                problems.append(
-                    "%s[line %d]: %s is empty (%r) -- a stored row's id is never empty; supply "
-                    "one with `record.py create %s <id>`" % (store, i, fld, v, store))
-            elif isinstance(v, str) and v.strip() in RESERVED_IDS:
-                problems.append(
-                    "%s[%s]: %s %r is reserved -- it is `record.py create`'s placeholder for "
-                    "\"mint me an id\", never a stored id; any row pointing at it points at "
-                    "nothing. Repaired by migration m_0_76_1_legacy_placeholders, and a new "
-                    "write of this id is refused" % (store, v, fld, v))
-    return n_stores, n_rows
-
-
-def load(name):
-    path = os.path.join(DATA, name)
-    if not os.path.exists(path):
-        return None, ["%s does not exist" % name]
-    recs, errs = [], []
-    for i, line in enumerate(open(path, encoding="utf-8"), 1):
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            recs.append(json.loads(line))
-        except ValueError as e:
-            errs.append("%s line %d: invalid JSON — %s" % (name, i, e))
-    return recs, errs
-
-
-def is_date(v):
-    return isinstance(v, str) and DATE_RE.match(v)
-
-
-# ⭐ A COMMUNICATION MAY CARRY A TIME (dev/audit 2026-09-02, Class B). Two messages on one day
-# — the outreach and its same-day reply — cannot be ordered from dates alone, which is what
-# made the reconcile audit assert ownership it could not know and left `responded_on >= date`
-# unprovable within a day. Optional `HH:MM[:SS]` after the date, space or `T` separated.
-# Deliberately NOT a widening of DATE_RE for every date field: a commitment carries its time
-# in its own `time` field, and every consumer of a plain date field parses ten characters.
-# Only the three communication timestamps accept it: messages[].sent_on, outreach[].date,
-# outreach[].responded_on. `date_part` is what a consumer compares or parses by — never the
-# raw string, which may now be longer than a date.
-TIMESTAMP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?$")
-
-
-def is_when(v):
-    return isinstance(v, str) and TIMESTAMP_RE.match(v)
-
-
-def date_part(v):
-    """The ISO date of a timestamp-or-date string ('' for anything unreadable)."""
-    s = str(v or "")
-    return s[:10] if is_when(s) else ""
-
-
-def precedes(a, b):
-    """Is timestamp `a` PROVABLY before `b`? Different dates decide it; the same date decides
-    it only when both carry a time. A same-day pair with a bare date on either side is
-    unprovable and returns False — the ambiguity is reported by reconcile.py, never asserted
-    here (the Class B rule: an order the data cannot show is not an order)."""
-    da, db = date_part(a), date_part(b)
-    if not (da and db):
-        return False
-    if da != db:
-        return da < db
-    sa, sb = str(a), str(b)
-    return len(sa) > 10 and len(sb) > 10 and sa < sb
-
-
-# ⚠️ Deliberately BELOW the vocabulary: your_move.py imports this module for
-# TERMINAL_OPP_STATUSES / SUBMITTED_APP_STATUS at ITS import time, and this module imports
-# your_move for parse_blocked_until (used only inside main). Whichever is imported first, the
-# names each side needs at import are already bound — a top-of-file import here would hand
-# your_move a half-initialised module whenever validate_data is the entry point.
-import your_move as _ym  # noqa: E402
-
-
-def req(rec, field, label, problems):
-    if field not in rec:
-        problems.append("%s: missing required field '%s'" % (label, field))
-        return False
-    return True
-
-
-def enum(rec, field, allowed, label, problems, nullable=False):
-    if field not in rec:
-        problems.append("%s: missing '%s'" % (label, field))
-        return
-    v = rec[field]
-    if v is None and nullable:
-        return
-    if v not in allowed:
-        problems.append("%s: '%s'=%r not in {%s}" % (label, field, v, ", ".join(sorted(allowed))))
-
-
-def check_trigger(row, label, problems, app_refs, sent_ids, touch_ids=None, commitment_ids=None):
-    """The trigger pair on an outreach row or an ask (public #27). Shared so the two call
-    sites cannot drift. `app_refs` is the set of resolvable application handles for the
-    record the trigger belongs to (app_id values plus dates, own-record rule); `sent_ids`
-    is the message-id set for 'reply' refs. Absent pair: legal (history predates the field).
-    Half a pair, a kind outside the enum, or a dangling ref: LOUD — an unreadable trigger
-    looks handled and is not (the precondition.py rule).
-
-    dev #834 (design-network-first.md 5.4): kind `introduction` carries a PREFIXED ref, `touch:<id>` or `commitment:<id>`, because an
-    introduction has two possible causes (the touch that asked for it, or a chat that offered it); the prefix is resolved against
-    `touch_ids` / `commitment_ids` (the id sets of the two stores). A set passed as None is not known to the caller and is not checked;
-    any other form of ref is refused."""
-    tk, tr = row.get("trigger_kind"), row.get("trigger_ref")
-    if tk is None and tr is None:
-        return
-    if tk is None:
-        problems.append("%s: trigger_ref %r without trigger_kind — half a trigger cannot be "
-                        "resolved and must not look like one" % (label, tr))
-        return
-    if tk not in TRIGGER_KINDS:
-        problems.append("%s: trigger_kind %r not in {%s}" % (label, tk,
-                        ", ".join(sorted(TRIGGER_KINDS))))
-        return
-    if tk == "manual":
-        if tr is not None:
-            problems.append("%s: trigger_kind 'manual' with trigger_ref %r — manual means no "
-                            "recorded cause; a ref here is a contradiction, name the real kind"
-                            % (label, tr))
-        return
-    if not (isinstance(tr, str) and tr.strip()):
-        problems.append("%s: trigger_kind %r requires a non-empty trigger_ref" % (label, tk))
-        return
-    if tk == "application" and tr not in app_refs:
-        problems.append("%s: trigger_ref %r resolves to no applications[] row on this record "
-                        "(by app_id or date) — a trigger naming an application that is not "
-                        "there is the unlinked-draft defect inverted" % (label, tr))
-    elif tk == "reply" and tr not in sent_ids:
-        problems.append("%s: trigger_ref %r resolves to no message in data/messages.jsonl"
-                        % (label, tr))
-    elif tk == "elapsed" and not is_date(tr):
-        problems.append("%s: trigger_kind 'elapsed' requires an ISO date trigger_ref (the day "
-                        "the clock started), got %r" % (label, tr))
-    elif tk == "introduction":
-        prefix, _sep, rest = tr.partition(":")
-        if prefix not in INTRODUCTION_REF_PREFIXES or not rest.strip():
-            problems.append("%s: trigger_kind 'introduction' requires trigger_ref 'touch:<id>' or 'commitment:<id>' "
-                            "(the touch that asked for it, or the chat that offered it), got %r" % (label, tr))
-        else:
-            known = touch_ids if prefix == "touch" else commitment_ids
-            if known is not None and rest not in known:
-                problems.append("%s: trigger_ref %r resolves to no %s record — an introduction names the touch or "
-                                "the chat it came of" % (label, tr, "touches" if prefix == "touch" else "commitments"))
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from validation.assessments import (
+    ASSESSMENT_PROPOSAL_STATUS,
+    ASSESSMENT_PROPOSAL_KINDS,
+    ASSESSMENT_OWNER_PROSE,
+    check_assessments,
+)
+from validation.basics import load, is_date, TIMESTAMP_RE, is_when, date_part, precedes, req, enum
+from validation.company_rules import check_company_fields, check_commute_config
+from validation.email_rules import (
+    DELIVERY_EVIDENCE_WORDS,
+    delivery_evidence,
+    PLACEHOLDER_EMAIL_DOMAINS,
+    PLACEHOLDER_EMAIL_TEMPLATES,
+    placeholder_email_violation,
+    delivery_violation,
+    _people_email_violation,
+    INTRODUCED_ONLY_RULES,
+    row_rule_violations,
+)
+from validation.hygiene import hygiene_lines
+from validation.links import (
+    check_location_provenance,
+    check_sibling_links,
+    check_passed_from,
+    WARM_LOOKUP_RESULT,
+    check_feed_links,
+    PORTFOLIO_CALENDAR_CADENCES,
+    check_portfolio_links,
+    check_channel_catalog_fields,
+)
+from validation.network_rules import (
+    resolve_person,
+    _relative_path_problem,
+    check_ties,
+    check_chat_fields,
+    check_via_fields,
+    check_proposal_row,
+    check_suggestion_ask,
+)
+from validation.pay import (
+    LISTED_PAY_STATES,
+    LISTED_PAY_SOURCES,
+    PAY_INTERVALS,
+    PROVENANCES,
+    LISTED_PAY_KEYS,
+    NONE_BASES,
+    SUPERSEDED_KEYS,
+    COMPANY_KINDS,
+    INFERRED_FROM,
+    PAY_RANGE_KEYS,
+    POSTED_SOURCES,
+    POSTED_KEYS,
+    COMMUTE_MINUTES_KEYS,
+    COMMUTE_MINUTES_SOURCES,
+    _real_date,
+    _is_number,
+    _unknown_keys,
+    check_listed_pay,
+    check_posted,
+    check_employer_posting,
+    check_commute_minutes,
+    check_title_floor,
+    check_non_employee_comp,
+    _live,
+    _has_pay,
+    check_pay_captured,
+)
+from validation.reserved_ids import RESERVED_IDS, id_keyed_stores, check_reserved_ids
+from validation.retired import (
+    RETIRED_KEYS,
+    _GRAPH_PY,
+    _APPLICATIONS_PY,
+    _TOUCHES_PY,
+    _PLANS_PY,
+    active_retired_keys,
+)
+from validation.screening import (
+    SCREEN_KEYS,
+    SCREEN_INPUTS,
+    SCREEN_VERDICT_RE,
+    SCREEN_TITLE_TOKENS,
+    LEAN_KEYS,
+    LEAN_VALUES,
+    LEAN_SIGNAL_KEYS,
+    SIGNAL_FIELDS,
+    LEAN_LINE_CAP,
+    check_screen,
+    check_jd_read,
+    CAPTURE_UNVERIFIED_CODES,
+    CAPTURE_KEYS,
+    check_capture,
+    check_lean,
+    check_likely_pass_signals,
+)
+from validation.source_tags import (
+    SOURCE_TAG_PATTERN,
+    SOURCE_TAG_PREFIX,
+    SOURCE_TAG_WRAPPED,
+    SOURCE_TAG_PREFIXES,
+    TAG_TOKEN_RE,
+    _WRAPPED_UID_RE,
+    _TAG_RES,
+    normalize_uid,
+    normalize_source_tag,
+    is_mail_tag,
+    tags_in_text,
+    SOURCE_TAG_MODES,
+    SOURCE_TAG_MIGRATION,
+    _strings_in,
+    source_tag_spec,
+    check_source_tags,
+)
+from validation.trigger_rules import check_trigger
+from validation.vocab import (
+    DATE_RE,
+    VERTICALS,
+    COMPANY_STATUS,
+    CHANNEL_TYPES,
+    URL_BEARING_CHANNEL_TYPES,
+    SOURCE_URL_REQUIRED_SINCE,
+    CADENCES,
+    OPP_STATUS,
+    TERMINAL_OPP_STATUSES,
+    STAGES,
+    SUBMITTED_APP_STATUS,
+    APPLICATION_ENDINGS,
+    DECISION_REASON_KINDS,
+    VERDICTS,
+    LOC_TYPES,
+    CONTACT_EMAIL_STATUS,
+    OUTREACH_STATUS,
+    APPLICATION_METHODS,
+    APPLICATION_STATUS,
+    ENGAGEMENT_TYPES,
+    COVER_LETTER_STATUS,
+    OUTREACH_OUTCOME,
+    MEDIA,
+    RETIRED_CHANNEL_IDS,
+    TOUCH_TYPES,
+    RECIPIENT_ROLES,
+    ADDRESS_STATUS,
+    DELIVERY,
+    TRIGGER_KINDS,
+    RESOLVED_BY,
+    FORM_ANSWER_KEYS,
+    COMMS_CUTOVER,
+    COMMS_REQUIRED_FIELDS,
+    SENT_REQUIRES_FIELD,
+    SENT_REQUIRES_DATE_FIELD,
+    EMAIL_MEDIUM_PREFIX,
+    EMAIL_REQUIRES_FIELD,
+    PATH_TYPES,
+    PEOPLE_STATUS,
+    FIT_VERDICTS,
+    FIT_Q_STATUS,
+    ASK_KINDS,
+    SUGGEST_COMPANY_KEYS,
+    SUGGEST_PLAN_SUBJECT_KINDS,
+    SUGGEST_PERSON_KEYS,
+    SUGGEST_OPS,
+    SUGGEST_SHAPE_KEYS,
+    PROPOSAL_STATUS,
+    PROPOSAL_NEEDS_SENT_ON,
+    RATE_PER,
+    CONCEPTUAL_AGREEMENT_LISTS,
+    CURRENCY_RE,
+    ASK_RESOLVES_WHEN,
+    UNRESOLVED,
+    COMMITMENT_STATUS,
+    COMMITMENT_KINDS,
+    ATTENDANCE,
+    TIE_KINDS,
+    INTRODUCTION_REF_PREFIXES,
+    MOTIVATION_MIN,
+    MOTIVATION_MAX,
+    VARIANT_STATUS,
+    SLUG_RE,
+    SHA12_RE,
+    BRIEF_ID_RE,
+    BRIEF_AXES,
+    BRIEF_REGISTERS,
+    BRIEF_EVIDENCE_RE,
+)
 
 
 # ── dev #713-#716 / public #145-#142 (sourcing-screen, jobsearch 0.67.0) ──────────────────────
@@ -1099,49 +302,6 @@ def check_trigger(row, label, problems, app_refs, sent_ids, touch_ids=None, comm
 # module-level functions that APPEND to a problem list, so a test (and `record.py`, which reads the
 # same list) exercises each rule on its own.
 
-LISTED_PAY_STATES = ("employer-stated", "board-estimate", "none-shown")
-LISTED_PAY_SOURCES = ("listing-text", "ats-api", "json-ld", "board-widget", "candidate")
-PAY_INTERVALS = ("year", "month", "day", "hour")          # R2: the four units postings in scope use
-# dev #820 / public #175 (0.82.0): WHERE a figure came from -- the capture card, the JD read, or the
-# candidate. Absent on a legacy row (not rewritten). `source` says what FORM the figure took.
-PROVENANCES = ("card", "jd", "candidate")
-LISTED_PAY_KEYS = ("state", "ranges", "source", "captured_on", "inferred_from", "provenance", "none_basis")
-# dev #846 (0.88.0, design 4.4): `none_basis` says HOW a `none-shown` was earned -- the route of the read (`record.py read-jd --via`)
-# that stated the description holds no pay. Legal only on a `none-shown` whose source is `listing-text`: a legacy none-shown has
-# none (the 0.88.0 migration moves those to `listed_pay_prior`), and the candidate's own none (`source: candidate`) needs no basis.
-NONE_BASES = ("fetch", "render", "feed", "ats-api")
-# A superseded `listed_pay` kept in `listed_pay_prior` (append-only) carries two more keys: when and by what it was moved.
-SUPERSEDED_KEYS = ("superseded_on", "superseded_by")
-# dev #915 (0.88.0, design 6.3, 6.4): what a company IS, by the candidate's own word (`record.py company-kind`). Absent means
-# `your_move.company_kind()` derives it from a channel of that name, then a name heuristic, else `employer`.
-COMPANY_KINDS = ("employer", "staffing", "aggregator")
-INFERRED_FROM = ("description",)             # dev #775: how a figure was READ, not what the listing showed
-PAY_RANGE_KEYS = ("min", "max", "currency", "interval", "label")
-CURRENCY_RE = re.compile(r"^[A-Z]{3}$")
-POSTED_SOURCES = ("ats-posted", "board-relative", "profile-document-date", "unknown")
-POSTED_KEYS = ("date", "source", "recorded_on")
-COMMUTE_MINUTES_KEYS = ("minutes", "anchor", "source")
-COMMUTE_MINUTES_SOURCES = ("candidate", "map-estimate", "config-place")
-SCREEN_KEYS = ("on", "verdict", "rules", "engine", "title_keys", "setting_source", "comp_keys",
-               "engagement_source", "inputs")
-# dev #820 / public #175 (0.82.0, design section 3.2): which inputs a screen was computed from -- the
-# capture CARD, the JD read, or the CANDIDATE's own read. Computed by `record.py screened`, never passed.
-# Absent on a legacy screen, which `lifecycle` trusts only beside a `via: legacy` read.
-SCREEN_INPUTS = PROVENANCES
-# the stored verdict: `keep`, `provisional` (a card-input screen never keeps), `review:<rules>` or
-# `remove:<rules>` with comma-separated lower-case rule names (comp, passed, geo, title, age).
-SCREEN_VERDICT_RE = re.compile(r"^(keep|provisional|(review|remove):[a-z][a-z-]*(,[a-z][a-z-]*)*)$")
-# dev #722 / public #156 (jobsearch 0.69.0): the title rule's tokens, a CLOSED set. 0.68.0 and earlier
-# stored three; the floor and the mandate add BELOW-FLOOR and OFF-MANDATE, and an unreadable key is a
-# visible UNREADABLE-TITLE-KEYS. A token outside the set is a stored screen nothing here can read.
-SCREEN_TITLE_TOKENS = ("MATCHES", "NO-MATCH", "NO-CONFIGURED-TITLES", "BELOW-FLOOR", "OFF-MANDATE",
-                       "UNREADABLE-TITLE-KEYS")
-
-LEAN_KEYS = ("lean", "line", "on", "signals")
-LEAN_VALUES = ("pursue", "pass", "ask")
-LEAN_SIGNAL_KEYS = ("id", "reason", "matched_in")
-SIGNAL_FIELDS = ("title", "jd", "company")
-LEAN_LINE_CAP = 200                    # deferred.ROLES_FIELD_CAP, mirrored (that module reads a queue)
 # R3: a JD read that was TRIED and failed satisfies the read. It is recorded in `fit.jd_source` as
 # `unavailable: <reason>` -- a CLOSED prefix, so a hand-typed "unavailable" or an invented reason is
 # refused instead of passing as a read. A null `jd_source` still means not tried.
@@ -1150,1069 +310,6 @@ JD_UNAVAILABLE_PREFIX = "unavailable"
 # `board_hosts`, a site whose terms forbid automated access, so the read was REFUSED rather than tried.
 JD_UNAVAILABLE_REASONS = ("login-wall", "dead-link", "no-url", "surface-cannot-read", "manual-board")
 JD_UNAVAILABLE_RE = re.compile(r"^unavailable: (%s)$" % "|".join(JD_UNAVAILABLE_REASONS))
-
-
-def _real_date(v):
-    """True for an ISO `YYYY-MM-DD` string that is a real calendar date."""
-    if not is_date(v):
-        return False
-    import datetime as _dt
-    try:
-        _dt.date.fromisoformat(v)
-    except ValueError:
-        return False
-    return True
-
-
-def _is_number(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool)
-
-
-def _unknown_keys(obj, allowed, label, problems):
-    for k in obj:
-        if k not in allowed:
-            problems.append("%s: unknown key %r (known: %s)" % (label, k, ", ".join(allowed)))
-
-
-def check_listed_pay(lp, label, problems, prior=False):
-    """`listed_pay` (design §3.1, R2): `{state, ranges?, source, captured_on}`. Refuses an unknown
-    state, source or interval; an empty `ranges` on a stated or estimated pay; ranges on a
-    none-shown pay; `min` above `max`; a range with neither figure; a currency that is not three
-    capitals; `board-estimate` from anywhere but a board's own widget; `ats-api` or `json-ld`
-    behind anything but an employer-stated pay.
-
-    dev #846 (0.88.0): `none_basis` is one of `NONE_BASES` and legal only on a `none-shown` read from `listing-text`. With
-    `prior=True` the object is an entry of `listed_pay_prior` (a superseded `listed_pay`): it also carries `superseded_on` (an ISO
-    date) and `superseded_by` (a non-empty string), both REQUIRED there and refused anywhere else."""
-    if not isinstance(lp, dict):
-        problems.append("%s: listed_pay must be an object (state, ranges, source, captured_on) -- "
-                        "got %s" % (label, type(lp).__name__))
-        return
-    _unknown_keys(lp, LISTED_PAY_KEYS + (SUPERSEDED_KEYS if prior else ()), label + " listed_pay", problems)
-    if prior:
-        if not _real_date(lp.get("superseded_on")):
-            problems.append("%s: listed_pay_prior entry superseded_on not an ISO date -- %r" % (label, lp.get("superseded_on")))
-        if not (isinstance(lp.get("superseded_by"), str) and lp["superseded_by"].strip()):
-            problems.append("%s: listed_pay_prior entry superseded_by must be a non-empty string (the migration or the read that "
-                            "moved it) -- %r" % (label, lp.get("superseded_by")))
-    state, source = lp.get("state"), lp.get("source")
-    if "none_basis" in lp:
-        if lp["none_basis"] not in NONE_BASES:
-            problems.append("%s: listed_pay.none_basis %r not in {%s}" % (label, lp["none_basis"], ", ".join(NONE_BASES)))
-        elif state != "none-shown" or source != "listing-text":
-            problems.append("%s: listed_pay.none_basis is legal only with state 'none-shown' and source 'listing-text' -- got %r "
-                            "and %r" % (label, state, source))
-    if state not in LISTED_PAY_STATES:
-        problems.append("%s: listed_pay.state %r not in {%s}" % (label, state,
-                                                                 ", ".join(LISTED_PAY_STATES)))
-    if source not in LISTED_PAY_SOURCES:
-        problems.append("%s: listed_pay.source %r not in {%s}" % (label, source,
-                                                                   ", ".join(LISTED_PAY_SOURCES)))
-    if state == "board-estimate" and source in LISTED_PAY_SOURCES and source != "board-widget":
-        problems.append("%s: listed_pay.state 'board-estimate' requires source 'board-widget' "
-                        "(an estimate is the board's own panel, never the listing text) -- got %r"
-                        % (label, source))
-    if source in ("ats-api", "json-ld") and state in LISTED_PAY_STATES \
-            and state != "employer-stated":
-        problems.append("%s: listed_pay.source %r requires state 'employer-stated' -- got %r"
-                        % (label, source, state))
-    if "inferred_from" in lp:
-        # dev #775 (design-workday-feed.md 6.4): a marker, not a new state. Legal only on a figure the
-        # reader took from listing text (`employer-stated` + `listing-text`): a Workday JobPosting carries
-        # no `baseSalary`, so the figure is read out of the description and says so.
-        if lp["inferred_from"] not in INFERRED_FROM:
-            problems.append("%s: listed_pay.inferred_from %r not in {%s}"
-                            % (label, lp["inferred_from"], ", ".join(INFERRED_FROM)))
-        elif state != "employer-stated" or source != "listing-text":
-            problems.append("%s: listed_pay.inferred_from is legal only with state 'employer-stated' "
-                            "and source 'listing-text' -- got %r and %r" % (label, state, source))
-    if "provenance" in lp and lp["provenance"] not in PROVENANCES:
-        problems.append("%s: listed_pay.provenance %r not in {%s}"
-                        % (label, lp["provenance"], ", ".join(PROVENANCES)))
-    if not _real_date(lp.get("captured_on")):
-        problems.append("%s: listed_pay.captured_on not an ISO date -- %r"
-                        % (label, lp.get("captured_on")))
-    ranges = lp.get("ranges")
-    if state == "none-shown":
-        if ranges:
-            problems.append("%s: listed_pay.state 'none-shown' carries no ranges -- a listing "
-                            "that showed no pay has nothing to range over" % label)
-        return
-    if state not in LISTED_PAY_STATES:
-        return
-    if not isinstance(ranges, list) or not ranges:
-        problems.append("%s: listed_pay.ranges must be a non-empty list for state %r"
-                        % (label, state))
-        return
-    for i, rg in enumerate(ranges):
-        rl = "%s listed_pay.ranges[%d]" % (label, i)
-        if not isinstance(rg, dict):
-            problems.append("%s: must be an object (min, max, currency, interval, label)" % rl)
-            continue
-        _unknown_keys(rg, PAY_RANGE_KEYS, rl, problems)
-        mn, mx = rg.get("min"), rg.get("max")
-        for name, v in (("min", mn), ("max", mx)):
-            if v is not None and not (_is_number(v) and v > 0):
-                problems.append("%s: %s must be a positive number or null -- %r" % (rl, name, v))
-        if mn is None and mx is None:
-            problems.append("%s: min and max are both null -- a range needs at least one figure"
-                            % rl)
-        elif _is_number(mn) and _is_number(mx) and mn > mx:
-            problems.append("%s: min %s > max %s" % (rl, mn, mx))
-        if not (isinstance(rg.get("currency"), str) and CURRENCY_RE.match(rg["currency"])):
-            problems.append("%s: currency %r is not an ISO 4217 code (three capitals)"
-                            % (rl, rg.get("currency")))
-        if rg.get("interval") not in PAY_INTERVALS:
-            problems.append("%s: interval %r not in {%s}" % (rl, rg.get("interval"),
-                                                              ", ".join(PAY_INTERVALS)))
-        lb = rg.get("label")
-        if lb is not None and not (isinstance(lb, str) and lb.strip()):
-            problems.append("%s: label must be a non-empty string or null" % rl)
-
-
-def check_posted(p, label, problems):
-    """`posted` (design §3.3): `{date, source, recorded_on}`. `date` is null EXACTLY when `source`
-    is `unknown`; a source outside the closed four, a date that is not a real calendar date and a
-    missing `recorded_on` are refused."""
-    if not isinstance(p, dict):
-        problems.append("%s: posted must be an object (date, source, recorded_on) -- got %s"
-                        % (label, type(p).__name__))
-        return
-    _unknown_keys(p, POSTED_KEYS, label + " posted", problems)
-    src, date = p.get("source"), p.get("date")
-    if src not in POSTED_SOURCES:
-        problems.append("%s: posted.source %r not in {%s}" % (label, src, ", ".join(POSTED_SOURCES)))
-    elif src == "unknown" and date is not None:
-        problems.append("%s: posted.source 'unknown' carries no date -- got %r (a date has a "
-                        "source that earned it)" % (label, date))
-    elif src != "unknown" and date is None:
-        problems.append("%s: posted.date is null but posted.source is %r -- null is exactly the "
-                        "'unknown' source" % (label, src))
-    if date is not None and not _real_date(date):
-        problems.append("%s: posted.date %r is not a real ISO date" % (label, date))
-    if not _real_date(p.get("recorded_on")):
-        problems.append("%s: posted.recorded_on not an ISO date -- %r"
-                        % (label, p.get("recorded_on")))
-
-
-def check_employer_posting(ep, label, problems):
-    """`employer_posting` (dev #776 / public #166, design-employer-posting-confirmation.md §3.3 and
-    §15 N8, N12): whether the role is confirmed on the EMPLOYER'S OWN posting. OPTIONAL, and ABSENT
-    means "never checked" (the validator does not look at a row without the key: no rewrite of any
-    stored row is needed). A PRESENT value must be an object that `posting_check.parse` accepts.
-
-    ⭐ THE RULES LIVE IN ONE PLACE. This function only CALLS the parser every reader calls, so the
-    validator and the surfaces cannot disagree about what a readable value is. It does not re-run
-    the ownership resolver (design §3.3: ownership is a write-time check, and a later change to
-    `companies[].ats` must not turn a valid historical row invalid).
-
-    ⭐ A PRESENT value is never skipped quietly. An explicit `null` is refused (absent is how an
-    unchecked role reads; a stored null is a value nothing wrote on purpose), and if the parser
-    cannot be imported the row is reported as a PROBLEM saying it was NOT CHECKED, because a green
-    run that validated nothing reads as a valid row. The import is lazy and inside this function so
-    that `posting_check` never has to import this module at load time (N8: no import cycle), and so
-    a profile that stores no such value never touches it."""
-    if not isinstance(ep, dict):
-        problems.append("%s: employer_posting must be an object (state, checked_on, ...) or ABSENT -- "
-                        "got %s (absent reads as never checked; a stored null is refused)"
-                        % (label, type(ep).__name__))
-        return
-    try:
-        import posting_check as _posting_check
-    except ImportError as exc:
-        problems.append("%s: employer_posting is present but NOT CHECKED -- posting_check could not "
-                        "be imported (%s)" % (label, exc))
-        return
-    try:
-        _posting_check.parse(ep)
-    except _posting_check.PostingFieldError as exc:
-        problems.append("%s: employer_posting %s" % (label, exc))
-
-
-def check_commute_minutes(cm, label, problems):
-    """`location.commute_minutes` (design §3.5): `{minutes, anchor, source}`."""
-    if not isinstance(cm, dict):
-        problems.append("%s: location.commute_minutes must be an object (minutes, anchor, "
-                        "source) -- got %s" % (label, type(cm).__name__))
-        return
-    _unknown_keys(cm, COMMUTE_MINUTES_KEYS, label + " location.commute_minutes", problems)
-    m = cm.get("minutes")
-    if not (isinstance(m, int) and not isinstance(m, bool) and m >= 0):
-        problems.append("%s: location.commute_minutes.minutes must be a whole number of minutes "
-                        ">= 0 -- %r" % (label, m))
-    if not (isinstance(cm.get("anchor"), str) and cm["anchor"].strip()):
-        problems.append("%s: location.commute_minutes.anchor must name the anchor place" % label)
-    if cm.get("source") not in COMMUTE_MINUTES_SOURCES:
-        problems.append("%s: location.commute_minutes.source %r not in {%s}"
-                        % (label, cm.get("source"), ", ".join(COMMUTE_MINUTES_SOURCES)))
-
-
-def check_screen(sc, label, problems):
-    """`screen` (design §3.6, R5): `{on, verdict, rules, engine}` -- the screen's own output, written
-    only by `record.py screened`. Structure only: the verdict vocabulary belongs to profile.py."""
-    if not isinstance(sc, dict):
-        problems.append("%s: screen must be an object (on, verdict, rules, engine) -- got %s"
-                        % (label, type(sc).__name__))
-        return
-    _unknown_keys(sc, SCREEN_KEYS, label + " screen", problems)
-    if not _real_date(sc.get("on")):
-        problems.append("%s: screen.on not an ISO date -- %r" % (label, sc.get("on")))
-    if not (isinstance(sc.get("verdict"), str) and sc["verdict"].strip()):
-        problems.append("%s: screen.verdict must be a non-empty string" % label)
-    elif not SCREEN_VERDICT_RE.match(sc["verdict"]):
-        problems.append("%s: screen.verdict %r must be keep, provisional, review:<rules> or remove:<rules>"
-                        % (label, sc["verdict"]))
-    if "inputs" in sc and sc["inputs"] not in SCREEN_INPUTS:
-        problems.append("%s: screen.inputs %r not in {%s}" % (label, sc["inputs"], ", ".join(SCREEN_INPUTS)))
-    rules = sc.get("rules")
-    if not isinstance(rules, dict) or not rules:
-        problems.append("%s: screen.rules must be a non-empty object of rule -> result" % label)
-    else:
-        for k, v in rules.items():
-            if not (isinstance(v, str) and v.strip()):
-                problems.append("%s: screen.rules[%r] must be a non-empty string -- %r"
-                                % (label, k, v))
-    if not (isinstance(sc.get("engine"), str) and sc["engine"].strip()):
-        problems.append("%s: screen.engine must name the engine version that screened" % label)
-    if isinstance(rules, dict) and "title" in rules and isinstance(rules["title"], str) \
-            and rules["title"].strip() and rules["title"] not in SCREEN_TITLE_TOKENS:
-        problems.append("%s: screen.rules['title'] %r not in {%s}"
-                        % (label, rules["title"], ", ".join(SCREEN_TITLE_TOKENS)))
-    if "title_keys" in sc and not (isinstance(sc["title_keys"], str) and sc["title_keys"].strip()):
-        problems.append("%s: screen.title_keys must be a non-empty string (the hash of the title "
-                        "keys the screen was computed under) -- %r" % (label, sc["title_keys"]))
-    if "setting_source" in sc and sc["setting_source"] != "inferred":
-        problems.append("%s: screen.setting_source must be 'inferred' (it is present only when the "
-                        "role was screened as onsite on an inference) -- %r"
-                        % (label, sc["setting_source"]))
-    # dev #739 / #740 (0.73.0): the sibling of title_keys, and the twin of setting_source.
-    if "comp_keys" in sc and not (isinstance(sc["comp_keys"], str) and sc["comp_keys"].strip()):
-        problems.append("%s: screen.comp_keys must be a non-empty string (the hash of the comp "
-                        "inputs the screen was computed under) -- %r" % (label, sc["comp_keys"]))
-    if "engagement_source" in sc and sc["engagement_source"] != "inferred":
-        problems.append("%s: screen.engagement_source must be 'inferred' (it is present only when the "
-                        "pay was routed on an engagement inferred from the title) -- %r"
-                        % (label, sc["engagement_source"]))
-
-
-def check_jd_read(value, label, problems):
-    """`jd_read` (dev #820 / public #175, design section 4.2): the stored record of every JD read attempt,
-    parsed by `jd_read.parse` -- the ONE parser, so what a verb may write and what the validator accepts
-    cannot drift. Written only by `record.py read-jd`, `read-failed` and `read-batch` and by the 0.82.0
-    migration (`via: legacy`). Appends one problem naming the attempt; a record with no attempt, an
-    unknown outcome, empty evidence, a `render` read with no quote and a bad `at` are each refused."""
-    try:
-        _jd_read.parse(value)
-    except _jd_read.JdReadError as e:
-        problems.append("%s: jd_read: %s" % (label, e))
-
-
-# the codes a degraded sweep query can carry, mirrored from `deferred.DEGRADED_CODES` (that module reads
-# the work queue and cannot be imported here); a test pins the equality.
-CAPTURE_UNVERIFIED_CODES = ("filter-dropped", "param-added", "window-unapplied", "truncated",
-                            "query-unparsed")
-CAPTURE_KEYS = ("run", "at", "item", "unverified")
-
-
-def check_capture(cap, label, problems):
-    """`capture` (dev #820 / public #175): `{run, at, item, unverified?}`, stamped by `record.py
-    capture-batch` on a role it creates from a capture item. `run` is the run id, `at` an ISO date and
-    time, `item` the queue item id the role was made from, and `unverified` (present only when the item
-    was quarantined: every query that showed the role was degraded) a non-empty list of distinct codes
-    from `deferred.DEGRADED_CODES`. `lifecycle` reads `item` to find the role's admission."""
-    if not isinstance(cap, dict):
-        problems.append("%s: capture must be an object (run, at, item, unverified?) -- got %s"
-                        % (label, type(cap).__name__))
-        return
-    _unknown_keys(cap, CAPTURE_KEYS, label + " capture", problems)
-    for k in ("run", "item"):
-        v = cap.get(k)
-        if not (isinstance(v, str) and v.strip() and not re.search(r"\s", v)):
-            problems.append("%s: capture.%s must be a non-empty string without whitespace -- %r"
-                            % (label, k, v))
-    at = cap.get("at")
-    try:
-        _jd_read.parse_at(at)
-    except _jd_read.JdReadError:
-        problems.append("%s: capture.at must be YYYY-MM-DDTHH:MM:SS -- %r" % (label, at))
-    if "unverified" in cap:
-        u = cap["unverified"]
-        if (not isinstance(u, list) or not u or len(set(map(str, u))) != len(u)
-                or any(c not in CAPTURE_UNVERIFIED_CODES for c in u)):
-            problems.append("%s: capture.unverified must be a non-empty list of distinct codes from {%s} "
-                            "-- %r" % (label, ", ".join(CAPTURE_UNVERIFIED_CODES), u))
-
-
-def check_location_provenance(loc, label, problems):
-    """The two optional `location` keys jobsearch 0.70.0 added (dev #727 / public #159, design R3:
-    keys INSIDE `location` are validated here only -- `record.py check_field` guards top-level and
-    array fields).
-
-      setting_source          `"inferred"` -- the capture script inferred `onsite` because the
-                              sweep read no setting (`declared == "none stated"`) at a concrete place.
-                              Absent means the setting was STATED. Only with `type: onsite`, only
-                              with `declared: "none stated"`, never with `inference_overturned`.
-      inference_overturned    `{was, to, on}` -- written by the overturn of an inferred setting
-                              (`record.py set <id> location '<json>'`): `was` is `onsite`, `to` a
-                              location type, `on` an ISO date. Absent means never overturned.
-    """
-    if not isinstance(loc, dict):
-        return
-    # dev #820 / public #175 (design section 3.1): where the location facts came from, and whether a CARD's
-    # place only echoed a commute anchor's (which proves nothing about the role).
-    if "provenance" in loc and loc["provenance"] not in PROVENANCES:
-        problems.append("%s: location.provenance %r not in {%s}"
-                        % (label, loc["provenance"], ", ".join(PROVENANCES)))
-    if "anchor_echo" in loc:
-        if loc["anchor_echo"] is not True:
-            problems.append("%s: location.anchor_echo must be true when present -- %r"
-                            % (label, loc["anchor_echo"]))
-        elif loc.get("provenance") != "card":
-            problems.append("%s: location.anchor_echo is legal only with provenance 'card' (a read of "
-                            "the JD or by the candidate is not an echo) -- provenance is %r"
-                            % (label, loc.get("provenance")))
-    if loc.get("provenance") == "card" and loc.get("setting_source") == "inferred":
-        problems.append("%s: a card never infers a setting: location.provenance 'card' with "
-                        "setting_source 'inferred' (design section 3.1)" % label)
-    if "setting_source" in loc:
-        if loc["setting_source"] != "inferred":
-            problems.append("%s: location.setting_source must be 'inferred' (absent means the "
-                            "setting was stated) -- %r" % (label, loc["setting_source"]))
-        elif loc.get("type") != "onsite":
-            problems.append("%s: location.setting_source 'inferred' with type %r -- only an "
-                            "inferred ONSITE exists; an overturn removes the flag"
-                            % (label, loc.get("type")))
-        if loc.get("declared") != "none stated":
-            problems.append("%s: location.setting_source 'inferred' needs location.declared == "
-                            "'none stated' (the sweep read no setting); got %r"
-                            % (label, loc.get("declared")))
-        if "inference_overturned" in loc:
-            problems.append("%s: location.setting_source and location.inference_overturned are both "
-                            "present -- an overturned inference no longer carries the flag" % label)
-    if "inference_overturned" in loc:
-        io = loc["inference_overturned"]
-        if not isinstance(io, dict) or set(io) != {"was", "to", "on"}:
-            problems.append("%s: location.inference_overturned must be exactly {was, to, on} -- %r"
-                            % (label, io))
-            return
-        if io["was"] != "onsite":
-            problems.append("%s: location.inference_overturned.was must be 'onsite' (the only "
-                            "setting the script infers) -- %r" % (label, io["was"]))
-        if io["to"] not in LOC_TYPES:
-            problems.append("%s: location.inference_overturned.to %r not in {%s}"
-                            % (label, io["to"], ", ".join(sorted(LOC_TYPES))))
-        if not _real_date(io["on"]):
-            problems.append("%s: location.inference_overturned.on not an ISO date -- %r"
-                            % (label, io["on"]))
-
-
-def check_sibling_links(r, label, ids, by_id, problems):
-    """The three optional fields jobsearch 0.70.0 added for one requisition listed at several places
-    (dev #728 / public #158, design-location-screen.md §5 and R3). Each is optional and ABSENT has a
-    defined meaning, so only a PRESENT value is checked.
-
-      duplicate_of          an opportunity id: this row was FOLDED into that one by hand
-                            (`record.py link-sibling`). It resolves, is not itself, and the target is
-                            not folded (a chain would hide the canonical row). A folded row carries
-                            no decision and no application: it stands for a listing the canonical row
-                            now lists.
-      distinct_from         a list of opportunity ids this row was recorded as DIFFERENT from (a false
-                            merge undone, or a `create --force` over a match): each resolves and none
-                            is itself. The matching rule never re-merges a named pair.
-      sightings[].location  a non-empty string: where that listing placed the role, verbatim.
-      sightings[].split_to  an opportunity id: this listing was split away to that row (the undo of a
-                            false merge); it resolves and is not this row.
-    """
-    oid = r.get("id")
-    if "duplicate_of" in r:
-        d = r["duplicate_of"]
-        if not isinstance(d, str) or not d.strip():
-            problems.append("%s: duplicate_of must be an opportunity id -- %r" % (label, d))
-        elif d == oid:
-            problems.append("%s: duplicate_of names the row itself" % label)
-        elif d not in ids:
-            problems.append("%s: duplicate_of %r does not resolve to an opportunity" % (label, d))
-        elif by_id.get(d, {}).get("duplicate_of"):
-            problems.append("%s: duplicate_of %r is itself folded into %r -- point at the canonical "
-                            "row, never a chain" % (label, d, by_id[d]["duplicate_of"]))
-        if r.get("verdict") not in (None, "undecided"):
-            problems.append("%s: a folded row (duplicate_of) carries no decision, but its verdict is "
-                            "%r -- decide the canonical row" % (label, r.get("verdict")))
-    if "distinct_from" in r:
-        df = r["distinct_from"]
-        if not isinstance(df, list) or not all(isinstance(x, str) and x.strip() for x in df):
-            problems.append("%s: distinct_from must be a list of opportunity ids -- %r" % (label, df))
-        else:
-            for x in df:
-                if x == oid:
-                    problems.append("%s: distinct_from names the row itself" % label)
-                elif x not in ids:
-                    problems.append("%s: distinct_from %r does not resolve to an opportunity"
-                                    % (label, x))
-    for i, sg in enumerate(r.get("sightings") or []):
-        if not isinstance(sg, dict):
-            continue
-        if "location" in sg and not (isinstance(sg["location"], str) and sg["location"].strip()):
-            problems.append("%s: sighting[%d].location must be a non-empty string -- %r"
-                            % (label, i, sg["location"]))
-        if "split_to" in sg:
-            st = sg["split_to"]
-            if not isinstance(st, str) or not st.strip():
-                problems.append("%s: sighting[%d].split_to must be an opportunity id -- %r"
-                                % (label, i, st))
-            elif st == oid:
-                problems.append("%s: sighting[%d].split_to names the row itself" % (label, i))
-            elif st not in ids:
-                problems.append("%s: sighting[%d].split_to %r does not resolve to an opportunity"
-                                % (label, i, st))
-
-
-def check_passed_from(r, label, problems):
-    """`passed_from` (dev #722 / public #156, §5): `{status, stage}` -- where a `decide pass` found
-    the role, kept so a later `decide pursue|park` can restore it. It exists ONLY on a role whose
-    `status` is `passed` (a restored or never-passed row must not carry a stale way back), its
-    `status` must be a NON-terminal opportunity status and its `stage` one of the stages."""
-    pf = r["passed_from"]
-    if r.get("status") != "passed":
-        problems.append("%s: passed_from on a role whose status is %r -- it belongs only to "
-                        "status 'passed' (a restore removes it)" % (label, r.get("status")))
-    if not isinstance(pf, dict):
-        problems.append("%s: passed_from must be an object (status, stage) -- got %s"
-                        % (label, type(pf).__name__))
-        return
-    _unknown_keys(pf, ("status", "stage"), label + " passed_from", problems)
-    if pf.get("status") not in OPP_STATUS or pf.get("status") in TERMINAL_OPP_STATUSES:
-        problems.append("%s: passed_from.status %r must be a non-terminal status in {%s}"
-                        % (label, pf.get("status"),
-                           ", ".join(sorted(OPP_STATUS - TERMINAL_OPP_STATUSES))))
-    if pf.get("stage") not in STAGES:
-        problems.append("%s: passed_from.stage %r not in {%s}"
-                        % (label, pf.get("stage"), ", ".join(sorted(STAGES))))
-
-
-WARM_LOOKUP_RESULT = "none-found"
-
-
-def check_feed_links(companies, channels):
-    """dev #751 (design §3.1) -- the join between a company and its career-page channel, and the
-    three invariants that keep a feed writable. Returns a list of problems.
-
-      * `channels[].company_id` is legal ONLY on `type: company-site`, and must resolve to a company;
-      * at most ONE company-site channel per `company_id`;
-      * every company whose `ats` is an OBJECT has exactly ONE linked company-site channel (a feed
-        sighting's `channel_id` must resolve, and `route.py` / `channels_due.py` key on the link).
-
-    A company with `ats: null` (declined) or no `ats` needs no channel."""
-    problems = []
-    by_id = {c.get("id"): c for c in companies}
-    linked = {}
-    for ch in channels:
-        if "company_id" not in ch:
-            continue
-        label = "channels[%s]" % ch.get("id", "?")
-        cid = ch.get("company_id")
-        if ch.get("type") != "company-site":
-            problems.append("%s: company_id is legal only on type 'company-site' (this one is %r)"
-                            % (label, ch.get("type")))
-            continue
-        if not isinstance(cid, str) or cid not in by_id:
-            problems.append("%s: company_id %r does not resolve to a company" % (label, cid))
-            continue
-        linked.setdefault(cid, []).append(ch.get("id"))
-    for cid, ids in sorted(linked.items()):
-        if len(ids) > 1:
-            problems.append("companies[%s]: %d company-site channels link to it (%s); a company has "
-                            "at most one career-page channel" % (cid, len(ids), ", ".join(map(str, ids))))
-    for c in companies:
-        if isinstance(c.get("ats"), dict) and len(linked.get(c.get("id"), [])) != 1:
-            problems.append("companies[%s]: has an `ats` feed but %d linked company-site channel(s) "
-                            "(exactly one is required: a feed's sightings are written to it)"
-                            % (c.get("id", "?"), len(linked.get(c.get("id"), []))))
-    return problems
-
-
-PORTFOLIO_CALENDAR_CADENCES = ("daily", "weekly", "biweekly", "monthly")
-
-
-def check_portfolio_links(companies, channels):
-    """dev #765 (design-portfolio-boards.md section 3.4, with the review's B1) -- the three optional fields a
-    portfolio board adds, and the rules that keep them readable. Returns a list of problems. Both
-    `channels[].portfolio_of` and `companies[].backed_by` may be absent (every pre-0.75.0 row is valid).
-
-      P1  `portfolio_of`  absent, or a non-empty string
-      P2                  an id present in `companies`
-      P3                  only on `type: job-board` AND `access: manual-candidate` (ADR-037's line as a
-                          check: a `public` or `login` portfolio board would route to a browser and
-                          automate a site whose terms forbid it)
-      P4                  needs a calendar `review_cadence` (daily, weekly, biweekly, monthly): the board is
-                          COVERED only while the candidate's review is inside its cadence, so a board with no
-                          calendar could never be covered
-      P5                  needs `board_hosts` (the hosts the engine must never open, see board_hosts.py)
-      H1  `board_hosts`   absent, or a non-empty list of distinct bare host names
-      H2                  only on a channel whose `access` is `manual-candidate`
-      B1  `backed_by`     absent, or a non-empty list of non-empty strings (a bare string iterates character
-                          by character, the `aliases` lesson)
-      B2                  each id resolves in `companies`, none is the row's own id, no repeats
-
-    Not checked on purpose: chains or cycles (A backed by B, B backed by A). Nothing reads `backers_of`
-    transitively, so a cycle has no consequence to guard."""
-    import board_hosts as _bh
-    problems = []
-    ids = {c.get("id") for c in companies}
-    for ch in channels:
-        label = "channels[%s]" % ch.get("id", "?")
-        if "board_hosts" in ch:
-            hosts = ch["board_hosts"]
-            if not (isinstance(hosts, list) and hosts and all(_bh.valid_host(h) for h in hosts)):
-                problems.append("%s: board_hosts must be a non-empty list of bare lower-case host names "
-                                "(e.g. [\"jobs.example.org\"], no scheme, path or port) -- %r"
-                                % (label, hosts))
-            elif len(set(hosts)) != len(hosts):
-                problems.append("%s: board_hosts repeats a host -- %r" % (label, hosts))
-            if ch.get("access") != _bh.MANUAL_ACCESS:
-                problems.append("%s: board_hosts is legal only where access is 'manual-candidate' (this one "
-                                "is %r): it names the sites the engine must never open"
-                                % (label, ch.get("access")))
-        if "portfolio_of" not in ch:
-            continue
-        firm = ch["portfolio_of"]
-        if not (isinstance(firm, str) and firm.strip()):
-            problems.append("%s: portfolio_of must be a non-empty company id -- %r" % (label, firm))
-        elif firm not in ids:
-            problems.append("%s: portfolio_of %r does not resolve to a company (create the firm's company "
-                            "row first)" % (label, firm))
-        if ch.get("type") != "job-board" or ch.get("access") != "manual-candidate":
-            problems.append("%s: portfolio_of is legal only on type 'job-board' with access 'manual-candidate' "
-                            "(this one is %r / %r): a portfolio board's terms forbid automated access "
-                            "(ADR-037)" % (label, ch.get("type"), ch.get("access")))
-        if ch.get("review_cadence") not in PORTFOLIO_CALENDAR_CADENCES:
-            problems.append("%s: a portfolio board needs a calendar review_cadence (%s), got %r: it is covered "
-                            "only while your review is inside its cadence"
-                            % (label, ", ".join(PORTFOLIO_CALENDAR_CADENCES), ch.get("review_cadence")))
-        if "board_hosts" not in ch:
-            problems.append("%s: a portfolio board needs board_hosts: the host(s) of the board, which the "
-                            "engine must never open" % label)
-    for c in companies:
-        if "backed_by" not in c:
-            continue
-        label = "companies[%s]" % c.get("id", "?")
-        bb = c["backed_by"]
-        if not (isinstance(bb, list) and bb and all(isinstance(b, str) and b.strip() for b in bb)):
-            problems.append("%s: backed_by must be a non-empty list of company ids, e.g. [\"<firm-id>\"] -- "
-                            "%r (fix: record.py set %s backed_by '[\"<firm-id>\"]' --file companies)"
-                            % (label, bb, c.get("id", "?")))
-            continue
-        for b in bb:
-            if b not in ids:
-                problems.append("%s: backed_by %r does not resolve to a company" % (label, b))
-            elif b == c.get("id"):
-                problems.append("%s: backed_by names the company itself" % label)
-        if len(set(bb)) != len(bb):
-            problems.append("%s: backed_by repeats an id -- %r" % (label, bb))
-    return problems
-
-
-def check_channel_catalog_fields(channels):
-    """dev #769 (design-channel-catalog.md section 4, jobsearch 0.76.0) -- the five optional channel fields the
-    channel catalog adds, and the rules that keep them readable. Every pre-0.76.0 row is valid (all absent).
-
-      C1  `board_url`   absent, or an `https` address with a host, no user-info and no port: the address the
-                        candidate opens. Legal only where `access` is `manual-candidate` (the engine never opens
-                        it), and it needs `board_hosts` covering its host, so a board the candidate is sent to
-                        is a board the engine is forbidden to open
-      C2  the stamp     `channel_catalog_entry` / `_sha` / `_on` / `_rev`: all four present or all four absent,
-                        each well formed (`channel_catalog.stamp_problems` is the one definition)
-
-      C3  `query_template` (dev #774) absent, or a non-empty string on a `job-board` / `aggregator` channel whose
-                        placeholders are all in the closed vocabulary {titles} {geo} {seniority}
-      C4  `prior_relationship_status` (dev #774, R2) absent, or exactly {"had": false} / {"had": true, "value":
-                        <string|null>}: what `record.py source off` found, so `source on` can put it back. The strict
-                        reader is `channel_catalog.read_prior`; the free-text `log` is never parsed for it
-
-    Not checked on purpose: that the entry id names an entry in the CURRENT catalog. An entry the catalog no
-    longer lists is a reconcile state (`orphaned`), not a data error, and this validator stays a function of the
-    profile alone."""
-    import board_hosts as _bh
-    import channel_catalog as _cc
-    from urllib.parse import urlsplit
-    problems = []
-    for ch in channels:
-        label = "channels[%s]" % ch.get("id", "?")
-        for why in _cc.stamp_problems(ch):
-            problems.append("%s: %s" % (label, why))
-        for why in _cc.prior_problems(ch):
-            problems.append("%s: %s" % (label, why))
-        if "query_template" in ch:
-            qt = ch["query_template"]
-            if ch.get("type") not in ("job-board", "aggregator"):
-                problems.append("%s: query_template is legal only on a job-board or aggregator channel (this one is "
-                                "%r)" % (label, ch.get("type")))
-            elif not (isinstance(qt, str) and qt.strip()):
-                problems.append("%s: query_template must be a non-empty string -- %r" % (label, qt))
-            else:
-                import re as _re
-                bad = sorted({p for p in _re.findall(r"\{([^{}]*)\}", qt) if p not in ("titles", "geo", "seniority")})
-                if bad:
-                    problems.append("%s: query_template uses a placeholder outside {titles} {geo} {seniority}: %s"
-                                    % (label, ", ".join(bad)))
-        if "board_url" not in ch:
-            continue
-        url = ch["board_url"]
-        host = None
-        try:
-            parts = urlsplit(url) if isinstance(url, str) else None
-            if parts is not None and parts.scheme == "https" and parts.hostname:
-                if not (parts.username or parts.password or parts.port):
-                    host = parts.hostname.lower()
-        except ValueError:
-            host = None
-        if host is None:
-            problems.append("%s: board_url must be an https address with a host, no user-info and no port "
-                            "-- %r" % (label, url))
-            continue
-        if ch.get("access") != _bh.MANUAL_ACCESS:
-            problems.append("%s: board_url is legal only where access is 'manual-candidate' (this one is %r): "
-                            "it is the address the candidate opens, on a site the engine must never open"
-                            % (label, ch.get("access")))
-        hosts = ch.get("board_hosts")
-        if not (isinstance(hosts, list) and any(isinstance(h, str) and _bh.host_matches(host, h) for h in hosts)):
-            problems.append("%s: board_url's host %r is not covered by board_hosts %r: the engine would be "
-                            "free to open the address the candidate is sent to" % (label, host, hosts))
-    return problems
-
-
-def check_title_floor(screen_cfg, problems):
-    """`screen.title_floor` of `config.json` (dev #722 / public #156): absent or null, or exactly one
-    level of `config_keys.SENIORITY_LEVELS`. Returns 1 when a floor is set. The validator is
-    `config_keys.validate_title_floor`'s, one copy."""
-    if not isinstance(screen_cfg, dict) or screen_cfg.get("title_floor") is None:
-        return 0
-    import config_keys as _ck
-    for why in _ck.validate_title_floor(screen_cfg.get("title_floor")):
-        problems.append("config %s" % why)
-    return 1
-
-
-def check_non_employee_comp(compensation, problems):
-    """`compensation.non_employee` of `config.json` (dev #740 / public #160, E4): absent or null, or
-    exactly `{floors: {<unit>: <positive int>}, note?}`. Returns 1 when a block is set. The validator
-    is `config_keys.validate_non_employee`'s, one copy: a block the screen cannot read is refused
-    here, loudly, never read as absent."""
-    import config_keys as _ck
-    if not isinstance(compensation, dict) or compensation.get("non_employee") is None:
-        return 0
-    for why in _ck.validate_non_employee(compensation.get("non_employee")):
-        problems.append("config %s" % why)
-    return 1
-
-
-def check_company_fields(c, label, problems):
-    """The four optional company fields `data_model.json` has declared since jobsearch 0.73.0
-    (dev #757), typed as `schema.md` documents them. The data model carries no types for any store,
-    so the types are enforced HERE:
-
-      career_url      absent, null, or a non-empty string (`ats_slug.discover` reads it)
-      domain          absent, null, or a non-empty string
-      aliases         absent, or a list of non-empty strings. A bare STRING is refused: `ats_slug`
-                      iterates it, and a string iterates character by character
-      size_ownership  absent, or a non-empty string
-
-    A refusal names the `record.py set` command that writes the field in the right shape."""
-    cid = c.get("id", "?")
-    for f in ("career_url", "domain"):
-        if f in c and c[f] is not None and not (isinstance(c[f], str) and c[f].strip()):
-            problems.append("%s: %s must be a non-empty string or null -- %r (fix: record.py set %s %s "
-                            "<value> --file companies)" % (label, f, c[f], cid, f))
-    if "aliases" in c:
-        al = c["aliases"]
-        if not (isinstance(al, list) and all(isinstance(a, str) and a.strip() for a in al)):
-            problems.append("%s: aliases must be a list of non-empty strings, e.g. [\"Example "
-                            "Holdings\"] -- %r (fix: record.py set %s aliases '[\"<name>\"]' "
-                            "--file companies)" % (label, al, cid))
-    if "size_ownership" in c:
-        so = c["size_ownership"]
-        if not (isinstance(so, str) and so.strip()):
-            problems.append("%s: size_ownership must be a non-empty string -- %r (fix: record.py set "
-                            "%s size_ownership \"<text>\" --file companies)" % (label, so, cid))
-    # dev #834 (jobsearch 0.86.0, design-network-first.md 4.1, 13.1): `active-target` is LIST MEMBERSHIP, so the company carries
-    # the date the candidate decided it (`status_on`) and, for a target, how much they want to work there (`motivation`, 1..5, LAMP's
-    # M). Both are the candidate's own statements, written together with `status` by `record.py company-status`. `motivation` is an
-    # int 1..5 or null; a bool is not an int here, and a string "3" is refused rather than read as 3.
-    if "status_on" in c and not (isinstance(c["status_on"], str) and DATE_RE.match(c["status_on"])):
-        problems.append("%s: status_on must be an ISO date (YYYY-MM-DD) -- %r (it is written only by `record.py company-status`)"
-                        % (label, c["status_on"]))
-    if "motivation" in c and c["motivation"] is not None:
-        mv = c["motivation"]
-        if not (isinstance(mv, int) and not isinstance(mv, bool) and MOTIVATION_MIN <= mv <= MOTIVATION_MAX):
-            problems.append("%s: motivation must be an integer %d..%d or null -- %r (the candidate's own stated hunger to work "
-                            "there; written by `record.py company-status %s active-target --motivation <%d-%d>`)"
-                            % (label, MOTIVATION_MIN, MOTIVATION_MAX, mv, cid, MOTIVATION_MIN, MOTIVATION_MAX))
-    # dev #834 (jobsearch 0.86.0, design-network-first.md 3.3, 13.1): `raised_on`, the date the company was first raised as a
-    # "look into this company?" item. Absent means never raised. When present it is an ISO date NOT AFTER today: a future date
-    # would hide the company from the raise for as long as it lasts. The one writer is `record.py raise-companies`.
-    if "raised_on" in c:
-        ro = c["raised_on"]
-        if not (isinstance(ro, str) and DATE_RE.match(ro)):
-            problems.append("%s: raised_on must be an ISO date (YYYY-MM-DD) -- %r (it is written only by "
-                            "`record.py raise-companies`)" % (label, ro))
-        elif ro > datetime.date.today().isoformat():
-            problems.append("%s: raised_on %s is after today: a company is raised on the day a run raised it (it is "
-                            "written only by `record.py raise-companies`)" % (label, ro))
-    # dev #915 (jobsearch 0.88.0, design-jobsearch-0.88.0.md 6.3, 6.4): `kind`, what the candidate says a company IS, and
-    # `later_on`, the day they asked to hear about it later (a derived snooze on the Targets-to-review list, never a status).
-    # Both are optional and absent has a defined meaning; a PRESENT one must be well formed. Their writers are `record.py
-    # company-kind` and `record.py company-later`.
-    if "kind" in c and c["kind"] not in COMPANY_KINDS:
-        problems.append("%s: kind must be one of %s -- %r (written by `record.py company-kind %s <kind>`)"
-                        % (label, ", ".join(COMPANY_KINDS), c["kind"], cid))
-    if "later_on" in c:
-        lo = c["later_on"]
-        if not (isinstance(lo, str) and DATE_RE.match(lo)):
-            problems.append("%s: later_on must be an ISO date (YYYY-MM-DD) -- %r (it is written only by `record.py "
-                            "company-later %s`)" % (label, lo, cid))
-        elif lo > datetime.date.today().isoformat():
-            problems.append("%s: later_on %s is after today: \"later\" is the day the candidate said it (written only by "
-                            "`record.py company-later %s`)" % (label, lo, cid))
-
-
-def resolve_person(pid, merged_into):
-    """The person a (possibly merged) id stands for: follow `merged_into` to the survivor. Cycle-safe (a cycle is its own problem,
-    reported by the people loop), so this never loops: it stops at the first id it has seen."""
-    seen = set()
-    while pid in merged_into and pid not in seen:
-        seen.add(pid)
-        pid = merged_into[pid]
-    return pid
-
-
-def _relative_path_problem(v):
-    """`None` when `v` is a relative path inside the profile (no `..` component, not absolute, not `~`-rooted), else why not."""
-    if not (isinstance(v, str) and v.strip()):
-        return "must be a non-empty relative path"
-    if v.startswith(("/", "\\", "~")) or re.match(r"^[A-Za-z]:[\\/]", v):
-        return "must be relative to the profile root, not absolute"
-    if ".." in re.split(r"[\\/]", v):
-        return "must not contain a `..` component"
-    return None
-
-
-def check_ties(r, label, problems):
-    """dev #834 (design-network-first.md 4.3): `people.ties` is absent (unknown: never "no ties") or a list of `{kind, via?}` where `kind`
-    is one of TIE_KINDS and `via`, when present, is a non-empty string. Any other key in an entry, a non-list, or an entry that is not an
-    object is refused: the field is the candidate's own statement, and a malformed one must be loud, not read as "knows no one"."""
-    if "ties" not in r:
-        return
-    ties = r["ties"]
-    if not isinstance(ties, list):
-        problems.append("%s: ties must be a list of {kind, via?} (or absent when unknown), got %r" % (label, ties))
-        return
-    for i, e in enumerate(ties):
-        if not isinstance(e, dict):
-            problems.append("%s: ties[%d] must be an object {kind, via?}, got %r" % (label, i, e))
-            continue
-        extra = sorted(set(e) - {"kind", "via"})
-        if extra:
-            problems.append("%s: ties[%d] has unknown key(s) %s -- an entry is {kind, via?}" % (label, i, ", ".join(extra)))
-        if e.get("kind") not in TIE_KINDS:
-            problems.append("%s: ties[%d].kind %r is not one of %s" % (label, i, e.get("kind"), "/".join(TIE_KINDS)))
-        if "via" in e and not (isinstance(e["via"], str) and e["via"].strip()):
-            problems.append("%s: ties[%d].via must be a non-empty string when present, got %r" % (label, i, e["via"]))
-
-
-def check_chat_fields(r, label, problems, people_ids, company_ids, touch_by_id, merged_into, today=None):
-    """dev #834 (jobsearch 0.86.0, design-network-first.md 5.2, 13.1): the fields a CHAT widens `commitments` with. Every one is
-    optional; an absent field means "not recorded" and is never read as a value (a legacy meeting has none of them).
-
-      person_id     FK people (a merged row resolves). REQUIRED when `kind` is `chat`: a chat is with someone
-      kind          `chat` | `interview`
-      touch_id      FK touches: the `meeting-booked` touch this chat came from, and that touch's person must equal `person_id`
-                    after merge resolution (so a booking is joined to its chat, never to someone else's)
-      attendance    `held` | `no-show`, only on a commitment dated on or before today, and only with `attendance_on` (ISO)
-      attendance_on written WITH `attendance`, never alone
-      notes_ref     a relative path (no `..`, not absolute); a missing FILE is a checkup warning, never a validator problem
-      intros_given  a list of `{person_id?, company_id?, on?}`; each names at least one FK and every FK resolves"""
-    today = today or datetime.date.today().isoformat()
-    pid = r.get("person_id")
-    if "person_id" in r and pid is not None and not (isinstance(pid, str) and pid in people_ids):
-        problems.append("%s: person_id %r does not resolve to any people row" % (label, pid))
-    kind = r.get("kind")
-    if "kind" in r and kind is not None and kind not in COMMITMENT_KINDS:
-        problems.append("%s: kind %r is not one of %s (absent means a legacy meeting not yet classified)"
-                        % (label, kind, "/".join(sorted(COMMITMENT_KINDS))))
-    if kind == "chat" and not pid:
-        problems.append("%s: a `kind: chat` commitment needs `person_id` -- a chat is with someone (record it with `record.py chat "
-                        "<person_id> --on <date>`)" % label)
-    tid = r.get("touch_id")
-    if "touch_id" in r and tid is not None:
-        t = touch_by_id.get(tid) if isinstance(tid, str) else None
-        if t is None:
-            problems.append("%s: touch_id %r does not resolve to any touches row" % (label, tid))
-        elif t.get("outcome") != "meeting-booked":
-            problems.append("%s: touch_id %r is not a `meeting-booked` touch (its outcome is %r)" % (label, tid, t.get("outcome")))
-        elif not pid:
-            problems.append("%s: touch_id %r needs the commitment's `person_id`: a booking is joined to the chat with the SAME "
-                            "person" % (label, tid))
-        elif resolve_person(t.get("person_id"), merged_into) != resolve_person(pid, merged_into):
-            problems.append("%s: touch_id %r is a touch to %r, but this chat is with %r (they are not the same person after "
-                            "merges)" % (label, tid, t.get("person_id"), pid))
-    att = r.get("attendance")
-    if "attendance" in r and att is not None:
-        if att not in ATTENDANCE:
-            problems.append("%s: attendance %r is not one of %s (absent means unrecorded)"
-                            % (label, att, "/".join(sorted(ATTENDANCE))))
-        d = r.get("date")
-        if not (is_date(d) and d <= today):
-            problems.append("%s: attendance %r on a commitment dated %r: a meeting that has not happened yet has no attendance"
-                            % (label, att, d))
-        if not is_date(r.get("attendance_on")):
-            problems.append("%s: attendance needs `attendance_on` (an ISO date), written with it" % label)
-    if r.get("attendance_on") is not None:
-        if att is None:
-            problems.append("%s: attendance_on without attendance -- the date is written WITH the attendance, never alone" % label)
-        elif not is_date(r.get("attendance_on")):
-            problems.append("%s: attendance_on must be an ISO date (YYYY-MM-DD) -- %r" % (label, r["attendance_on"]))
-    if "notes_ref" in r and r["notes_ref"] is not None:
-        why = _relative_path_problem(r["notes_ref"])
-        if why:
-            problems.append("%s: notes_ref %s -- %r" % (label, why, r["notes_ref"]))
-    if "intros_given" in r and r["intros_given"] is not None:
-        ig = r["intros_given"]
-        if not isinstance(ig, list):
-            problems.append("%s: intros_given must be a list of {person_id?, company_id?, on?}, got %s"
-                            % (label, type(ig).__name__))
-            ig = []
-        for j, e in enumerate(ig):
-            il = "%s.intros_given[%d]" % (label, j)
-            if not isinstance(e, dict):
-                problems.append("%s: entry is %s, not an object" % (il, type(e).__name__))
-                continue
-            extra = set(e) - {"person_id", "company_id", "on"}
-            if extra:
-                problems.append("%s: unknown key(s) %s (an entry is {person_id?, company_id?, on?})"
-                                % (il, ", ".join(sorted(extra))))
-            if not (e.get("person_id") or e.get("company_id")):
-                problems.append("%s: names neither person_id nor company_id -- an introduction is to someone or to somewhere" % il)
-            if e.get("person_id") and e["person_id"] not in people_ids:
-                problems.append("%s: person_id %r does not resolve to any people row" % (il, e["person_id"]))
-            if e.get("company_id") and e["company_id"] not in company_ids:
-                problems.append("%s: company_id %r does not resolve to any company" % (il, e["company_id"]))
-            if e.get("on") is not None and not is_date(e["on"]):
-                problems.append("%s: on must be an ISO date (YYYY-MM-DD) -- %r" % (il, e["on"]))
-
-
-def check_via_fields(r, label, problems, people_ids, commitment_by_id, merged_into):
-    """dev #834 (jobsearch 0.86.0, design-network-first.md 5.3): where a role or an application CAME FROM, as a person and/or a
-    conversation. Both are nullable foreign keys on `opportunities` and `applications`:
-
-      via_person_id      FK people
-      via_commitment_id  FK commitments (the chat that surfaced it)
-
-    When BOTH are set the chat must be with that person: the commitment's `person_id` equals `via_person_id` after merge
-    resolution, so a role is never credited to a conversation with somebody else. A commitment that names NO person cannot make that
-    claim and is refused beside a `via_person_id` (record the person on the chat first). Absent on both means "source not recorded",
-    reported as such and never inferred from a recent chat."""
-    vp, vc = r.get("via_person_id"), r.get("via_commitment_id")
-    if vp is not None and not (isinstance(vp, str) and vp in people_ids):
-        problems.append("%s: via_person_id %r does not resolve to any people row" % (label, vp))
-    cm = None
-    if vc is not None:
-        cm = commitment_by_id.get(vc) if isinstance(vc, str) else None
-        if cm is None:
-            problems.append("%s: via_commitment_id %r does not resolve to any commitments row" % (label, vc))
-    if vp is not None and cm is not None and vp in people_ids:
-        cp = cm.get("person_id")
-        if not cp:
-            problems.append("%s: via_commitment_id %r names no person, so it cannot be the conversation with via_person_id %r "
-                            "(record the person on the chat first)" % (label, vc, vp))
-        elif resolve_person(cp, merged_into) != resolve_person(vp, merged_into):
-            problems.append("%s: via_commitment_id %r is a conversation with %r, but via_person_id is %r (they are not the same "
-                            "person after merges)" % (label, vc, cp, vp))
-
-
-def check_proposal_row(r, label, problems, opp_by_id, ids_seen):
-    """dev #834 (jobsearch 0.86.0, design-network-first.md 6, owner ruling 3): one row of `proposals`, a proposal to a prospective
-    client of a non-employee engagement. The rules, each a problem naming the field and the verb that writes it:
-
-      id                 required, unique, a lowercase slug (minted `<opp_id>-pN` by `record.py proposal`)
-      opp_id             required FK to an opportunity whose `engagement_type` is one of `config_keys.ENGAGEMENT_NON_EMPLOYEE`
-                         (`fractional`, `interim`, `advisory`, `contract`): a full-time role's path is `applications`
-      status             one of PROPOSAL_STATUS; `status_on` is an ISO date, written with every status
-      date            an ISO date or null; REQUIRED for `sent`, `accepted`, `declined` and `expired` (each presupposes the proposal went
-                         out), and never after `status_on`
-      conceptual_agreement  null, or `{on, objectives[], measures[], value[]}`: each list non-empty, of non-empty strings, `on` ISO and no
-                         unknown key (the client agreed what success looks like BEFORE the proposal; the proposal confirms, it does not
-                         explore)
-      rate               null, or `{amount, per, currency}`: `amount` a positive number, `per` one of RATE_PER, `currency` three
-                         upper-case letters
-      scope, doc_ref, note   a non-empty string or null (`doc_ref` a relative path, never absolute and never with `..`)"""
-    pid = r.get("id")
-    if pid is not None:
-        if not (isinstance(pid, str) and SLUG_RE.match(pid)):
-            problems.append("%s: id %r must be a lowercase slug (minted as <opp_id>-pN by `record.py proposal`)" % (label, pid))
-        elif pid in ids_seen:
-            problems.append("%s: duplicate id" % label)
-        ids_seen.add(pid)
-    oid = r.get("opp_id")
-    if oid is not None:
-        opp = opp_by_id.get(oid) if isinstance(oid, str) else None
-        if opp is None:
-            problems.append("%s: opp_id %r does not resolve to any opportunity" % (label, oid))
-        elif opp.get("engagement_type") not in _config_keys.ENGAGEMENT_NON_EMPLOYEE:
-            problems.append("%s: opportunity %r has engagement_type %r, and a proposal belongs to one of %s (a full-time role's path is "
-                            "`applications`; set the engagement first: record.py set %s engagement_type <type>)"
-                            % (label, oid, opp.get("engagement_type"), "/".join(_config_keys.ENGAGEMENT_NON_EMPLOYEE), oid))
-    st = r.get("status")
-    if st is not None and st not in PROPOSAL_STATUS:
-        problems.append("%s: status %r is not one of %s" % (label, st, "/".join(PROPOSAL_STATUS)))
-    if "status_on" in r and not is_date(r.get("status_on")):
-        problems.append("%s: status_on must be an ISO date (YYYY-MM-DD), written with every status -- %r" % (label, r.get("status_on")))
-    so = r.get("date")
-    if so is not None and not is_date(so):
-        problems.append("%s: date must be an ISO date (YYYY-MM-DD) or null -- %r" % (label, so))
-    if st in PROPOSAL_NEEDS_SENT_ON and so is None:
-        problems.append("%s: status %r needs `date` -- the day the proposal went out (record.py proposal-status %s %s --on <date>)"
-                        % (label, st, pid, st))
-    if is_date(so) and is_date(r.get("status_on")) and so > r["status_on"]:
-        problems.append("%s: date %s is after status_on %s" % (label, so, r["status_on"]))
-    ca = r.get("conceptual_agreement")
-    if ca is not None:
-        if not isinstance(ca, dict):
-            problems.append("%s: conceptual_agreement must be an object {on, objectives[], measures[], value[]} or null, got %s"
-                            % (label, type(ca).__name__))
-        else:
-            extra = set(ca) - {"on", *CONCEPTUAL_AGREEMENT_LISTS}
-            if extra:
-                problems.append("%s: conceptual_agreement has unknown key(s) %s (it is {on, objectives, measures, value})"
-                                % (label, ", ".join(sorted(extra))))
-            if not is_date(ca.get("on")):
-                problems.append("%s: conceptual_agreement.on must be an ISO date -- the day the client agreed it" % label)
-            for f in CONCEPTUAL_AGREEMENT_LISTS:
-                v = ca.get(f)
-                if not (isinstance(v, list) and v and all(isinstance(x, str) and x.strip() for x in v)):
-                    problems.append("%s: conceptual_agreement.%s must be a non-empty list of non-empty strings -- %r (what the client "
-                                    "agreed BEFORE the proposal)" % (label, f, v))
-    rate = r.get("rate")
-    if rate is not None:
-        if not isinstance(rate, dict):
-            problems.append("%s: rate must be an object {amount, per, currency} or null, got %s" % (label, type(rate).__name__))
-        else:
-            extra = set(rate) - {"amount", "per", "currency"}
-            if extra:
-                problems.append("%s: rate has unknown key(s) %s (it is {amount, per, currency})" % (label, ", ".join(sorted(extra))))
-            amt = rate.get("amount")
-            if not (isinstance(amt, (int, float)) and not isinstance(amt, bool) and amt > 0):
-                problems.append("%s: rate.amount must be a positive number -- %r" % (label, amt))
-            if rate.get("per") not in RATE_PER:
-                problems.append("%s: rate.per %r is not one of %s" % (label, rate.get("per"), "/".join(RATE_PER)))
-            if not (isinstance(rate.get("currency"), str) and CURRENCY_RE.match(rate["currency"])):
-                problems.append("%s: rate.currency must be three upper-case letters (e.g. USD) -- %r" % (label, rate.get("currency")))
-    for f in ("scope", "note"):
-        if f in r and r[f] is not None and not (isinstance(r[f], str) and r[f].strip()):
-            problems.append("%s: %s must be a non-empty string or null -- %r" % (label, f, r[f]))
-    if "doc_ref" in r and r["doc_ref"] is not None:
-        why = _relative_path_problem(r["doc_ref"])
-        if why:
-            problems.append("%s: doc_ref %s -- %r" % (label, why, r["doc_ref"]))
-
-
-def check_suggestion_ask(r, label, problems, plan_fields):
-    """dev #834 (jobsearch 0.86.0, design-network-first.md 8.2): an ask of `kind: suggestion` carries `suggests`, the one write it stands
-    for, and nothing has written that row yet. `plan_fields` is the plan model's field list (a plan suggestion's closed key set).
-
-      suggests.store / .op   one of SUGGEST_OPS: companies `set`, plans `create`, people `set`
-      suggests.id            the target row's id (a `create` names the id the new row will take)
-      suggests.fields        a non-empty object; the keys are closed per store (a company: status, motivation, and `status` can only
-                             be `active-target`; a person: cadence; a plan: the plan model's fields, with a `subject_kind` of search,
-                             company or person)
-      suggests.before        optional: the values the target's fields held when the suggestion was made (`confirm` refuses when they
-                             have changed); each key is one of `fields`' keys
-
-    ⚠️ What is checked is the ask's OWN shape, never the stores it points at. A suggestion whose target has since been deleted, merged
-    away or created by hand is STALE, not corrupt: `record.py confirm` refuses it naming why, and `record.py decline` closes it. A
-    validator problem here would refuse the candidate's own legitimate write (creating the plan by hand, say) because an unanswered
-    question sat open, and would leave the whole profile reading invalid over a decision nobody has taken."""
-    s = r.get("suggests")
-    if r.get("kind") != "suggestion":
-        if s is not None:
-            problems.append("%s: `suggests` belongs to `kind: suggestion` asks only (this one is %r)" % (label, r.get("kind")))
-        return
-    if not isinstance(s, dict):
-        problems.append("%s: a `kind: suggestion` ask needs `suggests` {store, op, id, fields} -- the write it asks the owner to confirm"
-                        % label)
-        return
-    extra = set(s) - SUGGEST_SHAPE_KEYS
-    if extra:
-        problems.append("%s: suggests has unknown key(s) %s (it is {store, op, id, fields, before})" % (label, ", ".join(sorted(extra))))
-    store, op = s.get("store"), s.get("op")
-    if (store, op) not in SUGGEST_OPS:
-        problems.append("%s: suggests names %r %r, which is not a suggestable write (one of %s); a person row itself is never "
-                        "suggested" % (label, store, op, ", ".join("%s %s" % (a, b) for a, b in sorted(SUGGEST_OPS))))
-        return
-    tid, fields = s.get("id"), s.get("fields")
-    if not (isinstance(tid, str) and tid.strip()):
-        problems.append("%s: suggests.id must name the target row" % label)
-    if not (isinstance(fields, dict) and fields):
-        problems.append("%s: suggests.fields must be a non-empty object" % label)
-        return
-    allowed = {"companies": SUGGEST_COMPANY_KEYS, "people": SUGGEST_PERSON_KEYS}.get(store) or set(plan_fields)
-    bad = sorted(set(fields) - set(allowed))
-    if bad:
-        problems.append("%s: suggests.fields names %s, which a %s suggestion may not carry (allowed: %s)"
-                        % (label, ", ".join(bad), store, ", ".join(sorted(allowed))))
-    if store == "companies" and "status" in fields and fields["status"] != "active-target":
-        problems.append("%s: a company suggestion proposes `status: active-target` -- got %r" % (label, fields["status"]))
-    if store == "plans" and fields.get("subject_kind") not in SUGGEST_PLAN_SUBJECT_KINDS:
-        problems.append("%s: a plan suggestion's subject_kind must be one of %s -- got %r"
-                        % (label, "/".join(sorted(SUGGEST_PLAN_SUBJECT_KINDS)), fields.get("subject_kind")))
-    before = s.get("before")
-    if before is not None:
-        if not isinstance(before, dict) or set(before) - set(fields):
-            problems.append("%s: suggests.before must be an object whose keys are among suggests.fields' keys" % label)
-
-
-def check_lean(ln, label, problems):
-    """`lean` (design §3.7): `{lean, line, on, signals?}`. The line is required, non-empty, ONE
-    line and capped; each signal carries the `reason` it matched for -- a signal without one is a
-    flag nobody can read."""
-    if not isinstance(ln, dict):
-        problems.append("%s: lean must be an object (lean, line, on, signals) -- got %s"
-                        % (label, type(ln).__name__))
-        return
-    _unknown_keys(ln, LEAN_KEYS, label + " lean", problems)
-    if ln.get("lean") not in LEAN_VALUES:
-        problems.append("%s: lean.lean %r not in {%s}" % (label, ln.get("lean"),
-                                                           ", ".join(LEAN_VALUES)))
-    line = ln.get("line")
-    if not (isinstance(line, str) and line.strip()):
-        problems.append("%s: lean.line must be a non-empty string -- the one line that says why"
-                        % label)
-    elif "\n" in line or "\r" in line:
-        problems.append("%s: lean.line must be ONE line (no line breaks)" % label)
-    elif len(line) > LEAN_LINE_CAP:
-        problems.append("%s: lean.line is %d characters; the cap is %d"
-                        % (label, len(line), LEAN_LINE_CAP))
-    if not _real_date(ln.get("on")):
-        problems.append("%s: lean.on not an ISO date -- %r" % (label, ln.get("on")))
-    sigs = ln.get("signals")
-    if sigs is None:
-        return
-    if not isinstance(sigs, list):
-        problems.append("%s: lean.signals must be a list" % label)
-        return
-    for i, sg in enumerate(sigs):
-        sl = "%s lean.signals[%d]" % (label, i)
-        if not isinstance(sg, dict):
-            problems.append("%s: must be an object (id, reason, matched_in)" % sl)
-            continue
-        _unknown_keys(sg, LEAN_SIGNAL_KEYS, sl, problems)
-        if not (isinstance(sg.get("id"), str) and sg["id"].strip()):
-            problems.append("%s: id must be a non-empty string" % sl)
-        if not (isinstance(sg.get("reason"), str) and sg["reason"].strip()):
-            problems.append("%s: a signal without a reason -- a lean the candidate cannot read "
-                            "is a flag, not a lean" % sl)
-        if sg.get("matched_in") not in SIGNAL_FIELDS:
-            problems.append("%s: matched_in %r not in {%s}" % (sl, sg.get("matched_in"),
-                                                                ", ".join(SIGNAL_FIELDS)))
 
 
 def check_jd_source(jd_source, label, problems):
@@ -2229,145 +326,16 @@ def check_jd_source(jd_source, label, problems):
                         "reason one of {%s}" % (label, jd_source, ", ".join(JD_UNAVAILABLE_REASONS)))
 
 
-def check_commute_config(geography, problems):
-    """The commute tables of `config.json` `geography` (design §3.8, §9): each anchor's optional
-    `bands` -- `[{max_minutes, floor}]`, strictly ascending, the last no greater than the anchor's
-    own `max_commute_minutes` -- and any `includes[]` entry that is an object (`{place,
-    minutes}`). Appends to `problems`; returns the number of bands checked."""
-    n = 0
-    anchors = (geography or {}).get("commute_anchors") if isinstance(geography, dict) else None
-    if not isinstance(anchors, list):
-        return 0
-    for ai, anchor in enumerate(anchors):
-        al = "config geography.commute_anchors[%d]" % ai
-        if not isinstance(anchor, dict):
-            continue
-        for ii, inc in enumerate(anchor.get("includes") or []):
-            if isinstance(inc, str):
-                continue
-            il = "%s.includes[%d]" % (al, ii)
-            if not isinstance(inc, dict):
-                problems.append("%s: an includes entry is a place string or {place, minutes}" % il)
-                continue
-            _unknown_keys(inc, ("place", "minutes"), il, problems)
-            if not (isinstance(inc.get("place"), str) and inc["place"].strip()):
-                problems.append("%s: place must be a non-empty string" % il)
-            m = inc.get("minutes")
-            if not (isinstance(m, int) and not isinstance(m, bool) and m >= 0):
-                problems.append("%s: minutes must be a whole number >= 0 -- %r" % (il, m))
-        if "bands" not in anchor:
-            continue
-        bands = anchor["bands"]
-        if not isinstance(bands, list) or not bands:
-            problems.append("%s.bands must be a non-empty list of {max_minutes, floor}" % al)
-            continue
-        prev, cap = None, anchor.get("max_commute_minutes")
-        for bi, b in enumerate(bands):
-            bl = "%s.bands[%d]" % (al, bi)
-            if not isinstance(b, dict):
-                problems.append("%s: must be an object {max_minutes, floor}" % bl)
-                continue
-            _unknown_keys(b, ("max_minutes", "floor"), bl, problems)
-            mm, fl = b.get("max_minutes"), b.get("floor")
-            n += 1
-            if not (isinstance(mm, int) and not isinstance(mm, bool) and mm > 0):
-                problems.append("%s: max_minutes must be a whole number > 0 -- %r" % (bl, mm))
-                continue
-            if not (_is_number(fl) and fl > 0):
-                problems.append("%s: floor must be a positive number -- %r" % (bl, fl))
-            if prev is not None and mm <= prev:
-                problems.append("%s: max_minutes %d is not above the previous band's %d -- bands "
-                                "run strictly ascending" % (bl, mm, prev))
-            prev = mm
-        if prev is not None and isinstance(cap, int) and not isinstance(cap, bool) and prev > cap:
-            problems.append("%s.bands: the last band reaches %d minutes but the anchor's "
-                            "max_commute_minutes is %d -- a band cannot price a commute the "
-                            "anchor says is out of radius" % (al, prev, cap))
-    return n
-
-
-def check_likely_pass_signals(signals, problems):
-    """`screen.likely_pass_signals` of `config.json` (design §3.8, §9): `[{id, phrase, fields,
-    reason}]`. A signal without a `reason` is refused (a lean the candidate cannot read), as is a
-    duplicate id, an empty phrase and a field outside title / jd / company. Returns the count."""
-    if signals is None:
-        return 0
-    if not isinstance(signals, list):
-        problems.append("config screen.likely_pass_signals must be a list of {id, phrase, fields, "
-                        "reason}")
-        return 0
-    seen = set()
-    for i, sg in enumerate(signals):
-        sl = "config screen.likely_pass_signals[%d]" % i
-        if not isinstance(sg, dict):
-            problems.append("%s: must be an object {id, phrase, fields, reason}" % sl)
-            continue
-        _unknown_keys(sg, ("id", "phrase", "fields", "reason"), sl, problems)
-        sid = sg.get("id")
-        if not (isinstance(sid, str) and sid.strip()):
-            problems.append("%s: id must be a non-empty string" % sl)
-        elif sid in seen:
-            problems.append("%s: duplicate id %r" % (sl, sid))
-        seen.add(sid)
-        if not (isinstance(sg.get("phrase"), str) and sg["phrase"].strip()):
-            problems.append("%s: phrase must be a non-empty string" % sl)
-        if not (isinstance(sg.get("reason"), str) and sg["reason"].strip()):
-            problems.append("%s: a signal without a reason -- the lean it produces would be "
-                            "unreadable" % sl)
-        flds = sg.get("fields")
-        if not isinstance(flds, list) or not flds or any(f not in SIGNAL_FIELDS for f in flds):
-            problems.append("%s: fields must be a non-empty list drawn from {%s}"
-                            % (sl, ", ".join(SIGNAL_FIELDS)))
-    return len(signals)
-
-
 # ── hygiene: a standing finding, never a refusal (R7) ──────────────────────────────────────────
 # `_main()` has a non-fatal level already (`warnings`), but its heading says "rows that break an
 # introduced-only rule", which these are not. So the two hygiene checks print under a `HYGIENE`
 # heading of their own and NEVER change the exit code or the problem list `record.py` compares: a
 # legacy row without a captured pay would otherwise make every write after the upgrade fail.
 
-def _live(opp):
-    return opp.get("status") not in TERMINAL_OPP_STATUSES
-
-
-def _has_pay(opp):
-    comp = opp.get("comp")
-    if isinstance(comp, dict) and _is_number(comp.get("max")):
-        return True
-    return isinstance(opp.get("listed_pay"), dict)
-
-
-def check_pay_captured(opps):
-    """One line per LIVE opportunity with neither a `listed_pay` nor a `comp.max` (dev #715 / public
-    #143, P5): the role's pay was never captured, so the screen reports NOT CAPTURED for it and a
-    person should re-read the listing. Legacy rows appear here after the upgrade. That is the point."""
-    return ["opportunities[%s]: live, and its pay was never captured (no listed_pay, no comp.max) "
-            "-- re-read the listing, then record.py listed-pay" % o.get("id", "?")
-            for o in opps if isinstance(o, dict) and _live(o) and not _has_pay(o)]
-
-
 # dev #820 / public #175 (0.82.0): `check_triaging_stuck`, `triaging_states` and `triage_stuck_days` are
 # RETIRED with the `triaging` role state and `search.triage_stuck_days`. A role that has not been read is no
 # longer a stage that can be "stuck": `lifecycle` shows it as `waiting` or as a process failure with a cause,
 # on every surface, and `lifecycle.py --report` counts every role (the conservation line).
-
-def hygiene_lines(opps, cfg, today, owner_token):
-    """The `HYGIENE` section as printable lines (an empty list when there is nothing to say)."""
-    return check_pay_captured(opps)
-
-
-def emit_problems(problems):
-    """Write the finished problem list to PROBLEMS_OUT as JSON, when asked. Best-effort: a
-    reader that cannot find the file treats the run as unknown, which is the honest answer."""
-    if not PROBLEMS_OUT:
-        return
-    try:
-        with open(PROBLEMS_OUT, "w", encoding="utf-8") as fh:
-            json.dump(list(problems), fh, ensure_ascii=False)
-    except OSError:
-        pass
-
 
 # ── dev #365 (design-connected-entities.md §26.7/§28.2) ──────────────────────────────────────
 # Deliberately placed OUTSIDE `_main()`, far from every per-store loop above: this is a
@@ -2428,11 +396,11 @@ def check_store_introduction(problems):
     `<profile>/data`, and correct instead of stale whenever a caller (a test, or a future
     script) points `DATA` somewhere else without also repointing `ROOT`."""
     from migrations import stamp as _stamp, stores as _stores
-    stamp = _stamp.read_stamp(os.path.dirname(DATA))
+    stamp = _stamp.read_stamp(os.path.dirname(_data_root.DATA))
     for store, introduced_at in sorted(_stores.STORE_INTRODUCED.items()):
         if store in _STORE_INTRODUCTION_EXEMPT:
             continue
-        if os.path.exists(os.path.join(DATA, store)):
+        if os.path.exists(os.path.join(_data_root.DATA, store)):
             continue
         if _stores.store_absence_legal(stamp, store):
             continue
@@ -2440,6 +408,26 @@ def check_store_introduction(problems):
             "%s: absent, but the profile is stamped %s and %s introduced this store at or "
             "before that — a migrated profile is missing a file, not merely pre-dating it"
             % (store, stamp, introduced_at))
+
+
+# ⚠️ Deliberately BELOW the vocabulary: your_move.py imports this module for
+# TERMINAL_OPP_STATUSES / SUBMITTED_APP_STATUS at ITS import time, and this module imports
+# your_move for parse_blocked_until (used only inside main). Whichever is imported first, the
+# names each side needs at import are already bound — a top-of-file import here would hand
+# your_move a half-initialised module whenever validate_data is the entry point.
+import your_move as _ym  # noqa: E402
+
+
+def emit_problems(problems):
+    """Write the finished problem list to PROBLEMS_OUT as JSON, when asked. Best-effort: a
+    reader that cannot find the file treats the run as unknown, which is the honest answer."""
+    if not PROBLEMS_OUT:
+        return
+    try:
+        with open(PROBLEMS_OUT, "w", encoding="utf-8") as fh:
+            json.dump(list(problems), fh, ensure_ascii=False)
+    except OSError:
+        pass
 
 
 def main():
@@ -2684,7 +672,7 @@ def _main():
     # The authored files (the union, the variant pages) live at the PROFILE root; this store
     # lives under data/. Resolve siblings off the data dir's parent so the
     # CLAUDESEARCH_DATA_DIR override keeps working.
-    _files_base = os.path.dirname(os.path.abspath(DATA))
+    _files_base = os.path.dirname(os.path.abspath(_data_root.DATA))
     for r in variants:
         vid = r.get("id", "?")
         label = "resume_variants[%s]" % vid
@@ -4059,7 +2047,7 @@ def _main():
     # none (a fresh scaffold, a test pointing DATA at a temp dir) has nothing to check, and the
     # summary line below says so rather than reading as a pass.
     _cfg, _cfg_why = {}, None
-    _cfg_path = os.path.join(os.path.dirname(DATA), "config.json")
+    _cfg_path = os.path.join(os.path.dirname(_data_root.DATA), "config.json")
     try:
         with open(_cfg_path, encoding="utf-8") as _fh:
             _cfg = json.load(_fh)
