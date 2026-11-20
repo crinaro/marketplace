@@ -26,6 +26,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import engine_root
 from _diag import log_machine as _diag_machine
+from launcher_guard import target as _target
 
 HOME_DIR = os.path.join(os.path.expanduser("~"), ".claude", "jobsearch")
 LAUNCHER = os.path.join(HOME_DIR, "run")
@@ -326,6 +327,10 @@ def _template_generation(body):
 
 
 def install():
+    why = _target.refusal(HOME_DIR, engine_root())     # dev #988 / public #242: fail closed
+    if why:
+        _diag_machine("launcher-write-refused", caller="install", reason=why)
+        raise RuntimeError("launcher NOT written: " + why)
     os.makedirs(HOME_DIR, exist_ok=True)
     # TEMPLATE carries the default identity so it stays testable as-is; a non-default
     # marketplace or plugin name is substituted at install time (it appears in the CACHE
@@ -429,25 +434,15 @@ def heal_if_stale(apply_it=True):
     though a perfectly good install exists one path segment over. Regenerating the launcher
     whenever it exists and disagrees with the CURRENTLY-DERIVED identity closes that gap.
 
-    ⚠️ THE PREDICATE COMPARES THE FULL RENDERED BODY, NOT A NAME SUBSTRING. It used to test only
-    `"cache/%s/%s" % (marketplace, plugin) in body` — which stays true forever once the name is
-    right, even when TEMPLATE has since changed underneath it for an unrelated reason. That is
-    exactly what happened to the version-freeze fix (the `"$CACHE"/*` rejection block that makes
-    a pointer inside the install cache advisory rather than authoritative, so an old install
-    doesn't silently freeze the engine at whatever version the pointer happened to name): a
-    launcher generated before that fix, but AFTER any marketplace rename, already contains the
-    current name in full — the old substring test read it as `healthy` and never regenerated it,
-    leaving that launcher permanently unable to resolve past a stale in-cache pointer. Comparing
-    against `_rendered_template()` byte-for-byte catches that drift and any future one, because
-    it asks "would `install()` write something different?" rather than "does the name look ok?".
+    ⚠️ THE PREDICATE COMPARES THE FULL RENDERED BODY, NOT A NAME SUBSTRING (dev #251): a name-only
+    test certified a behaviourally stale launcher as healthy forever. See `_rendered_template()`.
 
     ⭐ ONLY ACTS ON AN EXISTING LAUNCHER. A user who never ran `install_launcher.py` (or
     onboarding) gets nothing created here — creating one from nothing stays onboarding's job,
     the same boundary `heal_install.py` draws around installs it did not create.
 
-    SAFE by this module's own rule (migrate.py's docstring): `install()` overwrites a file
-    whose own header says "GENERATED ... do not edit; re-run that script instead" — idempotent,
-    reversible (re-running install() again is always safe), and carries no user data.
+    SAFE (migrate.py's rule): `install()` overwrites a GENERATED file — idempotent, reversible,
+    no user data — and only under a home `launcher_guard/target.py` lets it write (dev #988).
 
     ⛔⛔ THE GENERATION GUARD — the fix for a regression shipped in 0.33.0 (df068f5), found
     before TEMPLATE next changed but designed to survive the moment it does. This function
@@ -475,7 +470,7 @@ def heal_if_stale(apply_it=True):
     disk generation, never an absent one.
 
     Returns (verdict, lines). verdict: absent | healthy | healed | would-heal | refused-stale-copy
-    | error. Never raises — callers still wrap this in their own envelope, but it stays
+    | refused-unsafe-target (launcher_guard/target.py, dev #988) | error. Never raises — callers still wrap this in their own envelope, but it stays
     self-contained so it can be tested and called directly.
     """
     if not os.path.exists(LAUNCHER):
@@ -509,6 +504,11 @@ def heal_if_stale(apply_it=True):
               "from a marketplace rename" % want) if want not in body else (
               "the current install identity, but its generated body has drifted from what "
               "this engine version writes today")
+    why = _target.refusal(HOME_DIR, engine_root(), _target.cache_dir(HOME_DIR, marketplace, plugin))
+    if why:                                    # dev #988 / public #242: a heal never writes a home it cannot serve
+        if apply_it:
+            _diag_machine("launcher-write-refused", caller="heal", reason=why)
+        return "refused-unsafe-target", ["  ⛔ %s left unchanged: %s." % (LAUNCHER, why)]
     if not apply_it:
         return "would-heal", [
             "  would regenerate %s — it names %s." % (LAUNCHER, reason)]
