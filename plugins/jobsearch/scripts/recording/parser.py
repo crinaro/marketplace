@@ -451,9 +451,23 @@ def _pipeline_arguments(ap):
                          "no-url, manual-board and site-not-allowed: no page outcome is recorded for a page that was not opened "
                          "and read (dev #838 / public #183).")
     ap.add_argument("--probe", dest="probe_json", default=None,
-                    help="read-failed --via render: the JSON result of the frame probe run on THIS page (`pane_probe.PROBE_JS`). "
-                         "The verdict `pane_probe.verdict` gives is stored; render-failed requires it, and is refused when the "
-                         "verdict is no-verdict:pane-hidden.")
+                    help="RETIRED (jobsearch 0.90.0, dev 858): `gate` replaces `probe` for new writes. Any value is refused "
+                         "and the refusal says what to run (`pane_probe.py --gate`) and which flag to pass (--gate).")
+    ap.add_argument("--browser", dest="browser_arg", default=None,
+                    help="read-jd / read-failed / not-attempted, --via render (0.90.0, dev 858): which browser made the "
+                         "attempt, pane | extension. Refused below the 0.90.0 profile pin.")
+    ap.add_argument("--ready", dest="ready_arg", default=None,
+                    help="read-failed / not-attempted (0.90.0): the word `page_ready.py --verdict` printed for this page, "
+                         "READY | NOT-READY | READY-ERROR.")
+    ap.add_argument("--gate", dest="gate_arg", default=None,
+                    help="read-failed / not-attempted (0.90.0): the word `pane_probe.py --gate --result <json>` printed for "
+                         "the frame probe run on this page, paints | not-painting | probe-error. render-failed requires it and "
+                         "is refused on not-painting or probe-error (a page that does not paint was never read).")
+    ap.add_argument("--fallback-extension", dest="fallback_ext_arg", default=None,
+                    help="read-failed / not-attempted (0.90.0): why the Chrome extension rung did not read this page, one of "
+                         "the jd_read.EXTENSION_CODES (tools-absent, not-connected, not-this-computer, browser-ambiguous, "
+                         "unattended-unprobed, not-preferred, lock-held, navigate-timeout, not-painting, not-ready, "
+                         "challenge, permission-denied, not-signed-in).")
     ap.add_argument("--body-sha1", dest="body_sha1", default=None,
                     help="read-jd --via fetch: the sha1 the `RESIDUE <id> (body)` line printed. The read is refused unless it "
                          "matches the saved body's index entry and file, and the evidence, location and every --pay figure are "
@@ -471,9 +485,9 @@ def _pipeline_arguments(ap):
                     help="read-batch: read each admitted role's posting by script (JSON-LD), settle what it can and "
                          "list the rest as the render residue.")
     ap.add_argument("--fallback", dest="fallback", action="store_true",
-                    help="read-batch: the opt-in fallback (search.posting_fetch on) -- read the public logged-out posting of "
-                         "a LinkedIn role whose browser read could not happen on this run (its latest attempt in the run is "
-                         "pane-hidden or render-failed). Records only `read` or `closed`; anything else records nothing.")
+                    help="read-batch: the automatic fallback (never when search.posting_fetch is off) -- read the public "
+                         "logged-out posting of a LinkedIn role no browser could read on this run. Records only `read` or "
+                         "`closed` as an outcome; any other answer is stored as why-not-read (fallback.fetch), never as one.")
     ap.add_argument("--ids", dest="ids_arg", nargs="+", default=None, metavar="OPP_ID",
                     help="read-batch --fallback: narrow the fallback to these opportunity ids (it never widens the set).")
 

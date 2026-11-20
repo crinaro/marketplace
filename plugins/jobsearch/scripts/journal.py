@@ -143,6 +143,7 @@ Usage:
                        --covered-by "public #58" \
                        --covered-reason "the surface was never wired, which #58 tracks"
                        # a KNOWN, filed limitation (#69); the reason is required (dev #711)
+    python3 journal.py --run <id> --gap <scope> --reason <code> --fallback-extension <code>   # 0.90.0 (dev 858)
     python3 journal.py --run <id> --end
     python3 journal.py --run <id> --dispose --because "reviewed, nothing actionable"  # (#72)
     python3 journal.py --unfinished     # runs that started and never ended, with their notes
@@ -304,6 +305,7 @@ from journaling.journal_file import (
     engine_version,
 )
 from journaling.linkedin_passes import (
+    file_gap,
     pass_rows,
     linkedin_passes_reached,
     linkedin_refusals_excused,
@@ -490,6 +492,8 @@ def main():
     ap.add_argument("--gap", metavar="SCOPE")
     ap.add_argument("--reason", choices=sorted(REASONS))
     ap.add_argument("--closes-when", dest="closes_when")
+    ap.add_argument("--fallback-extension", dest="fallback_extension", metavar="CODE",
+                    help="with --gap (dev 858, 0.90.0): why the Chrome extension did not take over: a jd_read.EXTENSION_CODES code")
     ap.add_argument("--covered-by", dest="covered_by", metavar="CITATION",
                     help="with --gap: a KNOWN, already-filed limitation explains this every "
                          "time — 'dev #N' / 'public #N' / 'marketplace #N' / 'GitHub #N' "
@@ -734,28 +738,7 @@ def main():
                 append(root, {"event": "note", "run_id": args.run, "text": args.note, "at": at})
                 print("noted")
             if args.gap:
-                if not args.reason:
-                    raise JournalError(
-                        "--reason is required with --gap. A gap without a reason code cannot be "
-                        "counted or grouped, which is the whole reason this is not prose.")
-                scope = args.gap
-                if scope == LINKEDIN_MESSAGE_REQUESTS_ALIAS:
-                    # design-linkedin-runner-resilience.md §6 — the old spelling is still
-                    # ACCEPTED (rows already on disk say it) but is normalized at write time so
-                    # the tree never carries two spellings as canon going forward.
-                    print("normalizing gap scope %r -> %r"
-                          % (LINKEDIN_MESSAGE_REQUESTS_ALIAS, LINKEDIN_MESSAGE_REQUESTS_CANON))
-                    scope = LINKEDIN_MESSAGE_REQUESTS_CANON
-                covered_by = normalize_citation(args.covered_by) if args.covered_by else ""
-                gid = record_gap(root, args.run, scope, args.reason,
-                                 closes_when=args.closes_when, covered_by=covered_by, at=at,
-                                 covered_reason=args.covered_reason or "")
-                print(gid)
-                if covered_by:
-                    # dev #711 / public #147 -- the citation is eyeballed WHEN WRITTEN: the
-                    # cited issue's title and state, or NOT VERIFIED when gh cannot answer.
-                    for ln in coverage_echo(covered_by):
-                        print(ln)
+                file_gap(root, args, at)
             if args.end:
                 # design-linkedin-runner-resilience.md §4 (closes D-5) — derived at write time,
                 # never a new --end argument: THIS run's own open gaps (a pass that opened

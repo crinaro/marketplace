@@ -71,6 +71,7 @@ from migrations import (
     m_0_86_0_network_first,
     m_0_86_0_proposals,
     m_0_88_0_pay_evidence,
+    m_0_90_0_browser_fallback,
 )
 from migrations.stamp import engine_version, read_stamp, ver
 from migrations.stores import STORE_INTRODUCED
@@ -304,7 +305,10 @@ MIGRATIONS = (("0.4.0", m_0_4_0.m_0_4_0), ("0.13.0", m_0_13_0.m_0_13_0), ("0.14.
               ("0.86.0", m_0_86_0_proposals.m_0_86_0_proposals),
               # KEYED "0.88.0" (dev #846, #915, #836) -- see the note above `PAY_EVIDENCE_BY`. ONE migration covers every stored-record
               # change of the release. It runs LAST; its first write is the 0.88.0 pin.
-              ("0.88.0", m_0_88_0_pay_evidence.m_0_88_0_pay_evidence))
+              ("0.88.0", m_0_88_0_pay_evidence.m_0_88_0_pay_evidence),
+              # KEYED "0.90.0" (dev 858) -- see the note above `BROWSER_FALLBACK_BY`. It runs LAST; its first write is the pin, its
+              # second the one asks.jsonl notice row (by id, only when absent). No sandbox setting is touched.
+              ("0.90.0", m_0_90_0_browser_fallback.m_0_90_0_browser_fallback))
 
 
 # Every value above must be a version key the MIGRATIONS registry actually knows, so a typo here

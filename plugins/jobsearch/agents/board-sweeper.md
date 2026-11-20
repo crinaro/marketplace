@@ -5,7 +5,7 @@ description: 'Sweep the non-LinkedIn sourcing surfaces for new roles — job boa
 model: sonnet
 effort: low
 disallowedTools: Agent
-tools: WebSearch, WebFetch, Read, Bash, mcp__Claude_Browser__preview_start, mcp__Claude_Browser__navigate, mcp__Claude_Browser__get_page_text, mcp__Claude_Browser__read_page, mcp__Claude_Browser__find, mcp__Claude_Browser__tabs_close
+tools: WebSearch, WebFetch, Read, Bash, ToolSearch, mcp__Claude_Browser__preview_start, mcp__Claude_Browser__navigate, mcp__Claude_Browser__get_page_text, mcp__Claude_Browser__read_page, mcp__Claude_Browser__find, mcp__Claude_Browser__tabs_context, mcp__Claude_Browser__javascript_tool, mcp__Claude_Browser__tabs_close, mcp__claude-in-chrome__list_connected_browsers, mcp__claude-in-chrome__select_browser, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__javascript_tool, mcp__claude-in-chrome__tabs_close_mcp
 ---
 
 ## THE PLUGIN AGENT CONTRACT — standing rules, before anything else in this file
@@ -141,6 +141,84 @@ report it as this channel's.
   open on the way out.
 - `guard_browser_tab.py` refuses a pane call from this agent that names no `tabId`, and its refusal
   says what to do. It is a backstop for this rule and does not replace it.
+- **The extension is another browser, with its own tab** (§"The ladder"): this section's tab is the pane's. Never put an
+  extension call on it, and never put a pane call on the extension's tab.
+
+## ⭐ Wait for the page, then read it, and ask the gate only when it did not read (dev #858, jobsearch 0.90.0)
+
+A page read straight after `navigate` is sometimes half-loaded, and a pane that does not paint reads a shell, which looks like
+a channel with no search UI. So after EVERY `navigate`, on either browser:
+
+1. **Wait for the content.** Once per dispatch run `~/.claude/jobsearch/run page_ready.py --print board-sweep` and keep the code
+   it prints. After each `navigate`, run that code with the browser's `javascript_tool` (`mcp__Claude_Browser__javascript_tool`
+   or `mcp__claude-in-chrome__javascript_tool`, always with your own `tabId`) and hand its JSON result to
+   `~/.claude/jobsearch/run page_ready.py --verdict '<that JSON, or the tool's own error text>'`. It prints `READY <chars>`,
+   `NOT-READY` or `READY-ERROR` (a tool error or a timeout is `READY-ERROR`). Keep the word.
+2. **Read** with `get_page_text` (your `tabId`). A READY page that shows the channel's search or listing UI is swept as below.
+3. **When the page is `NOT-READY` or `READY-ERROR`, or it is READY and shows neither the search UI nor a sign-in wall, a
+   challenge or a not-found,** ask the paint gate. Once per dispatch run `~/.claude/jobsearch/run pane_probe.py --print` and keep
+   the code. Run it with the same browser's `javascript_tool` and read the result with
+   `~/.claude/jobsearch/run pane_probe.py --gate --result '<probe JSON>'`. It prints `GATE <word>`:
+   - `paints` → the page painted and still is not the channel's UI: it is that channel's own failure, recorded by "When a
+     channel fails" below.
+   - `probe-again` → probe once more at least 4 seconds after the first, and pass both results (`--result` twice).
+   - `not-painting` or `probe-error` → this browser cannot read the page, which says nothing about the channel. Take the next
+     rung (§"The ladder"); never record `upstream-error` or `surface-unreachable` for it.
+
+   The pane line (the last line of `mcp__Claude_Browser__tabs_context`) is kept beside the gate and does not decide it: a pane that
+   reads `hidden` can still paint for minutes, and one that reads `displayed` can stop.
+
+## ⭐ The ladder: a channel the pane cannot read (dev #858, jobsearch 0.90.0)
+
+The rungs for a channel whose route is a browser: **the pane, then Claude in Chrome on this computer, then a loud `NOT CHECKED`**
+(no scripted fetch exists for a board). A channel whose route puts `chrome` first starts on the extension, under the same rules.
+The script says which rung is next; you never decide it:
+
+```bash
+~/.claude/jobsearch/run route.py --next --step board-sweep --attended <yes|no> \
+  --outcomes '<JSON list>' --latch <none|browser>
+```
+
+- `--attended`: the value your brief gave; `no` when it gave none.
+- `--outcomes`: one object per rung you have already tried for THIS channel, in order: `{"rung":"browser","word":"<the gate word,
+  not-painting or probe-error>"}`, then `{"rung":"chrome","word":"<its code, below>"}`. `[]` before any rung.
+- `--latch`: the `LATCH` word of the last answer in this dispatch (`none` before the first). Once it is `browser`, never open or probe
+  the pane again: start each next channel with `--outcomes '[]'` and this latch, and take the rung it names.
+
+It prints `NEXT <rung> LATCH <browser|none>`, plus ` NOTE waiting-on-person` (`chrome` on an attended run) and ` CODE <code>` (the
+extension was passed over: that code is the `extension <code>` of the NOT CHECKED line below). `NEXT browser` or `NEXT chrome`: sweep
+on that browser. `NEXT not-checked` (a board has no fetch) or `NEXT done`: see the last bullet, or the sweep is done.
+**`!! NO NEXT RUNG`** (exit 1) is a refused call, not an answer: never guess a rung; the channel is NOT CHECKED. **An absent, empty or
+non-`yes` `attended` is `no`:** a brief that does not say is unattended.
+
+- **Unattended (`attended: no`):** the extension is NOT entered. Its code is `unattended-unprobed`. A site prompt or a CAPTCHA blocks
+  the tool call, so an unattended run that entered the rung would never come back to report anything.
+- **Attended, `NEXT chrome`:**
+  1. **Print the waiting line before the first extension call:** `WAITING-ON-PERSON possible: Claude in Chrome may ask you to
+     allow this site, or stop at a CAPTCHA. This step waits until you answer.`
+  2. **Which browser: the script's answer.** If the extension tools are deferred, load them with `ToolSearch`
+     (`mcp__claude-in-chrome__list_connected_browsers`, `mcp__claude-in-chrome__select_browser`,
+     `mcp__claude-in-chrome__tabs_create_mcp`, `mcp__claude-in-chrome__navigate`, `mcp__claude-in-chrome__get_page_text`,
+     `mcp__claude-in-chrome__javascript_tool`, `mcp__claude-in-chrome__tabs_close_mcp`); none loadable is the code `tools-absent`. Call
+     `mcp__claude-in-chrome__list_connected_browsers` and pass the whole result to
+     `~/.claude/jobsearch/run route.py --pick-browser '<that JSON>'`. It prints `USE <deviceId>`, or `SELECT <deviceId>` (then call
+     `mcp__claude-in-chrome__select_browser` on that one), or a code: `not-connected`, `not-this-computer` or
+     `browser-ambiguous`. **Never call `switch_browser`**, and never `select_browser` a browser that is not on this computer.
+  3. **Your own tab.** `mcp__claude-in-chrome__tabs_create_mcp` once, then `navigate`, the wait and `get_page_text` in it. **Close
+     only that tab**, with `mcp__claude-in-chrome__tabs_close_mcp`, before you hand back and on every way out. Never use, reuse or
+     close a tab you did not create.
+  4. **Say so once in the transcript, at first use:** `The Browser pane is not painting. Using Claude in Chrome on this computer: its
+     tabs open in a tab group in your Chrome.`
+  5. Read the page as above: the wait, then the gate only if it did not read.
+- **Why the extension did not read (its code):** `tools-absent`, `not-connected`, `not-this-computer`, `browser-ambiguous`,
+  `unattended-unprobed`, `not-preferred` (the owner's route preference has no `chrome`), `lock-held`, `navigate-timeout` (the
+  `navigate` timed out: **no wake, no relaunch, no retry**; this channel moves on), `not-painting` (its own gate), `not-ready`,
+  `challenge`, `permission-denied` (the owner declined the site prompt).
+- **No rung read the channel: it is NOT CHECKED, said out loud.** Put one line in your hand-back file, outside the ROLES block:
+  `NOT CHECKED <channel id>: pane not painting; extension <code>; fetch none`. In the block it is
+  `CHANNEL <id> not-attempted reason=browser-unavailable`, or `CHANNEL <id> unreachable reason=surface-unreachable` when some of
+  its searches had already run (keep those `QUERY` lines). A browser that does not paint says nothing about the channel: never
+  `upstream-error`, and never a zero.
 
 ## What a sweep is
 

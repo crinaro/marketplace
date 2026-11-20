@@ -5,7 +5,7 @@ description: 'Deep-dive research on ONE newly sourced role — find the original
 model: sonnet
 effort: medium
 disallowedTools: Agent
-tools: WebSearch, WebFetch, Read, Bash, mcp__Claude_Browser__preview_start, mcp__Claude_Browser__navigate, mcp__Claude_Browser__get_page_text, mcp__Claude_Browser__read_page, mcp__Claude_Browser__find, mcp__Claude_Browser__tabs_close
+tools: WebSearch, WebFetch, Read, Bash, ToolSearch, mcp__Claude_Browser__preview_start, mcp__Claude_Browser__navigate, mcp__Claude_Browser__get_page_text, mcp__Claude_Browser__read_page, mcp__Claude_Browser__find, mcp__Claude_Browser__tabs_context, mcp__Claude_Browser__javascript_tool, mcp__Claude_Browser__tabs_close, mcp__claude-in-chrome__list_connected_browsers, mcp__claude-in-chrome__select_browser, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__javascript_tool, mcp__claude-in-chrome__tabs_close_mcp
 ---
 
 ## THE PLUGIN AGENT CONTRACT — standing rules, before anything else in this file
@@ -99,6 +99,82 @@ as this role's.
   way out.
 - `guard_browser_tab.py` refuses a pane call from this agent that names no `tabId`, and its refusal
   says what to do. It is a backstop for this rule and does not replace it.
+- **The extension is another browser, with its own tab** (§"The ladder"): this section's tab is the pane's. Never put an
+  extension call on it, and never put a pane call on the extension's tab.
+
+## ⭐ Wait for the page, then read it, and ask the gate only when it did not read (dev #858, jobsearch 0.90.0)
+
+A page read straight after `navigate` is sometimes half-loaded, and a pane that does not paint reads a shell: an unrendered shell
+is exactly the false "closed" this file already warns about. So after EVERY `navigate`, on either browser:
+
+1. **Wait for the content.** Once per dispatch run `~/.claude/jobsearch/run page_ready.py --print research-render` and keep the
+   code it prints. After each `navigate`, run that code with the browser's `javascript_tool`
+   (`mcp__Claude_Browser__javascript_tool` or `mcp__claude-in-chrome__javascript_tool`, always with your own `tabId`) and hand its
+   JSON result to `~/.claude/jobsearch/run page_ready.py --verdict '<that JSON, or the tool's own error text>'`. It prints
+   `READY <chars>`, `NOT-READY` or `READY-ERROR` (a tool error or a timeout is `READY-ERROR`). Keep the word.
+2. **Read** with `get_page_text` or `read_page` (your `tabId`). A READY page that shows the posting's own text is read as the
+   steps below say.
+3. **When the page is `NOT-READY` or `READY-ERROR`, or it is READY and shows no posting text,** ask the paint gate. Once per
+   dispatch run `~/.claude/jobsearch/run pane_probe.py --print` and keep the code. Run it with the same browser's
+   `javascript_tool` and read the result with `~/.claude/jobsearch/run pane_probe.py --gate --result '<probe JSON>'`. It prints
+   `GATE <word>`:
+   - `paints` → the page painted and still did not render the posting: report it as the steps below say (`render-failed`).
+   - `probe-again` → probe once more at least 4 seconds after the first, and pass both results (`--result` twice).
+   - `not-painting` or `probe-error` → this browser cannot read the page, which says nothing about the posting. Take the next
+     rung (§"The ladder"). A page a browser could not paint is **never** `render-failed`, never `negative`, and never evidence the
+     posting is dead.
+
+   The pane line (the last line of `mcp__Claude_Browser__tabs_context`) is kept beside the gate and does not decide it.
+
+## ⭐ The ladder: a page the pane cannot read (dev #858, jobsearch 0.90.0)
+
+The rungs: **the pane, then Claude in Chrome on this computer, then a loud `NOT CHECKED`** (no scripted fetch exists for an
+employer's own page). The script says which rung is next; you never decide it:
+
+```bash
+~/.claude/jobsearch/run route.py --next --step research-render --attended <yes|no> \
+  --outcomes '<JSON list>' --latch <none|browser>
+```
+
+- `--attended`: the value your brief gave; `no` when it gave none.
+- `--outcomes`: one object per rung you have already tried for THIS page, in order: `{"rung":"browser","word":"<the gate word,
+  not-painting or probe-error>"}`, then `{"rung":"chrome","word":"<its code, below>"}`. `[]` before any rung.
+- `--latch`: the `LATCH` word of the last answer in this dispatch (`none` before the first). Once it is `browser`, never open or probe
+  the pane again: start each next page with `--outcomes '[]'` and this latch, and take the rung it names.
+
+It prints `NEXT <rung> LATCH <browser|none>`, plus ` NOTE waiting-on-person` (`chrome` on an attended run) and ` CODE <code>` (the
+extension was passed over: that code is the `extension <code>` of the NOT CHECKED line below). `NEXT browser` or `NEXT chrome`: read
+on that browser. `NEXT not-checked` (no fetch exists) or `NEXT done`: see the last bullet, or the read is done. **`!! NO NEXT RUNG`**
+(exit 1) is a refused call, not an answer: never guess a rung; the page is NOT CHECKED. **An absent, empty or non-`yes` `attended` is
+`no`** (your brief's own rule, below).
+
+- **Unattended (`attended: no`):** the extension is NOT entered. Its code is `unattended-unprobed`. A site prompt or a CAPTCHA blocks
+  the tool call, so an unattended run that entered the rung would never come back to report anything.
+- **Attended, `NEXT chrome`:**
+  1. **Print the waiting line before the first extension call:** `WAITING-ON-PERSON possible: Claude in Chrome may ask you to
+     allow this site, or stop at a CAPTCHA. This step waits until you answer.`
+  2. **Which browser: the script's answer.** If the extension tools are deferred, load them with `ToolSearch`
+     (`mcp__claude-in-chrome__list_connected_browsers`, `mcp__claude-in-chrome__select_browser`,
+     `mcp__claude-in-chrome__tabs_create_mcp`, `mcp__claude-in-chrome__navigate`, `mcp__claude-in-chrome__get_page_text`,
+     `mcp__claude-in-chrome__javascript_tool`, `mcp__claude-in-chrome__tabs_close_mcp`); none loadable is the code `tools-absent`. Call
+     `mcp__claude-in-chrome__list_connected_browsers` and pass the whole result to
+     `~/.claude/jobsearch/run route.py --pick-browser '<that JSON>'`. It prints `USE <deviceId>`, or `SELECT <deviceId>` (then call
+     `mcp__claude-in-chrome__select_browser` on that one), or a code: `not-connected`, `not-this-computer` or
+     `browser-ambiguous`. **Never call `switch_browser`**, and never `select_browser` a browser that is not on this computer.
+  3. **Your own tab.** `mcp__claude-in-chrome__tabs_create_mcp` once, then `navigate`, the wait and `get_page_text` in it. **Close
+     only that tab**, with `mcp__claude-in-chrome__tabs_close_mcp`, before you hand back and on every way out. Never use, reuse or
+     close a tab you did not create.
+  4. **Say so once in the transcript, at first use:** `The Browser pane is not painting. Using Claude in Chrome on this computer: its
+     tabs open in a tab group in your Chrome.`
+  5. Read the page as above: the wait, then the gate only if it did not read.
+- **Why the extension did not read (its code):** `tools-absent`, `not-connected`, `not-this-computer`, `browser-ambiguous`,
+  `unattended-unprobed`, `not-preferred` (the owner's route preference has no `chrome`), `lock-held`, `navigate-timeout` (the
+  `navigate` timed out: **no wake, no relaunch, no retry**; this page moves on), `not-painting` (its own gate), `not-ready`,
+  `challenge`, `permission-denied` (the owner declined the site prompt).
+- **No rung read the page: it is NOT CHECKED, said out loud.** Put one line in your hand-back file:
+  `NOT CHECKED <opp_id>: pane not painting; extension <code>; fetch none`, and write the role's line as
+  `EMPLOYER-POSTING <opp_id> looked <url> inconclusive`, never `render-failed` and never `negative`. The role stays
+  "could not confirm live", which is what it is.
 
 ## ⭐ A site approval: never wait on an unattended run (N10)
 

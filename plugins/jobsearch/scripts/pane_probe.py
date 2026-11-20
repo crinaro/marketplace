@@ -61,12 +61,43 @@ session. It does not say the pane is PAINTING. A pane that reads `displayed` whi
 occluded, on another Space, on a sleeping display or behind a locked screen keeps the pre-0.83 outcome
 (the #96 verdict fires on it).
 
+## The paint gate: the same probe, read a second way (dev #858, jobsearch 0.90.0; design-browser-fallback.md §3.1)
+
+The pane line says whether the owner's window shows the session; it does not say the page paints (rounds A
+and B: the line read right for minutes, then a freshly loaded page stopped painting). A step therefore leaves
+the pane only when the PAINT GATE says so, and the pane line is recorded beside it and does not decide:
+
+    paint_gate(results)            -> "paints" | "not-painting" | "probe-again" | "probe-error"
+
+It reads the same `PROBE_JS` results as `verdict()`, by the same numbered rules in the same order, and gives
+each outcome the word a fallback step needs:
+
+    1. any result is `{hidden: true}`                     -> `not-painting`   (verdict(): no-verdict:pane-hidden)
+    2. no result, or one that is not a PROBE_JS shape     -> `probe-error`    (verdict(): no-verdict:probe-error)
+    3. any `{painted: true}`                              -> `paints`         (verdict(): painting)
+    4. exactly one candidate                              -> `probe-again`    (verdict(): candidate)
+    5. two or more candidates                             -> `not-painting`   (verdict(): render-stalled)
+
+Rule 1 is a VISIBILITY signal, not a paint measurement: `PROBE_JS` returns `{hidden: true}` before it asks
+for a single frame whenever `document.visibilityState` is not `visible`. If probe round C records `hidden`
+while a bare nested `requestAnimationFrame` fires, the gate needs a probe without that early return
+(design §10). Until then rule 1 reads a hidden document as a page that is not painting, which for a step that
+can fall back is the safe reading: a fallback is cheap and visible, a silent read of a page that never
+rendered is not (this is also why rule 2, `probe-error`, falls back).
+
+`verdict()` is UNCHANGED and still decides the runner's #96 `render-stalled`; one probe, two readings, one
+rule order. The test suite pins the agreement (`GateVerdictAgree`): `paint_gate` and `verdict()` map every
+shared input to the pair of words above. The 4-second spacing between two candidates stays prose, as it is
+for `verdict()`: neither function can see time. The gate takes no pane state on purpose.
+
 Usage:
     python3 scripts/pane_probe.py --print     # emit PROBE_JS verbatim, for a byte-equal diff
                                                # against the fenced copy in linkedin-runner.md
     python3 scripts/pane_probe.py --verdict --pane "<tabs_context last line | not-pane>" [--pane ...] \\
         --result '<probe json>' [--result ...]
                                                # prints one line: VERDICT <a word from verdict()>
+    python3 scripts/pane_probe.py --gate --result '<probe json>' [--result ...]
+                                               # prints one line: GATE <a word from paint_gate()>
 
 Python 3.9+. Standard library only.
 """
@@ -171,6 +202,44 @@ def verdict(pane_states, results):
     return "candidate" if len(shapes) == 1 else "render-stalled"
 
 
+# The words `paint_gate` returns, and the `verdict()` word each one is the gate's reading of. Declared once so
+# the CLI, the agents' recorded `gate:` values (jd_read.GATE_WORDS) and the agreement test name the same set.
+GATE_WORDS = ("paints", "not-painting", "probe-again", "probe-error")
+GATE_OF_VERDICT = {
+    "no-verdict:pane-hidden": "not-painting",
+    "no-verdict:probe-error": "probe-error",
+    "painting": "paints",
+    "candidate": "probe-again",
+    "render-stalled": "not-painting",
+}
+
+
+def paint_gate(results):
+    """The paint gate's word for a step's `PROBE_JS` results (dev #858, design §3.1). First match wins, in the
+    order of `verdict()`'s rules 2-5, and the pane line is not an input:
+
+      1. any result is `{hidden: true}`                 -> `not-painting`
+      2. no result, or one that is not a PROBE_JS shape -> `probe-error`
+      3. any `{painted: true}`                          -> `paints`
+      4. exactly one candidate                          -> `probe-again`   (probe again, at least 4 s later)
+      5. two or more candidates                         -> `not-painting`
+
+    Rule 1 is a VISIBILITY signal: `PROBE_JS` returns `{hidden: true}` before any frame is requested when
+    `document.visibilityState` is not `visible`, so it says "this document is not shown", not "this document
+    does not paint" (see the module docstring). `probe-error` falls back like `not-painting`: a fallback is
+    cheap and visible, a silent read of a page that never rendered is not. The spacing between candidates
+    stays prose, as in `verdict()`. A result is judged by the same `_shape` as `verdict()`, never a second
+    parser."""
+    shapes = [_shape(r) for r in (results or [])]
+    if "hidden" in shapes:
+        return "not-painting"
+    if not shapes or None in shapes:
+        return "probe-error"
+    if "painted" in shapes:
+        return "paints"
+    return "probe-again" if len(shapes) == 1 else "not-painting"
+
+
 def _parse_result(raw):
     """A `--result` value as JSON. An unreadable one becomes a value `_shape` refuses, so the verdict is
     `no-verdict:probe-error`: never a crash, never a guess."""
@@ -187,6 +256,8 @@ def main():
                     help="emit PROBE_JS verbatim to stdout")
     ap.add_argument("--verdict", dest="do_verdict", action="store_true",
                     help="print the probe's verdict from --pane and --result (dev #826)")
+    ap.add_argument("--gate", dest="do_gate", action="store_true",
+                    help="print the paint gate's word from --result (dev #858); the pane line is not an input")
     ap.add_argument("--pane", action="append", default=[],
                     help="with --verdict: the last line of a tabs_context result, or the literal not-pane "
                          "when the pass runs on the Chrome extension; repeat it per read")
@@ -197,6 +268,9 @@ def main():
     if args.do_print:
         print(PROBE_JS)
         return 0
+    if args.do_gate:
+        print("GATE %s" % paint_gate([_parse_result(r) for r in args.result]))
+        return 0
     if args.do_verdict:
         print("VERDICT %s" % verdict([_pane_arg(p) for p in args.pane],
                                      [_parse_result(r) for r in args.result]))
@@ -204,7 +278,8 @@ def main():
     print("pane_probe.py holds PROBE_JS, the render-stall probe run on the pane's own "
           "executor by name (linkedin-runner.md's FRAME PROBE section), and the verdict that decides "
           "what its result means. --print emits it verbatim, for diffing against the fenced copy in "
-          "that file; --verdict --pane <tabs_context last line> --result <json> prints the verdict.")
+          "that file; --verdict --pane <tabs_context last line> --result <json> prints the verdict; "
+          "--gate --result <json> prints the paint gate's word.")
     return 0
 
 

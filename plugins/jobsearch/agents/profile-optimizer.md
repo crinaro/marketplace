@@ -69,7 +69,8 @@ dispatching session's context (dev #482 / public #111).
 ## CONTEXT BUDGET — READ THIS FIRST
 
 **READS:** `presence/claims.md` · `~/.claude/jobsearch/run section.py configure/strategy.md "Target roles"` ·
-`~/.claude/jobsearch/run section.py configure/strategy.md "Positioning"` · the live LinkedIn profile.
+`~/.claude/jobsearch/run section.py configure/strategy.md "Positioning"` · the live LinkedIn profile · your brief's `attended: yes|no`
+(absent means no).
 
 **DOES NOT READ:** the pipeline JSONL · `log.md` · `outreach/drafts.md` · `applying/cover_letters.md`.
 
@@ -94,13 +95,87 @@ is working normally, that is a false negative: this agent declines work the mach
 
 Try in this order, and **say in the report which surface you used**:
 
-1. **In-app Browser pane** — `mcp__Claude_Browser__navigate` to the candidate's own profile URL
-   (from `profile.py`, never hard-coded). If it renders as them, work here.
-2. **Chrome extension** — `list_connected_browsers`, then the extension tools.
+1. **In-app Browser pane** — open one tab of your own with `mcp__Claude_Browser__preview_start` (it returns a `tabId`; pass that
+   `tabId` on every pane call and close the tab on the way out), then `mcp__Claude_Browser__navigate` to the candidate's own
+   profile URL (from `profile.py`, never hard-coded). If it renders as them, work here.
+2. **Chrome extension** — only when the script says so (§"The ladder" below), never on your own judgement.
 3. **Neither signed in** → return `BROWSER UNAVAILABLE`, and say what would fix it: the candidate
    opens the Browser pane in the Claude Code desktop app, goes to linkedin.com and signs in once;
    the session persists. `/jobsearch:linkedin` walks through it. **Never ask for the password and
    never sign in on their behalf.**
+
+## ⭐ Wait for the page, then read it, and ask the gate only when it did not read (dev #858, jobsearch 0.90.0)
+
+A page read straight after `navigate` is sometimes half-loaded, and a pane that does not paint reads a shell, which looks like a
+thin or empty profile. **An absence is a claim, not an observation** (above): a shell is never evidence the profile lacks a section.
+So after EVERY `navigate`, on either browser:
+
+1. **Wait for the content.** Once per dispatch run `~/.claude/jobsearch/run page_ready.py --print profile-read` and keep the code
+   it prints. After each `navigate`, run that code with the browser's `javascript_tool` (`mcp__Claude_Browser__javascript_tool` or
+   `mcp__claude-in-chrome__javascript_tool`, always with your own `tabId`) and hand its JSON result to
+   `~/.claude/jobsearch/run page_ready.py --verdict '<that JSON, or the tool's own error text>'`. It prints `READY <chars>`,
+   `NOT-READY` or `READY-ERROR` (a tool error or a timeout is `READY-ERROR`). Keep the word.
+2. **Read** with `get_page_text` or `read_page` (your `tabId`), and confirm the page carries the candidate's OWN NAME (below).
+3. **When the page is `NOT-READY` or `READY-ERROR`, or it is READY and shows nothing of the profile,** ask the paint gate. Once per
+   dispatch run `~/.claude/jobsearch/run pane_probe.py --print` and keep the code. Run it with the same browser's
+   `javascript_tool` and read the result with `~/.claude/jobsearch/run pane_probe.py --gate --result '<probe JSON>'`. It prints
+   `GATE <word>`:
+   - `paints` → the page painted and still is not the profile: it is not signed in, or the section is not there. Report that, with
+     the confirmation §"An ABSENCE" asks for.
+   - `probe-again` → probe once more at least 4 seconds after the first, and pass both results (`--result` twice).
+   - `not-painting` or `probe-error` → this browser cannot read the page, which says nothing about the profile. Take the next rung
+     (§"The ladder").
+
+   The pane line (the last line of `mcp__Claude_Browser__tabs_context`) is kept beside the gate and does not decide it.
+
+## ⭐ The ladder: a profile the pane cannot read (dev #858, jobsearch 0.90.0)
+
+The rungs: **the pane, then Claude in Chrome on this computer (signed in as the candidate, in their own Chrome), then a loud
+`NOT CHECKED`** (no scripted fetch exists for a signed-in page). The script says which rung is next:
+
+```bash
+~/.claude/jobsearch/run route.py --next --step profile-read --attended <yes|no> \
+  --outcomes '<JSON list>' --latch <none|browser>
+```
+
+- `--attended`: the value your brief gave; `no` when it gave none.
+- `--outcomes`: one object per rung you have already tried for the profile, in order: `{"rung":"browser","word":"<the gate word,
+  not-painting or probe-error>"}`, then `{"rung":"chrome","word":"<its code, below>"}`. `[]` before any rung.
+- `--latch`: the `LATCH` word of the last answer (`none` before the first). You read one profile: once it is `browser`, never open or
+  probe the pane again.
+
+It prints `NEXT <rung> LATCH <browser|none>`, plus ` NOTE waiting-on-person` (`chrome` on an attended run) and ` CODE <code>` (the
+extension was passed over: that code is the `extension <code>` of the NOT CHECKED line below). `NEXT browser` or `NEXT chrome`: read
+on that browser. `NEXT not-checked` (no fetch exists) or `NEXT done`: see the last bullet, or the read is done. **`!! NO NEXT RUNG`**
+(exit 1) is a refused call, not an answer: never guess a rung; the profile is NOT CHECKED. **An absent, empty or non-`yes`
+`attended` is `no`:** a brief that does not say is unattended.
+
+- **Unattended (`attended: no`):** the extension is NOT entered. Its code is `unattended-unprobed`. A site prompt or a CAPTCHA blocks
+  the tool call, so an unattended run that entered the rung would never come back to report anything.
+- **Attended, `NEXT chrome`:**
+  1. **Print the waiting line before the first extension call:** `WAITING-ON-PERSON possible: Claude in Chrome may ask you to
+     allow this site, or stop at a CAPTCHA. This step waits until you answer.`
+  2. **Which browser: the script's answer.** If the extension tools are deferred, load them with `ToolSearch`
+     (`mcp__claude-in-chrome__list_connected_browsers`, `mcp__claude-in-chrome__select_browser`,
+     `mcp__claude-in-chrome__tabs_create_mcp`, `mcp__claude-in-chrome__navigate`, `mcp__claude-in-chrome__get_page_text`,
+     `mcp__claude-in-chrome__javascript_tool`, `mcp__claude-in-chrome__tabs_close_mcp`); none loadable is the code `tools-absent`. Call
+     `mcp__claude-in-chrome__list_connected_browsers` and pass the whole result to
+     `~/.claude/jobsearch/run route.py --pick-browser '<that JSON>'`. It prints `USE <deviceId>`, or `SELECT <deviceId>` (then call
+     `mcp__claude-in-chrome__select_browser` on that one), or a code: `not-connected`, `not-this-computer` or
+     `browser-ambiguous`. **Never call `switch_browser`**, and never `select_browser` a browser that is not on this computer.
+  3. **Your own tab.** `mcp__claude-in-chrome__tabs_create_mcp` once, then `navigate`, the wait and `get_page_text` in it. **Close
+     only that tab**, with `mcp__claude-in-chrome__tabs_close_mcp`, before you hand back and on every way out. Never use, reuse or
+     close a tab you did not create.
+  4. **Say so once in the transcript, at first use:** `The Browser pane is not painting. Using Claude in Chrome on this computer: its
+     tabs open in a tab group in your Chrome.`
+  5. Read the page as above: the wait, then the gate only if it did not read.
+- **Why the extension did not read (its code):** `tools-absent`, `not-connected`, `not-this-computer`, `browser-ambiguous`,
+  `unattended-unprobed`, `not-preferred` (the owner's route preference has no `chrome`), `lock-held`, `navigate-timeout` (the
+  `navigate` timed out: **no wake, no relaunch, no retry**), `not-painting` (its own gate), `not-ready`, `challenge` (a sign-in
+  wall), `permission-denied` (the owner declined the site prompt).
+- **No rung read the profile: it is NOT CHECKED, said out loud.** Hand back `NOT CHECKED profile: pane not painting; extension
+  <code>; fetch none`, then `BROWSER UNAVAILABLE` and no audit. A browser that does not paint is not a thin profile: never draft
+  from a shell.
 
 ⚠️ **A logged-out LinkedIn page still returns 200 with plausible content**, so confirm the page
 carries the candidate's OWN NAME before trusting anything you read. "Profile looks thin" and "not

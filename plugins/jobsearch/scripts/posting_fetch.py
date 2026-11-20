@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""posting_fetch.py -- the opt-in, logged-out read of a LinkedIn job posting (jobsearch 0.85.0).
+"""posting_fetch.py -- the automatic, logged-out read of a LinkedIn job posting (jobsearch 0.85.0; automatic for everyone from 0.90.0).
 
-dev #840 / public #181, owner rulings D1 (accepted), D2 (opt-in, off by default) and "browser first" of 2026-11-13;
-design-hidden-pane-reads.md section 3, 4 and 16 (the build authority), ADR-038 (written by docs-steward).
+dev #840 / public #181 (0.85.0: design-hidden-pane-reads.md section 3, 4 and 16, ADR-038) and dev 858 (0.90.0: owner rulings D-A (a)
+everyone, (a2) no migration widens any sandbox, D-B an explicit `off` wins; design-browser-fallback.md section 6).
 
 WHAT IT IS, AND WHEN IT RUNS
 ----------------------------
@@ -10,17 +10,17 @@ WHAT IT IS, AND WHEN IT RUNS
 FALLBACK of the drain's read stage, never its first move:
 
   * `record.py read-batch --fetch` (the first pass) never sends a GET to a LinkedIn address. A LinkedIn role goes to the
-    render residue as `RESIDUE <id> (render): browser-first`, whether the key is on or off.
-  * `jd-reader` reads every `(render)` role in the Browser pane first. Only a role whose LATEST attempt in this run is
-    `pane-hidden` or `render-failed` (via render) can reach the fallback, and only when `search.posting_fetch` is `on`.
-    The key is `off` unless the user turns it on (`python3 posting_fetch.py --set on`, below). No migration and no
-    default ever turns it on.
+    render residue as `RESIDUE <id> (render): browser-first`, whatever the key says.
+  * `jd-reader` reads every `(render)` role in the Browser pane first, then, for an attended run, in Claude in Chrome. Only a role
+    whose browser reads could not happen (design 6.1, applied by `record.py`) can reach the fallback, and only when `auto_gate`
+    says go: the key is not `off` or unreadable, the host is `admitted`, and, for an `absent` key, the notice row exists.
   * It GETs ONE public address per eligible role, `https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/<job id>`,
     and records only what it can read in full: `read` (a pinned setting label and a derivable pay) or `closed` (the
-    page's own closed marker, on the page that is the role). Everything else records NOTHING: a 429, any other HTTP
-    status (401, 403, 404, 410, 999 and 5xx included), a shape change, a wrong page, the cap, a closed host. The role
-    keeps the outcome the browser gave it. The endpoint is UNDOCUMENTED by the vendor (a published scraping pattern
-    only), so no answer from it is ever evidence about the role.
+    page's own closed marker, on the page that is the role). Everything else records NO outcome about the role: a 429, any
+    other HTTP status (401, 403, 404, 410, 999 and 5xx included), a shape change, a wrong page, the cap, a closed host. The
+    role keeps the outcome the browser gave it. Since 0.90.0 a fetch that did not read leaves one more fact, never about the
+    role: `record.py` appends one `via fetch` `pane-hidden` attempt naming why (`evidence.fallback.fetch`). The endpoint is
+    UNDOCUMENTED by the vendor (a published scraping pattern only), so no answer from it is ever evidence about the role.
 
 WHAT IT SENDS (stated so a test can fail on it)
 -----------------------------------------------
@@ -58,21 +58,20 @@ FILES (never a store; `_root.state_root()` of the bound profile, or the seam `_S
   With no bound profile (`state_root()` falls back to the machine-global directory) the fallback prints
   `FALLBACK: off (no profile state directory)` and makes no GET.
 
-THE OPT-IN: `python3 posting_fetch.py --set on|off`
----------------------------------------------------
-The only writer of `search.posting_fetch`. `on` prints the terms (`TERMS_LINES`) FIRST, before anything is written, then
-adds `www.linkedin.com` to the profile project's `.claude/settings.json` `sandbox.network.allowedDomains` through
-`migrate._ats_feeds_settings_step` (the m_0_72_0 and m_0_76_0 step: a timestamped copy first, every other entry untouched,
-PENDING with nothing written on a file it cannot read), and only then writes the key. If that step is PENDING the key is
-NOT written and the exit is non-zero. `off` writes the key, leaves the host entry in place and says so. Under an
-administrator-required sandbox the repository's entry is ignored, the first GET fails as a transport error and the
-summary prints the `allowedDomains` line once.
+THE KEY AND THE SETTER: `python3 posting_fetch.py --set on|auto|off` (jobsearch 0.90.0, dev 858)
+-------------------------------------------------------------------------------------------------
+The key's tri-state (`absent` = automatic, `on`, `off` = NO fetch ever, `unreadable` = NO fetch), the sandbox admission check, the
+notice row and the gate are in `browser_fallback/` (`fetch_key`, `fetch_sandbox`, `fetch_notice`, `fetch_gate`); this file passes
+them its seams. The setter is the only writer of the key and of the notice row: `--set on` prints the terms (`TERMS_LINES`) FIRST,
+adds `www.linkedin.com` to the profile project's sandbox allowedDomains (`support_ats_feeds._ats_feeds_settings_step`) and writes
+`"on"`; `--set auto` prints the terms and REMOVES the key; `--set off` writes `"off"`. No migration ever touches a sandbox setting.
 
 Python 3.9+. Standard library only. Stdout only; the one write path is the setter and the two state files above.
 """
 
 import argparse
 import collections
+import datetime
 import hashlib
 import html
 import html.parser
@@ -88,6 +87,9 @@ import _atomic
 import _root
 import board_hosts as _bh
 import feed_poll as _fp
+from browser_fallback import fetch_gate as _gate, fetch_notice as _notice, fetch_sandbox as _sandbox
+from browser_fallback.fetch_limits import MIN_INTERVAL_S, POSTING_FETCH_CAP  # pacing and the cap (pace-by-test seams keep these names)
+from browser_fallback.fetch_key import KEY, KEY_DEFAULT, KEY_VALUES, SET_VALUES, key_value, write_key  # noqa: F401
 
 # ---- what is sent -------------------------------------------------------------------------------------------------
 _BASE = "https://www.linkedin.com"                       # a seam: the tests point it at a 127.0.0.1 loopback server
@@ -98,12 +100,10 @@ ENDPOINT_PATH_RE = re.compile(r"^/jobs-guest/jobs/api/jobPosting/\d+$", re.ASCII
 _HTTP = _fp.default_fetch                                # a seam: `(Request) -> feed_poll.Response`; raises FetchError
 
 # ---- pacing, backoff, cap (OURS; design section 3.4, with the reasons stated there) --------------------------------------
-MIN_INTERVAL_S = 3.0
 JITTER_MAX_S = 1.0
 BACKOFF_S = 30                                           # a 429 with no Retry-After: wait this, once
 RETRY_AFTER_CAP_S = _fp.RETRY_AFTER_CAP_S                # the longest Retry-After waited out; a longer one closes the host
 HOST_CLOSE_AFTER = 3                                     # rate-limit answers, or other non-200 answers, in one run
-POSTING_FETCH_CAP = 40                                   # GETs per run per machine: a fixed engine cap, read from no setting (40 was the retired `search.intake_per_run` default; intake counts companies now, `search.company_intake_per_run`)
 REQUEST_TIMEOUT_S = _fp.TIMEOUT_S
 # pacing at its maximum + a timeout + the backoff + the retry's timeout: asserted equal to that sum by a test, so a
 # changed constant that forgets this one is red. `--deadline-s` stops between roles below it.
@@ -124,18 +124,19 @@ CLOSED_MARKER = "No longer accepting applications"      # English only: a locali
 SETTING_LABEL_CLASS = None                               # UNDETERMINED: the workplace-type element is not yet pinned.
 #                                                          While it is None every parsed role takes the `(body)` route.
 
-# ---- the opt-in -----------------------------------------------------------------------------------------------------------
-KEY = "search.posting_fetch"
-KEY_VALUES = ("on", "off")
-KEY_DEFAULT = "off"
+# ---- the key, the audience and the terms --------------------------------------------------------------------------------------
+# OWNER RULING D-A (a), 2026-11-16 (dev 858): the automatic fetch is for EVERY installer, told first by `notice_row` (the owner
+# knew LinkedIn's robots.txt and User Agreement restrict it). The seam `"opted-in"` keeps the record executable; shipped: "everyone".
+AUDIENCES = ("everyone", "opted-in")
+AUTO_FETCH_AUDIENCE = "everyone"
 SANDBOX_PRE_COPY = "pre-posting-fetch"
 TERMS_LINES = (
-    "posting_fetch: turning on the logged-out posting fetch for LinkedIn roles the Browser pane could not read.",
+    "posting_fetch: the logged-out posting fetch for LinkedIn roles neither the Browser pane nor Claude in Chrome could read.",
     "  Sent: one GET per role to https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/<id>, with only a User-Agent "
     "naming this plugin. No cookie, no sign-in.",
     "  Pace: at most 40 per run on this machine, at least 3 s apart. Machines behind one address add up.",
     "  LinkedIn's robots.txt disallows this path, and LinkedIn User Agreement section 8.2 restricts automated access. "
-    "Turning this on is your decision.",
+    "Using this is your decision.",
     "  Terms: docs/user/jobsearch/posting-fetch.md in https://github.com/crinaro/marketplace",
 )
 
@@ -594,68 +595,63 @@ def prune(sdir, is_read):
     return removed
 
 
-# ---- the key ----------------------------------------------------------------------------------------------------------------
-
-def key_state(root):
-    """`(on, why)` for `search.posting_fetch` in `<root>/config.json`. ABSENT is `off`, and so is a value that is neither
-    `on` nor `off` (with `why` naming it, so the caller says so): a switch that cannot be read never turns a fetch on."""
-    try:
-        with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
-            cfg = json.load(fh)
-    except FileNotFoundError:
-        return False, None
-    except (OSError, ValueError) as e:
-        return False, "config.json cannot be read (%s)" % e
-    node = cfg
-    for part in KEY.split("."):
-        if not isinstance(node, dict) or part not in node:
-            return False, None
-        node = node[part]
-    if node == "on":
-        return True, None
-    if node == "off":
-        return False, None
-    return False, "%s is %r, not on or off" % (KEY, node)
+# ---- the key, the sandbox check, the notice row and the gate: `browser_fallback/` (design-browser-fallback.md 6.1-6.4) ---------
+PROXY_VARS = _sandbox.PROXY_VARS
+_USER_SETTINGS = None                                    # seam: an explicit path for the user's settings file
+_MANAGED_SETTINGS = None                                 # seam: a list of managed-settings paths; None means the OS's documented one
+NOTICE_ID, NOTICE_VALUES, NOTICE_REMEDY = _notice.NOTICE_ID, _notice.NOTICE_VALUES, _notice.NOTICE_REMEDY
+NOTICE_TEXTS = _notice.notice_texts()
+notice_exists = _notice.notice_exists
 
 
-def write_key(root, value):
-    """Set `search.posting_fetch` in `<root>/config.json`, every other key untouched, atomically. Raises ValueError."""
-    if value not in KEY_VALUES:
-        raise ValueError("%r is not on or off" % (value,))
-    path = os.path.join(root, "config.json")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            cfg = json.load(fh)
-    except (OSError, ValueError) as e:
-        raise ValueError("cannot read config.json (%s)" % e)
-    if not isinstance(cfg, dict):
-        raise ValueError("config.json is not a JSON object")
-    search = cfg.setdefault("search", {})
-    if not isinstance(search, dict):
-        raise ValueError("config.search is not an object")
-    search["posting_fetch"] = value
-    _atomic.write_json(path, cfg)
+def admitted(root):
+    """`(bool, why)`: may a GET to HOST go out (`fetch_sandbox.admitted`)?"""
+    return _sandbox.admitted(root, HOST, _USER_SETTINGS, _MANAGED_SETTINGS)
 
+
+def notice_row(value, today=None, created=None):
+    """The ONE notice row for the key value `value` (`fetch_notice.notice_row`), dated `today` (default: now)."""
+    return _notice.notice_row(value, today or datetime.date.fromtimestamp(_WALL()).isoformat(), created)
+
+
+def write_notice_row(root, value):
+    """Write the notice row for `value` by id (`fetch_notice.write_notice_row`)."""
+    _notice.write_notice_row(root, value, datetime.date.fromtimestamp(_WALL()).isoformat())
+
+
+def auto_gate(root):
+    """`(go, code, remedy)` for one `read-batch --fallback` call (`fetch_gate.auto_gate`)."""
+    return _gate.auto_gate(root, HOST, AUTO_FETCH_AUDIENCE, admitted)
+
+
+# ---- the setter -------------------------------------------------------------------------------------------------------------
 
 def set_key(root, value, out=print):
-    """The setter's whole logic (`--set on|off`). Returns the exit code: 0 written, 1 refused (nothing written)."""
-    if value not in KEY_VALUES:
-        out("posting_fetch: --set takes on or off (got %r). Nothing was written." % (value,))
+    """The setter's whole logic (`--set on|auto|off`). Returns the exit code: 0 written, 1 refused, 2 a value it does not take. Every
+    value writes the notice row for its new state, by id; only `on` writes a sandbox setting (design 6.3)."""
+    if value not in SET_VALUES:
+        out("posting_fetch: --set takes on, auto or off (got %r). Nothing was written." % (value,))
         return 2
     if _root.is_unbound(root) or not _root.looks_like_profile(root):
         out("posting_fetch: no profile is bound here (%s), so there is nothing to set. Nothing was written." % root)
         return 1
-    if value == "off":
+    notice_value = {"on": "on", "auto": "absent", "off": "off"}[value]
+    if value != "off":
+        for line in TERMS_LINES:                             # the terms, BEFORE anything is written (R2-S2)
+            out(line)
+    if value in ("off", "auto"):
         try:
-            write_key(root, "off")
+            write_notice_row(root, notice_value)
+            write_key(root, value)
         except ValueError as e:
             out("posting_fetch: REFUSED -- %s. Nothing was written." % e)
             return 1
-        out("posting_fetch: off. %s stays in .claude/settings.json sandbox.network.allowedDomains; remove it by hand if "
-            "you no longer want it." % HOST)
+        out("posting_fetch: off. No fetch of any kind will run. %s stays in .claude/settings.json sandbox.network.allowedDomains "
+            "if it was there; remove it by hand if you no longer want it." % HOST if value == "off" else
+            "posting_fetch: auto. %s is no longer set, so a LinkedIn role neither the Browser pane nor Claude in Chrome could read "
+            "is read from its public posting when the host is allowed (at most %d per run). Turn it off with "
+            "`posting_fetch.py --set off`." % (KEY, POSTING_FETCH_CAP))
         return 0
-    for line in TERMS_LINES:                                 # the terms, BEFORE anything is written (R2-S2)
-        out(line)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from migrations import support_ats_feeds as _ats_feeds
     ok, line = _ats_feeds._ats_feeds_settings_step(root, True, hosts=(HOST,), label="posting-fetch",
@@ -667,20 +663,22 @@ def set_key(root, value, out=print):
             "and run `posting_fetch.py --set on` again." % KEY)
         return 1
     try:
+        write_notice_row(root, notice_value)
         write_key(root, "on")
     except ValueError as e:
         out("posting_fetch: REFUSED -- %s. %s was not turned on." % (e, KEY))
         return 1
-    out("posting_fetch: on. A LinkedIn role the Browser pane could not read is now read from its public posting "
-        "(at most %d per run). Turn it off with `posting_fetch.py --set off`." % POSTING_FETCH_CAP)
+    out("posting_fetch: on. A LinkedIn role neither the Browser pane nor Claude in Chrome could read is now read from its public "
+        "posting (at most %d per run). Turn it off with `posting_fetch.py --set off`." % POSTING_FETCH_CAP)
     return 0
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="Turn the logged-out LinkedIn posting fetch on or off (off by default).")
-    ap.add_argument("--set", dest="value", metavar="on|off", required=True,
-                    help="on: print the terms, allow www.linkedin.com for the command sandbox, then turn "
-                         "search.posting_fetch on. off: turn it off (the sandbox entry stays).")
+    ap = argparse.ArgumentParser(description="Set the logged-out LinkedIn posting fetch: automatic (the default), on, or off.")
+    ap.add_argument("--set", dest="value", metavar="on|auto|off", required=True,
+                    help="on: print the terms, allow www.linkedin.com for the command sandbox, then turn search.posting_fetch "
+                         "on. auto: print the terms and remove the key (the automatic fetch; the default). off: turn it off "
+                         "(no fetch at all; the sandbox entry stays). Each writes the notice row.")
     args = ap.parse_args(argv)
     return set_key(_root.profile_root(), args.value.strip().lower())
 

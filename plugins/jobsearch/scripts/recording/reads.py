@@ -8,6 +8,7 @@ import json
 import re
 from recording import profile_paths as _paths
 from recording.common import _Refused, _Usage, _engine_version, _now, _profile_mod, _words
+from recording.evidence_keys import PROBE_RETIRED, new_evidence
 from recording.store_files import _load_or_empty, load
 
 
@@ -261,12 +262,14 @@ JD_READ_USAGE = ("read-jd <opp> --run <id> --url <u|-> --via fetch|render|feed|a
                  "--pay none|?|stated:<range>|estimate:<range> --setting \"<verbatim|none stated>\" "
                  "--location \"<text|?>\" --evidence \"<1-200 characters>\" [--status-text \"<the page's status line, or "
                  "none shown>\": --via render only] [--body-sha1 <sha1>: required with --via "
-                 "fetch] [--dry-run] [--already-locked]\n"
+                 "fetch] [--browser pane|extension: --via render only] [--dry-run] [--already-locked]\n"
                  "       read-failed <opp> --run <id> --url <u|-> --via fetch|render|feed|ats-api --outcome "
                  "closed|dead-link|manual-board|no-url|login-wall|challenge|render-failed|surface-cannot-read|"
                  "site-not-allowed --evidence \"<1-200 characters>\" [--page-result chars=<N>|error=<text>: required "
                  "with --via render, except for no-url, manual-board and site-not-allowed] [--pane \"<the tabs_context "
-                 "line>\" --probe '<json>': both required for render-failed] [--dry-run] [--already-locked]")
+                 "line>\": required for render-failed unless --browser extension] [--gate paints|not-painting|probe-error: "
+                 "required for render-failed] [--browser pane|extension] [--ready READY|NOT-READY|READY-ERROR] "
+                 "[--fallback-extension <code>] [--dry-run] [--already-locked]")
 
 
 def _jd_read_common(args, rec):
@@ -318,14 +321,18 @@ _PAGE_RESULT_RE = re.compile(r"^(?:chars=\d+|error=[^\r\n]{1,120})$")
 
 
 def _failed_page_evidence(args, via, outcome):
-    """The extra evidence keys (`page`, `pane`, `probe`) a `read-failed` stores, after the per-page requirement above.
-    `page` is the page result as given, `pane` the PARSED state (never the raw line) and `probe` the verdict
-    `pane_probe.verdict` returned. Raises `_Usage` (exit 2, nothing written) when a required flag is missing or malformed, or
-    when the pane or the probe says hidden for a `render-failed` (a hidden pane is `not-attempted --reason pane-hidden`)."""
+    """The extra evidence keys (`page`, `pane`, and from 0.90.0 `browser`, `ready`, `gate`, `fallback`) a `read-failed` stores,
+    after the per-page requirement above. `page` is the page result as given and `pane` the PARSED state (never the raw line);
+    `gate` is the word `pane_probe.py --gate` printed. Raises `_Usage` (exit 2, nothing written) when a required flag is missing
+    or malformed, when `--probe` is given (retired: `gate` replaces it), or when the gate says the page never painted for a
+    `render-failed` (a page that did not paint is `not-attempted --reason pane-hidden`). A hidden pane LINE alone is no longer a
+    refusal (design 3.3): the pane line is recorded and the gate decides."""
     import pane_probe as _pp
     on_page = via == "render" and outcome not in RENDER_EXEMPT_OUTCOMES
     on_render_failed = via == "render" and outcome == "render-failed"
     extra = {}
+    if args.probe_json is not None:
+        raise _Usage(PROBE_RETIRED + "\nusage: " + JD_READ_USAGE)
     page = (args.page_result or "").strip()
     if page:
         if not _PAGE_RESULT_RE.match(page):
@@ -337,29 +344,24 @@ def _failed_page_evidence(args, via, outcome):
                      "recorded for a page that was not opened and read, by itself, in this dispatch. A role you did not open "
                      "is reported in your hand-back (or, when the pane was hidden, recorded with `record.py not-attempted "
                      "--reason pane-hidden`), never given another role's outcome\nusage: %s" % (outcome, JD_READ_USAGE))
-    pane = None
+    new_keys = new_evidence(args, "read-failed", via, JD_READ_USAGE)
+    extra.update(new_keys)
     if args.pane_line is not None and str(args.pane_line).strip():
-        pane = _pp.pane_state(args.pane_line)
-        extra["pane"] = pane
-    elif on_render_failed:
+        extra["pane"] = _pp.pane_state(args.pane_line)
+    elif on_render_failed and new_keys.get("browser") != "extension":
         raise _Usage("read-failed --outcome render-failed needs --pane \"<the last line of tabs_context>\": the pane state is "
-                     "parsed from the harness's own line\nusage: " + JD_READ_USAGE)
-    verdict = None
-    if args.probe_json is not None and str(args.probe_json).strip():
-        try:
-            parsed = json.loads(args.probe_json)
-        except ValueError:
-            parsed = None                       # an unreadable probe is `no-verdict:probe-error`, never a crash or a guess
-        verdict = _pp.verdict([pane] if pane else [], [parsed])
-        extra["probe"] = verdict
-    elif on_render_failed:
-        raise _Usage("read-failed --outcome render-failed needs --probe '<json>': the result of the frame probe run on this "
-                     "page (pane_probe.PROBE_JS, with this tab's tabId)\nusage: " + JD_READ_USAGE)
-    if on_render_failed and (pane == "hidden" or verdict == "no-verdict:pane-hidden"):
-        raise _Usage("a hidden pane is not a failed render: with the Browser pane hidden (pane line or probe) the page never "
-                     "rendered, which is no evidence about the role. Record `record.py not-attempted <opp_id> ... --run <run id> "
-                     "--via render --reason pane-hidden --pane \"<line>\" --tab-active yes|no --evidence \"<the status line>\"` "
-                     "for this role and every one not yet read, and stop reading in the browser\nusage: " + NOT_ATTEMPTED_USAGE)
+                     "parsed from the harness's own line (a read on the Chrome extension has no pane line: pass --browser "
+                     "extension instead)\nusage: " + JD_READ_USAGE)
+    if on_render_failed and "gate" not in new_keys:
+        raise _Usage("read-failed --outcome render-failed needs --gate paints|not-painting|probe-error: the word `pane_probe.py "
+                     "--gate --result '<json>'` printed for the frame probe run on this page (pane_probe.PROBE_JS, with this "
+                     "tab's tabId). A failed render is a page that PAINTED and still did not read\nusage: " + JD_READ_USAGE)
+    if on_render_failed and new_keys.get("gate") in ("not-painting", "probe-error"):
+        raise _Usage("a page that does not paint is not a failed render: with the gate at %s the page never rendered, which is "
+                     "no evidence about the role. Try the next rung (the Chrome extension, then the fetch), and when none "
+                     "reads, record `record.py not-attempted <opp_id> ... --run <run id> --via render --reason pane-hidden "
+                     "--pane \"<line>\" --tab-active yes|no --gate %s --evidence \"<the status line>\"`\nusage: %s"
+                     % (new_keys["gate"], new_keys["gate"], NOT_ATTEMPTED_USAGE))
     return extra
 
 
@@ -526,10 +528,13 @@ def _jd_read_mutation(args, rec):
         return ("read-failed via %s: %s (%s)" % (via, outcome, _jd.outcome_class(outcome))), apply_failed
 
     # ---- read-jd ----
-    for flag, val in (("--page-result", args.page_result), ("--probe", args.probe_json), ("--pane", args.pane_line)):
+    if args.probe_json is not None:
+        raise _Usage(PROBE_RETIRED + "\nusage: " + JD_READ_USAGE)
+    for flag, val in (("--page-result", args.page_result), ("--pane", args.pane_line)):
         if val is not None:
             raise _Usage("%s belongs to `read-failed` (it describes a page that did not render as a posting), not to read-jd\n"
                          "usage: %s" % (flag, JD_READ_USAGE))
+    new_read_keys = new_evidence(args, "read-jd", via, JD_READ_USAGE)   # a read records its --browser only (and needs the pin)
     if via == "fetch" and not (args.body_sha1 or "").strip():
         raise _Usage("read-jd --via fetch needs --body-sha1 <sha1>: it records the reader's read of a body the fallback saved "
                      "(`RESIDUE <id> (body)`), and is refused unless the sha1, the evidence, the location and every --pay "
@@ -577,6 +582,7 @@ def _jd_read_mutation(args, rec):
     elif "\n" in place or len(place) > 200:
         raise _Refused("--location is one line of at most 200 characters")
     read_evidence = {"quote": evidence}
+    read_evidence.update(new_read_keys)
     body_pay_inferred = False
     if via == "fetch":
         url, body_evidence = _fetch_body_read(args, rec, evidence, place)
@@ -684,4 +690,5 @@ def _apply_failed(r, *, run, url, via, outcome, text, at_iso):
 
 NOT_ATTEMPTED_USAGE = ("not-attempted <opp id> [<opp id> ...] --run <id> --via render --reason pane-hidden "
                        "--pane \"<the tabs_context line>\" --tab-active yes|no --evidence \"<1-200 characters>\" "
-                       "[--dry-run] [--already-locked]")
+                       "[--gate paints|not-painting|probe-error] [--ready READY|NOT-READY|READY-ERROR] "
+                       "[--fallback-extension <code>] [--browser pane] [--dry-run] [--already-locked]")

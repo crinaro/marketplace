@@ -1,16 +1,20 @@
 """LinkedIn passes: which surfaces were reached, refusals excused, the quota split, crashed passes, and the probe and
 gap writers.
 
-Capability module of `journal.py` (S4a, moved unedited)."""
+Capability module of `journal.py` (S4a; `record_gap` takes the 0.90.0 `fallback` key, dev 858)."""
 
 import re
-from journaling.journal_file import append, now_iso
+import jd_read as _jd
+from journaling.coverage_claims import coverage_echo
+from journaling.journal_file import append, normalize_citation, now_iso
 from journaling.passes import record_verdict
 from journaling.tables import (
     COVERED_REASON_MAX,
     COVERED_REASON_MIN,
     JournalError,
     LINKEDIN_FREE_REFUSALS_PER_DAY,
+    LINKEDIN_MESSAGE_REQUESTS_ALIAS,
+    LINKEDIN_MESSAGE_REQUESTS_CANON,
     MEDIA,
     PROBE_RESULT_RE,
     REASONS,
@@ -149,8 +153,18 @@ def record_probe(root, subject, thread, result, medium="linkedin", mailbox=None,
     return append(root, rec)
 
 
+def _check_gap_fallback(fallback):
+    """dev 858 (jobsearch 0.90.0, design-browser-fallback.md 8.1) -- a gap's `fallback`: exactly `{"extension": <code>}`, the
+    code one of `jd_read.EXTENSION_CODES` (why the Chrome extension did not take the work the pane could not do). The ONE
+    vocabulary lives in `jd_read` (a pure module); this only refuses what it does not list."""
+    if (not isinstance(fallback, dict) or set(fallback) != {"extension"}
+            or fallback["extension"] not in _jd.EXTENSION_CODES):
+        raise JournalError("a gap's fallback must be {\"extension\": <one of %s>} -- %r"
+                           % (", ".join(_jd.EXTENSION_CODES), fallback))
+
+
 def record_gap(root, run_id, scope, reason, closes_when="", covered_by="", at=None,
-               covered_reason=""):
+               covered_reason="", fallback=None):
     """The ONE writer of a `gap` row (factored out of main()'s `--gap` branch, dev #488 /
     public #105, so `linkedin_sweep.py record` can file a `partial-results` gap without shelling
     out). Returns the gap id. The caller owns scope normalisation and `covered_by` citation
@@ -159,8 +173,13 @@ def record_gap(root, run_id, scope, reason, closes_when="", covered_by="", at=No
     ⭐ dev #711 / public #147 — a `covered_by` SUPPRESSES the gap, so it must say why the cited
     issue covers THIS gap's scope: `covered_reason`, required with `covered_by`, stored beside it.
     A reason with no citation is refused too (it would be a claim about nothing). Rows written
-    before this field existed carry no reason; they stay valid and read as unverified."""
+    before this field existed carry no reason; they stay valid and read as unverified.
+
+    dev 858 (0.90.0) -- `fallback`, optional, is `{"extension": <code>}`: why the Chrome extension did not take the work the
+    pane could not do (`_check_gap_fallback`). It is stored only when given, so every older row reads unchanged."""
     at = at or now_iso()
+    if fallback is not None:
+        _check_gap_fallback(fallback)
     covered_reason = " ".join((covered_reason or "").split())
     if covered_by:
         if not (COVERED_REASON_MIN <= len(covered_reason) <= COVERED_REASON_MAX):
@@ -179,8 +198,40 @@ def record_gap(root, run_id, scope, reason, closes_when="", covered_by="", at=No
     if reason not in REASONS:
         raise JournalError("record_gap reason %r is not in REASONS %r" % (reason, sorted(REASONS)))
     gid = "%s:%s" % (run_id, re.sub(r"[^A-Za-z0-9:._-]+", "-", scope))
-    append(root, {"event": "gap", "run_id": run_id, "gap_id": gid, "scope": scope,
-                  "reason": reason, "covered_by": covered_by or "",
-                  "covered_reason": covered_reason,
-                  "closes_when": closes_when or "", "at": at})
+    row = {"event": "gap", "run_id": run_id, "gap_id": gid, "scope": scope,
+           "reason": reason, "covered_by": covered_by or "",
+           "covered_reason": covered_reason,
+           "closes_when": closes_when or "", "at": at}
+    if fallback is not None:
+        row["fallback"] = dict(fallback)
+    append(root, row)
     return gid
+
+
+def file_gap(root, args, at):
+    """`journal.py --run <id> --gap <scope> --reason <code>`: normalise the scope, normalise and echo the `covered_by` citation,
+    write the gap through `record_gap`, print its id (the `--gap` branch of `journal.py main()`, moved here by dev 858 so the entry
+    point does not grow). Raises `JournalError`."""
+    if not args.reason:
+        raise JournalError(
+            "--reason is required with --gap. A gap without a reason code cannot be "
+            "counted or grouped, which is the whole reason this is not prose.")
+    scope = args.gap
+    if scope == LINKEDIN_MESSAGE_REQUESTS_ALIAS:
+        # design-linkedin-runner-resilience.md §6 — the old spelling is still
+        # ACCEPTED (rows already on disk say it) but is normalized at write time so
+        # the tree never carries two spellings as canon going forward.
+        print("normalizing gap scope %r -> %r"
+              % (LINKEDIN_MESSAGE_REQUESTS_ALIAS, LINKEDIN_MESSAGE_REQUESTS_CANON))
+        scope = LINKEDIN_MESSAGE_REQUESTS_CANON
+    covered_by = normalize_citation(args.covered_by) if args.covered_by else ""
+    gid = record_gap(root, args.run, scope, args.reason,
+                     closes_when=args.closes_when, covered_by=covered_by, at=at,
+                     covered_reason=args.covered_reason or "",
+                     fallback={"extension": args.fallback_extension} if args.fallback_extension else None)
+    print(gid)
+    if covered_by:
+        # dev #711 / public #147 -- the citation is eyeballed WHEN WRITTEN: the
+        # cited issue's title and state, or NOT VERIFIED when gh cannot answer.
+        for ln in coverage_echo(covered_by):
+            print(ln)

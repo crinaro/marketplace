@@ -116,12 +116,21 @@ free to grab this moment and effectively unrecoverable once the posting comes do
 ~/.claude/jobsearch/run record.py append <opp_id> sightings '{"channel_id":"linkedin-jobsearch","seen_on":"..."}' --source-url "<the posting's own LinkedIn URL>"
 ```
 
+## ⭐ THE BRIEF CARRIES `attended: yes|no` (dev #858, jobsearch 0.90.0)
+
+The dispatch says whether the owner is present: `attended: yes` or `attended: no`. **A brief that does not say, says it
+empty, or says anything other than `yes` is UNATTENDED.** Read it once, at entry; never infer it from the time of day or
+the surface, and pass it on exactly as given (`--attended <the value>` on `route.py --next`, which reads an absent, empty or
+non-`yes` value as `no` itself). It decides one thing: whether this pass may take the Chrome extension over from a pane that
+is hidden or not painting (§"Chrome extension — the FALLBACK"). An attended pass may wait on the extension's first-use site
+prompt or a CAPTCHA until the owner answers; an unattended pass never enters that rung and records `unattended-unprobed`.
+
 ## Two browser surfaces — pick the right one, never mix them
 
 | surface | what | use for |
 |---|---|---|
 | **in-app Browser pane** (`mcp__Claude_Browser__navigate`, `get_page_text`, `read_page`, `find`, `computer`) | Claude's own browser. **⭐ CAN HOLD A LOGGED-IN LinkedIn SESSION once the candidate signs in there** — and the session persists across runs. It is not signed in by default | **TRY FIRST for every capability** |
-| **Chrome extension** (`tabs_context_mcp`, `navigate`, `computer`, `list_connected_browsers`, `tabs_close_mcp`) | the candidate's real Chrome and their own session | **FALLBACK** when the in-app pane is not signed in |
+| **Chrome extension** (`tabs_context_mcp`, `navigate`, `computer`, `list_connected_browsers`, `tabs_close_mcp`) | the candidate's real Chrome and their own session | **FALLBACK** when the in-app pane is not signed in, or (attended runs only, before any click in the pass) hidden or not painting |
 
 **⭐ THE IN-APP PANE CAN BE AUTHENTICATED — it is a CAPABILITY, not a state.** This file previously
 said "never attempt LinkedIn-authenticated work in the in-app pane — it has no login," which was
@@ -152,7 +161,7 @@ still returns 200 with plausible-looking content** — the failure is silent and
 results," which is the same shape as the mailbox-blind bug that reported an empty inbox for a whole
 run. So on every pass: navigate to `https://www.linkedin.com/feed/` and confirm the page text
 carries the candidate's OWN NAME (read it from `profile.py`, never hard-code it). Name present → proceed
-here. Absent, or a sign-in wall → fall back to the Chrome extension ladder below, and SAY in the
+here. Absent, or a sign-in wall → fall back to the Chrome extension (§"Chrome extension — the FALLBACK"), and SAY in the
 report which surface you used.
 
 **Record the verdict on the pane lock the moment you know it** (design-linkedin-runner-
@@ -252,12 +261,13 @@ Encoded because a real run had to derive it under time pressure, and the next on
 | what you observe | what is actually wrong | where to start |
 |---|---|---|
 | cheap calls fail too | the browser is not connected at all | `BROWSER UNAVAILABLE`, queue it |
-| **cheap calls ANSWER but navigation hangs** | **the page-load / CDP path**, not the MV3 service worker | ⭐ go **straight to `--relaunch`** — a plain wake addresses the service-worker drop and will not fix this |
-| **navigation ANSWERS, a click lands, and the FRAME PROBE below confirms `render-stalled`** | **the pane answers but stops PAINTING** — clicks land, nothing renders (public #96) | go to **§"A CONFIRMED RENDER STALL"** below — never `--relaunch`, never `wake_chrome.sh`: the pane is not wedged, it is not painting, and quitting the candidate's browser fixes neither |
+| **cheap calls ANSWER but navigation hangs** | **the page-load / CDP path**, not the MV3 service worker | ⭐ on the extension this is `navigate-timeout`: record it, move to the next rung, and **never wake or relaunch the candidate's Chrome** (§"Chrome extension — the FALLBACK") |
+| **navigation ANSWERS, a click lands, and the FRAME PROBE below confirms `render-stalled`** | **the pane answers but stops PAINTING** — clicks land, nothing renders (public #96) | go to **§"A CONFIRMED RENDER STALL"** below — never a relaunch, never a wake script: the pane is not wedged, it is not painting, and quitting the candidate's browser fixes neither |
 
-**That second row is the expensive one to get wrong.** A plain wake looks like the gentler first
-step and costs another long timeout to fail; when cheap calls are answering, the service worker is
-demonstrably alive and waking it is treating the wrong fault.
+**That second row is the expensive one to get wrong.** When cheap calls are answering, the service
+worker is demonstrably alive and a hung `navigate` is a fault no wake or relaunch fixes (0.90.0: the
+recovery ladder that tried one is gone, and no agent runs a wake script). One timeout is one
+`navigate-timeout`; the step moves to its next rung and never loops.
 
 ### When you conclude the browser is unusable, do all three
 
@@ -297,23 +307,65 @@ differently because the owed pass is ONE standing item, while a one-off request 
 is neither: it runs with the owner present, so a failure is reported to them and **nothing is
 queued**.
 
-## Chrome extension — FALLBACK ONLY, when the in-app pane is not signed in
+## Chrome extension — the FALLBACK: a pane that is not signed in, or (attended only) one that cannot paint
 
-**First call `list_connected_browsers`. No connected browsers → return `BROWSER UNAVAILABLE`
-immediately; do not improvise alternatives.**
+**Entered in two cases, and no others.** (1) The pane is not signed in (the feed check above). (2) **Before any
+click-class call in this pass**, the pane state is `hidden` or the paint gate (§"THE PAINT GATE, BEFORE THE FIRST CLICK") says
+`not-painting` or `probe-error`, **and your brief says `attended: yes`** (§"THE BRIEF CARRIES `attended`"). No pane click was
+made, so none can be repeated, and the extension takes the surfaces you have not read in normal mode, with its own probe.
+**Rule 5 stands:** a confirmed render stall on a displayed pane AFTER clicks is never the extension's, in the same pass
+(§"A CONFIRMED RENDER STALL").
 
-**⭐ RECOVERY LADDER for a wedged-but-running Chrome (2026-08-04, per the candidate: "quit and
-relaunch the browser if it runs into the issue"):** if `navigate()` times out (~300s) while
-`list_connected_browsers` says connected, the MV3 service worker is wedged and a tab cycle may not
-recover it. Escalate ONCE, in order: (1) `~/.claude/jobsearch/run wake_chrome.sh` (plain wake), retry the
-navigate; (2) still dead → `~/.claude/jobsearch/run wake_chrome.sh --relaunch` (full quit + reopen; Chrome
-restores the session, nothing is lost), wait for reconnect, retry ONCE; (3) still dead → report
-`BROWSER UNAVAILABLE` and queue the work via `deferred.py`. **Never loop the relaunch** — quitting
-the candidate's real browser repeatedly while they work is worse than a skipped pass. Check the
-wake-chrome log tail (`~/.claude/scheduled-tasks/wake-chrome.log`) to confirm what the script
-actually did before claiming recovery. Then `tabs_context_mcp` with `createIfEmpty:true` —
-a fresh run never has an existing tab group, and that alone does not mean the browser is
-unreachable. Site permissions are open to any domain.
+**Unattended (the brief says `attended: no`, or says nothing): the extension is NOT entered.** Record the code
+`unattended-unprobed` as the reason there was no fallback: report each surface you could not read as `SURFACE <token>
+UNREACHABLE reason=pane-hidden`, put `fallback=none ext=unattended-unprobed` on the `PANE` line of your SWEEP block, and file the
+gap with `--fallback-extension unattended-unprobed`. A site prompt or a CAPTCHA blocks the tool call, so an unattended pass
+that entered the rung would never come back to record anything.
+
+**Attended: ask the script for the rung, never decide it.** Run it once, at the moment the pane cannot be used:
+
+```bash
+~/.claude/jobsearch/run route.py --next --step linkedin-surface --attended yes \
+  --outcomes '<JSON list>' --latch <none|browser>
+```
+
+- `--outcomes`: one object per rung already tried, in order: `{"rung":"browser","word":"<the gate word, not-painting or
+  probe-error; a pane line of hidden before the first click counts as not-painting>"}`, then `{"rung":"chrome","word":"<its code,
+  below>"}`. `[]` before any rung.
+- `--latch`: the `LATCH` word of the last answer in this pass (`none` before the first). Once it is `browser`, never open or probe the
+  pane again in this pass: call it with `--outcomes '[]'` and this latch and take the rung it names.
+
+It prints `NEXT <rung> LATCH <browser|none>`, plus ` NOTE waiting-on-person` when the rung is `chrome`, and ` CODE <code>` when the
+extension was passed over (record it as `ext=<code>`). `NEXT browser`: stay on the pane. `NEXT not-checked` (a surface has no fetch):
+every surface you could not read is `SURFACE <token> UNREACHABLE reason=pane-hidden`, with the `ext=` code on the `PANE` line.
+**`!! NO NEXT RUNG`** (exit 1) is a refused call, not an answer: never guess a rung; those surfaces are NOT CHECKED. On `NEXT chrome`:
+
+1. **Print the waiting line first, before the first extension call:** `WAITING-ON-PERSON possible: Claude in Chrome may ask
+   you to allow this site, or stop at a CAPTCHA. This step waits until you answer.` In the owner-away case a first-use site
+   prompt or a CAPTCHA parks this pass until the owner returns. That is accepted for an attended pass, and the line says where it
+   waits.
+2. **Which browser: the script's answer, never your own.** If the extension tools are deferred, load them with `ToolSearch`
+   (`mcp__claude-in-chrome__list_connected_browsers`, `select_browser`, `tabs_create_mcp`, `navigate`, `get_page_text`,
+   `javascript_tool`, `tabs_close_mcp`); none loadable is the code `tools-absent`. Call
+   `mcp__claude-in-chrome__list_connected_browsers` and pass its whole result to `~/.claude/jobsearch/run route.py
+   --pick-browser '<that JSON>'`. It prints `USE <deviceId>`, or `SELECT <deviceId>` (then call
+   `mcp__claude-in-chrome__select_browser` on that one), or a code: `not-connected` (nothing listed), `not-this-computer`
+   (none is on this computer) or `browser-ambiguous` (two or more and none in use). **A code is the answer, not
+   `BROWSER UNAVAILABLE`:** record it as `ext=<code>` and take the next rung. **Never call `switch_browser`**, and never
+   `select_browser` on a browser that is not on this computer: this pass drives only a Chrome on the machine it runs on.
+3. **Work in a tab of your own.** Open it with `mcp__claude-in-chrome__tabs_create_mcp`, read and navigate only in it, and close
+   only it with `tabs_close_mcp` (§"CLOSE EVERY TAB YOU OPENED"). Never use, reuse or close a tab you did not create.
+4. **Say so once, in the transcript, at first use:** `The Browser pane is not painting. Using Claude in Chrome on this
+   computer: its tabs open in a tab group in your Chrome.` It is a record, not a warning.
+5. **A `navigate` that times out is `navigate-timeout`: record it and move on.** No wake, no relaunch, no retry loop. The
+   other codes are `tools-absent`, `not-connected`, `not-this-computer`, `browser-ambiguous`, `lock-held`, `not-painting`,
+   `challenge` and `permission-denied` (the vocabulary is `jd_read.EXTENSION_CODES`). Put the last one you met on the `PANE`
+   line as `fallback=<extension|none> ext=<code>` (`extension` with `ext=-` when it read and met no fault).
+
+**There is no recovery ladder (removed in 0.90.0).** This agent never runs `wake_chrome.sh`, never quits or relaunches the
+candidate's Chrome, and never retries a wedged call: the script was macOS-only, named one browser, and quit the person's real
+browser while they worked (`NoWakeChrome` in the suite fails the build if any agent runs it). Site permissions are the
+extension's own: an attended pass answers to the owner, an unattended pass never gets here.
 
 **⚠️ VERIFY WITH A SCREENSHOT AFTER ANY DOM-CHANGING ACTION — do not trust the tool result.**
 `computer` click/type calls have reported success while the input never landed, and
@@ -375,6 +427,29 @@ this file claims otherwise. `scripts/guard_outbound_click.py` still denies an ou
 click, and the "no click is re-issued after a confirmed stall verdict" rule below still applies.
 Nothing mechanical stops a `computer` call in hidden mode yet; this section is the instruction.
 
+**⭐ An attended pass does not stay in hidden mode when nothing has been clicked yet (dev #858, 0.90.0).** If the pane state is
+`hidden`, or the paint gate below says the pane cannot paint, **before this pass's first click-class call and with `attended:
+yes`**, hidden mode does not start: the Chrome extension takes the surfaces you have not read, in normal mode
+(§"Chrome extension — the FALLBACK"). An unattended pass keeps hidden mode exactly as above and records `unattended-unprobed`.
+Hidden mode keeps its no-click rule either way.
+
+### ⭐ THE PAINT GATE, BEFORE THE FIRST CLICK (dev #858, jobsearch 0.90.0)
+
+The pane line says the owner's window shows the session; it does not say the page paints (a pane read `displayed` for minutes
+and then a freshly loaded page stopped painting). **Until this pass has made its first click-class call**, ask the pane one more
+question, by script: does the page you just navigated to paint? Run the fenced `PROBE_JS` of the next section on it, on the
+pane's own executor by name, and read the result with
+
+```bash
+~/.claude/jobsearch/run pane_probe.py --gate --result '<probe JSON>' [--result '<second probe JSON>']
+```
+
+It prints `GATE <word>` and you act on the word, not on your own reading: `paints` → stay on the pane; `probe-again` → probe once
+more at least 4 seconds after the first and gate both results; `not-painting` or `probe-error` → the pane cannot take this
+pass: **attended** → the extension takes it, **unattended** → hidden mode and `unattended-unprobed`. The pane line is recorded
+beside the gate and does not decide it. A hidden pane line before any click needs no probe: the rung follows from it. **After
+the first click this gate is not asked again:** a stall then is §"A CONFIRMED RENDER STALL", and its rule 5 holds.
+
 ### ⭐⭐ THE FRAME PROBE — does the pane still PAINT, not just respond? (closes public #96)
 
 **A screenshot can time out (see "SCREENSHOT MAY TIME OUT" below); the pane can still ANSWER a
@@ -412,7 +487,7 @@ below (a test asserts this):
 
 | result | verdict |
 |---|---|
-| `{hidden: true}` | **no verdict, and HIDDEN MODE starts here** (on either executor). Chromium pauses `requestAnimationFrame` in a hidden document — a timer-vs-rAF probe there reads "stalled" forever. Record `journal.py --note "pane hidden: stall detection unavailable this pass"`, say so in the report's first block, and follow §"THE PANE STATE, AND HIDDEN MODE": no click-class tool from here on. |
+| `{hidden: true}` | **no verdict, and HIDDEN MODE starts here** (on either executor) — unless this is the first click-free read of an attended pass, where the paint gate reads it as `not-painting` and the extension takes over (§"THE PAINT GATE, BEFORE THE FIRST CLICK"). Chromium pauses `requestAnimationFrame` in a hidden document — a timer-vs-rAF probe there reads "stalled" forever. Record `journal.py --note "pane hidden: stall detection unavailable this pass"`, say so in the report's first block, and follow §"THE PANE STATE, AND HIDDEN MODE": no click-class tool from here on. |
 | `{painted: true}` | painting normally — proceed |
 | `{painted: false, tasks_ran: true}` | a **candidate**, not yet a verdict. Probe again, **at least 4 seconds after the first returned** (the two windows must not sit inside one busy stretch), document still visible. Two such candidates in a row → **confirmed render-stall — but only the script says so** (below). |
 | the call errors, times out, or returns anything else | **no verdict** — the existing ladder's `BROWSER UNAVAILABLE`, not a new state |
@@ -456,8 +531,10 @@ hidden pane; a hidden pane is never a stall and never gets this section):
    A read (`read_page`, `get_page_text`, `find`) may still be
    retried; a click may not — the DOM may have taken the click without painting, and "landed"
    is unknowable without an observed effect.
-5. **No extension fallback in the same pass.** The standing rules stand: the Chrome extension is
-   FALLBACK ONLY for a pane that is not SIGNED IN (below), never for a pane that stalled. Never
+5. **No extension fallback in the same pass.** The standing rules stand (0.90.0: unchanged): a confirmed stall is a
+   pane that PAINTED and then stopped after a click this pass made, and the Chrome extension is never taken for it in the
+   same pass. The extension's two entries (§"Chrome extension — the FALLBACK") are a pane that is not SIGNED IN, and an
+   attended pass whose pane cannot paint BEFORE its first click, where no click exists to repeat. Never
    run `wake_chrome.sh` for a pane fault — the pane is not wedged, and quitting the candidate's
    real Chrome fixes nothing here.
 6. Queue what the stall blocked, for a session whose probe finds the pane usable again, per §5.1's
@@ -595,9 +672,10 @@ skimming past it. Report REACHED/UNREACHABLE/NOT-ATTEMPTED alongside the other f
 backstops this mechanically, but it does not replace it. Return a compact structured report;
 **do not edit tracker files yourself.**
 
-**⭐ CLOSE EVERY TAB YOU OPENED** via `tabs_close_mcp` before finishing. Closing the last tab in
-the group makes Chrome auto-remove the group; leaving one open orphans it indefinitely, and
-accumulating orphaned groups correlates with the "connected but navigate hangs" failure.
+**⭐ CLOSE EVERY TAB YOU OPENED, AND ONLY THOSE** via `tabs_close_mcp` before finishing. On the
+extension that is the tab you made with `tabs_create_mcp` (§"Chrome extension — the FALLBACK"): never use, reuse or close one
+you did not create. Closing the last tab in the group makes Chrome auto-remove the group; leaving one open orphans it
+indefinitely, and accumulating orphaned groups correlates with the "connected but navigate hangs" failure.
 **Every time, no exceptions — including on an early `BROWSER UNAVAILABLE` return that opened a
 canary tab.** The in-app pane's tab is closed the same way with `mcp__Claude_Browser__tabs_close`
 (the extension's `tabs_close_mcp` does not reach it).
@@ -667,7 +745,12 @@ writer.**
 2. **Preflight** as usual (§"PREFLIGHT BEFORE ANY LONG CALL"); verify the session; record
    `--verdict signed-in|not-signed-in` on the lock.
 2a. **Read the pane state once**, right after `preview_start` returns your `tabId` (§"THE PANE STATE,
-   AND HIDDEN MODE"). `hidden` → hidden mode for the whole pass: text reads only.
+   AND HIDDEN MODE"). `hidden` → hidden mode for the whole pass (text reads only), **unless** the brief says `attended:
+   yes` and nothing has been clicked yet: then the extension takes the pass (2b).
+2b. **Before the first click, attended:** `hidden`, or `pane_probe.py --gate` saying `not-painting` or `probe-error` →
+   `route.py --next` (the call in that section), the `WAITING-ON-PERSON` line, `route.py --pick-browser`, your own extension tab, and the
+   transcript line (§"Chrome extension — the FALLBACK"). Unattended → hidden mode and `unattended-unprobed`. Never the
+   extension after a click.
 3. **Probe** (normal mode only) after each DOM-changing action, on this pass's own executor by name
    (§"THE FRAME PROBE").
 4. **Confirmed stall** (the script's `VERDICT render-stalled`) → §"A CONFIRMED RENDER STALL":
@@ -713,7 +796,7 @@ THREAD contact:<id> url=<messaging thread url>
 --- END WORKLIST ---
 
 --- SWEEP v1 run=<run-id> ---                         (what you hand back, in your hand-back file)
-PANE state=<displayed|hidden|unknown|not-pane> mode=<normal|hidden>
+PANE state=<displayed|hidden|unknown|not-pane> mode=<normal|hidden> [fallback=<extension|none> ext=<code|->]
 SURFACE <token> REACHED shown=<n> total=<m|?> oldest=<YYYY-MM-DD|?>
 SURFACE <token> UNREACHABLE reason=<journal.REASONS code>
 SURFACE <token> NOT-ATTEMPTED
@@ -731,6 +814,19 @@ else `normal`; a hidden Chrome tab is `state=not-pane mode=hidden`. A hidden pan
 as partial. In hidden mode, report a surface you could not read by text as `SURFACE <token>
 UNREACHABLE reason=pane-hidden` (the script knows the code). Never write `RENDER STALLED` as the first
 line over a block whose `PANE` line is hidden: the script refuses it as a contradiction.
+
+**The optional `fallback=` tail (dev #858, 0.90.0).** When the pane could not take the pass, say what the extension did on the same
+line: `fallback=extension ext=-` when it took the surfaces and met no fault (`state=not-pane mode=normal`), or `ext=<code>` with
+the last fault it met (`navigate-timeout`, ...); `fallback=none ext=<code>` when it did not take over, with the reason as the code
+(`unattended-unprobed`, `not-this-computer`, `not-connected`, `tools-absent`, ...). The script stores the code on the
+`pane-hidden` gap it opens (`--fallback-extension` is the same field on `journal.py --gap`), so the open gap says why the
+automatic switch did not happen. Leave the tail off when the pane read and painted.
+
+**Never silent: a surface no rung read is `NOT CHECKED`, said out loud (dev #858).** For every surface the chain ended on
+(`pane-hidden` with no extension takeover, or the extension's own fault), put one line in your hand-back file, outside the SWEEP
+block: `NOT CHECKED <surface token>: pane not painting; extension <code>; fetch none` (a surface has no fetch rung, so the
+fetch is always `none`). The record is the gap you file (`--fallback-extension <code>`): the run summary prints its code on the `gaps`
+line, so this hand-back line is the human-readable copy, never the record.
 
 `back-to=none` means no one is watched: read each list's first view and report it. `positive-only`
 (sent invitations) means presence is pending and absence proves nothing. `state=accepted` is read

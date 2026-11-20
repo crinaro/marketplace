@@ -569,8 +569,12 @@ reads a failed hand-back, and closes it once a pass reaches a list.
 **Do not skip the queue step.** That flag used to be prose in a run summary and nothing else — no
 later run recovered the work, and a skipped pass looked identical to one that found nothing.
 Degrading gracefully was never the problem; forgetting was. **Expect this to fire rarely** — if it
-fires repeatedly, run `~/.claude/jobsearch/run wake_chrome.sh` and check macOS Automation access for the app
-before assuming a new fault (`docs/architecture.md` §3d).
+fires repeatedly, read the code the runner recorded before assuming a new fault: the SWEEP block's `PANE` line carries
+`fallback=<extension|none> ext=<code>`, and the journal gap carries the same code. The code is why Claude in Chrome did
+not take over (`route.py --next` picks the rung): `not-connected` or `not-this-computer` means no Chrome with the
+extension is connected on this computer, and `unattended-unprobed` means a scheduled run, which never enters the
+extension. Since 0.90.0 no step of the run wakes, quits or relaunches Chrome, and neither do you: a lapsed sign-in is
+fixed by `/jobsearch:linkedin`, a disconnected extension by the candidate.
 
 **COMPANY FEEDS: EVERY DAY, UNDER EVERY POSTURE, BEFORE THE BOARD PASS (dev #751; jobsearch 0.72.0).**
 A tracked company whose own URLs name a Greenhouse, Lever, Ashby or Workday board carries `companies[].ats`, and

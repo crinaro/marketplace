@@ -336,11 +336,10 @@ BOARD_TYPES = ("job-board", "aggregator", "company-site")
 
 # dev #811 / public #170 (design-sweep-partial-failure.md N2) -- the route mechanisms the board
 # sweeper's own tool allowlist can drive: `plugin` (a site plugin's tools) and `browser` (the built-in
-# browser pane's `mcp__Claude_Browser__*` tools). `agents/board-sweeper.md`'s `tools:` line lists NO
-# `mcp__claude-in-chrome__*` tool, so `chrome` is NOT here: dispatching a sweeper to a route it holds no
-# tool for spends the kind's slot on a pass that can only fail. Granting the extension to the sweeper is
-# a capability change with its own review; when it lands this constant moves with it, and
-# `TestSweeperCanUseRoute` (which reads the `tools:` line) fails until it does.
+# browser pane's `mcp__Claude_Browser__*` tools). `chrome` is NOT here although `agents/board-sweeper.md` now holds extension tools
+# (dev 858): they are a fallback rung inside a pane dispatch (`route.py --next`), not a dispatch route, so a machine with only the
+# extension gets no board dispatch. Making `chrome` a dispatch route is a capability change with its own review; when it lands this
+# constant moves with it, and `TestSweeperCanUseRoute` (which reads the `tools:` line) fails until it does.
 SWEEPER_MECHANISMS = ("plugin", "browser")
 
 

@@ -90,6 +90,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
+from browser_fallback import run_lines as _fallback_lines
 import journal as _journal
 import inbox as _inbox
 import handback as _handback        # handback.py: the hand-back contract (dev #811 / #812); kept_where()
@@ -1016,7 +1017,7 @@ def render_detail(recs, run_id, fp, root=None, at=None, report=None):
         when = r.get("at") or ""
         return start_at <= when <= as_of
 
-    lines = ["  %s" % ln for ln in roles_lines(recs, run_id, root=root, kind=_kind, at=at)]
+    lines = ["  %s" % ln for ln in roles_lines(recs, run_id, root=root, kind=_kind, at=at) + _fallback_lines.browser_fallback_lines(root, run_id)]
     notice = upgrade_notice(recs, run_id, report)          # dev #834 (M5): run summary only, never the page
     if notice:
         lines.insert(0, "  %s" % notice)
@@ -1033,8 +1034,7 @@ def render_detail(recs, run_id, fp, root=None, at=None, report=None):
     gaps = [g for g in _journal.open_gaps(recs) if g.get("run_id") == run_id]
     if gaps:
         lines.append("  gaps   : %s"
-                     % " · ".join("%s %s (open)" % (g.get("scope"), g.get("reason"))
-                                  for g in gaps))
+                     % " · ".join("%s %s (open%s)" % (g.get("scope"), g.get("reason"), _fallback_lines.gap_fallback(g)) for g in gaps))
     notes = [r for r in recs if r.get("event") == "note" and r.get("run_id") == run_id]
     if notes:
         def _note(n):

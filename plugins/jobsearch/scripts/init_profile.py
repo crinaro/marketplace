@@ -463,41 +463,10 @@ def main():
             fh.write(CREDENTIAL_CHECKLIST)
         created.append("CREDENTIALS.md")
 
-    # ⭐⭐ B1 (ADR-031 §28.1 item 5 / gates-connected-entities.md §3, "the fresh-scaffold no-op
-    # migration gate"). Before this, init_profile.py wrote NO stamp at all: `migrate.read_stamp`
-    # on an unstamped profile returns "0.0.0", so a brand-new profile replayed EVERY migration
-    # this engine has ever shipped on its first hook-firing session — confirmed red on c05b315
-    # with no plant needed (the gate spec's own words: it is already absent). Stamping at the
-    # engine's OWN version here means a fresh scaffold is current-shape from the first moment,
-    # so the chain is a no-op on it, exactly as the design intends.
-    #
-    # ⭐ ONLY WHEN NO STAMP EXISTS YET — never overwrite one. This call also runs when
-    # `--scaffold` is re-run against an OLDER, populated profile to fill in newly-added stores
-    # (e.g. people.jsonl/involvements.jsonl on an upgrade); that profile is not fresh and may
-    # genuinely have pending migrations, so stamping it "current" here would hide exactly the
-    # backlog migrate.py exists to run. `os.path.exists` is the same is-it-really-fresh signal
-    # every other line in this function already uses.
-    from migrations import stamp as _stamp, support_pins as _pins
-    stamp_path = os.path.join(ROOT, _stamp.STAMP)
-    if not os.path.exists(stamp_path):
-        ok, err = _stamp.write_stamp(ROOT, _stamp.engine_version())
-        if ok:
-            created.append(_stamp.STAMP)
-            # dev #834 (design-network-first.md 12.2): a profile scaffolded by 0.86.0 or later carries the 0.86.0 pin
-            # from its first moment, so it is never "pin lost" (`migrate.pending_for`) and an older engine on the same
-            # profile stops at its first journal reader instead of writing as if the profile were its own. Fail open:
-            # a pin that cannot be written leaves the profile pending, and the next hook re-appends it.
-            try:
-                import journal as _journal
-                _journal.record_profile_schema(ROOT, _pins.NETWORK_FIRST_PIN, "init_profile")
-                created.append("data/runs.jsonl (the jobsearch %s profile pin)" % _pins.NETWORK_FIRST_PIN)
-            except Exception as e:              # noqa: BLE001
-                print("  ⚠️ could not record the profile pin (%s) — migrate.py will record it on the next hook-firing "
-                      "session." % e)
-        else:
-            print("  ⚠️ could not write %s (%s) — migrate.py will treat this profile as "
-                  "unmigrated and replay its whole chain on the next hook-firing session."
-                  % (_stamp.STAMP, err))
+    # The schema stamp, the profile pin and the posting-fetch notice row of a NEW profile (B1, ADR-031 §28.1 item 5; dev #834; dev 858):
+    # `migrations/support_scaffold.py` says why, and writes them only when no stamp exists yet.
+    from migrations import stamp as _stamp, support_scaffold as _scaffold
+    _scaffold.stamp_new_profile(ROOT, created)
 
     # adr-012: a new profile is a git repository FROM THE FIRST MOMENT, seeded local-only
     # (the config skeleton above carries the declaration). Explicit paths only, and best-effort:

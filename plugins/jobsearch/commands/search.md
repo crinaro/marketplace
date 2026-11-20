@@ -118,9 +118,9 @@ Print its output verbatim. Then say that the sweep runs only from the attended f
    - capture: `record.py capture-batch --run <id> --admitted`, repeated until `deadline-left 0`;
    - read: `record.py read-batch --run <id> --fetch` for what a script can read, then `jd-reader` for the
      `RESIDUE (render)` lines, in one fronted tab, and a posting only the candidate can open is listed under YOUR READ
-     with its link and reason, never skipped. LinkedIn roles the Browser pane cannot read can be read from the public
-     posting instead: `posting_fetch.py --set on|off` (off by default; terms in
-     docs/user/jobsearch/posting-fetch.md);
+     with its link and reason, never skipped. A LinkedIn role neither the Browser pane nor Claude in Chrome could read
+     is read from its public posting automatically, when your sandbox settings allow the host; `posting_fetch.py --set
+     on|auto|off` changes that (`off` stops it; terms in docs/user/jobsearch/posting-fetch.md);
    - re-screen what was read: `record.py read-batch --run <id> --fetch` again, until `deadline-left 0`;
    - research, only past the gate: `deferred.py --add-research <opp_id>` exits 0 for a role screened `keep`, and an
      `opportunity-researcher` dispatch takes those; an exit 2 is a refusal with its reason, quoted to the

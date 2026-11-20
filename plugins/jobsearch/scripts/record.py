@@ -88,18 +88,18 @@ Usage:
                                   --pay none|stated:<range> --setting "<text>" --location "<text|?>" --evidence "<quote>"
                                   [--body-sha1 <sha1>]   # --via fetch: the reader's read of a saved body (0.85.0, dev #838 / public #183)
     python3 scripts/record.py read-failed <opp_id> --run <id> --url <u|-> --via render --outcome <outcome> --evidence "<text>"
-                                  --page-result chars=<N>|error=<text> [--pane "<tabs_context line>" --probe '<json>']
-                                              # 0.85.0 (dev #838 / public #183): no page outcome without a page. `--page-result` is
-                                              # required under `--via render` (not for no-url / manual-board / site-not-allowed),
-                                              # and `render-failed` also needs --pane and --probe and is refused when either is hidden
+                                  --page-result chars=<N>|error=<text> [--pane "<tabs_context line>" --gate <word>
+                                  --browser pane|extension --ready <word> --fallback-extension <code>]
+                                              # 0.85.0: no page outcome without a page (dev #838). 0.90.0 (dev #858): `render-failed`
+                                              # needs --pane and --gate (`pane_probe.py --gate`'s word; `--probe` is retired)
     python3 scripts/record.py read-batch --run <id> --fetch [--deadline-s N] [--check]
                                               # 0.85.0: never a GET to a LinkedIn address (RESIDUE ... (render): browser-first)
     python3 scripts/record.py read-batch --run <id> --fallback [--ids <opp id> ...] [--deadline-s N] [--check]
-                                              # 0.85.0 (dev #840 / public #181): the opt-in logged-out posting read of a
-                                              # LinkedIn role whose browser read could not happen (posting_fetch.py; the key
-                                              # `search.posting_fetch` is off unless `posting_fetch.py --set on` turned it on)
+                                              # 0.85.0 (dev #840), automatic from 0.90.0 (dev #858): the logged-out posting read of a
+                                              # LinkedIn role no browser could read (posting_fetch.py; not when the key is `off`)
     python3 scripts/record.py not-attempted <opp_id> [<opp_id> ...] --run <id> --via render --reason pane-hidden
                                   --pane "<the tabs_context line>" --tab-active yes|no --evidence "<the status line>"
+                                  [--gate <word> --ready <word> --fallback-extension <code> --browser pane]   # 0.90.0 (dev #858)
                                               # 0.85.0 (dev #839 / public #182): the page was NEVER READ because the Browser
                                               # pane was hidden or the reader's tab stayed in the background. ALL ids or none.
                                               # read-jd / read-failed / not-attempted / read-batch are the ONLY writers of `jd_read`
@@ -252,8 +252,8 @@ _paths.bind(_profile_root())
 # explicit violation of the agent rule. A batch-level copy-paste refusal was considered and rejected (design 6.1: identical
 # challenge pages have identical lengths on honest records).
 #
-#   read-failed --via render --outcome ...      --page-result    --pane      --probe
-#   render-failed                               required         required    required (refused when either says hidden)
+#   read-failed --via render --outcome ...      --page-result    --pane      --gate   (0.90.0: `--gate` replaces `--probe`)
+#   render-failed                               required         required    required (refused when the gate says not painting)
 #   closed dead-link login-wall challenge
 #     surface-cannot-read                       required         optional    optional (each stored when given)
 #   no-url manual-board site-not-allowed        exempt           exempt      exempt (no page exists to measure: the pane refused
@@ -306,22 +306,19 @@ _paths.bind(_profile_root())
 # fetch. The network is touched BEFORE the lock is taken; the lock is held only for the one write of the opportunities
 # store, which re-reads the rows and applies each result only to a role that is still unread.
 
-# ---- read-batch --fallback: the opt-in posting fetch (0.85.0; design-hidden-pane-reads.md section 3, 16) --------------------
+# ---- read-batch --fallback: the posting fetch (0.85.0; automatic for everyone from 0.90.0, dev 858; design-browser-fallback.md 6) --
 #
 # `record.py read-batch --run <id> --fallback [--ids <opp id> ...] [--deadline-s N] [--check] [--already-locked]`
 #
-# The script is `posting_fetch.py` (imported lazily, here only): it owns the request, the parse, the pacing, the backoff,
-# the cap, the host breaker and the files. THIS verb owns the decisions that read the stores: which roles are eligible,
-# and the one locked write. It runs from `jd-reader`, after the reader's last role, and again while it prints `MORE`.
+# `recording/fallback.py` does the work. The script is `posting_fetch.py` (imported lazily, there only): the request, the parse, the
+# pacing, the cap, the key, the sandbox admission check and the notice row. THIS verb owns the decisions that read the stores.
 #
-#   1. the key: `search.posting_fetch` not `on` (absent is off) prints `FALLBACK: off` and exits 0 -- no GET, nothing written;
-#      with no profile state directory it prints `FALLBACK: off (no profile state directory)` and exits 0 the same way;
-#   2. eligible = admitted in this run, not read, its LATEST attempt in this run `pane-hidden` or `render-failed` via
-#      render, a LinkedIn job-view address, and not already tried in this run. `--ids` only narrows this set;
+#   1. the gate, once per call (`posting_fetch.auto_gate`): the key `off` or unreadable prints `FALLBACK: off (<why>)`; a host not
+#      admitted, or a missing notice row, prints `FALLBACK: withheld (<code>): <remedy>`. NOTHING is sent; the code is stored;
+#   2. eligible = admitted in this run, not read, a LinkedIn job-view address, not tried in this run, and the browser's LATEST attempt
+#      (`_fallback_ineligible`) `pane-hidden` or `render-failed` for a key `on`, else not painting and carrying an extension code;
 #   3. a saved body younger than 7 days is reused with no GET; otherwise one GET (`posting_fetch.Session`);
-#   4. only `read` and `closed` are recorded (through `_apply_read` / `_apply_failed`, via `fetch`). A role the script
-#      cannot settle is printed `RESIDUE <id> (body): <reason> file=<path> sha1=<sha1>` for the reader; every other result
-#      (429, any other HTTP status, a shape change, a wrong page, the cap, a closed host) records NOTHING.
+#   4. only `read` and `closed` are outcomes about the role; any other answer is stored as a `via fetch` `pane-hidden` attempt.
 
 # ---- not-attempted: a browser read that could not HAPPEN (0.85.0; design-hidden-pane-reads.md section 5.4) ------------
 #

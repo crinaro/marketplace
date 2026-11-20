@@ -59,6 +59,25 @@ EVIDENCE
 (`make_attempt(..., migration=True)`); a verb that tries to write it is refused. It is the pre-0.82.0
 read, kept so a role that was read before the upgrade does not turn into an unread process failure.
 
+THE 0.90.0 KEYS (dev #858; design-browser-fallback.md section 8.1)
+------------------------------------------------------------------
+Four evidence keys say WHICH browser read a page and what the fallback ladder did. Each is a closed vocabulary and
+each value is checked here, so an unknown code is refused at write and is never stored:
+
+  browser   pane | extension          `via render` only: the browser that made the attempt (absent on an older row
+                                      = a pre-0.90.0 row, read as `pane`)
+  ready     READY | NOT-READY | READY-ERROR     the `page_ready.py --verdict` word, on a failed or not-attempted attempt
+  gate      paints | not-painting | probe-error the `pane_probe.py --gate` word (`probe-again` is never stored: it is
+                                      a request to probe again), on a failed or not-attempted attempt
+  fallback  {"extension": <code>}     `via render`: why the extension rung did not read (EXTENSION_CODES)
+            {"fetch": <code>}         `via fetch`, outcome `pane-hidden` only: what the scripted fetch did when it
+                                      did not read (FETCH_CODES)
+
+`gate` REPLACES `probe` for new writes (the writer, `record.py`, stops accepting `probe`); this parser still reads a
+`probe` on an older row. A `via fetch` `pane-hidden` attempt is written only by `record.py read-batch --fallback`
+and carries `{text, fallback: {fetch: <code>}}`, with no `pane` and no `tab_active` (nothing was opened).
+The installed 0.86.0-0.89.x reader REFUSES these keys, which is why the profile carries the 0.90.0 pin (section 8.2).
+
 NO FREE TEXT PASSES AS A READ. An unknown key, an unknown outcome, an empty evidence object, a `render`
 read without a quote, a bad `at` -- each raises `JdReadError` naming the field.
 
@@ -83,7 +102,12 @@ OUTCOMES = (READ,) + TERMINAL + CANDIDATE + HOST_CLASS
 # `read-failed` may record, and which the four classes above cover exactly). `ALL_OUTCOMES` is what the parser accepts.
 NOT_ATTEMPTED = ("pane-hidden",)
 ALL_OUTCOMES = OUTCOMES + NOT_ATTEMPTED
-NOT_ATTEMPTED_VIA = "render"
+# 0.90.0 (dev #858, design-browser-fallback.md 8.1): a not-attempted attempt is written `via render` (the browser read that
+# could not happen: `record.py not-attempted`, the only verb for it) or, for `pane-hidden` only, `via fetch` (the scripted
+# fetch rung withheld or failed: `record.py read-batch --fallback`). `NOT_ATTEMPTED_VERB_VIA` is the one the VERB writes.
+NOT_ATTEMPTED_VIA = ("render", "fetch")
+NOT_ATTEMPTED_VERB_VIA = "render"
+NOT_ATTEMPTED_FETCH_OUTCOMES = ("pane-hidden",)
 PANE_EVIDENCE_STATES = ("hidden", "displayed", "unknown")     # `pane_probe.pane_state`'s answers, mirrored (pure module)
 TAB_ACTIVE_VALUES = ("yes", "no")
 
@@ -94,9 +118,32 @@ LEGACY_UNAVAILABLE_RE = re.compile(r"^unavailable: (%s)$" % "|".join(LEGACY_REAS
 LEGACY_UNAVAILABLE_PREFIX = "unavailable"
 
 EVIDENCE_CAP = 200
-READ_EVIDENCE_KEYS = ("quote", "chars", "sha1", "replaced", "attestation")
-FAILED_EVIDENCE_KEYS = ("text", "page", "pane", "probe")        # only `text` is required; the rest are 0.85.0's, optional
-NOT_ATTEMPTED_EVIDENCE_KEYS = ("text", "pane", "tab_active")
+# 0.90.0 (dev #858): `NEW_EVIDENCE_KEYS` are the four keys below; each tuple gains the ones design 8.1 names for it.
+# `probe` stays readable on an older row and is no longer WRITTEN (`gate` replaces it); a fetch attempt's own keys are
+# `FETCH_NOT_ATTEMPTED_EVIDENCE_KEYS`.
+READ_EVIDENCE_KEYS = ("quote", "chars", "sha1", "replaced", "attestation", "browser")
+FAILED_EVIDENCE_KEYS = ("text", "page", "pane", "probe", "browser", "ready", "gate", "fallback")   # only `text` is required
+NOT_ATTEMPTED_EVIDENCE_KEYS = ("text", "pane", "tab_active", "browser", "ready", "gate", "fallback")
+FETCH_NOT_ATTEMPTED_EVIDENCE_KEYS = ("text", "fallback")
+NEW_EVIDENCE_KEYS = ("browser", "ready", "gate", "fallback")
+# The profile pin a WRITER requires before it stores a `NEW_EVIDENCE_KEYS` key (record.py's guard; design 8.2). It is the
+# `profile-schema` pin `m_0_90_0_browser_fallback` writes (`migrate.BROWSER_FALLBACK_PIN`); this module is pure and cannot
+# import migrate, so the literal is mirrored here.
+NEW_KEYS_PIN = "0.90.0"
+BROWSERS = ("pane", "extension")
+READY_WORDS = ("READY", "NOT-READY", "READY-ERROR")             # page_ready.py --verdict's words, mirrored (pure module)
+GATE_WORDS = ("paints", "not-painting", "probe-error")          # pane_probe.paint_gate's words that are STORED (not probe-again)
+# `fallback.extension`: why the extension rung did not read (design 4.2); the value says whether the scripted fetch is
+# admitted after it (the table's own "admits the fetch" cell, read by `record.py` and `posting_fetch.auto_gate`).
+EXTENSION_CODES = {
+    "tools-absent": True, "not-connected": True, "not-this-computer": True, "browser-ambiguous": True,
+    "unattended-unprobed": True, "not-preferred": True, "lock-held": True, "navigate-timeout": True,
+    "not-painting": True,
+    "not-ready": False, "challenge": False, "permission-denied": False, "not-signed-in": False,
+}
+# `fallback.fetch`: what the scripted fetch did when it did not read (design 8.1).
+FETCH_CODES = ("off", "unreadable", "sandbox-unconfirmed", "notice-missing", "rate-limited", "http", "refused",
+               "unreachable")
 LEGACY_EVIDENCE_KEYS = ("legacy",)
 ATTEMPT_KEYS = ("at", "run", "url", "via", "outcome", "evidence")
 
@@ -148,6 +195,29 @@ def _text(value, label, cap=EVIDENCE_CAP):
     return value
 
 
+def _check_new_keys(via, outcome, evidence):
+    """The 0.90.0 keys (dev #858), each against its closed vocabulary. `browser`, `ready` and `gate` belong to a `render`
+    attempt; `fallback` is `{extension: <code>}` on a `render` attempt and `{fetch: <code>}` on a `fetch` one, never
+    both and never empty. A key the attempt's tuple does not allow was already refused by the caller."""
+    for key, vocab in (("browser", BROWSERS), ("ready", READY_WORDS), ("gate", GATE_WORDS)):
+        if key in evidence:
+            if via != "render":
+                raise JdReadError("evidence.%s belongs to a `render` attempt, not via %s" % (key, via))
+            if evidence[key] not in vocab:
+                raise JdReadError("evidence.%s must be one of %s -- %r" % (key, ", ".join(vocab), evidence[key]))
+    if "fallback" in evidence:
+        fb = evidence["fallback"]
+        key = {"render": "extension", "fetch": "fetch"}.get(via)
+        if key is None or (key == "fetch" and outcome not in NOT_ATTEMPTED_FETCH_OUTCOMES):
+            raise JdReadError("evidence.fallback belongs to a `render` attempt or a `fetch` pane-hidden attempt, not to a "
+                              "via %s %s attempt" % (via, outcome))
+        if not isinstance(fb, dict) or set(fb) != {key}:
+            raise JdReadError("evidence.fallback on a via %s attempt must be exactly {%r: <code>} -- %r" % (via, key, fb))
+        codes = tuple(EXTENSION_CODES) if key == "extension" else FETCH_CODES
+        if fb[key] not in codes:
+            raise JdReadError("evidence.fallback.%s must be one of %s -- %r" % (key, ", ".join(codes), fb[key]))
+
+
 def _check_evidence(via, outcome, evidence):
     if not isinstance(evidence, dict) or not evidence:
         raise JdReadError("evidence must be a non-empty object -- %r" % (evidence,))
@@ -155,6 +225,8 @@ def _check_evidence(via, outcome, evidence):
         allowed = LEGACY_EVIDENCE_KEYS
     elif outcome == READ:
         allowed = READ_EVIDENCE_KEYS
+    elif outcome in NOT_ATTEMPTED and via == "fetch":
+        allowed = FETCH_NOT_ATTEMPTED_EVIDENCE_KEYS
     elif outcome in NOT_ATTEMPTED:
         allowed = NOT_ATTEMPTED_EVIDENCE_KEYS
     else:
@@ -166,6 +238,13 @@ def _check_evidence(via, outcome, evidence):
     if via == LEGACY_VIA:
         # the value is `fit.jd_source=<up to 200 chars>`
         _text(evidence.get("legacy"), "evidence.legacy", cap=EVIDENCE_CAP + len("fit.jd_source="))
+        return
+    _check_new_keys(via, outcome, evidence)
+    if outcome in NOT_ATTEMPTED and via == "fetch":
+        _text(evidence.get("text"), "evidence.text")
+        if "fallback" not in evidence:
+            raise JdReadError("a %s attempt via fetch needs evidence.fallback.fetch (what the scripted fetch did when it "
+                              "did not read)" % outcome)
         return
     if outcome in NOT_ATTEMPTED:
         _text(evidence.get("text"), "evidence.text")
@@ -236,9 +315,11 @@ def parse_attempt(att):
         raise JdReadError("via 'legacy' and run 'legacy' are legal only together (via=%r, run=%r)"
                           % (via, run))
     outcome_class(outcome)
-    if outcome in NOT_ATTEMPTED and via != NOT_ATTEMPTED_VIA:
+    if outcome in NOT_ATTEMPTED and (via not in NOT_ATTEMPTED_VIA
+                                     or (via == "fetch" and outcome not in NOT_ATTEMPTED_FETCH_OUTCOMES)):
         raise JdReadError("a %s attempt is written only via %s (got via %r): it records a page the Browser pane "
-                          "could not render, never a read by another route" % (outcome, NOT_ATTEMPTED_VIA, via))
+                          "could not render, or (pane-hidden only) a scripted fetch that did not read, never a read by "
+                          "another route" % (outcome, " or ".join(NOT_ATTEMPTED_VIA), via))
     if via == "candidate" and outcome != READ:
         raise JdReadError("a candidate attempt is a read: the candidate records what the posting says, "
                           "never a failure (via 'candidate' needs outcome 'read')")

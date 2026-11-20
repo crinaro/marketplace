@@ -65,10 +65,15 @@ Usage:
     route.py --check                                # exit 1 on unparseable or legacy access
     route.py --set-preference browser,plugin,chrome # change the order mechanisms are tried
     route.py --set-plugin indeed indeed-jobs        # name the plugin serving one channel
+    route.py --next --step posting-read-linkedin --attended yes [--outcomes '<json>'] [--latch browser|none]   # next fallback rung
+    route.py --pick-browser '<list_connected_browsers json>'   # USE|SELECT <deviceId>, or a code
 
 `/jobsearch:sourcing` is the command wrapper. ⚠️ Set these HERE, never by hand-editing
 config.json: the setters validate first, and a typo stored in config falls through to the
 default at run time and looks like it was honoured.
+
+THE FALLBACK CHAIN (dev 858, docs/design-browser-fallback.md section 4): `--next` and `--pick-browser` answer from
+`browser_fallback/rungs.py`, which documents the rungs, `attended` and the latch.
 
 Python 3.9+. Standard library only.
 """
@@ -80,16 +85,13 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
+from browser_fallback import rungs as _rungs
+from browser_fallback.rungs import (DEFAULT_PREFERENCE, MECHANISMS, STEP_KINDS, RouteError, fallback_chain,  # noqa: F401
+                                    is_attended, next_rung, pick_browser, preference)
 
 REQUIREMENTS = ("public", "bot-limited", "login", "human", "n/a", "manual-candidate")
-MECHANISMS = ("plugin", "browser", "chrome")
 # Requirements with NO mechanism: not a surface the engine reaches (dev #751 adds manual-candidate).
 NOT_BROWSABLE = ("human", "n/a", "manual-candidate")
-
-# The default order, used when the profile does not state one. In-app pane first because it is
-# in-process and needs no second application running; Chrome last because it depends on a real
-# browser being awake and signed in, which is the most fragile of the three.
-DEFAULT_PREFERENCE = ("plugin", "browser", "chrome")
 
 # ⭐ Legacy `access` strings, which encoded the mechanism into the requirement. Kept ONLY so a
 # profile that has not migrated yet still resolves; `migrate.py` rewrites them. Mapping them
@@ -98,12 +100,6 @@ LEGACY = {
     "login-chrome": "login",
     "public-bot-limited": "bot-limited",
 }
-
-
-class RouteError(ValueError):
-    """An access value nobody can read. ⚠️ MUST BE LOUD: a channel whose route cannot be
-    resolved is a channel that will be skipped, and a silent skip is indistinguishable from a
-    channel that was searched and found nothing."""
 
 
 def parse_access(raw):
@@ -120,20 +116,6 @@ def parse_access(raw):
     raise RouteError(
         "unreadable `access` value %r — expected one of %s (or a legacy %s)"
         % (raw, ", ".join(REQUIREMENTS), "/".join(sorted(LEGACY))))
-
-
-def preference(cfg):
-    """The candidate's ordered mechanisms, validated. An unknown mechanism is refused rather
-    than skipped: a preference list with a typo would silently fall through to the default and
-    look like it was honoured."""
-    raw = ((cfg.get("sourcing") or {}).get("route_preference")) or list(DEFAULT_PREFERENCE)
-    if not isinstance(raw, list) or not raw:
-        raise RouteError("config.sourcing.route_preference must be a non-empty list")
-    bad = [m for m in raw if m not in MECHANISMS]
-    if bad:
-        raise RouteError("unknown mechanism(s) %s in config.sourcing.route_preference; "
-                         "valid: %s" % (bad, ", ".join(MECHANISMS)))
-    return list(raw)
 
 
 def route(requirement, pref, channel_id, cfg, feed=None):
@@ -255,7 +237,16 @@ def main():
                     help="Set the ordered mechanism preference.")
     ap.add_argument("--set-plugin", nargs=2, metavar=("CHANNEL", "PLUGIN"),
                     help="Name the plugin serving one channel. Empty PLUGIN clears it.")
+    ap.add_argument("--next", action="store_true", help="Print the next rung of one step's fallback chain (needs --step).")
+    ap.add_argument("--step", choices=sorted(STEP_KINDS), help="The step kind, for --next.")
+    ap.add_argument("--attended", nargs="?", const="", default=None,
+                    help="The brief's attended value, for --next. Only `yes` is attended; absent, empty or anything else reads as no.")
+    ap.add_argument("--outcomes", default="[]", help='JSON list of {"rung","word"} outcomes so far, for --next.')
+    ap.add_argument("--latch", default="none", help="browser or none, for --next.")
+    ap.add_argument("--pick-browser", metavar="JSON", help="Which connected browser to drive, from list_connected_browsers' result.")
     args = ap.parse_args()
+    if args.next or args.pick_browser is not None:
+        return _rungs.run_cli(args, profile_root)
     root = profile_root()
 
     if args.set_preference:

@@ -763,25 +763,24 @@ _METADATA[SEARCH_WARM_LOOKUP_DAYS] = (
     "days a company reads 'looked, none found' after you record that you looked for a person there "
     "and found nobody (record.py warm-lookup); after that the lookup is owed again (dev #751)")
 
-# ── the opt-in posting fetch (dev #840 / public #181; jobsearch 0.85.0; design-hidden-pane-reads.md section 3.7, 16) ──
-# `search.posting_fetch` -- `on` | `off`. OFF UNLESS THE USER TURNS IT ON (owner ruling D2, 2026-11-13): when `on`,
-# `record.py read-batch --fallback` reads the public logged-out posting of a LinkedIn role whose browser read could not
-# happen on this run. Absent means `off`, and NO migration and NO default ever writes it: only the user's own
-# `posting_fetch.py --set on` does, and that prints the terms before it writes anything and adds the sandbox host or
-# writes nothing. The registered default is therefore `off`, asserted by a test, and the 0.85.0 migration leaves the key
-# absent. It is a user decision about automated access to a site whose terms restrict it (LinkedIn User Agreement
-# section 8.2), not a tuning knob.
+# ── the posting fetch (dev #840 / public #181; jobsearch 0.85.0; automatic for everyone from 0.90.0, dev 858) ───────────────
+# `search.posting_fetch` -- `on` | `off`, or ABSENT. ABSENT IS THE AUTOMATIC FETCH (owner ruling D-A (a), 2026-11-16): when neither the
+# Browser pane nor Claude in Chrome could read a LinkedIn role, `record.py read-batch --fallback` reads its public logged-out posting,
+# only from a host the sandbox settings allow and once the notice row (`NOTICE_ID`) exists. `on` keeps its 0.85.0 meaning plus the same
+# admission check; `off` is the user's refusal and WINS (owner ruling D-B); any other value reads as unreadable and nothing is fetched.
+# Only the user's own `posting_fetch.py --set on|auto|off` writes it (`auto` removes it); no migration and no default does. The
+# registered default is therefore `auto`, which the file never holds. A user decision about automated access (LinkedIn User Agreement 8.2).
 SEARCH_POSTING_FETCH = "search.posting_fetch"
-SEARCH_POSTING_FETCH_DEFAULT = "off"
+SEARCH_POSTING_FETCH_DEFAULT = "auto"
 SEARCH_POSTING_FETCH_VALUES = ("on", "off")
 
 READER_KEYS = READER_KEYS | frozenset({SEARCH_POSTING_FETCH})
 
 _METADATA[SEARCH_POSTING_FETCH] = (
     SEARCH_POSTING_FETCH_DEFAULT, "enum", SEARCH_POSTING_FETCH_VALUES,
-    "whether a LinkedIn role the Browser pane could not read is read from LinkedIn's public posting page instead "
-    "(automated access that LinkedIn User Agreement section 8.2 restricts; off unless you turn it on). Set it only "
-    "with `posting_fetch.py --set on|off`, which prints the terms first and allows the sandbox host (dev #840)")
+    "whether a LinkedIn role neither the Browser pane nor Claude in Chrome could read is read from LinkedIn's public posting page "
+    "instead (automated access that LinkedIn User Agreement section 8.2 restricts). Absent means automatic, inside your sandbox "
+    "settings; `off` stops it. Set it only with `posting_fetch.py --set on|auto|off`, which prints the terms first (dev #840, 858)")
 
 # ── network-first (dev #834; jobsearch 0.86.0; design-network-first.md sections 3.5, 9.1, 12.1, 13.1) ─────────────────
 # Every run works the network, whatever the plan's outcomes (owner ruling 1), and speculative outreach is a BUDGET, not a
