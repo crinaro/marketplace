@@ -2748,7 +2748,7 @@ LINKEDIN_SURFACES = LINKEDIN_REPLY_SURFACES | frozenset({"notifications"})
 # satisfied by `connections` OR the one-off `degree` visit.
 #
 # ⚠️ DEVIATION FROM DESIGN §3.2, and why: the design extends LINKEDIN_REPLY_SURFACES and
-# LINKEDIN_SURFACES themselves, but `tests/test_record.py::TestLinkedinSurfaceVocabulary` pins both
+# LINKEDIN_SURFACES themselves, but `tests/test_record_ledger_reads.py::TestLinkedinSurfaceVocabulary` pins both
 # at four and five tokens, and that file is outside this change's declared file set. So the two
 # constants above are left exactly as they were and the wider vocabulary is a THIRD constant beside
 # them; folding it back is a one-line change plus that one test (named in the hand-back).

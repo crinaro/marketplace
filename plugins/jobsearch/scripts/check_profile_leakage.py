@@ -64,9 +64,9 @@ if ROOT != _profile_root():
 # dev #399 §1: the glob is non-recursive on purpose (declare-what-you-scan), so the split
 # regression suite's own directory (scripts/tests/) needs its own explicit entry or its
 # fixture content would go unscanned by silent omission rather than by a stated exemption.
-ENGINE = (["CLAUDE.md", "docs/schema.md"]   # S2: and scripts/migrations/, scripts/tests/<package>/, one level down, below
+ENGINE = (["CLAUDE.md", "docs/schema.md"]   # S2: and scripts/migrations/, scripts/tests/<package>/, one level down, below; S3: and scripts/recording/
           + sorted(glob.glob(os.path.join(ENGINE_SCRIPTS, "*.py")))
-          + sorted(glob.glob(os.path.join(ENGINE_SCRIPTS, "tests", "*.py")) + glob.glob(os.path.join(ENGINE_SCRIPTS, "migrations", "*.py")) + glob.glob(os.path.join(ENGINE_SCRIPTS, "tests", "*", "*.py")))
+          + sorted(glob.glob(os.path.join(ENGINE_SCRIPTS, "tests", "*.py")) + glob.glob(os.path.join(ENGINE_SCRIPTS, "migrations", "*.py")) + glob.glob(os.path.join(ENGINE_SCRIPTS, "recording", "*.py")) + glob.glob(os.path.join(ENGINE_SCRIPTS, "tests", "*", "*.py")))
           + sorted(glob.glob(os.path.join(_engine_root(), "agents", "*.md")))
           + sorted(glob.glob(os.path.join(_engine_root(), "skills", "*", "SKILL.md")))
           + sorted(glob.glob(os.path.join(_engine_root(), "commands", "*.md"))))

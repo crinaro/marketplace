@@ -23,7 +23,7 @@ incident that produced them. So files are classified, and only two classes must 
 
     ENGINE   must be PORTABLE — zero personal data. A different candidate could use these
              unchanged.  agents/*.md · skills/*/SKILL.md · commands/*.md · scripts/*.py
-             · docs/*.md · RULEBOOK.md   (see ENGINE_FAMILIES — the authoritative list)
+             · scripts/recording/*.py · docs/*.md · RULEBOOK.md   (see ENGINE_FAMILIES — the authoritative list)
 
     PROFILE  IS the personal data, by design.  user.json · config.json · resume.md
              · projects.md · strategy.md · network.md · data/*
@@ -107,7 +107,7 @@ ENGINE_FAMILIES = (
     # ⭐ scripts/*.py was in the docstring taxonomy from day one and was never in the glob. It
     # is where the data actually accumulated — docstrings carry the incident that produced each
     # rule, and those incidents name real people, employers and cities.
-    ("scripts", os.path.join(ENGINE_ROOT, "scripts", "*.py")),
+    ("scripts", os.path.join(ENGINE_ROOT, "scripts", "*.py")), ("recording", os.path.join(ENGINE_ROOT, "scripts", "recording", "*.py")),  # S3: record.py's code and docstrings moved there; the glob is non-recursive, so the family must be named or `FAMILY_FILES` loses them
     # ⭐ THE WHOLE docs/ TREE, not just the ADRs — widened 2026-08-09. `schema.md`,
     # `architecture.md` and `deployment.md` describe the ENGINE and ship with it, and a real
     # employer name survived in schema.md precisely because only `adr-*.md` was globbed. The
