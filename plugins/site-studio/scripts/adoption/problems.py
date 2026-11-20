@@ -28,6 +28,11 @@ from adoption.convert import (
     label_conversions, normalise_redirect_keys, piece_renames,
 )
 from adoption.parity import decide_conversions, template_fingerprint
+from adoption.keycover import cover_keys, split_notes
+
+# A template key `pieceKeys` leaves under `view: showcase`, with the plugin key the steps view reads it as (design-movement-view
+# rule 5 and 6.2): `check` names it once, with that fix.
+SHOWCASE_LEFT = {"tilePhotoPosition": "tilePosition"}
 
 def accept_problems(tree, data, paper=None, folders=None, kind=None, only=None, settings=None, dispositions=None, persons=None,
                     hints=None):
@@ -56,16 +61,21 @@ def accept_problems(tree, data, paper=None, folders=None, kind=None, only=None, 
     return reword_unmodelled(every_refusal(snap, acc.problems), snap), acc
 
 
-# What a template site uses that the plugin does not model yet, by the issue that tracks it (dev 942, 944, 945). The build
-# says "unknown key" or "must be grid or page", and a fix of "remove it": true for a typo, wrong for a template's own key,
-# which the person's builder still renders and a visitor still sees. `check` says what is so instead.
-UNMODELLED_PIECE_KEYS = {"coverAlt": 942, "industry": 942, "photo": 942, "photoAlt": 942, "photoPosition": 942,
-                         "linkLabel": 942}
-UNMODELLED_REFERENCE_KEYS = {"alt": 944, "imagePosition": 944}
-UNMODELLED_VIEWS = {"movement": 945}
+# What a template site uses that the plugin does not model, by the issue that tracks it (dev 942, 944, 945, 965). The build
+# says "unknown key", "unknown token" or "must be grid or page", and a fix of "remove it": true for a typo, wrong for a
+# template's own key, which the person's builder still renders and a visitor still sees. `check` says what is so instead.
+# 0.5.0 models every piece and reference key 0.4.2 listed here (design-movement-view sections 3, 6.1); what stays is named by
+# design 7: `current` as the map's highlighted pin (dev 965; {key: (the view, issue)}, read by `keycover.cover_keys`, whose
+# note for a key read elsewhere says it), and the home page's range list (dev 942), a token. The range list's token name is
+# not in any fixture or report: `range` is assumed (INFERRED) until the owner's adopt run names it.
+UNMODELLED_PIECE_KEYS = {"current": ("map", 965)}
+UNMODELLED_REFERENCE_KEYS = {}
+UNMODELLED_VIEWS = {}             # `movement` is modelled as `steps` (the `viewNames` conversion, dev 945)
+UNMODELLED_TOKENS = {"range": 942}
 _STAYS = "your builder stays your publisher"
 _PIECE_KEY = re.compile(r"^(?P<f>\S+): front matter key '(?P<k>[^']+)' is not published; ")
 _REFERENCE_KEY = re.compile(r"^(?P<f>content/references/[^/]+/reference\.json): unknown key '(?P<k>[^']+)'$")
+_TEMPLATE_TOKEN = re.compile(r"^(?P<f>\S+): unknown token \{\{(?P<t>[A-Za-z]+)[^{}]*\}\}$")
 _VIEW_VALUE = re.compile(r"^view:[ \t]*[\"']?([^\"'\s#]+)", re.M)
 
 
@@ -80,13 +90,12 @@ def reword_unmodelled(probs, files=None):
     `files` ({path: bytes}) lets a `view` refusal read the page's own value; without it that refusal is left as it is."""
     out = []
     for p in probs:
-        m = _PIECE_KEY.match(p.message)
-        if m and UNMODELLED_PIECE_KEYS.get(m.group("k")) and not p.mechanical:
-            n = UNMODELLED_PIECE_KEYS[m.group("k")]
-            out.append(_reworded(p, "%s: the template's front matter key '%s' is not modelled yet (dev %d); %s"
-                                 % (m.group("f"), m.group("k"), n, _STAYS),
-                                 "nothing to change in this file: the plugin does not print '%s' yet (dev %d), so the key "
-                                 "stays as written, for your builder, until the plugin does" % (m.group("k"), n)))
+        m = _TEMPLATE_TOKEN.match(p.message)
+        if m and UNMODELLED_TOKENS.get(m.group("t")) and not p.mechanical:
+            n = UNMODELLED_TOKENS[m.group("t")]
+            out.append(_reworded(p, "%s: the template's %s list is not modelled (dev %d); %s" % (m.group("f"), m.group("t"), n, _STAYS),
+                                 "nothing the plugin prints replaces it (dev %d): keep this page on your builder, or write the "
+                                 "list your builder prints into the page as text, which does not grow as pieces are added" % n))
             continue
         m = _REFERENCE_KEY.match(p.message)
         if m and UNMODELLED_REFERENCE_KEYS.get(m.group("k")) and not p.mechanical:
@@ -111,7 +120,7 @@ def reword_unmodelled(probs, files=None):
 
 
 
-_OTHER_PORTFOLIO = re.compile(r"the (?P<p>[^ ]+) portfolio's meta and cardMeta do not list it")
+_OTHER_PORTFOLIO = re.compile(r"the ([^ ]+) portfolio's meta and cardMeta do not list it")
 
 
 def waits_on_work_keys(probs, data, settings):
@@ -129,7 +138,7 @@ def waits_on_work_keys(probs, data, settings):
     out = []
     for p in probs:
         m, o = _PIECE_KEY.match(p.message), _OTHER_PORTFOLIO.search(p.message)
-        if m and o and o.group("p") != "work" and m.group("k") in listed and not p.mechanical:
+        if m and o and o.group(1) != "work" and m.group("k") in listed and not p.mechanical:
             out.append(_reworded(p, p.message, "run `adopt.py parity`: site.json's work.meta or work.cardMeta lists '%s', your "
                                  "builder applies those lists to every portfolio, and parity measures `workKeys: all`, which "
                                  "lists them in this portfolio's page.md" % m.group("k")))
@@ -137,13 +146,24 @@ def waits_on_work_keys(probs, data, settings):
         out.append(p)
     return out
 
-def accept_warnings(acc):
+def accept_warnings(acc, pending=(), parity=None, notes=None):
     """The build's WARNINGS over the tree adopt would write, as problems (dev #885, dev #882; adopt-honesty W1): a stray
     `.md` or sub-folder in a piece folder, a piece key neither built in nor in meta or cardMeta. They never change what
     the build publishes, so the build says them and builds, and PARITY still measures such a tree. Where nothing has been
     converted yet, `check`, `inventory` and `apply` list each with its path and fix and refuse until it is settled: never
-    a quiet "adopt ok" over a page that is not published. `acc` is None when the build could not run."""
-    return reword_unmodelled(list(getattr(acc, "warnings", ()) or ())) if acc is not None else []
+    a quiet "adopt ok" over a page that is not published. `acc` is None when the build could not run. A piece key some
+    view or setting reads is sorted by `keycover.cover_keys` (dev #965): covered, read elsewhere (a note, never "remove"),
+    or unknown; `pending` and `parity` are passed on to it. A "read elsewhere" note is a note, not a decision (design 6.1): it is
+    never returned, so neither `check`'s count nor `apply` waits on it; a caller that prints it passes `notes`, a list it fills."""
+    if acc is None:
+        return []
+    model_ = getattr(acc, "model", None)
+    views = dict((pf.slug, pf.settings.get("view")) for pf in getattr(model_, "portfolios", None) or ())
+    probs, found = split_notes(cover_keys(reword_unmodelled(list(getattr(acc, "warnings", ()) or ())), views, pending, parity,
+                                          UNMODELLED_PIECE_KEYS, SHOWCASE_LEFT))
+    if notes is not None:
+        notes.extend(found)
+    return probs
 
 
 _UNKNOWN_KEY = re.compile(r"^(content/references/[^/]+/reference\.json): unknown key '")
@@ -247,7 +267,26 @@ def every_refusal(files, problems):
             out = [q for q in out if q.path != path or not _UNKNOWN_TOKEN.match(q.message) or q.message not in said]
             out.extend(listed)
             have = set((q.path, q.message) for q in out)
+    out = [_reference_line(q, files) for q in out]
     return sorted(out, key=lambda q: (q.path or "", q.lineno or 0, q.message))
+
+
+_REFERENCE_VALUE = re.compile(r"^content/references/[^/]+/reference\.json: '(?P<k>[A-Za-z]+)' ")
+
+
+def _reference_line(p, files):
+    """`p` with its line when it is a refusal of one key's value in a `reference.json` the build gave no line for (dev #964:
+    the "follows from ...reference.json" line of a `ref:` that names it then says where): the line of that key's member."""
+    m = _REFERENCE_VALUE.match(p.message)
+    if not m or p.lineno or p.path not in files:
+        return p
+    try:
+        text = files[p.path].decode("utf-8")
+    except (UnicodeDecodeError, AttributeError):
+        return p
+    at = re.search(r'"%s"\s*:' % re.escape(m.group("k")), text)
+    return p if at is None else diagnostics.make_problem(p.message, p.path, p.found, p.expected, p.fix, p.mechanical,
+                                                         text.count("\n", 0, at.start()) + 1)
 
 
 def size_copy_note(tree):
@@ -274,14 +313,16 @@ def check_only(chosen=()):
     return set(c for c, _l, _w in CONVERSION_CLASSES if c not in OPT_IN_CLASSES or c in chosen)
 
 
-def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=(), settings=None):
+def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=(), settings=None, parity=None, notes=None):
     """Every problem in what adopt WOULD write, all at once: `siteconfig.problems()` over the
     converted site.json (BEFORE the mechanical label conversion, so a pair-form label is reported and
     marked `apply fixes this`), then `content.layout_problems()` over the tree. A list of
     `siteconfig.Problem`; empty means nothing stands in the way (design section 7.1). A meta-refresh page
     adopt will turn into a redirect is one more mechanical problem (design 7.5). `settings` are the plan's measured and
     chosen settings (`plan_settings`): the tree is judged as apply would write it (dev #942, K1: `workKeys: all`, measured
-    by parity, puts `work`'s meta into every portfolio's page.md, and `check` still called those keys unlisted)."""
+    by parity, puts `work`'s meta into every portfolio's page.md, and `check` still called those keys unlisted). `parity` (the
+    plan's record) and `notes` (a list) go to `accept_warnings`: the "read elsewhere" notes land in `notes`, ending with what
+    parity knows."""
     d, _resume = _converted_dict(tree, data, paper, kind)
     probs = list(model.problems(d))
     cfg = None
@@ -331,8 +372,11 @@ def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=(), se
     probs += redirect_problems([r for r in redirect_pages(tree, d.get("redirects"))[0] if not r.boiler])
     have = set((p.path, p.message) for p in probs)
     refusals, acc = accept_problems(tree, data, paper, folders, kind, check_only(chosen), settings=settings)
-    probs += [p for p in waits_on_work_keys(refusals + accept_warnings(acc), data, settings)
+    found = []
+    probs += [p for p in waits_on_work_keys(refusals + accept_warnings(acc, (), parity, found), data, settings)
               if (p.path, p.message) not in have]
+    if notes is not None:            # a note keeps K1's word (its key in work.meta: parity measures `workKeys`), still a note
+        notes.extend(waits_on_work_keys(found, data, settings))
     probs += piece_both_problems(tree, folders) + redirect_collision_problems(tree, d)
     return probs
 

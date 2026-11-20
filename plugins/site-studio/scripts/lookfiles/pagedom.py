@@ -1,7 +1,13 @@
 """The page DOM, and the slot syntax of a look's markup. A small tree of the page (html.parser, stdlib) that keeps what a look can carry:
 elements, attributes in source order, text. Comments and declarations are dropped (a look may carry neither). It is not a conforming
 HTML5 parser: it closes an open `p`, `li`, `dt`, `dd`, `td`, `th` and `tr` the way a page that omits the end tag means it, and ignores
-an end tag that closes nothing. A page it misreads is reported `unmapped`, never guessed."""
+an end tag that closes nothing. A page it misreads is reported `unmapped`, never guessed.
+
+A DRAWING (design-movement-view 9.2): an `<svg>` subtree keeps the page's own text of it (`El.raw`, from `<svg` to the end of its
+`</svg>`), and `ser` writes that text byte for byte while the subtree is as it was read: a look copies the person's decoration as
+their page wrote it (`viewBox`, `<path .../>`), never as this module re-serialises it (`viewbox`, `<path ...></path>`). A subtree
+changed after it was read (a slot written into it) is serialised as any element is, so the look grammar sees the slot and refuses
+it: a decoration holds none."""
 
 import html.parser
 import looks
@@ -10,7 +16,7 @@ from contentmodel import links
 
 
 _WS = re.compile(r"\s+")
-_SLOT = re.compile(r"\{\{([a-z][a-z0-9]*)\}\}")
+_SLOT = re.compile(r"\{\{([a-z][A-Za-z0-9]*)\}\}")         # a slot name: `title`, `fullTitle` (step G, O4a)
 _PH_OPEN, _PH_CLOSE = "\ue010", "\ue011"          # a child's place inside a slot value, while it is parsed
 _PH = re.compile(_PH_OPEN + r"(\d+)" + _PH_CLOSE)
 
@@ -28,10 +34,11 @@ _STOP_UP = frozenset(("body", "html", "head", "#root"))
 
 
 class El(object):
-    __slots__ = ("tag", "attrs", "kids", "parent", "pos")
+    __slots__ = ("tag", "attrs", "kids", "parent", "pos", "raw")
 
     def __init__(self, tag, attrs=None):
         self.tag, self.attrs, self.kids, self.parent, self.pos = tag, list(attrs or ()), [], None, 0
+        self.raw = None                     # an `<svg>` subtree: (the page's own text of it, its canonical text as read)
 
 
 class Tx(object):
@@ -50,10 +57,16 @@ class Mk(object):
 
 
 class _DomBuilder(html.parser.HTMLParser):
-    def __init__(self):
+    def __init__(self, text=""):
         html.parser.HTMLParser.__init__(self, convert_charrefs=True)
         self.root = El("#root")
         self.stack = [self.root]
+        self.src, self.drawing = text, None             # the page's text; (the open `<svg>` element, where its text starts)
+        self.lines = [0] + [i + 1 for i, ch in enumerate(text) if ch == "\n"]
+
+    def _offset(self):
+        line, col = self.getpos()
+        return self.lines[line - 1] + col
 
     def _close_to(self, names, boundary=()):
         for i in range(len(self.stack) - 1, 0, -1):
@@ -78,6 +91,12 @@ class _DomBuilder(html.parser.HTMLParser):
         el = El(tag, attrs)
         el.parent = self.stack[-1]
         self.stack[-1].kids.append(el)
+        if tag == "svg" and self.drawing is None:
+            at = self._offset()
+            if selfclose:
+                el.raw = (self.src[at:at + len(self.get_starttag_text() or "")], None)
+            else:
+                self.drawing = (el, at)
         if tag not in _VOID and not selfclose:
             self.stack.append(el)
 
@@ -90,6 +109,12 @@ class _DomBuilder(html.parser.HTMLParser):
     def handle_endtag(self, tag):
         for i in range(len(self.stack) - 1, 0, -1):
             if self.stack[i].tag == tag:
+                if self.drawing is not None and self.drawing[0] in self.stack[i:]:
+                    el, at = self.drawing
+                    end = self.src.find(">", self._offset())
+                    if el is self.stack[i] and end >= 0:      # an svg closed by its own end tag; one an outer end tag closes keeps none
+                        el.raw = (self.src[at:end + 1], None)
+                    self.drawing = None
                 del self.stack[i:]
                 return
 
@@ -104,9 +129,10 @@ class _DomBuilder(html.parser.HTMLParser):
 
 
 def parse_dom(text):
-    p = _DomBuilder()
+    p = _DomBuilder(text)
     p.feed(text)
     p.close()
+    _settle_drawings(p.root)
     n = [0]
 
     def number(el):
@@ -117,6 +143,16 @@ def parse_dom(text):
                 number(k)
     number(p.root)
     return p.root
+
+
+def _settle_drawings(el):
+    """Each drawing's canonical text as it was read, beside the page's own (`ser` writes the page's while the two agree)."""
+    for k in el.kids:
+        if isinstance(k, El):
+            if k.raw is not None:
+                k.raw = (k.raw[0], _canonical(k))
+            else:
+                _settle_drawings(k)
 
 
 def _collapse(s):
@@ -130,6 +166,14 @@ def ser(node):
         return links.esc(_collapse(node.data))
     if isinstance(node, Mk):
         return "{{%s}}" % node.name
+    if node.raw is not None and node.raw[1] is not None:
+        canonical = _canonical(node)
+        return node.raw[0] if canonical == node.raw[1] else canonical
+    return _canonical(node)
+
+
+def _canonical(node):
+    """`ser` of an element, written by this module (a drawing's own text aside)."""
     inner = "".join(ser(k) for k in node.kids)
     if node.tag == "#root":
         return inner
@@ -169,6 +213,7 @@ def _copy(node, cmap):
         c = Mk(node.name)
     else:
         c = El(node.tag, node.attrs)
+        c.raw = node.raw
         for k in node.kids:
             ck = _copy(k, cmap)
             ck.parent = c

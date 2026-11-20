@@ -8,8 +8,11 @@ import posixpath
 import sys
 import urllib.parse
 from building import gitfiles, outcomes, running
+from building.acceptance import _load_model, trigger_slot_findings
+from building.lookneeds import look_needs
 from configschema import diagnostics, model, canonical, partblocks
 from contentmodel import grammar
+from lookgrammar import decoration
 from lookgrammar.stylesheets import check_stylesheet_file, scan_stylesheet
 from lookfiles.derive import derive_look
 from lookfiles.lookfile import (
@@ -124,6 +127,7 @@ def derive_command(repo, build_dir=None, url=None, owned_host=None, name=DEFAULT
         if not same and not replace:
             raise LookCommandError("%s already exists with other content; derive writes nothing over it. Pick another "
                                    "--name, or add --replace to overwrite it" % target)
+    site_json = _derived_site_json(top, files, cfg, target, text)
     for line in d.lines():
         env.say(line)
     if never:
@@ -131,10 +135,15 @@ def derive_command(repo, build_dir=None, url=None, owned_host=None, name=DEFAULT
                 % (len(never), FETCH_PAGES))
     addresses.write_bytes(top, target, text.encode("utf-8"))
     env.say("wrote %s (%d construct(s); structure and your own literal text)" % (target, len(parsed.constructs)))
+    if site_json is not None:
+        addresses.write_bytes(top, "site/site.json", site_json.encode("utf-8"))
+        env.say("wrote site/site.json: %s" % _schema_line(site_json, target))
     if lits:
         env.say("literal words this look carries (your own text, kept as the page had it):")
         for cid, pn, t in lits:
             env.say("  %s.%s: %s" % (cid, pn, t[:80]))
+    for line in decoration_lines(parsed):           # a drawing copied from the page is the person's own markup (design 9.2)
+        env.say(line)
     env.say("nothing is committed. Use it with: look.py use %s" % target)
     return EXIT_OK
 
@@ -176,6 +185,8 @@ def use_command(repo, source, accept_literals=False, env=None):
         env.say("%s carries %d literal word(s) of its own, which would appear on your pages:" % (shown, len(lits)))
         for cid, pn, t in lits:
             env.say("  %s.%s: %s" % (cid, pn, t[:80]))
+        for line in decoration_lines(lk):
+            env.say("  " + line)
         raise LookCommandError("nothing was copied. Read the words above, then run `use` again with --accept-literals "
                                "if you are happy with them")
     _prewrite(cfg, files)
@@ -223,7 +234,8 @@ def use_command(repo, source, accept_literals=False, env=None):
     d = cfg.to_dict()
     d["look"] = target
     d["schema"] = max(4, cfg.schema)          # a `look` key is a schema-4 key; the writer then holds the schema the tree needs
-    site_json = canonical.canonical_text(model.parse_data(d), new, grammar.interpretation_reasons(new), at_least=4)
+    site_json = canonical.canonical_text(model.parse_data(d), new, grammar.interpretation_reasons(new), at_least=4,
+                                         look_needs=look_needs(new))
     new["site/site.json"] = site_json.encode("utf-8")
     acc = running.accept(dict((k, v) for k, v in new.items() if k.startswith(("site/", "content/"))))
     if acc.problems:
@@ -247,9 +259,50 @@ def use_command(repo, source, accept_literals=False, env=None):
         env.say("already in place: %s" % rel)
     for rel in wrote:
         env.say("wrote %s" % rel)
+    for line in decoration_lines(lk):
+        env.say(line)
+    # the lines of design 4.4 name the look as the site will hold it (the target), never the file it was copied from (3b finding)
+    for line in trigger_lines(acc.model, model.parse_data(d), new, looks.parse(raw.decode("utf-8"), target)):
+        env.say(line)
     env.say("site.json: look is %s" % target)
+    if model.parse_text(site_json).schema > max(4, cfg.schema):
+        env.say("site.json: %s" % _schema_line(site_json, target))
     env.say("nothing is committed: stage these paths with git add, then commit: %s" % " ".join(wrote + placed))
     return EXIT_OK
+
+
+def _derived_site_json(top, files, cfg, target, text):
+    """The `site.json` text `derive` writes beside the look `text` at `target` when the tree then needs a higher
+    schema (design-movement-view section 3.4 point 3: a look that needs 0.5.0 is a schema-5 reason, so a look written
+    under a schema-4 `site.json` would leave a tree no build accepts), else None, when `site.json` is left alone. It
+    refuses, before anything is written, where that raise is not mechanical: below schema 3 or with a part name schema
+    4 fixes (`_prewrite`), or when `site/site.json` on disk is not the committed file it would be written from."""
+    new = dict(files)
+    new[target] = text.encode("utf-8")
+    needs = look_needs(new)
+    if not needs:
+        return None
+    site_json = canonical.canonical_text(cfg, new, grammar.interpretation_reasons(new), at_least=cfg.schema,
+                                         look_needs=needs)
+    if model.parse_text(site_json).schema <= cfg.schema:
+        return None
+    _prewrite(cfg, files)
+    try:
+        with open(os.path.join(top, "site", "site.json"), "rb") as fh:
+            on_disk = fh.read()
+    except OSError:
+        on_disk = None
+    if on_disk != files["site/site.json"]:
+        raise LookCommandError("site/site.json has uncommitted changes, and this look needs site-studio %s, so derive "
+                               "would write site.json too; commit or discard them first, then try again; nothing was "
+                               "written" % max(needs.values(), key=looks.version_tuple))
+    return site_json
+
+
+def _schema_line(site_json, target):
+    """What a writer says when the look raised the schema: the schema now written and why, in one line."""
+    return ("schema %d, because the site carries a look that needs site-studio 0.5.0 (%s); an older site-studio says "
+            "to update" % (model.parse_text(site_json).schema, target))
 
 
 def _prewrite(cfg, files):
@@ -295,4 +348,32 @@ def check_command(repo, env=None):
         env.say("%d literal word(s) in this look:" % len(lits))
         for cid, pn, t in lits:
             env.say("  %s.%s: %s" % (cid, pn, t[:80]))
+    for line in decoration_lines(lk):
+        env.say(line)
+    try:
+        loaded = _load_model(files, cfg, True, False)
+    except (diagnostics.SiteConfigError, outcomes.BuildError, ValueError) as e:
+        loaded = None
+        env.say("NOT CHECKED: the content does not load (%s), so the schema-5 settings were not checked against the "
+                "look; fix it, then run check again" % str(e).splitlines()[0][:120])
+    for line in trigger_lines(loaded, cfg, files, None if cfg.look is None else lk) if loaded is not None else ():
+        env.say(line)
+    number = lk.own_part("steps-view", "item")
+    if number is not None and "{{number}}" not in number:
+        env.say("note: steps-view.item has no {{number}}, so a step's number is not printed (no key asks for it; add "
+                "{{number}} where the step should show it)")
     return EXIT_OK
+
+
+def decoration_lines(look):
+    """The lines `use` and `check` print beside the literal words (design-movement-view 9.2): each decoration by construct and
+    part, and a note for a decoration whose root has no `aria-hidden="true"`, on every look."""
+    return decoration.listing(look.constructs, looks._PartParser)
+
+
+def trigger_lines(loaded, cfg, files, look):
+    """The lines `check` and `use` print for design-movement-view section 4.4, from the build's own check
+    (`building.acceptance.trigger_slot_findings`): "refused: ..." for a schema-5 setting the look gives no place to
+    print, "note: ..." for a part of the site's own look that leaves the kicker out."""
+    problems, notes = trigger_slot_findings(loaded, cfg, files, look)
+    return ["refused: %s" % p.message for p in problems] + ["note: %s" % n for n in notes]

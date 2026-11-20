@@ -7,8 +7,12 @@ construct could be read, nothing in the pages says the word varies, so the data 
 of the site's own pieces and not one every piece shares is a per-piece value, and the construct is not derived (a construct the look
 does not carry is built by the plugin's own markup, and `adoption.choose` then judges what that loses).
 
+The same holds in a construct of ONE instance (step 5c-4, measured on `template-movement-e`): a home page whose shelf of piece tiles is
+written into `home.wrap` as fixed markup is EQUAL on the day the look is made and stale once a piece changes, so derive asks every
+construct, not only `PER_ITEM`'s; `why_fixed` words the two reasons.
+
 `content_values(files)` is the site's per-piece values; `literal_hits(template, values)` the words of one template that are among them.
-Both are pure; neither reads a file.
+All are pure; none reads a file.
 """
 
 import re
@@ -20,7 +24,7 @@ PER_ITEM = ("piece", "card", "reference-card")      # the constructs each of who
 _PIECE = re.compile(r"^content/[^/_][^/]*/[^/_][^/]*/(?:index|[a-z0-9-]+)\.md$")
 _TAG = re.compile(r"<[^>]*>")
 _ATTR = re.compile(r"\b(?:alt|title|aria-label)=\"([^\"]*)\"")
-_SLOT = re.compile(r"\{\{[a-z][a-z0-9]*\}\}")
+_SLOT = re.compile(r"\{\{[a-z][A-Za-z0-9]*\}\}")
 
 
 def _squash(s):
@@ -73,6 +77,15 @@ def literal_texts(template):
     for chunk in re.split(r"\x00", text):
         out.extend(_SLOT.split(chunk))
     return [t for t in (_squash(x) for x in out) if re.search(r"[A-Za-z]", t)]
+
+
+def why_fixed(construct):
+    """derive's reason for not mapping a `construct` whose template writes a piece's own value as fixed text: in a construct of many
+    instances (`PER_ITEM`) the value would print on every instance's page; in any other (the home page's shelf, step 5c-4) it would
+    stay as it was when the look was made, whatever the piece says later."""
+    if construct in PER_ITEM:
+        return "this template writes a value of one piece's own data as fixed text"
+    return "this template writes a value of a piece's own data as fixed text, which would not follow the piece"
 
 
 def literal_hits(template, values):

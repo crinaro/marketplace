@@ -5,6 +5,7 @@ import looks
 import re
 from contentmodel import links
 from lookfiles.pagedom import _SLOT, _collapse
+from lookgrammar import optionalparts
 
 
 # --------------------------------------------------------------------------------------------- merge and agree
@@ -86,6 +87,37 @@ def _merge(entries, construct, part):
     return None
 
 
+def _merge_place_picture(entries, construct, part):
+    """`_merge` for a place's own picture part (`steps-view.image`, `home-showcase.image`; step G O3). The build takes the attribute
+    of a slot the picture has no value for out of that part (`optionalparts.strip`: a picture with no position writes no `style`),
+    so the instances holding the most values say the markup, and every other instance must be exactly that markup with those
+    attributes taken out. A picture's pixel size is a may-be-empty slot there too, so where the instances do not share one markup
+    their `width` and `height` are read as those slots first. None when they do not."""
+    tpl = _merge(entries, construct, part)
+    if tpl is not None:
+        return tpl
+    have = lambda c: set(s for s in c.table if c.values.get(s) not in (None, ""))        # noqa: E731
+    sized = [(_size_slots(t, c), c) for t, c in entries]
+    most = max(len(have(c)) for _t, c in entries)
+    tpl = _merge([e for e in sized if len(have(e[1])) == most], construct, part)
+    parsed = []
+    if tpl is None or looks.check_part(construct, part, tpl, parsed=parsed) or not parsed:
+        return None
+    for t, c in entries:
+        if _expand(optionalparts.strip(*parsed[0], keep=have(c)), c) != _expand(t, c):
+            return None
+    return tpl
+
+
+def _size_slots(template, call):
+    """`template` with the instance's own `width` and `height` attribute values written as those slots."""
+    for slot in ("width", "height"):
+        v = call.values.get(slot)
+        if v not in (None, ""):
+            template = template.replace(' %s="%s"' % (slot, v), ' %s="{{%s}}"' % (slot, slot), 1)
+    return template
+
+
 def _majority(entries, construct, part):
     """(template, [entries that do not share it]) for the markup MORE THAN HALF of the instances share, or (None, [])
     when no markup has that many. An instance whose own markup differs from the rest (a link the template points
@@ -111,7 +143,7 @@ def _align_words(cand, entries, got):
     stands for: a word that is a slot's value in some instances only is a coincidence (the `work` in `tn-work` is the
     portfolio's name in one portfolio and a fixed class in the next), so it stays literal. None when an instance does
     not fit `cand`'s shape, or a marker is neither its slot's value everywhere nor one text everywhere."""
-    parts = re.split(r"(\{\{[a-z][a-z0-9]*\}\})", cand)
+    parts = re.split(r"(\{\{[a-z][A-Za-z0-9]*\}\})", cand)
     marks = [(i, p[2:-2]) for i, p in enumerate(parts) if i % 2 == 1]
     caps = []
     for (_t, c), g in zip(entries, got):

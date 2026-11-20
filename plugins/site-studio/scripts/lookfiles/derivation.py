@@ -1,4 +1,18 @@
-"""One reading of the pages: the state that anchors each recorded part in a page and offers the readings of its template (`_Derivation`)."""
+"""One reading of the pages: the state that anchors each recorded part in a page and offers the readings of its template (`_Derivation`).
+
+Two shapes of a template's view (design-movement-view 9.2, U-D1, U-D2; step 5c-2):
+    a DRAWING beside a part   an `<svg>` element that shares one wrapper with a part's extent, and nothing else does, is the part's
+                              own markup: the wrapper is that part's only reading (`_read_variants`), so the drawing is copied into
+                              the part that draws it (`steps-view.wrap`), never left to the part above (`portfolio.wrap` would draw
+                              it on every index). The page's own text of it is kept (`pagedom.El.raw`), no slot is written inside
+                              it (`_text_slot`, `_url_slot`), and the look grammar decides whether it is a decoration: one that is
+                              not leaves that part `unmapped` with the refused element named, never a plain list.
+    a number the page omits   `NUMBER_PARTS` (the step's position) whose digits no element of the part's own extent holds (a CSS
+                              counter) is absent: its slot is left out of the template (`_replace_run`), never guessed from other
+                              digits on the page (a year, a count).
+    a line the page omits     `UNPRINTED_PARTS` (a card's teaser, a tile's role) of which NO word is anywhere in its parent's extent
+                              is absent the same way: the old card never printed it. A part the page prints in another form (a word
+                              of it is there) is not absent, it stays unmapped, so a look never drops a line the old page shows."""
 
 import collections
 import looks
@@ -16,6 +30,7 @@ from lookfiles.anchors import (
     _holds,
     _int_needles,
     _is_wild,
+    _list_pattern,
     _node_holds,
     _out_items,
     _own_needles,
@@ -39,8 +54,23 @@ from lookfiles.pagedom import (
     text_of,
     walk,
 )
-from lookfiles.renderlog import _tree, kids_of
+from lookfiles.renderlog import LIST_SEP, PLACE_PICTURES, _tree, kids_of
 from lookfiles.templatemerge import _merge
+
+NUMBER_PARTS = frozenset((("steps-view", "number"),))       # a part a page may draw in CSS instead of printing (U-M2, U-D1)
+# a piece's optional line a site's own card or tile may simply not print (step 5c-3): the teaser under a card's title (a template's
+# pieces carry `summary`, which `pieceKeys` renames to `teaser`, and its cards never printed it), and a tile's role
+UNPRINTED_PARTS = frozenset((("card", "teaser"), ("showcase-view", "role"), ("home-showcase", "role")))
+_HEAD = 12                                                  # the squashed characters a cut-short line still starts with
+
+
+def _drawn(el):
+    """Is `el` inside a drawing (an `<svg>` subtree the page's own text of which is kept)? No slot is written there."""
+    while el is not None:
+        if isinstance(el, El) and el.raw is not None:
+            return True
+        el = el.parent
+    return False
 
 
 class _Derivation(object):
@@ -56,6 +86,7 @@ class _Derivation(object):
         self.explained = collections.defaultdict(set)       # id(page) -> {id(element inside an anchored extent)}
         self.runs = {}                                      # id(call) -> sibling nodes a multi-element part spans
         self.seen = {}                                      # (page, part, scope, bound) -> its readings, or the failure
+        self.absent = set()                                 # id(call) of a `NUMBER_PARTS` call its page does not print
 
     # ------------------------------------------------------------------------------------------ anchoring
     def anchors(self, page, scope, call, bound):
@@ -181,9 +212,19 @@ class _Derivation(object):
         fewer (the wrappers above a block that is alone in them are then the parent's, such as the element a page's
         body slot sits in). With `runs`, a child that fills `r` with its parent, or an element with another child, is read as a run of
         that element's children (`_runs_for_sharers`) instead of being refused."""
-        cands = []
+        cands, present = [], []
         for k in kids:
-            allopts = self.instance(page, k, r, r)
+            try:
+                allopts = self.instance(page, k, r, r)
+            except _Fail:
+                if k.key in NUMBER_PARTS and not self.anchors(page, r, k, r):
+                    self.absent.add(id(k))          # the page draws the number in CSS (or not at all): no element holds its digits
+                    continue
+                if k.key in UNPRINTED_PARTS and self._unprinted(page, r, k):
+                    self.absent.add(id(k))          # the old card or tile does not print this line at all
+                    continue
+                raise
+            present.append(k)
 
             def own(o, k=k):
                 """How much markup the parts BELOW the kid hold in a reading: of readings that take the same element, the one that
@@ -206,12 +247,20 @@ class _Derivation(object):
         if picks is None:
             raise _Fail("ambiguous", "two instances of one construct share one element")
         if runs:
-            picks = self._runs_for_sharers(page, kids, picks, r)
+            picks = self._runs_for_sharers(page, present, picks, r)
         extents = {}
-        for k, pick in zip(kids, picks):
+        for k, pick in zip(present, picks):
             self.runs[id(k)] = pick[0].get(("run", id(k)), 1)
             extents[id(k)] = pick
         return extents
+
+    @staticmethod
+    def _unprinted(page, r, k):
+        """Does `r` hold none of `k`'s text, as text or in an attribute, whole or by its first `_HEAD` characters (a line the page cuts
+        short is still the line), and `k` no address? Only then is the line one the page does not print. (Single words are not asked:
+        a teaser shares words with its own card's title and alt.)"""
+        hard, soft = _full_needles(k)
+        return bool(hard) and not soft and not any(_holds(page, r, [n[:_HEAD]]) for n in hard)
 
     @staticmethod
     def _choose(cands, shared_ok):
@@ -374,21 +423,29 @@ class _Derivation(object):
         variants = [(r, extents)]
         cur = r
         beside = _fixed_beside(call)
-        while len(variants) < 3:
+        # a place's own picture part (`renderlog.PLACE_PICTURES`) is its `<img>`: a wrapper around it is the place's item's markup, as
+        # it is around the site-wide picture the part stands in for
+        while len(variants) < 3 and not (call.part == "image" and (call.construct, "item") in PLACE_PICTURES):
             up = cur.parent
             if (not _can_go(up, bound)
                     or any(isinstance(k, Tx) and k.data.strip() for k in up.kids)):
                 break
             sibs = [k for k in up.kids if isinstance(k, El)]
+            others = [k for k in sibs if k is not cur]
             # a wrapper alone around the extent, or one that holds the extent and the fixed element(s) the plugin's own markup for
             # the part writes beside it: the section around a heading and a list of ONE, where nothing but the heading says that the
             # section is the part's and the list's wrapper is not (`_fixed_beside`)
-            if sibs != [cur] and not (beside and sorted(k.tag for k in sibs if k is not cur) == beside and cur in sibs):
+            drawing = bool(others) and cur in sibs and all(k.tag == "svg" for k in others)
+            if sibs != [cur] and not drawing and not (beside and sorted(k.tag for k in others) == beside and cur in sibs):
                 break
             try:
                 variants.append((up, self._kids_in(page, searchable, up, tight)))
             except _Fail:
                 break
+            if drawing:
+                # a drawing beside the extent in one wrapper is the part's own (the template's ribbon beside its list): the readings
+                # without the wrapper would leave it to the part above, which draws it wherever that part is used
+                variants = variants[-1:]
             cur = up
         return self._options(call, variants)
 
@@ -472,9 +529,21 @@ class _Derivation(object):
             items = _value_items(call, slot)
             if items:
                 self._replace_run(root, slot, items, kid_copy, inside, flags, fixed)
+        # `fullTitle` (step G, O4a) is the piece's own title where `title` may be its short one: it is read FIRST where the two
+        # differ (the short title is a word run inside the long one), and never where they are equal (review F8a: `{{title}}` says
+        # the same and needs no newer release)
+        both = "fullTitle" in call.table and "title" in call.table
+        full = call.values.get("fullTitle") if both else None
+        if full and full != call.values.get("title"):
+            self._text_slot(root, "fullTitle", str(full), inside)
         for slot in call.all_slots():
             kind, v = call.table[slot], call.values.get(slot)
-            if v is None or v == "":
+            if v is None or v == "" or (both and slot == "fullTitle"):
+                continue
+            if kind == looks.TEXT and LIST_SEP in str(v):
+                sep = self._list_slot(root, slot, str(v), inside)
+                if sep is not None:
+                    fixed[("sep", id(call))] = sep
                 continue
             if kind == looks.TEXT:
                 # a slot the page does not show can only be a markup hook (a class token, a data attribute)
@@ -484,7 +553,11 @@ class _Derivation(object):
         return ser(root), flags, fixed
 
     def _replace_run(self, root, slot, items, kid_copy, inside, flags, fixed):
-        """Replace the sibling run that holds html slot `slot`'s items by one marker."""
+        """Replace the sibling run that holds html slot `slot`'s items by one marker. A slot that holds only parts the page does not
+        print (`absent`) is left out of the template."""
+        items = [it for it in items if not (it[0] == "kid" and id(it[1]) in self.absent)]
+        if not items:
+            return
         placed = []
         for it in items:
             if it[0] == "kid" and id(it[1]) not in kid_copy:
@@ -574,7 +647,7 @@ class _Derivation(object):
         done = False
         whole = squash(value) if attrs_only and len(squash(value)) >= 3 else None
         for el in list(walk(root)):
-            if id(el) in inside:
+            if id(el) in inside or _drawn(el):
                 continue
             for i, (name, val) in enumerate(el.attrs):
                 if val is None or name in _SUBST_SKIP or name == "style":
@@ -598,8 +671,28 @@ class _Derivation(object):
                     done = True
         return done
 
+    def _list_slot(self, root, slot, value, inside=()):
+        """Write `slot` where the items of the `LIST_SEP` value `value` stand in one text node, joined by one separator the page
+        chose (the same between every two). Returns that separator as the page writes it, or None where no text node holds them."""
+        pat = _list_pattern(value)
+        if pat is None:
+            return None
+        for el in list(walk(root)):
+            if id(el) in inside:
+                continue
+            for i, k in enumerate(el.kids):
+                m = pat.search(k.data) if isinstance(k, Tx) else None
+                if m is not None:
+                    t = Tx(k.data[:m.start()] + "{{%s}}" % slot + k.data[m.end():])
+                    t.parent = el
+                    el.kids[i] = t
+                    return m.group("sep")
+        return None
+
     def _url_slot(self, root, slot, kind, value):
         for el in walk(root):
+            if _drawn(el):
+                continue
             for i, (name, val) in enumerate(el.attrs):
                 if val is None:
                     continue

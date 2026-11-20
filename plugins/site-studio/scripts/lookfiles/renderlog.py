@@ -4,12 +4,21 @@ its output), which is what derive looks for in the published pages."""
 import collections
 import contextlib
 import looks
-from building import running
+from building import running, stepsview
 from lookfiles.pagedom import _SLOT
 from lookfiles.refusals import LookCommandError
 
 
 # ================================================================================================== the recording
+# A list value the build joins with a separator the site's look may name (`steps-view.role-sep`, step G O2) is recorded joined with
+# this private-use character instead, so derive can tell the items apart and read the separator the page writes between them.
+LIST_SEP = ""
+LIST_SEP_PARTS = {("steps-view", "role"): "role-sep"}
+# The places whose picture may render through a part of their own (step G O3): a site-wide `image` call made for one of these is read as
+# that place's `image` part, so a template that writes the step's or the home tile's `<img>` its own way derives it there.
+PLACE_PICTURES = (("steps-view", "item"), ("home-showcase", "item"))
+
+
 class Call(object):
     """One `looks.render` call: what was rendered, from which values, with what result."""
 
@@ -26,8 +35,10 @@ class Call(object):
             text = ""
         self.template = text            # the recording look's markup for this part
         used, in_text = [], set()
+        # a gated slot (rule L3a) filled with "" writes nothing into the page, so the page does not show it
+        empty_gated = set(s for s in looks.gated_slots(construct, part) if not self.values.get(s))
         for m in _SLOT.finditer(text):
-            if m.group(1) in self.table and m.group(1) not in used:
+            if m.group(1) in self.table and m.group(1) not in used and m.group(1) not in empty_gated:
                 used.append(m.group(1))
             if text.rfind("<", 0, m.start()) <= text.rfind(">", 0, m.start()):
                 in_text.add(m.group(1))     # not inside a tag: the slot's value is page text
@@ -45,6 +56,19 @@ class Call(object):
     def all_slots(self):
         """The slots the page shows, then the ones it may carry as markup (a class token, a data attribute)."""
         return list(self.used) + [s for s in self.table if s not in self.used]
+
+    def as_place(self, construct):
+        """Read this site-wide `image` call as `construct`'s own picture part (`PLACE_PICTURES`): the same values and the same
+        recorded markup (the recording look writes no place part), under the place part's slot table."""
+        if self.construct == "image":
+            self.site_key = (self.part, self.table)
+        self.construct, self.part = construct, "image"
+        self.table = looks.CONSTRUCTS[construct]["parts"]["image"]
+
+    def as_site(self):
+        """Undo `as_place`: the call is the site-wide `image` call it was recorded as."""
+        if self.construct != "image":
+            self.construct, (self.part, self.table) = "image", self.site_key
 
 
 @contextlib.contextmanager
@@ -111,6 +135,32 @@ def link_calls(calls):
             p.segments[slot] = segs
 
 
+@contextlib.contextmanager
+def _list_items():
+    """While recording, a list role is joined with `LIST_SEP` (the build reads the site's own separator through this one function)."""
+    original = stepsview.role_separator
+    stepsview.role_separator = lambda builder: LIST_SEP
+    try:
+        yield
+    finally:
+        stepsview.role_separator = original
+
+
+def place_calls(calls, places=PLACE_PICTURES):
+    """The site-wide `image` calls that are the picture of a `places` part (a step, a home tile)."""
+    return [c for c in calls if c.construct == "image" and c.parent is not None
+            and (c.parent.construct, c.parent.part) in places
+            and any(seg[0] == "kid" and seg[1] is c for seg in c.parent.segments.get("image", ()))]
+
+
+def place_pictures(calls, places=(("steps-view", "item"),)):
+    """Every `image` call that is the picture of a `places` part is read as that place's own `image` part. The recording reads a
+    step's picture so (`steps-view` is 0.5.0's own construct, so its picture part costs no newer release); a home tile's is read so
+    only by the derive reading that needs it (`derive.derive_look`: `home-showcase.image` makes a look need 0.5.0)."""
+    for c in place_calls(calls, places):
+        c.as_place(c.parent.construct)
+
+
 def kids_of(call):
     return [seg[1] for segs in call.segments.values() for seg in segs if seg[0] == "kid"]
 
@@ -118,13 +168,14 @@ def kids_of(call):
 def record(files):
     """Build `files` in memory with every render call recorded. Returns (calls, html_outputs). Raises
     LookCommandError when the tree does not build: nothing can be derived from content the build refuses."""
-    with recording() as calls:
+    with recording() as calls, _list_items():
         acc = running.accept(files)
     if acc.problems:
         first = "; ".join(p.line() for p in acc.problems[:2])
         raise LookCommandError("this repository's content does not build today (%s), so a look cannot be derived from "
                                "it; fix that first, then run derive again" % first)
     link_calls(calls)
+    place_pictures(calls)
     pages = {}
     for path, data in acc.output.items():
         if path.lower().endswith((".html", ".htm")):

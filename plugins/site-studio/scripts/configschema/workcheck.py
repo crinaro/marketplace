@@ -3,6 +3,8 @@ section, and the helpers that read their label maps."""
 
 import json
 from configschema.configkeys import (
+    BUILTIN_PIECE_KEYS,
+    CARD_IMAGES,
     CARD_NUMBER_FORMATS,
     DEFAULT_RESUME_PATH,
     DEFAULT_RESUME_PDF,
@@ -13,6 +15,7 @@ from configschema.configkeys import (
     RESUME_LAYOUTS,
     SCHEMA_MAX,
     V4_WORK_KEYS,
+    V5_WORK_KEYS,
     WORK_KEYS,
     _KEY_RE,
 )
@@ -113,6 +116,53 @@ def _list_of_keys(raw, k, where, col):
     return out
 
 
+def _needs_schema_5(where, have):
+    """A schema-5 setting under a lower declared schema: 0.4.x refuses it as an unknown key, and 0.5.0 refuses it naming
+    the schema (design-movement-view section 3.1 rule 1)."""
+    return SiteConfigError("site.json: '%s' needs \"schema\": 5" % where, path=where,
+                           found="schema %d" % have, expected="schema 5",
+                           fix="run `python3 build.py raise-schema --to 5`, which lists what the page changes before "
+                               "it writes schema 5")
+
+
+def _v5_settings(raw, where, schema, out, col):
+    """The schema-5 portfolio settings (design-movement-view section 3.2), each stored only when set: `cardImage`
+    ("cover" or "photo"), `cardKicker` (a piece key's name: not a built-in key, and not also in `cardMeta`, where it
+    would print twice) and `cardAlt`, `pieceLink`, `pieceTeaser` (`true` only)."""
+    for k in V5_WORK_KEYS:
+        if k not in raw:
+            continue
+        here = "%s.%s" % (where, k)
+        v = raw[k]
+        if schema < 5:
+            col.problems.append(_needs_schema_5(here, schema).problem)
+        elif k == "cardImage":
+            if v not in CARD_IMAGES:
+                names = " or ".join('"%s"' % a for a in CARD_IMAGES)
+                col.add("site.json: '%s' must be %s" % (here, names), here, _shown(repr(v)), names,
+                        "set %s to %s" % (here, names))
+            else:
+                out[k] = v
+        elif k == "cardKicker":
+            if not isinstance(v, str) or not _KEY_RE.match(v):
+                col.add("site.json: '%s' must be the name of a piece key" % here, here, _shown(repr(v)),
+                        "a plain key name", "name the piece key the card prints, such as cardKicker: industry")
+            elif v in BUILTIN_PIECE_KEYS:
+                col.add("site.json: '%s' names '%s', a built-in key the build shows already" % (here, v), here, v,
+                        "a piece key that is not built in", "name another piece key")
+            elif v in out["cardMeta"]:
+                col.add("site.json: '%s' names '%s', which cardMeta lists too, so the card would print it twice"
+                        % (here, v), here, v, "a key not in cardMeta",
+                        "remove '%s' from cardMeta, or name another key" % v)
+            else:
+                out[k] = v
+        elif v is not True:
+            col.add("site.json: '%s' must be true" % here, here, _shown(repr(v)), "true",
+                    "set %s to true, or remove it" % here)
+        else:
+            out[k] = True
+
+
 def _portfolio_check(raw, where, schema, featured_from, col):
     out = {"label": "Work", "description": "", "required": ["title"], "meta": [], "cardMeta": [],
            "groupBy": None, "groups": [], "labels": {"meta": {}, "groups": {}}}
@@ -160,6 +210,7 @@ def _portfolio_check(raw, where, schema, featured_from, col):
             ok, val = col.run(_bool, raw[k], "%s.%s" % (where, k))
             if ok and val != (k == "cardLabels"):          # the defaults are cardNumber false, cardLabels true
                 out[k] = val
+    _v5_settings(raw, where, schema, out, col)
     if "groupBy" in raw:
         ok, val = col.run(_str, raw["groupBy"], where + ".groupBy", optional=True)
         if ok:

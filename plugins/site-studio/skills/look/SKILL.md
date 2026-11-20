@@ -22,7 +22,11 @@ those, with explicit paths, after the person has seen what changed.
   uses. Run it first.
 - **`check`**: reads the site's look and says which constructs it leaves to the plugin's own markup,
   every literal word it carries (text the look prints on the pages by itself), and any live video
-  player. Run it after any change to a look file, including a hand edit.
+  player. From 0.5.0 it also lists each **decoration** (a drawing the look holds as an inline SVG of
+  shapes and gradients: no text, no link, nothing loaded), notes one without `aria-hidden="true"`,
+  and notes each part of the site's look that shows a portfolio's pieces without the `{{kicker}}`
+  that portfolio's `cardKicker` prints through. Run it after any change to a look file, including a
+  hand edit.
 - **`use <id or path>`**: copies a shipped look (by its id) or a look file from another repository
   (by its path) into `site/looks/`, with the stylesheets it names, and writes the `look` key in
   `site/site.json`. It **never overwrites** a file that holds other bytes: it names the file and
@@ -47,7 +51,13 @@ those, with explicit paths, after the person has seen what changed.
   schema 4 through the one writer, and a 0.3.x install of the plugin (another computer that has not
   updated) refuses a schema-4 tree. Tell the person that before they say yes. A site below schema 3
   is refused with the fix: run `build.py raise-schema` first, as `/site-studio:add-work` does, show
-  its report and wait for their yes.
+  its report and wait for their yes. **A look that uses anything new in 0.5.0** (the steps view's
+  parts, a kicker, a card picture, a piece link or teaser, the full-title slot, or a decoration) raises
+  the site to schema 5 when `use` or `derive` writes it, and the command says so: tell the person that
+  a copy of the plugin older than 0.5.0 on another computer will then say "update site-studio".
+- **A value with nowhere to print.** If a portfolio turns on `cardImage` (roles view), `pieceLink`,
+  `pieceTeaser` or `cardKicker` and the site's own look has no slot for it, the build refuses and
+  names the part and the slot to add. Add the slot to that part of the look, or remove the setting.
 - **The tree must be clean** in `site/`, `content/` and `.site-studio/`: commit or discard first.
 - **Literal words.** A look that carries words of its own (a heading, a label) is listed, construct
   by construct, and `use` refuses without `--accept-literals`. Show the person the words and add the

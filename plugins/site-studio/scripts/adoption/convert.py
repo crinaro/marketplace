@@ -16,6 +16,7 @@ import json
 import posixpath
 import re
 
+from building.lookneeds import look_needs  # noqa: E402
 from contentmodel import grammar, keytables, layout  # noqa: E402
 import github_url  # noqa: E402
 from configschema import canonical, configkeys, diagnostics, model, treeschema, workcheck  # noqa: E402
@@ -23,7 +24,7 @@ from configschema import canonical, configkeys, diagnostics, model, treeschema, 
 from adoption.base import Refused
 from adoption.dispose import apply_dispositions, conv_name
 from adoption.blocks import block_rewrites, blocks_left
-from adoption.settings import apply_settings, showcase_pieces
+from adoption.settings import apply_settings, page_view, showcase_pieces
 from adoption.template import (
     RESUME_OWNED_KEYS, home_key_rewrite, home_path, nav_token_rewrites, page_file_renames, person_name_change,
     reference_rewrites, resume_header_rewrite, resume_pdf_rename,
@@ -178,41 +179,72 @@ _FM_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*):(?:[ \t]+(.*?))?[ \t]*$")
 # fingerprint and a measured P2 (`decide_conversions` holds a TEMPLATE class without one).
 PIECE_KEY_SYNONYMS = (("tilePhoto", "cover"), ("summary", "teaser"), ("dates", "period"))      # `summary` (P1, #882): TEMPLATE, fingerprint,
                                                                          # never over an existing `teaser`
+# The template's tile picture and its two companions, by the view of the piece's portfolio (design-movement-view section 6.2):
+# under `steps` they are the tile's own keys; under `showcase` the picture and its alt are (rule 5: a showcase tile has no
+# position, so `tilePhotoPosition` stays and `check` names it); elsewhere the picture is the cover. A companion is renamed only
+# beside its picture, in the piece where `tilePhoto` itself is renamed: its alt and position belong to that picture.
+TILE_KEY_SYNONYMS = {
+    "steps": (("tilePhoto", "tileImage"), ("tilePhotoAlt", "tileAlt"), ("tilePhotoPosition", "tilePosition")),
+    "showcase": (("tilePhoto", "tileImage"), ("tilePhotoAlt", "tileAlt")),
+    "": (("tilePhoto", "cover"), ("tilePhotoAlt", "coverAlt"), ("tilePhotoPosition", "coverPosition")),
+}
+
+
+def _page_view_line(tree, name):
+    """(lines, index of the `view:` line, its value) of `content/<name>/page.md`'s front matter, or None."""
+    path = "content/%s/page.md" % name
+    if not tree.exists(path) or not tree.text(path).startswith("---\n"):
+        return None
+    lines = tree.text(path).split("\n")
+    end = next((i for i, l in enumerate(lines[1:], 1) if l.rstrip() == "---"), None)
+    for i in range(1, end or 1):
+        m = _FM_LINE.match(lines[i].rstrip("\r"))
+        if m and m.group(1) == "view":
+            return lines, i, (m.group(2) or "").strip().strip("\"'")
+    return None
+
+
+# The template's view names the plugin models under its own name (design-movement-view 6.2, `viewNames`, TEMPLATE).
+TEMPLATE_VIEW_NAMES = {"movement": "steps"}
+
+
+def view_name_rewrites(tree, portfolios):
+    """{content/<portfolio>/page.md: (new text, old value, new value)} for each portfolio page whose `view` is a template name
+    the plugin models (`TEMPLATE_VIEW_NAMES`): only the value on that one line changes. It changes the portfolio's index, so
+    parity measures it, and it is `apply fixes this` only on a measured P2 (`MEASURED_ONLY_CLASSES`)."""
+    out = {}
+    for name in portfolios:
+        found = _page_view_line(tree, name)
+        if found and found[2] in TEMPLATE_VIEW_NAMES:
+            lines, i, val = found
+            lines[i] = lines[i].replace(val, TEMPLATE_VIEW_NAMES[val], 1)
+            out["content/%s/page.md" % name] = ("\n".join(lines), val, TEMPLATE_VIEW_NAMES[val])
+    return out
 
 
 def view_key_rewrites(tree, portfolios):
     """{content/<portfolio>/page.md: (new text, the `view` value removed)} for each portfolio page whose front matter
     sets a `view` other than `grid` or `page` (design-site-fidelity sections 6.2 and 10): the plugin does not model that
     index layout, and refuses the key. Removing the line leaves the plugin's grid. It changes the page a visitor
-    loads, so it is `you decide` by nature (OPT_IN), and parity builds it to name the page."""
+    loads, so it is `you decide` by nature (OPT_IN), and parity builds it to name the page. A view `viewNames` renames
+    (`TEMPLATE_VIEW_NAMES`) is never offered for removal: the plugin models it (design-movement-view 6.1)."""
     out = {}
     for name in portfolios:
-        path = "content/%s/page.md" % name
-        if not tree.exists(path):
-            continue
-        text = tree.text(path)
-        if not text.startswith("---\n"):
-            continue
-        lines = text.split("\n")
-        end = next((i for i, l in enumerate(lines[1:], 1) if l.rstrip() == "---"), None)
-        if end is None:
-            continue
-        for i in range(1, end):
-            m = _FM_LINE.match(lines[i].rstrip("\r"))
-            if m and m.group(1) == "view":
-                val = (m.group(2) or "").strip().strip("\"'")
-                if val not in configkeys.PAGE_VIEWS + configkeys.V4_PAGE_VIEWS:
-                    out[path] = ("\n".join(lines[:i] + lines[i + 1:]), val)
-                break
+        found = _page_view_line(tree, name)
+        modelled = configkeys.PAGE_VIEWS + configkeys.V4_PAGE_VIEWS + configkeys.V5_PAGE_VIEWS + tuple(TEMPLATE_VIEW_NAMES)
+        if found and found[2] not in modelled:
+            lines, i, val = found
+            out["content/%s/page.md" % name] = ("\n".join(lines[:i] + lines[i + 1:]), val)
     return out
 
 
-def piece_key_rewrites(tree, portfolios, showcase=frozenset()):
+def piece_key_rewrites(tree, portfolios, showcase=frozenset(), steps=frozenset()):
     """{piece file path: (new text, [(source key, target key)])} for each piece file (`work.md` or `index.md` in
     `content/<portfolio>/<slug>/`) that carries a PIECE_KEY_SYNONYMS source key and not its target. Only the key
     name on that front-matter line changes: the value, the other lines and the body stay byte for byte. A piece in
     `showcase` (a set of `portfolio/slug`: its portfolio's view is showcase, or the home showcase names it) reads its tile
-    picture from `tileImage`, so there `tilePhoto` is `tileImage`, not `cover` (design 8 V1)."""
+    picture from `tileImage`, so there `tilePhoto` is `tileImage`, not `cover` (design 8 V1); a piece in `steps` (its
+    portfolio's view is steps) reads the tile's position too. `TILE_KEY_SYNONYMS` holds the three rows."""
     out = {}
     for path in sorted(tree.paths()):
         parts = path.split("/")
@@ -232,15 +264,16 @@ def piece_key_rewrites(tree, portfolios, showcase=frozenset()):
             if m:
                 keys.add(m.group(1))
         done = []
+        piece = "%s/%s" % (parts[1], parts[2])
+        tile = TILE_KEY_SYNONYMS["steps" if piece in steps else "showcase" if piece in showcase else ""]
         for src, dst in PIECE_KEY_SYNONYMS:
-            if src == "tilePhoto" and "%s/%s" % (parts[1], parts[2]) in showcase:
-                dst = "tileImage"
-            if src in keys and dst not in keys:
-                for i in range(1, end):
-                    if lines[i].startswith(src + ":"):
-                        lines[i] = dst + ":" + lines[i][len(src) + 1:]
-                        done.append((src, dst))
-                        break
+            for s, d in (tile if src == "tilePhoto" else ((src, dst),)):
+                if s in keys and d not in keys and (s == src or ("tilePhoto", tile[0][1]) in done):
+                    for i in range(1, end):
+                        if lines[i].startswith(s + ":"):
+                            lines[i] = d + ":" + lines[i][len(s) + 1:]
+                            done.append((s, d))
+                            break
         for i in range(1, end):                       # the template writes a flag as yes or no; the plugin reads true or false
             m = re.match(r"^(current|featured):[ \t]*(yes|no)[ \t]*$", lines[i].rstrip("\r"), re.I)
             if m:
@@ -249,6 +282,19 @@ def piece_key_rewrites(tree, portfolios, showcase=frozenset()):
         if done:
             out[path] = ("\n".join(lines), done)
     return out
+
+
+def steps_pieces(view, settings):
+    """{`portfolio/slug`}: every piece of a portfolio whose view is `steps`, as its page.md names it or as the person's
+    `view.<portfolio>` setting says (the `steps` row of `TILE_KEY_SYNONYMS` applies to them)."""
+    names = set()
+    for p in view.paths():
+        parts = p.split("/")
+        if len(parts) == 3 and parts[0] == "content" and parts[2] == "page.md":
+            if (settings.get("view." + parts[1]) or page_view(view.text(p))) == "steps":
+                names.add(parts[1])
+    return set("%s/%s" % tuple(p.split("/")[1:3]) for p in view.paths()
+               if len(p.split("/")) == 4 and p.split("/")[1] in names and p.split("/")[3] in ("work.md", "index.md"))
 
 
 TEMPLATE_VIEW_FOLDERS = {"roles": "roles", "experience": "roles"}   # folder -> the view the template renders it as when its page.md names none
@@ -434,7 +480,7 @@ def converted_site_files(tree, data, paper, folders=None, kind=None, only=None, 
                         "schemaReasons": [], "normalised": [], "layout": [], "removed": [], "olds": [],
                         "redirects": [], "redirectsLeft": [], "kind": kind, "redirectKeys": [],
                         "redirectCollisions": [], "redirectBoiler": [], "pieces": [], "piecesBoth": [],
-                        "resumeFields": [], "resumeFieldsLeft": [], "tokensFrozen": [], "pieceKeys": [], "viewKeys": [],
+                        "resumeFields": [], "resumeFieldsLeft": [], "tokensFrozen": [], "pieceKeys": [], "viewKeys": [], "viewNames": [],
                         "blocks": [], "blocksLeft": [], "references": [], "pageFiles": [], "homeKeys": [],
                         "resumeHeader": [], "navTokens": [], "personName": [], "resumePdfName": [], "settings": [],
                         "archived": [], "drafted": [], "archiveRows": []}
@@ -476,12 +522,17 @@ def converted_site_files(tree, data, paper, folders=None, kind=None, only=None, 
         if notes["pieces"]:
             notes["olds"].append(("piece file", "work.md"))
     _template_classes(view, files, gone, want, notes, d, portfolios, settings or {}, hints or {})
+    if want("viewNames"):                 # before `viewKeys` and `pieceKeys`: a steps portfolio's tile keys are renamed as steps'
+        for path, (new_text, old, new) in view_name_rewrites(view, portfolios).items():
+            files[path] = new_text.encode("utf-8")
+            notes["viewNames"].append((path, old, new))
     if want("viewKeys"):
         for path, (new_text, val) in view_key_rewrites(view, portfolios).items():
             files[path] = new_text.encode("utf-8")
             notes["viewKeys"].append((path, val))
     if want("pieceKeys"):
-        for path, (new_text, done) in piece_key_rewrites(view, portfolios, showcase_pieces(view, settings or {})).items():
+        for path, (new_text, done) in piece_key_rewrites(view, portfolios, showcase_pieces(view, settings or {}),
+                                                         steps_pieces(view, settings or {})).items():
             files[path] = new_text.encode("utf-8")
             notes["pieceKeys"].extend((posixpath.dirname(path) + "/", a, b) for a, b in done)
         # K4: a roles folder's own view. Read from the tree as the person wrote it, never from `view`: a page whose `view` the
@@ -534,8 +585,9 @@ def converted_site_files(tree, data, paper, folders=None, kind=None, only=None, 
     notes["schemaReasons"] = (treeschema.schema_2_reasons(cfg, seen)
                               + [(r.where, r.what, r.effect) for r in
                                  treeschema.schema_3_reasons(cfg, seen, interps)])
-    notes["schema"] = treeschema.required_schema(cfg, seen, interps)
-    files["site/site.json"] = canonical.canonical_text(cfg, seen, interps).encode("utf-8")
+    needs = look_needs(seen)                       # a vendored look that needs 0.5.0 is a schema-5 reason (design-movement-view 3.4)
+    notes["schema"] = treeschema.required_schema(cfg, seen, interps, look_needs=needs)
+    files["site/site.json"] = canonical.canonical_text(cfg, seen, interps, look_needs=needs).encode("utf-8")
     for key, old, _new, _line in notes["normalised"]:
         notes["olds"].append((key, old))
     for old, new, _line in notes["layout"]:

@@ -12,6 +12,7 @@ from contentmodel import keytables  # noqa: E402
 
 from adoption.accounting import cmd_file, no_landing_lines, no_landing_rows
 from adoption.fileacct import measured_folders
+from adoption.keycover import note_lines
 from adoption.base import Refused
 from adoption.measure import cmd_parity, cmd_remeasure
 from adoption.parity import preconditions
@@ -29,9 +30,11 @@ def verb_check(repo, args):
     for line in basis.up_front():
         print(line)
     plan = _plan_for(repo, basis.sha, print)
-    probs = (site_problems(tree, data, None, plan.get("siteKind"), measured_folders(tree, plan), plan["convert"], plan_settings(plan))
+    notes = []                                                # design-movement-view 6.1: a note, not a decision
+    probs = (site_problems(tree, data, None, plan.get("siteKind"), measured_folders(tree, plan), plan["convert"], plan_settings(plan),
+                           plan.get("parity"), notes)
              + held_problems(tree, data, plan))               # F2: a folder the last `parity` archived wholly is no question
-    for line in format_problems(probs):
+    for line in format_problems(probs) + note_lines(notes):
         print(line)
     blocked = [p for p in probs if not p.mechanical]
     if blocked:

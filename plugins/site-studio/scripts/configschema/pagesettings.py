@@ -8,13 +8,15 @@ from configschema.configkeys import (
     PAGE_VIEWS,
     V3_PAGE_DEFAULTS,
     V4_PAGE_VIEWS,
+    V5_PAGE_VIEWS,
 )
 from configschema.diagnostics import make_problem
 
 
 def page_settings_problems(raw, where, schema=3):
     """Every problem in the schema-3 portfolio keys of a `page.md` (`order`, `tagline`, `sort`, `menuLinks`,
-    `view`) and, at `schema` 4 and above, `mapMask`, `onePieceIndex` and the three further `view` values, as (problems,
+    `view`) and, at `schema` 4 and above, `mapMask`, `onePieceIndex` and the three further `view` values (at 5 also
+    `steps`), as (problems,
     settings). `raw` holds only those keys; `where` is the page's path. `settings` is fully defaulted (a
     schema-4 key is in it only when `raw` holds it, so a schema-3 settings dict is what it was). The value rules
     are the design's section 6.2 table, and every refusal names its fix. `schema` is the declared schema of the
@@ -59,7 +61,7 @@ def page_settings_problems(raw, where, schema=3):
             if allowed is None:
                 continue
             if key == "view" and schema >= 4:
-                allowed = PAGE_VIEWS + V4_PAGE_VIEWS
+                allowed = PAGE_VIEWS + V4_PAGE_VIEWS + (V5_PAGE_VIEWS if schema >= 5 else ())
             if val not in allowed:
                 names = " or ".join('"%s"' % a for a in allowed)
                 bad(key, repr(val), "must be %s" % names, "set %s to %s" % (key, names))

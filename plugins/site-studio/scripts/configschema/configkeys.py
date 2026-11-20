@@ -1,4 +1,4 @@
-"""configkeys: the key tables and constants of `site/site.json` and of a page's front matter, schemas 1 to 4.
+"""configkeys: the key tables and constants of `site/site.json` and of a page's front matter, schemas 1 to 5.
 
 Constants only: the schema ceiling, the engine marker, each key table, the budget defaults and the patterns the
 value checks use. No code runs here."""
@@ -6,7 +6,7 @@ value checks use. No code runs here."""
 import re
 
 
-SCHEMA_MAX = 4
+SCHEMA_MAX = 5
 ENGINE_MARKER = "site-studio"
 CANONICAL_MARKER_LINE = '  "engine": "site-studio",'
 
@@ -27,7 +27,8 @@ V4_TOP_KEYS = ("nav", "look", "blocks")
 SITE_KINDS = ("portfolio", "hub", "custom")
 FEATURED_FROM = ("home", "flags")
 WORK_KEYS = ("label", "description", "required", "meta", "cardMeta", "groupBy", "groups", "labels",
-             "cardNumber", "cardNumberFormat", "cardLabels", "backLink")
+             "cardNumber", "cardNumberFormat", "cardLabels", "backLink",
+             "cardImage", "cardAlt", "cardKicker", "pieceLink", "pieceTeaser")
 # The portfolio keys schema 4 adds (the last four of WORK_KEYS). Each is stored in a parsed `work` ONLY when it is
 # not its default (cardNumber false, cardNumberFormat "padded", cardLabels true, no backLink), the way `labels` is,
 # so a schema-3 site's settings stay what they were and `content.py`'s merge of site.json `work` with a page.md
@@ -37,6 +38,14 @@ V4_WORK_KEYS = ("cardNumber", "cardNumberFormat", "cardLabels", "backLink")
 # order as it is and the year, `2 / 2025`; "order" the order as it is and nothing else, `2`. The key says WHAT the
 # card prints, so the third value is one more word for it, not a second key that only means something beside "plain".
 CARD_NUMBER_FORMATS = ("padded", "plain", "order")
+# The portfolio settings schema 5 adds (design-movement-view section 3.2; the last five of WORK_KEYS), each a K trigger:
+# 0.4.x refuses every one, so no tree it accepted holds one. Each is stored in a parsed `work` only when the person set
+# it, so a schema-4 settings dict is what it was. `cardImage` is the picture a card shows ("cover" or "photo"),
+# `cardKicker` names the piece key printed as a card's kicker line, and `cardAlt`, `pieceLink` and `pieceTeaser` take
+# `true` only. `cardImage: cover` is kept as written: under `view: roles` it is not the default (a roles card has no
+# picture without it), so it is a reason by presence and never written away.
+V5_WORK_KEYS = ("cardImage", "cardAlt", "cardKicker", "pieceLink", "pieceTeaser")
+CARD_IMAGES = ("cover", "photo")
 # `blocks` (schema 4, a top-level object): the settings of the plugin's `:::` blocks and of the `ref:` lines a body holds. Its
 # keys are `headingLevel` (the h-level of a heading inside a block), `loneReferenceGrid` (a lone `ref:` line prints inside
 # the reference grid, as two or more do; the default, false, is a bare card) and `videoEmbed` (the address a video block and a gallery
@@ -78,6 +87,9 @@ PAGE_VIEWS = ("grid", "page")
 # Schema 4 (design-template-fidelity section 3.2): three more `view` values, and one more page.md key. The 0.3.x
 # tuple above is NOT extended, so what reads PAGE_VIEWS keeps the schema-3 meaning (adopt's page.md check).
 V4_PAGE_VIEWS = ("roles", "map", "showcase")
+# Schema 5 (design-movement-view section 3.2): the steps view, an ordered run of numbered steps. Neither tuple above is
+# extended, so what reads them keeps its schema-3 or schema-4 meaning.
+V5_PAGE_VIEWS = ("steps",)
 V4_PAGE_KEYS = ("mapMask", "onePieceIndex")
 V4_PAGE_DEFAULTS = {"mapMask": None, "onePieceIndex": "redirect"}
 # `onePieceIndex` (schema 4): what a portfolio's index is when `menuLinks: "single-piece"` has the menu link its one
@@ -105,6 +117,8 @@ HOME_INTRO_SCOPES = ("body", "first-block")
 HOME_SECTIONS = ("intro", "rest", "featured", "showcase", "feed", "samples", "links", "contact")
 V4_RESUME_PAGE_KEYS = ("tagline", "links")
 V4_REFERENCE_KEYS = ("image", "role", "fetched", "author")
+# The reference keys schema 5 adds: the alt and the `object-position` of a reference's card picture (design section 5).
+V5_REFERENCE_KEYS = ("imageAlt", "imagePosition")
 # The home parts fixed at schema 4 and above: `{{home:<part>}}` names them without a `:::part` container, so they
 # are the home KEYS' names. Below 4 each is a name a person may use for a custom part (design rule 7).
 V4_PART_FIXED = V4_HOME_KEYS

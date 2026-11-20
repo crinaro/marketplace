@@ -35,7 +35,7 @@ class _Builder(_PageBase, _MarkdownEnv, _HomePage, _Portfolios, _SiteParts):
         self.assets_emitted.add(key)
         self.assets_used.add(kind)
         href = esc(rel_link(from_out, PLUGIN_ASSETS[kind]))
-        if kind in ("css", "schema-4"):
+        if PLUGIN_ASSETS[kind].endswith(".css"):
             return '<link rel="stylesheet" href="%s">' % href
         return '<script src="%s" defer></script>' % href
 
@@ -51,7 +51,7 @@ class _Builder(_PageBase, _MarkdownEnv, _HomePage, _Portfolios, _SiteParts):
             except OSError:
                 raise BuildError("the site-studio install is missing templates/output/%s; reinstall the plugin"
                                  % rel, fix="reinstall the site-studio plugin, which ships that file")
-            if kind in ("css", "schema-4"):      # the build publishes no CSS comment (check_site's `comments` family proves it)
+            if rel.endswith(".css"):      # the build publishes no CSS comment (check_site's `comments` family proves it)
                 data = strip_css_comments(frontmatter.decode_text(data, rel)).lstrip("\n").encode("utf-8")
             self.add(rel, data, "templates/output/" + rel)
 

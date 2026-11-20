@@ -8,8 +8,9 @@ named piece of generated markup (a quote, a card, the nav); it has fixed named *
 between (a quote's `wrap` and its optional `by`; a nav `item` and `item-current`); a part is HTML holding
 `{{slot}}` placeholders and nothing else. There is no logic in a look: no loop, no condition, no script.
 
-    CONSTRUCTS     the closed table: construct id -> parts -> slot name -> slot kind. Written once, here, in
-                   full (step 1.2L, named change R5N-2): later steps add default entries and code, never rows.
+    CONSTRUCTS     the closed table: construct id -> parts -> slot name -> slot kind. Written once, in full
+                   (step 1.2L, named change R5N-2), in `lookgrammar/constructs.py` with the element and
+                   attribute lists, and re-exported here: later steps add default entries and code, never rows.
     parse()        strict, DENY-BY-DEFAULT validation of a look file (R5.2 rules 1 to 9), each refusal naming
                    the file, the construct, the part and the fix.
     render()       fill one part: every slot is escaped or validated by its KIND, whatever the look says.
@@ -48,6 +49,37 @@ from contentmodel.links import esc
 from lookgrammar.errors import LookError
 from lookgrammar.slotvalues import _INTLIT, safe_embed, safe_int, safe_position, safe_srcset, safe_url
 from lookgrammar.stylesheets import check_stylesheet_path
+from lookgrammar import decoration, optionalparts
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from lookgrammar.constructs import (
+    TEXT,
+    HTML,
+    URL,
+    SRCSET,
+    POSITION,
+    INT,
+    EMBED,
+    CONTACT,
+    SLOT_KINDS,
+    ASSET_KINDS,
+    _c,
+    CONSTRUCTS,
+    PART_FIRST,
+    SLOT_FIRST,
+    OPEN_SLOT_FIRST, OPTIONAL_PARTS, TEXT_ONLY_PARTS, SENT_OPEN, SENT_CLOSE,
+    ALLOWED_ELEMENTS,
+    VOID_ELEMENTS,
+    IFRAME_PARTS,
+    ELEMENT_REFUSALS,
+    GLOBAL_ATTRS,
+    ELEMENT_ATTRS,
+    NAMED_REFUSED_ATTRS,
+    STYLE_FORM,
+    URL_ATTRS,
+    SCRIPT_READ_ATTRS,
+    _ROLES,
+    CLOSED_VALUES,
+)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -55,121 +87,11 @@ DEFAULT_LOOK_REL = "templates/looks/site-studio.json"
 DEFAULT_LOOK_PATH = os.path.join(PLUGIN_ROOT, *DEFAULT_LOOK_REL.split("/"))
 LOOK_FORMAT = 1
 
-TEXT, HTML, URL, SRCSET, POSITION, INT, EMBED, CONTACT = (
-    "text", "html", "url", "srcset", "position", "int", "embed", "contact")
-SLOT_KINDS = (TEXT, HTML, URL, SRCSET, POSITION, INT, EMBED, CONTACT)
-
-# The plugin's own output files a look's `assets` may keep linked (R5.2). `css` and `js` are 0.3.1's
-# `site-studio/blocks.css` and `site-studio/video.js`; `schema-4` is 0.4.0's `site-studio/schema-4.css`.
-ASSET_KINDS = ("css", "js", "schema-4")
-
-
-# --------------------------------------------------------------------------------- the construct table
-# Written from the code at the `site-studio--v0.3.1` tag (every markup site it has) and from the design's
-# sections 3 and 8 (every construct 0.4.0 adds). `first` is the release that introduced the construct;
-# PART_FIRST names a part added later to a construct that already existed. A construct a look omits renders
-# with the default look's entry. Not expressible, stated: first/last/odd/even classes and any wrapper that
-# depends on a value the plugin does not expose as a slot (derive reports such a construct `unmapped`).
-
-def _c(first, **parts):
-    # keyword names cannot hold a hyphen, so a part named `item-current` is spelled `item_current` here
-    return {"first": first, "parts": dict((k.replace("_", "-"), v) for k, v in parts.items())}
-
-
-CONSTRUCTS = {
-    # ---- 0.3.1: every construct its code builds (content.py `_Renderer`, build.py `_Builder`)
-    "tagline": _c("0.3.1", wrap={"text": TEXT}),
-    "tiles": _c("0.3.1", wrap={"items": HTML, "label": TEXT, "count": INT},
-                item={"figure": TEXT, "text": TEXT, "n": INT}),
-    "quote": _c("0.3.1", wrap={"body": HTML, "by": HTML}, by={"who": HTML}),
-    "gallery": _c("0.3.1", wrap={"items": HTML, "count": INT},
-                  wrap_labelled={"items": HTML, "count": INT, "label": TEXT},
-                  item={"image": HTML, "caption": HTML}, caption={"text": TEXT}),
-    "videos": _c("0.3.1", wrap={"items": HTML}, wrap_labelled={"items": HTML, "label": TEXT},
-                 item_poster={"url": URL, "embed": EMBED, "image": HTML, "title": TEXT, "kind": TEXT},
-                 item={"url": URL, "embed": EMBED, "title": TEXT, "host": TEXT, "kind": TEXT}),
-    "carousel": _c("0.3.1", wrap={"items": HTML, "label": TEXT}, item={"body": HTML}),
-    "video-embed": _c("0.3.1", wrap={"embed": EMBED}),
-    "figure": _c("0.3.1", wrap={"image": HTML, "caption": HTML}, caption={"text": TEXT}),
-    "image": _c("0.3.1",
-                plain={"src": URL, "alt": TEXT},
-                sized={"src": URL, "alt": TEXT, "width": INT, "height": INT},
-                sized_set={"src": URL, "alt": TEXT, "width": INT, "height": INT, "srcset": SRCSET, "sizes": TEXT},
-                plain_pos={"src": URL, "alt": TEXT, "focus": POSITION},
-                sized_pos={"src": URL, "alt": TEXT, "width": INT, "height": INT, "focus": POSITION},
-                sized_set_pos={"src": URL, "alt": TEXT, "width": INT, "height": INT, "srcset": SRCSET,
-                               "sizes": TEXT, "focus": POSITION}),
-    "block-image": _c("0.3.1",
-                      plain={"src": URL, "alt": TEXT},
-                      sized={"src": URL, "alt": TEXT, "width": INT, "height": INT},
-                      sized_set={"src": URL, "alt": TEXT, "width": INT, "height": INT, "srcset": SRCSET,
-                                 "sizes": TEXT}),
-    "reference-card": _c("0.3.1", wrap={"url": URL, "image": HTML, "title": TEXT, "site": HTML,
-                                        "description": HTML, "role": HTML},
-                         site={"text": TEXT}, description={"text": TEXT}, role={"text": TEXT}),
-    "reference-grid": _c("0.3.1", wrap={"items": HTML}),
-    "card": _c("0.3.1", wrap={"url": URL, "image": HTML, "title": TEXT, "teaser": HTML, "meta": HTML,
-                              "number": HTML},
-               teaser={"text": TEXT}, meta={"text": TEXT}, number={"n": INT}),
-    "cards": _c("0.3.1", wrap={"items": HTML}),
-    "group": _c("0.3.1", wrap={"title": TEXT, "cards": HTML}),
-    "portfolio": _c("0.3.1", wrap={"title": TEXT, "tagline": HTML, "intro": HTML, "cards": HTML, "slug": TEXT}),
-    "piece": _c("0.3.1", wrap={"title": TEXT, "meta": HTML, "body": HTML, "back": HTML, "slug": TEXT,
-                               "portfolio": TEXT, "group": TEXT}),
-    "meta-list": _c("0.3.1", wrap={"items": HTML}, item={"name": TEXT, "value": TEXT}),
-    "nav": _c("0.3.1", wrap={"items": HTML}, item={"url": URL, "label": TEXT},
-              item_current={"url": URL, "label": TEXT}, link={"url": URL, "label": TEXT},
-              link_current={"url": URL, "label": TEXT}),
-    "contact": _c("0.3.1", wrap={"items": HTML}, heading={},
-                  item_mail={"label": TEXT, "href": CONTACT, "text": TEXT},
-                  item_link={"label": TEXT, "url": URL, "text": TEXT},
-                  item_text={"label": TEXT, "text": TEXT}),
-    "photo": _c("0.3.1", wrap={"image": HTML}),
-    "endorsement": _c("0.3.1", wrap={"quote": TEXT, "by": HTML}, by={"who": TEXT}),
-    "feed": _c("0.3.1", wrap={"grid": HTML}),
-    "home": _c("0.3.1", wrap={"title": TEXT, "body": HTML, "eyebrow": HTML, "role": HTML},
-               intro={"photo": HTML, "intro": HTML, "endorsement": HTML}, featured={"cards": HTML},
-               eyebrow={"text": TEXT}, role={"text": TEXT}),
-    "about": _c("0.3.1", wrap={"title": TEXT, "photo": HTML, "intro": HTML, "endorsement": HTML,
-                               "contact": HTML}),
-    "resume": _c("0.3.1", wrap={"title": TEXT, "download": HTML, "body": HTML, "contact": HTML, "links": HTML},
-                 download={"url": URL}),
-    # ---- 0.4.0: constructs new in this release (their default entries and code arrive with steps 1.3 to 1.5)
-    "quotes": _c("0.4.0", wrap={"items": HTML, "label": TEXT, "count": INT}, item={"body": HTML, "by": HTML},
-                 by={"who": HTML}),
-    "gallery-video": _c("0.4.0", item={"url": URL, "embed": EMBED, "image": HTML, "title": TEXT, "caption": HTML},
-                        caption={"text": TEXT, "url": URL, "embed": EMBED, "title": TEXT}),
-    "back-link": _c("0.4.0", wrap={"url": URL, "label": TEXT}),
-    "resume-role": _c("0.4.0", wrap={"role": HTML, "org": HTML, "body": HTML},
-                      wrap_bare={"role": HTML, "body": HTML}),
-    "roles-view": _c("0.4.0", wrap={"items": HTML},
-                     item={"heading": HTML, "url": URL, "titles": TEXT, "period": TEXT, "previously": HTML,
-                           "employer": TEXT},
-                     item_current={"heading": HTML, "url": URL, "titles": TEXT, "period": TEXT,
-                                   "previously": HTML, "employer": TEXT},
-                     heading={"employer": TEXT}, heading_multi={"count": INT, "employer": TEXT},
-                     previously={"items": HTML}, previously_item={"url": URL, "title": TEXT, "period": TEXT}),
-    "showcase-view": _c("0.4.0", wrap={"items": HTML, "label": TEXT},
-                        item={"url": URL, "image": HTML, "role": HTML, "title": TEXT}, role={"text": TEXT}),
-    "map-view": _c("0.4.0", wrap={"map": HTML, "list": HTML}, list={"items": HTML},
-                   list_item={"url": URL, "title": TEXT}),
-    "home-showcase": _c("0.4.0", wrap={"items": HTML},
-                        item={"url": URL, "image": HTML, "role": HTML, "title": TEXT}, role={"text": TEXT}),
-    "home-samples": _c("0.4.0", wrap={"items": HTML}),
-    "home-links": _c("0.4.0", wrap={"items": HTML}, item={"url": URL, "label": TEXT}),
-}
-
-# A part added to a construct that already existed, with the release that added it. Anything not named
-# here was born with its construct.
-PART_FIRST = {
-    ("reference-card", "role"): "0.4.0",
-    ("card", "number"): "0.4.0",
-    ("nav", "link"): "0.4.0", ("nav", "link-current"): "0.4.0",
-    ("home", "eyebrow"): "0.4.0", ("home", "role"): "0.4.0",
-}
+# ------------------------------------------------------------------- the construct table's own checks
+# The table itself (CONSTRUCTS, PART_FIRST) and the element and attribute lists are in lookgrammar/constructs.py.
 
 _PART_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
-_SLOT_NAME = re.compile(r"^[a-z][a-z0-9]*$")
+_SLOT_NAME = re.compile(r"^[a-z][A-Za-z0-9]*$")     # lower camel case: `fullTitle` (step G, O4a) is the first capital
 _SLOT = re.compile(r"\{\{([^{}]*)\}\}")
 
 
@@ -179,6 +101,81 @@ def version_tuple(v):
 
 def part_first(construct, part):
     return PART_FIRST.get((construct, part), CONSTRUCTS[construct]["first"])
+
+
+def gated_slots(construct, part):
+    """{slot: trigger} of one part's gated slots (rule L3a, `SLOT_FIRST`); {} for a part that has none."""
+    return dict((s, trig) for (c, p, s), (_rel, trig) in SLOT_FIRST.items() if (c, p) == (construct, part))
+
+
+def gate(construct, part, slot, triggers, markup):
+    """The value a gated slot is filled with: `markup` when `triggers` (the schema-5 triggers of the piece's OWN
+    portfolio, `keytables.active_triggers`) holds the slot's trigger, else "" (design-movement-view section 4.3). Every
+    call site that fills a gated slot goes through here, and `render` fills a gated slot it is given no value for with
+    "", so a part rendered by a call site that predates the slot prints exactly what it printed before."""
+    if SLOT_FIRST[(construct, part, slot)][1] in triggers:
+        return markup
+    return ""
+
+
+def slot_release(construct, part, slot):
+    """The release a slot added to an older part needs (`SLOT_FIRST`, gated; `OPEN_SLOT_FIRST`, ungated), else None."""
+    row = SLOT_FIRST.get((construct, part, slot))
+    return row[0] if row else OPEN_SLOT_FIRST.get((construct, part, slot))
+
+
+def optional_part(construct, part, look):
+    """The site's own markup for an `OPTIONAL_PARTS` part, or None when its look writes none (the default look has none
+    of them): the caller then renders the place exactly as it did before the part existed (step G, O2 and O3)."""
+    return look.own_part(construct, part) if look is not None and (construct, part) in OPTIONAL_PARTS else None
+
+
+# ------------------------------------------------------------- the release a look needs (design-movement-view 3.4)
+# An asset kind first released after 0.3.1 (`css` and `js` are 0.3.1's), with its release.
+ASSET_FIRST = {"schema-4": "0.4.0", "schema-5": "0.5.0"}
+
+
+def _decoration_needs(constructs):
+    """The release a decoration (a literal `<svg>` subtree that meets `lookgrammar/decoration.py`'s rules; design-movement-
+    view 3.4, 9.2) in any part of `constructs` ({construct id: {part: markup}}) needs: "0.5.0", else None."""
+    return decoration.RELEASE if decoration.holds(constructs, _PartParser) else None
+
+
+def needs(look_text):
+    """The newest release the look file `look_text` (its JSON text) needs to be read, as "0.5.0": the newest of the
+    `first` of every construct it names, every part it writes (`part_first`, `PART_FIRST`), every slot it places that
+    `SLOT_FIRST` gates or `OPEN_SLOT_FIRST` adds (`slot_release`), every asset kind it links (`ASSET_FIRST`) and every
+    decoration it holds (`_decoration_needs`).
+    None for a look that names nothing, or that is not a look at all (`parse` refuses that with its own line). A name
+    this release does not know is left to `parse`, which refuses it as unknown. The schema check reads this through
+    `building.lookneeds`, because `configschema` does not import the look grammar."""
+    try:
+        data = json.loads(look_text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    found, clean = [], {}
+    constructs = data.get("constructs")
+    for cid, parts in (constructs.items() if isinstance(constructs, dict) else ()):
+        if cid not in CONSTRUCTS or not isinstance(parts, dict):
+            continue
+        found.append(CONSTRUCTS[cid]["first"])
+        clean[cid] = {}
+        for pn, text in parts.items():
+            if pn not in CONSTRUCTS[cid]["parts"] or not isinstance(text, str):
+                continue
+            clean[cid][pn] = text
+            found.append(part_first(cid, pn))
+            found.extend(r for r in (slot_release(cid, pn, m.group(1)) for m in _SLOT.finditer(text)) if r)
+    assets = data.get("assets")
+    for kinds in (assets.values() if isinstance(assets, dict) else ()):
+        found.extend(ASSET_FIRST[k] for k in (kinds if isinstance(kinds, list) else ())
+                     if isinstance(k, str) and k in ASSET_FIRST)
+    decoration = _decoration_needs(clean)
+    if decoration:
+        found.append(decoration)
+    return max(found, key=version_tuple) if found else None
 
 
 def table_problems():
@@ -194,103 +191,17 @@ def table_problems():
                 out.append("%s.%s: part name is not a lower-case slug" % (cid, pn))
             for sn, kind in slots.items():
                 if not _SLOT_NAME.match(sn):
-                    out.append("%s.%s: slot name %r is not lower-case letters and digits" % (cid, pn, sn))
+                    out.append("%s.%s: slot name %r is not lower camel case (letters and digits)" % (cid, pn, sn))
                 if kind not in SLOT_KINDS:
                     out.append("%s.%s.%s: unknown slot kind %r" % (cid, pn, sn, kind))
     return out
 
 
-# ----------------------------------------------------------------------------- the element and attribute lists
-# ALLOWED_ELEMENTS: flow and phrasing elements, plus `img picture source time`. `iframe` is allowed only in
-# the (construct, part) pairs of IFRAME_PARTS. Everything else is refused; the ones below get their own line.
-ALLOWED_ELEMENTS = frozenset((
-    "a abbr article aside b blockquote br cite code dd div dl dt em figcaption figure footer "
-    "h1 h2 h3 h4 h5 h6 header hr i li nav ol p q section small span strong sub sup table tbody td th thead tr ul "
-    "img picture source time").split())
-VOID_ELEMENTS = frozenset(("br", "hr", "img", "source"))
-# `videos.item` is where a look MAY place a live player (design decision 34); `video-embed.wrap` is 0.3.1's
-# bare video line, which has been a live embed since 0.2.0 and so is frozen as one (the default look carries it).
-IFRAME_PARTS = frozenset((("videos", "item"), ("videos", "item-poster"), ("video-embed", "wrap")))
-
-ELEMENT_REFUSALS = {
-    "script": "a look is markup, never code",
-    "style": "a look carries no stylesheet text; name a stylesheet file in `stylesheets` instead",
-    "link": "a look may not load a file; name a stylesheet in `stylesheets` instead",
-    "meta": "a look renders part of a page, never its head",
-    "base": "a look may not change how every link on the page resolves",
-    "form": "a look is not a form",
-    "input": "a look is not a form",
-    "button": "a look is not a form",
-    "textarea": "a look is not a form",
-    "select": "a look is not a form",
-    "object": "a look may not embed a plugin object",
-    "embed": "a look may not embed a plugin object",
-    "svg": "inline SVG is plugin-made only (the map's SVG arrives through an `html` slot)",
-    "math": "a look may not carry MathML",
-    "video": "a hosted video file is a construct of its own in 0.5.0",
-    "audio": "a look may not load media",
-    "template": "a look may not carry an inert document fragment",
-    "iframe": "an iframe is allowed only in `videos.item` and `video-embed.wrap`",
-}
-
-GLOBAL_ATTRS = frozenset(("class", "id", "lang", "dir", "title", "hidden", "role", "tabindex"))
-ELEMENT_ATTRS = {
-    "a": frozenset(("href", "rel", "target", "hreflang")),
-    "img": frozenset(("src", "srcset", "sizes", "alt", "width", "height", "loading", "decoding", "style")),
-    "source": frozenset(("srcset", "sizes", "media", "type")),
-    "time": frozenset(("datetime",)),
-    "ol": frozenset(("start", "reversed")),
-    "li": frozenset(("value",)),
-    "td": frozenset(("colspan", "rowspan")),
-    "th": frozenset(("colspan", "rowspan")),
-    "blockquote": frozenset(("cite",)),
-    "q": frozenset(("cite",)),
-    "iframe": frozenset(("src", "title", "loading", "allow", "allowfullscreen", "referrerpolicy")),
-}
-# the (element, attribute) pairs the 0.3.1 code writes that are NOT look markup: kept here so the inventory
-# test can print and reason about each (R5N-7). `link`/`script` are the plugin-asset tags `asset_html` writes,
-# `meta`/`link`/`html` the page head and redirect page `emit_page` and `build_index_redirect` write.
-NAMED_REFUSED_ATTRS = {
-    "srcdoc": "an inline document would run as a page of its own",
-    "poster": "a poster loads a file; a video facade's image is an `img` made by the plugin",
-    "ping": "a ping sends a request to a third party on click",
-    "formaction": "a look is not a form",
-    "action": "a look is not a form",
-    "background": "a background attribute loads a file",
-    "xlink:href": "a look may not carry SVG links",
-    "style": "`style` is refused except the one exact form `style=\"object-position: {{focus}}\"` on `img`",
-}
-STYLE_FORM = "object-position: {{focus}}"
-
-# URL-bearing attributes: only a slot of the named kinds, alone, or a relative literal (rule 4). The plugin's
-# own scripts read `data-embed`; every attribute a shipped script reads is URL-bearing with an exact slot
-# form (R5N-5), derived by a test from the script text so a new one fails there until it is listed here.
-URL_ATTRS = {"href": (URL, CONTACT), "src": (URL, EMBED), "srcset": (SRCSET,), "cite": (URL,),
-             "data-embed": (EMBED,)}
-SCRIPT_READ_ATTRS = {"data-embed": "embed"}
-
-# Attribute VALUES that carry letters are a closed set per attribute (R5N-9). A literal outside its set is
-# refused in every look; a `text` slot is never accepted where a closed set applies (the plugin chooses).
-_ROLES = ("region", "group", "img", "list", "listitem", "navigation", "presentation", "none", "figure",
-          "article", "banner", "contentinfo", "main", "complementary", "heading", "link", "separator",
-          "term", "definition", "note")
-CLOSED_VALUES = {
-    "rel": ("noopener", "noreferrer", "nofollow", "external", "author", "me"),
-    "loading": ("lazy", "eager"),
-    "decoding": ("async", "sync", "auto"),
-    "target": ("_blank", "_self"),
-    "dir": ("ltr", "rtl", "auto"),
-    "type": ("image/avif", "image/webp", "image/jpeg", "image/png", "image/gif"),
-    "role": _ROLES,
-    "referrerpolicy": ("no-referrer", "no-referrer-when-downgrade", "origin", "origin-when-cross-origin",
-                       "same-origin", "strict-origin", "strict-origin-when-cross-origin"),
-    "allow": ("fullscreen", "picture-in-picture", "encrypted-media", "autoplay", "clipboard-write"),
-}
 _LANG = re.compile(r"^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$")
 _TOKEN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,39}$")
 _DIGITS3 = re.compile(r"\d{3,}")
 
-_SENT_OPEN, _SENT_CLOSE = "", ""
+_SENT_OPEN, _SENT_CLOSE = SENT_OPEN, SENT_CLOSE      # U+E000, U+E001
 _SENT = re.compile(_SENT_OPEN + r"(\d+)" + _SENT_CLOSE)
 
 
@@ -324,7 +235,7 @@ class _PartParser(html.parser.HTMLParser):
         self.slots_by_index = ()
         self.stack = []
         self.problems = []
-        self.elements = []
+        self.elements, self.seen_attrs = [], []     # seen_attrs: every (name, value), for optionalparts
 
     # -- helpers
     def bad(self, message, fix=None):
@@ -348,6 +259,7 @@ class _PartParser(html.parser.HTMLParser):
         elif tag not in ALLOWED_ELEMENTS and tag != "iframe":
             self.bad("%s: <%s> is not an allowed element" % (self.ctx, tag),
                      "use one of the elements the content model lists")
+        self.seen_attrs.extend(attrs)
         self._attrs(tag, attrs)
         if tag not in VOID_ELEMENTS and not selfclose:
             self.stack.append(tag)
@@ -554,21 +466,23 @@ def _replace_slots(text, slots_table, ctx, problems):
         return _SENT_OPEN + str(len(found) - 1) + _SENT_CLOSE
     out = _SLOT.sub(sub, text)
     if "{{" in out or "}}" in out:
-        problems.append(("%s: a literal '{{' or '}}' that is not a slot" % ctx, "write a slot as {{name}} with a lower-case name"))
+        problems.append(("%s: a literal '{{' or '}}' that is not a slot" % ctx, "write a slot as {{name}}, its name in lower camel case such as {{fullTitle}}"))
     return out, found
 
 
-def check_part(construct, part, text, shipped=False, template=False):
-    """Every problem with one part's text, as [(message, fix)]. [] is a clean part."""
+def check_part(construct, part, text, shipped=False, template=False, parsed=None):
+    """Every problem with one part's text, as [(message, fix)]. [] is a clean part. `parsed`: see `optionalparts.problems`."""
     problems = []
     ctx = "%s.%s" % (construct, part)
     if not isinstance(text, str):
         return [("%s: a part is a string of HTML" % ctx, "write the part as a JSON string")]
     if _SENT_OPEN in text or _SENT_CLOSE in text:
         return [("%s: a private-use character U+E000 or U+E001" % ctx, "remove it")]
+    if (construct, part) in TEXT_ONLY_PARTS and "<" in text:
+        return [("%s: this part is literal text only, with no element" % ctx, "write the text alone, such as \" / \"")]
     table = CONSTRUCTS[construct]["parts"][part]
     replaced, found = _replace_slots(text, table, ctx, problems)
-    p = _PartParser(ctx, table, shipped, template)
+    p = decoration.reader(_PartParser)(ctx, table, shipped, template)    # an `<svg>` subtree: lookgrammar/decoration.py
     p.slots_by_index = found
     try:
         p.feed(replaced)
@@ -576,6 +490,8 @@ def check_part(construct, part, text, shipped=False, template=False):
     except Exception as e:                                        # noqa: BLE001 -- html.parser's own errors
         problems.append(("%s: the markup cannot be read (%s)" % (ctx, e), "fix the markup"))
     problems.extend(p.problems)
+    if (construct, part) in OPTIONAL_PARTS:      # step G's own rules (review F1, F7): lookgrammar/optionalparts.py
+        problems.extend(optionalparts.problems(ctx, construct, part, text, replaced, found, p.seen_attrs, parsed))
     if p.stack:
         problems.append(("%s: <%s> is never closed" % (ctx, p.stack[-1]), "close every element you open"))
     # an html slot only in element content: a sentinel for an html slot inside any attribute value is caught
@@ -651,6 +567,7 @@ def parse(text, where="look", shipped=False, template=None):
             for msg, fix in check_part(cid, pn, ptext, shipped=shipped, template=template):
                 problems.append("%s: %s%s" % (where, msg, " -- fix: " + fix if fix else ""))
             clean[cid][pn] = ptext
+    problems.extend(decoration.look_problems(where, clean, _PartParser))     # an id a decoration writes, once a look
     sheets = data.get("stylesheets", [])
     if not isinstance(sheets, list):
         problems.append("%s: `stylesheets` is a list of paths" % where)
@@ -663,7 +580,7 @@ def parse(text, where="look", shipped=False, template=None):
             problems.append(str(e))
     assets = data.get("assets", {})
     if not isinstance(assets, dict):
-        problems.append("%s: `assets` is an object of construct id -> [css, js, schema-4]" % where)
+        problems.append("%s: `assets` is an object of construct id -> [%s]" % (where, ", ".join(ASSET_KINDS)))
         assets = {}
     for cid, kinds in assets.items():
         if cid not in CONSTRUCTS:
@@ -726,7 +643,7 @@ def part_markup(construct, part, look=None):
 
 
 def assets_for(construct, look=None):
-    """The plugin output files (`css`, `js`, `schema-4`) a page links where it holds `construct`, in the order
+    """The plugin output files (`ASSET_KINDS`) a page links where it holds `construct`, in the order
     the look names them. A look that carries its own entry for the construct decides, by its `assets` (none
     named means none linked: a template look brings its own stylesheet); a construct the look omits is linked
     as the default look says, the same rule as its markup (R5.2: the default look's entries carry 0.3.1's
@@ -757,14 +674,19 @@ def block_image_tag(tag, look=None):
 def render(construct, part, values, look=None):
     """Fill one part with `values` ({slot name: python value}). Every slot is escaped or validated by its
     KIND in CONSTRUCTS, whatever the look says. A slot the template uses that `values` lacks, and a value
-    for a slot the part does not have, are refused (a programming error, never a blank)."""
+    for a slot the part does not have, are refused (a programming error, never a blank). The one exception is a
+    GATED slot (rule L3a, `SLOT_FIRST`): given no value, it is filled with "", as it is when its trigger is off."""
     template = part_markup(construct, part, look)
     table = CONSTRUCTS[construct]["parts"][part]
     for k in values:
         if k not in table:
             raise LookError("%s.%s has no slot %r; this is a fault in site-studio: update the plugin, and report it on the plugin's GitHub issues page if it persists" % (construct, part, k))
+    gated = gated_slots(construct, part)
+
     def fill(m):
         name = m.group(1)
+        if name not in values and name in gated:
+            return ""
         if name not in values:
             raise LookError("%s.%s: the slot {{%s}} was given no value; correct the slot name in the look file "
                             "(site/looks/<name>.json), then run `/site-studio:look check`" % (construct, part, name))

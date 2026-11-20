@@ -30,6 +30,7 @@ CONVERSION_CLASSES = (
     ("draft", "GENERAL", "a piece the old builder did not publish, marked draft: true"),
     ("pieces", "TEMPLATE", "piece files named work.md renamed index.md"),
     ("pageFiles", "TEMPLATE", "home.md and about.md renamed index.md in their folders"),
+    ("viewNames", "TEMPLATE", "a portfolio's `view: movement` (the template's numbered steps) as `view: steps`, the plugin's own"),
     ("pieceKeys", "TEMPLATE", "piece front-matter keys the template names differently (tilePhoto, summary) as the build's own (cover, teaser)"),
     ("blocks", "TEMPLATE", "the template's tile:, quote, video: and image lines as the plugin's block containers"),
     ("references", "TEMPLATE", "a reference's template keys (myRole, captured_from) as the plugin's (role, fetched)"),
@@ -44,6 +45,9 @@ CONVERSION_CLASSES = (
 # (a portfolio `view` the plugin does not model, such as the template's roles index) is one: the build refuses the
 # key, the site stays on the person's builder, and choosing it measures what the plugin's grid would change.
 OPT_IN_CLASSES = ("redirectBoiler", "resumeFields", "viewKeys")
+# A class that is `apply fixes this` only on a MEASURED P2 (design-movement-view 6.2): never because there is no local build to
+# measure against (`NOT APPLICABLE`), which `decide_conversions` otherwise lets through. `viewNames` changes a portfolio's index.
+MEASURED_ONLY_CLASSES = ("viewNames",)
 # The head elements a meta-refresh page may carry and still be a redirect (design-site-fidelity section 5.6): the
 # plugin's own redirect page drops them, so converting is `you decide`.
 HEAD_BOILERPLATE_LINKS = ("icon", "shortcut icon", "apple-touch-icon", "mask-icon", "manifest", "stylesheet")

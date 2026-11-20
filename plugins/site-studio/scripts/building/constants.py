@@ -7,7 +7,8 @@ import os
 SCRIPTS_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 PLUGIN_ASSETS = {"css": "site-studio/blocks.css", "js": "site-studio/video.js",
-                 "schema-4": "site-studio/schema-4.css"}
+                 "schema-4": "site-studio/schema-4.css",
+                 "schema-5": "site-studio/schema-5.css"}     # design-movement-view 4.2: the five 0.5.0 constructs only
 
 JUNK_NAMES = (".DS_Store", "Thumbs.db")
 

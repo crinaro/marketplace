@@ -8,6 +8,7 @@ import content as C
 from contentmodel import links
 from contentmodel.errors import ContentError
 
+from building import pictures
 from building.constants import IMAGE_EXTS, SIZES_ATTR
 from building.imagesize import image_size
 from building.outcomes import BuildError
@@ -71,8 +72,9 @@ class _MarkdownEnv(object):
         self.used_refs.add(name)
         d = ref.data
         img = ""
-        if ref.card_path:
-            img = self.img_tag(ref.card_path, "", from_out, out_path=self._card_out(ref))
+        if ref.card_path:       # design-movement-view section 5: `imageAlt` (else "") and `imagePosition`, schema-5 keys
+            alt, position = pictures.reference_companions(ref)
+            img = self.img_tag(ref.card_path, alt or "", from_out, out_path=self._card_out(ref), focus=position)
         site = self.r("reference-card", "site", {"text": d["site"]}) if d.get("site") else ""
         desc = self.r("reference-card", "description", {"text": d["description"]}) if d.get("description") else ""
         role = self.r("reference-card", "role", {"text": d["role"]}) if d.get("role") else ""

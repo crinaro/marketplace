@@ -6,7 +6,7 @@ from configschema.diagnostics import make_problem
 from configschema.frontmatter import front_matter_keys
 
 from contentmodel.frontmatter import decode_text
-from contentmodel.keytables import VIEW_PIECE_KEYS
+from contentmodel.keytables import VIEW_PIECE_KEYS, piece_keys_read
 from contentmodel.pagefiles import parse_showcase_entry
 
 
@@ -23,7 +23,8 @@ def piece_known_keys(portfolio, featured_from="home", showcased=False):
     under `featuredFrom: flags` (where the piece's own flag picks the featured pieces), and the keys a setting
     reads (`VIEW_PIECE_KEYS`: those of the portfolio's `view` and of `cardNumber` when it is on). `showcased`
     is True for a piece the home page's `showcase` names: its tile keys are read wherever its portfolio's view
-    is (design R4 row 6)."""
+    is (design R4 row 6). Under a schema-5 trigger, the `V5_PIECE_KEYS` rows it turns on and the key `cardKicker`
+    names (design-movement-view section 3.3); without one, none of them is known here."""
     known = set(BUILTIN_PIECE_KEYS) | {"description"}
     known.update(portfolio.settings["meta"])
     known.update(portfolio.settings["cardMeta"])
@@ -36,6 +37,7 @@ def piece_known_keys(portfolio, featured_from="home", showcased=False):
         known.update(VIEW_PIECE_KEYS["cardNumber"])
     if showcased:
         known.update(VIEW_PIECE_KEYS["showcase"])
+    known.update(piece_keys_read(portfolio.settings))
     return known
 
 

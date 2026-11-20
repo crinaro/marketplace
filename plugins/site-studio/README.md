@@ -86,7 +86,9 @@ Adopt works in two stages, and it tells you which one it is in.
 **First it measures, and changes nothing your visitors see.**
 
 - It lists every problem it finds with its fix, groups them by cause, and fixes the mechanical ones
-  itself, listing each fix.
+  itself, listing each fix. From 0.5.0 a piece key that some view or setting of site-studio reads is
+  never called unused: where your portfolio does not use that view, a note says which view reads the
+  key and that you can list it to print it as it is, or set the view.
 - It builds your site with your own builder and with site-studio's and compares the two (the
   **parity** check). It converts your content to site-studio's form only where the comparison shows a
   visitor would not see a difference, and it tells you about every difference it finds. A
@@ -225,6 +227,23 @@ which older copies of the plugin on other computers will refuse until they are u
 - **References.** A card image of your choice, and a role line.
 - **Home and index options.** The home page's `<title>` form, whether its intro holds the whole body
   or its first block, the order of its parts, and a one-piece portfolio's index as a listing.
+
+Version 0.5.0 adds more, each again opt-in, under settings version 5 (shown to you before it is
+written; an older copy of the plugin says "update site-studio" rather than build such a site):
+
+- **A steps view.** A portfolio's index can be an ordered run of numbered steps (`view: steps`), one
+  per piece in the portfolio's own order: a picture, the step's number, its title and its role line.
+- **Cards and piece pages.** Per portfolio: a card can show a piece's `photo` instead of its cover,
+  give its picture the piece's own alt text, and carry a short kicker line from one of your piece
+  keys (on cards, roles cards, steps and showcase tiles); a piece page can print one outbound link
+  and its teaser as a paragraph under the title.
+- **Pictures.** A cover, photo or tile picture can carry its own alt text and crop position, and a
+  reference's card picture its own alt and position.
+- **Looks.** A look can place these new values, print a piece's full title where another place
+  prints the short one, choose how a step's roles are joined, give a step's or a home tile's picture
+  its own markup, and hold a decoration: a small drawing (an inline SVG of shapes and gradients only,
+  no text, no links, nothing loaded), such as a ribbon behind the steps. If your look has no place
+  for a value you turned on, the build refuses and names the part, rather than drop it in silence.
 
 The full list of keys, tokens, blocks and settings is in `reference/content-model.md` in the
 installed plugin, next to `scripts/`.

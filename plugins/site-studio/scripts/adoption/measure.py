@@ -182,6 +182,8 @@ def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=Non
                 res["settings"] = picked.plan_rows()
                 res["notes"].extend(picked.lines)
                 res["lookStatus"] = picked.look_status
+                res["notes"].extend("look: %s %s (%s)" % (cid, st, picked.look_why[cid]) for cid, st in sorted(picked.look_status.items())
+                                    if st in ("unmapped", "ambiguous") and picked.look_why.get(cid))     # what derive refused, named
                 settings.update(picked.values())
             elif plan.get("settings"):
                 settings.update(dict((k, v["value"]) for k, v in plan["settings"].items()))
@@ -263,6 +265,7 @@ def _choose_settings(tree, data, plan, local, folders, kind, chosen, disposition
         return s2
 
     built, derived = {}, {}                          # the same settings are asked again by every pass: built and derived once each
+    why = {}                                         # construct -> derive's reason it did not map (the element a rule refused)
 
     def evaluate(settings):
         key = json.dumps(sorted(settings.items()), default=repr)
@@ -284,10 +287,12 @@ def _choose_settings(tree, data, plan, local, folders, kind, chosen, disposition
             for cid, counts in d.status.items():
                 status[cid] = "mapped" if counts.get("mapped") and not (counts.get("unmapped") or counts.get("ambiguous")) else (
                     "ambiguous" if counts.get("ambiguous") else "unmapped" if counts.get("unmapped") else "not reached")
+            why.update((cid, d.reasons[cid]) for cid in status if cid in d.reasons and status[cid] != "mapped")
             derived[key] = ({"id": "derived", "file": d.text}, status)
         return derived[key]
-    return choose(snap, data, evaluate, local, previous=plan.get("settings"), derive_under=derive_under,
-                  no_local_reason=None)
+    picked = choose(snap, data, evaluate, local, previous=plan.get("settings"), derive_under=derive_under, no_local_reason=None)
+    picked.look_why = why
+    return picked
 
 
 def scrubbed_home(env):

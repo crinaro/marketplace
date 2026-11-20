@@ -45,7 +45,7 @@ import tarfile
 from collections import namedtuple
 
 from adoption.base import PARITY_RECORD_REL, PLAN_REL, PlanError, RECORD_SCHEMA, Refused, git, gitt
-from adoption.spec import CONVERSION_CLASSES, OPT_IN_CLASSES
+from adoption.spec import CONVERSION_CLASSES, MEASURED_ONLY_CLASSES, OPT_IN_CLASSES
 from adoption.blocks import piece_pages as blocks_page
 from adoption.tree import Tree
 # The comparison, its stated rules and the grouped report are `parity_classes`' (design R2-13, R4 row 11): adopt
@@ -307,7 +307,8 @@ def active_classes(notes):
     for cls, key in (
             ("normalise", "normalised"), ("redirectKeys", "redirectKeys"), ("labels", "labels"),
             ("redirects", "redirects"), ("redirectBoiler", "redirectBoiler"), ("layout", "layout"),
-            ("tokens", "tokens"), ("viewKeys", "viewKeys"), ("pieces", "pieces"), ("pieceKeys", "pieceKeys"),
+            ("tokens", "tokens"), ("viewKeys", "viewKeys"), ("viewNames", "viewNames"), ("pieces", "pieces"),
+            ("pieceKeys", "pieceKeys"),
             ("resumeFields", "resumeFields"), ("pageFiles", "pageFiles"), ("blocks", "blocks"),
             ("references", "references"), ("homeKeys", "homeKeys"), ("resumeHeader", "resumeHeader"),
             ("navTokens", "navTokens"), ("personName", "personName"), ("resumePdfName", "resumePdfName"),
@@ -338,6 +339,8 @@ def _output_paths(cls, notes):
         return sorted(out)
     if cls == "viewKeys":
         return ["%s/index.html" % posixpath.basename(posixpath.dirname(path)) for path, _v in notes["viewKeys"]]
+    if cls == "viewNames":                         # the portfolio's index and its piece pages
+        return sorted(set("%s/" % posixpath.basename(posixpath.dirname(path)) for path, _a, _b in notes["viewNames"]))
     if cls == "pieceKeys":                         # the piece page, its portfolio's index and cards, and a home that features it
         out = set(["index.html"])
         for folder, _src, _dst in notes["pieceKeys"]:
@@ -434,12 +437,12 @@ def decide_conversions(notes, parity, fingerprint=False, chosen=()):
         elif label == "TEMPLATE" and not fingerprint:
             row.update(status="you decide", reason="the repo does not carry the template's fingerprint, so this "
                        "reading of it is a guess")
-        elif p2 == "NOT APPLICABLE":
+        elif p2 == "NOT APPLICABLE" and cls not in MEASURED_ONLY_CLASSES:
             pass
         elif parity is None:
             row.update(status="waits on parity", reason="run `adopt.py parity`: it measures whether this "
                        "changes a page, and whether it changes what your own builder publishes")
-        elif p2 == "UNVERIFIED":
+        elif p2 in ("UNVERIFIED", "NOT APPLICABLE"):        # NOT APPLICABLE here: a MEASURED_ONLY class, held without a P2
             row.update(status="you decide", reason="parity could not measure this (%s)" % parity.get("reason", ""))
         elif p2 in ("EQUAL", "MARKUP-ONLY", "ACCEPTED"):
             pass

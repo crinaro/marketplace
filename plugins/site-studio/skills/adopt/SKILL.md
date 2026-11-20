@@ -151,7 +151,7 @@ settle**: read it that way to the person, and settle the cause (the consequences
 itself is never grouped. A decision recorded with `adopt.py folder`, `convert` or `paper` is read by `check` the same
 way parity reads it: a folder the person has decided is not listed as undecided again.
 
-**Strays the build only warns about.** The build and preview print a named warning for a `.md` other than `index.md` or a sub-folder other than `media/` or `_*` in a piece folder, and for a piece front matter key that is neither built in nor in the portfolio's `meta`/`cardMeta`; the published bytes do not change. Where nothing has been converted yet, `check` lists each as a problem with its fix and refuses (`you decide`), so `adopt ok` is not said over a page that would go unpublished. Read each fix to the person.
+**Strays the build only warns about.** The build and preview print a named warning for a `.md` other than `index.md` or a sub-folder other than `media/` or `_*` in a piece folder, and for a piece front matter key that is neither built in nor in the portfolio's `meta`/`cardMeta`; the published bytes do not change. Where nothing has been converted yet, `check` lists each as a problem with its fix and refuses (`you decide`), so `adopt ok` is not said over a page that would go unpublished. Read each fix to the person. From 0.5.0 a piece key some view or setting of the plugin reads is never listed as an unused stray: a key the converted tree reads (a pending conversion counts before parity runs) is not listed at all, and a key another view reads that this portfolio does not use (`pin` under a grid) is a **note**, not a decision, naming that view, with both ways out (list it in `meta` to print it as it is, or set the view) and what parity knows about the page. Read the note; never offer "remove" for it.
 
 **When the basis moves,** the decisions do not all go with it. After the person commits a hand fix and runs
 `inventory` again, a decision about a path that still exists and did not change is **kept**; every one cleared is
@@ -195,7 +195,9 @@ under, and the template's `tile:`, quote, `video:` and image lines as the plugin
 `:::videos` and `:::gallery` blocks. Three conversions are `you decide` by their
 nature, and apply leaves the page as written unless the person chooses them: a portfolio `view` the
 plugin does not model is removed so that index becomes the plugin's grid (`adopt.py convert viewKeys`; the
-`roles`, `map` and `showcase` views are modelled at schema 4 and are kept, not removed; until the person
+`roles`, `map` and `showcase` views are modelled at schema 4 and are kept, not removed; from 0.5.0 a
+template's `view: movement` is not removed either: `viewNames` renames it to the steps view, `view: steps`,
+and parity measures that index like any conversion; until the person
 chooses, the build refuses a view it does not know and the site stays on the person's builder); a
 meta-refresh page with
 **head boilerplate** (an icon, a manifest, a theme colour) is recognised as a redirect, but the
@@ -263,7 +265,11 @@ piece's `featured: true` (`featuredFrom`); a portfolio's piece order (`sort.<por
 a Home item (`nav.home`); resume headings as written (`resume.headings`) and the resume's role cards
 (`resume.layout`); whether site.json's `work` keys apply to every portfolio (`workKeys`); card values
 without their labels (`cardLabels`); a number on each card (`cardNumber`) and how it prints
-(`cardNumberFormat`: `padded`, `plain` or `order`); a back link above each piece title (`backLink`); a
+(`cardNumberFormat`: `padded`, `plain` or `order`); from 0.5.0, per portfolio, the picture a card shows
+(`cardImage.<portfolio>`: `photo`, or `cover` on a roles card), the card picture's own alt text
+(`cardAlt.<portfolio>`), a kicker line from one of the pieces' own keys (`cardKicker.<portfolio>`), an
+outbound link on each piece page (`pieceLink.<portfolio>`) and the teaser paragraph under a piece's title
+(`pieceTeaser.<portfolio>`); a back link above each piece title (`backLink`); a
 menu link that goes straight to a one-piece portfolio (`menuLinks.<portfolio>`) and what that
 portfolio's index is (`onePieceIndex.<portfolio>`: a redirect page, or the listing it was); the
 heading level inside a carousel slide (`blocks.headingLevel`); whether a lone reference card sits in the

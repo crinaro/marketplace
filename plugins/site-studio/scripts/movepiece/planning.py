@@ -6,6 +6,7 @@ stops it before a byte is written. It writes nothing (design-template-fidelity s
 import addresses
 import re
 from building import constants, running, tokens
+from building.lookneeds import look_needs
 from configschema import canonical, model, frontmatter
 from contentmodel import grammar, keytables
 from movepiece.rewrite import _decode, nfc, rewrite_front_names, rewrite_links
@@ -28,7 +29,8 @@ def _site_json(cfg, redirects, files, record_text, at_least):
     tree = dict(files)
     if record_text is not None:
         tree[addresses.RECORD_REL] = record_text.encode("utf-8")
-    return canonical.canonical_text(new, tree, grammar.interpretation_reasons(tree), at_least=at_least)
+    return canonical.canonical_text(new, tree, grammar.interpretation_reasons(tree), at_least=at_least,
+                                    look_needs=look_needs(tree))
 
 
 def _redirect_out(old):

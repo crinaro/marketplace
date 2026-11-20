@@ -3,7 +3,7 @@ at each schema."""
 
 import re
 
-from configschema.configkeys import V4_HOME_PAGE_KEYS, V4_REFERENCE_KEYS, V4_RESUME_PAGE_KEYS
+from configschema.configkeys import V4_HOME_PAGE_KEYS, V4_REFERENCE_KEYS, V4_RESUME_PAGE_KEYS, V5_REFERENCE_KEYS
 
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -27,6 +27,8 @@ REFERENCE_KEYS = ("url", "title", "description", "site", "published", "kind", "c
 # (it lists them for its schema-4 reasons); the readers below add them at schema 4 and above only.
 REFERENCE_KEYS_V4 = V4_REFERENCE_KEYS
 
+REFERENCE_KEYS_V5 = V5_REFERENCE_KEYS
+
 TEXT_EXTS = (".html", ".htm", ".css", ".js", ".mjs", ".json", ".md", ".txt", ".xml", ".svg",
              ".webmanifest")
 
@@ -34,6 +36,11 @@ HOME_KEYS = ("title", "description", "featured", "feed", "endorsement", "photo",
              "contact")
 
 HOME_KEYS_V4 = V4_HOME_PAGE_KEYS
+
+# The home keys the model reads as a LIST of names (design-movement-view section 6.2, dev #964): the one table the
+# page check reads, and adopt's home rewrite after it. `showcase` and `samples` are schema-4 keys; a key that is not
+# allowed at the page's schema is refused by the key check before any list check runs.
+HOME_LIST_KEYS = ("featured", "feed", "showcase", "samples")
 
 ABOUT_KEYS = ("title", "description", "endorsement", "photo", "photoAlt", "contact")
 
@@ -54,6 +61,58 @@ VIEW_PIECE_KEYS = {
     "cardNumber": ("year",),
 }
 
+# The piece keys schema 5 reads, each ONLY under one of its triggers (design-movement-view sections 3.1 rule 2 and
+# 3.3): a trigger is a `view` value (`steps`) or a schema-5 portfolio setting, so no tree 0.4.x accepted has one, and
+# without it the key is what it was (a free key: a stray warning, no output). Every reader, the stray check, the
+# generated reference and the names corpus read this table; none types a key of its own (`PieceKeyReadsAreTabled`).
+# The key `cardKicker` names is the person's own, so it is not a row: `piece_keys_read` adds it.
+V5_PIECE_KEYS = {
+    "tileImage": ("steps",),
+    "tileAlt": ("steps",),
+    "tileRole": ("steps",),
+    "role": ("steps",),
+    "tilePosition": ("steps",),
+    "photo": ("steps", "cardImage"),
+    "photoAlt": ("steps", "cardImage"),
+    "photoPosition": ("steps", "cardImage"),
+    "coverAlt": ("steps", "cardAlt"),
+    "teaser": ("pieceTeaser",),
+    "link": ("pieceLink",),
+    "linkLabel": ("pieceLink",),
+}
+
+
+def active_triggers(settings):
+    """The schema-5 triggers a portfolio's settings turn on, as a set of `V5_PIECE_KEYS` trigger names: its `view` when
+    that is `steps`, `cardImage` when a card reads `photo` (the value `photo`, or either value under `view: roles`, where
+    a card has no picture without it), and `cardAlt`, `cardKicker`, `pieceLink`, `pieceTeaser` when set. Empty for every
+    settings dict 0.4.x could load."""
+    on = set()
+    view = settings.get("view")
+    if view == "steps":
+        on.add("steps")
+    image = settings.get("cardImage")
+    if image == "photo" or (image is not None and view == "roles"):
+        on.add("cardImage")
+    for key in ("cardAlt", "cardKicker", "pieceLink", "pieceTeaser"):
+        if settings.get(key):
+            on.add(key)
+    return on
+
+
+def piece_keys_read(settings):
+    """{piece key: the triggers it is read under here} for the schema-5 keys this portfolio's settings read: every
+    `V5_PIECE_KEYS` row with an active trigger, and the key `cardKicker` names."""
+    on = active_triggers(settings)
+    out = {}
+    for key, triggers in V5_PIECE_KEYS.items():
+        hit = tuple(t for t in triggers if t in on)
+        if hit:
+            out[key] = hit
+    if "cardKicker" in on:
+        out.setdefault(settings["cardKicker"], ("cardKicker",))
+    return out
+
 
 def home_keys(schema):
     """The front matter keys a home page reads at `schema`: the 0.3.x set, and from schema 4 the five parts and `titleForm`."""
@@ -66,5 +125,5 @@ def resume_page_keys(schema):
 
 
 def reference_keys(schema):
-    """The `reference.json` keys read at `schema`."""
-    return REFERENCE_KEYS + (REFERENCE_KEYS_V4 if schema >= 4 else ())
+    """The `reference.json` keys read at `schema` (`imageAlt` and `imagePosition` from 5)."""
+    return REFERENCE_KEYS + (REFERENCE_KEYS_V4 if schema >= 4 else ()) + (REFERENCE_KEYS_V5 if schema >= 5 else ())

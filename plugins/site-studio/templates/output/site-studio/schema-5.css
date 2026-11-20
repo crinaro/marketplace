@@ -1,0 +1,89 @@
+/* site-studio schema-5 styles (design-movement-view 0.5.0, section 4.2). Linked from a page only when the page holds a
+   plugin construct that schema 5 adds: the steps view of a portfolio index, a kicker line, a roles card's picture, a
+   piece page's outbound link or its teaser paragraph. blocks.css, schema-4.css and video.js keep their bytes, so these
+   rules live in their own file, under the same three rules:
+   1. the whole file is ONE cascade layer, so any style the person writes outside a layer beats it;
+   2. every selector's last compound carries an ss- class, so it can only reach an element the plugin made;
+   3. no declaration here is marked important, and nothing loads from another address.
+   The steps view's ribbon is the one rule on .ss-steps::before: a line behind the steps, no element of its own. */
+@layer site-studio {
+  .ss-steps {
+    position: relative;
+    list-style: none;
+    margin: 1.5rem 0;
+    padding: 0 0 0 2.5rem;
+  }
+  .ss-steps::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 1rem;
+    border-left: 2px solid currentColor;
+    opacity: 0.25;
+  }
+  .ss-step {
+    position: relative;
+    margin: 0 0 1.5rem;
+    padding: 0;
+  }
+  .ss-step-link {
+    display: block;
+    color: inherit;
+    text-decoration: none;
+  }
+  .ss-step-media {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+  }
+  .ss-step-media:empty {
+    display: none;
+  }
+  .ss-step-number {
+    display: block;
+    margin-top: 0.5rem;
+    font-variant-numeric: tabular-nums;
+    font-size: 0.85rem;
+    letter-spacing: 0.05em;
+  }
+  .ss-step-title {
+    display: block;
+    font-weight: 600;
+  }
+  .ss-step-role {
+    display: block;
+    font-size: 0.85rem;
+    opacity: 0.8;
+  }
+
+  .ss-kicker {
+    display: block;
+    font-size: 0.75rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    opacity: 0.8;
+  }
+
+  .ss-card-picture {
+    display: block;
+    max-width: 100%;
+    overflow: hidden;
+    margin-bottom: 0.5rem;
+  }
+
+  .ss-piece-teaser {
+    font-size: 1.1rem;
+    opacity: 0.85;
+  }
+  .ss-piece-link {
+    margin: 1rem 0;
+  }
+
+  @media print {
+    .ss-step {
+      break-inside: avoid;
+      page-break-inside: avoid;
+    }
+  }
+}

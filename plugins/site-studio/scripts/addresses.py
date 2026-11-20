@@ -50,6 +50,7 @@ if HERE not in sys.path:
 
 from contentmodel import grammar, keytables  # noqa: E402
 from configschema import canonical, configkeys, partblocks  # noqa: E402
+from building.lookneeds import look_needs  # noqa: E402
 
 RECORD_REL = configkeys.ADDRESSES_RECORD
 RECORD_SCHEMA = 1
@@ -272,7 +273,8 @@ def site_json_text(cfg, files, record_text):
     `files` is the tree without the record; this adds it, so `required_schema` sees the reason."""
     tree = dict(files)
     tree[RECORD_REL] = record_text.encode("utf-8")
-    return canonical.canonical_text(cfg, tree, grammar.interpretation_reasons(tree), at_least=4)
+    return canonical.canonical_text(cfg, tree, grammar.interpretation_reasons(tree), at_least=4,
+                                    look_needs=look_needs(tree))
 
 
 def read_record_file(repo):

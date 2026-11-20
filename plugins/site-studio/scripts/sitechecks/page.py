@@ -184,13 +184,13 @@ def parse_page(rel, text):
 _REMOTE_LOAD = re.compile(r"^\s*(?:https?:|ftp:|//)", re.I)
 
 
-FACADE_ROOTS = ("ss-video", "ss-videos", "ss-map", "ss-showcase", "ss-gallery-video")
+FACADE_ROOTS = ("ss-video", "ss-videos", "ss-map", "ss-showcase", "ss-gallery-video", "ss-steps")
 
 
 class FacadeScan(HTMLParser):
-    """The facade loading-attribute rule (site-fidelity section 7.3, dev #865; extended at 0.4.0). Inside an
-    element whose class list holds one of `FACADE_ROOTS` (`ss-video`, `ss-videos`, and the schema-4 `ss-map`,
-    `ss-showcase`, `ss-gallery-video`), no element may carry a LOADING attribute with a remote value: `src` and
+    """The facade loading-attribute rule (site-fidelity section 7.3, dev #865; extended at 0.4.0 and 0.5.0). Inside an
+    element whose class list holds one of `FACADE_ROOTS` (`ss-video`, `ss-videos`, the schema-4 `ss-map`,
+    `ss-showcase`, `ss-gallery-video`, and the schema-5 steps view `ss-steps`), no element may carry a LOADING attribute with a remote value: `src` and
     `srcset` (an <img>, an <iframe>, a <source>, a <video>), `poster`, `data` (an <object>), `href` on a <link>,
     and `href` or `xlink:href` on an SVG <image> or <use>. `href` on an <a> and `data-embed` are exempt: they hold
     the video's address, or the piece a pin or tile links to, and load nothing until a click.

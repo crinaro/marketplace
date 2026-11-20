@@ -2,7 +2,7 @@
 
 <!-- GENERATED from the tables in scripts/content.py, scripts/siteconfig.py and scripts/build.py. Do not edit by hand: the plugin's maintainers regenerate it, and their tests fail when it and the code disagree. -->
 
-What your site's files may hold, and what the build reads. This page is written from the build's own tables, so it names exactly the keys, tokens, blocks and settings this version knows. Where this page and the build disagree, the build is right, and that is a bug in the plugin to report. A site is schema 1, 2, 3 or 4 (this version reads up to 4); the plugin writes the lowest schema that holds your site, and nothing here changes a site that does not use it.
+What your site's files may hold, and what the build reads. This page is written from the build's own tables, so it names exactly the keys, tokens, blocks and settings this version knows. Where this page and the build disagree, the build is right, and that is a bug in the plugin to report. A site is schema 1, 2, 3, 4 or 5 (this version reads up to 5); the plugin writes the lowest schema that holds your site, and nothing here changes a site that does not use it.
 
 ## Where things live
 
@@ -79,6 +79,8 @@ Top-level keys, in the order the plugin writes them. A key marked schema 2 makes
 
 The same keys are set in `site.json` `work` (the default portfolio) and in a portfolio's `page.md` front matter, which overrides them. Any other key is refused. `cardNumber`, `cardNumberFormat`, `cardLabels`, `backLink` need schema 4: a file below schema 4 that holds one is refused with `needs "schema": 4`; written at its default (`cardNumber` false, `cardNumberFormat` padded, `cardLabels` true) a key is accepted and dropped.
 
+`cardImage`, `cardAlt`, `cardKicker`, `pieceLink`, `pieceTeaser` need schema 5: a file below schema 5 that holds one is refused with `needs "schema": 5`, and each is kept as written (`cardImage: cover` in a grid changes nothing, and is still a reason for schema 5).
+
 | key | meaning |
 | --- | --- |
 | `label` | the portfolio's name in the menu and on its index. |
@@ -93,6 +95,11 @@ The same keys are set in `site.json` `work` (the default portfolio) and in a por
 | `cardNumberFormat` | `padded` (the default) prints the card's order as two digits and its year, `02 / 2025`; `plain` prints the order as it is and its year, `2 / 2025`; `order` prints the order as it is and no year, `2` (schema 4; read only when `cardNumber` is on). |
 | `cardLabels` | `false` prints a card's meta values without their labels; the piece page keeps its labels (schema 4; the default is `true`). |
 | `backLink` | one line of text: a link back to the portfolio's index above each piece's title (schema 4). |
+| `cardImage` | the picture a card shows (schema 5): `cover` (the default on a grid) or `photo` (the piece's `photo`, else its `cover`); under `view: roles`, where a card has no picture without it, either value gives each employer card the picture of its newest piece. |
+| `cardAlt` | `true` (schema 5): a card's picture carries its own alt key (`coverAlt`, or `photoAlt` for a photo) instead of an empty alt. |
+| `cardKicker` | the name of a piece key (schema 5): that key's value is printed as one line with the piece wherever it is shown as a card or a tile (a list joined with `, `); a piece without the key has none. A built-in key, or a key `cardMeta` lists too, is refused. |
+| `pieceLink` | `true` (schema 5): a piece page prints one outbound link, address `link`, text `linkLabel` (else the address's host). |
+| `pieceTeaser` | `true` (schema 5): a piece page prints the piece's `teaser` as one paragraph under its title. |
 
 Portfolio page keys (a `page.md`, schema 3): each is refused below schema 3 with `needs "schema": 3`.
 
@@ -102,9 +109,11 @@ Portfolio page keys (a `page.md`, schema 3): each is refused below schema 3 with
 | `tagline` | see meaning | none | one line printed under a portfolio index's title, or (schema 4) under the resume's title. |
 | `sort` | `date`, `order` | `date` | how pieces are ordered: `date` (newest first) or `order` (a piece's own whole-number `order` first). |
 | `menuLinks` | `index`, `single-piece` | `index` | `index` (the menu links the portfolio's index) or `single-piece` (links the piece when only one is built). |
-| `view` | `grid`, `page` | `grid` | `grid` (the generated index) or `page` (your own `site/src/<portfolio>/index.html`); at schema 4 also `roles`, `map` or `showcase`. |
+| `view` | `grid`, `page` | `grid` | `grid` (the generated index) or `page` (your own `site/src/<portfolio>/index.html`); at schema 4 also `roles`, `map` or `showcase`; at schema 5 also `steps` (an ordered run of numbered steps: a step's number is its place in the portfolio's own piece order, from 1, printed as two digits). |
 
 Schema 4 adds the `view` values `roles`, `map`, `showcase` (`view: map` reads `mapMask`), and these page keys; a file below schema 4 that holds any of them is refused with `needs "schema": 4`.
+
+Schema 5 adds the `view` value `steps`; a file below schema 5 that holds it is refused with `needs "schema": 5`.
 
 | key | values | default | meaning |
 | --- | --- | --- | --- |
@@ -120,7 +129,7 @@ Home, about, resume and portfolio pages read a fixed set of keys; any other key 
 | home (`content/home.md`) | `title`, `description`, `featured`, `feed`, `endorsement`, `photo`, `photoAlt`, `contact` (and, at schema 4, `eyebrow`, `role`, `showcase`, `samples`, `links`, `titleForm`, `introScope`, `partOrder`) |
 | about (`content/about.md`) | `title`, `description`, `endorsement`, `photo`, `photoAlt`, `contact` |
 | resume (`content/resume/resume.md`) | `title`, `description` (and `contact` at schema 3, `tagline`, `links` at schema 4) |
-| portfolio (`page.md`) | `title`, `label`, `description`, `required`, `meta`, `cardMeta`, `groupBy`, `groups`, `labels`, `cardNumber`, `cardNumberFormat`, `cardLabels`, `backLink`, `order`, `tagline`, `sort`, `menuLinks`, `view`, `mapMask`, `onePieceIndex` |
+| portfolio (`page.md`) | `title`, `label`, `description`, `required`, `meta`, `cardMeta`, `groupBy`, `groups`, `labels`, `cardNumber`, `cardNumberFormat`, `cardLabels`, `backLink`, `cardImage`, `cardAlt`, `cardKicker`, `pieceLink`, `pieceTeaser`, `order`, `tagline`, `sort`, `menuLinks`, `view`, `mapMask`, `onePieceIndex` |
 
 | key | meaning |
 | --- | --- |
@@ -144,7 +153,7 @@ Home, about, resume and portfolio pages read a fixed set of keys; any other key 
 | `order` | menu order: a whole number; portfolios with one come first, ascending. |
 | `sort` | how pieces are ordered: `date` (newest first) or `order` (a piece's own whole-number `order` first). |
 | `menuLinks` | `index` (the menu links the portfolio's index) or `single-piece` (links the piece when only one is built). |
-| `view` | `grid` (the generated index) or `page` (your own `site/src/<portfolio>/index.html`); at schema 4 also `roles`, `map` or `showcase`. |
+| `view` | `grid` (the generated index) or `page` (your own `site/src/<portfolio>/index.html`); at schema 4 also `roles`, `map` or `showcase`; at schema 5 also `steps` (an ordered run of numbered steps: a step's number is its place in the portfolio's own piece order, from 1, printed as two digits). |
 | `mapMask` | a path inside the portfolio folder to a land mask for `view: map` (schema 4); default: the plugin's own. |
 | `onePieceIndex` | what the index is when `menuLinks: single-piece` has the menu link a portfolio's one piece (schema 4): `redirect` (the default) serves the index address as a redirect page to the piece; `listing` builds the index as the portfolio's listing, as for any other portfolio. The menu links the piece either way. The listing is a page no menu item links, as the old index was: the publish check's reachable rule lets it through when it links nothing beyond its one published piece and nothing else in the site is unreachable. |
 
@@ -181,11 +190,28 @@ Schema 4 reads more piece keys, each only where a setting uses it (so each is st
 | `tileRole` | `view: showcase`, or a piece the home page's `showcase` names | the line printed under the tile's title (default: `role`). |
 | `year` | `cardNumber: true` | a whole number: the year `cardNumber` prints (default: the year of `date`). |
 
+Schema 5 reads these piece keys, each ONLY under one of its triggers (a schema-5 view or setting of the piece's own portfolio). Without the trigger a key is what it was: not published, and named in the warning. Under it, a value that is not what the key means there (a `photo` that is no picture, a `link` that is no address) is refused with the way out: move that value to another key and list the new key in meta, or remove the trigger; and a `meta` or `cardMeta` list naming the key is refused, because the build shows it already. The key `cardKicker` names is read under `cardKicker`.
+
+| key | read under | meaning |
+| --- | --- | --- |
+| `tileImage` | `view: steps` | a file in the piece's `media/` folder: the step's picture, first of `tileImage`, `photo`, `cover`. |
+| `tileAlt` | `view: steps` | the alt of the step's picture when it is the `tileImage`. |
+| `tileRole` | `view: steps` | the line printed under the step's title (default: `role`). |
+| `role` | `view: steps` | the step's line when `tileRole` is absent. |
+| `tilePosition` | `view: steps` | a CSS position: the `tileImage`'s `object-position` on a step. |
+| `photo` | `view: steps`, `cardImage: photo` (either value under `view: roles`) | a file in the piece's `media/` folder, or `ref:<name>`: the step's picture after `tileImage`, and the card's picture under `cardImage: photo` (under `view: roles`, the employer card's under `cardImage`). |
+| `photoAlt` | `view: steps`, `cardImage: photo` (either value under `view: roles`) | one line: the photo's alt wherever the photo is the picture shown. |
+| `photoPosition` | `view: steps`, `cardImage: photo` (either value under `view: roles`) | a CSS position: the photo's `object-position` wherever it is the picture shown. |
+| `coverAlt` | `view: steps`, `cardAlt: true` | one line: the cover's alt on a step that shows the cover, and on a card under `cardAlt: true`. |
+| `teaser` | `pieceTeaser: true` | one line: printed under the piece page's title (the card and the meta description use it as before). |
+| `link` | `pieceLink: true` | an `http` or `https` address: the piece page's outbound link. |
+| `linkLabel` | `pieceLink: true` | one line: that link's text (default: the address's host). |
+
 **A piece is one page.** In a piece folder, a `.md` file other than `index.md`, and a sub-folder other than `media/`, are not published. The build names each one in a warning, and says: pieces have one page; put this in index.md, or start the name with _ to keep it as source. A name starting with `_` is the way to keep something there as source.
 
 ## References
 
-`reference.json` holds these keys; `url` and `title` are required. `image`, `role`, `fetched`, `author` need schema 4: a file below schema 4 that holds one is refused with `needs "schema": 4`.
+`reference.json` holds these keys; `url` and `title` are required. `image`, `role`, `fetched`, `author` need schema 4: a file below schema 4 that holds one is refused with `needs "schema": 4`. `imageAlt`, `imagePosition` need schema 5, refused below it the same way.
 
 | key | meaning |
 | --- | --- |
@@ -200,6 +226,8 @@ Schema 4 reads more piece keys, each only where a setting uses it (so each is st
 | `role` | one line on what you did, printed on every card of the reference (schema 4). |
 | `fetched` | when the page was fetched; stored, never printed (schema 4). |
 | `author` | who wrote the page; stored, never printed (schema 4). |
+| `imageAlt` | one line: the alt of the reference's card picture, on every card of it (schema 5). |
+| `imagePosition` | a CSS position such as `center 30%`: that picture's `object-position` (schema 5). |
 
 ## Layout tokens
 

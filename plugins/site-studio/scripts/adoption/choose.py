@@ -72,8 +72,16 @@ module DECIDES them:
     or the body without its chrome, that the plugin's page does not hold); one that loses any is `you decide`, never kept, and says
     what it loses. It is judged LAST, never while the look is a candidate: a card number, a label or a featured piece's picture is
     another setting's to put back, and a look judged before them would lose what they supply.
+  * THE CARD AND PIECE SETTINGS (design-movement-view 6.3, schema 5). `cardImage`, `cardAlt`, `cardKicker`, `pieceLink` and
+    `pieceTeaser` of each portfolio are offered only when their "offered when" holds (`v5_candidates`): a piece has `photo` (or, under
+    a roles view, `photo` or `cover`); a piece has `coverAlt` or `photoAlt`; a piece key nothing reads exists (`unread_keys`: not built
+    in, not in `meta`, `cardMeta` or `groupBy`, not read by the view or another setting the portfolio is judged under, not renamed by a
+    pending conversion), most-used first, name order on a tie, at most `KICKER_MAX`; a piece has `link`; a piece has `teaser`, or a key a
+    pending conversion makes `teaser` (`summary`). Each is judged like every setting, under the look derived for the candidate.
   * COST. One `accept` per candidate per pass, and a second pass runs only when the first moved a value off its default: the cost case
-    (`test_choose.Cost`) bounds the whole at `3 x (candidates + 1) x` one `accept`, which is the pass cap times one pass.
+    (`test_choose.Cost`) bounds the whole at `3 x (candidates + 1) x` one `accept`, which is the pass cap times one pass. The five card
+    and piece settings add at most 3 + 2 + 5 + 2 + 2 = 14 candidates per portfolio per pass, and none where nothing is offered: the
+    gate counts them (`test_choose.CostSchema5`).
 
 `evaluate(settings) -> {path: bytes}` is the plugin output for a settings dict, supplied by the caller (so the greedy loop is tested
 over fakes and the real one is `accept`-backed in `adoption.measure`).
@@ -85,9 +93,14 @@ import posixpath
 import re
 
 import parity_classes
+from configschema.configkeys import BUILTIN_PIECE_KEYS
+from contentmodel.keytables import VIEW_PIECE_KEYS, piece_keys_read
 
 from adoption import homeparts
-from adoption.settings import BACK_LINK_MAX, SETTING_ORDER, setting_family, setting_paths
+from adoption.convert import PIECE_KEY_SYNONYMS
+from adoption.keycover import synonym_sources
+from adoption.settings import BACK_LINK_MAX, SETTING_ORDER, V5_PORTFOLIO_SETTINGS, featured_shelf, setting_family, setting_paths
+from adoption.template import split_front
 
 MAX_PASSES = 3
 DEFAULTS = {"look": "site-studio", "featuredFrom": "home", "nav.home": True, "resume.headings": "shift", "resume.layout": "plain",
@@ -95,14 +108,26 @@ DEFAULTS = {"look": "site-studio", "featuredFrom": "home", "nav.home": True, "re
             "cardNumber": False, "cardNumberFormat": "padded", "backLink": None, "blocks.headingLevel": None, "blocks.loneReferenceGrid": False,
             "blocks.videoEmbed": "facade", "workKeys": "work",
             "titleForm": "site", "introScope": "body", "partOrder": None}
-BUILT_IN_VIEWS = ("grid", "page", "roles", "map", "showcase")
+BUILT_IN_VIEWS = ("grid", "page", "roles", "map", "showcase", "steps")        # `steps` at schema 5 (design-movement-view 6.1)
 
 
-def partner(name, cand):
+def partner(name, cand, snap=None):
     """The setting whose best value a candidate of `name` is scored under, or None: the two settings do not separate on the page."""
     if name == "cardNumber" and cand is True:
         return "cardNumberFormat"
+    if name == "featuredFrom" and cand == "showcase" and snap is not None:   # step 5c-4: under `cardImage` a home tile shows the card's
+        shelf = featured_shelf(lambda p: snap[p].decode("utf-8", "replace"), snap, {})[1]    # picture (O4b), chosen after this one
+        return "cardImage." + shelf[0].split("/")[0] if shelf else None
     return {"resume.headings": "resume.layout", "resume.layout": "resume.headings"}.get(name)
+
+
+def look_partner(name, cand):
+    """Under a DERIVED look only (step 5c-3): `pieceTeaser.<p>: true` is scored under the best `pieceLink.<p>` and the other way
+    round. A derived look reads a piece page only when every paragraph on it is explained, so the summary paragraph and the outbound
+    link each leave the page as different as the other does until both print (finding 1064's shape)."""
+    fam, _dot, port = name.partition(".")
+    return ({"pieceTeaser": "pieceLink.", "pieceLink": "pieceTeaser."}[fam] + port) if cand is True and fam in (
+        "pieceTeaser", "pieceLink") and port else None
 
 HOME_OPTIONS = ("titleForm", "introScope", "partOrder")    # the home page's own options: each is judged under a refined look (read up to four times; one reading
 #                                                            leaves the home's wrapped parts ambiguous), and no other setting under them
@@ -246,11 +271,117 @@ def has_video(snap):
     return False
 
 
+KICKER_MAX = 4                       # cardKicker's piece keys tried after the default (design-movement-view 6.3)
+TEASER_SOURCES = tuple(src for src, dst in PIECE_KEY_SYNONYMS if dst == "teaser")    # what a pending conversion makes `teaser`
+
+
+def _front_list(snap, port, key):
+    """The names a list key of portfolio `port`'s page.md holds (`meta: [a, b]` or a block list), [] when it has none."""
+    text = snap.get("content/%s/page.md" % port, b"").decode("utf-8", "replace")
+    out, inside = [], False
+    for line in text.split("\n")[1:] if text.startswith("---\n") else ():
+        if line.rstrip() == "---":
+            break
+        m = _FM.match(line)
+        if m:
+            inside = m.group(1) == key
+            if inside and m.group(2):
+                out += [t.strip().strip("'\"") for t in m.group(2).strip("[]").split(",") if t.strip()]
+        elif inside and line.strip().startswith("- "):
+            out.append(line.strip()[2:].strip().strip("'\""))
+    return out
+
+
+def portfolio_settings(port, snap, settings=None):
+    """The portfolio-level settings `port` is judged under, as `keytables.active_triggers` reads them: its `view` (the setting when
+    one is chosen, else as written) and each of the five card and piece settings that has a value. `cardKicker` is left out: the
+    key it names is the one being chosen."""
+    s = settings or {}
+    out = {"view": s.get("view." + port) or portfolio_facts(snap).get(port, {}).get("view")}
+    for fam in V5_PORTFOLIO_SETTINGS:
+        if fam != "cardKicker" and s.get("%s.%s" % (fam, port)) not in (None, False):
+            out[fam] = s["%s.%s" % (fam, port)]
+    return out
+
+
+def read_keys(port, snap, data, settings=None):
+    """The piece keys of portfolio `port` that something reads under `settings` (the stray check's own sources,
+    `strays.piece_known_keys`): the built-in keys and `description`, what `meta`, `cardMeta` and `groupBy` name (site.json's `work`
+    object for the portfolio named `work`, or every portfolio under `workKeys: all`), `featured` under `featuredFrom: flags`, the
+    keys of its view and of `cardNumber`, the schema-5 keys its settings read, and every key a pending conversion renames."""
+    s = settings or {}
+    known = set(BUILTIN_PIECE_KEYS) | {"description"} | synonym_sources()
+    work = (data or {}).get("work") or {}
+    for key in ("meta", "cardMeta"):
+        known.update(_front_list(snap, port, key))
+        if port == "work" or s.get("workKeys") == "all":
+            known.update(work.get(key) or ())
+    known.update(_front_list(snap, port, "groupBy"))
+    if s.get("featuredFrom") == "flags":
+        known.add("featured")
+    ps = portfolio_settings(port, snap, s)
+    known.update(VIEW_PIECE_KEYS.get(ps["view"], ()))
+    if s.get("cardNumber"):
+        known.update(VIEW_PIECE_KEYS["cardNumber"])
+    known.update(piece_keys_read(ps))
+    return known
+
+
+def unread_keys(port, snap, data, settings=None):
+    """cardKicker's candidates for `port`: each piece key nothing reads (`read_keys`), most-used first, name order on a tie, at most
+    `KICKER_MAX`."""
+    known = read_keys(port, snap, data, settings)
+    shown, uses = showcased(snap), {}
+    for path in sorted(snap):
+        parts = path.split("/")
+        if len(parts) != 4 or parts[:2] != ["content", port] or parts[3] != "index.md" or parts[2].startswith("_"):
+            continue
+        tile = VIEW_PIECE_KEYS["showcase"] if "%s/%s" % (port, parts[2]) in shown else ()
+        for key in _front(snap[path].decode("utf-8", "replace")):
+            if key not in known and key not in tile:
+                uses[key] = uses.get(key, 0) + 1
+    return sorted(uses, key=lambda k: (-uses[k], k))[:KICKER_MAX]
+
+
+def showcased(snap):
+    """{`portfolio/slug`}: the pieces the converted home page's `showcase` list names. Their tile keys are read wherever their
+    portfolio's view is (`strays.piece_known_keys`, design R4 row 6), so none of them is a kicker's key."""
+    path = homeparts.home_in(snap)
+    if path is None:
+        return set()
+    show = homeparts.front_values(split_front(snap[path].decode("utf-8", "replace"))[0]).get("showcase")
+    return set("/".join(i.split("|")[0].strip().split("/")[:2]) for i in show if "/" in i) if isinstance(show, list) else set()
+
+
+def v5_candidates(name, snap, data, settings=None):
+    """The candidates of one of the five card and piece settings (design-movement-view 6.3), absent first; [None] when its
+    "offered when" does not hold."""
+    fam, port = name.split(".", 1)
+    pieces = portfolio_facts(snap).get(port, {}).get("pieces", ())
+
+    def has(*keys):
+        return any(k in fm for fm in pieces for k in keys)
+    if fam == "cardImage":
+        if portfolio_settings(port, snap, settings)["view"] == "roles" and has("photo", "cover"):
+            return [None, "photo", "cover"]
+        return [None, "photo"] if has("photo") else [None]
+    if fam == "cardAlt":
+        return [None, True] if has("coverAlt", "photoAlt") else [None]
+    if fam == "cardKicker":
+        return [None] + unread_keys(port, snap, data, settings)
+    if fam == "pieceLink":
+        return [None, True] if has("link") else [None]
+    return [None, True] if has("teaser", *TEASER_SOURCES) else [None]          # pieceTeaser
+
+
 def candidates_for(name, snap, data, local=None, settings=None):
     """The values to try for one setting, DEFAULT FIRST; a single value means there is nothing to choose (not measured). `local`
     is the old builder's output, which `backLink` (its text) and `partOrder` (the order of the old home's parts) read; `settings` the
-    values the setting is judged under, which `partOrder` reads for `introScope` (`rest` is a part only under `first-block`)."""
+    values the setting is judged under, which `partOrder` reads for `introScope` (`rest` is a part only under `first-block`) and the
+    card and piece settings for what the portfolio reads."""
     fam = setting_family(name)
+    if fam in V5_PORTFOLIO_SETTINGS and "." in name:
+        return v5_candidates(name, snap, data, settings)
     facts = portfolio_facts(snap)
     if name == "titleForm":
         return ["site", "page"] if homeparts.home_in(snap) else ["site"]
@@ -288,7 +419,8 @@ def candidates_for(name, snap, data, local=None, settings=None):
         return ["site-studio"]               # the derived candidate is added by the caller when the default fails
     if fam == "featuredFrom":
         flagged = any(fm.get("featured", "").lower() in ("true", "yes") for f in facts.values() for fm in f["pieces"])
-        return ["home", "flags"] if flagged else ["home"]
+        shelf = featured_shelf(lambda p: snap[p].decode("utf-8", "replace"), snap, settings or {})[1]
+        return ["home"] + (["flags"] if flagged else []) + (["showcase"] if shelf else [])
     if fam == "nav.home" or name == "nav.home":
         return [True, False]
     if name in ("resume.headings", "resume.layout"):
@@ -316,6 +448,7 @@ def setting_names(snap):
     names = ["look", "featuredFrom"]
     names += ["sort.%s" % p for p in sorted(portfolio_facts(snap))]
     names += ["nav.home", "resume.headings", "resume.layout", "workKeys", "cardLabels", "cardNumber", "cardNumberFormat"]
+    names += ["%s.%s" % (fam, p) for fam in V5_PORTFOLIO_SETTINGS for p in sorted(portfolio_facts(snap))]
     names += ["backLink"] if portfolio_facts(snap) else []
     names += ["menuLinks.%s" % p for p in sorted(portfolio_facts(snap))]
     names += ["onePieceIndex.%s" % p for p in sorted(portfolio_facts(snap))]
@@ -539,7 +672,7 @@ def choose(snap, data, evaluate, local, previous=None, no_local_reason=None, der
 
     def best_score(name, cand, others):
         """`score` of one candidate; a candidate with a DEPENDENT setting is scored under that setting's best value."""
-        dep = partner(name, cand)
+        dep = partner(name, cand, snap) or (look_partner(name, cand) if isinstance(others.get("look"), dict) else None)
         if dep is None:
             return score(local, evaluate(under(name, cand, others)), name)
         out = None
@@ -580,6 +713,10 @@ def choose(snap, data, evaluate, local, previous=None, no_local_reason=None, der
                     picked = cand
                     break
                 tried.append((cand, why, n, pset, seen))
+            if picked is None and cands and len(tried) < len(cands):     # the absent candidate (None) itself was EQUAL
+                res.rows[name] = Row(name, None, "measured", _reason(name, None, True, snap, None))
+                cur.pop(name, None)
+                continue
             if name == "look" and tried:
                 default_looks[name] = tried[0][2]
             if picked is None and name == "look" and (derive is not None or derive_under is not None):

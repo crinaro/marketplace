@@ -20,17 +20,17 @@ from configschema.treeschema import required_schema
 from configschema.workcheck import validate_portfolio_settings
 
 
-def canonical_text(cfg, files=None, interpretations=None, at_least=None):
+def canonical_text(cfg, files=None, interpretations=None, at_least=None, look_needs=None):
     """The one canonical form of a config: schema order, indent 2, one trailing LF. It writes the
     LOWEST schema that holds the site (`required_schema(cfg, files)`) and only that schema's keys:
     `siteKind` only when it is not `portfolio`, `labels` only when non-empty, `featuredFrom` only
     when `flags`. A `hub` or `custom` config leaves out `work` and `resume` when they hold
     nothing. `files` is the tree the caller holds (None: no tree feature is known); when it is given,
-    so must `interpretations` be (see `required_schema`)."""
+    so must `interpretations` be, and `look_needs` (`building.lookneeds.look_needs(files)`; see `required_schema`)."""
     if not isinstance(cfg, SiteConfig):
         cfg = parse_data(cfg)
     d = cfg.to_dict()
-    d["schema"] = max(required_schema(cfg, files, interpretations), at_least or 1)
+    d["schema"] = max(required_schema(cfg, files, interpretations, look_needs), at_least or 1)
     d["work"] = dict((k, d["work"][k]) for k in WORK_KEYS if k in d["work"])
     if d["resume"] is not None:
         d["resume"] = dict((k, d["resume"][k]) for k in RESUME_KEYS
@@ -44,13 +44,13 @@ def canonical_text(cfg, files=None, interpretations=None, at_least=None):
     return json.dumps(ordered, indent=2, ensure_ascii=False) + "\n"
 
 
-def write(path, cfg, files=None, interpretations=None, at_least=None):
+def write(path, cfg, files=None, interpretations=None, at_least=None, look_needs=None):
     """Validate, then write `site.json` in canonical form, atomically. The only writer. `files` is
     the tree the caller holds, so the schema written is the one the whole site needs (with `files`,
     pass `interpretations` too: `content.interpretation_reasons(files)`)."""
     if not isinstance(cfg, SiteConfig):
         cfg = parse_data(cfg)
-    text = canonical_text(cfg, files, interpretations, at_least)
+    text = canonical_text(cfg, files, interpretations, at_least, look_needs)
     directory = os.path.dirname(os.path.abspath(path))
     os.makedirs(directory, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix=".site.json.", dir=directory)

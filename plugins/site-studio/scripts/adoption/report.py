@@ -45,6 +45,7 @@ from adoption.tokens import (
 from adoption.redirects import redirect_pages
 from adoption.convert import converted_site_files, holds_markdown, pageless_folders
 from adoption.fileacct import measured_folders
+from adoption.keycover import note_lines
 from adoption.features import FEATURES, detect_signals, feature_lines, infer_kind
 from adoption.parity import conversion_lines, decide_conversions, preconditions, template_fingerprint
 from adoption.problems import plan_settings, format_problems, held_problems, problem_dicts, site_problems, size_copy_note
@@ -71,7 +72,9 @@ def cmd_inventory(repo, as_json):
         unknown += [(p, t) for t in u]
         sections += [(p, a, b) for a, b in ch if "{{#page:" in b]
     kind = plan.get("siteKind")
-    probs = site_problems(tree, data, plan["paper"], kind, measured_folders(tree, plan), plan["convert"], plan_settings(plan)) + held_problems(tree, data, plan)
+    notes = []                       # design-movement-view 6.1: a key read elsewhere is a note, not a decision
+    probs = site_problems(tree, data, plan["paper"], kind, measured_folders(tree, plan), plan["convert"], plan_settings(plan),
+                          plan.get("parity"), notes) + held_problems(tree, data, plan)
     redirects = redirect_pages(tree, data.get("redirects"))
     signals = detect_signals(tree, data, redirects)
     known = set(f.key for f in FEATURES)
@@ -147,9 +150,9 @@ def cmd_inventory(repo, as_json):
                  "it is not):")
         for p, a, b in sections:
             L.append("  %s: %s -> %s" % (p, " ".join(a.split()), " ".join(b.split())))
-    if probs:
+    if probs or notes:
         L.append("")
-        L += format_problems(probs)
+        L += format_problems(probs) + note_lines(notes)
         L.append("")
     L += _pageless_lines(tree, plan)
     sch = site_json_schema_line(tree, data, plan["paper"], plan["folders"], kind)

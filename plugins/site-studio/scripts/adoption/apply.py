@@ -425,6 +425,8 @@ def _site_changes(tree, notes, record, plan):
     for path, val in notes["viewKeys"]:
         changes.append("%s: view %s removed (you chose this: the plugin builds that portfolio's index as its grid, which "
                        "a visitor sees as a different page)" % (path, val))
+    for path, old, new in notes.get("viewNames") or []:
+        changes.append("%s: view %s -> %s (the plugin's name for the view; parity measured the index)" % (path, old, new))
     for folder, src, dst in notes["pieceKeys"]:
         changes.append("%s: front matter key %s -> %s (the plugin reads %s; the value is unchanged)" % (folder, src, dst, dst))
     for key, _val in notes["resumeFields"]:

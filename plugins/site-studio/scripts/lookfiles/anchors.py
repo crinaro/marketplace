@@ -21,7 +21,7 @@ from lookfiles.pagedom import (
     text_of,
     walk,
 )
-from lookfiles.renderlog import kids_of
+from lookfiles.renderlog import LIST_SEP, kids_of
 
 
 # ================================================================================================= the derivation
@@ -131,8 +131,10 @@ def _own_needles(call):
             s = squash(str(v))
             if s:
                 # a value the recording look writes into an attribute only (a label, an alt) may not be on the page at
-                # all (the template has no such attribute), and a word of it found elsewhere must not pull the anchor out
-                (opt if slot in call.attr_only else hard).append(s)
+                # all (the template has no such attribute), and a word of it found elsewhere must not pull the anchor out;
+                # a list the page may join its own way (`LIST_SEP`) is looked for item by item
+                items = [x for x in (squash(i) for i in s.split(LIST_SEP)) if x] if LIST_SEP in s else [s]
+                (opt if slot in call.attr_only else hard).extend(items)
         elif kind == looks.HTML:
             for it in _items_or_empty(call, slot):
                 if it[0] == "el" and it[2]:
@@ -330,6 +332,18 @@ def _word_pattern(value):
     if len(squash(value)) < 2:
         return re.compile(r"^(\s*)" + re.escape(words[0]) + r"(\s*)$")
     return re.compile(r"(?<![A-Za-z0-9])" + r"\s+".join(re.escape(w) for w in words) + r"(?![A-Za-z0-9])")
+
+
+def _list_pattern(value):
+    """A pattern for a `LIST_SEP` value in a page: its items as whole words, in order, with one separator between them that is
+    the same every time (group `sep`: a short run of anything but letters, digits and tags, such as ", " or " / "). None when the
+    value holds fewer than two items."""
+    items = [i.split() for i in value.split(LIST_SEP)]
+    if len(items) < 2 or not all(items):
+        return None
+    words = [r"\s+".join(re.escape(w) for w in ws) for ws in items]
+    body =words[0] + r"(?P<sep>[^A-Za-z0-9<>]{1,8}?)" + words[1] + "".join(r"(?P=sep)" + w for w in words[2:])
+    return re.compile(r"(?<![A-Za-z0-9])" + body + r"(?![A-Za-z0-9])")
 
 
 def _sub_slot(pat, slot, text):

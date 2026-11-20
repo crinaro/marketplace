@@ -6,10 +6,10 @@ import re
 from contentmodel.errors import ContentError
 from contentmodel.frontmatter import _check_keys, _need_str, _str_list, decode_text, parse_front_matter
 from contentmodel.grammar import body_start_line
-from contentmodel.keytables import DATE_RE, POSITION_RE
+from contentmodel.keytables import DATE_RE, HOME_LIST_KEYS, POSITION_RE, piece_keys_read
 from contentmodel.links import check_href
 from contentmodel.models import Page, Piece
-from configschema.configkeys import HOME_INTRO_SCOPES, HOME_TITLE_FORMS
+from configschema.configkeys import BUILTIN_PIECE_KEYS, HOME_INTRO_SCOPES, HOME_TITLE_FORMS
 
 
 def _check_contact(meta, path):
@@ -55,7 +55,7 @@ def _check_v4_page_keys(meta, path):
     for k in ("eyebrow", "role", "tagline"):
         if k in meta:
             _one_line(meta, k, path)
-    for k in ("showcase", "samples"):
+    for k in HOME_LIST_KEYS:
         if k in meta:
             _str_list(meta, k, path)
     for entry in meta.get("showcase", []):
@@ -111,10 +111,91 @@ def _page(files, path, allowed, where_name, schema=3):
             raise ContentError("%s: 'endorsement' must be a map with 'quote' and optionally 'by'" % path, fix="write endorsement as a map with quote: and optionally by:")
     if "contact" in meta:
         _check_contact(meta, path)
-    for k in ("featured", "feed"):
+    for k in HOME_LIST_KEYS:
         if k in meta:
             _str_list(meta, k, path)
     return Page(path, meta, body, body_start_line(text))
+
+
+_LINK_RE = re.compile(r"^https?://")
+_PICTURE = "must be a file in this piece's media/ folder, or ref:<name>"
+
+
+def _trigger_text(trigger, settings):
+    """A trigger as the person wrote it: `view: steps`, `cardImage: photo`, `pieceLink: true`."""
+    if trigger == "steps":
+        return "view: steps"
+    v = settings.get(trigger)
+    return "%s: %s" % (trigger, "true" if v is True else v)
+
+
+def _v5_value_problem(key, val, path, media_paths):
+    """What is wrong with the value of a schema-5 piece key read under its trigger, as a phrase, or None (design-movement-
+    view section 3.3). `tileImage`, `tileAlt`, `tileRole`, `role` and `teaser` keep the checks they have where they are
+    read (as in 0.4.0)."""
+    if key == "photo":
+        if not isinstance(val, str) or not val.strip():
+            return _PICTURE
+        if val.startswith("ref:"):
+            return None
+        full = posixpath.normpath(posixpath.join(posixpath.dirname(path), val))
+        if full not in media_paths or not full.startswith(posixpath.dirname(path) + "/media/"):
+            return _PICTURE
+        return None
+    if key in ("tilePosition", "photoPosition"):
+        return None if isinstance(val, str) and POSITION_RE.match(val) else "must be a CSS position such as center 30%"
+    if key in ("photoAlt", "coverAlt", "linkLabel"):
+        return None if isinstance(val, str) and val.strip() and "\n" not in val else "must be one line of text"
+    if key == "link":
+        if not isinstance(val, str) or not _LINK_RE.match(val):
+            return "must be an http or https address"
+        try:
+            check_href(val, "%s: front matter 'link'" % path)
+        except ContentError:
+            return "must be an http or https address"
+    return None
+
+
+def _kicker_problem(val):
+    """A kicker's value: text, a number, or a list of them."""
+    def one(v):
+        return (isinstance(v, str) and v.strip() and "\n" not in v) or (isinstance(v, (int, float))
+                                                                        and not isinstance(v, bool))
+    if one(val) or (isinstance(val, list) and val and all(one(v) for v in val)):
+        return None
+    return "must be text, a number, or a list of them"
+
+
+def _check_v5_piece_keys(portfolio, meta, path, media_paths):
+    """Rule 6 of design-movement-view section 3.1: under a schema-5 trigger of the piece's own portfolio, a value that is
+    not what its key now means is refused with the way out ("move that value to another key and list the new key in
+    meta, or remove <trigger>"), and a `meta` or `cardMeta` list naming a key the trigger reads is refused (the build
+    shows it already). Without a trigger nothing here runs: the key is what it was in 0.4.x."""
+    settings = portfolio.settings
+    read = piece_keys_read(settings)
+    if not read:
+        return
+    kicker = settings.get("cardKicker")
+    shown = set(settings.get("meta", ())) | set(settings.get("cardMeta", ()))
+    for key in sorted(read):
+        if key in shown and key != kicker and key not in BUILTIN_PIECE_KEYS:
+            where = portfolio.page_source or "site/site.json"
+            trig = _trigger_text(read[key][0], settings)
+            raise ContentError("%s: meta or cardMeta lists '%s', which %s reads: the build shows it already; list "
+                               "another key" % (where, key, trig), path=where,
+                               fix="remove '%s' from meta and cardMeta; the build shows it already under %s"
+                                   % (key, trig))
+    for key in sorted(read):
+        if key not in meta:
+            continue
+        if key == kicker and read[key] == ("cardKicker",):
+            problem = _kicker_problem(meta[key])
+        else:
+            problem = _v5_value_problem(key, meta[key], path, media_paths)
+        if problem:
+            trig = _trigger_text(read[key][0], settings)
+            raise ContentError("%s: front matter '%s' %s, because %s reads it" % (path, key, problem, trig), path=path,
+                               fix="move that value to another key and list the new key in meta, or remove %s" % trig)
 
 
 def _validate_piece(portfolio, slug, path, files, drafts, media_paths, featured_from="home"):
@@ -161,4 +242,5 @@ def _validate_piece(portfolio, slug, path, files, drafts, media_paths, featured_
             full = posixpath.normpath(posixpath.join(posixpath.dirname(path), cv))
             if full not in media_paths or not full.startswith(posixpath.dirname(path) + "/media/"):
                 raise ContentError("%s: cover '%s' is not a file in this piece's media/ folder" % (path, cv), fix="put the cover image in this piece's media/ folder and name it media/<file>")
+    _check_v5_piece_keys(portfolio, meta, path, media_paths)
     return Piece(portfolio.slug, slug, path, meta, body, body_start_line(text))

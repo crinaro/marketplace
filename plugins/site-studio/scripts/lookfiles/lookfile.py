@@ -29,16 +29,32 @@ def literals(look):
 
 
 class _Literals(html.parser.HTMLParser):
+    """The literal words of one part. A decoration's attribute values (an `<svg>` subtree: a path's `d`, a `fill`; design-movement-
+    view 9.2) are drawing, never words a visitor reads: `look.py use` and `check` list the decoration on its own line instead."""
+
     def __init__(self):
         html.parser.HTMLParser.__init__(self, convert_charrefs=True)
         self.found = []
+        self.svg = 0                    # how deep inside a decoration's `<svg>` subtree the parser is
 
     def handle_starttag(self, tag, attrs):
+        if tag == "svg" or self.svg:
+            self.svg += 1
+            return
+        self._words(attrs)
+
+    def handle_startendtag(self, tag, attrs):
+        if tag != "svg" and not self.svg:
+            self._words(attrs)
+
+    def handle_endtag(self, tag):
+        if self.svg:
+            self.svg -= 1
+
+    def _words(self, attrs):
         for name, v in attrs:
             if v and name not in _NOT_TEXT_ATTRS and not name.startswith("data-") and re.search(r"[A-Za-z]", v):
                 self.found.append(v.strip())
-
-    handle_startendtag = handle_starttag
 
     def handle_data(self, data):
         if re.search(r"[A-Za-z]", data):

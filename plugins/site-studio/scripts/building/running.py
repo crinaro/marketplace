@@ -11,10 +11,12 @@ from building.acceptance import (
     _not_checked,
     _problem_from,
     _refusal,
+    trigger_slot_findings,
 )
 from building.constants import ACCEPT_PREVIEW_URL, PREVIEW_SITE_URL, ACCEPT_YEAR
 from building.digest import _check_out_dir, _write_outputs, _digest_tree
 from building.gitfiles import _commit_files, _disk_files, _is_shallow, _last_commit_epoch, _utc_date
+from building.lookneeds import look_needs
 from building.outcomes import Acceptance, BuildError, PublishResult, BuildResult
 from configschema import diagnostics, model as model_mod, treeschema
 from configschema.diagnostics import SiteConfigError
@@ -69,7 +71,8 @@ def _accept(files, drafts, year, lastmod, grammar=None):
     ok, cfg = stage("siteconfig.problems", "site/site.json", config)               # stage 1
     if not ok:
         return finish()
-    ok, _ = stage("check_tree_schema", "site/site.json", treeschema.check_tree_schema, cfg, files)   # stage 2
+    ok, _ = stage("check_tree_schema", "site/site.json",                                         # stage 2
+                  lambda: treeschema.check_tree_schema(cfg, files, look_needs(files)))
     if not ok:
         return finish(cfg)
     ok, layout = stage("content.layout_problems", "content/", layout_mod.layout_problems, files, cfg.siteKind, cfg)
@@ -120,6 +123,12 @@ def _accept(files, drafts, year, lastmod, grammar=None):
     ok, _ = stage("_Builder.load_look", cfg.look or "site/site.json", b.load_look)  # the look the site names
     if not ok:
         return finish(cfg, model)
+    ok, found = stage("trigger_slot_findings", cfg.look or "site/site.json",     # a trigger with nowhere to print
+                      trigger_slot_findings, model, cfg, files, b.look, b.grammar)
+    if ok:
+        for p in found[0]:
+            add(p)
+        notes.extend(found[1])
     ok, _ = stage("_Builder.preregister", "site/", b.preregister)                  # stage 5
     if not ok:
         return finish(cfg, model)

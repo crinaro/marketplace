@@ -9,11 +9,14 @@ from lookfiles import literals
 from lookfiles.derivation import _Derivation
 from lookfiles.pagedom import Page, Tx, _STOP_UP, walk
 from lookfiles.refusals import LookCommandError
-from lookfiles.renderlog import _tree, kids_of, record
-from lookfiles.templatemerge import _majority, _merge
+from lookfiles.renderlog import LIST_SEP_PARTS, PLACE_PICTURES, _tree, kids_of, place_calls, record
+from lookfiles.templatemerge import _majority, _merge, _merge_place_picture
+from lookgrammar.constructs import PART_FIRST
 
 
 STATUSES = ("mapped", "unmapped", "ambiguous", "not reached")
+DEFAULT_LIST_SEP = " / "                    # what the build joins a list role with when the look names no separator
+PLACE_PARTS = frozenset((c, "image") for c, _p in PLACE_PICTURES)
 
 
 # ================================================================================================ derive, whole
@@ -74,6 +77,30 @@ def derive_look(files, pages, never=(), recorded=None, refine=True):
     The reading that maps the most instances is the answer, then the one that names the fewest `ambiguous`; on a tie, the earlier (the
     first is what every earlier release gave, so a site that derived cleanly derives as it did)."""
     calls_pages = recorded if recorded is not None else record(files)
+    best = _readings(files, pages, never, calls_pages, refine)
+    # a home tile's picture is read as the site-wide `image` first (a look that keeps it so needs no newer release); only where that
+    # leaves the tiles or the pictures not mapped is it read again as the tile's own `home-showcase.image` part (step G O3), and that
+    # reading is kept only when it maps more. It is tried only for content that already prints a 0.5.0 construct: a tree 0.4.x
+    # accepts derives as 0.4.x derived it (G3: the look of a schema-4 template site never comes to need 0.5.0 through its tiles)
+    tiles = place_calls(calls_pages[0], (("home-showcase", "item"),))
+    unsettled = lambda cid: any(best.status.get(cid, {}).get(s) for s in ("ambiguous", "unmapped"))      # noqa: E731
+    newer = any(looks.CONSTRUCTS[c.construct]["first"] == PART_FIRST[("home-showcase", "image")] for c in calls_pages[0])
+    if tiles and newer and (unsettled("home-showcase") or unsettled("image")):
+        for c in tiles:
+            c.as_place("home-showcase")
+        try:
+            more = _readings(files, pages, never, calls_pages, refine)
+        except LookCommandError:
+            more = None
+        if more is not None and _quality(more) > _quality(best):
+            return more
+        for c in tiles:
+            c.as_site()
+    return best
+
+
+def _readings(files, pages, never, calls_pages, refine):
+    """The readings of `derive_look`, the best of them."""
     best = _derive_look(files, pages, never, calls_pages, False)
     if not refine or not any(c.get("ambiguous") for c in best.status.values()):
         return best
@@ -212,11 +239,17 @@ class _Reading(object):
 
     def commit(self, root, page, tmap, exts, skip=()):
         for c in _tree(root):
+            if id(c) in self.state.absent and id(c) not in skip:
+                self.instances[id(c)] = c       # a number the page does not print, and the look does not either (U-D1)
             if id(c) in tmap and id(c) not in skip:
                 tpl, suf = tmap[id(c)]
                 self.state.entries[c.key].append((tpl + (" " if suf else ""), c))
                 self.accepted[c.key].append((tpl + (" " if suf else ""), c))
                 self.instances[id(c)] = c
+            sep = tmap.get(("sep", id(c)))
+            if sep is not None and sep[0] != DEFAULT_LIST_SEP and id(c) not in skip:
+                # the separator the page writes between a list's items is the look's own part (`steps-view.role-sep`)
+                self.state.entries[(c.construct, LIST_SEP_PARTS[c.key])].append((sep[0], c))
         for ext in exts:
             for el in walk(ext):
                 self.state.explained[id(page)].add(id(el))
@@ -283,7 +316,10 @@ class _Reading(object):
 
     def place(self, root, page, opts, hold=()):
         self.root_now[0] = root
-        keep = sorted((o for o in opts if self.consistent(root, o[1], hold)), key=lambda o: -self.score(o))
+        # of readings the instances support equally, the one that reads the root as the plugin's own markup comes first: nothing above a
+        # root owns a wrapper, so a page that writes the part exactly as the plugin does (`<nav class="site-nav"><ul>`) keeps that wrapper
+        keep = sorted((o for o in opts if self.consistent(root, o[1], hold)),
+                      key=lambda o: (-self.score(o), o[1].get(id(root), ("",))[0] != root.template))
         if not keep:
             # no reading agrees with what is accepted: the reading with the fewest such parts is kept, and those parts alone are named
             # `ambiguous` (a home page does not lose its wrapper, its heading and every part inside it because one list of links is
@@ -371,7 +407,7 @@ class _Reading(object):
         constructs that could not be mapped."""
         bad = {}
         for (cid, pn), entries in sorted(self.state.entries.items()):
-            tpl = _merge(entries, cid, pn)
+            tpl = (_merge_place_picture if (cid, pn) in PLACE_PARTS else _merge)(entries, cid, pn)
             if tpl is None:
                 tpl, odd = _majority(entries, cid, pn)
                 if tpl is None:
@@ -383,12 +419,19 @@ class _Reading(object):
             if problems:
                 bad.setdefault(cid, ("unmapped", _sanitise(problems[0][0])))
                 continue
-            if cid in literals.PER_ITEM and literals.literal_hits(tpl, self.values):
-                # dev 941 (D1): one instance's own value written as the template's fixed text would print it on every instance's page
-                bad.setdefault(cid, ("unmapped", "this template writes a value of one piece's own data as fixed text"))
+            if literals.literal_hits(tpl, self.values):
+                # dev 941 (D1): one instance's own value written as the template's fixed text would print it on every instance's page;
+                # in a part of one instance (the home page) it would print the value as it was when the look was made (step 5c-4)
+                bad.setdefault(cid, ("unmapped", literals.why_fixed(cid)))
                 continue
             result.look["constructs"].setdefault(cid, {})[pn] = tpl
             result.consensus[(cid, pn)] = (tpl, entries[0][1])
+        # a home tile's picture that the site-wide `image` parts already write as the page does needs no part of its own: kept, it
+        # would make the look need 0.5.0 for nothing (review F8a's rule, applied to the picture parts of step G O3)
+        tiles = result.look["constructs"].get("home-showcase", {})
+        shared = set(result.look["constructs"].get("image", {}).values())
+        if "image" in tiles and all(t in shared for t, _c in self.state.entries[("home-showcase", "image")]):
+            del tiles["image"]
         return bad
 
     def count_statuses(self, result, bad):

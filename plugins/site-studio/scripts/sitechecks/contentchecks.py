@@ -18,7 +18,8 @@ shows. A mixin of `checker.Checker`.
                `xlink:href` as loading attributes (the map is an SVG), and the shipped
                `site-studio/schema-4.css` is held to the same no-remote-`url()` rule as `blocks.css`.
                A planted `<image href="https://...">` inside the map goes red (test_check_site.py
-               SchemaFourFacades).
+               SchemaFourFacades). Since 0.5.0 (design-movement-view section 4.1) `.ss-steps`, the steps
+               view, is a root too, and `site-studio/schema-5.css` is held to the same rule.
   unfinished   TODO/FIXME/TBD/lorem ipsum/coming soon/under construction in visible text, empty or
                "#" links, development URLs (localhost, 127.0.0.1, file://), a noindex page that is
                not a redirect stub, an untitled or empty page.
@@ -108,7 +109,7 @@ class ContentChecks(object):
                 n += 1
                 self.r.add(fam, rel, "a video facade loads %s from another address before any click (<%s %s>); "
                            "a facade may load only a poster committed under media/" % (val, tag, attr))
-        for css in ("site-studio/blocks.css", "site-studio/schema-4.css"):
+        for css in ("site-studio/blocks.css", "site-studio/schema-4.css", "site-studio/schema-5.css"):
             if css in t.files:
                 n += 1
                 for m in _CSS_URL.finditer(_CSS_COMMENT.sub("", t.text(css))):

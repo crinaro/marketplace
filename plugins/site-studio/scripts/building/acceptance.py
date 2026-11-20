@@ -1,10 +1,11 @@
 """The pieces of the acceptance run: loading the model, turning a refusal into a `Problem`, the schema-3
-meta-key rule, the carriage-return check."""
+meta-key rule, the carriage-return check, and a schema-5 trigger with nowhere to print (`trigger_slot_findings`)."""
 
 import re
 
 import content as C
-from contentmodel import keytables, layout as layout_mod, models
+import looks
+from contentmodel import keytables, layout as layout_mod, models, pagefiles
 from configschema import configkeys, diagnostics, treeschema
 from contentmodel.errors import ContentError
 
@@ -102,3 +103,114 @@ def _refusal(problems):
     first = problems[0]
     return BuildError("; ".join(p.message for p in problems), path=first.path, lineno=first.lineno,
                       fix=first.fix, problems=problems)
+
+
+# ------------------------------------------------------------- a trigger with nowhere to print (design-movement-view 4.4)
+# The slot each schema-5 trigger prints through (`cardImage` is checked only under `view: roles`, where a card has no
+# picture without it; `cardKicker` in every part that shows the portfolio's pieces).
+TRIGGER_SLOTS = {"cardImage": "image", "pieceLink": "link", "pieceTeaser": "teaser", "cardKicker": "kicker"}
+_VIEW_TILES = {"steps": ("steps-view", "item"), "showcase": ("showcase-view", "item")}
+_ROLES_PARTS = (("roles-view", "item"), ("roles-view", "item-current"))
+
+
+def _index_parts(pf):
+    """The parts the index of portfolio `pf` shows its pieces in, as the build renders them: a card (`card.wrap`) on a
+    grid, the view's tile, and under `view: roles` the employer card the build uses for each employer (`item-current`
+    where one of its pieces is current). A roles portfolio with no piece yet counts both cards; `map` and `page` show
+    no card or tile."""
+    view = pf.settings.get("view")
+    if view in _VIEW_TILES:
+        return {_VIEW_TILES[view]}
+    if view == "roles":
+        current = {}
+        for piece in pf.pieces:
+            name = piece.meta.get("employer")
+            name = name.strip() if isinstance(name, str) else name
+            current[name] = current.get(name, False) or piece.meta.get("current") is True
+        if not current:
+            return set(_ROLES_PARTS)
+        return set(_ROLES_PARTS[1] if cur else _ROLES_PARTS[0] for cur in current.values())
+    if view in ("map", "page"):
+        return set()
+    return {("card", "wrap")}
+
+
+def _home_parts(model, cfg, files, grammar):
+    """{portfolio slug: parts} the generated home page shows a piece of that portfolio in: a featured card
+    (`card.wrap`; `featured:` or the `featured: true` flags, as `selection` reads them) and, at schema 4, a home
+    showcase tile (`home-showcase.item`). {} when the home page is the person's own `site/src/index.html`."""
+    out = {}
+    if "site/src/index.html" in files:
+        return out
+    meta = model.home.meta if model.home else {}
+    if cfg.featuredFrom == "flags":
+        featured = [pc for pf in model.portfolios for pc in pf.pieces if pc.meta.get("featured") is True and not pc.draft]
+    else:
+        featured = [model.piece(k) for k in meta.get("featured") or []]
+    for pc in featured:
+        if pc is not None:
+            out.setdefault(pc.portfolio, set()).add(("card", "wrap"))
+    if model.home and grammar >= 4:
+        for entry in meta.get("showcase") or []:
+            parsed = pagefiles.parse_showcase_entry(entry) if isinstance(entry, str) else None
+            pc = model.piece(parsed[0]) if parsed else None
+            if pc is not None:
+                out.setdefault(pc.portfolio, set()).add(("home-showcase", "item"))
+    return out
+
+
+def _has_slot(look, construct, part, slot):
+    """Whether the part as the build renders it (the look's own, else the default look's) holds `{{slot}}`."""
+    return ("{{%s}}" % slot) in looks.part_markup(construct, part, look)
+
+
+def trigger_slot_findings(model, cfg, files, look, grammar=None):
+    """(problems, notes) of design-movement-view section 4.4, over the tree as built. A schema-5 trigger whose value has
+    no slot in the site's look part that would carry it is refused, naming both: `cardImage` under `view: roles`
+    (`{{image}}`), `pieceLink` (`{{link}}`) and `pieceTeaser` (`{{teaser}}`) in `piece.wrap`; `cardKicker` only when NO
+    part that shows that portfolio's pieces (its index, the home page's featured cards and showcase tiles) has a
+    `{{kicker}}`. A part OF THE SITE'S OWN LOOK that shows those pieces without one is a note, printed on every build.
+    A part the look omits renders with the default look's, which has every slot. `cardKicker` in a portfolio whose pieces
+    no card or tile shows at all (a `map` or `page` index, no home card or tile) does nothing under any look, so it is
+    refused with or without a site look (invariant 4: no key is silent). Otherwise, no site look (`look` None): nothing."""
+    problems, notes = [], []
+    if cfg.siteKind != "portfolio":
+        return problems, notes
+    home = _home_parts(model, cfg, files, cfg.schema if grammar is None else grammar)
+    for pf in model.portfolios:
+        on = keytables.active_triggers(pf.settings)
+        for key in sorted(k for k in TRIGGER_SLOTS if k in on):
+            slot = TRIGGER_SLOTS[key]
+            src = pf.page_source if (pf.page_source and key in pf.page_keys) else "site/site.json"
+            if key == "cardKicker":
+                parts = sorted(_index_parts(pf) | home.get(pf.slug, set()))
+                if not parts:
+                    problems.append(diagnostics.make_problem(
+                        "%s sets cardKicker, and no card or tile shows the pieces of %s (its index is view: %s, and the "
+                        "home page names none of them); the kicker would print nowhere, so remove the key"
+                        % (src, pf.slug, pf.settings.get("view")), src, "cardKicker with nowhere to print",
+                        "a card or tile showing the pieces of %s" % pf.slug, "remove cardKicker from %s" % src))
+                    continue
+            if look is None:
+                continue
+            if key == "cardImage":
+                if pf.settings.get("view") != "roles":
+                    continue
+                parts = sorted(_index_parts(pf))
+            elif key != "cardKicker":
+                parts = [("piece", "wrap")]
+            missing = [cp for cp in parts if not _has_slot(look, cp[0], cp[1], slot)]
+            if key == "cardKicker" and len(missing) < len(parts):
+                notes.extend("%s sets cardKicker, and %s.%s of the site's look (%s) shows pieces of %s with no "
+                             "{{kicker}}, so the kicker does not print there; add the slot to that part if it should"
+                             % (src, c, p, look.where, pf.slug) for c, p in missing if look.has(c, p))
+                continue
+            if not missing:         # every part has the slot
+                continue
+            named = " or ".join("%s.%s" % cp for cp in missing)
+            problems.append(diagnostics.make_problem(
+                "%s sets %s, and the site's look (%s) has no {{%s}} in %s; add the slot to that part, or remove the key"
+                % (src, key, look.where, slot, named), src, "%s with no {{%s}} to print it" % (key, slot),
+                "a {{%s}} in %s" % (slot, named), "add {{%s}} to %s in %s, or remove %s from %s"
+                % (slot, named, look.where, key, src)))
+    return problems, notes

@@ -7,17 +7,19 @@ file but through that object, so `converted_site_files` can lay one class's resu
 
 THE CLASSES.
   references   (TEMPLATE)  a `reference.json` with the template's `myRole` / `captured_from`: `myRole` is `role`,
-                           `captured_from` is `fetched`; `image` and `author` are the plugin's own keys at schema 4 and
-                           stay. A `published: null` is "no date": the key is dropped (dev 944). NO FILE MOVES, so no
-                           image address changes (R1).
+                           `captured_from` is `fetched`, `alt` is `imageAlt` (dev 944); `image`, `author` and
+                           `imagePosition` are the plugin's own keys and stay. A `null` in any optional key is "absent":
+                           the key is dropped (dev 944, 964); a `null` `url` or `title` stays, for the build to refuse.
+                           NO FILE MOVES, so no image address changes (R1).
   pageFiles    (TEMPLATE)  `content/home/home.md` -> `content/home/index.md`, `content/about/about.md` -> `content/about/
                            index.md`; the bytes are unchanged (the reserved folders' form of 0.3.0's `work.md` rule, H1).
   homeKeys     (TEMPLATE)  the home page's keys (H1): `headline` is `title`; the front-matter `intro` is the body's first
                            paragraph; `stats` is a `:::part stats` holding `:::tiles`; `quote` and `quoteBy` are
                            `endorsement`; a template `feed: a; b` is a list; the template's reference `featured` is
                            `samples`; `contact` text is a `:::part reach`; `linkedin` is `links`; the showcase is a list
-                           of `portfolio/piece | image`; a list the template wrote comma-separated (`showcase`, `feed`,
-                           `featured`) is a list (dev 943). `eyebrow`, `role` and `photo` stay (keys at schema 4).
+                           of `portfolio/piece | image`; every key of `keytables.HOME_LIST_KEYS` the template wrote as
+                           text, comma-separated (dev 943) or as ONE value (dev 964), is a list. `eyebrow`, `role` and
+                           `photo` stay (keys at schema 4).
   resumeHeader (TEMPLATE)  the resume's `name` is `title`, `headline` is `tagline`, `linkedin` and `website` are ONE `links`
                            map (the website's label is its host, as the template prints it), `email` and `location` are
                            `contact` (RS1, dev 947).
@@ -36,6 +38,9 @@ import json
 import posixpath
 import re
 from urllib.parse import urlsplit
+
+from configschema import configkeys
+from contentmodel import keytables
 
 _KEY_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*):(?:[ \t]+(.*?))?[ \t]*$")
 _WORD_NAME = re.compile(r"^[A-Za-z][A-Za-z.'-]*(?: [A-Za-z][A-Za-z.'-]*)+$")
@@ -110,14 +115,34 @@ def _map_entry(key, pairs):
 
 # ---------------------------------------------------------------- references (R1)
 
-REFERENCE_RENAMES = (("myRole", "role"), ("captured_from", "fetched"))
-_JSON_KEY = r'^(\s*)"%s"(\s*:)'
+REFERENCE_RENAMES = (("myRole", "role"), ("captured_from", "fetched"), ("alt", "imageAlt"))
+# The keys a reference may leave out: every key the newest schema reads but the two it requires (design-movement-view 6.2,
+# dev #964). A `null` in one of them is "absent" (YAML and JSON) and is dropped; a `null` `url` or `title` stays, refused.
+REFERENCE_REQUIRED = ("url", "title")
+_JSON_KEY = r'((?:^|[{,])\s*)"%s"(\s*:)'          # a member at a line's start, or after `{` or `,` (a one-line reference)
+
+
+def _renamed_only(text, data, old, new):
+    """True when `text` parses as `data` with the member `old` named `new` and nothing else changed (a match inside a string
+    value is not a member, and is never renamed)."""
+    try:
+        got = json.loads(text)
+    except ValueError:
+        return False
+    want = dict((new if k == old else k, v) for k, v in data.items())
+    return got == want and list(got) == list(want)
+
+
+def optional_reference_keys():
+    """The `reference.json` keys a `null` may be dropped from: `reference_keys(SCHEMA_MAX)` less `REFERENCE_REQUIRED`."""
+    return tuple(k for k in keytables.reference_keys(configkeys.SCHEMA_MAX) if k not in REFERENCE_REQUIRED)
 
 
 def reference_rewrites(tree):
     """{content/references/<r>/reference.json: (new text, [(old key, new key)])} for each reference holding a template
     key. Only the key's name changes: the order, the values and every other byte stay. A reference that already holds the
-    plugin's key too is left (and `check` names the duplicate through the build's own refusal)."""
+    plugin's key too is left (and `check` names the duplicate through the build's own refusal). Then every optional key
+    holding `null` is dropped (`published: null` since 0.4.2, any optional key since 0.5.0)."""
     out = {}
     for p in sorted(tree.paths()):
         parts = p.split("/")
@@ -134,14 +159,18 @@ def reference_rewrites(tree):
         for old, new in REFERENCE_RENAMES:
             if old in data and new not in data:
                 new_text, n = re.subn(_JSON_KEY % re.escape(old), r'\1"%s"\2' % new, text, count=1, flags=re.M)
-                if n == 1:
+                if n == 1 and _renamed_only(new_text, json.loads(text), old, new):
                     text = new_text
                     done.append((old, new))
-        if "published" in data and data["published"] is None:       # null is "no date" (dev 944, R1): the key is simply absent
-            dropped = _drop_null_member(text, "published")
-            if dropped is not None:
-                text = dropped
-                done.append(("published: null", "(no key: null means no date)"))
+        renamed = dict(done)
+        for key in sorted(data, key=lambda k: (k != "published", k)):       # null is absent (dev 944 R1, dev 964)
+            name = renamed.get(key, key)
+            if data[key] is None and name in optional_reference_keys():
+                dropped = _drop_null_member(text, name)
+                if dropped is not None:
+                    text = dropped
+                    done.append(("%s: null" % name, "(no key: null means no date)" if name == "published"
+                                 else "(no key: null means absent)"))
         if done:
             out[p] = (text, done)
     return out
@@ -230,11 +259,8 @@ def _template_shaped(vals, refs):
     map, or one of the template's own names): a plugin-shaped home is left exactly as it is."""
     if any(vals.get(k) not in (None, "") for k in ("headline", "intro", "stats", "quote", "quoteBy", "linkedin", "contact")):
         return True
-    for k in ("feed", "showcase"):
-        if vals.get(k) not in (None, "") and not vals[k].startswith("["):
-            return True
-    feat = vals.get("featured")
-    return bool(feat) and not feat.startswith("[") and all(n in refs for n in _split_list(feat))
+    # a list key written as text, comma-separated or ONE value (dev #964: a lone `featured` naming one piece)
+    return any(vals.get(k) not in (None, "") and not vals[k].startswith("[") for k in keytables.HOME_LIST_KEYS)
 
 
 def home_key_rewrite(tree, path):
@@ -273,12 +299,13 @@ def home_key_rewrite(tree, path):
                 notes.append("quote, quoteBy -> endorsement")
             elif not vals.get("quote"):
                 out.append(ent)
-        elif key == "feed" and v and not v.startswith("["):
-            out.append(_list_entry("feed", _split_list(v)))
-            notes.append("feed -> a list")
-        elif key == "featured" and v and not v.startswith("[") and all(n in refs for n in _split_list(v)):
-            out.append(_list_entry("samples", _split_list(v)))
-            notes.append("featured (references) -> samples")
+        elif key in keytables.HOME_LIST_KEYS and key != "showcase" and v and not v.startswith("["):
+            if key == "featured" and all(n in refs for n in _split_list(v)):      # the reference test first (0.4.2's order)
+                out.append(_list_entry("samples", _split_list(v)))
+                notes.append("featured (references) -> samples")
+            else:                                                                  # one value is a one-item list (dev #964)
+                out.append(_list_entry(key, _split_list(v)))
+                notes.append("%s -> a list" % key)
         elif key == "showcase" and v and not v.startswith("["):
             items = []
             for item in _split_list(v):

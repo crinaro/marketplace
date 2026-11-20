@@ -4,7 +4,8 @@ issue #909; decisions 33 and 38; R5N-13, R5N-15, R5N-16). Python 3.9, standard l
 
     look.py list                                  the looks site-studio ships, and the looks this site carries
     look.py use <id|path> [--accept-literals]     copy a look (and the stylesheets it names) into this site
-    look.py check                                 read this site's look: omitted constructs, literal words, files
+    look.py check                                 read this site's look: omitted constructs, literal words, files,
+                                                  and a schema-5 setting the look gives no place to print
     look.py derive [--build DIR | --url URL] [--owned-host HOST] [--name NAME] [--replace]
                                                   make a look from a site this repository's content built
 
@@ -13,11 +14,16 @@ wrote, and the skill that ran it commits them.
 
 `use` copies a shipped look (`templates/looks/<id>.json`, stylesheets from `templates/looks/<id>.css`) or a look file
 from another repository (`<path>`, stylesheets from that repository's `site/src/`) to `site/looks/<id>.json`, and
-writes the site.json `look` key through `siteconfig` (the one writer) at schema 4. It NEVER OVERWRITES: a target that
+writes the site.json `look` key through `siteconfig` (the one writer) at schema 4, or at schema 5 when a look in the
+tree needs site-studio 0.5.0 (a new construct, part, slot or asset kind; design-movement-view section 3.4), and says so;
+`derive` writes site.json the same way when the look it writes raises the schema. It NEVER OVERWRITES: a target that
 exists with other bytes refuses, naming it; identical bytes print "already in place". A look holding literal words
 (any letter in a text node or a text attribute) is listed by construct and part and refused without
 `--accept-literals`: the person is shown the words first. The finished tree is built in memory before a byte is
-written, so a look that makes the site unbuildable refuses and writes nothing.
+written, so a look that makes the site unbuildable refuses and writes nothing. `check` and `use` print the build's own
+lines for a schema-5 setting (`cardKicker`, `cardImage` under `view: roles`, `pieceLink`, `pieceTeaser`) whose slot
+the look leaves out (design-movement-view section 4.4): "refused: ..." where no part can print it, "note: ..." for a
+part of the site's own look that leaves the kicker out; `check` also notes a `steps-view.item` with no `{{number}}`.
 
 `derive` reads this repository's CONTENT at HEAD, builds it in memory (recording every `looks.render` call: the values
 each slot got), and finds each construct instance in the pages of the site the content produced. Nothing is a model's

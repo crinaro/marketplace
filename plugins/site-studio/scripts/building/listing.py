@@ -5,6 +5,7 @@ from contentmodel import frontmatter
 import os
 from building.acceptance import _load_model
 from building.gitfiles import _disk_files
+from building.lookneeds import look_needs
 from building.outcomes import BuildError
 from configschema import diagnostics, model as model_mod, treeschema
 from contentmodel.errors import ContentError
@@ -19,7 +20,7 @@ def inventory(repo):
         raise BuildError("site/site.json is not in the working tree", fix="add site/site.json, or run /site-studio:setup in the dev repo")
     try:
         cfg = model_mod.parse_text(frontmatter.decode_text(raw, "site/site.json"))
-        treeschema.check_tree_schema(cfg, files)
+        treeschema.check_tree_schema(cfg, files, look_needs(files))
         model = _load_model(files, cfg, True, False)
     except (diagnostics.SiteConfigError, ContentError) as e:
         raise BuildError(str(e), path=getattr(e, "path", None), lineno=getattr(e, "lineno", None), fix=getattr(e, "fix", None) or "fix the problem named above, then try again")

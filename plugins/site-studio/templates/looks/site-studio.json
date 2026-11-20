@@ -58,7 +58,7 @@
       "wrap": "<div class=\"ref-grid\">{{items}}</div>"
     },
     "card": {
-      "wrap": "<li class=\"card\"><a href=\"{{url}}\">{{image}}{{number}}<span class=\"card-title\">{{title}}</span>{{teaser}}{{meta}}</a></li>",
+      "wrap": "<li class=\"card\"><a href=\"{{url}}\">{{image}}{{number}}{{kicker}}<span class=\"card-title\">{{title}}</span>{{teaser}}{{meta}}</a></li>",
       "teaser": "<span class=\"card-teaser\">{{text}}</span>",
       "meta": "<span class=\"card-meta\">{{text}}</span>",
       "number": "<span class=\"ss-card-number\">{{n}}</span>"
@@ -73,7 +73,7 @@
       "wrap": "<article class=\"portfolio\"><h1>{{title}}</h1>{{tagline}}{{intro}}{{cards}}</article>"
     },
     "piece": {
-      "wrap": "<article class=\"piece\">{{back}}<h1>{{title}}</h1>{{meta}}{{body}}</article>"
+      "wrap": "<article class=\"piece\">{{back}}<h1>{{title}}</h1>{{teaser}}{{meta}}{{link}}{{body}}</article>"
     },
     "meta-list": {
       "wrap": "<dl class=\"meta\">{{items}}</dl>",
@@ -135,8 +135,8 @@
     },
     "roles-view": {
       "wrap": "<div class=\"ss-roles\">{{items}}</div>",
-      "item": "<article class=\"ss-employer\"><h2 class=\"ss-employer-heading\">{{heading}}</h2><p class=\"ss-employer-role\"><a href=\"{{url}}\">{{titles}}</a><span class=\"ss-employer-period\">{{period}}</span></p>{{previously}}</article>",
-      "item-current": "<article class=\"ss-employer ss-employer-current\"><h2 class=\"ss-employer-heading\">{{heading}}</h2><p class=\"ss-employer-role\"><a href=\"{{url}}\">{{titles}}</a><span class=\"ss-employer-period\">{{period}}</span></p>{{previously}}</article>",
+      "item": "<article class=\"ss-employer\">{{image}}{{kicker}}<h2 class=\"ss-employer-heading\">{{heading}}</h2><p class=\"ss-employer-role\"><a href=\"{{url}}\">{{titles}}</a><span class=\"ss-employer-period\">{{period}}</span></p>{{previously}}</article>",
+      "item-current": "<article class=\"ss-employer ss-employer-current\">{{image}}{{kicker}}<h2 class=\"ss-employer-heading\">{{heading}}</h2><p class=\"ss-employer-role\"><a href=\"{{url}}\">{{titles}}</a><span class=\"ss-employer-period\">{{period}}</span></p>{{previously}}</article>",
       "heading": "<span class=\"ss-employer-name\">{{employer}}</span>",
       "heading-multi": "<span class=\"ss-employer-count\">{{count}} roles at</span> <span class=\"ss-employer-name\">{{employer}}</span>",
       "previously": "<p class=\"ss-previously\"><span class=\"ss-previously-label\">Previously:</span> {{items}}</p>",
@@ -144,7 +144,7 @@
     },
     "showcase-view": {
       "wrap": "<ul class=\"ss-showcase\" aria-label=\"{{label}}\">{{items}}</ul>",
-      "item": "<li class=\"ss-showcase-tile\"><a class=\"ss-showcase-link\" href=\"{{url}}\"><span class=\"ss-showcase-media\">{{image}}</span><span class=\"ss-showcase-title\">{{title}}</span>{{role}}</a></li>",
+      "item": "<li class=\"ss-showcase-tile\"><a class=\"ss-showcase-link\" href=\"{{url}}\"><span class=\"ss-showcase-media\">{{image}}</span>{{kicker}}<span class=\"ss-showcase-title\">{{title}}</span>{{role}}</a></li>",
       "role": "<span class=\"ss-showcase-role\">{{text}}</span>"
     },
     "map-view": {
@@ -154,7 +154,7 @@
     },
     "home-showcase": {
       "wrap": "<ul class=\"ss-showcase\">{{items}}</ul>",
-      "item": "<li class=\"ss-showcase-tile\"><a class=\"ss-showcase-link\" href=\"{{url}}\"><span class=\"ss-showcase-media\">{{image}}</span><span class=\"ss-showcase-title\">{{title}}</span>{{role}}</a></li>",
+      "item": "<li class=\"ss-showcase-tile\"><a class=\"ss-showcase-link\" href=\"{{url}}\"><span class=\"ss-showcase-media\">{{image}}</span>{{kicker}}<span class=\"ss-showcase-title\">{{title}}</span>{{role}}</a></li>",
       "role": "<span class=\"ss-showcase-role\">{{text}}</span>"
     },
     "home-samples": {
@@ -163,6 +163,24 @@
     "home-links": {
       "wrap": "<ul class=\"ss-links\">{{items}}</ul>",
       "item": "<li><a href=\"{{url}}\" rel=\"noopener\">{{label}}</a></li>"
+    },
+    "steps-view": {
+      "wrap": "<ol class=\"ss-steps\" role=\"list\" aria-label=\"{{label}}\">{{items}}</ol>",
+      "item": "<li class=\"ss-step\"><a class=\"ss-step-link\" href=\"{{url}}\"><span class=\"ss-step-media\">{{image}}</span>{{number}}{{kicker}}<span class=\"ss-step-title\">{{title}}</span>{{role}}</a></li>",
+      "number": "<span class=\"ss-step-number\">{{n}}</span>",
+      "role": "<span class=\"ss-step-role\">{{text}}</span>"
+    },
+    "kicker": {
+      "wrap": "<span class=\"ss-kicker\">{{text}}</span>"
+    },
+    "card-picture": {
+      "wrap": "<span class=\"ss-card-picture\">{{image}}</span>"
+    },
+    "piece-link": {
+      "wrap": "<p class=\"ss-piece-link\"><a href=\"{{url}}\" rel=\"noopener\">{{label}}</a></p>"
+    },
+    "piece-teaser": {
+      "wrap": "<p class=\"ss-piece-teaser\">{{text}}</p>"
     }
   },
   "assets": {
@@ -226,6 +244,21 @@
     ],
     "home-showcase": [
       "schema-4"
+    ],
+    "steps-view": [
+      "schema-5"
+    ],
+    "kicker": [
+      "schema-5"
+    ],
+    "card-picture": [
+      "schema-5"
+    ],
+    "piece-link": [
+      "schema-5"
+    ],
+    "piece-teaser": [
+      "schema-5"
     ]
   }
 }

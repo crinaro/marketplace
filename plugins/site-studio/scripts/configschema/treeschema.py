@@ -1,4 +1,4 @@
-"""treeschema: which schema a site needs. The schema-2, 3 and 4 reasons a tree can hold, `required_schema` (the one
+"""treeschema: which schema a site needs. The schema-2, 3, 4 and 5 reasons a tree can hold, `required_schema` (the one
 place that says), `tree_schema_problems` and `check_tree_schema` (the build's refusal of a file whose schema is
 below what its tree needs) and `kind_conflicts`. K reasons are keys older plugins refused; I reasons are new
 readings of text they accepted (see the `siteconfig.py` docstring)."""
@@ -16,6 +16,9 @@ from configschema.configkeys import (
     V4_RESUME_KEYS,
     V4_RESUME_PAGE_KEYS,
     V4_WORK_KEYS,
+    V5_PAGE_VIEWS,
+    V5_REFERENCE_KEYS,
+    V5_WORK_KEYS,
 )
 from configschema.diagnostics import SiteConfigError, make_problem
 from configschema.frontmatter import (
@@ -204,16 +207,80 @@ def schema_4_reasons(cfg, files=None):
     return out
 
 
-def required_schema(cfg, files=None, interpretations=None):
-    """The lowest schema that holds the site: 4 when any schema-4 reason holds (`schema_4_reasons`), 3 when
+_EFFECT_K5 = "site-studio 0.4 would refuse it"
+_EFFECT_LOOK5 = "site-studio 0.4 would refuse the look as unknown"
+_LOOK_PATH_RE = re.compile(r"^site/looks/[a-z0-9][a-z0-9-]*\.json$")
+NEEDS_050 = "0.5.0"
+
+
+def schema_5_reasons(cfg, files=None, look_needs=None):
+    """Every reason this site needs schema 5, as [Reason(where, what, effect, lineno, "K")]. All are K reasons
+    (design-movement-view section 3.1 rule 1): a key, value or look form 0.4.x refuses, so no tree 0.4.x accepted holds
+    one and raising a tree from 4 to 5 changes no output. The rows are section 3.2's: a schema-5 portfolio setting in
+    `site.json` `work` or a `page.md` (`cardImage: cover` in a grid is a reason by presence), `view: steps`, a schema-5
+    `reference.json` key, and every `site/looks/*.json` whose `look_needs` value is 0.5.0 (not only the look `site.json`
+    names). `files` is the tree as {repo path: bytes or str}. `look_needs` is {look path: the newest release that look
+    needs}, which this module cannot compute (it does not import the look grammar): whoever passes `files` passes it
+    too (section 3.4 point 1), as `interpretations` is passed to `schema_3_reasons`, and a call with `files` and no
+    `look_needs` is refused rather than read as "no look needs anything"."""
+    if files is not None and look_needs is None:
+        raise ValueError("schema_5_reasons(cfg, files) needs look_needs= ({site/looks/<name>.json: release}, from "
+                         "building.lookneeds.look_needs(files)); pass {} only when you know the tree holds no look")
+    out = []
+    here = "site/site.json"
+
+    def add(where, what, lineno=None, effect=_EFFECT_K5):
+        out.append(Reason(where, what, effect, lineno, "K"))
+    for k in V5_WORK_KEYS:
+        if k in cfg.work:
+            add(here, "sets work.%s" % k)
+    for path in sorted(files or ()):
+        parts = path.split("/")
+        if path.startswith("content/") and path.endswith("/page.md") and len(parts) == 3:
+            for key, val, n in front_matter_pairs(files[path]):
+                if key in V5_WORK_KEYS:
+                    add(path, "sets %s" % key, n)
+                elif key == "view" and val in V5_PAGE_VIEWS:
+                    add(path, "sets view %s" % val, n)
+        if (len(parts) == 4 and parts[0] == "content" and parts[1] == "references"
+                and parts[3] == "reference.json"):
+            try:
+                data = json.loads(_text_of(files[path]))
+            except ValueError:
+                data = None
+            if isinstance(data, dict):
+                for key in V5_REFERENCE_KEYS:
+                    if key in data:
+                        add(path, "sets %s" % key)
+    for path in sorted(look_needs or {}):
+        if look_needs[path] == NEEDS_050 and _LOOK_PATH_RE.match(path) and (files is None or path in files):
+            add(path, "is a look that needs site-studio 0.5.0", None, _EFFECT_LOOK5)
+    return out
+
+
+def _looks_read(files, look_needs):
+    """`look_needs` as given, else {}. Given `files` and no `look_needs`, {} means the looks are NOT scanned (called
+    directly, `schema_5_reasons` refuses `files` without it; through here it is not refused). Since 0.5.0 a look can
+    need 0.5.0 (design-movement-view section 3.4), so every caller that holds a tree passes
+    `building.lookneeds.look_needs(files)`: `building/running.py`, `building/raiseschema.py`, `building/listing.py`,
+    `lookfiles/commands.py`, `adoption/convert.py`, `addresses.py` and `movepiece/planning.py`."""
+    return look_needs if look_needs is not None or files is None else {}
+
+
+def required_schema(cfg, files=None, interpretations=None, look_needs=None):
+    """The lowest schema that holds the site: 5 when any schema-5 reason holds (`schema_5_reasons`, and only a
+    section 3.2 row of design-movement-view is one), 4 when any schema-4 reason holds (`schema_4_reasons`), 3 when
     any schema-3 reason holds (`schema_3_reasons`), 2
     when any of five conditions holds (`schema_2_reasons`), else 1. `files` is the tree the caller
     holds (adopt: the converted tree); None means no tree feature is known. When `files` is given,
     `interpretations` MUST be too (`content.interpretation_reasons(files)`; [] when there are none): a
-    caller that held a tree and forgot the scan would write a schema too low (design section 3.3)."""
+    caller that held a tree and forgot the scan would write a schema too low (design section 3.3). `look_needs` is
+    `building.lookneeds.look_needs(files)` (see `_looks_read`)."""
     if files is not None and interpretations is None:
         raise ValueError("required_schema(cfg, files) needs interpretations= (content.interpretation_reasons"
                          "(files)); pass [] only when you know the tree holds none")
+    if schema_5_reasons(cfg, files, _looks_read(files, look_needs)):
+        return 5
     if schema_4_reasons(cfg, files):
         return 4
     if schema_3_reasons(cfg, files, interpretations):
@@ -221,12 +288,13 @@ def required_schema(cfg, files=None, interpretations=None):
     return 2 if schema_2_reasons(cfg, files) else 1
 
 
-def tree_schema_problems(cfg, files):
+def tree_schema_problems(cfg, files, look_needs=None):
     """Every Problem the declared schema of `site.json` has with the tree: the schema-2 reasons under a
     schema-1 file, then the K schema-3 reasons under a file below 3. An I reason is never a problem
     (design section 3.2), then the schema-4 K reasons (and the guard reason) under a file below 4, and at 4 and
-    above the part-name collisions (design section 3.1 rule 7). Each carries `path` and `lineno`; none is
-    mechanical."""
+    above the part-name collisions (design section 3.1 rule 7), then the schema-5 reasons under a file below 5, a look
+    that needs 0.5.0 among them (design-movement-view section 3.4 point 2). Each carries `path` and `lineno`; none is
+    mechanical. `look_needs` is `building.lookneeds.look_needs(files)` (see `_looks_read`)."""
     out = []
     if cfg.schema < 2:
         for where, what, effect in schema_2_reasons(cfg, files):
@@ -249,15 +317,22 @@ def tree_schema_problems(cfg, files):
                                     "the page changes before it writes schema 4", False, r.lineno))
     else:
         out.extend(part_collision_problems(files))
+    if cfg.schema < 5:
+        for r in schema_5_reasons(cfg, files, _looks_read(files, look_needs)):
+            at = "%s:%d:" % (r.where, r.lineno) if r.lineno else r.where
+            out.append(make_problem("%s %s, which needs \"schema\": 5 in site/site.json (run `build.py "
+                                    "raise-schema --to 5`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
+                                    "schema 5", "run `python3 build.py raise-schema --to 5`, which lists what "
+                                    "the page changes before it writes schema 5", False, r.lineno))
     return out
 
 
-def check_tree_schema(cfg, files):
+def check_tree_schema(cfg, files, look_needs=None):
     """The build's refusal of a `site.json` whose schema is lower than the tree needs, naming the file
     and the feature (the hand-edit case: a person typed a section into a layout, or a `page.md` key
     from 0.3.0). Raises ONE error that carries every reason (`.problems`); with one reason its message
-    is exactly that reason's."""
-    probs = tree_schema_problems(cfg, files)
+    is exactly that reason's. `look_needs`: see `tree_schema_problems`."""
+    probs = tree_schema_problems(cfg, files, look_needs)
     if probs:
         raise SiteConfigError.of(probs)
 

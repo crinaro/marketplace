@@ -11,9 +11,11 @@ BUILT-IN VIEWS, NOT A RENDERER (design section 4). Each index is generated at bu
 so adding a piece updates it, and the build stays a pure function of the committed tree and the plugin version:
 nothing here reads the clock, the network or anything outside the build input and the plugin's own files. All
 markup goes through `builder.r(construct, part, values)` (`looks.render`), so a site's look decides every element
-and class, with ONE exception stated here: an SVG is not a thing a look may write (looks.ELEMENT_REFUSALS), so the
-map's `<svg>` is made by this module and enters its look part through an `html` slot, as the Markdown renderer's
-own markup does.
+and class, with ONE exception stated here: the map's `<svg>` is a drawing of the pieces' pins, which no look writes, so
+it is made by this module and enters its look part through an `html` slot, as the Markdown renderer's own markup does.
+(From 0.5.0 a look may hold an `<svg>` of its own only as a decoration, `lookgrammar/decoration.py`: an allow-listed
+drawing with no slot, so it can never carry the map.) The steps view of schema 5 is `building/stepsview.py`, which
+`index_html` dispatches to.
 
     roles       one card per employer. Pieces are grouped by their `employer`; a piece without one is refused naming
                 the key. Groups follow the portfolio's own piece order (its `sort`, newest first by default, so a
@@ -46,6 +48,7 @@ import os
 import posixpath
 import re
 
+from building import pictures, stepsview
 from contentmodel import frontmatter
 from contentmodel.errors import ContentError
 from contentmodel.links import esc
@@ -242,10 +245,13 @@ def roles_html(builder, portfolio, out):
         else:
             heading = builder.r("roles-view", "heading", {"employer": name}, newest.source)
             previously = ""
-        items.append(builder.r("roles-view", "item-current" if currents[name] else "item",
+        part = "item-current" if currents[name] else "item"
+        items.append(builder.r("roles-view", part,
                                {"heading": heading, "url": _piece_url(builder, newest, out),
                                 "titles": _titles(newest), "period": _period(newest), "previously": previously,
-                                "employer": name}, newest.source))
+                                "employer": name, "image": pictures.roles_image_slot(builder, part, newest, out),
+                                "kicker": stepsview.kicker_slot(builder, "roles-view", part, newest, out)},
+                               newest.source))
     return builder.assets(out, "roles-view") + builder.r("roles-view", "wrap", {"items": "".join(items)})
 
 
@@ -268,13 +274,20 @@ def map_html(builder, portfolio, out):
 
 def _tile(builder, construct, piece, out, image=None, home=None):
     """One tile: the piece's image (the entry's own `image` when the home page names one, else `tileImage`, else
-    `cover`), its alt (`tileAlt`), its title and its role line (`tileRole`, else `role`)."""
+    `cover`), its alt (`tileAlt`), its title and its role line (`tileRole`, else `role`). Step G (coordinator,
+    2026-11-19): a HOME tile with no entry `image`, under the `cardImage` trigger of the piece's OWN portfolio, shows a
+    card's picture instead (O4b, `pictures.card_picture`); a home tile's picture renders through the site's own
+    `home-showcase.image` part when its look writes one (O3); `fullTitle` is the piece's own `title` (O4a)."""
     for key in ("tileAlt", "tileRole"):
         if piece.meta.get(key) is not None and (not isinstance(piece.meta[key], str)
                                                 or not piece.meta[key].strip() or "\n" in piece.meta[key]):
             raise ContentError("%s: front matter '%s' must be one line of text" % (piece.source, key),
                                path=piece.source, fix="write %s as one line of text, or remove it" % key)
-    if image:
+    settings = builder.model.portfolio(piece.portfolio).settings
+    card = construct == "home-showcase" and not image and "cardImage" in stepsview.piece_triggers(builder, piece)
+    if card:
+        found = None
+    elif image:
         full = posixpath.normpath(posixpath.join(posixpath.dirname(home), image))
         if full not in builder.media_out:
             raise ContentError("%s: showcase image '%s' is not a file in %s/media/"
@@ -288,13 +301,17 @@ def _tile(builder, construct, piece, out, image=None, home=None):
         found = builder.cover_of(piece, "tileImage")
     else:
         found = builder.cover_of(piece)
-    img = builder.img_tag(found[0], piece.meta.get("tileAlt", ""), out, out_path=found[1]) if found else ""
+    picture = (pictures.card_picture(builder, piece, settings) if card else
+               pictures.Picture("tile", found[0], found[1], piece.meta.get("tileAlt", ""), None) if found else None)
+    img = pictures.place_html(builder, construct, picture, out) if picture else ""
     role = piece.meta.get("tileRole")
     if role is None and piece.meta.get("role") is not None:
         role = _titles(piece)
     line = builder.r(construct, "role", {"text": role}, piece.source) if role else ""
     return builder.r(construct, "item", {"url": _piece_url(builder, piece, out), "image": img, "role": line,
-                                         "title": piece.card_title}, piece.source)
+                                         "title": piece.card_title, "fullTitle": piece.title,
+                                         "kicker": stepsview.kicker_slot(builder, construct, "item", piece, out)},
+                     piece.source)
 
 
 def showcase_view_html(builder, portfolio, out):
@@ -303,7 +320,7 @@ def showcase_view_html(builder, portfolio, out):
         "showcase-view", "wrap", {"items": tiles, "label": portfolio.title})
 
 
-VIEWS = {"roles": roles_html, "map": map_html, "showcase": showcase_view_html}
+VIEWS = {"roles": roles_html, "map": map_html, "showcase": showcase_view_html, "steps": stepsview.steps_html}
 
 
 def index_html(builder, portfolio, out):

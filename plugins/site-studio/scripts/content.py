@@ -70,7 +70,7 @@ from configschema.pagesettings import page_settings_problems
 from configschema.workcheck import validate_portfolio_settings, labels_nonempty
 
 from contentmodel.errors import ContentError
-from contentmodel.keytables import SLUG_RE, RESERVED_PORTFOLIO_NAMES, CARD_EXTS, ABOUT_KEYS, PORTFOLIO_PAGE_KEYS, home_keys, reference_keys
+from contentmodel.keytables import SLUG_RE, RESERVED_PORTFOLIO_NAMES, CARD_EXTS, ABOUT_KEYS, PORTFOLIO_PAGE_KEYS, POSITION_RE, home_keys, reference_keys
 from contentmodel.frontmatter import decode_text, parse_front_matter, _check_keys, _need_str
 from contentmodel.models import Portfolio, Reference, Content
 from contentmodel.pagefiles import _page, _validate_piece
@@ -196,7 +196,14 @@ def _load_reference(name, files, paths, schema=3):
     if "role" in data and ("\n" in data["role"] or not data["role"].strip()):
         raise ContentError("%s: 'role' must be one line of text" % rj, path=rj,
                            fix="write role as one line, such as what you did on the project")
-    cards = [p for p in paths if p.startswith("content/references/%s/card." % name)
+    # schema 5 (design-movement-view sections 3.2 and 5; `reference_keys` refuses both keys below it)
+    if "imageAlt" in data and "\n" in data["imageAlt"]:
+        raise ContentError("%s: 'imageAlt' must be one line of text" % rj, path=rj,
+                           fix="write imageAlt as one line that says what the card's picture shows")
+    if "imagePosition" in data and not POSITION_RE.match(data["imagePosition"]):
+        raise ContentError("%s: 'imagePosition' must be a CSS position such as 'center 30%%'" % rj, path=rj,
+                           fix="write a CSS position such as center 30%")
+    cards =[p for p in paths if p.startswith("content/references/%s/card." % name)
              and p.lower().endswith(CARD_EXTS)]
     if len(cards) > 1:
         raise ContentError("content/references/%s/ has more than one card image" % name,

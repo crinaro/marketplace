@@ -2,10 +2,14 @@
 
 import posixpath
 import re
+from urllib.parse import urlsplit
 
 from contentmodel import frontmatter, grammar
 from configschema import configkeys
 
+import looks
+
+from building import pictures, stepsview
 from building.outcomes import BuildError
 from building.tokens import rel_link
 
@@ -48,12 +52,9 @@ class _Portfolios(object):
 
     def card_html(self, piece, from_out):
         to = "%s/%s/index.html" % (piece.portfolio, piece.slug)
-        pf = self.model.portfolio(piece.portfolio)
-        img = ""
-        cover = self.cover_of(piece)
-        if cover:
-            repo_path, out_path = cover
-            img = self.img_tag(repo_path, "", from_out, out_path=out_path, focus=piece.meta.get("coverPosition"))
+        pf = self.model.portfolio(piece.portfolio)         # the piece's OWN portfolio: every trigger is read from it
+        picture = pictures.card_picture(self, piece, pf.settings)     # design-movement-view section 5: `cover` unless a trigger says otherwise
+        img = picture.html(self, from_out) if picture else ""
         teaser = (self.r("card", "teaser", {"text": piece.meta["teaser"]}, piece.source)
                   if piece.meta.get("teaser") else "")
         names = pf.settings["labels"]["meta"]
@@ -62,8 +63,11 @@ class _Portfolios(object):
                else frontmatter.meta_text(piece.meta[k])) for k in pf.settings["cardMeta"] if k in piece.meta]
         meta = self.r("card", "meta", {"text": " \u00b7 ".join(cm)}, piece.source) if cm else ""
         return self.r("card", "wrap", {"url": rel_link(from_out, to), "image": img, "title": piece.card_title,
+                                       "fullTitle": piece.title,             # step G, O4a: no default part holds it
                                        "teaser": teaser, "meta": meta,
-                                       "number": self.card_number(piece, pf, from_out)}, piece.source)
+                                       "number": self.card_number(piece, pf, from_out),
+                                       "kicker": stepsview.kicker_slot(self, "card", "wrap", piece, from_out)},
+                      piece.source)
 
     def cover_of(self, piece, key="cover"):
         """(repo path, output path) of the image a piece's `key` names (`cover`, or the view key `tileImage`: the
@@ -104,7 +108,7 @@ class _Portfolios(object):
         if self.single_piece_redirect(pf):     # schema 3: the nav links the piece; the index URL redirects to it (no orphan page)
             self.build_index_redirect(out, "%s/%s/index.html" % (pf.slug, pf.pieces[0].slug))
             return
-        if st["view"] in configkeys.V4_PAGE_VIEWS:        # schema 4: roles, map or showcase, built by the views module
+        if st["view"] in configkeys.V4_PAGE_VIEWS + configkeys.V5_PAGE_VIEWS:     # roles, map, showcase (4), steps (5)
             cards = self.views().index_html(self, pf, out)
         elif st["groupBy"]:
             body = []
@@ -137,6 +141,29 @@ class _Portfolios(object):
                 + self.r("back-link", "wrap", {"url": rel_link(out, "%s/index.html" % pf.slug), "label": text},
                          piece.source))
 
+    def piece_link(self, piece, out):
+        """`pieceLink: true` (schema 5, design-movement-view section 3.2): the piece page's one outbound link, address
+        `link`, text `linkLabel`, else the address's host, in the gated `piece.wrap` `link` slot. "" without the trigger
+        of the piece's own portfolio, or for a piece with no `link`."""
+        triggers = stepsview.piece_triggers(self, piece)
+        address = piece.meta.get("link")
+        if "pieceLink" not in triggers or not address:
+            return ""
+        label = piece.meta.get("linkLabel") or urlsplit(address).hostname or address
+        markup = self.assets(out, "piece-link") + self.r("piece-link", "wrap", {"url": address, "label": label},
+                                                          piece.source)
+        return looks.gate("piece", "wrap", "link", triggers, markup)
+
+    def piece_teaser(self, piece, out):
+        """`pieceTeaser: true` (schema 5): the piece's `teaser` as one paragraph under its title, in the gated
+        `piece.wrap` `teaser` slot (the card and the meta description keep using it). "" without the trigger."""
+        triggers = stepsview.piece_triggers(self, piece)
+        text = piece.meta.get("teaser")
+        if "pieceTeaser" not in triggers or not text:
+            return ""
+        markup = self.assets(out, "piece-teaser") + self.r("piece-teaser", "wrap", {"text": text}, piece.source)
+        return looks.gate("piece", "wrap", "teaser", triggers, markup)
+
     def build_piece(self, pf, piece):
         out = "%s/%s/index.html" % (piece.portfolio, piece.slug)
         names = pf.settings["labels"]["meta"]
@@ -153,6 +180,8 @@ class _Portfolios(object):
                        self.r("piece", "wrap", {"title": piece.title, "meta": dl, "body": body,
                                                 "back": self.back_link(pf, piece, out), "slug": piece.slug,
                                                 "portfolio": pf.slug,
-                                                "group": group if isinstance(group, str) else ""}, piece.source),
+                                                "group": group if isinstance(group, str) else "",
+                                                "teaser": self.piece_teaser(piece, out),     # first: it prints first
+                                                "link": self.piece_link(piece, out)}, piece.source),
                        image_out=cover[1] if cover else None, og_type="article",
                        lastmod_src=piece.folder)

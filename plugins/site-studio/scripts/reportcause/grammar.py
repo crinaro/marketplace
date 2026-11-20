@@ -21,7 +21,7 @@ REFUSAL_CODE_IDS = ("unknown-reference-key", "unknown-page-key", "unknown-token"
 AREAS = ("content", "site", "root")
 # adopt.CONVERSION_CLASSES' names (0.3.1) plus the classes 0.4.0 adds; asserted a superset of adopt's table.
 CONVERSION_CLASS_IDS = ("normalise", "redirectKeys", "labels", "redirects", "redirectBoiler", "layout", "tokens",
-                        "viewKeys", "pieces", "pieceKeys", "resumeFields", "archive", "draft", "references", "personName", "blocks",
+                        "viewKeys", "viewNames", "pieces", "pieceKeys", "resumeFields", "archive", "draft", "references", "personName", "blocks",
                         "resumePdfName", "pageFiles", "homeKeys", "resumeHeader", "navTokens", "other")
 LANGUAGES = ("python", "shell", "ruby", "go", "php", "typescript", "make", "workflow", "other")
 UNITS = ("about", "home", "resume", "portfolio", "site-src")

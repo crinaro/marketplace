@@ -9,7 +9,9 @@ choice fixes the one before it; interactions beyond that are design UNDETERMINED
 
   look                the site's look: `site-studio` (the default, no key) or `derived` (a look file vendored at
                       `site/looks/derived.json`, derived from the old builder's own pages, R6)
-  featuredFrom        `home` (the default) or `flags` (a piece's `featured: true` feeds the home page)
+  featuredFrom        `home` (the default) or `flags` (a piece's `featured: true` feeds the home page), or adopt's own `showcase`
+                      (step 5c-4): the pieces the home features (its `featured` list, else the flags) written as its `showcase`
+                      list, which prints tiles where `featured` prints cards; offered only for a home with no `showcase` of its own
   sort.<portfolio>    `date` (the default) or `order` (every piece carries an integer `order`), in that portfolio's page.md
   nav.home            true (the default) or false: the nav without a Home item (`nav: {"home": false}`)
   resume.headings     `shift` (the default) or `as-written`
@@ -21,6 +23,12 @@ choice fixes the one before it; interactions beyond that are design UNDETERMINED
   cardNumber          false (the default) or true: a number on each card (P03: the piece's `order` and `year`), written into EVERY
                       portfolio's page.md (a page.md configures its own portfolio, and site.json's `work` the portfolio named `work` only)
   cardNumberFormat    `padded` (the default, `02 / 2025`), `plain` (`2 / 2025`) or `order` (`2`): what the number prints (schema 4)
+  cardImage.<p>       absent (the default), `photo`, or `cover` under a roles view: the picture a card of portfolio <p> shows (schema 5,
+                      design-movement-view 6.3); the five below are written into that portfolio's page.md, and absent writes no key
+  cardAlt.<p>         absent or true: a card's picture carries its own alt key (schema 5)
+  cardKicker.<p>      absent or the name of a piece key nothing reads: one line with each card and tile (schema 5)
+  pieceLink.<p>       absent or true: a piece page prints the piece's `link` (schema 5)
+  pieceTeaser.<p>     absent or true: a piece page prints the piece's `teaser` under its title (schema 5)
   backLink            absent (the default) or one line of text: a link to the portfolio index above the piece title (P06), with the
                       text the old builder's own piece pages carry (`work.backLink`); the candidate is read from the local build
   blocks.headingLevel absent (the default) or 2 to 6: the h-level of a heading inside a carousel slide (schema 4), `blocks.headingLevel`;
@@ -55,18 +63,26 @@ import json
 import posixpath
 import re
 
+from configschema.configkeys import BUILTIN_PIECE_KEYS
+from contentmodel.keytables import KEY_RE
+
 from adoption.base import Refused
 from adoption.plan import _current_base, _plan_for, save_plan
-from adoption.template import _yaml, entries, home_path, scalar, split_front
+from adoption.homeparts import HOME_PATHS, front_values
+from adoption.template import _emit, _list_entry, _yaml, entries, home_path, scalar, split_front
 
+# The five schema-5 portfolio settings (design-movement-view 6.3), in the order they are chosen, after `cardNumberFormat`.
+V5_PORTFOLIO_SETTINGS = ("cardImage", "cardAlt", "cardKicker", "pieceLink", "pieceTeaser")
 SETTING_ORDER = ("look", "featuredFrom", "sort", "nav.home", "resume.headings", "resume.layout", "workKeys", "cardLabels", "cardNumber", "cardNumberFormat",
+                 "cardImage", "cardAlt", "cardKicker", "pieceLink", "pieceTeaser",       # a literal: test_routing reads it by `ast`
                  "backLink", "menuLinks", "onePieceIndex", "blocks.headingLevel", "blocks.loneReferenceGrid", "blocks.videoEmbed", "titleForm", "introScope",
                  "partOrder", "view")
 HOME_KEYS = ("titleForm", "introScope", "partOrder")       # the settings written into the home page's own front matter
 PORTFOLIO_KEYS = ("cardNumber", "cardNumberFormat", "cardLabels", "backLink")     # the portfolio keys written into every page.md
 SHARED_WORK_KEYS = ("meta", "cardMeta")                                          # the `work` keys `workKeys: all` copies
 BACK_LINK_MAX = 60
-_PER_PORTFOLIO = ("sort", "view", "menuLinks", "onePieceIndex")
+_PER_PORTFOLIO = ("sort", "view", "menuLinks", "onePieceIndex") + V5_PORTFOLIO_SETTINGS
+_CARD_PAGES = ("cardImage", "cardAlt", "cardKicker")       # a card or a tile: the portfolio's index and the home page
 _FM = re.compile(r"^([A-Za-z][A-Za-z0-9_]*):")
 
 
@@ -95,6 +111,10 @@ def setting_paths(name):
         return ["%s/index.html" % port]            # the portfolio's own index: the home page is no view's to change
     if fam == "sort" and port:
         return ["%s/index.html" % port, "index.html"]
+    if fam in _CARD_PAGES and port:
+        return ["%s/index.html" % port, "index.html"]
+    if fam in ("pieceLink", "pieceTeaser") and port:
+        return ["%s/" % port]                      # the portfolio's pages: its piece pages are the ones that change
     if fam in ("cardLabels", "cardNumber", "cardNumberFormat", "backLink", "workKeys", "blocks.headingLevel",
                "blocks.loneReferenceGrid"):
         return ["*"]                          # cards on the home and the indexes; the back link on every piece page; a block on any page
@@ -184,6 +204,61 @@ def showcase_pieces(view, settings):
     return out
 
 
+_NOT_PORTFOLIOS = ("home", "about", "resume", "references", "media")
+
+
+def featured_shelf(read, paths, settings):
+    """(home path, [`portfolio/slug`]): the home `showcase` list `featuredFrom: showcase` writes (step 5c-4), or (path, []) when it is
+    not offered. The pieces the home features: its own `featured` list (the names of pieces, `portfolio/slug`), else every piece whose
+    front matter says `featured: true`, in the order the plugin prints flagged pieces (portfolios by folder name; in each, newest
+    `date` or `year` first, then by folder name, or by `order` under that portfolio's `sort: order`). Never offered when the home
+    already names a `showcase`. `read(path)` is a page's text in the converted tree, `paths` its paths, `settings` the values judged."""
+    paths = set(paths)
+    hp = next((p for p in HOME_PATHS if p in paths), None)
+    if hp is None:
+        return None, []
+    vals = front_values(split_front(read(hp))[0])
+    if vals.get("showcase"):
+        return hp, []
+    listed = vals.get("featured")
+    listed = [x.strip() for x in listed.split(",")] if isinstance(listed, str) else listed if isinstance(listed, list) else []
+    if [n for n in listed if n]:
+        return hp, [n for n in listed if "/" in n] if all("/" in n for n in listed if n) else []
+    flagged = {}
+    for p in sorted(paths):
+        parts = p.split("/")
+        if (len(parts) == 4 and parts[0] == "content" and parts[3] == "index.md" and not parts[1].startswith("_")
+                and not parts[2].startswith("_") and parts[1] not in _NOT_PORTFOLIOS):
+            fm = front_values(split_front(read(p))[0])
+            if str(fm.get("featured", "")).lower() in ("true", "yes"):
+                flagged.setdefault(parts[1], []).append((parts[2], fm))
+    out = []
+    for port in sorted(flagged):
+        ps = sorted(sorted(flagged[port]), key=lambda x: str(x[1].get("date") or x[1].get("year") or ""), reverse=True)
+        page = "content/%s/page.md" % port
+        sort = settings.get("sort." + port) or (front_values(split_front(read(page))[0]).get("sort") if page in paths else None)
+        if sort == "order":
+            ps = sorted(ps, key=lambda x: (0, int(x[1]["order"])) if re.match(r"^-?\d+$", str(x[1].get("order", ""))) else (1, 0))
+        out += ["%s/%s" % (port, slug) for slug, _fm in ps]
+    return hp, out
+
+
+def _write_shelf(view, files, settings, notes):
+    """`featuredFrom: showcase`: the pieces the home features become its `showcase` list, in place of its `featured` list (the flags
+    stay in the pieces, read by nothing). The plugin prints a `showcase` piece as a tile, a `featured` one as a card."""
+    hp, names = featured_shelf(lambda p: _page_text(view, files, p), view.paths(), settings)
+    if not names:
+        return
+    front, body, _had = split_front(_page_text(view, files, hp))
+    ents, done = entries(front), False
+    for i, ent in enumerate(ents):
+        if ent[0] == "featured":
+            ents[i], done = _list_entry("showcase", names), True
+    ents = ents if done else ents + [_list_entry("showcase", names)]
+    files[hp] = _emit(ents, body).encode("utf-8")
+    notes["settings"].append("featuredFrom: showcase (the featured pieces as the home page's showcase tiles: %s)" % ", ".join(names))
+
+
 def apply_settings(view, files, d, settings, hints, notes, portfolios):
     """Lay the settings over the converted tree: `d` (site.json's dict) and `files` ({path: bytes}) are changed in place;
     `notes["settings"]` gains one line per setting applied."""
@@ -196,7 +271,9 @@ def apply_settings(view, files, d, settings, hints, notes, portfolios):
                 notes["settings"].append("look: a look derived from your own pages, vendored at %s" % d["look"])
             continue
         if fam == "featuredFrom":
-            if value != "home":
+            if value == "showcase":
+                _write_shelf(view, files, settings, notes)
+            elif value != "home":
                 d["featuredFrom"] = value
                 notes["settings"].append("featuredFrom: %s" % value)
         elif name == "nav.home":
@@ -249,23 +326,26 @@ def apply_settings(view, files, d, settings, hints, notes, portfolios):
                                           "cardNumberFormat": "cardNumberFormat: %s" % json.dumps(value),
                                           "cardLabels": "cardLabels: false", "backLink": "backLink: %s" % json.dumps(value)}[fam])
         elif fam in _PER_PORTFOLIO and "." in name:
-            if (fam == "menuLinks" and value == "index") or (fam == "onePieceIndex" and value == "redirect"):
+            if ((fam == "menuLinks" and value == "index") or (fam == "onePieceIndex" and value == "redirect")
+                    or (fam in V5_PORTFOLIO_SETTINGS and value in (None, False, ""))):
                 continue                     # the default writes no key
             port = name.split(".", 1)[1]
             path = "content/%s/page.md" % port
             if not view.exists(path):
                 continue
             cur = _page_text(view, files, path)
-            files[path] = _set_front_key(cur, fam, value).encode("utf-8")
-            notes["settings"].append("%s of %s: %s" % (fam, port, value))
+            files[path] = _set_front_key(cur, fam, _front_value(value) if fam in V5_PORTFOLIO_SETTINGS else value).encode("utf-8")
+            notes["settings"].append("%s of %s: %s" % (fam, port, _front_value(value) if fam in V5_PORTFOLIO_SETTINGS else value))
 
 
 _BOOL = {"true": True, "false": False}
-_CHOICES = {"featuredFrom": ("home", "flags"), "sort": ("date", "order"), "resume.headings": ("shift", "as-written"),
+_CHOICES = {"featuredFrom": ("home", "flags", "showcase"), "sort": ("date", "order"), "resume.headings": ("shift", "as-written"),
             "resume.layout": ("plain", "cards"),
             "view": ("grid", "page", "roles", "map", "showcase"), "look": ("site-studio",), "menuLinks": ("index", "single-piece"),
             "workKeys": ("work", "all"), "cardNumberFormat": ("padded", "plain", "order"), "onePieceIndex": ("redirect", "listing"),
-            "titleForm": ("site", "page"), "introScope": ("body", "first-block"), "blocks.videoEmbed": ("facade", "live")}
+            "titleForm": ("site", "page"), "introScope": ("body", "first-block"), "blocks.videoEmbed": ("facade", "live"),
+            "cardImage": ("cover", "photo")}
+_V5_TRUE = ("cardAlt", "pieceLink", "pieceTeaser")          # true, or false for absent (no key)
 _BOOLEAN = ("nav.home", "cardLabels", "cardNumber", "blocks.loneReferenceGrid")
 
 
@@ -277,10 +357,15 @@ def parse_chosen(name, text):
     if fam not in SETTING_ORDER or (fam in _PER_PORTFOLIO) != portfolio_form:
         raise Refused("%s is not a setting adopt measures; the settings are %s (sort and view take a portfolio: `sort.work`); "
                       "pass one of those names" % (name, ", ".join(SETTING_ORDER)))
-    if name in _BOOLEAN:
+    if name in _BOOLEAN or fam in _V5_TRUE:
         if text not in _BOOL:
             raise Refused("%s takes true or false; pass one of those" % name)
-        return _BOOL[text]
+        return _BOOL[text] if name in _BOOLEAN else (True if _BOOL[text] else None)      # false is the absent key
+    if fam == "cardKicker":
+        if not KEY_RE.match(text or "") or text in BUILTIN_PIECE_KEYS:
+            raise Refused("%s takes the name of a piece key that is not built in (%s); pass a key your pieces carry"
+                          % (name, ", ".join(BUILTIN_PIECE_KEYS)))
+        return text
     if fam == "backLink":
         if not text or "\n" in text or len(text) > BACK_LINK_MAX:
             raise Refused("backLink takes one line of text, at most %d characters; shorten it to one line" % BACK_LINK_MAX)
