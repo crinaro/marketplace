@@ -25,12 +25,14 @@ class PageData(object):
     targets_text        the Targets list's prompt fragments (D2b; the shape is in `dashboard.targets`'s docstring)
     targets_ask         the ids of the listed companies that get the staffing question (D2b; §8 signals T1, T2)
     targets_not_raised  the qualifying companies no run has raised yet ("N more will be raised by later runs", E1b)
+    ref_of              {plan row key: the key of the primary row it refers to} (`network.ref_targets`, dev 973): the
+                        Network row renders as a reference, and Today's item for it links that primary row
     """
     FIELDS = ("now", "currency", "terminal_statuses",
               "plan_groups", "needs_human", "queued_by_contact", "title",
               "run_id", "network_rel", "net_sent_proposals", "today_drafts", "today_plan", "today_roles",
               "today_targets", "today_counts", "quiet_days", "pick_rows", "pick_heads",
-              "network_text", "targets_text", "targets_ask", "targets_not_raised")
+              "network_text", "targets_text", "targets_ask", "targets_not_raised", "ref_of")
 
     def __init__(self, **values):
         unknown = sorted(set(values) - set(self.FIELDS))

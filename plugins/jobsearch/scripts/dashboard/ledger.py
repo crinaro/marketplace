@@ -72,7 +72,9 @@ class Ledger(object):
 # `elsewhere` (jobsearch 0.71.0, amending ADR-024): the record is not on this page BY DESIGN and lives
 # in a named home (`where` is the home: panel, review-resume or review-linkedin). It ranks lowest, so a
 # record that is rendered, counted in a remainder or terminal keeps that placement.
-_DISP_RANK = {"rendered": 3, "remainder": 2, "terminal": 1, "elsewhere": 0}
+# `referenced` (dev 973, public #241): the record's row is on the page as a REFERENCE (`data-ref`) to the one primary
+# row of its subject in another section; `where` is that primary row's key. Below `rendered`, above a remainder.
+_DISP_RANK = {"rendered": 4, "referenced": 3, "remainder": 2, "terminal": 1, "elsewhere": 0}
 
 
 # The homes a record can live in once the page no longer renders it (design §4, amending ADR-024):

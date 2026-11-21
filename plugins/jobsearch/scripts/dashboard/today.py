@@ -83,8 +83,14 @@ def _text(item, counts):
     return "%s%s" % (who, esc(", and %d more." % (item.count - 1)))
 
 
-def _item(item, counts, href, box=""):
-    ref = ' data-ref="%s"' % esc(item.ref[0]) if item.ref is not None else ' data-count="%d"' % item.count
+def _target(pd, key):
+    """The key of the primary row an item about `key` links: `key` itself, or the row it refers to when its Network row
+    is a reference (`pd.ref_of`, dev 973), so a Today item never names a key with no primary row (LINKED)."""
+    return (pd.ref_of or {}).get(key, key)
+
+
+def _item(item, counts, href, box="", target=None):
+    ref = ' data-ref="%s"' % esc(target or item.ref[0]) if item.ref is not None else ' data-count="%d"' % item.count
     return ('<li class="today-item" data-kind="%s"%s>%s<a class="ref" href="%s"><strong>%s</strong> %s</a> '
             '<span class="sub">%s</span></li>' % (esc(item.kind.name), ref, box, esc(href), esc(_label(item)),
                                                   _text(item, counts), esc(item.kind.where)))
@@ -100,7 +106,7 @@ def _box(pd, item, present):
     if pd.pick_rows is None:
         return "", 0
     members = [item.ref] if item.ref is not None else list(item.kind.members)
-    picks = [pd.pick_rows[m[0]] for m in members if present(rec_id(m[0]))]
+    picks = [pd.pick_rows[m[0]] for m in members if present(rec_id(_target(pd, m[0])))]
     if not picks:
         return "", 0
     return (pick(picks[0][0], "\n".join(line for _rec, line in picks), item.first[1], level=1, checked=True),
@@ -118,13 +124,13 @@ def render(pd, sections, present):
     lis, n_boxes, missing = [], 0, 0
     for it in items:
         if it.ref is not None:
-            href = links_for(it.ref[0])
+            href = links_for(_target(pd, it.ref[0]))
         else:
             href = "#" + (it.kind.anchor if present(it.kind.anchor) else sections.get(it.kind.section, it.kind.anchor))
         box, n_missing = _box(pd, it, present)
         n_boxes += bool(box)
         missing += n_missing
-        lis.append(_item(it, counts, href, box))
+        lis.append(_item(it, counts, href, box, it.ref and _target(pd, it.ref[0])))
     more = ('<div class="sub today-also">Also below: %s</div>'
             % esc(" · ".join(_n(n, *k.also) for k, n in also))) if also else ""
     button = levels.group_button(pd, "Work through", n_boxes, missing) if n_boxes else ""

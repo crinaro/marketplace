@@ -551,8 +551,7 @@ def _load_staged(s):
     # public #29 — TERMINAL entries render in NEITHER list; the ledger says they ended.
     for _r in _pre_rows:
         if _r.get("state") in _terminal:
-            s.ledger.cover(_r["_key"], "terminal",
-                           "drafts" if _r.get("file") == _DRAFTS_REL else "covers")
+            s.ledger.cover(_r["_key"], "terminal", "drafts" if _r.get("file") == _DRAFTS_REL else "covers")
     _draft_keys = _ym.entry_keys("draft", [d[0] for d in s.drafts])
     _cover_keys = _ym.entry_keys("cover", [c[0] for c in s.covers])
     _dpairs = [(d, k) for d, k in zip(s.drafts, _draft_keys)
@@ -648,8 +647,7 @@ def _render_roles(s):
     s.first_opps, s.opp_counts = "", dict(roles_ui._EMPTY_OPP_COUNTS)
     if s.new_opps:
         opp_list_html, s.opp_counts = _role_list(s, s.new_opps, play_ctx)
-        s.first_opps = roles_ui.render_opportunities_section(opp_list_html, s.opp_counts["all"],
-                                                             s.opp_counts["open"])
+        s.first_opps = roles_ui.render_opportunities_section(opp_list_html, s.opp_counts["all"], s.opp_counts["open"])
     s.first_read, s.n_read = "", len(s.read_opps)
     if s.read_opps:
         read_list_html, _read_counts = _role_list(s, s.read_opps, play_ctx, set_name="needs-read")
@@ -812,10 +810,12 @@ def _render_covers(s):
 def _render_network(s):
     """The title, then the Network list and Targets to review, from the rows `_load_network` computed."""
     s.pd.title = _dashboard_title()
-    _net, _plan, _plan_failed, _tr, _tr_failed = s.net, s.plan, s.plan_failed, s.tr, s.tr_failed
-    _network_text((_plan or {}).get("rows") or [], s.pd)
-    s.first_network, s.n_network = network_ui.render_network_list(_plan, _plan_failed, s.page_opp_keys, s.ledger,
-                                                                  s.pd)
+    _net, _plan, _tr, _tr_failed, rows = s.net, s.plan, s.tr, s.tr_failed, (s.plan or {}).get("rows") or []
+    _network_text(rows, s.pd)
+    # dev 973: a plan row whose subject is primary in Drafts or the cover letters is a reference to it (Today too)
+    s.pd.ref_of = network_ui.ref_targets(rows, s.page_opp_keys, drafts_ui.primary_subjects(
+        s.drafts_active + s.covers_active, s.drafts_active_keys + s.covers_active_keys, s.ledger))
+    s.first_network, s.n_network = network_ui.render_network_list(_plan, s.plan_failed, s.page_opp_keys, s.ledger, s.pd)
     _targets_text(s)
     s.first_targets, s.n_targets = targets_ui.render_targets_list(_tr, _net["rows"], s.ledger, s.pd)
     if _tr_failed:

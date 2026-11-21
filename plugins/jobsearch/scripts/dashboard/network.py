@@ -110,23 +110,29 @@ def text_needed(lay):
     return {"actions": actions, "lines": lines, "more": more}
 
 
-def _row(r, level, page_opp_keys, text, ledger):
-    """One row: level 1 a full row, level 2 one line (who, why, a tick box). A role the page already renders under
-    Opportunities or Applications is a reference (`data-ref`), so a record is never two primary rows."""
-    is_ref = r["key"] in page_opp_keys
+def _row(r, level, refs, text, ledger):
+    """One row: level 1 a full row, level 2 one line (who, why, a tick box). A row whose record or subject is primary
+    elsewhere on the page (`refs`, `ref_targets`) is a reference (`data-ref` to that primary row, and a link to it), so
+    a subject is never two primary rows; it keeps its tick box, and the ledger places its key as `referenced`."""
+    target = refs.get(r["key"])
+    is_ref = target is not None
     if not is_ref:
         ledger.cover(r["key"], "rendered", "network")
+    elif target != r["key"]:
+        ledger.cover(r["key"], "referenced", target)
     line = text["lines"].get(r["key"])
     box = pick(pick_key(r), line, r["who"], level=level) if line else ""
     bits = ['<div class="net-row%s"%s data-subject="%s" data-group="%s">%s<strong>%s</strong> <span class="sub">%s</span>'
-            % ("" if level == 1 else " net-line", _ref_attrs(r["key"]) if is_ref else _rec_attrs(r["key"]),
+            % ("" if level == 1 else " net-line", _ref_attrs(target) if is_ref else _rec_attrs(r["key"]),
                esc(r["subject"]), esc(r["group"]), box, theirs(r["who"], _who_site(r)), esc(plain(r["why"])))]
     if level == 1:
         if r.get("last_touch"):
             bits.append('<div class="sub">last touch %s</div>' % esc(str(r["last_touch"])))
         bits.append('<div class="sub">next: %s</div>' % esc(plain(r["next_step"])))
         if is_ref:
-            bits.append(_ref_link(r["key"], "the role below"))
+            bits.append(_ref_link(target, "the role below" if target == r["key"] else "its row in Drafts"))
+    elif is_ref:
+        bits.append(_ref_link(target, "its row"))
     return "".join(bits) + "</div>"
 
 
@@ -136,18 +142,18 @@ def _head(s, cls):
                                                                      esc(s.heading), n)
 
 
-def _levels(s, page_opp_keys, text, ledger):
+def _levels(s, refs, text, ledger):
     """One list's levels: open rows, ONE closed fold of one-line rows, and the count of the rest (`data-more`, placed
     in the ledger's remainder). A `Not checked yet` list is its one counted line."""
     if s.mode == "line":
         ledger.cover_set("network-%s" % s.id, [], [r["key"] for r in s.rest])
         return ('<div class="sub ws-more" data-more="network-%s:%d">%d %s waiting for a mailbox check. Nothing for you '
                 'to do.</div>' % (s.id, len(s.rest), len(s.rest), "is" if len(s.rest) == 1 else "are"))
-    out = [_row(r, 1, page_opp_keys, text, ledger) for r in s.open]
+    out = [_row(r, 1, refs, text, ledger) for r in s.open]
     if s.folded:
         out.append('<details class="net-fold"><summary>%s</summary>%s</details>'
                    % (esc(("%d more" if s.open else "%d, folded") % len(s.folded)),
-                      "".join(_row(r, 2, page_opp_keys, text, ledger) for r in s.folded)))
+                      "".join(_row(r, 2, refs, text, ledger) for r in s.folded)))
     if s.rest:
         ledger.cover_set("network-%s" % s.id, [], [r["key"] for r in s.rest])
         out.append('<div class="sub ws-more" data-more="network-%s:%d">+ %d more that are not on this page. To see '
@@ -156,7 +162,7 @@ def _levels(s, page_opp_keys, text, ledger):
     return "".join(out)
 
 
-def _group(g, subs, page_opp_keys, text, ledger):
+def _group(g, subs, refs, text, ledger):
     """One group: one `data-pick-group` element holding its heading, its ONE button and its lists' tick boxes."""
     heading, _anchor, action, label = GROUPS[g]
     n_default = sum(1 for s in subs if s.mode != "line" for r in s.open if text["lines"].get(r["key"]))
@@ -168,9 +174,9 @@ def _group(g, subs, page_opp_keys, text, ledger):
         # sub-heading, never here, so the button's prompt plus its `Not on the page` count equals this (§3.6 rule 5, X5)
         n = sum(len(s.open) + len(s.folded) + len(s.rest) for s in subs if s.mode != "line")
         body = ('<div class="sub net-head"><strong>%s (%d)</strong></div>' % (esc(heading), n) + button
-                + "".join(_head(s, "net-head net-sub") + _levels(s, page_opp_keys, text, ledger) for s in subs))
+                + "".join(_head(s, "net-head net-sub") + _levels(s, refs, text, ledger) for s in subs))
     else:
-        body = _head(subs[0], "net-head") + button + _levels(subs[0], page_opp_keys, text, ledger)
+        body = _head(subs[0], "net-head") + button + _levels(subs[0], refs, text, ledger)
     return '<div class="net-group"%s>%s</div>' % (group_attr("network-%s" % g), body)
 
 
@@ -180,6 +186,21 @@ def _expired(expired):
                         for e in expired))
 
 
+def ref_targets(rows, page_opp_keys, primary_by_subject):
+    """{plan row key: the key of the ONE primary row it refers to} (dev 973, public #241; coordinator ruling 2026-11-20,
+    design-dashboard-redesign § Amendments). A row whose own key is a role the page renders under Opportunities or
+    Applications (`page_opp_keys`) refers to that role; otherwise a row whose SUBJECT already has a primary row in
+    another section (`primary_by_subject`, {subject: key}: Drafts and cover letters, `drafts.primary_subjects`) refers
+    to that row. Any group, any pair of sections: one subject, one primary row. Every other row is absent (primary)."""
+    out = {}
+    for r in rows:
+        if r["key"] in page_opp_keys:
+            out[r["key"]] = r["key"]
+        elif r.get("subject") in primary_by_subject:
+            out[r["key"]] = primary_by_subject[r["subject"]]
+    return out
+
+
 def render_network_list(plan, failed, page_opp_keys, ledger, pd):
     """The Network list is the COMMUNICATION PLAN (dev #914, #915; design 6.1): the rows of `your_move.
     communication_plan`, the ONE owner of membership, laid out by `layout` (the module docstring). Returns
@@ -187,7 +208,8 @@ def render_network_list(plan, failed, page_opp_keys, ledger, pd):
     there is nothing to say and nothing failed. Every row carries `data-subject`, which `check_dashboard_coverage`'s
     SUBJECT TWICE reads. Footer of the applied group: the applications that expired this ISO week, each once.
     dashboard-redesign: `ledger` is the render's `Ledger`; the group order (`pd.plan_groups`) and every prompt
-    fragment (`pd.network_text`) are the loader's values."""
+    fragment (`pd.network_text`) are the loader's values, and so is `pd.ref_of` (`ref_targets`); without it
+    a row refers only to a role in `page_opp_keys`."""
     rows = (plan or {}).get("rows") or []
     expired = (plan or {}).get("expired_this_week") or []
     if not rows and not expired and not failed:
@@ -198,8 +220,9 @@ def render_network_list(plan, failed, page_opp_keys, ledger, pd):
                      'what is waiting on you here is UNKNOWN, not zero.</div>' % esc(plain(failed)))
     text = pd.network_text or {"heads": {}, "lines": {}, "tails": {}}
     lay = layout(rows, pd)
+    refs = pd.ref_of if pd.ref_of is not None else ref_targets(rows, page_opp_keys, {})
     for g, subs in lay:
-        parts.append(_group(g, subs, page_opp_keys, text, ledger))
+        parts.append(_group(g, subs, refs, text, ledger))
         if g == "applied-no-contact" and expired:
             parts.append(_expired(expired))
     if expired and not any(g == "applied-no-contact" for g, _s in lay):

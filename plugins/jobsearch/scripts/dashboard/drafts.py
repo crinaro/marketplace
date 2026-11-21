@@ -256,6 +256,17 @@ def _subject(meta, key):
     return ("person:%s" % m_to.group(1)) if m_to else (("opp:%s" % m_opp.group(1)) if m_opp else key)
 
 
+def primary_subjects(entries, keys, ledger):
+    """{subject: key}: the subject of every staged entry whose PRIMARY row is on the page (the ledger placed it
+    `rendered`), first entry wins (several drafts to one person are one appearance). `entries` ([(title, blocks)]) and
+    `keys` are aligned. What `network.ref_targets` reads so a plan row about the same subject is a reference (dev 973)."""
+    out = {}
+    for (_title, blocks), key in zip(entries, keys):
+        if (ledger.records.get(key) or {}).get("disposition") == "rendered":
+            out.setdefault(_subject(_draft_meta_summary(blocks), key), key)
+    return out
+
+
 def _row(title, blocks, key, st, pd, pick_html, full, medium=None):
     """One entry's PRIMARY row. `full` (level 1): the title, its state chip, its meta line, the reason in plain words
     when it needs the owner, then the text fold. Otherwise (level 2, or a waiting entry) ONE line: the title, the state

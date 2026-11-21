@@ -5,6 +5,8 @@
 -------------------------------------------------------------------
 COVERAGE: every record in the row-backed stores is, on the generated page, exactly one of
   * RENDERED    — a row carries `data-rec="<kind>:<id>"`;
+  * REFERENCED  — (dev 973) its row is a `data-ref` to its SUBJECT's one primary row in another section, whose key
+                  the ledger names (`where`); that primary row and the reference are both on the page;
   * REMAINDER   — trimmed by a working-set cap into a "+K more" line whose K counts it
                   (`data-more="<set>:<K>"`), so the reader knows it exists and where;
   * TERMINAL    — it has ENDED (a terminal opportunity status, a resolved ask, a commitment
@@ -933,7 +935,7 @@ def check(root, verbose=False):
 
     exp = expected_records(root, today)
     gaps, placements = [], []
-    counts = {"rendered": 0, "remainder": 0, "terminal": 0, "elsewhere": 0}
+    counts = {"rendered": 0, "remainder": 0, "terminal": 0, "elsewhere": 0, "referenced": 0}
     elsewhere_keys = []
     remainder_members = {}
     for key, meta in sorted(exp.items()):
@@ -948,6 +950,11 @@ def check(root, verbose=False):
             counts["rendered"] += 1
             if key not in on_page:
                 gaps.append("CLAIMED RENDERED, NOT ON PAGE — %s (ledger says %s)" % (key, where))
+        elif disp == "referenced":   # dev 973: a reference row to its subject's ONE primary row, the key `where`
+            counts["referenced"] += 1
+            if where not in on_page or ('data-ref="%s"' % _html.escape(str(where), False)) not in page:
+                gaps.append("REFERENCED, NO PRIMARY OR NO REFERENCE ROW — %s (ledger says a reference to %s)"
+                            % (key, where))
         elif disp == "remainder":
             counts["remainder"] += 1
             remainder_members.setdefault(where, []).append(key)
@@ -1042,18 +1049,11 @@ def check(root, verbose=False):
     gaps.extend(pc_gaps)
     n_exp = len(exp)
     n_placed = n_exp - sum(1 for g in gaps if g.startswith("UNPLACED"))
-    lines = ["covered %d of %d record(s) — %d rendered · %d in counted remainders · "
+    lines = ["covered %d of %d record(s) — %d rendered · %d referenced · %d in counted remainders · "
              "%d terminal · %d elsewhere (generated %s, prep window %d days)"
-             % (n_placed, n_exp, counts["rendered"], counts["remainder"],
+             % (n_placed, n_exp, counts["rendered"], counts["referenced"], counts["remainder"],
                 counts["terminal"], counts["elsewhere"], today.isoformat(), horizon)]
-    lines.append(l_line)
-    lines.append(w_line)
-    lines.append(p_line)
-    lines.append(t_line)
-    lines.append(n_line)
-    lines.append(c_line)
-    lines.append(st_line)
-    lines.extend([pc_line, td_line, f_line, pk_line])
+    lines.extend([l_line, w_line, p_line, t_line, n_line, c_line, st_line, pc_line, td_line, f_line, pk_line])
     if verbose:
         lines.extend("  " + p for p in placements)
     # EXACTLY ONCE is a GAP since design r3 (check_links); nothing is advisory any more. The
