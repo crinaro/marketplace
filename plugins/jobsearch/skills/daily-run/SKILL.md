@@ -761,7 +761,8 @@ It prints the week's budget (`network.new_reachouts_per_week`, the ISO week, new
 drafts of any age) and **at most the REMAINING budget** as `REACH-OUT` lines, each a person the candidate has never contacted
 at a company they target. **Draft exactly those lines and never more, whatever else the run finds; a spent budget is a
 line that says so, and the run drafts nothing new.** A `LOOKUP` line is a link the CANDIDATE opens, listed in the summary: it
-is not budgeted and no LinkedIn step is automated. `--journal <id>` writes the run's one `network` event (its only write).
+is not budgeted and no LinkedIn step is automated. Once `record.py warm-lookup <co> --none-found` is recorded, that company's
+LOOKUP is one `LOOKED` line naming the day it returns (`search.warm_lookup_days`, 90): report it, ask nothing. `--journal <id>` writes the run's one `network` event (its only write).
 
 **What stays the candidate's, always:** sending a message, sending a connection request, any LinkedIn people lookup, writing
 chat notes and confirming that a chat was held. Also theirs, because each is a fact or a decision only they hold: the

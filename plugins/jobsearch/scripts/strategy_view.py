@@ -182,8 +182,7 @@ def _t(v):
 
 def _stated(v):
     """A field the owner states: a missing or empty one reads `not stated`, never a guess."""
-    s = _t(v)
-    return s if s else "not stated"
+    return _t(v) or "not stated"
 
 
 def _cell(v):
@@ -320,10 +319,11 @@ def _week(run, due):
         out.append(run.not_checked("this week's reach-out budget",
                                    "reachouts.plan answered without an integer `remaining`"))
     else:
-        out.append("- Remaining budget: %d" % plan["remaining"])
+        out.append("- Budget %s, spent %s, remaining %d" % (plan["budget"], plan["spent"], plan["remaining"])
+                   if "budget" in plan and "spent" in plan else "- Remaining budget: %d" % plan["remaining"])
         for key in ("lines", "lookups", "reconnects", "role_specific"):
             v = plan.get(key)
-            if isinstance(v, list):
+            if isinstance(v, list) and v:                    # 0.90.3: a kind with nothing in it is no row of 0
                 out.append("- %s: %d" % (key.replace("_", " ").capitalize(), len(v)))
                 if key in ("reconnects", "role_specific"):       # design 9.1 and 16.1: the unbudgeted lines, each named
                     for item in v:

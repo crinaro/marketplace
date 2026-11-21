@@ -130,16 +130,8 @@ def load(name):
     path = os.path.join(DATA, name)
     if not os.path.exists(path):
         return []
-    out = []
-    fh = open(path, encoding="utf-8")
-    try:
-        for line in fh:
-            line = line.strip()
-            if line:
-                out.append(json.loads(line))
-    finally:
-        fh.close()
-    return out
+    with open(path, encoding="utf-8") as fh:
+        return [json.loads(line) for line in (raw.strip() for raw in fh) if line]
 
 
 def pct(n, d):
@@ -522,10 +514,14 @@ def render_age_at_capture(opps, channels):
 BOOKED_BUCKETS = ("held", "no-show", "unrecorded", "upcoming", "cancelled", "no chat recorded")
 UNBOOKED_BUCKETS = ("held", "no-show", "unrecorded", "upcoming")
 _INBOX_SURFACE = "inbox"
+_ZERO_STATE_ROWS = ("new reach-outs sent", "role-specific first touches", "replied (a win)", "bookings (touches)",
+                    "chats with no booking", "chats held (all chats)", "intros", "chat → opportunity")
 
 
 def _rate(n, d, unit="resolved"):
-    """The ONE place a network percentage is made. Below MIN_SAMPLE it prints no percentage."""
+    """The ONE place a network percentage is made. Below MIN_SAMPLE it prints no percentage; at 0 it says none yet."""
+    if d == 0:
+        return "none %s yet" % unit
     if d < MIN_SAMPLE:
         return "%d of %d %s   too few to rate (n<%d)" % (n, d, unit, MIN_SAMPLE)
     return "%d of %d %s   rate %d%%" % (n, d, unit, round(100.0 * n / d))
@@ -614,7 +610,9 @@ def _chat_state(c, today):
 
 
 def _chat_model(root, as_of, window_from=None):
-    """Everything `chat_buckets` and `network_section` share, computed once (design §10.3 'the join')."""
+    """Everything `chat_buckets` and `network_section` share, computed once (design §10.3 'the join').
+    `as_of` is a `datetime.date` (strategy_view) or an ISO string (the CLI): one ISO string from here on."""
+    as_of = as_of.isoformat() if isinstance(as_of, datetime.date) else as_of
     today = _iso_to_date(as_of)
     wf = window_from or (today - datetime.timedelta(days=DEFAULT_WINDOW_DAYS)).isoformat()
     people = {p["id"]: p for p in _net_rows(root, "people.jsonl") if p.get("id")}
@@ -656,7 +654,7 @@ def _chat_model(root, as_of, window_from=None):
         if c["id"] not in used:
             unbooked[_chat_state(c, today)].append(c["id"])
     unrecorded = sorted((c["id"] for c in scoped_live if _chat_state(c, today) == "unrecorded"))
-    return {"today": today, "window_from": wf, "bookings": bookings, "match": match, "booked": booked,
+    return {"today": today, "as_of": as_of, "window_from": wf, "bookings": bookings, "match": match, "booked": booked,
             "unbooked": unbooked, "unrecorded": unrecorded, "scoped_live": scoped_live,
             "matched_live": matched_live, "no_chat_recorded": list(booked["no chat recorded"]),
             "people": people, "touches": touches, "commits": commits, "chats": chats}
@@ -737,19 +735,21 @@ def _opp_created(o, commits_by_id):
     return str(o["plan_assigned_on"]) if o.get("plan_assigned_on") else None
 
 
-def _unobserved_items(root, as_of):
-    """[(ref, label)] for `reachouts.plan(...)["unobserved"]` (NF3, design §9.1); [] when the engine has
-    no `reachouts` module (an ImportError is the ONLY thing treated as "not built"). Anything else it
-    raises is loud, never an empty list."""
+def _reachouts_plan(root, as_of):
+    """`reachouts.plan(...)` as of `as_of` (NF3, design §9.1); None when the engine has no `reachouts` module (an ImportError is
+    the ONLY thing treated as "not built"). Anything else it raises is loud, never an empty answer. The contract (dev #834
+    verify): `reachouts.plan` takes a `datetime.date`; this module carries ISO strings, so it converts once, here."""
     try:
         import reachouts as _r
     except ImportError:
-        return []
+        return None
+    return _r.plan(root, _iso_to_date(as_of) if isinstance(as_of, str) else as_of) or {}
+
+
+def _unobserved_items(root, as_of):
+    """[(ref, label)] for `reachouts.plan(...)["unobserved"]`; [] when the engine has no `reachouts` module."""
     out = []
-    # The contract (dev #834 verify): `reachouts.plan` takes a `datetime.date` (it also coerces an ISO string at its own boundary,
-    # `reachouts.as_date`). This module carries ISO strings, so it converts once, here, and passes the documented type.
-    when = _iso_to_date(as_of) if isinstance(as_of, str) else as_of
-    for item in (_r.plan(root, when) or {}).get("unobserved") or []:
+    for item in (_reachouts_plan(root, as_of) or {}).get("unobserved") or []:
         if isinstance(item, dict):
             ref = str(item.get("ref") or item.get("id") or "?")
             out.append((ref, "%s (%s%s)" % (ref, item.get("person") or item.get("person_id") or "?",
@@ -766,13 +766,8 @@ def _unobserved_sends(root, as_of):
 def _age_unknown_drafts(root, as_of):
     """`["<ref> (<person>): <reason>"]` for `reachouts.plan(...)["age_unknown"]` (design 9.1): open first-touch drafts whose age
     cannot be read from their `**Brief:**` id. They are neither a send unobserved nor silently absent: the report names them."""
-    try:
-        import reachouts as _r
-    except ImportError:
-        return []
-    when = _iso_to_date(as_of) if isinstance(as_of, str) else as_of
     return ["%s (%s): %s" % (u.get("ref"), u.get("person"), u.get("reason"))
-            for u in (_r.plan(root, when) or {}).get("age_unknown") or [] if isinstance(u, dict)]
+            for u in (_reachouts_plan(root, as_of) or {}).get("age_unknown") or [] if isinstance(u, dict)]
 
 
 def network_section(ctx_or_root, as_of, window_from=None):
@@ -782,7 +777,7 @@ def network_section(ctx_or_root, as_of, window_from=None):
     stand behind prints NOT CHECKED or PARTIAL, never a quiet number."""
     root = _net_root(ctx_or_root)
     m = _chat_model(root, as_of, window_from)
-    today, wf = m["today"], m["window_from"]
+    today, wf, as_of = m["today"], m["window_from"], m["as_of"]
     in_win = lambda d: wf <= str(d or "") <= as_of
     people, touches, commits = m["people"], m["touches"], m["commits"]
     commits_by_id = {c["id"]: c for c in commits if c.get("id")}
@@ -888,8 +883,9 @@ def network_section(ctx_or_root, as_of, window_from=None):
         line("weeks at budget", "%d of %d run   (each week against the budget recorded that week; %d other "
              "week%s in the window not run)" % (len(at_budget), len(run_weeks), len(win_weeks) - len(run_weeks),
                                                 "" if len(win_weeks) - len(run_weeks) == 1 else "s"))
-    else:
-        line("weeks at budget", "none run   (no `network` event in the window)")
+    else:                                     # 0.90.3: what this week holds, not "none run"
+        wk = _reachouts_plan(root, as_of)
+        line("this week", "budget %s, spent %s" % (wk.get("budget"), wk.get("spent")) if wk else "no `network` event yet")
     if not_checked:
         line("replied (a win)", "; ".join(not_checked))
     else:
@@ -926,8 +922,11 @@ def network_section(ctx_or_root, as_of, window_from=None):
     unsourced = [o for o in win_opps if not o.get("via_commitment_id") and not o.get("via_person_id")]
     chat_opps = [o for o in from_chat if o["via_commitment_id"] in held_ids]
     line("chat → opportunity", _rate(len(chat_opps), len(held), "held"))
-    line("opportunities in window", "%d: from a chat %d · from a person, no chat %d · source not recorded %d"
-         % (len(win_opps), len(from_chat), len(from_person), len(unsourced)))
+    if not (sent or nb or m["scoped_live"] or unobs):    # 0.90.3 zero state: one line of what happened, not rows of 0
+        L[:] = [l for l in L if l[2:29].strip() not in _ZERO_STATE_ROWS + ("",)]      # "" = the bucket rows
+        L.insert(3, "  %-27s %s" % ("reach-outs and chats", "none yet: no reach-out sent, chat held or meeting booked"))
+    line("opportunities in window", "%d" % len(win_opps) + (": from a chat %d · from a person, no chat %d · source not recorded %d"
+         % (len(from_chat), len(from_person), len(unsourced)) if win_opps else ""))
     app_opps = {a.get("opp_id") for a in apps}
     line("opportunity → application", "%d" % sum(1 for o in win_opps if o.get("id") in app_opps))
 

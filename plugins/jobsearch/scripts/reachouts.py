@@ -23,7 +23,8 @@ DEFINITIONS (every one derived from stores that already exist; nothing here is s
 `--plan` lists at most `remaining` REACH-OUT lines, ranked: people at `active-target` companies the candidate knows and has never
 contacted, by company `motivation` (highest first, none last), a person with stated `ties` first, then the company with the
 fewest people already contacted (spread across targets), then id. A person with an open draft is never planned again.
-Not budgeted: a LOOKUP line for each target company with nobody known and never contacted, a link the CANDIDATE opens. This
+Not budgeted: a LOOKUP line for each target company with nobody known and never contacted, a link the CANDIDATE opens. After
+`record.py warm-lookup <co> --none-found` it is a LOOKED line (look date, return date) for `search.warm_lookup_days` (90). This
 script reads; it never sends, never drafts, never opens LinkedIn. Its one write is `--journal <run id>`: one `network` journal
 event for the run (`{week, budget, open_drafts, sent_this_week, planned}`), the record the funnel's weeks-at-budget reads.
 
@@ -105,11 +106,8 @@ def as_date(today):
         return today.date()
     if isinstance(today, datetime.date):
         return today
-    if isinstance(today, str):
-        try:
-            return datetime.date.fromisoformat(today[:10])
-        except ValueError:
-            pass
+    if isinstance(today, str) and _date(today) is not None:
+        return _date(today)
     raise ValueError("today must be a date or a YYYY-MM-DD string, got %r" % (today,))
 
 
@@ -124,12 +122,7 @@ def budget(root):
     """`network.new_reachouts_per_week` for the profile at `root`: the configured int 0..50, else the registered default (5).
     A value present but not an int in range raises `ValueError` naming the key (a typo never reads as the default)."""
     import config_keys as ck
-    cfg = {}
-    p = os.path.join(root, "config.json")
-    if os.path.exists(p):
-        with open(p, encoding="utf-8") as fh:
-            cfg = json.load(fh)
-    return ck.resolve_int(cfg, ck.NETWORK_NEW_REACHOUTS_PER_WEEK)
+    return ck.resolve_int(_config(root), ck.NETWORK_NEW_REACHOUTS_PER_WEEK)
 
 
 class _History:
@@ -479,6 +472,7 @@ def plan(root, today=None):
         {"week": "2026-W46", "budget": 5, "sent_this_week": n, "open_drafts": n, "spent": n, "remaining": n,
          "lines": [{"kind": "second-contact" | "reach-out", "person_id", "person_name", "company_id", "company_name", "ties", "why"}],
          "lookups": [{"kind": "lookup-owed", "company_id", "company_name", "linkedin_url"}],
+         "looked_none": [{"kind": "looked-none", "company_id", "company_name", "looked_on", "lookup_returns_on"}],
          "reconnects": [{"kind": "reconnect", "person_id", ...}], "role_specific": [{"kind": "draft-owed", "person_id", "opp_ids", ...}],
          "followups": [{"kind": "follow-up", "person_id", ...}], "quiet": [{"kind": "quiet", ...}],
          "unobserved": [{"ref", "person_id", "person", "drafted_on", "days"}], "undated_drafts": n,
@@ -542,13 +536,18 @@ def plan(root, today=None):
                       "company_id": co["id"], "company_name": co.get("name"), "ties": p.get("ties") or [], "why": why})
 
     import warm_path as _wp
-    lookups, seen = [], set()
+    lookups, seen, looked_none, relook = [], set(), [], _wp._lookup_days(_config(root))
     for cid, co in sorted(targets.items()):
         if any(p["company_id"] == cid and not hist.ever_contacted(p["id"]) for p in people):
             continue                       # somebody known and uncontacted is there: no lookup is owed
+        seen.add(cid)
+        on = _date((co.get("warm_lookup") or {}).get("on")) if isinstance(co.get("warm_lookup"), dict) else None
+        if on is not None and 0 <= (today - on).days <= relook:      # none-found recorded: not asked again yet (0.90.3)
+            looked_none.append({"kind": "looked-none", "company_id": cid, "company_name": co.get("name"), "looked_on": on.isoformat(),
+                                "lookup_returns_on": (on + datetime.timedelta(days=relook + 1)).isoformat()})
+            continue
         lookups.append({"kind": "lookup-owed", "company_id": cid, "company_name": co.get("name"),
                         "linkedin_url": _wp._linkedin_url(co)})
-        seen.add(cid)
     for a in actions:                      # a second contact with nobody known: the same link, once per company
         if a["kind"] == "lookup-owed" and a["company_id"] not in seen:
             lookups.append({"kind": "lookup-owed", "company_id": a["company_id"], "company_name": a["company_name"],
@@ -558,7 +557,7 @@ def plan(root, today=None):
     return {"week": label, "budget": cap, "sent_this_week": sent, "open_drafts": open_drafts, "spent": spent,
             "remaining": remaining, "lines": lines, "lookups": lookups, "reconnects": reconnects(root, today, ctx),
             "role_specific": role_specific(root, today, ctx), "unobserved": stale, "undated_drafts": len(unknown),
-            "age_unknown": unknown,
+            "age_unknown": unknown, "looked_none": looked_none,
             "followups": [a for a in actions if a["kind"] == "follow-up"],
             "quiet": [a for a in actions if a["kind"] == "quiet"]}
 
@@ -593,6 +592,9 @@ def render(p):
         out.append("LOOKUP %s (%s)%s (a link for the candidate to open; no LinkedIn step is automated)"
                    % (l["company_id"], l["company_name"] or l["company_id"],
                       " " + l["linkedin_url"] if l["linkedin_url"] else ""))
+    for l in p.get("looked_none", []):
+        out.append("LOOKED %s (%s) -- looked %s and found nobody; the LOOKUP returns on %s (search.warm_lookup_days)"
+                   % (l["company_id"], l["company_name"] or l["company_id"], l["looked_on"], l["lookup_returns_on"]))
     return "\n".join(out)
 
 
@@ -642,12 +644,10 @@ def main(argv=None):
     args = ap.parse_args(argv)
     if not (args.plan or args.week or args.due):
         ap.error("one of --plan, --week or --due is required")
-    today = None
-    if args.today:
-        today = _date(args.today)
-        if today is None:
-            print("--today %r is not a date" % args.today, file=sys.stderr)
-            return 2
+    today = _date(args.today) if args.today else None
+    if args.today and today is None:
+        print("--today %r is not a date" % args.today, file=sys.stderr)
+        return 2
     from _root import profile_root
     root = profile_root()
     gate = _gate(root)
@@ -684,7 +684,7 @@ def main(argv=None):
     if args.json:
         print(json.dumps(p, indent=2, sort_keys=True))
     elif args.week:
-        print(render(dict(p, lines=[], lookups=[], reconnects=[], role_specific=[])))
+        print(render(dict(p, lines=[], lookups=[], looked_none=[], reconnects=[], role_specific=[])))
     else:
         print(render(p))
     return 0
