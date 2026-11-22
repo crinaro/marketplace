@@ -4,19 +4,21 @@
 `contentchecks`, `budgets`, `pagemeta`, `privacy`), and holds the parsed pages, the reference
 resolver and `run`, which calls the families in order and then fails any family that examined
 nothing (a green run is never an empty one). `not_read_pdfs` is the seam review_record.py's
-coverage packet reads.
+coverage packet reads. Since 0.6.0 it also holds the carried set (`carried`, `held_pages`:
+`sitechecks/carriedpages.py`, design-adopt-parity-2 section 4.7.2), and `run` prints the `carried:`
+note when the tree holds a carried page.
 """
 
 import os
 import posixpath
-import re
 from configschema import model
 from urllib.parse import unquote, urlsplit
+from sitechecks import carriedpages
 from sitechecks.budgets import BudgetChecks
 from sitechecks.contentchecks import ContentChecks
 from sitechecks.domain import DomainChecks
 from sitechecks.linking import LinkChecks
-from sitechecks.page import _CSS_IMPORT, _CSS_URL, parse_page, parse_srcset
+from sitechecks.page import parse_page
 from sitechecks.pagemeta import PageMetaChecks
 from sitechecks.privacy import PrivacyChecks
 from sitechecks.report import FAMILIES, Report
@@ -41,6 +43,10 @@ class Checker(StructureChecks, LinkChecks, DomainChecks, ContentChecks, BudgetCh
                 self.pages[rel] = parse_page(rel, tree.text(rel))
         self.redirects = set(r for r, p in self.pages.items() if self._is_redirect(p))
         self.content_pages = [r for r in sorted(self.pages) if r not in self.redirects]
+        # schema 6: the files `site.json` `carried` names, served as adopted. Each family module's dated note says what
+        # it holds them to; `held_pages` are the content pages held to the plugin's own page form.
+        self.carried = carriedpages.carried_in(cfg, tree.files)
+        self.held_pages = [r for r in self.content_pages if r not in self.carried]
         self.refs_by_page = {}
         self.referenced = set()
         self.flagged = set()      # files `structure` already refused: not reported again as orphans
@@ -92,44 +98,14 @@ class Checker(StructureChecks, LinkChecks, DomainChecks, ContentChecks, BudgetCh
         return (None, frag, miss)
 
     def collect_refs(self):
-        """Every reference in every page and stylesheet: (from_rel, kind, url)."""
+        """Every reference in every page and stylesheet: (from_rel, kind, url). The readers are
+        `carriedpages.page_refs` and `css_refs`, which the build's reading of a carried page shares."""
         refs = []
         for rel, p in self.pages.items():
-            for a in p.anchors:
-                if a["href"] is not None:
-                    refs.append((rel, "a", a["href"]))
-            for im in p.imgs:
-                if im["src"] is not None:
-                    refs.append((rel, "img", im["src"]))
-                for u, _d in parse_srcset(im["srcset"]):
-                    refs.append((rel, "srcset", u))
-            for s in p.scripts:
-                if s["src"]:
-                    refs.append((rel, "script", s["src"]))
-            for lt in p.linktags:
-                if lt.get("href") and lt.get("rel", "").lower() not in ("canonical",):
-                    refs.append((rel, "link", lt["href"]))
-            for fr in p.iframes:
-                if fr.get("src"):
-                    refs.append((rel, "iframe", fr["src"]))
-            for m in p.metas:
-                if m.get("http-equiv", "").lower() == "refresh":
-                    mm = re.search(r"url\s*=\s*(.+)$", m.get("content", ""), re.I)
-                    if mm:
-                        refs.append((rel, "refresh", mm.group(1).strip().strip("'\"")))
-                if m.get("property") in ("og:image", "og:url") or m.get("name") == "twitter:image":
-                    if m.get("content"):
-                        refs.append((rel, "meta", m["content"]))
-            for st in p.style_text + p.inline_style_attrs:
-                for _q, u in _CSS_URL.findall(st):
-                    refs.append((rel, "css", u))
+            refs.extend(carriedpages.page_refs(rel, p))
         for rel in sorted(self.t.files):
             if rel.lower().endswith(".css"):
-                css = self.t.text(rel)
-                for _q, u in _CSS_URL.findall(css):
-                    refs.append((rel, "css", u))
-                for u in _CSS_IMPORT.findall(css):
-                    refs.append((rel, "css", u))
+                refs.extend(carriedpages.css_refs(rel, self.t.text(rel)))
         return refs
 
     # -- run ---------------------------------------------------------------------------------
@@ -147,6 +123,9 @@ class Checker(StructureChecks, LinkChecks, DomainChecks, ContentChecks, BudgetCh
         self.basepath()
         self.size()
         self.privacy()
+        carried_pages = sum(1 for rel in self.carried if carriedpages.is_page(rel))
+        if carried_pages:           # the families that skip a carried page say so, never a quiet pass
+            self.r.notes.append(carriedpages.carried_note(carried_pages))
         if self.pages:
             for fam in FAMILIES:
                 if self.r.checked.get(fam, 0) == 0 and fam not in ("media",):

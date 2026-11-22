@@ -11,11 +11,14 @@ from building.outcomes import BuildError
 from building.pagebase import _PageBase
 from building.portfolios import _Portfolios
 from building.siteparts import _SiteParts
+from building import grouping
 from building.tokens import (
+    ASSET_EXTS,
     TOKEN_SCOPES,
     TOKEN_SINCE,
     _TOKEN,
     _line_of,
+    asset_version,
     nfc,
     rel_link,
     strip_css_comments,
@@ -100,13 +103,29 @@ class _Builder(_PageBase, _MarkdownEnv, _HomePage, _Portfolios, _SiteParts):
                     raise BuildError("%s: {{featured}} is for site/src pages and the layout; a Markdown "
                                      "body is escaped, so it would print as text" % source, fix="move {{featured}} to a site/src page or the layout")
                 sel = self.selection()
-                return self.cards_html(sel, current_out) if sel else ""
+                return grouping.featured_html(self, sel, current_out) if sel else ""
+            if name == "assetVersion":      # schema 6 (TOKEN_SINCE): computed once, only where a page uses it
+                return self.asset_version()
             if name in values:
                 return values[name]
             if extra and name in extra:
                 return extra[name]
             raise BuildError("%s: unknown token {{%s}}" % (source, name), fix="check the spelling of the token, or remove it (the tokens are listed in %s)" % CONTENT_MODEL)
         return _TOKEN.sub(sub, text)
+
+    def asset_version(self):
+        """`{{assetVersion}}` (schema 6, design-adopt-parity-2 section 3.2): `tokens.asset_version` of the bytes this build
+        serves for every `site/src` stylesheet and script, by the transform `build_site_src_file` publishes them with (a
+        stylesheet's comments stripped; a script decoded and written as UTF-8), so the value moves with the served bytes
+        and never with a page. Computed once per build, the first time a page uses the token."""
+        if getattr(self, "_asset_version", None) is None:
+            served = {}
+            for path in sorted(self.files):
+                if path.startswith("site/src/") and path.lower().endswith(ASSET_EXTS):
+                    text = frontmatter.decode_text(self.files[path], path)
+                    served[path] = (strip_css_comments(text) if path.lower().endswith(".css") else text).encode("utf-8")
+            self._asset_version = asset_version(served)
+        return self._asset_version
 
     def presence(self, html_text, out_path, title, desc, image_out, og_type):
         """Inject canonical and og/twitter tags before </head>, only those not already present."""
@@ -159,6 +178,7 @@ class _Builder(_PageBase, _MarkdownEnv, _HomePage, _Portfolios, _SiteParts):
 
     # ---- sitemap, robots, markers
     def build_sitemap(self, lastmod):
+        self.build_carried()        # schema 6: before the sitemap lists the pages; nothing without the `carried` key
         entries = []
         for out_path in sorted(self.pages):
             info = self.pages[out_path]

@@ -1,4 +1,4 @@
-"""configkeys: the key tables and constants of `site/site.json` and of a page's front matter, schemas 1 to 5.
+"""configkeys: the key tables and constants of `site/site.json` and of a page's front matter, schemas 1 to 6.
 
 Constants only: the schema ceiling, the engine marker, each key table, the budget defaults and the patterns the
 value checks use. No code runs here."""
@@ -6,7 +6,7 @@ value checks use. No code runs here."""
 import re
 
 
-SCHEMA_MAX = 5
+SCHEMA_MAX = 6
 ENGINE_MARKER = "site-studio"
 CANONICAL_MARKER_LINE = '  "engine": "site-studio",'
 
@@ -18,17 +18,49 @@ KEY_ORDER = (
 # schema-1 key set; CANON_ORDER is the written order with the schema-2 keys placed in it.
 V2_TOP_KEYS = ("siteKind", "featuredFrom")
 CANON_ORDER = (
-    "schema", "engine", "name", "siteTitle", "siteKind", "publicRepo", "previewUrl", "domain",
-    "cutover", "publicEmails", "privateTerms", "work", "featuredFrom", "nav", "look", "blocks", "redirects",
-    "resume", "budgets",
+    "schema", "engine", "name", "siteTitle", "titleSeparator", "siteKind", "publicRepo", "previewUrl", "domain",
+    "cutover", "publicEmails", "privateTerms", "work", "featuredFrom", "featuredView", "nav", "look", "blocks",
+    "mediaPaths", "sizeCopies", "carried", "redirects", "resume", "budgets",
 )
 # Schema 4 adds these top-level keys (design-template-fidelity section 3.2), refused below 4.
 V4_TOP_KEYS = ("nav", "look", "blocks")
+# Schema 6 adds these top-level keys (design-adopt-parity-2 section 3.2), each a K reason: 0.5.x refuses every one as an
+# unknown key, and each is stored only when it is not its default, so a schema-5 config's dict is what it was.
+V6_TOP_KEYS = ("featuredView", "titleSeparator", "mediaPaths", "sizeCopies", "carried")
+# `featuredView`: how `{{featured}}` and the generated home's featured part print the selection. "flat" (the default,
+# written away) is today's one run of cards; "grouped" is a filtered view of each portfolio's index (section 4.1).
+FEATURED_VIEWS = ("flat", "grouped")
+# `titleSeparator`: the text between a page's title and the site title in `<title>`: one to three punctuation marks or
+# symbols (Unicode categories P* and S*), with at most one space on each side. The default is written away.
+TITLE_SEPARATOR_DEFAULT = " | "
+TITLE_SEPARATOR_MAX = 3
+# `sizeCopies`: "any-format" lets a size copy have another raster extension than its original (section 4.6).
+SIZE_COPIES = ("any-format",)
+SIZE_COPY_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".avif")
+# `mediaPaths`: where a folder's media is published, one pattern per folder (section 4.6): two to four `/`-separated
+# segments, each a slug or `{name}`, the last `{file}`; `references` holds `{name}` once, `home` and `about` hold none.
+MEDIA_PATH_FOLDERS = ("references", "home", "about")
+MEDIA_PATH_SEGMENTS = (2, 4)
+# `carried`: one to 24 output paths, each served from `site/carried/<path>` byte for byte (section 4.7). A file the build
+# owns for deployment is never carried, nor anything under `site-studio/`, nor a name the site gate never publishes. The
+# last four tables are the site gate's own (`sitechecks/kinds.py` `FORBIDDEN_NAMES`, `FORBIDDEN_DIRS`, `JUNK_NAMES`,
+# `JUNK_SUFFIXES`), copied because `configschema` may not import `sitechecks` (G6: the import would close a cycle between
+# the two packages); `tests/configschema/test_sectioncheck.py` `CarriedNamesAreTheGates` holds each equal to the gate's.
+CARRIED_MAX = 24
+CARRIED_SOURCE = "site/carried/"
+CARRIED_RESERVED = ("CNAME", ".nojekyll", "robots.txt", "sitemap.xml")
+CARRIED_RESERVED_DIRS = ("site-studio",)
+GATE_FORBIDDEN_NAMES = ("CLAUDE.md", "HANDOFF.md", "BRAND.md", "site.json", "layout.html", "text.md",
+                        "reference.json", "package.json", "package-lock.json")
+GATE_FORBIDDEN_DIRS = (".git", ".site-studio", ".github", "decisions", "originals", "node_modules",
+                       "__MACOSX", "templates")
+GATE_JUNK_NAMES = (".DS_Store", "Thumbs.db", "desktop.ini")
+GATE_JUNK_SUFFIXES = ("~", ".bak", ".orig", ".part", ".tmp", ".swp", ".md", ".pdf.json", ".jsonl", ".py")
 SITE_KINDS = ("portfolio", "hub", "custom")
 FEATURED_FROM = ("home", "flags")
 WORK_KEYS = ("label", "description", "required", "meta", "cardMeta", "groupBy", "groups", "labels",
              "cardNumber", "cardNumberFormat", "cardLabels", "backLink",
-             "cardImage", "cardAlt", "cardKicker", "pieceLink", "pieceTeaser")
+             "cardImage", "cardAlt", "cardKicker", "pieceLink", "pieceTeaser", "groupCount", "pieceRoles")
 # The portfolio keys schema 4 adds (the last four of WORK_KEYS). Each is stored in a parsed `work` ONLY when it is
 # not its default (cardNumber false, cardNumberFormat "padded", cardLabels true, no backLink), the way `labels` is,
 # so a schema-3 site's settings stay what they were and `content.py`'s merge of site.json `work` with a page.md
@@ -46,19 +78,42 @@ CARD_NUMBER_FORMATS = ("padded", "plain", "order")
 # picture without it), so it is a reason by presence and never written away.
 V5_WORK_KEYS = ("cardImage", "cardAlt", "cardKicker", "pieceLink", "pieceTeaser")
 CARD_IMAGES = ("cover", "photo")
+# The portfolio settings schema 6 adds (design-adopt-parity-2 section 3.2; the last two of WORK_KEYS), each `true` only and
+# each a K trigger: `groupCount` (each group heading prints how many pieces it shows; refused without `groupBy`) and
+# `pieceRoles` (a piece's `role` is a list of dated roles, `V6_PIECE_KEYS`). Schema 6 also adds a VALUE, `cardAlt: "title"`
+# (a card picture's alt is the piece's title), and a `labels` part, `counts` (`V6_LABEL_PARTS`).
+V6_WORK_KEYS = ("groupCount", "pieceRoles")
+CARD_ALT_TITLE = "title"
 # `blocks` (schema 4, a top-level object): the settings of the plugin's `:::` blocks and of the `ref:` lines a body holds. Its
 # keys are `headingLevel` (the h-level of a heading inside a block), `loneReferenceGrid` (a lone `ref:` line prints inside
 # the reference grid, as two or more do; the default, false, is a bare card) and `videoEmbed` (the address a video block and a gallery
 # video carry: "facade", the default, adds Vimeo's `dnt=1`; "live" keeps the player's own address, as a site built elsewhere wrote it).
-BLOCKS_KEYS = ("headingLevel", "loneReferenceGrid", "videoEmbed")
+BLOCKS_KEYS = ("headingLevel", "loneReferenceGrid", "videoEmbed", "headings")
+# `blocks.headings` (schema 6): the h-level of a heading in every Markdown body but the resume's (which keeps
+# `resume.headings`), with the resume's two values (`RESUME_HEADINGS`); "shift", the default, is written away.
+V6_BLOCKS_KEYS = ("headings",)
 VIDEO_EMBED_FORMS = ("facade", "live")
 BLOCK_HEADING_LEVELS = (2, 3, 4, 5, 6)
 LABEL_PARTS = ("meta", "groups")
+# `labels.counts` (schema 6): the word after a group's count, per group value or `*`, under CLDR's plural category names.
+# 0.6.0 prints two forms; CLDR's other four names are reserved (refused, naming the release), so a later release can read
+# them as its own K reason without changing what a 0.6.0 tree means.
+V6_LABEL_PARTS = ("counts",)
+COUNT_ANY = "*"
+COUNT_FORMS = ("one", "other")
+COUNT_FORMS_RESERVED = ("zero", "two", "few", "many")
 RESUME_KEYS = ("path", "pdf", "paper", "headings", "layout")
 V4_RESUME_KEYS = ("headings", "layout")          # schema 4; stored only when not the default
 RESUME_HEADINGS = ("shift", "as-written")
 RESUME_LAYOUTS = ("plain", "cards")
-NAV_KEYS = ("home",)
+NAV_KEYS = ("home", "extra")
+# Schema 6 (design-adopt-parity-2 section 3.2): `nav.home` gains the value "title" (the first item's text is the site
+# title), and `nav.extra` is one to four `{"label", "url"}` items after the built-in ones, each url an absolute `https:` or
+# `mailto:` address.
+V6_NAV_KEYS = ("extra",)
+NAV_HOME_TITLE = "title"
+NAV_EXTRA_MAX = 4
+NAV_EXTRA_SCHEMES = ("https://", "mailto:")
 PAPERS = ("Letter", "A4")
 
 # The performance limits of design 4.3 (B's numbers), overridable in `budgets`.

@@ -30,7 +30,10 @@ choice fixes the one before it; interactions beyond that are design UNDETERMINED
   pieceLink.<p>       absent or true: a piece page prints the piece's `link` (schema 5)
   pieceTeaser.<p>     absent or true: a piece page prints the piece's `teaser` under its title (schema 5)
   backLink            absent (the default) or one line of text: a link to the portfolio index above the piece title (P06), with the
-                      text the old builder's own piece pages carry (`work.backLink`); the candidate is read from the local build
+                      text the old builder's own piece pages carry (`work.backLink`); the candidate is read from the local build.
+                      Schema 6's adopt measures it per portfolio, `backLink.<p>` (design-adopt-parity-2 section 7.6: the text THAT
+                      portfolio's old piece pages share, written into its page.md); the site-wide name stays a setting a person may
+                      have chosen, and writes what it wrote
   blocks.headingLevel absent (the default) or 2 to 6: the h-level of a heading inside a carousel slide (schema 4), `blocks.headingLevel`;
                       the candidates are the levels the old builder's own pages print headings at
   blocks.loneReferenceGrid
@@ -62,10 +65,15 @@ measured. Every function here is pure over a tree-like object and the dicts it i
 import json
 import posixpath
 import re
+import unicodedata
 
-from configschema.configkeys import BUILTIN_PIECE_KEYS
+from configschema import sectioncheck
+from configschema.configkeys import (BUILTIN_PIECE_KEYS, COUNT_ANY, MEDIA_PATH_FOLDERS, NAV_HOME_TITLE, SIZE_COPIES,
+                                     TITLE_SEPARATOR_DEFAULT, TITLE_SEPARATOR_MAX)
+from configschema.diagnostics import SiteConfigError
 from contentmodel.keytables import KEY_RE
 
+from adoption import carry
 from adoption.base import Refused
 from adoption.plan import _current_base, _plan_for, save_plan
 from adoption.homeparts import HOME_PATHS, front_values
@@ -77,26 +85,42 @@ SETTING_ORDER = ("look", "featuredFrom", "sort", "nav.home", "resume.headings", 
                  "cardImage", "cardAlt", "cardKicker", "pieceLink", "pieceTeaser",       # a literal: test_routing reads it by `ast`
                  "backLink", "menuLinks", "onePieceIndex", "blocks.headingLevel", "blocks.loneReferenceGrid", "blocks.videoEmbed", "titleForm", "introScope",
                  "partOrder", "view")
+# The schema-6 settings (design-adopt-parity-2 section 7.6), chosen among the others by `candidates.setting_names`: `featuredView`
+# (`flat` or `grouped`), `nav.extra` (the menu's `https:` and `mailto:` items after the built-in ones), `titleSeparator` (the text
+# between a page's title and the site title), `blocks.headings` (`shift` or `as-written`: the h-level of a heading in every
+# Markdown body but the resume's), `mediaPaths.<folder>` (where `references`, `home` or `about` media is published: a pattern,
+# section 4.6), `sizeCopies` (`any-format`: a size copy may carry another raster extension), `carried` (the old build's own pages
+# served byte for byte, section 4.7: `adoption.carry` offers them and writes them from the bytes the measurement put in `hints`;
+# step 10b), and per portfolio `groupCount`
+# (true, or {"counts": <the `labels.counts` words read from the old headings>}: each group heading prints its count; step 8b folds
+# step 8's separate `countWords` into it, the design's one row of cap 2) and `pieceRoles` (true: a piece's `role` is a list of
+# dated roles). `nav.home` gains `"title"`, `cardAlt` gains `"title"`, `view` gains `roles`, `map`, `steps` and `showcase` by the
+# pieces' keys, and `backLink` is measured per portfolio. A separate literal from SETTING_ORDER: the adopt skill names both, and
+# test_routing's skill-names gate reads both by `ast` (step 14a).
+V6_SETTING_ORDER = ("featuredView", "nav.extra", "titleSeparator", "groupCount", "pieceRoles", "blocks.headings", "mediaPaths",
+                    "sizeCopies", "carried")
+V6_PORTFOLIO_SETTINGS = ("groupCount", "pieceRoles")
+_KEYED = ("mediaPaths",)                  # a setting per folder, `mediaPaths.<folder>`: not a portfolio's
 HOME_KEYS = ("titleForm", "introScope", "partOrder")       # the settings written into the home page's own front matter
 PORTFOLIO_KEYS = ("cardNumber", "cardNumberFormat", "cardLabels", "backLink")     # the portfolio keys written into every page.md
 SHARED_WORK_KEYS = ("meta", "cardMeta")                                          # the `work` keys `workKeys: all` copies
 BACK_LINK_MAX = 60
-_PER_PORTFOLIO = ("sort", "view", "menuLinks", "onePieceIndex") + V5_PORTFOLIO_SETTINGS
+_PER_PORTFOLIO = ("sort", "view", "menuLinks", "onePieceIndex") + V5_PORTFOLIO_SETTINGS + V6_PORTFOLIO_SETTINGS + ("backLink",)
 _CARD_PAGES = ("cardImage", "cardAlt", "cardKicker")       # a card or a tile: the portfolio's index and the home page
 _FM = re.compile(r"^([A-Za-z][A-Za-z0-9_]*):")
 
 
 def setting_family(name):
-    """`sort.work` is of the family `sort`; `look` of `look`."""
-    return name.split(".", 1)[0] if name.split(".", 1)[0] in _PER_PORTFOLIO else name
+    """`sort.work` is of the family `sort`, `mediaPaths.home` of `mediaPaths`; `look` of `look`, `backLink` of `backLink`."""
+    return name.split(".", 1)[0] if name.split(".", 1)[0] in _PER_PORTFOLIO + _KEYED else name
 
 
 def setting_paths(name):
     """The output paths the setting can change: exact paths, prefixes ending in `/`, or `*` for every page. Never empty."""
     fam = setting_family(name)
-    if fam in ("look", "nav.home"):
+    if fam in ("look", "nav.home", "nav.extra", "titleSeparator", "blocks.headings", "mediaPaths", "sizeCopies"):
         return ["*"]
-    if fam == "featuredFrom":
+    if fam in ("featuredFrom", "featuredView"):
         return ["index.html"]
     if fam in ("resume.headings", "resume.layout"):
         return ["resume/index.html"]
@@ -111,9 +135,9 @@ def setting_paths(name):
         return ["%s/index.html" % port]            # the portfolio's own index: the home page is no view's to change
     if fam == "sort" and port:
         return ["%s/index.html" % port, "index.html"]
-    if fam in _CARD_PAGES and port:
+    if fam in _CARD_PAGES + ("groupCount",) and port:
         return ["%s/index.html" % port, "index.html"]
-    if fam in ("pieceLink", "pieceTeaser") and port:
+    if fam in ("pieceLink", "pieceTeaser", "pieceRoles", "backLink") and port:
         return ["%s/" % port]                      # the portfolio's pages: its piece pages are the ones that change
     if fam in ("cardLabels", "cardNumber", "cardNumberFormat", "backLink", "workKeys", "blocks.headingLevel",
                "blocks.loneReferenceGrid"):
@@ -262,8 +286,21 @@ def _write_shelf(view, files, settings, notes):
 def apply_settings(view, files, d, settings, hints, notes, portfolios):
     """Lay the settings over the converted tree: `d` (site.json's dict) and `files` ({path: bytes}) are changed in place;
     `notes["settings"]` gains one line per setting applied."""
-    for name in sorted(settings, key=lambda n: (SETTING_ORDER.index(setting_family(n)) if setting_family(n) in SETTING_ORDER else 99, n)):
+    order = SETTING_ORDER + V6_SETTING_ORDER
+    for name in sorted(settings, key=lambda n: (order.index(setting_family(n)) if setting_family(n) in order else 99, n)):
         value, fam = settings[name], setting_family(name)
+        if name == "carried":                   # section 7.4's `carried` row: the bytes from `hints`, checked against their sha256
+            if value and carry.HINT in (hints or {}):
+                carry.write(files, d, value, hints, notes)       # refuses a path the measured bytes do not cover
+            elif value:
+                # a command that holds no measurement of the old build (`check`: every 0.6.0 measurement stores the member, empty
+                # or not, `adoption.measure`) cannot write the page, and says so rather than refuse the tree for it
+                notes["settings"].append("carried: %s (not written by this command, which holds no measurement of your old site; "
+                                         "`adopt.py parity` measures the pages and `apply` writes them)" % ", ".join(value))
+            continue
+        if fam in V6_SETTING_ORDER:
+            _apply_v6(view, files, d, settings, name, value, notes)
+            continue
         if fam == "look":
             if isinstance(value, dict) and value.get("file"):
                 files["site/looks/%s.json" % value.get("id", "derived")] = value["file"].encode("utf-8")
@@ -278,8 +315,11 @@ def apply_settings(view, files, d, settings, hints, notes, portfolios):
                 notes["settings"].append("featuredFrom: %s" % value)
         elif name == "nav.home":
             if value is False:
-                d["nav"] = {"home": False}
+                d["nav"] = dict(d.get("nav") or {}, home=False)
                 notes["settings"].append("nav.home: false (no Home item in the nav)")
+            elif value == NAV_HOME_TITLE:
+                d["nav"] = dict(d.get("nav") or {}, home=NAV_HOME_TITLE)
+                notes["settings"].append("nav.home: title (the menu's first item is the site title)")
         elif name == "resume.headings":
             if value != "shift" and isinstance(d.get("resume"), dict):
                 d["resume"]["headings"] = value
@@ -315,6 +355,8 @@ def apply_settings(view, files, d, settings, hints, notes, portfolios):
                 text = "[%s]" % ", ".join(value) if fam == "partOrder" else _front_value(value)
                 files[hp] = _set_front_key(_page_text(view, files, hp), fam, text).encode("utf-8")
                 notes["settings"].append("%s: %s" % (fam, ", ".join(value) if fam == "partOrder" else value))
+        elif fam == "backLink" and "." in name:
+            _write_back_link(view, files, d, name.split(".", 1)[1], value, notes)
         elif fam in PORTFOLIO_KEYS:
             default ={"cardLabels": True, "cardNumber": False, "cardNumberFormat": "padded", "backLink": None}[fam]
             if value not in (None, "", default):
@@ -338,6 +380,117 @@ def apply_settings(view, files, d, settings, hints, notes, portfolios):
             notes["settings"].append("%s of %s: %s" % (fam, port, _front_value(value) if fam in V5_PORTFOLIO_SETTINGS else value))
 
 
+def separator_ok(sep):
+    """True for a `titleSeparator` site.json accepts (design-adopt-parity-2 section 3.2): one to three punctuation marks or
+    symbols (Unicode categories P* and S*) with at most one space on each side."""
+    core = sep.strip(" ")
+    if not core or len(core) > TITLE_SEPARATOR_MAX or sep.startswith("  ") or sep.endswith("  ") or " " in core:
+        return False
+    return all(unicodedata.category(ch)[0] in "PS" for ch in core)
+
+
+def _write_back_link(view, files, d, port, value, notes):
+    """`backLink.<p>` (schema 6's adopt, section 7.6): the text into that portfolio's page.md, or into site.json's `work` for the
+    portfolio named `work` when it has no page.md of its own; the default (absent) writes nothing."""
+    if value in (None, ""):
+        return
+    path = "content/%s/page.md" % port
+    if view.exists(path):
+        files[path] = _set_front_key(_page_text(view, files, path), "backLink", _front_value(value)).encode("utf-8")
+    elif port == "work":
+        d["work"] = dict(d.get("work") or {}, backLink=value)
+    else:
+        return
+    notes["settings"].append("backLink of %s: %s" % (port, json.dumps(value, ensure_ascii=False)))
+
+
+def media_pattern_ok(folder, pattern):
+    """True for a `mediaPaths.<folder>` pattern site.json accepts (section 4.6; `configschema.sectioncheck._media_pattern`, the
+    check the build runs, asked here so the two can never disagree)."""
+    if folder not in MEDIA_PATH_FOLDERS or not isinstance(pattern, str):
+        return False
+    try:
+        sectioncheck._media_pattern(pattern, "mediaPaths.%s" % folder, folder)
+    except SiteConfigError:
+        return False
+    return True
+
+
+def work_count_words(view, files, d, counts):
+    """(the `labels.counts` value site.json's `work` can hold for the portfolio named `work`, None), or (None, why not). The
+    schema-6 validator reads site.json's `work` on its own (`configschema.workcheck`: a group named in `labels.counts` must be one
+    of `work.groups`, or "*"), and a page.md's front matter cannot hold `labels.counts` at all (it reads two levels; the words are
+    four). So: groups in site.json's `work` keep one entry per group, as the old headings show; groups in `content/work/page.md`
+    take the one entry "*" when every group there has the same words, and otherwise the words are not written. Found at step 9a2
+    on template-portfolio-a, whose groups are in its page.md and whose two groups have two words: step 8's writer put the group
+    entries into site.json, and the validator refused the whole converted tree."""
+    if (d.get("work") or {}).get("groups"):
+        return counts, None
+    path = "content/work/page.md"
+    front = front_values(split_front(_page_text(view, files, path))[0]) if (path in files or view.exists(path)) else {}
+    if "labels" in front:
+        return None, "the portfolio's page.md holds its own labels, which replace site.json's"
+    groups, forms = front.get("groups") or [], [counts[g] for g in sorted(counts)]
+    if groups and sorted(counts) == sorted(groups) and all(f == forms[0] for f in forms):
+        return {COUNT_ANY: forms[0]}, None
+    return None, ("its groups are in content/work/page.md, which cannot hold labels.counts, and site.json's work may name a "
+                  "group only when it lists the groups itself; each group's words differ, so no one entry \"*\" holds them")
+
+
+def _apply_v6(view, files, d, settings, name, value, notes):
+    """Write one schema-6 setting (`V6_SETTING_ORDER`); the default writes nothing. `groupCount.<p>` writes `groupCount: true`
+    into the portfolio's page.md, and the words of a {"counts": ...} value into site.json's `work` for the portfolio named `work`
+    only, in the form the validator accepts there (`work_count_words`): a page.md's front matter reads two levels and refuses a
+    third (`contentmodel.frontmatter`), and `labels.counts.<group>.<form>` is four, so another portfolio's count prints the number
+    alone (a finding of step 8, stated in the note)."""
+    fam = setting_family(name)
+    port = name.split(".", 1)[1] if fam in V6_PORTFOLIO_SETTINGS else None
+    if value in (None, False, "", [], {}):
+        return
+    if name == "blocks.headings":
+        if value != "shift":
+            d["blocks"] = dict(d.get("blocks") or {}, headings=value)
+            notes["settings"].append("blocks.headings: %s (a heading in a page's body keeps the level it is written at)" % value)
+        return
+    if fam == "mediaPaths":
+        folder = name.split(".", 1)[1]
+        d["mediaPaths"] = dict(d.get("mediaPaths") or {}, **{folder: value})
+        notes["settings"].append("mediaPaths.%s: %s (the %s media at the old addresses)" % (folder, value, folder))
+        return
+    if name == "sizeCopies":
+        d["sizeCopies"] = value
+        notes["settings"].append("sizeCopies: %s (a size copy in another format joins its picture)" % value)
+        return
+    if fam == "groupCount" and isinstance(value, dict):
+        _apply_v6(view, files, d, settings, name, True, notes)
+        counts, why = ((None, "a page.md cannot hold labels.counts") if port != "work"
+                       else work_count_words(view, files, d, value["counts"]))
+        if counts is None:
+            notes["settings"].append("groupCount of %s: the words are not written (%s; the count prints alone)" % (port, why))
+            return
+        work = dict(d.get("work") or {})
+        work["labels"] = dict(work.get("labels") or {}, counts=counts)
+        d["work"] = work
+        notes["settings"].append("groupCount of work: the words %s" % json.dumps(counts, ensure_ascii=False))
+        return
+    if name == "featuredView":
+        if value != "flat":
+            d["featuredView"] = value
+            notes["settings"].append("featuredView: %s (the featured pieces in their portfolio's groups)" % value)
+    elif name == "nav.extra":
+        d["nav"] = dict(d.get("nav") or {}, extra=[{"label": x["label"], "url": x["url"]} for x in value])
+        notes["settings"].append("nav.extra: %s" % ", ".join("%s (%s)" % (x["label"], x["url"]) for x in value))
+    elif name == "titleSeparator":
+        if value != TITLE_SEPARATOR_DEFAULT:
+            d["titleSeparator"] = value
+            notes["settings"].append("titleSeparator: %s" % json.dumps(value, ensure_ascii=False))
+    else:                                                  # groupCount, pieceRoles: `true` in the portfolio's page.md
+        path = "content/%s/page.md" % port
+        if view.exists(path):
+            files[path] = _set_front_key(_page_text(view, files, path), fam, "true").encode("utf-8")
+            notes["settings"].append("%s of %s: true" % (fam, port))
+
+
 _BOOL = {"true": True, "false": False}
 _CHOICES = {"featuredFrom": ("home", "flags", "showcase"), "sort": ("date", "order"), "resume.headings": ("shift", "as-written"),
             "resume.layout": ("plain", "cards"),
@@ -354,9 +507,36 @@ def parse_chosen(name, text):
     (a derived look is measured, never chosen: it is a file adopt writes); `backLink` takes one line of text."""
     fam = setting_family(name)
     portfolio_form = "." in name and name.split(".", 1)[0] in _PER_PORTFOLIO
-    if fam not in SETTING_ORDER or (fam in _PER_PORTFOLIO) != portfolio_form:
-        raise Refused("%s is not a setting adopt measures; the settings are %s (sort and view take a portfolio: `sort.work`); "
-                      "pass one of those names" % (name, ", ".join(SETTING_ORDER)))
+    if (fam not in SETTING_ORDER + V6_SETTING_ORDER or ((fam in _PER_PORTFOLIO) != portfolio_form and fam != "backLink")
+            or (fam == "mediaPaths" and name.split(".", 1)[-1] not in MEDIA_PATH_FOLDERS)):
+        raise Refused("%s is not a setting adopt measures; the settings are %s (sort and view take a portfolio: `sort.work`; "
+                      "mediaPaths a folder: `mediaPaths.home`); pass one of those names" % (name, ", ".join(SETTING_ORDER + V6_SETTING_ORDER)))
+    if text == NAV_HOME_TITLE and (name == "nav.home" or fam == "cardAlt"):
+        return NAV_HOME_TITLE                                # schema 6: the site title (nav.home), the piece's title (cardAlt)
+    if fam in ("groupCount", "pieceRoles"):
+        if text not in _BOOL:
+            raise Refused("%s takes true or false; pass one of those" % name)
+        return True if _BOOL[text] else None                 # a typed groupCount prints the number alone: the words are measured
+    if name in ("featuredView", "blocks.headings", "sizeCopies"):
+        allowed = {"featuredView": ("flat", "grouped"), "blocks.headings": ("shift", "as-written"),
+                   "sizeCopies": SIZE_COPIES + ("false",)}[name]
+        if text not in allowed:
+            raise Refused("%s takes one of: %s" % (name, ", ".join(allowed)))
+        return None if text == "false" else text
+    if fam == "mediaPaths":
+        if not media_pattern_ok(name.split(".", 1)[1], text):
+            raise Refused("%s takes a pattern of two to four segments, the last {file}; use one such as `refs/{name}/{file}` "
+                          "(references) or `media/{file}` (home, about)" % name)
+        return text
+    if name == "titleSeparator":
+        if not separator_ok(text or ""):
+            raise Refused("titleSeparator takes one to three punctuation marks or symbols, with at most one space on each side; "
+                          "use one such as ` · `")
+        return text
+    if fam == "nav.extra":
+        raise Refused("%s is read from your old pages and measured, never typed; run `adopt.py parity` to measure it" % name)
+    if name == "carried":
+        return carried_value(text)
     if name in _BOOLEAN or fam in _V5_TRUE:
         if text not in _BOOL:
             raise Refused("%s takes true or false; pass one of those" % name)
@@ -382,6 +562,24 @@ def parse_chosen(name, text):
     if text not in _CHOICES[fam]:
         raise Refused("%s takes one of: %s" % (name, ", ".join(_CHOICES[fam])))
     return text
+
+
+def carried_value(text):
+    """`adopt.py setting carried 404.html[,other.html]`: the output paths, each once, each one the `carried` key accepts
+    (`sectioncheck._carried_path`, the check the build runs); `false` is the absent key. The bytes are the measurement's: the
+    next `adopt.py parity` stores them for every chosen path the old build serves (`adoption.measure`)."""
+    if text == "false":
+        return None
+    paths = [t.strip() for t in (text or "").split(",") if t.strip()]
+    if not paths or len(set(paths)) != len(paths):
+        raise Refused("carried takes the old site's own pages: give them comma-separated and each once, such as `404.html`, "
+                      "or false")
+    for p in paths:
+        try:
+            sectioncheck._carried_path(p, "carried")
+        except SiteConfigError as e:
+            raise Refused("carried cannot name %s: %s; leave it out of the list" % (p, str(e).split("never carried: ", 1)[-1]))
+    return sorted(paths)
 
 
 def cmd_setting(repo, name, text, clear=False):

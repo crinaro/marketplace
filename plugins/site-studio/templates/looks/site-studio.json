@@ -67,13 +67,13 @@
       "wrap": "<ul class=\"cards\">{{items}}</ul>"
     },
     "group": {
-      "wrap": "<section class=\"group\"><h2>{{title}}</h2>{{cards}}</section>"
+      "wrap": "<section class=\"group\"><h2>{{title}}{{count}}</h2>{{cards}}</section>"
     },
     "portfolio": {
       "wrap": "<article class=\"portfolio\"><h1>{{title}}</h1>{{tagline}}{{intro}}{{cards}}</article>"
     },
     "piece": {
-      "wrap": "<article class=\"piece\">{{back}}<h1>{{title}}</h1>{{teaser}}{{meta}}{{link}}{{body}}</article>"
+      "wrap": "<article class=\"piece\">{{back}}<h1>{{title}}</h1>{{roles}}{{teaser}}{{meta}}{{link}}{{body}}</article>"
     },
     "meta-list": {
       "wrap": "<dl class=\"meta\">{{items}}</dl>",
@@ -181,6 +181,15 @@
     },
     "piece-teaser": {
       "wrap": "<p class=\"ss-piece-teaser\">{{text}}</p>"
+    },
+    "group-count": {
+      "wrap": "<span class=\"ss-group-count\">{{n}} {{unit}}</span>"
+    },
+    "piece-roles": {
+      "wrap": "<ul class=\"ss-piece-roles\">{{items}}</ul>",
+      "item": "<li><span class=\"ss-piece-role\">{{title}}</span>{{period}}</li>",
+      "item-current": "<li class=\"ss-piece-role-current\"><span class=\"ss-piece-role\">{{title}}</span>{{period}}</li>",
+      "period": "<span class=\"ss-piece-role-period\">{{text}}</span>"
     }
   },
   "assets": {
@@ -259,6 +268,12 @@
     ],
     "piece-teaser": [
       "schema-5"
+    ],
+    "group-count": [
+      "schema-6"
+    ],
+    "piece-roles": [
+      "schema-6"
     ]
   }
 }

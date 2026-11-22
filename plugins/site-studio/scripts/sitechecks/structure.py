@@ -16,6 +16,15 @@ rule. A mixin of `checker.Checker`.
                proves it). JavaScript comments are NOT in scope: the build does not strip them, and
                a private term inside one is caught by the privacy family anyway. A sourceMappingURL
                reference in JS or CSS is a finding (it names a local path).
+
+  Dated note, 2026-11-20 (design-adopt-parity-2 section 4.7.2, owner decision 2 (i)): a CARRIED file (`site.json`
+  `carried`, schema 6; `sitechecks/carriedpages.py`) is served byte for byte as the person's old site served it, so the
+  build neither expands nor strips it. `structure`'s per-file rules (a required file, a forbidden name or folder, junk,
+  a URL-unsafe name, a symlink) hold it like any file; its per-page rules (doctype, `lang`, malformed markup, one
+  `<h1>`, an unexpanded token) and the whole `comments` family (bar a `sourceMappingURL`, which names a local path) are
+  NOT applied to it: they hold the plugin's output to the plugin's form, and refusing the page now would change nothing
+  for a visitor and block the person. `checker.run` prints the `carried:` note, so the skip is never a quiet pass. A
+  tree without the key has no carried file and is judged as before.
 """
 
 import posixpath
@@ -69,7 +78,7 @@ class StructureChecks(object):
                 self.r.add(fam, rel, "file name is not URL-safe (space or reserved character)")
         for s in t.symlinks:
             self.r.add(fam, s, "a symbolic link must never be published")
-        for rel in self.content_pages:
+        for rel in self.held_pages:             # a carried page keeps its own form (the dated note)
             p = self.pages[rel]
             if not p.doctype:
                 self.r.add(fam, rel, "no <!doctype>")
@@ -80,6 +89,8 @@ class StructureChecks(object):
             if rel != "404.html" and p.h1 != 1:
                 self.r.add(fam, rel, "expected exactly one <h1>, found %d" % p.h1)
         for rel in sorted(self.pages):          # every built page, redirect stubs and the 404 page too
+            if rel in self.carried:             # never token-expanded by the build: its braces are the person's
+                continue
             for lineno, line in enumerate(t.text(rel).split("\n"), 1):
                 if _UNEXPANDED.search(line):
                     self.r.add(fam, "%s:%d" % (rel, lineno), UNEXPANDED_MESSAGE)
@@ -89,6 +100,8 @@ class StructureChecks(object):
         fam = "comments"
         n = 0
         for rel, p in self.pages.items():
+            if rel in self.carried:             # never comment-stripped by the build (the dated note)
+                continue
             n += 1
             for c in p.comments:
                 self.r.add(fam, rel, "HTML comment left in the published page (%d characters)" % len(c))
@@ -97,7 +110,9 @@ class StructureChecks(object):
                     self.r.add(fam, rel, "CSS comment left in an inline <style>")
         for rel in sorted(self.t.files):
             low = rel.lower()
-            if low.endswith(".css"):
+            if rel in self.carried:
+                pass
+            elif low.endswith(".css"):
                 n += 1
                 css = self.t.text(rel)
                 if _CSS_COMMENT.search(css.replace("/*# sourceMappingURL", "/*#sourceMappingURL")):

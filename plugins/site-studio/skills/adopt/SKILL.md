@@ -169,7 +169,8 @@ then writes an equivalent page at the same address. A refresh page that is more 
 elsewhere) stays a hand page. The inventory and the commit list each one with its reason: read those to
 the person. If the site has a local builder, its parity will show the generated redirect page as a
 difference from the hand-made one; that is expected: the local builder does not write that page, so parity reports DIFFERENT, and the person
-decides whether to accept it with `adopt.py parity --accept`, after reading what `parity` listed (step 3).
+decides whether to accept it with `adopt.py parity --accept`, after reading what `parity` listed and
+opening the pictures `--keep` made (step 3).
 
 **Conversions that depend on the site's own builder.** The `check` and `inventory` output ends with a
 `conversions` list: each conversion, whether it is `GENERAL` (follows from site-studio's own model) or
@@ -269,13 +270,39 @@ without their labels (`cardLabels`); a number on each card (`cardNumber`) and ho
 (`cardImage.<portfolio>`: `photo`, or `cover` on a roles card), the card picture's own alt text
 (`cardAlt.<portfolio>`), a kicker line from one of the pieces' own keys (`cardKicker.<portfolio>`), an
 outbound link on each piece page (`pieceLink.<portfolio>`) and the teaser paragraph under a piece's title
-(`pieceTeaser.<portfolio>`); a back link above each piece title (`backLink`); a
+(`pieceTeaser.<portfolio>`); a back link above each piece title, one text per portfolio from 0.6.0
+(`backLink.<portfolio>`; the old site-wide `backLink` is gone); a
 menu link that goes straight to a one-piece portfolio (`menuLinks.<portfolio>`) and what that
 portfolio's index is (`onePieceIndex.<portfolio>`: a redirect page, or the listing it was); the
 heading level inside a carousel slide (`blocks.headingLevel`); whether a lone reference card sits in the
 reference grid (`blocks.loneReferenceGrid`); the home page's `<title>` form
 (`titleForm`), whether its intro holds the whole body or its first block (`introScope`) and the order of
-its parts (`partOrder`); and a portfolio's index view (`view.<portfolio>`).
+its parts (`partOrder`); and a portfolio's index view (`view.<portfolio>`: from 0.6.0 also `roles`,
+`map`, `steps` or `showcase`, offered by the keys the pieces carry).
+
+From 0.6.0 adopt also measures, each a schema-6 key (`${CLAUDE_PLUGIN_ROOT}/reference/content-model.md`): the featured
+shelf printed as each portfolio's index, group by group (`featuredView`: `flat` or `grouped`); the
+menu's first item as the site title (`nav.home`: `"title"`) and the `https:` and `mailto:` links every
+old menu holds after the built-in items (`nav.extra`); the text between a page's title and the site
+title (`titleSeparator`); per portfolio, a count on each group heading with the word after it
+(`groupCount.<portfolio>`, the words written as `labels.counts`), a card picture's alt as the piece's
+title (`cardAlt.<portfolio>`: `"title"`) and a piece's dated roles (`pieceRoles.<portfolio>`); the level
+a heading in a page's body is written at (`blocks.headings`); where each media folder is published
+(`mediaPaths.<folder>`, for `references`, `home` and `about`), and a size copy in another format
+(`sizeCopies`); and the old site's own pages served as it wrote them (`carried`, below).
+
+- **A count's word.** Which word a group's count prints with is the person's entry in
+  `labels.counts`, never a rule of the plugin (owner decision 4). Where the words cannot be written
+  (the portfolio's groups are listed in its `page.md`, and the groups use different words), the count
+  prints alone, and adopt lists that page as an ACCEPT candidate: tell the person so.
+- **`carried`** offers the pages only the old build has (the 404 page first), byte for byte, and a
+  file such as a script only when a page of the new site loads it. It never offers `CNAME`,
+  `robots.txt`, `sitemap.xml` or `.nojekyll`, a page whose addresses do not fit the path the plugin's
+  build is served at (its reason says to carry it after cutover), or a page only an uncommitted file
+  makes. A carried page does not change when the site does (a new menu item will not appear on it);
+  every build says so, and the first build after the site's address changes stops until its addresses
+  are corrected. Tell the person both before they keep one. To keep a page that differs as written:
+  `adopt.py setting carried <path>`.
 
 - **How a value is chosen.** adopt builds the plugin's side once per candidate and compares only the
   pages that setting can change. It keeps the first value that makes those pages equal (or markup-only),
@@ -303,9 +330,14 @@ its parts (`partOrder`); and a portfolio's index view (`view.<portfolio>`).
 
 **The look.** When the plugin's own markup does not match the old site's, adopt derives a look from the
 old builder's own pages and the converted content (`site/looks/derived.json`, the same work as
-`/site-studio:look derive`) and keeps it only if parity then measures no visitor-visible difference.
-A construct it cannot map keeps the plugin's own markup and is reported as `look/unmapped/<construct>`
-or `look/ambiguous/<construct>`. **Measured on the plugin's template fixture, this version's derive maps
+`/site-studio:look derive`). From 0.6.0 the look is **kept per construct**, never refused whole: it
+answers only for what it loses that the plugin's own look shows. A construct that loses content is
+dropped (listed `look: <construct> dropped: loses content`) and the rest of the look is kept. What
+neither look prints is listed once, "the plugin's build does not print: <page>, <what>", and becomes an
+ACCEPT candidate. The look's row ends with how many constructs mapped and the share of the old pages'
+class names that are on the new pages, under the derived look and under the plugin's ("62% against
+9%"). A construct it cannot map keeps the plugin's own markup and is reported as `look/unmapped/<construct>`
+or `look/ambiguous/<construct>`, with the reason and the first page that held it. **Measured on the plugin's template fixture, this version's derive maps
 every construct the fixture uses**, and the only visible difference left is the page descriptions a
 search result shows (named for the person to accept). What a real site needs is not known until adopt
 runs on it; say that plainly. A construct derive cannot map is a limit of this version, not something
@@ -351,15 +383,42 @@ side**. Neither build touches the repo.
   class, listed after the body differences and never in place of one: a page with both shows both. A file with
   more hunks than are listed says how many it did not list. A path present in only one build is listed as it
   always was. An ignored file in the working copy is named when it is the likely cause. Show every
-  difference. `adopt.py parity --keep <dir>` leaves the two builds in `<dir>/local` and `<dir>/plugin` as the
-  builders wrote them, so a difference can be opened and read (`<dir>` must not exist, or be empty, and must be
-  outside the repo). If the person accepts the differences, so the build becomes the plugin's, run
-  `adopt.py parity --accept`. It accepts only what an earlier `parity` on the same commit already showed:
-  it prints those differences (one line per cause) before it records `ACCEPTED`. If you run it before the
-  person has seen them (no earlier `parity` on this commit, or the differences are not the ones the last
-  run showed), it lists the differences, records `DIFFERENT`, says it did not accept, and the person is asked
-  again; run `parity --accept` once more to accept exactly those. Otherwise the local
-  builder is kept and the agents and commands can still be archived.
+  difference. The causes are printed under two headings, **"a visitor sees"** and **"no visitor sees
+  (does not block)"**; read the first to the person as what they would accept.
+- **ACCEPT candidates.** `parity` ends with one list: every visible difference no setting, look or
+  carried page removed, one row per page that differs (or that only one build has), per address no
+  longer served, and per file no old page links. Each page row says what the person can do about that
+  page alone: keep it as written (`adopt.py setting carried <path>`), or keep their builder.
+- **The pictures.** `adopt.py parity --keep <dir>` leaves the two builds in `<dir>/local` and
+  `<dir>/plugin` as the builders wrote them, and from 0.6.0 also renders every page row from each build
+  that has it, four views each (wide and narrow, light and dark), into `<dir>/shots/old` and
+  `<dir>/shots/new`, with `<dir>/shots/compare.html` showing each page old beside new. **Name the folder
+  yourself: a new one beside the repository, `../<repo name>-parity`** (with a number after it when
+  that exists), not the system's temporary folder, so it is still there when the person comes back.
+  `<dir>` must not exist, or be empty, and must be outside the repo. `--keep` is the only adopt command
+  that starts a browser (headless Chrome); plain `parity`, `check`, `inventory` and `apply` start none.
+  It prints the number of renders first, then the path of `compare.html` and every PNG's path.
+- **Give the person the path, and never say the pictures were "shown".** Reading a PNG yourself shows
+  it to nobody. Say: "the pictures are in `<path of compare.html>`: open this file, then tell me
+  whether to accept." In the desktop app the person can click the path; in a terminal, "open this file
+  in your browser". Always add the PNG paths it printed: **"if the page shows no pictures, open these
+  files"** (whether the app's pane loads the pictures beside a file outside the project is not yet
+  known).
+- **Accepting.** If the person accepts the differences, so the build becomes the plugin's, run
+  `adopt.py parity --accept --shots <dir>/shots`. It accepts the whole record at once, never page by
+  page, and only what an earlier `parity` on the same commit already showed: it prints those
+  differences (one line per cause) before it records `ACCEPTED`. It refuses, saying what to run, when
+  the ACCEPT candidates are not the ones the last `parity` stored, when no `--keep` made the pictures,
+  when a page that differs has no picture from a build that has it, or when a picture is gone or
+  changed since it was made (then run `--keep` again, into a new folder). If you run it before the
+  person has seen them (no earlier `parity` on this commit, or the differences are not the ones the
+  last run showed), it lists the differences, records `DIFFERENT`, says it did not accept, and the
+  person is asked again. **Without a browser on the machine** no picture can be made: `--keep` stores
+  `chrome-not-found`, and `--accept` then records "accepted without pictures: chrome-not-found", once
+  the differences have been printed as text, and only while the machine still has no browser. **A
+  browser that is installed and will not start** (running as root, or a Linux sandbox restriction) is a
+  refusal with the cause and the fix, never an accept without pictures. Otherwise the local builder is
+  kept and the agents and commands can still be archived.
 - **UNVERIFIED** (no Node on this computer, the local builder failed, or the plugin build
   refused): never a pass, and the local builder stays. When the plugin build refuses, parity lists what
   it needs in the same `path:line` and fix form `check` prints.
@@ -496,7 +555,9 @@ Configuration the conversion changes, for you to show as a diff:
   mechanical fixes listed under "Problems in what adopt would write", each of which is a line of
   the commit. A meta-refresh page it converted becomes a `redirects` entry, and the kind the person
   confirmed (`hub` or `custom`) becomes `siteKind`. It is written at the lowest schema the converted
-  site needs (up to 4), and the inventory says when it is more than 1 and why.
+  site needs (up to 6: a measured setting from 0.6.0 is a schema-6 key, which a copy of the plugin
+  older than 0.6.0 on another computer refuses with "update site-studio"), and the inventory says when
+  it is more than 1 and why.
 - **`.site-studio/adopt-parity.json`:** the parity verdict (`EQUAL`, `MARKUP-ONLY`, `ACCEPTED`,
   `DIFFERENT`, `UNVERIFIED` or `NOT APPLICABLE`), the basis commit and each difference, with no date.
   `/site-studio:publish` reads it (see "7. After apply: the publish gate").
@@ -568,9 +629,14 @@ stops, with a sentence that is true of that verdict and names a way out that wor
   Without node, an adopted site with a builder cannot be published by site-studio.
 - **MARKUP-ONLY**: the pages differ only in markup a visitor does not see. It passes. For a class, `data-*`
   or added `id` difference, each publish checks again that no stylesheet or script now names what differs.
-  Two kinds of difference are judged invisible once, at measure time, and are not re-checked at publish:
+  Three kinds of difference are judged invisible once, at measure time, and are not re-checked at publish:
   - whitespace a browser collapses between block elements;
-  - a `noopener` or `noreferrer` `rel` on a link that opens in the same window.
+  - a `noopener` or `noreferrer` `rel` on a link that opens in the same window;
+  - from 0.6.0, an `href`, `src` or `srcset` address that names the same resource in both builds
+    (rule U): the same address read from each build's own path (`./` against `../work/` from a page
+    one folder down), the same same-site stylesheet or script with only a version in its query and
+    equal bytes, or another same-site address whose file has equal bytes. An address the old build
+    served and the new one does not is always a difference a visitor sees.
 
 An unreadable record stops it too, naming the file. No record (a site made by setup, or adopted by an older site-studio) is the old
 behaviour: nothing is read. Tell the person plainly that publishing here is held by design, not broken.
@@ -581,7 +647,12 @@ prints each difference (by cause, as `parity` does), rewrites the record and com
 `adopt.py remeasure --accept` records `ACCEPTED`, and **only after the person has just been shown the
 differences and said yes**: it prints the differences it is accepting (one line per cause) **before**
 it writes the record, so what is accepted is in front of them in the same run; it never accepts
-UNVERIFIED. For a site with no local builder at all, `--accept` means "site-studio's build replaces my
+UNVERIFIED. From 0.6.0 it needs the pictures too, by the rule `parity --accept` has: run `adopt.py
+remeasure --keep <dir>` first (the folder beside the repository, as above), give the person the path
+of `compare.html` and the PNG paths, then `adopt.py remeasure --accept --shots <dir>/shots`, which
+refuses unless those pictures are of the differences it measures now. Its commit message names the
+pictures ("pictures of <n> page(s), manifest <12 hex>") or "no pictures: chrome-not-found". For a site
+with no local builder at all, `--accept` means "site-studio's build replaces my
 site, unmeasured". It refuses in a cloud session, as adopt does. The gate runs only the one builder
 file adopt classified: any other step of the person's pipeline (a CI workflow, a hosting build) is not
 run, and the inventory says so.

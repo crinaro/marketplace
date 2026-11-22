@@ -1,0 +1,36 @@
+/* site-studio schema-6 styles (design-adopt-parity-2 0.6.0, section 4.8). Linked from a page only when the page holds a
+   plugin construct that schema 6 adds: a group heading's count, or a piece page's list of dated roles. blocks.css,
+   schema-4.css, schema-5.css and video.js keep their bytes, so these rules live in their own file, under the same rules:
+   1. the whole file is ONE cascade layer, so any style the person writes outside a layer beats it;
+   2. every selector's last compound carries an ss- class, so it can only reach an element the plugin made;
+   3. no declaration here is marked important, and nothing loads from another address.
+   Against CSS the person put in layers of their own, a rule here wins on an ss- element (the plugin's layer is declared
+   last); the person reverses that with one line at the top of their own stylesheet: @layer site-studio; */
+@layer site-studio {
+  .ss-group-count {
+    margin-left: 0.5em;
+    font-size: 0.75em;
+    font-weight: normal;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.75;
+  }
+
+  .ss-piece-roles {
+    list-style: none;
+    margin: 0.5rem 0 1rem;
+    padding: 0;
+  }
+  .ss-piece-role-current {
+    font-weight: 600;
+  }
+  .ss-piece-role {
+    display: inline;
+  }
+  .ss-piece-role-period {
+    margin-left: 0.5em;
+    font-size: 0.85em;
+    font-weight: normal;
+    font-variant-numeric: tabular-nums;
+    opacity: 0.8;
+  }
+}

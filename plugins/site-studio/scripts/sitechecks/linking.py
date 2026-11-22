@@ -25,11 +25,21 @@
                page is, NO page gets the exception. Without the repo to read, no page gets it. A listing without
                the key, a listing that links another page, an unpublished path or an external address, and any
                extra unlinked page in the same build are each still refused (test_check_site.OnePieceListing).
+
+  Dated note, 2026-11-20 (design-adopt-parity-2 sections 4.7.2 and 4.7.3, owner decision 2 (i)): a CARRIED file
+  (`site.json` `carried`, schema 6; `sitechecks/carriedpages.py`) is the person's page as their old site served it.
+  `links` HOLDS it: every address inside the site must resolve to a published file, and a root-absolute or own-host
+  address is read as `carriedpages.read_address` reads it (inside the site's current path, with that path removed;
+  one outside it, or with no site address to read it against, is `basepath`'s finding). The one thing not applied is
+  the `http://` finding: the old site served that link, and it loads nothing of this site. `reachable` EXEMPTS a
+  carried file, as it exempts the 404 page and a redirect stub: it is an address kept alive, and whether the new
+  pages still link it is a difference parity already shows. A tree without the key is judged as before.
 """
 
 import os
 import posixpath
 from configschema import frontmatter
+from sitechecks.carriedpages import SITE, read_address
 from sitechecks.kinds import FONT_EXTS, ROOT_EXEMPT, is_font_licence
 from sitechecks.tree import classify
 
@@ -45,7 +55,13 @@ class LinkChecks(object):
         n = 0
         for rel, kind, url in refs:
             n += 1
+            carried = rel in self.carried
             k, rest = classify(url, self.base)
+            if carried and k == "rootabs":      # read inside the site's path, or left to `basepath` (the dated note)
+                reading, rest = read_address(url, self.base)
+                if reading != SITE:
+                    continue
+                k = "internal"
             if kind == "meta" and k == "internal":
                 pass
             if k == "empty":
@@ -62,7 +78,7 @@ class LinkChecks(object):
                 self.r.add(fam, rel, "protocol-relative URL %s: write https://" % url)
                 continue
             if k == "external":
-                if url.lower().startswith("http://"):
+                if url.lower().startswith("http://") and not carried:
                     self.r.add(fam, rel, "insecure link %s: use https" % url)
                 if kind in ("a", "iframe", "link", "script", "img", "srcset", "css", "meta"):
                     self.r.externals.setdefault(url, set()).add(rel)
@@ -161,7 +177,8 @@ class LinkChecks(object):
                     seen.add(target)
                     queue.append(target)
         self.r.count(fam, len(self.pages) + len(self.t.files))
-        unreached = [rel for rel in self.content_pages if rel != "404.html" and rel not in seen]
+        unreached = [rel for rel in self.content_pages if rel != "404.html" and rel not in seen
+                     and rel not in self.carried]       # an address kept alive (the dated note)
         listings = self.one_piece_listings(unreached)
         for rel in unreached:
             if rel in listings:
@@ -180,7 +197,7 @@ class LinkChecks(object):
                 continue
             if is_font_licence(name) and posixpath.dirname(rel) in font_dirs:
                 continue
-            if rel in self.flagged:
+            if rel in self.flagged or rel in self.carried:
                 continue
             if rel not in self.referenced:
                 self.r.add(fam, rel, "published but not referenced by any page or stylesheet")

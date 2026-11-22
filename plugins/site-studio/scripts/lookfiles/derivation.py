@@ -32,10 +32,14 @@ from lookfiles.anchors import (
     _is_wild,
     _list_pattern,
     _node_holds,
+    _number_then_words,
+    same_target,
     _out_items,
     _own_needles,
     _sub_slot,
     _tops,
+    _unit_after,
+    _unit_slot,
     _value_items,
     _widened,
     _word_pattern,
@@ -54,7 +58,8 @@ from lookfiles.pagedom import (
     text_of,
     walk,
 )
-from lookfiles.renderlog import LIST_SEP, PLACE_PICTURES, _tree, kids_of
+from lookfiles.places import card_places, picture_places
+from lookfiles.renderlog import LIST_SEP, _tree, kids_of
 from lookfiles.templatemerge import _merge
 
 NUMBER_PARTS = frozenset((("steps-view", "number"),))       # a part a page may draw in CSS instead of printing (U-M2, U-D1)
@@ -100,10 +105,13 @@ class _Derivation(object):
             if not ints:
                 return []
             want = squash(ints[0])
+            unit = _unit_after(call)
+            fits = lambda el: page.stext(el) == want or (  # noqa: E731
+                unit is not None and _number_then_words(" ".join(text_of(el).split()), want))
             for el in walk(scope):
-                if el.tag in _STOP_UP or page.stext(el) != want:
+                if el.tag in _STOP_UP or not fits(el):
                     continue
-                if any(isinstance(k, El) and page.stext(k) == want for k in el.kids):
+                if any(isinstance(k, El) and fits(k) for k in el.kids):
                     continue
                 out.append(el)
             return out
@@ -172,6 +180,7 @@ class _Derivation(object):
         return hit
 
     def _instance(self, page, call, scope, bound):
+        self.page_key = page.key                # the page the templates below are read from (`_url_slot` resolves an address there)
         cands = self.anchors(page, scope, call, bound)
         if not cands:
             raise _Fail("unmapped", "no element of the page holds this instance's values")
@@ -214,6 +223,9 @@ class _Derivation(object):
         that element's children (`_runs_for_sharers`) instead of being refused."""
         cands, present = [], []
         for k in kids:
+            if self._place_unprinted(page, r, k):   # asked first: a host stands in the card's own address, where it would anchor
+                self.absent.add(id(k))
+                continue
             try:
                 allopts = self.instance(page, k, r, r)
             except _Fail:
@@ -261,6 +273,25 @@ class _Derivation(object):
         a teaser shares words with its own card's title and alt.)"""
         hard, soft = _full_needles(k)
         return bool(hard) and not soft and not any(_holds(page, r, [n[:_HEAD]]) for n in hard)
+
+    @staticmethod
+    def _place_unprinted(page, r, k):
+        """Is `k` a part of a card read as its PLACE's own part (rule L6: `feed.item`, `home-samples.item`) of which `r` holds
+        nothing, no word and no address? A place may print fewer of a card's lines than the card a body shows (design-adopt-parity-2
+        4.8; step 12c: `-c`'s feed prints a title and a role, its body card a picture, a host and a description too), and the place
+        part is that place's markup alone, so the line is left out of it. The site-wide card is never read so. A line's words are
+        looked for in the text (a host is a part of the card's own address, which says nothing about whether the line is printed);
+        a part found only by attributes (a picture's alt) and an address are looked for in the attributes."""
+        p = getattr(k, "parent", None)
+        if p is None or card_places().get(p.construct) != p.part:
+            return False
+        hard, soft = _full_needles(k)
+        if not (hard or soft):
+            return False
+        text, words = page.stext(r), page.words(r)
+        if any((n in words) if len(n) < 2 else (n[:_HEAD] in text) for n in hard):
+            return False
+        return not any(_holds(page, r, [s]) for s in soft + (list(hard) if _attr_only(k) else []))
 
     @staticmethod
     def _choose(cands, shared_ok):
@@ -402,6 +433,9 @@ class _Derivation(object):
                     fill = r
                 up = r.parent
                 if not _can_go(up, bound):
+                    bare = self._bare(call, r, extents)
+                    if bare is not None:
+                        return [bare]
                     raise _Fail("unmapped", "the instance and one of its parts share one element")
                 r = up
             out = self._read_variants(page, call, r, extents, bound, searchable, tight)
@@ -419,13 +453,31 @@ class _Derivation(object):
             raise failure
         return out
 
+    @staticmethod
+    def _bare(call, r, extents):
+        """The reading of a part the page does not wrap at all: its one html slot holds one part, whose extent is the element `r`, and it
+        has no value of its own to show (a card's picture, `<span class="ss-card-picture">{{image}}</span>` in the plugin, that a
+        template writes as the bare `<img>`: step 12, the `-b` career card of design-adopt-parity-2 section 9). Its template is the slot
+        alone; None where the part holds anything else."""
+        hard, soft = _own_needles(call)
+        slots = [s for s in call.slot_order() if call.table[s] == looks.HTML and call.values.get(s)]
+        if hard or soft or len(slots) != 1 or len(extents) != 1:
+            return None
+        items = _value_items(call, slots[0])
+        (kid_id, (tm, ext)), = extents.items()
+        if ext is not r or len(items) != 1 or items[0][0] != "kid" or id(items[0][1]) != kid_id or items[0][1].construct != "image":
+            return None                         # only a picture's own wrapper: a list of one is still read as its list (`_read_variants`)
+        tmaps = dict(tm)
+        tmaps[id(call)] = ("{{%s}}" % slots[0], False)
+        return tmaps, r
+
     def _read_variants(self, page, call, r, extents, bound, searchable, tight):
         variants = [(r, extents)]
         cur = r
         beside = _fixed_beside(call)
-        # a place's own picture part (`renderlog.PLACE_PICTURES`) is its `<img>`: a wrapper around it is the place's item's markup, as
+        # a place's own picture part (`places.picture_places`) is its `<img>`: a wrapper around it is the place's item's markup, as
         # it is around the site-wide picture the part stands in for
-        while len(variants) < 3 and not (call.part == "image" and (call.construct, "item") in PLACE_PICTURES):
+        while len(variants) < 3 and not (call.part == "image" and (call.construct, "item") in picture_places()):
             up = cur.parent
             if (not _can_go(up, bound)
                     or any(isinstance(k, Tx) and k.data.strip() for k in up.kids)):
@@ -550,6 +602,9 @@ class _Derivation(object):
                 self._text_slot(root, slot, str(v), inside, attrs_only=slot not in call.used)
             elif kind in (looks.URL, looks.CONTACT, looks.SRCSET, looks.EMBED, looks.POSITION):
                 self._url_slot(root, slot, kind, str(v))
+        unit = _unit_after(call)
+        if unit is not None:
+            _unit_slot(root, unit[0], unit[1])
         return ser(root), flags, fixed
 
     def _replace_run(self, root, slot, items, kid_copy, inside, flags, fixed):
@@ -690,13 +745,19 @@ class _Derivation(object):
         return None
 
     def _url_slot(self, root, slot, kind, value):
+        """Write `slot` where an attribute holds the address `value`. A link (`href`) whose text differs but that names the same page
+        from this page (`./` and `../work/` on `work/index.html`: `anchors.same_target`) is the slot too, and only where no attribute
+        holds the value as written: the plugin writes its own form of the address, which reads as the same resource (step 12; a
+        literal address there would send every page's current item to one page, step 10c's F18)."""
+        exact = any(val is not None and val.strip() == value.strip() for el in walk(root) if not _drawn(el) for _n, val in el.attrs)
         for el in walk(root):
             if _drawn(el):
                 continue
             for i, (name, val) in enumerate(el.attrs):
                 if val is None:
                     continue
-                same = val.strip() == value.strip()
+                same = val.strip() == value.strip() or (
+                    not exact and name == "href" and kind in (looks.URL, looks.CONTACT) and same_target(self.page_key, val, value))
                 if kind in (looks.URL, looks.CONTACT) and name in ("href", "src", "cite") and same:
                     el.attrs[i] = (name, "{{%s}}" % slot)
                 elif kind == looks.SRCSET and name == "srcset" and same:

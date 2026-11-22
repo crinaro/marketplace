@@ -1,6 +1,7 @@
 """The token table and the text helpers a page is expanded with: which tokens exist and where, comment
 stripping, NFC, relative links between output pages."""
 
+import hashlib
 import posixpath
 import re
 import unicodedata
@@ -29,14 +30,31 @@ TOKEN_RE = _TOKEN       # the one token syntax: adopt reads it from here, so it 
 #            section 6.1); the argument names the part, and a part the page does not have is refused
 #   layout   a value the layout alone receives
 TOKEN_SCOPES = {
-    "siteUrl": "value", "siteTitle": "value", "name": "value", "year": "value", "root": "value",
+    "siteUrl": "value", "siteTitle": "value", "name": "value", "year": "value", "root": "value", "assetVersion": "value",
     "nav": "nav", "navLinks": "nav", "link": "link", "featured": "featured", "home": "home",
     "title": "layout", "pageTitle": "layout", "description": "layout", "content": "layout",
 }
 
 # The schema a token is first read at (template-fidelity 1.4, design section 3.2): below it the token is
-# unknown, as it was in 0.3.x. A token not named here is read at every schema.
-TOKEN_SINCE = {"navLinks": 4}
+# unknown, as it was in 0.3.x. A token not named here is read at every schema. `assetVersion` is schema 6's
+# (design-adopt-parity-2 section 3.2): ten hex digits that change when a `site/src` stylesheet or script does
+# (`asset_version`), for a layout that writes `site.css?v={{assetVersion}}`.
+TOKEN_SINCE = {"navLinks": 4, "assetVersion": 6}
+
+ASSET_EXTS = (".css", ".js", ".mjs")
+ASSET_VERSION_DIGITS = 10
+
+
+def asset_version(served):
+    """`{{assetVersion}}` (schema 6): the first ten hex digits of the sha256 of the bytes the build serves for every
+    `site/src` stylesheet and script (`.css`, `.js`, `.mjs`), in path order. `served` is {source path: the bytes the build
+    publishes for it}; any other path in it (a page, a piece, `site.json`) is not read, so the value changes when one
+    byte of a stylesheet or script does, and only then. Path order, not the order of `served`, so the same files give the
+    same value whatever order the disk lists them in."""
+    h = hashlib.sha256()
+    for path in sorted(p for p in served if p.startswith("site/src/") and p.lower().endswith(ASSET_EXTS)):
+        h.update(served[path])
+    return h.hexdigest()[:ASSET_VERSION_DIGITS]
 
 # The size-copy namings schema 3 reads IN ADDITION to `<stem>-<w>w.<ext>` (design-site-fidelity section 5.3, I-3):
 # a copy sits beside its original and its file keeps its name and its public URL, so nothing is renamed and no

@@ -81,6 +81,11 @@ from contentmodel.grammar import _INLINE, _HEADING, _ULI, _OLI, _REFLINE, _IMGLI
 from contentmodel.blockbase import _BlockBase
 from contentmodel.blockkinds import _BlockKinds
 
+# The value of `video-embed.wrap`'s open slot `title` (design-adopt-parity-2 section 4.8): a bare video line's caption
+# when it has one, else this word. Probe P-V (where a video's caption is written) was answered `default`, so 0.6.0 reads
+# no caption and the value is the word the default look's own `title="Video"` literal has printed since 0.3.1.
+VIDEO_TITLE = "Video"
+
 
 def _load_portfolio_head(name, files, cfg, folder, page_path):
     """The folder checks, the page.md and the settings of one portfolio, as a `Portfolio` with no pieces."""
@@ -367,7 +372,7 @@ class _Renderer(_BlockBase, _BlockKinds):
                 continue
             src = video_embed(line.strip())
             if src:
-                out.append(self.r("video-embed", "wrap", {"embed": src}, nums[i]))
+                out.append(self.r("video-embed", "wrap", self.video_values(src), nums[i]))
                 i += 1
                 continue
             m = _REFLINE.match(line)
@@ -411,6 +416,17 @@ class _Renderer(_BlockBase, _BlockKinds):
                     i += 1
                 out.append("<p>%s</p>" % render_inline(" ".join(para), env, where))
         return out
+
+    def video_values(self, src):
+        """The values of a bare video line's `video-embed.wrap`: the embed address, and the open slot `title` (0.6.0,
+        `VIDEO_TITLE`) where the look in force places it. The bare line has no caption to read (probe P-V: `default`),
+        so the title is a constant, the word the default look writes as a literal; it is given only where a look's
+        part holds `{{title}}`, so a look derived from a page whose iframe says `title="Video"` keeps the literal and
+        needs no newer release (a constant value has nothing for derive to read)."""
+        values = {"embed": src}
+        if "{{title}}" in looks.part_markup("video-embed", "wrap", self.look):
+            values["title"] = VIDEO_TITLE
+        return values
 
     def card(self, heading, body, n):
         """One role card: `Role · Organisation` heading text, or just a role when it holds no separator."""

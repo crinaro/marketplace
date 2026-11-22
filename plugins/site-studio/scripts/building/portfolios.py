@@ -9,7 +9,7 @@ from configschema import configkeys
 
 import looks
 
-from building import pictures, stepsview
+from building import grouping, piecehead, pictures, stepsview
 from building.outcomes import BuildError
 from building.tokens import rel_link
 
@@ -90,8 +90,9 @@ class _Portfolios(object):
                              path=piece.source, fix="put the image in %s/media/ and name it as media/<file>" % piece.folder)
         return full, self.media_out[full]
 
-    def cards_html(self, pieces, from_out):
-        return self.r("cards", "wrap", {"items": "".join(self.card_html(p, from_out) for p in pieces)})
+    def cards_html(self, pieces, from_out, group=""):
+        """The cards of `pieces` in `cards.wrap`; `group` (schema 6's open slot) is the group's own value, "" outside a group."""
+        return self.r("cards", "wrap", {"items": "".join(self.card_html(p, from_out) for p in pieces), "group": group})
 
     # ---- the pages
     def build_portfolios(self):
@@ -110,14 +111,8 @@ class _Portfolios(object):
             return
         if st["view"] in configkeys.V4_PAGE_VIEWS + configkeys.V5_PAGE_VIEWS:     # roles, map, showcase (4), steps (5)
             cards = self.views().index_html(self, pf, out)
-        elif st["groupBy"]:
-            body = []
-            for g in st["groups"]:
-                ps = [p for p in pf.pieces if p.meta.get(st["groupBy"]) == g]
-                if ps:
-                    body.append(self.r("group", "wrap", {"title": st["labels"]["groups"].get(g, g),
-                                                         "cards": self.cards_html(ps, out)}))
-            cards = "".join(body)
+        elif st["groupBy"]:            # each group through `group.wrap`; its count only under `groupCount` (schema 6)
+            cards = grouping.groups_html(self, pf, pf.pieces, out)
         else:
             cards = self.cards_html(pf.pieces, out) if pf.pieces else ""
         intro = self.markdown(pf.intro, pf.page_source or "content/%s" % pf.slug, out,
@@ -182,6 +177,7 @@ class _Portfolios(object):
                                                 "portfolio": pf.slug,
                                                 "group": group if isinstance(group, str) else "",
                                                 "teaser": self.piece_teaser(piece, out),     # first: it prints first
-                                                "link": self.piece_link(piece, out)}, piece.source),
+                                                "link": self.piece_link(piece, out),
+                                                "roles": piecehead.roles_slot(self, piece, out)}, piece.source),
                        image_out=cover[1] if cover else None, og_type="article",
                        lastmod_src=piece.folder)

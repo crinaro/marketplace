@@ -9,6 +9,8 @@ are the same objects whichever module a caller reads them from.
     ASSET_KINDS         the plugin output files a look's `assets` may keep linked
     CONSTRUCTS          construct id -> {"first": release, "parts": part -> slot name -> slot kind}
     PART_FIRST          a part added to a construct that already existed, with its release
+    PLACE_PARTS         a per-place part that renders what a site-wide construct's part renders, in one place:
+                        {(place construct, part): (site-wide construct, part)}; it takes that part's slots
     SLOT_FIRST          a GATED slot added to a part that already existed (rule L3a), with its release and the
                         schema-N trigger without which the build fills it with ""
     OPEN_SLOT_FIRST     an UNGATED slot added to a part that already existed, with its release: always filled, so no
@@ -38,8 +40,9 @@ SLOT_KINDS = (TEXT, HTML, URL, SRCSET, POSITION, INT, EMBED, CONTACT)
 
 # The plugin's own output files a look's `assets` may keep linked (R5.2). `css` and `js` are 0.3.1's
 # `site-studio/blocks.css` and `site-studio/video.js`; `schema-4` is 0.4.0's `site-studio/schema-4.css`; `schema-5` is
-# 0.5.0's `site-studio/schema-5.css`, linked only by the five 0.5.0 constructs (design-movement-view section 4.2).
-ASSET_KINDS = ("css", "js", "schema-4", "schema-5")
+# 0.5.0's `site-studio/schema-5.css`, linked only by the five 0.5.0 constructs (design-movement-view section 4.2);
+# `schema-6` is 0.6.0's `site-studio/schema-6.css`, linked only by the two 0.6.0 constructs (design-adopt-parity-2 4.8).
+ASSET_KINDS = ("css", "js", "schema-4", "schema-5", "schema-6")
 
 
 # --------------------------------------------------------------------------------- the construct table
@@ -59,6 +62,9 @@ def _c(first, **parts):
 # picture has none for is left out, as the site-wide construct's smaller parts leave it out.
 PLACE_IMAGE_SLOTS = {"src": URL, "alt": TEXT, "width": INT, "height": INT, "srcset": SRCSET, "sizes": TEXT,
                      "focus": POSITION}
+# The slots of `reference-card.wrap`, which the 0.6.0 place parts `feed.item` and `home-samples.item` take (PLACE_PARTS):
+# one object, so a place part can never hold a slot the site-wide part lacks, nor lack one it has.
+REFERENCE_CARD_SLOTS = {"url": URL, "image": HTML, "title": TEXT, "site": HTML, "description": HTML, "role": HTML}
 
 CONSTRUCTS = {
     # ---- 0.3.1: every construct its code builds (content.py `_Renderer`, build.py `_Builder`)
@@ -74,7 +80,7 @@ CONSTRUCTS = {
         "item-poster": {"url": URL, "embed": EMBED, "image": HTML, "title": TEXT, "kind": TEXT},
         "item": {"url": URL, "embed": EMBED, "title": TEXT, "host": TEXT, "kind": TEXT}}},
     "carousel": {"first": "0.3.1", "parts": {"wrap": {"items": HTML, "label": TEXT}, "item": {"body": HTML}}},
-    "video-embed": {"first": "0.3.1", "parts": {"wrap": {"embed": EMBED}}},
+    "video-embed": {"first": "0.3.1", "parts": {"wrap": {"embed": EMBED, "title": TEXT}}},
     "figure": {"first": "0.3.1", "parts": {"wrap": {"image": HTML, "caption": HTML}, "caption": {"text": TEXT}}},
     "image": {"first": "0.3.1", "parts": {"plain": {"src": URL, "alt": TEXT},
         "sized": {"src": URL, "alt": TEXT, "width": INT, "height": INT},
@@ -87,30 +93,34 @@ CONSTRUCTS = {
         "sized": {"src": URL, "alt": TEXT, "width": INT, "height": INT},
         "sized-set": {"src": URL, "alt": TEXT, "width": INT, "height": INT, "srcset": SRCSET, "sizes": TEXT}}},
     "reference-card": {"first": "0.3.1", "parts": {
-        "wrap": {"url": URL, "image": HTML, "title": TEXT, "site": HTML, "description": HTML, "role": HTML},
+        "wrap": REFERENCE_CARD_SLOTS,
         "site": {"text": TEXT}, "description": {"text": TEXT}, "role": {"text": TEXT}}},
     "reference-grid": {"first": "0.3.1", "parts": {"wrap": {"items": HTML}}},
     "card": {"first": "0.3.1", "parts": {
         "wrap": {"url": URL, "image": HTML, "title": TEXT, "teaser": HTML, "meta": HTML, "number": HTML,
             "kicker": HTML, "fullTitle": TEXT},
         "teaser": {"text": TEXT}, "meta": {"text": TEXT}, "number": {"n": INT}}},
-    "cards": {"first": "0.3.1", "parts": {"wrap": {"items": HTML}}},
-    "group": {"first": "0.3.1", "parts": {"wrap": {"title": TEXT, "cards": HTML}}},
+    "cards": {"first": "0.3.1", "parts": {"wrap": {"items": HTML, "group": TEXT}}},
+    "group": {"first": "0.3.1", "parts": {"wrap": {"title": TEXT, "cards": HTML, "count": HTML, "group": TEXT}}},
     "portfolio": {"first": "0.3.1", "parts": {
         "wrap": {"title": TEXT, "tagline": HTML, "intro": HTML, "cards": HTML, "slug": TEXT}}},
     "piece": {"first": "0.3.1", "parts": {
         "wrap": {"title": TEXT, "meta": HTML, "body": HTML, "back": HTML, "slug": TEXT, "portfolio": TEXT,
-            "group": TEXT, "link": HTML, "teaser": HTML}}},
+            "group": TEXT, "link": HTML, "teaser": HTML, "roles": HTML}}},
     "meta-list": {"first": "0.3.1", "parts": {"wrap": {"items": HTML}, "item": {"name": TEXT, "value": TEXT}}},
-    "nav": {"first": "0.3.1", "parts": {"wrap": {"items": HTML}, "item": {"url": URL, "label": TEXT},
-        "item-current": {"url": URL, "label": TEXT}, "link": {"url": URL, "label": TEXT},
-        "link-current": {"url": URL, "label": TEXT}}},
+    # `nav.item` and `nav.link` take a `contact` url (0.6.0): a `nav.extra` item (schema 6) may be a mailto: address and
+    # renders through them; every built-in item is a relative link, which a contact slot prints as a url slot does
+    "nav": {"first": "0.3.1", "parts": {"wrap": {"items": HTML}, "item": {"url": CONTACT, "label": TEXT},
+        "item-current": {"url": URL, "label": TEXT}, "link": {"url": CONTACT, "label": TEXT},
+        "link-current": {"url": URL, "label": TEXT}, "brand": {"url": URL, "label": TEXT},
+        "brand-current": {"url": URL, "label": TEXT}, "item-section": {"url": URL, "label": TEXT},
+        "link-section": {"url": URL, "label": TEXT}}},
     "contact": {"first": "0.3.1", "parts": {"wrap": {"items": HTML}, "heading": {},
         "item-mail": {"label": TEXT, "href": CONTACT, "text": TEXT},
         "item-link": {"label": TEXT, "url": URL, "text": TEXT}, "item-text": {"label": TEXT, "text": TEXT}}},
     "photo": {"first": "0.3.1", "parts": {"wrap": {"image": HTML}}},
     "endorsement": {"first": "0.3.1", "parts": {"wrap": {"quote": TEXT, "by": HTML}, "by": {"who": TEXT}}},
-    "feed": {"first": "0.3.1", "parts": {"wrap": {"grid": HTML}}},
+    "feed": {"first": "0.3.1", "parts": {"wrap": {"grid": HTML}, "item": REFERENCE_CARD_SLOTS}},
     "home": {"first": "0.3.1", "parts": {"wrap": {"title": TEXT, "body": HTML, "eyebrow": HTML, "role": HTML},
         "intro": {"photo": HTML, "intro": HTML, "endorsement": HTML}, "featured": {"cards": HTML},
         "eyebrow": {"text": TEXT}, "role": {"text": TEXT}}},
@@ -142,7 +152,7 @@ CONSTRUCTS = {
     "home-showcase": {"first": "0.4.0", "parts": {"wrap": {"items": HTML},
         "item": {"url": URL, "image": HTML, "role": HTML, "title": TEXT, "kicker": HTML, "fullTitle": TEXT},
         "role": {"text": TEXT}, "image": PLACE_IMAGE_SLOTS}},
-    "home-samples": {"first": "0.4.0", "parts": {"wrap": {"items": HTML}}},
+    "home-samples": {"first": "0.4.0", "parts": {"wrap": {"items": HTML}, "item": REFERENCE_CARD_SLOTS}},
     "home-links": {"first": "0.4.0", "parts": {"wrap": {"items": HTML}, "item": {"url": URL, "label": TEXT}}},
     # ---- 0.5.0 (design-movement-view section 4.2): new plugin markup lives in new constructs only, each linking
     # `schema-5.css` by its own `assets` entry. A value printed inside an existing part reaches it through a gated slot
@@ -155,6 +165,13 @@ CONSTRUCTS = {
     "card-picture": {"first": "0.5.0", "parts": {"wrap": {"image": HTML}}},
     "piece-link": {"first": "0.5.0", "parts": {"wrap": {"url": URL, "label": TEXT}}},
     "piece-teaser": {"first": "0.5.0", "parts": {"wrap": {"text": TEXT}}},
+    # ---- 0.6.0 (design-adopt-parity-2 section 4.8), under 0.5.0's rule: the two new constructs each link
+    # `schema-6.css` by their own `assets` entry, and reach an existing part through a gated slot (`group.wrap` `count`,
+    # `piece.wrap` `roles`), filled only under that row's schema-6 trigger.
+    "group-count": {"first": "0.6.0", "parts": {"wrap": {"n": INT, "unit": TEXT}}},
+    "piece-roles": {"first": "0.6.0", "parts": {"wrap": {"items": HTML},
+        "item": {"title": TEXT, "period": HTML}, "item-current": {"title": TEXT, "period": HTML},
+        "period": {"text": TEXT}}},
 }
 
 # A part added to a construct that already existed, with the release that added it. Anything not named
@@ -165,6 +182,22 @@ PART_FIRST = {
     ("nav", "link"): "0.4.0", ("nav", "link-current"): "0.4.0",
     ("home", "eyebrow"): "0.4.0", ("home", "role"): "0.4.0",
     ("home-showcase", "image"): "0.5.0",
+    ("nav", "brand"): "0.6.0", ("nav", "brand-current"): "0.6.0",
+    ("nav", "item-section"): "0.6.0", ("nav", "link-section"): "0.6.0",
+    ("feed", "item"): "0.6.0", ("home-samples", "item"): "0.6.0",
+}
+
+# A place part (design-adopt-parity-2 section 4.8; it generalises 0.5.0's `lookfiles/renderlog.py` `PLACE_PICTURES`):
+# {(place construct, part): (site-wide construct, part)}. The place part has exactly the site-wide part's slots and is an
+# `OPTIONAL_PARTS` part: where a site's look writes it, what the site-wide part renders in that place renders through
+# it; where it does not, the place renders through the site-wide part as before. Read by the build (which part to render
+# through), by derive (which reading to try when the site-wide one is unmapped or ambiguous) and by `looks.needs` (a slot
+# of a place part needs what the same slot of the site-wide part needs).
+PLACE_PARTS = {
+    ("steps-view", "image"): ("image", "sized-set-pos"),
+    ("home-showcase", "image"): ("image", "sized-set-pos"),
+    ("feed", "item"): ("reference-card", "wrap"),
+    ("home-samples", "item"): ("reference-card", "wrap"),
 }
 
 # Rule L3a (design-movement-view section 4.3; OURS, amends 0.4.0 L3): a slot added to a part that already existed,
@@ -182,6 +215,8 @@ SLOT_FIRST = {
     ("piece", "wrap", "teaser"): ("0.5.0", "pieceTeaser"),
     ("showcase-view", "item", "kicker"): ("0.5.0", "cardKicker"),
     ("home-showcase", "item", "kicker"): ("0.5.0", "cardKicker"),
+    ("group", "wrap", "count"): ("0.6.0", "groupCount"),
+    ("piece", "wrap", "roles"): ("0.6.0", "pieceRoles"),
 }
 
 # Step G (O4a; coordinator 2026-11-19): an UNGATED slot added to a part that already existed, {(construct, part, slot):
@@ -193,11 +228,21 @@ OPEN_SLOT_FIRST = {
     ("card", "wrap", "fullTitle"): "0.5.0",
     ("showcase-view", "item", "fullTitle"): "0.5.0",
     ("home-showcase", "item", "fullTitle"): "0.5.0",
+    # 0.6.0 (design-adopt-parity-2 section 4.8): the group's own value (for a class such as `t-grid-{{group}}`; empty
+    # outside a group), and the bare video line's title (its caption when it has one, else `Video`: the default look
+    # keeps its literal `title="Video"`, so its bytes do not move).
+    ("cards", "wrap", "group"): "0.6.0",
+    ("group", "wrap", "group"): "0.6.0",
+    ("video-embed", "wrap", "title"): "0.6.0",
 }
 
 # Step G (O2, O3): parts the default look has NO entry for. A site's own look may write one; where it does not, the
 # place renders exactly as before the part existed (the separator " / ", the site-wide `image` construct).
-OPTIONAL_PARTS = frozenset((("steps-view", "role-sep"), ("steps-view", "image"), ("home-showcase", "image")))
+# 0.6.0 adds the four nav parts of design-adopt-parity-2 section 4.5 and the two reference-card place parts (4.8).
+# `tiles.item-first` is NOT built: probe P-A was answered `default` (the group file), so the set-apart tile is an ACCEPT.
+OPTIONAL_PARTS = frozenset((("steps-view", "role-sep"), ("steps-view", "image"), ("home-showcase", "image"),
+                            ("nav", "brand"), ("nav", "brand-current"), ("nav", "item-section"),
+                            ("nav", "link-section"), ("feed", "item"), ("home-samples", "item")))
 # Parts that are literal text and nothing else (no slot: the table gives none; no element: `looks.check_part`).
 TEXT_ONLY_PARTS = frozenset((("steps-view", "role-sep"),))
 # The slots of PLACE_IMAGE_SLOTS a picture may have no value for, so the build may leave them unfilled (`img_tag` fills

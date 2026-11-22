@@ -156,6 +156,75 @@ def _v5_value_problem(key, val, path, media_paths):
     return None
 
 
+def _role_fault(s):
+    """The phrase that says what is wrong with one stripped dated-role text, or None when it is well formed: empty, on
+    more than one line, a closing parenthesis it never opens, an unclosed parenthesis, an empty title. A phrase, not a
+    refusal: `_roles_problem` prints it inside the refusal that names the piece and the fix."""
+    if not s:
+        return "an empty role"
+    if "\n" in s:
+        return "a role on more than one line"
+    at = s.rfind("(")
+    if at < 0:
+        return ("'%s' closes a parenthesis it never opens" % s) if ")" in s else None
+    inner = s[at + 1:]
+    if not inner.endswith(")") or ")" in inner[:-1]:
+        return "'%s' has an unclosed parenthesis" % s
+    if not s[:at].strip():
+        return "'%s' has an empty title" % s
+    return None
+
+
+def role_entry(text):
+    """(title, dates or None) of one dated role, `Title (dates)` (design-adopt-parity-2 section 4.4): the text before the
+    last opening parenthesis, and what is inside it; an entry with no parenthesis has no dates. Raises ValueError, with
+    the phrase `_role_fault` gives, for an unclosed parenthesis (or a closing one with no opening one) and for an empty
+    title."""
+    s = text.strip() if isinstance(text, str) else ""
+    why = _role_fault(s)
+    if why:
+        raise ValueError(why)
+    at = s.rfind("(")
+    if at < 0:
+        return s, None
+    return s[:at].strip(), s[at + 1:-1].strip() or None
+
+
+def role_entries(value):
+    """The dated roles of a piece's `role` under `pieceRoles`, [(title, dates or None)] in the order written: a list of
+    entries, or one line read as one entry (a `;` in it is not a separator: adopt converts the one-line form to a list).
+    Raises ValueError, with the phrase to print, for any malformed entry, naming it."""
+    items = value if isinstance(value, list) else [value]
+    why = None if items else "an empty list"
+    if why:
+        raise ValueError(why)
+    return [role_entry(x) for x in items]
+
+
+def _roles_problem(key, meta):
+    """What is wrong with a `V6_PIECE_KEYS` value under `pieceRoles`, as a phrase, or None: `role` must be well-formed
+    dated roles (`role_entries`), `current` true or false, and `currentRole` a whole number from 1 that is not larger
+    than the number of roles (design-adopt-parity-2 section 4.4)."""
+    val = meta[key]
+    if key == "role":
+        try:
+            role_entries(val)
+        except ValueError as e:
+            return "must be a list of roles, each Title (dates): %s" % e
+        return None
+    if key == "current":
+        return None if isinstance(val, bool) else "must be true or false"
+    if isinstance(val, bool) or not isinstance(val, int) or val < 1:
+        return "must be a whole number from 1 (which entry of role is the current one)"
+    try:
+        n = len(role_entries(meta["role"])) if "role" in meta else 0
+    except ValueError:
+        return None          # the role entry is refused on its own line
+    if val > n:
+        return "names role %d, and the piece holds %d role(s)" % (val, n)
+    return None
+
+
 def _kicker_problem(val):
     """A kicker's value: text, a number, or a list of them."""
     def one(v):
@@ -167,7 +236,9 @@ def _kicker_problem(val):
 
 
 def _check_v5_piece_keys(portfolio, meta, path, media_paths):
-    """Rule 6 of design-movement-view section 3.1: under a schema-5 trigger of the piece's own portfolio, a value that is
+    """Rule 6 of design-movement-view section 3.1, and the same rule for schema 6's `pieceRoles` (design-adopt-parity-2
+    section 4.4: a malformed dated role and a `currentRole` beyond the list are refused naming the piece): under a
+    schema-5 or schema-6 trigger of the piece's own portfolio, a value that is
     not what its key now means is refused with the way out ("move that value to another key and list the new key in
     meta, or remove <trigger>"), and a `meta` or `cardMeta` list naming a key the trigger reads is refused (the build
     shows it already). Without a trigger nothing here runs: the key is what it was in 0.4.x."""
@@ -188,12 +259,16 @@ def _check_v5_piece_keys(portfolio, meta, path, media_paths):
     for key in sorted(read):
         if key not in meta:
             continue
+        trigger = read[key][0]
         if key == kicker and read[key] == ("cardKicker",):
             problem = _kicker_problem(meta[key])
+        elif "pieceRoles" in read[key]:
+            trigger = "pieceRoles"
+            problem = _roles_problem(key, meta)
         else:
             problem = _v5_value_problem(key, meta[key], path, media_paths)
         if problem:
-            trig = _trigger_text(read[key][0], settings)
+            trig = _trigger_text(trigger, settings)
             raise ContentError("%s: front matter '%s' %s, because %s reads it" % (path, key, problem, trig), path=path,
                                fix="move that value to another key and list the new key in meta, or remove %s" % trig)
 

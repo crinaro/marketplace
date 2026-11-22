@@ -110,6 +110,10 @@ def disposition_of(path, ev):
       plugin      set of paths the plugin's build attributes
       unsettled   set of paths neither measurement could settle (counterfactual cap, no measurement)
       measured    False when rules 5 to 9 cannot run (no node, a builder that fails): those files stay undisposed
+      state       {path: why} (optional): builder state, which the old builder stops without and publishes nothing from
+                  (rule S3, `adoption.served`): `engine`
+      unusedWhy   {path: why} (optional): source material no page shows (rules S2, S3): `archived` with that note (rule
+                  `unused`), never a blocker
 
     Returns ("undisposed", why) for what cannot be measured. First rule wins (design 8 FA)."""
     if path in ev["engine"]:
@@ -132,6 +136,8 @@ def disposition_of(path, ev):
         return "undisposed", "not measured (no local build): the file stays where it is"
     if path in ev["unsettled"]:
         return "undisposed", "the counterfactual could not isolate it"
+    if path in (ev.get("state") or {}):                  # rule S3: the old builder stops without it and publishes nothing from it
+        return "engine", ev["state"][path]
     if path in ev["old"] and path in ev["plugin"]:
         return "published", "the old builder and the plugin's build both use it"
     if path in ev["old"]:
@@ -139,6 +145,8 @@ def disposition_of(path, ev):
         return "no-landing", "the old builder uses it%s and the plugin's build cannot hold it" % ((" (%s)" % how) if how else "")
     if is_piece_index(path) and path in ev["plugin"]:
         return "draft", "the plugin would publish a piece the old builder did not"
+    if path in (ev.get("unusedWhy") or {}):              # rule S2/S3: source material no page shows (rule `unused`), never a blocker
+        return "archived", ev["unusedWhy"][path]
     return "archived", "nothing builds or reads it"
 
 

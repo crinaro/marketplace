@@ -40,7 +40,7 @@ import re
 from urllib.parse import urlsplit
 
 from configschema import configkeys
-from contentmodel import keytables
+from contentmodel import keytables, pagefiles
 
 _KEY_LINE = re.compile(r"^([A-Za-z][A-Za-z0-9_]*):(?:[ \t]+(.*?))?[ \t]*$")
 _WORD_NAME = re.compile(r"^[A-Za-z][A-Za-z.'-]*(?: [A-Za-z][A-Za-z.'-]*)+$")
@@ -343,6 +343,27 @@ def home_key_rewrite(tree, path):
         new_body += ([""] if i else []) + chunk
     new = _emit(out, new_body + [""])
     return (None, []) if new == text.replace("\r\n", "\n") else (new, notes)
+
+
+# ---------------------------------------------------------------- pieceKeys under pieceRoles (design-adopt-parity-2 7.4)
+
+def role_list_lines(value):
+    """(the front-matter lines of `role` as a YAML list, None) for the template's one-line `role: A (x); B (y)` with two or more
+    entries, each one the build reads under `pieceRoles` (`pagefiles.role_entry`, section 4.4): the same words in the same
+    order, `currentRole` never written (probe P-R is `default`: the first entry is the current one). (None, why) for a line an
+    entry of which section 4.4 would refuse (an unclosed parenthesis, an empty title): the line is left as written, never
+    half-converted, and `why` names the entry. (None, None) for a line that is not the one-line form (one entry, no `;`)."""
+    if not isinstance(value, str) or ";" not in value:
+        return None, None
+    items = [x.strip() for x in value.split(";")]
+    if len(items) < 2:
+        return None, None
+    for item in items:
+        try:
+            pagefiles.role_entry(item)
+        except ValueError as e:
+            return None, "the entry %s: %s" % (json.dumps(item, ensure_ascii=False), e)
+    return ["role:"] + ["  - %s" % _yaml(x) for x in items], None
 
 
 # ---------------------------------------------------------------- resumeHeader (RS1)

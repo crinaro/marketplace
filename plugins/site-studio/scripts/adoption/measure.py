@@ -6,6 +6,7 @@ Part of the `adoption` package behind the entry point `adopt.py`.
 import hashlib
 import json
 import os
+import posixpath
 import re
 import shutil
 import tempfile
@@ -16,6 +17,7 @@ import parity_classes  # noqa: E402
 from configschema import model  # noqa: E402
 
 from adoption.base import PARITY_RECORD_REL, PlanError, Refused, git, gitt
+from adoption.candidates import measured_names
 from adoption.choose import choose
 from adoption.engine import compute_engine, invocation_for, unmeasurable_language
 from adoption.template import live_pdf_name
@@ -29,12 +31,16 @@ from adoption.parity import (
     BUILDER_FAILS, TAKEOVER, takeover_class, OUTPUT_DIRS, _NET_BLOCK, _archive_to, _copy_working_copy,
     _run_builder, _walk, active_classes, builder_entry,
     builder_failed, classify_p2, compare_builds, parse_parity_record, preconditions, record_text,
-    scrubbed_env, write_kept,
+    scrubbed_env, served_at, stamp_plugin, write_kept,
 )
+from adoption.accepts import open_rows
+from adoption import shots
 from adoption.plan import _plan_for, save_plan
 from adoption.problems import accept_problems, check_only, format_problems, problem_dicts, problems_from_dicts
 from adoption.report import accept_lines
-from adoption.usage import old_runner
+from adoption.scoring import Output
+from adoption import carry
+from adoption.usage import old_runner, prune
 
 def _measure_p1(a_dir, local, entry, node, guard, env, scratch, tree, data, folders, kind, files, cnotes, args=(),
                 dispositions=None):
@@ -46,11 +52,7 @@ def _measure_p1(a_dir, local, entry, node, guard, env, scratch, tree, data, fold
         shutil.copytree(a_dir, c_dir, symlinks=False)
         for out_rel in OUTPUT_DIRS:
             shutil.rmtree(os.path.join(c_dir, *out_rel.split("/")), ignore_errors=True)
-        for rel in removed:
-            try:
-                os.remove(os.path.join(c_dir, rel))
-            except OSError:
-                pass
+        remove_files(c_dir, removed)
         for rel, blob in overlay.items():
             os.makedirs(os.path.dirname(os.path.join(c_dir, rel)), exist_ok=True)
             with open(os.path.join(c_dir, rel), "wb") as fh:
@@ -80,6 +82,34 @@ def _measure_p1(a_dir, local, entry, node, guard, env, scratch, tree, data, fold
             return {"verdict": "UNVERIFIED", "reason": why, "differences": [], "classes": {}}
         return {"verdict": "FAILS", "reason": why, "differences": [], "classes": classes}
     return {"verdict": "DIFFERENT", "reason": "", "differences": [list(x) for x in diffs], "classes": classes}
+
+
+def remove_files(root, removed):
+    """Delete each of `removed` (paths relative to `root`) and every folder a removal leaves empty (`usage.prune`): a checkout
+    without an archived unit has no folder of that name, and a builder that lists folders reads an empty one as a unit missing
+    its files (step 10's F5: P1 read `archive` as FAILS on template-portfolio-c, ENOENT on c-old's `reference.json`)."""
+    for rel in removed:
+        try:
+            os.remove(os.path.join(root, *rel.split("/")))
+        except OSError:
+            pass
+        prune(root, posixpath.dirname(rel))
+
+
+def replaying(run, store):
+    """`run(removed)` answered from `store` ({removed: [result, ...]}) when an earlier accounting of the same run already made that
+    call that many times, else run and stored: the accounting under the chosen settings asks the old builder only what the first
+    one did not. Calls are counted per key, so the counterfactual's two runs on the unchanged tree stay two real runs."""
+    seen = {}
+
+    def again(removed):
+        key = tuple(sorted(removed))
+        n = seen[key] = seen.get(key, 0) + 1
+        got = store.setdefault(key, [])
+        if len(got) < n:
+            got.append(run(removed))
+        return got[n - 1]
+    return again
 
 
 def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=None, kind=None, chosen=(), keep=None,
@@ -170,23 +200,34 @@ def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=Non
             hints["resumePdf"] = live
         res["hints"] = hints
         if plan is not None:                 # design 8 FA, steps 1 to 4: every file accounted for BEFORE P2, so P2 judges the result
-            res["accounting"] = _account_files(tree, data, plan, local, engine, infos, a_dir, entry, node, guard, env,
-                                               inv.args, scratch, chosen, settings)
+            asked, given = {}, folders       # the old builder's counterfactual runs, asked once for both accountings below
+            account = lambda st, h: _account_files(tree, data, plan, local, engine, infos, a_dir, entry, node, guard,  # noqa: E731
+                                                   env, inv.args, scratch, chosen, st, h, asked)
+            res["accounting"] = account(dict(settings), None)
             if not res["accounting"].get("refused"):
                 dispositions = res["accounting"]["dispositions"]
-                folders = open_folders(folders, tree.paths(), dispositions)      # F1: a decision the archive already satisfied
-            if res["accounting"].get("cause"):
-                res["cause"] = res["cause"] or res["accounting"]["cause"]
+                folders = open_folders(given, tree.paths(), dispositions)      # F1: a decision the archive already satisfied
             picked = _choose_settings(tree, data, plan, local, folders, kind, chosen, dispositions, persons, hints)
+            before = dict(settings)
             if picked is not None:
                 res["settings"] = picked.plan_rows()
                 res["notes"].extend(picked.lines)
                 res["lookStatus"] = picked.look_status
                 res["notes"].extend("look: %s %s (%s)" % (cid, st, picked.look_why[cid]) for cid, st in sorted(picked.look_status.items())
                                     if st in ("unmapped", "ambiguous") and picked.look_why.get(cid))     # what derive refused, named
+                res["notes"].extend(picked.carry_lines)
                 settings.update(picked.values())
             elif plan.get("settings"):
                 settings.update(dict((k, v["value"]) for k, v in plan["settings"].items()))
+            if settings != before and not res["accounting"].get("refused"):
+                # rule S1 (section 8): the plugin's side is what the build of the CHOSEN settings uses; a file that lands only under
+                # a measured setting (a size copy under `sizeCopies: any-format`) is no-landing when accounted before it (step 10's F4)
+                again = account(dict(settings), hints)       # the bytes a chosen `carried` is written from
+                if not again.get("refused"):
+                    res["accounting"], dispositions = again, again["dispositions"]
+                    folders = open_folders(given, tree.paths(), dispositions)
+            if res["accounting"].get("cause"):
+                res["cause"] = res["cause"] or res["accounting"]["cause"]
         b_dir, files, cnotes = _plugin_side(repo, base, scratch, tree, data, folders, kind, only, settings, dispositions, persons, hints, res)
         out_dir = os.path.join(scratch, "plugin-out")
         try:
@@ -199,7 +240,8 @@ def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=Non
         p2 = classify_p2(local, plugin_files)
         res.update(differences=p2["differences"], report=p2["report"], verdict=p2["verdict"], reason=p2["reason"],
                    markup=p2["markup"], tokens=p2["tokens"], external=p2["external"], kinds=p2["kinds"],
-                   accepts=[list(c) for c in parity_classes.description_changes(local, plugin_files)])
+                   accepts=[list(c) for c in parity_classes.description_changes(local, plugin_files)],
+                   open=open_rows(p2["differences"], local, served_at(plugin_files)[0], cnotes.get("settings")))
         if keep:
             res["kept"] = write_kept(keep, local, plugin_files)
         if p2["verdict"] == "DIFFERENT":     # P2 shows a visible difference, so the builder is kept: does the CONVERSION change what it publishes?
@@ -253,6 +295,13 @@ def _choose_settings(tree, data, plan, local, folders, kind, chosen, disposition
     """The measured settings for the tree (`adoption.choose`): the plugin side built in memory once per candidate against the ONE
     local build; a look derived from the old builder's own pages when the default look does not agree (R6)."""
     _f, _n, snap, acc, _drafted = pass_one(tree, data, plan, chosen, None, hints)
+    # `carried` (sections 4.7, 7.4, 7.6; step 10b): the pages adopt offers, read against the converted tree's own path, and their
+    # bytes in `hints` BEFORE any candidate is built, with those of a `carried` the person chose: the setting is written from them
+    offer = carry.offer_for(snap, local, getattr(tree, "repo", None))     # step 10c: never a page only an uncommitted file makes
+    mine = ((plan.get("settings") or {}).get("carried") or {})
+    named = list(offer.paths) + [p for p in ((mine.get("value") or []) if mine.get("how") == "chosen" else [])
+                                 if p in local and p not in offer.paths]
+    hints[carry.HINT] = carry.hints_for(local, named)      # present, if empty: this measurement holds the old build (settings.py)
     if acc is None:
         return None
     only = check_only(chosen)
@@ -268,9 +317,12 @@ def _choose_settings(tree, data, plan, local, folders, kind, chosen, disposition
     why = {}                                         # construct -> derive's reason it did not map (the element a rule refused)
 
     def evaluate(settings):
+        """The plugin's output for `settings` with the publish build's problems (`scoring.Output`; step 11c, F24: a candidate the
+        build refuses never wins, so the problems are carried, never dropped)."""
         key = json.dumps(sorted(settings.items()), default=repr)
         if key not in built:
-            built[key] = dict(running.accept(snapshot(settings)).output)
+            acc = running.accept(snapshot(settings))
+            built[key] = Output(acc.output, acc.problems)
         return built[key]
 
     def derive_under(settings, refine=True):
@@ -290,8 +342,10 @@ def _choose_settings(tree, data, plan, local, folders, kind, chosen, disposition
             why.update((cid, d.reasons[cid]) for cid in status if cid in d.reasons and status[cid] != "mapped")
             derived[key] = ({"id": "derived", "file": d.text}, status)
         return derived[key]
-    picked = choose(snap, data, evaluate, local, previous=plan.get("settings"), derive_under=derive_under, no_local_reason=None)
+    picked = choose(snap, data, evaluate, local, previous=plan.get("settings"), derive_under=derive_under, no_local_reason=None,
+                    names=measured_names(snap))
     picked.look_why = why
+    picked.carry_lines = offer.lines()          # each page only the old build has that is not offered, with its reason (4.7.3)
     return picked
 
 
@@ -300,8 +354,9 @@ def scrubbed_home(env):
 
 
 def _account_files(tree, data, plan, local, engine, infos, a_dir, entry, node, guard, env, args, scratch, chosen,
-                   settings=None):
-    """The file accounting for the basis tree (`adoption.fileacct`), with the old builder run again for the counterfactual."""
+                   settings=None, hints=None, asked=None):
+    """The file accounting for the basis tree (`adoption.fileacct`) under `settings`, with the old builder run again for the
+    counterfactual; `asked` ({removed: [result]}) holds the runs an earlier accounting of this run made (`replaying`)."""
     paths = [p for p in tree.paths() if not p.startswith(".git/")]
     kept = set(i["path"] for i in infos if i["class"] in ("CUSTOM", "MIXED"))
     kept |= set(p for p, e in plan["files"].items() if e.get("removal") == "keep" or e.get("disposition") == "keep")
@@ -310,12 +365,14 @@ def _account_files(tree, data, plan, local, engine, infos, a_dir, entry, node, g
     cf_scratch = os.path.join(scratch, "counterfactual")
     os.makedirs(cf_scratch, exist_ok=True)
     runner = old_runner(a_dir, lambda work: _run_builder(work, entry, node, guard, env, args), cf_scratch)
-    return run_accounting(paths, tree, data, plan, local, engine, kept, archived, runner, chosen, settings)
+    runner = replaying(runner, asked if asked is not None else {})
+    return run_accounting(paths, tree, data, plan, local, engine, kept, archived, runner, chosen, settings, hints)
 
 
-def measure_adopted(repo, which=None):
+def measure_adopted(repo, which=None, keep=None):
     """Parity for a repo adopt ALREADY converted: the person's kept builder, run on the working copy, against
-    the plugin's build of HEAD. Returns the `run_parity` dict (verdict, reason, differences, notes)."""
+    the plugin's build of HEAD. Returns the `run_parity` dict (verdict, reason, differences, notes, open); `keep` (a folder
+    `keep_dir` accepted) receives the two builds, as `parity --keep` does, for `remeasure --keep`'s pictures."""
     res = {"verdict": "UNVERIFIED", "reason": "", "differences": [], "notes": [], "problems": [], "p1": None,
            "report": [], "kept": None, "markup": [], "tokens": {"class": [], "data": [], "id": []}, "external": []}
     tree = Tree(repo, "HEAD")
@@ -365,7 +422,9 @@ def measure_adopted(repo, which=None):
         p2 = classify_p2(local, plugin_files)
         res.update(differences=p2["differences"], report=p2["report"], verdict=p2["verdict"], reason=p2["reason"],
                    markup=p2["markup"], tokens=p2["tokens"], external=p2["external"], kinds=p2["kinds"],
-                   accepts=[list(c) for c in parity_classes.description_changes(local, plugin_files)])
+                   accepts=[list(c) for c in parity_classes.description_changes(local, plugin_files)],
+                   open=open_rows(p2["differences"], local, served_at(plugin_files)[0]),
+                   kept=write_kept(keep, local, plugin_files) if keep else None)
         return res
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -383,10 +442,11 @@ def differences_were_shown(prev, res):
     return [list(d) for d in prev.get("differences", [])] == [list(d) for d in res["differences"]]
 
 
-def cmd_remeasure(repo, accept=False, which=None):
-    """`adopt.py remeasure [--accept]`: measure an adopted repo again and rewrite its parity record, in ONE commit
-    that touches only the record. `--accept` records ACCEPTED, and only for a measured DIFFERENT (or, with no
-    builder, for "site-studio's build replaces my site, unmeasured"); it is never a way past UNVERIFIED."""
+def cmd_remeasure(repo, accept=False, which=None, keep=None, shots_dir=None):
+    """`adopt.py remeasure [--accept [--shots DIR/shots]] [--keep DIR]`: measure an adopted repo again and rewrite its parity
+    record, in ONE commit that touches only the record. `--accept` records ACCEPTED, and only for a measured DIFFERENT (or, with no
+    builder, for "site-studio's build replaces my site, unmeasured"); it is never a way past UNVERIFIED. `--keep` makes the
+    pictures of each page that differs and `--accept --shots` checks them (`shots.for_remeasure`, design-adopt-parity-2 7.3)."""
     if os.environ.get("CLAUDE_CODE_REMOTE") == "true":
         raise Refused("adopt runs on your own computer, not in a cloud session; open the repo there")
     if git(repo, "rev-parse", "--is-inside-work-tree", check=False).returncode != 0:
@@ -405,9 +465,10 @@ def cmd_remeasure(repo, accept=False, which=None):
     dirty = git(repo, "status", "--porcelain", "--untracked-files=no").decode("utf-8", "replace").strip()
     if dirty:
         raise Refused("the repo has uncommitted changes; commit or discard them first (parity builds the working copy)")
-    res = measure_adopted(repo, which)
+    res = measure_adopted(repo, which, keep_dir(repo, keep) if keep else None)
     verdict = res["verdict"]
     causes = res.get("report") or ["  %s: %s%s" % (k, p, (" (%s)" % d) if d else "") for k, p, d in res["differences"]]
+    pictured = shots.for_remeasure(res, accept and verdict == "DIFFERENT", res.get("kept"), shots_dir)   # design-adopt-parity-2 7.3
     if accept:
         if verdict == "DIFFERENT":
             verdict = "ACCEPTED"
@@ -432,7 +493,7 @@ def cmd_remeasure(repo, accept=False, which=None):
         if who.returncode != 0:
             raise Refused("git has no committer identity; set user.name and user.email and run remeasure again")
         git(repo, "add", "--", PARITY_RECORD_REL)
-        git(repo, "commit", "-q", "-m", "adopt remeasure: parity is %s" % verdict, "--", PARITY_RECORD_REL)
+        git(repo, "commit", "-q", "-m", "adopt remeasure: parity is %s%s" % (verdict, pictured), "--", PARITY_RECORD_REL)
     out = ["remeasure: parity is %s -- %s" % (res["verdict"], res["reason"])]
     if not accept:                  # with --accept they were printed above, before the record was written
         out += causes + accept_lines(res)
@@ -480,10 +541,11 @@ def _worktree_roots(repo):
     return [line[len("worktree "):] for line in listing.splitlines() if line.startswith("worktree ")]
 
 
-def cmd_parity(repo, accept=False, keep=None):
-    """`adopt.py parity [--accept] [--keep DIR]` (moved here from adopt.py, the entry point, unchanged in what it prints):
-    measure P2 and P1, save the result in the plan (`MARKUP-ONLY` carries its markup and tokens, plan schema 2) and print
-    it. `--accept` records ACCEPTED only for the differences an earlier `parity` on this basis showed."""
+def cmd_parity(repo, accept=False, keep=None, shots_dir=None):
+    """`adopt.py parity [--accept [--shots DIR/shots]] [--keep DIR]` (moved here from adopt.py, the entry point): measure P2 and
+    P1, save the result in the plan (`MARKUP-ONLY` carries its markup and tokens, plan schema 2; every parity names its `plugin`
+    and holds its `open` ACCEPT candidates and `shots`, plan schema 3) and print it. `--accept` records ACCEPTED only for the
+    differences an earlier `parity` on this basis showed, and only with the pictures `--keep` made (`shots.for_parity`)."""
     basis, tree, data = preconditions(repo)
     keep = keep_dir(repo, keep) if keep else None
     plan = _plan_for(repo, basis.sha, print)
@@ -500,6 +562,7 @@ def cmd_parity(repo, accept=False, keep=None):
                           "read the verdict and deal with what it names" % res["verdict"])
         accepted_now = differences_were_shown(prev, res)
         shown_first = not accepted_now
+    pictures = shots.for_parity(res, prev, keep, shots_dir, accepted_now)    # design-adopt-parity-2 7.3: the accept needs the pictures
     if accepted_now:
         # dev #879, P4: what is being accepted is printed BEFORE the plan that says ACCEPTED is saved
         print("\n".join(["parity --accept: you are accepting these differences (one line per cause), the "
@@ -512,6 +575,7 @@ def cmd_parity(repo, accept=False, keep=None):
     for key in ("accounting", "cause", "engine", "kinds", "hints", "lookStatus", "accepts"):    # what `apply` disposes by, and the causes it records
         if res.get(key):
             plan["parity"][key] = res[key]
+    pictures.store(stamp_plugin(plan["parity"]))     # plan schema 3: the version that measured, the `open` rows, the `shots`
     if res.get("settings") is not None:               # the measured rows replace the old measured ones; a `chosen` row is the person's
         kept = dict((k, v) for k, v in (plan.get("settings") or {}).items() if v["how"] == "chosen")
         plan["settings"] = dict(res["settings"], **kept)
@@ -560,3 +624,4 @@ def cmd_parity(repo, accept=False, keep=None):
                           if not (prev and prev.get("verdict") == "DIFFERENT") else
                           "they are not the differences the last `parity` on this basis showed you, so the "
                           "ones listed above are what is measured now, and the plan says DIFFERENT."))
+    pictures.finish()                   # a browser that was found and would not start: a refusal, after all of the above

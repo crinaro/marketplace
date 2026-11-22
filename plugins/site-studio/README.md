@@ -61,7 +61,7 @@ and install the plugin, then type `/site-studio:setup`:
 |---|---|
 | **Python 3.9 or newer** and **git** (on a Mac the Command Line Tools bring both) | everything; no npm or pip install |
 | **gh**, the GitHub command line, signed in | setup, publish and adopt |
-| **Google Chrome** (Chromium on Linux) | importing photos, visual checks, capturing a page, making the resume PDF. Building and publishing do not need it |
+| **Google Chrome** (Chromium on Linux) | importing photos, visual checks, capturing a page, making the resume PDF, and (from 0.6.0) the pictures adopt makes of each page that differs. Building and publishing do not need it; without it adopt shows the differences as text |
 | **node**, only for an adopted site with its own builder | comparing your builder with site-studio's, and choosing the settings that make the two match |
 
 Setup checks all of this, says what is missing in plain words, and asks before it installs anything.
@@ -97,6 +97,29 @@ Adopt works in two stages, and it tells you which one it is in.
   number, which look the pages use), it tries the choices and keeps the one that matches, or the one
   with clearly fewer differences when none matches. Without `node` it cannot measure, so it asks you
   and never guesses.
+- **From 0.6.0, what is left to accept is one list, with pictures.** Every difference a visitor would
+  see that no setting, look or kept page removed is an *ACCEPT candidate*, one row per page.
+  `adopt.py parity --keep <folder>` makes pictures of each such page from both builds (wide and
+  narrow, light and dark) and a file, `compare.html`, that puts them old beside new; it prints the
+  file's path for you to open. Claude puts that folder beside your repository, so it is still there
+  when you come back. Accepting needs those pictures: it is refused until they exist and are of the
+  same differences. This is the one adopt step that starts a browser (headless Chrome); on a computer
+  without Chrome you are shown the differences as text instead, and can accept them that way.
+- **From 0.6.0, a page can be kept exactly as your old site served it** (`carried`), such as your
+  404 page. It no longer changes when the site does (a new menu item will not appear on it), every
+  build reminds you of that, and the first build after your site's address changes stops until you
+  correct the page's addresses. Adopt offers the pages only your old builder makes; a page that
+  differs can be kept that way by your choice.
+- **From 0.6.0 adopt measures more of a template site's settings**: the featured shelf grouped as
+  each portfolio's index, a count on each group heading, a piece's dated roles, a back link per
+  portfolio, the menu's title item and extra links, the separator in each page's title, where
+  images are published (so old image addresses keep working), and the index views (roles, map,
+  steps, showcase). The look it works out from your old pages is kept part by part: a part that
+  would lose content goes back to site-studio's markup, and the rest stays.
+- **A difference that is not one is no longer counted.** Two addresses that name the same file (a
+  link written `./` on one site and `../work/` on the other, a stylesheet with a version number
+  added) are markup a visitor does not see, and parity prints them under their own heading, apart
+  from what a visitor sees.
 - Every file in the repository gets one fate, shown to you: published, kept as a draft, archived,
   part of the old builder, or kept as it is. A file your old builder used and site-studio cannot
   hold is named, because a visitor would lose it; that stops the adoption until you decide.
@@ -138,7 +161,11 @@ ask, `apply` is refused and Claude leaves a note in `HANDOFF.md` saying what to 
 - **That the two builds are equal.** site-studio has measured an exact match only on small example sites it
   builds for its own tests; on its example template site the one difference left is the description
   each page shows in a search result, which it asks you to accept. It compares the built files (markup, styles and scripts), not screenshots,
-  and it leans toward calling a difference visible.
+  and it leans toward calling a difference visible. The pictures `--keep` makes are for you to look at;
+  nothing compares them by pixel, and nothing can tell that you opened them.
+- **That a site adopted with 0.6.0 opens in an older copy of site-studio.** A measured setting new in
+  0.6.0 makes the site schema 6; a copy older than 0.6.0 on another computer says "update
+  site-studio" and changes nothing.
 - **That it can reproduce every part of a template's markup.** In this version, on the example
   template, the part of adopt that works out a site's markup from its old pages handles every part
   it was tested on. A real site may have parts it cannot work out; adopt then keeps site-studio's

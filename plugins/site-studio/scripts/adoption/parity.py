@@ -43,6 +43,9 @@ import shutil
 import subprocess
 import tarfile
 from collections import namedtuple
+from urllib.parse import urlsplit
+
+import report_issue  # noqa: E402
 
 from adoption.base import PARITY_RECORD_REL, PLAN_REL, PlanError, RECORD_SCHEMA, Refused, git, gitt
 from adoption.spec import CONVERSION_CLASSES, MEASURED_ONLY_CLASSES, OPT_IN_CLASSES
@@ -394,6 +397,46 @@ def _opt_in_reason(cls, notes, diffs, paths):
 
 TAKEOVER = "applies once parity is EQUAL or ACCEPTED (site-studio takes over publishing)"
 
+# A stored parity names the site-studio that measured it (design-adopt-parity-2 section 7.5, `plan.parity.plugin`), and one another
+# version measured is read as none (`stale_parity`): `check`, `inventory` and `apply` say `waits on parity`, and nothing it says is
+# repeated. The WRITE is `stamp_plugin`, called where `parity` stores its entry (`measure.cmd_parity`), and the plan schema that
+# holds it is 3 (`adoption/plan.py`): both landed at step 9b, which turned this on. A parity that names NONE (every plan 0.5.0 wrote)
+# is read as stale while this is True; a parity that names ANOTHER version is stale either way. `plan.load_plan` drops a stale one
+# for `apply`, which reads `plan["parity"]` directly.
+PARITY_NAMES_PLUGIN = True
+
+
+def plugin_version():
+    """The version of this site-studio, as a stored parity names it (`report_issue.plugin_version`, from plugin.json)."""
+    return report_issue.plugin_version()
+
+
+def stamp_plugin(entry):
+    """`entry` (the plan's parity entry, a dict) with `plugin` set to this site-studio's version; returned."""
+    entry["plugin"] = plugin_version()
+    return entry
+
+
+def stale_parity(parity):
+    """The `waits on parity` line for a stored parity this site-studio did not measure, or None (section 7.5): "measured by
+    site-studio <x>; this is <y>: run `adopt.py parity`". A parity that names another version is stale; one that names none
+    is stale once `PARITY_NAMES_PLUGIN` holds. No parity at all is None: that is "not run", said by the caller."""
+    if not parity:
+        return None
+    got = parity.get("plugin")
+    if got is None and not PARITY_NAMES_PLUGIN:
+        return None
+    mine = plugin_version()
+    if got == mine:
+        return None
+    return "measured by %s; this is %s: run `adopt.py parity`" % (
+        ("site-studio %s" % got) if got else "an earlier site-studio (the stored parity names no version)", mine)
+
+
+def current_parity(parity):
+    """`parity`, or None when it is stale (`stale_parity`): what a reader may repeat."""
+    return None if stale_parity(parity) else parity
+
 
 def takeover_class(cls):
     """True for a TEMPLATE rename the kept builder may be unable to read (`resumeHeader`, `pieces`, `pageFiles`, `pieceKeys`, ...):
@@ -401,6 +444,17 @@ def takeover_class(cls):
     rename, not a blocker. It is held while that builder publishes and made once site-studio takes over (P1R). An OPT_IN
     class is never one: choosing it is the person's say, and `broken_chosen` refuses it while parity is not EQUAL or ACCEPTED."""
     return cls not in OPT_IN_CLASSES and any(c == cls and label == "TEMPLATE" for c, label, _w in CONVERSION_CLASSES)
+
+
+def measured_alone(fail, paths, diffs):
+    """What P2 says about a takeover class (design-adopt-parity-2 section 7.5): the kept builder cannot read the tree it
+    makes, so P1 cannot measure it, and it is measured against the plugin's build only, on the output paths it can change
+    (`_output_paths`; `*` is every page). "the pages it touches are EQUAL", or "differ on <n>, first <page>", from the stored
+    P2 differences. The class stays held until takeover; this line says what it is held with."""
+    hit = sorted(set(d for d in diffs if _touches(paths, d)))
+    head = "measured against the plugin's build only (your builder cannot read what it makes: %s)" % fail
+    return "%s: %s" % (head, ("the pages it touches differ on %d, first %s" % (len(hit), hit[0])) if hit
+                       else "the pages it touches are EQUAL")
 
 
 def _builder_failure(p1, cls):
@@ -414,8 +468,13 @@ def decide_conversions(notes, parity, fingerprint=False, chosen=()):
     5.0.3: `apply fixes this` only when parity MEASURES no visitor-facing difference; `you decide`, with the
     reason, when it measures one or cannot measure; `waits on parity` when it has not run yet. A conversion
     that touches no output path (a value in site.json, a folder the build never reads) has nothing for
-    parity to measure and is mechanical. Returns [{class, label, what, status, reason}]."""
+    parity to measure and is mechanical. Returns [{class, label, what, status, reason}].
+
+    A stored parity another site-studio measured (`stale_parity`, design-adopt-parity-2 section 7.5) is read as none: every
+    row `waits on parity`, its reason the stale line, and nothing that parity says is repeated."""
     out = []
+    stale = stale_parity(parity)
+    parity = None if stale else parity
     p2 = (parity or {}).get("verdict")
     p1 = (parity or {}).get("p1") or {}
     diffs = [d[1] for d in (parity or {}).get("differences", [])]
@@ -440,7 +499,7 @@ def decide_conversions(notes, parity, fingerprint=False, chosen=()):
         elif p2 == "NOT APPLICABLE" and cls not in MEASURED_ONLY_CLASSES:
             pass
         elif parity is None:
-            row.update(status="waits on parity", reason="run `adopt.py parity`: it measures whether this "
+            row.update(status="waits on parity", reason=stale or "run `adopt.py parity`: it measures whether this "
                        "changes a page, and whether it changes what your own builder publishes")
         elif p2 in ("UNVERIFIED", "NOT APPLICABLE"):        # NOT APPLICABLE here: a MEASURED_ONLY class, held without a P2
             row.update(status="you decide", reason="parity could not measure this (%s)" % parity.get("reason", ""))
@@ -452,7 +511,8 @@ def decide_conversions(notes, parity, fingerprint=False, chosen=()):
             hit = [] if paths == ["*"] else [d for d in diffs if _touches(paths, d)]
             reasons = []
             if fail and takeover_class(cls):      # P1R: a rename the kept builder cannot read is made at takeover, not a blocker
-                reasons.append("%s: your own builder cannot read what it makes (%s)" % (TAKEOVER, fail))
+                reasons.append("%s; %s" % (TAKEOVER, measured_alone(fail, paths, diffs)))
+                hit = []                          # the P2-only line names the pages it touches
             elif fail:                # dev #890, B1: not a difference, a failure, named with the builder's own line
                 row["failure"] = fail
                 reasons.append("your own builder FAILS on the tree this conversion makes (%s)" % fail)
@@ -490,13 +550,35 @@ MARKUP_LIMITS = ("the check is static: a script that reads class names or data a
                  "and scripts, and the publish re-check cannot repeat it for whitespace")
 
 
-def classify_p2(local, plugin):
+_SITEMAP_LINE = re.compile(r"^Sitemap:\s*(\S+)/sitemap\.xml\s*$", re.M)
+
+
+def served_at(plugin):
+    """(site path, site host) the plugin's build says it is served at, from its own `robots.txt` (`_Builder.build_sitemap`
+    writes `Sitemap: <cfg.site_url()>/sitemap.xml` on every publish build): the path is `SiteConfig.site_path()`'s form, None
+    for the root; the host lower-case. (None, None) when the build wrote no such line (design-adopt-parity-2 section 7.1, rule
+    U: a root-absolute `/<site path>/...` address on the old site is the same address as the plugin's relative one)."""
+    raw = (plugin or {}).get("robots.txt")
+    m = _SITEMAP_LINE.search(raw.decode("utf-8", "replace")) if isinstance(raw, bytes) else None
+    if not m:
+        return None, None
+    parts = urlsplit(m.group(1))
+    return (parts.path.strip("/") or None), ((parts.hostname or "").lower() or None)
+
+
+def classify_p2(local, plugin, site_path=None, site_host=None):
     """P2 over two `{path: bytes}` builds, with the invisible-markup class (design 5, R4 row 11: `parity_classes`' one
     classifier). Returns {verdict EQUAL | MARKUP-ONLY | DIFFERENT; differences (the files with a VISIBLE difference, in
     `compare_builds`' words); markup ([[path, detail]], one per invisible hunk, sorted); tokens ({"class", "data", "id"}:
     every invisible token, sorted); external (each off-origin stylesheet or script: while one exists nothing is
-    invisible); files (every file that differs); report (the printed lines); reason}. Both builds are read once."""
-    res = classify_differences(local, plugin)
+    invisible); files (every file that differs); report (the printed lines); reason}. Both builds are read once.
+
+    Rule U reads each build under its own path (design-adopt-parity-2 section 7.1): `site_path` and `site_host` are the
+    plugin's, from `served_at(plugin)` when neither is given (step 7 left them out here, so a `/<site path>/...` address on
+    the old site was not yet the same address in a real run; dev 977)."""
+    if site_path is None and site_host is None:
+        site_path, site_host = served_at(plugin)
+    res = classify_differences(local, plugin, site_path=site_path, site_host=site_host)
     visible_paths = set(d.path for d in res["visible"])
     diffs = [t for t in res["files"] if t[1] in visible_paths]
     markup = sorted([d.path, "line %d: %s" % (d.line, hunk_text(list(d.local), list(d.plugin)))] for d in res["markup"])
@@ -512,7 +594,7 @@ def classify_p2(local, plugin):
         kinds[d.kind] = kinds.get(d.kind, 0) + 1
     return {"verdict": res["verdict"], "differences": diffs, "markup": markup, "tokens": res["tokens"], "kinds": kinds,
             "external": [list(x) for x in res["external"]], "files": res["files"],
-            "report": difference_report(local, plugin, res["files"]), "reason": reason}
+            "report": difference_report(local, plugin, res["files"], site_path=site_path, site_host=site_host), "reason": reason}
 
 
 def record_text(verdict, basis_sha, differences, markup=(), tokens=None):

@@ -2,6 +2,7 @@
 an element holds them (TEXT ANCHORING, design R5.4(f))."""
 
 import looks
+import posixpath
 import re
 from contentmodel import links
 from lookfiles.pagedom import (
@@ -85,7 +86,19 @@ def _out_items(call):
     return memo
 
 
+_SEP_TEXT = re.compile(r"^[^A-Za-z0-9<>]{1,8}$")
+
+
+def _is_sep(text):
+    """Is `text`, between two parts at the top of an html slot, a separator the build writes between them (` / ` between a card's
+    two numbers, `portfolios.card_html`) rather than a line of words? A short run of anything but letters, digits and tags."""
+    return bool(text.strip()) and bool(_SEP_TEXT.match(text.strip()))
+
+
 def _parse_items(segs):
+    """The top-level items of a slot's segments. Text between parts at the top is a line of Markdown text holding a construct, which
+    no template can read, except a separator (`_is_sep`) the build writes between two parts: that is an item of its own (step 12,
+    the card number `02 / 2024` of design-adopt-parity-2 section 9's `-a`)."""
     kids, text = [], []
     for kind, payload in segs:
         if kind == "text":
@@ -106,8 +119,11 @@ def _parse_items(segs):
         data = n.data
         pos = 0
         for m in _PH.finditer(data):
-            if data[pos:m.start()].strip():
-                raise _Fail("unmapped", "a construct is used inside a line of Markdown text")
+            between = data[pos:m.start()]
+            if between.strip():
+                if not (pos and _is_sep(between)):
+                    raise _Fail("unmapped", "a construct is used inside a line of Markdown text")
+                items.append(("tx", squash(between), between))
             items.append(("kid", kids[int(m.group(1))]))
             pos = m.end()
         rest = data[pos:]
@@ -139,13 +155,50 @@ def _own_needles(call):
             for it in _items_or_empty(call, slot):
                 if it[0] == "el" and it[2]:
                     hard.append(it[2])
-                elif it[0] == "tx" and it[1]:
+                elif it[0] == "tx" and it[1] and not _is_sep(it[1]):
                     hard.append(it[1])
         elif kind in (looks.URL, looks.CONTACT, looks.SRCSET, looks.EMBED):
             soft.append(str(v).strip())
     call.cache["own"] = (hard, soft)
     call.cache["own-opt"] = opt
     return hard, soft
+
+
+def _unit_after(call):
+    """(slot, number) of the TEXT slot the recording look writes right after a number, `{{n}} {{unit}}`, when the build gave it no value (a group count
+    whose word site.json cannot hold: design-adopt-parity-2 section 4.2, owner decision 4), else None. Where the page writes a word
+    there, that word stands in the place of the slot: the part is still the page's number and its word (step 12)."""
+    if "unit" not in call.cache:
+        got = None
+        for m in re.finditer(r"\{\{(\w+)\}\}\s+\{\{(\w+)\}\}", call.template):
+            num, word = m.group(1), m.group(2)
+            if call.table.get(num) == looks.INT and call.table.get(word) == looks.TEXT and call.values.get(word) == "" \
+                    and call.values.get(num) not in (None, ""):
+                got = (word, str(call.values[num]))
+                break
+        call.cache["unit"] = got
+    return call.cache["unit"]
+
+
+_NUMBER_WORDS = r"^%s\s+([^\W\d][^<>\d]*)$"
+
+
+def _number_then_words(text, number):
+    """Is `text` the number `number` followed by a word or words (`2 projects`), and nothing else?"""
+    return re.match(_NUMBER_WORDS % re.escape(number), text) is not None
+
+
+def _unit_slot(root, slot, number):
+    """Write `slot` in place of the words after `number` in the text node that is the number and its words. True if it did."""
+    for el in walk(root):
+        for i, k in enumerate(el.kids):
+            if isinstance(k, Tx) and _number_then_words(" ".join(k.data.split()), number):
+                m = re.search(r"(%s\s+)(\S.*?)(\s*)$" % re.escape(number), k.data, re.S)
+                t = Tx(k.data[:m.start(2)] + "{{%s}}" % slot + k.data[m.end(2):])
+                t.parent = el
+                el.kids[i] = t
+                return True
+    return False
 
 
 def _int_needles(call):
@@ -282,6 +335,30 @@ def _holds(page, el, hard, apart=False):
         if not any(n in sq for _k, sq, _raw in attrs):
             return False
     return True
+
+
+def _resolved(page_key, url):
+    """The site path a relative address names from the page `page_key` (`work/index.html`), with `index.html` and a trailing `/`
+    read as one; None for an address that is not relative (a scheme, `//`, `/`, `#`, `?`, or none at all)."""
+    url = (url or "").strip()
+    if not url or url.startswith(("/", "#", "?")) or re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:", url):
+        return None
+    path = url.split("#")[0].split("?")[0]
+    here = posixpath.dirname(page_key or "")
+    out = posixpath.normpath(posixpath.join(here, path)) if path else posixpath.normpath(here or ".")
+    if out.startswith(".."):
+        return None
+    if out.endswith("/index.html") or out == "index.html":
+        out = posixpath.dirname(out)
+    return "" if out == "." else out
+
+
+def same_target(page_key, a, b):
+    """Do the relative addresses `a` and `b`, written on the page `page_key`, name the same page (`./` and `../work/` on
+    `work/index.html`)? Their query and fragment must agree too."""
+    tail = lambda u: (u.split("#", 1)[1] if "#" in u else "", u.split("#")[0].split("?", 1)[1] if "?" in u.split("#")[0] else "")  # noqa: E731
+    ra, rb = _resolved(page_key, a), _resolved(page_key, b)
+    return ra is not None and ra == rb and tail(a.strip()) == tail(b.strip())
 
 
 def _has_url(page, el, url):

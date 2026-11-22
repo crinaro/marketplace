@@ -35,10 +35,16 @@ WHAT IS INVISIBLE (5.1). A differing pair of tokens is invisible only when ALL h
        modulepreload, `<script src>` or `@import`, or any absolute URL inside a script (any `<script>` body,
        a JSON-LD block included: it errs toward visible). One of those makes every markup difference visible,
        and each one is named. No exception for font stylesheets (owner decision 13).
-Everything else is visible: element names, text, `href`, `src`, `alt`, `title`, `style`, `aria-*`, `role`, a
-changed or removed `id`, any other attribute, and any differing non-HTML file. A page's `<meta name="description">` is
+Everything else is visible: element names, text, `href`, `src` and `srcset` (but for rule U, below), `alt`, `title`,
+`style`, `aria-*`, `role`, a changed or removed `id`, any other attribute, and any differing non-HTML file. A page's `<meta name="description">` is
 VISIBLE too (owner ruling, 2026-11-18): no page shows it, but a search result shows it before the page is opened.
 `description_changes` lists each page where it differs, for adopt to name as an ACCEPT.
+
+RULE U, THE SAME RESOURCE (design-adopt-parity-2 7.1, `parityscan/sameresource.py`). A pair whose `href`, `src` or `srcset`
+values differ is invisible too when both name the same resource: the same address, each build read under its own path
+(`sameresource.build_path`: `site_path` is the plugin's, `preview.base_path`; None reads both at the root); the same stylesheet
+or script with another version in its query; or equal bytes at another address. A file the old build served and the plugin's
+does not stays `only-local` (visible). It records no token.
 
 WHITESPACE (template-fidelity G3, `parity_whitespace.py`). A hunk that is exactly one whitespace token, present in one
 build only, is invisible (class `markup`, kind `text`, no token) when a browser collapses it: it touches a block edge,
@@ -58,6 +64,7 @@ import html.parser
 import posixpath
 import re
 import parity_whitespace
+from parityscan import sameresource
 from parityscan.sinks import Sinks, _is_page
 
 PARITY_IGNORED = {
@@ -309,11 +316,13 @@ def _class_tokens(value):
     return (value or "").split()
 
 
-def _pair_tokens(x, y, rel_ok=None):
+def _pair_tokens(x, y, rel_ok=None, url_ok=None):
     """For two start tags `(element, attributes)` at the same position: the invisible tokens `[(kind, name)]` when
     every difference is of the invisible kinds (rules 1 and 2), else None (a visible pair). `x` is the local build's
     tag and `y` the plugin build's: an `id` is invisible only when `y` adds it where `x` had none. `rel_ok(element, a, b)` says
-    whether a difference of `rel` alone is one no visitor meets (`parity_whitespace.rel_invisible`); it records no token."""
+    whether a difference of `rel` alone is one no visitor meets (`parity_whitespace.rel_invisible`); `url_ok(element, attribute,
+    a, b)` whether two `href`, `src` or `srcset` values name the same resource (rule U, `sameresource.Reading.same`, given the
+    values as written). Neither records a token."""
     if x[0] != y[0] or x[0] == parity_whitespace.WS:
         return None
     da, db = dict((k, normalise_dates(v) if v is not None else None) for k, v in x[1]), \
@@ -332,6 +341,8 @@ def _pair_tokens(x, y, rel_ok=None):
         elif k == "id" and k not in da and db.get(k):
             tokens.append(("id", db[k]))
         elif k == "rel" and rel_ok is not None and rel_ok(x[0], da, db):
+            continue
+        elif k in sameresource.URL_ATTRS and url_ok is not None and url_ok(x[0], k, dict(x[1]).get(k), dict(y[1]).get(k)):
             continue
         else:
             return None
@@ -370,10 +381,11 @@ class _Hunk(object):
         return (self.cls, self.a, self.b, self.line)
 
 
-def _hunks(rel, na, nb, ia=None, ib=None, sinks=None):
+def _hunks(rel, na, nb, ia=None, ib=None, sinks=None, reading=None):
     """Every differing hunk of one file as `_Hunk`s, from the two normalised forms. With `sinks` and the two aligned
     attribute lists, a block of equal length is paired token by token and each pair is `markup` (invisible) or
-    visible by 5.1; without them every hunk is head, body or file, exactly as 0.3.1 classed it."""
+    visible by 5.1 (and, with `reading`, a `sameresource.Reading` of the two builds, by rule U); without them every hunk
+    is head, body or file, exactly as 0.3.1 classed it."""
     try:
         ta, tb = na.decode("utf-8"), nb.decode("utf-8")
     except UnicodeDecodeError:
@@ -386,6 +398,10 @@ def _hunks(rel, na, nb, ia=None, ib=None, sinks=None):
         base_target = any(l.startswith("<base ") and " target=" in l for l in la + lb)
         rel_ok = lambda el, da, db: parity_whitespace.rel_invisible(                       # noqa: E731
             el, da, db, base_target, [t for _w, t in sinks.css], [t for _w, t in sinks.js], bool(sinks.external))
+    url_ok = None
+    if sinks is not None and page and reading is not None:
+        url_ok = lambda el, attr, a, b: reading.same(                                      # noqa: E731
+            rel, el, attr, a, b, [t for _w, t in sinks.css], [t for _w, t in sinks.js], bool(sinks.external))
     out = []
     for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, la, lb, autojunk=False).get_opcodes():
         if tag == "equal":
@@ -396,7 +412,7 @@ def _hunks(rel, na, nb, ia=None, ib=None, sinks=None):
                 x, y = la[i1 + k], lb[j1 + k]
                 tokens, why = None, ""
                 if ia[i1 + k] is not None and ib[j1 + k] is not None:
-                    tokens = _pair_tokens(ia[i1 + k], ib[j1 + k], rel_ok)
+                    tokens = _pair_tokens(ia[i1 + k], ib[j1 + k], rel_ok, url_ok)
                 if tokens is not None:
                     reasons = []
                     for kind_, name in tokens:
@@ -536,9 +552,17 @@ class Difference(object):
         return "Difference(%s, %s:%s, %s)" % (self.cls, self.path, self.line, self.kind)
 
 
-def classify_differences(local, plugin, ignored=None):
+def _reading(local, plugin, site_path, site_host):
+    """Rule U's view of the two builds (`sameresource.Reading`), each read under its own path."""
+    return sameresource.Reading(local, plugin, site_path, site_host, normal=normalise_file)
+
+
+def classify_differences(local, plugin, ignored=None, site_path=None, site_host=None):
     """The 5.1 classifier over two `{path: bytes}` builds: `local` is the person's builder's output, `plugin` the
-    plugin's. Reads EVERY hunk of every differing file (the print cap is `difference_report`'s). Returns
+    plugin's. Reads EVERY hunk of every differing file (the print cap is `difference_report`'s). `site_path` is the
+    path the plugin's build is served under (`preview.base_path`; None is the root) and `site_host` the site's own host
+    (None: an absolute address is never the site's): rule U reads the plugin's addresses under `site_path` and the
+    local build's under `sameresource.build_path(local, site_path)`. Returns
 
         verdict    EQUAL (nothing differs), MARKUP-ONLY (every difference is invisible) or DIFFERENT
         visible    [Difference]: every difference a visitor can see (cls head, body, file, only-local, only-plugin)
@@ -551,6 +575,7 @@ def classify_differences(local, plugin, ignored=None):
     ignored = ignored or PARITY_IGNORED
     diffs = compare_builds(local, plugin, ignored)
     sinks = Sinks((("local", local), ("plugin", plugin)))
+    reading = _reading(local, plugin, site_path, site_host)
     visible, markup = [], []
     for kind_, p, _detail in diffs:
         if kind_ == "only in the local build":
@@ -559,7 +584,7 @@ def classify_differences(local, plugin, ignored=None):
             visible.append(Difference("only-plugin", p, 0, [], []))
         else:
             na, nb, ia, ib = _forms(p, local[p], plugin[p], ignored)
-            for h in _hunks(p, na, nb, ia, ib, sinks if _is_page(p) else None):
+            for h in _hunks(p, na, nb, ia, ib, sinks if _is_page(p) else None, reading):
                 d = Difference(h.cls, p, h.line, h.a, h.b, h.why, [t for t in h.tokens])
                 (markup if h.cls == "markup" else visible).append(d)
     tokens = {"class": set(), "data": set(), "id": set()}
@@ -626,19 +651,21 @@ def _forms(p, a, b, ignored):
 
 # ---------------------------------------------------------------- the printed report (dev #879), now with `markup`
 
-def difference_groups(local, plugin, diffs, ignored=None, markup=True):
+def difference_groups(local, plugin, diffs, ignored=None, markup=True, site_path=None, site_host=None):
     """({(class, local lines, plugin lines): [(path, line)]}, [(path, hunks not read)]): every hunk of every file
     `diffs` says differs, up to HUNKS_PER_FILE per file, grouped across files by the hunk's own text. With `markup`
-    (the default) an invisible difference is class `markup`, its own group, never folded into `body`; with it off
-    every hunk is head, body or file as 0.3.1 printed it."""
+    (the default) an invisible difference (5.1 and rule U, `site_path` and `site_host` as `classify_differences`
+    takes them) is class `markup`, its own group, never folded into `body`; with it off every hunk is head, body or
+    file as 0.3.1 printed it."""
     ignored = ignored or PARITY_IGNORED
     sinks = Sinks((("local", local), ("plugin", plugin))) if markup else None
+    reading = _reading(local, plugin, site_path, site_host) if markup else None
     groups, omitted = {}, []
     for kind_, p, _detail in diffs:
         if kind_ != "differs" or p not in local or p not in plugin:
             continue
         na, nb, ia, ib = _forms(p, local[p], plugin[p], ignored)
-        hunks = _hunks(p, na, nb, ia, ib, sinks)
+        hunks = _hunks(p, na, nb, ia, ib, sinks, reading)
         for h in hunks[:HUNKS_PER_FILE]:
             places = groups.setdefault((h.cls, tuple(h.a), tuple(h.b)), [])
             if p not in [q for q, _l in places]:
@@ -648,23 +675,26 @@ def difference_groups(local, plugin, diffs, ignored=None, markup=True):
     return groups, omitted
 
 
-def difference_report(local, plugin, diffs, ignored=None, markup=True):
-    """The lines `parity` and `remeasure` print for a list of differences (`compare_builds`' output): the files
-    present in only one build, then ONE LINE PER CAUSE (a hunk's text, however many pages carry it) with its page
-    count, body causes before the causes that are only an addition inside `<head>`, the markup a visitor does not
-    see last and apart, and a count of what was not read (a file past HUNKS_PER_FILE hunks, causes past
-    CAUSE_LINES_MAX). Empty when nothing differs."""
-    lines = []
-    for kind_, p, detail in diffs:
-        if kind_ != "differs":
-            lines.append("  %s: %s%s" % (kind_, p, (" (%s)" % detail) if detail else ""))
-    groups, omitted = difference_groups(local, plugin, diffs, ignored, markup)
+HEADING_SEEN = "a visitor sees"
+HEADING_UNSEEN = "no visitor sees (does not block)"
+
+
+def difference_report(local, plugin, diffs, ignored=None, markup=True, site_path=None, site_host=None):
+    """The lines `parity` and `remeasure` print for a list of differences (`compare_builds`' output), under two headings
+    (design-adopt-parity-2 7.2). First a count of the causes. Then HEADING_SEEN over the files present in only one
+    build and ONE LINE PER CAUSE (a hunk's text, however many pages carry it) with its page count, body causes before
+    the causes that are only an addition inside `<head>`; then HEADING_UNSEEN over the markup a visitor does not see
+    (5.1 and rule U), last and apart. A heading is printed only over a line of its own. Last, a count of what was not
+    read (a file past HUNKS_PER_FILE hunks, causes past CAUSE_LINES_MAX). Empty when nothing differs."""
+    ones = ["  %s: %s%s" % (kind_, p, (" (%s)" % detail) if detail else "") for kind_, p, detail in diffs if kind_ != "differs"]
+    groups, omitted = difference_groups(local, plugin, diffs, ignored, markup, site_path, site_host)
+    lines, seen, unseen = [], list(ones), []
+    order = {"body": 0, "file": 1, "head": 2, "markup": 3}
+    rows = sorted(groups.items(), key=lambda kv: (order[kv[0][0]], kv[1][0][0], kv[0][1], kv[0][2]))
+    n_markup = sum(1 for k in groups if k[0] == "markup")
     if groups:
-        order = {"body": 0, "file": 1, "head": 2, "markup": 3}
-        rows = sorted(groups.items(), key=lambda kv: (order[kv[0][0]], kv[1][0][0], kv[0][1], kv[0][2]))
         pages = set(p for places in groups.values() for p, _l in places)
         n_head = sum(1 for k in groups if k[0] == "head")
-        n_markup = sum(1 for k in groups if k[0] == "markup")
         lines.append("  differences by cause: %d cause(s) over %d file(s); %d only an addition inside <head> (listed after "
                      "the body causes, and never in place of one)%s" % (
                          len(groups), len(pages), n_head,
@@ -673,9 +703,15 @@ def difference_report(local, plugin, diffs, ignored=None, markup=True):
             who = ("%s (line %d)" % places[0]) if len(places) == 1 else (
                 "%d pages (%s%s)" % (len(places), ", ".join(p for p, _l in places[:CAUSE_EXAMPLES]),
                                      ", and %d more" % (len(places) - CAUSE_EXAMPLES) if len(places) > CAUSE_EXAMPLES else ""))
-            lines.append("  differs: %s -- %s: %s" % (who, HUNK_CLASSES[cls], hunk_text(a, b)))
-        if len(rows) > CAUSE_LINES_MAX:
-            lines.append("  ... and %d more cause(s) not listed" % (len(rows) - CAUSE_LINES_MAX))
+            (unseen if cls == "markup" else seen).append("  differs: %s -- %s: %s" % (who, HUNK_CLASSES[cls], hunk_text(a, b)))
+    if seen:
+        lines.append("  %s: %d difference(s)" % (HEADING_SEEN, len(ones) + len(groups) - n_markup))
+        lines.extend(seen)
+    if unseen:
+        lines.append("  %s: %d cause(s)" % (HEADING_UNSEEN, n_markup))
+        lines.extend(unseen)
+    if len(rows) > CAUSE_LINES_MAX:
+        lines.append("  ... and %d more cause(s) not listed" % (len(rows) - CAUSE_LINES_MAX))
     for p, n in omitted:
         lines.append("  differs: %s -- %d more hunk(s) not listed (the first %d are)" % (p, n, HUNKS_PER_FILE))
     return lines

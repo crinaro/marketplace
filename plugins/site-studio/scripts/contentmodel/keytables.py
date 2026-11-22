@@ -81,12 +81,25 @@ V5_PIECE_KEYS = {
     "linkLabel": ("pieceLink",),
 }
 
+# The piece keys schema 6 reads, each ONLY under its K trigger `pieceRoles` (design-adopt-parity-2 sections 3.1 rule 3 and
+# 3.2), the successor table of `V5_PIECE_KEYS`, read the same way by the same readers. Under the trigger `role` is a list
+# of dated roles, `current: true` marks the piece current, and `currentRole` (a whole number from 1) names which entry
+# of `role` is the current one (absent, the first). Without the trigger each is what it was in 0.5.x: `role` and
+# `current` keep the readings a view gives them, and `currentRole` is a free key.
+V6_PIECE_KEYS = {
+    "role": ("pieceRoles",),
+    "current": ("pieceRoles",),
+    "currentRole": ("pieceRoles",),
+}
+
 
 def active_triggers(settings):
     """The schema-5 triggers a portfolio's settings turn on, as a set of `V5_PIECE_KEYS` trigger names: its `view` when
     that is `steps`, `cardImage` when a card reads `photo` (the value `photo`, or either value under `view: roles`, where
-    a card has no picture without it), and `cardAlt`, `cardKicker`, `pieceLink`, `pieceTeaser` when set. Empty for every
-    settings dict 0.4.x could load."""
+    a card has no picture without it), `cardAlt` when it is `true` (under schema 6's `cardAlt: "title"` the alt is the
+    piece's title, so no alt key is read), `cardKicker`, `pieceLink`, `pieceTeaser` when set, and schema 6's
+    `pieceRoles` (`V6_PIECE_KEYS`) and `groupCount` (the trigger of the gated `group.wrap` `count` slot; it reads no
+    piece key). Empty for every settings dict 0.4.x could load."""
     on = set()
     view = settings.get("view")
     if view == "steps":
@@ -94,21 +107,25 @@ def active_triggers(settings):
     image = settings.get("cardImage")
     if image == "photo" or (image is not None and view == "roles"):
         on.add("cardImage")
-    for key in ("cardAlt", "cardKicker", "pieceLink", "pieceTeaser"):
+    if settings.get("cardAlt") is True:
+        on.add("cardAlt")
+    for key in ("cardKicker", "pieceLink", "pieceTeaser", "pieceRoles", "groupCount"):
         if settings.get(key):
             on.add(key)
     return on
 
 
 def piece_keys_read(settings):
-    """{piece key: the triggers it is read under here} for the schema-5 keys this portfolio's settings read: every
-    `V5_PIECE_KEYS` row with an active trigger, and the key `cardKicker` names."""
+    """{piece key: the triggers it is read under here} for the schema-5 and schema-6 keys this portfolio's settings read:
+    every `V5_PIECE_KEYS` and `V6_PIECE_KEYS` row with an active trigger (a key in both tables, `role`, carries the
+    triggers of both, schema 5's first), and the key `cardKicker` names."""
     on = active_triggers(settings)
     out = {}
-    for key, triggers in V5_PIECE_KEYS.items():
-        hit = tuple(t for t in triggers if t in on)
-        if hit:
-            out[key] = hit
+    for table in (V5_PIECE_KEYS, V6_PIECE_KEYS):
+        for key, triggers in table.items():
+            hit = tuple(t for t in triggers if t in on)
+            if hit:
+                out[key] = out.get(key, ()) + hit
     if "cardKicker" in on:
         out.setdefault(settings["cardKicker"], ("cardKicker",))
     return out

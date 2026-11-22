@@ -182,8 +182,8 @@ def verb_kind(repo, args):
 
 
 def verb_parity(repo, args):
-    """`adopt.py parity [--accept] [--keep DIR]`: build both ways and compare."""
-    cmd_parity(repo, args.accept, args.keep)
+    """`adopt.py parity [--accept [--shots DIR/shots]] [--keep DIR]`: build both ways and compare."""
+    cmd_parity(repo, args.accept, args.keep, args.shots)
 
 
 def verb_report(repo, args):
@@ -204,8 +204,8 @@ def verb_setting(repo, args):
 
 
 def verb_remeasure(repo, args):
-    """`adopt.py remeasure [--accept]`: measure parity again on the moved basis."""
-    print(cmd_remeasure(repo, args.accept))
+    """`adopt.py remeasure [--accept [--shots DIR/shots]] [--keep DIR]`: measure parity again on the moved basis."""
+    print(cmd_remeasure(repo, args.accept, keep=args.keep, shots_dir=args.shots))
 
 
 VERBS = {

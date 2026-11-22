@@ -10,6 +10,7 @@ from contentmodel.errors import ContentError
 from contentmodel.links import esc
 from lookgrammar.errors import LookError
 
+from building import mediapaths, navparts
 from building.constants import HTML_EXTS
 from building.outcomes import BuildError
 from building.references import size_copies
@@ -32,11 +33,12 @@ class _PageBase(object):
         self.pages = {}          # output path -> dict(kind, source, title, desc, image, lastmod_src, sitemap)
         self.used_refs = set()
         self.notes = []
-        self.media_out = dict((p, nfc(o)) for p, o in model.media.items())
+        # where each media file is published: the model's addresses, home and about media placed by `mediaPaths` (schema 6)
+        self.media_out = dict((p, nfc(o)) for p, o in mediapaths.media_map(model.media, cfg).items())
         # the size copies of a schema-4 reference `image`, published with the reference only when a card uses it (never in media_out)
         self.ref_copies = {}
         for ref in model.references.values():
-            self.ref_copies.update((p, nfc(o)) for p, o in size_copies(ref, files).items())
+            self.ref_copies.update((p, nfc(o)) for p, o in size_copies(ref, files, cfg).items())
         self._selection = None
         self._home_split = {}            # output page -> (intro, parts) of content/home.md for `{{home:<part>}}`
         self.assets_emitted = set()      # (page, kind) already linked, so a page links each plugin file once
@@ -150,9 +152,11 @@ class _PageBase(object):
         return self.single_piece(pf) and pf.settings.get("onePieceIndex", "redirect") != "listing"
 
     def nav_entries(self, current_out):
-        """[(href from `current_out`, label, is the current page)] of the site nav, in order: Home (unless
-        `nav.home` is false, schema 4), the menu portfolios, About, Resume."""
-        items = [("", "Home")] if self.cfg.nav.get("home", True) is not False else []
+        """[(href from `current_out`, label, state)] of the site nav, in order: Home (unless `nav.home` is false, schema
+        4; the site title under `nav.home: "title"`, schema 6), the menu portfolios, About, Resume, then schema 6's
+        `nav.extra`. The state is `navparts.state`'s: "current", "section", "brand", "brand-current" or ""."""
+        home = navparts.home_label(self.cfg)
+        items = [("", home)] if home is not None else []
         for pf in self.model.menu_portfolios():
             if self.single_piece(pf):       # schema 3: the one piece
                 items.append(("%s/%s" % (pf.slug, pf.pieces[0].slug), pf.settings["label"]))
@@ -162,23 +166,24 @@ class _PageBase(object):
             items.append(("about", "About"))
         if self.model.resume is not None:
             items.append(("resume", "Resume"))
+        brand = self.cfg.nav.get("home") == navparts.NAV_HOME_TITLE
         out = []
         for key, label in items:
             to = "index.html" if key == "" else key + "/index.html"
-            out.append((rel_link(current_out, to), label, to == current_out))
-        return out
+            out.append((rel_link(current_out, to), label, navparts.state(key, to, current_out, brand and key == "")))
+        return out + navparts.extra_entries(self)
 
     def nav_html(self, current_out):
-        """`{{nav}}`: the nav element with its list, each item through the look's `nav` parts."""
-        lis = [self.r("nav", "item-current" if cur else "item", {"url": href, "label": label})
-               for href, label, cur in self.nav_entries(current_out)]
+        """`{{nav}}`: the nav element with its list, each item through the look's `nav` parts (`navparts.part`)."""
+        lis = [self.r("nav", navparts.part(self, "item", st), {"url": href, "label": label})
+               for href, label, st in self.nav_entries(current_out)]
         return self.r("nav", "wrap", {"items": "".join(lis)})
 
     def nav_links_html(self, current_out):
         """`{{navLinks}}` (schema 4): the same items as `{{nav}}` as links only, with no nav element and no
         list, for a layout that already wraps its links (design template-fidelity N1)."""
-        return "".join(self.r("nav", "link-current" if cur else "link", {"url": href, "label": label})
-                       for href, label, cur in self.nav_entries(current_out))
+        return "".join(self.r("nav", navparts.part(self, "link", st), {"url": href, "label": label})
+                       for href, label, st in self.nav_entries(current_out))
 
     def sections(self, text, source):
         """Resolve `{{#page:X}}...{{/page}}` before any token is read: a block whose page is built stays
@@ -261,4 +266,6 @@ class _PageBase(object):
         self.add(out_path, text.encode("utf-8"), source)
 
     def full_title(self, page_title, home=False):
-        return self.cfg.siteTitle if home else "%s | %s" % (page_title, self.cfg.siteTitle)
+        """A page's `<title>`: the site title alone for the home, else the page's title, `titleSeparator` (schema 6;
+        default " | "), the site title. The separator is HTML-escaped where the layout prints it, as the title is."""
+        return self.cfg.siteTitle if home else "%s%s%s" % (page_title, self.cfg.titleSeparator, self.cfg.siteTitle)

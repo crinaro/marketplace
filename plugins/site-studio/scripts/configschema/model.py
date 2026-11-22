@@ -3,6 +3,7 @@
 they cannot drift."""
 
 import json
+import urllib.parse
 from configschema.configkeys import (
     BUDGET_DEFAULTS,
     CANON_ORDER,
@@ -11,8 +12,10 @@ from configschema.configkeys import (
     KEY_ORDER,
     SCHEMA_MAX,
     SITE_KINDS,
+    TITLE_SEPARATOR_DEFAULT,
     V2_TOP_KEYS,
     V4_TOP_KEYS,
+    V6_TOP_KEYS,
     _DOMAIN_RE,
     _REPO_RE,
 )
@@ -23,6 +26,8 @@ from configschema.sectioncheck import (
     _look,
     _nav_check,
     _redirects_check,
+    needs_schema_6,
+    v6_top_check,
 )
 from configschema.valuecheck import (
     _bad,
@@ -61,6 +66,11 @@ class SiteConfig(object):
         self.nav = d.get("nav", {})
         self.look = d.get("look")
         self.blocks = d.get("blocks", {})
+        self.featuredView = d.get("featuredView", "flat")
+        self.titleSeparator = d.get("titleSeparator", TITLE_SEPARATOR_DEFAULT)
+        self.mediaPaths = d.get("mediaPaths", {})
+        self.sizeCopies = d.get("sizeCopies")
+        self.carried = d.get("carried", [])
 
     def to_dict(self):
         """The config as a plain dict that `parse_data` reads back. A schema-2 key appears only when
@@ -81,6 +91,16 @@ class SiteConfig(object):
             d["look"] = self.look
         if self.blocks:
             d["blocks"] = dict(self.blocks)
+        if self.featuredView != "flat":
+            d["featuredView"] = self.featuredView
+        if self.titleSeparator != TITLE_SEPARATOR_DEFAULT:
+            d["titleSeparator"] = self.titleSeparator
+        if self.mediaPaths:
+            d["mediaPaths"] = dict(self.mediaPaths)
+        if self.sizeCopies is not None:
+            d["sizeCopies"] = self.sizeCopies
+        if self.carried:
+            d["carried"] = list(self.carried)
         return d
 
     def effective_budgets(self):
@@ -94,6 +114,16 @@ class SiteConfig(object):
         if self.cutover:
             return "https://" + self.domain
         return self.previewUrl
+
+    def site_path(self):
+        """The site's path (design-adopt-parity-2 section 4.7.3): the path part of `site_url()` without its slashes
+        (`site` for `https://pat.github.io/site`, `""` for a domain after cutover), or None when `site_url()` is None.
+        The one function every reader of "the site's path" calls; `preview.base_path` returns it and keeps its own
+        fallback to the repo's name, which is a guess good enough to serve a preview and never to judge a page on."""
+        url = self.site_url()
+        if url is None:
+            return None
+        return urllib.parse.urlsplit(url).path.strip("/")
 
     def __eq__(self, other):
         return isinstance(other, SiteConfig) and self.to_dict() == other.to_dict()
@@ -128,8 +158,8 @@ def _check(data):
                 "make site/site.json one JSON object")
         return col.problems, None
     if "schema" not in data:
-        col.add("site.json: 'schema' is missing", "schema", "missing", "1, 2, 3 or 4",
-                "add \"schema\": 1 (or 2, 3 or 4 when the site uses a feature that needs it)")
+        col.add("site.json: 'schema' is missing", "schema", "missing", "1 to %d" % SCHEMA_MAX,
+                "add \"schema\": 1 (or up to %d when the site uses a feature that needs it)" % SCHEMA_MAX)
         return col.problems, None
     schema = data["schema"]
     if isinstance(schema, bool) or not isinstance(schema, int):
@@ -141,17 +171,19 @@ def _check(data):
                 "update site-studio")
         return col.problems, None
     if schema < 1:
-        col.add("site.json: 'schema' must be 1 or more", "schema", schema, "1, 2, 3 or 4",
-                "set \"schema\" to 1, 2, 3 or 4")
+        col.add("site.json: 'schema' must be 1 or more", "schema", schema, "1 to %d" % SCHEMA_MAX,
+                "set \"schema\" to a whole number from 1 to %d" % SCHEMA_MAX)
         return col.problems, None
     for k in data:
-        if k not in KEY_ORDER and k not in V2_TOP_KEYS and k not in V4_TOP_KEYS:
+        if k not in KEY_ORDER and k not in V2_TOP_KEYS and k not in V4_TOP_KEYS and k not in V6_TOP_KEYS:
             col.add("site.json: unknown key '%s'" % k, k, "unknown key", "one of: " + ", ".join(CANON_ORDER),
                     "remove '%s'" % k)
         elif k in V2_TOP_KEYS and schema < 2:
             col.problems.append(_needs_schema_2(k).problem)
         elif k in V4_TOP_KEYS and schema < 4:
             col.problems.append(_needs_schema_4(k, schema).problem)
+        elif k in V6_TOP_KEYS and schema < 6:
+            col.problems.append(needs_schema_6(k, schema).problem)
     for k in ("engine", "name", "siteTitle"):
         if k not in data:
             col.add("site.json: '%s' is missing" % k, k, "missing", "a value", "add '%s' to site/site.json" % k)
@@ -208,13 +240,15 @@ def _check(data):
     d["work"] = _portfolio_check(data.get("work", {}), "work", schema, featured_from, col)
     d["redirects"] = _redirects_check(data.get("redirects", {}), col)
     if schema >= 4 and "nav" in data:
-        d["nav"] = _nav_check(data["nav"], col)
+        d["nav"] = _nav_check(data["nav"], col, schema)
     if schema >= 4 and "look" in data:
         ok, look = col.run(_look, data["look"])
         if ok:
             d["look"] = look
     if schema >= 4 and "blocks" in data:
-        d["blocks"] = _blocks_check(data["blocks"], col)
+        d["blocks"] = _blocks_check(data["blocks"], col, schema)
+    if schema >= 6:
+        d.update(v6_top_check(data, col))
     d["resume"] = _resume_check(data.get("resume"), col, schema)
     d["budgets"] = _budgets_check(data.get("budgets", {}), col)
     if col.problems:

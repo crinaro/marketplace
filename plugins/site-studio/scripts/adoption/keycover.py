@@ -63,11 +63,13 @@ def sort_key(key, read_here=(), pending=()):
 
 def parity_tail(portfolio, parity=None):
     """What parity knows about `portfolio`'s pages, as the last clause of a note: the page it named, that it could not
-    measure (no local build), that it measured no difference there, or that it has not run."""
+    measure (with the reason its record gives: design-adopt-parity-2 section 7.5, dev 977; it said "no local build" of a site
+    that had one), that it measured no difference there, or that it has not run."""
     if not parity:
         return "whether your builder prints it is parity's to say, on the page: `adopt.py parity` measures it"
     if parity.get("verdict") in ("UNVERIFIED", "NOT APPLICABLE"):
-        return "parity has not measured this site (no local build)"
+        why = " ".join(str(parity.get("reason") or "").split())
+        return "parity could not measure this site (%s)" % (why or "its record gives no reason")
     for d in parity.get("differences") or ():
         page = d[1] if isinstance(d, (list, tuple)) and len(d) > 1 else None
         if page and page.startswith(portfolio + "/"):

@@ -27,7 +27,7 @@ from adoption.convert import (
     _converted_dict, _give_resume_sidecar, _snapshot, converted_site_files,
     label_conversions, normalise_redirect_keys, piece_renames,
 )
-from adoption.parity import decide_conversions, template_fingerprint
+from adoption.parity import current_parity, decide_conversions, template_fingerprint
 from adoption.keycover import cover_keys, split_notes
 
 # A template key `pieceKeys` leaves under `view: showcase`, with the plugin key the steps view reads it as (design-movement-view
@@ -322,7 +322,8 @@ def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=(), se
     chosen settings (`plan_settings`): the tree is judged as apply would write it (dev #942, K1: `workKeys: all`, measured
     by parity, puts `work`'s meta into every portfolio's page.md, and `check` still called those keys unlisted). `parity` (the
     plan's record) and `notes` (a list) go to `accept_warnings`: the "read elsewhere" notes land in `notes`, ending with what
-    parity knows."""
+    parity knows. A stored parity another site-studio measured says nothing here (`current_parity`, design-adopt-parity-2 7.5)."""
+    parity = current_parity(parity)
     d, _resume = _converted_dict(tree, data, paper, kind)
     probs = list(model.problems(d))
     cfg = None

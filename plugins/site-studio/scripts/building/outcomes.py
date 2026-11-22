@@ -24,12 +24,15 @@ class Acceptance(object):
     `warnings` is a list of the same `make_problem` shape, kept APART from `problems`: `problems` means the
     build refuses, a warning means it builds and says what it does not publish (a stray `.md` or folder in a
     piece folder, an unknown piece key; dev #885, dev #882). Empty `problems` with warnings is still an
-    accepted tree whose output bytes the warnings never change; `adopt check` may refuse one."""
+    accepted tree whose output bytes the warnings never change; `adopt check` may refuse one. `used` is the sorted repo
+    paths the build read to make that output (`provenance.used`, design-adopt-parity-2 rule S1); empty when the run
+    stopped before it built."""
 
-    def __init__(self, problems, notes, cfg, model, output, pages, warnings=None):
+    def __init__(self, problems, notes, cfg, model, output, pages, warnings=None, used=None):
         self.problems = problems
         self.notes = notes
         self.warnings = list(warnings or [])
+        self.used = list(used or [])
         self.cfg = cfg
         self.model = model
         self.output = output

@@ -4,7 +4,8 @@ its output), which is what derive looks for in the published pages."""
 import collections
 import contextlib
 import looks
-from building import running, stepsview
+from building import grouping, navparts, running, stepsview
+from lookfiles import places as place_tables
 from lookfiles.pagedom import _SLOT
 from lookfiles.refusals import LookCommandError
 
@@ -15,8 +16,8 @@ from lookfiles.refusals import LookCommandError
 LIST_SEP = ""
 LIST_SEP_PARTS = {("steps-view", "role"): "role-sep"}
 # The places whose picture may render through a part of their own (step G O3): a site-wide `image` call made for one of these is read as
-# that place's `image` part, so a template that writes the step's or the home tile's `<img>` its own way derives it there.
-PLACE_PICTURES = (("steps-view", "item"), ("home-showcase", "item"))
+# that place's `image` part, so a template that writes the step's or the home tile's `<img>` its own way derives it there. Read from
+# `lookgrammar.constructs.PLACE_PARTS` (`lookfiles.places.picture_places`, step 12): one table for the build, derive and `looks.needs`.
 
 
 class Call(object):
@@ -27,6 +28,7 @@ class Call(object):
         self.values = dict(values)
         self.table = looks.CONSTRUCTS[construct]["parts"][part]
         self.parent = None
+        self.own = None                 # the optional part a nav item's state renders through where the look writes it (`places`)
         self.segments = {}              # html slot -> [("text", html) | ("kid", Call)]
         self.cache = {}                 # memo of items and needles (a Call is read many times while anchoring)
         try:
@@ -57,18 +59,26 @@ class Call(object):
         """The slots the page shows, then the ones it may carry as markup (a class token, a data attribute)."""
         return list(self.used) + [s for s in self.table if s not in self.used]
 
+    def as_part(self, construct, part):
+        """Read this call as `construct.part`, a part of its own for its place or state (`lookfiles.places`): the same values and the
+        same recorded markup (the recording look writes no such part), under that part's slot table."""
+        if not hasattr(self, "recorded"):
+            self.recorded = (self.construct, self.part, self.table)
+        self.construct, self.part = construct, part
+        self.table = looks.CONSTRUCTS[construct]["parts"][part]
+
+    def as_recorded(self):
+        """Undo `as_part`: the call is the part it was recorded as."""
+        if hasattr(self, "recorded"):
+            self.construct, self.part, self.table = self.recorded
+
     def as_place(self, construct):
-        """Read this site-wide `image` call as `construct`'s own picture part (`PLACE_PICTURES`): the same values and the same
-        recorded markup (the recording look writes no place part), under the place part's slot table."""
-        if self.construct == "image":
-            self.site_key = (self.part, self.table)
-        self.construct, self.part = construct, "image"
-        self.table = looks.CONSTRUCTS[construct]["parts"]["image"]
+        """Read this site-wide `image` call as `construct`'s own picture part (`places.picture_places`)."""
+        self.as_part(construct, "image")
 
     def as_site(self):
-        """Undo `as_place`: the call is the site-wide `image` call it was recorded as."""
-        if self.construct != "image":
-            self.construct, (self.part, self.table) = "image", self.site_key
+        """Undo `as_place`."""
+        self.as_recorded()
 
 
 @contextlib.contextmanager
@@ -76,17 +86,40 @@ def recording():
     """Record every `looks.render` call made inside the block (build.py and content.py call it through the module,
     so the one wrapper sees them all). Restores the original on exit. Yields the list of `Call`."""
     calls = []
-    original = looks.render
+    original, original_part = looks.render, navparts.part
+    own = [None]
+
+    def part(builder, base, st):
+        # the nav item's state names the optional part it would take (`places.nav_own`); the next nav call is that item's
+        got = original_part(builder, base, st)
+        mine = place_tables.nav_own(base, st)
+        own[0] = mine if mine != got else None
+        return got
 
     def rec(construct, part, values, look=None):
         out = original(construct, part, values, look)
-        calls.append(Call(len(calls), construct, part, values, out, look))
+        call = Call(len(calls), construct, part, values, out, look)
+        if construct == "nav" and part != "wrap":
+            call.own, own[0] = own[0], None
+        calls.append(call)
         return out
-    looks.render = rec
+    original_alone = grouping.number_alone
+
+    def alone(rendered, markup):
+        # a count with no word drops the space beside it after its render (`grouping.number_alone`, section 4.2): the recorded
+        # output is what the page holds, so the parent's html slot still holds it (step 12b)
+        got = original_alone(rendered, markup)
+        if got != rendered:
+            for c in reversed(calls):
+                if c.key == ("group-count", "wrap") and c.out == rendered:
+                    c.out = got
+                    break
+        return got
+    looks.render, navparts.part, grouping.number_alone = rec, part, alone
     try:
         yield calls
     finally:
-        looks.render = original
+        looks.render, navparts.part, grouping.number_alone = original, original_part, original_alone
 
 
 def link_calls(calls):
@@ -146,8 +179,9 @@ def _list_items():
         stepsview.role_separator = original
 
 
-def place_calls(calls, places=PLACE_PICTURES):
-    """The site-wide `image` calls that are the picture of a `places` part (a step, a home tile)."""
+def place_calls(calls, places=None):
+    """The site-wide `image` calls that are the picture of a `places` part (a step, a home tile; every picture place by default)."""
+    places = place_tables.picture_places() if places is None else places
     return [c for c in calls if c.construct == "image" and c.parent is not None
             and (c.parent.construct, c.parent.part) in places
             and any(seg[0] == "kid" and seg[1] is c for seg in c.parent.segments.get("image", ()))]

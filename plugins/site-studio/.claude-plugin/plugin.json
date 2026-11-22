@@ -1,7 +1,7 @@
 {
   "name": "site-studio",
   "description": "Build your own portfolio, resume or link-hub site (one page of your links) on GitHub Pages. Needs a Mac or Linux computer (not Windows) and a GitHub account with gh, its command line. Content stays in a private repo; only the finished site goes public, when you type /site-studio:publish and approve a dry run. Start a site, add work, keep your resume and its PDF current, preview, and get a privacy and quality review. Not for job applications, outreach or tracking a search (jobsearch).",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "author": {
     "name": "Crinaro",
     "email": "marketplace@crinaro.ai"
@@ -19,6 +19,6 @@
   ],
   "metadata": {
     "versioningPolicy": "Explicit releases; version reflects the release group's largest change (minor/patch). Bump before any sync or push — an unbumped change ships nothing and looks like a broken install.",
-    "provides": "6 agents, 12 skills (setup, adopt, publish user-only; coordinator also answers help: what you can do, what next, what an error means), hooks/hooks.json (SessionStart doctor+sync_main; PreToolUse publish_guard). Data: the person's dev repo, site/site.json schema 1 to 4. Contracts: spec/roster.json, docs/plugin-agent-contract.md"
+    "provides": "6 agents, 12 skills (setup, adopt, publish user-only; coordinator also answers help: what you can do, what next, what an error means), hooks/hooks.json (SessionStart doctor+sync_main; PreToolUse publish_guard). Data: the person's dev repo, site/site.json schema 1 to 6. Contracts: spec/roster.json, docs/plugin-agent-contract.md"
   }
 }

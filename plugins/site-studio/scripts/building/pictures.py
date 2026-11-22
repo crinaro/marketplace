@@ -12,7 +12,8 @@ the alt and position that print are the ones of the picture that prints:
 Which picture prints, and whether its alt does:
 
     a step (`view: steps`)          tileImage, photo, cover    the picture's own alt, else ""
-    a card, `cardImage: photo`      photo, cover               "" ; under `cardAlt: true` the picture's own alt, else ""
+    a card, `cardImage: photo`      photo, cover               "" ; under `cardAlt: true` the picture's own alt, else "";
+                                                               under `cardAlt: "title"` (schema 6) the piece's title
     a card, no `cardImage`          cover                      the same rule
     a roles card under `cardImage`  the group's newest piece, as a card (`roles_picture`)
     a reference card                the reference's picture    imageAlt, else ""
@@ -31,6 +32,7 @@ only where the caller's trigger, from the piece's OWN portfolio, says so: `step_
 `card_picture` reads `photo` only under the `cardImage` trigger and an alt only under `cardAlt`."""
 
 from building.outcomes import BuildError
+from configschema.configkeys import CARD_ALT_TITLE
 from contentmodel.errors import ContentError
 from contentmodel.keytables import active_triggers
 from lookgrammar import optionalparts
@@ -137,10 +139,12 @@ def _named(piece, key):
     return value if isinstance(value, str) and value else None
 
 
-def resolve(builder, piece, order, with_alt):
+def resolve(builder, piece, order, with_alt, alt_title=False):
     """The `Picture` of the first key in `order` the piece has, or None. Its alt is the picture's own alt key when
     `with_alt`, else ""; its position is the picture's own position key. A `ref:<name>` picture takes the reference's
-    `imageAlt` and `imagePosition` for whichever of the two the piece does not give."""
+    `imageAlt` and `imagePosition` for whichever of the two the piece does not give. `alt_title` (schema 6's `cardAlt:
+    "title"`, design-adopt-parity-2 section 4.3): the alt is the piece's own `title` (never `shortTitle`), whatever
+    picture shows."""
     for key in order:
         value = _named(piece, key)
         if value is None:
@@ -155,6 +159,8 @@ def resolve(builder, piece, order, with_alt):
             ref_alt, ref_position = reference_companions(builder.model.references.get(value[4:]))
             alt = alt if alt is not None or not with_alt else ref_alt
             position = position if position is not None else ref_position
+        if alt_title:
+            alt = piece.title
         return Picture(key, found[0], found[1], alt or "", position)
     return None
 
@@ -166,10 +172,11 @@ def step_picture(builder, piece):
 
 def card_picture(builder, piece, settings):
     """A grid or featured card's picture under the piece's own portfolio `settings`: `photo`, else `cover`, when the
-    `cardImage` trigger is on with the value `photo`; else `cover`. Its alt is "" unless `cardAlt` is on."""
+    `cardImage` trigger is on with the value `photo`; else `cover`. Its alt is "" unless `cardAlt` is on: `true`, the
+    picture's own alt key; `"title"` (schema 6), the piece's title."""
     on = active_triggers(settings)
     order = CARD_PHOTO_ORDER if ("cardImage" in on and settings.get("cardImage") == "photo") else CARD_ORDER
-    return resolve(builder, piece, order, "cardAlt" in on)
+    return resolve(builder, piece, order, "cardAlt" in on, alt_title=settings.get("cardAlt") == CARD_ALT_TITLE)
 
 
 def roles_picture(builder, newest, settings):

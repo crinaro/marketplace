@@ -30,7 +30,6 @@ import signal
 import sys
 import tempfile
 import time
-import urllib.parse
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import browser    # noqa: E402
@@ -40,10 +39,11 @@ import platform_check  # noqa: E402
 
 
 def base_path(cfg):
-    """The path the site is served under on the web: the path of its address, else the repo name."""
-    url = cfg.site_url()
-    if url:
-        return urllib.parse.urlsplit(url).path.strip("/")
+    """The path the site is served under on the web: the path of its address (`SiteConfig.site_path`, the one function
+    every reader of the site's path calls), else the repo name."""
+    path = cfg.site_path()
+    if path is not None:
+        return path
     repo = (cfg.publicRepo or "").split("/")[-1]
     return repo.strip("/")
 

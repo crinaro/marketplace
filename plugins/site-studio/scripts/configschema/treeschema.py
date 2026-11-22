@@ -1,4 +1,4 @@
-"""treeschema: which schema a site needs. The schema-2, 3, 4 and 5 reasons a tree can hold, `required_schema` (the one
+"""treeschema: which schema a site needs. The schema-2, 3, 4, 5 and 6 reasons a tree can hold, `required_schema` (the one
 place that says), `tree_schema_problems` and `check_tree_schema` (the build's refusal of a file whose schema is
 below what its tree needs) and `kind_conflicts`. K reasons are keys older plugins refused; I reasons are new
 readings of text they accepted (see the `siteconfig.py` docstring)."""
@@ -8,6 +8,8 @@ import re
 from collections import namedtuple
 from configschema.configkeys import (
     ADDRESSES_RECORD,
+    CARD_ALT_TITLE,
+    NAV_HOME_TITLE,
     V3_PAGE_KEYS,
     V4_HOME_PAGE_KEYS,
     V4_PAGE_KEYS,
@@ -19,6 +21,9 @@ from configschema.configkeys import (
     V5_PAGE_VIEWS,
     V5_REFERENCE_KEYS,
     V5_WORK_KEYS,
+    V6_BLOCKS_KEYS,
+    V6_TOP_KEYS,
+    V6_WORK_KEYS,
 )
 from configschema.diagnostics import SiteConfigError, make_problem
 from configschema.frontmatter import (
@@ -148,12 +153,13 @@ def schema_4_reasons(cfg, files=None):
 
     def add(where, what, lineno=None, effect=_EFFECT_K4):
         out.append(Reason(where, what, effect, lineno, "K"))
-    if cfg.nav:
+    if cfg.nav.get("home") is False:            # the one schema-4 nav setting; schema 6's are `schema_6_reasons`'
         add(here, "sets nav.home false")
     if cfg.look is not None:
         add(here, "sets look")
     for k in cfg.blocks:
-        add(here, "sets blocks.%s" % k)
+        if k not in V6_BLOCKS_KEYS:
+            add(here, "sets blocks.%s" % k)
     for k in V4_RESUME_KEYS:
         if cfg.resume is not None and k in cfg.resume:
             add(here, "sets resume.%s" % k)
@@ -258,6 +264,102 @@ def schema_5_reasons(cfg, files=None, look_needs=None):
     return out
 
 
+_EFFECT_K6 = "site-studio 0.5 would refuse it"
+_EFFECT_LOOK6 = "site-studio 0.5 would refuse the look as unknown"
+_ASSET_VERSION_RE = re.compile(r"\{\{\s*assetVersion\s*\}\}")
+_LABELS_OPEN_RE = re.compile(r"^labels:[ \t]*(.*)$")
+_COUNTS_INLINE_RE = re.compile(r"(?:^|[{,\s])counts\s*:")
+NEEDS_060 = "0.6.0"
+
+
+def _labels_parts(text):
+    """The part names (`meta`, `groups`, `counts`) a `page.md`'s front matter `labels:` holds, read from the lines as
+    written: an inline flow map, or the first indentation level of the lines under `labels:`. Tolerant: what it cannot
+    read it does not name (the content model's own parse refuses that file anyway)."""
+    lines = _text_of(text).replace("\r\n", "\n").split("\n")
+    if not lines or lines[0] != "---":
+        return set()
+    out = set()
+    for i in range(1, len(lines)):
+        if lines[i].rstrip() == "---":
+            break
+        m = _LABELS_OPEN_RE.match(lines[i])
+        if not m:
+            continue
+        if m.group(1).strip():
+            if _COUNTS_INLINE_RE.search(m.group(1)):
+                out.add("counts")
+            continue
+        indent = None
+        for line in lines[i + 1:]:
+            if line.rstrip() == "---" or (line.strip() and line[:1] not in " \t"):
+                break
+            if not line.strip():
+                continue
+            depth = len(line) - len(line.lstrip())
+            indent = depth if indent is None else indent
+            key = re.match(r"^([A-Za-z][A-Za-z0-9_]*)\s*:", line.strip())
+            if depth == indent and key:
+                out.add(key.group(1))
+    return out
+
+
+def schema_6_reasons(cfg, files=None, look_needs=None):
+    """Every reason this site needs schema 6, as [Reason(where, what, effect, lineno, "K")]. All are K reasons
+    (design-adopt-parity-2 section 3.1 rule 1): a key, value, token or look element 0.5.x refuses, so no tree 0.5.x
+    accepted holds one and raising a tree from 5 to 6 changes no output. The rows are section 3.2's: the schema-6
+    top-level keys (each stored only when not its default), `nav.home: "title"`, `nav.extra`, `blocks.headings`, the
+    schema-6 portfolio settings (`groupCount`, `pieceRoles`, `cardAlt: "title"`, `labels.counts`) in `site.json` `work`
+    or a `page.md`, the `{{assetVersion}}` token in a file the build expands, and every `site/looks/*.json` whose
+    `look_needs` value is 0.6.0. NOT a reason: the piece key `currentRole` (a free key 0.5.x prints nowhere), and the
+    folder `site/carried/` (0.5.x ignores it; the K reason is the `carried` key alone). `files` and `look_needs` as
+    `schema_5_reasons` (a call with `files` and no `look_needs` is refused)."""
+    if files is not None and look_needs is None:
+        raise ValueError("schema_6_reasons(cfg, files) needs look_needs= ({site/looks/<name>.json: release}, from "
+                         "building.lookneeds.look_needs(files)); pass {} only when you know the tree holds no look")
+    out = []
+    here = "site/site.json"
+
+    def add(where, what, lineno=None, effect=_EFFECT_K6):
+        out.append(Reason(where, what, effect, lineno, "K"))
+    for k in V6_TOP_KEYS:
+        if k in cfg.to_dict():
+            add(here, "sets %s" % k)
+    if cfg.nav.get("home") == NAV_HOME_TITLE:
+        add(here, "sets nav.home title")
+    if "extra" in cfg.nav:
+        add(here, "sets nav.extra")
+    for k in V6_BLOCKS_KEYS:
+        if k in cfg.blocks:
+            add(here, "sets blocks.%s" % k)
+    for k in V6_WORK_KEYS:
+        if k in cfg.work:
+            add(here, "sets work.%s" % k)
+    if cfg.work.get("cardAlt") == CARD_ALT_TITLE:
+        add(here, "sets work.cardAlt title")
+    if (cfg.work.get("labels") or {}).get("counts"):
+        add(here, "sets work.labels.counts")
+    for path in sorted(files or ()):
+        parts = path.split("/")
+        if path.startswith("content/") and path.endswith("/page.md") and len(parts) == 3:
+            for key, val, n in front_matter_pairs(files[path]):
+                if key in V6_WORK_KEYS:
+                    add(path, "sets %s" % key, n)
+                elif key == "cardAlt" and val == CARD_ALT_TITLE:
+                    add(path, "sets cardAlt title", n)
+            if "counts" in _labels_parts(files[path]):
+                add(path, "sets labels.counts")
+        if _expanded_file(path):
+            text = _text_of(files[path])
+            m = _ASSET_VERSION_RE.search(text)
+            if m:
+                add(path, "uses the {{assetVersion}} token", text[:m.start()].count("\n") + 1)
+    for path in sorted(look_needs or {}):
+        if look_needs[path] == NEEDS_060 and _LOOK_PATH_RE.match(path) and (files is None or path in files):
+            add(path, "is a look that needs site-studio 0.6.0", None, _EFFECT_LOOK6)
+    return out
+
+
 def _looks_read(files, look_needs):
     """`look_needs` as given, else {}. Given `files` and no `look_needs`, {} means the looks are NOT scanned (called
     directly, `schema_5_reasons` refuses `files` without it; through here it is not refused). Since 0.5.0 a look can
@@ -268,7 +370,8 @@ def _looks_read(files, look_needs):
 
 
 def required_schema(cfg, files=None, interpretations=None, look_needs=None):
-    """The lowest schema that holds the site: 5 when any schema-5 reason holds (`schema_5_reasons`, and only a
+    """The lowest schema that holds the site: 6 when any schema-6 reason holds (`schema_6_reasons`, a section 3.2 row
+    of design-adopt-parity-2), 5 when any schema-5 reason holds (`schema_5_reasons`, and only a
     section 3.2 row of design-movement-view is one), 4 when any schema-4 reason holds (`schema_4_reasons`), 3 when
     any schema-3 reason holds (`schema_3_reasons`), 2
     when any of five conditions holds (`schema_2_reasons`), else 1. `files` is the tree the caller
@@ -279,6 +382,8 @@ def required_schema(cfg, files=None, interpretations=None, look_needs=None):
     if files is not None and interpretations is None:
         raise ValueError("required_schema(cfg, files) needs interpretations= (content.interpretation_reasons"
                          "(files)); pass [] only when you know the tree holds none")
+    if schema_6_reasons(cfg, files, _looks_read(files, look_needs)):
+        return 6
     if schema_5_reasons(cfg, files, _looks_read(files, look_needs)):
         return 5
     if schema_4_reasons(cfg, files):
@@ -293,7 +398,8 @@ def tree_schema_problems(cfg, files, look_needs=None):
     schema-1 file, then the K schema-3 reasons under a file below 3. An I reason is never a problem
     (design section 3.2), then the schema-4 K reasons (and the guard reason) under a file below 4, and at 4 and
     above the part-name collisions (design section 3.1 rule 7), then the schema-5 reasons under a file below 5, a look
-    that needs 0.5.0 among them (design-movement-view section 3.4 point 2). Each carries `path` and `lineno`; none is
+    that needs 0.5.0 among them (design-movement-view section 3.4 point 2), then the schema-6 reasons under a file
+    below 6 (design-adopt-parity-2 section 3.2). Each carries `path` and `lineno`; none is
     mechanical. `look_needs` is `building.lookneeds.look_needs(files)` (see `_looks_read`)."""
     out = []
     if cfg.schema < 2:
@@ -324,6 +430,13 @@ def tree_schema_problems(cfg, files, look_needs=None):
                                     "raise-schema --to 5`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
                                     "schema 5", "run `python3 build.py raise-schema --to 5`, which lists what "
                                     "the page changes before it writes schema 5", False, r.lineno))
+    if cfg.schema < 6:
+        for r in schema_6_reasons(cfg, files, _looks_read(files, look_needs)):
+            at = "%s:%d:" % (r.where, r.lineno) if r.lineno else r.where
+            out.append(make_problem("%s %s, which needs \"schema\": 6 in site/site.json (run `build.py "
+                                    "raise-schema --to 6`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
+                                    "schema 6", "run `python3 build.py raise-schema --to 6`, which lists what "
+                                    "the page changes before it writes schema 6", False, r.lineno))
     return out
 
 

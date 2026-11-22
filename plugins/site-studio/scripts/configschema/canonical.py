@@ -24,7 +24,8 @@ def canonical_text(cfg, files=None, interpretations=None, at_least=None, look_ne
     """The one canonical form of a config: schema order, indent 2, one trailing LF. It writes the
     LOWEST schema that holds the site (`required_schema(cfg, files)`) and only that schema's keys:
     `siteKind` only when it is not `portfolio`, `labels` only when non-empty, `featuredFrom` only
-    when `flags`. A `hub` or `custom` config leaves out `work` and `resume` when they hold
+    when `flags`, and each schema-6 top-level key only when it is not its default (`SiteConfig.to_dict`; `featuredView`
+    "flat" and `titleSeparator` " | " are written away), so a schema-5 config writes what 0.5.x wrote. A `hub` or `custom` config leaves out `work` and `resume` when they hold
     nothing. `files` is the tree the caller holds (None: no tree feature is known); when it is given,
     so must `interpretations` be, and `look_needs` (`building.lookneeds.look_needs(files)`; see `required_schema`)."""
     if not isinstance(cfg, SiteConfig):

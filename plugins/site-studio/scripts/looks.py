@@ -65,6 +65,7 @@ from lookgrammar.constructs import (
     _c,
     CONSTRUCTS,
     PART_FIRST,
+    PLACE_PARTS,
     SLOT_FIRST,
     OPEN_SLOT_FIRST, OPTIONAL_PARTS, TEXT_ONLY_PARTS, SENT_OPEN, SENT_CLOSE,
     ALLOWED_ELEMENTS,
@@ -119,7 +120,9 @@ def gate(construct, part, slot, triggers, markup):
 
 
 def slot_release(construct, part, slot):
-    """The release a slot added to an older part needs (`SLOT_FIRST`, gated; `OPEN_SLOT_FIRST`, ungated), else None."""
+    """The release a slot added to an older part needs (`SLOT_FIRST`, gated; `OPEN_SLOT_FIRST`, ungated), else None. A
+    place part's slot (`PLACE_PARTS`) is the site-wide part's slot, so it needs what that slot needs."""
+    construct, part = PLACE_PARTS.get((construct, part), (construct, part))
     row = SLOT_FIRST.get((construct, part, slot))
     return row[0] if row else OPEN_SLOT_FIRST.get((construct, part, slot))
 
@@ -132,7 +135,7 @@ def optional_part(construct, part, look):
 
 # ------------------------------------------------------------- the release a look needs (design-movement-view 3.4)
 # An asset kind first released after 0.3.1 (`css` and `js` are 0.3.1's), with its release.
-ASSET_FIRST = {"schema-4": "0.4.0", "schema-5": "0.5.0"}
+ASSET_FIRST = {"schema-4": "0.4.0", "schema-5": "0.5.0", "schema-6": "0.6.0"}
 
 
 def _decoration_needs(constructs):
@@ -423,8 +426,8 @@ class _PartParser(html.parser.HTMLParser):
                          % (where, kind, sname, name, "/".join(allowed)),
                          "use a slot of kind %s, or a relative literal" % "/".join(allowed))
                 return
-            if kind == CONTACT and not (tag == "a" and self.construct == "contact"):
-                self.bad(where + " takes a contact slot only on an <a> in the contact construct", "use a url slot")
+            if kind == CONTACT and not (tag == "a" and self.construct in ("contact", "nav")):
+                self.bad(where + " takes a contact slot only on an <a> in the contact or nav construct", "use a url slot")
             if kind == EMBED:
                 if not ((tag == "iframe" and name == "src") or name == "data-embed"):
                     self.bad(where + " takes an embed slot only as `iframe src` or `data-embed`", "use a url slot")

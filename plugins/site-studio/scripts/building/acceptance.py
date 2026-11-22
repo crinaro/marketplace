@@ -108,7 +108,10 @@ def _refusal(problems):
 # ------------------------------------------------------------- a trigger with nowhere to print (design-movement-view 4.4)
 # The slot each schema-5 trigger prints through (`cardImage` is checked only under `view: roles`, where a card has no
 # picture without it; `cardKicker` in every part that shows the portfolio's pieces).
-TRIGGER_SLOTS = {"cardImage": "image", "pieceLink": "link", "pieceTeaser": "teaser", "cardKicker": "kicker"}
+TRIGGER_SLOTS = {"cardImage": "image", "pieceLink": "link", "pieceTeaser": "teaser", "cardKicker": "kicker",
+                 # schema 6 (design-adopt-parity-2 section 4.8): `groupCount` prints in `group.wrap`; `pieceRoles` in
+                 # `piece.wrap`, unless a roles view prints the roles (then the piece page need not)
+                 "groupCount": "count", "pieceRoles": "roles"}
 _VIEW_TILES = {"steps": ("steps-view", "item"), "showcase": ("showcase-view", "item")}
 _ROLES_PARTS = (("roles-view", "item"), ("roles-view", "item-current"))
 
@@ -167,7 +170,9 @@ def _has_slot(look, construct, part, slot):
 def trigger_slot_findings(model, cfg, files, look, grammar=None):
     """(problems, notes) of design-movement-view section 4.4, over the tree as built. A schema-5 trigger whose value has
     no slot in the site's look part that would carry it is refused, naming both: `cardImage` under `view: roles`
-    (`{{image}}`), `pieceLink` (`{{link}}`) and `pieceTeaser` (`{{teaser}}`) in `piece.wrap`; `cardKicker` only when NO
+    (`{{image}}`), `pieceLink` (`{{link}}`) and `pieceTeaser` (`{{teaser}}`) in `piece.wrap`; schema 6's `groupCount`
+    (`{{count}}` in `group.wrap`) and `pieceRoles` (`{{roles}}` in `piece.wrap`, unless the portfolio is a roles view,
+    which prints the roles itself; design-adopt-parity-2 section 4.8); `cardKicker` only when NO
     part that shows that portfolio's pieces (its index, the home page's featured cards and showcase tiles) has a
     `{{kicker}}`. A part OF THE SITE'S OWN LOOK that shows those pieces without one is a note, printed on every build.
     A part the look omits renders with the default look's, which has every slot. `cardKicker` in a portfolio whose pieces
@@ -197,6 +202,10 @@ def trigger_slot_findings(model, cfg, files, look, grammar=None):
                 if pf.settings.get("view") != "roles":
                     continue
                 parts = sorted(_index_parts(pf))
+            elif key == "groupCount":
+                parts = [("group", "wrap")]
+            elif key == "pieceRoles" and pf.settings.get("view") == "roles":
+                continue
             elif key != "cardKicker":
                 parts = [("piece", "wrap")]
             missing = [cp for cp in parts if not _has_slot(look, cp[0], cp[1], slot)]

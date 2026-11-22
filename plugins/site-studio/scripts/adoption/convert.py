@@ -27,11 +27,11 @@ from adoption.blocks import block_rewrites, blocks_left
 from adoption.settings import apply_settings, page_view, showcase_pieces
 from adoption.template import (
     RESUME_OWNED_KEYS, home_key_rewrite, home_path, nav_token_rewrites, page_file_renames, person_name_change,
-    reference_rewrites, resume_header_rewrite, resume_pdf_rename,
+    reference_rewrites, resume_header_rewrite, resume_pdf_rename, role_list_lines,
 )
 from adoption.tree import Overlay, TreeFiles
 from adoption.tokens import (
-    detect_resume, home_feed, portfolio_folders, rewrite_tokens,
+    detect_resume, home_feed, old_page, portfolio_folders, rewrite_tokens,
     site_json_labels, token_files,
 )
 from adoption.redirects import redirect_pages
@@ -238,14 +238,46 @@ def view_key_rewrites(tree, portfolios):
     return out
 
 
-def piece_key_rewrites(tree, portfolios, showcase=frozenset(), steps=frozenset()):
+def roles_portfolios(portfolios, settings):
+    """The portfolios under a chosen `pieceRoles` (design-adopt-parity-2 section 7.4): the measured or chosen setting
+    `pieceRoles.<portfolio>` is `true` (`apply_settings` then writes `pieceRoles: true` into the portfolio's page.md)."""
+    return set(name for name in portfolios if (settings or {}).get("pieceRoles." + name) is True)
+
+
+def _role_line(lines, end, path, left):
+    """The front matter `lines[1:end]` with a one-line dated `role` made a YAML list (`template.role_list_lines`), and the
+    (source, target) row; or None. A line an entry of which section 4.4 refuses is left as written, and `(the piece folder,
+    why)` is appended to `left` (when given): the piece is named, never half-converted."""
+    for i in range(1, end):
+        m = _FM_LINE.match(lines[i].rstrip("\r"))
+        if not m or m.group(1) != "role" or (i + 1 < end and lines[i + 1][:1] in (" ", "\t", "-")):
+            continue
+        value = (m.group(2) or "").strip()
+        if len(value) > 1 and value[0] in "\"'" and value[-1] == value[0]:
+            value = value[1:-1]
+        new, why = role_list_lines(value)
+        if why is not None and left is not None:
+            left.append((posixpath.dirname(path) + "/", why))
+        if new is None:
+            return None
+        return lines[:i] + new + lines[i + 1:], ("role (one line)", "role (a list of %d, in the order written)" % (len(new) - 1))
+    return None
+
+
+def piece_key_rewrites(tree, portfolios, showcase=frozenset(), steps=frozenset(), settings=None, notes=None):
     """{piece file path: (new text, [(source key, target key)])} for each piece file (`work.md` or `index.md` in
     `content/<portfolio>/<slug>/`) that carries a PIECE_KEY_SYNONYMS source key and not its target. Only the key
     name on that front-matter line changes: the value, the other lines and the body stay byte for byte. A piece in
     `showcase` (a set of `portfolio/slug`: its portfolio's view is showcase, or the home showcase names it) reads its tile
     picture from `tileImage`, so there `tilePhoto` is `tileImage`, not `cover` (design 8 V1); a piece in `steps` (its
-    portfolio's view is steps) reads the tile's position too. `TILE_KEY_SYNONYMS` holds the three rows."""
+    portfolio's view is steps) reads the tile's position too. `TILE_KEY_SYNONYMS` holds the three rows.
+
+    Under a chosen `pieceRoles` (`roles_portfolios` of `settings`; design-adopt-parity-2 section 7.4) a one-line `role: A (x);
+    B (y)` becomes a YAML list in the same order (`_role_line`); a line one entry of which section 4.4 would refuse is left as
+    written and its piece is named in `notes["pieceKeysLeft"]` (when `notes` is given)."""
     out = {}
+    roles = roles_portfolios(portfolios, settings)
+    left = notes.setdefault("pieceKeysLeft", []) if notes is not None else None
     for path in sorted(tree.paths()):
         parts = path.split("/")
         if not (len(parts) == 4 and parts[0] == "content" and parts[1] in portfolios and not parts[2].startswith("_")
@@ -279,6 +311,10 @@ def piece_key_rewrites(tree, portfolios, showcase=frozenset(), steps=frozenset()
             if m:
                 lines[i] = "%s: %s" % (m.group(1), "true" if m.group(2).lower() == "yes" else "false")
                 done.append((m.group(1) + ": " + m.group(2), m.group(1) + ": " + ("true" if m.group(2).lower() == "yes" else "false")))
+        listed = _role_line(lines, end, path, left) if parts[1] in roles else None
+        if listed:
+            lines = listed[0]
+            done.append(listed[1])
         if done:
             out[path] = ("\n".join(lines), done)
     return out
@@ -532,7 +568,7 @@ def converted_site_files(tree, data, paper, folders=None, kind=None, only=None, 
             notes["viewKeys"].append((path, val))
     if want("pieceKeys"):
         for path, (new_text, done) in piece_key_rewrites(view, portfolios, showcase_pieces(view, settings or {}),
-                                                         steps_pieces(view, settings or {})).items():
+                                                         steps_pieces(view, settings or {}), settings, notes).items():
             files[path] = new_text.encode("utf-8")
             notes["pieceKeys"].extend((posixpath.dirname(path) + "/", a, b) for a, b in done)
         # K4: a roles folder's own view. Read from the tree as the person wrote it, never from `view`: a page whose `view` the
@@ -571,7 +607,7 @@ def converted_site_files(tree, data, paper, folders=None, kind=None, only=None, 
         frz = []
         new, ch, unk = rewrite_tokens(text, names, layout=(p == "site/templates/layout.html"), home=home, frozen=frz,
                                       labels=site_json_labels(data), home_rows=bool(notes["homeKeys"]),
-                                      home_samples=any("featured (references)" in w for _p, w in notes["homeKeys"]))
+                                      home_samples=any("featured (references)" in w for _p, w in notes["homeKeys"]), old=old_page(hints, p, data))
         notes["tokens"].extend((p, a, b) for a, b in ch)
         notes["tokensFrozen"].extend((p, a, b) for a, b in frz)
         notes["unknown"].extend((p, t) for t in unk)

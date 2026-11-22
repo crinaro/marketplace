@@ -19,6 +19,7 @@ import content as C
 from configschema import configkeys
 from contentmodel.errors import ContentError
 
+from building import grouping
 from building.outcomes import BuildError
 
 
@@ -79,7 +80,7 @@ def arranged_body(b, page, out, extras, pieces, feed_cards):
         "intro": lambda: b.r("home", "intro", {"photo": extras["photo"], "intro": intro_and_rest()[0],
                                                "endorsement": extras["endorsement"]}),
         "rest": lambda: intro_and_rest()[1],
-        "featured": lambda: b.r("home", "featured", {"cards": b.cards_html(pieces, out)}) if pieces else "",
+        "featured": lambda: b.r("home", "featured", {"cards": grouping.featured_html(b, pieces, out)}) if pieces else "",
         "showcase": lambda: b.showcase_html(meta, source, out),
         "feed": lambda: b.feed_html(feed_cards),
         "samples": lambda: b.samples_html(meta.get("samples", []), out),

@@ -24,7 +24,9 @@ def piece_known_keys(portfolio, featured_from="home", showcased=False):
     reads (`VIEW_PIECE_KEYS`: those of the portfolio's `view` and of `cardNumber` when it is on). `showcased`
     is True for a piece the home page's `showcase` names: its tile keys are read wherever its portfolio's view
     is (design R4 row 6). Under a schema-5 trigger, the `V5_PIECE_KEYS` rows it turns on and the key `cardKicker`
-    names (design-movement-view section 3.3); without one, none of them is known here."""
+    names (design-movement-view section 3.3), and under schema 6's `pieceRoles` the `V6_PIECE_KEYS` rows (`currentRole`
+    among them; design-adopt-parity-2 section 3.2), both through `piece_keys_read`; without a trigger none of them is
+    known here, so `currentRole` in a 0.5.x tree is reported as not published, as 0.5.x reports it."""
     known = set(BUILTIN_PIECE_KEYS) | {"description"}
     known.update(portfolio.settings["meta"])
     known.update(portfolio.settings["cardMeta"])

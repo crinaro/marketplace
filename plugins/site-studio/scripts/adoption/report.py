@@ -47,9 +47,10 @@ from adoption.convert import converted_site_files, holds_markdown, pageless_fold
 from adoption.fileacct import measured_folders
 from adoption.keycover import note_lines
 from adoption.features import FEATURES, detect_signals, feature_lines, infer_kind
-from adoption.parity import conversion_lines, decide_conversions, preconditions, template_fingerprint
+from adoption.parity import conversion_lines, current_parity, decide_conversions, preconditions, template_fingerprint
 from adoption.problems import plan_settings, format_problems, held_problems, problem_dicts, site_problems, size_copy_note
 from adoption.plan import _plan_for, save_plan
+from adoption.accepts import open_lines
 
 def cmd_inventory(repo, as_json):
     basis, tree, data = preconditions(repo)
@@ -234,6 +235,12 @@ def _shown(text):
 
 
 def accept_lines(parity):
+    """The ACCEPT list `parity` and `check` print (design-adopt-parity-2 7.3): the description rows (`_description_lines`), then the
+    visible differences still open (`parity["open"]`, `accepts.open_lines`). Nothing for a verdict that is not DIFFERENT."""
+    return _description_lines(parity) + open_lines(parity)
+
+
+def _description_lines(parity):
     """The lines `parity` and `check` print for the pages whose search-result description will read differently. `parity` is a parity
     result (`run_parity`'s, or the plan's `parity`): its `accepts` is `[(page, old text, new text)]` (`parity_classes.description_changes`).
     It is a difference a person MEETS before the page (a search result shows it), so it is named once, page by page, as something to
@@ -260,15 +267,27 @@ def _conversion_block(tree, data, plan):
     """The `conversions` lines of `check`: each conversion, its label and what parity says about it (empty
     when adopt would make none), then the pages whose search-result description will read differently, named as an ACCEPT
     (`accept_lines`, from the last `parity` on this basis; none when parity has not measured or found none)."""
-    accepts = accept_lines(plan["parity"])
+    accepts = accept_lines(current_parity(plan["parity"]))          # a stale parity's rows are not repeated (design-adopt-parity-2 7.5)
     try:
-        _files, notes = converted_site_files(tree, data, plan["paper"], plan["folders"], plan.get("siteKind"))
+        _files, notes = converted_site_files(tree, data, plan["paper"], plan["folders"], plan.get("siteKind"),
+                                             settings=plan_settings(plan))
     except Refused:
         return accepts
     rows = decide_conversions(notes, plan["parity"], template_fingerprint(tree), plan["convert"])
     head = (["conversions (GENERAL follows from site-studio's own model, TEMPLATE from the template's conventions):"]
-            + conversion_lines(rows)) if rows else []
+            + conversion_lines(rows) + conversion_notes(notes)) if rows else []
     return head + ([""] if head and accepts else []) + accepts
+
+
+def conversion_notes(notes):
+    """What `check` says under the conversions (design-adopt-parity-2 section 7.4): each FROZEN token, "frozen: it no longer
+    follows the key it came from" (the home intro's freeze of 0.3.x, and the whole-anchor freeze), and each piece whose one-line
+    `role` the `pieceKeys` conversion left as written under `pieceRoles`, named with the entry that stops it."""
+    out = ["    frozen: %s: %s -> %s (frozen: it no longer follows the key it came from)" % (p, a, " ".join(b.split()))
+           for p, a, b in notes.get("tokensFrozen") or ()]
+    out += ["    left as written: %s: its one-line role stays as it is, because %s; write each role as Title (dates) on its own "
+            "line under role:" % (folder, why) for folder, why in notes.get("pieceKeysLeft") or ()]
+    return out
 
 
 def site_json_schema_line(tree, data, paper, folders=None, kind=None):

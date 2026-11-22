@@ -8,12 +8,11 @@ import content as C
 from contentmodel import links
 from contentmodel.errors import ContentError
 
-from building import pictures
+from building import mediapaths, pictures, references
 from building.constants import IMAGE_EXTS, SIZES_ATTR
 from building.imagesize import image_size
 from building.outcomes import BuildError
-from building.references import card_out
-from building.tokens import SIZE_COPY_SHAPES, rel_link
+from building.tokens import rel_link
 
 
 class _MarkdownEnv(object):
@@ -42,10 +41,9 @@ class _MarkdownEnv(object):
             part = "sized"
             stem, ext = posixpath.splitext(posixpath.basename(repo_path))
             copies = []
-            rx = re.compile(r"^%s-(\d+)w%s$" % (re.escape(stem), re.escape(ext)))
             folder = posixpath.dirname(repo_path)
-            shapes = [rx] if self.grammar < 3 else [rx] + [      # I-3: schema 3 reads these namings too (F4)
-                re.compile(pat % (re.escape(stem), re.escape(ext))) for pat, _name in SIZE_COPY_SHAPES]
+            # I-3: schema 3 reads the SIZE_COPY_SHAPES namings too (F4); schema 6's `sizeCopies: any-format` widens their extension
+            shapes = references.copy_shapes(stem, ext, self.grammar >= 3, mediapaths.any_format(self.cfg))
             for p in sorted(itertools.chain(self.media_out, self.ref_copies)):
                 if posixpath.dirname(p) == folder and any(r.match(posixpath.basename(p)) for r in shapes):
                     s2 = image_size(self.files[p])
@@ -84,12 +82,15 @@ class _MarkdownEnv(object):
         return (self.assets(from_out, "reference-card") if role else "") + card
 
     def _card_out(self, ref):
-        return card_out(ref)
+        return references.card_out(ref, self.cfg)
 
     # ---- markdown
-    def markdown(self, body, source, from_out, base_dir, first_line=1, headings="shift", cards=False):
+    def markdown(self, body, source, from_out, base_dir, first_line=1, headings=None, cards=False):
         """The body as HTML. `headings` and `cards` are the resume's schema-4 settings (`resume.headings`,
-        `resume.layout`); every other page reads the defaults."""
+        `resume.layout`), which the resume passes; every other body reads `blocks.headings` (schema 6: "as-written"
+        prints a heading at the level written; absent, "shift", the rule every earlier schema has) and no cards."""
+        if headings is None:
+            headings = self.cfg.blocks.get("headings", "shift")
         env = self.md_env(source, from_out, base_dir)
         text = self.expand(body, from_out, source, escape=False)
         try:

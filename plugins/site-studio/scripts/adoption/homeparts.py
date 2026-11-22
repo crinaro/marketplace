@@ -252,16 +252,51 @@ def placement(held, nodes):
     return placed
 
 
+def body_parts(snap):
+    """{name: how many of the intro's texts the build prints AFTER it} for each `:::part` block of the converted home body, in file
+    order: the texts of the body's blocks that follow it in the file, and the endorsement's quote."""
+    path = home_in(snap)
+    if path is None:
+        return {}
+    front, body, _had = split_front(_text(snap, path))
+    quote = front_values(front).get("endorsement")
+    tail = 1 if isinstance(quote, dict) and quote.get("quote") else 0
+    out = {}
+    for i, line in enumerate(body):
+        s = line.strip()
+        if s.startswith(":::part"):
+            blocks, named = body_blocks(body[i:])
+            if named:
+                name = next(iter(named))
+                out.setdefault(name, len([a for b in blocks for a in anchors_of(b)]) + tail)
+    return out
+
+
+def escapes_intro(held, placed, nodes, named):
+    """True when the old page shows one of the body's `:::part` blocks before none of the intro's texts the build prints after it.
+    With no `partOrder` under `introScope: body` the build prints the whole body, its `:::part` blocks where they stand, INSIDE
+    `home.intro`, before the endorsement (`building/homeorder.py`); a page that shows the part after one of those texts is not in the
+    order the build prints anyway, even where the order of the part names agrees (step 12c, F-c1: `-c`'s number tiles follow the
+    quote). `named` is `body_parts`: {part: how many intro texts follow it in the build}."""
+    run = _match(nodes, held["intro"], set()) if held.get("intro") else None
+    if not run:
+        return False
+    return any(0 < k <= len(run) and placed[n] > run[-k] for n, k in named.items() if n in placed)
+
+
 def old_order(snap, local, scope="body"):
     """The parts of the converted home in the order the old home page prints them, or None when there is nothing to offer: no home
-    page, no old home page, fewer than two parts placed, or the old page prints them in the order the build does anyway."""
+    page, no old home page, fewer than two parts placed, or the old page prints them in the order the build does anyway (under no
+    `partOrder` and `introScope: body`, a body's `:::part` inside the intro: `escapes_intro`)."""
     held = parts(snap, scope)
     page = (local or {}).get("index.html")
     if not held or page is None:
         return None
-    placed = placement(held, text_nodes(page))
+    nodes = text_nodes(page)
+    placed = placement(held, nodes)
     order = sorted(placed, key=lambda n: (placed[n], list(held).index(n)))
-    if len(order) < 2 or order == [n for n in held if n in placed]:
+    nested = scope == "body" and escapes_intro(held, placed, nodes, body_parts(snap))
+    if len(order) < 2 or (order == [n for n in held if n in placed] and not nested):
         return None
     return order + [n for n in held if n not in placed]
 

@@ -19,10 +19,20 @@ shows. A mixin of `checker.Checker`.
                `site-studio/schema-4.css` is held to the same no-remote-`url()` rule as `blocks.css`.
                A planted `<image href="https://...">` inside the map goes red (test_check_site.py
                SchemaFourFacades). Since 0.5.0 (design-movement-view section 4.1) `.ss-steps`, the steps
-               view, is a root too, and `site-studio/schema-5.css` is held to the same rule.
+               view, is a root too, and `site-studio/schema-5.css` is held to the same rule; since 0.6.0
+               (design-adopt-parity-2 section 4.8) `site-studio/schema-6.css` is too (`PLUGIN_STYLESHEETS`).
   unfinished   TODO/FIXME/TBD/lorem ipsum/coming soon/under construction in visible text, empty or
                "#" links, development URLs (localhost, 127.0.0.1, file://), a noindex page that is
                not a redirect stub, an untitled or empty page.
+
+  Dated note, 2026-11-20 (design-adopt-parity-2 section 4.7.2, owner decision 2 (i)): a CARRIED file (`site.json`
+  `carried`, schema 6; `sitechecks/carriedpages.py`) is the person's page as their old site served it. `media`'s
+  per-page rules (an <img>'s alt, size and srcset, an <iframe>'s title and host, the facade rule) and the whole
+  `unfinished` family are NOT applied to it: they hold the plugin's output to the plugin's form, and refusing the page
+  now would change nothing for a visitor and block the person. `media`'s per-file rules (an image format browsers do
+  not show, an unreadable header, a long edge over the cap, the plugin stylesheets' remote loads) hold every file,
+  carried or not; an address on a carried page that names a development origin is still `basepath`'s finding. `checker.run` prints the
+  `carried:` note, so the skip is never a quiet pass. A tree without the key is judged as before.
 """
 
 from imaging import plan, sniff
@@ -31,6 +41,12 @@ from urllib.parse import urlsplit
 from sitechecks.kinds import BAD_IMAGE_EXTS, IMAGE_EXTS, VIDEO_HOSTS
 from sitechecks.page import _CSS_COMMENT, _CSS_URL, _REMOTE_LOAD, facade_loads, parse_srcset
 from sitechecks.tree import classify
+
+# The plugin's own stylesheets a built site may hold, each held to the no-remote-load rule of the `media` family. A literal,
+# not read from `building.constants`: no module of `sitechecks/` imports the builder. Each `.css` of
+# `building.constants.PLUGIN_ASSETS` must be here (tests/test_content_css.py `Schema6Css`).
+PLUGIN_STYLESHEETS = ("site-studio/blocks.css", "site-studio/schema-4.css", "site-studio/schema-5.css",
+                      "site-studio/schema-6.css")
 
 
 class ContentChecks(object):
@@ -53,6 +69,8 @@ class ContentChecks(object):
                 elif max(dims) > plan.LONG_EDGE_CAP:
                     self.r.add(fam, rel, "long edge %d px is over the %d px cap" % (max(dims), plan.LONG_EDGE_CAP))
         for rel, p in sorted(self.pages.items()):
+            if rel in self.carried:             # the page as the person wrote it (the dated note)
+                continue
             for im in p.imgs:
                 n += 1
                 src = im["src"]
@@ -109,7 +127,7 @@ class ContentChecks(object):
                 n += 1
                 self.r.add(fam, rel, "a video facade loads %s from another address before any click (<%s %s>); "
                            "a facade may load only a poster committed under media/" % (val, tag, attr))
-        for css in ("site-studio/blocks.css", "site-studio/schema-4.css", "site-studio/schema-5.css"):
+        for css in PLUGIN_STYLESHEETS:
             if css in t.files:
                 n += 1
                 for m in _CSS_URL.finditer(_CSS_COMMENT.sub("", t.text(css))):
@@ -125,8 +143,9 @@ class ContentChecks(object):
 
     def unfinished(self):
         fam = "unfinished"
-        for rel, p in sorted(self.pages.items()):
-            text = " ".join([p.visible_text, p.title] + p.attr_text)
+        held = dict((rel, p) for rel, p in self.pages.items() if rel not in self.carried)    # the dated note
+        for rel, p in sorted(held.items()):
+            text =" ".join([p.visible_text, p.title] + p.attr_text)
             for m in self._UNFINISHED.finditer(text):
                 self.r.add(fam, rel, "unfinished marker %r in the page text" % m.group(0))
             for a in p.anchors:
@@ -141,8 +160,8 @@ class ContentChecks(object):
             if rel != "404.html" and not "".join(p.main_text or p.text).strip() and not p.imgs:
                 self.r.add(fam, rel, "the page has no content")
         for rel in sorted(self.t.files):
-            if rel.lower().endswith((".html", ".htm", ".js", ".css")):
+            if rel.lower().endswith((".html", ".htm", ".js", ".css")) and rel not in self.carried:
                 for m in re.finditer(r"(?i)\b(?:https?://)?(localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?|file://", self.t.text(rel)):
                     self.r.add(fam, rel, "development address %r left in" % m.group(0))
                     break
-        self.r.count(fam, len(self.pages))
+        self.r.count(fam, len(held))

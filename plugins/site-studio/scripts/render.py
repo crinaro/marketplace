@@ -3,7 +3,7 @@
 light and dark, horizontal-overflow flags, and page weight (dev #835; design 5.3; named change M8).
 Python 3.9, standard library only; Chrome through browser.py. The `visual-qa` skill reads the PNGs.
 
-    python3 render.py [--repo R | --site DIR] [--out DIR] [--pages a/index.html,...] [--weight] [--json]
+    python3 render.py [--repo R | --site DIR [--base PATH]] [--out DIR] [--pages a/index.html,...] [--weight] [--json]
 
 WHAT IT DOES, per page, per (phone 390 | desktop 1440) x (light | dark)
   1. loads the page from a local server under the real base path (preview.py; or --site DIR, a
@@ -20,7 +20,9 @@ WHAT IT DOES, per page, per (phone 390 | desktop 1440) x (light | dark)
   resource it loaded, after the scroll.
 
 WRITES <out>/report.json: the Chrome version and platform (named change M8, so a later Chrome
-change shows), every PNG, every overflow, every weight. Prints one line per finding.
+change shows), every PNG (and, in `views`, the page, viewport and scheme of each), every overflow,
+every weight. Prints one line per finding. `--chrome` only says where Chrome is found and starts
+nothing (`adoption/shots.py` asks it before honouring an accept without pictures).
 
 EXIT: 0 when no page overflows; 1 when any does (the overflow IS the finding) or a page cannot
 load; 2 on a usage error. The default --out is a fresh folder under the system temp directory,
@@ -73,12 +75,15 @@ def pages_in(directory):
     return sorted(out)
 
 
-def render_site(serve, pages, out_dir, weight=False, log=print):
+def render_site(serve, pages, out_dir, weight=False, log=print, browser_factory=None):
     """Render `pages` (output paths) from `serve` (an object with .page_url(path)); returns the report
-    dict."""
+    dict. `browser_factory` makes the browser of each `with` block below; None is `browser.Browser`,
+    read at call time (design-adopt-parity-2 section 7.3: the seam `adoption/shots.py`'s tests replace,
+    so the real loop, its `except` and its report run with no browser)."""
+    factory = browser_factory or browser.Browser
     os.makedirs(out_dir, exist_ok=True)
-    report = {"pages": [], "overflow": [], "weights": {}, "png": [], "errors": []}
-    with browser.Browser() as b:
+    report = {"pages": [], "overflow": [], "weights": {}, "png": [], "errors": [], "views": []}
+    with factory() as b:
         report["browser"] = b.packet()
         for page in pages:
             url = serve.page_url(page)
@@ -101,6 +106,7 @@ def render_site(serve, pages, out_dir, weight=False, log=print):
                     with open(os.path.join(out_dir, name), "wb") as fh:
                         fh.write(png)
                     report["png"].append(name)
+                    report["views"].append({"page": page, "viewport": vname, "scheme": scheme, "png": name})
                     if ov["scrollWidth"] > ov["clientWidth"] + 1:
                         rec = {"page": page, "viewport": vname, "width": width, "scrollWidth": ov["scrollWidth"],
                                "culprits": ov["culprits"]}
@@ -111,7 +117,7 @@ def render_site(serve, pages, out_dir, weight=False, log=print):
             report["pages"].append(page)
     if weight:
         for scale in WEIGHT_SCALES:
-            with browser.Browser() as b:     # a fresh profile and cache per scale
+            with factory() as b:     # a fresh profile and cache per scale
                 for page in pages:
                     try:
                         p = b.new_page(width=390, height=844, scale=scale)
@@ -135,10 +141,11 @@ def render_site(serve, pages, out_dir, weight=False, log=print):
 
 
 class _Dir(object):
-    """--site DIR: built pages served at the root of a local server."""
+    """--site DIR: built pages served at the root of a local server, or under `base` (`--base PATH`, in
+    `preview.base_path`'s form): the path the pages' own addresses assume (design-adopt-parity-2 7.3)."""
 
-    def __init__(self, directory):
-        self.server = browser.LocalServer(directory)
+    def __init__(self, directory, base=""):
+        self.server = browser.LocalServer(directory, base=base or "")
 
     def __enter__(self):
         self.server.start()
@@ -159,21 +166,32 @@ def build_parser():
     g = ap.add_mutually_exclusive_group()
     g.add_argument("--repo", help="the dev repo to build (drafts included) and render (default: the current directory)")
     g.add_argument("--site", help="a folder of already-built pages to render, served at the root")
+    ap.add_argument("--base", default="", metavar="PATH",
+                    help="with --site: serve the pages under /PATH/, the path their own addresses assume (default: the root)")
     ap.add_argument("--out", help="where to write the PNGs and report.json (default: a new temp folder)")
     ap.add_argument("--pages", help="comma-separated output paths to render (default: every page)")
     ap.add_argument("--weight", action="store_true", help="also record bytes per page at 2x and 3x")
     ap.add_argument("--json", action="store_true", help="print the report as JSON instead of lines")
+    ap.add_argument("--chrome", action="store_true",
+                    help="only say where Chrome is found (CHROME_PATH, the Mac paths, PATH): starts nothing; exit 1 when it is not")
     return ap
 
 
 def main(argv=None):
-    args = build_parser().parse_args(argv)
+    ap = build_parser()
+    args = ap.parse_args(argv)
+    if args.base and not args.site:
+        ap.error("--base applies only with --site")
+    if args.chrome:                  # `adopt.py parity --accept` asks this of a stored `shots: none` (design-adopt-parity-2 7.3)
+        path, why = browser.lookup_chrome()
+        print(path or why)
+        return 0 if path else 1
     out = args.out or tempfile.mkdtemp(prefix="site-studio-render-")
     try:
         browser.require_chrome()
         log = (lambda s: None) if args.json else print
         if args.site:
-            with _Dir(args.site) as srv:
+            with _Dir(args.site, args.base) as srv:
                 pages = pages_in(args.site)
                 pages = [p for p in pages if not args.pages or p in args.pages.split(",")]
                 rep = render_site(srv, pages, out, args.weight, log)

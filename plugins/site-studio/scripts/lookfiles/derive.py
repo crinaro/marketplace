@@ -5,18 +5,17 @@ import json
 import looks
 import re
 from lookfiles.anchors import _Fail
-from lookfiles import literals
+from lookfiles import literals, places
 from lookfiles.derivation import _Derivation
 from lookfiles.pagedom import Page, Tx, _STOP_UP, walk
 from lookfiles.refusals import LookCommandError
-from lookfiles.renderlog import LIST_SEP_PARTS, PLACE_PICTURES, _tree, kids_of, place_calls, record
+from lookfiles.renderlog import LIST_SEP_PARTS, _tree, kids_of, place_calls, record
 from lookfiles.templatemerge import _majority, _merge, _merge_place_picture
 from lookgrammar.constructs import PART_FIRST
 
 
 STATUSES = ("mapped", "unmapped", "ambiguous", "not reached")
 DEFAULT_LIST_SEP = " / "                    # what the build joins a list role with when the look names no separator
-PLACE_PARTS = frozenset((c, "image") for c, _p in PLACE_PICTURES)
 
 
 # ================================================================================================ derive, whole
@@ -25,6 +24,7 @@ class Derivation(object):
         self.look = {"look": looks.LOOK_FORMAT, "constructs": {}}
         self.status = collections.OrderedDict()      # construct -> Counter of statuses (by distinct instance)
         self.reasons = {}                             # construct -> first reason it did not map
+        self.where = {}                               # construct -> the first page that held an instance that did not map (rule L5)
         self.unexplained = collections.Counter()
         self.pages_read = 0
         self.mapped_instances = 0
@@ -41,8 +41,10 @@ class Derivation(object):
                 continue
             c = self.status[cid]
             line = "%s: %s" % (cid, ", ".join("%s %d" % (s, c[s]) for s in STATUSES if c.get(s)))
-            if cid in self.reasons and not c.get("mapped"):
-                line += " (%s)" % self.reasons[cid]
+            if cid in self.reasons and any(c.get(s) for s in STATUSES[1:]):
+                # rule L5 (design-adopt-parity-2 section 6; step 12): every construct not wholly mapped says why, `ambiguous` included,
+                # and the page that first held such an instance
+                line += " (%s%s)" % (self.reasons[cid], ", first on %s" % self.where[cid] if self.where.get(cid) else "")
             out.append(line)
         silent = [cid for cid in looks.CONSTRUCTS if cid not in self.status]
         out.append("%d construct(s) have no instance in this repository's content: the plugin's markup is used"
@@ -51,6 +53,31 @@ class Derivation(object):
             out.append("text no content explains, by element: " + ", ".join(
                 "element/%s x%d" % (t, n) for t, n in sorted(self.unexplained.items())))
         return out
+
+
+_ADDRESS = re.compile(r"\b(?:src|srcset|poster)=\"([^\"{}]*)\"")
+FIXED_PICTURE = "this template writes a picture's address as fixed text, which names the right file from one folder only"
+
+
+def fixed_picture(template):
+    """Does `template` write a picture's RELATIVE address as fixed text (`<img src="gull-works/media/photo.png">`, a `srcset` of
+    `../../refs/...`)? A relative address names the right file from the pages of one folder depth only, and a part renders on pages
+    of every depth (a site-wide `image` part made from a piece's page prints `../../refs/...` on the home page, outside the site),
+    and one piece's own picture written so would print on every instance (step 12: design-adopt-parity-2 section 9's `-b` career
+    card, whose `cardImage` and `cardAlt` then changed nothing; `-c`'s reference picture under a measured `mediaPaths`, step 8b).
+    An absolute address (a scheme, `//`, `/`, `data:`) is depth-free and stays."""
+    for m in _ADDRESS.finditer(template):
+        for part in m.group(1).split(","):
+            url = (part.split() or [""])[0]
+            if url and not re.match(r"^(?:[A-Za-z][A-Za-z0-9+.-]*:|/)", url):
+                return True
+    return False
+
+
+def _outer_tag(template):
+    """The name of the element a template opens with (`nav` for `<nav class="site-nav"><ul>`), or None."""
+    m = re.match(r"\s*<([a-zA-Z][a-zA-Z0-9-]*)", template or "")
+    return m.group(1).lower() if m else None
 
 
 def _sanitise(message):
@@ -86,16 +113,27 @@ def derive_look(files, pages, never=(), recorded=None, refine=True):
     unsettled = lambda cid: any(best.status.get(cid, {}).get(s) for s in ("ambiguous", "unmapped"))      # noqa: E731
     newer = any(looks.CONSTRUCTS[c.construct]["first"] == PART_FIRST[("home-showcase", "image")] for c in calls_pages[0])
     if tiles and newer and (unsettled("home-showcase") or unsettled("image")):
-        for c in tiles:
-            c.as_place("home-showcase")
-        try:
-            more = _readings(files, pages, never, calls_pages, refine)
-        except LookCommandError:
-            more = None
-        if more is not None and _quality(more) > _quality(best):
-            return more
-        for c in tiles:
-            c.as_site()
+        best = _try(best, [(c, "home-showcase", "image") for c in tiles], files, pages, never, calls_pages, refine)
+    # rule L6 (design-adopt-parity-2 section 6; step 12): a reference card printed in a place (`feed`, `home-samples`) and a nav item
+    # in a state (the brand, the section mark) read as their own part where the site-wide reading leaves the construct unsettled,
+    # kept only when that maps more; in a tree that may hold 0.6.0's parts only (`places.families`)
+    for _name, group in places.families(calls_pages[0], files):
+        if any(unsettled(c.construct) for c, _construct, _part in group):
+            best = _try(best, group, files, pages, never, calls_pages, refine)
+    return best
+
+
+def _try(best, group, files, pages, never, calls_pages, refine):
+    """`best`, or the reading with `group` read as their own parts (`places.read_as`) where it maps more; the calls stay so read
+    only then."""
+    undo = places.read_as(group)
+    try:
+        more = _readings(files, pages, never, calls_pages, refine)
+    except LookCommandError:
+        more = None
+    if more is not None and _quality(more) > _quality(best):
+        return more
+    undo()
     return best
 
 
@@ -131,9 +169,10 @@ class _Reading(object):
     of it, run in this order: `anchor_roots`, `count_support`, `place_pending`, `place_salvaged`, `merge_templates`, `count_statuses`,
     `finish`."""
 
-    def __init__(self, calls, built, parsed, never, state, values=()):
+    def __init__(self, calls, built, parsed, never, state, values=(), hosts=frozenset()):
         self.calls, self.built, self.parsed = calls, built, parsed
         self.values = values                    # the pieces' own values (`literals.content_values`): none is a look's fixed text
+        self.hosts = set(hosts)                 # the references' hosts no key holds (`literals.host_values`): left out, never fixed
         self.by_key = dict((p.key, p) for p in parsed)
         self.never = set(never)
         self.state = state
@@ -317,9 +356,13 @@ class _Reading(object):
     def place(self, root, page, opts, hold=()):
         self.root_now[0] = root
         # of readings the instances support equally, the one that reads the root as the plugin's own markup comes first: nothing above a
-        # root owns a wrapper, so a page that writes the part exactly as the plugin does (`<nav class="site-nav"><ul>`) keeps that wrapper
+        # root owns a wrapper, so a page that writes the part exactly as the plugin does (`<nav class="site-nav"><ul>`) keeps that wrapper;
+        # and before that, the one that opens with the element the plugin's own markup opens with: a menu the page writes as
+        # `<nav class="t-nav"><ul>` keeps its `<nav>` (the token the part replaces stands where the whole menu stood; step 12)
+        own = _outer_tag(root.template)
         keep = sorted((o for o in opts if self.consistent(root, o[1], hold)),
-                      key=lambda o: (-self.score(o), o[1].get(id(root), ("",))[0] != root.template))
+                      key=lambda o: (-self.score(o), own is not None and _outer_tag(o[1].get(id(root), ("",))[0]) != own,
+                                     o[1].get(id(root), ("",))[0] != root.template))
         if not keep:
             # no reading agrees with what is accepted: the reading with the fewest such parts is kept, and those parts alone are named
             # `ambiguous` (a home page does not lose its wrapper, its heading and every part inside it because one list of links is
@@ -407,7 +450,7 @@ class _Reading(object):
         constructs that could not be mapped."""
         bad = {}
         for (cid, pn), entries in sorted(self.state.entries.items()):
-            tpl = (_merge_place_picture if (cid, pn) in PLACE_PARTS else _merge)(entries, cid, pn)
+            tpl = (_merge_place_picture if (cid, pn) in places.picture_parts() else _merge)(entries, cid, pn)
             if tpl is None:
                 tpl, odd = _majority(entries, cid, pn)
                 if tpl is None:
@@ -419,10 +462,17 @@ class _Reading(object):
             if problems:
                 bad.setdefault(cid, ("unmapped", _sanitise(problems[0][0])))
                 continue
-            if literals.literal_hits(tpl, self.values):
+            hits = literals.literal_hits(tpl, self.values)
+            bare = literals.without_hosts(tpl, self.hosts) if hits and set(hits) <= self.hosts else None
+            if bare is not None and not literals.literal_hits(bare, self.values) and not looks.check_part(cid, pn, bare):
+                tpl, hits = bare, []            # step 12c: a reference's host no key holds is left out, a content gap (L3)
+            if hits:
                 # dev 941 (D1): one instance's own value written as the template's fixed text would print it on every instance's page;
                 # in a part of one instance (the home page) it would print the value as it was when the look was made (step 5c-4)
                 bad.setdefault(cid, ("unmapped", literals.why_fixed(cid)))
+                continue
+            if fixed_picture(tpl):
+                bad.setdefault(cid, ("unmapped", FIXED_PICTURE))
                 continue
             result.look["constructs"].setdefault(cid, {})[pn] = tpl
             result.consensus[(cid, pn)] = (tpl, entries[0][1])
@@ -455,6 +505,8 @@ class _Reading(object):
                 st, why = "unmapped", "an instance of the same markup was read through another page"
             cnt[st] += 1
             result.reasons.setdefault(c.construct, why)
+            if c.construct not in result.where:
+                result.where[c.construct] = next((k for k in sorted(self.built) if c.out and c.out in self.built[k]), None)
 
     def finish(self, result, bad):
         """The look keeps the constructs that mapped; a tree that mapped none is refused, and the text no content explains is counted."""
@@ -486,7 +538,8 @@ def _derive_look(files, pages, never, recorded, prefer_parent, prior=None):
                                "--build <folder of built pages>, or check the address")
     result = Derivation()
     result.pages_read = len(parsed)
-    rd = _Reading(calls, built, parsed, never, _Derivation(prefer_parent, prior), literals.content_values(files))
+    rd = _Reading(calls, built, parsed, never, _Derivation(prefer_parent, prior), literals.content_values(files),
+                  literals.host_values(files))
     rd.anchor_roots()
     rd.count_support()
     rd.place_pending()

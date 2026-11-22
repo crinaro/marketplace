@@ -9,10 +9,22 @@
   basepath     the site is served under /<repo>/ before cutover, so a root-absolute link or url(),
                a <base> tag, a development origin, or an absolute URL on the site's own host but
                outside its path is a finding.
+
+  Dated note, 2026-11-20 (design-adopt-parity-2 sections 4.7.2 and 4.7.3, owner decision 2 (i) and (ii)): a CARRIED
+  file (`site.json` `carried`, schema 6; `sitechecks/carriedpages.py`) is the person's page as their old site served
+  it. `head` and `nav` are NOT applied to it: they hold the plugin's output to the plugin's form (a canonical link from
+  the build's `presence`, the menu every generated page shares), which a byte-for-byte page cannot have, and refusing
+  it would change nothing for a visitor and block the person. `basepath` HOLDS it with one change: a root-absolute
+  address is read as `carriedpages.read_address` reads it, so one inside the site's CURRENT path is accepted (`links`
+  then requires it to resolve), one outside that path is a finding naming both, and one in a tree whose `site.json`
+  gives no address is a finding naming `previewUrl` and `domain`. An absolute address on the site's host but outside
+  its path was never this site's file and is not judged (it is listed with the external links). A `<base>` tag, a
+  development origin and a `file:` address are refused as on any page. A tree without the key is judged as before.
 """
 
 import re
 from urllib.parse import urlsplit
+from sitechecks.carriedpages import OUTSIDE, UNANCHORED, read_address, shown_path
 from sitechecks.tree import classify
 
 
@@ -23,7 +35,7 @@ class PageMetaChecks(object):
     def head(self):
         fam = "head"
         titles = {}
-        for rel in self.content_pages:
+        for rel in self.held_pages:             # a carried page keeps its own head (the dated note)
             p = self.pages[rel]
             metas = p.metas
             if not any(m.get("charset", "").lower() == "utf-8" or
@@ -50,7 +62,7 @@ class PageMetaChecks(object):
         for title, rels in sorted(titles.items()):
             if len(rels) > 1:
                 self.r.add(fam, rels[0], "the title %r is also used by %s" % (title, ", ".join(rels[1:])))
-        self.r.count(fam, len(self.content_pages))
+        self.r.count(fam, len(self.held_pages))
 
     # -- nav ---------------------------------------------------------------------------------
     def nav(self):
@@ -72,7 +84,7 @@ class PageMetaChecks(object):
         want = targets("index.html", home)
         if not want:
             self.r.add(fam, "index.html", "the home page has no primary navigation")
-        for rel in self.content_pages:
+        for rel in self.held_pages:             # a carried page keeps its own menu (the dated note)
             p = self.pages[rel]
             links_home = False
             for a in p.anchors:
@@ -96,7 +108,7 @@ class PageMetaChecks(object):
                 extra = sorted(got - want)
                 self.r.add(fam, rel, "primary nav differs from the home page's (missing %s; extra %s)"
                            % (missing or "nothing", extra or "nothing"))
-        self.r.count(fam, len(self.content_pages))
+        self.r.count(fam, len(self.held_pages))
 
     # -- basepath ----------------------------------------------------------------------------
     def basepath(self):
@@ -110,12 +122,24 @@ class PageMetaChecks(object):
                 self.r.add(fam, rel, "a <base> tag changes how every relative link resolves")
         for rel, kind, url in getattr(self, "all_refs", []):
             k, rest = classify(url, self.base)
-            if k == "rootabs":
+            carried = rel in self.carried
+            if k == "rootabs" and carried:      # read against the site's current path (the dated note)
+                reading, _rest = read_address(url, self.base)
+                if reading == OUTSIDE:
+                    self.r.add(fam, rel, "carried %s %s lies outside the site's path %s: a carried page is never rewritten, "
+                               "so correct the address in site/carried/%s, or remove %s from carried"
+                               % (kind, url, shown_path(self.base), rel, rel))
+                elif reading == UNANCHORED:
+                    self.r.add(fam, rel, "carried %s %s names the site's path, and site.json gives no address to read it "
+                               "against: set previewUrl, or domain with cutover" % (kind, url))
+            elif k == "rootabs":
                 self.r.add(fam, rel, "root-absolute %s %s breaks under the /<repo>/ preview path" % (kind, url))
             elif k == "external":
                 u = urlsplit(url)
                 if u.hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1") or url.lower().startswith("file:"):
                     self.r.add(fam, rel, "development origin %s" % url)
+                elif carried:
+                    pass                        # on the host but outside the path: never this site's file, not judged
                 elif host and u.netloc.lower() == host and sp and not (u.path == sp or u.path.startswith(sp + "/")):
                     self.r.add(fam, rel, "absolute URL %s is on this site's host but outside %s" % (url, sp))
             elif k == "special" and url.lower().startswith("file:"):

@@ -4,9 +4,18 @@
                sitemap <loc> and robots Sitemap all start with the site URL; no absolute URL to the
                other origin (the preview URL after cutover, the not-yet-live domain before); every
                page appears in the sitemap and every <loc> is a real page.
+
+  Dated note, 2026-11-20 (design-adopt-parity-2 sections 4.7.2 and 4.7.3, owner decision 2 (i) and (iii)): a CARRIED
+  page (`site.json` `carried`, schema 6; `sitechecks/carriedpages.py`) is HELD to the cutover rule in full: no address
+  on the site's other origin (`carriedpages.other_origins`, the one list the build's refusal reads too), and a carried
+  page other than the 404 page is in the sitemap like any page. The one rule not applied to it is "canonical and
+  og:url equal the page's own address": the build's `presence` writes those on its own pages only, a byte-for-byte page
+  keeps what the person wrote, and refusing it for that form would change nothing for a visitor. `CNAME` is never
+  carried (the key refuses it), so the CNAME rules are unchanged. A tree without the key is judged as before.
 """
 
 import re
+from sitechecks.carriedpages import other_origins
 from sitechecks.tree import classify
 
 
@@ -33,9 +42,9 @@ class DomainChecks(object):
                                 "(no previewUrl or domain gives a site URL)")
             self.r.count(fam, n)
             return
-        for rel in self.content_pages:
+        for rel in self.held_pages:             # a carried page keeps the canonical it was written with
             p = self.pages[rel]
-            expect = self.base + "/" + (rel[:-len("index.html")] if rel.endswith("index.html") else rel)
+            expect =self.base + "/" + (rel[:-len("index.html")] if rel.endswith("index.html") else rel)
             if rel == "index.html":
                 expect = self.base + "/"
             for lt in p.linktags:
@@ -48,11 +57,7 @@ class DomainChecks(object):
                     n += 1
                     if m.get("content") != expect:
                         self.r.add(fam, rel, "og:url is %s, expected %s" % (m.get("content"), expect))
-        other = []
-        if cfg.cutover and cfg.previewUrl:
-            other.append(cfg.previewUrl.rstrip("/"))
-        if not cfg.cutover and cfg.domain:
-            other.append("https://" + cfg.domain)
+        other = other_origins(cfg)
         texts = [(rel, p.source) for rel, p in self.pages.items()]
         for rel in ("sitemap.xml", "robots.txt"):
             if rel in self.t.files:

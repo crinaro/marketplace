@@ -11,6 +11,11 @@ runs them over a real tree and a real old builder, in the order the design state
   4. every file gets its disposition (`accounting.account`); the files attribution leaves open go to the counterfactual
   5. `archive` and `draft` are then applied (by `adoption.apply`) and measured like every class: P2 over the whole result
 
+Rule S (design-adopt-parity-2 section 8, `adoption.served`): the plugin's side is what its build used (`Acceptance.used`, S1),
+judged against the old side without a run where it can be; the counterfactual removes units (S2); a file the old builder
+stops without is asked whether anything of it is published, never counted as used for the crash (S3); the template's
+stamp is builder state without a run. The units of source material no page shows are named in one note, never a blocker.
+
 Evidence is keyed by the path AT THE BASIS (what `git ls-files` lists). A renamed file (`work.md` -> `index.md`, `home.md` ->
 `index.md`) is looked up under its converted name. Without a measurement (no node, a builder that fails) nothing here runs and
 every file but those rules 1 to 4 settle stays where it is, undisposed.
@@ -27,6 +32,8 @@ from adoption.dispose import conv_name
 from adoption.convert import _give_resume_sidecar, _snapshot, converted_site_files, holds_markdown, pageless_folders
 from adoption.parity import compare_builds
 from adoption.problems import check_only
+from adoption.served import (UNUSED_WHY, crash_reading, is_content_unit, old_texts, run_free_use, stamp_why, template_stamp,
+                             unit_of, unlinked_removal, unused_lines)
 from adoption.tree import TreeFiles
 from adoption.usage import counterfactual, old_attribution_why, plugin_attribution
 
@@ -82,24 +89,52 @@ def named_inputs(snap, cfg):
 
 
 def evidence(basis_paths, notes, snap, acc, local_out, engine_files, kept, archived, person, counter, measured=True,
-             drafted=()):
+             drafted=(), read=None, tree=None):
     """The `accounting.disposition_of` evidence for every basis path. A piece tried again as a draft (the plugin refused it as it
-    stands) is one the plugin WOULD publish: it counts as attributed."""
+    stands) is one the plugin WOULD publish: it counts as attributed. Rule S (`adoption.served`): the plugin's side holds
+    what its build used (`acc.used`, S1), and a used file the old side serves is shown so without a run; the counterfactual's
+    crashes are judged by S3 (`state`: builder state, `unusedWhy`: source material no page shows); `read(path)` gives a basis
+    file's bytes (S1, S3) and `tree` the basis tree (the template's stamp)."""
     plugin_c = plugin_attribution(acc, snap, named_inputs(snap, acc.cfg)) if acc is not None else set()
-    plugin_c = plugin_c | set(drafted)
+    plugin_c = plugin_c | set(drafted) | set(getattr(acc, "used", None) or ())
     old_why = old_attribution_why(local_out, snap, acc) if acc is not None else {}
     if acc is not None:       # a build input lands as "build input": the build needs it, whatever the old builder read
         for p in named_inputs(snap, acc.cfg):
             old_why.setdefault(p, "site-studio's build reads it as an input")
     plugin = set(p for p in basis_paths if conv_name(p, notes) in plugin_c)
-    old = set(p for p in basis_paths if conv_name(p, notes) in old_why) | set(counter.used if counter else ())
     why = dict((p, old_why[conv_name(p, notes)]) for p in basis_paths if conv_name(p, notes) in old_why)
+    texts = old_texts(local_out or {})
+    if read is not None:      # S1: a file the plugin's build used, which the old side serves, is shown so without a run
+        why.update(run_free_use([p for p in plugin if p not in why], why, read, texts))
+    state, unused = {}, {}
+    stamp = _stamp(tree, acc, notes)
+    if stamp:
+        state[stamp] = stamp_why(conv_name(stamp, notes)[:-len(".sha256")])
     for p in (counter.used if counter else ()):          # N1: how each file the counterfactual found used was judged so
-        why.setdefault(p, "your builder exits non-zero when it is missing" if p in counter.failed else
-                       "your builder publishes something different when it is missing")
+        why.setdefault(p, "your builder publishes something different when %s is missing"
+                       % ("its folder %s" % unit_of(p) if is_content_unit(unit_of(p)) else "it"))
+    for p in (counter.unused if counter else ()):
+        if is_content_unit(unit_of(p)):
+            unused[p] = "%s (%s changes no page when it is removed)" % (UNUSED_WHY, unit_of(p))
+    for p in sorted(counter.failed if counter else ()):  # S3: a crash is not use
+        if p in plugin:          # both builds read it: never archived or builder state under the plugin's own build (S1)
+            why.setdefault(p, "your builder exits non-zero when it is missing, and site-studio's build reads it too")
+            continue
+        kind, line = crash_reading(p, read(p) if read is not None else b"", texts)
+        {"old": why, "unused": unused, "state": state}[kind].setdefault(p, line)
+    old = set(p for p in basis_paths if p in why)
     return {"engine": set(engine_files), "kept": set(kept), "archived": set(archived), "person": dict(person), "old": old,
             "plugin": plugin, "unsettled": set(p for g in (counter.unsettled if counter else []) for p in g),
-            "measured": measured, "usedWhy": why}
+            "measured": measured, "usedWhy": why, "state": state, "unusedWhy": unused}
+
+
+def _stamp(tree, acc, notes):
+    """The basis path of the template's resume stamp (`served.template_stamp`), or None."""
+    if tree is None or acc is None or acc.cfg is None:
+        return None
+    pdf = (getattr(acc.cfg, "resume", None) or {}).get("pdf")
+    basis = dict((conv_name(p, notes), p) for p in tree.paths())
+    return template_stamp(tree, basis.get(pdf, pdf), sidecar=bool(pdf))
 
 
 def undecided_folders(tree, plan, kind=None):
@@ -119,11 +154,12 @@ def measured_folders(tree, plan, kind=None):
     return out
 
 
-def open_candidates(basis_paths, notes, snap, acc, local_out, engine_files, kept, archived, person):
-    """The files attribution leaves open: not engine, kept, archived, not the person's, and neither attributed to the old builder
-    nor to the plugin's build as a page source: the counterfactual decides whether the old builder uses them."""
-    ev = evidence(basis_paths, notes, snap, acc, local_out, engine_files, kept, archived, person, None)
-    skip = ev["engine"] | ev["kept"] | ev["archived"] | set(person)
+def open_candidates(basis_paths, notes, snap, acc, local_out, engine_files, kept, archived, person, read=None, tree=None):
+    """The files attribution leaves open: not engine, kept, archived, not the person's, not the template's stamp, and not shown
+    used by the old builder (by attribution, or for a file the plugin's build used, without a run: rule S1): the
+    counterfactual decides whether the old builder uses them."""
+    ev = evidence(basis_paths, notes, snap, acc, local_out, engine_files, kept, archived, person, None, read=read, tree=tree)
+    skip = ev["engine"] | ev["kept"] | ev["archived"] | set(person) | set(ev["state"])
     return sorted(p for p in basis_paths if p not in skip and p not in ev["old"] and not p.startswith(".site-studio/")
                   and not re.match(r"^(README|LICENSE|CLAUDE\.md|HANDOFF\.md|\.git|\.editorconfig)", posixpath.basename(p))
                   and not p.startswith(".claude/"))
@@ -142,11 +178,26 @@ def run_accounting(basis_paths, tree, data, plan, local_out, engine, kept, archi
                                      if p not in engine["files"]),
                 "counts": {}, "lines": ["file accounting: the plugin's build refuses the converted tree, so no file was attributed"],
                 "cause": None, "drafted": [], "unsettled": [], "refused": "the plugin's build refuses the converted tree"}
-    cands = open_candidates(basis_paths, notes, snap, acc, local_out, set(engine["files"]), kept, archived, person)
-    counter = counterfactual(cands, run_old, lambda a, b: compare_builds(a, b) == [])
+    read = _reader(tree, snap, notes)
+    cands = open_candidates(basis_paths, notes, snap, acc, local_out, set(engine["files"]), kept, archived, person, read, tree)
+    same = lambda a, b: compare_builds(a, b) == []          # noqa: E731
+    counter = counterfactual(cands, run_old, same, unlinked=lambda base, out, unit: unlinked_removal(base, out, unit, same))
     ev = evidence(basis_paths, notes, snap, acc, local_out, set(engine["files"]), kept, archived, person, counter,
-                  drafted=drafted)
+                  drafted=drafted, read=read, tree=tree)
     accounted = account(sorted(basis_paths), ev)
     return {"dispositions": dict((p, list(v)) for p, v in accounted.items()), "counts": counts(accounted),
-            "lines": counter.lines, "cause": counter.cause, "drafted": drafted,
+            "lines": counter.lines + unused_lines(accounted), "cause": counter.cause, "drafted": drafted,
             "unsettled": [list(g) for g in counter.unsettled], "refused": None}
+
+
+def _reader(tree, snap, notes):
+    """`read(basis path)`: the bytes of a basis file, read under its converted name where the pass-1 tree holds it."""
+    def read(path):
+        conv = conv_name(path, notes)
+        if conv in snap:
+            return snap[conv]
+        try:
+            return tree.read(path)
+        except Exception:      # noqa: BLE001 -- a file the tree cannot give is one with no evidence (S3: UNKNOWN)
+            return b""
+    return read

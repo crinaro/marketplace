@@ -2,7 +2,7 @@
 
 <!-- GENERATED from the tables in scripts/content.py, scripts/siteconfig.py and scripts/build.py. Do not edit by hand: the plugin's maintainers regenerate it, and their tests fail when it and the code disagree. -->
 
-What your site's files may hold, and what the build reads. This page is written from the build's own tables, so it names exactly the keys, tokens, blocks and settings this version knows. Where this page and the build disagree, the build is right, and that is a bug in the plugin to report. A site is schema 1, 2, 3, 4 or 5 (this version reads up to 5); the plugin writes the lowest schema that holds your site, and nothing here changes a site that does not use it.
+What your site's files may hold, and what the build reads. This page is written from the build's own tables, so it names exactly the keys, tokens, blocks and settings this version knows. Where this page and the build disagree, the build is right, and that is a bug in the plugin to report. A site is schema 1, 2, 3, 4, 5 or 6 (this version reads up to 6); the plugin writes the lowest schema that holds your site, and nothing here changes a site that does not use it.
 
 ## Where things live
 
@@ -26,10 +26,11 @@ Top-level keys, in the order the plugin writes them. A key marked schema 2 makes
 
 | key | schema | meaning |
 | --- | --- | --- |
-| `schema` | 1 | which reading of the tree this site uses (1, 2, 3 or 4); the plugin writes the lowest one that holds the site. |
+| `schema` | 1 | which reading of the tree this site uses (1 to 6); the plugin writes the lowest one that holds the site. |
 | `engine` | 1 | the marker that says this file is site-studio's; written for you. |
 | `name` | 1 | your name, as printed on the site. |
 | `siteTitle` | 1 | the site's title, used in page titles. |
+| `titleSeparator` | 6 | the text between a page's title and the site title in `<title>` (schema 6): one to three punctuation marks or symbols, with at most one space on each side, such as `" / "` or `" - "`; the default `" \| "` is never written. |
 | `siteKind` | 2 | `portfolio` (the default, never written), `hub` or `custom`: what `site/src` and `content/` hold. Values: `portfolio`, `hub`, `custom`. |
 | `publicRepo` | 1 | the public GitHub repository the site is published to, as `owner/name`. |
 | `previewUrl` | 1 | the public address of the preview, an https URL; share tags and the sitemap need it. |
@@ -39,9 +40,13 @@ Top-level keys, in the order the plugin writes them. A key marked schema 2 makes
 | `privateTerms` | 1 | words the site must never publish; the checks look for them. |
 | `work` | 1 | the default portfolio's settings (see Portfolio settings). |
 | `featuredFrom` | 2 | `home` (the featured list in `content/home.md`) or `flags` (each piece's own `featured: true`). Values: `home`, `flags`. |
-| `nav` | 4 | the menu's settings: `{"home": false}` takes the Home item out of `{{nav}}` (schema 4; the default, with Home, is never written). |
+| `featuredView` | 6 | how the featured selection prints (schema 6): `flat` (the default, never written) is one run of cards; `grouped` is each portfolio's index filtered to its featured pieces, in menu order, group by group. |
+| `nav` | 4 | the menu's settings: `{"home": false}` takes the Home item out of `{{nav}}` (schema 4; the default, with Home, is never written); at schema 6 `{"home": "title"}` makes the first item's text the site title, and `extra` adds one to four `{"label", "url"}` items after the built-in ones, each url an absolute `https:` or `mailto:` address. |
 | `look` | 4 | the markup look the site's generated pages use: a file `site/looks/<name>.json` (schema 4); absent means the plugin's own markup. |
 | `blocks` | 4 | the settings of the `:::` blocks and of `ref:` lines (keys below): `{"headingLevel": 3}` prints the headings inside a block at h3, `{"loneReferenceGrid": true}` prints a lone `ref:` line inside the reference grid, `{"videoEmbed": "live"}` keeps a video's own address (schema 4; absent is the default). |
+| `mediaPaths` | 6 | where a folder's media is published (schema 6): an object with any of `references`, `home` and `about`, each a pattern of two to four `/`-separated lower-case names, the last `{file}`, such as `refs/{name}/{file}` (`references` holds `{name}` once) or `media/{file}`. |
+| `sizeCopies` | 6 | `any-format` (schema 6): a size copy may have another raster extension than its original (`.jpg`, `.jpeg`, `.png`, `.webp`, `.avif`). |
+| `carried` | 6 | one to 24 output paths served as you wrote them (schema 6): each is the file `site/carried/<path>`, byte for byte, not token-expanded; `CNAME`, `.nojekyll`, `robots.txt`, `sitemap.xml`, anything under `site-studio/` and a name the publish check never publishes are refused. The publish check holds a carried page to privacy, links, the site's own origin, its path and size, not to site-studio's page form, and says so. The first build after the site's address changes refuses a carried page whose addresses still name the old path, until you correct them or remove the path from `carried`. Without this key `site/carried/` is not read. |
 | `redirects` | 1 | old address to new page, one redirect page each. |
 | `resume` | 1 | the resume's source and PDF, or null for none (keys below). |
 | `budgets` | 1 | overrides for the performance limits (keys below). |
@@ -58,13 +63,14 @@ Top-level keys, in the order the plugin writes them. A key marked schema 2 makes
 | `headings` | `shift` (the default: a `#` is printed as h2) or `as-written` (a `#` is h1) for the resume's body headings (schema 4). |
 | `layout` | `plain` (the default) or `cards` (each role a card) for the resume's body (schema 4). |
 
-`blocks` holds `headingLevel`, `loneReferenceGrid`, `videoEmbed`; it needs schema 4, and a file below schema 4 that holds it is refused with `needs "schema": 4`.
+`blocks` holds `headingLevel`, `loneReferenceGrid`, `videoEmbed`, `headings`; it needs schema 4, and a file below schema 4 that holds it is refused with `needs "schema": 4`.
 
 | blocks key | meaning |
 | --- | --- |
 | `headingLevel` | a whole number from 2 to 6: the h-level a `###` heading prints at inside a block, so the outline matches the page you moved from; a deeper heading keeps its distance from it. Only a `:::carousel` slide holds headings (tiles, quote, quotes, gallery and videos hold none). Absent, a block's headings print one level below what is written, or as the resume's `headings` says. |
 | `loneReferenceGrid` | true or false: `true` prints a `ref:` line that stands alone inside `<div class="ref-grid">`, as two or more `ref:` lines print, for a site whose old pages wrapped a single reference in a grid (the grid's track bounds the card's width). Absent or `false`, a lone `ref:` line is a bare card; `false` is written away. |
 | `videoEmbed` | `facade` (the default) or `live`: the address a `:::videos` row and a gallery video carry. `facade` is the privacy form the plugin has always written, a Vimeo address with `dnt=1`. `live` keeps the player's own address with nothing added (`https://player.vimeo.com/video/ID`, `https://www.youtube-nocookie.com/embed/ID`, a Drive `/preview` address), the form a site built elsewhere wrote in its pages, so a look that places the player in `videos.item` can match them. Only the address changes: whether a player loads with the page or after a click is the look's markup, and the plugin's own look still shows a click-to-load link. The same links are refused either way: https only, and only YouTube, Vimeo or a public Drive file. `facade` is written away. |
+| `headings` | `shift` (the default: a `#` is printed as h2) or `as-written` (a `#` is h1) for the headings of every Markdown body but the resume's, which keeps `resume.headings` (schema 6); `shift` is written away. |
 
 `budgets` holds any of these, each with its default:
 
@@ -90,16 +96,18 @@ The same keys are set in `site.json` `work` (the default portfolio) and in a por
 | `cardMeta` | piece keys printed on each piece's card. |
 | `groupBy` | a piece key whose value groups the cards; `groups` names the allowed values. |
 | `groups` | the allowed values of the `groupBy` key, in display order. |
-| `labels` | display names: `labels.meta` for `meta` keys, `labels.groups` for group names (schema 2). |
+| `labels` | display names: `labels.meta` for `meta` keys, `labels.groups` for group names (schema 2); at schema 6 `labels.counts`, the word after a group's count, per group name or `*`, under `one` (the count 1) and `other` (every other count), as `{"one": "piece", "other": "pieces"}` (two forms; a language with more keeps the word it was adopted with; `zero`, `two`, `few` and `many` are refused). |
 | `cardNumber` | `true` prints `NN / YYYY` on each card: the piece's `order` to two digits, then its `year` (a whole number) or its date's year (schema 4). |
 | `cardNumberFormat` | `padded` (the default) prints the card's order as two digits and its year, `02 / 2025`; `plain` prints the order as it is and its year, `2 / 2025`; `order` prints the order as it is and no year, `2` (schema 4; read only when `cardNumber` is on). |
 | `cardLabels` | `false` prints a card's meta values without their labels; the piece page keeps its labels (schema 4; the default is `true`). |
 | `backLink` | one line of text: a link back to the portfolio's index above each piece's title (schema 4). |
 | `cardImage` | the picture a card shows (schema 5): `cover` (the default on a grid) or `photo` (the piece's `photo`, else its `cover`); under `view: roles`, where a card has no picture without it, either value gives each employer card the picture of its newest piece. |
-| `cardAlt` | `true` (schema 5): a card's picture carries its own alt key (`coverAlt`, or `photoAlt` for a photo) instead of an empty alt. |
+| `cardAlt` | `true` (schema 5): a card's picture carries its own alt key (`coverAlt`, or `photoAlt` for a photo) instead of an empty alt; `title` (schema 6): the alt is the piece's title, whatever picture shows. |
 | `cardKicker` | the name of a piece key (schema 5): that key's value is printed as one line with the piece wherever it is shown as a card or a tile (a list joined with `, `); a piece without the key has none. A built-in key, or a key `cardMeta` lists too, is refused. |
 | `pieceLink` | `true` (schema 5): a piece page prints one outbound link, address `link`, text `linkLabel` (else the address's host). |
 | `pieceTeaser` | `true` (schema 5): a piece page prints the piece's `teaser` as one paragraph under its title. |
+| `groupCount` | `true` (schema 6): each group heading prints how many pieces it shows, with the word `labels.counts` gives; refused without `groupBy`. |
+| `pieceRoles` | `true` (schema 6): a piece's `role` is a list of dated roles, `Title (dates)`, printed in the order written (see the schema-6 piece keys). |
 
 Portfolio page keys (a `page.md`, schema 3): each is refused below schema 3 with `needs "schema": 3`.
 
@@ -129,7 +137,7 @@ Home, about, resume and portfolio pages read a fixed set of keys; any other key 
 | home (`content/home.md`) | `title`, `description`, `featured`, `feed`, `endorsement`, `photo`, `photoAlt`, `contact` (and, at schema 4, `eyebrow`, `role`, `showcase`, `samples`, `links`, `titleForm`, `introScope`, `partOrder`) |
 | about (`content/about.md`) | `title`, `description`, `endorsement`, `photo`, `photoAlt`, `contact` |
 | resume (`content/resume/resume.md`) | `title`, `description` (and `contact` at schema 3, `tagline`, `links` at schema 4) |
-| portfolio (`page.md`) | `title`, `label`, `description`, `required`, `meta`, `cardMeta`, `groupBy`, `groups`, `labels`, `cardNumber`, `cardNumberFormat`, `cardLabels`, `backLink`, `cardImage`, `cardAlt`, `cardKicker`, `pieceLink`, `pieceTeaser`, `order`, `tagline`, `sort`, `menuLinks`, `view`, `mapMask`, `onePieceIndex` |
+| portfolio (`page.md`) | `title`, `label`, `description`, `required`, `meta`, `cardMeta`, `groupBy`, `groups`, `labels`, `cardNumber`, `cardNumberFormat`, `cardLabels`, `backLink`, `cardImage`, `cardAlt`, `cardKicker`, `pieceLink`, `pieceTeaser`, `groupCount`, `pieceRoles`, `order`, `tagline`, `sort`, `menuLinks`, `view`, `mapMask`, `onePieceIndex` |
 
 | key | meaning |
 | --- | --- |
@@ -207,6 +215,14 @@ Schema 5 reads these piece keys, each ONLY under one of its triggers (a schema-5
 | `link` | `pieceLink: true` | an `http` or `https` address: the piece page's outbound link. |
 | `linkLabel` | `pieceLink: true` | one line: that link's text (default: the address's host). |
 
+Schema 6 reads these piece keys, each ONLY under `pieceRoles: true` of the piece's own portfolio. Without it `role` and `current` keep the readings above, and `currentRole` is not published. Under it, a value that is not what the key means there is refused, naming the piece, and a `meta` or `cardMeta` list naming the key is refused, because the build shows it already.
+
+| key | read under | meaning |
+| --- | --- | --- |
+| `role` | `pieceRoles: true` | a list of roles, each `Title (dates)` (the text before the last parenthesis, and what is inside it), printed in the order written; an unclosed parenthesis or an empty title is refused. |
+| `current` | `pieceRoles: true` | `true` marks the piece current: its current role is the one `currentRole` names, else the first. |
+| `currentRole` | `pieceRoles: true` | a whole number from 1: which entry of `role` is the current one; larger than the list is refused. |
+
 **A piece is one page.** In a piece folder, a `.md` file other than `index.md`, and a sub-folder other than `media/`, are not published. The build names each one in a warning, and says: pieces have one page; put this in index.md, or start the name with _ to keep it as source. A name starting with `_` is the way to keep something there as source.
 
 ## References
@@ -239,6 +255,7 @@ A token is `{{name}}` or `{{name:argument}}`, in a page under `site/src` or in t
   - `{{name}}`: `name` from `site.json`.
   - `{{year}}`: the year of the newest commit touching `site/` or `content/` (never the clock).
   - `{{root}}`: the relative path back to the site's root.
+  - `{{assetVersion}}`: ten hex digits that change when a `site/src` stylesheet or script does, for an address such as `css/site.css?v={{assetVersion}}` (schema 6).
 - **nav**: the site navigation, in every file the build expands tokens in.
   - `{{nav}}`: the menu: a `nav` element holding a list of links (do not put it inside a `nav` of your own: use `{{navLinks}}` there).
   - `{{navLinks}}`: the menu's links only, with no `nav` element and no list, for a layout that already wraps its links (schema 4); `nav.home` applies to it too.

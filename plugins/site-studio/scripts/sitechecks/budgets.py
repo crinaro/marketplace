@@ -7,6 +7,13 @@
                pageImagesMaxMB (all). An image costs its largest candidate up to 1440 px wide
                (what a 2x screen would fetch from the srcset). OURS: an approximation, stated.
   size         the published tree against treeMaxMB, and any single file near GitHub's limit.
+
+  Dated note, 2026-11-20 (design-adopt-parity-2 section 4.7.2, owner decision 2 (i)): a CARRIED page (`site.json`
+  `carried`, schema 6; `sitechecks/carriedpages.py`) is the person's page as their old site served it. `size` HOLDS it
+  like any file (it is about the files, not their form), as does `performance`'s per-file rule (an image over the size
+  budget with no size copies). `performance`'s per-page image weights are NOT applied to it: the page loads what the
+  old site's page loaded, and refusing it now would change nothing for a visitor and block the person. `checker.run`
+  prints the `carried:` note, so the skip is never a quiet pass. A tree without the key is judged as before.
 """
 
 from imaging import plan, sniff
@@ -73,6 +80,8 @@ class BudgetChecks(object):
         first_cap = b["firstViewMaxMB"] * 1024 * 1024
         page_cap = b["pageImagesMaxMB"] * 1024 * 1024
         for rel, p in sorted(self.pages.items()):
+            if rel in self.carried:             # the page as the person wrote it (the dated note)
+                continue
             n += 1
             seen, total, first, first_seen = set(), 0, 0, set()
             for i, im in enumerate(p.imgs):

@@ -5,13 +5,37 @@ import re
 
 import content as C
 from contentmodel import grammar, links as links_mod, pagefiles
+import looks
 import views
 from contentmodel.errors import ContentError
 from contentmodel.links import esc
 
-from building import homeorder
+from building import grouping, homeorder
 from building.outcomes import BuildError
 from building.tokens import rel_link
+
+
+class _PlaceCard(object):
+    """Stands in for the builder inside `ref_card`, rendering the site-wide card part (`reference-card.wrap`) through the
+    place part of `construct` (`looks.PLACE_PARTS`) and every other part as the builder does: the place's card is filled
+    with exactly the values, and has exactly the side effects (the reference marked used, its picture published), of the
+    site-wide card: an attribute read or written goes to the builder. The precedent is `building/pictures.py` `_Capture`."""
+
+    def __init__(self, builder, construct):
+        object.__setattr__(self, "_builder", builder)
+        object.__setattr__(self, "_construct", construct)
+        object.__setattr__(self, "_site_wide", looks.PLACE_PARTS[(construct, "item")])
+
+    def __getattr__(self, name):
+        return getattr(self._builder, name)
+
+    def __setattr__(self, name, value):
+        setattr(self._builder, name, value)
+
+    def r(self, construct, part, values, source=None):
+        if (construct, part) == self._site_wide:
+            return self._builder.r(self._construct, "item", values, source)
+        return self._builder.r(construct, part, values, source)
 
 
 class _HomePage(object):
@@ -71,7 +95,7 @@ class _HomePage(object):
         elif part in ("photo", "endorsement", "contact"):
             html = self.page_extras(page, out)[part] or None
         elif part == "feed":
-            html = self.feed_html([self.ref_card(n, out) for n in meta.get("feed", [])]) or None
+            html = self.feed_html([self.place_card("feed", n, out) for n in meta.get("feed", [])]) or None
         elif part in ("eyebrow", "role") and self.grammar >= 4:       # the schema-4 home keys are parts of their own
             html = self.home_line(part, meta, out) or None
         elif part == "samples" and self.grammar >= 4:
@@ -101,9 +125,18 @@ class _HomePage(object):
             return ""
         return self.assets(out, "home") + self.r("home", part, {"text": meta[part]}, self.model.home.source)
 
+    def place_card(self, construct, name, out):
+        """The reference card `name` printed in one place of the home page, `feed` or `home-samples` (design-adopt-parity-2
+        section 4.8). Where the site's own look writes that place's part `<construct>.item` (an `OPTIONAL_PARTS` place
+        part), the card renders through it, with the slots and values of `reference-card.wrap`; where it does not (the
+        default look never does), `ref_card`: byte for byte as before."""
+        if looks.optional_part(construct, "item", self.look) is None:
+            return self.ref_card(name, out)
+        return type(self).ref_card(_PlaceCard(self, construct), name, out)
+
     def samples_html(self, names, out):
         """samples: the named references as reference cards (each with its role line), in the look's grid."""
-        cards = [self.ref_card(n, out) for n in names]
+        cards = [self.place_card("home-samples", n, out) for n in names]
         if not cards:
             return ""
         return self.assets(out, "home-samples") + self.r("home-samples", "wrap", {"items": "".join(cards)})
@@ -188,7 +221,7 @@ class _HomePage(object):
         pieces = self.selection()
         feed = []
         for name in meta.get("feed", []):
-            feed.append(self.ref_card(name, out))
+            feed.append(self.place_card("feed", name, out))
         extras = self.page_extras(page, out) if page else {"photo": "", "endorsement": "", "contact": ""}
         if page and homeorder.wanted(meta, self.grammar):      # schema 4 `partOrder` / `introScope` (homeorder.py)
             body = homeorder.arranged_body(self, page, out, extras, pieces, feed)
@@ -198,7 +231,7 @@ class _HomePage(object):
             body = self.r("home", "intro", {"photo": extras["photo"], "intro": intro,
                                             "endorsement": extras["endorsement"]})
             if pieces:
-                body += self.r("home", "featured", {"cards": self.cards_html(pieces, out)})
+                body += self.r("home", "featured", {"cards": grouping.featured_html(self, pieces, out)})
             if page and self.grammar >= 4:             # the schema-4 home keys; a part the page does not hold is ""
                 body += self.showcase_html(meta, page.source, out)
             body += self.feed_html(feed)

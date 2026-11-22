@@ -1,10 +1,12 @@
-"""The files that are not generated pages: `site/src` pages, media and redirects."""
+"""The files that are not generated pages: `site/src` pages, media, redirects and, at schema 6, the carried files
+(`site.json` `carried`, design-adopt-parity-2 section 4.7: `build_carried`, whose rules are `building/carried.py`)."""
 
 import posixpath
 import re
 
 from contentmodel import frontmatter, keytables
 
+from building import carried
 from building.constants import HTML_EXTS
 from building.outcomes import BuildError
 from building.references import size_copies
@@ -46,8 +48,14 @@ class _SiteParts(object):
             ref = self.model.references[name]
             if ref.card_path:
                 self.add(self._card_out(ref), self.files[ref.card_path], ref.card_path)
-                for repo_path, out_path in sorted(size_copies(ref, self.files).items()):
+                for repo_path, out_path in sorted(size_copies(ref, self.files, self.cfg).items()):
                     self.add(out_path, self.files[repo_path], repo_path)
+
+    # ---- site/carried (schema 6)
+    def build_carried(self):
+        """Serve each path `carried` names from `site/carried/<path>`, byte for byte (`carried.apply`). Without the key it
+        does nothing, so a tree 0.5.x builds, `site/carried/` and all, is built byte-identically."""
+        carried.apply(self)
 
     def build_redirects(self):
         for old in sorted(self.cfg.redirects):

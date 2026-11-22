@@ -102,9 +102,11 @@ def _build_parser():
     s.add_argument("--keep", action="store_true")
     s = sub.add_parser("kind")
     s.add_argument("site_kind", choices=configkeys.SITE_KINDS)
+    shots = "with --accept: the pictures `--keep` made, DIR/shots (accepting needs them)"
     s = sub.add_parser("parity")
     s.add_argument("--accept", action="store_true")
     s.add_argument("--keep", metavar="DIR")
+    s.add_argument("--shots", metavar="DIR", help=shots)
     s = sub.add_parser("report", allow_abbrev=False)    # the guard reads `--f` to `--file`: no abbreviation may mean another flag
     s.add_argument("--file", action="store_true", help="file the pending reports on the tracker (a publish: the guard asks)")
     s.add_argument("--decline", action="store_true", help="record every pending cause as declined")
@@ -118,6 +120,8 @@ def _build_parser():
     s.add_argument("--clear", action="store_true", help="forget the chosen value: the next parity measures it again")
     s = sub.add_parser("remeasure")
     s.add_argument("--accept", action="store_true")
+    s.add_argument("--keep", metavar="DIR", help="leave the two builds and the pictures of each page that differs in DIR")
+    s.add_argument("--shots", metavar="DIR", help=shots)
     s = sub.add_parser("apply", allow_abbrev=False)     # the guard reads `--dry-run` literally: no abbreviation may mean it
     s.add_argument("--date", default=time.strftime("%Y-%m-%d"))
     s.add_argument("--dry-run", action="store_true")

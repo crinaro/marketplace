@@ -48,8 +48,8 @@ import os
 import posixpath
 import re
 
-from building import pictures, stepsview
-from contentmodel import frontmatter
+from building import piecehead, pictures, stepsview
+from contentmodel import frontmatter, keytables
 from contentmodel.errors import ContentError
 from contentmodel.links import esc
 
@@ -221,6 +221,22 @@ def _is_current(piece):
     return value
 
 
+def _dated_rows(pieces):
+    """Schema 6's `pieceRoles` reading of one employer's pieces (design-adopt-parity-2 section 4.4): ((title, period)
+    the card shows, [(piece, title, period)] of every other entry). The card shows the newest piece's current entry
+    (`piecehead.card_entry`: without `current: true`, its first); the others follow in their written order, the newest
+    piece's first, each linking its own piece. An entry's period is its dates; an entry with none takes the piece's
+    `period` only when it is the piece's one entry, so a portfolio whose pieces are one role each reads as before."""
+    rows = []
+    for piece in pieces:
+        entries = piecehead.roles(piece) or [(piece.card_title, None)]
+        for title, dates in entries:
+            rows.append((piece, title, dates if dates else (_period(piece) if len(entries) == 1 else "")))
+    pick = piecehead.card_entry(pieces[0])
+    shown = rows[pick]
+    return (shown[1], shown[2]), [r for i, r in enumerate(rows) if i != pick]
+
+
 # ---------------------------------------------------------------------------------------------- the views
 def roles_html(builder, portfolio, out):
     groups, order = {}, []
@@ -232,23 +248,29 @@ def roles_html(builder, portfolio, out):
         groups[name].append(piece)
     currents = dict((name, any(_is_current(p) for p in groups[name])) for name in order)
     order = [n for n in order if currents[n]] + [n for n in order if not currents[n]]
+    dated = "pieceRoles" in keytables.active_triggers(portfolio.settings)
     items = []
     for name in order:
-        newest, earlier = groups[name][0], groups[name][1:]
+        newest = groups[name][0]
+        if dated:
+            shown, earlier = _dated_rows(groups[name])
+        else:                       # 0.5.x's reading, in its order: the earlier pieces' lines, then the newest's
+            earlier = [(p, _titles(p), _period(p)) for p in groups[name][1:]]
+            shown = (_titles(newest), _period(newest))
         if earlier:
-            heading = builder.r("roles-view", "heading-multi", {"count": len(groups[name]), "employer": name},
+            heading = builder.r("roles-view", "heading-multi", {"count": len(earlier) + 1, "employer": name},
                                 newest.source)
             previously = builder.r("roles-view", "previously", {"items": "".join(
                 builder.r("roles-view", "previously-item", {"url": _piece_url(builder, p, out),
-                                                            "title": _titles(p), "period": _period(p)}, p.source)
-                for p in earlier)}, newest.source)
+                                                            "title": title, "period": period}, p.source)
+                for p, title, period in earlier)}, newest.source)
         else:
             heading = builder.r("roles-view", "heading", {"employer": name}, newest.source)
             previously = ""
         part = "item-current" if currents[name] else "item"
         items.append(builder.r("roles-view", part,
                                {"heading": heading, "url": _piece_url(builder, newest, out),
-                                "titles": _titles(newest), "period": _period(newest), "previously": previously,
+                                "titles": shown[0], "period": shown[1], "previously": previously,
                                 "employer": name, "image": pictures.roles_image_slot(builder, part, newest, out),
                                 "kicker": stepsview.kicker_slot(builder, "roles-view", part, newest, out)},
                                newest.source))

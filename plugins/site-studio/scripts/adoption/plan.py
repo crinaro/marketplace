@@ -21,10 +21,21 @@ from adoption.base import FACT_KINDS, FOLDER_CHOICES, PLAN_REL, PlanError, Refus
 from adoption.spec import OPT_IN_CLASSES
 from adoption.tree import Tree
 from adoption.tokens import detect_resume
-from adoption.parity import parity_basis
+from adoption.parity import parity_basis, stale_parity
 
 PLAN_SCHEMA = 1                    # what an empty plan, and a plan with nothing that needs 2, is written at
-PLAN_SCHEMA_MAX = 2                # schema 2 adds `settings`, `files[path].disposition` and the verdict MARKUP-ONLY
+PLAN_SCHEMA_MAX = 3                # schema 2 adds `settings`, `files[path].disposition` and the verdict MARKUP-ONLY; 3 the parity's
+#                                    `plugin`, `open` and `shots` (design-adopt-parity-2 3.2), and a setting 0.5.x has no name for
+PARITY_V3 = ("plugin", "open", "shots")
+OPEN_KINDS = ("page", "file", "unlinked")       # `adoption.accepts.OPEN_KINDS`, in their sort order
+SHOTS_NONE = ("chrome-not-found",)              # `adoption.shots.NONE_CODES`: a closed set, never a browser's message (R2-S3)
+# The settings 0.5.x has no name for (`adoption.settings.V6_SETTING_ORDER`, by family; a literal here because `settings` imports this
+# module, and `test_plan.PlanSchema3` asserts the two agree): a plan holding one is written at schema 3, which 0.5.x refuses
+V6_SETTING_FAMILIES = ("featuredView", "nav.extra", "titleSeparator", "groupCount", "pieceRoles", "blocks.headings", "mediaPaths",
+                       "sizeCopies", "carried")
+_PNG = re.compile(r"^[A-Za-z0-9._-]+-(?:desktop|phone)-(?:light|dark)\.png$")
+_SHA = re.compile(r"^[0-9a-f]{64}$")
+_VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+)*[0-9A-Za-z.+-]*$")
 SETTING_HOWS = ("measured", "chosen", "not measured")
 FILE_DISPOSITIONS = ("archive", "draft", "keep", "engine")      # the person's choice for a file (design 8 FA rule 4)
 PLAN_VERDICTS = ("EQUAL", "DIFFERENT", "UNVERIFIED", "ACCEPTED", "NOT APPLICABLE")
@@ -43,7 +54,7 @@ def parse_plan(text):
                         "again), then run `adopt.py check`" % e)
     if not isinstance(d, dict):
         raise PlanError("adopt plan: the top level must be an object")
-    two = d.get("schema") == 2 and not isinstance(d.get("schema"), bool)
+    two = d.get("schema") in (2, 3) and not isinstance(d.get("schema"), bool)
     # an empty `settings` is what an in-memory plan carries (save_plan does not write it at schema 1); a schema-1 file
     # that holds a setting is refused as an unknown key, as an older install refuses it
     allowed = ("schema", "base", "files", "facts", "paper", "parity", "folders", "siteKind", "convert") + (
@@ -71,8 +82,8 @@ def parse_plan(text):
         if not re.match(r"^[^/\s]+$", name) or choice not in FOLDER_CHOICES:
             raise PlanError("adopt plan: folders[%r] must name one folder under content/ and be %s"
                             % (name, " or ".join("'%s'" % c for c in FOLDER_CHOICES)))
-    if isinstance(d["schema"], bool) or d["schema"] not in (1, PLAN_SCHEMA_MAX):
-        raise PlanError("adopt plan: schema %r is not understood (this adopt reads 1 and %d); update site-studio if the "
+    if isinstance(d["schema"], bool) or d["schema"] not in range(1, PLAN_SCHEMA_MAX + 1):
+        raise PlanError("adopt plan: schema %r is not understood (this adopt reads 1 to %d); update site-studio if the "
                         "plan came from a newer one, or delete .site-studio/adopt-plan.json and run `adopt.py check`"
                         % (d["schema"], PLAN_SCHEMA_MAX))
     if not isinstance(d["settings"], dict):
@@ -121,27 +132,72 @@ def parse_plan(text):
                 ("MARKUP-ONLY",) if two else ()):
             raise PlanError("adopt plan: 'parity.verdict' is not a known verdict; delete .site-studio/adopt-plan.json and run "
                             "`adopt.py parity` to measure again")
+        _parity_v3(d["parity"], d["schema"])
     return d
+
+
+def _parity_v3(parity, schema):
+    """Plan schema 3's members of `parity` (design-adopt-parity-2 3.2), strict: `plugin` (the version that measured), `open` (the
+    ACCEPT candidates, `adoption.accepts`) and `shots` (the pictures' names and hashes, `adoption.shots`). Each is refused at
+    schema 1 or 2, as 0.5.x refuses the whole plan at schema 3. No path of the person's machine and no browser text is accepted."""
+    again = "; delete .site-studio/adopt-plan.json and run `adopt.py parity` to measure again"
+    held = [k for k in PARITY_V3 if k in parity]
+    if held and schema != 3:
+        raise PlanError("adopt plan: parity.%s needs plan schema 3 (this plan says %r)%s" % (held[0], schema, again))
+    if "plugin" in parity and not (isinstance(parity["plugin"], str) and _VERSION.match(parity["plugin"])):
+        raise PlanError("adopt plan: parity.plugin must be a site-studio version%s" % again)
+    if "open" in parity:
+        rows = parity["open"]
+        if not isinstance(rows, list) or not all(
+                isinstance(r, dict) and sorted(r) == ["kind", "path", "what"] and r["kind"] in OPEN_KINDS
+                and isinstance(r["path"], str) and r["path"] and isinstance(r["what"], str) for r in rows):
+            raise PlanError("adopt plan: parity.open must be a list of {kind (%s), path, what}%s" % (", ".join(OPEN_KINDS), again))
+        if rows != sorted(rows, key=lambda r: (OPEN_KINDS.index(r["kind"]), r["path"])):
+            raise PlanError("adopt plan: parity.open must be sorted by kind, then path%s" % again)
+    if "shots" in parity:
+        s = parity["shots"]
+        if isinstance(s, dict) and set(s) == {"none"}:
+            if s["none"] not in SHOTS_NONE:
+                raise PlanError("adopt plan: parity.shots.none must be one of %s%s" % (", ".join(SHOTS_NONE), again))
+            return
+        if not (isinstance(s, dict) and set(s) == {"pages"} and isinstance(s["pages"], dict) and all(
+                isinstance(p, str) and isinstance(e, dict) and e and set(e) <= {"old", "new"} and all(
+                    isinstance(m, dict) and all(isinstance(n, str) and _PNG.match(n) and isinstance(h, str) and _SHA.match(h)
+                                                for n, h in m.items()) for m in e.values())
+                for p, e in s["pages"].items())):
+            raise PlanError("adopt plan: parity.shots must be {\"none\": a reason code} or {\"pages\": {page: {old, new: {png name: "
+                            "sha256}}}}%s" % again)
 
 
 def plan_path(repo):
     return os.path.join(repo, PLAN_REL)
 
 
-def load_plan(repo):
+def load_plan(repo, stale=False):
+    """The plan, or None. A stored parity another site-studio measured (`parity.stale_parity`, design-adopt-parity-2 7.5) is
+    DROPPED here, so a reader of `plan["parity"]` (`apply` reads it directly) meets none and says `waits on parity`, unless
+    `stale` is asked for: `_plan_for` asks, so `check`, `inventory` and `parity` can name the version that measured it."""
     try:
         with open(plan_path(repo), "r", encoding="utf-8") as fh:
-            return parse_plan(fh.read())
+            plan = parse_plan(fh.read())
     except OSError:
         return None
+    if not stale and stale_parity(plan["parity"]):
+        plan["parity"] = None
+    return plan
 
 
 def lowest_schema(plan):
     """The lowest plan schema that holds `plan` (design 3.5: schema 2 is written only when something needs it, so an older
-    install reads every plan that has nothing a schema-1 plan cannot hold)."""
+    install reads every plan that has nothing a schema-1 plan cannot hold). Schema 3 when the parity holds a member of
+    `PARITY_V3` (every parity this site-studio measures names its `plugin`) or a setting is one 0.5.x has no name for."""
+    parity = plan.get("parity") or {}
+    if any(k in parity for k in PARITY_V3) or any(
+            n in V6_SETTING_FAMILIES or n.split(".", 1)[0] in V6_SETTING_FAMILIES for n in plan.get("settings") or {}):
+        return 3
     needs = (bool(plan.get("settings")) or any("disposition" in f for f in plan["files"].values())
-             or (plan.get("parity") or {}).get("verdict") == "MARKUP-ONLY")
-    return PLAN_SCHEMA_MAX if needs else PLAN_SCHEMA
+             or parity.get("verdict") == "MARKUP-ONLY")
+    return 2 if needs else PLAN_SCHEMA
 
 
 def save_plan(repo, plan):
@@ -234,7 +290,7 @@ def cleared_line(old_base, base, cleared):
 def _plan_for(repo, base, say=None):
     """The plan for `base`. A plan made for another basis is CARRIED (`carry_plan`), not dropped, and `say` (when
     given) is called with the one line naming every decision that was cleared."""
-    plan = load_plan(repo)
+    plan = load_plan(repo, stale=True)
     if plan is None:
         return empty_plan(base)
     if plan["base"] != base:

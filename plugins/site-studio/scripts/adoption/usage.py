@@ -18,8 +18,10 @@ removed, the group being a directory's worth; a group whose output equals the un
 ways, both printed: `COUNTERFACTUAL_RUNS` builder runs and `COUNTERFACTUAL_SECONDS` of wall time. A group still unsplit at either
 bound is `unsettled`: cause `unobservable/<family>` (a count, never a name), the files stay undisposed and block. A builder run
 that TIMES OUT on a variant makes that group unsettled, never `no-landing` (R3N-7). A builder that CRASHES when ONE file is
-removed needs that file (it threw on the missing read): that file is used (a group that crashes is halved like one that
-differs, so the crash is pinned to a file); a crash is therefore never a reason to leave a file unsettled. Before any variant the builder runs
+removed is pinned to that file (a group that crashes is halved like one that differs) and the file is `failed`, NOT `used`:
+a crash is not use (design-adopt-parity-2 rule S3; `adoption.served.crash_reading` asks whether anything of it is published).
+The groups are UNITS (rule S2, `served.units_of`: a piece's or a reference's folder whole, else a directory), and a folder a
+variant leaves empty is removed with its files, as a checkout without those files has no such folder. Before any variant the builder runs
 once more on the UNCHANGED tree: if it differs from itself beyond normalisation, nothing is run and the files stay undisposed
 with cause `env/builder-nondeterministic` (never filed).
 
@@ -34,6 +36,7 @@ import shutil
 import time
 
 from adoption.parity import _walk, builder_failed
+from adoption.served import unit_of, units_of
 
 COUNTERFACTUAL_RUNS = 32
 COUNTERFACTUAL_SECONDS = 120.0
@@ -84,26 +87,27 @@ def old_attribution(old_out, files, acc):
 
 
 def groups_of(paths):
-    """The first counterfactual groups: the files in one directory. Sorted, so a run is repeatable."""
-    by = {}
-    for p in sorted(paths):
-        by.setdefault(posixpath.dirname(p), []).append(p)
-    return [by[d] for d in sorted(by)]
+    """The first counterfactual groups: the files of one unit (rule S2, `served.units_of`). Sorted, so a run is repeatable."""
+    return units_of(paths)
 
 
 class Counterfactual(object):
     """The result: `used` (removing it changed the output), `unused` (a group whose removal changed nothing), `unsettled`
     (a group the run cap, the time bound or a crash left unsplit), `runs`, `cause` (a closed id or None) and `lines` (printed).
-    `failed` is the part of `used` whose removal made the builder exit non-zero (it threw on the missing read)."""
+    `failed` holds the files whose removal alone made the builder exit non-zero: never `used` (rule S3, a crash is not use).
+    `unlinked` ({unit: [old output path]}) the units S2 found unused although their removal took their own unlinked files."""
 
     def __init__(self):
         self.used, self.unused, self.unsettled, self.runs, self.cause, self.lines = set(), set(), [], 0, None, []
-        self.failed = set()
+        self.failed, self.unlinked = set(), {}
 
 
-def counterfactual(candidates, run, same, runs=COUNTERFACTUAL_RUNS, seconds=COUNTERFACTUAL_SECONDS, clock=time.monotonic):
+def counterfactual(candidates, run, same, runs=COUNTERFACTUAL_RUNS, seconds=COUNTERFACTUAL_SECONDS, clock=time.monotonic,
+                   unlinked=None):
     """Bisect `candidates` ([path]) against `run(removed) -> (outcome, files)`. `same(a, b)` says two outputs are equal after P2's
-    normalisation. See the module docstring for the bounds."""
+    normalisation. `unlinked(base, files, unit)` (`served.unlinked_removal`), when given, is asked of a WHOLE unit whose removal
+    differs: the old addresses it took, when they are all it changed and no old page links them (rule S2), and then the unit is
+    unused like one that changes nothing (`Counterfactual.unlinked`). See the module docstring for the bounds."""
     res = Counterfactual()
     if not candidates:
         return res
@@ -123,6 +127,7 @@ def counterfactual(candidates, run, same, runs=COUNTERFACTUAL_RUNS, seconds=COUN
                          "so no file was tested and each stays where it is")
         return res
     todo = groups_of(candidates)
+    whole = set(tuple(g) for g in todo)
     while todo:
         group = todo.pop(0)
         if res.runs >= runs + 2 or clock() - start > seconds:
@@ -135,20 +140,28 @@ def counterfactual(candidates, run, same, runs=COUNTERFACTUAL_RUNS, seconds=COUN
                 mid = len(group) // 2
                 todo[0:0] = [group[:mid], group[mid:]]
             elif len(group) == 1 and outcome == "fails":
-                res.used.add(group[0])             # the builder threw when this one file was gone: it reads it
-                res.failed.add(group[0])
+                res.failed.add(group[0])           # the builder threw when this one file was gone: S3 judges it, never as use
             else:
                 res.unsettled.append(group)
             continue
+        gone = (None if same(base, files) or unlinked is None or tuple(group) not in whole
+                else unlinked(base, files, unit_of(group[0])))
         if same(base, files):
             res.unused.update(group)
+        elif gone:
+            res.unused.update(group)            # S2: only its own published files went, at addresses no old page links
+            res.unlinked[unit_of(group[0])] = gone
         elif len(group) == 1:
             res.used.add(group[0])
         else:
             mid = len(group) // 2
             todo[0:0] = [group[:mid], group[mid:]]
-    res.lines.append("counterfactual: %d builder run(s) (bound %d runs, %d seconds); %d file(s) used, %d unused, %d group(s) not "
-                     "settled" % (res.runs, runs + 2, int(seconds), len(res.used), len(res.unused), len(res.unsettled)))
+    res.lines.append("counterfactual: %d builder run(s) (bound %d runs, %d seconds); %d file(s) used, %d unused, %d the builder "
+                     "stops without, %d group(s) not settled" % (res.runs, runs + 2, int(seconds), len(res.used), len(res.unused),
+                                                                 len(res.failed), len(res.unsettled)))
+    for unit, gone in sorted(res.unlinked.items()):
+        res.lines.append("counterfactual: removing %s takes only its own %d published file(s), which no old page links (first %s): "
+                         "source material no page shows" % (unit, len(gone), gone[0]))
     if res.unsettled and res.cause is None:
         res.cause = "unobservable"
     return res
@@ -168,6 +181,7 @@ def old_runner(copy_root, run_builder, scratch):
                     os.remove(os.path.join(work, *rel.split("/")))
                 except OSError:
                     pass
+                prune(work, posixpath.dirname(rel))
             out, why = run_builder(work)
             if out is None:
                 return ("fails" if builder_failed(why) else "timeout"), {}
@@ -175,3 +189,13 @@ def old_runner(copy_root, run_builder, scratch):
         finally:
             shutil.rmtree(work, ignore_errors=True)
     return run
+
+
+def prune(root, folder):
+    """Remove `folder` (relative to `root`) and each parent that a removal left empty: a unit removed whole leaves no folder."""
+    while folder:
+        try:
+            os.rmdir(os.path.join(root, *folder.split("/")))
+        except OSError:
+            return
+        folder = posixpath.dirname(folder)

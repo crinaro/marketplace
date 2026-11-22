@@ -16,6 +16,7 @@ from building.acceptance import (
 from building.constants import ACCEPT_PREVIEW_URL, PREVIEW_SITE_URL, ACCEPT_YEAR
 from building.digest import _check_out_dir, _write_outputs, _digest_tree
 from building.gitfiles import _commit_files, _disk_files, _is_shallow, _last_commit_epoch, _utc_date
+from building import provenance
 from building.lookneeds import look_needs
 from building.outcomes import Acceptance, BuildError, PublishResult, BuildResult
 from configschema import diagnostics, model as model_mod, treeschema
@@ -51,9 +52,9 @@ def _accept(files, drafts, year, lastmod, grammar=None):
             add(_not_checked(label, e, default_path))
         return False, None
 
-    def finish(cfg=None, model=None, out=None, pages=None):
+    def finish(cfg=None, model=None, out=None, pages=None, used=None):
         ordered = sorted(problems, key=lambda p: (p.path or "", p.lineno or 0, p.message))
-        return Acceptance(ordered, notes, cfg, model, out if out is not None else {}, pages or {}, warnings)
+        return Acceptance(ordered, notes, cfg, model, out if out is not None else {}, pages or {}, warnings, used)
 
     raw = files.get("site/site.json")
     if raw is None:
@@ -154,7 +155,8 @@ def _accept(files, drafts, year, lastmod, grammar=None):
     for p in _cr_problems(b.out):
         add(p)
     notes.extend(b.notes)
-    return finish(cfg, model, b.out, b.pages)
+    _ok, used = stage("provenance.used", "site/", provenance.used, b, files)    # rule S1: what the build read; no byte
+    return finish(cfg, model, b.out, b.pages, used)
 
 
 def accept(files, drafts=False):

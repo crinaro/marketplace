@@ -4,8 +4,12 @@ section, and the helpers that read their label maps."""
 import json
 from configschema.configkeys import (
     BUILTIN_PIECE_KEYS,
+    CARD_ALT_TITLE,
     CARD_IMAGES,
     CARD_NUMBER_FORMATS,
+    COUNT_ANY,
+    COUNT_FORMS,
+    COUNT_FORMS_RESERVED,
     DEFAULT_RESUME_PATH,
     DEFAULT_RESUME_PDF,
     LABEL_PARTS,
@@ -16,10 +20,13 @@ from configschema.configkeys import (
     SCHEMA_MAX,
     V4_WORK_KEYS,
     V5_WORK_KEYS,
+    V6_LABEL_PARTS,
+    V6_WORK_KEYS,
     WORK_KEYS,
     _KEY_RE,
 )
 from configschema.diagnostics import SiteConfigError, _Collector
+from configschema.sectioncheck import needs_schema_6
 from configschema.valuecheck import (
     _bad,
     _bool,
@@ -52,8 +59,9 @@ def pair_label(item):
     return (k, item[1] if isinstance(item, list) else item["label"])
 
 
-def _labels(raw, where, col):
-    """The `labels` map of a portfolio-settings object: {meta: {key: label}, groups: {name: label}}.
+def _labels(raw, where, col, schema=SCHEMA_MAX):
+    """The `labels` map of a portfolio-settings object: {meta: {key: label}, groups: {name: label}}, and at schema 6
+    `counts` (`_counts`), present only when it holds a word.
     Both parts optional. Values are non-empty strings. Returns the fully-defaulted shape; every fault
     is recorded in `col`."""
     out = {"meta": {}, "groups": {}}
@@ -61,9 +69,16 @@ def _labels(raw, where, col):
         col.run(_bad, where, "an object", raw)
         return out
     for k in raw:
-        if k not in LABEL_PARTS:
+        if k in V6_LABEL_PARTS:
+            if schema < 6:
+                col.problems.append(needs_schema_6("%s.%s" % (where, k), schema).problem)
+            else:
+                counts = _counts(raw[k], "%s.%s" % (where, k), col)
+                if counts:
+                    out[k] = counts
+        elif k not in LABEL_PARTS:
             col.add("site.json: unknown key '%s.%s'" % (where, k), "%s.%s" % (where, k), "unknown key",
-                    "one of: " + ", ".join(LABEL_PARTS), "remove '%s.%s'" % (where, k))
+                    "one of: " + ", ".join(LABEL_PARTS + V6_LABEL_PARTS), "remove '%s.%s'" % (where, k))
     for part in LABEL_PARTS:
         if part not in raw:
             continue
@@ -86,8 +101,44 @@ def _labels(raw, where, col):
     return out
 
 
+def _counts(raw, where, col):
+    """`labels.counts` (schema 6, design-adopt-parity-2 sections 3.2 and 4.2): {group value or "*": {"one": word,
+    "other": word}}, either member absent. The member names are CLDR's plural categories; 0.6.0 prints two forms, so
+    `zero`, `two`, `few` and `many` are reserved: refused, naming the release, so a later release can read them as its
+    own K reason. Whether a group value is one of `groups` is the caller's check. Returns the good entries."""
+    if not isinstance(raw, dict):
+        col.run(_bad, where, "an object", raw)
+        return {}
+    out = {}
+    for group, forms in raw.items():
+        at = "%s['%s']" % (where, group)
+        if not isinstance(group, str) or not group.strip():
+            col.add("site.json: '%s' has an empty key" % where, where, "empty key", "a group value or \"*\"",
+                    "remove the empty key")
+            continue
+        if not isinstance(forms, dict):
+            col.run(_bad, at, "an object such as {\"one\": \"piece\", \"other\": \"pieces\"}", forms)
+            continue
+        good = {}
+        for form, word in forms.items():
+            if form in COUNT_FORMS_RESERVED:
+                col.add("site.json: '%s' names the plural form '%s': site-studio 0.6.0 prints two forms (`one`, `other`)"
+                        % (at, form), "%s.%s" % (at, form), form, "one or other",
+                        "write the word under \"other\" (every number but 1), or under \"one\"")
+            elif form not in COUNT_FORMS:
+                col.add("site.json: unknown key '%s.%s'" % (at, form), "%s.%s" % (at, form), "unknown key",
+                        "one of: " + ", ".join(COUNT_FORMS), "remove '%s.%s'" % (at, form))
+            else:
+                ok, val = col.run(_one_line, word, "%s.%s" % (at, form))
+                if ok:
+                    good[form] = val
+        if good:
+            out[group] = good
+    return out
+
+
 def labels_nonempty(labels):
-    return bool(labels) and any(labels.get(p) for p in LABEL_PARTS)
+    return bool(labels) and any(labels.get(p) for p in LABEL_PARTS + V6_LABEL_PARTS)
 
 
 def _list_of_keys(raw, k, where, col):
@@ -156,8 +207,31 @@ def _v5_settings(raw, where, schema, out, col):
                         "remove '%s' from cardMeta, or name another key" % v)
             else:
                 out[k] = v
+        elif k == "cardAlt" and v == CARD_ALT_TITLE:
+            # Schema 6 (design-adopt-parity-2 section 4.3): the alt of a card's picture is the piece's title.
+            if schema < 6:
+                col.problems.append(needs_schema_6(here, schema).problem)
+            else:
+                out[k] = CARD_ALT_TITLE
         elif v is not True:
             col.add("site.json: '%s' must be true" % here, here, _shown(repr(v)), "true",
+                    "set %s to true, or remove it" % here)
+        else:
+            out[k] = True
+
+
+def _v6_settings(raw, where, schema, out, col):
+    """The schema-6 portfolio settings (design-adopt-parity-2 section 3.2), each `true` only and stored only when set:
+    `groupCount` (each group heading prints how many pieces it shows; its `groupBy` is the caller's check) and
+    `pieceRoles` (a piece's `role` is a list of dated roles). Below 6 each is refused naming the schema."""
+    for k in V6_WORK_KEYS:
+        if k not in raw:
+            continue
+        here = "%s.%s" % (where, k)
+        if schema < 6:
+            col.problems.append(needs_schema_6(here, schema).problem)
+        elif raw[k] is not True:
+            col.add("site.json: '%s' must be true" % here, here, _shown(repr(raw[k])), "true",
                     "set %s to true, or remove it" % here)
         else:
             out[k] = True
@@ -211,6 +285,7 @@ def _portfolio_check(raw, where, schema, featured_from, col):
             if ok and val != (k == "cardLabels"):          # the defaults are cardNumber false, cardLabels true
                 out[k] = val
     _v5_settings(raw, where, schema, out, col)
+    _v6_settings(raw, where, schema, out, col)
     if "groupBy" in raw:
         ok, val = col.run(_str, raw["groupBy"], where + ".groupBy", optional=True)
         if ok:
@@ -221,6 +296,10 @@ def _portfolio_check(raw, where, schema, featured_from, col):
     if bool(out["groups"]) != (out["groupBy"] is not None):
         col.add("site.json: '%s.groupBy' and '%s.groups' go together" % (where, where), where + ".groupBy",
                 "one without the other", "both, or neither", "set groupBy and groups together, or remove both")
+    if out.get("groupCount") and out["groupBy"] is None:
+        col.add("site.json: '%s.groupCount' counts the pieces of each group, and this portfolio has no groupBy"
+                % where, where + ".groupCount", "no groupBy", "groupBy and groups",
+                "set groupBy and groups, or remove groupCount")
     for k in ("required", "meta", "cardMeta"):
         for item in out[k]:
             if not _KEY_RE.match(item):
@@ -234,7 +313,7 @@ def _portfolio_check(raw, where, schema, featured_from, col):
                         % (where, k), "%s.%s" % (where, k), "featured", "no 'featured' in %s" % k,
                         "remove 'featured' from %s, or drop featuredFrom" % k)
     if labels_raw is not None:
-        out["labels"] = _labels(labels_raw, where + ".labels", col)
+        out["labels"] = _labels(labels_raw, where + ".labels", col, schema)
         shown = set(out["meta"]) | set(out["cardMeta"])
         for key in out["labels"]["meta"]:
             if key not in shown:
@@ -246,6 +325,11 @@ def _portfolio_check(raw, where, schema, featured_from, col):
                 col.add("site.json: '%s.labels.groups' labels '%s', which is not in groups" % (where, key),
                         "%s.labels.groups" % where, key, "a name listed in groups",
                         "remove the label, or add '%s' to groups" % key)
+        for key in out["labels"].get("counts", {}):
+            if key != COUNT_ANY and key not in out["groups"]:
+                col.add("site.json: '%s.labels.counts' names '%s', which is not in groups" % (where, key),
+                        "%s.labels.counts" % where, key, "a name listed in groups, or \"*\"",
+                        "remove the entry, or add '%s' to groups" % key)
     return out
 
 

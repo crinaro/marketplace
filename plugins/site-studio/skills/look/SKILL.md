@@ -35,9 +35,13 @@ those, with explicit paths, after the person has seen what changed.
 - **`derive`**: makes a look from a site this repository's own content built, so the new site prints
   the markup the old one did. It reads the pages, finds where each block and card appears, and writes
   `site/looks/<name>.json` (default `derived`; `--name` chooses another, `--replace` overwrites one).
-  It prints one line per construct: `mapped`, `unmapped`, `ambiguous` or `not reached`. Read every
+  It prints one line per construct with its count of instances `mapped`, `unmapped`, `ambiguous` or
+  `not reached`; from 0.6.0 a construct that is not wholly mapped, `ambiguous` included, also gives
+  its reason and the first page that held such an instance (`(<reason>, first on <page>)`). Read every
   line to the person: a construct that is not `mapped` keeps the plugin's own markup, and the report
-  says so. **Known limits in this version,** measured on the plugin's example template and not
+  says so. Where a card is printed differently in one place (a home feed, the home samples), derive
+  reads that place's cards as their own part (`feed.item`, `home-samples.item`) when the site-wide
+  card reads unmapped or ambiguous, and keeps that reading only when it maps more. **Known limits in this version,** measured on the plugin's example template and not
   on a real site: a construct derive cannot map keeps the plugin's markup and is printed `unmapped`
   or `ambiguous`; which constructs a real site hits is not known until derive runs on it. Say so
   rather than calling the derived look a match.
@@ -105,8 +109,19 @@ paths (the look file, its stylesheets and `site/site.json`) with explicit paths,
 in `HANDOFF.md`. Publishing stays the person's own `/site-studio:publish`.
 
 `/site-studio:adopt` chooses a look for a site it moves over: it derives one from the old builder's
-own pages and keeps it only if parity then measures no visitor-visible difference. This skill is for
-changing a look afterwards, on a site that is already on site-studio.
+own pages and, from 0.6.0, keeps it per construct: a construct that loses content the plugin's own
+markup shows is dropped and named, and the rest of the look is kept. When adopt shows the person
+pictures of a page old beside new, it gives the path of the file to open, never says they were
+"shown"; the adopt skill has the wording. This skill is for changing a look afterwards, on a site that
+is already on site-studio.
+
+**A look that uses anything new in 0.6.0** (a group heading's count, a piece's dated roles, the
+`{{group}}` and video `{{title}}` slots, the nav's `brand` and `section` parts, a feed or home-samples
+card part) raises the site to schema 6 when `use` or `derive` writes it; a copy of the plugin older
+than 0.6.0 then says "update site-studio". Plugin styles a page links for these
+(`site-studio/schema-6.css`) lose to any CSS the person wrote outside a cascade layer; against CSS the
+person put in layers of their own they win on the plugin's own markup unless the person's stylesheet
+starts with `@layer site-studio;`, which declares the plugin's layer first and so lowest.
 
 ## Where it runs
 
