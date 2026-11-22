@@ -1,78 +1,76 @@
 #!/usr/bin/env python3
-"""PreToolUse guard: DENY the gmail-multi connector's send-family tools. jobsearch is
-draft-only, and that is now a POLICY, so this file is where it is enforced.
+"""PreToolUse guard: DENY the gmail-multi connector's send-family tools. jobsearch is draft-only unless the
+candidate set email `me` (0.91.0, then an approved, bound send ASKS), and that is a POLICY enforced here.
 
 ⭐ WHY THIS EXISTS (marketplace #213, owner decision 2026-08-21)
 ----------------------------------------------------------------
-Until 2026-08-22 "jobsearch never sends" was guaranteed by CAPABILITY ABSENCE: the
-gmail-multi connector had zero send tools and no SMTP path, so there was nothing to
-misuse. The owner then decided the connector should send/reply/forward like any
-general-purpose mail connector — capability belongs to the connector — while jobsearch
-must keep drafting and never sending, as an explicit review control the owner may relax
-later. That inverts the safety story: absence became policy, and policy is strictly
-weaker unless it is enforced mechanically and has failed on purpose. This guard is the
+Until 2026-08-22 "jobsearch never sends" was guaranteed by CAPABILITY ABSENCE: the gmail-multi connector had zero send
+tools and no SMTP path, so there was nothing to misuse. The owner then decided the connector should send/reply/forward
+like any general-purpose mail connector — capability belongs to the connector — while jobsearch must keep drafting and
+never sending, as an explicit review control the owner may relax later. That inverts the safety story: absence became
+policy, and policy is strictly weaker unless it is enforced mechanically and has failed on purpose. This guard is the
 enforcement; `test_checks.py` holds the induced-failure evidence.
 
 MEASURED, NOT ASSUMED (2026-08-22, CLI 2.1.231, disposable --plugin-dir session)
 --------------------------------------------------------------------------------
-A PreToolUse hook registered by THIS plugin's hooks.json fires on a tool served by a
-DIFFERENT plugin's MCP server: the probe hook intercepted and blocked
-`mcp__plugin_gmail-multi_gmail-multi__gmail_accounts`. That run also measured the
-naming scheme for plugin-served MCP tools — `mcp__plugin_<plugin>_<server>__<tool>` —
-which is what GUARDED_MAIL_SEND_TOOLS encodes. The bare `mcp__gmail-multi__<tool>`
-spellings are included as well, for a user who wires the same server through a manual
-`.mcp.json` instead of the plugin manifest.
+A PreToolUse hook registered by THIS plugin's hooks.json fires on a tool served by a DIFFERENT plugin's MCP server:
+the probe hook intercepted and blocked `mcp__plugin_gmail-multi_gmail-multi__gmail_accounts`. That run also measured
+the naming scheme for plugin-served MCP tools — `mcp__plugin_<plugin>_<server>__<tool>` — which is what
+GUARDED_MAIL_SEND_TOOLS encodes. The bare `mcp__gmail-multi__<tool>` spellings are included as well, for a user who
+wires the same server through a manual `.mcp.json` instead of the plugin manifest.
 
 ## The test, stated once
 
-    tool_name is one of GUARDED_MAIL_SEND_TOOLS  -> DENY (exit 2, reason on stderr)
+    tool_name is one of GUARDED_MAIL_SEND_TOOLS  -> DENY (exit 2, reason on stderr), except: send or reply
+                                                    (CONNECTOR_ENTRY_DEFERS) bound to an approved outbox row
+                                                    -> ASK (exit 0), never ALLOW (0.91.0, below)
     tool_name is anything else                   -> ALLOW (exit 0) — defensive; the
                                                     matcher should never route it here
     payload unreadable / tool_name absent        -> DENY (exit 2)
 
-⚠️ The unreadable-payload branch FAILS CLOSED, deliberately — the opposite of
-`guard_outbound_click.py`. That guard must CLASSIFY an ambiguous click, and a wrong
-deny there blocks legitimate work, so it fails open and says so. This guard performs no
-classification: `hooks.json`'s matcher (gated equal to GUARDED_MAIL_SEND_TOOLS by
-`check_mail_guard_matcher.py`) is the classifier, so the only way this script runs at
-all is that a send-family tool was called. A payload we cannot parse changes nothing
-about that, and the least reversible act in the system does not get the benefit of a
-parsing doubt.
+⚠️ The unreadable-payload branch FAILS CLOSED, deliberately — the opposite of `guard_outbound_click.py`. That guard
+must CLASSIFY an ambiguous click, and a wrong deny there blocks legitimate work, so it fails open and says so. This
+guard performs no classification: `hooks.json`'s matcher (gated equal to GUARDED_MAIL_SEND_TOOLS by
+`check_mail_guard_matcher.py`) is the classifier, so the only way this script runs at all is that a send-family tool
+was called. A payload we cannot parse changes nothing about that, and the least reversible act in the system does not
+get the benefit of a parsing doubt.
 
 ## SCOPE — this deny binds EVERY session where jobsearch is loaded. Decided, not drifted.
 
-A hook cannot tell whether a given send is "job-search work"; attribution is not
-mechanically decidable, and for the least reversible act ambiguity must fail closed
-(the same posture as guard_outbound_click's verb match). So the deny is unconditional
-while jobsearch is loaded — including a session where the user wants gmail-multi's send
-tools for unrelated mail. The named remedy for that user is real and per-project:
-disable jobsearch where mail is not job-search work (`claude plugin disable jobsearch`,
-or scope jobsearch's enablement to the profile project, which is how the owner runs
-it). There is deliberately NO in-band override — no profile flag, no env var — because
-any switch this process reads is a switch a confident mid-task session can flip; the
-owner's future relaxation ships as an engine version change, reviewed, like every other
-behaviour change (rulebook: a change ships as a version, never as an instruction).
+A hook cannot tell whether a given send is "job-search work"; attribution is not mechanically decidable, and for the
+least reversible act ambiguity must fail closed (the same posture as guard_outbound_click's verb match). So the deny
+is unconditional while jobsearch is loaded — including a session where the user wants gmail-multi's send tools for
+unrelated mail. The named remedy for that user is real and per-project: disable jobsearch where mail is not job-search
+work (`claude plugin disable jobsearch`, or scope jobsearch's enablement to the profile project, which is how the
+owner runs it). There is deliberately NO in-band override: no switch this process reads SENDS anything.
+
+⭐ 0.91.0, EMAIL `me` ATTENDED ONLY (design-build-reach.md 10.5, owner O19, O21, amendment 2026-11-21). With
+`actions.modes.email-send: me` a send or reply bound to an outbox row that an attended `outbox.py approve` and `call`
+of THIS session made live in the last 600 s turns this deny into `ask`: the platform's own prompt, which gmail-multi's
+`requiresUserInteraction` flag also forces, is the per-message approval. Flipping the mode turns a deny into a prompt,
+for the exact listed text to a recorded person; it never answers `allow`. The checks are `sending/approval.py`
+`decide`; the profile comes from the hook's `cwd` only. Forward is always denied. The connector entry leaves exactly
+these four names to this one (`CONNECTOR_ENTRY_DEFERS`), so this entry carries `"onFailure": "block"` (Claude Code
+v2.1.295 or later; older clients ignore it, the flag still prompts).
 
 ## WHAT THIS DOES NOT COVER — state it, don't let a reader assume more than what's here
 
-- **The claude.ai-managed Gmail connector.** Its server name is a per-user UUID
-  (`mcp__<uuid>__send_message`), which a shipped matcher cannot enumerate. If that
-  connector is attached, its send tools are NOT guarded here.
+- **The claude.ai-managed Gmail connector.** Its server name is a per-user UUID (`mcp__<uuid>__send_message`), which a
+  shipped matcher cannot enumerate. If that connector is attached, its send tools are NOT guarded here.
 - **Any other mail-capable tool the user installs.** Same reason as the click guard:
   a shipped matcher covers the surfaces this plugin routes to, nothing more.
-- **The sweeps' own IMAP library (`mail_client.py`).** It has no send code at all —
-  capability absence still guards the deterministic path; this guard exists for the
-  model-invoked path, which is where the capability now lives.
-- **S6 (the server-side claude.ai install — docs/surfaces.md).** Whether hooks execute there is
-  UNVERIFIED (same standing caveat as guard_outbound_click). The behavioural rule in
-  the plugin description — "It never sends anything itself" — remains the first line.
+- **The sweeps' own IMAP library (`mail_client.py`).** It has no send code at all — capability absence still guards
+  the deterministic path; this guard exists for the model-invoked path, which is where the capability now lives.
+- **S6 (the server-side claude.ai install — docs/surfaces.md).** Whether hooks execute there is UNVERIFIED (same
+  standing caveat as guard_outbound_click). The behavioural rule in the plugin description — "It never sends anything
+  itself" — remains the first line.
 
 ⭐⭐ THE CONNECTOR ENTRY (`--connector`, dev #799, design-mail-any-connector.md §5.1, §14 R2-M1, M5)
 ----------------------------------------------------------------------------------------------
-jobsearch can now read mail through the claude.ai Gmail, Microsoft 365, Fastmail and Superhuman
-connectors, and each of them can send. A second PreToolUse entry runs this script with `--connector`
-and denies their send-family tools. It is a DIFFERENT shape from the gmail-multi entry above, which
-is untouched:
+jobsearch can now read mail through the claude.ai Gmail, Microsoft 365, Fastmail and Superhuman connectors, and each
+of them can send. A second PreToolUse entry runs this script with `--connector` and denies their send-family tools,
+except gmail-multi's own send and reply, the four exact names of `CONNECTOR_ENTRY_DEFERS` (O19), which it leaves to
+the gmail-multi entry above. It is a DIFFERENT shape:
   * UNCONDITIONAL while jobsearch is loaded. It resolves no profile and imports nothing from
     jobsearch (the name tuples below are literals, pinned equal to `mail_connectors.py` by test), so
     no ImportError and no unresolved profile can open it. The remembered-profile pointer made a
@@ -91,19 +89,17 @@ is untouched:
     forward, reply (with no draft), or filter/rule-write token, case-insensitive, split on `_`, `-`
     and camelCase.
 
-The cost, for every installer: this fires wherever jobsearch is enabled — the profile project on a
-project-scope install, EVERY session on the machine on a user-scope install. There, no claude.ai mail
-connector can send, reply, forward, unsubscribe or set mail rules, Superhuman and Fastmail cannot
-create events, and any connector tool named exactly `send_message`, `reply` or `forward` is denied
-whatever its product. The remedy is the same as above: disable jobsearch for that project or install
-it at project scope. S6 (server-side claude.ai install): whether plugin hooks run there is UNVERIFIED;
-if they do, the deny applies to every S6 session on the account.
+The cost, for every installer: this fires wherever jobsearch is enabled — the profile project on a project-scope
+install, EVERY session on the machine on a user-scope install. There, no claude.ai mail connector can send, reply,
+forward, unsubscribe or set mail rules, Superhuman and Fastmail cannot create events, and any connector tool named
+exactly `send_message`, `reply` or `forward` is denied whatever its product. The remedy is the same as above: disable
+jobsearch for that project or install it at project scope. S6 (server-side claude.ai install): whether plugin hooks
+run there is UNVERIFIED; if they do, the deny applies to every S6 session on the account.
 
 NOT CLAIMED, stated rather than left for a reader to assume (design §5.2, §14 M5):
-  * PLATFORM ROUTING IS UNVERIFIED: the verdict function and the matcher strings are TESTED; nobody
-    has measured whether Claude Code routes an `sdk` or `claude_ai_` connector call to the hook, or
-    whether exit 2 blocks it there (probe P3). "Script and matcher TESTED, platform routing
-    UNVERIFIED."
+  * PLATFORM ROUTING IS UNVERIFIED: the verdict function and the matcher strings are TESTED; nobody has measured
+    whether Claude Code routes an `sdk` or `claude_ai_` connector call to the hook, or whether exit 2 blocks it there
+    (probe P3). "Script and matcher TESTED, platform routing UNVERIFIED."
   * THREE FAIL-OPEN RESIDUALS. The platform documents that a hook which does not start or exits with
     a code other than 0 or 2 is a NON-blocking error, and that a timed-out PreToolUse hook does not
     block. So a SYNTAX ERROR in this file (exit 1), a missing `python3` (127) and a HOOK TIMEOUT all
@@ -133,6 +129,21 @@ import json
 import re
 import sys
 
+# `sending/` (this entry point is over its line budget): the selftest bodies, imported only for `--selftest`, and E1's approval
+# path (jobsearch 0.91.0, design-build-reach.md 10.5), never imported for `--connector`. Each inside `except BaseException`: a
+# module that does not import leaves `None`, E1 then denies exactly as before 0.91.0, and the selftest says so.
+_selftest = _approval = None
+if "--selftest" in sys.argv[1:]:
+    try:
+        from sending import selftest as _selftest
+    except BaseException:                                 # noqa: BLE001 - reported by the selftest itself
+        _selftest = None
+if "--connector" not in sys.argv[1:]:
+    try:
+        from sending import approval as _approval
+    except BaseException:                                 # noqa: BLE001 - fail CLOSED: E1 denies every send
+        _approval = None
+
 # ⭐ SINGLE SOURCE OF TRUTH for what is guarded. hooks.json's PreToolUse matcher for this
 # script must equal "|".join(GUARDED_MAIL_SEND_TOOLS) exactly — check_mail_guard_matcher.py
 # asserts that, in CI and inside the materialized shipped package. A send-family tool added
@@ -147,6 +158,16 @@ GUARDED_MAIL_SEND_TOOLS = (
     "mcp__gmail-multi__gmail_send_message",
     "mcp__gmail-multi__gmail_reply",
     "mcp__gmail-multi__gmail_forward",
+)
+
+# ⭐ O19 (design 10.5): gmail-multi's own send and reply, both spellings, EXACT names. The connector entry (E2) leaves these four
+# to E1 (unless `mcp_server.source` is `claudeai`); E1 asks only for a bound, approved, in-window, same-session call. Forward is
+# not here: E1 and E2 both keep denying it. `check_mail_guard_matcher.py` pins this list.
+CONNECTOR_ENTRY_DEFERS = (
+    "mcp__plugin_gmail-multi_gmail-multi__gmail_send_message",
+    "mcp__plugin_gmail-multi_gmail-multi__gmail_reply",
+    "mcp__gmail-multi__gmail_send_message",
+    "mcp__gmail-multi__gmail_reply",
 )
 
 DENY_MESSAGE = """\
@@ -308,6 +329,8 @@ def evaluate_connector(payload):
     if not name or not isinstance(name, str):
         return True, "hook payload carries no tool_name - failing CLOSED"
     mcp_server = payload.get("mcp_server")
+    if name in CONNECTOR_ENTRY_DEFERS and not (isinstance(mcp_server, dict) and mcp_server.get("source") == "claudeai"):
+        return False, "tool %s is gmail-multi's own send or reply: the gmail-multi entry decides it (O19)" % name
     for server, tool in _splits(name):
         if not connector_shaped(server, mcp_server):
             continue
@@ -324,37 +347,17 @@ def floor_denies(name, mcp_server=None):
     return evaluate_connector({"tool_name": name, "mcp_server": mcp_server})[0]
 
 
-def _connector_selftest():
-    """Proves the connector entry's branches against synthetic payloads. Loud, never blocking
-    startup, and never lets its own exception escape as a silent pass."""
-    failures = []
-    try:
-        uuid = "0a1b2c3d-0000-4000-8000-000000000000"
-        for name in ("mcp__%s__send_message" % uuid, "mcp__%s__outlook_send_mail" % uuid,
-                     "mcp__claude_ai_Gmail__reply", "mcp__outlook-work__sendMail",
-                     "mcp__%s__send-email" % uuid, "mcp__%s__Send_Mail" % uuid,
-                     "mcp__%s__unsubscribe" % uuid, "mcp__%s__compose_event" % uuid):
-            if not evaluate_connector({"tool_name": name})[0]:
-                failures.append("did not deny %s" % name)
-        for name in ("mcp__%s__create_reply_draft" % uuid, "mcp__%s__get_senders" % uuid,
-                     "mcp__%s__slack_send_message" % uuid, "mcp__%s__search_threads" % uuid,
-                     "mcp__ccd_session_mgmt__send_message"):
-            if evaluate_connector({"tool_name": name})[0]:
-                failures.append("denied %s" % name)
-        if not evaluate_connector(None)[0]:
-            failures.append("unreadable payload did not deny")
-        if not (CONNECTOR_SEND_MATCHER.startswith("^mcp__") and "(?" not in CONNECTOR_SEND_MATCHER):
-            failures.append("CONNECTOR_SEND_MATCHER is not a plain anchored regex")
-        elif not re.search(CONNECTOR_SEND_MATCHER, "mcp__%s__send_message" % uuid):
-            failures.append("CONNECTOR_SEND_MATCHER does not route send_message")
-    except BaseException as exc:                          # noqa: BLE001 - a broken selftest is a loud one
-        failures = ["selftest raised %s: %s" % (type(exc).__name__, exc)]
-    if failures:
-        print(json.dumps({"systemMessage":
-                          "guard_mail_send --connector SELFTEST FAILED (%s) - the draft-only "
-                          "guard for claude.ai mail connectors may be inert; treat connector "
-                          "sends as unguarded this session." % "; ".join(failures)}))
+def _no_selftest(label):
+    print(json.dumps({"systemMessage": "%s SELFTEST FAILED (sending/selftest.py did not import) - treat sends as "
+                      "unguarded this session." % label}))
     return 0
+
+
+def _connector_selftest():
+    """The connector entry's selftest: `sending/selftest.py`, loud on any failure, never blocking startup."""
+    if _selftest is None:
+        return _no_selftest("guard_mail_send --connector")
+    return _selftest.connector(evaluate_connector, CONNECTOR_SEND_MATCHER, CONNECTOR_SEND_VERBS)
 
 
 def _main_connector(args):
@@ -382,24 +385,10 @@ def _main_connector(args):
 
 
 def selftest():
-    """Prove both branches against synthetic payloads. Loud, never blocking startup."""
-    failures = []
-    deny, _ = evaluate({"tool_name": GUARDED_MAIL_SEND_TOOLS[0]})
-    if not deny:
-        failures.append("send tool did not deny")
-    deny, _ = evaluate({"tool_name": "mcp__plugin_gmail-multi_gmail-multi__gmail_search"})
-    if deny:
-        failures.append("read tool denied")
-    deny, _ = evaluate(None)
-    if not deny:
-        failures.append("unreadable payload did not deny")
-    if failures:
-        print(json.dumps({"systemMessage":
-                          "guard_mail_send SELFTEST FAILED (%s) — the draft-only guard "
-                          "may be inert; treat sends as unguarded this session."
-                          % "; ".join(failures)}))
-        return 0  # never block startup; the message is the point
-    return 0
+    """The gmail-multi entry's selftest: `sending/selftest.py`, loud on any failure, never blocking startup."""
+    if _selftest is None:
+        return _no_selftest("guard_mail_send")
+    return _selftest.guard(evaluate, GUARDED_MAIL_SEND_TOOLS, _approval, CONNECTOR_ENTRY_DEFERS)
 
 
 def main():
@@ -412,6 +401,17 @@ def main():
     except Exception:
         payload = None
     deny, reason = evaluate(payload)
+    if deny and isinstance(payload, dict) and payload.get("tool_name") in CONNECTOR_ENTRY_DEFERS:
+        try:
+            verdict, why = _approval.decide(payload) if _approval is not None else (
+                "deny", "sending/approval.py did not import, so no send can be bound")
+            if verdict == "ask":                          # never "allow": the platform's prompt is the approval
+                print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
+                                                         "permissionDecisionReason": why}}))
+                return 0
+            reason = "%s; %s" % (reason, why)
+        except BaseException as exc:                      # noqa: BLE001 - fail CLOSED
+            reason = "%s; the approval check failed (%s)" % (reason, type(exc).__name__)
     if deny:
         sys.stderr.write(DENY_MESSAGE + "\n[guard_mail_send: %s]\n" % reason)
         return 2

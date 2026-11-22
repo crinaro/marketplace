@@ -15,12 +15,12 @@ imports it rather than re-reading them. `plays.py --brief` COMPOSES from `brief.
 (ADR-032's correction to ADR-031's own B4 row) — it never recomputes a register or a silence
 window; `check_ledger_reads.py` stays green because nothing here opens `briefs.jsonl` by name.
 
-THE VOCABULARY (design §18, §24, §25) — 15 tokens, every one `as_of`-dated
+THE VOCABULARY (design §18, §24, §25; design-build-reach.md 6.3) — 17 tokens, every one `as_of`-dated
 ------------------------------------------------------------------------------
 application-submitted · insider-known · recruiter-known · decider-known · has-referral ·
 referral-declined · done:<step> · replied:<step> · silent:<step>:<param> · role-open ·
 pitch-ready · referral-resolved:<wait>:<search> · interview-scheduled · pursuit-closed ·
-recruiter-first
+recruiter-first · side-contact-known · referrer-named (0.91.0: `reach/sidedoor.py` answers it)
 
 Parsing is strict (§18): an unknown token, an undeclared `<param>`, a `<step>` not in the play,
 or a `:` argument on a token that takes none, fails loudly — `validate_when()` is the one
@@ -54,6 +54,15 @@ import plans as _plans                                             # noqa: E402
 import validate_data as _vd                                        # noqa: E402
 import posture as _posture                                         # noqa: E402
 import config_keys as _ck                                          # noqa: E402
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from reach.recipients import (
+    PATH_TYPE_CLASS,
+    ROLE_TO_PATH,
+    _involvement_class,
+    touch_class,
+    class_known,
+)
+from reach import sidedoor as _sd                                  # noqa: E402
 
 ENGINE_PLAYS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                 "plays")
@@ -65,28 +74,19 @@ TOKEN_ARITY = {
     "application-submitted": 0, "insider-known": 0, "recruiter-known": 0, "decider-known": 0,
     "has-referral": 0, "referral-declined": 0, "done": 1, "replied": 1, "silent": 2,
     "role-open": 0, "pitch-ready": 0, "referral-resolved": 2, "interview-scheduled": 0,
-    "pursuit-closed": 0, "recruiter-first": 0,
+    "pursuit-closed": 0, "recruiter-first": 0, "side-contact-known": 0, "referrer-named": 0,
 }
 # Tokens whose argument is a STEP id (declared in the play's own steps).
 STEP_ARG_TOKENS = {"done": (0,), "replied": (0,), "silent": (0,)}
 # Tokens whose argument is a PARAMETER name (declared in the play's own params).
 PARAM_ARG_TOKENS = {"silent": (1,), "referral-resolved": (0, 1)}
 
-# §18/§26.2 — the class an involvement's `path_type` (or, absent one, a touch's own
-# `recipient_role` through this one bridge) resolves to. `RECIPIENT_ROLES` stays the touch's
-# vocabulary, `PATH_TYPES` the involvement's — this is the ONE mapping between them (§26.2's
-# own withdrawal of §20's "one vocabulary" sentence).
-PATH_TYPE_CLASS = {"recruiter": "recruiter", "warm-referral": "insider", "internal": "insider",
-                   "hiring-manager": "decider"}
-ROLE_TO_PATH = {"talent-acquisition": "recruiter", "recruiter-agency": "recruiter",
-               "warm-contact": "warm-referral", "peer-network": "warm-referral",
-               "hiring-manager": "hiring-manager", "hiring-line": "hiring-manager"}
-DO_TO_CLASSES = {"insider", "recruiter", "decider"}
+DO_TO_CLASSES = {"insider", "recruiter", "decider", "side-contact"}
 
-# §18 — the closed `say` slug vocabulary.
-SAY_SLUGS = {"referral", "fit", "ask-conversation", "ask-open", "referral-ask", "reconnect"}
+# §18 — the closed `say` slug vocabulary (0.91.0 adds ask-advice, ask-who, named-referral).
+SAY_SLUGS = {"referral", "fit", "ask-conversation", "ask-open", "referral-ask", "reconnect", "ask-advice", "ask-who", "named-referral"}
 DO_KINDS = {"apply", "research", "touch"}
-RESEARCH_FINDS = {"insider", "recruiter", "decider"}
+RESEARCH_FINDS = {"insider", "recruiter", "decider", "side-contact"}
 
 # §26.4 — the closed, `\b`-anchored, case-insensitive pronoun list a shipped pattern's `why`
 # may never contain (a possessive NOUN is legal; only these are refused).
@@ -156,6 +156,7 @@ class Context:
         self.graph = _graph.Graph(os.path.join(root, "data"))
         self.opps = self.graph.stores["opportunities"]
         self.opps_by_id = {o.get("id"): o for o in self.opps if o.get("id")}
+        self.people = self.graph.stores["people"]                  # `referrer-named` reads the candidate's own ties
         touch_rows, _e, _p = _touches.load(root)
         self.touches_by_opp = _touches.group_by_opp(touch_rows)
         app_rows, _e2, _p2 = _apps.load(root)
@@ -169,34 +170,6 @@ class Context:
         self.plans_by_id = _plans.by_id(self.plans)
         self.plays, _e4, _p4 = _plans.load_plays(root)
         self.plays_by_id = _plans.by_id(self.plays)
-
-
-def _involvement_class(opp_id, person_id, ctx):
-    for inv in ctx.involvements_by_opp.get(opp_id, ()):
-        if inv.get("person_id") == person_id:
-            c = PATH_TYPE_CLASS.get(inv.get("path_type"))
-            if c:
-                return c
-    return None
-
-
-def touch_class(touch, ctx):
-    """§26.2 — the recipient's class for one touch: the involvement's `path_type` first, the
-    touch's own `recipient_role` through `ROLE_TO_PATH` second. Two stored facts, in order,
-    never a guess."""
-    opp_id, person_id = touch.get("opp_id"), touch.get("person_id")
-    c = _involvement_class(opp_id, person_id, ctx) if opp_id and person_id else None
-    if c:
-        return c
-    pt = ROLE_TO_PATH.get(touch.get("recipient_role"))
-    return PATH_TYPE_CLASS.get(pt) if pt else None
-
-
-def class_known(opp_id, cls, ctx):
-    for inv in ctx.involvements_by_opp.get(opp_id, ()):
-        if PATH_TYPE_CLASS.get(inv.get("path_type")) == cls:
-            return True
-    return False
 
 
 def _submitted_apps(opp_id, ctx, as_of):
@@ -344,8 +317,12 @@ def _evaluate_body(name, args, opp, play, ctx, as_of, _stack):
     opp_id = opp.get("id")
     if name == "application-submitted":
         return bool(_submitted_apps(opp_id, ctx, as_of))
-    if name in ("insider-known", "recruiter-known", "decider-known"):
-        return class_known(opp_id, name.split("-")[0], ctx)
+    if name in ("insider-known", "recruiter-known", "decider-known", "side-contact-known"):
+        return class_known(opp_id, name[:-len("-known")], ctx)
+    if name == "referrer-named":            # 0.91.0: a current person's own `introduced` tie names an asked side contact
+        side = _sd.side_contact_ids(ctx.involvements_by_opp.get(opp_id, ()))
+        asked = _sd.asked_ids(ctx.touches_by_opp.get(opp_id, ()), side, as_of)
+        return _sd.referrer_named(ctx.people, opp.get("company_id"), asked, as_of)
     if name == "has-referral":
         return any(t.get("touch_type") == "referral-ask" and t.get("outcome") == "accepted"
                   and (t.get("responded_on") or "")[:10] <= as_of

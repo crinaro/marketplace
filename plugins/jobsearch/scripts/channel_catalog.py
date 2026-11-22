@@ -111,7 +111,7 @@ CATALOG_REL = os.path.join("channel_catalog", "channel_catalog.json")
 CATALOG_PATH = (os.environ.get("CLAUDESEARCH_CHANNEL_CATALOG")
                 or os.path.join(_root.engine_root(), CATALOG_REL))
 
-KINDS = ("swept-board", "alert-sender", "feed-policy", "curated", "portfolio")
+KINDS = ("swept-board", "alert-sender", "feed-policy", "curated", "portfolio", "event-host")   # event-host: 0.91.0, K8
 ROW_KINDS = ("swept-board", "alert-sender", "curated", "portfolio")     # kinds that write a channels row
 BOARD_KINDS = ("curated", "portfolio")                                  # manual-candidate boards
 # what `load_catalog` needs of an entry to use it at all; the maintainers' gate (check_channel_catalog.py) owns
@@ -121,7 +121,7 @@ RUNTIME_REQUIRED = {
     "curated": ("channel_id", "access", "board_url", "board_hosts", "review_cadence", "scope_notes"),
     "swept-board": ("channel_id", "type", "access", "query_template", "review_cadence", "scope_notes"),
     "alert-sender": ("channel_id", "type", "access", "alert_sender", "review_cadence", "scope_notes"),
-    "feed-policy": ("config_key", "vendors"),
+    "feed-policy": ("config_key", "vendors"), "event-host": ("host", "rsvp"),
 }
 FIRM_KEYS = ("id", "name", "domain")
 STAMP_FIELDS = ("channel_catalog_entry", "channel_catalog_sha", "channel_catalog_on", "channel_catalog_rev")

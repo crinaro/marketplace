@@ -40,6 +40,18 @@ import sys
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from reach.resolution import (
+    MIN_SAMPLE,
+    TERMINAL_TOUCH_OUTCOMES,
+    WIN_OUTCOMES,
+    NO_RESPONSE_AFTER,
+    _age_days,
+    touch_resolution,
+    touch_is_win,
+    _iso_to_date,
+    days_since,
+)
 
 ROOT = _profile_root()
 # ⭐ TEST-ISOLATABLE (2026-08-05). test_says_insufficient_data_today froze a date-dependent
@@ -49,18 +61,11 @@ ROOT = _profile_root()
 # whatever the pipeline looks like today; same pattern as runlock.py's CLAUDESEARCH_LOCK_PATH.
 DATA = os.environ.get("CLAUDESEARCH_DATA_DIR") or os.path.join(ROOT, "data")
 
-# Below this, a percentage is noise dressed up as a finding.
-MIN_SAMPLE = 5
 # The smallest gap, in percentage points, between two RATABLE arms before recommend() will call
 # the configured one CONTRADICTED. ADR-031 B5: hoisted from a local inside recommend() to module
 # level so `plays.py --assess` imports the same number this report prints — one home for both
 # thresholds (design-connected-entities.md §27.2, design-b5-assessment.md §0). Value unchanged.
 MIN_GAP_PP = 20
-
-# A touch outcome that ENDS the wait — the resolution every reply/resolution rate reads. One
-# tuple, read by `resolution()` in main() and by `step_funnel()` below, so the two funnels can
-# never disagree about what "resolved" means.
-TERMINAL_TOUCH_OUTCOMES = ("replied", "meeting-booked", "accepted", "no-response", "declined")
 
 # ADR-031 B5 — the CLOSED construct-signal catalogue (design-connected-entities.md §27.3: four
 # kinds; a fifth is an engine change, never a profile's). A proposal keyed `<signal>:<step|token>`
@@ -87,45 +92,6 @@ PROPOSAL_EVIDENCE_KEYS = {
 DEFAULT_WINDOW_DAYS = 42
 
 
-# ⭐ dev #834 (M2) — the resolution rule, hoisted out of main() so the network section shares it.
-# A WIN is a reply, a booking or an accepted connection request.
-WIN_OUTCOMES = ("replied", "meeting-booked", "accepted")
-NO_RESPONSE_AFTER = 14   # an `awaiting` row older than this is COUNTED as resolved, but the row
-                         # is NEVER mutated — the inference stays in the report
-
-
-def _age_days(d, today=None):
-    """Days from ISO date `d` to `today` (a date), or to the wall clock when `today` is None."""
-    if today is None:
-        return days_since(d)
-    try:
-        return (today - _iso_to_date(d)).days
-    except (ValueError, AttributeError, TypeError):
-        return None
-
-
-def touch_resolution(x, today=None):
-    """resolved / resolved-aged / awaiting / bounced / undeliverable-unknown, for one SENT touch."""
-    if x.get("delivery") == "bounced":
-        return "bounced"
-    oc = x.get("outcome")
-    if oc in TERMINAL_TOUCH_OUTCOMES:
-        return "resolved"
-    age = _age_days(x.get("date"), today)
-    if oc == "awaiting" and age is not None and age >= NO_RESPONSE_AFTER:
-        return "resolved-aged"
-    # A pattern-inferred address with unknown delivery cannot distinguish silence from a bounce.
-    # It is evidence of NOTHING either way and must not sit in a denominator.
-    if (x.get("medium") or "").startswith("email") and \
-       x.get("address_status") == "pattern-inferred" and x.get("delivery") == "unknown":
-        return "undeliverable-unknown"
-    return "awaiting"
-
-
-def touch_is_win(x):
-    return x.get("outcome") in WIN_OUTCOMES
-
-
 def load(name):
     path = os.path.join(DATA, name)
     if not os.path.exists(path):
@@ -143,27 +109,12 @@ def pct(n, d):
     return "%d/%d = %d%%" % (n, d, round(100.0 * n / d))
 
 
-def _iso_to_date(s):
-    y, m, d = (int(x) for x in s.split("-"))
-    return datetime.date(y, m, d)
-
-
 def is_iso(v):
     try:
         _iso_to_date(v)
         return True
     except (ValueError, AttributeError, TypeError):
         return False
-
-
-def days_since(d):
-    if not d:
-        return None
-    try:
-        y, m, dd = (int(x) for x in d.split("-"))
-        return (datetime.date.today() - datetime.date(y, m, dd)).days
-    except ValueError:
-        return None
 
 
 def rule(title):

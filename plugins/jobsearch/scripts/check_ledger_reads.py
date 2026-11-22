@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""check_ledger_reads.py — fails any shipped script (outside the ledger's own three readers)
+"""check_ledger_reads.py — fails any shipped script (outside the ledger's own readers)
 that opens `data/briefs.jsonl` by its literal filename, or reads one of its derived-fact
 fields (`days_since_in`, `last_word`, `latest_in`, `latest_out`, `register`) off ANY row.
 
@@ -21,8 +21,8 @@ Two independent scans, same file, same discipline as `check_retired_reads.py` (A
 §28.1 item 4's own precedent, reused here for a ledger instead of a retired array):
 
     (a) the string constant "briefs.jsonl" (an `ast.Constant`) anywhere in a file NOT in
-        `brief.LEDGER_READERS` — the ledger's own three readers (`brief.py` itself,
-        `validate_data.py` for shape, `make_fixture.py` for generation).
+        `brief.LEDGER_READERS` — the ledger's own readers (`brief.py`, `validate_data.py` for
+        shape, `make_fixture.py` for generation, `ledger/brief_rows.py` the row reader, 0.91.0).
     (b) any `ast.Subscript` whose slice is one of `"days_since_in"`, `"last_word"`,
         `"latest_in"`, `"latest_out"`, `"register"`, or any `.get(<one of those>)` call —
         REGARDLESS of what the subscripted/called-on object is — outside `brief.py`.
@@ -299,7 +299,7 @@ def main():
     if problems:
         return 1
 
-    print("\n  CLEAN. The ledger has exactly its three readers.")
+    print("\n  CLEAN. The ledger has exactly its %d readers." % len(LEDGER_READERS))
     return 0
 
 

@@ -1,6 +1,7 @@
 """The staged-message pair (dashboard-redesign A, moved from generate_dashboard.py): the drafts.md and
 cover_letters.md parsers, the three groups of a message list (D2, design §5), and the Drafts to review section."""
 import re
+from urllib.parse import urlsplit
 
 from dashboard import caps, levels
 from dashboard.actions_ui import group_attr
@@ -267,32 +268,101 @@ def primary_subjects(entries, keys, ledger):
     return out
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# THE HAND-OFF (jobsearch 0.91.0 B7a; design-build-reach.md 10.2 "The LinkedIn hand-off, precisely", owner O8 and the
+# 2026-11-21 amendment). A READY draft names how it leaves:
+#   * a LinkedIn medium: the action is the candidate's (`actions.modes` refuses `me` for every LinkedIn type, User Agreement
+#     8.2 item 13), so the row carries a link to the exact page (the person's recorded LinkedIn address, or says none is
+#     recorded; never a guessed or searched address). The Copy control is the one the row already has: its tick box and the
+#     list's ONE button (`actions_ui`, `navigator.clipboard.writeText`), whose prompt names the draft for the session (design
+#     10.2, 11: "link and text in the terminal"); the text itself is in the row's fold. A second button
+#     kind that copied the text alone is NOT built: the page contract (dashboard-redesign 6.1, 6.5; test_dashboard_budget's
+#     every-button-is-an-action-block and button-budget cases) allows one. Nothing else: no engine process opens LinkedIn,
+#     reads a page or writes the clipboard, and the link is a plain anchor. `linkedin-profile-edit` and `linkedin-post` have
+#     no drafts.md medium (`precondition.MEDIA`), so no row reaches them.
+#   * an email with an outbox row: that row's state, and for a `me` row the attended-only note (a queued send goes only
+#     from an attended session, after the candidate approves it and answers the platform's send prompt).
+# ─────────────────────────────────────────────────────────────────────────────
+LINKEDIN_ACTIONS = {"linkedin-connection-note": "linkedin-connect", "linkedin-message": "linkedin-message",
+                    "linkedin-inmail": "linkedin-message"}
+EMAIL_ME_NOTE = ("email me is attended only: it is sent only from a session you are at, after you approve it there and "
+                 "answer the send prompt; a scheduled run never sends it")
+_OUTBOX_NOTES = {
+    "staged": "in your mailbox's drafts: open it there, edit it if you like, and send it yourself",
+    "queued": "queued for jobsearch to send after your approval",
+    "approved": "approved in an attended session: it goes only when you answer the send prompt",
+    "sending": "the send call was made; it is recorded as sent once it shows in your Sent mail",
+    "failed": "the send failed; nothing was sent",
+}
+
+
+def _linkedin_page(url):
+    """`url` when it is an https address on linkedin.com (or a subdomain of it), else None: the hand-off links only a
+    recorded LinkedIn address."""
+    try:
+        parts = urlsplit(url) if isinstance(url, str) else None
+    except ValueError:
+        return None
+    host = (parts.hostname or "") if parts else ""
+    return url if parts and parts.scheme == "https" and (host == "linkedin.com" or host.endswith(".linkedin.com")) else None
+
+
+def handoff_data(people, outbox_rows):
+    """`PageData.handoff`: {"pages": {person id: recorded LinkedIn address}, "outbox": {draft_ref: its open outbox row}}.
+    A discarded or sent row hands nothing off; with two rows for one draft the later wins."""
+    pages = {p["id"]: _linkedin_page(p.get("linkedin")) for p in people if isinstance(p, dict) and p.get("id")}
+    outbox = {r["draft_ref"]: r for r in outbox_rows
+              if isinstance(r, dict) and r.get("draft_ref") and r.get("state") in _OUTBOX_NOTES}
+    return {"pages": {k: v for k, v in pages.items() if v}, "outbox": outbox}
+
+
+def _handoff(blocks, meta, medium, pd):
+    """The row's hand-off line (the block comment above), or "" when it hands nothing off."""
+    data = getattr(pd, "handoff", None) or {}
+    action = LINKEDIN_ACTIONS.get(medium)
+    if action:
+        m_to = re.search(r"To:\s*contact:(\S+)", meta)
+        url = (data.get("pages") or {}).get(m_to.group(1)) if m_to else None
+        # terse on purpose: the open page's word budget (dashboard-redesign 9.1, test_dashboard_budget) counts every row
+        link = (('<a class="handoff-link" href="%s" target="_blank" rel="noopener">send on LinkedIn &#8599;</a>' % esc(url))
+                if url else "no LinkedIn address recorded")
+        return '<div class="handoff sub" data-handoff="%s">%s</div>' % (esc(action), link)
+    m_brief = re.search(r"Brief:\s*(\S+)", meta)
+    row = (data.get("outbox") or {}).get(m_brief.group(1)) if m_brief else None
+    if not row:
+        return ""
+    note = _OUTBOX_NOTES[row["state"]] + ((" (%s)" % EMAIL_ME_NOTE) if row.get("mode") == "me" else "")
+    return ('<div class="handoff sub" data-handoff="email-send"><span class="chip queued">outbox: %s</span> %s</div>'
+            % (esc(row["state"]), esc(note)))
+
+
 def _row(title, blocks, key, st, pd, pick_html, full, medium=None):
     """One entry's PRIMARY row. `full` (level 1): the title, its state chip, its meta line, the reason in plain words
-    when it needs the owner, then the text fold. Otherwise (level 2, or a waiting entry) ONE line: the title, the state
-    in a few words, the text fold."""
+    when it needs the owner, its hand-off when it is ready (`_handoff`), then the text fold. Otherwise (level 2, or a
+    waiting entry) ONE line: the title, the state in a few words, the hand-off of a ready level-2 row, the text fold."""
     cls, label = _SEND_CHIP.get(st, ("waiting", st))
     meta = _draft_meta_summary(blocks)
     attrs = '%s data-sendability="%s" data-subject="%s"' % (_rec_attrs(key), esc(st), esc(_subject(meta, key)))
+    hand = _handoff(blocks, meta, medium, pd) if st == "sendable" else ""
     if not full:
         note = ""
         if st in ("unverified-cold", "unverified-silent"):
             m_to = re.search(r"To:\s*contact:(\S+)", meta)
             act_id = pd.queued_by_contact.get(m_to.group(1)) if m_to else None
             note = (" · queued: %s" % act_id) if act_id else ""
-        return ('<div class="draft draft-line"%s>%s%s <span class="chip %s">%s</span><span class="sub">%s</span>%s'
+        return ('<div class="draft draft-line"%s>%s%s <span class="chip %s">%s</span><span class="sub">%s</span>%s%s'
                 '</div>' % (attrs, pick_html, theirs_html(md_inline(title), "message-snippet"), cls, esc(label),
-                            esc(note), _text_fold(title, blocks, st, label)))
+                            esc(note), hand, _text_fold(title, blocks, st, label)))
     medium_flag = ""
     if medium == "unknown":
         # Loud on the row: the **Medium:** line names no MEDIA value (or there is no line); never a guess.
         medium_flag = ' <span class="chip action" title="the Medium line names no known medium">medium: unknown</span>'
     loud = st in pd.needs_human
     why = ('<div class="sub">%s</div>' % md_inline(plain(_SEND_WHERE.get(st, st)))) if loud else ""
-    return ('<div class="draft%s"%s><div class="draft-title">%s%s <span class="chip %s">%s</span>%s</div>%s%s%s</div>'
+    return ('<div class="draft%s"%s><div class="draft-title">%s%s <span class="chip %s">%s</span>%s</div>%s%s%s%s</div>'
             % (" ws-loud" if loud else "", attrs, pick_html, theirs_html(md_inline(title), "message-snippet"), cls,
                esc(label), medium_flag,
-               ('<div class="draft-meta">%s</div>' % theirs(meta, "message-snippet")) if meta else "", why,
+               ('<div class="draft-meta">%s</div>' % theirs(meta, "message-snippet")) if meta else "", why, hand,
                _text_fold(title, blocks, st, label)))
 
 
@@ -341,8 +411,8 @@ def render_message_groups(set_name, kind, entries, keys, states, filename, ledge
                    % (head_tag, (' id="%s"' % anchor) if section else "", esc(heading), len(g_all), head_tag))
         out.extend(_row(t, b, k, st, pd, levels.row_pick(pd, k, t, 1), True, md) for t, b, k, st, md in g_open)
         out.append(levels.fold("%d more %s, one line each" % (len(g_fold), heading.lower()),
-                               "".join(_row(t, b, k, st, pd, levels.row_pick(pd, k, t, 2), False)
-                                       for t, b, k, st, _md in g_fold)))
+                               "".join(_row(t, b, k, st, pd, levels.row_pick(pd, k, t, 2), False, md)
+                                       for t, b, k, st, md in g_fold)))
     out.append(levels.more_line(set_name, len(rest), "%ss ready or needing you" % noun,
                                 "Show me every %s that is ready or needs me." % noun))
     if waiting:

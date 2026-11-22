@@ -19,7 +19,8 @@ from recording.row_checks import (
     check_field,
     model,
 )
-from recording.common import Mutation, _Refused, _validator_module
+from recording.common import Mutation, _Refused, _now, _validator_module
+from recording.employment import stamp_people_create
 from recording.ids import mint_app_id, mint_cover_letter_id, mint_touch_id
 from recording.parser import _touch_requirement_lines
 from recording.posting import _feed_posting_value, _posting_today
@@ -318,6 +319,11 @@ def _create_checks(args, new_row):
               "stated once." % (idf, new_row[idf], args.rid))
         return 1
     new_row[idf] = args.rid
+    if args.file == "people":           # jobsearch 0.91.0: `created` and the first standing are stamped, never typed
+        _stamp_refused = stamp_people_create(new_row, _now().date().isoformat())
+        if _stamp_refused:
+            print("⛔ REFUSED — %s" % _stamp_refused)
+            return 1
     # Same refuse-before-write guards every other op gets: unknown keys, aliases, required.
     for k in new_row:
         bad = check_field(args.file, k)

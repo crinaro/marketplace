@@ -8,7 +8,8 @@ import os
 import tempfile
 from recording import profile_paths as _paths
 from recording.row_checks import _diagnostic_lines, validate
-from recording.common import Mutation, _plays_mod, _validator_module
+from recording.common import Mutation, _now, _plays_mod, _validator_module
+from recording.employment import merge_employment
 from recording.generic import _merge_would_cycle
 from recording.store_files import (
     LockError,
@@ -297,9 +298,23 @@ def merge_person_mutation(args, rows):
               "merge chain already leads back to %r."
               % (args.rid, args.into_id, args.into_id, args.rid))
         return 1
+    # jobsearch 0.91.0 (design-build-reach.md 5.2): two different employers of record are a decision, never a silent win for the
+    # survivor's: `--current <company_id|none>` names the one that is current, and the other moves to the survivor's `formerly`
+    # (`employment.merge_employment`). The survivor is edited in the SAME locked write, through `apply_rows`.
+    dup = find(rows, args.rid)
+    survivor_apply, refused = merge_employment(dup or {}, survivor, args.current_company, _now().date().isoformat())
+    if refused:
+        print("⛔ REFUSED — %s" % refused)
+        return 1
     desc = "merge-person into %s" % args.into_id
+    if survivor_apply is not None:
+        desc += " (the survivor keeps employer %s; the other goes to formerly)" % (
+            args.current_company or survivor.get("company_id"))
+    holder = [None]
 
     def apply(r):
         r["status"] = "merged"
         r["merged_into"] = args.into_id
-    return Mutation(desc, apply)
+        if survivor_apply is not None:
+            survivor_apply(find(holder[0], args.into_id))
+    return Mutation(desc, apply, apply_rows=holder)

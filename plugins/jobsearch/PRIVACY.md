@@ -64,11 +64,22 @@ a claude.ai connector is also handled under that connector's own terms, with the
 
 ## What leaves your machine
 
-Only the fetches and the mail connection listed above. The plugin never sends mail, and never posts,
-connects or applies on your behalf; its guards refuse those calls.
+Only the fetches and the mail connection listed above. The plugin never posts, connects or applies on
+your behalf, and its guards refuse those calls. **By default it never sends mail either.** Since 0.91.0
+there is one opt-in: if you set `actions.modes.email-send` to `me` and use gmail-multi, the plugin can
+send an email for you. It does so only in a session you are attending, only a message you were shown
+in full and approved, and only after you allow that one send in Claude Code's own prompt. The message
+goes from your own Gmail account to the recorded recipient, through gmail-multi; nothing passes through
+a server of ours. A scheduled or unattended run never sends; it keeps the message waiting for you.
+Until that send, the message text is kept in your profile's `data/outbox.jsonl`, and after it, in your
+own `messages` record, as for any mail you send.
 
 **What that claim covers, exactly.** jobsearch's own code has no mail-sending code. Two guards refuse
-mail sends. One covers `gmail-multi`'s send tools, and one covers the claude.ai connectors' send
+mail sends. One covers `gmail-multi`'s send tools. Under `email-send: me` it hands a send to Claude Code's
+prompt instead of refusing it, and only for a message you approved in that same session in the last
+10 minutes, with exactly the text and recipients you were shown. Forwarding is always refused. Both
+guards are set to block the call if they fail to run (`onFailure: block`, Claude Code v2.1.295 or
+later). The other guard covers the claude.ai connectors' send
 tools (send, reply, forward, unsubscribe, mail rules, and the event writes of Superhuman and
 Fastmail, which send invitations from your identity). The
 second guard stays on while jobsearch is loaded, whatever your selection. Its script and its
@@ -78,8 +89,9 @@ Also not covered:
 
 - a mail write tool with no mail word in its name that a vendor has not published, and calendar
   event writes through Microsoft 365, whose tool names are unpublished;
-- a guard that fails to start (a syntax error, a missing `python3`, a hook timeout), which
-  lets the call through. The session-start self-test warns about the first of these;
+- a guard that fails to start (a syntax error, a missing `python3`, a hook timeout) on a Claude Code
+  older than v2.1.295, which ignores `onFailure: block` and lets the call through. The session-start
+  self-test warns about the first of these;
 - mail changes that are not sends, such as moving, labelling or deleting a message.
 
 **The cost of the guard.** On a user-scope install it applies to every session on your machine: no

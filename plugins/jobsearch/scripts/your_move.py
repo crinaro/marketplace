@@ -113,6 +113,7 @@ import pipeline_index as _pidx                                       # noqa: E40
 # bare `import` is invisible to `publish_manifest.py`'s reachability closure.
 import lifecycle as _lc                                              # noqa: E402
 import jd_read as _jd                                                # noqa: E402
+from reach import standing_rows as _rows                             # noqa: E402  (0.91.0: Alumni by employment standing)
 
 # Re-exported so a caller (validate_data.py) needs exactly one import to validate the field.
 PreconditionError = _pre.PreconditionError
@@ -1849,10 +1850,11 @@ def company_candidates(root, today=None, with_excluded=False):
     qualifies exactly when its `status` is `watching`, its `status_on` is absent (no owner decision is recorded), and at least one
     of its opportunities is non-terminal, not folded into another and carries a sighting.
 
-    Rank (the order `raise-companies` takes them in): Alumni desc (non-merged people at the company with a stated `ties`,
-    design 4.2), live roles desc, newest sighting desc, id. Each item:
+    Rank (the order `raise-companies` takes them in): Alumni desc (non-merged CURRENT employees with a stated `ties`, design
+    4.2 and, since 0.91.0, design-build-reach.md 5.3), live roles desc, newest sighting desc, id. Each item:
 
         {"id", "name", "roles": n, "titles": [title...], "newest_sighting": "YYYY-MM-DD" | None, "alumni": n,
+         "alumni_former": n, "alumni_unconfirmed": n (tied people formerly there / unconfirmed there: words, never Alumni),
          "backers": [firm ids], "raised_on": "YYYY-MM-DD" | None, "raised_days_ago": n | None}
 
     dev #915 (0.88.0): a company whose `company_kind` is `aggregator` or `staffing` NEVER qualifies, so `raise-companies`
@@ -1869,10 +1871,7 @@ def company_candidates(root, today=None, with_excluded=False):
         if (o.get("status") in _lc.NON_TERMINAL_STATUSES and not _pidx.is_folded(o) and o.get("company_id")
                 and any(isinstance(s, dict) for s in (o.get("sightings") or []))):
             opps_by_co.setdefault(o["company_id"], []).append(o)
-    alumni = {}
-    for p in g.stores["people"]:
-        if p.get("status") != "merged" and p.get("company_id") and p.get("ties"):
-            alumni[p["company_id"]] = alumni.get(p["company_id"], 0) + 1
+    alumni = _rows.tie_counts(g.stores["people"], today_d)      # {cid: {"alumni", "alumni_former", "alumni_unconfirmed"}}
     out, excluded = [], []
     for c in g.stores["companies"]:
         cid = c.get("id")
@@ -1891,7 +1890,7 @@ def company_candidates(root, today=None, with_excluded=False):
             days = None
         out.append(({"id": cid, "name": c.get("name") or cid, "roles": len(roles),
                      "titles": [str(o.get("title") or o.get("id")) for o in roles],
-                     "newest_sighting": newest.isoformat() if newest else None, "alumni": alumni.get(cid, 0),
+                     "newest_sighting": newest.isoformat() if newest else None, **alumni.get(cid, _rows.NO_TIES),
                      "backers": [b["firm_id"] for b in _pb.backers_of(cid, g.stores["companies"], g.stores["channels"],
                                                                         g.stores["opportunities"])],
                      "raised_on": raised, "raised_days_ago": days},

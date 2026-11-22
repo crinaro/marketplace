@@ -201,8 +201,18 @@ search plan is for. In order, the run:
    with a small next step, such as a short call.
 
 **Everything that sends, connects or looks up a person stays with you.** A run drafts messages for you to read and
-send. It never sends one, never sends a connection request and never searches LinkedIn for a person; where it needs
-someone found, it lists a link for you to open. It also never writes down that a chat happened: that is your word.
+send. It never sends a connection request and never searches LinkedIn for a person; where it needs someone found, it
+lists a link for you to open. It never sends a message, with one opt-in since 0.91.0: under
+`actions.modes.email-send: me` (gmail-multi only), an email you approved is sent in a session you are attending, after
+you allow it in Claude Code's prompt; a scheduled run never sends ([Your data](your-data.md), *Outbox*). It also never
+writes down that a chat happened: that is your word.
+
+**Only current employees count at a company (since 0.91.0).** Someone who has left is still in your network, but is no
+longer a way into their old employer, and someone whose employment you have not confirmed is not counted until you do.
+At a target where you have no way in, the reach-out plan offers a **BUILD** step instead of a bare lookup: an advice
+ask to someone who used to work there, a lookup angled by your school or past employer, a side-door ask to someone
+already involved, and others, inside the same weekly budget. The weekly review counts what you did that week, and quotes
+a reply rate only over the last 12 weeks once there are at least 5 answered asks.
 
 ### Chats, and what a held chat is worth
 
@@ -514,7 +524,8 @@ for you to send, never sent. A backing you know of but never saw on a board goes
 
 No auto-apply, no automated LinkedIn action, no bought contact lists, no tricks aimed at a screening model, no
 service that applies or reaches out in your name. Each of these breaks a site's terms, puts other people's
-data in your profile, or sends something you have not seen, and the plugin never sends anything for you.
+data in your profile, or sends something you have not seen. The plugin never sends anything you have not seen and
+approved, one message at a time.
 
 ---
 
@@ -564,8 +575,12 @@ run that was launched from anywhere else, from the run check it already makes.
 
 ## The rules it holds itself to
 
-**It never sends.** Not email, not LinkedIn messages, not applications. Drafts are staged for
-you. This is structural, not a setting. With a claude.ai mail connector selected, a guard also
+**It never sends on its own.** Not email, not LinkedIn messages, not applications. Drafts are
+staged for you. LinkedIn messages and applications are never sent by the plugin, whatever you set.
+Email has one opt-in since 0.91.0, `actions.modes.email-send: me` (gmail-multi only). With it, a
+message you were shown in full and approved is sent only in a session you are attending, and only
+after you allow that one send in Claude Code's prompt. A scheduled run keeps it waiting for you
+([Your data](your-data.md), *Outbox* and *Action modes*). With a claude.ai mail connector selected, a guard also
 refuses that connector's send, reply and forward tools; the script is tested, and whether the app
 routes every call through it is not yet verified. Reporting a problem by `report_issue.py --email`
 prints an email for you to send yourself; the plugin sends nothing.

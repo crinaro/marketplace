@@ -248,6 +248,45 @@ names how many were probed and how many remain; the next run's `--probe --held` 
 closes the gap. **The call's last line states `Probed N … queued M … K not reached`: put exactly
 those three numbers in the summary, and treat K above zero as an open gap, never as "all clear".**
 
+## 2d. ⭐ THE OUTBOX — was a staged draft sent? (jobsearch 0.91.0)
+
+```bash
+~/.claude/jobsearch/run outbox.py detect
+```
+
+For every draft staged in the mailbox (and every send the guard passed), it searches Sent for the message and records what it
+finds. A match is recorded in one locked write: the touch (dated the day the message was actually sent, so the follow-up clock
+starts there), the sent message, the drafts.md entry marked `sent`, and the outbox row. Put each line in the summary as printed:
+`found in Sent` (recorded), `ambiguous` (two messages match one draft, or one message two drafts: nothing was recorded, so ask
+the candidate which), `none found` (it adds `send unobserved` once the draft is old enough), and **`not checked: <reason>`, which
+is never "none found"**: the mailbox could not be read (`credential-missing`, `timeout`, `no sent bundle` on a claude.ai
+connector with no bundle reaching back far enough). This step writes no sweep coverage; the Gmail passes below still run.
+
+**When drafts are staged is the candidate's setting, `actions.email.stage`** (read it with `~/.claude/jobsearch/run profile.py
+--options`; owner O7). **`ask`, the default: staging is on request, in an attended run only** (the explicit attended form). When
+the candidate asks to put drafts in their mailbox ("stage 1 and 3", or all of them), run
+`~/.claude/jobsearch/run outbox.py stage <brief id>... --account <address>` (or `stage --all-ready`) and make each printed `CALL`
+exactly as printed, one call per draft, nothing added. Under `ask` an unattended run stages nothing. **`auto`, an opt-in: the run
+stages every ready draft itself, once, after the network block** (§7, "Staging under `auto`"), attended or not. It stages
+only a sendable `email-cold` or `email-reply` draft with a `**Subject:**` line and one quoted body. A reply also needs its
+`**In-reply-to:** <account>:<uid>` line, goes from that mailbox, and stages only under gmail-multi; a reply draft without the line
+is not staged, never staged as a new message. Every refusal names its reason, so report it rather than work around it. gmail-multi cannot delete a draft, so stage only text the candidate has called final. Staging sends
+nothing: the candidate opens their drafts, edits if they like, and sends. No run, attended or not, ever calls a send tool from
+this step. `outbox.py list` shows the open rows; `outbox.py discard <id>` drops one the candidate will not send. An
+`actions.email.stage` that reads anything but `ask` or `auto` is neither: stage nothing unasked and say so in the summary
+(`doctor.py`'s CONFIG CURRENCY prints that row FAIL with the reason), and a `REFUSED: actions.modes...` line from `stage` is a mode
+the candidate must correct: put it in the summary as printed.
+
+**Under `actions.modes.email-send: me` (gmail-multi only; ATTENDED ONLY, owner ruling 2026-11-21)** staging makes `queued` rows
+and prints no call. **An unattended run never approves, never calls `outbox.py call`, and never calls a send tool:** it reports
+the queued count and leaves them for the next attended session. In an attended run only, and only when the candidate asks to
+send: show the batch with `~/.claude/jobsearch/run outbox.py list --ready` (recipient, account, subject, the full text, and for a
+reply the message answered), let the candidate say which, then `outbox.py approve <id>... --attended` and, for each message
+in turn, `outbox.py call <id> --attended`, and make that one printed `CALL` exactly as printed. The platform then asks the
+candidate to allow that send: their click is the approval, never yours. A call the guard refuses (text or recipient changed,
+approval older than 600 s, another session's approval) is reported as printed, never retried by editing. A row left `sending`
+is resolved by `outbox.py detect` or the candidate's `outbox.py cancel <id>`, never by sending again.
+
 ## 3. GMAIL — two passes, and the order matters
 
 **⭐ ONE MAIL CONNECTOR, the selected one — and the run says which it used.** `config.json`'s
@@ -354,8 +393,8 @@ subject, or `in:sent`/`in:anywhere`). Two outcomes:
   NOT queue a needs-response or spawn a drafter** — the loop is closed. Note "candidate already
   replied" in the run summary so the candidate knows it was seen, not missed.
 - **The last word is theirs** → proceed to §7b (queue + draft).
-This happened 2026-08-05: Ashford Search's <an employer> decline landed overnight and the candidate replied ~1 hour
-later; the scan saw only the inbound and nearly drafted a response to a thread the candidate had already closed.
+Without this check, a scan that sees only the inbound drafts a response to a thread the candidate already
+closed.
 
 **c. HUMAN/MEETING PASS — delegate to `inbox-scan`.** (Under a claude.ai connector this dispatch is the
 fetch above, and it runs ahead of pass a.) New recruiter/human inbound, thread replies,
@@ -727,7 +766,10 @@ drafts nothing and prints what it would have drafted; `reachouts.py` re-derives 
 
 **1. Replies.** Every inbound reply that §3 and §4 found and the candidate has not already answered (the thread-completeness
 check of §3b; §7b records it and queues the URGENT finding) is drafted a response now, in the block's one dispatch. A reply
-that closes the thread (a rejection, a "not my search" with no pointer) gets no draft.
+that closes the thread (a rejection, a "not my search" with no pointer) gets no draft. For an email reply, hand the drafter the
+answered message as `<account>:<uid>` (the account and uid of the inbound message you recorded, the last two parts of its
+`messages` row `source`); it writes that on the draft's `**In-reply-to:**` line, which `outbox.py stage` needs to thread the
+draft. Never make one up: with no recorded uid, say so in the dispatch, and the reply is drafted but not stageable.
 
 **2. Follow-ups.**
 
@@ -763,6 +805,28 @@ at a company they target. **Draft exactly those lines and never more, whatever e
 line that says so, and the run drafts nothing new.** A `LOOKUP` line is a link the CANDIDATE opens, listed in the summary: it
 is not budgeted and no LinkedIn step is automated. Once `record.py warm-lookup <co> --none-found` is recorded, that company's
 LOOKUP is one `LOOKED` line naming the day it returns (`search.warm_lookup_days`, 90): report it, ask nothing. `--journal <id>` writes the run's one `network` event (its only write).
+**A `BUILD` line (jobsearch 0.91.0)** is a step toward a way in at a target with none: an advice ask, an angled lookup, a
+side-door ask, and other kinds. A BUILD line that names a person goes to `outreach-drafter` in the same one dispatch, as written.
+The drafter briefs that person first, and the brief row records the step (its "THE BUILD LINES" section); never restate or edit
+the step's fields yourself. A BUILD line that is only a link is listed for the candidate, like a LOOKUP. In-budget BUILD drafts
+spend `network.new_reachouts_per_week`; the line says whether it is in the budget.
+
+**5. Affiliations, asked once (jobsearch 0.91.0, owner O6).**
+
+```bash
+~/.claude/jobsearch/run record.py affiliations
+```
+
+It prints the derived state: `AFFILIATIONS listed`, `AFFILIATIONS none` (asked, none) or `AFFILIATIONS not-asked` (the key is
+absent from `user.json`: a profile from before 0.91.0, or a question set aside). `listed` and `none` need nothing. **On
+`not-asked`, an attended run (the explicit attended form only) asks the onboarding question once, in this block, and never
+twice in one run:** *"Which schools, bootcamps, past employers and communities are you part of? List them in the order you
+would lean on them."* Offer the past employers already in `presence/claims.md` for the candidate to confirm, trim or reorder,
+and add nothing they did not confirm. Record their answer with `record.py affiliations '<json list>'` (or `--none` when
+they say there are none); the onboarding skill's step 2b has the shape and the kinds. If they set it aside, write nothing: it
+stays `not-asked`. **An unattended run never asks** (nobody is there to answer): it puts one summary line, `Affiliations: not
+asked yet (the next attended run asks once)`, and writes nothing. `AFFILIATIONS unreadable` goes into the summary as printed
+(`validate_data.py` names the fix); it is never read as "none". No step of this run looks anyone up from an affiliation.
 
 **What stays the candidate's, always:** sending a message, sending a connection request, any LinkedIn people lookup, writing
 chat notes and confirming that a chat was held. Also theirs, because each is a fact or a decision only they hold: the
@@ -1138,6 +1202,18 @@ what applied, what was proposed, what was withheld under the ask cap — and its
 verbatim. **`--run <id>` is what records the count against this run; without it nothing is recorded.** Every write is
 under THIS run's own lock hold (`--already-locked`); invoked with the lock unheld it degrades
 to plan-only and exits 2 — never a hard failure, never a half-written store.
+
+**Staging under `auto`** (§2d; owner O7). Only when `profile.py --options` shows `actions.email.stage` as `auto`: the network
+block's drafts are written by now (the block itself only reads and drafts), so run
+
+```bash
+~/.claude/jobsearch/run outbox.py stage --all-ready
+```
+
+and make each printed `CALL` exactly as printed, one call per draft, nothing added; put each `NOT STAGED` line and any
+`REFUSED:` line in the summary as printed. Under `ask` (the default), or any other value, this step stages nothing: the
+candidate asks for it. Under `actions.modes.email-send: me` the same command queues the drafts and prints no call; an unattended
+run leaves them queued for the next attended session and calls nothing.
 
 **⭐ USE THE WRITE API — do not hand-edit the JSONL. A brand-new row is `create`, not an edit.**
 

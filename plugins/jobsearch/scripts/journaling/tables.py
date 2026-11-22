@@ -12,7 +12,7 @@ from _root import STATE_DIRNAME
 JOURNAL = os.path.join("data", "runs.jsonl")
 EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swept", "probe",
          "triaged", "dispatch", "pass", "roles", "feeds", "drain", "mail-status", "readmit",
-         "profile-schema", "network", "companies-raised")
+         "profile-schema", "network", "companies-raised", "outbox-lapse")
 
 # dev #751 (sourcing-feeds; design §3.6 as amended by review B1/B3/B6) -- the company feed poller's
 # failure vocabulary, CLOSED and validated by `record_feeds`: a code, not a sentence, each mapped to

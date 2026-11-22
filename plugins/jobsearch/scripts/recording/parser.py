@@ -90,7 +90,14 @@ OPS = ("create", "set", "set-in", "append", "show", "fields",
        # jobsearch 0.86.0 (dev #834) -- the proposals verbs (a proposal to a prospective client of a non-employee engagement) and the
        # suggestion verbs (the strategist's proposed row, the candidate's confirm or decline). Each is a locked, validated,
        # rollback-verified write; `suggest` writes the ASK only, `confirm` writes the suggested row AND resolves the ask in ONE write.
-       "proposal", "proposal-status", "suggest", "confirm", "decline")
+       "proposal", "proposal-status", "suggest", "confirm", "decline",
+       # jobsearch 0.91.0 (design-build-reach.md 5.2) -- where a person works now, dated the day the engine learns it: one locked,
+       # validated, rollback-verified write of PEOPLE each, behind the 0.86.0 pin. `--dry-run` is proven in test_record_call_surface.py.
+       "employment", "moved",
+       # jobsearch 0.91.0 (design-build-reach.md 7.1) -- the ONE writer of user.json's `affiliations` (the candidate's list, or
+       # `--none`), one locked, validated, rollback-verified write; with no argument it prints the derived state. `--dry-run` is
+       # proven in test_record_call_surface.py's VERB_ARGS.
+       "affiliations")
 SOURCING_OPS = ("screened", "lean", "listed-pay", "posted")
 
 
@@ -154,6 +161,10 @@ def _help_epilog():
         "employer posting (dev #776 / public #166) -- the ONE writer of an opportunity's employer_posting:",
         "  posting --from-file <file of EMPLOYER-POSTING lines> [--dry-run] [--already-locked]",
         "      reads every EMPLOYER-POSTING line in the file (never argv); set / set-in / append / create refuse the field.",
+        "",
+        "affiliations (0.91.0) -- the ONE writer of user.json's affiliations, in the candidate's order:",
+        "  affiliations '<json list of {kind, name, linkedin_url?, career_services?}>' | affiliations --none | affiliations",
+        "      kind school|bootcamp|employer|community; absent = not asked, --none = asked, none; no argument prints the state.",
     ]
     try:
         lines.append("")
@@ -213,7 +224,7 @@ def _core_arguments(ap):
                          "application-status is optional too, same default).")
     ap.add_argument("--to", dest="to_token", default=None,
                     help="touched: `contact:<person-id>` — who the touch went to (required; "
-                         "the person must exist and not be merged).")
+                         "the person must exist and not be merged). moved: the company id they work at now.")
     ap.add_argument("--medium", dest="medium", default=None,
                     help="touched: one of validate_data.MEDIA (required).")
     ap.add_argument("--touch-type", dest="touch_type", default=None,
@@ -251,6 +262,12 @@ def _core_arguments(ap):
                     help="merge-person: the SURVIVOR person id. The record named by <rid> "
                          "(the duplicate) gets status=merged, merged_into=<--into>, in one "
                          "write. Refused if that would close a merge cycle (public #93).")
+    ap.add_argument("--current", dest="current_company", default=None,
+                    help="merge-person: when the two rows name two different employers, the one that is "
+                         "current (<company_id>, or `none`); the other moves to formerly (0.91.0).")
+    ap.add_argument("--left", dest="left_date", default=None,
+                    help="employment ... former / moved: when they left, as you know it (YYYY-MM-DD; display "
+                         "only, never the date the departure was learned).")
     ap.add_argument("--note", dest="note_text", default=None,
                     help="application-status: appended to the row's existing `note` (never "
                          "overwritten — an owner's hand note survives) in the SAME transaction "
@@ -361,7 +378,7 @@ def _sourcing_arguments(ap):
     # jobsearch 0.72.0 (dev #751) company-feed verbs.
     ap.add_argument("--none", dest="ats_none", action="store_true",
                     help="ats: DECLINE a feed for this company (`ats: null`); discovery never "
-                         "rewrites it.")
+                         "rewrites it. affiliations: asked, none (stores []).")
     ap.add_argument("--clear", dest="ats_clear", action="store_true",
                     help="ats: remove the `ats` key so discovery may run again.")
     ap.add_argument("--discover", dest="ats_discover", action="store_true",
@@ -553,7 +570,7 @@ def bind_store(args):
         args.file = "messages"
     elif args.op == "received":
         args.file = "messages"
-    elif args.op == "merge-person":
+    elif args.op in ("merge-person", "employment", "moved"):
         args.file = "people"
     elif args.op == "involve":
         args.file = "opportunities"      # cmd_involve names its own stores; keeps the generic checks harmless

@@ -1256,10 +1256,10 @@ def main():
     # Recruiter relationships gone quiet (soft signal — these are on-inbound, but a
     # silent open thread is worth a nudge; complements check_followups on opportunities).
     #
-    # ⭐ 2026-08-02: this used to read ONLY channels.jsonl (log[] + last_reviewed), so a
+    # ⭐ This used to read ONLY channels.jsonl (log[] + last_reviewed), so a
     # real touch recorded as an OUTREACH ROW on an opportunity was invisible and the firm
-    # looked silent. That produced a partly-false "15 firms gone quiet" list at the weekly
-    # review — Ashford Search showed 12 days while the <an employer> chase to Calloway had gone out 7/31.
+    # looked silent. That produced a partly-false "firms gone quiet" list at the weekly
+    # review: a firm showed as silent while a chase through it had already gone out.
     # A nudge decision made off that list would have been wrong, so the live pipeline is
     # now folded in as a touch source.
     # ADR-031 B3 — the top-level touches store, never a nested array on the opportunity.

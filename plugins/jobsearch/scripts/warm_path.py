@@ -66,12 +66,11 @@ Eligible roles: `status` not terminal, not folded (`duplicate_of`), a STORED `sc
 `remove:*` (read off the stored screen, never re-derived), and `verdict` not `pass`. An applied role is
 eligible, which is how the daily run's old "warm-path on every application" rule is absorbed.
 
-Person: non-merged people whose `company_id` is the role's company, or who have an `involvements` row on an
-opportunity at that company. A person's rank is their best usable involvement `path_type`: `warm-referral`
-and `internal` first, then `hiring-manager`, then `hiring-context`; `recruiter` and `cold` are never a warm
-path. An involvement on THIS role outranks one on a sibling role (so two roles can have different best
-people); a person with a `company_id` and no involvement at all ranks last. Ties go to the most recent
-inbound message, then to `id`.
+Person: a non-merged CURRENT employee of the role's company today (0.91.0, `reach.standing_rows`); a former or
+unconfirmed one is never a `referral-ask` or `hm-note`, and an unconfirmed one puts "confirm employment first" and
+the verb on the company's card. Rank: the best usable involvement `path_type` (`warm-referral`, `internal`, then
+`hiring-manager`, then `hiring-context`; `recruiter` and `cold` never), one on THIS role before a sibling role's,
+no involvement last; ties go to the most recent inbound message, then to `id`.
 
 Python 3.9+. Standard library only. Read-only.
 """
@@ -85,6 +84,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
+from reach import standing_rows as _rows
 
 ROOT = _profile_root()
 
@@ -201,9 +201,8 @@ def derive(root=None, today=None, warm_days=WARM_DAYS, lookup_days=90):
     applied = {a.get("opp_id") for a in apps if a.get("status") in _vd.SUBMITTED_APP_STATUS}
     all_opps = _load(os.path.join(data, "opportunities.jsonl"))
     opp_company = {o.get("id"): o.get("company_id") for o in all_opps}
-    drafts_to = open_draft_recipients(root)
     drafts_to_resolved = {}
-    for pid, titles in drafts_to.items():
+    for pid, titles in open_draft_recipients(root).items():
         try:
             row = g.resolve_person(pid)
         except _graph.MergeCycleError:
@@ -241,10 +240,10 @@ def derive(root=None, today=None, warm_days=WARM_DAYS, lookup_days=90):
             invs = g.involvements_for_person(p["id"])
             at_company = [i for i in invs if opp_company.get(i.get("opp_id")) == cid]
             via = None
-            if p.get("company_id") != cid and not at_company:
-                if p.get("company_id") not in firms:
+            if not _rows.is_current(p, cid, today):      # 0.91.0: former / unconfirmed / no link is never a way in here
+                via = _rows.current_firm(p, firms, today)    # ... and the firm route needs a current employee of the firm
+                if via is None:
                     continue
-                via = p.get("company_id")
             usable = [(0 if i.get("opp_id") == opp.get("id") else OTHER_ROLE_PENALTY)
                       + PATH_RANK[i.get("path_type")] for i in at_company if i.get("path_type") in PATH_RANK]
             if at_company and not usable and all(i.get("path_type") in NOT_WARM for i in at_company):
@@ -278,7 +277,8 @@ def derive(root=None, today=None, warm_days=WARM_DAYS, lookup_days=90):
         cname = company.get("name") or company_id or "this company"
         roles = ", ".join("%s (%s)" % (by_id[i].get("title") or i, i) for i in opp_ids)
         act = {"opp_ids": opp_ids, "company_id": company_id, "person_id": person_id,
-               "person_name": None, "on": None, "linkedin_url": None, "via": None}
+               "person_name": None, "on": None, "linkedin_url": None, "via": None,
+               "confirm": _rows.unconfirmed_ids(g.stores["people"], company_id, today)}
         if person_id is None:
             wl = company.get("warm_lookup") if isinstance(company.get("warm_lookup"), dict) else None
             looked = _date((wl or {}).get("on"))
@@ -287,7 +287,7 @@ def derive(root=None, today=None, warm_days=WARM_DAYS, lookup_days=90):
             if looked and 0 <= (today - looked).days <= lookup_days:
                 act["state"] = "looked-none"
                 act["on"] = looked.isoformat()
-                act["why"] = "looked %s, no one found at %s" % (looked.isoformat(), cname)
+                act["why"] = "looked %s, no one found at %s" % (looked.isoformat(), cname) + _rows.confirm_hint(act["confirm"])
             else:
                 act["state"] = "lookup-owed"
                 if act["linkedin_url"]:
@@ -296,7 +296,7 @@ def derive(root=None, today=None, warm_days=WARM_DAYS, lookup_days=90):
                     where = "Search LinkedIn for %s people" % cname
                 act["why"] = ("No one known at %s. %s, then record who you found (a people row and "
                               "`record.py involve`), or `record.py warm-lookup %s --none-found`."
-                              % (cname, where, company_id))
+                              % (cname, where, company_id)) + _rows.confirm_hint(act["confirm"])
             actions.append(act)
             continue
         person, best, via = chosen[(company_id, person_id)]

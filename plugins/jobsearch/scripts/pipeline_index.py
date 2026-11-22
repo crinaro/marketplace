@@ -76,6 +76,7 @@ import urllib.parse
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
+from reach import standing_rows as _rows      # 0.91.0: a person lookup says "(unconfirmed)" / "formerly at" (wording only)
 
 ROOT = _profile_root()
 DATA = os.path.join(ROOT, "data")
@@ -448,8 +449,7 @@ def main():
             if needle not in (p.get("name") or "").lower():
                 continue
             found = True
-            print("%s — %s" % (p.get("name"), companies.get(p.get("company_id"),
-                                                             p.get("company_id") or "—")))
+            print("%s — %s" % (p.get("name"), _rows.employer_words(p, companies)))
             print("  email    : %s" % (p.get("email") or "— none on record"))
             print("  linkedin : %s" % (p.get("linkedin") or "—"))
             if p.get("status") == "merged":

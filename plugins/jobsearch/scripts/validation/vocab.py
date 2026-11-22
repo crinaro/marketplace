@@ -193,7 +193,15 @@ EMAIL_MEDIUM_PREFIX = "email"         # an email-* medium requires 'address_stat
 EMAIL_REQUIRES_FIELD = "address_status"
 
 
-PATH_TYPES = {"warm-referral", "recruiter", "hiring-manager", "hiring-context", "internal", "cold"}
+# `side-contact` (jobsearch 0.91.0, design-build-reach.md 6.3): a recruiting, HR or talent person on the role who is NOT its lead
+# (`recruiter`); the side-door play's first recipient. Never warm, never a referral: `warm_path` ranks it nowhere.
+PATH_TYPES = {"warm-referral", "recruiter", "hiring-manager", "hiring-context", "internal", "cold", "side-contact"}
+# jobsearch 0.91.0 (design-build-reach.md 6.2) -- `touches.build_kind`: which BUILD line a touch came from, set from the script-built
+# brief row, never from drafter text. Absent means "not from a BUILD line". `advice-ask` is a `first-touch` with no `opp_id` and an
+# `object_company_id`; `side-door` is an `intro-request` with an `opp_id` whose recipient holds a `side-contact` involvement on it.
+BUILD_KINDS = ("advice-ask", "side-door")
+BUILD_KIND_SHAPE = {"advice-ask": "first-touch", "side-door": "intro-request"}
+TIE_VIA_PERSON = "person:"      # a tie's `via` that begins so names a people id, which must resolve to a living person
 # ADR-031 B1 — `people.status`. `merged` is the ONLY non-active state a person can be in;
 # `merged_into` is required iff status is `merged` (checked below, not restated as an enum).
 PEOPLE_STATUS = {"active", "merged"}
@@ -249,12 +257,23 @@ COMMITMENT_STATUS = {"scheduled", "cancelled"}
 # dev #834 (jobsearch 0.86.0, design-network-first.md 5.2, 13.1) -- a CHAT widens `commitments`. `kind` classifies a meeting
 # (absent on a legacy row = unclassified, counted and never guessed); `attendance` records whether a past one HAPPENED (absent =
 # unrecorded, never "held" and never "no-show"). `status` stays scheduled/cancelled: attendance is a second fact, not a third state.
-COMMITMENT_KINDS = {"chat", "interview"}
+# `event` (jobsearch 0.91.0, design-build-reach.md 6.5): a public event the candidate may attend, `{kind: event, date, title, source}`
+# with `source` the event page's address and no `person_id`; `attendance` applies as it does to a chat.
+COMMITMENT_KINDS = {"chat", "interview", "event"}
 ATTENDANCE = {"held", "no-show"}
 # dev #834 (design-network-first.md 4.3, accepted by the owner 2026-11-12) -- `people.ties`: how the candidate knows a person, one STATED
 # field, `[{kind, via?}]`. `kind` is a closed set, `via` an optional non-empty string (which employer, school or community). Absent means
 # unknown, never "no ties": LAMP's Alumni is derived by counting people with a non-empty `ties`, and nothing infers one (ADR-031 decision 5).
 TIE_KINDS = ("former-colleague", "alumni", "community", "friend", "introduced", "other")
+# jobsearch 0.91.0 (design-build-reach.md 5.2, owner O2/O3) -- where a person works NOW, a dated statement on the employer of record
+# (`people.employment`), and where they used to (`people.formerly[]`). "Used to work there" has ONE spelling, an entry in `formerly`:
+# a stored `status: former` is refused. Every date a derivation reads is the day the engine LEARNED the fact, set by the writer.
+EMPLOYMENT_STATUS = ("current", "unknown")
+EMPLOYMENT_SOURCES = ("stated", "observed-mail", "migration")
+EMPLOYMENT_KEYS = frozenset({"status", "as_of", "confirmed_on", "source"})
+FORMERLY_KEYS = frozenset({"company_id", "as_of", "until", "counted_from"})
+# The people fields only the employment verbs write (`record.py employment|moved|merge-person`; `create` states the first one).
+EMPLOYMENT_OWNED_FIELDS = ("company_id", "employment", "formerly")
 # dev #834 (design-network-first.md 5.4) -- the cause of a touch or ask that came of an INTRODUCTION has two possible homes, so its
 # `trigger_ref` is prefixed: `touch:<id>` (the intro-request touch that produced it) or `commitment:<id>` (an intro offered in a chat).
 INTRODUCTION_REF_PREFIXES = ("touch", "commitment")

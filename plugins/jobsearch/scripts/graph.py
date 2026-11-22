@@ -56,6 +56,12 @@ its survivor. A touch, message or chat dated AFTER `as_of` does not exist as of 
 `access.py --since` replays a table at an earlier date from the same rows, with no stored snapshot.
 `warm_days` is the caller's (`access.warm_days`, 180); this file never reads config.
 
+STANDING — DOES THIS PERSON WORK THERE, DATED (jobsearch 0.91.0, design-build-reach.md 5.3)
+-------------------------------------------------------------------------------------------
+`standing(person_id, company_id, as_of)` is `current` · `unknown` · `former`, or None for no recorded link: the predicate
+`reach.standing.standing` over the merge survivor's `company_id`, `employment` and `formerly`, at a date, so a replay
+reads the standing as the candidate knew it then. `people_for_company(company_id, standing=..., as_of=...)` filters with it.
+
 Usage:
     python3 scripts/graph.py --person <id>          # print what this person touches
     python3 scripts/graph.py --opportunity <opp_id> # print who is involved in this pursuit
@@ -73,6 +79,9 @@ import sys
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from _root import profile_root as _profile_root  # noqa: E402
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from _dates import to_date, date_or_none  # noqa: E402
+from reach import standing as _standing  # noqa: E402
 
 ROOT = _profile_root()
 DATA = os.environ.get("CLAUDESEARCH_DATA_DIR") or os.path.join(ROOT, "data")
@@ -92,31 +101,6 @@ STORES_WITH_ID = tuple(s for s in STORES if s != "involvements")
 # registered config key is `access.warm_days` (default 180, 30..365); the CALLER resolves it and passes it in.
 WARM_DAYS = 180
 WARMTH_STATES = ("warm", "contacted", "known")
-
-
-def to_date(value):
-    """A `datetime.date` from a date, a datetime or an ISO string (a `YYYY-MM-DD HH:MM` stamp keeps its
-    date). Raises `ValueError` for anything else: an `as_of` nobody can read must be loud, never read as
-    today."""
-    if isinstance(value, datetime.datetime):
-        return value.date()
-    if isinstance(value, datetime.date):
-        return value
-    if isinstance(value, str):
-        try:
-            return datetime.date.fromisoformat(value.strip()[:10])
-        except ValueError:
-            pass
-    raise ValueError("not a date: %r" % (value,))
-
-
-def date_or_none(value):
-    """`to_date`, or None for a missing or unreadable STORED value (a commitment's literal `unresolved`
-    date, a null). A row whose date cannot be read is not evidence of anything on any day."""
-    try:
-        return to_date(value)
-    except ValueError:
-        return None
 
 
 class MergeCycleError(ValueError):
@@ -252,11 +236,20 @@ class Graph:
                 out.append(c)
         return out
 
-    def people_for_company(self, company_id):
-        """The living (not merged) people whose `company_id` is this company. An absorbed row is
-        skipped: its survivor is the one person, and counts once."""
-        return [p for p in self.stores["people"]
-                if p.get("company_id") == company_id and p.get("status") != "merged"]
+    def standing(self, person_id, company_id, as_of=None):
+        """`current` · `unknown` · `former` for this person (merges resolved) at `company_id` on `as_of` (default today), or
+        None when no row or no recorded link (see the module docstring, STANDING)."""
+        p = self.resolve_person(person_id)
+        return _standing.standing(p, company_id, as_of or datetime.date.today()) if p else None
+
+    def people_for_company(self, company_id, standing=("current",), as_of=None):
+        """The living (not merged) people whose standing at this company on `as_of` (default today) is in `standing`; None
+        keeps every linked person. An absorbed row is skipped: its survivor is the one person, and counts once. The default
+        is current employees only (design-build-reach.md 5.3, B2), so a caller that forgets the argument fails safe: a former
+        or unconfirmed person is never counted at the company by omission."""
+        day = as_of or datetime.date.today()
+        return [p for p in self.stores["people"] if p.get("status") != "merged"
+                and _standing.standing(p, company_id, day) in (standing or _standing.STANDINGS)]
 
     def warmth(self, person_id, as_of, warm_days=WARM_DAYS):
         """`warm` · `contacted` · `known` for this person as of `as_of`, or None (see the module

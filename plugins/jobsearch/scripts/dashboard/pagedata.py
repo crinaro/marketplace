@@ -27,8 +27,10 @@ class PageData(object):
     targets_not_raised  the qualifying companies no run has raised yet ("N more will be raised by later runs", E1b)
     ref_of              {plan row key: the key of the primary row it refers to} (`network.ref_targets`, dev 973): the
                         Network row renders as a reference, and Today's item for it links that primary row
+    handoff             {"pages": {person id: recorded LinkedIn address}, "outbox": {draft_ref: outbox row}}: what a Drafts
+                        row hands off (`drafts.handoff_data`, jobsearch 0.91.0 B7a); None renders no hand-off
     """
-    FIELDS = ("now", "currency", "terminal_statuses",
+    FIELDS = ("now", "currency", "terminal_statuses", "handoff",
               "plan_groups", "needs_human", "queued_by_contact", "title",
               "run_id", "network_rel", "net_sent_proposals", "today_drafts", "today_plan", "today_roles",
               "today_targets", "today_counts", "quiet_days", "pick_rows", "pick_heads",

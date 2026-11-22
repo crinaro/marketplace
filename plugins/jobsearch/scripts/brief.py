@@ -65,6 +65,11 @@ import mail_client
 import posture as _posture
 import precondition as _pre
 import your_move as _ym
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from reach.asks import _ask_concerns_person
+from reach import build as _build
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from ledger.brief_rows import LEDGER, _ledger_path, read_ledger, ledger_row
 # ⭐ `reconcile` is imported LAZILY, inside `name_terms()` only — never at this module's top
 # level. `reconcile.py` imports `validate_data`, whose module-level `OWNERS = {...,
 # _profile.owner_token(), ...}` reads `user.json` UNCONDITIONALLY and raises if it is absent.
@@ -72,8 +77,6 @@ import your_move as _ym
 # that is `unaddressed` and returns from `verdict()` before ever needing a name term — and a
 # profile-less precondition.py caller (several exist in the regression suite) must not crash
 # merely because brief.py's import graph happened to reach validate_data's fragile top level.
-
-LEDGER = os.path.join("data", "briefs.jsonl")
 
 # dev #687 / public #138 (owner decision R1, 2026-10-09) — the harvest command a
 # `store-behind-mailbox` finding tells the run to execute. BOTH halves go through the launcher:
@@ -98,7 +101,8 @@ ID_ENTROPY_BYTES = 8
 # The three readers this ledger has (§3.6) — `check_ledger_reads.py` enforces this allowlist
 # against every OTHER shipped script's source, by AST, so the set here and the set that gate
 # reads cannot drift into two different truths about who may open this file.
-LEDGER_READERS = frozenset({"brief.py", "validate_data.py", "make_fixture.py"})
+LEDGER_READERS = frozenset({"brief.py", "validate_data.py", "make_fixture.py",
+                            "ledger/brief_rows.py"})   # 0.91.0 B4b: the row reader moved out of this entry point
 
 # The evidence vocabulary (§4.1). A code path may only ever PRODUCE one of these — never a
 # variant spelling — because `register_for()` below pattern-matches the token's PREFIX and a
@@ -131,10 +135,6 @@ class BriefError(ValueError):
 
 # ── the ledger — append-only, one reader allowlist, never sorted by time (§3.6, §3.9) ─────────
 
-def _ledger_path(root):
-    return os.path.join(root, LEDGER)
-
-
 def append_ledger(root, rec):
     """Append one ledger row. Refuses an `id` already in the ledger (dev #680): `ledger_row()`
     returns the FIRST match, so a second row under the same id is invisible to its own author and
@@ -149,19 +149,6 @@ def append_ledger(root, rec):
     with open(p, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(rec, sort_keys=True, ensure_ascii=False) + "\n")
     return rec
-
-
-def read_ledger(root):
-    out = []
-    try:
-        with open(_ledger_path(root), encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    out.append(json.loads(line))
-    except (OSError, ValueError):
-        pass
-    return out
 
 
 def read_ledger_strict(root):
@@ -265,15 +252,6 @@ def ledger_message_ids(root):
             if isinstance(ref, dict) and ref.get("id"):
                 out.append((r.get("id"), f, ref["id"]))
     return out
-
-
-def ledger_row(root, brief_id):
-    """The ONE row this id names, or None. §3.6/§3.9: never 'newest for a person' — always the
-    CITED id, because two runs briefing one person at once each cite their own row."""
-    for r in read_ledger(root):
-        if r.get("id") == brief_id:
-            return r
-    return None
 
 
 def _engine_version():
@@ -773,6 +751,9 @@ def compute(root, person_id, opp_id=None, channel_id=None, today=None, medium=No
                    "no_response_after_days_provenance": nr_prov},
         "open_asks": open_asks_for(root, person_id, opp_id, channel_id),
         "engine": _engine_version(),
+        # 0.91.0 (design-build-reach.md R2 N10): the BUILD step this brief is for, from the stores; the sent write copies it
+        "build": _build.step_for(_graph.Graph(os.path.join(root, "data")), root, cfg,
+                                 config_keys.resolve_int(cfg, config_keys.ACCESS_WARM_DAYS), person_id, opp_id, today),
     }
 
 
@@ -836,28 +817,6 @@ def _probe_result_class(result):
     if r.startswith("thread:"):
         return "thread"
     return "other"
-
-
-def _ask_concerns_person(g, ask, person_id):
-    """dev #475 (public #118) — an ask joins `opp_id`/`channel_id`, never a person directly
-    (asks.jsonl's own field list has no `person_id`), so on a pursuit or channel that has MORE
-    THAN ONE person involved — a hiring manager and a recruiter on the same opportunity, say —
-    the ask cannot be attributed to either one specifically. `is_stale()` used to flag staleness
-    for ANY contact sharing that opp/channel the moment the ask resolved, even when it was
-    really the OTHER party's ask that closed. That is the too-broad predicate this narrows:
-    an ask counts against a contact only when that contact is the SOLE person its own scope
-    resolves to. An ambiguous, shared scope is a false-positive risk, not evidence this
-    particular contact's brief moved — so it is excluded rather than guessed at."""
-    opp_id, channel_id = ask.get("opp_id"), ask.get("channel_id")
-    if not opp_id and not channel_id:
-        return False
-    invs = g.involvements_for_opportunity(opp_id) if opp_id else g.involvements_for_channel(channel_id)
-    people = set()
-    for inv in invs:
-        p = g.resolve_person(inv.get("person_id"))
-        if p is not None:
-            people.add(p["id"])
-    return people == {person_id}
 
 
 def is_stale(root, row, today=None):
@@ -994,6 +953,8 @@ def print_brief(brief_id, b):
         print("latest outbound  %s (%s)" % (b["latest_out"].get("date"), b["latest_out"].get("id") or "no message row"))
     if b["open_asks"]:
         print("open asks        %s" % ", ".join(b["open_asks"]))
+    if b.get("build"):                                  # 0.91.0: the BUILD step this draft is for (recorded on the touch)
+        print("build step       %s" % ", ".join("%s=%s" % kv for kv in sorted(b["build"].items()) if kv[1] is not None))
     print()
 
 

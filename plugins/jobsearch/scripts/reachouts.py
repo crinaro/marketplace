@@ -72,20 +72,18 @@ import datetime
 import json
 import os
 import sys
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from reach.plan_text import render, render_due
+from reach import standing_rows as _rows
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from reach.weeks import iso_week, business_days_since
+from reach import build as _build
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
 PENDING_LINE = ("network-first upgrade pending: the jobsearch 0.86.0 migration has not run on this profile (run "
                 "`~/.claude/jobsearch/run migrate.py` and read what it says); nothing was drafted")
-
-
-def iso_week(today):
-    """`(label, monday, sunday)` of the ISO week containing `today` (a date): `("2026-W46", date, date)`. The ISO year is the
-    one the week belongs to, so 2027-01-01 is in `2026-W53`."""
-    year, week, _wd = today.isocalendar()
-    monday = today - datetime.timedelta(days=today.weekday())
-    return "%04d-W%02d" % (year, week), monday, monday + datetime.timedelta(days=6)
 
 
 def _date(v):
@@ -191,19 +189,6 @@ def _config(root):
         return json.load(fh)
 
 
-def business_days_since(start, end, workdays):
-    """How many business days lie in `(start, end]`: the days after `start`, up to and including `end`, whose ISO weekday (1 = Monday
-    .. 7 = Sunday) is in `workdays`. A reach-out sent on a Monday is 3 business days old on Thursday; sent on a Thursday it is 3
-    business days old on the next Tuesday (Friday, Monday, Tuesday: Saturday and Sunday are skipped). Zero when `end` is not after
-    `start`."""
-    n, d = 0, start
-    while d < end:
-        d += datetime.timedelta(days=1)
-        if d.isoweekday() in workdays:
-            n += 1
-    return n
-
-
 class _Context:
     """The stores a 3B7 question needs, read ONCE (read-only): the people and companies, the contact history, the open drafts, the
     timetable's marks and workdays, and the anchors. `active` is False when the profile is not ready for the network block (no 0.86.0
@@ -216,7 +201,8 @@ class _Context:
         self.today = as_date(today)
         self.active = _gate(root) is None
         self.hist = _History(root)
-        cfg = _config(root)
+        self.cfg = cfg = _config(root)
+        self.warm_days, self.confirms = ck.resolve_int(cfg, ck.ACCESS_WARM_DAYS), ck.resolve_int(cfg, ck._rk.NETWORK_EMPLOYMENT_CONFIRMS_PER_RUN)
         self.first_mark, self.second_mark = ck.resolve_followup_days(cfg)
         self.workdays = ck.resolve_workdays(cfg)
         self.window = WINDOW_MULTIPLE * self.second_mark
@@ -224,6 +210,7 @@ class _Context:
         self.companies = {c.get("id"): c for c in _load(os.path.join(data, "companies.jsonl"))}
         self.targets = {cid: c for cid, c in self.companies.items() if c.get("status") == "active-target"}
         self.people = [p for p in self.hist.g.stores["people"] if p.get("status") != "merged"]
+        self.current = _rows.current_ids(self.people, self.today)    # 0.91.0: who is "known there" (design-build-reach 5.3)
         self.draft_people = set()            # living person ids with ANY open draft (a first touch, a chase, a reply)
         for pid in _wp.open_draft_recipients(root):
             row = self.hist.survivor(pid)
@@ -284,7 +271,7 @@ class _Context:
         """A first touch to ANOTHER person at the company on or after the anchor (a same-day pair satisfies each other), or an open
         draft to one: the draft is the second contact being made, and re-listing it would draft a third person."""
         for p in self.people:
-            if p.get("company_id") != anchor["company_id"] or p["id"] == anchor["person_id"]:
+            if p.get("company_id") != anchor["company_id"] or p["id"] == anchor["person_id"] or p["id"] not in self.current:
                 continue
             if p["id"] in self.draft_people:
                 return True
@@ -297,7 +284,7 @@ class _Context:
     def next_known(self, company_id, exclude):
         """The next-ranked known person at the company who has never been contacted and has no open draft: a stated tie first, then the
         id (the company is the same for every candidate, so its motivation does not rank them)."""
-        cands = [p for p in self.people if p.get("company_id") == company_id and p["id"] not in exclude
+        cands = [p for p in self.people if p.get("company_id") == company_id and p["id"] in self.current and p["id"] not in exclude
                  and p["id"] not in self.draft_people and not self.hist.ever_contacted(p["id"])]
         cands.sort(key=lambda p: (0 if p.get("ties") else 1, str(p["id"])))
         return cands[0] if cands else None
@@ -473,6 +460,7 @@ def plan(root, today=None):
          "lines": [{"kind": "second-contact" | "reach-out", "person_id", "person_name", "company_id", "company_name", "ties", "why"}],
          "lookups": [{"kind": "lookup-owed", "company_id", "company_name", "linkedin_url"}],
          "looked_none": [{"kind": "looked-none", "company_id", "company_name", "looked_on", "lookup_returns_on"}],
+         "confirm": [{"kind": "confirm-employment", "company_id", "company_name", "person_ids", "why"}],   # 0.91.0, unbudgeted
          "reconnects": [{"kind": "reconnect", "person_id", ...}], "role_specific": [{"kind": "draft-owed", "person_id", "opp_ids", ...}],
          "followups": [{"kind": "follow-up", "person_id", ...}], "quiet": [{"kind": "quiet", ...}],
          "unobserved": [{"ref", "person_id", "person", "drafted_on", "days"}], "undated_drafts": n,
@@ -492,7 +480,7 @@ def plan(root, today=None):
 
     sent = 0
     for t in hist.g.stores["touches"]:
-        if t.get("touch_type") != "first-touch" or t.get("status") != "sent" or t.get("opp_id"):
+        if t.get("status") != "sent" or not _build.counts_as_new_reachout(t):      # 0.91.0: + a side-door ask (design 6.4)
             continue
         d = _date(t.get("date"))
         row = hist.survivor(t.get("person_id"))
@@ -506,7 +494,7 @@ def plan(root, today=None):
     remaining = max(0, cap - spent)
 
     targets = ctx.targets
-    people = [p for p in ctx.people if p.get("company_id") in targets]
+    people = [p for p in ctx.people if p.get("company_id") in targets and p["id"] in ctx.current]    # 0.91.0: current only
     contacted_at = {}
     for p in people:
         if hist.ever_contacted(p["id"]):
@@ -527,13 +515,20 @@ def plan(root, today=None):
     lines = [{"kind": "second-contact", "person_id": a["person_id"], "person_name": a["person_name"],
               "company_id": a["company_id"], "company_name": a["company_name"], "ties": a.get("ties") or [], "why": a["why"],
               "anchor_person_id": a["anchor_person_id"]} for a in second]
-    for p in sorted(candidates, key=rank)[:max(0, remaining - len(lines))]:
+    outs = []
+    for p in sorted(candidates, key=rank):
         co = targets[p["company_id"]]
         why = "never contacted, at the target %s" % (co.get("name") or co["id"])
         if p.get("ties"):
             why += "; a stated tie"
-        lines.append({"kind": "reach-out", "person_id": p["id"], "person_name": p.get("name"),
-                      "company_id": co["id"], "company_name": co.get("name"), "ties": p.get("ties") or [], "why": why})
+        outs.append({"kind": "reach-out", "person_id": p["id"], "person_name": p.get("name"),
+                     "company_id": co["id"], "company_name": co.get("name"), "ties": p.get("ties") or [], "why": why})
+    # 0.91.0 (design-build-reach.md 6.1, 6.4): BUILD lines at path-none targets, interleaved with the reach-outs by motivation, inside
+    # the same remaining units. A company with somebody current uncontacted, or a reach-out still on its 3B7 timetable, gets none.
+    busy = {p["company_id"] for p in people if not hist.ever_contacted(p["id"])} | {
+        a["company_id"] for a in ctx.anchors if ctx.in_window(a) and not ctx.replied(a)}
+    built = _build.plan_lines(hist.g, root, ctx.cfg, ctx.warm_days, today, targets, outs, remaining - len(lines), busy)
+    lines += built.pop("lines")
 
     import warm_path as _wp
     lookups, seen, looked_none, relook = [], set(), [], _wp._lookup_days(_config(root))
@@ -557,67 +552,9 @@ def plan(root, today=None):
     return {"week": label, "budget": cap, "sent_this_week": sent, "open_drafts": open_drafts, "spent": spent,
             "remaining": remaining, "lines": lines, "lookups": lookups, "reconnects": reconnects(root, today, ctx),
             "role_specific": role_specific(root, today, ctx), "unobserved": stale, "undated_drafts": len(unknown),
-            "age_unknown": unknown, "looked_none": looked_none,
+            "age_unknown": unknown, "looked_none": looked_none, "confirm": _build.cap_confirms(ctx.people, targets, today, ctx.confirms),
             "followups": [a for a in actions if a["kind"] == "follow-up"],
-            "quiet": [a for a in actions if a["kind"] == "quiet"]}
-
-
-def render(p):
-    out = ["NETWORK BUDGET %s: %d a week · sent %d · open drafts %d · remaining %d"
-           % (p["week"], p["budget"], p["sent_this_week"], p["open_drafts"], p["remaining"])]
-    if p["remaining"] == 0 and p["budget"] > 0:
-        out.append("  the week's budget is spent: no new reach-out is drafted this run")
-    if p["budget"] == 0:
-        out.append("  network.new_reachouts_per_week is 0: new reach-outs are off")
-    for l in p["lines"]:
-        label = "SECOND-CONTACT" if l["kind"] == "second-contact" else "REACH-OUT"
-        out.append("%s %s (%s) at %s -- %s (draft this; nothing is sent)"
-                   % (label, l["person_id"], l["person_name"] or "no name", l["company_name"] or l["company_id"], l["why"]))
-    for l in p.get("followups", []):
-        out.append("FOLLOW-UP %s (%s) at %s -- %s (draft this; nothing is sent)"
-                   % (l["person_id"], l["person_name"] or "no name", l["company_name"] or l["company_id"], l["why"]))
-    for l in p.get("quiet", []):
-        out.append("QUIET %s (%s) at %s -- %s" % (l["person_id"], l["person_name"] or "no name",
-                                                  l["company_name"] or l["company_id"], l["why"]))
-    for l in p.get("age_unknown", []):
-        out.append("AGE-UNKNOWN %s (%s) -- %s, so it cannot be called a send unobserved; it still counts against the budget "
-                   "(record the send with record.py touch, or delete the draft)" % (l["ref"], l["person"], l["reason"]))
-    for l in p.get("role_specific", []):
-        out.append("ROLE-SPECIFIC %s (%s) at %s -- %s (not budgeted; a draft for the candidate to send)"
-                   % (l["person_id"], l["person_name"] or "no name", l["company_name"] or l["company_id"], l["why"]))
-    for l in p.get("reconnects", []):
-        out.append("RECONNECT %s (%s) at %s -- %s (not budgeted; a draft for the candidate to send)"
-                   % (l["person_id"], l["person_name"] or "no name", l["company_name"] or l["company_id"] or "no company", l["why"]))
-    for l in p["lookups"]:
-        out.append("LOOKUP %s (%s)%s (a link for the candidate to open; no LinkedIn step is automated)"
-                   % (l["company_id"], l["company_name"] or l["company_id"],
-                      " " + l["linkedin_url"] if l["linkedin_url"] else ""))
-    for l in p.get("looked_none", []):
-        out.append("LOOKED %s (%s) -- looked %s and found nobody; the LOOKUP returns on %s (search.warm_lookup_days)"
-                   % (l["company_id"], l["company_name"] or l["company_id"], l["looked_on"], l["lookup_returns_on"]))
-    return "\n".join(out)
-
-
-def render_due(actions):
-    """The `--due` output: one line per 3B7 action, drafts and links only (nothing here sends)."""
-    if not actions:
-        return "3B7: nothing is due"
-    out = ["3B7: %d action%s due" % (len(actions), "" if len(actions) == 1 else "s")]
-    for a in actions:
-        if a["kind"] == "second-contact":
-            out.append("SECOND-CONTACT %s (%s) at %s -- %s (draft this; nothing is sent)"
-                       % (a["person_id"], a["person_name"] or "no name", a["company_name"] or a["company_id"], a["why"]))
-        elif a["kind"] == "follow-up":
-            out.append("FOLLOW-UP %s (%s) at %s -- %s (draft this; nothing is sent)"
-                       % (a["person_id"], a["person_name"] or "no name", a["company_name"] or a["company_id"], a["why"]))
-        elif a["kind"] == "quiet":
-            out.append("QUIET %s (%s) at %s -- %s" % (a["person_id"], a["person_name"] or "no name",
-                                                      a["company_name"] or a["company_id"], a["why"]))
-        else:
-            out.append("LOOKUP %s (%s)%s -- %s (a link for the candidate to open; no LinkedIn step is automated)"
-                       % (a["company_id"], a["company_name"] or a["company_id"],
-                          (" " + a["linkedin_url"]) if a.get("linkedin_url") else "", a["why"]))
-    return "\n".join(out)
+            "quiet": [a for a in actions if a["kind"] == "quiet"], **built}
 
 
 def _gate(root):
@@ -684,7 +621,7 @@ def main(argv=None):
     if args.json:
         print(json.dumps(p, indent=2, sort_keys=True))
     elif args.week:
-        print(render(dict(p, lines=[], lookups=[], looked_none=[], reconnects=[], role_specific=[])))
+        print(render(dict(p, lines=[], lookups=[], looked_none=[], reconnects=[], role_specific=[], confirm=[])))
     else:
         print(render(p))
     return 0

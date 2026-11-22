@@ -71,7 +71,7 @@ STORES = ("opportunities.jsonl", "companies.jsonl", "channels.jsonl", "messages.
           # dev #834 (jobsearch 0.86.0, design-network-first.md 12.2): the `proposals` store joins here and
           # make_fixture.PLACEHOLDER_STORES together (the B1-B4 pattern), so a fresh profile is born current-shape and
           # `check_store_introduction` never names it missing on a profile scaffolded by 0.86.0 or later.
-          "proposals.jsonl")
+          "proposals.jsonl", "outbox.jsonl")   # outbox: jobsearch 0.91.0 (design-build-reach.md 9.1), born empty
 
 # A fresh profile is BORN in the six-phase tree (public #28) — the same shape the 0.32.0
 # migration produces, so a new user never runs (or needs) the migration at all.

@@ -41,6 +41,11 @@ of printing a guess.
 message waits on acceptance. Say so IN THE HEADING (e.g. "PART A SENT · part B pending") and this
 check will still flag it — read the flag, confirm the pending half is real, and move on.
 
+⭐ THE OUTBOX IS READ FIRST (jobsearch 0.91.0, design-build-reach.md 9.1). A draft whose `**Brief:**` id has a `sent`
+outbox row is not a suspect: `outbox.py detect` saw it in Sent and recorded it, so it is listed as RECORDED SENT (a fact, with
+the outbox id, the day and the touch) and the heuristic below never runs on it. An entry still pending after that is a sent write
+that did not retire it. An unreadable outbox is said as NOT CHECKED for that half; the heuristic still runs on every entry.
+
 Python 3.9+, stdlib only.
 """
 
@@ -57,11 +62,14 @@ import applications as _apps
 import touches as _touches
 import precondition as _precondition
 import trigger as _trigger
+from sending import outbox_store as _outbox
 
 ROOT = _profile_root()
 OPPS = os.path.join(ROOT, "data", "opportunities.jsonl")
 COMPANIES = os.path.join(ROOT, "data", "companies.jsonl")
 FILES = (_tree.rel("drafts"), _tree.rel("cover_letters"))
+BRIEF_RE = re.compile(r"^\*\*Brief:\*\*\s*(\S+)", re.M | re.I)
+SENT_STATUS_RE = re.compile(r"^\*\*Status:\*\*\s*sent\b", re.M | re.I)
 
 
 def _load_jsonl(path):
@@ -179,7 +187,18 @@ def anchor_hint():
     return None
 
 
+def outbox_sent():
+    """`({draft_ref: sent outbox row}, None)`, or `({}, why)` when the outbox cannot be read."""
+    try:
+        rows = _outbox.load(ROOT)
+    except _outbox.OutboxError as e:
+        return {}, str(e)
+    return {r.get("draft_ref"): r for r in rows if r.get("state") == "sent" and r.get("draft_ref")}, None
+
+
 def main():
+    sent_rows, outbox_why = outbox_sent()
+    recorded = []
     opps = load_opps()
     companies = load_companies()
     markers = sent_markers(opps)
@@ -188,6 +207,11 @@ def main():
     n_opp = n_company = 0
     for path in FILES:
         for lineno, heading, body in pending_entries(path):
+            b = BRIEF_RE.search(body)
+            if b and b.group(1) in sent_rows:
+                if not SENT_STATUS_RE.search(body):    # marked `sent` by the sent write: retired, nothing to say
+                    recorded.append((path, lineno, heading, sent_rows[b.group(1)]))
+                continue
             kind, block_id = entry_block(heading, body, companies)
             if kind is None:
                 unchecked.append((path, lineno, heading))
@@ -209,8 +233,13 @@ def main():
                     hits.append((path, lineno, heading, m))
                     break
 
-    total = n_opp + n_company + len(unchecked)
+    total = n_opp + n_company + len(unchecked) + len(recorded)
     print("Sent-but-still-pending check — drafts.md / cover_letters.md")
+    if outbox_why:
+        print("\n  Outbox: NOT CHECKED (%s); every entry went to the heuristic below." % outbox_why)
+    for path, lineno, heading, r in recorded:
+        print("\n  RECORDED SENT %s:%d  %s\n     outbox %s: sent %s, touch %s (seen in Sent by outbox.py detect)"
+              % (path, lineno, heading[:80], r.get("id"), r.get("date"), r.get("touch_id")))
     print("\n  Scanned %d pending entr%s: %d anchored to an opportunity, %d to a company, %d not checked."
           % (total, "y" if total == 1 else "ies", n_opp, n_company, len(unchecked)))
     if hits:
@@ -228,6 +257,8 @@ def main():
         print("  legitimate — say so in the heading and leave it.")
     elif total == 0:
         print("\n  NOT CHECKED: no pending entries were found in drafts.md or cover_letters.md.")
+    elif recorded:
+        print("\n  The RECORDED SENT entries above were sent; set their Status line to `sent <date>`.")
     elif not unchecked:
         print("\n  Clean. Nothing shown as pending has already been sent or submitted.")
     else:

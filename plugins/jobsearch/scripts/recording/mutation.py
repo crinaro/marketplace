@@ -22,6 +22,8 @@ from recording.row_checks import (
 )
 from recording.common import Mutation, _Refused, _Usage
 from recording.decisions import _your_move_visibility_note
+from recording.affiliations_verb import AFFILIATION_OPS, cmd_affiliations
+from recording.employment import EMPLOYMENT_OPS, cmd_employment
 from recording.generic import cmd_fields
 from recording.persons import _reuse_people
 from recording.reads import JD_READ_OPS, _jd_read_mutation, _stage_line
@@ -53,12 +55,21 @@ from recording.store_files import (
 def preflight(args):
     """Before the store is loaded: `--reuse` off `create --file people` is refused, `fields` is printed, and
     `create --file people --reuse` may answer with an existing person. Returns the exit code to stop with, else
-    None."""
+    None.
+
+    jobsearch 0.91.0: the two employment verbs (`employment`, `moved`) make their own write and answer here, the way
+    `fields` does: record.py's `_dispatch` is an entry point at its line budget, so a new verb reaches its command from
+    this, the store-verb path's first step (recording/employment.py). `affiliations` (user.json's one writer,
+    recording/affiliations_verb.py) is reached the same way."""
     if args.reuse and not (args.op == "create" and args.file == "people"):
         print("⛔ REFUSED — --reuse applies only to `create <id> '<json>' --file people`.")
         return 1
     if args.op == "fields" or args.fields:
         return cmd_fields(args)
+    if args.op in EMPLOYMENT_OPS:
+        return cmd_employment(args)
+    if args.op in AFFILIATION_OPS:
+        return cmd_affiliations(args)
 
     if args.reuse:
         _reuse_rc = _reuse_people(args)

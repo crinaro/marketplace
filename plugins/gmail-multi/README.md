@@ -14,11 +14,16 @@ job search, and there is no platform dependency between them: jobsearch names it
 metadata and installs it for you the first time it is missing.
 
 **A consumer that must not send enforces that itself.** jobsearch, for example, is
-draft-only by an explicit review policy: it denies this connector's send/reply/forward
-tools with its own `PreToolUse` guard for the whole session it is loaded in, and fails
-closed if it cannot even read the request. That guard is jobsearch's, not this
-connector's. When both plugins are installed the two compose: jobsearch's refusal beats
-this connector's ask, so inside a job-search session a send is simply denied.
+draft-only by default, by an explicit review policy: it denies this connector's
+send/reply/forward tools with its own `PreToolUse` guard for the whole session it is
+loaded in, and fails closed if it cannot even read the request. Since jobsearch 0.91.0 a
+candidate may set its email mode to `me`: then, in an attended session only, that guard
+turns the deny into an **ask** (never an allow) for one send or reply that matches a
+message the candidate listed and approved minutes earlier in the same session, so this
+connector's own per-call prompt is the approval; forward stays denied. That guard is
+jobsearch's, not this connector's. When both plugins are installed the two compose:
+jobsearch's refusal beats this connector's ask, so inside a job-search session a send is
+denied unless jobsearch has bound it, and then you are still asked.
 
 **Every send outcome states what is known to have been delivered** — sent, not sent, or
 unknown — so nothing downstream is tempted into a blind retry after an ambiguous

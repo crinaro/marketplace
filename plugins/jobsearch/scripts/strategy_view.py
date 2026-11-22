@@ -3,7 +3,7 @@
 
 ⭐ WHY THIS EXISTS (dev #834, design-network-first §8.4, criterion G2). The search is led by
 relationships, and the owner needs the whole network on one page: the search plans, each target
-company with the people known there, this week's reach-out budget, the suggestions waiting on a
+company with the people known there (0.91.0: an unconfirmed or former one says so), this week's reach-out budget, the suggestions waiting on a
 decision, the proposals out, and the summary numbers. It is NOT a dashboard section (round 2: the
 dashboard is the page of decisions and the owner removed its top region in 0.84.0 C7); the
 dashboard's "Not on this page" note names this file instead.
@@ -48,7 +48,6 @@ Usage:
 Exit 0 after a write (or `--stdout`); 2 on a bad argument; 1 when the file cannot be written
 (printed, never silent). It reads the data directory of the profile it is given and no real profile
 unless one is named: with no `--root` it resolves the profile exactly as every other script does.
-
 Python 3.9+. Standard library only.
 """
 
@@ -62,6 +61,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _atomic
 import _tree
+from reach import standing_rows as _rows
 
 # An open suggestion older than this is shown as stale; nothing resolves it automatically (§8.2).
 STALE_SUGGESTION_DAYS = 28
@@ -293,16 +293,16 @@ def _targets(run, due_by_person, warmth):
         for p in sorted(mine, key=lambda r: _sort_key(r)):
             out.append("- Plan `%s`: goal %s; cadence %s"
                        % (_t(p.get("id")), _stated(p.get("goal")), _stated(p.get("cadence"))))
-        here = [p for p in people if p.get("company_id") == cid and p.get("status") != "merged"]
+        here = _rows.at_company(people, cid, run.today, _t(c.get("name")) or _t(cid), key=lambda r: _sort_key(r, "name"))
         if not here:
             out.append("- People: none known")
-        for p in sorted(here, key=lambda r: _sort_key(r, "name")):
+        for p, word in here:                              # 0.91.0: current first; "(unconfirmed)", "(formerly at X)" after
             lt = last_touch.get(p.get("id"))
             ago = _days_ago(run.today, lt) if lt else None
             touch = ("last touch %s (%s days ago)" % (lt, ago) if ago is not None
                      else "last touch %s" % lt if lt else "no touch recorded")
-            out.append("- %s (`%s`): warmth %s; %s; cadence %s; %s"
-                       % (_t(p.get("name")), _t(p.get("id")), warmth(p.get("id")), _ties(p),
+            out.append("- %s%s (`%s`): warmth %s; %s; cadence %s; %s"
+                       % (_t(p.get("name")), word, _t(p.get("id")), warmth(p.get("id")), _ties(p),
                           _stated(p.get("cadence")), touch))
             for a in due_by_person.get(p.get("id"), ()):
                 out.append("  - 3B7 due: %s" % _action_words(a))
@@ -412,13 +412,10 @@ def _numbers(run):
     else:
         out.append("- Look-into raised: %d; waiting: %s" % (len(li.get("look-into") or ()),
                                                            li.get("look-into-waiting", 0)))
-    ok, text = run.ask("the network funnel (reach-outs, chats, intros, follow-ups)",
-                       "funnel_report", "network_section", run.root, run.today)
-    out.append("")
-    if not ok:
-        out.append(text)
-    else:
-        out += ["```text", str(text).rstrip("\n"), "```"]
+    for what, mod, fn in (("the network funnel (reach-outs, chats, intros, follow-ups)", "funnel_report", "network_section"),
+                          ("this week's measures", "build_reach", "measures_text")):          # 0.91.0: design-build-reach 8
+        ok, text = run.ask(what, mod, fn, run.root, run.today)
+        out += ["", text] if not ok else ["", "```text", str(text).rstrip("\n"), "```"]
     out.append("")
     return out
 

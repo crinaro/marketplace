@@ -34,6 +34,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import check_followups as _cf
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from reach.keys import _is_pos_int, _is_number, _get_dotted
+from reach import keys as _rk     # jobsearch 0.91.0: REACH_KINDS_OFF, ACCESS_EMPLOYMENT_RECHECK_DAYS, NETWORK_EMPLOYMENT_* ...
 
 # `config.json.communications.chase_after_days` — the axis's `silent` threshold (your_move.py's
 # `conversation_axis`): below this many days since the last outbound touch with no verified
@@ -827,8 +830,8 @@ _METADATA[SEARCH_COMPANY_INTAKE_PER_RUN] = (
     "also how many new companies a run raises for you to look into (dev #834)")
 _METADATA[NETWORK_NEW_REACHOUTS_PER_WEEK] = (
     NETWORK_NEW_REACHOUTS_PER_WEEK_DEFAULT, "int", (0, 50),
-    "new reach-outs the daily run may draft in an ISO week (first touches to people you have not contacted); "
-    "open drafts count until you send or delete them; 0 turns new reach-outs off (dev #834)")
+    "new reach-outs the daily run may draft in an ISO week (first touches to people you have not contacted, and from 0.91.0 "
+    "a side-door ask; a BUILD line holds a slot); open drafts count until you send or delete them; 0 turns them off (dev #834)")
 _METADATA[NETWORK_FOLLOWUP_BUSINESS_DAYS] = (
     NETWORK_FOLLOWUP_BUSINESS_DAYS_DEFAULT, "list", ("two whole numbers 1-30, increasing",),
     "business days after a reach-out at which a second contact and then a follow-up are due (3B7: 3 and 7) (dev #834)")
@@ -845,6 +848,8 @@ _METADATA[NETWORK_DRAFT_UNOBSERVED_DAYS] = (
 _METADATA[ACCESS_WARM_DAYS] = (
     ACCESS_WARM_DAYS_DEFAULT, "int", (30, 365),
     "days within which a recorded touch makes a person warm in the access table (dev #834)")
+_METADATA.update(_rk.METADATA)                    # jobsearch 0.91.0: the BUILD keys, defined in `reach/keys.py`
+READER_KEYS = READER_KEYS | _rk.READER_KEYS
 
 # What `migrate.m_0_86_0_network_first` seeds where absent: (section, key, default). One place, so the migration and the
 # registry cannot name two different sets. `search.intake_per_run` is NOT here: it is left exactly as it is.
@@ -1010,10 +1015,6 @@ def validate_title_floor(value):
     return []
 
 
-def _is_pos_int(v):
-    return isinstance(v, int) and not isinstance(v, bool) and v > 0
-
-
 # ── engagement type and the non-employee pay block (dev #740 / public #160; jobsearch 0.73.0) ──
 # design-comp-and-company-data.md §4. A role's `engagement_type` decides which pay floors it can be
 # measured against: the profile's tiers are ANNUAL BASE salary, so a fractional, interim, advisory or
@@ -1154,10 +1155,6 @@ def validate_commute_includes(anchor):
     return problems
 
 
-def _is_number(v):
-    return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v
-
-
 def validate_anchor_geo(anchor):
     """Problems with one anchor's `radius_miles` / `lat` / `lon` ([] when valid or undeclared). An
     unreadable value is LOUD (the screen holds, `hold="config"`), never read as absent: a typo in a
@@ -1251,15 +1248,6 @@ def seed_default(dotted_key):
         raise KeyError("config_keys has no seedable default for %r — SEEDABLE_DEFAULTS: %s"
                        % (dotted_key, ", ".join(sorted(SEEDABLE_DEFAULTS))))
     return SEEDABLE_DEFAULTS[dotted_key]
-
-
-def _get_dotted(cfg, dotted):
-    node = cfg or {}
-    for part in dotted.split("."):
-        if not isinstance(node, dict):
-            return None
-        node = node.get(part)
-    return node
 
 
 def liveness_hours(cfg):

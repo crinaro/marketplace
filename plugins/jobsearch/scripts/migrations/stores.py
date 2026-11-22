@@ -40,8 +40,8 @@ from migrations.stamp import ver
 #
 # ⭐⭐ THE LEDGER (`briefs.jsonl`) IS DELIBERATELY NOT IN THIS TABLE AT ALL — the one
 # `docs/data_model.json` store this table cannot cover. `check_ledger_reads.py`'s rule (a)
-# fails any shipped file outside `brief.LEDGER_READERS` ({brief.py, validate_data.py,
-# make_fixture.py}) that names the ledger by a bare `"briefs.jsonl"` string literal — a dict
+# fails any shipped file outside `brief.LEDGER_READERS` ({brief.py, validate_data.py, make_fixture.py,
+# ledger/brief_rows.py}) that names the ledger by a bare `"briefs.jsonl"` string literal — a dict
 # key here is exactly that shape, confirmed the hard way while building this table (it failed
 # the gate). Importing `brief` here to derive the name indirectly was tried and reverted: `brief`
 # imports `graph`/`inbox`/`journal`/`mail_client`/`posture`/`precondition`/`your_move`/
@@ -78,6 +78,7 @@ STORE_INTRODUCED = {
     "plans.jsonl": "0.49.0",                   # ADR-031 B4
     "plays.jsonl": "0.49.0",                   # ADR-031 B4
     "proposals.jsonl": "0.86.0",               # dev #834 (network-first): `m_0_86_0_proposals` scaffolds it
+    "outbox.jsonl": "0.91.0",                  # design-build-reach 9.1: no migration, absent is an empty outbox (validate_data exempts it)
     # the ledger is NOT here — see the comment above
 }
 

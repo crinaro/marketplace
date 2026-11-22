@@ -96,6 +96,33 @@ section of `presence/claims.md`:**
 **Ask these one or two at a time, conversationally.** A wall of twenty questions gets skimmed
 answers, and skimmed answers become confident wrong screens.
 
+## 2b. ⭐ Affiliations — one question, asked of everyone (jobsearch 0.91.0)
+
+Ask exactly this, once:
+
+> **"Which schools, bootcamps, past employers and communities are you part of? List them in the order you would lean
+> on them."**
+
+**Past employers default from the resume you read in step 1:** show them as a list for the candidate to confirm,
+trim or reorder, and add nothing they did not confirm. Schools, bootcamps and communities (a guild, an alumni group, a
+meetup they run) come from their answer only. **The order is theirs**: it is the order later outreach leans on them, so
+keep it exactly as they give it. A LinkedIn page address is optional; take one only if they give it (a school,
+company or group page, in any of LinkedIn's spellings: the script stores one form). For a school or bootcamp, ask
+whether it has a career services office they can use (`"career_services": true`, or its https address).
+
+Record the answer with the one writer, never by editing `user.json`:
+
+```bash
+~/.claude/jobsearch/run record.py affiliations '[{"kind": "school", "name": "<as they write it>", "linkedin_url": "<optional>"}, {"kind": "employer", "name": "<as they write it>"}]'
+~/.claude/jobsearch/run record.py affiliations --none      # they answered, and there are none
+~/.claude/jobsearch/run record.py affiliations             # read back: AFFILIATIONS listed | none | not-asked
+```
+
+`kind` is one of `school`, `bootcamp`, `employer`, `community`. A refusal prints what to fix and writes nothing; read it
+to them and ask again. **`--none` only when they said "none"**: if they set the question aside, write nothing, and
+it stays "not asked" (the next attended daily run asks it once). An affiliation only shapes a lookup link the
+candidate opens; nothing searches for people from it.
+
 ## 3. Set the budget posture — say the trade-off out loud
 
 ```bash

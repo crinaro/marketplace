@@ -42,7 +42,10 @@ password before it is searched.
   the plugin is enabled and a profile is remembered, gmail-multi's tools are limited to that
   profile's addresses in every session. To use another account, open a session where the
   job-search plugin is turned off.
-- **The job search still only drafts.** It never sends mail. Under a claude.ai connector, a
+- **The job search only drafts, unless you opt in.** By default it never sends mail. With
+  `actions.modes.email-send: me` and gmail-multi, it sends an email you approved, only in a session
+  you are attending, after Claude Code's prompt for that message ([Your data](your-data.md),
+  *Outbox*). Under a claude.ai connector that setting is refused, and a
   guard refuses that connector's send, reply and forward tools while jobsearch is loaded (the
   script and its matcher are tested; whether the app routes every call through it is not yet
   verified). Separately, gmail-multi now asks

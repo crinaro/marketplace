@@ -17,7 +17,10 @@ the candidate does the work and do not move when they do not. One row per `activ
                The engine never asserts whom a contact knows (ADR-031 decision 5); ties are the candidate's.
   known / contacted / warm
                DERIVED per person by `graph.warmth()` and counted by tier. The tiers are exclusive: each
-               person is in exactly one, so the three add up to the people the table knows at the company.
+               person is in exactly one, so the three add up to the CURRENT employees the table knows there.
+  unconf       people whose employment there is unconfirmed (0.91.0, design-build-reach.md 5.3): not counted
+               in any column, listed above the table with the verb. A former employee is never counted either
+               (`standing.former` in --json). Every column above reads `reach.standing_rows` at the row's date.
   chats_held   DERIVED: `kind: chat` commitments with `attendance: held` with a person at the company. A
                chat in the past with no `attendance` is UNRECORDED and is never counted as not held: the
                cell reads `N+` and the table names the unrecorded ids (design section 0 item 7).
@@ -39,6 +42,8 @@ design-connected-entities.md):
   and in both cases NOT YET LANDED: a touch with `trigger_kind: introduction` whose `trigger_ref` is
   `touch:<the request id>` or `commitment:<the chat id>` (for an offer naming a person, the landing touch
   is to that person; naming a company, to someone at it) and dated on or before the date.
+  Never a side-door ask (`build_kind: side-door`, 0.91.0, owner O17): an ask to a stranger is an action, not an
+  introduction, so the company stays `path none`. `--json` adds each row's derived `reach` block (`reach/block.py`).
 
 MOVEMENT BY REPLAY. `--since D` recomputes the same table AS OF `D` from the same dated rows (a touch's
 `date`, a message's `sent_on`, a reply's `responded_on`, a chat's `date` and `attendance_on`) and prints what
@@ -46,7 +51,11 @@ moved: `path none -> via-intro`, a person `contacted -> warm`. No snapshot is st
 reader is not misled: a role's `status` and a person's `ties` carry no date, so Posting as of `D` is "the
 roles live NOW whose sightings predate D" and Alumni changes only when a person is added; a company whose
 `status_on` falls after `D` is reported as a NEW TARGET, and a company that WAS a target and no longer is
-cannot be replayed (its status was overwritten), so it is absent.
+cannot be replayed (its status was overwritten), so it is absent. Employment (0.91.0) is replayed by its learned
+dates: a person confirmed after `D` was unconfirmed at `D`, and one marked former after `D` still counted there.
+Its limits: (1) a replay to before the 0.91.0 stamp uses the new rule at both ends, so the upgrade is never a move
+and pre-upgrade counts are not reproduced; (2) `moved --to` a company in `formerly` removes that entry, so the
+earlier spell is no longer replayable; (3) a merged person replays with the survivor's fields.
 
 LOUD, NEVER EMPTY. No `active-target` company prints `NO TARGETS DECLARED` and says how to declare one,
 never an empty table. A profile with no `data/` directory is `NOT CHECKED` (exit 1), never "no targets". An
@@ -72,6 +81,12 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 import config_keys as _ck  # noqa: E402
 import graph as _graph  # noqa: E402
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from reach.render import PATHS, NO_VERTICAL, by_vertical, unstated_motivation, _grid, _fmt_move, standing_lines
+from reach import standing_rows as _rows  # noqa: E402
+# 0.91.0 B4: the path and open introductions moved to reach/way_in.py (reachouts and brief ask the same question); the reach block
+from reach.way_in import chat_dates as _chat_dates, landings as _landings, open_intros as _open_intros, path_word  # noqa: E402
+from reach import block as _block, keys as _rk  # noqa: E402
 
 WARM_DAYS_KEY = _ck.ACCESS_WARM_DAYS
 WARM_DAYS_DEFAULT = _graph.WARM_DAYS     # test_access pins this equal to the registered default
@@ -83,8 +98,6 @@ WARM_DAYS_DEFAULT = _graph.WARM_DAYS     # test_access pins this equal to the re
 # `lifecycle.NON_TERMINAL_STATUSES`.
 LIVE_OPP_STATUSES = frozenset(("active-pursuit", "needs-resolution", "in-motion", "backlog"))
 
-PATHS = ("direct", "via-intro", "none")
-NO_VERTICAL = "(none stated)"
 NO_TARGETS = ("NO TARGETS DECLARED: no company has status active-target, so there is no access to measure. "
               "Declare the companies you most want to work at with `record.py company-status <id> "
               "active-target`; this is not an empty table, it is a missing list.")
@@ -144,87 +157,6 @@ def _has_ties(person):
     return isinstance(ties, list) and any(isinstance(t, dict) and t.get("kind") for t in ties)
 
 
-def _chat_dates(c):
-    """`(date, recorded_on)` of a non-cancelled `kind: chat` commitment with a readable date, else None."""
-    if c.get("kind") != "chat" or c.get("status") == "cancelled":
-        return None
-    d = _graph.date_or_none(c.get("date"))
-    if d is None:
-        return None
-    return d, (_graph.date_or_none(c.get("attendance_on")) or d)
-
-
-def _landings(g, as_of):
-    """Every introduction that LANDED on or before `as_of`: `[(trigger_ref, person_survivor_row)]`."""
-    out = []
-    for t in g.stores["touches"]:
-        if t.get("trigger_kind") != "introduction":
-            continue
-        d = _graph.date_or_none(t.get("date"))
-        if d is None or d > as_of:
-            continue
-        try:
-            person = g.resolve_person(t.get("person_id"))
-        except _graph.MergeCycleError:
-            person = None
-        out.append((t.get("trigger_ref"), person))
-    return out
-
-
-def _person_company(g, person_id):
-    try:
-        p = g.resolve_person(person_id) if person_id else None
-    except _graph.MergeCycleError:
-        p = None
-    return p
-
-
-def _open_intros(g, cid, as_of, landings):
-    """How many introductions toward company `cid` are open as of `as_of` (module docstring)."""
-    n = 0
-    for t in g.stores["touches"]:
-        if t.get("touch_type") != "intro-request" or t.get("status") != "sent":
-            continue
-        d = _graph.date_or_none(t.get("date"))
-        if d is None or d > as_of:
-            continue
-        replied = _graph.date_or_none(t.get("responded_on"))
-        if not (t.get("outcome") == "awaiting" or (replied is not None and replied > as_of)):
-            continue
-        obj = _person_company(g, t.get("object_person_id"))
-        if t.get("object_company_id") != cid and (obj or {}).get("company_id") != cid:
-            continue
-        if any(ref == "touch:%s" % t.get("id") for ref, _p in landings):
-            continue
-        n += 1
-    for c in g.stores["commitments"]:
-        if _chat_dates(c) is None:
-            continue
-        for e in c.get("intros_given") or []:
-            if not isinstance(e, dict):
-                continue
-            on = _graph.date_or_none(e.get("on")) or _graph.date_or_none(c.get("date"))
-            if on is None or on > as_of:
-                continue
-            who = _person_company(g, e.get("person_id"))
-            if e.get("company_id") != cid and (who or {}).get("company_id") != cid:
-                continue
-            ref = "commitment:%s" % c.get("id")
-            landed = False
-            for lref, lperson in landings:
-                if lref != ref or lperson is None:
-                    continue
-                if who is not None:
-                    landed = lperson.get("id") == who.get("id")
-                else:
-                    landed = lperson.get("company_id") == e.get("company_id")
-                if landed:
-                    break
-            if not landed:
-                n += 1
-    return n
-
-
 def _posting(g, cid, as_of):
     """`{"live": n, "newest": iso|None}`: the company's non-terminal, non-folded roles that have a sighting
     on or before `as_of`, and the newest such sighting date."""
@@ -241,11 +173,12 @@ def _posting(g, cid, as_of):
     return {"live": live, "newest": _iso(newest)}
 
 
-def _row(g, company, as_of, warm_days, landings):
+def _row(g, company, as_of, warm_days, landings, recheck_days=_rows.RECHECK_DAYS):
     cid = company.get("id")
     tiers = {"warm": 0, "contacted": 0, "known": 0}
     people, alumni, held, unrecorded, dates = {}, 0, 0, [], []
-    for p in g.people_for_company(cid):
+    by = _rows.split(g.people_for_company(cid, standing=None, as_of=as_of), cid, as_of, recheck_days)   # 0.91.0: only `current` counts
+    for p in by["current"]:
         pid = p["id"]
         w = g.warmth(pid, as_of, warm_days=warm_days)
         if w is None:
@@ -274,13 +207,13 @@ def _row(g, company, as_of, warm_days, landings):
             elif not c.get("attendance") and d < as_of:
                 unrecorded.append(c.get("id"))
     intros = _open_intros(g, cid, as_of, landings)
-    path = "direct" if tiers["warm"] else ("via-intro" if intros else "none")
+    path = path_word(tiers["warm"], intros)
     return {"company_id": cid, "name": company.get("name") or cid,
             "vertical": company.get("vertical"), "motivation": company.get("motivation"),
             "alumni": alumni, "known": tiers["known"], "contacted": tiers["contacted"],
             "warm": tiers["warm"], "chats_held": held, "chats_unrecorded": sorted(unrecorded),
             "open_intros": intros, "path": path, "posting": _posting(g, cid, as_of),
-            "last_contact": _iso(max(dates)) if dates else None, "people": people}
+            "last_contact": _iso(max(dates)) if dates else None, "people": people, "standing": _rows.ids(by)}
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -294,10 +227,11 @@ def _moved(before, now, company, since):
         out.append({"what": "target", "from": None, "to": "active-target", "on": _iso(status_on)})
     if before["path"] != now["path"]:
         out.append({"what": "path", "from": before["path"], "to": now["path"]})
-    for pid in sorted(now["people"]):
-        was = before["people"].get(pid)
-        if was != now["people"][pid]:
-            out.append({"what": "person", "person_id": pid, "from": was, "to": now["people"][pid]})
+    for pid in sorted(set(now["people"]) | set(before["people"])):      # a departure leaves `now`: it is a move too
+        was, is_ = before["people"].get(pid), now["people"].get(pid)
+        if was != is_:
+            out.append({"what": "person", "person_id": pid, "from": was, "to": is_})
+    out += _rows.moves(before["standing"], now["standing"])
     for key in ("alumni", "chats_held", "open_intros"):
         if before[key] != now[key]:
             out.append({"what": key, "from": before[key], "to": now[key]})
@@ -314,6 +248,7 @@ def table(ctx_or_root, as_of, since=None, warm_days=None):
     date, a `since` after `as_of`, or a bad `access.warm_days`."""
     g, root = _open(ctx_or_root)
     days = warm_days if warm_days is not None else _ck.resolve_int(_read_config(root), WARM_DAYS_KEY)
+    recheck = _ck.resolve_int(_read_config(root), _rk.ACCESS_EMPLOYMENT_RECHECK_DAYS)     # 0.91.0: a stale `current` is re-confirmed
     today = _graph.to_date(as_of)
     then = _graph.to_date(since) if since else None
     if then is not None and then > today:
@@ -324,9 +259,9 @@ def table(ctx_or_root, as_of, since=None, warm_days=None):
     for company in g.stores["companies"]:
         if company.get("status") != "active-target":
             continue
-        row = _row(g, company, today, days, now_landings)
+        row = _row(g, company, today, days, now_landings, recheck)
         if then is not None:
-            before = _row(g, company, then, days, then_landings)
+            before = _row(g, company, then, days, then_landings, recheck)
             row["since"] = then.isoformat()
             row["moved"] = _moved(before, row, company, then)
         rows.append(row)
@@ -334,49 +269,9 @@ def table(ctx_or_root, as_of, since=None, warm_days=None):
     return rows
 
 
-def by_vertical(rows):
-    """The market roll-up: one line per vertical, so a whole market with no path reads as one line."""
-    out = {}
-    for r in rows:
-        v = r["vertical"] or NO_VERTICAL
-        agg = out.setdefault(v, {"vertical": v, "companies": 0, "alumni": 0, "known": 0, "contacted": 0,
-                                 "warm": 0, "chats_held": 0, "open_intros": 0, "posting_live": 0,
-                                 "posting_newest": None, "paths": dict((p, 0) for p in PATHS)})
-        agg["companies"] += 1
-        for k in ("alumni", "known", "contacted", "warm", "chats_held", "open_intros"):
-            agg[k] += r[k]
-        agg["posting_live"] += r["posting"]["live"]
-        agg["posting_newest"] = max(filter(None, [agg["posting_newest"], r["posting"]["newest"]]), default=None)
-        agg["paths"][r["path"]] += 1
-    return [out[k] for k in sorted(out)]
-
-
-def unstated_motivation(rows):
-    return [r["company_id"] for r in rows if r["motivation"] is None]
-
-
 # ---------------------------------------------------------------------------------------------------
 # rendering
 # ---------------------------------------------------------------------------------------------------
-
-def _grid(header, body, left):
-    """Fixed-width columns; the columns named in `left` are left-aligned text, the rest right-aligned."""
-    widths = [max(len(str(x)) for x in col) for col in zip(header, *body)]
-    lines = []
-    for r in [header] + body:
-        cells = [str(c).ljust(w) if i in left else str(c).rjust(w)
-                 for i, (c, w) in enumerate(zip(r, widths))]
-        lines.append("  ".join(cells).rstrip())
-    return lines
-
-
-def _fmt_move(m):
-    if m["what"] == "target":
-        return "new target (declared %s)" % m["on"]
-    if m["what"] == "person":
-        return "%s %s -> %s" % (m["person_id"], m["from"] or "not known", m["to"])
-    return "%s %s -> %s" % (m["what"], m["from"], m["to"])
-
 
 def render(rows, as_of, since=None, warm_days=WARM_DAYS_DEFAULT, vertical=False):
     if not rows:
@@ -392,15 +287,16 @@ def render(rows, as_of, since=None, warm_days=WARM_DAYS_DEFAULT, vertical=False)
                  a["paths"]["none"], "%d · %s" % (a["posting_live"], a["posting_newest"] or "—")]
                 for a in by_vertical(rows)]
     else:
-        header = ["company", "M", "alumni", "known", "contacted", "warm", "chats_held", "open_intros",
+        header = ["company", "M", "alumni", "known", "contacted", "warm", "unconf", "chats_held", "open_intros",
                   "path", "posting", "last_contact"]
         body = [[r["name"], r["motivation"] if r["motivation"] is not None else "?", r["alumni"],
-                 r["known"], r["contacted"], r["warm"],
+                 r["known"], r["contacted"], r["warm"], len(r["standing"]["unconfirmed"]),
                  ("%d+" % r["chats_held"]) if r["chats_unrecorded"] else r["chats_held"],
                  r["open_intros"], r["path"],
                  "%d · %s" % (r["posting"]["live"], r["posting"]["newest"] or "—"),
                  r["last_contact"] or "—"] for r in rows]
-    out.extend(_grid(header, body, left=(0, 8, 9, 10) if not vertical else (0, 11)))
+    out.extend(standing_lines(rows))                     # 0.91.0: above the table, so the drop never reads as lost work
+    out.extend(_grid(header, body, left=(0, 9, 10, 11) if not vertical else (0, 11)))
     unrecorded = [(r["name"], cid) for r in rows for cid in r["chats_unrecorded"]]
     if unrecorded:
         out.append("UNRECORDED CHATS (counted as 'N+', never as not held): %s -- record each with "
@@ -449,7 +345,9 @@ def main(argv=None):
         if not os.path.isdir(_graph.DATA):
             raise NotChecked("no data directory at %s" % _graph.DATA)
         days = _ck.resolve_int(_read_config(_graph.ROOT), WARM_DAYS_KEY)
-        rows = table(_graph.Graph(_graph.DATA), as_of, since=since, warm_days=days)
+        rows = table((g := _graph.Graph(_graph.DATA)), as_of, since=since, warm_days=days)
+        if args.json:                                       # 0.91.0: the derived reach block (reach/block.py), never stored
+            _block.attach(g, _graph.ROOT, _read_config(_graph.ROOT), days, rows, as_of)
     except NotChecked as e:
         print("NOT CHECKED: the access table cannot be answered (%s). This is not 'no targets'." % e)
         return 1

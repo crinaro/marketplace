@@ -15,6 +15,7 @@ from recording import profile_paths as _paths
 from recording.profile_paths import ENGINE_SCRIPTS
 from recording.common import _plans_mod, _validator_module
 from recording.store_files import STORES, _load_or_empty
+from validation.network_rules import employment_owned_refusal
 
 
 # ⭐ ENGINE, not profile — the data MODEL ships with the code; the DATA belongs to the user.
@@ -229,6 +230,10 @@ def verb_owned_refusal(op, store, before_row, after_row):
         return ["%s is the proposal's lifecycle and is written only by `record.py proposal-status <proposal_id> "
                 "sent|accepted|declined|withdrawn|expired [--on <date>]`; `%s` cannot change it, and --force does not lift this"
                 % (f, op) for f in _PROPOSAL_LIFECYCLE_FIELDS if before_row.get(f) != after_row.get(f)]
+    if store == "people" and isinstance(after_row, dict) and isinstance(before_row, dict):
+        # jobsearch 0.91.0 (design-build-reach.md 5.2): a person's employer of record and its dated standing are written by the
+        # employment verbs only, each stamping the day it learned the fact. A `create` states the first one at the door.
+        return employment_owned_refusal(op, before_row, after_row)
     if store != "opportunities" or not isinstance(after_row, dict):
         return []
     out = []

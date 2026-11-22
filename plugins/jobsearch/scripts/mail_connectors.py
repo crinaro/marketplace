@@ -26,6 +26,8 @@ Row fields:
   search_tool       the tool that lists a window of messages.
   body_tool         the tool that reads one body.
   read_tools        every published read tool a fetch uses (suffixes; the server segment varies).
+  draft_tool        the tool that saves a message to the mailbox's drafts, unsent (`outbox.py stage`, design-build-reach.md
+                    9.2), or None when the vendor publishes none: staging is then refused with that reason.
   send_names        the outbound names the vendor publishes (a send, a reply, a forward, a mail rule,
                     or an event write that sends invitations). The send guard denies these.
   contract_complete True only when the vendor's own pages list EVERY tool, so that an unlisted
@@ -57,6 +59,7 @@ CONNECTORS = {
         "body_tool": "get_message",
         "read_tools": ("search_threads", "get_thread", "get_message", "list_labels", "list_drafts",
                        "list_filters"),
+        "draft_tool": "create_draft",
         "send_names": ("send_message", "reply", "forward", "create_filter"),
         "contract_complete": False,        # the directory page shows 24 of 29 tools
         "server_hints": ("gmail",),
@@ -69,6 +72,7 @@ CONNECTORS = {
         "search_tool": "outlook_email_search",
         "body_tool": "read_resource",
         "read_tools": ("outlook_email_search", "read_resource"),
+        "draft_tool": None,                # "manage drafts" is published; no tool name is
         "send_names": (),                  # the vendor publishes no write-tool name
         "contract_complete": False,        # its doc says write actions exist and names none
         "server_hints": ("microsoft", "m365", "outlook"),
@@ -82,6 +86,7 @@ CONNECTORS = {
         "body_tool": "read_email",
         "read_tools": ("search_email", "read_email", "read_thread", "list_folders",
                        "list_identities"),
+        "draft_tool": "draft_email",
         "send_names": ("compose_event",),
         "contract_complete": False,        # the directory page shows 24 of 29 tools
         "server_hints": ("fastmail",),
@@ -95,6 +100,7 @@ CONNECTORS = {
         "body_tool": "get_message",
         "read_tools": ("list_threads", "get_thread", "get_message", "get_attachment",
                        "query_email_and_calendar", "get_read_statuses"),
+        "draft_tool": "create_or_update_draft",
         "send_names": ("send_draft", "undo_send", "unsubscribe", "create_or_update_event"),
         "contract_complete": True,         # the directory page shows all 19 tools
         "server_hints": ("superhuman",),

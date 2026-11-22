@@ -151,8 +151,11 @@ that companion plugin is missing; it is the only connector `plugin.json` declare
   session and the plugin's scripts contact no mail server.
 - The one credential it reads is the Gmail app password **you** store in your OS credential store,
   and it is sent only to `imap.gmail.com`. A claude.ai connector uses the sign-in you made in claude.ai.
-- It never sends mail, and it never posts, connects or applies on your behalf; the guards above
-  refuse those calls. The exact scope of that claim is in *Mail connectors* below.
+- It never posts, connects or applies on your behalf, and by default it never sends mail; the guards
+  above refuse those calls. The one opt-in (0.91.0): with `actions.modes.email-send: me` under
+  gmail-multi, it sends an email you were shown and approved, only in a session you are attending,
+  after you allow that send in Claude Code's prompt. The exact scope of that claim is in *Mail
+  connectors* below.
 - Your profile data stays in your own folder; nothing is sent to the plugin's authors.
 - **A report you start yourself is the one exception.** `report_issue.py --file` files a public GitHub
   issue. `report_issue.py --email` prints a message for you to paste into your own mail client, and
@@ -230,7 +233,7 @@ value is refused, never read as the default.
 - **[Commands](../../docs/user/jobsearch/commands.md)** — every `/jobsearch:` command and skill, in
   plain words, grouped by what you want to do.
 - **[How it works](../../docs/user/jobsearch/how-it-works.md)** — the engine/profile split, what runs when,
-  and the rules it holds itself to: it never sends, never handles a credential, and never invents
+  and the rules it holds itself to: it never sends without your approval of that message, never handles a credential, and never invents
   a fact about you.
 - **[Mailboxes](../../docs/user/jobsearch/mailboxes.md)** — which mail accounts the search reads and
   how to add or check one.

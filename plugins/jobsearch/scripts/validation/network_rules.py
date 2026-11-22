@@ -11,6 +11,11 @@ from validation.vocab import (
     COMMITMENT_KINDS,
     CONCEPTUAL_AGREEMENT_LISTS,
     CURRENCY_RE,
+    EMPLOYMENT_KEYS,
+    EMPLOYMENT_OWNED_FIELDS,
+    EMPLOYMENT_SOURCES,
+    EMPLOYMENT_STATUS,
+    FORMERLY_KEYS,
     PROPOSAL_NEEDS_SENT_ON,
     PROPOSAL_STATUS,
     RATE_PER,
@@ -21,6 +26,9 @@ from validation.vocab import (
     SUGGEST_PLAN_SUBJECT_KINDS,
     SUGGEST_SHAPE_KEYS,
     TIE_KINDS,
+    TIE_VIA_PERSON,
+    BUILD_KINDS,
+    BUILD_KIND_SHAPE,
 )
 
 
@@ -45,10 +53,20 @@ def _relative_path_problem(v):
     return None
 
 
-def check_ties(r, label, problems):
+def check_ties(r, label, problems, company_ids=None, people=None):
     """dev #834 (design-network-first.md 4.3): `people.ties` is absent (unknown: never "no ties") or a list of `{kind, via?}` where `kind`
     is one of TIE_KINDS and `via`, when present, is a non-empty string. Any other key in an entry, a non-list, or an entry that is not an
-    object is refused: the field is the candidate's own statement, and a malformed one must be loud, not read as "knows no one"."""
+    object is refused: the field is the candidate's own statement, and a malformed one must be loud, not read as "knows no one".
+
+    jobsearch 0.91.0: given `company_ids` (the companies store's ids), the row's employment fields are checked too
+    (`check_employment`), so `validate_data.py`'s people loop keeps one call per row for the person's network fields. Given `people`
+    (the whole people store), a `via` that begins `person:` must name a living (non-merged) people row other than this one: that
+    one spelling gates a message ("X suggested I connect with you", design-build-reach.md 6.3), so it gets a strict parser; any
+    other `via` stays free text."""
+    if people is not None:
+        _check_via_people(r, label, problems, people)
+    if company_ids is not None:
+        check_employment(r, label, problems, company_ids)
     if "ties" not in r:
         return
     ties = r["ties"]
@@ -66,6 +84,158 @@ def check_ties(r, label, problems):
             problems.append("%s: ties[%d].kind %r is not one of %s" % (label, i, e.get("kind"), "/".join(TIE_KINDS)))
         if "via" in e and not (isinstance(e["via"], str) and e["via"].strip()):
             problems.append("%s: ties[%d].via must be a non-empty string when present, got %r" % (label, i, e["via"]))
+
+
+def _check_via_people(r, label, problems, people):
+    """A `ties[].via` of `person:<id>` must name a living people row that is not `r` itself (see `check_ties`)."""
+    ties = r.get("ties")
+    if not isinstance(ties, list):
+        return
+    living = {p.get("id") for p in people if isinstance(p, dict) and p.get("status") != "merged"}
+    for i, e in enumerate(ties):
+        via = e.get("via") if isinstance(e, dict) else None
+        if not (isinstance(via, str) and via.startswith(TIE_VIA_PERSON)):
+            continue
+        pid = via[len(TIE_VIA_PERSON):].strip()
+        if pid not in living:
+            problems.append("%s: ties[%d].via %r names no living people row (a merged or unknown id never stands for who introduced "
+                            "this person; record that person first, or write the via as plain text)" % (label, i, via))
+        elif pid == r.get("id"):
+            problems.append("%s: ties[%d].via %r names this person themself" % (label, i, via))
+
+
+def check_touch_build(t, label, problems, company_ids, involvements):
+    """A touch's object company and its `build_kind` (jobsearch 0.91.0, design-build-reach.md 6.2). `object_company_id`, when set,
+    must resolve. `build_kind`, when set, is one of BUILD_KINDS and fits its touch: `advice-ask` is a `first-touch` with no `opp_id`
+    and an `object_company_id`; `side-door` is an `intro-request` with an `opp_id` and an `object_company_id` whose recipient holds a
+    `side-contact` involvement on that role. A wrong shape is refused, never read as "not from a BUILD line": the field is what the
+    week's counts and `access._open_intros` read."""
+    ocid = t.get("object_company_id")
+    if ocid is not None and ocid not in company_ids:
+        problems.append("%s: object_company_id %r does not resolve" % (label, ocid))
+    bk = t.get("build_kind")
+    if bk is None:
+        return
+    if bk not in BUILD_KINDS:
+        problems.append("%s: build_kind %r is not one of %s (absent means not from a BUILD line)" % (label, bk, "/".join(BUILD_KINDS)))
+        return
+    want = BUILD_KIND_SHAPE[bk]
+    if t.get("touch_type") != want:
+        problems.append("%s: build_kind %r belongs on a `%s` touch, not %r" % (label, bk, want, t.get("touch_type")))
+    if not ocid:
+        problems.append("%s: build_kind %r needs object_company_id (the company the BUILD line is for)" % (label, bk))
+    if bk == "advice-ask" and t.get("opp_id"):
+        problems.append("%s: build_kind 'advice-ask' carries no opp_id (an advice ask is about a company, not a role)" % label)
+    if bk == "side-door":
+        oid = t.get("opp_id")
+        side = any(isinstance(i, dict) and i.get("opp_id") == oid and i.get("person_id") == t.get("person_id")
+                   and i.get("path_type") == "side-contact" for i in involvements or ()) if oid else False
+        if not oid:
+            problems.append("%s: build_kind 'side-door' needs the opp_id of the role the ask is about" % label)
+        elif not side:
+            problems.append("%s: build_kind 'side-door' needs a recipient holding a `side-contact` involvement on %r" % (label, oid))
+
+
+def check_employment(r, label, problems, company_ids):
+    """jobsearch 0.91.0 (design-build-reach.md 5.2, owner O2): `people.employment` is absent or `{status, as_of, confirmed_on?, source}` on
+    the employer of record (`company_id`), and `people.formerly` is absent or a list of `{company_id, as_of, until?, counted_from?}`.
+
+      employment  requires `company_id`. `status` is `current` or `unknown`; a stored `former` is refused, because "used to work there"
+                  has one spelling, an entry in `formerly`. `as_of` is the ISO date the engine learned a `current` (required) and null
+                  for `unknown`; `confirmed_on`, when set, is a date no earlier than `as_of`, on a `current` only; `source` is one of
+                  EMPLOYMENT_SOURCES. Null is not a spelling of "not stated": the field is absent then.
+      formerly    each entry's `company_id` resolves, appears once in the list, and differs from the row's own `company_id`; `as_of`
+                  (the day the departure was learned) is a date; `until` (as the candidate states it, display only) and
+                  `counted_from` (the `employment.as_of` the row carried while current there) are dates or null, and
+                  `counted_from <= as_of`.
+
+    Absent `employment` is legal on any row: a row with no employer of record, or one the 0.91.0 migration has not reached yet (every
+    reader treats it as `unknown`). The rule that a NEW row with a `company_id` states it is `record.py create`'s
+    (`recording.employment.stamp_people_create`), not this whole-store check's."""
+    if "employment" in r:
+        _check_employment_object(r, label, problems)
+    if "formerly" not in r:
+        return
+    formerly = r["formerly"]
+    if not isinstance(formerly, list):
+        problems.append("%s: formerly must be a list of {company_id, as_of, until?, counted_from?} (or absent), got %r" % (label, formerly))
+        return
+    seen = set()
+    for i, f in enumerate(formerly):
+        fl = "%s: formerly[%d]" % (label, i)
+        if not isinstance(f, dict):
+            problems.append("%s must be an object {company_id, as_of, until?, counted_from?}, got %r" % (fl, f))
+            continue
+        extra = sorted(set(f) - FORMERLY_KEYS)
+        if extra:
+            problems.append("%s has unknown key(s) %s" % (fl, ", ".join(extra)))
+        cid = f.get("company_id")
+        if cid not in company_ids:
+            problems.append("%s.company_id %r does not resolve" % (fl, cid))
+        if cid in seen:
+            problems.append("%s.company_id %r appears twice: one entry per former employer" % (fl, cid))
+        seen.add(cid)
+        if cid is not None and cid == r.get("company_id"):
+            problems.append("%s.company_id %r is also the employer of record: a person is current or former at a company, never both"
+                            % (fl, cid))
+        if not is_date(f.get("as_of")):
+            problems.append("%s.as_of %r must be the ISO date the departure was learned" % (fl, f.get("as_of")))
+        for k in ("until", "counted_from"):
+            if f.get(k) is not None and not is_date(f.get(k)):
+                problems.append("%s.%s %r must be an ISO date or null" % (fl, k, f.get(k)))
+        if is_date(f.get("counted_from")) and is_date(f.get("as_of")) and f["counted_from"] > f["as_of"]:
+            problems.append("%s.counted_from %s is after its as_of %s" % (fl, f["counted_from"], f["as_of"]))
+
+
+def _check_employment_object(r, label, problems):
+    """The `employment` object of one people row (see `check_employment`)."""
+    e = r["employment"]
+    if not isinstance(e, dict):
+        problems.append("%s: employment must be an object {status, as_of, confirmed_on?, source} (absent when not stated), got %r"
+                        % (label, e))
+        return
+    extra = sorted(set(e) - EMPLOYMENT_KEYS)
+    if extra:
+        problems.append("%s: employment has unknown key(s) %s" % (label, ", ".join(extra)))
+    if not r.get("company_id"):
+        problems.append("%s: employment requires company_id: it describes the employer of record" % label)
+    status = e.get("status")
+    if status == "former":
+        problems.append("%s: employment.status 'former' is refused: a past employer is an entry in formerly "
+                        "(`record.py employment <id> former` moves it there)" % label)
+    elif status not in EMPLOYMENT_STATUS:
+        problems.append("%s: employment.status %r is not one of %s" % (label, status, "/".join(EMPLOYMENT_STATUS)))
+    if e.get("source") not in EMPLOYMENT_SOURCES:
+        problems.append("%s: employment.source %r is not one of %s" % (label, e.get("source"), "/".join(EMPLOYMENT_SOURCES)))
+    if status == "current" and not is_date(e.get("as_of")):
+        problems.append("%s: employment.as_of %r: a current standing needs the ISO date it was learned" % (label, e.get("as_of")))
+    if status == "unknown" and e.get("as_of") is not None:
+        problems.append("%s: employment.as_of must be null for an unknown standing, got %r" % (label, e.get("as_of")))
+    conf = e.get("confirmed_on")
+    if conf is not None:
+        if status != "current":
+            problems.append("%s: employment.confirmed_on is a re-confirmation of a current standing; this one is %r" % (label, status))
+        elif not is_date(conf):
+            problems.append("%s: employment.confirmed_on %r must be an ISO date or null" % (label, conf))
+        elif is_date(e.get("as_of")) and conf < e["as_of"]:
+            problems.append("%s: employment.confirmed_on %s is before its as_of %s" % (label, conf, e["as_of"]))
+
+
+def employment_owned_refusal(op, before_row, after_row):
+    """The refusals (messages; empty when none) for a write of `op` that CHANGES an employment-owned field (EMPLOYMENT_OWNED_FIELDS:
+    `company_id`, `employment`, `formerly`) of an EXISTING people row. Those fields are written only by `record.py employment`,
+    `record.py moved` and `record.py merge-person`, which date what they learn (jobsearch 0.91.0, design-build-reach.md 5.2: no verb
+    takes a date for `as_of`); none of them passes through this check. Called by `recording.row_checks.verb_owned_refusal`, so a
+    `set`, `set-in` or `append` that would hand-write a standing, or move a person's employer without moving the standing with it,
+    is refused before a byte lands. A `create` states the first standing through `recording.employment.stamp_people_create`."""
+    out = []
+    for f in EMPLOYMENT_OWNED_FIELDS:
+        if (before_row or {}).get(f) != (after_row or {}).get(f):
+            out.append("people.%s is written only by `record.py employment <person_id> current|unknown|former [--left YYYY-MM-DD]`, "
+                       "`record.py moved <person_id> --to <company_id> [--left YYYY-MM-DD]` and `record.py merge-person ... "
+                       "[--current <company_id|none>]`, which date what they learn; `%s` cannot change it, and --force does not "
+                       "lift this" % (f, op))
+    return out
 
 
 def check_chat_fields(r, label, problems, people_ids, company_ids, touch_by_id, merged_into, today=None):
@@ -91,6 +261,12 @@ def check_chat_fields(r, label, problems, people_ids, company_ids, touch_by_id, 
     if kind == "chat" and not pid:
         problems.append("%s: a `kind: chat` commitment needs `person_id` -- a chat is with someone (record it with `record.py chat "
                         "<person_id> --on <date>`)" % label)
+    if kind == "event":           # 0.91.0 (design-build-reach.md 6.5): a public event, from its own page, with nobody named
+        src = r.get("source")
+        if pid:
+            problems.append("%s: a `kind: event` commitment names no person (an event is a place to meet people, not a chat)" % label)
+        if not (isinstance(src, str) and src.startswith(("https://", "http://"))):
+            problems.append("%s: a `kind: event` commitment needs `source`, the event page's address -- got %r" % (label, src))
     tid = r.get("touch_id")
     if "touch_id" in r and tid is not None:
         t = touch_by_id.get(tid) if isinstance(tid, str) else None

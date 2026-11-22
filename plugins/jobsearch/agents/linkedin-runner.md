@@ -652,7 +652,10 @@ record above, and still report the SURFACE line as UNREACHABLE.
    against the pipeline (that judgement moved into `deferred.py --add-roles`).
 
 **4. CONTACT PATH** — for a company, find a Talent/Recruiting/People person via people search.
-Prefer current employees. **Note mutual connections ONLY if they actually exist.**
+Prefer current employees, and **report each person's standing as the page shows it: `current` (the company is their present
+role), `former` (it is a past role) or `not shown`** (the page does not say). Never guess one from a title or a date; a `former` or
+`not shown` person is never reported as a way into the company, and the standing is recorded only through `record.py employment`.
+**Note mutual connections ONLY if they actually exist.**
 **This lookup is a READ, and it is unchanged (dev #751).** The warm path (`warm_path.py`) does not call
 it and does not automate any LinkedIn step: when no one is known at a company it prints a link the
 CANDIDATE opens. If the candidate asks you for a company's contact path, you report what you read; you

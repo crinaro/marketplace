@@ -141,6 +141,7 @@ from validation.network_rules import (
     resolve_person,
     _relative_path_problem,
     check_ties,
+    check_touch_build,
     check_chat_fields,
     check_via_fields,
     check_proposal_row,
@@ -220,6 +221,8 @@ from validation.source_tags import (
     check_source_tags,
 )
 from validation.trigger_rules import check_trigger
+from validation.user_rules import check_user_file, read_beside_data
+from validation.outbox_rules import check_outbox
 from validation.vocab import (
     DATE_RE,
     VERTICALS,
@@ -371,6 +374,7 @@ _STORE_INTRODUCTION_EXEMPT = frozenset({
     # above (`problems += e or []` with no `is None` guard) — including it here too would
     # double-report the same absence under two different messages.
     "messages.jsonl",
+    "outbox.jsonl",   # 0.91.0: absent is an empty outbox, never a lost file (sending/outbox_store.py docstring; design 9.1)
 })
 
 
@@ -495,7 +499,7 @@ def _main():
             problems.append("%s: cadence %r must be a positive integer (days) or null" % (pl, cad))
         if pr.get("company_id") is not None and pr["company_id"] not in _company_ids_for_people:
             problems.append("%s: company_id %r does not resolve" % (pl, pr["company_id"]))
-        check_ties(pr, pl, problems)
+        check_ties(pr, pl, problems, company_ids=_company_ids_for_people, people=people)
         mi = pr.get("merged_into")
         if pr.get("status") == "merged" and not mi:
             problems.append("%s: status 'merged' requires 'merged_into'" % pl)
@@ -1684,9 +1688,7 @@ def _main():
         if opid_obj is not None and opid_obj not in all_person_ids:
             problems.append("%s: object_person_id %r does not resolve to any people row"
                             % (label, opid_obj))
-        ocid_obj = t.get("object_company_id")
-        if ocid_obj is not None and ocid_obj not in company_ids:
-            problems.append("%s: object_company_id %r does not resolve" % (label, ocid_obj))
+        check_touch_build(t, label, problems, company_ids, involvements)    # object_company_id, and 0.91.0's build_kind
         if t.get("status") not in OUTREACH_STATUS:
             problems.append("%s: status %r not in {%s}"
                             % (label, t.get("status"), ", ".join(sorted(OUTREACH_STATUS))))
@@ -2046,17 +2048,9 @@ def _main():
     # where the profile's other data is checked. The config sits beside `data/`; a profile with
     # none (a fresh scaffold, a test pointing DATA at a temp dir) has nothing to check, and the
     # summary line below says so rather than reading as a pass.
-    _cfg, _cfg_why = {}, None
-    _cfg_path = os.path.join(os.path.dirname(_data_root.DATA), "config.json")
-    try:
-        with open(_cfg_path, encoding="utf-8") as _fh:
-            _cfg = json.load(_fh)
-        if not isinstance(_cfg, dict):
-            _cfg, _cfg_why = {}, "config.json is not an object"
-    except OSError:
-        _cfg_why = "no config.json beside data/"
-    except ValueError as _e:
-        _cfg_why = "config.json is not readable JSON (%s)" % _e
+    _cfg, _cfg_why = read_beside_data(_data_root.DATA, "config.json")
+    _user_line = check_user_file(_data_root.DATA, problems)   # 0.91.0: user.json's affiliations (validation/user_rules.py)
+    _outbox_line = check_outbox(_data_root.DATA, problems)   # 0.91.0: the outbox (validation/outbox_rules.py)
     _bands_n = _signals_n = 0
     if _cfg_why is None:
         _bands_n = check_commute_config(_cfg.get("geography"), problems)
@@ -2098,6 +2092,7 @@ def _main():
     else:
         print("  Sourcing config: %d commute band(s), %d likely-pass signal(s) checked"
               % (_bands_n, _signals_n))
+    print("  " + _user_line + "\n  " + _outbox_line)
     if _source_tag_stats is None:
         print("  Source tags: NOT CHECKED -- docs/data_model.json `source_tag` could not be used "
               "(see the problem above)")

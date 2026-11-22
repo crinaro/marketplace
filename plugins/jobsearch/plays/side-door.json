@@ -1,0 +1,25 @@
+{
+  "id": "side-door",
+  "description": "nobody known inside: ask a recruiter or people-team member who is not the lead on the role whether it is open and who the right person is, then write to that person naming who pointed the way",
+  "steps": [
+    {
+      "id": "find-side-contact",
+      "when": ["!side-contact-known"],
+      "do": {"kind": "research", "find": "side-contact"}
+    },
+    {
+      "id": "ask-side",
+      "when": ["side-contact-known", "!done:ask-side"],
+      "do": {"kind": "touch", "touch_type": "intro-request", "to": "side-contact"},
+      "say": ["ask-open", "ask-who"]
+    },
+    {
+      "id": "named-note",
+      "when": ["replied:ask-side", "referrer-named", "!done:named-note"],
+      "do": {"kind": "touch", "touch_type": "first-touch", "to": "decider"},
+      "say": ["named-referral", "fit", "ask-conversation"]
+    }
+  ],
+  "goal": "interview-scheduled",
+  "params": {}
+}

@@ -72,6 +72,7 @@ from migrations import (
     m_0_86_0_proposals,
     m_0_88_0_pay_evidence,
     m_0_90_0_browser_fallback,
+    m_0_91_0_employment,
 )
 from migrations.stamp import engine_version, read_stamp, ver
 from migrations.stores import STORE_INTRODUCED
@@ -308,7 +309,10 @@ MIGRATIONS = (("0.4.0", m_0_4_0.m_0_4_0), ("0.13.0", m_0_13_0.m_0_13_0), ("0.14.
               ("0.88.0", m_0_88_0_pay_evidence.m_0_88_0_pay_evidence),
               # KEYED "0.90.0" (dev 858) -- see the note above `BROWSER_FALLBACK_BY`. It runs LAST; its first write is the pin, its
               # second the one asks.jsonl notice row (by id, only when absent). No sandbox setting is touched.
-              ("0.90.0", m_0_90_0_browser_fallback.m_0_90_0_browser_fallback))
+              ("0.90.0", m_0_90_0_browser_fallback.m_0_90_0_browser_fallback),
+              # KEYED "0.91.0" (design-build-reach.md 5.4) -- see the note above `EMPLOYMENT_PRE_COPY`. It runs LAST; it writes only
+              # data/people.jsonl (one `employment` object per person with an employer of record), after preserving it.
+              ("0.91.0", m_0_91_0_employment.m_0_91_0_employment))
 
 
 # Every value above must be a version key the MIGRATIONS registry actually knows, so a typo here

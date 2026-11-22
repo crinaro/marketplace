@@ -192,7 +192,7 @@ SEARCH on the job sites and company career pages (the `linkedin-runner` job, dri
 
 Return a compact structured report:
    - NEW inbound recruiter/human emails (sender, firm, role, one-line summary) — only items not already tracked.
-   - REPLIES on known threads (which role/firm, what changed). **⭐ CHECK BOTH DIRECTIONS OF THE THREAD, NOT JUST THE NEWEST INBOUND (added 2026-08-05, per the candidate).** When you find an inbound reply on a thread, look at the FULL thread and report the **direction and timestamp of the LATEST message** — was the last word theirs, or did the candidate already reply after it? Search the candidate's SENT mail in that thread too (`from:<candidate's address> subject:"Re: ..."`, or `in:sent`). If the candidate has already answered, say so explicitly ("candidate replied <date/time>, last word is theirs") and quote their reply gist — otherwise the caller may draft a response to a thread they already closed. This exact miss happened 2026-08-05: an inbound recruiter pass (Ashford Search's <an employer> decline) was flagged as needing a response when the candidate had replied the night before.
+   - REPLIES on known threads (which role/firm, what changed). **⭐ CHECK BOTH DIRECTIONS OF THE THREAD, NOT JUST THE NEWEST INBOUND.** When you find an inbound reply on a thread, look at the FULL thread and report the **direction and timestamp of the LATEST message** — was the last word theirs, or did the candidate already reply after it? Search the candidate's SENT mail in that thread too (`from:<candidate's address> subject:"Re: ..."`, or `in:sent`). If the candidate has already answered, say so explicitly ("candidate replied <date/time>, last word is theirs") and quote their reply gist — otherwise the caller may draft a response to a thread they already closed. Otherwise an inbound message the candidate already answered gets flagged as needing a response.
    - MEETING/`.ics` mail (sender, subject, the sender's exact date/time words + the email timestamp).
    - ALERT-BACKSTOP roles, if any cleared the bar — clearly labeled, capped.
    - NOTHING NEW if that's the truth — one line.
@@ -229,7 +229,9 @@ you scanned in, so a truncated read still surfaces the most urgent thing.
 - **Meeting artifacts** — invitations, acceptances, reschedules. Quote the sender's exact words
   for any date or time; **never resolve one yourself.**
 - **Human senders** — who, which account, which role or firm if known, and what they are asking.
-- **Replies on known threads** — which role, and what changed.
+- **Replies on known threads** — which role, and what changed, and the latest inbound message as
+  `<account>:<uid>` (the account you searched and the uid `gmail_search` printed for it), so the caller
+  records it with that source and the reply draft can name it (`**In-reply-to:**`). Copy it; never guess one.
 - **Digests** — a count and the surfaced roles, marked as the low-value backstop they are.
 - **Coverage** — **the connector you used** (`gmail-multi`, `claude-gmail`, `claude-m365`, `claude-fastmail` or `claude-superhuman`), and every account you actually searched. Under a claude.ai connector, also the preflight verdict and each account's `Mail coverage (...)` line; any verdict other than `covered` goes at the top. ⚠️ **If any account raised an INCOMPLETE
   COVERAGE banner, say so at the top.** A partial sweep reported as a clean one is the failure

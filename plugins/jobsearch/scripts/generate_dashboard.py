@@ -566,7 +566,7 @@ def _load_staged(s):
     s.covers_active = [c for c, _k in _cpairs]
     _covers_active_keys = [k for _c, k in _cpairs]
     s.states, s.pre_rows, s.drafts_rel = _states, _pre_rows, _DRAFTS_REL
-    s.pd.queued_by_contact = _queued_by_contact(_states)
+    s.pd.queued_by_contact, s.pd.handoff = _queued_by_contact(_states), drafts_ui.handoff_data(load_jsonl("people.jsonl"), load_jsonl("outbox.jsonl"))   # 0.91.0 B7a
     s.covers_active_keys, s.covers_rel = _covers_active_keys, _COVERS_REL
     # public #95 — the terminal-transition cascade's data-store half. Advisory only.
     try:

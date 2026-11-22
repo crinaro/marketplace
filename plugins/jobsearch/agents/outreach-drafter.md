@@ -122,7 +122,8 @@ enforces this.
   `brief.py --json` (never recomputes a register or a silence window — `check_ledger_reads.py`
   stays green) and adds the play's own `next_step` and `say` list: the closed set of things the
   current step licenses saying (`referral`, `fit`, `ask-conversation`, `ask-open`,
-  `referral-ask`, `reconnect`). **The referral hard rule below is now backed by this, not by
+  `referral-ask`, `reconnect`, and since 0.91.0 `ask-advice`, `ask-who`, `named-referral`: see THE
+  BUILD LINES below). **The referral hard rule below is now backed by this, not by
   your own judgement alone** — `say` includes `referral` only when the store already proves one
   (the `has-referral` predicate: a `referral-ask` touch with `outcome: accepted`), so a draft
   that leans on a referral without `referral` in the step's `say` list is drafting past what the
@@ -287,7 +288,21 @@ the file's own header does not define them — this does:
     **Brief:** <the id `brief.py --for` printed, or the literal `none`>   (C1, required)
     **Status:** <one line: DRAFT, sent <date>, moot …>
     **Medium:** <ONE value from the `medium` enum below, verbatim>
+    **Subject:** <the email's subject, verbatim>              (every email draft; `outbox.py stage` requires it)
+    **In-reply-to:** <account>:<uid>                          (every email-reply draft, and only those)
     **Blocked until:** contact:<contact_id> outcome:<…>      (only when there is a precondition)
+
+**`**Subject:**` (jobsearch 0.91.0).** `outbox.py stage` puts an `email-cold` or `email-reply` draft into
+the mailbox's drafts only when the entry carries this line: a subject is always explicit, never derived from
+the body, and a draft without one is refused (`no **Subject:** line`). For a reply, write the thread's
+subject (`Re: <the subject of the message you answer>`). The message itself stays the one `> ` quoted block.
+
+**`**In-reply-to:**` (jobsearch 0.91.0).** An `email-reply` draft names the one message it answers: the
+mailbox that received it and its uid there, exactly as the dispatch hands them to you
+(the mailbox address, a colon, the uid's digits, and nothing after the digits). Copy it;
+never compose or guess one. It is how `outbox.py stage` threads the draft and how a send is bound to that
+thread, so a reply with no such line is not staged at all, and a malformed one is refused. If the dispatch
+named no inbound uid, leave the line off and say so in your hand-back.
 
 **`**To:**`/`**Brief:**` come first, and precondition.py checks them BEFORE `**Blocked
 until:**`** — an entry naming no recipient, or citing no brief, is `unaddressed`/`unbriefed`
@@ -383,6 +398,29 @@ jobs above and are not capped by this section.
 A 3B7 `FOLLOW-UP` line is shorter still and adds nothing new to ask. A `SECOND-CONTACT` is a first touch to a different
 person at the company and follows the rules above. The hard rules (never fabricate a mutual, never claim a stated boundary,
 drafts only) are unchanged.
+
+## ⭐ THE BUILD LINES — a way in where the network has none (jobsearch 0.91.0, design-build-reach.md 6)
+
+A `BUILD` line from `reachouts.py --plan` names its kind and the `say` slugs it licenses. Brief the recipient with
+`brief.py --for contact:<id>` (and `--opp <id>` for a side-door step) **before** drafting: the brief row records the BUILD step
+(`build` in its JSON: `build_kind`, `play_step`, `touch_type`, the object and trigger fields), computed from the stores. You never
+write those fields yourself and never put them in the draft; the send copies them from the brief row. A brief whose `build` is
+null is not a BUILD draft, whatever the line said: say so and stop.
+
+- **`ADVICE-ASK`, say `ask-advice`.** The recipient used to work at the company (`formerly`). Ask what the team or the company is
+  like from where they sat, one small next step (a short call). It is a network reach-out (the section above applies: the word
+  cap, insight never a job, never a referral). Never imply they still work there, and never ask them to refer or introduce.
+- **`SIDE-DOOR` step `ask-side`, say `ask-open` and `ask-who`.** The recipient is a recruiting, HR or talent person who is NOT the
+  role's lead. Two questions only: is the role still open, and who is the right person to talk to about it. Name the role. No
+  pitch, no ask for a referral.
+- **`SIDE-DOOR` step `named-note`, say `named-referral`, `fit`, `ask-conversation`.** Write to the person the side contact named,
+  and say who pointed the way ("<side contact> suggested I connect with you"). **Use the side contact's name only when the
+  step's `say` list carries `named-referral`**: the play emits it only when the side contact replied AND the candidate recorded
+  the named person with `ties: [{kind: introduced, via: "person:<side contact id>"}]`. A reply that named nobody licenses
+  nothing: the name must not be used, and there is no note to draft.
+- **`AFFILIATION-LOOKUP`, `PLAIN-LOOKUP`, `EVENT`, `CAREER-SERVICES`** are links and words for the candidate, not drafts. Nothing is
+  searched for, opened or registered for them; a person found that way is recorded (with `ties`) and drafted later as an
+  ordinary reach-out.
 
 ## ⭐ IF A DRAFT CANNOT BE SENT YET, SAY SO AS DATA — not in the Status prose
 

@@ -657,9 +657,11 @@ lives on the link, never on the person).
 | `email`, `linkedin` | structured and validated, never prose |
 | `email_status` | how you know the address is right: `verified-published` (they publish it) · `verified-received` (you have received mail from it) · `pattern-inferred` (guessed from the company's address format) · `unknown`. It tells you how far to trust the address before you write to it |
 | `title`, `cadence` | who they are professionally, and (once you set it) how often you want to stay in touch |
-| `company_id` | the company they were reached through, set only for a person reached through a role; `null` for someone known only through a channel |
+| `company_id` | the company they work at, as far as your record knows (`null` for none). Since 0.91.0 it is written only when the person is created and by the employment commands below; `record.py set` of it is refused. Whether they count there **now** is `employment`, never this field alone |
+| `employment` | since 0.91.0: `{status, as_of, confirmed_on, source}`, whether they work at `company_id` now. `status` is `current` or `unknown`; `as_of` is the day the plugin **learned** they were current (the day you said so, or the date of the email that showed it), never a date you type; `confirmed_on` is the last time you re-confirmed; `source` is `stated`, `observed-mail` or `migration`. Absent reads as `unknown` |
+| `formerly` | since 0.91.0: the companies they used to work at, a list of `{company_id, as_of, until, counted_from}`. `as_of` is the day you recorded that they left; `until` is when they left, if you said (shown, never used to count); `counted_from` is when the plugin had them as current there |
 | `not_same_as` | ids of people you have reviewed and confirmed are **different** humans. Once a pair is listed, `people.py --duplicates` stops surfacing it, so a same-name pair you have already ruled on does not come back on every run |
-| `created` | when the record was made — `null` until you fill it in by hand |
+| `created` | when the record was made. Since 0.91.0 `record.py create` stamps it with that day (a typed value is refused); a person created earlier keeps `null`, meaning "before the plugin measured it", and is never backfilled |
 | `note` | free text of your own about them |
 | `ties` | since 0.86.0, optional: **how you know them**, a list of entries `{kind, via}`. `kind` is one of `former-colleague`, `alumni`, `community`, `friend`, `introduced`, `other`; `via` (optional) says which employer, school or community. Absent means *unknown*, never "no ties". **Only you write it** (for example `record.py set <person> ties '[{"kind":"alumni","via":"Example University"}]' --file people`); nothing is guessed from a profile or an email. The plugin counts the people at each of your target companies who have a tie (the *Alumni* column of the reach table); a malformed entry is refused, and the write rolled back, naming it |
 
@@ -668,6 +670,27 @@ lives on the link, never on the person).
 | `person_id` | who the link is about — it must resolve to a person, and with `opp_id` or `channel_id` it is what identifies the link (a link has no `id` of its own) |
 | `opp_id`, `channel_id` | which role or channel the link is to — **exactly one is set**, never both and never neither. A person known only through a firm or a referral has `channel_id` set and no role at all. A person you keep in touch with who is tied to neither has **no link row at all**: they exist as a person and in their touches and messages, and that is a complete record |
 | `role`, `path_type`, `status`, `note` | how you reached them and where it stands, **for this role or channel specifically** |
+
+**Who counts at a company: current employees only (since 0.91.0).** The reach table (Alumni, known, contacted, warm), the warm
+path, the reach-out plan and the strategy view count a person at a company only while their `employment` reads `current` there.
+Someone who has left is still in your network and can still be asked for advice; they are never counted as a way into their old
+employer. Someone whose employment is `unknown` is not counted either. They are shown as `unconf`, with a line naming them, and
+an attended run asks you about a few at a time (`network.employment_confirms_per_run`, highest-motivation company first). A
+scheduled run only lists them. You record what you know with:
+
+- `record.py employment <person> current` (or `unknown`). Run on someone already current, it only re-confirms.
+- `record.py employment <person> former [--left YYYY-MM-DD]`: the company moves to `formerly`.
+- `record.py moved <person> --to <company> [--left YYYY-MM-DD]`: they left one company and now work at another.
+- `record.py create ... --file people` with a `company_id` must say `"employment": {"status": "current"}` or `"unknown"`.
+- `record.py merge-person <duplicate> --into <survivor> --current <company or none>` when the two records name two employers.
+
+Someone you said is current more than `access.employment_recheck_days` ago (default 365) is still counted and is listed once to
+re-confirm. Re-confirming is never shown as a move.
+
+**What the 0.91.0 upgrade does to your people.** It first saves `data/people.jsonl` as `people.jsonl.pre-0.91.0`, then gives
+each person who has a `company_id` an `employment`: `current` when you received an email from them at that company's domain in
+the last 180 days, and `unknown` otherwise. It never marks anyone as having left. So after upgrading, your reach counts usually
+drop until you confirm people. That is the change working: until now everyone ever linked to a company was counted there.
 
 **Linking someone to a role later — `record.py involve <person-id> --opp <opp-id>` (since
 0.62.0).** When a person you have been in touch with turns out to matter for a role, you link them
@@ -807,6 +830,7 @@ One record per touch. The fields exist to make "which approach actually works?" 
 | `trigger_kind`, `trigger_ref` | what CAUSED this touch — `application`, `reply`, `elapsed`, `introduction` (since 0.86.0) or `manual`, plus the specific application/message/date it points at. See *Triggers and sequences* below |
 | `sequence_id`, `sequence_step` | groups this touch into a multi-step play with other outreach and staged drafts under the same `sequence_id`, ordered by `sequence_step` |
 | `plan_id`, `play_step` | since 0.49.0 — which plan this touch counts toward, and which play step it satisfies (`reach-insider`, …), or the marker `unresolved` when the touch predates 0.49.0 and can't be assigned a step automatically. Only set on a touch anchored to a role (`opp_id`); a networking touch has no plan to derive one from. See *Plans and plays* above |
+| `build_kind` | since 0.91.0 — which BUILD step this touch carried out (an advice ask, a side-door ask, ...), copied from the brief your draft cited when the outbox saw the message in Sent |
 | `note` | free text of your own about this touch |
 
 #### Recording a touch with no role — the person form of `touched` (since 0.62.0)
@@ -1119,6 +1143,65 @@ What a row records, in the order you would read it:
   each with where it came from (`in your config.json` or `default — not in your file`) so the
   card says which numbers decided the register. `open_asks` lists the ids of any open asks
   touching that person's role or channel. `engine` is the plugin version that computed the row.
+- **Which BUILD step the draft is (since 0.91.0).** `build` is `null` for an ordinary draft. For a draft that carries out a
+  BUILD line (an advice ask to someone who used to work at a target with no way in, or a step of the side-door play), it records
+  that step: `build_kind`, `play_step`, `touch_type`, `opp_id`, `plan_id`, `object_company_id`, `object_person_id`, `trigger_kind`
+  and `trigger_ref`. When the outbox sees the message in Sent, those fields are copied onto the touch it records, so the weekly
+  measures can count each kind of ask separately. `{"not_checked": "<why>"}` means a file the step needed could not be read. It
+  never means "no step", and the sent touch then carries no `build_kind`, with a line saying so.
+
+### Outbox — a draft on its way to sent, `outbox.jsonl` (since 0.91.0)
+
+When you ask for a draft to be put in your mailbox, the engine writes one row here (`outbox.py stage`) and prints the one
+draft-tool call that puts the text in your drafts; you open your mailbox, edit if you like, and send. Every run then looks for
+the message in Sent (`outbox.py detect`). When it finds it, one write records the touch (dated the day you actually sent it),
+the message as you sent it, marks the draft `sent` in `drafts.md`, and clears the text from this row. A run that could not read
+your mailbox says `not checked` and changes nothing here; it never reads as "not sent". No file means nothing has been staged.
+
+| field | what it records |
+|---|---|
+| `id` | the row's handle, `o-1`, `o-2`, ... |
+| `person_id` | who the message is to |
+| `draft_ref` | the `**Brief:**` id of the draft in `drafts.md` |
+| `medium`, `mode` | the draft's medium, and `you` (you send it) or `me` (the engine sends it after you approve, where offered) |
+| `account` | the mailbox it goes from: one of your own addresses |
+| `to`, `cc`, `bcc` | the recipients, always written out |
+| `subject`, `body` | the exact text, kept only until the message is sent or dropped |
+| `reply_uid` | the message being answered, when it is a reply. It comes from the reply draft's `**In-reply-to:** <account>:<uid>` line (the drafter writes it from the message you received), and must name a message on record from that person. A reply draft without the line is not staged, and the reason is printed; it is never staged as a new message |
+| `text_sha256` | a fingerprint of the text and recipients, so a changed text is noticed |
+| `state` | `queued`, `staged`, `approved`, `sending`, `sent`, `discarded` or `failed` |
+| `queued_on`, `staged_on`, `date` | when it was queued, put in your drafts, and sent |
+| `approved_at`, `approved_session`, `sending_at` | when an engine send was approved and passed the guard |
+| `touch_id` | the touch recorded when it was sent |
+| `last_checked_at`, `check_result`, `none_found_checks` | the last time Sent was actually read for it, what that found, and how many reads in a row found nothing |
+| `note` | free text |
+
+**What can be staged.** A sendable first-touch email (`email-cold`) or reply (`email-reply`) draft, with a `**Subject:**` line
+and one quoted body, that has no row yet. A reply also needs its `**In-reply-to:**` line, and can be staged only through
+gmail-multi, because no claude.ai connector's draft tool takes a reply argument. Every refusal names its reason. Staging is on
+request unless you set `actions.email.stage` to `auto` (see *Action modes* below). gmail-multi cannot delete a draft, so stage
+only text you have called final. `outbox.py list` shows the open rows, and `outbox.py discard <id>` drops one you will not send
+(the draft in your mailbox stays yours to delete).
+
+**When the engine sends for you: `actions.modes.email-send` set to `me`** (gmail-multi only). Under `me` a draft is not put in
+your mailbox. It waits as a `queued` row, and is sent only in a session you are attending:
+
+1. The session shows you the waiting messages in full (`outbox.py list --ready`): to whom, from which address, the subject and
+   the text, and for a reply, the message it answers.
+2. You say which to send. The session runs `outbox.py approve <id>... --attended`, then, for each one,
+   `outbox.py call <id> --attended`, and makes the one call it prints.
+3. **Claude Code asks you to allow each send** (once or twice per message; which one is not yet measured). That click is your
+   approval. Deny it and nothing is sent. The guard lets the
+   call reach that prompt only if the recipients and text are exactly the ones you were shown, the approval was made in this same
+   session, and the message was approved in the last 10 minutes. Anything else is refused before you are asked.
+
+A scheduled or unattended run never sends. It leaves the rows `queued` for your next attended session. An approval older than 10
+minutes goes back to `queued`, and an approval made in another session (one that has ended, or before `/clear`) is refused. `outbox.py cancel <id>` puts an
+approved or sending row back to `queued`. A row stays `sending` until the message is found in Sent; it is never sent twice
+without a new approval. `outbox.py --stats` prints how long approvals took and how many lapsed. Forwarding is never sent by the
+engine, in any mode. This needs Claude Code v2.1.295 or later. **Approve sends at your computer:** whether Claude Code's prompt
+can be answered from your phone over Remote Control has not been checked yet. If you have your own setting or hook that
+auto-approves permission prompts, it can approve these sends too, and the plugin cannot see it.
 
 ### The working set — what leaves `drafts.md` and where it goes (since 0.47.0)
 
@@ -1728,6 +1811,24 @@ that `gmail-multi` already holds, not a copy of it.
 [Mailboxes](mailboxes.md) explains the two lists, what the job search can and cannot reach, and
 the upgrade step by step.
 
+## Affiliations — `user.json.affiliations` (since 0.91.0)
+
+Your schools, bootcamps, past employers and communities, in your own order of importance. They are used only to point a
+lookup at people you share something with. For example, a link to a school's LinkedIn page for you to open, at a target company
+where you have no way in. The plugin never searches for anyone from them.
+
+| field | what it is |
+|---|---|
+| `kind` | `school`, `bootcamp`, `employer` or `community` |
+| `name` | as you write it |
+| `linkedin_url` | optional: the school, company or group page on LinkedIn. Any common form is accepted (with or without `www`, a country subdomain, a trailing slash) and stored as `https://www.linkedin.com/<school, company or groups>/<name>/`. A person's own page is refused |
+| `career_services` | optional, schools and bootcamps only: `true`, or the office's web address. The weekly strategy may suggest asking them |
+
+**Not asked, none, and a list are three different answers.** With no `affiliations` key, onboarding asks you once, and an
+attended daily run asks again until you answer. `[]` means you said there are none. Record your answer with
+`record.py affiliations '<json list>'`, or `record.py affiliations --none` for none. `record.py affiliations` on its own prints
+which of the three you have. No upgrade writes this key.
+
 ## Mail connector — `config.json.communications.mail_connector`
 
 Which mail connector the job search reads mail through. The search uses **one**, the one you
@@ -1814,6 +1915,37 @@ No upgrade step writes these. A key you have not set uses its default.
 | `network.owed_followup_days` | how many days after you applied an owed follow-up stays on the dashboard when nobody at the company has been in touch. Any human contact on or after the application date clears it sooner. A whole number from 7 to 90; defaults to **30**, the same as `ats.silence_days` |
 | `network.targets_per_week` | how many companies the weekly Targets to review list asks you about (yes, no or later); the rest are counted, not listed. A whole number from 3 to 25; defaults to **10** |
 | `runs.liveness_hours` | how long a run that started and never ended counts as still running before it is called dead. A whole number of hours from 6 to 72; defaults to **8**. The floor of 6 is the longest drain plus the longest whole run, so a healthy run is never called dead |
+
+### Settings added in 0.91.0 (`config.json.network`, `config.json.access`, `config.json.reach`)
+
+No upgrade step writes these. A key you have not set uses its default. The action settings of 0.91.0 are under *Action modes*
+below.
+
+| key | what it is |
+|---|---|
+| `network.conversations_per_week` | how many conversations a week you aim to hold; the weekly review's measures (`build_reach.py --measures`) print the week's held chats against it, for example `1 of 2`. A whole number from 0 to 20; defaults to **2**. It is a target you set, never a limit: nothing is held back when you pass it |
+| `network.employment_confirms_per_run` | the most people one attended run asks you about ("does this person still work at this company?"), highest-motivation company first. A whole number from 1 to 25; defaults to **5** |
+| `network.event_suggestions_per_week` | the most public events the weekly strategy suggests. Suggestions only: nothing is registered or answered for you. A whole number from 0 to 10; defaults to **3**; 0 turns them off |
+| `access.employment_recheck_days` | days after which someone you said works at a company is listed once to re-confirm. They are still counted meanwhile. A whole number from 90 to 1095; defaults to **365** |
+| `reach.kinds_off` | the BUILD kinds you do not want suggested at a target with no way in, from `advice-ask`, `affiliation-lookup`, `side-door`, `hm-note`, `recruiter-direct`, `plain-lookup`, `event`, `career-services`. Defaults to `[]` (every kind). An unknown name is refused, never ignored |
+
+## Action modes — `config.json.actions` (since 0.91.0)
+
+For each kind of outward act, who performs it: `you` (the default), or `me`, meaning the plugin does it **after you approve that
+act**. `me` never means "without you". Where `me` is not offered, the setting is refused and `doctor.py` prints the reason on
+that setting's row. No upgrade writes these.
+
+| key | `me` |
+|---|---|
+| `actions.modes.email-send` | **offered** when your mail connector is gmail-multi, in an attended session only, after Claude Code's prompt for each message (see *Outbox* above). Under any other connector it is refused, because no claude.ai connector's send tool prompts on every call |
+| `actions.modes.linkedin-message`, `actions.modes.linkedin-connect`, `actions.modes.linkedin-profile-edit`, `actions.modes.linkedin-post` | **refused**: LinkedIn's User Agreement (§8.2) bans software acting for a member. Under `you`, the dashboard row links to the person's recorded LinkedIn page, and the text is in the row |
+| `actions.modes.ats-submit` | **refused**: the plugin never submits an application |
+| `actions.modes.event-rsvp` | **refused**: no event host's terms have been read and found to permit it |
+| `actions.modes.site-register` | **refused**: no registration pre-fill exists, and nothing would stop a registration form's Submit being clicked |
+
+| key | what it is |
+|---|---|
+| `actions.email.stage` | when ready email drafts are put in your mailbox: `ask` (the default) only when you ask, in an attended run; `auto`, every ready draft at the end of the daily run's write step, attended or not. gmail-multi cannot delete a draft, so `auto` puts text in your drafts you have not looked at |
 
 ### What the 0.86.0 upgrade writes
 

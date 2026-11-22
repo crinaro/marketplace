@@ -273,14 +273,14 @@ def check_config_currency(fix=False):
         # half-written profile behind.
         write_json(os.path.join(ROOT, "config.json"), cfg)
 
-    # States & Views V1 §15.7 — the SAME registry `profile.py --options` reads
-    # (config_keys.READER_KEYS), never a second hand-typed list: an adjustable key always has
-    # an engine default, so its absence is never BAD here (that is what "adjustable" means) —
-    # it is reported OK, with provenance, so CONFIG CURRENCY answers "what does this engine
-    # read" for the adjustable surface too, not only the five structural keys above.
+    # States & Views V1 §15.7 — the SAME registry `profile.py --options` reads (config_keys.READER_KEYS), never a second
+    # hand-typed list: an adjustable key always has an engine default, so its absence is never BAD here (that is what
+    # "adjustable" means) — it is reported OK, with provenance, so CONFIG CURRENCY answers "what does this engine read" for
+    # the adjustable surface too. jobsearch 0.91.0 B7a: a value the registry REFUSES (`reach/keys.refusal`: an action mode
+    # its type does not offer, or a value outside the enum) is FAIL on its own row, with the reason.
     for key in sorted(_ck.READER_KEYS):
-        value, provenance = _ck.describe(cfg, key)
-        out.append((OK, key, "%r (%s)" % (value, provenance)))
+        (value, provenance), why = _ck.describe(cfg, key), _ck._rk.refusal(cfg, key)
+        out.append((BAD if why else OK, key, ("%r: %s" % (value, why)) if why else "%r (%s)" % (value, provenance)))
     return out
 
 

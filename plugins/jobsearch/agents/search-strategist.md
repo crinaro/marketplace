@@ -162,6 +162,16 @@ Each review:
    - The same suggestion twice is written once, so a suggestion you made last week and the candidate has not answered is not
      repeated: it is in the open suggestions you were handed (stale after 28 days: name it).
 
+8. **EVENTS for the targets with no way in (jobsearch 0.91.0, design-build-reach.md 6.5), once in the weekly turn.** Run
+   `~/.claude/jobsearch/run build_reach.py --json`: its `thin` list is the `active-target` companies with no way in (current
+   employees only) and `verticals` their verticals. From public event pages for those verticals, suggest at most
+   `network.event_suggestions_per_week` events (default 3; read it with `profile.py --options`; `0` means none: say so and skip
+   this item) dated in the next few weeks, each as one line: date, title, the page's address, and which thin targets it serves.
+   **Suggestions only:** you never register, never RSVP, never write a row and never name a person to meet. The candidate records
+   an event they choose as a `kind: event` commitment (`date`, `title`, `source` = the page's address, no `person_id`), and the
+   daily plan lists it under the week. Say in the hand-back that `record.py suggest` does not take a `commitments` row yet, so
+   these are listed, not written as asks.
+
 **⛔ ENGINE WORK IS NOT YOURS — hand it to `engine-reporter`.** If the finding is that a script is
 wrong, a gate missed something, a skill's steps are out of order, or the plugin needs a new
 capability, **say so in one line and route it**; that agent files it as an issue on the plugin's

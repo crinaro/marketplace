@@ -138,16 +138,28 @@ strategist dispatch below**, because the strategist never re-derives what a scri
 ```bash
 ~/.claude/jobsearch/run access.py --since <the date of the last weekly review, from its entry in log.md>
 ~/.claude/jobsearch/run reachouts.py --week
+~/.claude/jobsearch/run build_reach.py --measures
 ```
 
 - **`access.py --since`** is the access table, one row per company the candidate targets (alumni, known, contacted, warm, chats held,
   open introductions, the live postings), with what MOVED since the last review. "No targets declared" printed loudly is a finding
-  for the candidate (name the targets), never an empty table. On a first review omit `--since`.
+  for the candidate (name the targets), never an empty table. On a first review omit `--since`. Since 0.91.0 every count is
+  CURRENT employees only, read at that row's date: the `unconf` column counts people whose employment is unknown (not counted
+  elsewhere), and the EMPLOYMENT UNCONFIRMED and RE-CONFIRM lines above the table name them. Quote those lines; a re-confirmation
+  is never a move.
 - **The NETWORK section of `funnel_report.py`**, which is the first section of the output the START block already printed (do not run
   it a second time: two runs give two numbers for one question). It carries the reach-outs sent, the bookings and chats held, the
   unrecorded chats, the introductions, the look-into counts and the proposals sent, each rate withheld below n=5 and each count
   marked `≥` or `UNRECORDED` where the data cannot say. **An unrecorded chat is reported as unrecorded, never as zero.**
 - **`reachouts.py --week`** is the week's reach-out budget (`network.new_reachouts_per_week`) against what was sent and what is drafted.
+- **`build_reach.py --measures`** (jobsearch 0.91.0) is this ISO week's counts, replayed from the rows and never stored: conversations
+  held against `network.conversations_per_week`, asks sent by kind (advice asks, side-door asks, introduction asks, plain reach-outs,
+  each its own count), people added with a stated tie, targets with a new way in, side-door asks awaiting, follow-ups on time,
+  events attended, and employment confirmed this week. **The week is counts only: quote no rate for a week.** A target that moved off
+  `path none` only because an employment was confirmed is on the "employment confirmed" line, not counted as a way in, and a
+  side-door ask is never a way in. The reply rate per ask kind is printed over the trailing 12 weeks of RESOLVED asks only, at 5 or
+  more (pending asks and bounces are not in it); a line reading `not checked: mailbox not swept <dates>` is a sweep gap to report,
+  never a rate and never zero. An exit 1 (`NOT CHECKED`) is reported as such, never as a quiet week.
 - **The open suggestions**: the `kind: suggestion` rows of `data/asks.jsonl` with no `resolved_on`, each an earlier proposal of the
   strategist's that the candidate has not answered yet (an ask older than 28 days is stale: say so).
 - **A script that exits 3** prints why: the profile's 0.86.0 migration has not run, or the profile is pinned above this engine. Put
