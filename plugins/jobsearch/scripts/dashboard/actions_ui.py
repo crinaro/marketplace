@@ -15,8 +15,10 @@ ONE script (`PICK_SCRIPT`) joins them. The HTML contract, which the section rend
              count as a second primary row. `line` may hold several record lines joined by newlines (a Today
              group item stands for the rows of its group on the page).
   button     `group_button(label, head, tail, n_default)`: one `<button type="button" class="pick-go">` with
-             `data-head`, `data-tail` (may be empty), `data-none` ("<label> for these N", shown while nothing
-             is ticked), `data-some` ("<label> for the ticked ones") and `data-done` ("Copied").
+             `data-head`, `data-tail` (may be empty), `data-none` ("Copy <label> for N", shown while nothing
+             is ticked), `data-some` ("Copy <label> for the ticked ones") and `data-done` (`COPY_DONE`). Every
+             label reads `Copy <label> for ...` and the done-text says to paste it: a click records
+             nothing (jobsearch 0.92.0, owner decision 1; `copy_label`, `COPY_NOTE`).
   fallback   `SHARED_FALLBACK`, placed ONCE on the page: `<div class="pick-shared" hidden>` holding the hint and
              the one `<textarea>`.
   script     `PICK_SCRIPT`, placed once, under the marker the coverage gate allows. On a click of a
@@ -55,6 +57,19 @@ SHARED_HINT = "Copy the selected text, then paste it into your session."
 # a phone surface that gives neither a copy nor the selected text (`group_button(..., read_only=True)`).
 READ_ONLY_NOTE = "On this screen the page is read-only: act from the session on your computer."
 
+# jobsearch 0.92.0 (design-decision-surface D.1, owner decision 1, review round 2 H6): a click records nothing, so
+# every button says plainly that it copies text. `COPY_DONE` is the button's `data-done`; `COPY_NOTE` is placed once
+# on the page (`dashboard.page.PAGE_NOTE`, after Today, when a button is on the page).
+COPY_DONE = "Copied. Paste it into your jobsearch session in Claude Code."
+COPY_NOTE = ("Nothing is recorded until you paste it into your jobsearch session in Claude Code (on your computer, "
+             "or its Remote Control session); a plain claude.ai chat cannot record it.")
+
+
+def copy_label(label, n=None):
+    """The honest button text: `Copy <label> for N` (`for the ticked ones` when `n` is None)."""
+    return 'Copy %s for %s' % (label, "the ticked ones" if n is None else "%d" % n)
+
+
 SHARED_FALLBACK = ('<div class="pick-shared" hidden><span class="cap-hint sub">Copy the selected text, then paste it '
                    'into your session.</span><textarea class="pick-text" readonly rows="8"></textarea></div>')
 
@@ -82,12 +97,12 @@ def pick(pick_key, line, label, level=1, checked=False):
 
 def group_button(label, head, tail, n_default, read_only=False):
     """A group's ONE button. `head` and `tail` are `dashboard_actions.head(action)` and `tail(more)`;
-    `n_default` is the number of level-1 boxes the button takes with nothing ticked ("<label> for these N")."""
-    none = "%s for these %d" % (label, n_default)
+    `n_default` is the number of level-1 boxes the button takes with nothing ticked (`copy_label(label, N)`)."""
+    none = copy_label(label, n_default)
     note = '<span class="pick-ro sub">%s</span>' % esc(READ_ONLY_NOTE) if read_only else ""
     return ('<button type="button" class="pick-go" data-head="%s" data-tail="%s" data-none="%s" data-some="%s" '
-            'data-done="Copied">%s</button>%s'
-            % (_attr(head), _attr(tail), _attr(none), _attr("%s for the ticked ones" % label), esc(none), note))
+            'data-done="%s">%s</button>%s'
+            % (_attr(head), _attr(tail), _attr(none), _attr(copy_label(label)), _attr(COPY_DONE), esc(none), note))
 
 
 PICK_SCRIPT = ("<script %s>\n" % COPY_SCRIPT_MARKER) + r"""(function () {

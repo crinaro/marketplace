@@ -1,16 +1,20 @@
-"""The profile pins (0.86.0 network-first, 0.90.0 browser-fallback): each pin's version and whether a profile's journal still needs it.
+"""The profile pins (0.86.0 network-first, 0.90.0 browser-fallback, 0.92.0 decision-surface): each pin's version and whether a
+profile's journal still needs it.
 
 One module of `migrations/` (design-component-segmentation.md §5); the 0.86.0 half moved out of `migrate.py` unedited by S2; the
-0.90.0 half (dev 858) is read by `m_0_90_0_browser_fallback` and `init_profile.py`, which both need the pin and the asks reader."""
+0.90.0 half (dev 858) is read by `m_0_90_0_browser_fallback` and `init_profile.py`, which both need the pin and the asks reader. The
+0.92.0 half (docs/design-decision-surface.md §M) is read by `m_0_92_0_decision_surface`, by `support_scaffold.stamp_new_profile`
+(the pin a NEW profile carries) and by `registry.pending_for` (a lost 0.92.0 pin is re-run)."""
 
 import json
 import os
-from journaling.journal_file import profile_pin
+from journaling.journal_file import pin_scan, profile_pin
 from migrations.stamp import ver
 
 
 NETWORK_FIRST_PIN = "0.86.0"
 BROWSER_FALLBACK_PIN = "0.90.0"
+DECISION_SURFACE_PIN = "0.92.0"
 
 
 def _network_first_pin_needed(profile, recs=None):
@@ -25,6 +29,19 @@ def _browser_fallback_pin_needed(recs):
     """True when the journal rows `recs` (as `journal.read` returned them) carry no pin at or above 0.90.0."""
     pin = profile_pin(recs)
     return pin is None or ver(pin) < ver(BROWSER_FALLBACK_PIN)
+
+
+def _decision_surface_pin_needed(recs):
+    """True when the journal rows `recs` (as `journal.read` returned them) carry no pin at or above 0.92.0."""
+    pin = profile_pin(recs)
+    return pin is None or ver(pin) < ver(DECISION_SURFACE_PIN)
+
+
+def _decision_surface_pin_lost(profile):
+    """True when the profile's journal, scanned tolerantly (`journal.pin_scan`, which never raises on a line it cannot parse),
+    carries no pin at or above 0.92.0. `registry.pending_for` asks this: it must answer for a journal `journal.read` refuses."""
+    pin = pin_scan(profile)
+    return pin is None or ver(pin) < ver(DECISION_SURFACE_PIN)
 
 
 def _browser_fallback_asks(profile):

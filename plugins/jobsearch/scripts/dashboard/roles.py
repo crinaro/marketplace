@@ -126,7 +126,7 @@ def _flag_html(f, companies, full):
             '<div class="rs-title">%s: %s <span class="sub">(%s)</span></div>'
             '<div class="rs-line">Stored verdict <code>%s</code>; jobsearch 0.73.0 would give '
             '<code>%s</code> (%s).</div>'
-            '<div class="rs-line sub">Why: %s</div>'
+            '<details class="rs-line sub"><summary>Why</summary>Why: %s</details>'   # 0.92.0: detail, folded (page budget)
             '<div class="rs-act">To reopen: %s</div></div>'
             % (attr, esc(co), esc(f.get("title") or ""),
                esc(f.get("status") or ""), esc(f.get("old_verdict") or ""), esc(f.get("new_verdict") or ""),

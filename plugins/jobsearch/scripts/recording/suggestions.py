@@ -9,7 +9,7 @@ import re
 from recording import profile_paths as _paths
 from recording.row_checks import _diagnostic_lines, dry_run_validate, model, new_problems, validate
 from recording.common import _Refused, _now, _validator_module
-from recording.generic import coerce
+from recording.field_shapes import typed
 from recording.network_verbs import _live_person, _network_gate, _network_row_write, _remove_new_store
 from recording.proposals import PROPOSAL_USAGE, _deep
 from recording.store_files import (
@@ -259,11 +259,7 @@ def cmd_confirm(args):
         if k.strip() in overrides:
             print("⛔ REFUSED — --set %s is given twice." % k.strip())
             return 1
-        try:
-            overrides[k.strip()] = coerce(v)
-        except ValueError as e:
-            print("⛔ REFUSED — --set %s: %s" % (k.strip(), e))
-            return 1
+        overrides[k.strip()] = v
     gate = _network_gate()
     if gate:
         print(gate)
@@ -279,6 +275,11 @@ def cmd_confirm(args):
     store = (ask.get("suggests") or {}).get("store")
     if store not in ("companies", "plans", "people"):
         print("⛔ REFUSED — %s suggests store %r, which is not a suggestable store." % (args.rid, store))
+        return 1
+    try:
+        overrides = {k: typed(store, k, v) for k, v in overrides.items()}
+    except _Refused as e:
+        print("⛔ REFUSED — --set: %s" % e)
         return 1
     today = _now().date().isoformat()
 

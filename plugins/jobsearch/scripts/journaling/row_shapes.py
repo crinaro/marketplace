@@ -347,15 +347,20 @@ def _check_network_row(rec):
 
 
 COMPANIES_RAISED_FIELDS = ("event", "at", "run_id", "setting", "raised", "waiting")
+# jobsearch 0.92.0 (dev #950, docs/design-decision-surface.md §C.3): `held` is OPTIONAL, `{"undecided", "watching", "passed": n}`
+# (exactly those three keys, each an int >= 0), the roles held for a company decision when the step ran (opportunities only).
+# Its writer writes it only on a profile pinned at 0.92.0, so an engine that refuses an unknown field never meets it.
+COMPANIES_RAISED_OPTIONAL = ("held",)
+HELD_KEYS = ("undecided", "watching", "passed")
 
 
 def _check_companies_raised_row(rec):
     """dev #834 (design-network-first.md 3.3) -- the shape of a `companies-raised` event, for the writer and the reader alike:
-    exactly `{event, at, run_id, setting, raised, waiting}`. `setting` is `search.company_intake_per_run` as it read when the
+    exactly `{event, at, run_id, setting, raised, waiting}`, plus the optional `held` (0.92.0, above). `setting` is `search.company_intake_per_run` as it read when the
     step ran (int 1..100); `raised` the company ids newly raised this run (distinct, non-empty, whitespace-free, at most
     `setting`); `waiting` the qualifying companies still unraised (int >= 0). It is written EVEN WHEN `raised` is empty, so
     "the step ran and raised nothing" differs from "the step never ran"."""
-    unknown = sorted(set(rec) - set(COMPANIES_RAISED_FIELDS))
+    unknown = sorted(set(rec) - set(COMPANIES_RAISED_FIELDS) - set(COMPANIES_RAISED_OPTIONAL))
     missing = [k for k in COMPANIES_RAISED_FIELDS if k not in rec]
     if unknown:
         raise JournalError("companies-raised has unknown field(s) %s" % ", ".join(unknown))
@@ -374,3 +379,7 @@ def _check_companies_raised_row(rec):
                            "the setting" % (len(rec["raised"]), rec["setting"]))
     if not _is_int(rec["waiting"]):
         raise JournalError("companies-raised waiting=%r is not an int >= 0" % (rec["waiting"],))
+    if "held" in rec:
+        held = rec["held"]
+        if not isinstance(held, dict) or sorted(held) != sorted(HELD_KEYS) or not all(_is_int(held[k]) for k in HELD_KEYS):
+            raise JournalError("companies-raised held=%r is not {undecided, watching, passed} of ints >= 0" % (held,))

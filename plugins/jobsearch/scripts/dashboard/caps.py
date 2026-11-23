@@ -9,6 +9,7 @@ sets, because it already exists; the Targets list reads it from `targets_review`
     OPPS_L1        5    Opportunities, open cards
     APPS_L1        5    Applications to finish
     RECONSIDER_L1  3    Roles to reconsider
+    HELD_L1        5    Roles waiting on a company decision (jobsearch 0.92.0, dev #1005)
     LEVEL2        20    one-line rows inside ONE closed fold, per list or group, every fold (the Drafts waiting fold too)
     TODAY_CAP      5    Today's items (§3.2, D-1)
 
@@ -34,6 +35,7 @@ NEEDS_READ_L1 = 3
 OPPS_L1 = 5
 APPS_L1 = 5
 RECONSIDER_L1 = 3
+HELD_L1 = 5
 LEVEL2 = 20
 TODAY_CAP = 5
 

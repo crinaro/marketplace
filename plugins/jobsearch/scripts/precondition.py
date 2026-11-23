@@ -114,7 +114,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
-import _tree
+import _tree, reach.follow_stop as _fstop        # 0.92.0: a stop / resume row is no sent fact (dev #951)
 
 FIELD_RE = re.compile(r"^\*\*Blocked until:\*\*\s*(.+?)\s*$", re.M | re.I)
 TOKEN_RE = re.compile(r"(contact|outcome)\s*:\s*([A-Za-z0-9_|-]+)")
@@ -801,7 +801,7 @@ def _person_sent_row_exists(root, person_id, date):
     channel path's semantics do not move."""
     if not date or not person_id:
         return False
-    for t in _load_jsonl_rows(root, "touches.jsonl"):
+    for t in _fstop.ordinary(_load_jsonl_rows(root, "touches.jsonl")):
         if (t.get("person_id") == person_id and not t.get("opp_id")
                 and str(t.get("date") or "")[:10] == date):
             return True

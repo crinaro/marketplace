@@ -196,3 +196,11 @@ people. **Runs** (it writes one note; it researches the company only if it is ne
 
 **`/jobsearch:coordinator`**. Listed above; the place to review drafts, decide on a role and say yes or no
 to what the search proposes.
+
+### Stopping follow-up with a person (since 0.92.0)
+
+- **`record.py stop-following <person id> [--note "<why>"] [--dry-run]`**. Use it, by asking the coordinator ("stop
+  following up with them"), when someone should leave *They wrote back* and *Awaiting a reply*. **Writes** one row and changes
+  nothing else; a later message from them, or one you send them, brings them back. `--undo` resumes. If it prints
+  `invalid choice: 'stop-following'`, run `/reload-plugins` and try again. Details: *Stopping follow-up with a person* in
+  [Your data](your-data.md).

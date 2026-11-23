@@ -37,7 +37,7 @@ import json
 import os
 import sys
 
-import os, sys as _sys
+import os, sys as _sys, reach.follow_stop as _fstop    # 0.92.0: the outreach count skips stop / resume rows
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 # Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
@@ -1211,7 +1211,7 @@ def main():
     # ---- 3. Outreach: who we connected with, and did they reply? -----------
     rule("OUTREACH - who the candidate connected with, and whether they replied")
     # ADR-031 B3 — the top-level touches store, joined by opp_id; never a nested array.
-    rows = [(opps_by_id.get(t.get("opp_id"), {}), t) for t in load("touches.jsonl")]
+    rows = [(opps_by_id.get(t.get("opp_id"), {}), t) for t in _fstop.ordinary(load("touches.jsonl"))]
     if not rows:
         print("  None recorded.")
     else:

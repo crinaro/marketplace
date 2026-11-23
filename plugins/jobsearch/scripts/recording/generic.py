@@ -21,6 +21,7 @@ from recording.row_checks import (
 )
 from recording.common import Mutation, _Refused, _now, _validator_module
 from recording.employment import stamp_people_create
+from recording.field_shapes import typed
 from recording.ids import mint_app_id, mint_cover_letter_id, mint_touch_id
 from recording.parser import _touch_requirement_lines
 from recording.posting import _feed_posting_value, _posting_today
@@ -60,21 +61,6 @@ def _merge_would_cycle(people_rows, dup_id, survivor_id):
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def coerce(v):
-    """A CLI gives strings; the store is typed. Guessing wrong writes "true" where True belongs."""
-    if v in ("true", "True"):
-        return True
-    if v in ("false", "False"):
-        return False
-    if v in ("null", "None", ""):
-        return None
-    if v.lstrip("-").isdigit():
-        return int(v)
-    if v.startswith(("{", "[")):
-        return json.loads(v)
-    return v
-
-
 def cmd_show(rec, as_json):
     """Print the whole stored record. Indented JSON by default; `--json` prints ONE compact line (a script reads it).
     Before 0.82.0 `show` dropped `research_log` and `fit` and cut the rest at 3000 characters, so a role looked
@@ -101,7 +87,7 @@ def cmd_fields(args):
     print("%s — %s" % (args.file, ", ".join(sorted(m["fields"]))))
     print("  required: %s" % ", ".join(m.get("required") or []))
     if objects:
-        print("\n  OBJECT-TYPED (not a string):")
+        print("\n  OBJECT-TYPED (not a string; a field marked array holds a list):")
         for f in sorted(objects):
             print("    %s: %s" % (f, objects[f]))
     if enums:
@@ -522,13 +508,18 @@ def set_mutation(args, rec):
     if len(args.rest) != 2:
         print("usage: set <id> <field> <value>")
         return 2
-    field, val = args.rest[0], coerce(args.rest[1])
+    field = args.rest[0]
     bad = check_field(args.file, field)
     if bad and not args.force:
         print("⛔ REFUSED — %s" % bad)
         print("\n  Fix the field name, or add it to docs/data_model.json if it is genuinely")
         print("  new. --force writes anyway and is almost never right: an unknown field is")
         print("  invisible to every query written against the real one.")
+        return 1
+    try:
+        val = typed(args.file, field, args.rest[1], current=rec.get(field))
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
         return 1
     desc = "set %s = %r" % (field, val)
     if args.file == "opportunities" and field == "location" and isinstance(val, dict):
@@ -624,13 +615,25 @@ def append_mutation(args, rec):
     return Mutation(desc, apply)
 
 
+def _container_in(rec, arr, mk, mv, field):
+    """The first object or array that `field` holds on a row of `rec`'s `arr` where `mk == mv` (the walk `set-in` makes,
+    a dotted `arr` included); None when no matched row holds one."""
+    node = rec or {}
+    for part in arr.split(".")[:-1]:
+        node = node.get(part) or {}
+    for x in node.get(arr.split(".")[-1]) or []:
+        if str(x.get(mk)) == mv and isinstance(x.get(field), (dict, list)):
+            return x[field]
+    return None
+
+
 def set_in_mutation(args):
     """`set-in <id> <array> <key>=<match> <field> <value>` (moved out of record.py main). Returns a Mutation, or a
     printed refusal's code."""
     if len(args.rest) != 4:
         print("usage: set-in <id> <array> <key>=<match> <field> <value>")
         return 2
-    arr, match, field, val = args.rest[0], args.rest[1], args.rest[2], coerce(args.rest[3])
+    arr, match, field = args.rest[0], args.rest[1], args.rest[2]
     if "=" not in match:
         print("match must be key=value, e.g. contact_id=jane-doe")
         return 2
@@ -640,6 +643,12 @@ def set_in_mutation(args):
         if bad and not args.force:
             print("⛔ REFUSED — %s" % bad)
             return 1
+    try:
+        current = _container_in(find(load(args.file), args.rid), arr, mk, mv, field)
+        val = typed(args.file, field, args.rest[3], array=arr, current=current)
+    except _Refused as e:
+        print("⛔ REFUSED — %s" % e)
+        return 1
     desc = "set %s = %r on %s[] where %s == %r" % (field, val, arr, mk, mv)
 
     def apply(r):

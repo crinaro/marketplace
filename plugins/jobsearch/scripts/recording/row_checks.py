@@ -489,19 +489,25 @@ def _array_enum_registry(_vd):
     }
 
 
-def _object_shaped_fields(store, _vd):
-    """Fields whose value is an OBJECT, not a string — the exact class of mistake the report
-    cites: a comp-style field (an object with two numeric keys) rendered by `fields` as though
-    it accepted free text, with nothing to tell a caller otherwise. The model file only carries
-    flat field-name lists, so a caller reading just that has no way to know; state it here."""
-    if store != "opportunities":
-        return {}
+def _shape_hints(_vd):
+    """What `fields` says beyond the bare shape, for the opportunity fields whose keys a caller cannot guess. Every key
+    here is a field `data_model.json` declares in `shapes` (a test fails on one that is not)."""
     return {
         "comp": "object — {\"min\": number, \"max\": number}",
         "location": ("object — {\"type\": one of {%s}, \"declared\": string, "
                      "\"primary\": string}" % ", ".join(sorted(_vd.LOC_TYPES))),
         "fit": "object — {\"requirements\": [fit.requirements[] rows, below]}",
     }
+
+
+def _object_shaped_fields(store, _vd):
+    """Fields whose value is an OBJECT or an ARRAY, not a string — the exact class of mistake the report
+    cites: a comp-style field (an object with two numeric keys) rendered by `fields` as though
+    it accepted free text, with nothing to tell a caller otherwise. `data_model.json` declares them
+    in `shapes` (dev #1001); the opportunity hints in `_shape_hints` say more than the bare shape."""
+    shapes = (model()["stores"].get(store) or {}).get("shapes") or {}
+    hints = _shape_hints(_vd) if store == "opportunities" else {}
+    return {f: hints.get(f, shape) for f, shape in shapes.items()}
 
 
 def _row_checks(op, before, after, posting_ok=False, jd_read_ok=False):

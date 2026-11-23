@@ -10,6 +10,9 @@ description: 'Start (or resume) the JOB SEARCH coordinator — the one session t
 > first, never by hand); one that starts "Apply a correction to one of my staged drafts" goes through **step 5b**.
 > Both steps sit far down this file, past the part Claude Code re-attaches after a context compaction, so re-read
 > the step before acting on the block.
+> Stopping or resuming follow-up with a person ("stop following up with them") is
+> `~/.claude/jobsearch/run record.py stop-following <person_id>` (`--undo` to resume), `--dry-run` first; if it prints
+> `invalid choice: 'stop-following'`, run `/reload-plugins` (the scripts loaded are older than this skill) and retry.
 
 ## ⚠️ HOW SCRIPTS ARE RUN HERE
 

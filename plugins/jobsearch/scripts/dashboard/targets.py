@@ -2,7 +2,8 @@
 generate_dashboard.py; D2b gives it one-line rows, tick boxes and the staffing question's signals: design §8, §6.5).
 
 THE LIST. `targets_review`'s rows, in its order and under its weekly cap (both unchanged), one line each:
-`name · N open roles · raised on DATE`, each a primary row (`data-rec="net:look-into:<id>"`) with a tick box. The
+`name · N open roles: T1; T2; T3 (+K more) · M match your titles · raised on DATE` (0.92.0, dev #1004 D2: up to `TITLES_SHOWN`
+titles, the matching ones first; the match count only when one matches), each a primary row (`data-rec="net:look-into:<id>"`) with a tick box. The
 rest (over the cap, snoozed) is ONE counted remainder (`data-more="targets-review:N"`). The heading says the count and
 what a yes does, and how many more companies later runs will raise (case E1b).
 
@@ -19,8 +20,14 @@ motivation, dev #960), No and Later. "These are staffing firms" is a nested grou
 the question, holding one box per such row. The excluded companies are one counted, closed fold
 (`name — staffing (by its name)`) of at most `caps.LEVEL2` rows, the rest one count line inside it (design §4, every
 fold; dashboard-redesign E: it grew with the data, 60 rows at busy scale 10); only a rule-3 (`how == "name"`)
-exclusion carries a tick box, under one button, "These are employers", whose tail counts the boxed ones past the fold. Python writes every character of a prompt: the loader fills `pd.targets_text`
-(`{"heads": {action: head}, "lines": {company id: record line}, "tail": tail}`); this module only places them."""
+exclusion, and since 0.92.0 a recruiter-only one (`how == "sightings"`, `reach.staffing`, D3), carries a tick box, under one
+button, "These are employers", whose tail counts the boxed ones past the fold. Python writes every character of a prompt: the loader fills `pd.targets_text`
+(`{"heads": {action: head}, "lines": {company id: record line}, "tail": tail, "unchecked": [ids]}`); this module only places them.
+
+THE EXCLUSION SENTENCE (0.92.0, dev #1004 D4). `unchecked(listed, facts)` is the listed companies with a sighting whose channel
+resolves to no channel or to one with no `type`: the recruiter-only check could not run on them. The heading then says
+`EXCLUSION_SAID` when none is unchecked, `N of these could not be checked ...` when some are, and nothing when the check did not
+run (no `unchecked` key, or `render_targets_failed`)."""
 import re
 
 from dashboard import caps
@@ -36,7 +43,12 @@ T2_ROLES, T2_FAMILIES = 8, 3            # constants with no measurement behind t
 SENIORITY = ("senior", "sr", "junior", "jr", "lead", "principal", "staff", "head", "chief", "associate", "assistant",
              "intern", "internship", "trainee", "apprentice", "entry", "level", "mid", "graduate", "grad", "vp", "vice",
              "president", "executive", "i", "ii", "iii", "iv", "v", "1", "2", "3", "4", "5")
-HOW = {"stated": "you said so", "channel": "by its channel", "name": "by its name"}
+HOW = {"stated": "you said so", "channel": "by its channel", "name": "by its name",
+       "sightings": "every sighting came through a recruiter channel"}
+BOXED_HOW = ("name", "sightings")           # the exclusions a "These are employers" tick can undo
+TITLES_SHOWN = 3
+EXCLUSION_SAID = "Companies the engine can identify as aggregators or staffing firms are not listed."
+EXCLUSION_UNCHECKED = "%d of these could not be checked for staffing: a sighting's channel is unknown."
 LISTED_ACTIONS = (("target-yes", "Yes"), ("target-no", "No"), ("target-later", "Later"))
 
 
@@ -75,6 +87,38 @@ def ask_ids(listed, facts):
     return tuple(out)
 
 
+def unchecked(listed, facts):
+    """The ids of the listed companies whose recruiter-only check could not run (D4): a sighting's channel type is None in
+    `facts` (`ask_ids`' own reading: the channel id resolves to no channel, or to one with no `type`)."""
+    return [it["id"] for it in listed if None in list((facts.get(it["id"]) or (None, None, (), False))[2])]
+
+
+def exclusion_sentence(text):
+    """The heading's exclusion sentence (D4): said only when the check ran (`text["unchecked"]` is a list)."""
+    ids = text.get("unchecked")
+    if ids is None:
+        return ""
+    return EXCLUSION_UNCHECKED % len(ids) if ids else EXCLUSION_SAID
+
+
+def titles_text(it, html=False):
+    """`N open roles: T1; T2; T3 (+K more)` with the matching titles first, then `· M match your titles` when one does. With
+    `html`, the engine's words are escaped and the titles are the candidate's own text (ONE `theirs` span, site `role-title`, their
+    `; ` inside it so the page budget counts no separator as a word), so the NO CLI gate never reads a title as engine prose."""
+    e, w = (esc, lambda t: theirs(t, "role-title")) if html else (str, str)
+    titles = list(it.get("titles") or [])
+    hits = list(it.get("titles_matching") or [])
+    first = hits + [t for t in titles if t not in hits]
+    n = it.get("roles") or len(titles)
+    out = e(_n(n, "open role", "open roles"))
+    if first:
+        out += e(": ") + w("; ".join(first[:TITLES_SHOWN])) + (
+            e(" (+%d more)" % (len(first) - TITLES_SHOWN)) if len(first) > TITLES_SHOWN else "")
+    if it.get("title_match"):
+        out += e(" · %d match%s your titles" % (it["title_match"], "es" if it["title_match"] == 1 else ""))
+    return out
+
+
 def _n(n, one, many):
     return "%d %s" % (n, one if n == 1 else many)
 
@@ -92,12 +136,11 @@ def _heading_words(n_listed, pd):
 
 
 def _row(it, r, line, ask):
-    roles = it.get("roles") or 0
-    bits = [_n(roles, "open role", "open roles")] + (["raised on %s" % it["raised_on"]] if it.get("raised_on") else [])
+    bits = titles_text(it, html=True) + (esc(" · raised on %s" % it["raised_on"]) if it.get("raised_on") else "")
     return ('<div class="net-row net-line"%s data-subject="company:%s">%s<strong>%s</strong> <span class="sub">'
             '&middot; %s</span>%s</div>'
             % (_rec_attrs(r["key"]), esc(it["id"]), pick(r["actions"][0]["rec_id"], line, it["name"]) if line else "",
-               theirs(it["name"], "company-name"), esc(" · ".join(bits)),
+               theirs(it["name"], "company-name"), bits,
                ' <span class="sub">may be a staffing firm</span>' if ask else ""))
 
 
@@ -123,7 +166,7 @@ def _excluded(excluded, text):
     shown, rest = excluded[:caps.LEVEL2], excluded[caps.LEVEL2:]
     lines, boxed = [], 0
     for e in shown:
-        line = text["lines"].get(e["id"]) if e.get("how") == "name" else None
+        line = text["lines"].get(e["id"]) if e.get("how") in BOXED_HOW else None
         boxed += bool(line)
         lines.append('<div class="net-line net-excluded" data-subject="company:%s">%s%s <span class="sub">&mdash; %s '
                      '(%s)</span></div>' % (esc(e["id"]), pick("company:%s" % e["id"], line, e["name"]) if line else "",
@@ -132,7 +175,7 @@ def _excluded(excluded, text):
     if rest:
         lines.append('<div class="sub ws-more">+ %d more that %s not on this page. To see them, say to the coordinator: '
                      'Show me every excluded company.</div>' % (len(rest), "is" if len(rest) == 1 else "are"))
-    more = sum(1 for e in rest if e.get("how") == "name" and text["lines"].get(e["id"]))
+    more = sum(1 for e in rest if e.get("how") in BOXED_HOW and text["lines"].get(e["id"]))
     button = ('<div class="net-actions">%s</div>' % group_button("These are employers",
                                                                  text["heads"]["company-kind-employer"], tail(more),
                                                                  boxed)
@@ -170,9 +213,9 @@ def render_targets_list(tr, net_rows, ledger, pd):
                       tr["per_week"]))
     out.append(_excluded(tr["excluded"], text))
     return ('<h2 id="%s">&#127919; Targets to review <span class="tcount">%d</span></h2>'
-            '<div class="sub" id="%s" style="margin:-6px 0 10px">%s Aggregators and staffing firms are never listed '
-            'as targets.</div><div class="card">%s</div>'
-            % (TARGETS_SECTION, len(shown), TARGETS_ANCHOR, esc(_heading_words(len(shown), pd)), "".join(out))), len(shown)
+            '<div class="sub" id="%s" style="margin:-6px 0 10px">%s</div><div class="card">%s</div>'
+            % (TARGETS_SECTION, len(shown), TARGETS_ANCHOR,
+               esc(" ".join(x for x in (_heading_words(len(shown), pd), exclusion_sentence(text)) if x)), "".join(out))), len(shown)
 
 
 def render_targets_failed(failed, lost):

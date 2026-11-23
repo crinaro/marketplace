@@ -78,6 +78,9 @@ def _propagate_touch(opp_id, person_id, date, recipient_role=None):
 TOUCHED_USAGE = ("usage: touched [<opp_id>] --to contact:<person-id> --medium <medium> "
                  "[--on <date>] [--role <role>] [--touch-type <type>]  "
                  "(no <opp_id> = a person-anchored touch: a relationship with no role)")
+# jobsearch 0.92.0 (dev #951): the two follow-control types are not outreach, so `touched` refuses them and names their one writer.
+STOP_ROUTE = (". Stopping or resuming follow-up with a person is `record.py stop-following <person_id>` (`--undo` resumes), "
+              "never a touch you record")
 
 
 def cmd_touched(args):
@@ -128,7 +131,8 @@ def cmd_touched(args):
         print("⛔ REFUSED — --role must be one of %s" % ", ".join(sorted(_vd.RECIPIENT_ROLES)))
         return 1
     if args.touch_type is not None and args.touch_type not in _vd.TOUCH_TYPES:
-        print("⛔ REFUSED — --touch-type must be one of %s" % ", ".join(sorted(_vd.TOUCH_TYPES)))
+        print("⛔ REFUSED — --touch-type must be one of %s%s" % (", ".join(sorted(_vd.TOUCH_TYPES)), STOP_ROUTE
+                                                                  if args.touch_type in _vd.FOLLOW_CONTROL_TYPES else ""))
         return 1
 
     if opp_id:

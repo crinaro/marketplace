@@ -138,6 +138,10 @@ RETIRED_CHANNEL_IDS = {"linkedin-direct", "email-direct"}
 
 TOUCH_TYPES = {"first-touch", "chase", "reply", "referral-ask", "intro-request",
                "thank-you", "reconnect", "apply-path", "unknown"}
+# jobsearch 0.92.0 (dev #951, design-decision-surface.md B.1): the two CONTROL touch types, written only by
+# `record.py stop-following` (and its `--undo`). Kept OUT of TOUCH_TYPES on purpose: the outreach drafter's enum and the
+# plays check are held to TOUCH_TYPES, and a control row is no outreach. The touches row check compares against the union.
+FOLLOW_CONTROL_TYPES = frozenset({"stop-following", "resume-following"})
 RECIPIENT_ROLES = {"hiring-manager", "hiring-line", "talent-acquisition", "recruiter-agency",
                    "warm-contact", "peer-network", "other", "unknown"}
 ADDRESS_STATUS = {"verified-published", "verified-received", "pattern-inferred", "unknown"}

@@ -30,11 +30,14 @@ def record_network(root, run_id, at=None, **fields):
     return append(root, rec)
 
 
-def record_companies_raised(root, run_id, setting, raised, waiting, at=None):
-    """dev #834 -- the ONE writer of a `companies-raised` event: `{event, at, run_id, setting, raised, waiting}`. Validated
+def record_companies_raised(root, run_id, setting, raised, waiting, at=None, held=None):
+    """dev #834 -- the ONE writer of a `companies-raised` event: `{event, at, run_id, setting, raised, waiting}`, plus `held`
+    when given (jobsearch 0.92.0, dev #950: the held counts; the caller passes it only on a profile pinned at 0.92.0). Validated
     before it is appended; nothing is written on a refusal. Returns the row."""
     rec = {"event": "companies-raised", "at": at or now_iso(), "run_id": run_id, "setting": setting,
            "raised": list(raised), "waiting": waiting}
+    if held is not None:
+        rec["held"] = dict(held)
     _check_companies_raised_row(rec)
     return append(root, rec)
 

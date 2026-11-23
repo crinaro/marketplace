@@ -42,6 +42,19 @@ def new_keys_pin_refusal(keys):
     return None
 
 
+def shape_pin_refusal(minimum, what, migration):
+    """`None` when the profile's pin (`pin_scan`) is at or above `minimum` (a version tuple), else the refusal line naming the
+    pending `migration` (nothing written). `what` names the shape refused. The general form of `new_keys_pin_refusal`, for a writer
+    of a release's new stored shape (jobsearch 0.92.0, docs/design-decision-surface.md §M): an unpinned profile is below it."""
+    pin = pin_scan(_paths.ROOT)
+    have = tuple(int(x) for x in pin.split(".")) if pin else None
+    if have is not None and have >= tuple(minimum):
+        return None
+    return ("this profile is not pinned to jobsearch %s (its pin is %s), so %s is refused: an older engine sharing the profile "
+            "cannot read it. The pending migration is %s: run `~/.claude/jobsearch/run migrate.py`, read what it says, and "
+            "re-issue this call. Nothing was written." % (".".join(str(x) for x in minimum), pin or "absent", what, migration))
+
+
 def _given(args):
     """The keys the call gave, as a dict (empty when it gave none)."""
     given = {}

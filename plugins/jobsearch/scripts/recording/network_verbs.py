@@ -9,6 +9,7 @@ import json
 import os
 import re
 from recording import profile_paths as _paths
+from recording.evidence_keys import shape_pin_refusal
 from recording.row_checks import (
     _RAISED_FIELD,
     _diagnostic_lines,
@@ -17,6 +18,7 @@ from recording.row_checks import (
     validate,
 )
 from recording.common import _Refused, _now, _profile_mod, _validator_module
+from reach import held_roles as _held
 from recording.store_files import (
     LockError,
     STORES,
@@ -33,6 +35,26 @@ from recording.store_files import (
 
 
 RAISE_COMPANIES_USAGE = "raise-companies --run <run id> [--on YYYY-MM-DD] [--check | --dry-run] [--already-locked]"
+HELD_PIN, HELD_MIGRATION = (0, 92, 0), "m_0_92_0_decision_surface"
+HELD_WITHHELD = "held count not recorded (profile not pinned at 0.92.0: %s pending)" % HELD_MIGRATION
+
+
+def _held_counts(ym, said):
+    """The `held` object of this run's `companies-raised` row (jobsearch 0.92.0, dev #950, design §C.3, review round 2 G3 and
+    H5): `reach.held_roles.held_counts` over every opportunity's lifecycle stage (opportunities only, never a capture-item
+    group), or None. None, with one printed line, when the profile is not pinned at 0.92.0 (an older engine sharing it refuses
+    an unknown field) or the count cannot be computed, appended to `said` and printed after the raise's own line;
+    neither ever fails the raise. The lifecycle is read through `ym`
+    (`your_move`, which this verb already imports), so this module adds no import of an entry point (G5.L2)."""
+    if shape_pin_refusal(HELD_PIN, "a held count", HELD_MIGRATION) is not None:
+        said.append(HELD_WITHHELD)
+        return None
+    try:
+        data = ym._lc.load_data(_paths.ROOT)
+        return _held.held_counts(ym.stage_by_id(data["opportunities"], _now(), data).values())
+    except Exception as e:                                       # noqa: BLE001 - said, never a failed raise
+        said.append("held count not recorded (%s: %s)" % (type(e).__name__, str(e)[:100]))
+        return None
 
 
 def cmd_raise_companies(args):
@@ -114,13 +136,15 @@ def cmd_raise_companies(args):
                          "NOT VERIFIABLY ROLLED BACK -- restore companies.jsonl from git"))
                 print("  " + "\n  ".join(added if added else _diagnostic_lines(rc, out, err)))
                 return 1
+        said = []
         try:
-            _journal.record_companies_raised(_paths.ROOT, run, setting, [c["id"] for c in raised], waiting)
+            _journal.record_companies_raised(_paths.ROOT, run, setting, [c["id"] for c in raised], waiting,
+                                             held=_held_counts(_ym, said))
         except _journal.JournalError as e:
             print("⚠️ could not journal the `companies-raised` event (%s)" % e)
-            print(line)
+            print("\n".join([line] + said))
             return 1
-        print(line)
+        print("\n".join([line] + said))
         return 0
     finally:
         if not check and not args.already_locked:

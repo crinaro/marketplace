@@ -258,7 +258,12 @@ reply someone is waiting for comes first. When nothing needs you, Today is one s
 list below Drafts, with its own entry in the jump bar, holding only what you act on, in groups: *They wrote back*, *To
 record*, *Applied, no one contacted yet*, *Awaiting a reply* (split into they accepted, went quiet recently, quiet for
 a long time, and not checked yet), *Introductions* and *Relationships due this week*. Every list shows its first few
-rows, folds the next 20 into one line each, and counts the rest. The numbers (reach-outs
+rows, folds the next 20 into one line each, and counts the rest. Since 0.92.0 each Network row says what it is about and
+why it is listed, a reply owed for more than `network.reply_owed_days` days (60 by default) or about an ended role is named
+under *Not listed* instead, and a person you asked to stop following (`record.py stop-following`) stays off both groups until
+they write again. Held roles that match your titles have their own section, *Roles waiting on a company decision*, with the
+held count and its change since last week. Every button copies text to paste into your jobsearch session; nothing is recorded
+by the click. See *The page since 0.92.0* in [Reading your files](reading-your-files.md). The numbers (reach-outs
 against the budget, chats booked and held, introductions) live in the weekly review and in
 `views/network_strategy.md`. A run that found no roles but worked your network is not a quiet run, and a profile with
 no applications is not a stalled one.
@@ -273,6 +278,10 @@ plugin" and leaves alone. Update the plugin on that machine and it carries on.
 
 Since 0.88.0 the upgrade writes a second mark, and a machine on 0.87.0 or older refuses the profile: it says "Update the plugin on this
 machine before running it here" and writes nothing. Update it and it carries on.
+
+Since 0.92.0 the upgrade writes a third mark, and a machine on 0.91.x refuses every `record.py` command and every read of the
+run history with the same message. It can still regenerate its own dashboard, missing what it cannot read and naming the same
+remedy, and publish it over the newer one; it also still adds to the inbox. So update the plugin on every machine you use.
 
 ---
 

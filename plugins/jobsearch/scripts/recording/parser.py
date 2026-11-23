@@ -97,7 +97,10 @@ OPS = ("create", "set", "set-in", "append", "show", "fields",
        # jobsearch 0.91.0 (design-build-reach.md 7.1) -- the ONE writer of user.json's `affiliations` (the candidate's list, or
        # `--none`), one locked, validated, rollback-verified write; with no argument it prints the derived state. `--dry-run` is
        # proven in test_record_call_surface.py's VERB_ARGS.
-       "affiliations")
+       "affiliations",
+       # jobsearch 0.92.0 (dev #951, design-decision-surface.md B.2) -- stop (or, with --undo, resume) following a person up: one
+       # locked, validated, rollback-verified append to TOUCHES behind the 0.92.0 pin. `--dry-run` is proven in test_record_call_surface.py.
+       "stop-following")
 SOURCING_OPS = ("screened", "lean", "listed-pay", "posted")
 
 
@@ -272,6 +275,8 @@ def _core_arguments(ap):
                     help="application-status: appended to the row's existing `note` (never "
                          "overwritten — an owner's hand note survives) in the SAME transaction "
                          "as status/status_on (design-inbound-resolution.md §2).")
+    ap.add_argument("--undo", dest="undo", action="store_true",
+                    help="stop-following: resume following a person you stopped following (appends a resume-following row).")
     ap.add_argument("--channel", dest="channel_id", default=None,
                     help="received: `--channel <channel_id>` — the other half of the anchor "
                          "rule (--opp or --channel, at least one, never both).")
@@ -570,6 +575,8 @@ def bind_store(args):
         args.file = "messages"
     elif args.op == "received":
         args.file = "messages"
+    elif args.op == "stop-following":
+        args.file = "touches"            # dev #951: cmd_follow appends its own control row
     elif args.op in ("merge-person", "employment", "moved"):
         args.file = "people"
     elif args.op == "involve":

@@ -143,5 +143,12 @@ ACTION_METADATA = {
                   "ask (default): a draft goes into your mailbox when you ask; auto: the daily run puts every ready draft "
                   "there in its write phase (gmail-multi cannot delete a draft) (jobsearch 0.91.0)"),
 }
-METADATA = {**METADATA, **ACTION_METADATA}
+
+# ── jobsearch 0.92.0 (dev #1003, design-decision-surface.md B.3; owner decision 3): a reply owed ages out. Registered here, not in
+# `config_keys.py` (ratcheted). Never seeded: an absent key reads 60, the `actions/stale` `days-before-stale` default.
+NETWORK_REPLY_OWED_DAYS = "network.reply_owed_days"
+METADATA = {**METADATA, **ACTION_METADATA,
+            NETWORK_REPLY_OWED_DAYS: (60, "int", (7, 365),
+                                      "a person who wrote back longer ago than this many days, with no reply drafted, is named but "
+                                      "no longer listed for a reply (jobsearch 0.92.0)")}
 READER_KEYS = frozenset(METADATA)

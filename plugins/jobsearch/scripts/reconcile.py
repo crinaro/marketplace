@@ -109,7 +109,7 @@ _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 from _atomic import write_jsonl, write_json, write_text
 import validate_data as _vd
-import touches as _touches
+import touches as _touches, reach.follow_stop as _fstop    # 0.92.0: --all never reconciles a stop / resume row
 import journal as _journal
 
 try:
@@ -2160,7 +2160,7 @@ def main():
     # write-back below addresses a row by id, never by position in an array that no longer
     # exists (see the `--apply` block).
     targets = []
-    for r in _touches.load(ROOT)[0]:
+    for r in _fstop.ordinary(_touches.load(ROOT)[0]):
         oid = r.get("opp_id")
         o = opps_by_id.get(oid) or {}
         if args.role and oid != args.role:

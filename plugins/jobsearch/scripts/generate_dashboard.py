@@ -99,7 +99,7 @@ from dashboard import pagedata as pagedata_ui
 from dashboard import process as process_ui
 from dashboard import rank as rank_ui
 from dashboard import roles as roles_ui
-from dashboard import targets as targets_ui
+from dashboard import held as held_ui, targets as targets_ui
 
 
 # ⭐ THE ONE TERMINAL SET — validate_data's, by import. This file used to carry its own
@@ -452,12 +452,12 @@ def _targets_text(s):
     pd.targets_ask = targets_ui.ask_ids(listed, facts)
     pd.targets_not_raised = (_ym.classify_companies(str(ROOT), _now().date().isoformat())["look-into-waiting"]
                              if s.tr is not None else 0)
-    named = [e for e in excluded if e.get("how") == "name"]
+    named = [e for e in excluded if e.get("how") in ("name", "sightings")]
     pd.targets_text = {"heads": {a: _actions.head(a) for a in ("target-yes", "target-no", "target-later",
                                                                "company-kind-staffing", "company-kind-employer")},
                        "lines": {it["id"]: _actions.record_line("company:%s" % it["id"], it["name"])
                                  for it in listed + named},
-                       "tail": _actions.tail(len(tr.get("waiting") or []))}
+                       "tail": _actions.tail(len(tr.get("waiting") or [])), "unchecked": targets_ui.unchecked(listed, facts)}
 
 
 def build_page(root, now, run_id=None):
@@ -737,10 +737,8 @@ def _load_today(s):
                         for it in ((s.tr or {}).get("rows") or []) if it["id"] in by_cid]
     pd.quiet_days = _ym._cfg_int(str(ROOT), _ck.CHASE_AFTER_DAYS) + _ym._cfg_int(str(ROOT), _ck.NO_RESPONSE_AFTER_DAYS)
     listed = {it["id"] for it in ((s.tr or {}).get("rows") or []) if it["id"] in by_cid}
-    held_listed = sum(1 for o in s.live if o.get("company_id") in listed
-                      and getattr(s.stages.get(o.get("id")), "name", None) == "held-for-company"
-                      and getattr(s.stages.get(o.get("id")), "detail", None) == "undecided")
-    counts = {"checked": rep is not None, "snoozed": len((s.tr or {}).get("snoozed") or []), "held_listed": held_listed}
+    counts = {"checked": rep is not None, "snoozed": len((s.tr or {}).get("snoozed") or []),
+              "held_listed": held_ui.listed_count(s.live, listed, s.stages)}
     if rep is not None:
         prog = [st.since for st in s.stages.values() if st.name in _lifecycle.PROGRESS_STAGES and st.since]
         counts.update(roles=rep.totals.get("roles") or 0, ready=rep.ready, waiting=rep.waiting,
@@ -759,10 +757,10 @@ def _not_yet_due(s):
     chase, today = _ym._cfg_int(str(ROOT), _ck.CHASE_AFTER_DAYS), s.lc_now.date().isoformat()
     listed = {r["subject"] for r in (s.plan or {}).get("rows") or []}
     people = {p.get("id") for p in load_jsonl("people.jsonl") if p.get("id") and p.get("status") != "merged"}
-    talked = {t.get("person_id") for t in load_jsonl("touches.jsonl")} | {m.get("person_id")
-                                                                         for m in load_jsonl("messages.jsonl")}
-    n = 0
-    for pid in sorted(x for x in talked if x in people and "person:%s" % x not in listed):
+    touches, msgs, n = load_jsonl("touches.jsonl"), load_jsonl("messages.jsonl"), 0
+    talked = {t.get("person_id") for t in _ym._fstop.ordinary(touches)} | {m.get("person_id") for m in msgs}
+    for pid in sorted(x for x in talked if x in people and "person:%s" % x not in listed and not _ym._fstop.in_force(
+            [t for t in touches if t.get("person_id") == x], [m for m in msgs if m.get("person_id") == x])[0]):
         try:
             axes = _ym.conversation_axis(str(ROOT), pid, today=today, window=chase)
         except Exception as e:                                       # noqa: BLE001 - said, never a crash
@@ -818,6 +816,8 @@ def _render_network(s):
     s.first_network, s.n_network = network_ui.render_network_list(_plan, s.plan_failed, s.page_opp_keys, s.ledger, s.pd)
     _targets_text(s)
     s.first_targets, s.n_targets = targets_ui.render_targets_list(_tr, _net["rows"], s.ledger, s.pd)
+    s.first_held = held_ui.render(held_ui.load(str(ROOT), s.opp_rows, s.stages, s.opp_comps, s.lc_report, (_profile.title_matches, _ym._root_cfg(
+        str(ROOT))), _lifecycle.first_seen, s.lc_now.date(), _ym._cfg_int(str(ROOT), _ck.TARGETS_PER_WEEK)), s.ledger, lambda o: best_link(o)[0])
     if _tr_failed:
         # a raised company the targets list could not carry is still counted (one remainder), never lost
         _lost = [_r["key"] for _r in _net["rows"] if _r["group"] == "look-into"]
@@ -833,7 +833,7 @@ def _assemble(s):
     titles = _role_titles(s.lc_ctx, s.lc_snapshot) if (rep is not None and rep.failure_roles) else {}
     failure_texts = {k: _ym.failure_text(st) for k, st in rep.failure_roles} if rep is not None else {}
     alert_line = _lifecycle.alert_line(rep) if rep is not None else None
-    parts = dict(drafts=s.first_drafts, network=s.first_network, targets=s.first_targets, read=s.first_read,
+    parts = dict(drafts=s.first_drafts, network=s.first_network, targets=s.first_targets, held=s.first_held, read=s.first_read,
                  opps=s.first_opps, apply=s.first_apply, flags=s.first_flags,
                  n_drafts=len(s.drafts_active), n_opps=s.opp_counts["all"], n_apply=s.n_apply, n_flags=s.n_flags,
                  n_read=s.n_read, n_network=s.n_network, n_targets=s.n_targets,

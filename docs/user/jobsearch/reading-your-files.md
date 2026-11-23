@@ -97,6 +97,52 @@ works over Remote Control has not been tested, so do not rely on it. One loss is
 prep's text is no longer on the page, so before a call you need a chat turn (ask for the prep by
 date or company) or the file itself.
 
+### The page since 0.92.0: why each row is there, and what is left out
+
+0.92.0 keeps the 0.89.0 layout (below) and changes what the lists hold and how they explain themselves.
+
+**Buttons copy text, and say so.** Every button now reads *Copy <what> for N* (for example *Copy Work through for 5*, *Copy
+Yes for 10*), or *for the ticked ones* once you tick rows. After a click it reads "Copied. Paste it into your jobsearch session
+in Claude Code." One note, placed once after *Today*, says the rest: nothing is recorded until you paste the text into your
+jobsearch session in Claude Code, on your computer or its Remote Control session; a plain claude.ai chat cannot record it. A
+click on the page itself records nothing.
+
+**Network: who is listed, and why.** Each row under *They wrote back* and *Awaiting a reply* now says when they wrote (and how
+many days ago), the role it is about and whether that role is still live (or "about no role"), what a reply serves (your
+application, a role you are pursuing, a way in at a target company, or the relationship), and the next step.
+
+- **A reply owed ages out.** Someone who wrote back more than `network.reply_owed_days` days ago (60 unless you change it),
+  with no reply drafted, is no longer listed. Exactly 60 days old is still listed.
+- **An ended role drops out.** A thread about a role that has ended is not listed.
+- **Not listed is named, not hidden.** After *Awaiting a reply*, one closed fold, *Not listed*, counts and names everyone left
+  out and why: who wrote back more than N days ago, whose role has ended, and whom you stopped following. These are plain lines,
+  with no tick box.
+- **A possible duplicate is one row, never merged.** When two records look like the same person (same email, or the same name,
+  with or without the same employer), the page shows one row with a line "possible duplicate of {name} (same email, different
+  name; ...)". Nothing is merged for you. To settle it, merge the records (`record.py merge-person`) or record that they are
+  different people (`not_same_as`); either removes the flag.
+- **Stopping and resuming.** To stop following up with someone, say so to the coordinator: it runs `record.py stop-following`
+  (dry run first), and they leave both groups until they write again or you write to them. If they come back, their row says
+  "back on this list: they wrote on {date}, after you stopped following on {date}". `--undo` resumes. See *Stopping follow-up
+  with a person* in [Your data](your-data.md).
+- Someone with a draft staged, or a message queued in the outbox, is not listed here: their draft is on the page instead.
+
+**Targets.** Each company row lists up to three of its open role titles, the ones that match your target titles first, then
+"+K more", and how many match. A company whose every sighting came through a recruiter channel, with no role on its own
+postings, is left out as a staffing firm and never raised; it carries a tick box under **These are employers**, so a wrong
+call costs one tick. The heading says "Companies the engine can identify as aggregators or staffing firms are not listed."
+only when that check ran on every listed company; when a sighting's channel is unknown it says how many could not be checked
+instead.
+
+**Roles waiting on a company decision** is a new section after Targets. It lists, role first, each held role whose title
+matches your target titles at a company you have not decided about or are watching (not one you passed on, which is only
+counted): title, company, when it was first seen, and why it is held. The first row of each company has a tick box for that
+company under *Copy the "Target these companies" request for N*. Above the rows, one line gives the held count, split by why,
+and its change since a week ago ("+9 since {date}", "no change since {date}"). Until there is a count from a week ago it
+says "counting since {date}" (the first week after the upgrade), or "no count from a week ago yet". With no target titles
+configured nothing is listed and the line says why. A closed fold states the three caps between a find and a decision, in
+order. Companies holding a matching held role are also put to you first.
+
 ### The page since 0.89.0: Today first, three levels, tick boxes
 
 **Today leads the page**, and `Today` is the first entry in the bar pinned to the top. It shows at most five things,
@@ -119,7 +165,8 @@ nothing left to filter.
 closed fold for drafts **waiting, with nothing for you to do** ("2 held, waiting on their reply · 7 queued, waiting
 for a mailbox check"). Every draft's text is on the page once, in a closed fold on its row.
 
-**Network groups:** *They wrote back* (a person replied and no reply is drafted), *To record*, *Applied, no one
+**Network groups:** *They wrote back* (a person replied and no reply is drafted; since 0.92.0, within the last
+`network.reply_owed_days` days, above), *To record*, *Applied, no one
 contacted yet*, *Awaiting a reply*, *Introductions* and *Relationships due this week*. A person who wrote back is
 under *They wrote back* even when they are also an introduction you are waiting on. *Awaiting a reply* is split by
 how long it has been: *They accepted*, *Went quiet recently* (your last message is at most 21 days old with the default
@@ -127,18 +174,19 @@ settings),
 *Quiet for a long time* (a fold and a count only, never on Today), and *Not checked yet* (one line: those wait for a
 mailbox check, and there is nothing for you to do).
 
-**Targets** is one line per company: its name, its open roles and when it was raised. The staffing question is asked
+**Targets** is one line per company: its name, its open roles (since 0.92.0, with up to three titles) and when it was raised. The staffing question is asked
 only when there is a reason to doubt the company is an employer (every sighting came through a job board or a
 recruiter, or it has many open roles in unrelated kinds of job). Then the rows it applies to carry one extra button,
 **These are staffing firms**. Companies already left out as staffing firms or aggregators are one counted, closed fold;
-those left out only because of their name carry a tick box and one button, **These are employers**. **Yes asks how
+those left out only because of their name, or since 0.92.0 because every sighting came through a recruiter, carry a tick box
+and one button, **These are employers**. **Yes asks how
 motivated you are about each company, 1 to 5**, before anything is recorded: the coordinator asks you, and never
 picks the number (on 0.88, every Yes from the page failed and recorded nothing).
 
 **Acting on the page: tick boxes and one button per list.** Each row you can act on has a tick box, and each list or
 group has one button (*Work through* for most lists, *Draft replies* or *Draft messages* in the Network, *Yes*, *No*
-and *Later* in Targets). With nothing ticked, the button takes the open rows; tick rows, including folded ones, and it
-takes exactly those. Today's items start ticked. The button copies one block naming every record. Paste it into your
+and *Later* in Targets; since 0.92.0 each reads *Copy ... for N*). With nothing ticked, the button takes the open rows; tick rows, including folded ones, and it
+takes exactly those. Today's items start ticked. The button copies one block naming every record, and records nothing. Paste it into your
 coordinator session: for *Work through*, the coordinator goes through the records one at a time, asks the one
 question each needs, and records your answer; for a write such as *No*, it ends with one line, for example
 `applied 3 of 4 (1 refused)`, and tells you why the refused one was refused. Rows past the fold are not in the block,

@@ -817,7 +817,7 @@ One record per touch. The fields exist to make "which approach actually works?" 
 | `person_id` | who you reached — every touch is to a person, always resolved through `people.jsonl` |
 | `opp_id` | the role this touch was about, if any. **Optional** — a channel-anchored or fully unanchored networking touch is a legal row with no role attached |
 | `medium` | a LinkedIn connection note, an InMail and a direct message get read at completely different rates. Pooling them makes any reply rate meaningless |
-| `touch_type` | a first touch and a chase have different base rates |
+| `touch_type` | a first touch and a chase have different base rates. Since 0.92.0 two more values, `stop-following` and `resume-following`, mark that you stopped or resumed following up with a person; they are not outreach, and only `record.py stop-following` writes them (see *Stopping follow-up with a person*, below) |
 | `channel_id` | the relationship the touch travelled through — a recruiting firm, a warm-network channel. `null` is correct and expected for a cold touch: it names the *relationship*, never the medium (that is `medium`) |
 | `to` | the recipient's display name as it read when you sent — required and non-empty on a sent touch. It is a label for you to read; the resolving link to the person is `person_id` |
 | `variant` | a short slug naming the style or approach you used (for example a shorter opener versus a longer one), so an approach can be scored against `outcome` later. `null` when you are not tracking one |
@@ -831,6 +831,7 @@ One record per touch. The fields exist to make "which approach actually works?" 
 | `sequence_id`, `sequence_step` | groups this touch into a multi-step play with other outreach and staged drafts under the same `sequence_id`, ordered by `sequence_step` |
 | `plan_id`, `play_step` | since 0.49.0 — which plan this touch counts toward, and which play step it satisfies (`reach-insider`, …), or the marker `unresolved` when the touch predates 0.49.0 and can't be assigned a step automatically. Only set on a touch anchored to a role (`opp_id`); a networking touch has no plan to derive one from. See *Plans and plays* above |
 | `build_kind` | since 0.91.0 — which BUILD step this touch carried out (an advice ask, a side-door ask, ...), copied from the brief your draft cited when the outbox saw the message in Sent |
+| `inbound_seen` | since 0.92.0 — only on a `stop-following` row: how many of their messages dated the day before, the day of or the day after the stop the engine had already stored, so a later message from them brings them back. Written by `record.py stop-following <person>` alone; `record.py set` refuses to change it, and no other row may carry it |
 | `note` | free text of your own about this touch |
 
 #### Recording a touch with no role — the person form of `touched` (since 0.62.0)
@@ -855,6 +856,38 @@ someone you have on record but with no role and no channel, is moved out of `dra
 recording (or finding) exactly this kind of touch for that date. A `SENT` entry with no date, or
 one whose recipient resolves to nobody, is left in place and reported — the engine does not invent
 a date or a recipient.
+
+#### Stopping follow-up with a person — `record.py stop-following` (since 0.92.0)
+
+When you no longer want the dashboard to list someone under *They wrote back* or *Awaiting a reply*, say so to the
+coordinator ("stop following up with them"). It runs, dry run first:
+
+`record.py stop-following <person-id> [--note "<why>"] [--dry-run]`
+
+It adds one row to `touches.jsonl` and never edits or removes one, so the history of a stop is its rows. It prints
+`stopped following <name> (<id>) on <date>: they leave "They wrote back" and "Awaiting a reply"; a later message from them, once
+stored by the mail sweep or record.py received, brings them back`, and then one line for each of these that is true:
+
+- no message from them dated yesterday, today or tomorrow is stored yet, so one that a later run stores brings them back once
+  (stop again then if you still mean it);
+- a cadence is still set on them, so they stay under *Relationships due* when it falls due;
+- a possible duplicate record of them is not stopped (its id is named);
+- an outbox row is still open for them: stopping does not withdraw it. A draft staged in `drafts.md` with no outbox row is
+  not looked for, so nothing is printed about it;
+- no mailbox is set up on this machine, so their replies have to be recorded with `record.py received` to bring them back.
+
+**What brings them back.** A message from them dated after the stop, or a message you send them. The page then lists them
+again with "back on this list: they wrote on {date}, after you stopped following on {date}". A message from the same three days
+that is stored only after the stop counts as new and brings them back once; that is deliberate, because hiding a real reply is
+the worse mistake.
+
+**Resuming.** `record.py stop-following <person-id> --undo` adds a `resume-following` row: they are listed again whenever a
+thread with them needs a reply or a nudge. It refuses when no stop is in force, and says what reopened the last one and when.
+
+It refuses, and writes nothing, for an id that is no person, a record merged into another (it names the one to use), a person
+with no message and no touch, a stop already in force (it names that row), and a profile the 0.92.0 upgrade has not marked yet
+(it names the pending step). If it prints `invalid choice: 'stop-following'`, the scripts loaded are older than the coordinator:
+run `/reload-plugins` and try again.
 
 #### Recording a touch changes more than the touch — since 0.54.0
 
@@ -1929,6 +1962,14 @@ below.
 | `access.employment_recheck_days` | days after which someone you said works at a company is listed once to re-confirm. They are still counted meanwhile. A whole number from 90 to 1095; defaults to **365** |
 | `reach.kinds_off` | the BUILD kinds you do not want suggested at a target with no way in, from `advice-ask`, `affiliation-lookup`, `side-door`, `hm-note`, `recruiter-direct`, `plain-lookup`, `event`, `career-services`. Defaults to `[]` (every kind). An unknown name is refused, never ignored |
 
+### Settings added in 0.92.0 (`config.json.network`)
+
+No upgrade step writes this. If you have not set it, it uses its default.
+
+| key | what it is |
+|---|---|
+| `network.reply_owed_days` | how long someone who wrote back stays listed under "They wrote back" with no reply drafted. Past it they are no longer listed, and the Network section names them under *Not listed*. A whole number from 7 to 365; defaults to **60** |
+
 ## Action modes — `config.json.actions` (since 0.91.0)
 
 For each kind of outward act, who performs it: `you` (the default), or `me`, meaning the plugin does it **after you approve that
@@ -2329,6 +2370,28 @@ everything else in [the documents table above](#the-documents): `focus.md` →
 automatic, no-action-needed move as the rest of the tree.
 
 ---
+
+### What the 0.92.0 upgrade writes
+
+One automatic step (`m_0_92_0_decision_surface`). **It adds one mark to the run history**, `data/runs.jsonl`, saying the profile
+needs 0.92.0 or later, and changes nothing else: no file is rewritten and no copy is made. If the run history cannot be read it
+writes nothing and tries again next session. Until the mark is written, `record.py stop-following` refuses and names the step, and
+the held count on the dashboard reads "no count recorded: an update step is pending".
+
+**If you use more than one machine.** Once the mark is written, a machine still on 0.91.x refuses every `record.py` command and
+every read of the run history: it says "Update the plugin on this machine before running it here". It can still regenerate its
+own dashboard, without its Network rows and naming the same remedy, and publish it over the newer one, so update the plugin on
+every machine.
+
+New fields this release adds, none of which rewrites a stored row: the `stop-following` and `resume-following` touch rows and
+their `inbound_seen` (above, under touches); an optional `held` count on the run history's daily `companies-raised` line
+(`{undecided, watching, passed}`, written once per run from the first run after the mark); and the `network.reply_owed_days`
+setting (see *Settings added in 0.92.0*).
+
+**`record.py set`, `set-in` and `confirm --set` read a value by the field's kind (since 0.92.0).** A field that holds an
+object or a list (for example `location`, `comp` or `research_log`) is read as JSON and must be one; any other field keeps your
+text as written, so a note starting with `[` or `{`, such as `[CLAUDE] checked`, is stored as that text. A malformed object or
+list is refused with `⛔ REFUSED` naming the field, never a crash. `true`, `false`, `null` and whole numbers are read as before.
 
 ## Editing by hand
 

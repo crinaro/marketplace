@@ -4,7 +4,7 @@ import html
 
 from dashboard import rank, today as today_ui
 from dashboard.caps import TODAY_CAP
-from dashboard.actions_ui import PICK_SCRIPT, SHARED_FALLBACK
+from dashboard.actions_ui import COPY_NOTE, PICK_SCRIPT, SHARED_FALLBACK
 from dashboard.markup import esc
 from dashboard.network import NETWORK_SECTION
 from dashboard.roles import READ_SECTION, RESCREEN_SECTION
@@ -310,12 +310,18 @@ CSS = """
 """ + _CSS_ROUTER
 
 
+# The page's ONE copy note (jobsearch 0.92.0, owner decision 1, review round 2 H6): what a tick and a button do, said once
+# instead of under every heading (it replaces the Network heading's own sentence). `actions_ui.COPY_NOTE` is its last sentence.
+PAGE_NOTE = '<div class="sub copy-note">Buttons copy text. %s</div>' % COPY_NOTE
+
+
 def render(pd, parts, ledger):
     """The ONE page (cut from `main`, dashboard-redesign A). Page order: jump bar, title, `Generated`, the
     ONE alert line (nothing when healthy), Today (`dashboard.today`, dashboard-redesign D1, always the first list),
-    the lists, the "Not on this page" note, the collapsed process
+    the copy note (`PAGE_NOTE`, once, when a button is on the page; jobsearch 0.92.0, owner decision 1), the lists
+    (Targets, then Roles waiting on a company decision, `dashboard.held`), the "Not on this page" note, the collapsed process
     block, the conservation line (last). `parts` holds the rendered sections (`drafts`, `network`,
-    `targets`, `read`, `opps`, `apply`, `flags`, `alert`, `process`, `conservation`) and the jump bar's
+    `targets`, `held`, `read`, `opps`, `apply`, `flags`, `alert`, `process`, `conservation`) and the jump bar's
     counts (`n_drafts`, `n_opps`, `n_apply`, `n_flags`, `n_read`, `n_network`, `n_targets`); `pd` the
     title, the clock, the run and the note's values; `ledger` is the render's: the page writes only Today's block to it
     (`Ledger.place_today`, dashboard-redesign E; the filter chips' block retired, D-6). Each list's count in the jump bar is its WHOLE count (design §2)."""
@@ -326,15 +332,16 @@ def render(pd, parts, ledger):
     # a list that is not on the page is a plain, unlinked label, so the bar never links to nothing.
     # dashboard-redesign D1 (design §2, §3.6 rule 3): Today is the FIRST list, always on the page (items or its one
     # sentence), so the first-lists section always exists and nothing but the frame and one alert precedes it.
-    _lists = "\n".join(x for x in (_first_drafts, _first_network, _first_targets, _first_read, _first_opps,
-                                   _first_apply, _first_flags) if x)
+    _lists = "\n".join(x for x in (_first_drafts, _first_network, _first_targets, parts.get("held"), _first_read,
+                                   _first_opps, _first_apply, _first_flags) if x)
     _today = today_ui.render(pd, {"drafts": JUMP_TARGETS[0][1], "network": NETWORK_SECTION,
                                   "targets": TARGETS_SECTION, "opps": JUMP_TARGETS[1][1], "read": READ_SECTION,
                                   "apply": JUMP_TARGETS[2][1]}, lambda anchor: (' id="%s"' % anchor) in _lists)
     ledger.place_today(TODAY_CAP, [{"kind": it.kind.name, "ref": it.ref[0]} if it.ref is not None else
                                    {"kind": it.kind.name, "count": it.count} for it in rank.plan(pd, TODAY_CAP)[0]])
+    _note = PAGE_NOTE if 'class="pick-go"' in _today + _lists else ""
     _first_html = '<section class="first" id="first-lists">\n%s\n</section>' % "\n".join(
-        [_today] + ([_lists] if _lists else []))
+        x for x in [_today, _note, _lists] if x)
     jump_html = render_jump_bar(parts["n_drafts"] if _first_drafts else None,
                                 parts["n_opps"] if _first_opps else None,
                                 parts["n_apply"] if _first_apply else None,

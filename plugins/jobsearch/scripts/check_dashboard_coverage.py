@@ -134,6 +134,7 @@ import _tree                                                        # noqa: E402
 import channels_due as _cd                                          # noqa: E402
 import knowledge as _kn                                             # noqa: E402
 import precondition as _pre                                         # noqa: E402
+from coverage_checks import held_gaps as _held                      # noqa: E402  (0.92.0, dev #1002: the held roles)
 from coverage_checks.folds import check_folds                       # noqa: E402
 from coverage_checks.picks import check_picks                       # noqa: E402
 from coverage_checks.script import check_scripts                    # noqa: E402
@@ -659,6 +660,15 @@ def check_subject_twice(page):
 _PURSUE_RE = re.compile(r'id="phase-pipeline-roles">[^<]*<span class="tcount">(\d+)</span>')
 
 
+def _lifecycle_facts(root, now):
+    """`(data, process_report, ctx, your_move, title matcher)` at `now`: PURSUE COUNT and the held roles read it (0.92.0, §E)."""
+    import lifecycle as _lifecycle
+    import your_move as _ym
+    data, cfg = _lifecycle.load_data(root), _ym._root_cfg(root)
+    return (data, _lifecycle.process_report(data, now), _ym.lifecycle_context(data["opportunities"], now, data), _ym,
+            lambda t: _ym._profile.title_matches(t, cfg))
+
+
 def check_pursue_count(page, root):
     """(gaps, line): PURSUE COUNT (dev #902). See the banner above for the rule."""
     m_gen = _PGEN_RE.search(page)
@@ -676,11 +686,7 @@ def check_pursue_count(page, root):
         NOT_CHECKED.append("pursue count (no Opportunities heading and no empty-state label on the page)")
         return [], "pursue count: NOT CHECKED"
     try:
-        import lifecycle as _lifecycle
-        import your_move as _ym
-        data = _lifecycle.load_data(root)
-        rep = _lifecycle.process_report(data, now)
-        ctx = _ym.lifecycle_context(data["opportunities"], now, data)
+        data, rep, ctx, _ym, _matches = _lifecycle_facts(root, now)
         ready = [o for o in data["opportunities"] if ctx.stage_of_opp(o).name == "ready"]
         cells = {}
         for o in ready:
@@ -1033,27 +1039,21 @@ def check(root, verbose=False):
         gaps.extend(td_gaps + f_gaps + pk_gaps)
     except Exception as e:                                       # noqa: BLE001 - said, never a pass
         NOT_CHECKED.append("today, folds, picks (the page could not be walked: %s: %s)" % (type(e).__name__, e))
-    w_gaps, w_line = check_warm_path(page, root, today)
-    gaps.extend(w_gaps)
-    p_gaps, p_line = check_process_block(page, root)
-    gaps.extend(p_gaps)
-    t_gaps, t_line = check_top_region(page)
-    gaps.extend(t_gaps)
-    n_gaps, n_line = check_network_note(page, root, today)
-    gaps.extend(n_gaps)
-    c_gaps, c_line = check_no_cli(page)
-    gaps.extend(c_gaps)
-    st_gaps, st_line = check_subject_twice(page)
-    gaps.extend(st_gaps)
-    pc_gaps, pc_line = check_pursue_count(page, root)
-    gaps.extend(pc_gaps)
+    x_lines = [l_line]               # the page checks below, in their order; each line is printed in that order
+    for fn, args in ((check_warm_path, (page, root, today)), (check_process_block, (page, root)), (check_top_region, (page,)),
+                     (check_network_note, (page, root, today)), (check_no_cli, (page,)), (check_subject_twice, (page,)),
+                     (check_pursue_count, (page, root)),
+                     (_held.run, (page, ledger, lambda now: _lifecycle_facts(root, now), NOT_CHECKED))):   # 0.92.0, dev #1002
+        x_gaps, x_line = fn(*args)
+        gaps.extend(x_gaps)
+        x_lines.append(x_line)
     n_exp = len(exp)
     n_placed = n_exp - sum(1 for g in gaps if g.startswith("UNPLACED"))
     lines = ["covered %d of %d record(s) — %d rendered · %d referenced · %d in counted remainders · "
              "%d terminal · %d elsewhere (generated %s, prep window %d days)"
              % (n_placed, n_exp, counts["rendered"], counts["referenced"], counts["remainder"],
                 counts["terminal"], counts["elsewhere"], today.isoformat(), horizon)]
-    lines.extend([l_line, w_line, p_line, t_line, n_line, c_line, st_line, pc_line, td_line, f_line, pk_line])
+    lines.extend(x_lines + [td_line, f_line, pk_line])
     if verbose:
         lines.extend("  " + p for p in placements)
     # EXACTLY ONCE is a GAP since design r3 (check_links); nothing is advisory any more. The

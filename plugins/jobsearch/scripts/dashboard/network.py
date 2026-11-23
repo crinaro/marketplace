@@ -24,6 +24,7 @@ record, `draft-message` for the rest. A row's tick box carries `data-pick` = its
 import collections
 
 from dashboard import caps, rank
+from reach import follow_rows
 from dashboard.actions_ui import group_attr, group_button, pick
 from dashboard.markup import _rec_attrs, _ref_attrs, _ref_link, esc, plain, theirs
 
@@ -122,13 +123,21 @@ def _row(r, level, refs, text, ledger):
         ledger.cover(r["key"], "referenced", target)
     line = text["lines"].get(r["key"])
     box = pick(pick_key(r), line, r["who"], level=level) if line else ""
+    person = "serves" in r                     # 0.92.0: a reply-owed / awaiting-reply row of reach/follow_rows (design B.4)
+    extra = [follow_rows.about_text(r) + "; " + follow_rows.serves_text(r), follow_rows.duplicate_text(r),
+             follow_rows.back_text(r)] if person else []
+    why = follow_rows.why_text(r) if person else r["why"]
+    if level == 2 and person:
+        why = " · ".join([why] + extra[:1] + (["possible duplicate"] if extra[1] else []))
     bits = ['<div class="net-row%s"%s data-subject="%s" data-group="%s">%s<strong>%s</strong> <span class="sub">%s</span>'
             % ("" if level == 1 else " net-line", _ref_attrs(target) if is_ref else _rec_attrs(r["key"]),
-               esc(r["subject"]), esc(r["group"]), box, theirs(r["who"], _who_site(r)), esc(plain(r["why"])))]
+               esc(r["subject"]), esc(r["group"]), box, theirs(r["who"], _who_site(r)), esc(plain(why)))]
     if level == 1:
-        if r.get("last_touch"):
+        bits.extend('<div class="sub">%s</div>' % esc(plain(x)) for x in extra if x)
+        if r.get("last_touch") and not person:                          # a person row's first line carries its date
             bits.append('<div class="sub">last touch %s</div>' % esc(str(r["last_touch"])))
-        bits.append('<div class="sub">next: %s</div>' % esc(plain(r["next_step"])))
+        step = "send the note" if person and r.get("state") == "accepted" else r["next_step"]   # its first line says accepted
+        bits.append('<div class="sub">next: %s</div>' % esc(plain(step)))
         if is_ref:
             bits.append(_ref_link(target, "the role below" if target == r["key"] else "its row in Drafts"))
     elif is_ref:
@@ -147,8 +156,8 @@ def _levels(s, refs, text, ledger):
     in the ledger's remainder). A `Not checked yet` list is its one counted line."""
     if s.mode == "line":
         ledger.cover_set("network-%s" % s.id, [], [r["key"] for r in s.rest])
-        return ('<div class="sub ws-more" data-more="network-%s:%d">%d %s waiting for a mailbox check. Nothing for you '
-                'to do.</div>' % (s.id, len(s.rest), len(s.rest), "is" if len(s.rest) == 1 else "are"))
+        return ('<div class="sub ws-more" data-more="network-%s:%d">%d %s for a mailbox check; nothing to do.</div>'
+                % (s.id, len(s.rest), len(s.rest), "waits" if len(s.rest) == 1 else "wait"))
     out = [_row(r, 1, refs, text, ledger) for r in s.open]
     if s.folded:
         out.append('<details class="net-fold"><summary>%s</summary>%s</details>'
@@ -156,8 +165,8 @@ def _levels(s, refs, text, ledger):
                       "".join(_row(r, 2, refs, text, ledger) for r in s.folded)))
     if s.rest:
         ledger.cover_set("network-%s" % s.id, [], [r["key"] for r in s.rest])
-        out.append('<div class="sub ws-more" data-more="network-%s:%d">+ %d more that are not on this page. To see '
-                   'them, say to the coordinator: Show me every row of %s.</div>'
+        out.append('<div class="sub ws-more" data-more="network-%s:%d">+ %d more not on this page: ask the coordinator '
+                   'for every row of %s.</div>'
                    % (s.id, len(s.rest), len(s.rest), esc(s.heading)))
     return "".join(out)
 
@@ -178,6 +187,27 @@ def _group(g, subs, refs, text, ledger):
     else:
         body = _head(subs[0], "net-head") + button + _levels(subs[0], refs, text, ledger)
     return '<div class="net-group"%s>%s</div>' % (group_attr("network-%s" % g), body)
+
+
+def _not_listed(nl):
+    """The closed fold after Awaiting a reply naming every person the plan left out and why (0.92.0, design B.4 / Rendering): text,
+    never rows (no tick box, no `data-rec`), so nothing has to be asked for. "" when nobody was left out."""
+    people = (nl or {}).get("people") or []
+    if not people:
+        return ""
+    n = collections.Counter(p["why"] for p in people)
+    head = " · ".join(x for x in (
+        "%d who wrote back more than %s days ago" % (n["aged"], nl.get("days")) if n["aged"] else "",
+        "%d whose role has ended" % n["ended"] if n["ended"] else "",
+        "%d you stopped following" % n["stopped"] if n["stopped"] else "") if x)
+    lines = []
+    for p in people:
+        what = {"aged": "wrote back on %s" % p.get("on"),
+                "ended": "%s at %s has ended" % (p.get("title") or "their role", p.get("company") or "?"),
+                "stopped": "you stopped following on %s" % p.get("on")}[p["why"]]
+        lines.append('<div class="sub net-line">%s · %s</div>' % (theirs(p["name"], "person-name"), esc(what)))
+    return '<details class="net-fold net-not-listed"><summary>%s</summary>%s</details>' % (esc("Not listed: " + head),
+                                                                                         "".join(lines))
 
 
 def _expired(expired):
@@ -212,7 +242,8 @@ def render_network_list(plan, failed, page_opp_keys, ledger, pd):
     a row refers only to a role in `page_opp_keys`."""
     rows = (plan or {}).get("rows") or []
     expired = (plan or {}).get("expired_this_week") or []
-    if not rows and not expired and not failed:
+    hidden = _not_listed((plan or {}).get("not_listed"))
+    if not rows and not expired and not failed and not hidden:
         return "", None
     parts = []
     if failed:
@@ -225,11 +256,13 @@ def render_network_list(plan, failed, page_opp_keys, ledger, pd):
         parts.append(_group(g, subs, refs, text, ledger))
         if g == "applied-no-contact" and expired:
             parts.append(_expired(expired))
+        if g == "awaiting-reply" and hidden:
+            parts.append(hidden)
     if expired and not any(g == "applied-no-contact" for g, _s in lay):
         parts.append(_expired(expired))
+    if hidden and not any(g == "awaiting-reply" for g, _s in lay):
+        parts.append(hidden)
     n = sum(len(s.open) + len(s.folded) + len(s.rest) for _g, subs in lay for s in subs if s.mode != "line")
     return ('<span id="phase-outreach-people"></span>'   # D6: the retired People-due block's anchor, kept empty
-            '<h2 id="%s">&#129309; Network <span class="tcount">%d</span></h2>'
-            '<div class="sub" style="margin:-6px 0 10px">Tick the rows you want, or none for the open rows, then use '
-            'the group\'s button and paste the text into your session. Nothing here is sent for you.</div>'
+            '<h2 id="%s">&#129309; Network <span class="tcount">%d</span></h2>'   # the tick sentence: page.PAGE_NOTE
             '<div class="card">%s</div>' % (NETWORK_SECTION, n, "".join(parts))), n

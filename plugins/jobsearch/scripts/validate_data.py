@@ -248,7 +248,7 @@ from validation.vocab import (
     OUTREACH_OUTCOME,
     MEDIA,
     RETIRED_CHANNEL_IDS,
-    TOUCH_TYPES,
+    TOUCH_TYPES, FOLLOW_CONTROL_TYPES,
     RECIPIENT_ROLES,
     ADDRESS_STATUS,
     DELIVERY,
@@ -1728,7 +1728,7 @@ def _main():
             problems.append("%s: still awaiting, but messages[%s] answers its message_ref %r "
                             "— set responded_on (and outcome) on the row"
                             % (label, "/".join(str(x) for x in answered_by[_mref]), _mref))
-        for fld, allowed in (("medium", MEDIA), ("touch_type", TOUCH_TYPES),
+        for fld, allowed in (("medium", MEDIA), ("touch_type", TOUCH_TYPES | FOLLOW_CONTROL_TYPES),
                              ("recipient_role", RECIPIENT_ROLES), ("delivery", DELIVERY)):
             v = t.get(fld)
             if v is not None and v not in allowed:

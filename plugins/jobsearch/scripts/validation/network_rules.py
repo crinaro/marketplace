@@ -15,6 +15,7 @@ from validation.vocab import (
     EMPLOYMENT_OWNED_FIELDS,
     EMPLOYMENT_SOURCES,
     EMPLOYMENT_STATUS,
+    FOLLOW_CONTROL_TYPES,
     FORMERLY_KEYS,
     PROPOSAL_NEEDS_SENT_ON,
     PROPOSAL_STATUS,
@@ -110,6 +111,7 @@ def check_touch_build(t, label, problems, company_ids, involvements):
     and an `object_company_id`; `side-door` is an `intro-request` with an `opp_id` and an `object_company_id` whose recipient holds a
     `side-contact` involvement on that role. A wrong shape is refused, never read as "not from a BUILD line": the field is what the
     week's counts and `access._open_intros` read."""
+    check_follow_control(t, label, problems)                      # 0.92.0: the stop / resume control rows
     ocid = t.get("object_company_id")
     if ocid is not None and ocid not in company_ids:
         problems.append("%s: object_company_id %r does not resolve" % (label, ocid))
@@ -134,6 +136,39 @@ def check_touch_build(t, label, problems, company_ids, involvements):
             problems.append("%s: build_kind 'side-door' needs the opp_id of the role the ask is about" % label)
         elif not side:
             problems.append("%s: build_kind 'side-door' needs a recipient holding a `side-contact` involvement on %r" % (label, oid))
+
+
+# The fields a follow-control row must leave empty (design-decision-surface.md B.1): no role, no channel, nothing it is about, no
+# message, no reply and no cause. These are what keep the row out of every reader that joins on a role or counts a send.
+FOLLOW_CONTROL_EMPTY = ("opp_id", "channel_id", "object_person_id", "object_company_id", "message_ref", "responded_on",
+                        "trigger_kind", "trigger_ref", "build_kind")
+
+
+def check_follow_control(t, label, problems):
+    """A `stop-following` / `resume-following` touch (jobsearch 0.92.0, dev #951, design-decision-surface.md B.1) is a control row,
+    never outreach: `status` declined, `medium` other, `outcome` null or n/a, an ISO-day `date`, every field of
+    FOLLOW_CONTROL_EMPTY empty, and on a stop an int `inbound_seen` >= 0 (the inbound stored within a day of the stop when it was
+    written). Any other row carrying `inbound_seen` is refused: the field belongs to the stop alone. A bool is not an int here."""
+    kind = t.get("touch_type")
+    if kind not in FOLLOW_CONTROL_TYPES:
+        if "inbound_seen" in t:
+            problems.append("%s: inbound_seen belongs only on a stop-following row (written by `record.py stop-following`), "
+                            "not on a %r touch" % (label, kind))
+        return
+    for fld, want in (("status", ("declined",)), ("medium", ("other",)), ("outcome", (None, "n/a"))):
+        if t.get(fld) not in want:
+            problems.append("%s: a %s row has %s %s, got %r" % (label, kind, fld, " or ".join(str(w) for w in want), t.get(fld)))
+    if not is_date(t.get("date") or ""):
+        problems.append("%s: a %s row's date is an ISO day (YYYY-MM-DD), got %r" % (label, kind, t.get("date")))
+    for fld in FOLLOW_CONTROL_EMPTY:
+        if t.get(fld) not in (None, ""):
+            problems.append("%s: a %s row carries no %s (it is a control row, not outreach), got %r" % (label, kind, fld, t.get(fld)))
+    seen = t.get("inbound_seen")
+    if kind == "stop-following":
+        if isinstance(seen, bool) or not isinstance(seen, int) or seen < 0:
+            problems.append("%s: a stop-following row's inbound_seen is an integer of 0 or more, got %r" % (label, seen))
+    elif "inbound_seen" in t:
+        problems.append("%s: inbound_seen belongs only on a stop-following row, not on %s" % (label, kind))
 
 
 def check_employment(r, label, problems, company_ids):

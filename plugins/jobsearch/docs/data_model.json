@@ -42,6 +42,24 @@
     "via_person_id",
     "via_commitment_id"
    ],
+   "shapes": {
+    "comp": "object",
+    "location": "object",
+    "sightings": "array",
+    "research_log": "array",
+    "fit": "object",
+    "decision": "object",
+    "listed_pay": "object",
+    "listed_pay_prior": "array",
+    "posted": "object",
+    "screen": "object",
+    "lean": "object",
+    "employer_posting": "object",
+    "passed_from": "object",
+    "distinct_from": "array",
+    "jd_read": "object",
+    "capture": "object"
+   },
    "required": [
     "id",
     "company_id",
@@ -124,6 +142,13 @@
     "kind",
     "later_on"
    ],
+   "shapes": {
+    "research_log": "array",
+    "ats": "object",
+    "warm_lookup": "object",
+    "aliases": "array",
+    "backed_by": "array"
+   },
    "required": [
     "id",
     "name",
@@ -157,6 +182,12 @@
     "query_template",
     "prior_relationship_status"
    ],
+   "shapes": {
+    "log": "array",
+    "next_touch": "object",
+    "board_hosts": "array",
+    "prior_relationship_status": "object"
+   },
    "required": [
     "id",
     "label",
@@ -226,6 +257,9 @@
     "note",
     "suggests"
    ],
+   "shapes": {
+    "suggests": "object"
+   },
    "required": [
     "id",
     "kind",
@@ -257,6 +291,9 @@
     "notes_ref",
     "intros_given"
    ],
+   "shapes": {
+    "intros_given": "array"
+   },
    "required": [
     "id",
     "date",
@@ -309,6 +346,12 @@
     "employment",
     "formerly"
    ],
+   "shapes": {
+    "not_same_as": "array",
+    "ties": "array",
+    "employment": "object",
+    "formerly": "array"
+   },
    "required": [
     "id",
     "name",
@@ -354,6 +397,9 @@
     "via_person_id",
     "via_commitment_id"
    ],
+   "shapes": {
+    "form_answers": "array"
+   },
    "required": [
     "opp_id",
     "date",
@@ -377,6 +423,10 @@
     "doc_ref",
     "note"
    ],
+   "shapes": {
+    "conceptual_agreement": "object",
+    "rate": "object"
+   },
    "required": [
     "id",
     "opp_id",
@@ -436,7 +486,8 @@
     "sequence_step",
     "plan_id",
     "play_step",
-    "build_kind"
+    "build_kind",
+    "inbound_seen"
    ],
    "required": [
     "person_id",
@@ -476,6 +527,11 @@
     "none_found_checks",
     "note"
    ],
+   "shapes": {
+    "to": "array",
+    "cc": "array",
+    "bcc": "array"
+   },
    "required": [
     "id",
     "person_id",
@@ -513,6 +569,11 @@
     "note",
     "assessments"
    ],
+   "shapes": {
+    "outcomes": "array",
+    "targets": "object",
+    "assessments": "array"
+   },
    "required": [
     "id",
     "subject_kind",
@@ -533,6 +594,9 @@
       "note",
       "proposals"
      ],
+     "shapes": {
+      "proposals": "array"
+     },
      "required": [
       "date",
       "as_of",
@@ -581,6 +645,10 @@
     "status",
     "note"
    ],
+   "shapes": {
+    "params": "object",
+    "steps": "array"
+   },
    "required": [
     "id",
     "steps",
@@ -612,6 +680,14 @@
     "engine",
     "build"
    ],
+   "shapes": {
+    "latest_in": "object",
+    "latest_out": "object",
+    "evidence": "object",
+    "windows": "object",
+    "open_asks": "array",
+    "build": "object"
+   },
    "required": [
     "id",
     "computed_at",

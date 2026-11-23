@@ -24,6 +24,7 @@ from recording.common import Mutation, _Refused, _Usage
 from recording.decisions import _your_move_visibility_note
 from recording.affiliations_verb import AFFILIATION_OPS, cmd_affiliations
 from recording.employment import EMPLOYMENT_OPS, cmd_employment
+from recording.follow_verbs import FOLLOW_OPS, cmd_follow, owned_refusal
 from recording.generic import cmd_fields
 from recording.persons import _reuse_people
 from recording.reads import JD_READ_OPS, _jd_read_mutation, _stage_line
@@ -60,7 +61,7 @@ def preflight(args):
     jobsearch 0.91.0: the two employment verbs (`employment`, `moved`) make their own write and answer here, the way
     `fields` does: record.py's `_dispatch` is an entry point at its line budget, so a new verb reaches its command from
     this, the store-verb path's first step (recording/employment.py). `affiliations` (user.json's one writer,
-    recording/affiliations_verb.py) is reached the same way."""
+    recording/affiliations_verb.py) is reached the same way, and so is jobsearch 0.92.0's `stop-following` (recording/follow_verbs.py)."""
     if args.reuse and not (args.op == "create" and args.file == "people"):
         print("⛔ REFUSED — --reuse applies only to `create <id> '<json>' --file people`.")
         return 1
@@ -70,6 +71,8 @@ def preflight(args):
         return cmd_employment(args)
     if args.op in AFFILIATION_OPS:
         return cmd_affiliations(args)
+    if args.op in FOLLOW_OPS:
+        return cmd_follow(args)
 
     if args.reuse:
         _reuse_rc = _reuse_people(args)
@@ -187,7 +190,8 @@ def _dry_run(args, rows, rec, m):
         _introduced = (introduced_row_violations(
                            args.file, None if args.op == "create" else rec, _after_row)
                        + verb_owned_refusal(
-                           args.op, args.file, None if args.op == "create" else rec, _after_row))
+                           args.op, args.file, None if args.op == "create" else rec, _after_row)
+                       + owned_refusal(args.op, args.file, None if args.op == "create" else rec, _after_row))
     if _introduced:
         print("  ⛔ a REAL (non-dry-run) write of this would be REFUSED (nothing is written):")
         print("  " + "\n  ".join("- " + m for m in _introduced))
@@ -300,7 +304,8 @@ def _write_locked(args, m):
         _introduced = (introduced_row_violations(
                            args.file, _row_before, new_row if args.op == "create" else rec)
                        + verb_owned_refusal(
-                           args.op, args.file, _row_before, new_row if args.op == "create" else rec))
+                           args.op, args.file, _row_before, new_row if args.op == "create" else rec)
+                       + owned_refusal(args.op, args.file, _row_before, new_row if args.op == "create" else rec))
     if _introduced:
         print("  ⛔ REFUSED — this write would introduce a violation (nothing was written):")
         print("  " + "\n  ".join("- " + m for m in _introduced))

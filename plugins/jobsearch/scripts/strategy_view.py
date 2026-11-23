@@ -61,7 +61,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import _atomic
 import _tree
-from reach import standing_rows as _rows
+from reach import follow_stop as _fstop, standing_rows as _rows
 
 # An open suggestion older than this is shown as stale; nothing resolves it automatically (§8.2).
 STALE_SUGGESTION_DAYS = 28
@@ -275,7 +275,7 @@ def _targets(run, due_by_person, warmth):
     people = run.rows["people"]
     by_id = run.rows.people_by_id()
     last_touch = {}
-    for t in run.rows["touches"]:
+    for t in _fstop.ordinary(run.rows["touches"]):          # 0.92.0: a stop / resume row is no touch
         s = run.rows.survivor(t.get("person_id"), by_id)
         d = _t(t.get("date"))
         if s is not None and d and d > last_touch.get(s.get("id"), ""):

@@ -113,7 +113,7 @@ import pipeline_index as _pidx                                       # noqa: E40
 # bare `import` is invisible to `publish_manifest.py`'s reachability closure.
 import lifecycle as _lc                                              # noqa: E402
 import jd_read as _jd                                                # noqa: E402
-from reach import standing_rows as _rows                             # noqa: E402  (0.91.0: Alumni by employment standing)
+from reach import held_roles as _held, follow_facts as _ffacts, follow_rows as _frows, follow_stop as _fstop, staffing as _staff, standing_rows as _rows  # noqa: E402
 
 # Re-exported so a caller (validate_data.py) needs exactly one import to validate the field.
 PreconditionError = _pre.PreconditionError
@@ -329,7 +329,7 @@ def _thread_events(graph, person_id, kind, thread_id):
     elif kind == "person" and thread_id == person_id:
         # dev #686: a touch with NO opp and NO channel is the person-only relationship. A
         # channel-only touch stays excluded (see the scope note just below).
-        for t in graph.stores["touches"]:
+        for t in _fstop.ordinary(graph.stores["touches"]):        # 0.92.0: a stop / resume row is no event
             if (not t.get("opp_id") and not t.get("channel_id")
                     and _resolves_to(graph, t.get("person_id"), person_id)):
                 touches.append(t)
@@ -454,7 +454,7 @@ def conversation_axis(root, subject, counterpart=None, today=None, window=None):
         for m in g.messages_for_person(person_id):
             if not m.get("opp_id") and not m.get("channel_id"):
                 threads.add(("person", person_id))
-        for t in g.stores["touches"]:
+        for t in _fstop.ordinary(g.stores["touches"]):            # 0.92.0: a stop / resume row opens no thread
             if (not t.get("opp_id") and not t.get("channel_id")
                     and _resolves_to(g, t.get("person_id"), person_id)):
                 threads.add(("person", person_id))
@@ -1747,7 +1747,7 @@ def _last_touch_date(person_id, g, as_of, ended_ctx=None):
     reply is evidence a human engaged, whatever the pursuit's fate, and this module scopes
     the exclusion to what public #95 actually reported (a stale TOUCH, not a stale reply)."""
     dates = []
-    for t in g.touches_for_person(person_id):
+    for t in _fstop.ordinary(g.touches_for_person(person_id)):    # 0.92.0: a stop / resume row is no touch
         if ended_ctx is not None and touch_state(t, ended_ctx)[0] == "ended":
             continue
         d = t.get("date")
@@ -1834,32 +1834,21 @@ def classify_people(root, today=None, warm_days=180):
 # DERIVED; only the act of raising it is stored (`raised_on`), because nothing else records which companies were already asked.
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _sighting_dates(opp):
-    out = []
-    for s in opp.get("sightings") or []:
-        if isinstance(s, dict) and s.get("seen_on"):
-            try:
-                out.append(_parse_date(s["seen_on"]))
-            except ValueError:
-                pass
-    return out
-
-
 def company_candidates(root, today=None, with_excluded=False):
     """Every company that QUALIFIES for a "look into this company?" question, ranked, as a list of item dicts. A company
     qualifies exactly when its `status` is `watching`, its `status_on` is absent (no owner decision is recorded), and at least one
     of its opportunities is non-terminal, not folded into another and carries a sighting.
 
-    Rank (the order `raise-companies` takes them in): Alumni desc (non-merged CURRENT employees with a stated `ties`, design
+    Rank (the order `raise-companies` takes them in; 0.92.0, `reach.held_roles.candidate_key`): a title match first, Alumni desc (non-merged CURRENT employees with a stated `ties`, design
     4.2 and, since 0.91.0, design-build-reach.md 5.3), live roles desc, newest sighting desc, id. Each item:
 
-        {"id", "name", "roles": n, "titles": [title...], "newest_sighting": "YYYY-MM-DD" | None, "alumni": n,
+        {"id", "name", "roles": n, "titles": [title...], "title_match": n | None, "titles_matching": [title...], "newest_sighting": "YYYY-MM-DD" | None, "alumni": n,
          "alumni_former": n, "alumni_unconfirmed": n (tied people formerly there / unconfirmed there: words, never Alumni),
          "backers": [firm ids], "raised_on": "YYYY-MM-DD" | None, "raised_days_ago": n | None}
 
     dev #915 (0.88.0): a company whose `company_kind` is `aggregator` or `staffing` NEVER qualifies, so `raise-companies`
     never raises one. `with_excluded=True` returns `(items, excluded)`, `excluded` being `[{"id","name","kind","how"}]`
-    for the companies that would have qualified but for their kind.
+    for the companies that would have qualified but for their kind (0.92.0: recruiter-only, `reach.staffing`, how `sightings`).
 
     Pure: it reads the stores under `root` and writes nothing, so it answers the same on every call."""
     import graph as _graph
@@ -1872,30 +1861,32 @@ def company_candidates(root, today=None, with_excluded=False):
                 and any(isinstance(s, dict) for s in (o.get("sightings") or []))):
             opps_by_co.setdefault(o["company_id"], []).append(o)
     alumni = _rows.tie_counts(g.stores["people"], today_d)      # {cid: {"alumni", "alumni_former", "alumni_unconfirmed"}}
+    match = _held.title_matcher(_profile.title_matches, _root_cfg(root))
     out, excluded = [], []
     for c in g.stores["companies"]:
         cid = c.get("id")
         if c.get("status") != "watching" or c.get("status_on") or cid not in opps_by_co:
             continue
-        kind, how = company_kind(c, g.stores["channels"])
+        kind, how = _staff.kind_of(company_kind(c, g.stores["channels"]), opps_by_co[cid], g.stores["channels"],
+                                   lambda o: role_link(o)[1])
         if kind in ("aggregator", "staffing"):
             excluded.append({"id": cid, "name": c.get("name") or cid, "kind": kind, "how": how})
             continue
         roles = opps_by_co[cid]
-        newest = max((d for o in roles for d in _sighting_dates(o)), default=None)
+        newest = _held.newest_sighting(roles)
         raised = c.get("raised_on") or None
         try:
             days = (today_d - _parse_date(raised)).days if raised else None
         except ValueError:
             days = None
         out.append(({"id": cid, "name": c.get("name") or cid, "roles": len(roles),
-                     "titles": [str(o.get("title") or o.get("id")) for o in roles],
+                     **_held.title_fields([str(o.get("title") or o.get("id")) for o in roles], match),
                      "newest_sighting": newest.isoformat() if newest else None, **alumni.get(cid, _rows.NO_TIES),
                      "backers": [b["firm_id"] for b in _pb.backers_of(cid, g.stores["companies"], g.stores["channels"],
                                                                         g.stores["opportunities"])],
                      "raised_on": raised, "raised_days_ago": days},
                     newest.toordinal() if newest else 0))
-    out.sort(key=lambda t: (-t[0]["alumni"], -t[0]["roles"], -t[1], t[0]["id"]))
+    out.sort(key=_held.candidate_key)
     items = [item for item, _ordinal in out]
     return (items, sorted(excluded, key=lambda e: e["id"])) if with_excluded else items
 
@@ -1913,7 +1904,7 @@ def classify_companies(root, today=None):
     today_s = (today.isoformat() if isinstance(today, datetime.date) else today) or datetime.date.today().isoformat()
     cands = company_candidates(root, today_s)
     raised = [c for c in cands if c["raised_on"]]
-    raised.sort(key=lambda c: c["raised_on"])                       # stable: the rank order breaks a tie
+    raised.sort(key=_held.look_into_key)                            # a title match first; stable: the rank breaks a tie
     return {"look-into": raised, "look-into-waiting": sum(1 for c in cands if not c["raised_on"]),
             "look-into-new": [c["id"] for c in raised if c["raised_on"] == today_s]}
 
@@ -2210,46 +2201,6 @@ def _plan_applied(g, owed, opps_by_id, companies, drafted):
     return [r for _d, r in sorted(a_rows, key=lambda t: (t[0], t[1]["key"]), reverse=True)]
 
 
-_PLAN_AXES = {"reply-owed": 0, "accepted": 1, "silent": 2, "silence-unverified": 2}   # the pick, best first
-
-
-def _plan_people(root, g, people, skip, today, failed):
-    """(o) reply-owed and (b) awaiting-reply, from ONE pass over the person threads: `(owed_rows, awaiting_rows)`,
-    each oldest last message first. A person with any thread whose newest event is inbound is `reply-owed` (dev #952:
-    they wrote back and no reply is drafted); else a thread whose axis says a nudge is due (`silent`,
-    `silence-unverified`) or a connection was `accepted` makes them `awaiting-reply`. A row's `state` is that axis."""
-    chase = _cfg_int(root, config_keys.CHASE_AFTER_DAYS)
-    talked = {t.get("person_id") for t in g.stores["touches"]} | {m.get("person_id") for m in g.stores["messages"]}
-    out = {"reply-owed": [], "awaiting-reply": []}
-    for pid in sorted(x for x in talked if x in people and people[x].get("status") != "merged"):
-        if "person:%s" % pid in skip:
-            continue
-        try:
-            axes = conversation_axis(root, pid, today=today, window=chase)
-        except Exception as e:                                     # noqa: BLE001 - said, never an empty group
-            failed.append("awaiting-reply %s: %s: %s" % (pid, type(e).__name__, str(e)[:80]))
-            continue
-        # the axis rank, then the newest event, then the thread id: never the hash-seeded order of `axes` (review R)
-        cand = sorted(((str(t), a, ev) for t, (a, ev) in axes.items() if a in _PLAN_AXES), key=lambda c: c[0])
-        cand.sort(key=lambda c: max((str(e.get("date") or "") for e in c[2]), default=""), reverse=True)
-        cand.sort(key=lambda c: _PLAN_AXES[c[1]])
-        if not cand:
-            continue
-        _tid, axis, events = cand[0]
-        last = max((str(e.get("date") or "") for e in events), default="") or None
-        group = "reply-owed" if axis == "reply-owed" else "awaiting-reply"
-        why, step = {"reply-owed": ("they wrote back on %s and no reply is drafted" % (last or "?"), "reply"),
-                     "accepted": ("they accepted your connection", "send the note now that they accepted")}.get(
-            axis, ("no reply in %d days%s" % (chase, "" if axis == "silent" else
-                                              " (not yet verified in your mailbox)"), "nudge"))
-        out[group].append((last or "9999", {
-            "key": "person:%s" % pid, "subject": "person:%s" % pid, "group": group, "state": axis,
-            "who": (people.get(pid) or {}).get("name") or pid, "why": why, "last_touch": last, "next_step": step,
-            "actions": _draft_it("person:%s" % pid)}))
-    return tuple([r for _d, r in sorted(out[k], key=lambda t: (t[0], t[1]["key"]))]
-                 for k in ("reply-owed", "awaiting-reply"))
-
-
 def _plan_handoff(root, g, people, drafted, today):
     """(c) referral handoffs: a person an introduction is still awaited to, oldest request first."""
     def pname(pid):
@@ -2313,7 +2264,7 @@ def _plan_expired(owed, opps_by_id, companies, today):
 
 
 def communication_plan(root, today=None, net=None, owed=None):
-    """`{"rows": [...], "expired_this_week": [...], "failed": None | str}` - the Network section's ONE membership
+    """`{"rows", "expired_this_week", "failed": None | str, "not_listed"}` (0.92.0: reach/follow_rows) - the Network's ONE membership
     (dev #914 C4/C6, #915, #952). A row: `{"key", "subject", "group", "state", "who", "why", "last_touch",
     "next_step", "actions"}`. `state` is the conversation axis token of a reply-owed or awaiting-reply row (`reply-owed`,
     `accepted`, `silent`, `silence-unverified`; design-dashboard-redesign 7.5), None elsewhere. `actions` are
@@ -2356,12 +2307,15 @@ def communication_plan(root, today=None, net=None, owed=None):
                                        today=today)
     opps_by_id = {o.get("id"): o for o in _trig.load_jsonl(root, "opportunities.jsonl")}
     applied = add(_plan_applied(g, owed, opps_by_id, companies, drafted))
-    owed_rows, awaiting = _plan_people(root, g, people, drafted | seen, today, failed)
+    owed_rows, awaiting, not_listed = _frows.plan_people(g, people, drafted | seen, today, failed, **_ffacts.facts(
+        root, g, today, failed, conversation_axis, ended_because, has_submitted_application, build_ended_context(root), companies,
+        _cfg_int(root, config_keys.CHASE_AFTER_DAYS), _cfg_int(root, _ffacts.REPLY_OWED_KEY)))   # 0.92.0: reach/follow_rows.py
     owed_rows, awaiting = add(owed_rows), add(awaiting)
     rest = add(_plan_handoff(root, g, people, drafted, today))
     rest += add(_plan_relationships(root, g, drafted, today))
     return {"rows": owed_rows + to_record + applied + awaiting + rest,
-            "expired_this_week": _plan_expired(owed, opps_by_id, companies, today), "failed": "; ".join(failed) or None}
+            "expired_this_week": _plan_expired(owed, opps_by_id, companies, today), "failed": "; ".join(failed) or None,
+            "not_listed": not_listed}
 
 
 def _role_row(o, state, why, posting, ctx):

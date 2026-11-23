@@ -73,10 +73,12 @@ from migrations import (
     m_0_88_0_pay_evidence,
     m_0_90_0_browser_fallback,
     m_0_91_0_employment,
+    m_0_92_0_decision_surface,
 )
 from migrations.stamp import engine_version, read_stamp, ver
 from migrations.stores import STORE_INTRODUCED
-from migrations.support_pins import NETWORK_FIRST_PIN, _network_first_pin_needed
+from migrations.support_pins import (DECISION_SURFACE_PIN, NETWORK_FIRST_PIN, _decision_surface_pin_lost,
+                                     _network_first_pin_needed)
 
 
 MIGRATIONS = (("0.4.0", m_0_4_0.m_0_4_0), ("0.13.0", m_0_13_0.m_0_13_0), ("0.14.0", m_0_14_0.m_0_14_0),
@@ -312,7 +314,10 @@ MIGRATIONS = (("0.4.0", m_0_4_0.m_0_4_0), ("0.13.0", m_0_13_0.m_0_13_0), ("0.14.
               ("0.90.0", m_0_90_0_browser_fallback.m_0_90_0_browser_fallback),
               # KEYED "0.91.0" (design-build-reach.md 5.4) -- see the note above `EMPLOYMENT_PRE_COPY`. It runs LAST; it writes only
               # data/people.jsonl (one `employment` object per person with an employer of record), after preserving it.
-              ("0.91.0", m_0_91_0_employment.m_0_91_0_employment))
+              ("0.91.0", m_0_91_0_employment.m_0_91_0_employment),
+              # KEYED "0.92.0" (docs/design-decision-surface.md §M) -- see the note above `DECISION_SURFACE_BY`. It runs LAST; its
+              # one write is the 0.92.0 profile pin (no data is transformed). `pending_for` also re-selects it for a lost pin.
+              ("0.92.0", m_0_92_0_decision_surface.m_0_92_0_decision_surface))
 
 
 # Every value above must be a version key the MIGRATIONS registry actually knows, so a typo here
@@ -363,5 +368,10 @@ def pending_for(profile, engine=None):
                     and _network_first_pin_needed(profile))
     except ImportError:
         pin_lost = False        # a stripped engine copy with no journal.py cannot be asked; the shipped tree always has it
+    # The same named state for the 0.92.0 pin (docs/design-decision-surface.md §M): its writers refuse below it, so a profile
+    # stamped at or above 0.92.0 whose journal's pin is below it has `m_0_92_0_decision_surface` pending whatever the stamp says.
+    surface_lost = (ver(engine) >= ver(DECISION_SURFACE_PIN) and ver(stamp) >= ver(DECISION_SURFACE_PIN)
+                    and _decision_surface_pin_lost(profile))
     return [v for v, _fn in MIGRATIONS
-            if ver(stamp) < ver(v) <= ver(engine) or (pin_lost and v == NETWORK_FIRST_PIN)]
+            if ver(stamp) < ver(v) <= ver(engine) or (pin_lost and v == NETWORK_FIRST_PIN)
+            or (surface_lost and v == DECISION_SURFACE_PIN)]
