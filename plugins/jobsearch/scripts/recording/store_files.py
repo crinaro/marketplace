@@ -56,7 +56,11 @@ STORES = {"opportunities": "opportunities.jsonl",
           # dev #834 (jobsearch 0.86.0, design-network-first.md 6) -- `proposals` joins STORES so the generic `set` / `set-in` write
           # `conceptual_agreement` and `doc_ref` and the proposal verbs' dry-run validates it. `proposal` mints the id
           # (`<opp_id>-pN`); `proposal-status` is the one writer of `status`, `status_on` and `date` of an existing row.
-          "proposals": "proposals.jsonl"}
+          "proposals": "proposals.jsonl",
+          # presence-report (design-presence-report.md 8.2) -- APPEND-ONLY, like `messages`: its only writers are the presence
+          # verbs (recording/presence_verbs.py, PRESENCE_VERBS below); every generic verb on `--file presence_changes` is
+          # refused before any store machinery runs (parser.messages_refusal). An absent file is an empty store.
+          "presence_changes": "presence_changes.jsonl"}
 # ⭐ dev #764 / public #162 -- THE STORES `create auto` CAN MINT AN ID FOR, and the label the
 # write's report uses for the id it minted. `create auto` on any other store used to write the
 # literal id "auto" (the argument was taken as the id) -- a row no later verb could tell from a
@@ -68,6 +72,8 @@ AUTO_MINT_LABEL = {"applications": "app_id", "touches": "touch id",
 # design-inbound-resolution.md §2 — `received` joins `touched`/`answered`: the one public
 # INBOUND writer (ADR-029), promoted from `reconcile.py --harvest`'s own private append.
 MESSAGES_WRITE_VERBS = frozenset({"touched", "answered", "received"})
+PRESENCE_VERBS = frozenset({"presence", "presence-state", "presence-propose", "presence-decide", "presence-apply",
+                            "presence-import"})
 
 
 LOCK = os.path.join(ENGINE_SCRIPTS, "runlock.py")

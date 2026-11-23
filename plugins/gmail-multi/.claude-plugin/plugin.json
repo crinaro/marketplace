@@ -1,7 +1,7 @@
 {
   "name": "gmail-multi",
   "description": "Search, read, draft and send across several Gmail accounts at once; the managed Gmail connector binds to one. Results are tagged with their mailbox, and attachments can be fetched. Every call names its account (`all` searches every registered one). Every send, reply or forward asks you first and is refused when nobody is present. Configure accounts with /gmail-multi:accounts; app passwords stay in the OS credential store. Use it whenever mail spans more than one Google account.",
-  "version": "0.5.3",
+  "version": "0.6.0",
   "author": {
     "name": "Crinaro",
     "email": "marketplace@crinaro.ai"

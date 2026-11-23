@@ -1,5 +1,5 @@
 """modes: the per-action "you do it / I do it after your approval" switch, `config.json` `actions.modes` (jobsearch 0.91.0,
-design-build-reach.md 10.1, 10.2, owner O1, O4, O9, O14 and the 2026-11-21 amendment: email `me` ships ATTENDED ONLY), and the
+design-build-reach.md 10.1, 10.2, owner O1, O4, O9, O14; for email, the 2026-11-23 ruling of ADR-043: `me` drafts), and the
 O7 staging switch `actions.email.stage`.
 
     actions.modes = {"email-send": "me"}       an object keyed by action type, each value "you" or "me"; absent is "you"
@@ -11,21 +11,27 @@ does not offer it:
 
 | type                                                   | `me`                                                           |
 |--------------------------------------------------------|----------------------------------------------------------------|
-| email-send                                             | accepted only while `communications.mail_connector` is gmail-multi (O4): its send tools carry the platform's every-call prompt; no claude.ai connector's do |
+| email-send                                             | accepted while the selected `communications.mail_connector` has a draft tool (gmail-multi, claude.ai Gmail, Fastmail, Superhuman; refused for Microsoft 365, which publishes none): `me` puts each approved message in the drafts and the candidate presses Send (0.93.0, ADR-043) |
 | linkedin-message, -connect, -profile-edit, -post       | refused: LinkedIn User Agreement 8.2 item 13 (ADR-037)         |
 | ats-submit                                             | refused: ADR-037 bans any application submit (O1)              |
 | event-rsvp                                             | refused: no event host's terms have been ruled permissive (O9); `check_channel_catalog.py` K8 refuses a permissive event-host entry while no RSVP is built |
 | site-register                                          | refused (B7a decision): no pre-fill is built, and the outbound-click guard does not hold a registration form's submit (its verbs are send/connect/invite/apply/share/post/inmail) |
 
-`me` NEVER MEANS UNATTENDED (owner ruling). It means the engine performs the act after the candidate approves that act, and for
-email the approval is the platform's own prompt for the send call (design 10.3). Where a run is unattended (`posture.py`: the
-default; attended is only ever the explicit `--attended` form) a `me` send is queued and never called: `sending/approval.py`.
+`me` NEVER MEANS UNATTENDED APPROVAL (owner ruling). It means the engine performs the act after the candidate approves that act.
+For email the act is a draft, never a send (owner ruling 2026-11-23, ADR-043): the candidate approves in an attended run (the
+explicit `--attended` form, `posture.py`), the message goes into their drafts, and they press Send. A scheduled run only drafts
+what was already approved: `sending/approval.py`.
 
 THE KEYS ARE REGISTERED (B7a). One enum key per action type, `actions.modes.<type>`, and `actions.email.stage`, are defined in
 `reach/keys.py` (the registry's extension point: `config_keys.py` may not grow) and merged into `config_keys`' registry; this module
 reads each value through `config_keys.describe`, and the refusal reasons are `reach/keys.py`'s, the same text `doctor.py`'s CONFIG
 CURRENCY prints on the key's own row. The object checks (a non-object, an unknown type name) stay here: they are about the object,
 not one key.
+
+An edit of a resume variant file is not an action type (owner ruling 2026-11-23): the file is the candidate's own, so
+`recording/presence_verbs.py` writes it with no mode. A LinkedIn target there is asked about as `linkedin-profile-edit`, so its
+refusal is this table's. An `actions.modes` key naming no type above (the 0.93.0 branch's removed `variant-edit` included) is
+refused by `raw_modes`, loudly, never ignored.
 
 Capability module of `outbox.py` and `sending/approval.py`. Python 3.9+, standard library only."""
 

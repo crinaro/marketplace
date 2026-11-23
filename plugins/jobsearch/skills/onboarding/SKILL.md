@@ -61,7 +61,14 @@ Ask for it in any form (paste, file, PDF). Then:
   case, not a different mechanism. If the candidate later needs more than one printed page (e.g.
   an executive-facing page and a technical-facing page), each becomes its own variant file,
   declared in `data/resume_variants.jsonl` — see `docs/data_model.json`'s `resume_variants` store
-  entry. **Paraphrasing at this step
+  entry. A printed version the candidate already has as a file (`.docx`, `.md`, `.txt`, or a Google Doc
+  fetched through the Drive connector as one of those) goes into its declared variant with `~/.claude/jobsearch/run
+  record.py presence-import <variant-id> --from-file <file>`, which copies it word for word and records it.
+  Then `~/.claude/jobsearch/run record.py presence-docx <variant-id> --attended` writes the variant's Word file in
+  the default layout (local `.docx` output only). Tell the candidate that they may fix its spacing, text size and
+  margins in Word, the team keeps that layout on every update, and a change to its words is asked about, never
+  overwritten silently.
+  **Paraphrasing at this step
   poisons everything downstream** — a summarized bullet once dropped the clause naming an
   employer's marquee customers, and the sentence survived while the credential in it did not.
   Copy. Do not improve.
@@ -122,6 +129,22 @@ Record the answer with the one writer, never by editing `user.json`:
 to them and ask again. **`--none` only when they said "none"**: if they set the question aside, write nothing, and
 it stays "not asked" (the next attended daily run asks it once). An affiliation only shapes a lookup link the
 candidate opens; nothing searches for people from it.
+
+## 2c. ⭐ LinkedIn headline and skills — one question (presence-report)
+
+Ask once: **"Do you have a LinkedIn profile? If so, what do its headline and skills say today?"** Record the answer
+with the one writer (`kind` stated, by the candidate):
+
+```bash
+~/.claude/jobsearch/run record.py presence-state linkedin status none          # no LinkedIn profile
+~/.claude/jobsearch/run record.py presence-state linkedin status skip          # has one, will not state it
+~/.claude/jobsearch/run record.py presence-state linkedin headline --text-file <f>
+~/.claude/jobsearch/run record.py presence-state linkedin skills --from-file <f>    # one skill per line
+```
+
+**A stated `none` or `skip` ends the question**: nothing asks it again until they state `active` (stating a headline
+or skills does that). If they set it aside, write nothing; the next `/jobsearch:weekly-review attended` asks it. The
+engine never edits their profile: the coverage report only compares what they stated with what they are aiming for.
 
 ## 3. Set the budget posture — say the trade-off out loud
 

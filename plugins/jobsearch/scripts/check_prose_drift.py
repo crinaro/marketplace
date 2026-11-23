@@ -11,55 +11,42 @@ recorded it confirmed, "not open to relocation" carried into a decline while
 
 ⭐ THE THREE COMPARISONS (each reads an EXISTING config key; no key is added by this check)
 -------------------------------------------------------------------------------------------
-1. FIGURE   a line naming a "floor" and a money figure, against `compensation.tiers[].floor`
-             (the tier is picked by the setting the line names: remote / hybrid / local-onsite /
-             relocation; no setting named means the figure must equal SOME tier's floor).
-2. OPEN     a line that marks the pay BASIS question open ("basis unconfirmed", "open question",
-             "not yet confirmed", ...) while `compensation.tiers[].basis_confirmed` is recorded
-             `true`. `basis_confirmed` is the only "confirmed" field config.json carries today;
-             `OPEN_MARKER`/`_check_open_questions` are the one place to extend that.
-3. SCOPE    (#493) in an OPEN ask (`data/asks.jsonl`, via `your_move.open_asks`) or `drafts.md`:
-             a premise about search scope (`SCOPE_PREMISES`) that contradicts the `geography.*`
-             key it comes from, OR that cites no config key at all. A premise agreeing with config
-             but citing no key is still reported: the point of #493 is that scope is stated FROM a
-             key, so a reader can check it, not recalled from an earlier conversation.
+1. FIGURE   a line naming a "floor" and a money figure, against `compensation.tiers[].floor` (the tier is picked by
+             the setting the line names: remote / hybrid / local-onsite / relocation; none named means the figure must
+             equal SOME tier's floor). An amount stated as an OFFSET from a floor ("the floor plus $15K", "$20K above
+             the floor") is not a floor claim and is not compared (dev #1030 / public #267).
+2. OPEN     a line that marks the pay BASIS question open ("basis unconfirmed", "not yet confirmed", ...) while
+             `compensation.tiers[].basis_confirmed` is recorded `true`. The key is matched by its key path, or by
+             `basis` sharing a clause with the open marker; never by the idiom "on that basis" (dev #1030).
+             `basis_confirmed` is the only "confirmed" field config.json carries; `OPEN_MARKER` and
+             `_check_open_questions` are the one place to extend that.
+3. SCOPE    (#493) in an OPEN ask (`data/asks.jsonl`, via `your_move.open_asks`) or `drafts.md`: a premise about
+             search scope (`SCOPE_PREMISES`) that contradicts the `geography.*` key it comes from, OR that cites no
+             config key at all (scope is stated FROM a key, so a reader can check it, never recalled).
 
-WHAT IT SCANS (declared and printed, never inferred): the profile's `strategy.md`, `handoff.md`,
-`drafts.md`, `CLAUDE.md` (the INSTALLED rulebook: `install_rulebook.py` copies the engine's
-`RULEBOOK.md` there, and a session reads it as fact at start-up; dev #706 / public #152), and every
-OPEN ask. Deliberately NOT scanned: `log.md` and `archive/` (history is stale by nature),
-`claims.md`/`projects.md` (the candidate's proof points). A figure-or-open-question comparison
-(1, 2) runs on every scanned document; the scope comparison (3) runs only on open asks and
-`drafts.md`, because that is what #493 reports. The printed `scope:` line names every document
-the scan covers, present or not, so a missing `CLAUDE.md` reads as missing, not as clean.
-Comparison 2 reads one LINE at a time, so an open-question sentence wrapped across two lines is
-not seen in a document; the engine-side check below reads across a wrap.
+WHAT IT SCANS (declared and printed, never inferred): the profile's `strategy.md`, `handoff.md`, `drafts.md`,
+`CLAUDE.md` (the INSTALLED rulebook, which a session reads as fact at start-up; dev #706 / public #152), and every
+OPEN ask. Deliberately NOT scanned: `log.md` and `archive/` (history is stale by nature), `claims.md`/`projects.md`.
+Comparisons 1 and 2 run on every scanned document, 3 only on open asks and `drafts.md` (what #493 reports). The
+printed `scope:` line names every document covered, present or not, so a missing `CLAUDE.md` reads as missing.
+Comparison 2 reads one LINE at a time; the engine-side check below reads across a wrap.
 
-⭐ THE ENGINE-SIDE CHECK (dev #706 / public #152): `--engine-rulebook`. The scan above reads a
-PROFILE's copy; this reads the engine's own `RULEBOOK.md` (the template every profile's CLAUDE.md
-is copied from) and FAILS, exit 1, when a line asserts a VALUE for a config key. A rulebook is
-shipped to every profile, so a value it states ("the relocation tier's `basis_confirmed` is still
-`false`") is true for nobody in particular and read as current by everybody, and goes stale the
-moment one profile changes. The key set is every key `config_keys.py` registers (`READER_KEYS`)
-plus the keys this file already compares (`SCOPE_PREMISES`' `geography.*` keys and
-`compensation.tiers[].basis_confirmed`). ⚠️ `basis_confirmed` is NOT a `config_keys.py` key (that
-registry describes the scalar adjustable surface; `compensation.tiers` is absent from it on
-purpose), so the registry alone would have passed the very line #706 reported. The rulebook may
-NAME a key, or the command that prints it; it may not state what the key holds. This mode is the
-one exception to "exit 0 always" below: it checks the repo, not a user's profile, so there is no
-unattended run to wedge. It prints how many lines and keys it covered, and an unreadable
-rulebook is `NOT CHECKED` with exit 1.
+⭐ THE ENGINE-SIDE CHECK (dev #706 / public #152): `--engine-rulebook` reads the engine's own `RULEBOOK.md` (the
+template every profile's CLAUDE.md is copied from) and FAILS, exit 1, when a line asserts a VALUE for a config key:
+a value a shipped rulebook states is true for nobody in particular and read as current by everybody. The key set is
+every `config_keys.py` key (`READER_KEYS`) plus the keys compared here (`SCOPE_PREMISES`' `geography.*` keys and
+`compensation.tiers[].basis_confirmed`, which is NOT a `config_keys.py` key, so the registry alone would have passed
+the line #706 reported). The rulebook may NAME a key or the command that prints it, never what it holds. This mode
+is the one exception to "exit 0 always": it checks the repo, not a profile. An unreadable rulebook is `NOT CHECKED`,
+exit 1.
 
-⭐ A CLEAN RESULT IS NEVER EMPTY. The last line always reads `checked N documents, M figures; ...`.
-A scan that found no documents, or no config to compare against, prints `NOT CHECKED: <why>` —
-a missing thing must never read as an empty thing.
+⭐ A CLEAN RESULT IS NEVER EMPTY. The last line always reads `checked N documents, M figures; ...`; no documents or
+no config prints `NOT CHECKED: <why>`, because a missing thing must never read as an empty thing.
 
-⚠️ ADVISORY, EXIT 0 ALWAYS, AND IT NEVER WRITES. Matching prose to config is inexact (a line
-quoting a floor's HISTORY, "was <old>, now <new>", reports the old figure), and a prose section that
-looks like a duplicate can be the only surviving copy of a decision. So a finding is a question
-for the owner, one line each: document, line, the config key, both values. This script has no
-write path (it only reads), and no flag adds one. An absent config key is not
-a contradiction (a default is not a recorded value); it is simply not compared.
+⚠️ ADVISORY, EXIT 0 ALWAYS, AND IT NEVER WRITES. Matching prose to config is inexact (a line quoting a floor's
+HISTORY, "was <old>, now <new>", reports the old figure), so a finding is a question for the owner, one line each:
+document, line, the config key, both values. No write path exists and no flag adds one. An absent config key is
+not a contradiction (a default is not a recorded value); it is simply not compared.
 
 Usage:
     check_prose_drift.py                 # the profile, or the synthetic fixture when there is none
@@ -88,27 +75,26 @@ import your_move as _ym                                            # noqa: E402
 _MONEY = re.compile(r"[$£€]\s?(\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?)\s?([kK])?"
                     r"|(?<![\w$£€.,])(\d{2,3}(?:\.\d+)?)\s?[kK]\b")
 _FLOOR = re.compile(r"\bfloors?\b", re.I)
+# dev #1030: an amount stated RELATIVE to a floor ("the floor plus $15K", "$20K above the floor") is an offset, not a floor.
+_OFFSET_BEFORE = re.compile(r"(?:\+|\bplus|\bminus)\s*$", re.I)
+_OFFSET_AFTER = re.compile(r"\s*(?:above|over|below|under|more than|less than|beyond|on top of)\b", re.I)
 
-# Prose spellings of a tier's `setting`; a setting this table does not know falls back to its
-# own name (hyphens matching a space or nothing), so a tier the owner added is still found.
-_SETTING_ALIASES = {
-    "remote": r"remote",
-    "hybrid": r"hybrid",
-    "local-onsite": r"local[- ]?on-?site|on-?site|in-office",
-    "relocation": r"relocat\w*",
-}
+# Prose spellings of a tier's `setting`; an unknown setting falls back to its own name (hyphen = space or nothing).
+_SETTING_ALIASES = {"remote": r"remote", "hybrid": r"hybrid",
+                    "local-onsite": r"local[- ]?on-?site|on-?site|in-office", "relocation": r"relocat\w*"}
 
 # ── comparison 2: open questions ────────────────────────────────────────────────────────────
 OPEN_MARKER = re.compile(
     r"\bopen question\b|\bunconfirmed\b|\bnot (?:yet )?confirmed\b|\bstill (?:open|to confirm)\b"
     r"|\bto be confirmed\b|\bTBC\b|\bneeds? (?:to be )?confirm\w*|\bask the candidate\b"
     r"|basis_confirmed\W{0,8}(?:is\W+)?(?:still\W+)?false", re.I)
-_BASIS = re.compile(r"\bbasis\b|basis_confirmed", re.I)
+_BASIS = re.compile(r"\bbasis\b", re.I)
+_CLAUSE = re.compile(r"[.;!?]")
+_ON_IDIOM = re.compile(r"\bon\s+(?:\S+\s+){0,2}$", re.I)     # "on that basis", "on a weekly basis": an idiom, no key
 
 # ── comparison 3: scope premises (dev #493) ─────────────────────────────────────────────────
-# (name, regex, {config key: value the premise ASSERTS}). Negatives and positives are separate
-# rows, and each positive refuses a negating word right before it. Every key is a `geography.*`
-# key config.json already carries; `commute_anchors` is not compared (it needs a minutes parse).
+# (name, regex, {config key: value the premise ASSERTS}). Negatives and positives are separate rows; each positive
+# refuses a negating word right before it. Every key is an existing `geography.*` key (`commute_anchors` is not compared).
 _NEG = r"(?<!not )(?<!never )(?<!n't )(?<!no )"
 SCOPE_PREMISES = (
     ("not open to relocation",
@@ -158,8 +144,7 @@ SCAN_SCOPE = ("strategy.md", "handoff.md", "drafts.md",
 
 # ── the engine-side check: a shipped rulebook states no config value (dev #706) ─────────────
 ENGINE_RULEBOOK = os.path.join(os.path.dirname(HERE), "RULEBOOK.md")
-# The one key the drift check compares that `config_keys.py` does not register: it lives in
-# `compensation.tiers[]`, a table, not a scalar. Spelled once here, by its full path and its leaf.
+# The one compared key `config_keys.py` does not register (it lives in the `compensation.tiers[]` table), spelled once.
 _TIER_BASIS_KEY = "compensation.tiers[].basis_confirmed"
 
 _SP = r"(?:[ \t]+|[ \t]*\n[ \t]*)"          # a space, or ONE line wrap (never a blank line)
@@ -282,9 +267,11 @@ def _named_tiers(line, tiers):
 
 
 def _figures(line):
-    """The money figures on a line, as whole-currency ints."""
+    """The money figures on a line, as whole-currency ints; an offset from a floor is not one (dev #1030)."""
     out = []
     for m in _MONEY.finditer(line):
+        if _OFFSET_BEFORE.search(line[:m.start()]) or _OFFSET_AFTER.match(line, m.end()):
+            continue
         if m.group(3):                                   # bare `210k`
             out.append(int(round(float(m.group(3)) * 1000)))
         elif m.group(2):                                 # a `k`-suffixed amount
@@ -320,8 +307,19 @@ def _check_figures(doc, lineno, line, tiers, counts):
     return found
 
 
+def _basis_topic(line):
+    """dev #1030 -- the key by its path, or `basis` sharing a clause with the open marker; never the idiom."""
+    if "basis_confirmed" in line:
+        return True
+    for m in _BASIS.finditer(line):
+        before, after = _CLAUSE.split(line[:m.start()])[-1], _CLAUSE.split(line[m.end():], 1)[0]
+        if not _ON_IDIOM.search(line[:m.start()]) and (OPEN_MARKER.search(before) or OPEN_MARKER.search(after)):
+            return True
+    return False
+
+
 def _check_open_questions(doc, lineno, line, tiers, counts):
-    if not (OPEN_MARKER.search(line) and _BASIS.search(line)) or not tiers:
+    if not (OPEN_MARKER.search(line) and _basis_topic(line)) or not tiers:
         return []
     counts["open"] += 1
     named = _named_tiers(line, tiers)

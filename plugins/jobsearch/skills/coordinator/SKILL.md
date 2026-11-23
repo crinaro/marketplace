@@ -323,7 +323,7 @@ already know.
 | a role whose JD read screened it `keep` (lifecycle stage `screened`) | `opportunity-researcher`, through § Drain (4c) |
 | a message to a recruiter, warm intro, or reply | `outreach-drafter` |
 | a letter accompanying a formal application | `cover-letter-writer` |
-| the live LinkedIn profile | `profile-optimizer` |
+| resume variant and LinkedIn profile copy | `profile-optimizer` |
 | how the search itself is going | `search-strategist` (fable — the expensive one, weekly) |
 
 ⭐ **ONE WRITE-CAPABLE AGENT AT A TIME.** They share this working tree; two writers is not

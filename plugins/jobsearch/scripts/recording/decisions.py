@@ -9,6 +9,7 @@ import re
 from recording import profile_paths as _paths
 from recording.common import Mutation, _validator_module
 from recording.store_files import load
+from validation.vocab import TERMINAL_OPP_STATUSES
 
 
 def _your_move_visibility_note(rec):
@@ -83,10 +84,15 @@ def decide_mutation(args, rec, new_verdict, _ym, _profile_mod):
         # requires passed at closed), the way back kept in `passed_from` so a later
         # `decide pursue|park` restores it. Before this, `verdict: pass` left the row
         # `status: backlog`: excluded but not terminal, so the rest of the engine still saw a
-        # live backlog role. A pass on any other status (a live pursuit) is unchanged and out of
-        # scope; a `passed` row with no `passed_from` (passed some other way) is not guessed at.
-        if new_verdict == "pass" and r.get("status") == "backlog":
-            r["passed_from"] = {"status": "backlog", "stage": r.get("stage")}
+        # live backlog role. A `passed` row with no `passed_from` (passed some other way) is not
+        # guessed at.
+        # ⭐ dev #1032 / public #265 (jobsearch 0.93.0): the same write for EVERY live status
+        # (active-pursuit, needs-resolution, in-motion), not only backlog. A passed pursuit left
+        # `active-pursuit` stayed live on every surface, and the validator blocked each one-field
+        # way out (passed needs closed; a live status cannot be at closed). A terminal row
+        # (passed, expired) is left alone: a second pass keeps the way back it already has.
+        if new_verdict == "pass" and r.get("status") not in TERMINAL_OPP_STATUSES:
+            r["passed_from"] = {"status": r.get("status"), "stage": r.get("stage")}
             r["status"], r["stage"] = "passed", "closed"
         elif (new_verdict in ("pursue", "parked") and r.get("status") == "passed"
                 and isinstance(r.get("passed_from"), dict)):

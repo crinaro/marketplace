@@ -38,6 +38,10 @@ Row fields:
                     connector). They only ever ADD a server to what is treated as a connector.
   limit             a limit every doc and `/jobsearch:mailboxes` must state, or None.
   warning           a caution that goes with the limit, or None.
+  attach_read_on    the `read_on` of the connector's `tool-arguments` source row in the listing (a page showing the
+                    draft tool's arguments), or None when the listing holds no such row. Copied from the listing and
+                    pinned equal to it by test; it only dates the by-hand line (`attach_by_hand_line`). jobsearch
+                    never passes an attachment to a claude.ai connector, whatever this holds (design-resume-docx.md §7.3).
 """
 
 GMAIL_MULTI = "gmail-multi"
@@ -50,6 +54,14 @@ M365_LIMIT = ("works only where your organisation's Entra administrator has cons
               "not covered.")
 M365_WARNING = ("Reading through your employer's or school's tenant tracks your job search inside "
                 "that organisation's mailbox. Know that before you choose it.")
+# Why a connector with no `draft_tool` has none, read 2026-11-23 (spec listing): Microsoft lists drafting, names no tool.
+NO_DRAFT_WHY = {"claude-m365": ("Microsoft's connector page says Outlook can draft email but names no tool for it, and "
+                                "jobsearch builds only to a published tool name")}
+
+
+def no_draft_why(value):
+    """The published reason a connector has no draft tool, or the generic one."""
+    return NO_DRAFT_WHY.get(value, "%s publishes no draft tool" % label(value))
 
 CONNECTORS = {
     "claude-gmail": {
@@ -65,6 +77,7 @@ CONNECTORS = {
         "server_hints": ("gmail",),
         "limit": None,
         "warning": None,
+        "attach_read_on": None,            # no tool-arguments row: the directory page lists tool names only
     },
     "claude-m365": {
         "value": "claude-m365",
@@ -78,6 +91,7 @@ CONNECTORS = {
         "server_hints": ("microsoft", "m365", "outlook"),
         "limit": M365_LIMIT,
         "warning": M365_WARNING,
+        "attach_read_on": None,            # no draft tool at all, so no by-hand line; its refusal gains the path sentence
     },
     "claude-fastmail": {
         "value": "claude-fastmail",
@@ -92,6 +106,7 @@ CONNECTORS = {
         "server_hints": ("fastmail",),
         "limit": None,
         "warning": None,
+        "attach_read_on": None,            # no tool-arguments row: the directory page lists tool names only
     },
     "claude-superhuman": {
         "value": "claude-superhuman",
@@ -106,6 +121,7 @@ CONNECTORS = {
         "server_hints": ("superhuman",),
         "limit": None,
         "warning": None,
+        "attach_read_on": None,            # no tool-arguments row: the directory page lists tool names only
     },
 }
 
@@ -145,3 +161,49 @@ def all_read_tools():
             if t not in seen:
                 seen.append(t)
     return tuple(seen)
+
+
+# ── the file a claude.ai draft cannot carry (jobsearch 0.93.0, design-resume-docx.md §7.3) ─────────────────────────
+# The draft is still made, with no attachment argument, and the person adds the file. The line is printed, never stored.
+# It names "the computer running this session", never a hostname (§R2 S2-7: on macOS the hostname is not the name the
+# person sees, and it often holds their name).
+
+# the only arguments a claude.ai draft call carries: an attachment is never one, whatever the live schema shows
+CLAUDE_AI_DRAFT_KEYS = ("to", "subject", "body")
+ON_THIS_COMPUTER = "On the computer running this session: %s"
+ADD_IT = "Add the file to the draft before you press Send."
+
+
+def path_sentence(path):
+    """The fixed sentence that makes a by-hand path usable from a phone driving this session (S5)."""
+    return ON_THIS_COMPUTER % path
+
+
+def claude_ai_draft_args(value, fields):
+    """The argument dict of a claude.ai connector's draft call: `to`, `subject`, `body` from `fields`, and nothing else.
+
+    `fields` may hold anything an outbox row holds, `attachments` included; only `CLAUDE_AI_DRAFT_KEYS` pass. Raises
+    ValueError for a value with no published draft tool (`gmail-multi` builds its own call)."""
+    r = row(value)
+    if not r or not r.get("draft_tool"):
+        raise ValueError("%s has no claude.ai draft tool" % label(value))
+    args = {k: fields[k] for k in CLAUDE_AI_DRAFT_KEYS}
+    args["_note"] = "argument names per %s's own tool schema" % label(value)
+    return args
+
+
+def attach_by_hand_line(value, outbox_id, path, table=None):
+    """The ATTACH BY HAND line printed with a claude.ai connector's draft call, for the file at `path`.
+
+    Dated with exactly the row's `attach_read_on` when the listing holds a `tool-arguments` row for the connector,
+    undated otherwise. Raises ValueError for a value with no draft tool: `claude-m365` makes no draft and its refusal
+    gains `path_sentence(path)` instead; `gmail-multi` carries the file. `table` defaults to `CONNECTORS`."""
+    r = (CONNECTORS if table is None else table).get(value)
+    if not r or not r.get("draft_tool"):
+        raise ValueError("%s has no claude.ai draft tool, so there is no draft to attach to" % label(value))
+    name, tool, read_on = r["label"], r["draft_tool"], r.get("attach_read_on")
+    if read_on:
+        head = "%s's %s publishes no attachment argument (read %s)." % (name, tool, read_on)
+    else:
+        head = "this plugin records no attachment argument for %s's %s." % (name, tool)
+    return "ATTACH BY HAND %s: %s %s %s" % (outbox_id, head, ADD_IT, path_sentence(path))

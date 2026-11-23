@@ -83,7 +83,7 @@ def cmd_raise_companies(args):
         print(gate)
         return 3
     try:
-        setting = _ck.resolve_int(_profile_mod().load(), _ck.SEARCH_COMPANY_INTAKE_PER_RUN)
+        setting = _ck.resolve_int(_profile_mod().load(), _ck.SEARCH_COMPANIES_RAISED_PER_RUN)     # dev #1021
     except (ValueError, OSError) as e:
         print("⛔ REFUSED — %s; nothing written." % e)
         return 2

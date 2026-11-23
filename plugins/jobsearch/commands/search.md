@@ -109,7 +109,7 @@ Print its output verbatim. Then say that the sweep runs only from the attended f
    about to do:
 
    - link the sightings of roles already known: `record.py capture-batch --run <id> --link-only`;
-   - raise the companies to look into: `record.py raise-companies --run <id>` (at most `search.company_intake_per_run`
+   - raise the companies to look into: `record.py raise-companies --run <id>` (at most `search.companies_raised_per_run`
      new ones a run; it decides nothing about a company, the candidate answers with
      `record.py company-status <id> active-target|watching|passed`; a profile whose 0.86.0 migration has not run is refused
      with its reason, which you print and go on);

@@ -56,6 +56,14 @@ def split(people, company_id, as_of, recheck_days=RECHECK_DAYS):
     return out
 
 
+def counted(by):
+    """`[(row, is_current)]` in id order over `split()`'s `current` and `unconfirmed` rows: who a COUNT at the company includes (dev
+    #1020: an unconfirmed person still counts, flagged; only a confirmed former employee is removed). A way in (alumni, a path) is
+    `is_current` only (owner 2026-11-21)."""
+    cur = {id(p) for p in by["current"]}
+    return [(p, id(p) in cur) for p in sorted(by["current"] + by["unconfirmed"], key=lambda r: str(r.get("id")))]
+
+
 def ids(by):
     """`split()`'s result with each row replaced by its id: the shape a derived row carries (`access.table`'s `standing`)."""
     return {k: [p.get("id") for p in v] for k, v in by.items()}

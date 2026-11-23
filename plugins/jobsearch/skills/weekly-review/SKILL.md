@@ -73,6 +73,11 @@ Suggested settings: model **Fable**, weekly on the day/time `posture.py --cron` 
 
 Run the weekly strategy review of the candidate's search. Read `CLAUDE.md` first.
 
+**⭐ A REVIEW IS UNATTENDED BY DEFAULT; the attended form is `/jobsearch:weekly-review attended`.** Only that form
+passes `--attended` to the scripts that take it (§0c), the form `daily-run` has. **Never infer attended** from the time
+of day, a missing scheduler line or the surface: the safe reading of an unmarked run is that nobody is watching. An
+unattended review never asks the candidate, never applies a change and never starts a live LinkedIn read.
+
 ## 0. START
 
 ```bash
@@ -173,6 +178,56 @@ the network (who to reach, who went quiet, where the access table is thin), chan
 proposals. The strategist hands back PROPOSALS and may write SUGGESTIONS (a company to target, a plan, a person's cadence) with
 `record.py suggest`; a suggestion is an ask, and **nothing writes the row until the candidate runs `record.py confirm <ask_id>`**.
 The strategist never confirms, never declines, and never suggests a person (finding people is the candidate's own LinkedIn work).
+
+## 0c. ⭐ PRESENCE GAPS — the script decides the dispatch; the skill relays it (presence-report)
+
+After the strategist turn, one more READ, run unlocked. Add `--attended` only in the attended form:
+
+```bash
+~/.claude/jobsearch/run resume_report.py --gaps                 # the attended form: resume_report.py --gaps --attended
+```
+
+1. Print its `scanned:` and `GAP` lines. **Relay its last line, the `DISPATCH:` line, and act on nothing else.** A
+   `NOT CHECKED` on the `scanned:` line is an input the report could not read; say so, never call it clean.
+2. **`DISPATCH: no (...)` or `DISPATCH: held (...)`** → print it and stop this section. **Nothing is queued**: a gap
+   is derived on every run, so a queue row would store what is never stored.
+3. **`DISPATCH: yes <keys>`, and only then** → run `~/.claude/jobsearch/run resume_report.py --packet` (with
+   `--attended` in the attended form), dispatch `profile-optimizer` **once** with that packet and the brief's
+   `attended: yes|no`, then run `~/.claude/jobsearch/run record.py presence-propose --from-file <the path it hands
+   back> --dispatched <keys>` and print its result lines, refusals included.
+4. **An `ASK:` line is asked** (the attended form only; record the LinkedIn answer with `record.py presence-state
+   linkedin status none|skip|active`, or the headline and skills it names). **A `LISTED:` line is printed as it is.**
+5. **Settle the Word files first** (jobsearch 0.93.0). Run `~/.claude/jobsearch/run record.py presence-docx --all`
+   (`--all --attended` in the attended form) before applying anything, so an edit the candidate made in Word is
+   settled before the team's edits land; print every line it prints. It covers each active variant on the `print`
+   surface and each variant an approved email attaches. A layout change (spacing, text size, margins) is kept and
+   never asked about. `SKIPPED` (resume output is set to Drive), `ELSEWHERE`, `REFUSED`, `TRACKED` and `UNMERGED`
+   lines are printed as they are; nothing in them is fixed here. **A Word file whose words changed is asked, never
+   settled by guess:**
+   - **Attended**: an `ASK <variant>:` line carries the question ("You changed the Word file for <variant>. Update
+     the resume we keep on file from it? If not, your change will be overwritten at the next update."). Ask it in
+     those words. Yes: `~/.claude/jobsearch/run record.py presence-docx <variant> --keep word --attended`. No:
+     `... --keep md --attended` (the file is backed up first). Either answer also resolves the ask an earlier
+     unattended run filed. No answer: run neither, and the variant stays held.
+   - **Unattended**: an `ASKED <variant> (resume-word-edited:<variant>)` line means the question was filed as an ask
+     and nothing was written to either file. Put the line on the review's approval lines, verbatim. Never answer it
+     and never pass `--keep` or `--attended`: the candidate answers later with `--keep word|md --answer
+     resume-word-edited:<variant>`, as the line says.
+
+   Then apply the proposals (step 6), then run `record.py presence-docx --all` again (with `--attended` in the
+   attended form), so the applied words reach each Word file inside the candidate's own layout.
+6. **Open proposals.** Run `~/.claude/jobsearch/run record.py presence`. **A resume variant proposal is applied** with
+   `~/.claude/jobsearch/run record.py presence-apply <id>`: the variant files are the candidate's own, in their
+   profile, and a local edit there needs no authorization (owner rulings 2026-11-23). In the attended form, show the
+   candidate each one and apply the ones they keep; **an unattended review applies every open one** and prints each
+   result line. Either way it checks the variant, puts the file back if the check fails, and records the edit, so the
+   candidate sees it and can undo it. While a variant's Word-file question is open, its proposals are refused with
+   the variant named: print the refusal, and the proposal waits for the answer. **A LinkedIn proposal is never applied by the engine:** in the attended form show
+   its text for the candidate to paste, then record what they did with `record.py presence-decide <id>
+   applied|declined`; an unattended review only lists it.
+
+An unattended review drafts only when the posture grants `drafting` (the script has already decided that), and never
+twice for a key whose draft recorded nothing.
 
 ## 1. ⭐⭐ THE DEFINING JOB: DRAIN PROCESS DEBT TO ZERO
 
@@ -303,6 +358,21 @@ never mint on `url-missing`) — **on a version conflict, regenerate and publish
 `force`; after a successful publish, `~/.claude/jobsearch/run check_dashboard_fresh.py
 --stamp-published` so a dropped publish cannot stay silent (dev #133)** → commit (explicit paths) →
 **`~/.claude/jobsearch/run sync.py --end-of-run`** → `--release` the lock.
+
+**The commit names its paths, and the profile's git remote decides the Word files** (jobsearch 0.93.0). Run
+`git remote` in the profile, every review; it is never a setting. Stage with the one line that fits, then commit:
+
+```bash
+# No git remote (`git remote` prints nothing): every Word file stays on this machine.
+git add -- data/ handoff.md log.md presence/ ':(exclude)presence/*.docx'
+# A git remote: the managed Word file travels with the profile; its dated backups and a saved other side do not.
+git add -- data/ handoff.md log.md presence/ ':(exclude)presence/*.before-*.docx' ':(exclude)presence/*.remote-*.docx'
+git commit -m "Weekly review $(date +%F): <one-line summary> [run:<id>]"
+```
+
+The variant md files and `presence/claims.md` travel either way. With no remote, a `TRACKED` line printed by
+`record.py presence-docx` names a Word file already committed: relay it; never untrack it yourself, the line says
+how. **An `UNCONFIRMED o-<n>` line** from any `outbox.py` call this review made is repeated in the summary.
 
 **`~/.claude/jobsearch/run sync.py --end-of-run` replaces the old unconditional push (ADR-012).**
 Under a declared `remote` mode it delegates to `push.sh`, which reads this session's

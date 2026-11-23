@@ -15,9 +15,9 @@ DEFINITIONS (every one derived from stores that already exist; nothing here is s
                 the budget nor counts here.
   open draft    an entry in `outreach/drafts.md` addressed `**To:** contact:<id>` whose `**Status:**` is not `sent`, `moot`
                 or `do not send` (`warm_path.open_draft_recipients`, the one test). A draft records no `opp_id`, so an open
-                draft to a person with no earlier contact is counted as a first-touch draft, whatever its age (CONSERVATIVE: it
-                can only under-draft), which bounds the outstanding drafts to one week's budget.
-  spent         new reach-outs SENT this week + open first-touch drafts of any age.
+                draft to a person with no earlier contact is counted as a first-touch draft until it is older than
+                `network.draft_unobserved_days` (dev #1022, 0.93.0: then it spends nothing and is listed to send or drop).
+  spent         new reach-outs SENT this week + open first-touch drafts not past that threshold (an undated one counts).
   remaining     `network.new_reachouts_per_week` - spent, floored at 0.
 
 `--plan` lists at most `remaining` REACH-OUT lines, ranked: people at `active-target` companies the candidate knows and has never
@@ -387,8 +387,8 @@ def unobserved(root, today, hist=None):
     A draft whose age cannot be read is NEVER guessed old and NEVER silently dropped (CLAUDE.md: an unparseable value is loud): it
     goes in `unknown` with the reason (`_age_unknown_reason`), `plan` returns it as `age_unknown` and counts it in
     `undated_drafts`, and `render`, the strategy view and the funnel's network section each print it. It is not listed as a send
-    unobserved, because nothing can say it is overdue, and it still counts against the budget. A draft to someone already in
-    contact is a reply or a chase, not a first touch, and is in neither list. Read-only."""
+    unobserved, because nothing can say it is overdue, and it still counts against the budget; a listed one does not (dev #1022).
+    A draft to someone already in contact is a reply or a chase, not a first touch, and is in neither list. Read-only."""
     import config_keys as ck
     import warm_path as _wp
     today = as_date(today)
@@ -467,7 +467,7 @@ def plan(root, today=None):
          "age_unknown": [{"ref", "person_id", "person", "reason"}]}
 
     `today` is a date or an ISO string (`as_date`). `unobserved` is the "send unobserved" list (`unobserved()`, design 9.1): open
-    first-touch drafts older than `network.draft_unobserved_days`; they stay in `open_drafts` and `spent`.
+    first-touch drafts older than `network.draft_unobserved_days`; since 0.93.0 (dev #1022) they are NOT in `open_drafts` or `spent`.
 
     `lines` never has more than `remaining` entries (the whole point of the budget), and has none when the budget is spent. The 3B7
     SECOND CONTACTS come first (design 9.1), out of the remaining budget; the ranked first touches fill what is left. Follow-ups
@@ -489,7 +489,8 @@ def plan(root, today=None):
         if not hist.contacted_before(row["id"], d, touch_id=t.get("id")):
             sent += 1
     drafts = _open_first_touch_drafts(root, hist)
-    open_drafts = sum(len(v) for v in drafts.values())
+    stale, unknown = unobserved(root, today, hist)      # dev #1022: a draft past the threshold spends nothing; listed to send or drop
+    open_drafts = sum(len(v) for v in drafts.values()) - len(stale)
     spent = sent + open_drafts
     remaining = max(0, cap - spent)
 
@@ -548,7 +549,6 @@ def plan(root, today=None):
             lookups.append({"kind": "lookup-owed", "company_id": a["company_id"], "company_name": a["company_name"],
                             "linkedin_url": a.get("linkedin_url")})
             seen.add(a["company_id"])
-    stale, unknown = unobserved(root, today, hist)
     return {"week": label, "budget": cap, "sent_this_week": sent, "open_drafts": open_drafts, "spent": spent,
             "remaining": remaining, "lines": lines, "lookups": lookups, "reconnects": reconnects(root, today, ctx),
             "role_specific": role_specific(root, today, ctx), "unobserved": stale, "undated_drafts": len(unknown),

@@ -56,15 +56,15 @@ def _fmt_move(m):
 def standing_lines(rows):
     """The lines printed ABOVE the table (design-build-reach.md 5.5, owner O3 and O12), each only when it has people in it:
 
-        EMPLOYMENT UNCONFIRMED: 3 people at 2 targets are not counted until you say whether they still work there: Globex
+        EMPLOYMENT UNCONFIRMED: 3 people at 2 targets are counted, flagged, until you say whether they still work there: Globex
             (robin-example, sam-sample); Initech (jo-placeholder) -- `record.py employment <person_id> current|former`
         RE-CONFIRM: 1 person at 1 target still counted, last stated longer ago than the re-check window: ...
 
     `rows` are `access.table` rows; each carries `standing` (`reach.standing_rows.ids`)."""
     out = []
     for key, head, tail in (
-            ("unconfirmed", "EMPLOYMENT UNCONFIRMED: %d %s at %d target%s %s not counted until you say whether they still work "
-                            "there: ", "`record.py employment <person_id> current|former`"),
+            ("unconfirmed", "EMPLOYMENT UNCONFIRMED: %d %s at %d target%s %s counted, flagged, until you say whether they still "
+                            "work there (never a way in): ", "`record.py employment <person_id> current|former`"),     # dev #1020
             ("reconfirm", "RE-CONFIRM: %d %s at %d target%s still counted, %s last stated longer ago than the re-check "
                           "window: ", "`record.py employment <person_id> current` (a re-confirmation is never shown as a move)")):
         hits = [(r["name"], (r.get("standing") or {}).get(key) or []) for r in rows]

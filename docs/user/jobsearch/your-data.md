@@ -171,7 +171,7 @@ The main record. Everything about one role hangs off it.
 | `employer_posting` | since 0.80.0 — whether the role was seen on the **employer's own** posting (their careers page or applicant-tracking site) and whether that posting is still up: `confirmed`, `unconfirmed` or `closed`, with the address, the dates and the visible text that was quoted. Absent means *never checked*, and reads as unconfirmed. Only the plugin's own scripts write it, so a hand edit is refused; a role not re-checked within a week reads *NOT CHECKED since* a date, never "live". See *Is the role still open?* in `how-it-works.md` |
 | `status` | what you are **doing** about it |
 | `stage` | where it **is** in the funnel |
-| `passed_from` | since 0.69.0, only on a role whose `status` is `passed` — `{status, stage}`, where the role stood when you passed on it, kept so that `pursue` or `park` can put it back. See *A pass on a backlog role is final* below. Absent on every other role |
+| `passed_from` | since 0.69.0, only on a role whose `status` is `passed` — `{status, stage}`, where the role stood when you passed on it, kept so that `pursue` or `park` can put it back. See *A pass on a live role is final* below. Absent on every other role |
 | `verdict` | `pursue` · `pass` · `parked` · `undecided` |
 | `duplicate_of` | since 0.70.0, only on a row you folded into another with `record.py link-sibling` — the id of the row that stands for the same requisition. A folded row carries no decision of its own and leaves the undecided list. Absent on every other role |
 | `distinct_from` | since 0.70.0, optional — ids of rows you recorded as a *different* role (a merge you undid, or a role you created anyway with `--force`), so the matcher never joins that pair again |
@@ -280,13 +280,14 @@ since. Going back to 0.81.0 on an upgraded profile is not supported: that versio
 `jd_read` and cannot read the run journal's new entries. A profile is driven by one version of the plugin at
 a time.
 
-### A pass on a backlog role is final — since 0.69.0
+### A pass on a live role is final — since 0.69.0 (backlog), 0.93.0 (every live status)
 
 Passing on a role you had only sourced (`record.py decide <role> pass`) now ends it in the same
 write: `status: passed`, `stage: closed`, and `passed_from` holds the status and stage it had, for
 example `{"status": "backlog", "stage": "sourced"}`. Before 0.69.0 the pass was recorded as
 `verdict: pass` but the role stayed `status: backlog`, so the rest of the system still saw a live
-backlog role. A pass on a role you are already pursuing is unchanged.
+backlog role. Since 0.93.0 the same holds for a role you were already pursuing (any live status), so a
+passed role no longer stays on Needs You or your network lists.
 
 **Changing your mind.** `record.py decide <role> pursue` or `park` on a `passed` role that has a
 `passed_from` puts `status` and `stage` back as they were and removes `passed_from`. A `passed`
@@ -943,7 +944,9 @@ never a draft that can drift.
   (otherwise `null`). **`sent_on`** is the date, or `YYYY-MM-DD HH:MM` where the time is known.
 - **`from`** and **`to`** are the sender and recipient as the message states them — an address, or
   a `contact:<id>` token when you record it through `record.py`. `from` is usually `null` on a
-  message you sent yourself.
+  message you sent yourself. Since 0.93.0, `record.py answered contact:<id>` with no `--opp` records
+  a reply on that person's one thread with no role (a channel thread or the person-only thread); with
+  several, it lists the exact commands (`--channel <id>`, or `answered person:<id>`).
 - **`source`** is required, and says where the text came from — `gmail:<account>:<uid>` for mail
   (`ats:<account>:<uid>` is the same shape, written by the ATS sweep, which also leaves
   `mail:<account>:<uid>` markers in the notes it writes), or `outreach/drafts.md` for something you wrote and sent
@@ -1196,15 +1199,17 @@ your mailbox says `not checked` and changes nothing here; it never reads as "not
 | `id` | the row's handle, `o-1`, `o-2`, ... |
 | `person_id` | who the message is to |
 | `draft_ref` | the `**Brief:**` id of the draft in `drafts.md` |
-| `medium`, `mode` | the draft's medium, and `you` (you send it) or `me` (the engine sends it after you approve, where offered) |
+| `medium`, `mode` | the draft's medium, and `you` (you ask for it to be put in your drafts) or `me` (it goes into your drafts when you approve it); you send it either way |
 | `account` | the mailbox it goes from: one of your own addresses |
 | `to`, `cc`, `bcc` | the recipients, always written out |
 | `subject`, `body` | the exact text, kept only until the message is sent or dropped |
 | `reply_uid` | the message being answered, when it is a reply. It comes from the reply draft's `**In-reply-to:** <account>:<uid>` line (the drafter writes it from the message you received), and must name a message on record from that person. A reply draft without the line is not staged, and the reason is printed; it is never staged as a new message |
 | `text_sha256` | a fingerprint of the text and recipients, so a changed text is noticed |
+| `attachments` | since 0.93.0, when the draft carries your resume: the file (`ref` names the resume version, `file` its path, `sha256` and `bytes` its fingerprint and size) and whether the drafted email really held it (`carried`, with `why` when it did not). With a claude.ai connector or Microsoft 365, `carried` is false and you add the file yourself |
+| `attach_sha256` | a fingerprint of the attachment list, so an attachment changed after you approve is noticed |
 | `state` | `queued`, `staged`, `approved`, `sending`, `sent`, `discarded` or `failed` |
 | `queued_on`, `staged_on`, `date` | when it was queued, put in your drafts, and sent |
-| `approved_at`, `approved_session`, `sending_at` | when an engine send was approved and passed the guard |
+| `approved_at`, `approved_session`, `sending_at` | when you approved a `me` message; the other two were written only by 0.91.0 to 0.92.0, which could send |
 | `touch_id` | the touch recorded when it was sent |
 | `last_checked_at`, `check_result`, `none_found_checks` | the last time Sent was actually read for it, what that found, and how many reads in a row found nothing |
 | `note` | free text |
@@ -1216,25 +1221,24 @@ request unless you set `actions.email.stage` to `auto` (see *Action modes* below
 only text you have called final. `outbox.py list` shows the open rows, and `outbox.py discard <id>` drops one you will not send
 (the draft in your mailbox stays yours to delete).
 
-**When the engine sends for you: `actions.modes.email-send` set to `me`** (gmail-multi only). Under `me` a draft is not put in
-your mailbox. It waits as a `queued` row, and is sent only in a session you are attending:
+**When you approve and the engine drafts: `actions.modes.email-send` set to `me`** (since 0.93.0). You always press Send.
+Under `me` a draft waits as a `queued` row until you approve it:
 
-1. The session shows you the waiting messages in full (`outbox.py list --ready`): to whom, from which address, the subject and
-   the text, and for a reply, the message it answers.
-2. You say which to send. The session runs `outbox.py approve <id>... --attended`, then, for each one,
-   `outbox.py call <id> --attended`, and makes the one call it prints.
-3. **Claude Code asks you to allow each send** (once or twice per message; which one is not yet measured). That click is your
-   approval. Deny it and nothing is sent. The guard lets the
-   call reach that prompt only if the recipients and text are exactly the ones you were shown, the approval was made in this same
-   session, and the message was approved in the last 10 minutes. Anything else is refused before you are asked.
+1. In a session you are attending, the session shows you the waiting messages in full (`outbox.py list --ready`): to whom,
+   from which address, the subject and the text, and for a reply, the message it answers.
+2. You say which ones. The session runs `outbox.py approve <id>... --attended`, and each one you approved goes straight into
+   your drafts (the row becomes `staged`). Nothing asks you again.
+3. You open your drafts, edit if you like, and send. Every run then looks for the message in Sent, as above.
 
-A scheduled or unattended run never sends. It leaves the rows `queued` for your next attended session. An approval older than 10
-minutes goes back to `queued`, and an approval made in another session (one that has ended, or before `/clear`) is refused. `outbox.py cancel <id>` puts an
-approved or sending row back to `queued`. A row stays `sending` until the message is found in Sent; it is never sent twice
-without a new approval. `outbox.py --stats` prints how long approvals took and how many lapsed. Forwarding is never sent by the
-engine, in any mode. This needs Claude Code v2.1.295 or later. **Approve sends at your computer:** whether Claude Code's prompt
-can be answered from your phone over Remote Control has not been checked yet. If you have your own setting or hook that
-auto-approves permission prompts, it can approve these sends too, and the plugin cannot see it.
+A scheduled run never approves anything for you; it does put a message you already approved into your drafts if that had not
+happened yet (`outbox.py draft`). `outbox.py cancel <id>` puts an approved row back to `queued`. This works under gmail-multi
+and under the claude.ai Gmail, Fastmail and Superhuman connectors, each with its own draft tool; a reply is drafted only under
+gmail-multi. Under Microsoft 365, which publishes no draft tool, `me` is refused and you draft the message from the text shown.
+Nothing is ever sent by the engine, in any mode: the plugin refuses gmail-multi's send, reply and forward tools in every session.
+
+*Before 0.93.0* (0.91.0 to 0.92.0) `me` let the engine send an approved email after Claude Code's prompt. A row an older version
+left `approved` is put into your drafts by the next run; a row left `sending` stays until the message is found in Sent, or
+`outbox.py cancel <id>` puts it back to `queued`.
 
 ### The working set — what leaves `drafts.md` and where it goes (since 0.47.0)
 
@@ -1456,6 +1460,61 @@ The one place you actually see its effect is a checkup line counting how many le
 `moot` this way, alongside the equivalent count for a touch whose role has ended
 (`data/touches.jsonl`, derived the same way by `your_move.touch_state()`).
 
+### Presence changes — what your LinkedIn says, and what was proposed, `presence_changes.jsonl` (since 0.93.0)
+
+A dated record of your presence copy: what your LinkedIn profile says, what the plugin proposed for
+the coverage report's gaps, and what you did with each proposal. **Rows are only ever added**: nothing
+rewrites one, so the file reads in the order things happened. What your profile says now is the last
+row in the file that stated it, observed it, or applied a change to it (`record.py presence` prints
+it). No file means nothing is recorded yet; there is no upgrade step. **The plugin never edits your
+LinkedIn profile.** It prints a proposal and the link; you paste it in, then tell it so.
+
+| field | what it records |
+|---|---|
+| `id` | the row's handle, `pc-1`, `pc-2`, ..., always increasing down the file. A file whose order was changed by hand (for example a merge you resolved) is refused, with the row named |
+| `kind` | `stated` (you said it), `observed` (read from your own profile in a session you attended, and confirmed by you), `proposal` (a drafted change), `decision` (what you did with a proposal), or `refused` (a gap that was sent for drafting and got no usable draft) |
+| `created` | the day the plugin learned it, stamped by the command |
+| `by` | `candidate` (you), `profile-optimizer`, `linkedin-runner`, or `session` |
+| `note` | free text. On a `refused` row, the reason, ending with the drafts file it was judged on |
+| `target` | `linkedin`, or `variant` (one of your resume version files) |
+| `variant_id` | which resume version, for a `variant` target |
+| `field` | for LinkedIn: `status`, `headline`, `about`, `skills`, `experience` or `featured`; for a version: `opening`, `bullet` or `text` |
+| `value` | what the profile says, or would say under a proposal. For `skills`, a list (at most 100). For `status`: `none` (no LinkedIn profile), `skip` (you have one and will not state it) or `active` |
+| `gap` | the report's gap a proposal answers, or that a `refused` row is about |
+| `before` | the text a proposal replaces |
+| `claims` | the lines of your claim union a proposal rests on, copied word for word. For LinkedIn, each must be tagged `[public]` |
+| `handback` | the drafts file a proposal was read from, so the same file is never recorded twice |
+| `proposal` | on a decision: which proposal it answers. A proposal gets at most one decision |
+| `decision` | `applied`, `declined`, or `superseded` (a newer proposal for the same gap replaced it) |
+| `applied_on` | the day you say you applied it, shown only |
+| `applied_value` | the text as you actually applied it, when you changed it (`--as-edited`); it then counts as the current text |
+| `applied_by` | `candidate`, or `engine` for a resume version edited by `record.py presence-apply`. `engine` on a LinkedIn change is refused |
+| `doc_op` | on a `document` row (since 0.93.0): what the plugin did to a resume version's Word file. `render` (wrote it fresh in the default layout), `update` (changed only the paragraphs whose words changed, keeping your layout) or `adopt` (accepted the file as it is, writing nothing) |
+| `file` | that Word file's path inside your project folder, written with `/` |
+| `doc_sha256`, `doc_text_sha256`, `source_sha256` | fingerprints taken right after: of the Word file, of its words, and of the resume version's text file. Comparing them with the files as they are now is how the plugin tells whether you changed the Word file's layout, its words, or neither |
+| `ats` | the applicant-tracking checks the Word file failed (`table`, `textbox`, `columns`, `identity-top`, `heading-style`, `image`); empty when all pass. Reported, never fixed for you |
+| `machine` | which of your computers wrote it, as a random id (never the computer's name); empty only when your project folder is not a git repository |
+| `written_at` | the moment the row was written, in UTC. The newest row by this time, not by its place in the file, is what the plugin compares against; a `document` row without one is refused |
+| `removed`, `added` | on an `update`: fingerprints of each paragraph it replaced and each one it wrote, so an older copy of the file saved over the update is recognised and you are asked, not overwritten |
+
+**How rows get here.** `record.py presence-state` records what you state (and, with `--observed
+--attended`, a read you confirmed). `record.py presence-propose` records drafts. `record.py
+presence-decide <id> applied` or `declined` records your decision. `record.py presence-apply <id>` edits
+a resume version file for you, and `record.py presence-import` brings a resume file from elsewhere into
+one, as `stated` rows of field `text` (the version's earlier text first, then the imported text). Neither
+needs an approval: the files are yours, in your own project (since 0.93.0). `record.py presence` lists
+every such edit. Each is listed in
+[Commands](commands.md). Stating a headline or skills after `none` or `skip` sets the status back to
+`active` in the same write. **Never stored here:** a gap, a count, a rate, or a "done" mark; each is
+worked out on every run.
+
+**Your resume's Word file** (since 0.93.0). `record.py presence-docx` keeps each resume version's Word file in step with
+its text, and adds a `document` row each time it writes the file or accepts it as it is. Your layout (spacing, text size,
+margins) is yours and is kept: an update changes only the words inside the paragraphs whose text changed. If you changed the
+words in the Word file, the plugin asks whether to update the resume it keeps on file from it; if you say no, your change is
+overwritten at the next update. In a run you are not watching it writes nothing to either file and leaves the question for
+you as an ask (`resume-word-edited:<version>`).
+
 ### Fit — how you match the role
 
 This is the role's `fit` field. Optional. Absent means the job description has not been analysed yet.
@@ -1484,6 +1543,14 @@ Each material requirement from the posting becomes a row in `fit.requirements[]`
   undated last, on the coordinator's list and on the dashboard's fit section — the date used to
   live as prose inside the question, where nothing could sort it.
 - **`answered_on`** — the date you answered it.
+- **`topic`** (since 0.93.0, optional) — what the requirement is about, as a short lower-case slug a
+  LinkedIn skill would use (`enterprise-architecture`). The coverage report counts a topic as recurring
+  when two roles you pursue carry it. `resume_report.py --topics` lists the topics in use, and
+  `record.py retopic <old> <new>` merges two that mean the same thing.
+- **`claim`** (since 0.93.0, optional, aligned or partial only) — the line of your claim union the
+  evidence rests on, word for word. It is checked against the union when it is written, never later:
+  a union you edit afterwards shows in the report, not as a broken record. `record.py fit-key` sets
+  either key on one existing requirement. Requirements recorded before 0.93.0 are not changed.
 
 `not-aligned` rows are kept, not suppressed. They tell you where you are stretching, and a fit
 analysis that lists only matches is marketing rather than analysis.
@@ -1612,6 +1679,14 @@ onto every existing profile, absent-only, by the 0.50.0 upgrade. Every resolutio
 is recorded on the inbound message itself — `messages.jsonl`'s `resolves` (the application it
 resolves) and `resolved_by` (which of the three checks decided it) — not only on the
 application, so you can always trace a status change back to the specific email that caused it.
+
+**Since 0.93.0.** Mail the sweep cannot match to an application becomes one question per sender
+domain per week, naming the domain and `ats.receipt_sender_domains`; answering it `noise` quiets that
+domain. `reconcile.py --ats --verify` holds only a configured receipt domain (`ats.receipt_sender_domains`)
+to having a recorded row for every message; mail from a derived domain (a job-board or social digest) is
+reported as advisory and never fails the check. The follow-up check's UNRESOLVED INBOUND list holds only
+messages a re-run of `reconcile.py --ats` will apply; one the record already reflects, or that would move a
+status backwards, is counted as held inbound: answer the ATS ask in Your Move, or record the status yourself.
 
 **Renamed in 0.41.0.** Earlier versions of the scaffold seeded this block as `ats.sender_domains`
 and `ats.receipt_phrases` (one flat list, which could only ever mean "acknowledged"); every
@@ -1931,12 +2006,13 @@ The 0.86.0 upgrade seeds each of these where it is missing and never overwrites 
 
 | key | what it is |
 |---|---|
-| `search.company_intake_per_run` | how many target companies one daily run takes on, every waiting role of each company together, and how many companies a run newly raises for you to look into. A whole number from 1 to 100; defaults to **10** |
-| `network.new_reachouts_per_week` | how many new reach-outs the daily run may draft in a calendar week (Monday to Sunday): first messages to people you have not contacted, at companies you target. Open drafts count until you send or delete them. A whole number from 0 to 50; defaults to **5**; 0 turns new reach-outs off. The run only drafts: it never sends |
+| `search.company_intake_per_run` | how many target companies one daily run takes on, every waiting role of each company together. A whole number from 1 to 100; defaults to **10** |
+| `search.companies_raised_per_run` | since 0.93.0: how many companies a run newly raises for you to look into. A whole number from 1 to 100. If you never set it, it is whatever `search.company_intake_per_run` is, which is how one setting worked for both before. |
+| `network.new_reachouts_per_week` | how many new reach-outs the daily run may draft in a calendar week (Monday to Sunday): first messages to people you have not contacted, at companies you target. An open draft counts until you send or delete it, or until it is older than `network.draft_unobserved_days`; then it is listed as a send unobserved and no longer counts. A whole number from 0 to 50; defaults to **5**; 0 turns new reach-outs off. The run only drafts: it never sends |
 | `network.followup_business_days` | the business days after a reach-out at which a second contact and then a follow-up are due, two whole numbers from 1 to 30, increasing; defaults to **[3, 7]** |
 | `network.workdays` | which weekdays count as business days (1 is Monday, 7 is Sunday), a list of unique numbers; defaults to **[1, 2, 3, 4, 5]**. Holidays are not modelled |
 | `network.reachout_max_words` | the word cap on a network reach-out draft, from 25 to 200; defaults to **75** |
-| `network.draft_unobserved_days` | an open reach-out draft older than this many days is listed as "send unobserved" (it still counts against the week's budget), from 7 to 60; defaults to **14**. The draft's age is read from the date in its `**Brief:**` line; a draft whose age cannot be read is listed as "age unknown" instead |
+| `network.draft_unobserved_days` | an open reach-out draft older than this many days is listed as "send unobserved" (send it and record it, or delete it; since 0.93.0 it no longer counts against the week's budget), from 7 to 60; defaults to **14**. The draft's age is read from the date in its `**Brief:**` line; a draft whose age cannot be read is listed as "age unknown" instead |
 | `access.warm_days` | the days within which a recorded touch makes a person warm, from 30 to 365; defaults to **180** |
 
 ### Settings added in 0.88.0 (`config.json.network`, `config.json.runs`)
@@ -1978,11 +2054,14 @@ that setting's row. No upgrade writes these.
 
 | key | `me` |
 |---|---|
-| `actions.modes.email-send` | **offered** when your mail connector is gmail-multi, in an attended session only, after Claude Code's prompt for each message (see *Outbox* above). Under any other connector it is refused, because no claude.ai connector's send tool prompts on every call |
+| `actions.modes.email-send` | **offered** (since 0.93.0, as a draft): each message you approve, in a session you are attending, goes into your drafts and you press Send (see *Outbox* above). Offered under gmail-multi and the claude.ai Gmail, Fastmail and Superhuman connectors; refused under Microsoft 365, which publishes no draft tool. The engine never sends in either mode |
 | `actions.modes.linkedin-message`, `actions.modes.linkedin-connect`, `actions.modes.linkedin-profile-edit`, `actions.modes.linkedin-post` | **refused**: LinkedIn's User Agreement (§8.2) bans software acting for a member. Under `you`, the dashboard row links to the person's recorded LinkedIn page, and the text is in the row |
 | `actions.modes.ats-submit` | **refused**: the plugin never submits an application |
 | `actions.modes.event-rsvp` | **refused**: no event host's terms have been read and found to permit it |
 | `actions.modes.site-register` | **refused**: no registration pre-fill exists, and nothing would stop a registration form's Submit being clicked |
+
+**Your resume version files have no setting here** (since 0.93.0): they are yours, in your own project, so the plugin edits them
+for you with no approval (`record.py presence-apply`, `presence-import`; see *Presence changes*). LinkedIn stays yours alone.
 
 | key | what it is |
 |---|---|
@@ -2012,7 +2091,7 @@ more, and tries again next session; it never reports "0 done" for work it could 
 again and says so rather than failing if `data/` cannot be written.
 
 **What the upgrade does not do.** It does not ask about, raise or change any company. The first daily runs after it raise
-the first `search.company_intake_per_run` companies that have a live role and that you have not yet decided about (each
+the first `search.companies_raised_per_run` companies that have a live role and that you have not yet decided about (each
 gets a `raised_on` date, written only by `record.py raise-companies`), and the rest follow on later runs. For the first 7
 days the run summary carries one line saying the profile was upgraded, how many roles are held for your company decision and
 how many companies are waiting to be raised. A profile that has not been upgraded yet reads as *upgrade pending*, never as an
@@ -2370,6 +2449,17 @@ everything else in [the documents table above](#the-documents): `focus.md` →
 automatic, no-action-needed move as the rest of the tree.
 
 ---
+
+### What the 0.93.0 upgrade writes
+
+One automatic step (`m_0_93_0_word_round_trip`). **It adds one mark to the run history**, `data/runs.jsonl`, saying the
+profile needs 0.93.0 or later, and changes nothing else: no file is rewritten and no copy is made. If the run history
+cannot be read it writes nothing and tries again next session. A profile first set up with 0.93.0 carries the mark from
+the start.
+
+**If you use more than one machine.** Once the mark is written, a machine still on 0.92.x refuses every `record.py`
+command and every read of the run history: it says "Update the plugin on this machine before running it here", so
+update the plugin on every machine.
 
 ### What the 0.92.0 upgrade writes
 

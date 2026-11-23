@@ -64,6 +64,7 @@ from _root import (engine_root as _engine_root, profile_root as _profile_root,
                     is_tracked_fixture as _is_tracked_fixture,
                     is_installed_engine as _is_installed_engine,
                     looks_like_profile as _looks_like_profile); import _script_files   # S4a: the one definition of "every shipped script"
+from purity import ordinary_words as _ow   # dev #1029: a single-token company name that is an ordinary word
 
 # ⭐⭐ TWO ROOTS, AND CONFLATING THEM IS TRAP #2 IN THE MARKETPLACE RULEBOOK.
 #
@@ -528,6 +529,8 @@ def _profile_terms(root=None):
         for row in rows(rel):
             for f in fields:
                 record(row.get(f))
+            if rel == "companies.jsonl" and encountered(row.get("name")) and _ow.domain_qualifier(row):
+                terms.setdefault("encountered", set()).add(_ow.domain_qualifier(row))   # dev #1029
 
     # ⭐⭐ CONTACTS USED TO LIVE NESTED, AND THE FLAT SCAN ABOVE COULD NOT SEE THEM — added
     # 2026-08-11, RESOLVED by ADR-031 B1 (2026-09-10): `contacts[]` is retired and every name
@@ -541,11 +544,8 @@ def _profile_terms(root=None):
     # person-terms from the one file that held people, and a contact named in a portable file
     # was invisible to it.
     #
-    # It certified exactly that: four real third-party names survived across `daily-run`'s
-    # SKILL.md, `docs/schema.md`, `docs/architecture.md`, `migrate_contacts.py`,
-    # `reconcile.py` and `test_checks.py` through every green run — every one of them a person
-    # in this array. Same signature failure as the two above it: a source that is never read
-    # produces an empty term set, and an empty term set reads as CLEAN.
+    # It certified exactly that: four real third-party names survived across six engine files through every green
+    # run. Same failure as above: a source never read gives an empty term set, which reads as CLEAN.
 
     return {k: sorted(v) for k, v in terms.items() if v}
 
@@ -662,7 +662,7 @@ def _shape_exempt(kind, w, m, line):
     The count of every exempted match prints on every run (see `main()`), so the trade is never
     silent.
     """
-    if kind == "name" or " " in w:
+    if kind == "name" or " " in w or any(c in JOIN for c in w):   # dev #1029: a domain/address is never prose
         return False
     text = m.group(0)
     if text != text.lower():
@@ -1066,7 +1066,7 @@ def _scan_incremental(files, base, terms, cached, over_budget=None, min_new=0,
         sink = [] if need_exempt else None
         try:
             if need_exempt or deadline is not None:
-                rel, hs = scan(path, terms, sink, deadline)
+                rel, hs = scan(path, terms, exempt_sink=sink, deadline=deadline)
             else:
                 rel, hs = scan(path, terms)
         except ScanBudgetExceeded:
@@ -1679,16 +1679,14 @@ def hook_step(profile, engine, budget_s=8, migrations_verdict="current"):
         #
         # ⭐⭐ dev #709 (public #149) — A SLICE RESUMES, IT DOES NOT RESTART. Every run used to
         # begin at file zero, so a budget that covered 9 of 138 files covered the same 9 every
-        # session and the scan never finished. The per-file record in the progress file (see
-        # `_scan_incremental()`) is reused when the file's content hash is unchanged, and
-        # `min_new=1` makes every run scan at least one file that has no record, so the covered
-        # count rises on every run and a bounded sequence of runs reaches a complete verdict.
+        # session and the scan never finished. A file's record is reused while its hash holds, and `min_new=1` scans
+        # at least one unrecorded file per run, so the covered count rises and the scan completes (`_scan_incremental`).
         t0 = time.time()
         files = _engine_files_for(engine)
         progress_path = os.path.join(state_dir, os.path.basename(PROGRESS_REL))
         progress_key = _progress_key(engine_version, terms)
         res = _scan_incremental(files, engine, terms, _load_progress(progress_path, progress_key),
-                                over_budget=lambda: time.time() - t0 > budget_s, min_new=1)
+                                over_budget=lambda: time.time() - t0 > budget_s, min_new=1, need_exempt=True)
         partial = res.partial
         covered = len(res.order)
         resume_from = files.index(res.uncovered[0]) if partial else None
@@ -1706,7 +1704,8 @@ def hook_step(profile, engine, budget_s=8, migrations_verdict="current"):
                 hits_raw.append({"path": rec["path"], "line": n, "kind": kind,
                                  "term": st[idx] if 0 <= idx < len(st) else "?",
                                  "text_sha256": text_sha, "_file": path})
-
+        ordinary = _ow.ordinary_word_terms(res.records.values(), terms)   # dev #1029: set aside, never counted
+        hits_raw = [h for h in hits_raw if (h["kind"], h["term"]) not in ordinary]
         dismissed = stamp.get("dismissed", [])
         if not isinstance(dismissed, list):
             dismissed = []
@@ -2113,7 +2112,8 @@ def main():
             if (len(files_) >= PERVASIVE_FILE_THRESHOLD
                     and (kind, _term_key(stamp_doc["term_salt"], kind, term)) in dindex[2]):
                 quiet_terms.add((kind, term))
-    n_dismissed = 0
+    n_dismissed = n_ordinary = 0
+    ordinary = _ow.ordinary_word_terms(res.records.values(), terms)       # dev #1029
     for p, rel_key in res.order:
         rec = res.records.get(rel_key)
         if not rec or not rec.get("text"):
@@ -2131,6 +2131,8 @@ def main():
             elif dindex is not None and ((h[1], h[2]) in quiet_terms
                                          or _hit_dismissed(dindex, rel, row[0], row[1], row[3])):
                 n_dismissed += 1          # the user's own answer; counted below, never silent
+            elif (h[1], h[2]) in ordinary:
+                n_ordinary += 1           # dev #1029: an ordinary word; counted below, never silent
             else:
                 keep.append(h)
         if keep:
@@ -2140,15 +2142,12 @@ def main():
             print("\n  %s" % rel)
             for n, kind, w, line in hits[:12]:
                 print("    %4d  [%s:%s]  %s" % (n, kind, w, line))
-    # ⭐ dev #709 — THE TIME IS PRINTED, every run, so "the default run completes" is a number a
-    # reader can see and a log can keep rather than a claim.
+    # ⭐ dev #709 — THE TIME IS PRINTED, every run: "the default run completes" is a number, not a claim.
     print("  scan took %.1fs: %d file(s) read, %d unchanged since the last complete scan "
           "(progress file; dev #709)" % (scan_s, res.scanned_now, res.reused))
 
-    # ⭐⭐ dev #476 — LOUD, AND BEFORE ANY "CLEAN"-SHAPED OUTPUT. A budget-exhausted scan must be
-    # impossible to mistake for a completed one — print this the moment the loop above stops
-    # early, not folded into the final verdict line where a reader skimming for "CLEAN" could
-    # miss it.
+    # ⭐⭐ dev #476 — LOUD, AND BEFORE ANY "CLEAN"-SHAPED OUTPUT: a budget-exhausted scan must be impossible to
+    # mistake for a completed one, so this prints the moment the loop stops early, not in the verdict line.
     if partial:
         print("\n  !! PURITY SCAN INCOMPLETE — budget of %ss exceeded after %d of %d readable "
               "file(s)." % (args.budget_s, resume_index, len(readable)))
@@ -2157,10 +2156,8 @@ def main():
         print("     But %d file(s) were NEVER SCANNED this run — raise --budget-s or re-run; a "
               "lack of hits below is NOT a passing verdict." % (len(readable) - resume_index))
 
-    # ⭐⭐ dev #342 — VISIBLE EVERY RUN, RED NEVER. The mechanism that retires a KNOWN_EXCEPTIONS
-    # entry by occurrence shape must be as visible as the exceptions it replaces — the count
-    # prints unconditionally, and --verbose names every site, so the trade in `_shape_exempt()`'s
-    # own docstring (a bare-lowercase-mid-sentence company mention goes uncaught) is never silent.
+    # ⭐⭐ dev #342 — VISIBLE EVERY RUN, RED NEVER: the shape-exempt count prints unconditionally and --verbose
+    # names every site, so the trade in `_shape_exempt()`'s docstring is never silent.
     total_exempt = sum(len(v) for v in exempt_by_file.values())
     print("\n  shape-exempt (dev #342): %d lowercase, unjoined single-token match(es) in %d "
           "file(s)" % (total_exempt, len(exempt_by_file)))
@@ -2174,6 +2171,8 @@ def main():
     else:
         print("  dismissed (not-my-data): %d match(es), from this profile's own answers (dev #710)"
               % n_dismissed)
+    print("  set aside (dev #1029): %d match(es) of %d single-token name(s) the engine writes as an ordinary word "
+          "in %d+ files; a company's domain still counts" % (n_ordinary, len(ordinary), _ow.MIN_FILES))
 
     # ⭐⭐ THE COVERAGE LINE IS THE POINT OF #45. A gate that cannot say what it skipped is a
     # gate whose green run means nothing. scanned + excluded must equal the tracked total, and

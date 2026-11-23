@@ -93,6 +93,7 @@ from _root import profile_root
 from browser_fallback import run_lines as _fallback_lines
 import journal as _journal
 import inbox as _inbox
+from browser_fallback import hidden_passes as _hidden_passes   # dev #1026: hidden-pane LinkedIn passes block
 import handback as _handback        # handback.py: the hand-back contract (dev #811 / #812); kept_where()
 # dev #820 / public #175: `lifecycle.py` owns the text of process state (`process_report().headline`).
 # Named here by file because a bare `import` is invisible to `publish_manifest.py`'s reachability closure.
@@ -532,6 +533,7 @@ def render_headline(recs, run_id, fp, report=None, report_error=None, root=None)
         partial = partial + [k for k in report.partial_kinds if k not in partial]
     if partial:
         head += " · PARTIAL: %s" % ", ".join(partial)
+    head += _hidden_passes.headline_clause(recs)                  # dev #1026
     if report is not None:
         head += report.headline
     elif report_error:
@@ -1018,6 +1020,7 @@ def render_detail(recs, run_id, fp, root=None, at=None, report=None):
         return start_at <= when <= as_of
 
     lines = ["  %s" % ln for ln in roles_lines(recs, run_id, root=root, kind=_kind, at=at) + _fallback_lines.browser_fallback_lines(root, run_id)]
+    lines[:0] = ["  %s" % ln for ln in _hidden_passes.start_lines(recs)]   # dev #1026: first, it blocks
     notice = upgrade_notice(recs, run_id, report)          # dev #834 (M5): run summary only, never the page
     if notice:
         lines.insert(0, "  %s" % notice)
@@ -1163,13 +1166,10 @@ def main():
     print(text)
 
     if args.post:
-        rec_id = "run-summary-%s" % args.run     # ⭐ deterministic — a second --post for the
-                                                  # SAME run replaces this row on replay rather
-                                                  # than duplicating it (inbox.replay(), public
-                                                  # #85 plant: "--post twice for one run -> one
-                                                  # row"), because inbox.py folds by `id`.
-        urgency = args.urgency or ("high" if (fp["swept_failed"] or fp["gaps_open"])
-                                   else "normal")
+        # ⭐ deterministic id: a re-post for this run replaces the row (inbox folds by id; public #85). dev #1026 below.
+        rec_id = "run-summary-%s" % args.run
+        urgency = args.urgency or ("high" if (fp["swept_failed"] or fp["gaps_open"]
+                                              or _hidden_passes.blocking(recs)) else "normal")
         now = datetime.datetime.now()
         rec = {"id": rec_id, "kind": "run-summary", "summary": headline, "detail": detail,
                "urgency": urgency, "status": "pending",

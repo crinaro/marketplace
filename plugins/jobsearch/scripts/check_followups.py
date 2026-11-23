@@ -76,6 +76,7 @@ import journal as _journal
 import mail_client as _mail_client
 import reachouts as _reachouts
 import touches as _touches
+from ats_mail import inbound_retry as _ir   # dev #1028
 
 ROOT = _profile_root()
 
@@ -392,46 +393,33 @@ def check_silent_applications(as_of, silence_days):
 
 
 def check_unresolved_inbound(root):
-    """design-inbound-resolution.md §7 — the NARROW half of the invariant this check can see
-    (derivation is validate_data.py's job; ingestion is `reconcile.py --ats --verify`'s):
-    every message that carries `resolves` should have moved the application it names, unless
-    the process died between the two writes (D1's own failure window — record.py's `received`
-    then `application-status` are two transactions, and the message is the idempotency mark).
+    """design-inbound-resolution.md §7 — the NARROW half of the invariant this check can see (derivation is
+    validate_data.py's job; ingestion is `reconcile.py --ats --verify`'s): a message that carries `resolves` should
+    have moved the application it names, unless the process died between the two writes (D1's own failure window:
+    record.py's `received` then `application-status` are two transactions). Scoped to `resolves`, never every
+    historical inbound row with an `opp_id` (the withdrawn 2026-09-13 class, which flooded on day one).
 
-    Deliberately scoped to messages that explicitly `resolves` an application — never every
-    historical inbound row with an `opp_id` (the 2026-09-13 design's withdrawn class, which
-    flooded on day one because a sweep-written row did not yet exist to anchor it). A
-    sweep-written row always carries `resolves` by construction, so this fires almost never —
-    exactly in D1's own window — which is what makes it a PROCESS FAILURE worth a non-zero
-    exit rather than an advisory line lost among routine findings."""
+    ⭐ dev #1028 (public #269) — returns `(unresolved, held)`. Only a row a `reconcile.py --ats` re-run actually moves
+    (`ats_mail.inbound_retry.retry_verdict` == retry: a forward move under the CURRENT `ats.status_phrases`) is
+    UNRESOLVED, a PROCESS FAILURE worth a non-zero exit; a row the no-backward-move rule holds (or that matches no
+    single phrase class) is counted in `held` by reason, because re-running can never clear it: the remedy is the
+    owner's answer to the ask the sweep filed."""
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import applications as _apps_mod
     apps_rows, _errs, _present = _apps_mod.load(root)
     app_by_id = {a.get("id"): a for a in apps_rows if a.get("id")}
     msg_path = os.path.join(root, "data", "messages.jsonl")
-    findings = []
     if not os.path.exists(msg_path):
-        return findings
+        return [], {}
     with open(msg_path, encoding="utf-8") as fh:
-        for line in fh:
-            line = line.strip()
-            if not line:
-                continue
-            m = json.loads(line)
-            resolves = m.get("resolves")
-            if not resolves:
-                continue
-            app = app_by_id.get(resolves)
-            if app is None:
-                continue          # validate_data.py already refuses a dangling resolves
-            msg_date = _vd_date_part(m.get("sent_on"))
-            app_date = _vd_date_part(app.get("status_on"))
-            if not msg_date:
-                continue
-            if not app_date or app_date < msg_date:
-                findings.append((m.get("id"), resolves, m.get("sent_on"), app.get("status"),
-                                 app.get("status_on")))
-    return findings
+        messages = [json.loads(line) for line in fh if line.strip()]
+    try:
+        with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
+            phrases = (json.load(fh).get("ats") or {}).get("status_phrases")
+    except (OSError, ValueError, AttributeError):
+        phrases = None
+    return _ir.split_unresolved(messages, app_by_id, phrases if isinstance(phrases, dict) else {},
+                                _apps_mod.status_advance, _vd_date_part)
 
 
 def _vd_date_part(v):
@@ -652,20 +640,9 @@ def main():
     # application but whose status write never landed (D1's own failure window). Narrow by
     # construction (scoped to `resolves`, never every historical inbound row), so a hit here
     # is a PROCESS FAILURE, not a routine finding — this is what makes main() return non-zero.
-    unresolved_inbound = check_unresolved_inbound(ROOT)
-    if unresolved_inbound:
-        print("")
-        print("=" * 72)
-        print("UNRESOLVED INBOUND — a message resolved an application; the status never moved")
-        print("=" * 72)
-        print("  D1: the message write landed but the status write did not (refused, rolled")
-        print("  back, or the process died between the two). Re-run reconcile.py --ats — the")
-        print("  uid is skipped, but the status write re-attempts because this row's own")
-        print("  `note` has not yet recorded it.")
-        print("")
-        for mid, app_id, sent_on, status, status_on in unresolved_inbound:
-            print("  - message %s -> application %s (sent %s; status %r since %s)"
-                 % (mid, app_id, sent_on, status, status_on))
+    unresolved_inbound, held_inbound = check_unresolved_inbound(ROOT)
+    for line in _ir.report_lines(unresolved_inbound, held_inbound):   # dev #1028: a remedy that clears each row
+        print(line)
 
     if not silent and not silent_apps and not stalled and not unverified and not unresolved_inbound:
         print("\nNothing to chase.")

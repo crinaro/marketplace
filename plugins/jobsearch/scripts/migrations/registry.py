@@ -74,11 +74,12 @@ from migrations import (
     m_0_90_0_browser_fallback,
     m_0_91_0_employment,
     m_0_92_0_decision_surface,
+    m_0_93_0_word_round_trip,
 )
 from migrations.stamp import engine_version, read_stamp, ver
 from migrations.stores import STORE_INTRODUCED
-from migrations.support_pins import (DECISION_SURFACE_PIN, NETWORK_FIRST_PIN, _decision_surface_pin_lost,
-                                     _network_first_pin_needed)
+from migrations.support_pins import (DECISION_SURFACE_PIN, NETWORK_FIRST_PIN, WORD_ROUND_TRIP_PIN, _decision_surface_pin_lost,
+                                     _network_first_pin_needed, _word_round_trip_pin_lost)
 
 
 MIGRATIONS = (("0.4.0", m_0_4_0.m_0_4_0), ("0.13.0", m_0_13_0.m_0_13_0), ("0.14.0", m_0_14_0.m_0_14_0),
@@ -317,7 +318,10 @@ MIGRATIONS = (("0.4.0", m_0_4_0.m_0_4_0), ("0.13.0", m_0_13_0.m_0_13_0), ("0.14.
               ("0.91.0", m_0_91_0_employment.m_0_91_0_employment),
               # KEYED "0.92.0" (docs/design-decision-surface.md §M) -- see the note above `DECISION_SURFACE_BY`. It runs LAST; its
               # one write is the 0.92.0 profile pin (no data is transformed). `pending_for` also re-selects it for a lost pin.
-              ("0.92.0", m_0_92_0_decision_surface.m_0_92_0_decision_surface))
+              ("0.92.0", m_0_92_0_decision_surface.m_0_92_0_decision_surface),
+              # KEYED "0.93.0" (docs/design-resume-docx.md §R3 R3-3, O25) -- see the note above `WORD_ROUND_TRIP_BY`. It runs LAST;
+              # its one write is the 0.93.0 profile pin (no data is transformed). `pending_for` also re-selects it for a lost pin.
+              ("0.93.0", m_0_93_0_word_round_trip.m_0_93_0_word_round_trip))
 
 
 # Every value above must be a version key the MIGRATIONS registry actually knows, so a typo here
@@ -372,6 +376,9 @@ def pending_for(profile, engine=None):
     # stamped at or above 0.92.0 whose journal's pin is below it has `m_0_92_0_decision_surface` pending whatever the stamp says.
     surface_lost = (ver(engine) >= ver(DECISION_SURFACE_PIN) and ver(stamp) >= ver(DECISION_SURFACE_PIN)
                     and _decision_surface_pin_lost(profile))
+    # And for the 0.93.0 pin (docs/design-resume-docx.md §R3 R3-3): `m_0_93_0_word_round_trip` re-runs for a lost pin.
+    word_lost = (ver(engine) >= ver(WORD_ROUND_TRIP_PIN) and ver(stamp) >= ver(WORD_ROUND_TRIP_PIN)
+                 and _word_round_trip_pin_lost(profile))
     return [v for v, _fn in MIGRATIONS
             if ver(stamp) < ver(v) <= ver(engine) or (pin_lost and v == NETWORK_FIRST_PIN)
-            or (surface_lost and v == DECISION_SURFACE_PIN)]
+            or (surface_lost and v == DECISION_SURFACE_PIN) or (word_lost and v == WORD_ROUND_TRIP_PIN)]

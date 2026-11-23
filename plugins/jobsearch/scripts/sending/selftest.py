@@ -1,5 +1,5 @@
 """selftest: the SessionStart selftest bodies of `guard_mail_send.py`'s two entries (jobsearch 0.91.0, design-build-reach.md 12:
-moved out of the entry point, which is over the 300-line budget, so the guard can gain E1's approval path without growing).
+moved out of the entry point, which is over the 300-line budget; since 0.93.0, ADR-043, both entries deny every send).
 
 Each function takes the guard's own verdict functions as arguments (a package module never imports an entry point), proves the
 deny and allow branches against synthetic payloads, prints one `systemMessage` line naming every failure, and returns 0: never
@@ -14,6 +14,9 @@ import types
 from sending import guard_routes
 
 UUID = "0a1b2c3d-0000-4000-8000-000000000000"
+# jobsearch 0.93.0 (ADR-043): the connector entry carves nothing out, so it denies gmail-multi's own send family too.
+GMAIL_MULTI_SENDS = tuple("mcp__%s__gmail_%s" % (server, tool) for server in ("plugin_gmail-multi_gmail-multi", "gmail-multi")
+                          for tool in ("send_message", "reply", "forward"))
 
 
 def _report(failures, label, what):
@@ -22,26 +25,20 @@ def _report(failures, label, what):
     return 0
 
 
-def guard(evaluate, guarded_tools, approval=None, defers=()):
-    """The gmail-multi entry (E1): a send tool denies, a read tool does not, an unreadable payload denies. Since 0.91.0 both
-    branches of the approval path: `approval` (the `sending/approval.py` module, or None when it did not import) must deny an
-    unbound send from a directory that is no profile; None is reported, because every send, `me` included, is then denied."""
+def guard(evaluate, guarded_tools):
+    """The gmail-multi entry (E1): EVERY send, reply and forward tool denies (jobsearch 0.93.0, ADR-043: no send path exists, so
+    nothing turns a deny into anything else), a read tool does not, an unreadable payload denies."""
     failures = []
     try:
-        if not evaluate({"tool_name": guarded_tools[0]})[0]:
-            failures.append("send tool did not deny")
+        for name in guarded_tools:
+            if not evaluate({"tool_name": name, "session_id": "selftest", "cwd": "/"})[0]:
+                failures.append("%s did not deny" % name)
         if evaluate({"tool_name": "mcp__plugin_gmail-multi_gmail-multi__gmail_search"})[0]:
             failures.append("read tool denied")
+        if evaluate({"tool_name": "mcp__plugin_gmail-multi_gmail-multi__gmail_create_draft"})[0]:
+            failures.append("the draft tool denied")
         if not evaluate(None)[0]:
             failures.append("unreadable payload did not deny")
-        if approval is None:
-            failures.append("sending/approval.py did not import: every send is denied this session, email `me` included")
-        else:
-            for name in defers:
-                verdict = approval.decide({"tool_name": name, "cwd": "/", "session_id": "selftest",
-                                           "tool_input": {"subject": "selftest", "body": "selftest"}})
-                if verdict[0] != "deny":
-                    failures.append("an unbound %s was not denied by the approval path" % name)
     except BaseException as exc:                          # noqa: BLE001 - a broken selftest is a loud one
         failures = ["selftest raised %s: %s" % (type(exc).__name__, exc)]
     return _report(failures, "guard_mail_send", "the draft-only guard may be inert; treat sends as unguarded this session.")
@@ -56,7 +53,7 @@ def connector(evaluate_connector, matcher, verbs=None):
         for name in ("mcp__%s__send_message" % UUID, "mcp__%s__outlook_send_mail" % UUID,
                      "mcp__claude_ai_Gmail__reply", "mcp__outlook-work__sendMail",
                      "mcp__%s__send-email" % UUID, "mcp__%s__Send_Mail" % UUID,
-                     "mcp__%s__unsubscribe" % UUID, "mcp__%s__compose_event" % UUID):
+                     "mcp__%s__unsubscribe" % UUID, "mcp__%s__compose_event" % UUID) + GMAIL_MULTI_SENDS:
             if not evaluate_connector({"tool_name": name})[0]:
                 failures.append("did not deny %s" % name)
         for name in ("mcp__%s__create_reply_draft" % UUID, "mcp__%s__get_senders" % UUID,

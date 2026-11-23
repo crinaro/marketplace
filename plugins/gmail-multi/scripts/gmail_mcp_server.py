@@ -81,6 +81,7 @@ import sys
 import tempfile
 
 import credentials as _cred
+from drafting import attachments as _attachments
 
 # ⭐ COMPATIBILITY CONSTANT — the credential store IS the shared interface. The service
 # name ("claudesearch-imap") is how every consumer of this connector, and every credential
@@ -846,28 +847,15 @@ def tool_create_draft(args):
     html_body = args.get("html_body")
     subject = args.get("subject") or ""
     reply_uid = str(args.get("reply_to_uid") or "").strip()
+    parts = _attachments.load(args.get("attachments"))  # a refusal comes before the mailbox: no draft at all
 
     in_reply_to = references = None
     with Mailbox(acct) as mb:
         if reply_uid:
             in_reply_to, references, subject, body, html_body = _reply_context(
                 mb, reply_uid, acct, subject, body, html_body)
-
-        msg = email.message.EmailMessage()
-        msg["From"] = acct
-        msg["To"] = ", ".join(to)
-        if cc:
-            msg["Cc"] = ", ".join(cc)
-        msg["Subject"] = subject
-        msg["Date"] = email.utils.formatdate(localtime=True)
-        msg["Message-ID"] = email.utils.make_msgid()
-        if in_reply_to:
-            msg["In-Reply-To"] = in_reply_to
-        if references:
-            msg["References"] = references
-        msg.set_content(body)
-        if html_body:
-            msg.add_alternative(html_body, subtype="html")
+        msg = _attachments.attach(_compose(acct, to, cc, [], subject, body, html_body,
+                                           in_reply_to, references), parts)
 
         drafts_name = mb.select_drafts()
         quoted_drafts = '"%s"' % drafts_name.replace("\\", "\\\\").replace('"', '\\"')
@@ -886,6 +874,7 @@ def tool_create_draft(args):
     if in_reply_to:
         out.append("  Threaded as a reply (In-Reply-To + References set) — it "
                    "will appear inside the existing conversation.")
+    out.extend(_attachments.result_lines(parts))
     out.append("")
     out.append("NOT SENT. Open Gmail, review, and send it yourself.")
     out.append("NOTE: this tool cannot delete. Get it right in one pass — a "
@@ -1238,6 +1227,10 @@ TOOLS = [
                               "description": "Optional HTML alternative — use it for the signature anchor."},
                 "reply_to_uid": {"type": "string",
                                  "description": "uid (in the same account) of the message being replied to."},
+                "attachments": {"type": "array", "items": {"type": "string"}, "maxItems": 5,
+                                "description": ("Optional absolute paths of .docx or .pdf files (at most 5; 5 MB each, "
+                                                "10 MB together; no symlinks). Any refused file means no draft is made. "
+                                                "The result prints `attached <sha256> <bytes> <name>` per file.")},
             },
             "required": ["account", "to", "body"],
         },

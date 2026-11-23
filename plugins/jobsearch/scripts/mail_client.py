@@ -725,8 +725,8 @@ def account_reachable(account, root=None):
 
 
 def unreachable_reason(account, root=None):
-    """The short reason `account_reachable` said no."""
-    return "no-bundle" if is_bundle_backed(root) else "credential-missing"
+    """The short reason `account_reachable` said no (dev #1017: a store timeout names the credential)."""
+    return "no-bundle" if is_bundle_backed(root) else _cred.failure_reason(account)
 
 
 def print_coverage(root, accounts, since_days, now=None, unbounded=False, out=print):

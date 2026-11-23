@@ -5,6 +5,8 @@
 `config_keys.py` unedited (jobsearch 0.91.0 B4 step A); `config_keys.py` stays the one registry and re-exports every name.
 Capability module of `config_keys.py`. Python 3.9+, standard library only."""
 
+import mail_connectors
+
 
 def _is_pos_int(v):
     return isinstance(v, int) and not isinstance(v, bool) and v > 0
@@ -69,13 +71,17 @@ METADATA = {
 #
 # `actions.modes.<type>` -- "you" (default: the candidate does it) or "me" (the engine does it after the candidate approves that
 #     act; never unattended). `me` is OFFERED only where `ME_REFUSED` has no entry for the type, and for email-send only while
-#     `communications.mail_connector` is gmail-multi (O4).
+#     the selected `communications.mail_connector` has a draft tool (jobsearch 0.93.0, ADR-043: email `me` puts an approved
+#     message in the drafts; gmail-multi's `gmail_create_draft`, or a claude.ai connector's `mail_connectors` `draft_tool`).
 # `actions.email.stage` -- "ask" (default: a draft is put in the mailbox on the candidate's request) or "auto" (the daily run stages
 #     every ready draft in its write phase (daily-run section 7), `outbox.py stage --all-ready`; O7). gmail-multi cannot delete a draft.
 ACTION_MODES = "actions.modes"
 ACTION_MODE_VALUES = ("you", "me")
 ACTION_MODE_DEFAULT = "you"
 EMAIL_SEND = "email-send"
+# An edit of a resume variant file is NOT an action type (owner ruling 2026-11-23, ADR-042's note of that date): the file is in
+# the candidate's own profile, so `record.py presence-apply` and `presence-import` (recording/presence_verbs.py) write it with no
+# approval and no mode. The unreleased 0.93.0 type for it was removed before release, so no shipped profile carries its key.
 ACTION_TYPES = (EMAIL_SEND, "linkedin-message", "linkedin-connect", "linkedin-profile-edit", "linkedin-post", "event-rsvp",
                 "site-register", "ats-submit")
 MAIL_CONNECTOR_KEY = "communications.mail_connector"
@@ -90,6 +96,10 @@ ME_REFUSED = {
     "site-register": ("no registration pre-fill is built in this engine (owner O14), and nothing mechanical holds a "
                       "registration form's submit: the outbound-click guard's verbs do not include register or sign up"),
 }
+ME_OFFERED = {      # the registry text for each type that offers `me`, naming its condition
+    EMAIL_SEND: ("me puts each message you approve (in an attended run) into your drafts, and you press Send; it needs a mail "
+                 "connector with a draft tool (gmail-multi, claude.ai Gmail, Fastmail or Superhuman)"),
+}
 EMAIL_STAGE = "actions.email.stage"
 EMAIL_STAGE_VALUES = ("ask", "auto")
 EMAIL_STAGE_DEFAULT = "ask"
@@ -102,15 +112,17 @@ def mode_key(action):
 
 def me_refusal(cfg, action):
     """Why `me` is not offered for `action` under the loaded `config.json` dict `cfg`, or None when it is. An absent connector
-    selection is gmail-multi (its registered default); any other value, a misspelling included, refuses `me` (O4)."""
+    selection is gmail-multi (its registered default). Email `me` drafts (ADR-043), so it is refused only where the selected
+    connector publishes no draft tool (Microsoft 365) or is not a known value (a misspelling included): email stays `you` there."""
     if action in ME_REFUSED:
         return ME_REFUSED[action]
     if action == EMAIL_SEND:
         connector = _get_dotted(cfg, MAIL_CONNECTOR_KEY)
         connector = GMAIL_MULTI if connector is None else connector
-        if connector != GMAIL_MULTI:
-            return ("the selected mail connector is %r; only gmail-multi's send tools carry the platform's every-call prompt "
-                    "(owner O4)" % (connector,))
+        if connector != GMAIL_MULTI and not (mail_connectors.row(connector) or {}).get("draft_tool"):
+            return ("the selected mail connector %r has no draft tool (%s), so jobsearch cannot put an approved message in "
+                    "your drafts: email stays you (you draft it from the text shown)"
+                    % (connector, mail_connectors.no_draft_why(connector)))
     return None
 
 
@@ -137,8 +149,7 @@ ACTION_METADATA = {
     **{"%s.%s" % (ACTION_MODES, a): (
         ACTION_MODE_DEFAULT, "enum", ACTION_MODE_VALUES,
         "who performs a %s: you (default), or me, the engine after your approval of that act; %s (jobsearch 0.91.0)"
-        % (a, ("me is not offered: " + ME_REFUSED[a]) if a in ME_REFUSED
-           else "me needs the gmail-multi connector and an attended session")) for a in ACTION_TYPES},
+        % (a, ("me is not offered: " + ME_REFUSED[a]) if a in ME_REFUSED else ME_OFFERED[a])) for a in ACTION_TYPES},
     EMAIL_STAGE: (EMAIL_STAGE_DEFAULT, "enum", EMAIL_STAGE_VALUES,
                   "ask (default): a draft goes into your mailbox when you ask; auto: the daily run puts every ready draft "
                   "there in its write phase (gmail-multi cannot delete a draft) (jobsearch 0.91.0)"),

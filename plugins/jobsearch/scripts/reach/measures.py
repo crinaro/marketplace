@@ -9,9 +9,11 @@ reach-out budget is 5 (`network.new_reachouts_per_week`), so no single ask kind 
     conversations held      `kind: chat` commitments, not cancelled, `attendance: held`, dated in the week, against
                             `network.conversations_per_week`; a chat dated before today with no `attendance` makes it `N+` (access.py)
     asks sent, by kind      sent touches dated in the week, by STORED fields only (`ask_kind`): `build_kind` first (advice-ask,
-                            side-door), then `trigger_kind: introduction` (a landing), then `touch_type` (intro-request, a first-touch
-                            with no `opp_id` = reach-out, one with an `opp_id` = role-specific, referral-ask, chase, reconnect). A reply,
-                            a thank-you or an apply-path is not an ask. Each kind is its own count; nothing is summed across kinds
+                            side-door), then `touch_type` (intro-request, referral-ask, chase, reconnect; a first-touch carrying
+                            `trigger_kind: introduction` = introduction (a landing), else one with no `opp_id` = reach-out and one with
+                            an `opp_id` = role-specific). The trigger names a cause and never overrides the kind `touch_type` names, so
+                            each count equals the touches store's (dev #1023). A reply, a thank-you or an apply-path is not an ask.
+                            Each kind is its own count; nothing is summed across kinds
     people added            `people` rows whose `created` (stamped by `record.py create --file people`, B1) is in the week and whose
                             `ties` hold a stated tie. An older row has no stamp: it was added "before measuring", never this week
     a new way in            `access.table` replayed between the Sunday before the week and `today` (the caller passes
@@ -143,12 +145,12 @@ def ask_kind(t):
     """Which ask a touch is, from its stored fields only (module docstring), or None when it is not an ask."""
     if t.get("build_kind") in ("advice-ask", "side-door"):
         return t["build_kind"]
-    if t.get("trigger_kind") == "introduction":
-        return "introduction"
     tt = t.get("touch_type")
     if tt == "intro-request":
         return "intro-request"
-    if tt == "first-touch":
+    if tt == "first-touch":             # dev #1023: the trigger names a cause, never overrides a kind the store names
+        if t.get("trigger_kind") == "introduction":
+            return "introduction"
         return "role-specific" if t.get("opp_id") else "reach-out"
     return tt if tt in _PLAIN_ASKS else None
 
@@ -243,7 +245,9 @@ def way_in(rows, stores, since, end):
             continue
         newly = {m.get("person_id") for m in r["moved"] if m.get("what") == "standing" and m.get("to") == "current"}
         if mv[0]["to"] == "direct":
-            warm = {pid for pid, w in (r.get("people") or {}).items() if w == "warm"}
+            st = r.get("standing")                  # dev #1020: an access row's `people` also holds the unconfirmed
+            cur = set(st.get("current") or ()) if isinstance(st, dict) else None
+            warm = {pid for pid, w in (r.get("people") or {}).items() if w == "warm" and (cur is None or pid in cur)}
             only = bool(newly) and not (warm - newly) and not (warm & acts)
         else:
             only = bool(newly) and r.get("company_id") not in intro_to and not (newly & intro_to)

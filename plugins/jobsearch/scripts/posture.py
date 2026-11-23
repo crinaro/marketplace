@@ -79,10 +79,11 @@ import json
 import os
 import sys
 
-import os, sys as _sys
+import sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 import config_keys as _ck
+from presence import posture_cfg as _posture_cfg
 
 ROOT = _profile_root()
 
@@ -131,23 +132,7 @@ def queue_hint(capability, name):
 
 
 def load(root=None):
-    path = os.path.join(root or ROOT, "config.json")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            cfg = json.load(fh)
-    except (OSError, ValueError) as e:
-        return None, None, "cannot read config.json (%s)" % e
-    search = cfg.get("search") or {}
-    name = search.get("posture")
-    postures = search.get("postures") or {}
-    if not name:
-        return None, None, "config.search.posture is unset"
-    if name not in postures:
-        # A named posture with no definition is worse than none: the run cannot tell whether it
-        # is permitted to do anything, and the safe reading is the cheapest one.
-        return name, None, ("posture %r is not defined in config.search.postures (have: %s)"
-                            % (name, ", ".join(sorted(postures)) or "none"))
-    return name, postures[name], None
+    return _posture_cfg.read(root or ROOT)
 
 
 def merge_tokens(p, caps, attended=False):

@@ -7,9 +7,10 @@
 // needs is passed IN by register.ts; every element constructor is passed in as `els`, the table
 // the host hands register.ts and no more.
 //
-// The data it draws is the JSON of scripts/panel.py (the status pane) and of
-// scripts/presence_set.py --json --surface <s> (a review pane). The mod holds no logic a script
-// can hold: it renders, and the scripts decide.
+// The data it draws is the JSON of scripts/panel.py (the status pane), of
+// scripts/presence_set.py --json --surface <s> (a review pane) and of
+// scripts/resume_report.py --json --surface <s> (a review pane's Coverage tab, design-presence-report.md
+// section 6). The mod holds no logic a script can hold: it renders, and the scripts decide.
 
 export type Els = {
   Box: (p: any) => any
@@ -230,9 +231,56 @@ export type ReviewHandlers = {
 export function reviewTabs(model: any): { key: string; label: string }[] {
   const tabs = [{ key: 'union', label: (model.union && model.union.title) || 'The claim union' }]
   for (const v of model.variants || []) tabs.push({ key: 'v:' + v.id, label: v.title || v.id })
+  tabs.push({ key: 'coverage', label: 'Coverage' })
   tabs.push({ key: 'open', label: 'Open items' })
   tabs.push({ key: 'rules', label: 'Rules' })
   return tabs
+}
+
+// The Coverage tab: the six sections of scripts/resume_report.py --json, in the report's own order
+// (presence/report_text.py SECTIONS), then its gaps block, whose last line is the DISPATCH: line. Each
+// line is drawn verbatim; a section's first line is the script's own "== <label> ==" header. The pane
+// decides nothing: a missing section is NOT CHECKED, never empty, and a report that could not be read
+// (a non-zero exit, output that is not JSON) is one NOT CHECKED line instead of six empty sections.
+export const COVERAGE_SECTIONS = ['title', 'requirements', 'quantified', 'outcomes', 'readability', 'linkedin']
+
+export type CoverageBlock = { key: string; title: string; lines: string[] }
+
+function headerLabel(line: string): string | null {
+  return line.startsWith('== ') && line.endsWith(' ==') && line.length > 6 ? line.slice(3, -3) : null
+}
+
+export function coverageBlocks(report: any): CoverageBlock[] {
+  const out: CoverageBlock[] = []
+  const secs = report && report.sections
+  for (const name of COVERAGE_SECTIONS) {
+    const raw: string[] = secs && Array.isArray(secs[name]) ? secs[name].map((l: any) => String(l)) : []
+    if (!raw.length) {
+      out.push({ key: name, title: name, lines: ['NOT CHECKED (resume_report.py printed no ' + name + ' section)'] })
+      continue
+    }
+    const label = headerLabel(raw[0] || '')
+    out.push({ key: name, title: label || name, lines: (label ? raw.slice(1) : raw).map((l) => l.replace(/^ {2}/, '')) })
+  }
+  const gb: string[] = report && Array.isArray(report.gaps_block) ? report.gaps_block.map((l: any) => String(l)) : []
+  out.push({ key: 'gaps', title: 'Gaps', lines: gb.length ? gb : ['NOT CHECKED (resume_report.py printed no gaps block)'] })
+  return out
+}
+
+export function coverageBody(els: Els, report: any): any[] {
+  if (isFailure(report)) {
+    return [txt(els, 'NOT CHECKED (' + (report && report.error ? report.error : 'the coverage report was not read') + ')')]
+  }
+  return coverageBlocks(report).map((b) =>
+    els.Box({
+      key: 'coverage-' + b.key,
+      flexDirection: 'column',
+      children: [
+        txt(els, b.title, { bold: true }),
+        els.Box({ flexDirection: 'column', paddingLeft: 2, children: b.lines.map((l) => txt(els, l)) }),
+      ],
+    }),
+  )
 }
 
 function stripLine(v: any): string {
@@ -241,7 +289,7 @@ function stripLine(v: any): string {
   return 'limit ' + s.cap + ' · used ' + s.count + (s.as_of ? ' · as of ' + s.as_of : '')
 }
 
-export function reviewTree(els: Els, model: any, tab: string, handlers: ReviewHandlers): any {
+export function reviewTree(els: Els, model: any, tab: string, handlers: ReviewHandlers, coverage?: any): any {
   if (isFailure(model)) {
     return txt(els, 'NOT CHECKED (' + (model && model.error ? model.error : 'no data yet') + ')')
   }
@@ -264,6 +312,8 @@ export function reviewTree(els: Els, model: any, tab: string, handlers: ReviewHa
   let actions: any[] = []
   if (active === 'union') {
     body = (model.union.paragraphs || []).map((p: string, i: number) => els.Markdown({ key: 'u' + i, text: p }))
+  } else if (active === 'coverage') {
+    body = coverageBody(els, coverage)
   } else if (active === 'open') {
     const items: any[] = model.open_items || []
     body = items.length
@@ -305,9 +355,23 @@ export function reviewTree(els: Els, model: any, tab: string, handlers: ReviewHa
 }
 
 // The submitted texts are built here, from data, so a test can read them without a session.
+// design-presence-report.md section 6 and O19: Revise routes to profile-optimizer, which DRAFTS proposals for the
+// gaps resume_report.py names. A variant proposal the candidate accepts is applied with record.py presence-apply
+// (owner ruling 2026-11-23: no approval is needed for the candidate's own resume files); a LinkedIn change the candidate
+// applies. It never tells the session to edit a source file by hand; on the LinkedIn surface it carries the consent
+// rule's own words.
+export const LINKEDIN_CONSENT = "NEVER edit the candidate's live LinkedIn profile. The candidate applies every change."
+
 export function reviseText(surface: string, variantId: string): string {
-  return 'Revise the "' + variantId + '" variant of the ' + surface + ' layer with profile-optimizer. ' +
-    'Work through the open items for it, edit the source file under the write lock, and regenerate nothing by hand.'
+  const head = 'Revise the "' + variantId + '" variant of the ' + surface + ' layer with profile-optimizer, ' +
+    'in this attended session. Run resume_report.py --gaps --attended and relay its DISPATCH: line. Only on ' +
+    'DISPATCH: yes, run resume_report.py --packet --attended, dispatch profile-optimizer once with that packet ' +
+    '(attended: yes), then run record.py presence-propose --from-file <the hand-back path> --dispatched <keys> ' +
+    'and print its result lines. Every change is a draft proposal recorded for the candidate to read. '
+  return surface === 'public-profile'
+    ? head + LINKEDIN_CONSENT
+    : head + 'Show the candidate each variant proposal and apply the ones they accept with record.py presence-apply <id>, ' +
+      'which checks the variant and records the edit; never edit the variant file by hand.'
 }
 
 // (The Render button runs /jobsearch:resume <variant> as a COMMAND RUN from register.ts: the host

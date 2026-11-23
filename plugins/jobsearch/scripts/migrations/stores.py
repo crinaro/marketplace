@@ -79,6 +79,7 @@ STORE_INTRODUCED = {
     "plays.jsonl": "0.49.0",                   # ADR-031 B4
     "proposals.jsonl": "0.86.0",               # dev #834 (network-first): `m_0_86_0_proposals` scaffolds it
     "outbox.jsonl": "0.91.0",                  # design-build-reach 9.1: no migration, absent is an empty outbox (validate_data exempts it)
+    "presence_changes.jsonl": "0.93.0",        # presence-report 8.2: ships in 0.93.0, a registered key since m_0_93_0_word_round_trip (design-resume-docx R3-3); absent is empty (exempt)
     # the ledger is NOT here — see the comment above
 }
 

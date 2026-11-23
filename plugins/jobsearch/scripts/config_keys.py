@@ -706,15 +706,8 @@ def feeds_enabled(cfg):
 
 
 # ── the role pipeline (dev #820 / public #175; jobsearch 0.82.0; design-role-pipeline.md §4.5, 17 N8) ──────
-# `search.intake_per_run` -- how many ROLES one run ADMITS and finishes (capture, JD read, re-screen,
-# research for a keep). It is an INTAKE budget, not a read or research count: there is no ceiling on
-# model reads, because every admitted role completes in the run that admitted it (owner rulings 4, 5). A
-# role the run sees and does not admit is `waiting`, visible and aged. 1..300, default 40: sized from one
-# profile's measured arrival rate (about 18 new roles a run) plus about 22 of backlog drain, so it is a
-# starting point, not a law -- a rising waiting count is the signal to raise it, and the drain's own time
-# cap (`lifecycle.DRAIN_BUDGET_S`) may lower the effective capacity (N7). It REPLACES
-# `search.triage_per_run`, whose meaning was "reads per run": `m_0_82_0_role_lifecycle` moves the old
-# key aside, carrying a stored 10 to 40 (owner ruling 7) and any other value unchanged.
+# `search.intake_per_run` -- was how many ROLES one run ADMITS and finishes, 1..300, default 40 (design-role-pipeline.md §4.5);
+# it REPLACED `search.triage_per_run` ("reads per run"), which `m_0_82_0_role_lifecycle` moves aside.
 #
 # ⚠️ dev #834 (jobsearch 0.86.0, design-network-first.md 3.4 row 10, 3.5): `search.intake_per_run` is RETIRED IN THE READER and
 # UNREGISTERED. Intake is counted in companies now (`search.company_intake_per_run`, below), no 0.86.0 script reads the old
@@ -793,10 +786,12 @@ _METADATA[SEARCH_POSTING_FETCH] = (
 #
 # `search.company_intake_per_run` -- companies one run ADMITS and finishes (every waiting role of each admitted company
 # together). It replaces `search.intake_per_run` (roles) as the drain's setting; that key is LEFT IN PLACE in the profile
-# for older engines (design 12.1) and is unregistered above. `lifecycle.intake_setting` reads THIS key; it also caps how many
-# companies `record.py raise-companies` newly raises per run (design 3.3).
+# for older engines (design 12.1) and is unregistered above. `lifecycle.intake_setting` reads THIS key.
 SEARCH_COMPANY_INTAKE_PER_RUN = "search.company_intake_per_run"
 SEARCH_COMPANY_INTAKE_PER_RUN_DEFAULT = 10
+# `search.companies_raised_per_run` -- dev #1021 (0.93.0): companies `record.py raise-companies` newly raises per run (design
+# 3.3). ABSENT it FOLLOWS the intake key (`_FOLLOWS`, read by `describe`/`resolve_int`), as one key set both before 0.93.0.
+SEARCH_COMPANIES_RAISED_PER_RUN = "search.companies_raised_per_run"
 # `network.new_reachouts_per_week` -- the budget that REPLACES the old invariant "no speculative outreach": the network
 # block drafts up to the week's REMAINING budget of first touches to people at target companies, never more. 0 turns new
 # reach-outs off; 0..50, default 5 (owner ruling 4). The week is the ISO week (Monday start) in the profile's zone.
@@ -820,18 +815,21 @@ NETWORK_DRAFT_UNOBSERVED_DAYS_DEFAULT = 14
 ACCESS_WARM_DAYS = "access.warm_days"
 ACCESS_WARM_DAYS_DEFAULT = 180
 
-READER_KEYS = READER_KEYS | frozenset({SEARCH_COMPANY_INTAKE_PER_RUN, NETWORK_NEW_REACHOUTS_PER_WEEK,
+READER_KEYS = READER_KEYS | frozenset({SEARCH_COMPANY_INTAKE_PER_RUN, SEARCH_COMPANIES_RAISED_PER_RUN, NETWORK_NEW_REACHOUTS_PER_WEEK,
                                        NETWORK_FOLLOWUP_BUSINESS_DAYS, NETWORK_WORKDAYS,
                                        NETWORK_REACHOUT_MAX_WORDS, NETWORK_DRAFT_UNOBSERVED_DAYS, ACCESS_WARM_DAYS})
 
 _METADATA[SEARCH_COMPANY_INTAKE_PER_RUN] = (
     SEARCH_COMPANY_INTAKE_PER_RUN_DEFAULT, "int", (1, 100),
-    "target companies one run admits and finishes (every waiting role of each admitted company together); "
-    "also how many new companies a run raises for you to look into (dev #834)")
+    "target companies one run admits and finishes (every waiting role of each admitted company together) (dev #834)")
+_METADATA[SEARCH_COMPANIES_RAISED_PER_RUN] = (
+    SEARCH_COMPANY_INTAKE_PER_RUN_DEFAULT, "int", (1, 100),
+    "new companies a run raises for you to look into; absent, the same as search.company_intake_per_run (dev #1021)")
+_FOLLOWS = {SEARCH_COMPANIES_RAISED_PER_RUN: SEARCH_COMPANY_INTAKE_PER_RUN}     # absent, the key reads the other key's value
 _METADATA[NETWORK_NEW_REACHOUTS_PER_WEEK] = (
     NETWORK_NEW_REACHOUTS_PER_WEEK_DEFAULT, "int", (0, 50),
     "new reach-outs the daily run may draft in an ISO week (first touches to people you have not contacted, and from 0.91.0 "
-    "a side-door ask; a BUILD line holds a slot); open drafts count until you send or delete them; 0 turns them off (dev #834)")
+    "a side-door ask; a BUILD line holds a slot); an open draft counts until sent, deleted or past draft_unobserved_days; 0 turns them off")
 _METADATA[NETWORK_FOLLOWUP_BUSINESS_DAYS] = (
     NETWORK_FOLLOWUP_BUSINESS_DAYS_DEFAULT, "list", ("two whole numbers 1-30, increasing",),
     "business days after a reach-out at which a second contact and then a follow-up are due (3B7: 3 and 7) (dev #834)")
@@ -843,8 +841,8 @@ _METADATA[NETWORK_REACHOUT_MAX_WORDS] = (
     "word cap for a network reach-out draft (whitespace-separated words) (dev #834)")
 _METADATA[NETWORK_DRAFT_UNOBSERVED_DAYS] = (
     NETWORK_DRAFT_UNOBSERVED_DAYS_DEFAULT, "int", (7, 60),
-    "an open reach-out draft older than this many days is listed as 'send unobserved' (it still counts against the "
-    "weekly budget) (dev #834)")
+    "an open reach-out draft older than this many days is listed as 'send unobserved' (send it or delete it) and no "
+    "longer counts against the weekly budget (dev #834, #1022)")
 _METADATA[ACCESS_WARM_DAYS] = (
     ACCESS_WARM_DAYS_DEFAULT, "int", (30, 365),
     "days within which a recorded touch makes a person warm in the access table (dev #834)")
@@ -940,6 +938,8 @@ def resolve_int(cfg, key):
     the key and the legal range -- a sourcing-screen reader treats that as a loud `review`, never
     as the default, because a typo that silently fell back would read as a choice the candidate
     never made."""
+    if key in _FOLLOWS and _get_dotted(cfg, key) is None:
+        return resolve_int(cfg, _FOLLOWS[key])                 # the followed key's value, bounds and refusal (dev #1021)
     value, _provenance = describe(cfg, key)
     default, kind, bounds, _why = metadata(key)
     if kind != "int":
@@ -1271,7 +1271,7 @@ def describe(cfg, key):
     default = _METADATA[key][0]
     v = _get_dotted(cfg, key)
     if v is None:
-        return default, "default — not in your file"
+        return (describe(cfg, _FOLLOWS[key])[0] if key in _FOLLOWS else default), "default — not in your file"
     return v, "in your config.json"
 
 

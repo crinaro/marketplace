@@ -32,7 +32,7 @@ not yet due a nudge) and `pd.today_plan`. It never uses a fault word (`FAULT_PHR
 from dashboard import levels, rank
 from dashboard.actions_ui import group_attr, pick
 from dashboard.caps import TODAY_CAP
-from dashboard.markup import esc, links_for, rec_id, theirs
+from dashboard.markup import esc, key_attr, links_for, rec_id, theirs
 
 
 TODAY_ID = "today"
@@ -90,7 +90,7 @@ def _target(pd, key):
 
 
 def _item(item, counts, href, box="", target=None):
-    ref = ' data-ref="%s"' % esc(target or item.ref[0]) if item.ref is not None else ' data-count="%d"' % item.count
+    ref = ' data-ref="%s"' % key_attr(target or item.ref[0]) if item.ref is not None else ' data-count="%d"' % item.count
     return ('<li class="today-item" data-kind="%s"%s>%s<a class="ref" href="%s"><strong>%s</strong> %s</a> '
             '<span class="sub">%s</span></li>' % (esc(item.kind.name), ref, box, esc(href), esc(_label(item)),
                                                   _text(item, counts), esc(item.kind.where)))

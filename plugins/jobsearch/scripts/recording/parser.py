@@ -7,9 +7,11 @@ Capability module of record.py (an entry point over `recording/`)."""
 import argparse
 import sys
 from recording.common import _validator_module
+from recording.document_verbs import DOCUMENT_OPS
 from recording.fit import FIT_USAGE
+from recording.fit_keys import FIT_KEY_USAGE, RETOPIC_USAGE
 from recording.reads import BATCH_OPS, CAPTURE_DEADLINE_S_DEFAULT, FETCH_DEADLINE_S_DEFAULT, JD_READ_OPS
-from recording.store_files import DEFAULT_WAIT, MESSAGES_WRITE_VERBS, STORES
+from recording.store_files import DEFAULT_WAIT, MESSAGES_WRITE_VERBS, PRESENCE_VERBS, STORES
 
 
 # ⭐ public #103 — THE SINGLE SOURCE for every verb this CLI has. main()'s parser is built
@@ -98,6 +100,18 @@ OPS = ("create", "set", "set-in", "append", "show", "fields",
        # `--none`), one locked, validated, rollback-verified write; with no argument it prints the derived state. `--dry-run` is
        # proven in test_record_call_surface.py's VERB_ARGS.
        "affiliations",
+       # jobsearch presence-report (design-presence-report.md 8.1) -- the two writers of the optional `topic` / `claim` keys on
+       # rows already stored (recording/fit_keys.py): one locked, validated, rollback-verified write of OPPORTUNITIES each.
+       # `--dry-run` is proven in test_record_call_surface.py's VERB_ARGS.
+       "retopic", "fit-key",
+       # presence-report (design-presence-report.md 8.2, R3) -- the presence_changes store's reader and its three append-only
+       # writers (recording/presence_verbs.py), each one locked, rules-checked, validated append that is truncated back on a
+       # new problem. `--dry-run` is proven in test_record_call_surface.py's VERB_ARGS. `presence-apply` and `presence-import`
+       # (owner ruling 2026-11-23): a variant file edited or imported directly, attended or not, with its rows.
+       "presence", "presence-state", "presence-propose", "presence-decide", "presence-apply", "presence-import",
+       # jobsearch 0.93.0 (design-resume-docx.md B13) -- the one writer of a variant's managed Word file
+       # (recording/document_verbs.py). `--dry-run` is proven in test_record_call_surface.py's VERB_ARGS.
+       "presence-docx",
        # jobsearch 0.92.0 (dev #951, design-decision-surface.md B.2) -- stop (or, with --undo, resume) following a person up: one
        # locked, validated, rollback-verified append to TOUCHES behind the 0.92.0 pin. `--dry-run` is proven in test_record_call_surface.py.
        "stop-following")
@@ -160,6 +174,19 @@ def _help_epilog():
         "research fit (dev #861 / public #194) -- the researcher's `fit`, handed back by file, before a role is ready:",
         "  " + FIT_USAGE,
         "      one JSON object per line ({opp, jd_source, requirements[]}); analyzed_on is stamped here, never typed.",
+        "  " + RETOPIC_USAGE,
+        "  " + FIT_KEY_USAGE,
+        "      a requirement's optional topic (its own slug) and claim (a union bullet, checked at the write).",
+        "",
+        "presence (design-presence-report.md 8.2) -- the append-only presence_changes store:",
+        "  presence | presence-state linkedin status none|skip|active | presence-state linkedin headline --text-file <f>",
+        "  presence-state linkedin skills --from-file <f> | presence-state --observed --from-file <f> --attended",
+        "  presence-propose --from-file <f> --dispatched <key> ... [--attended]",
+        "  presence-decide <id> applied [--applied-on D] [--as-edited --text-file <f>] | presence-decide <id> declined [--why ...]",
+        "  presence-apply <id>   (a variant proposal only; the file is restored unless resume_variants --check is green)",
+        "  presence-import <variant-id> --from-file <f.md|f.txt|f.docx>   (a resume from anywhere into a declared variant)",
+        "  presence-docx <variant-id> [--fresh] [--here] [--keep md|word] [--answer <ask-id>] [--attended] | presence-docx --all",
+        "      the variant's Word file, kept in the layout its owner gave it: rendered, updated in place, adopted, or asked.",
         "",
         "employer posting (dev #776 / public #166) -- the ONE writer of an opportunity's employer_posting:",
         "  posting --from-file <file of EMPLOYER-POSTING lines> [--dry-run] [--already-locked]",
@@ -247,9 +274,10 @@ def _core_arguments(ap):
                          "feeds the involvement's path_type via plays.ROLE_TO_PATH when the "
                          "recipient's involvement does not already have one (dev #479).")
     ap.add_argument("--opp", dest="opp_id", default=None,
-                    help="answered: the opportunity this reply belongs to — required when "
-                         "the target is a `contact:<id>` touch ref rather than a message id "
-                         "(a bare message id already carries its own opp_id/channel_id). "
+                    help="answered: the opportunity a `contact:<id>` reply belongs to. Without "
+                         "--opp or --channel the reply anchors to the one thread that owes it, "
+                         "and `person:<id>` names the person-only thread (dev #1019); a bare "
+                         "message id already carries its own opp_id/channel_id. "
                          "involve: the opportunity to link the person to (required).")
     ap.add_argument("--when", dest="when_token", default=None,
                     help="set play:<id> params.<name>: the arm's predicate token — creates or "
@@ -279,7 +307,8 @@ def _core_arguments(ap):
                     help="stop-following: resume following a person you stopped following (appends a resume-following row).")
     ap.add_argument("--channel", dest="channel_id", default=None,
                     help="received: `--channel <channel_id>` — the other half of the anchor "
-                         "rule (--opp or --channel, at least one, never both).")
+                         "rule (--opp or --channel, at least one, never both). answered: the "
+                         "channel thread a `contact:<id>` reply answers (never with --opp; dev #1019).")
     ap.add_argument("--person", dest="person_id_arg", default=None,
                     help="received: the sender's people.jsonl id, when known. With neither "
                          "--opp nor --channel a resolving --person is itself the anchor (a "
@@ -424,6 +453,35 @@ def _sourcing_arguments(ap):
     ap.add_argument("--from-file", dest="from_file", default=None,
                     help="posting: a file holding the EMPLOYER-POSTING lines to record (the researcher's hand-back, or "
                          "`posting_check.py --run`'s own file). Every such line in it is read; other lines are ignored.")
+    ap.add_argument("--topic", dest="topic_arg", default=None,
+                    help="fit-key: the requirement row's topic, which must be its own slug (e.g. enterprise-architecture).")
+    ap.add_argument("--claim-file", dest="claim_file", default=None,
+                    help="fit-key: a file holding the one union bullet the row's evidence rests on, verbatim.")
+    ap.add_argument("--text-file", dest="text_file", default=None,
+                    help="presence-state headline / presence-decide --as-edited: a file holding the text, verbatim.")
+    ap.add_argument("--observed", dest="observed", action="store_true",
+                    help="presence-state: record what linkedin-runner read (kind observed); needs --attended.")
+    ap.add_argument("--attended", dest="attended", action="store_true",
+                    help="presence-state --observed / presence-propose: the candidate is present (never inferred); "
+                         "presence-apply records it in the note.")
+    ap.add_argument("--dispatched", dest="dispatched", nargs="+", default=None, metavar="KEY",
+                    help="presence-propose: the gap keys the dispatch was for; each with nothing recorded gets a refused row.")
+    ap.add_argument("--applied-on", dest="applied_on", default=None,
+                    help="presence-decide applied: the day the candidate says it was applied (default: today).")
+    ap.add_argument("--as-edited", dest="as_edited", action="store_true",
+                    help="presence-decide applied: the candidate applied it edited; the text is in --text-file.")
+    ap.add_argument("--all", dest="all_variants", action="store_true",
+                    help="presence-docx: every active print variant, and every variant an approved outbox row attaches.")
+    ap.add_argument("--fresh", dest="fresh", action="store_true",
+                    help="presence-docx: back to the default layout (a dated backup first); needs --attended.")
+    ap.add_argument("--here", dest="here", action="store_true",
+                    help="presence-docx: make this machine the Word file's home; needs --attended.")
+    ap.add_argument("--keep", dest="keep", choices=("md", "word"), default=None,
+                    help="presence-docx: answer the Word-edit question: word takes the Word words into the md, md "
+                         "updates the Word file from the md; needs --attended or --answer.")
+    ap.add_argument("--answer", dest="answer", default=None, metavar="ASK_ID",
+                    help="presence-docx --keep: the open resume-word-edited:<variant> ask this answers (resolved in the "
+                         "same locked write).")
     ap.add_argument("--today", dest="today_arg", default=None,
                     help="posting / create --from-item: TEST-ONLY. The run date as YYYY-MM-DD, so a dated case runs end "
                          "to end; omitted, it is today. Never pass it in a real run.")
@@ -591,8 +649,8 @@ def bind_store(args):
         args.file = "channels"           # dev #774: cmd_source names its own stores
     elif args.op == "posting":
         args.file = "opportunities"      # dev #776: cmd_posting names its own stores
-    elif args.op == "fit":
-        args.file = "opportunities"      # dev #861: cmd_fit names its own store
+    elif args.op in ("fit", "retopic", "fit-key"):
+        args.file = "opportunities"      # dev #861: cmd_fit names its own store; so do the fit-key verbs
     elif args.op in ("company-status", "company-later", "company-kind"):
         args.file = "companies"          # dev #834: the network-first verbs each name their own store
     elif args.op in ("chat", "attended", "intro-offered"):
@@ -603,6 +661,8 @@ def bind_store(args):
         args.file = "proposals"          # dev #834: the proposal verbs name their own stores
     elif args.op in ("suggest", "confirm", "decline"):
         args.file = "asks"
+    elif args.op in PRESENCE_VERBS or args.op in DOCUMENT_OPS:
+        args.file = "presence_changes"   # the presence verbs name their own (append-only) store
 
 
 def messages_refusal(args):
@@ -610,6 +670,10 @@ def messages_refusal(args):
     # §15.3 point 1 — `messages` is append-only; `answered`/`touched`/`received` are its ONLY
     # writers. Refused here, before any generic single-store machinery runs, so the refusal is
     # the very first thing printed rather than a confusing failure two steps later.
+    if args.file == "presence_changes" and args.op not in PRESENCE_VERBS and args.op not in DOCUMENT_OPS:
+        print("⛔ REFUSED — 'presence_changes' is append-only (design-presence-report.md 8.2): no verb rewrites a row. "
+              "Use `record.py presence-state`, `presence-propose`, `presence-decide`, `presence-apply` or `presence-import`.")
+        return 1
     if args.file == "messages" and args.op not in MESSAGES_WRITE_VERBS:
         print("⛔ REFUSED — 'messages' is append-only (design §15.3): a message row is "
               "immutable once written. Use `record.py answered ...`, `record.py touched ...` "

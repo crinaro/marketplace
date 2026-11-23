@@ -21,10 +21,12 @@ on the candidate: `undecided`, `watching` or `passed` (`reach.held_roles`).
   carries the company's tick box (`company:<id>`, action `target-yes`) under one button, `Copy the "Target these companies"
   request for N`. With no target titles configured nothing is listed and the line says so (`data-held-list="unmatched"`).
 - The caps, in order, are one line in a closed fold (the page word budget): a run raises at most {a} new companies · Targets lists at most {b} a week · a run reads at
-  most {c} companies (`search.company_intake_per_run` raises and admits; `network.targets_per_week` lists).
+  most {c} companies (`search.companies_raised_per_run` raises, dev #1021; `search.company_intake_per_run` admits;
+  `network.targets_per_week` lists).
 
 `listed_count` is the Targets heading's "N unread roles" (moved from `generate_dashboard._load_today`, unedited in meaning).
 `load` reads the journal and the pin (the profile's own files); `render` is pure. Python 3.9+, standard library only."""
+import config_keys as _ck
 from dashboard import caps
 from dashboard.action_block import head, record_line, tail
 from dashboard.actions_ui import group_attr, group_button, pick
@@ -81,7 +83,16 @@ def load(root, opps, stages, companies, rep, matcher, first_seen, today, per_wee
         state = ("since", "%s since %s" % ("%+d" % diff if diff else "no change", state[1]), None)
     return {"counts": counts, "total": total, "items": max(rep.held_for_company - total, 0), "state": state,
             "listing": held_roles.listing(opps, stages, companies, held_roles.title_matcher(*matcher), first_seen),
-            "caps": (rep.intake, per_week, rep.intake)}
+            "caps": (_raises(matcher[1], rep.intake), per_week, rep.intake)}
+
+
+def _raises(cfg, intake):
+    """`search.companies_raised_per_run` (dev #1021): absent, it reads the intake key. A bad value is refused loudly by
+    `record.py raise-companies`; the page then shows the intake figure, which is what the key reads when absent."""
+    try:
+        return _ck.resolve_int(cfg or {}, _ck.SEARCH_COMPANIES_RAISED_PER_RUN)
+    except ValueError:
+        return intake
 
 
 def _count_line(h):

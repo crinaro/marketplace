@@ -133,7 +133,7 @@ hours, costing that morning's run outright.
 ~/.claude/jobsearch/run check_action_claims.py      # a hand-authored ask the data already answered (#43)
 ~/.claude/jobsearch/run check_sent_drafts.py        # a draft/letter already sent or submitted but still shown as pending on Your Move (advisory — retire the entry)
 ~/.claude/jobsearch/run validate_data.py            # schema · enums · referential integrity
-~/.claude/jobsearch/run channels_due.py             # which sources are due
+~/.claude/jobsearch/run channels_due.py             # which sources are due; quote each UNREACHABLE line in the summary (dev #1025)
 ~/.claude/jobsearch/run check_rule_homes.py         # archived lessons still have a home
 ~/.claude/jobsearch/run check_dashboard_fresh.py    # dashboard behind its sources, or PUBLISHED view behind the repo (dev #133)
 ~/.claude/jobsearch/run check_engine_purity.py --advisory --budget-s 60   # engine files carry no profile data (advisory: a scan cut short at 60 s says so and exits 0, dev #526)
@@ -245,7 +245,8 @@ are probed in a stable (sorted) order; **each person's result is posted the mome
 probed**, so even a hard kill keeps everyone already done. If the deadline passes first, the
 remaining people are not attempted and ONE journal gap (`email:held-probe`, reason `timeout`)
 names how many were probed and how many remain; the next run's `--probe --held` reaches them and
-closes the gap. **The call's last line states `Probed N … queued M … K not reached`: put exactly
+closes the gap. A credential store that does not answer is bounded by the same deadline (dev #1017):
+each `Not probed here: credential-timeout: ...` line names the credential; quote it in the summary. **The call's last line states `Probed N … queued M … K not reached`: put exactly
 those three numbers in the summary, and treat K above zero as an open gap, never as "all clear".**
 
 ## 2d. ⭐ THE OUTBOX — was a staged draft sent? (jobsearch 0.91.0)
@@ -254,7 +255,7 @@ those three numbers in the summary, and treat K above zero as an open gap, never
 ~/.claude/jobsearch/run outbox.py detect
 ```
 
-For every draft staged in the mailbox (and every send the guard passed), it searches Sent for the message and records what it
+For every draft staged in the mailbox (and every send an older engine's guard passed), it searches Sent for the message and records what it
 finds. A match is recorded in one locked write: the touch (dated the day the message was actually sent, so the follow-up clock
 starts there), the sent message, the drafts.md entry marked `sent`, and the outbox row. Put each line in the summary as printed:
 `found in Sent` (recorded), `ambiguous` (two messages match one draft, or one message two drafts: nothing was recorded, so ask
@@ -277,15 +278,27 @@ this step. `outbox.py list` shows the open rows; `outbox.py discard <id>` drops 
 (`doctor.py`'s CONFIG CURRENCY prints that row FAIL with the reason), and a `REFUSED: actions.modes...` line from `stage` is a mode
 the candidate must correct: put it in the summary as printed.
 
-**Under `actions.modes.email-send: me` (gmail-multi only; ATTENDED ONLY, owner ruling 2026-11-21)** staging makes `queued` rows
-and prints no call. **An unattended run never approves, never calls `outbox.py call`, and never calls a send tool:** it reports
-the queued count and leaves them for the next attended session. In an attended run only, and only when the candidate asks to
-send: show the batch with `~/.claude/jobsearch/run outbox.py list --ready` (recipient, account, subject, the full text, and for a
-reply the message answered), let the candidate say which, then `outbox.py approve <id>... --attended` and, for each message
-in turn, `outbox.py call <id> --attended`, and make that one printed `CALL` exactly as printed. The platform then asks the
-candidate to allow that send: their click is the approval, never yours. A call the guard refuses (text or recipient changed,
-approval older than 600 s, another session's approval) is reported as printed, never retried by editing. A row left `sending`
-is resolved by `outbox.py detect` or the candidate's `outbox.py cancel <id>`, never by sending again.
+**Under `actions.modes.email-send: me` (owner ruling 2026-11-23, ADR-043: "Email should just put it in drafts for you to
+send")** staging makes `queued` rows and prints no call. **The candidate always presses Send: no run ever calls a send tool.**
+In an attended run, when the candidate wants to go through them: show the batch with `~/.claude/jobsearch/run outbox.py list
+--ready` (recipient, account, subject, the full text, and for a reply the message answered), let the candidate say which, then
+run `outbox.py approve <id>... --attended` and make each printed `CALL` (a draft tool) exactly as printed, right away, without
+asking again: approving IS putting it in their drafts. Tell them the messages are in their drafts to send. An unattended run
+never approves; it reports the queued count. **Every run, attended or not, then runs `~/.claude/jobsearch/run outbox.py draft`
+and makes each printed `CALL` exactly as printed:** it drafts any message already approved whose draft was not made yet (a line
+`stays approved, not in your drafts yet: <reason>` goes into the summary as printed). A row left `sending` by an older engine is
+resolved by `outbox.py detect` or the candidate's `outbox.py cancel <id>`.
+
+**A draft that attaches the resume (jobsearch 0.93.0).** An approval line reading `attaches <file> (in sync)` names the
+Word file the draft carries; `attaches resume:<variant> once ready: ...; run record.py presence-docx <variant>` means the
+row stays approved until that command settles the file (in an attended run, run it, then `outbox.py draft` again).
+**After a draft call whose `CALL` carried `attachments`**, save the tool's whole result text to a file under the session's
+scratch directory and run `~/.claude/jobsearch/run outbox.py attached o-<n> --result-file <that file>` right away; print its
+line. `o-<n>: <file> attached, size and hash match` is the confirmation. `MISMATCH`, `NO DRAFT` and `UNCONFIRMED o-<n>`
+lines go into the summary as printed: `UNCONFIRMED` means a draft's result was never recorded, and `outbox.py attached` with
+the saved result settles it. **An `ATTACH BY HAND o-<n>: ...` line is printed as it is, for the candidate to read, and
+never copied into `log.md` or `handoff.md`:** it names a file path on this computer, and it describes one draft, which the
+candidate finishes by adding the file before pressing Send. The row already records that the file was not carried.
 
 ## 3. GMAIL — two passes, and the order matters
 
@@ -800,7 +813,7 @@ them in the summary and **never written by the run**: only the candidate says th
 ```
 
 It prints the week's budget (`network.new_reachouts_per_week`, the ISO week, new reach-outs sent plus open first-touch
-drafts of any age) and **at most the REMAINING budget** as `REACH-OUT` lines, each a person the candidate has never contacted
+drafts not yet past `network.draft_unobserved_days`) and **at most the REMAINING budget** as `REACH-OUT` lines, each a person the candidate has never contacted
 at a company they target. **Draft exactly those lines and never more, whatever else the run finds; a spent budget is a
 line that says so, and the run drafts nothing new.** A `LOOKUP` line is a link the CANDIDATE opens, listed in the summary: it
 is not budgeted and no LinkedIn step is automated. Once `record.py warm-lookup <co> --none-found` is recorded, that company's
@@ -889,7 +902,7 @@ the candidate has not targeted** (a company that is not `active-target`, one a c
 ordinary role row, `held-for-company`, that no run reads, screens or researches until its company is targeted. It consumes no
 intake and needs no render route, so it is recorded on every surface; step 1b then asks the candidate about the company.
 
-**1b. Raise the companies to look into (at most `search.company_intake_per_run` new ones a run).**
+**1b. Raise the companies to look into (at most `search.companies_raised_per_run` new ones a run; unset, `search.company_intake_per_run`).**
 
 ```bash
 ~/.claude/jobsearch/run record.py raise-companies --run <id>
@@ -1212,8 +1225,8 @@ block's drafts are written by now (the block itself only reads and drafts), so r
 
 and make each printed `CALL` exactly as printed, one call per draft, nothing added; put each `NOT STAGED` line and any
 `REFUSED:` line in the summary as printed. Under `ask` (the default), or any other value, this step stages nothing: the
-candidate asks for it. Under `actions.modes.email-send: me` the same command queues the drafts and prints no call; an unattended
-run leaves them queued for the next attended session and calls nothing.
+candidate asks for it. Under `actions.modes.email-send: me` the same command queues the drafts and prints no call; they wait
+for the candidate's approval in an attended run (§2d), which puts them in the drafts.
 
 **⭐ USE THE WRITE API — do not hand-edit the JSONL. A brand-new row is `create`, not an edit.**
 
@@ -1521,6 +1534,9 @@ Then commit, genuinely last for the DATA, and let the sync resolver decide the p
 # run, and `-A` bundles whatever they left mid-edit into this commit -- the exact failure the
 # rulebook records for 2026-07-25. Name what this run changed.
 git add data/ handoff.md log.md outreach/drafts.md applying/cover_letters.md dashboard.html 2>/dev/null
+# jobsearch 0.93.0, only when `git remote` in the profile prints a remote: the managed resume Word files travel too
+# (never their dated backups or a saved other side). With no remote, skip this line: the Word files stay here.
+git add -- 'presence/*.docx' ':(exclude)presence/*.before-*.docx' ':(exclude)presence/*.remote-*.docx' 2>/dev/null
 git commit -m "Daily run $(date +%F): <one-line summary> [run:<id>]"
 ~/.claude/jobsearch/run sync.py --end-of-run
 ```

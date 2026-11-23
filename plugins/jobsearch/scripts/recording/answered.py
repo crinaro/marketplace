@@ -21,6 +21,60 @@ from recording.store_files import (
     take_lock,
 )
 from recording.touched import _propagate_touch
+from reach import follow_stop as _fstop
+
+
+def _reply_threads(person_id, involved, messages):
+    """The threads a reply from the owner to `person_id` can answer when no `--opp`/`--channel` names one, as
+    `(command target, (opp_id, channel_id))` pairs: each channel thread (a channel-only involvement, or a message anchored
+    to a channel and no opportunity) and the person-only thread (dev #686: a message, or an ordinary touch, carrying
+    neither). The same thread kinds `your_move.conversation_axis` opens, read from the same rows."""
+    channels = list(dict.fromkeys(involved + [
+        m["channel_id"] for m in messages
+        if m.get("person_id") == person_id and m.get("channel_id") and not m.get("opp_id")]))
+    out = [("contact:%s --channel %s" % (person_id, c), (None, c)) for c in channels]
+
+    def unanchored(r):
+        return r.get("person_id") == person_id and not r.get("opp_id") and not r.get("channel_id")
+    if any(unanchored(m) for m in messages) or any(unanchored(t) for t in _fstop.ordinary(load("touches"))):
+        out.append(("person:%s" % person_id, (None, None)))
+    return out
+
+
+def _contact_anchor(person_id, args, messages, person_only=False):
+    """The `(opp_id, channel_id)` a reply to `contact:<id>` / `person:<id>` anchors to, or the exit code of a refusal it
+    has printed. dev #1019 / public #278 (jobsearch 0.93.0): a reply must be recordable on EVERY thread kind the
+    owed-reply logic (`your_move.conversation_axis`) lists -- an opportunity, a channel (opened by a channel-only
+    involvement OR a channel-anchored message) and the person-only thread (dev #686). Before this, a target with no
+    `--opp` resolved only a channel-only involvement and refused the rest, so those reply-owed rows could never be
+    closed. `--opp` / `--channel` name the thread and `person:<id>` names the person-only one. With none: the person's one
+    thread is used; several are refused naming each (never a guess at which one the reply answers); none anchors to the
+    person (a message to a person about no role and no channel is a legal row)."""
+    channel_id = getattr(args, "channel_id", None)
+    if args.opp_id and channel_id:
+        print("⛔ REFUSED — --opp and --channel together: a reply anchors to one thread, never both.")
+        return 1
+    if person_only and (args.opp_id or channel_id):
+        print("⛔ REFUSED — person:%s is the person-only thread; drop --opp/--channel, or target "
+              "contact:%s with them." % (person_id, person_id))
+        return 1
+    if args.opp_id or channel_id:
+        return args.opp_id, channel_id
+    if person_id not in {p.get("id") for p in load("people")}:
+        print("⛔ REFUSED — %r resolves to no person in data/people.jsonl." % person_id)
+        return 1
+    if person_only:
+        return None, None
+    involved = [r["channel_id"] for r in _load_involvements()
+                if r.get("person_id") == person_id and r.get("channel_id") and not r.get("opp_id")]
+    threads = _reply_threads(person_id, involved, messages)
+    if len(threads) > 1:
+        print("⛔ REFUSED — contact:%s has %d threads with no role; name the one this reply answers:"
+              % (person_id, len(threads)))
+        for target, _anchor in threads:
+            print("    record.py answered %s --via <medium> --on <date>" % target)
+        return 1
+    return threads[0][1] if threads else (None, None)
 
 
 def cmd_answered(args):
@@ -33,8 +87,8 @@ def cmd_answered(args):
     case (a LinkedIn or pre-harvest reply with no message row to point `answers` at)."""
     target = args.rid
     if not target or args.rest:
-        print("usage: answered <inbound-message-id | contact:<person-id>> --on <date> "
-              "--via <medium> [--opp <opp_id>]")
+        print("usage: answered <inbound-message-id | contact:<person-id> | person:<person-id>> --on <date> "
+              "--via <medium> [--opp <opp_id> | --channel <channel_id>]")
         return 2
     date = args.on_date or datetime.date.today().isoformat()
     if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
@@ -53,21 +107,13 @@ def cmd_answered(args):
         return 1
 
     messages0 = load("messages")
-    cm = re.match(r"^contact:(.+)$", target)
+    cm = re.match(r"^(contact|person):(.+)$", target)
     if cm:
-        person_id = cm.group(1)
-        answers, opp_id, channel_id = None, args.opp_id, None
-        if not opp_id:
-            for row in _load_involvements():
-                if (row.get("person_id") == person_id and row.get("channel_id")
-                        and not row.get("opp_id")):
-                    channel_id = row["channel_id"]
-                    break
-            if not channel_id:
-                print("⛔ REFUSED — contact:%s names no opportunity (--opp) and resolves to "
-                      "no channel-only involvement either — a message must anchor to "
-                      "SOMETHING." % person_id)
-                return 1
+        person_id = cm.group(2)
+        anchor = _contact_anchor(person_id, args, messages0, person_only=cm.group(1) == "person")
+        if isinstance(anchor, int):
+            return anchor
+        answers, (opp_id, channel_id) = None, anchor
     else:
         inbound = find(messages0, target)
         if inbound is None:

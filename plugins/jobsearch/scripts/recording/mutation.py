@@ -24,6 +24,9 @@ from recording.common import Mutation, _Refused, _Usage
 from recording.decisions import _your_move_visibility_note
 from recording.affiliations_verb import AFFILIATION_OPS, cmd_affiliations
 from recording.employment import EMPLOYMENT_OPS, cmd_employment
+from recording.fit_keys import FIT_KEY_OPS, cmd_fit_key, cmd_retopic
+from recording.presence_verbs import PRESENCE_OPS, cmd_presence
+from recording.document_verbs import DOCUMENT_OPS, cmd_document, order_refusal
 from recording.follow_verbs import FOLLOW_OPS, cmd_follow, owned_refusal
 from recording.generic import cmd_fields
 from recording.persons import _reuse_people
@@ -61,7 +64,8 @@ def preflight(args):
     jobsearch 0.91.0: the two employment verbs (`employment`, `moved`) make their own write and answer here, the way
     `fields` does: record.py's `_dispatch` is an entry point at its line budget, so a new verb reaches its command from
     this, the store-verb path's first step (recording/employment.py). `affiliations` (user.json's one writer,
-    recording/affiliations_verb.py) is reached the same way, and so is jobsearch 0.92.0's `stop-following` (recording/follow_verbs.py)."""
+    recording/affiliations_verb.py) is reached the same way, and so are `retopic` and `fit-key` (recording/fit_keys.py)
+    and jobsearch 0.92.0's `stop-following` (recording/follow_verbs.py)."""
     if args.reuse and not (args.op == "create" and args.file == "people"):
         print("⛔ REFUSED — --reuse applies only to `create <id> '<json>' --file people`.")
         return 1
@@ -71,6 +75,12 @@ def preflight(args):
         return cmd_employment(args)
     if args.op in AFFILIATION_OPS:
         return cmd_affiliations(args)
+    if args.op in FIT_KEY_OPS:
+        return cmd_retopic(args) if args.op == "retopic" else cmd_fit_key(args)
+    if args.op in DOCUMENT_OPS:
+        return cmd_document(args)
+    if args.op in PRESENCE_OPS:
+        return order_refusal(args) or cmd_presence(args)      # §3.3: one call, docx_state.blocks_md_write
     if args.op in FOLLOW_OPS:
         return cmd_follow(args)
 

@@ -321,13 +321,13 @@ def _week(run, due):
     else:
         out.append("- Budget %s, spent %s, remaining %d" % (plan["budget"], plan["spent"], plan["remaining"])
                    if "budget" in plan and "spent" in plan else "- Remaining budget: %d" % plan["remaining"])
-        for key in ("lines", "lookups", "reconnects", "role_specific"):
-            v = plan.get(key)
-            if isinstance(v, list) and v:                    # 0.90.3: a kind with nothing in it is no row of 0
-                out.append("- %s: %d" % (key.replace("_", " ").capitalize(), len(v)))
-                if key in ("reconnects", "role_specific"):       # design 9.1 and 16.1: the unbudgeted lines, each named
-                    for item in v:
-                        out.append("  - %s" % _unbudgeted_words(item))
+        out += ["- %s: %d" % (k.capitalize(), len(plan[k])) for k in ("lines", "lookups")  # 0.90.3: no row of 0
+                if isinstance(plan.get(k), list) and plan[k]]
+        owed = [(k, plan[k]) for k in ("reconnects", "role_specific") if isinstance(plan.get(k), list) and plan[k]]
+        out += ["", "Owed and not sent yet (outside the budget, not part of spent):"] if owed else []  # dev #1023 finding
+        for key, v in owed:                                  # design 9.1 and 16.1: the unbudgeted lines, each named
+            out += ["- %s owed, unsent: %d" % (key.replace("_", " ").capitalize(), len(v))]
+            out += ["  - %s" % _unbudgeted_words(item) for item in v]
         for u in plan.get("unobserved") or ():
             out.append("- Send unobserved: %s" % _action_words(u))
         for u in plan.get("age_unknown") or ():          # a draft whose age cannot be read is shown, never dropped

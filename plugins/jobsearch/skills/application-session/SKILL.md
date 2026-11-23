@@ -38,13 +38,17 @@ unreadable trigger or a dangling ref looks handled and is not.
 
 1. **Verify the posting is live** at the view's link before anything else.
 2. **The resume variant line.** `⛔ not decided` means decide NOW, with the candidate, and
-   record it on the opportunity (`resume_variant`) before the form is opened. Render the
-   deliverable before attaching it — `~/.claude/jobsearch/run variant_out.py --render
-   <variant-id>` (public #64 closed the markdown-only gap: gated by the visibility check, a
-   `public-profile` surface variant printing a claim nobody reviewed for a public audience
-   refuses to render at all, same as `resume_variants.py --check` reports it). Confirm with the
-   candidate that the rendered file is what actually gets attached — rendering is mechanical;
-   attaching the right file is still a human action inside this session.
+   record it on the opportunity (`resume_variant`) before the form is opened. Bring the
+   variant's Word file up to date before attaching it — `~/.claude/jobsearch/run record.py
+   presence-docx <variant-id> --attended` (jobsearch 0.93.0: it writes the default layout the
+   first time and afterwards updates only the changed paragraphs, inside the candidate's own
+   formatting; gated by the visibility check, a variant printing a claim nobody reviewed for its
+   audience is refused, same as `resume_variants.py --check` reports it). If it prints the
+   question about a Word file whose words the candidate changed, ask it in its words and run the
+   answer (`--keep word` or `--keep md`, with `--attended`) before uploading anything. Under Drive
+   output it prints `SKIPPED`; use the Google Doc. Confirm with the candidate that the file it
+   names is what actually gets attached — updating is mechanical; attaching the right file is
+   still a human action inside this session.
 3. **Answer the form from precedent.** The view lists prior answers per `question_key` —
    same employer first, latest elsewhere second. A `⛔ conflicting precedent` line is
    resolved with the candidate before answering a third way.

@@ -958,7 +958,7 @@ def check(root, verbose=False):
                 gaps.append("CLAIMED RENDERED, NOT ON PAGE — %s (ledger says %s)" % (key, where))
         elif disp == "referenced":   # dev 973: a reference row to its subject's ONE primary row, the key `where`
             counts["referenced"] += 1
-            if where not in on_page or ('data-ref="%s"' % _html.escape(str(where), False)) not in page:
+            if where not in on_page or ('data-ref="%s"' % _html.escape(str(where), False).replace('"', "&quot;")) not in page:
                 gaps.append("REFERENCED, NO PRIMARY OR NO REFERENCE ROW — %s (ledger says a reference to %s)"
                             % (key, where))
         elif disp == "remainder":

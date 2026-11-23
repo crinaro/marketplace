@@ -12,6 +12,7 @@ from recording.row_checks import (
     new_problems,
     validate,
 )
+from recording import fit_keys as _fk
 from recording.common import _now
 from recording.reads import _stage_line
 from recording.store_files import (
@@ -44,8 +45,10 @@ from recording.store_files import (
 # validator on a disposable copy of the data directory: one rule set, never a copy of it here.
 FIT_USAGE = "fit --from-file <file of fit lines: one JSON object per line> [--dry-run] [--already-locked]"
 FIT_LINE_KEYS = ("opp", "jd_source", "requirements")
+# design-presence-report.md 8.1: `topic` and `claim` are optional, checked by `recording/fit_keys.py` (the claim against the
+# union at the write); a replaced fit carries neither forward, and says how many it dropped.
 FIT_REQUIREMENT_KEYS = ("requirement", "verdict", "evidence", "pitch_line", "question_for_candidate", "question_status",
-                        "act_by", "landed_in", "answered_on")
+                        "act_by", "landed_in", "answered_on", "topic", "claim")
 
 
 def _fit_read_lines(path):
@@ -113,13 +116,17 @@ def _fit_plan(lines, opps, today_iso, carried=None):
     touches disk."""
     import jd_read as _jd
     results, changed = [], []
+    known, union = _fk.stored_topics(opps), _fk.cached_keys()
     for n, line in lines:
-        res = {"n": n, "opp_id": None, "ok": False, "text": ""}
+        res = {"n": n, "opp_id": None, "ok": False, "text": "", "notes": []}
         results.append(res)
         if carried and n in carried:
             res["text"] = carried[n]
             continue
         obj, why = _fit_parse_line(line)
+        if obj is not None:
+            why = _fk.lines_refusal(obj["requirements"], union)
+            obj = None if why else obj
         if obj is None:
             res["text"] = "⛔ REFUSED line %d — %s; nothing written for it, never retry it edited." % (n, why)
             continue
@@ -146,6 +153,7 @@ def _fit_plan(lines, opps, today_iso, carried=None):
                            "not overwritten, so the candidate's answered questions are never erased."
                            % (n, oid, have_day.isoformat(), read_day.isoformat()))
             continue
+        res["notes"] = [x for x in [_fk.replaced_note(have)] if x] + _fk.new_topic_notes(obj["requirements"], known)
         row["fit"] = {"analyzed_on": today_iso, "jd_source": obj["jd_source"].strip(),
                       "requirements": json.loads(json.dumps(obj["requirements"]))}
         if oid not in changed:
@@ -198,6 +206,8 @@ def _print_fit_results(plan):
     print("fit: %d line(s) read, %d written, %d refused" % (len(plan["results"]), n_ok, len(plan["results"]) - n_ok))
     for r in plan["results"]:
         print("  " + r["text"])
+        for note in r.get("notes") or ():
+            print("    " + note)
 
 
 def cmd_fit(args):

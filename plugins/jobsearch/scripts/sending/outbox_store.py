@@ -1,7 +1,7 @@
 """outbox_store: the `outbox` store, `data/outbox.jsonl` (jobsearch 0.91.0, design-build-reach.md 9.1, 10.4, 10.5, R2 N1, N9, N13b).
 
-One row per message that left "drafted" for the mailbox (`staged`, the candidate sends it) or for an approved send (`queued`, the
-engine sends it after the platform's prompt; B7). A draft's TEXT stays in `outreach/drafts.md`; what a run KNOWS about that draft's
+One row per message that left "drafted" for the mailbox (`staged`, the candidate sends it) or for the candidate's approval (`queued`,
+email `me`: approving it puts it in the drafts and the candidate sends it; jobsearch 0.93.0, ADR-043). A draft's TEXT stays in `outreach/drafts.md`; what a run KNOWS about that draft's
 journey to sent is a fact, so it lives here (CLAUDE.md principle 4). An open draft with no row is exactly today's draft.
 
     id                 "o-<n>", minted by `mint_id`
@@ -19,7 +19,8 @@ journey to sent is a fact, so it lives here (CLAUDE.md principle 4). An open dra
     date               the ISO date the message was SENT (the sent message's own `Date:` header). Named `date`, not the design's
                        `sent_on`: `sent_on` is a banned alias for `date` in docs/data_model.json, and `touches`, `applications` and
                        `proposals` already name the day an action went out `date` (the 0.86.0 proposals precedent)
-    approved_at, approved_session, sending_at   B7: aware UTC timestamps (seconds) and the approving session (R2 N4, N5)
+    approved_at        aware UTC timestamp (seconds) of the candidate's approval of a `me` row
+    approved_session, sending_at   written only by a 0.91.0/0.92.0 engine's send path; read, never written, since 0.93.0
     touch_id           the touches row written when the state became sent
     last_checked_at    aware UTC timestamp of the last send-detection check that SUCCEEDED (R2 N1); never written by a check that
                        could not read the mailbox
@@ -63,14 +64,16 @@ LOCK_DEADLINE_S = 3.0
 LOCK_STALE_S = 120.0
 LOCK_POLL_S = 0.05
 
-# what send detection looks for in Sent: a staged draft (the candidate sends it) and a send the guard passed (B7)
+# what send detection looks for in Sent: a staged draft (the candidate sends it, under `you` and `me` alike) and a send a 0.91.0 or
+# 0.92.0 guard passed (`sending`)
 DETECTABLE = frozenset({"staged", "sending"})
-# design 9.1 / 10.4 / 10.5: every move a row may make. A sent, discarded or failed row is over; a failed row's text is cleared,
-# so a retry is a new row with a new approval, never a resend of this one.
+# design 9.1, ADR-043: every move a row may make. An approved `me` row goes into the drafts (`staged`), never to `sending`
+# (jobsearch 0.93.0: the person always presses Send); `sending` is only ever a row an earlier engine left there, still detected,
+# failed or cancelled. A sent, discarded or failed row is over; a failed row's text is cleared.
 TRANSITIONS = {
     "queued": frozenset({"approved", "discarded"}),
     "staged": frozenset({"sent", "discarded"}),
-    "approved": frozenset({"sending", "queued", "discarded"}),
+    "approved": frozenset({"staged", "queued", "discarded"}),
     "sending": frozenset({"sent", "failed", "queued"}),
     "sent": frozenset(),
     "discarded": frozenset(),

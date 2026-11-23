@@ -52,6 +52,8 @@ from reach.resolution import (
     _iso_to_date,
     days_since,
 )
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from pursuits.app_outcomes import pct, buckets
 
 ROOT = _profile_root()
 # ⭐ TEST-ISOLATABLE (2026-08-05). test_says_insufficient_data_today froze a date-dependent
@@ -98,15 +100,6 @@ def load(name):
         return []
     with open(path, encoding="utf-8") as fh:
         return [json.loads(line) for line in (raw.strip() for raw in fh) if line]
-
-
-def pct(n, d):
-    """A rate, or an explicit refusal to compute one."""
-    if d == 0:
-        return "n/a"
-    if d < MIN_SAMPLE:
-        return "%d/%d (too few to rate)" % (n, d)
-    return "%d/%d = %d%%" % (n, d, round(100.0 * n / d))
 
 
 def is_iso(v):
@@ -644,15 +637,20 @@ def _day_bounds_utc(day):
 def _mail_coverage(recs, days):
     """(mailboxes, {mailbox: [uncovered days]}). A mailbox is covered on day D when the union of its ok
     `swept` intervals covers the whole day in the profile's zone — `journal.coverage_intervals` and
-    `journal._merge_intervals`, never a second implementation of the interval logic (dev #807)."""
+    `journal._merge_intervals`, never a second implementation of the interval logic (dev #807).
+    dev #1024: the LAST day of `days` is the as-of day, which is not over when the section is read on it; it is covered
+    from its midnight through the mailbox's last sweep (`last`), never "to its end", or no mailbox ever read as covered."""
     import journal as _j
     boxes = sorted({r.get("mailbox") for r in recs if r.get("event") == "swept" and r.get("mailbox")})
     gaps = {}
     for mb in boxes:
         merged = _j._merge_intervals(_j.coverage_intervals(recs, mb))
+        last = max((t for _f, t in merged), default=None)
         miss = []
-        for d in days:
+        for i, d in enumerate(days):
             s, e = _day_bounds_utc(d)
+            if i == len(days) - 1 and last is not None and s < last < e:
+                e = last
             if not any(f <= s and t >= e for f, t in merged):
                 miss.append(d)
         gaps[mb] = miss
@@ -1139,44 +1137,18 @@ def main():
         # answer, the row itself never mutated, exactly NO_RESPONSE_AFTER's own existing rule
         # for outreach) · live (still within the window) · withdrawn · expired · unrecorded —
         # the last three EXCLUDED from every rate and each printed with its own count.
-        # Response rate = heard / (heard + closed on silence). Reuses your_move.ended_because()
+        # Response rate = heard / (heard + closed on silence). Reuses pursuits.app_endings.ended_because()
         # — one derivation, never a second reading of the same fields.
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        import your_move as _ym
         import config_keys as _ck
         import profile as _profile_mod
         try:
             _silence_days, _ = _ck.describe(_profile_mod.config(), _ck.ATS_SILENCE_DAYS)
         except Exception:                                   # noqa: BLE001 — report, never crash
             _silence_days = _ck.ATS_SILENCE_DAYS_DEFAULT
-        by_opp_apps = collections.defaultdict(list)
-        for _o, _a in apps:
-            if _a.get("opp_id"):
-                by_opp_apps[_a["opp_id"]].append(_a)
-        heard, closed_silence = [], []
-        live_bucket, withdrawn_b, expired_b, unrecorded_b = [], [], [], []
-        for oid, opp_apps in by_opp_apps.items():
-            o = opps_by_id.get(oid, {})
-            newest = sorted(opp_apps, key=lambda a: str(a.get("date") or ""))[-1]
-            reason = _ym.ended_because(o, opp_apps)
-            status = newest.get("status")
-            if reason == "rejected" or status == "advanced":
-                heard.append((o, newest))
-            elif reason == "closed-silence":
-                closed_silence.append((o, newest))
-            elif reason == "withdrawn":
-                withdrawn_b.append((o, newest))
-            elif reason == "expired":
-                expired_b.append((o, newest))
-            elif reason == "unrecorded":
-                unrecorded_b.append((o, newest))
-            elif status in ("submitted", "acknowledged"):
-                anchor = newest.get("status_on") or newest.get("date")
-                age = days_since(anchor) if anchor else None
-                if age is not None and age >= _silence_days:
-                    closed_silence.append((o, newest))   # resolved-aged — counted, not mutated
-                else:
-                    live_bucket.append((o, newest))
+        b = buckets(opps_by_id, apps, _silence_days)
+        heard, closed_silence, live_bucket = b["heard"], b["closed-silence"], b["live"]
+        withdrawn_b, expired_b, unrecorded_b = b["withdrawn"], b["expired"], b["unrecorded"]
         print("  Response rate (heard / (heard + closed on silence)): %s"
               % pct(len(heard), len(heard) + len(closed_silence)))
         print("  heard=%d · closed-on-silence=%d (incl. resolved-aged) · live=%d"

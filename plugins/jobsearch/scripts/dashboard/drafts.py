@@ -342,7 +342,9 @@ def _row(title, blocks, key, st, pd, pick_html, full, medium=None):
     waiting entry) ONE line: the title, the state in a few words, the hand-off of a ready level-2 row, the text fold."""
     cls, label = _SEND_CHIP.get(st, ("waiting", st))
     meta = _draft_meta_summary(blocks)
-    attrs = '%s data-sendability="%s" data-subject="%s"' % (_rec_attrs(key), esc(st), esc(_subject(meta, key)))
+    # dev #1027: a title may hold a straight double quote; `esc` leaves it raw, which ended the attribute at the first quote
+    # and split the ledger key from the row. The key's attributes are `_rec_attrs`'; the subject escapes its own quotes.
+    attrs = '%s data-sendability="%s" data-subject="%s"' % (_rec_attrs(key), esc(st), esc(_subject(meta, key)).replace('"', "&quot;"))
     hand = _handoff(blocks, meta, medium, pd) if st == "sendable" else ""
     if not full:
         note = ""

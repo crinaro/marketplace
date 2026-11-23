@@ -14,16 +14,13 @@ job search, and there is no platform dependency between them: jobsearch names it
 metadata and installs it for you the first time it is missing.
 
 **A consumer that must not send enforces that itself.** jobsearch, for example, is
-draft-only by default, by an explicit review policy: it denies this connector's
-send/reply/forward tools with its own `PreToolUse` guard for the whole session it is
-loaded in, and fails closed if it cannot even read the request. Since jobsearch 0.91.0 a
-candidate may set its email mode to `me`: then, in an attended session only, that guard
-turns the deny into an **ask** (never an allow) for one send or reply that matches a
-message the candidate listed and approved minutes earlier in the same session, so this
-connector's own per-call prompt is the approval; forward stays denied. That guard is
-jobsearch's, not this connector's. When both plugins are installed the two compose:
-jobsearch's refusal beats this connector's ask, so inside a job-search session a send is
-denied unless jobsearch has bound it, and then you are still asked.
+draft-only, by an explicit review policy: it denies this connector's send/reply/forward
+tools with its own `PreToolUse` guard for the whole session it is loaded in, in every
+session state, and fails closed if it cannot even read the request. Its email mode `me`
+(jobsearch 0.93.0) puts a message you approved into your drafts with `gmail_create_draft`,
+and you press Send. That guard is jobsearch's, not this connector's. When both plugins are
+installed the two compose: jobsearch's refusal beats this connector's ask, so inside a
+job-search session every send is denied.
 
 **Every send outcome states what is known to have been delivered** — sent, not sent, or
 unknown — so nothing downstream is tempted into a blind retry after an ambiguous
@@ -145,6 +142,12 @@ because "no matches in half your mail" is indistinguishable from "no matches".
 Read/draft: `gmail_accounts` · `gmail_search` · `gmail_get_message` ·
 `gmail_get_attachment` · `gmail_create_draft`. Send: `gmail_send_message` ·
 `gmail_reply` · `gmail_forward` — see the schemas in `scripts/gmail_mcp_server.py`.
+
+**Attachments on a draft (0.6.0).** `gmail_create_draft` takes an optional `attachments` list of absolute
+paths to `.docx` or `.pdf` files: at most 5, 5 MB each and 10 MB together, no symlinks; the bytes must
+match the type. If any is refused, no draft is made and the error names the file and the rule. For each
+file attached, the result prints `attached <sha256> <bytes> <filename>`. Send, reply and forward do not
+take attachments.
 
 Python 3.9+, standard library only. Deployment surface support: `docs/deployment.md` in the
 source repository (a maintenance artifact — an installed copy does not carry it).

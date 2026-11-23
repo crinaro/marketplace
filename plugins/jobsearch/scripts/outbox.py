@@ -8,13 +8,17 @@ design-build-reach.md 9; the store is `sending/outbox_store.py`, detection `send
     outbox.py detect                                       send detection over the staged and sending rows
     outbox.py list [--ready]                               every open row and its state; --ready: the queued `me` batch, full text
     outbox.py discard <id>                                 a staged row the candidate will not send (the mailbox draft stays theirs)
-    outbox.py approve <id>... --attended                   B7, email `me` only, attended only: queued -> approved, this session
-    outbox.py call <id> --attended                         the exact send call to make, re-stamping approved_at (R2 N5)
-    outbox.py cancel <id>  ·  --stats  ·  --sent-hook      back to queued · R2 N12 · the PostToolUse entry (hooks.json)
+    outbox.py approve <id>... --attended                   email `me`: queued -> approved -> staged, each draft call printed
+    outbox.py draft [<id>...]                              approved -> staged, any run: the draft calls not yet made
+    outbox.py cancel <id>                                  an approved (or 0.91.0/0.92.0 `sending`) row back to queued
+    outbox.py attached <id> --result-file <f>              the saved draft-tool result: was the printed file attached?
 
-EMAIL `me` (B7, `sending/approval.py`; owner amendment 2026-11-21: ATTENDED ONLY). Under `actions.modes.email-send: me` `stage`
-makes `queued` rows and prints no draft call. An unattended run (no `--attended`; attended is never inferred) leaves them queued
-for the next attended session and calls nothing. Every verb first reverts an approval older than 600 s to queued, journaled.
+ATTACHMENTS (0.93.0, design-resume-docx.md §7.1): `sending/attachments.py`; this entry point passes it the gate (`_gate`).
+
+EMAIL `me` (`sending/approval.py`; owner ruling 2026-11-23, ADR-043: "Email should just put it in drafts for you to send").
+Under `actions.modes.email-send: me` `stage` makes `queued` rows and prints no call. The candidate approves them in an attended
+run (`approve`, never inferred), which puts each in the drafts: the session makes each printed draft call at once. A scheduled
+run's `draft` does the same for an approved row whose draft was not made yet. The candidate always presses Send.
 
 STAGING (design 9.2, owner O7: on request; `auto` is an opt-in whose key is B7's). A draft is staged only when it is an `email-cold`
 or `email-reply` draft that `precondition.py` reports `sendable` (so its **To:** and **Brief:** resolve and no precondition holds
@@ -42,16 +46,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(os.path.realpath(__file__))))
 from _root import profile_root  # noqa: E402
 import config_keys  # noqa: E402
 import mail_client  # noqa: E402
-import mail_connectors  # noqa: E402
 from ledger import brief_rows as _ledger  # noqa: E402
 from sending import approval as _approval  # noqa: E402
+from sending import attachments as _attachments  # noqa: E402
+from sending.approval import GMAIL_MULTI_DRAFT_TOOL, draft_call  # noqa: E402,F401 -- moved there in 0.93.0
 from sending import detect as _detect  # noqa: E402
 from sending.detect import _entry_body, describe, quoted_body  # noqa: E402 -- moved there in B7
 from sending import modes as _modes  # noqa: E402
 from sending import outbox_store as store  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(os.path.realpath(__file__)))
-GMAIL_MULTI_DRAFT_TOOL = "gmail_create_draft"
 STAGEABLE_MEDIA = ("email-cold", "email-reply")
 TO_RE = re.compile(r"^\*\*To:\*\*\s*contact:(\S+)\s*$", re.M | re.I)
 SUBJECT_RE = re.compile(r"^\*\*Subject:\*\*\s*(.+?)\s*$", re.M | re.I)
@@ -115,28 +119,13 @@ def build_row(root, draft_ref, account, rows, today, states, people, mode="you")
     row = {"id": store.mint_id(rows), "person_id": person["id"], "draft_ref": draft_ref, "medium": rep["medium"],
            "mode": mode, "account": account, "to": [addr], "cc": [], "bcc": [], "subject": subj.group(1),
            "body": quoted_body(body), "reply_uid": reply[1] if reply else None}
+    row.update(_attachments.stage_fields(root, body))     # AttachError (a ValueError): nothing staged
     row.update({"state": "queued", "queued_on": today} if mode == "me" else {"state": "staged", "staged_on": today})
     row["text_sha256"] = store.row_sha256(row)
     problems = store.check_row(row)
     if problems:
         raise Refused("; ".join(problems))
     return row, person
-
-
-def draft_call(root, row):
-    """`(tool, args)`: the one call the session makes to put the row's text in the mailbox's drafts."""
-    connector = mail_client.selected_connector(root)
-    if connector == mail_client.GMAIL_MULTI:
-        args = {"account": row["account"], "to": row["to"], "cc": row["cc"], "subject": row["subject"], "body": row["body"]}
-        return GMAIL_MULTI_DRAFT_TOOL, dict(args, reply_to_uid=row["reply_uid"]) if row.get("reply_uid") else args
-    if row.get("reply_uid"):
-        raise Refused("%s publishes no reply argument for its draft tool, so a reply is staged only under gmail-multi"
-                      % mail_connectors.label(connector))
-    tool = (mail_connectors.row(connector) or {}).get("draft_tool")
-    if not tool:
-        raise Refused("%s publishes no draft tool, so staging is refused there" % mail_connectors.label(connector))
-    return tool, {"to": row["to"], "subject": row["subject"], "body": row["body"],
-                  "_note": "argument names per %s's own tool schema" % mail_connectors.label(connector)}
 
 
 def pick_account(given, reply_account=None):
@@ -154,6 +143,20 @@ def pick_account(given, reply_account=None):
     return accounts[0]
 
 
+def _gate(root):
+    """`(exit code or None, stderr)` of `resume_variants.py --check`, run as its own program (design-resume-docx §7.1 step 4)."""
+    try:
+        r = subprocess.run([sys.executable, os.path.join(HERE, "resume_variants.py"), "--check"], capture_output=True,
+                           text=True, env=dict(os.environ, CLAUDESEARCH_ROOT=root), timeout=120)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return None, "resume_variants.py --check did not run (%s)" % type(exc).__name__
+    return r.returncode, r.stderr
+
+
+def _probe(root):
+    return _attachments.Probe(root, lambda: _gate(root))
+
+
 def cmd_stage(root, refs, all_ready, account):
     try:
         mode = _modes.resolve(_approval.load_config(root), _modes.EMAIL_SEND)
@@ -169,22 +172,24 @@ def cmd_stage(root, refs, all_ready, account):
     if not refs:
         print("Nothing to stage.")
         return 0
-    today, rc = datetime.date.today().isoformat(), 0
+    today, rc, probe = datetime.date.today().isoformat(), 0, _probe(root)
     for ref in refs:
         try:
             with store.lock(root, why="outbox.py stage"):
                 rows = store.load(root)
                 row, person = build_row(root, ref, account, rows, today, states, people, mode)
-                tool, args = draft_call(root, row) if mode == "you" else (None, None)
+                # under `me` too: a row whose approval could not be drafted is not made (its attachment is decided at draft)
+                tool, args, notes = _approval.call_for(root, row, probe) if mode == "you" else draft_call(root, row) + ([],)
                 rows.append(row)
                 store.save(root, rows)
-        except (Refused, store.OutboxError, store.OutboxLocked, ValueError) as exc:
+        except (Refused, _approval.Refused, store.OutboxError, store.OutboxLocked, ValueError) as exc:
             print("NOT STAGED %s: %s" % (ref, exc))
             rc = 1
             continue
         print("%s %s: %s <%s> \"%s\"" % (row["id"], row["state"], person.get("name") or person["id"], row["to"][0],
                                          row["subject"]))
-        print("  CALL %s %s" % (tool, json.dumps(args, ensure_ascii=False)) if tool else "  " + _approval.state_note(row, None))
+        print("  CALL %s %s" % (tool, json.dumps(args, ensure_ascii=False)) if mode == "you" else "  " + _approval.state_note(row))
+        print("".join("  %s\n" % n for n in notes), end="")
     return rc
 
 
@@ -216,14 +221,15 @@ def cmd_detect(root):
     return 0
 
 
-def cmd_list(root, now):
+def cmd_list(root):
     rows = [r for r in store.load(root) if r.get("state") in store.HOLDS_TEXT]
     if not rows:
         print("Outbox: no open rows.")
     for r in rows:
         print("%s %-8s %s <%s> %s · last check: %s%s" % (r["id"], r["state"], r.get("staged_on") or r.get("queued_on") or "",
                                                        r["to"][0], r["draft_ref"], r.get("last_checked_at") or "never",
-                                                       (" · " + _approval.state_note(r, now)) if r["state"] != "staged" else ""))
+                                                       (" · " + _approval.state_note(r)) if r["state"] != "staged" else ""))
+    print("".join(l + "\n" for l in _attachments.unconfirmed(rows)), end="")
     return 0
 
 
@@ -241,28 +247,25 @@ def cmd_discard(root, oid):
 
 
 def dispatch(args, root, now):
-    """One verb. Every verb first reverts a lapsed approval (R2 N12); `Refused` and store errors print REFUSED, exit 1."""
-    for line in _approval.lapse(root, now):
-        print(line)
-    session = os.environ.get(_approval.SESSION_ENV)
-    if args.stats:
-        print("\n".join(_approval.stats(root)))
-        return 0
+    """One verb. `Refused` and store errors print REFUSED, exit 1."""
+    today = datetime.date.today().isoformat()
     if args.verb == "stage":
         return cmd_stage(root, args.refs, args.all_ready, args.account)
     if args.verb == "detect":
         return cmd_detect(root)
     if args.verb == "list":
-        return print("\n".join(_approval.ready_lines(root))) or 0 if args.ready else cmd_list(root, now)
+        return print("\n".join(_approval.ready_lines(root, _probe(root)))) or 0 if args.ready else cmd_list(root)
     if args.verb == "approve":
-        print("\n".join(_approval.approve(root, args.refs, args.attended, session, now)))
+        print("\n".join(_approval.approve(root, args.refs, args.attended, now, today, _probe(root))))
         return 0
-    if args.verb is None or len(args.refs) != 1:
-        print("usage: outbox.py %s <id>" % (args.verb or "<verb>"))
+    if args.verb == "draft":
+        print("\n".join(_approval.draft(root, args.refs, today, _probe(root)) + _attachments.unconfirmed(store.load(root))))
+        return 0
+    if args.verb is None or len(args.refs) != 1 or (args.verb == "attached") != bool(args.result_file):
+        print("usage: outbox.py %s <id>%s" % (args.verb or "<verb>", " --result-file <f>" * (args.verb == "attached")))
         return 2
-    if args.verb == "call":
-        tool, cargs = _approval.call(root, args.refs[0], args.attended, session, now)
-        print("CALL %s %s" % (tool, json.dumps(cargs, ensure_ascii=False)))
+    if args.verb == "attached":
+        print("\n".join(_attachments.settle(root, args.refs[0], args.result_file)))
         return 0
     if args.verb == "cancel":
         print(_approval.cancel(root, args.refs[0]))
@@ -271,23 +274,16 @@ def dispatch(args, root, now):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="the outbox: stage, detect, list, discard, approve, call, cancel")
-    ap.add_argument("verb", nargs="?", choices=("stage", "detect", "list", "discard", "approve", "call", "cancel"))
-    ap.add_argument("refs", nargs="*", help="stage: brief ids; approve: outbox ids; discard, call, cancel: one outbox id")
-    ap.add_argument("--attended", action="store_true", help="approve, call: the explicit attended form (never inferred)")
+    ap = argparse.ArgumentParser(description="the outbox: stage, detect, list, discard, approve, draft, cancel, attached")
+    ap.add_argument("verb", nargs="?", choices=("stage", "detect", "list", "discard", "approve", "draft", "cancel", "attached"))
+    ap.add_argument("--result-file", dest="result_file", help="attached: the draft tool's result text, saved to a file")
+    ap.add_argument("refs", nargs="*", help="stage: brief ids; approve, draft: outbox ids; discard, cancel: one outbox id")
+    ap.add_argument("--attended", action="store_true", help="approve: the explicit attended form (never inferred)")
     ap.add_argument("--ready", action="store_true", help="list: the queued `me` rows to approve, with their full text")
-    ap.add_argument("--stats", action="store_true", help="sending_at - approved_at per row and the lapse count")
-    ap.add_argument("--sent-hook", dest="sent_hook", action="store_true", help="the PostToolUse entry (reads its payload)")
     ap.add_argument("--account", help="stage: the mailbox to stage in (default: the only registered one)")
     ap.add_argument("--all-ready", dest="all_ready", action="store_true",
                     help="stage: every sendable email draft with no outbox row")
     args = ap.parse_args(argv)
-    if args.sent_hook:                                    # PostToolUse: the hook's cwd names the profile; exit 0 always
-        try:
-            print(_approval.sent_hook(json.load(sys.stdin)))
-        except Exception as exc:                          # noqa: BLE001
-            print("outbox sent-hook: payload unreadable (%s); nothing recorded" % exc)
-        return 0
     try:
         return dispatch(args, profile_root(), datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0))
     except (_approval.Refused, store.OutboxError, store.OutboxLocked) as exc:

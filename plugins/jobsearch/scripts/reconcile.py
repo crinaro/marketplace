@@ -111,6 +111,8 @@ from _atomic import write_jsonl, write_json, write_text
 import validate_data as _vd
 import touches as _touches, reach.follow_stop as _fstop    # 0.92.0: --all never reconciles a stop / resume row
 import journal as _journal
+from ats_mail import ask_digest as _ad          # dev #1031
+from ats_mail import inbound_retry as _ir        # dev #1028
 
 try:
     from mail_client import (
@@ -790,19 +792,7 @@ def resolve_application(subject, body_text_, from_domain, live_apps, companies):
     return NoHit
 
 
-def classify_status_phrase(text_low, status_phrases):
-    """§3.3 — exactly one status class hit -> (status, False). Zero, or two at once ->
-    (None, ambiguous_bool). `status_phrases`: dict status -> [phrase, ...]."""
-    hits = []
-    for status, phrases in (status_phrases or {}).items():
-        for p in phrases or ():
-            if p and str(p).lower() in text_low:
-                hits.append(status)
-                break
-    uniq = sorted(set(hits))
-    if len(uniq) == 1:
-        return uniq[0], False
-    return None, bool(uniq)
+classify_status_phrase = _ir.classify_status_phrase     # §3.3, shared with check_followups.py (dev #1028)
 
 
 # ── dev #820 / public #175 (design-role-pipeline section 8.2, M818, issue #818) ─────────────────
@@ -953,51 +943,10 @@ class MailStatusTally(object):
                                             for c in STATUS_MAIL_CLASSES), len(self.unmatched)))
 
 
-_SUBJECT_PREFIX_RE = re.compile(r"^\s*(re|fwd?)\s*:\s*", re.I)
-
-
-def normalize_subject(subject):
-    """§4.4 — strip Re:/Fwd: prefixes, digits, and whitespace runs, for the dedup hash."""
-    s = (subject or "").strip()
-    while True:
-        s2 = _SUBJECT_PREFIX_RE.sub("", s)
-        if s2 == s:
-            break
-        s = s2
-    s = re.sub(r"\d+", "", s)
-    return re.sub(r"\s+", " ", s).strip().lower()
-
-
-def iso_week(date_iso):
-    try:
-        d = datetime.date.fromisoformat(str(date_iso)[:10])
-    except ValueError:
-        d = datetime.date.today()
-    y, w, _wd = d.isocalendar()
-    return "%04dW%02d" % (y, w)
-
-
-def _ask_key_hash(domain, subject):
-    """The (domain, normalized subject) key's own hash — independent of `kind` and of the ISO
-    week, so it is stable across both. §4.4's dedup key, and (dev #376 item 2) the same key a
-    `resolution: noise` disposition suppresses future asks by."""
-    return hashlib.sha1(("%s|%s" % ((domain or "").lower(), normalize_subject(subject)))
-                        .encode("utf-8")).hexdigest()[:10]
-
-
-_ASK_ID_RE = re.compile(r"^ask-ats-[a-z]+-([0-9a-f]{10})-\d{4}W\d{2}$")
-
-
-def _ask_key_hash_from_id(ask_id):
-    """The `_ask_key_hash(...)` segment embedded in an `ask-ats-<kind>-<hash>-<week>` id, or
-    None when `ask_id` is not that shape at all (a hand-authored or pre-ADR-030 ask row)."""
-    m = _ASK_ID_RE.match(ask_id or "")
-    return m.group(1) if m else None
-
-
-def ask_digest_id(kind, domain, subject, date_iso):
-    """§4.4 — dedup is by (sender domain, normalized subject) per ISO week, never by uid."""
-    return "ask-ats-%s-%s-%s" % (kind, _ask_key_hash(domain, subject), iso_week(date_iso))
+# §4.4 ask ids and keys live in `ats_mail/ask_digest.py` (dev #1031: an unmatched message is one ask per sender
+# domain per week); the names stay bound here for every caller and test that reads them off this module.
+normalize_subject, iso_week, ask_digest_id = _ad.normalize_subject, _ad.iso_week, _ad.ask_digest_id
+_ask_key_hash, _ask_key_hash_from_id = _ad.ask_key_hash, _ad.ask_key_hash_from_id
 
 
 def _read_config(root):
@@ -1353,8 +1302,8 @@ def write_status_conflict_ask(app_id, current_status, current_status_on, propose
 def write_or_extend_ask(kind, domain, subject, date_iso, note_tag, already_locked=False,
                         opp_id=None, trigger_ref=None, asks_by_id=None, cap=None,
                         created_counter=None, company_name=None):
-    """§4.4 — one ask per (domain, normalized subject, ISO week); every further uid it
-    absorbs is appended to the ask's `note`, never a second row. `cap`/`created_counter`
+    """§4.4 — one ask per (dedup key, ISO week), the key being the sender domain alone for unmatched mail
+    (dev #1031, `ats_mail.ask_digest`); every further uid it absorbs is appended to the ask's `note`, never a second row. `cap`/`created_counter`
     (a one-item mutable list, `[n]`) enforce ADR-030 decision 5: a NEW ask counts against the
     per-run cap; extending an existing one's note does not. Returns (ask_id_or_None,
     withheld_bool).
@@ -1369,31 +1318,18 @@ def write_or_extend_ask(kind, domain, subject, date_iso, note_tag, already_locke
     if existing is not None:
         new_note = ("%s | %s" % (existing.get("note"), note_tag)) if existing.get("note") \
             else note_tag
-        _run_record(["set", ask_id, "note", new_note, "--file", "asks"] +
-                   (["--already-locked"] if already_locked else []))
+        ok, _out = _run_record(["set", ask_id, "note", new_note, "--file", "asks"] +
+                               (["--already-locked"] if already_locked else []))
+        if ok:
+            existing["note"] = new_note    # dev #1031: a third message this run extends the note the second wrote
         return ask_id, False
-    key_hash = _ask_key_hash(domain, subject)
-    if any(a.get("resolution") == "noise" and _ask_key_hash_from_id(a.get("id")) == key_hash
-          for a in (asks_by_id or {}).values()):
+    if _ad.noise_suppressed(kind, domain, subject, (asks_by_id or {}).values()):
         print("  suppressed (noise): %s|%s" % ((domain or "").lower(),
                                                 normalize_subject(subject)))
         return None, False
     if cap is not None and created_counter is not None and created_counter[0] >= cap:
         return None, True
-    if kind == "unresolved":
-        title = "Unidentified/unresolved ATS mail"
-        text = ("A message from %s (%s) could not be resolved to a live application — check "
-               "whether it names one, or add the domain to receipt_sender_domains."
-               % (domain, subject[:60]))
-    elif kind == "unidentified":
-        title = "Possible ATS domain not configured"
-        text = ("A message from %s (%s) names %s, a live application's company, but %s is "
-               "not a configured or derived ATS domain — add it to receipt_sender_domains if "
-               "this is the ATS." % (domain, subject[:60], company_name or domain, domain))
-    else:
-        title = "ATS status change proposed"
-        text = ("A parsed ATS status change from %s (%s) is proposed, not applied — confirm "
-               "or correct it." % (domain, subject[:60]))
+    title, text = _ad.ask_text(kind, domain, subject, company_name)     # dev #1031: a question, naming the domain
     fields = {
         "kind": "system", "title": title[:120], "ask": text,
         "created": date_iso[:10], "act_by": (
@@ -1965,7 +1901,8 @@ def cmd_verify(args):
     invariant: a READ, independent of the ledger, that catches a record.py write that never
     happened for mail the mailbox actually has. D2 — a mailbox this cannot even OPEN prints
     UNVERIFIED (the SILENCE UNVERIFIED banner's own shape), never 'no traffic', and the run
-    exits non-zero."""
+    exits non-zero. dev #1028 (public #269): only a CONFIGURED receipt domain owes a row for every message; a
+    derived domain's unrecorded mail (job-board and social digests) prints as advisory and never fails the run."""
     cfg = _read_config(ROOT)
     messages_all = load("messages.jsonl")
     configured_domains, derived_domains = sender_domain_sets(cfg, messages_all)
@@ -2021,7 +1958,7 @@ def cmd_verify(args):
                             n_historical += 1
                         else:
                             n_unrecorded += 1
-                            problem = True
+                            problem = problem or d not in unstated   # dev #1028: a derived domain is advisory
                     per_domain[d] = (len(uids), n_recorded, n_asked, n_historical,
                                      n_unrecorded)
                 print("--VERIFY %s (window %dd)" % (account, days))
@@ -2033,7 +1970,10 @@ def cmd_verify(args):
                     leg = "derived, not configured" if d in unstated else "configured"
                     print("  %s (%s): %d received · %d rows · %d asked · %d historical · "
                          "%d UNRECORDED" % (d, leg, n, rec, asked, hist, unrec))
-                    if unrec:
+                    if unrec and d in unstated:
+                        print("  · %d not recorded — advisory: a derived domain (a digest or a notice, not a "
+                              "configured receipt sender) owes no receipt (dev #1028)" % unrec)
+                    elif unrec:
                         print("  ⛔ %d UNRECORDED — inside the sweep's own window; this is a "
                              "PROCESS FAILURE" % unrec)
         except CredentialError as exc:

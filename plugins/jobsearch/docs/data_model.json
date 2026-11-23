@@ -108,7 +108,9 @@
       "question_status",
       "answered_on",
       "landed_in",
-      "act_by"
+      "act_by",
+      "topic",
+      "claim"
      ],
      "required": [
       "requirement",
@@ -498,7 +500,7 @@
    "arrays": {}
   },
   "outbox": {
-   "_note": "jobsearch 0.91.0 (design-build-reach.md 9.1, 10.4, 10.5, R2 N1/N9/N13b) - one row per message that left \"drafted\" for the mailbox (`staged`: the candidate sends it from their own drafts) or for an approved send (`queued`, B7). The draft's TEXT stays in outreach/drafts.md; this store holds what a run knows about its journey to sent. `id` is `o-<n>`, minted by `outbox.py`; `draft_ref` is the drafts.md entry's `**Brief:**` id. `to` is always explicit and is the person's recorded email (or, with `reply_uid`, the address that message came from); `subject`/`body` are held ONLY while the state is queued, staged, approved or sending, and `text_sha256` (the canonical-form hash of design 10.5, sending/outbox_store.canonical_form) stays after the text is cleared. `state` moves only as sending/outbox_store.TRANSITIONS allows. `date` is the day the message was SENT, read from the sent message's own `Date:` header (named `date`, not the design's `sent_on`: `sent_on` is a banned alias for `date`). When a row becomes `sent`, ONE locked write records the `touches` row (`touch_id`), the outbound `messages` row (the sent body), marks the drafts.md entry sent, and clears the text here. `last_checked_at`/`check_result`/`none_found_checks` record send detection's own SUCCESSFUL checks (R2 N1: detection writes no `swept` row); a check that could not read the mailbox writes nothing. `approved_at`/`approved_session`/`sending_at` are B7's. `reply_uid` is taken from an `email-reply` draft's `**In-reply-to:** <account>:<uid>` line (B4c; sending/outbox_store.in_reply_to), and the row's `account` is that mailbox. There is no `sent_as` (R2 N13b). An absent file is an empty outbox (no migration). Rules: validation/outbox_rules.py, through sending/outbox_store.check_row.",
+   "_note": "jobsearch 0.91.0 (design-build-reach.md 9.1, 10.4, 10.5, R2 N1/N9/N13b) - one row per message that left \"drafted\" for the mailbox (`staged`: the candidate sends it from their own drafts) or for the candidate's approval (`queued`, email `me`: approving puts it in the drafts and the candidate sends it; jobsearch 0.93.0, ADR-043). The draft's TEXT stays in outreach/drafts.md; this store holds what a run knows about its journey to sent. `id` is `o-<n>`, minted by `outbox.py`; `draft_ref` is the drafts.md entry's `**Brief:**` id. `to` is always explicit and is the person's recorded email (or, with `reply_uid`, the address that message came from); `subject`/`body` are held ONLY while the state is queued, staged, approved or sending, and `text_sha256` (the canonical-form hash of design 10.5, sending/outbox_store.canonical_form) stays after the text is cleared. `state` moves only as sending/outbox_store.TRANSITIONS allows. `date` is the day the message was SENT, read from the sent message's own `Date:` header (named `date`, not the design's `sent_on`: `sent_on` is a banned alias for `date`). When a row becomes `sent`, ONE locked write records the `touches` row (`touch_id`), the outbound `messages` row (the sent body), marks the drafts.md entry sent, and clears the text here. `last_checked_at`/`check_result`/`none_found_checks` record send detection's own SUCCESSFUL checks (R2 N1: detection writes no `swept` row); a check that could not read the mailbox writes nothing. `approved_at` is the candidate's approval of a `me` row; `approved_session`/`sending_at` (and the `sending` state) were written only by 0.91.0-0.92.0's send path, read and never written since 0.93.0. `reply_uid` is taken from an `email-reply` draft's `**In-reply-to:** <account>:<uid>` line (B4c; sending/outbox_store.in_reply_to), and the row's `account` is that mailbox. There is no `sent_as` (R2 N13b). Since jobsearch 0.93.0 (design-resume-docx.md 6.2, 7.1) a row whose drafts.md entry carries `**Attach:** resume:<variant-id>` holds `attachments` (one item in this release: `ref` written at stage; `file` (profile-relative, \"/\"-separated), `sha256` and `bytes` stamped together when the draft call is printed, else null; `carried` null until `outbox.py attached` reads the saved result, true only when a result line's hash and size equal the stamp, false with `why` otherwise) and `attach_sha256` (64 hex of the refs joined by newline), the two present together or not at all, the hash checked in every state; `text_sha256` is unchanged by them (sending/attachments.py). An absent file is an empty outbox (no migration). Rules: validation/outbox_rules.py, through sending/outbox_store.check_row.",
    "id_field": "id",
    "fields": [
     "id",
@@ -525,12 +527,15 @@
     "last_checked_at",
     "check_result",
     "none_found_checks",
-    "note"
+    "note",
+    "attachments",
+    "attach_sha256"
    ],
    "shapes": {
     "to": "array",
     "cc": "array",
-    "bcc": "array"
+    "bcc": "array",
+    "attachments": "array"
    },
    "required": [
     "id",
@@ -546,7 +551,71 @@
     "text_sha256",
     "state"
    ],
-   "arrays": {}
+   "arrays": {
+    "attachments": {
+     "fields": [
+      "ref",
+      "file",
+      "sha256",
+      "bytes",
+      "carried",
+      "why"
+     ],
+     "required": [
+      "ref"
+     ],
+     "id_field": null
+    }
+   }
+  },
+  "presence_changes": {
+   "_note": "design-presence-report.md 8.2, R3 - APPEND-ONLY dated event rows about the candidate's presence copy: what the LinkedIn profile says (`stated` by the candidate, `observed` by linkedin-runner and confirmed attended), what profile-optimizer proposed for a gap (`proposal`, its claims stored verbatim), the candidate's `decision` (applied / declined, or `superseded` by a newer proposal for the same gap), and a dispatched gap key that recorded nothing (`refused`, by session, carrying exactly gap and note). No verb rewrites a row; file order is event order; `id` is `pc-<n>`, minted by record.py and strictly increasing in file order. The current value of a field is the last qualifying row in file order (presence/changes.py, the one reader). Since jobsearch 0.93.0 (design-resume-docx.md 6.1, R2 S2-2 and S2-8) a `document` row, by session on a variant target, records the team's last write or acceptance of that variant's managed Word file: `doc_op` (render, update or adopt), `file` (profile-relative, \"/\"-separated, ending .docx; a backslash, an absolute path or a `..` segment is refused), the fingerprints `doc_sha256`, `doc_text_sha256` and `source_sha256` (64 hex each), `ats` (failing check ids), `machine` (32 hex, or null only when the profile has no git common dir; the verb refuses null in a git profile), `written_at` (YYYY-MM-DDTHH:MM:SSZ UTC; a document row without a readable one is refused, since it decides the newest row, never line position), and `removed`/`added` (64-hex paragraph hashes, empty unless update). It carries no value field and replay never reads it as a value. A proposal's `handback` is the hand-back file it was read from, so a consumed path is refused on a retry. An absent file is an empty store (no migration). Rules: presence/store_rules.py (validation/presence_rules.py is its facade); writers: recording/presence_verbs.py.",
+   "id_field": "id",
+   "fields": [
+    "id",
+    "kind",
+    "created",
+    "by",
+    "note",
+    "target",
+    "variant_id",
+    "field",
+    "value",
+    "gap",
+    "before",
+    "claims",
+    "handback",
+    "proposal",
+    "decision",
+    "applied_on",
+    "applied_value",
+    "applied_by",
+    "doc_op",
+    "file",
+    "doc_sha256",
+    "doc_text_sha256",
+    "source_sha256",
+    "ats",
+    "machine",
+    "written_at",
+    "removed",
+    "added"
+   ],
+   "required": [
+    "id",
+    "kind",
+    "created",
+    "by"
+   ],
+   "arrays": {},
+   "shapes": {
+    "value": "array",
+    "before": "array",
+    "claims": "array",
+    "ats": "array",
+    "removed": "array",
+    "added": "array"
+   }
   },
   "plans": {
    "_note": "ADR-031 B4 (design §10, §17) — the owner's strategy as data: a plan whose subject is a role search, a company, a person's relationship, or one bespoke opportunity. `subject_kind`/`subject_id` say what the plan is ABOUT; `opportunities.plan_id` says which plan GOVERNS a pursuit (a different question — see design §17's table). `outcomes[]` is required only on `search` plans (role|contract|access). `play_id` is a FK to `plays`, the literal `manual` (no play; the owner decides each step), or null (not yet chosen) — required only on a plan that GOVERNS pursuits (search/company/opportunity), refused on a `person` plan (design §17: 'person: governs none'). `play_confirmed` is required whenever `play_id` names a real play — an unconfirmed play acts on nothing outward (design §26.1). `goal`/`approach` are the owner's own words; no shipped code path ever writes them (ADR-031 decision 12) — null counts, never invented. `resolves_when`/`resolved_on`/`resolution` are the asks contract, copied (design §17): both-or-neither, resolution atomic with the act. `targets` is an optional override of config.json's `targets` shape, only meaningful on a `search` plan (design §26.5, owner decision 20).",

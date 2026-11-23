@@ -77,6 +77,8 @@ import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 from reach import standing_rows as _rows      # 0.91.0: a person lookup says "(unconfirmed)" / "formerly at" (wording only)
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from pursuits.ruled_out import is_excluded
 
 ROOT = _profile_root()
 DATA = os.path.join(ROOT, "data")
@@ -88,15 +90,6 @@ def load(name):
         return []
     with open(path, encoding="utf-8") as fh:
         return [json.loads(l) for l in fh if l.strip()]
-
-
-def is_excluded(o):
-    """The one definition of 'already ruled out'. Do not re-derive this elsewhere.
-
-    Deliberately does NOT include `status: expired` — see the module docstring: a re-sighting
-    of an expired role is a repost, and treating it as 'already ruled out' would silently drop
-    the second chance the candidate never declined."""
-    return o.get("verdict") == "pass" or o.get("status") == "passed"
 
 
 # dev #670 — job-title abbreviations, expanded to full words so "Sr. Eng Manager" and "Senior

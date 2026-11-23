@@ -402,6 +402,13 @@ shape and its enums):
 - **`pitch_line`** — how to PRESENT the match. This is the marketing alignment: the drafters
   read it via `~/.claude/jobsearch/run fit_report.py --pitch <opp_id>` instead of re-inventing
   positioning per message.
+- **`topic`** (optional, any verdict) — what the requirement is about, as the shortest phrase a LinkedIn skill would
+  use, written as its own slug (`enterprise-architecture`, `c-plus-plus`). **Run `~/.claude/jobsearch/run
+  resume_report.py --topics` first and reuse a listed topic when one fits**; a slug no stored row used before is
+  printed as `topic new:` when the fit is recorded, so drift is seen.
+- **`claim`** (optional, `aligned`/`partial` only) — the ONE bullet of `presence/claims.md` the evidence rests on,
+  copied verbatim. The writer refuses a claim that matches no union bullet, so never paraphrase one; leave it out
+  when no single bullet carries the evidence.
 - **`question_for_candidate`** — REQUIRED for `unknown`. **The gaps are the point, not a
   by-product.** the candidate's resume is deliberately incomplete; a live role is what makes the missing
   context concrete enough to ask about. Only ask what would genuinely change the pitch.

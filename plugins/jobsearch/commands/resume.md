@@ -18,14 +18,33 @@ Switch modes (`$ARGUMENTS` may name one):
 ~/.claude/jobsearch/run variant_out.py --set-mode drive
 ```
 
-Render a declared variant:
+Write or update a declared variant's Word file (`local_docx`):
 
 ```bash
-~/.claude/jobsearch/run variant_out.py --render "<variant-id>"
-~/.claude/jobsearch/run variant_out.py --render "<variant-id>" --dry-run
+~/.claude/jobsearch/run record.py presence-docx "<variant-id>" --attended
+~/.claude/jobsearch/run record.py presence-docx --all --attended
 ```
 
-`--dry-run` composes and prints the outline; it writes nothing.
+**The Word file is kept in the layout you give it** (jobsearch 0.93.0). The first run writes the default layout.
+Fix the spacing, text size or margins in Word as you like: the next update rewrites only the paragraphs whose
+words changed in the md, inside your formatting. A dated backup (`<name>.before-update-<date>.docx`) is taken
+before each update; the ten newest are kept. **If you change the words in Word**, nothing is overwritten and you
+are asked: "You changed the Word file for <variant>. Update the resume we keep on file from it? If not, your change
+will be overwritten at the next update." Yes is `--keep word`, no is `--keep md` (your file is backed up first),
+each with `--attended`. A question a scheduled run filed is answered with `--keep word|md --answer
+resume-word-edited:<variant-id>`. `--fresh --attended` goes back to the default layout after a `before-fresh`
+backup. Under `drive` it prints `SKIPPED` and writes nothing.
+
+Preview, or write a separate copy somewhere else:
+
+```bash
+~/.claude/jobsearch/run variant_out.py --render "<variant-id>" --dry-run
+~/.claude/jobsearch/run variant_out.py --render "<variant-id>" --out "<path>"
+```
+
+`--dry-run` composes and prints the outline; it writes nothing. Under `local_docx`, `--render` without `--out` or
+`--dry-run` is refused: it would overwrite the Word file `record.py presence-docx` keeps in your layout. A copy
+written with `--out` is yours and is never updated.
 
 ## The two modes
 
@@ -39,7 +58,9 @@ account and the documents connector. The folder id comes from
 Unlike `/jobsearch:letters` (whose `drive` default is historical, not a recommendation), this renderer has
 no prior behavior to inherit — `local_docx` is the deliberate default.
 
-## ⚠️ `--render` refuses before writing anything, on purpose
+## ⚠️ A render refuses before writing anything, on purpose
+
+`record.py presence-docx` runs the same checks before it writes the default layout.
 
 **The visibility gate runs first, on every render, before any target.** A variant whose
 `resume_variants.py --check` state is `unplaced` or `private-on-public` (public #59/ADR-027 — a

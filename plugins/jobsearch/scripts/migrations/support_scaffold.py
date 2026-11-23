@@ -24,7 +24,10 @@ pending (the next hook re-appends it); a row that cannot be written leaves the k
 
 jobsearch 0.92.0 (docs/design-decision-surface.md §M): the pin a NEW profile carries is now `DECISION_SURFACE_PIN` (0.92.0). A new
 profile is stamped at the engine's version, so no migration ever pins it, and the 0.92.0 writers (`stop-following`, the `held`
-counts) refuse below that pin; 0.92.0 satisfies every check a 0.90.0 or 0.86.0 pin did (`pin_scan` takes the highest)."""
+counts) refuse below that pin; 0.92.0 satisfies every check a 0.90.0 or 0.86.0 pin did (`pin_scan` takes the highest).
+
+jobsearch 0.93.0 (docs/design-resume-docx.md §R3 R3-3): the pin a NEW profile carries is now `WORD_ROUND_TRIP_PIN` (0.93.0), for
+the same reason: `m_0_93_0_word_round_trip` never runs on a profile stamped at 0.93.0, and 0.93.0 satisfies every older check."""
 
 import datetime
 import os
@@ -33,7 +36,7 @@ from browser_fallback.fetch_key import key_value
 from browser_fallback.fetch_notice import NOTICE_ID, notice_row
 from journaling.row_kinds import record_profile_schema
 from migrations import stamp
-from migrations.support_pins import DECISION_SURFACE_PIN, _browser_fallback_asks
+from migrations.support_pins import WORD_ROUND_TRIP_PIN, _browser_fallback_asks
 
 
 def write_notice_row(root):
@@ -50,7 +53,7 @@ def write_notice_row(root):
 
 
 def stamp_new_profile(root, created):
-    """Stamp `root` at the engine's version, pin it at `DECISION_SURFACE_PIN` and write the notice row, when it has no stamp yet.
+    """Stamp `root` at the engine's version, pin it at `WORD_ROUND_TRIP_PIN` and write the notice row, when it has no stamp yet.
     Appends what it wrote to the list `created`; prints a warning (never raises) for what it could not write."""
     if os.path.exists(os.path.join(root, stamp.STAMP)):
         return
@@ -61,8 +64,8 @@ def stamp_new_profile(root, created):
         return
     created.append(stamp.STAMP)
     try:
-        record_profile_schema(root, DECISION_SURFACE_PIN, "init_profile")
-        created.append("data/runs.jsonl (the jobsearch %s profile pin)" % DECISION_SURFACE_PIN)
+        record_profile_schema(root, WORD_ROUND_TRIP_PIN, "init_profile")
+        created.append("data/runs.jsonl (the jobsearch %s profile pin)" % WORD_ROUND_TRIP_PIN)
     except Exception as e:              # noqa: BLE001
         print("  ⚠️ could not record the profile pin (%s) — migrate.py will record it on the next hook-firing "
               "session." % e)

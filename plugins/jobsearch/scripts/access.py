@@ -16,11 +16,10 @@ the candidate does the work and do not move when they do not. One row per `activ
   alumni       DERIVED (LAMP's A): the people at the company with a stated tie (`people.ties`, non-empty).
                The engine never asserts whom a contact knows (ADR-031 decision 5); ties are the candidate's.
   known / contacted / warm
-               DERIVED per person by `graph.warmth()` and counted by tier. The tiers are exclusive: each
-               person is in exactly one, so the three add up to the CURRENT employees the table knows there.
-  unconf       people whose employment there is unconfirmed (0.91.0, design-build-reach.md 5.3): not counted
-               in any column, listed above the table with the verb. A former employee is never counted either
-               (`standing.former` in --json). Every column above reads `reach.standing_rows` at the row's date.
+               DERIVED per person by `graph.warmth()` and counted by tier, each person in exactly one tier.
+  unconf       people whose employment there is unconfirmed (design-build-reach.md 5.3). dev #1020: they STILL COUNT
+               in the tiers, chats_held and last_contact, flagged here and above the table; only a confirmed former
+               employee is removed. Alumni and path count CURRENT employees only (`reach.standing_rows.counted`).
   chats_held   DERIVED: `kind: chat` commitments with `attendance: held` with a person at the company. A
                chat in the past with no `attendance` is UNRECORDED and is never counted as not held: the
                cell reads `N+` and the table names the unrecorded ids (design section 0 item 7).
@@ -176,16 +175,17 @@ def _posting(g, cid, as_of):
 def _row(g, company, as_of, warm_days, landings, recheck_days=_rows.RECHECK_DAYS):
     cid = company.get("id")
     tiers = {"warm": 0, "contacted": 0, "known": 0}
-    people, alumni, held, unrecorded, dates = {}, 0, 0, [], []
-    by = _rows.split(g.people_for_company(cid, standing=None, as_of=as_of), cid, as_of, recheck_days)   # 0.91.0: only `current` counts
-    for p in by["current"]:
+    people, alumni, held, unrecorded, dates, warm_current = {}, 0, 0, [], [], 0
+    by = _rows.split(g.people_for_company(cid, standing=None, as_of=as_of), cid, as_of, recheck_days)
+    for p, current in _rows.counted(by):              # dev #1020: the unconfirmed count, flagged; a way in is current only
         pid = p["id"]
         w = g.warmth(pid, as_of, warm_days=warm_days)
         if w is None:
             continue
         people[pid] = w
         tiers[w] += 1
-        if _has_ties(p):
+        warm_current += 1 if current and w == "warm" else 0
+        if current and _has_ties(p):
             alumni += 1
         for t in g.touches_for_person(pid):
             for field in ("date", "responded_on"):
@@ -207,7 +207,7 @@ def _row(g, company, as_of, warm_days, landings, recheck_days=_rows.RECHECK_DAYS
             elif not c.get("attendance") and d < as_of:
                 unrecorded.append(c.get("id"))
     intros = _open_intros(g, cid, as_of, landings)
-    path = path_word(tiers["warm"], intros)
+    path = path_word(warm_current, intros)        # a way in needs a CURRENT warm employee (owner 2026-11-21)
     return {"company_id": cid, "name": company.get("name") or cid,
             "vertical": company.get("vertical"), "motivation": company.get("motivation"),
             "alumni": alumni, "known": tiers["known"], "contacted": tiers["contacted"],

@@ -10,6 +10,8 @@ from _root import STATE_DIRNAME
 
 
 JOURNAL = os.path.join("data", "runs.jsonl")
+# `outbox-lapse` is written by no engine since 0.93.0 (ADR-043 removed the 600 s send window); it stays a known event so a journal
+# a 0.91.0/0.92.0 engine wrote still reads.
 EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swept", "probe",
          "triaged", "dispatch", "pass", "roles", "feeds", "drain", "mail-status", "readmit",
          "profile-schema", "network", "companies-raised", "outbox-lapse")

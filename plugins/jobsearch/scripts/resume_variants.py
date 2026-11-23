@@ -129,6 +129,16 @@ import _tree
 import _atomic
 import applications as _apps
 import surfaces as _surf
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from presence.union_text import (
+    BULLET_RE,
+    HEADING_RE,
+    CLAIM_TAG_RE,
+    _norm,
+    read_union,
+    bullets_with_sections,
+)
+from presence.variant_blocks import BULLET_INDENT_RE
 
 UNION_FILE = _tree.rel("claims")           # presence/claims.md; legacy spellings resolve via _tree
 STORE_FILE = os.path.join("data", "resume_variants.jsonl")
@@ -136,17 +146,6 @@ STORE_FILE = os.path.join("data", "resume_variants.jsonl")
 # Sections of the union whose bullets are deliberately unprinted — exempt from the orphan
 # check. Matches the "Additional Detail (elicited beyond the resume)" addenda headings.
 ADDENDA_HEADING_RE = re.compile(r"additional\s+detail", re.I)
-
-BULLET_RE = re.compile(r"^\s*[-*+]\s+(.+?)\s*$")
-# Same bullet grammar as BULLET_RE, with the leading indentation captured separately —
-# union_claim_tags() needs it to pair a nested `[private]` twin with its `[public]` parent; the
-# plain containment path (bullets_with_sections) never needed nesting, only section membership.
-BULLET_INDENT_RE = re.compile(r"^(\s*)[-*+]\s+(.+?)\s*$")
-HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
-
-# public #59, ADR-027 — the per-claim marking, at the HEAD of a union bullet's own text. No
-# section default, no cross-reference table, no id: the tag IS the claim's review stamp.
-CLAIM_TAG_RE = re.compile(r"^\[(public|private)\]\s*(.+)$", re.I)
 
 # applications[].status values that prove a submission happened — mirrored from
 # validate_data.SUBMITTED_APP_STATUS as a literal, same move as precondition.py's OUTCOMES:
@@ -157,51 +156,10 @@ FAIL_STATES = frozenset({"drifted", "no-claims", "unstamped", "missing-file", "u
                         "unplaced", "private-on-public"})
 
 
-def _norm(s):
-    """Whitespace-collapsed, case preserved — verbatim discipline minus formatting."""
-    return " ".join((s or "").split())
-
-
 def union_hash(text):
     """12-hex stamp of the union's content, line-ending and trailing-space insensitive."""
     canon = "\n".join(line.rstrip() for line in text.splitlines())
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()[:12]
-
-
-def read_union(root):
-    path = _tree.path(root, "claims")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            return fh.read()
-    except OSError:
-        return None
-
-
-def bullets_with_sections(text):
-    """[(normalized_bullet, heading_path_of_its_section)] in file order.
-
-    public #67 — heading_path is the full ancestor chain ("Outer > Inner"), not just the
-    nearest heading. A single flat `heading` variable overwritten on every heading line loses
-    the addenda association the moment a sub-heading nests under it: an "## Additional Detail"
-    section containing "### <topic>" sub-headings reported every bullet under the sub-heading
-    as having heading "<topic>" alone, so ADDENDA_HEADING_RE.search(heading) in report() no
-    longer matched "additional detail" and those claims were counted as claims outside the
-    addenda — overstated, not actually orphaned. Joining the ancestor chain keeps the match
-    working via the same substring search, however deep the nesting goes.
-    """
-    out, stack = [], []   # stack: [(level, text), ...], outermost first
-    for line in (text or "").splitlines():
-        hm = HEADING_RE.match(line)
-        if hm:
-            level, htext = len(hm.group(1)), hm.group(2)
-            while stack and stack[-1][0] >= level:
-                stack.pop()
-            stack.append((level, htext))
-            continue
-        bm = BULLET_RE.match(line)
-        if bm:
-            out.append((_norm(bm.group(1)), " > ".join(t for _, t in stack)))
-    return out
 
 
 def union_claim_tags(text):

@@ -515,9 +515,9 @@ def run_email_probe(root, person_id, accounts=None):
                         name_hits.extend(mb.search(_scoped_query(term)))
                     name_hits = _human_hits_dated(mb, name_hits, configured_domains,
                                                   derived_domains)
-        except mail_client.CredentialError:
+        except mail_client.CredentialError as e:
             out.append({"account": account, "state": "unreachable",
-                       "reason": "credential-missing"})
+                       "reason": getattr(e, "reason", "credential-missing")})
             continue
         except Exception as e:                            # noqa: BLE001 — classified below
             out.append({"account": account, "state": "unreachable",
@@ -1112,7 +1112,8 @@ def cmd_probe_held(root, deadline_s=HELD_PROBE_DEADLINE_S):
         print("No held drafts to probe.")
         return 0
     accounts = mail_client.configured_accounts()                  # once per call (dev #712)
-    reachable = bool(accounts) and all(mail_client.account_reachable(a, root) for a in accounts)
+    down = [a for a in accounts if not mail_client.account_reachable(a, root)]   # dev #1017
+    reachable = bool(accounts) and not down
     started = _clock()
     probed, queued, not_reached = 0, 0, 0
     todo = [pid for pid in sorted(held_people)                    # sorted: a stable order
@@ -1133,11 +1134,11 @@ def cmd_probe_held(root, deadline_s=HELD_PROBE_DEADLINE_S):
         _file_held_probe_gap(root, probed, not_reached, deadline_s)
     elif reachable:
         _close_held_probe_gaps(root)
+    for a in down:                                       # dev #1017: name the credential
+        print("Not probed here: %s" % mail_client.unreachable_reason(a, root))
     print("Probed %d held draft(s) directly, queued %d for a keychain-holding session, "
-          "%d not reached%s."
-          % (probed, queued, not_reached,
-             " (the %gs deadline passed; one journal gap names them)" % deadline_s
-             if not_reached else ""))
+          "%d not reached%s." % (probed, queued, not_reached, " (the %gs deadline passed; one "
+          "journal gap names them)" % deadline_s if not_reached else ""))
     return 0
 
 
@@ -1503,11 +1504,9 @@ def main():
     ap.add_argument("--held", action="store_true")
     ap.add_argument("--deadline-s", dest="deadline_s", type=float,
                     default=HELD_PROBE_DEADLINE_S, metavar="SECONDS",
-                    help="--probe --held only (dev #712): stop starting new probes after this "
-                         "many seconds and file ONE gap for the rest. Default %gs: below the "
-                         "shortest observed kill of the call (50 s); daily-run §2c gives the "
-                         "call a 90 s timeout. Results already probed are kept."
-                         % HELD_PROBE_DEADLINE_S)
+                    help="Every probe caps each credential lookup to end by then (dev #1017); "
+                         "--probe --held also starts no probe after it and files ONE gap for the "
+                         "rest (dev #712). Default %gs (§2c: 90 s timeout)." % HELD_PROBE_DEADLINE_S)
     ap.add_argument("--rebrief", action="store_true")
     ap.add_argument("--restamp", action="store_true",
                     help="re-stamp `**To:** unaddressed` entries that now resolve a contact "
@@ -1533,6 +1532,7 @@ def main():
             ap.error("--probe requires a value (contact:<id>) unless paired with --held")
         if args.deadline_s <= 0:
             ap.error("--deadline-s must be greater than 0")
+        credentials.set_deadline(args.deadline_s)          # dev #1017: a store that never answers
         if args.probe and args.held:
             return cmd_probe_held(root, args.deadline_s)
         if args.probe:

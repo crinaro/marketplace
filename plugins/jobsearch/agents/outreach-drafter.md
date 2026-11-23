@@ -291,6 +291,15 @@ the file's own header does not define them — this does:
     **Subject:** <the email's subject, verbatim>              (every email draft; `outbox.py stage` requires it)
     **In-reply-to:** <account>:<uid>                          (every email-reply draft, and only those)
     **Blocked until:** contact:<contact_id> outcome:<…>      (only when there is a precondition)
+    **Attach:** resume:<variant-id>                           (only when the message says the resume is attached)
+
+**`**Attach:**` (jobsearch 0.93.0).** When the message text promises the resume ("my resume is attached"),
+add one `**Attach:** resume:<variant-id>` line naming the variant the message is written from, its id exactly as
+`resume_variants.jsonl` declares it. At most one per entry, and `resume` is the only kind. `outbox.py stage`
+refuses the entry, nothing written, for a second line, another kind, or a variant that is not declared or is
+retired. The line names the variant, never a file path: the engine attaches that variant's Word file when it is
+ready, and otherwise drafts the email without it and says so. A message that does not mention the resume carries
+no Attach line.
 
 **`**Subject:**` (jobsearch 0.91.0).** `outbox.py stage` puts an `email-cold` or `email-reply` draft into
 the mailbox's drafts only when the entry carries this line: a subject is always explicit, never derived from
@@ -300,7 +309,7 @@ subject (`Re: <the subject of the message you answer>`). The message itself stay
 **`**In-reply-to:**` (jobsearch 0.91.0).** An `email-reply` draft names the one message it answers: the
 mailbox that received it and its uid there, exactly as the dispatch hands them to you
 (the mailbox address, a colon, the uid's digits, and nothing after the digits). Copy it;
-never compose or guess one. It is how `outbox.py stage` threads the draft and how a send is bound to that
+never compose or guess one. It is how `outbox.py stage` and `outbox.py approve` keep the draft in that
 thread, so a reply with no such line is not staged at all, and a malformed one is refused. If the dispatch
 named no inbound uid, leave the line off and say so in your hand-back.
 

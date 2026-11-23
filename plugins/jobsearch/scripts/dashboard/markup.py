@@ -116,14 +116,21 @@ def links_for(key: str) -> str:
     return "#" + rec_id(key)
 
 
+def key_attr(key: str) -> str:
+    """A record key as an attribute value (dev #1027): `esc` plus `"` as `&quot;`, because a key holds a draft's title
+    and a straight double quote left raw ends the attribute, splitting the ledger's key from the row's. Nothing else
+    changes, so every key without a `"` is byte-identical on the page."""
+    return esc(key).replace('"', "&quot;")
+
+
 def _rec_attrs(key: str) -> str:
     """` id="rec-…" data-rec="…"` - the primary row's attributes, id FIRST so the checker's
     `data-rec="…" data-full="1"` pairing is untouched."""
-    return ' id="%s" data-rec="%s"' % (rec_id(key), esc(key))
+    return ' id="%s" data-rec="%s"' % (rec_id(key), key_attr(key))
 
 
 def _ref_attrs(key: str) -> str:
-    return ' data-ref="%s"' % esc(key)
+    return ' data-ref="%s"' % key_attr(key)
 
 
 def _ref_link(key: str, text: str = "the full row ↓") -> str:

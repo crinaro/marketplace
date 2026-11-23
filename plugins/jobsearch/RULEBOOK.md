@@ -290,9 +290,7 @@ before they were centralized — a value stated twice is a value that disagrees 
   with vague language and don't invent specifics.** Ask the candidate a targeted question instead — that is
   what the `fit` block's `question_for_candidate` is for. Only ask when the missing specific would
   materially change how compelling the pitch is.
-- **NEVER edit the candidate's live LinkedIn profile without their explicit fresh approval** — a public,
-  identity-facing profile is at least as consequential as a sent message. Draft suggested copy via
-  `profile-optimizer` for their review first.
+- **NEVER edit the candidate's live LinkedIn profile. The candidate applies every change.**
 - Outreach style: warm, role-specific, healthcare/SaaS background, **no comp mentioned upfront**.
   Per-medium limits and the two-jobs rule live in `config.json.communications` — read them with
   `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/profile.py"`, never retype one.

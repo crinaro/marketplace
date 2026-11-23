@@ -53,8 +53,30 @@ Only in your own profile folder on your machine, as plain JSON and markdown file
 and delete. That includes the full text of messages it records (`data/messages.jsonl`), your resume
 variants and your drafts. Under a `claude-*` selection it also includes the fetched messages:
 `.jobsearch/mail_bundle/` in your profile folder, pruned to the last 3 days, and never written
-anywhere under your home folder. There is no server of ours, no telemetry and no analytics. The
+anywhere under your home folder. Under `sync.mode: remote` the whole profile is also pushed to your
+profile repository's own remote. There is no server of ours, no telemetry and no analytics. The
 plugin's authors never receive your data.
+
+**Your LinkedIn text and the changes proposed to it** (since 0.93.0) are kept in
+`data/presence_changes.jsonl`, beside your claim union: the headline, skills and profile status you
+state, what was read from your own LinkedIn profile in a session you attended and confirmed, each
+change the plugin drafted with the resume lines it rests on, and whether you applied or declined it.
+The plugin never edits your LinkedIn profile: you paste every change yourself. **Under
+`sync.mode: remote` this file leaves your machine** with every other file in your profile, pushed to
+your profile repository's own remote. It never goes to the plugin's authors or to the marketplace.
+
+**Your resume's Word file** (since 0.93.0, local `.docx` output only) is kept in your profile's resume folder,
+`presence/resumes/` unless you set another folder inside the profile; a folder outside the profile is refused. Before
+the plugin changes that file it saves your bytes beside it as `<name>.before-update-<date>.docx` (the ten newest are
+kept), `<name>.before-keep-<date>.docx` or `<name>.before-fresh-<date>.docx` (kept until you delete them). Fingerprints
+of the file (hashes, never its text) and of each paragraph it changed are kept in `data/presence_changes.jsonl`. To tell
+your machines apart, the plugin writes a random id to `jobsearch-machine` inside your profile's `.git` folder, which
+git never pushes; the id is recorded on those rows, and no computer name is ever read. **Whether the Word file leaves
+your machine follows your profile's git remote:** with no remote it stays on this machine and the review's commit
+leaves every `.docx` out; with a remote the Word file is committed and pushed with your profile, its dated backups are
+not, and a copy from your other machine that differs is saved beside it as `<name>.remote-<short commit id>.docx`. When an email
+attaches the resume, gmail-multi reads the file from your disk and puts it in the draft in your own mailbox; a
+claude.ai connector is never given the file, and you add it to that draft yourself.
 
 ## What Claude sees
 
@@ -64,21 +86,20 @@ a claude.ai connector is also handled under that connector's own terms, with the
 
 ## What leaves your machine
 
-Only the fetches and the mail connection listed above. The plugin never posts, connects or applies on
-your behalf, and its guards refuse those calls. **By default it never sends mail either.** Since 0.91.0
-there is one opt-in: if you set `actions.modes.email-send` to `me` and use gmail-multi, the plugin can
-send an email for you. It does so only in a session you are attending, only a message you were shown
-in full and approved, and only after you allow that one send in Claude Code's own prompt. The message
-goes from your own Gmail account to the recorded recipient, through gmail-multi; nothing passes through
-a server of ours. A scheduled or unattended run never sends; it keeps the message waiting for you.
-Until that send, the message text is kept in your profile's `data/outbox.jsonl`, and after it, in your
-own `messages` record, as for any mail you send.
+Only the fetches and the mail connection listed above, and, under `sync.mode: remote`, your profile
+pushed to your own profile repository's remote. The plugin never posts, connects or applies on
+your behalf, and its guards refuse those calls. **It never sends mail either: you always press Send.**
+If you set `actions.modes.email-send` to `me` (since 0.93.0), a message you were shown in full and
+approved, in a session you are attending, is put into your own mailbox's drafts for you; you open your
+drafts and send it yourself. The draft is written to your own mailbox through the mail connector you
+selected (gmail-multi, or a claude.ai connector that offers a draft tool); nothing passes through a
+server of ours. Until you send it, the message text is kept in your profile's `data/outbox.jsonl`, and
+after it, in your own `messages` record, as for any mail you send. (From 0.91.0 to 0.92.0 this setting
+let the plugin send an approved email after Claude Code's prompt; 0.93.0 removed that.)
 
 **What that claim covers, exactly.** jobsearch's own code has no mail-sending code. Two guards refuse
-mail sends. One covers `gmail-multi`'s send tools. Under `email-send: me` it hands a send to Claude Code's
-prompt instead of refusing it, and only for a message you approved in that same session in the last
-10 minutes, with exactly the text and recipients you were shown. Forwarding is always refused. Both
-guards are set to block the call if they fail to run (`onFailure: block`, Claude Code v2.1.295 or
+mail sends. One covers `gmail-multi`'s send, reply and forward tools, in every session, whatever your
+settings. Both guards are set to block the call if they fail to run (`onFailure: block`, Claude Code v2.1.295 or
 later). The other guard covers the claude.ai connectors' send
 tools (send, reply, forward, unsubscribe, mail rules, and the event writes of Superhuman and
 Fastmail, which send invitations from your identity). The

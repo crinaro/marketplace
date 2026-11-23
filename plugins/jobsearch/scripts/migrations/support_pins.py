@@ -4,7 +4,8 @@ profile's journal still needs it.
 One module of `migrations/` (design-component-segmentation.md §5); the 0.86.0 half moved out of `migrate.py` unedited by S2; the
 0.90.0 half (dev 858) is read by `m_0_90_0_browser_fallback` and `init_profile.py`, which both need the pin and the asks reader. The
 0.92.0 half (docs/design-decision-surface.md §M) is read by `m_0_92_0_decision_surface`, by `support_scaffold.stamp_new_profile`
-(the pin a NEW profile carries) and by `registry.pending_for` (a lost 0.92.0 pin is re-run)."""
+(the pin a NEW profile carries) and by `registry.pending_for` (a lost 0.92.0 pin is re-run). The 0.93.0 half
+(docs/design-resume-docx.md §R3 R3-3) is the same pair for `m_0_93_0_word_round_trip` and `registry.pending_for`."""
 
 import json
 import os
@@ -15,6 +16,7 @@ from migrations.stamp import ver
 NETWORK_FIRST_PIN = "0.86.0"
 BROWSER_FALLBACK_PIN = "0.90.0"
 DECISION_SURFACE_PIN = "0.92.0"
+WORD_ROUND_TRIP_PIN = "0.93.0"
 
 
 def _network_first_pin_needed(profile, recs=None):
@@ -42,6 +44,19 @@ def _decision_surface_pin_lost(profile):
     carries no pin at or above 0.92.0. `registry.pending_for` asks this: it must answer for a journal `journal.read` refuses."""
     pin = pin_scan(profile)
     return pin is None or ver(pin) < ver(DECISION_SURFACE_PIN)
+
+
+def _word_round_trip_pin_needed(recs):
+    """True when the journal rows `recs` (as `journal.read` returned them) carry no pin at or above 0.93.0."""
+    pin = profile_pin(recs)
+    return pin is None or ver(pin) < ver(WORD_ROUND_TRIP_PIN)
+
+
+def _word_round_trip_pin_lost(profile):
+    """True when the profile's journal, scanned tolerantly (`journal.pin_scan`), carries no pin at or above 0.93.0.
+    `registry.pending_for` asks this, as it asks `_decision_surface_pin_lost`: it must answer for a journal `journal.read` refuses."""
+    pin = pin_scan(profile)
+    return pin is None or ver(pin) < ver(WORD_ROUND_TRIP_PIN)
 
 
 def _browser_fallback_asks(profile):

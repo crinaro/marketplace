@@ -79,7 +79,7 @@ ARCHIVE = os.path.join(ROOT, "docs", "incident_archive.md")
 #   the library — a distinction every run loads and must not get backwards. The old, SHORTER
 #   sentence it replaces ("`account` defaults to `all` on both") was also WRONG once the guard
 #   shipped, so this is a correction that happens to cost words, not narrative.
-MAX_CLAUDE_WORDS = 5780
+MAX_CLAUDE_WORDS = 5757   # 2026-11-22 (presence-report, O19): LOWERED -23, the measured count
 
 # Where a rule is allowed to live. Deliberately broader than focus.md's original list, which
 # named only CLAUDE.md and agent definitions — that is precisely why data-shaped lessons (the
@@ -223,7 +223,7 @@ LOAD_BEARING = {
     "never assert an unchecked doc fact":        "NEVER assert a specific fact about a document",   # EVIDENCE
     "ask, don't paper over a JD gap":            "only covers thinly",   # TRUTHFULNESS
     "no send without fresh approval":            "NEVER send messages, emails, or applications",   # CONSENT
-    "never edit the live LinkedIn profile":      "live LinkedIn profile without their explicit fresh approval",   # CONSENT
+    "never edit the live LinkedIn profile":      "live LinkedIn profile. The candidate applies every change",   # CONSENT (O19, presence-report: no approval path; the needle lives in the rulebook only)
     "outreach style":                            "Outreach style",   # WRITING
     "channel priority":                          "retained-firm relationships and warm intros first",   # PROCESS
     "LinkedIn fetch invents a location":         "FROM A LINKEDIN-SOURCED FETCH",   # EVIDENCE

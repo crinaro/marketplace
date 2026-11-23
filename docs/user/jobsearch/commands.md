@@ -113,7 +113,12 @@ healthy. **Shows** only; it changes nothing and is safe to run at any time.
 you can reach and how, the week's reach-out budget, the network funnel and any open suggestions), then which channels
 produced roles, whether you kept to your own cadence, and proposed setting changes. **Runs** and writes a
 review; any change to your settings, and any suggestion it makes about a company, a plan or a person, is a proposal for you
-to confirm.
+to confirm. Since 0.93.0 it also runs the resume and LinkedIn coverage report (`resume_report.py --gaps`) and, when that report's
+last line says `DISPATCH: yes`, has `profile-optimizer` draft changes for the open gaps; each draft is recorded as a proposal
+for you to apply. **`/jobsearch:weekly-review attended`** is the form for when you are at the keyboard: only it asks you
+questions (your LinkedIn headline, skills or whether you have a profile at all), redrafts a gap whose last draft recorded
+nothing, or starts a live read of your own LinkedIn profile. A review is unattended unless you type `attended`; an unattended
+one only lists those questions, and drafts only when your search posture allows drafting.
 
 **`/jobsearch:checkup`**. Use it when something is not working, or you want to know whether the search
 is working well. **Runs** an investigation and tells you whether the cause is a setting here, a decision
@@ -168,10 +173,92 @@ makes sense.
 ## Make documents
 
 **`/jobsearch:review-resume`**. Use it to look over your resume layer: the claims, each print version as
-it will look, and the open items. **Shows** only.
+it will look, the open items, and (since 0.93.0) the coverage report for the print versions. With the
+plugin's mod on it opens a pane, whose **Coverage** tab shows that report. **Shows** only.
 
-**`/jobsearch:review-linkedin`**. Use it to check your public-profile text field by field against its
-length limit. **Shows** only. Signing in to LinkedIn is `/jobsearch:linkedin`.
+**`/jobsearch:review-linkedin`**. Use it to check your public-profile text field by field, each with its
+character count (no LinkedIn length limit is recorded, so nothing is called over one), and (since 0.93.0)
+the LinkedIn coverage report, also on the pane's **Coverage** tab. **Shows** only. Signing in to LinkedIn
+is `/jobsearch:linkedin`.
+
+### Your resume and LinkedIn coverage (since 0.93.0)
+
+Scripts, run as `~/.claude/jobsearch/run <script> ...`. The plugin never edits your LinkedIn profile:
+every change it drafts is a proposal you paste in yourself, then record.
+
+- **`resume_report.py`**. The coverage report: whether each resume version leads with one of your target
+  titles, how the requirements of the roles you are pursuing are covered, how many bullets carry a number,
+  how each version has done (no rate under five applications), readability, and your LinkedIn headline
+  and skills against the topics that recur. **Shows** only: it stores nothing it prints. A
+  `NOT CHECKED (reason)` line means a source could not be read, never that it is empty. Forms:
+  `--surface print` or `--surface public-profile` (only those versions), `--json` (the same report as one
+  object, which the pane uses), `--topics` (every requirement topic on record and how many roles carry
+  it), `--gaps` (the open gaps, the questions, and a last `DISPATCH:` line saying whether a draft is
+  due), `--packet` (the brief `profile-optimizer` drafts from; it names the file the drafts come back in).
+  `--attended` marks you as present: questions are printed as `ASK:` rather than `LISTED:`.
+- **`record.py presence`**. Shows what your LinkedIn profile says as recorded (status, headline, skills,
+  with dates) and the open proposals. **Shows** only.
+- **`record.py presence-state linkedin status none|skip|active`**. Tells the plugin you have no LinkedIn
+  profile (`none`), have one but will not state it (`skip`), or have one (`active`). `none` and `skip`
+  end the question. **Runs**.
+- **`record.py presence-state linkedin headline --text-file <file>`** and **`presence-state linkedin
+  skills --from-file <file>`** (one skill per line). Record your current headline or skills. **Runs**.
+  `presence-state --observed --from-file <file> --attended` records what a read of your own profile saw,
+  after you confirm it.
+- **`record.py presence-propose --from-file <file> --dispatched <gap> ...`**. The weekly review runs it to
+  record the optimizer's drafts. Each line prints `RECORDED pc-<n> <gap>` or `REFUSED <gap>: <reason>`; a
+  gap that got no draft is recorded as refused, so an unattended review does not pay to draft it again.
+  You do not normally run it. **Runs**.
+- **`record.py presence-decide <id> applied`** (`--applied-on <date>`, or `--as-edited --text-file <file>`
+  when you changed the text) or **`presence-decide <id> declined`** (`--why "..."`). Say what you did
+  with a proposal. **Runs**.
+- **`record.py presence-apply <id>`**. For a proposal to one of your resume version files only: the
+  plugin makes that one edit, checks the versions, puts the file back exactly as it was if the check
+  fails, and records the edit. Your resume files are yours, in your own project, so it needs no other
+  approval (since 0.93.0). It never edits LinkedIn. **Runs**.
+- **`record.py presence-import <version id> --from-file <file>`**. Brings a resume from anywhere on your
+  computer into one of your declared resume versions: a `.md`, `.txt` or Word `.docx` file (a Google Doc
+  first saved from Drive as one of those; a PDF first copied into a `.md` file). Word list items become
+  bullet lines. It records the version's earlier text first, so you can put it back. **Runs**.
+- **`record.py retopic <old> <new>`**. Renames a requirement topic on every role at once, when two topics
+  mean the same thing. **Runs**.
+- **`record.py fit-key <role id> <index> [--topic <topic>] [--claim-file <file>]`**. Sets the topic, or the
+  resume line the evidence rests on, on one requirement of a role's fit. The line must be in your claim
+  union word for word. **Runs**.
+
+### Your resume's Word file, and the resume attached to an email (since 0.93.0)
+
+- **`record.py presence-docx <version id>`**. Keeps the Word file of a resume version in the layout you
+  gave it. The first run writes the default layout. After that, when the version's text changes, only the
+  paragraphs whose words changed are rewritten, inside your own formatting: the spacing, text size and
+  margins you set are kept. A dated backup (`<name>.before-update-<date>.docx`) is taken before each
+  update, and the ten newest are kept. **If you changed the words in Word**, nothing is overwritten and you
+  are asked: "You changed the Word file for <version>. Update the resume we keep on file from it? If not,
+  your change will be overwritten at the next update." Answer with `--keep word` (yes: your Word text goes
+  into the version, your layout is kept) or `--keep md` (no: your file is backed up as
+  `<name>.before-keep-<date>.docx`, then updated); in a session you are attending, add `--attended`. A
+  scheduled run never answers: it files the question as an ask, and you answer it with `--keep word|md
+  --answer resume-word-edited:<version id>`. `--fresh --attended` goes back to the default layout after a
+  `before-fresh` backup. `--here --attended` makes this machine the home of a file another machine last
+  wrote (a profile with no git remote; the `ELSEWHERE` line says so). `--all` settles every active print
+  version and every version an approved email attaches, and is what the weekly review runs. Under Drive
+  output it prints `SKIPPED` and writes nothing. Other lines: `TRACKED` (a Word file committed to your
+  profile, with the command that stops tracking it, which you run yourself), `UNMERGED` (your two machines
+  both changed it; the other side is saved beside it as `<name>.remote-<id>.docx`), `REFUSED` (with the
+  reason and nothing written). **Runs**.
+- **`variant_out.py --render <version id>`** no longer writes that Word file under `local_docx`: it is
+  refused, because it would overwrite your layout. Use `--out <path>` for a separate copy, which is yours
+  and never updated, or `--dry-run` to preview. **Runs**.
+- **An email that attaches your resume.** A draft whose text says the resume is attached names the version
+  (`**Attach:** resume:<version id>`). With gmail-multi 0.6.0 or later the file goes into the draft. With a
+  claude.ai mail connector, an older gmail-multi, Drive output, or a Word file waiting on your answer, the
+  draft is made without it and an `ATTACH BY HAND o-<n>: ...` line names the file: add it yourself before
+  you press Send.
+- **`outbox.py attached o-<n> --result-file <file>`**. After a draft that carried a file, the run saves the
+  mail tool's reply to a file and runs this, which records whether the file you were shown is the file
+  that was attached (its size and fingerprint). `o-<n>: ... attached, size and hash match` confirms it; a
+  `MISMATCH` line is followed by `ATTACH BY HAND`; `NO DRAFT` means gmail-multi refused the file and made no
+  draft. Until it runs, `outbox.py list` and `draft` print `UNCONFIRMED o-<n>`. **Runs**.
 
 **`/jobsearch:resume`** *(`drive`, `local_docx` or a resume version's id)*. Use it to choose where a
 finished resume goes (a Google Doc in your Drive folder, or a local `.docx`) and to produce one. With no

@@ -70,6 +70,7 @@ import your_move as _ym
 import lifecycle as _lifecycle
 import applications as _apps
 import touches as _touches
+from ats_mail import ask_digest as _ad   # dev #1031: two engine-keyed ATS asks are distinct by their own dedup key
 
 ROOT = _profile_root()
 
@@ -258,13 +259,12 @@ def main():
     # The render puts each ROW in exactly one panel, so the duplicates left are duplicates
     # in the DATA: two open asks about one subject, an ask restating a commitment, or an ask
     # restating a role the JSONL already routes to Your Move.
-    # TITLE keywords, deliberately — matching the focus.md-era comparison. Folding the full
-    # ask text in dilutes the overlap ratio until real duplicates stop flagging.
+    # TITLE keywords, deliberately: folding the ask text in dilutes the ratio until real duplicates stop flagging.
     ask_keys = [(a, keywords(a.get("title") or "")) for a in open_asks]
     for i in range(len(ask_keys)):
         for j in range(i + 1, len(ask_keys)):
             (ai, ki), (aj, kj) = ask_keys[i], ask_keys[j]
-            if not ki or not kj:
+            if not ki or not kj or (_ad.is_digest_id(ai.get("id")) and _ad.is_digest_id(aj.get("id"))):
                 continue
             overlap = ki & kj
             if len(overlap) >= 2 and len(overlap) >= min(len(ki), len(kj)) * 0.6:

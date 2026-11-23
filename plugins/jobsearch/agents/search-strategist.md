@@ -133,7 +133,9 @@ Each review:
    fact cannot be used.** Name the specific proof point to elicit and the roles it would unlock.
    `fit_report.py --gaps` is the register; a recurring gap there is a data gap, not a fit problem.
 5. WASTE — repeated no-yield activities, and open asks or commitments that linger a week
-   or more past their date.
+   or more past their date. A commitment is open only when it is not `cancelled` AND has no
+   `attendance`: `status` stays `scheduled` after `record.py attended`, and `attendance: held|no-show`
+   is the outcome. Take unrecorded chats from `funnel_report.py`'s `unrecorded:` line, never from `status`.
 6. PROPOSALS — concrete, prioritized, with the expected benefit stated. Do NOT apply them
    yourself; present them for the candidate's approval. You may append your summary to `log.md`.
 7. **⭐ SUGGESTIONS — the rows you may PROPOSE for the candidate to CONFIRM (jobsearch 0.86.0, dev #834).** Three kinds, and only these:

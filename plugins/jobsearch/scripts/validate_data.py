@@ -223,6 +223,8 @@ from validation.source_tags import (
 from validation.trigger_rules import check_trigger
 from validation.user_rules import check_user_file, read_beside_data
 from validation.outbox_rules import check_outbox
+from validation.requirement_rules import check_requirement
+from presence.store_rules import check_presence_changes
 from validation.vocab import (
     DATE_RE,
     VERTICALS,
@@ -305,30 +307,6 @@ from validation.vocab import (
 # module-level functions that APPEND to a problem list, so a test (and `record.py`, which reads the
 # same list) exercises each rule on its own.
 
-# R3: a JD read that was TRIED and failed satisfies the read. It is recorded in `fit.jd_source` as
-# `unavailable: <reason>` -- a CLOSED prefix, so a hand-typed "unavailable" or an invented reason is
-# refused instead of passing as a read. A null `jd_source` still means not tried.
-JD_UNAVAILABLE_PREFIX = "unavailable"
-# dev #765: `manual-board` -- the only address the role carries is on a `manual-candidate` channel's
-# `board_hosts`, a site whose terms forbid automated access, so the read was REFUSED rather than tried.
-JD_UNAVAILABLE_REASONS = ("login-wall", "dead-link", "no-url", "surface-cannot-read", "manual-board")
-JD_UNAVAILABLE_RE = re.compile(r"^unavailable: (%s)$" % "|".join(JD_UNAVAILABLE_REASONS))
-
-
-def check_jd_source(jd_source, label, problems):
-    """`fit.jd_source` (R3): free text naming what was read, EXCEPT that anything beginning
-    `unavailable` is a read that was tried and failed and must be exactly `unavailable: <reason>`
-    with the reason in the closed set. A null is 'not tried' and is legal."""
-    if jd_source is None:
-        return
-    if not isinstance(jd_source, str):
-        problems.append("%s: fit.jd_source must be a string or null -- %r" % (label, jd_source))
-        return
-    if jd_source.lower().startswith(JD_UNAVAILABLE_PREFIX) and not JD_UNAVAILABLE_RE.match(jd_source):
-        problems.append("%s: fit.jd_source %r must be exactly 'unavailable: <reason>' with the "
-                        "reason one of {%s}" % (label, jd_source, ", ".join(JD_UNAVAILABLE_REASONS)))
-
-
 # ── hygiene: a standing finding, never a refusal (R7) ──────────────────────────────────────────
 # `_main()` has a non-fatal level already (`warnings`), but its heading says "rows that break an
 # introduced-only rule", which these are not. So the two hygiene checks print under a `HYGIENE`
@@ -375,6 +353,7 @@ _STORE_INTRODUCTION_EXEMPT = frozenset({
     # double-report the same absence under two different messages.
     "messages.jsonl",
     "outbox.jsonl",   # 0.91.0: absent is an empty outbox, never a lost file (sending/outbox_store.py docstring; design 9.1)
+    "presence_changes.jsonl",   # absent is an empty store, the outbox rule (design-presence-report.md 8.2); no migration
 })
 
 
@@ -420,6 +399,13 @@ def check_store_introduction(problems):
 # names each side needs at import are already bound — a top-of-file import here would hand
 # your_move a half-initialised module whenever validate_data is the entry point.
 import your_move as _ym  # noqa: E402
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from validation.jd_source import (
+    JD_UNAVAILABLE_PREFIX,
+    JD_UNAVAILABLE_REASONS,
+    JD_UNAVAILABLE_RE,
+    check_jd_source,
+)
 
 
 def emit_problems(problems):
@@ -1434,33 +1420,7 @@ def _main():
                     problems.append("%s: fit.requirements must be a non-empty list" % label)
                 else:
                     for i, q in enumerate(reqs):
-                        rl = "%s fit.requirements[%d]" % (label, i)
-                        if not (q.get("requirement") or "").strip():
-                            problems.append("%s: empty 'requirement'" % rl)
-                        enum(q, "verdict", FIT_VERDICTS, rl, problems)
-                        enum(q, "question_status", FIT_Q_STATUS, rl, problems)
-                        # An alignment claim with no citation is a gap wearing a disguise.
-                        if q.get("verdict") in ("aligned", "partial") and not (q.get("evidence") or "").strip():
-                            problems.append("%s: verdict=%r requires 'evidence' — an uncited "
-                                            "alignment claim is not evidence of alignment"
-                                            % (rl, q.get("verdict")))
-                        # An unknown with no question is a gap nobody will ever close.
-                        # ⭐ act_by — added 2026-08-03. A question with a DATE is a different
-                        # object from one without. The candidate: "does the coordinator know to suggest a
-                        # draft a nudge to <a recruiter> for today?" It did not. <a recruiter>'s auto-reply
-                        # said she returns Monday August 3; that fact went into the question as
-                        # PROSE, and nothing can sort or surface prose. A date in a field can be.
-                        ab = q.get("act_by")
-                        if ab is not None and not re.match(r"^\d{4}-\d{2}-\d{2}$", str(ab)):
-                            problems.append("%s: act_by %r is not an ISO date" % (rl, ab))
-                        if q.get("verdict") == "unknown" and not (q.get("question_for_candidate") or "").strip():
-                            problems.append("%s: verdict='unknown' requires 'question_for_candidate' — "
-                                            "otherwise the gap is recorded and never harvested" % rl)
-                        if q.get("question_status") == "answered" and not (q.get("landed_in") or "").strip():
-                            problems.append("%s: question_status='answered' requires 'landed_in' "
-                                            "(projects.md / resume.md-addendum / resume.md / kb_<company>.md)" % rl)
-                        if q.get("answered_on") and not is_date(q.get("answered_on")):
-                            problems.append("%s: answered_on not ISO — %r" % (rl, q.get("answered_on")))
+                        check_requirement(q, "%s fit.requirements[%d]" % (label, i), problems)   # validation/requirement_rules.py
 
         # jd_url must be present as string or explicit null
         if "jd_url" not in r:
@@ -2051,6 +2011,7 @@ def _main():
     _cfg, _cfg_why = read_beside_data(_data_root.DATA, "config.json")
     _user_line = check_user_file(_data_root.DATA, problems)   # 0.91.0: user.json's affiliations (validation/user_rules.py)
     _outbox_line = check_outbox(_data_root.DATA, problems)   # 0.91.0: the outbox (validation/outbox_rules.py)
+    _presence_line = check_presence_changes(_data_root.DATA, problems)   # presence_changes (validation/presence_rules.py)
     _bands_n = _signals_n = 0
     if _cfg_why is None:
         _bands_n = check_commute_config(_cfg.get("geography"), problems)
@@ -2092,7 +2053,7 @@ def _main():
     else:
         print("  Sourcing config: %d commute band(s), %d likely-pass signal(s) checked"
               % (_bands_n, _signals_n))
-    print("  " + _user_line + "\n  " + _outbox_line)
+    print("  " + _user_line + "\n  " + _outbox_line + "\n  " + _presence_line)
     if _source_tag_stats is None:
         print("  Source tags: NOT CHECKED -- docs/data_model.json `source_tag` could not be used "
               "(see the problem above)")

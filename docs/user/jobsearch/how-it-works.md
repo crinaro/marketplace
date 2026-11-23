@@ -164,7 +164,7 @@ still accounted for, and the line that counts them says how many are held and wh
 or passed).
 
 What the run does instead is ask about the **company**: *look into this company?* At most
-`search.company_intake_per_run` companies a run are raised this way, newly (10 unless you changed it), and the rest are
+`search.companies_raised_per_run` companies a run are raised this way, newly (since 0.93.0; unset, the same number as `search.company_intake_per_run`, 10 unless you changed it), and the rest are
 counted as *waiting*, never dropped. Your answer is one command, and it is your decision, never the run's:
 
 - `record.py company-status <company> active-target --motivation <1-5>`: target it. From the next run its roles are read,
@@ -202,13 +202,13 @@ search plan is for. In order, the run:
 
 **Everything that sends, connects or looks up a person stays with you.** A run drafts messages for you to read and
 send. It never sends a connection request and never searches LinkedIn for a person; where it needs someone found, it
-lists a link for you to open. It never sends a message, with one opt-in since 0.91.0: under
-`actions.modes.email-send: me` (gmail-multi only), an email you approved is sent in a session you are attending, after
-you allow it in Claude Code's prompt; a scheduled run never sends ([Your data](your-data.md), *Outbox*). It also never
+lists a link for you to open. It never sends a message: under `actions.modes.email-send: me` (since 0.93.0), an email you
+approve is put into your drafts, and you press Send ([Your data](your-data.md), *Outbox*). It also never
 writes down that a chat happened: that is your word.
 
 **Only current employees count at a company (since 0.91.0).** Someone who has left is still in your network, but is no
-longer a way into their old employer, and someone whose employment you have not confirmed is not counted until you do.
+longer a way into their old employer. Someone whose employment you have not confirmed still counts in a target's known
+and contacted columns, flagged as unconfirmed, but is never treated as a way in until you confirm it (since 0.93.0).
 At a target where you have no way in, the reach-out plan offers a **BUILD** step instead of a bare lookup: an advice
 ask to someone who used to work there, a lookup angled by your school or past employer, a side-door ask to someone
 already involved, and others, inside the same weekly budget. The weekly review counts what you did that week, and quotes
@@ -586,10 +586,10 @@ run that was launched from anywhere else, from the run check it already makes.
 
 **It never sends on its own.** Not email, not LinkedIn messages, not applications. Drafts are
 staged for you. LinkedIn messages and applications are never sent by the plugin, whatever you set.
-Email has one opt-in since 0.91.0, `actions.modes.email-send: me` (gmail-multi only). With it, a
-message you were shown in full and approved is sent only in a session you are attending, and only
-after you allow that one send in Claude Code's prompt. A scheduled run keeps it waiting for you
-([Your data](your-data.md), *Outbox* and *Action modes*). With a claude.ai mail connector selected, a guard also
+With `actions.modes.email-send: me` (since 0.93.0), a message you were shown in full and approved,
+in a session you are attending, goes straight into your drafts; you press Send. A scheduled run puts
+an already-approved message into your drafts too, and never approves one for you ([Your
+data](your-data.md), *Outbox* and *Action modes*). With a claude.ai mail connector selected, a guard also
 refuses that connector's send, reply and forward tools; the script is tested, and whether the app
 routes every call through it is not yet verified. Reporting a problem by `report_issue.py --email`
 prints an email for you to send yourself; the plugin sends nothing.

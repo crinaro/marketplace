@@ -9,6 +9,16 @@ here so the validator never imports the writer), plus the references only the ot
     medium      one of the touch media
     id          unique
 
+The attachment fields (jobsearch 0.93.0, design-resume-docx.md §6.2), both optional and absent when the draft names none:
+
+    attachments     a list of at most `MAX_ATTACHMENTS` items, each exactly `ATTACH_KEYS`: `ref` (`<kind>:<variant id>`,
+                    kind `resume`); `file` ("/"-separated, relative to the profile root), `sha256` and `bytes`, stamped
+                    together when the draft call is printed, else all null; `carried` null (printed, no result recorded),
+                    true (only with a stamp) or false; `why` the reason exactly when `carried` is false
+    attach_sha256   64 hex of the refs joined by newline (`refs_sha256`), present exactly when `attachments` is, in every
+                    state, so a `ref` edited after approval is red here. A hand edit rewriting both together is not seen
+                    (the text hash's own limit)
+
 An absent `outbox.jsonl` is an empty outbox (the store's docstring says why), so it is checked as zero rows, said on the summary
 line. A present file that does not parse is a problem, never zero rows.
 
@@ -27,7 +37,7 @@ MODES = ("you", "me")
 CHECK_RESULTS = ("none-found", "ambiguous", "sent")
 FIELDS = ("id", "person_id", "draft_ref", "medium", "mode", "account", "to", "cc", "bcc", "subject", "body", "reply_uid",
           "text_sha256", "state", "queued_on", "staged_on", "date", "approved_at", "approved_session", "sending_at", "touch_id",
-          "last_checked_at", "check_result", "none_found_checks", "note")
+          "last_checked_at", "check_result", "none_found_checks", "note", "attachments", "attach_sha256")
 REQUIRED = ("id", "person_id", "draft_ref", "medium", "mode", "account", "to", "cc", "bcc", "reply_uid", "text_sha256", "state")
 # the field each state must carry once a row is in it (design 9.1's validator rules)
 STATE_STAMP = {"queued": "queued_on", "staged": "staged_on", "approved": "approved_at", "sending": "sending_at", "sent": "date"}
@@ -38,6 +48,12 @@ DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 INSTANT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:Z|[+-]\d{2}:\d{2})$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 UID_RE = re.compile(r"^[0-9]+$")
+# design-resume-docx.md §6.2, §7.1 step 1: at most one attachment, kind `resume`, in this release
+ATTACH_KEYS = ("ref", "file", "sha256", "bytes", "carried", "why")
+ATTACH_KINDS = ("resume",)
+MAX_ATTACHMENTS = 1
+REF_RE = re.compile(r"^(?P<kind>[a-z][a-z0-9-]*):(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*)$")
+UNSTAMPED = frozenset({"queued", "approved"})     # no draft call has been printed for a row in these states
 
 
 class OutboxError(ValueError):
@@ -92,6 +108,64 @@ def row_sha256(row):
     tool = "reply" if row.get("reply_uid") else "send"
     return text_sha256(tool, row.get("account"), row.get("to"), row.get("cc"), row.get("bcc"), row.get("subject"),
                        row.get("body"), row.get("reply_uid"))
+
+
+def refs_sha256(items):
+    """`attach_sha256`: the hash of the items' refs joined by newline (§6.2)."""
+    return hashlib.sha256("\n".join(str(i.get("ref")) for i in items).encode("utf-8")).hexdigest()
+
+
+def rel_file_ok(value):
+    """A "/"-separated path relative to the profile root: no backslash, not absolute, no empty, `.` or `..` segment."""
+    if not isinstance(value, str) or not value or "\\" in value or value.startswith("/") or re.match(r"^[A-Za-z]:", value):
+        return False
+    return all(seg not in ("", ".", "..") for seg in value.split("/"))
+
+
+def _check_item(item, where, state, out):
+    if not isinstance(item, dict) or set(item) != set(ATTACH_KEYS):
+        out.append("%s must hold exactly %s, got %r" % (where, ", ".join(ATTACH_KEYS), item))
+        return
+    m = REF_RE.match(item["ref"]) if isinstance(item["ref"], str) else None
+    if m is None or m.group("kind") not in ATTACH_KINDS:
+        out.append("%s: ref %r is not %s:<variant id>" % (where, item["ref"], "|".join(ATTACH_KINDS)))
+    if any(item[k] is not None for k in ("file", "sha256", "bytes")):
+        if not rel_file_ok(item["file"]):
+            out.append("%s: file %r is not a \"/\"-separated path relative to the profile root" % (where, item["file"]))
+        if not SHA_RE.match(str(item["sha256"])):
+            out.append("%s: sha256 is not 64 hex characters" % where)
+        if isinstance(item["bytes"], bool) or not isinstance(item["bytes"], int) or item["bytes"] < 0:
+            out.append("%s: bytes must be a count" % where)
+        if state in UNSTAMPED:
+            out.append("%s: a %s row has printed no draft call, so it holds no file stamp" % (where, state))
+    if item["carried"] not in (None, True, False):
+        out.append("%s: carried %r is not null, true or false" % (where, item["carried"]))
+    if item["carried"] is True and item["sha256"] is None:
+        out.append("%s: carried is true with no stamp to have matched" % where)
+    if item["carried"] is not None and state in UNSTAMPED:
+        out.append("%s: a %s row has printed no draft call, so carried is null" % (where, state))
+    if item["carried"] is False and not (isinstance(item["why"], str) and item["why"].strip()):
+        out.append("%s: carried is false, so why names the reason" % where)
+    if item["carried"] is not False and item["why"] is not None:
+        out.append("%s: why is set only when carried is false" % where)
+
+
+def _check_attachments(row, label, out):
+    """§6.2: `attachments` and `attach_sha256` together or not at all, and the hash equal to the row's own refs."""
+    if ("attachments" in row) != ("attach_sha256" in row):
+        out.append("%s: attachments and attach_sha256 are present together or not at all" % label)
+        return
+    if "attachments" not in row:
+        return
+    items = row["attachments"]
+    if not isinstance(items, list) or not 1 <= len(items) <= MAX_ATTACHMENTS:
+        out.append("%s: attachments must be a list of 1 to %d items" % (label, MAX_ATTACHMENTS))
+        return
+    for j, item in enumerate(items):
+        _check_item(item, "%s: attachments[%d]" % (label, j), row.get("state"), out)
+    if row["attach_sha256"] != refs_sha256([i for i in items if isinstance(i, dict)]):
+        out.append("%s: attach_sha256 does not match the row's own refs: an attachment was changed without "
+                   "re-staging it" % label)
 
 
 def _check_lists(row, label, out):
@@ -160,6 +234,7 @@ def check_row(row, label=None):
     if n is not None and (not isinstance(n, int) or isinstance(n, bool) or n < 0):
         out.append("%s: none_found_checks must be a count" % label)
     _check_state(row, label, out)
+    _check_attachments(row, label, out)
     return out
 
 

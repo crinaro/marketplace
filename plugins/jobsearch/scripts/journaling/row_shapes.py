@@ -356,7 +356,7 @@ HELD_KEYS = ("undecided", "watching", "passed")
 
 def _check_companies_raised_row(rec):
     """dev #834 (design-network-first.md 3.3) -- the shape of a `companies-raised` event, for the writer and the reader alike:
-    exactly `{event, at, run_id, setting, raised, waiting}`, plus the optional `held` (0.92.0, above). `setting` is `search.company_intake_per_run` as it read when the
+    exactly `{event, at, run_id, setting, raised, waiting}`, plus the optional `held` (0.92.0, above). `setting` is `search.companies_raised_per_run` (0.93.0, dev #1021; before, `search.company_intake_per_run`) as it read when the
     step ran (int 1..100); `raised` the company ids newly raised this run (distinct, non-empty, whitespace-free, at most
     `setting`); `waiting` the qualifying companies still unraised (int >= 0). It is written EVEN WHEN `raised` is empty, so
     "the step ran and raised nothing" differs from "the step never ran"."""

@@ -38,12 +38,11 @@ Targets Python 3.9+, stdlib only.
 import argparse
 import datetime
 import json
-import os
-
 import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 from _atomic import write_jsonl, write_json
+from browser_fallback import channel_reach as _channel_reach   # dev #1025: a due channel no agent reaches
 import touches as _touches
 # public #98 — your_move.py is the SINGLE OWNER of "which group does a channel plan belong
 # in" (ADR-031 §14, your_move.py's own docstring: "generate_dashboard.py must never
@@ -1180,6 +1179,7 @@ def main():
             continue
         due.append((c, why))
         due_ids.add(cid)
+    due, _unreach = _channel_reach.split(due, _recs, owned_elsewhere_of(chans))   # dev #1025: never silently overdue
 
     print("=" * 68)
     print("DUE NOW — review by DIRECT SEARCH on the source, then --stamp it")
@@ -1194,10 +1194,12 @@ def main():
             print("  ● %-24s %-9s [%s] %s" % (c["label"][:24], cad, acc, why))
             if c.get("scope_notes"):
                 print("      %s" % c["scope_notes"][:80])
-    elif waiting or no_pass or blocked or _state["schedule_problem"]:
+    elif waiting or no_pass or blocked or _state["schedule_problem"] or _unreach:
         print("  Nothing is due for a sweep today; see below.")
     else:
         print("  Nothing due. All active-search channels are current.")
+    for _ln in _channel_reach.lines(_unreach):
+        print(_ln)
 
     # dev #785 (design §7) -- a channel whose pass is not open today is NAMED here, never dropped and
     # never listed as DUE NOW (public #167 P5).
@@ -1253,15 +1255,11 @@ def main():
         for c in retired:
             print("  ⛔ %-24s %s" % (c["label"][:24], (c.get("scope_notes") or "")[:70]))
 
-    # Recruiter relationships gone quiet (soft signal — these are on-inbound, but a
-    # silent open thread is worth a nudge; complements check_followups on opportunities).
-    #
-    # ⭐ This used to read ONLY channels.jsonl (log[] + last_reviewed), so a
-    # real touch recorded as an OUTREACH ROW on an opportunity was invisible and the firm
-    # looked silent. That produced a partly-false "firms gone quiet" list at the weekly
-    # review: a firm showed as silent while a chase through it had already gone out.
-    # A nudge decision made off that list would have been wrong, so the live pipeline is
-    # now folded in as a touch source.
+    # Recruiter relationships gone quiet (soft signal — these are on-inbound, but a silent open thread is worth a
+    # nudge; complements check_followups on opportunities).
+    # ⭐ This used to read ONLY channels.jsonl (log[] + last_reviewed), so a real touch recorded as an OUTREACH ROW on
+    # an opportunity was invisible and the firm looked silent: a partly-false "firms gone quiet" list at the weekly
+    # review, while a chase through it had already gone out. So the live pipeline is folded in as a touch source.
     # ADR-031 B3 — the top-level touches store, never a nested array on the opportunity.
     outreach_touch = {}   # channel_id -> most recent outreach date
     for r in _touches.load(ROOT)[0]:

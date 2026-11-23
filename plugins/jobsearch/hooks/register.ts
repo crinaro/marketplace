@@ -4,14 +4,19 @@
 // Run daily / Run weekly buttons that start the SCHEDULED TASK as its own session, three commands
 // that open panes (status, review-resume, review-linkedin), and a watcher that wakes the
 // coordinator when a background run queues work. It holds no logic a script can hold: every number
-// it shows comes from scripts/panel.py or scripts/presence_set.py, and every pane tree is built by
-// the pure functions in panel.tsx.
+// it shows comes from scripts/panel.py, scripts/presence_set.py or scripts/resume_report.py, and every
+// pane tree is built by the pure functions in panel.tsx.
+//
+// THE SCRIPTS IT LAUNCHES, all through py() and no other way: panel.py and presence_set.py (read-only
+// composers), resume_report.py (`--json --surface <s>`, the review panes' Coverage tab; it writes nothing;
+// design-presence-report.md section 6, owner decision O14), and record.py with the `source` sub-verb only.
 //
 // WHAT IT NEVER DOES (the trust obligation, enforced in CI by the repository mod-surface gate, which does not ship):
 //   - write a profile file (no fs write, no store, no model call, no http, no process spawn). The ONE way a profile
 //     changes through this mod is a Sources button, which runs `record.py source <on|off> <id>` and nothing else: the
 //     write is that script's, under its own lock and validator (ADR-036, amended by dev #774). The mod-surface gate
-//     holds the list of scripts the mod may launch, and record.py is allowed only with the `source` sub-verb;
+//     holds the list of scripts the mod may launch (the four above), and record.py is allowed only with the `source`
+//     sub-verb;
 //   - read mail or browser state; handle a tool call it did not register; approve or rewrite one;
 //   - run on a refused surface differently: NO runtime refusal is built (change R2) - S3b and S4
 //     are unsupported by documentation (plugins/jobsearch/docs/deployment.md, Supported surfaces).
@@ -35,6 +40,7 @@ const SURFACE_OF: any = { resume: 'print', linkedin: 'public-profile' }
 let profileRoot: string | null = null
 let snapshot: any = null
 let reviews: any = {}
+let coverage: any = {}
 let reviewTabs: any = {}
 let note = ''
 let busy: any = { fast: false, full: false }
@@ -102,6 +108,13 @@ async function refreshReview($: any, which: string): Promise<void> {
     reviews[which] = r.exitCode === 0 ? parseJson(r.stdout) : { error: 'presence_set.py exited ' + r.exitCode }
   } catch (err) {
     reviews[which] = { error: String(err && (err as any).message ? (err as any).message : err).slice(0, 80) }
+  }
+  // The Coverage tab (design-presence-report.md section 6): resume_report.py writes nothing in any form.
+  try {
+    const c = await py($, 'resume_report.py', ['--json', '--surface', SURFACE_OF[which]], 30000)
+    coverage[which] = c.exitCode === 0 ? parseJson(c.stdout) : { error: 'resume_report.py exited ' + c.exitCode }
+  } catch (err) {
+    coverage[which] = { error: String(err && (err as any).message ? (err as any).message : err).slice(0, 80) }
   }
   $.ui.invalidate('ui.render')
 }
@@ -194,7 +207,7 @@ function paneFor($: any, els: any, id: string, surface: string): any {
     render: (variantId: string) => renderVariant($, variantId),
     refresh: () => refreshReview($, which),
   }
-  return reviewTree(els, model, reviewTabs[which] || 'union', h)
+  return reviewTree(els, model, reviewTabs[which] || 'union', h, coverage[which])
 }
 
 // The watcher: armed ONLY by the coordinator calling jobsearch_watch (a scheduled run's own
