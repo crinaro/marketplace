@@ -23,6 +23,7 @@ from configschema.configkeys import (
     V5_WORK_KEYS,
     V6_BLOCKS_KEYS,
     V6_TOP_KEYS,
+    V7_TOP_KEYS,
     V6_WORK_KEYS,
 )
 from configschema.diagnostics import SiteConfigError, make_problem
@@ -360,6 +361,33 @@ def schema_6_reasons(cfg, files=None, look_needs=None):
     return out
 
 
+_EFFECT_LOOK7 = "site-studio 0.6 would refuse the look as unknown"
+_EFFECT_K7 = "site-studio 0.6 would refuse the key as unknown"
+NEEDS_070 = "0.7.0"
+
+
+def schema_7_reasons(cfg, files=None, look_needs=None):
+    """Every reason this site needs schema 7 (design-adopt-ownership-line section 2.1), as [Reason(..., "K")]: a key, slot,
+    part or look key 0.6.0 refuses, so no tree 0.6.0 accepted holds one and raising a tree from 6 to 7 changes no output.
+    The rows: the key `lookLocal` (`V7_TOP_KEYS`), and a look the build READS that needs 0.7.0. A look is read when a key
+    names it: the file `look` names and the file `lookLocal` names, and no other (section 2.1); a look file no key names
+    (a stray `site/looks/x.json`, or `local.json` without `lookLocal`) is not read, so it is not a reason, and 0.6.0
+    builds such a tree (step 0, TESTED). `files` and `look_needs` as `schema_6_reasons`."""
+    if files is not None and look_needs is None:
+        raise ValueError("schema_7_reasons(cfg, files) needs look_needs= ({site/looks/<name>.json: release}, from "
+                         "building.lookneeds.look_needs(files)); pass {} only when you know the tree holds no look")
+    out = []
+    for k in V7_TOP_KEYS:
+        if k in cfg.to_dict():
+            out.append(Reason("site/site.json", "sets %s" % k, _EFFECT_K7, None, "K"))
+    read = set(p for p in (getattr(cfg, "look", None), getattr(cfg, "lookLocal", None)) if isinstance(p, str))
+    for path in sorted(look_needs or {}):
+        if (look_needs[path] == NEEDS_070 and path in read and _LOOK_PATH_RE.match(path)
+                and (files is None or path in files)):
+            out.append(Reason(path, "is a look that needs site-studio 0.7.0", _EFFECT_LOOK7, None, "K"))
+    return out
+
+
 def _looks_read(files, look_needs):
     """`look_needs` as given, else {}. Given `files` and no `look_needs`, {} means the looks are NOT scanned (called
     directly, `schema_5_reasons` refuses `files` without it; through here it is not refused). Since 0.5.0 a look can
@@ -382,6 +410,8 @@ def required_schema(cfg, files=None, interpretations=None, look_needs=None):
     if files is not None and interpretations is None:
         raise ValueError("required_schema(cfg, files) needs interpretations= (content.interpretation_reasons"
                          "(files)); pass [] only when you know the tree holds none")
+    if schema_7_reasons(cfg, files, _looks_read(files, look_needs)):
+        return 7
     if schema_6_reasons(cfg, files, _looks_read(files, look_needs)):
         return 6
     if schema_5_reasons(cfg, files, _looks_read(files, look_needs)):
@@ -437,6 +467,13 @@ def tree_schema_problems(cfg, files, look_needs=None):
                                     "raise-schema --to 6`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
                                     "schema 6", "run `python3 build.py raise-schema --to 6`, which lists what "
                                     "the page changes before it writes schema 6", False, r.lineno))
+    if cfg.schema < 7:
+        for r in schema_7_reasons(cfg, files, _looks_read(files, look_needs)):
+            at = "%s:%d:" % (r.where, r.lineno) if r.lineno else r.where
+            out.append(make_problem("%s %s, which needs \"schema\": 7 in site/site.json (run `build.py "
+                                    "raise-schema --to 7`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
+                                    "schema 7", "run `python3 build.py raise-schema --to 7`, which lists what "
+                                    "the page changes before it writes schema 7", False, r.lineno))
     return out
 
 

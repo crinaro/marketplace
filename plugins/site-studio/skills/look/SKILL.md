@@ -1,6 +1,6 @@
 ---
 name: look
-description: 'Set the markup a site''s pages are printed through: copy a look site-studio ships, check the look the site carries, or derive one from the person''s own pages so the site keeps the structure and classes an earlier site had. Use when the person wants the site''s HTML structure to match another site, or asks which look it uses. Not for colours, fonts or brand direction (brand-advisor), and not for moving a site over from its own builder (adopt).'
+description: 'Set the markup a site''s pages are printed through: copy a look site-studio ships, check the look the site carries, or derive one from the person''s own pages so the site keeps the structure and classes an earlier site had, or draft a suggestion to site-studio from what the site''s own look adds. Use when the person wants the site''s HTML structure to match another site, or asks which look it uses, or wants to offer a look addition to others. Not for colours, fonts or brand direction (brand-advisor), and not for moving a site over from its own builder (adopt).'
 ---
 
 # Look
@@ -10,6 +10,12 @@ of its blocks, cards and views: the tiles, the quotes, the gallery, the piece ca
 views, the resume's role cards. The stylesheets the file names are part of the look and are copied
 with it. With no look the plugin prints its own markup. Choosing a look never changes what the person wrote, only the tags
 and class names around it, so it is how a site keeps the structure its stylesheet already knows.
+
+**site-studio supplies reusable tools, patterns and templates; the person and their session shape the look.** From
+0.7.0 a site's own look file (`site/looks/local.json`), its key maps (`reads`) and its own named blocks and views are
+the normal way to work, not a workaround: the plugin measures what the site adds, keeps it when derive runs again,
+and can offer it back to site-studio when it would help other sites ("Offer an addition back", below). Say it that
+way to the person.
 
 Every command runs as `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/look.py" <command> [--repo <dev repo>]`
 (the repo defaults to the current folder). Exit codes: `0` done, `1` refused (the line says what to
@@ -45,6 +51,39 @@ those, with explicit paths, after the person has seen what changed.
   on a real site: a construct derive cannot map keeps the plugin's markup and is printed `unmapped`
   or `ambiguous`; which constructs a real site hits is not known until derive runs on it. Say so
   rather than calling the derived look a match.
+
+## The person's own look file (0.7.0)
+
+A site can carry two look files, laid over each other construct by construct: the one `look` names (on an adopted
+site `site/looks/derived.json`, which derive writes and the person may edit) and `site/looks/local.json`, which only
+the person writes and which wins. `site/site.json` switches the second on with one key,
+`"lookLocal": "site/looks/local.json"`; the file alone does nothing, and `check` says so ("is not used: site/site.json
+has no "lookLocal""). The key needs schema 7: raise the site first with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/build.py"
+raise-schema --repo . --to 7` (it lists every output difference first; from 6 to 7 it should say no page changes;
+show the person and add `--confirm` on their yes), add the key, then run `siteconfig.py check site/site.json` and
+`check`. Tell the person that a copy of the plugin older than 0.7.0 on another computer then says "update
+site-studio".
+
+- **A construct in `local.json` replaces the same construct of the other file whole.** A part it leaves out prints
+  as the plugin's own, never as the other file's. `check` lists every construct both files hold
+  (`site/looks/local.json replaces "card" of site/looks/derived.json`) and which file each construct comes from.
+  Read those lines to the person.
+- **An edit to `derived.json` is the person's too.** Derive keeps a construct the person changed exactly as it is,
+  and writes its new reading only for constructs it wrote itself. To hand a construct back to derive, delete it.
+  After `derive`, commit `.site-studio/derived-look.json` with the look, as its closing line says: that file is how
+  the next derive knows which constructs are its own.
+- **A key map, `reads`,** maps a place the look prints to the front-matter keys it reads, first value wins:
+  `"reads": {"video-embed.wrap.title": ["@caption", "videoName"]}`. The places are a closed list (the installed
+  `reference/content-model.md`, "Your own look"); an unknown one is refused with the list. With no entry a place
+  reads what it always did.
+- **Named blocks and views, `named`,** give a block or a view the site's own name over one plugin block or view's data:
+  `"named": {"t-ledger": {"like": "tiles", "parts": {...}}}`, then `:::t-ledger` in content, or `view: t-ledger`
+  for a view. The parts are the base's parts and slots; nothing else is the site's to define.
+- **The card's running number:** `{{position}}` in `card.wrap` and `{{text}}` in `card.number` print
+  `01 / 2022`, `02 / ...` across the groups of a page.
+- **On an adopted site whose old builder is still in the repository**, commit a look edit, then run `adopt.py
+  parity` (before `apply`) or `adopt.py remeasure` (after): each entry of the person's own gets its own row,
+  measured against the old pages. Parity measures commits, so an uncommitted edit is not measured.
 
 ## Before `use` or `derive`
 
@@ -123,9 +162,55 @@ than 0.6.0 then says "update site-studio". Plugin styles a page links for these
 person put in layers of their own they win on the plugin's own markup unless the person's stylesheet
 starts with `@layer site-studio;`, which declares the plugin's layer first and so lowest.
 
+## Offer an addition back
+
+When something the person added to their look would help other sites, site-studio can draft a suggestion to its
+own maintainers from the addition's **structure alone**. Nothing leaves the computer here: this section ends at a
+printed draft, and filing is the person's own step in `/site-studio:adopt`.
+
+Every command runs as `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/adopt.py" [--repo <dev repo>] <command>`.
+
+1. **Run `adopt.py suggest`.** It needs no network and writes nothing. It reads the committed look files, so ask the
+   person to commit a look edit first; an uncommitted one is named in one line and not read. It prints one line per
+   entry of the person's own (a construct of `local.json`, a construct of `derived.json` they edited, a named block
+   or view, a `reads` entry), with a class and the reason:
+   - `suggest <id>`: it builds, and it adds something no look site-studio ships has (a derive gap, or a new use of
+     the grammar);
+   - `ask <id>`: the same slots in the same parts as a shipped look, and only the markup around them differs;
+   - `no`: why not (not used on any page, a visible difference left, a literal address, already shipped in a named
+     look).
+   Read every line to the person. On a site that never had a builder to compare against (one started with
+   `/site-studio:setup`, say), a suggestion carries **build evidence only**: the entry builds and passes the site
+   checks, with no parity numbers. On a site adopted from a builder parity can run, it carries **parity evidence**:
+   the numbers adopt measured. Each draft says which.
+2. **For an `ask` line**, show the person the two fragments the script printed (theirs and the nearest shipped one)
+   and say in one sentence which you think it is: a pattern another site would want (a semantic element, an
+   accessibility relation, another nesting of the same slots) or this site's own styling. That one sentence is the
+   only judgement here; never write any part of a suggestion yourself. On the person's word run `adopt.py suggest
+   --offer <id>`, which records it as offered.
+3. **For a suggestion the person wants to send, run `adopt.py report --suggestion <id>`** and show the person the
+   whole text it prints: the title `site-studio look: <id>`, the body (one fixed line per field, the fragment, and
+   an `Evidence:` line), and a last line naming the command that files exactly this text. The draft holds no class
+   name, id, address or word from their site; say so, and let them read it.
+4. **Stop there.** To file it, the person types `/site-studio:adopt` and asks to file that suggestion: filing is a
+   publish to a public tracker, and it is written only in that skill, which only the person can start. Never file a
+   suggestion from here, and never run `gh issue create` or any other way to open an issue yourself.
+5. **If the person does not want it sent**, `adopt.py report --suggestion <id> --decline` records that, and the
+   same id is not offered again.
+
+`suggest --offer` and `--decline` each make one commit of `.site-studio/look-suggestions.json` on the current
+branch and push nothing; each says so ("committed on <branch>, not pushed"). Until that commit reaches `main` the
+next publish refuses, and another session sees it only then. On a site still being adopted (before `adopt.py
+apply`), both refuse with "finish adopt.py apply first". In a cloud session `suggest` lists, and `suggest --offer`
+and `report --suggestion` refuse: the draft can be printed only on the person's own computer.
+
+`adopt.py parity` prints one line when an entry of the person's reproduced the old pages exactly ("look: N of your
+look entries reproduce the old pages exactly; adopt.py suggest shows whether one could help other sites"). That is
+the moment to offer this section; nothing else prompts it.
+
 ## Where it runs
 
 On the person's own computer: the desktop app or a terminal, macOS or Linux. Windows is refused in
 one sentence. In a cloud session the plugin is usually absent; where it is present, `derive` may not
-reach GitHub or the site, and its refusals say so. A look that holds no literal words and no live
-player changes nothing a visitor reads or loads.
+reach GitHub or the site, and its refusals say so. `adopt.py suggest` lists there too, and printing or recording a
+suggestion is refused. A look that holds no literal words and no live player changes nothing a visitor reads or loads.

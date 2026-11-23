@@ -80,8 +80,10 @@ def _with_draft(blob):
 
 
 def named_inputs(snap, cfg):
-    """The files the build reads that no page names: site.json, the layout, the resume source's sidecar."""
+    """The files the build reads that no page names: site.json, the layout, the resume source's sidecar, and the look files
+    `look` and `lookLocal` name (design-adopt-ownership-line 3: both look files are adopt's own inputs, never archived)."""
     out = set(p for p in ("site/site.json", "site/templates/layout.html") if p in snap)
+    out.update(p for p in (getattr(cfg, "look", None), getattr(cfg, "lookLocal", None)) if isinstance(p, str) and p in snap)
     pdf = (cfg.resume or {}).get("pdf") if cfg is not None and getattr(cfg, "resume", None) else None
     if pdf:
         out.update(p for p in (pdf, pdf + ".json") if p in snap)

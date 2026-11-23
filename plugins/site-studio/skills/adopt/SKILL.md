@@ -215,7 +215,7 @@ covered, once, and left exactly as written; the
 build then refuses a part the home page does not have, naming the file and line. Since 0.4.0 the plugin
 builds roles, map and showcase indexes, the resume's role cards, a few more blocks and a per-site markup
 look from content, so a site whose own builder printed those can be converted and measured. What the
-plugin still does not build (a block renderer of the person's own, an index it has no view for) is not
+plugin still does not build (a block whose data shape is the person's own, an index no view or named view can print) is not
 changed: the person's builder keeps publishing it. adopt does not write `view: "page"` or freeze a section
 for the person; if they want an index to stay their own file under `site/src`, they set `view: "page"` in
 that portfolio's `page.md` themselves, and adopt's parity measures the result.
@@ -342,6 +342,11 @@ every construct the fixture uses**, and the only visible difference left is the 
 search result shows (named for the person to accept). What a real site needs is not known until adopt
 runs on it; say that plainly. A construct derive cannot map is a limit of this version, not something
 the person did.
+
+**The person's own look is the normal way to work (0.7.0).** A construct they write in `site/looks/local.json`
+(switched on by `lookLocal`), or edit in `derived.json`, is theirs: it is measured as its own row, derive never
+overwrites it, and when parity prints "look: N of your look entries reproduce the old pages exactly", the `look`
+skill's section "Offer an addition back" is how to draft a suggestion from it; filing one is step 6 below.
 
 ## 2. Keep the person's data, before anything is removed
 
@@ -609,6 +614,30 @@ filed.
 After the plugin is updated, a session start line says "site-studio <v> may resolve N adopt blockers:
 run adopt again". Then run `adopt.py remeasure` (below), or `apply` again if the run never completed.
 
+### Filing a look suggestion (0.7.0)
+
+A look suggestion is drafted in the `look` skill ("Offer an addition back": `adopt.py suggest`, then the dry print
+`adopt.py report --suggestion <id>`). Filing it is here, because only the person starts this skill. When the person
+asks to file one:
+
+1. Run `adopt.py report --suggestion <id>` again and show the person the whole text: the title `site-studio look:
+   <id>`, the body with its `Evidence:` line (`parity, measured at <short sha>` or `build only, no parity
+   measured`), and the last line, `to file exactly this: adopt.py report --suggestion <id> --file --digest <12 hex>`.
+2. **Ask once.** On their yes, run exactly that last line: `adopt.py report --suggestion <id> --file --digest
+   <digest>`. One id per command, one issue per yes. It is a publish to the guard, so the guard asks too.
+3. Read its result to the person. It checks, in order: the site is on site-studio (not part way through an
+   adopt, before `apply`), `gh` is signed in and git has a
+   committer identity; the text it would file has the digest the dry print showed (if not: "the text to file is not
+   the text that was shown", so print it again and show it); the draft holds no word, class, id, address or number
+   of the site; and the tracker has no issue of the same title, open or closed. Then it files one public issue on
+   the plugin's tracker, with no label, and commits `.site-studio/look-suggestions.json` alone on the current
+   branch, not pushed (the line says so: the next publish refuses until that commit reaches `main`). A suggestion
+   already on the tracker is recorded as `existing` with its number, and nothing is filed.
+
+`adopt.py report --suggestion <id> --decline` records the person's no; that id is not offered again. A refusal
+files nothing and changes no record: read its line to the person and do not try another way. Never run `gh issue
+create` yourself, never edit the body, and never file a suggestion the person has not just been shown.
+
 ## 7. After apply: the publish gate
 
 **While parity is not EQUAL, MARKUP-ONLY or ACCEPTED, the person's own builder stays the publisher,
@@ -659,8 +688,8 @@ run, and the inventory says so.
 
 ## The guard, and when `apply` cannot ask
 
-`adopt.py apply` (without `--dry-run`) and `adopt.py report --file` are publishes to the plugin's
-guard, which decides from the session's permission mode, as it does for `deploy.py --confirm`:
+`adopt.py apply` (without `--dry-run`), `adopt.py report --file` and `adopt.py report --suggestion <id> --file
+--digest <digest>` are publishes to the plugin's guard, which decides from the session's permission mode, as it does for `deploy.py --confirm`:
 
 | session | the guard |
 |---|---|
@@ -669,7 +698,8 @@ guard, which decides from the session's permission mode, as it does for `deploy.
 | `bypassPermissions`, `dontAsk`, any other mode, or none | **denies**: this session is set not to ask |
 | a cloud session | **denies**: adopt runs only on the person's own computer |
 
-`apply --dry-run`, `adopt.py report` (print) and `--decline` are never held. Never try to get past a
+`apply --dry-run`, `adopt.py report` and `adopt.py report --suggestion <id>` (print), and `--decline` are never
+held. Never try to get past a
 denial, and never run the steps of `apply` yourself another way.
 
 **When the guard denies `apply` (a scheduled run, `claude -p`, a session set not to ask), write the

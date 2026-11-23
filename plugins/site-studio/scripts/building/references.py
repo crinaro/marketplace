@@ -18,6 +18,7 @@ import posixpath
 import re
 
 from configschema.configkeys import SIZE_COPY_EXTS
+from contentmodel.grammar import _REFLINE
 
 from building import mediapaths
 from building.outcomes import BuildError
@@ -74,4 +75,19 @@ def size_copies(ref, files, cfg=None):
         if posixpath.dirname(p) == folder and any(r.match(posixpath.basename(p)) for r in shapes):
             default = "references/%s/%s" % (ref.name, p[len(_folder(ref)):])
             out[p] = mediapaths.reference_out(ref.name, p, default, cfg) or default
+    return out
+
+
+def used_by(model):
+    """{reference name: the first piece, in site order (the portfolios, then each one's pieces, as the build reads them),
+    whose body names it on a `ref:` line} (design-adopt-ownership-line section 6.4, U-U1: the pre-pass, from the model,
+    before any page renders). A cover or `tileImage` of the form `ref:<name>` shows the reference's picture, not its
+    card, and is not counted."""
+    out = {}
+    for pf in model.portfolios:
+        for piece in pf.pieces:
+            for line in piece.body.splitlines():
+                m = _REFLINE.match(line)
+                if m:
+                    out.setdefault(m.group(1), piece)
     return out

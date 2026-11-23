@@ -69,11 +69,11 @@ import unicodedata
 
 from configschema import sectioncheck
 from configschema.configkeys import (BUILTIN_PIECE_KEYS, COUNT_ANY, MEDIA_PATH_FOLDERS, NAV_HOME_TITLE, SIZE_COPIES,
-                                     TITLE_SEPARATOR_DEFAULT, TITLE_SEPARATOR_MAX)
+                                     TITLE_SEPARATOR_DEFAULT, TITLE_SEPARATOR_MAX, WORK_KEYS)
 from configschema.diagnostics import SiteConfigError
 from contentmodel.keytables import KEY_RE
 
-from adoption import carry
+from adoption import carry, lookwrite
 from adoption.base import Refused
 from adoption.plan import _current_base, _plan_for, save_plan
 from adoption.homeparts import HOME_PATHS, front_values
@@ -108,6 +108,7 @@ BACK_LINK_MAX = 60
 _PER_PORTFOLIO = ("sort", "view", "menuLinks", "onePieceIndex") + V5_PORTFOLIO_SETTINGS + V6_PORTFOLIO_SETTINGS + ("backLink",)
 _CARD_PAGES = ("cardImage", "cardAlt", "cardKicker")       # a card or a tile: the portfolio's index and the home page
 _FM = re.compile(r"^([A-Za-z][A-Za-z0-9_]*):")
+PERSON_ROWS = ("look.", "reads.")       # plan schema 4's measured rows of the person's look entries: evidence, never a setting to write
 
 
 def setting_family(name):
@@ -287,9 +288,12 @@ def apply_settings(view, files, d, settings, hints, notes, portfolios):
     """Lay the settings over the converted tree: `d` (site.json's dict) and `files` ({path: bytes}) are changed in place;
     `notes["settings"]` gains one line per setting applied."""
     order = SETTING_ORDER + V6_SETTING_ORDER
+    lookwrite.carry(view, files, d, settings.get("look"), notes)     # both look files, as adopt's own (step 8)
     for name in sorted(settings, key=lambda n: (order.index(setting_family(n)) if setting_family(n) in order else 99, n)):
         value, fam = settings[name], setting_family(name)
-        if name == "carried":                   # section 7.4's `carried` row: the bytes from `hints`, checked against their sha256
+        if name.startswith(PERSON_ROWS):
+            continue
+        if name == "carried":                  # section 7.4's `carried` row: the bytes from `hints`, checked against their sha256
             if value and carry.HINT in (hints or {}):
                 carry.write(files, d, value, hints, notes)       # refuses a path the measured bytes do not cover
             elif value:
@@ -301,11 +305,7 @@ def apply_settings(view, files, d, settings, hints, notes, portfolios):
         if fam in V6_SETTING_ORDER:
             _apply_v6(view, files, d, settings, name, value, notes)
             continue
-        if fam == "look":
-            if isinstance(value, dict) and value.get("file"):
-                files["site/looks/%s.json" % value.get("id", "derived")] = value["file"].encode("utf-8")
-                d["look"] = "site/looks/%s.json" % value.get("id", "derived")
-                notes["settings"].append("look: a look derived from your own pages, vendored at %s" % d["look"])
+        if fam == "look":               # laid by `lookwrite.carry` below; `look.<construct>` and `reads.<target>` rows write nothing
             continue
         if fam == "featuredFrom":
             if value == "showcase":
@@ -374,6 +374,7 @@ def apply_settings(view, files, d, settings, hints, notes, portfolios):
             port = name.split(".", 1)[1]
             path = "content/%s/page.md" % port
             if not view.exists(path):
+                _write_work_json(view, d, port, fam, value, notes)      # dev #1007: a `work` with no page.md
                 continue
             cur = _page_text(view, files, path)
             files[path] = _set_front_key(cur, fam, _front_value(value) if fam in V5_PORTFOLIO_SETTINGS else value).encode("utf-8")
@@ -489,6 +490,23 @@ def _apply_v6(view, files, d, settings, name, value, notes):
         if view.exists(path):
             files[path] = _set_front_key(_page_text(view, files, path), fam, "true").encode("utf-8")
             notes["settings"].append("%s of %s: true" % (fam, port))
+        else:
+            _write_work_json(view, d, port, fam, True, notes)          # dev #1007: a `work` with no page.md
+
+
+def _write_work_json(view, d, port, fam, value, notes):
+    """dev #1007 (0.7.0): the portfolio named `work` with no `content/work/page.md` is configured by site.json's `work` object
+    (`contentmodel/layout.py` exempts it), so a per-portfolio setting is written THERE when site.json's `work` holds that key
+    (`WORK_KEYS`). A key only a page.md holds (`sort`, `view`, `menuLinks`, `onePieceIndex`) is not written, and the note says
+    so: the measured build is this same function, so such a candidate measures as the default and is never chosen silently."""
+    if port != "work" or view.exists("content/work/page.md"):
+        return
+    if fam in WORK_KEYS:
+        d["work"] = dict(d.get("work") or {}, **{fam: value})
+        notes["settings"].append("%s of work: %s (in site.json's work: the portfolio has no page.md)" % (fam, json.dumps(value)))
+    else:
+        notes["settings"].append("%s of work: not written (only a page.md holds %s, and content/work/page.md does not exist)"
+                                 % (fam, fam))
 
 
 _BOOL = {"true": True, "false": False}

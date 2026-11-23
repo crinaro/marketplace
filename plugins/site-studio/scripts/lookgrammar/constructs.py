@@ -64,13 +64,17 @@ PLACE_IMAGE_SLOTS = {"src": URL, "alt": TEXT, "width": INT, "height": INT, "srcs
                      "focus": POSITION}
 # The slots of `reference-card.wrap`, which the 0.6.0 place parts `feed.item` and `home-samples.item` take (PLACE_PARTS):
 # one object, so a place part can never hold a slot the site-wide part lacks, nor lack one it has.
-REFERENCE_CARD_SLOTS = {"url": URL, "image": HTML, "title": TEXT, "site": HTML, "description": HTML, "role": HTML}
+# 0.7.0 adds the open slot `usedBy` (design-adopt-ownership-line section 6.4): the `used-by` part, filled with the first piece
+# that names the reference, so the three parts sharing this table gain it together (three `OPEN_SLOT_FIRST` rows).
+REFERENCE_CARD_SLOTS = {"url": URL, "image": HTML, "title": TEXT, "site": HTML, "description": HTML, "role": HTML,
+                        "usedBy": HTML}
 
 CONSTRUCTS = {
     # ---- 0.3.1: every construct its code builds (content.py `_Renderer`, build.py `_Builder`)
     "tagline": {"first": "0.3.1", "parts": {"wrap": {"text": TEXT}}},
     "tiles": {"first": "0.3.1", "parts": {"wrap": {"items": HTML, "label": TEXT, "count": INT},
-        "item": {"figure": TEXT, "text": TEXT, "n": INT}}},
+        "item": {"figure": TEXT, "text": TEXT, "n": INT},
+        "item-accent": {"figure": TEXT, "text": TEXT, "n": INT}}},       # 0.7.0: the slots of `item` (section 6.3)
     "quote": {"first": "0.3.1", "parts": {"wrap": {"body": HTML, "by": HTML}, "by": {"who": HTML}}},
     "gallery": {"first": "0.3.1", "parts": {"wrap": {"items": HTML, "count": INT},
         "wrap-labelled": {"items": HTML, "count": INT, "label": TEXT}, "item": {"image": HTML, "caption": HTML},
@@ -93,13 +97,13 @@ CONSTRUCTS = {
         "sized": {"src": URL, "alt": TEXT, "width": INT, "height": INT},
         "sized-set": {"src": URL, "alt": TEXT, "width": INT, "height": INT, "srcset": SRCSET, "sizes": TEXT}}},
     "reference-card": {"first": "0.3.1", "parts": {
-        "wrap": REFERENCE_CARD_SLOTS,
+        "wrap": REFERENCE_CARD_SLOTS, "used-by": {"title": TEXT, "url": URL},
         "site": {"text": TEXT}, "description": {"text": TEXT}, "role": {"text": TEXT}}},
     "reference-grid": {"first": "0.3.1", "parts": {"wrap": {"items": HTML}}},
     "card": {"first": "0.3.1", "parts": {
         "wrap": {"url": URL, "image": HTML, "title": TEXT, "teaser": HTML, "meta": HTML, "number": HTML,
-            "kicker": HTML, "fullTitle": TEXT},
-        "teaser": {"text": TEXT}, "meta": {"text": TEXT}, "number": {"n": INT}}},
+            "kicker": HTML, "fullTitle": TEXT, "position": HTML},
+        "teaser": {"text": TEXT}, "meta": {"text": TEXT}, "number": {"n": INT, "text": TEXT}}},
     "cards": {"first": "0.3.1", "parts": {"wrap": {"items": HTML, "group": TEXT}}},
     "group": {"first": "0.3.1", "parts": {"wrap": {"title": TEXT, "cards": HTML, "count": HTML, "group": TEXT}}},
     "portfolio": {"first": "0.3.1", "parts": {
@@ -185,6 +189,9 @@ PART_FIRST = {
     ("nav", "brand"): "0.6.0", ("nav", "brand-current"): "0.6.0",
     ("nav", "item-section"): "0.6.0", ("nav", "link-section"): "0.6.0",
     ("feed", "item"): "0.6.0", ("home-samples", "item"): "0.6.0",
+    # 0.7.0 (design-adopt-ownership-line sections 6.3 and 6.4): a variant tile a `reads` choice picks, and the part that
+    # fills `{{usedBy}}`. Both optional: no default entry, so no tree's bytes move.
+    ("tiles", "item-accent"): "0.7.0", ("reference-card", "used-by"): "0.7.0",
 }
 
 # A place part (design-adopt-parity-2 section 4.8; it generalises 0.5.0's `lookfiles/renderlog.py` `PLACE_PICTURES`):
@@ -234,7 +241,21 @@ OPEN_SLOT_FIRST = {
     ("cards", "wrap", "group"): "0.6.0",
     ("group", "wrap", "group"): "0.6.0",
     ("video-embed", "wrap", "title"): "0.6.0",
+    # 0.7.0 (design-adopt-ownership-line section 5, owner decision 2): the card's number led by its running position on
+    # the page, across groups, and the whole joined number string in ONE copy of `card.number`. No default part holds
+    # either, so no tree's bytes move.
+    ("card", "wrap", "position"): "0.7.0",
+    ("card", "number", "text"): "0.7.0",
+    # 0.7.0 (section 6.4): `usedBy`, in the three parts that share `REFERENCE_CARD_SLOTS`
+    ("reference-card", "wrap", "usedBy"): "0.7.0",
+    ("feed", "item", "usedBy"): "0.7.0",
+    ("home-samples", "item", "usedBy"): "0.7.0",
 }
+
+# A top-level key of a look file, with the release that added it (design-adopt-ownership-line section 2.1): 0.6.0 refuses
+# an unknown top-level key, so the KEY needs 0.7.0 whatever it holds, `{}` included (step 0, U-B1, TESTED). `named` is
+# read by the grammar from step 6b; until then `looks.parse` refuses it as unknown, and this row still says what it needs.
+TOP_KEY_FIRST = {"reads": "0.7.0", "named": "0.7.0"}
 
 # Step G (O2, O3): parts the default look has NO entry for. A site's own look may write one; where it does not, the
 # place renders exactly as before the part existed (the separator " / ", the site-wide `image` construct).
@@ -242,7 +263,8 @@ OPEN_SLOT_FIRST = {
 # `tiles.item-first` is NOT built: probe P-A was answered `default` (the group file), so the set-apart tile is an ACCEPT.
 OPTIONAL_PARTS = frozenset((("steps-view", "role-sep"), ("steps-view", "image"), ("home-showcase", "image"),
                             ("nav", "brand"), ("nav", "brand-current"), ("nav", "item-section"),
-                            ("nav", "link-section"), ("feed", "item"), ("home-samples", "item")))
+                            ("nav", "link-section"), ("feed", "item"), ("home-samples", "item"),
+                            ("tiles", "item-accent"), ("reference-card", "used-by")))
 # Parts that are literal text and nothing else (no slot: the table gives none; no element: `looks.check_part`).
 TEXT_ONLY_PARTS = frozenset((("steps-view", "role-sep"),))
 # The slots of PLACE_IMAGE_SLOTS a picture may have no value for, so the build may leave them unfilled (`img_tag` fills

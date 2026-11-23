@@ -10,6 +10,8 @@ never assumed. A site with NO resume PDF is not asked: apply writes `"pdf": null
 no page is printed to a paper size.
 """
 
+import base64
+import hashlib
 import html
 import html.parser
 import posixpath
@@ -174,10 +176,53 @@ def menu_anchor_measured(m, old, page, label):
     if not old or len(old) < 3 or not old[2]:
         return False
     middle = old_spot(m, old[0])
-    w = _MENU_ANCHOR.match(middle) if middle is not None else None
+    w = _MENU_ANCHOR.match(middle) if middle is not None else run_anchor(m, old[0])
     if not w:
         return False
     return html.unescape(w.group(3)) == label and html.unescape(w.group(2)) == tokens.rel_link(old[2], page + "/index.html")
+
+
+_ADJACENT = re.compile(r"^\s*$")
+
+
+def run_anchor(m, old):
+    """dev #985 (0.7.0): the one anchor the old page shows for the bare token `m` when it stands in a RUN of tokens with nothing
+    but white space between them (`{{workLink}}{{resumeLink}}`), so `old_spot` finds no text of the source's own beside it. The
+    spot is the whole run's, found as `old_spot` finds one; it must hold exactly one menu anchor per token of the run, separated
+    as the source separates them, else None (never a guess). The anchor at the token's place in the run is returned as a
+    `_MENU_ANCHOR` match."""
+    s = m.string
+    run = [t for t in tokens.TOKEN_RE.finditer(s)]
+    i = next((k for k, t in enumerate(run) if t.start() == m.start()), None)
+    if i is None:
+        return None
+    lo = hi = i
+    while lo > 0 and _ADJACENT.match(s[run[lo - 1].end():run[lo].start()]):
+        lo -= 1
+    while hi + 1 < len(run) and _ADJACENT.match(s[run[hi].end():run[hi + 1].start()]):
+        hi += 1
+    if lo == hi:
+        return None
+    a, b = run[lo].start(), run[hi].end()
+    prev = run[lo - 1].end() if lo > 0 else 0
+    nxt = run[hi + 1].start() if hi + 1 < len(run) else len(s)
+    before, after = s[max(prev, a - _CONTEXT):a], s[b:min(nxt, b + _CONTEXT)]
+    if not before.strip() or not after.strip():
+        return None
+    found = set(x.group(1) for x in re.finditer(re.escape(before) + r"(.*?)" + re.escape(after), old, re.S))
+    if len(found) != 1:
+        return None
+    middle = found.pop()
+    parts = []
+    for k in range(lo, hi + 1):
+        w = re.match(r"\s*<a\s+href\s*=\s*([\"'])([^\"'<>]*)\1\s*>([^<>]*)</a\s*>", middle)
+        if not w:
+            return None
+        parts.append(_MENU_ANCHOR.match(w.group(0)))
+        middle = middle[w.end():]
+    if middle.strip():
+        return None
+    return parts[i - lo]
 
 
 def old_page(hints, path, data):
@@ -185,16 +230,43 @@ def old_page(hints, path, data):
     `frozen_anchor` and `menu_anchor_measured`, or None. Read
     from `hints["oldPages"]` ({output path: bytes}), which the caller that ran the old builder supplies; `check` has no old
     build, so there it is None and no token is frozen this way. The layout prints on every page and has no one page."""
-    pages = (hints or {}).get("oldPages") or {}
+    pages = (hints or {}).get(OLD_PAGES) or {}
     if not path.startswith("site/src/") or path[len("site/src/"):] not in pages:
         return None
     d = data if isinstance(data, dict) else {}
     own = set(h.lower() for h in (urlsplit(d["previewUrl"]).hostname if isinstance(d.get("previewUrl"), str) else None,
                                   d.get("domain") if isinstance(d.get("domain"), str) else None) if h)
+    blob = pages[path[len("site/src/"):]]
+    if isinstance(blob, dict):          # the plan's form (`old_pages_hint`): the bytes parity measured, checked, else not read
+        try:
+            raw = base64.b64decode(blob["data"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        if hashlib.sha256(raw).hexdigest() != blob.get("sha256"):
+            return None
+        blob = raw
     try:
-        return pages[path[len("site/src/"):]].decode("utf-8"), own, path[len("site/src/"):]
+        return blob.decode("utf-8"), own, path[len("site/src/"):]
     except (UnicodeDecodeError, AttributeError):
         return None
+
+
+OLD_PAGES = "oldPages"          # the member of the plan's `hints` that holds the old pages a token conversion read
+
+
+def old_pages_hint(sources, local):
+    """dev #985, option A (0.7.0): the `hints` member that hands the token conversion the old builder's pages, which parity now
+    runs BEFORE the token check. Only the pages whose source (`{site/src/<path>: text}`) holds a token the plugin's build does
+    not know, as {output path: {"sha256", "data" (base64)}}: the form the plan stores, so `check` and `apply` make the same
+    conversion parity measured. A page the old build did not write is not in it, so its token stays a loud refusal."""
+    out = {}
+    for path, text in sorted(sources.items()):
+        rel = path[len("site/src/"):] if path.startswith("site/src/") else None
+        if rel is None or rel not in local:
+            continue
+        if any(not tokens.token_known(m.group(1), False) for m in tokens.TOKEN_RE.finditer(text)):
+            out[rel] = {"sha256": hashlib.sha256(local[rel]).hexdigest(), "data": base64.b64encode(local[rel]).decode("ascii")}
+    return out
 
 
 _HOME_LOCAL = re.compile(r"^home([A-Z][A-Za-z0-9]*)$")

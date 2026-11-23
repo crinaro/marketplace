@@ -64,6 +64,7 @@ import html.parser
 import posixpath
 import re
 import parity_whitespace
+from building.tokens import strip_css_comments
 from parityscan import sameresource
 from parityscan.sinks import Sinks, _is_page
 
@@ -233,6 +234,8 @@ def normalise_file(rel, data):
         text = normalise_html(text)
     else:
         text = text.replace("\r\n", "\n")
+        if low.endswith(".css"):            # dev #1008: the build strips CSS comments (building/tokens.py); no visitor sees one
+            text = strip_css_comments(text)
     return normalise_dates(text).encode("utf-8")
 
 
@@ -679,13 +682,14 @@ HEADING_SEEN = "a visitor sees"
 HEADING_UNSEEN = "no visitor sees (does not block)"
 
 
-def difference_report(local, plugin, diffs, ignored=None, markup=True, site_path=None, site_host=None):
+def difference_report(local, plugin, diffs, ignored=None, markup=True, site_path=None, site_host=None, limit=CAUSE_LINES_MAX):
     """The lines `parity` and `remeasure` print for a list of differences (`compare_builds`' output), under two headings
     (design-adopt-parity-2 7.2). First a count of the causes. Then HEADING_SEEN over the files present in only one
     build and ONE LINE PER CAUSE (a hunk's text, however many pages carry it) with its page count, body causes before
     the causes that are only an addition inside `<head>`; then HEADING_UNSEEN over the markup a visitor does not see
     (5.1 and rule U), last and apart. A heading is printed only over a line of its own. Last, a count of what was not
-    read (a file past HUNKS_PER_FILE hunks, causes past CAUSE_LINES_MAX). Empty when nothing differs."""
+    read (a file past HUNKS_PER_FILE hunks, causes past `limit`, CAUSE_LINES_MAX by default; None lists every cause, as
+    `adopt.py parity --json` does, dev #1009). Empty when nothing differs."""
     ones = ["  %s: %s%s" % (kind_, p, (" (%s)" % detail) if detail else "") for kind_, p, detail in diffs if kind_ != "differs"]
     groups, omitted = difference_groups(local, plugin, diffs, ignored, markup, site_path, site_host)
     lines, seen, unseen = [], list(ones), []
@@ -699,7 +703,7 @@ def difference_report(local, plugin, diffs, ignored=None, markup=True, site_path
                      "the body causes, and never in place of one)%s" % (
                          len(groups), len(pages), n_head,
                          ("; %d markup a visitor does not see (listed last, apart)" % n_markup) if n_markup else ""))
-        for (cls, a, b), places in rows[:CAUSE_LINES_MAX]:
+        for (cls, a, b), places in (rows if limit is None else rows[:limit]):
             who = ("%s (line %d)" % places[0]) if len(places) == 1 else (
                 "%d pages (%s%s)" % (len(places), ", ".join(p for p, _l in places[:CAUSE_EXAMPLES]),
                                      ", and %d more" % (len(places) - CAUSE_EXAMPLES) if len(places) > CAUSE_EXAMPLES else ""))
@@ -710,8 +714,8 @@ def difference_report(local, plugin, diffs, ignored=None, markup=True, site_path
     if unseen:
         lines.append("  %s: %d cause(s)" % (HEADING_UNSEEN, n_markup))
         lines.extend(unseen)
-    if len(rows) > CAUSE_LINES_MAX:
-        lines.append("  ... and %d more cause(s) not listed" % (len(rows) - CAUSE_LINES_MAX))
+    if limit is not None and len(rows) > limit:
+        lines.append("  ... and %d more cause(s) not listed; `adopt.py parity --json` lists every one" % (len(rows) - limit))
     for p, n in omitted:
         lines.append("  differs: %s -- %d more hunk(s) not listed (the first %d are)" % (p, n, HUNKS_PER_FILE))
     return lines

@@ -14,9 +14,12 @@ design 6.4; named changes S2, S8, S9, S10 (round 1), M9, M13). Python 3.9, stand
     adopt.py [--repo R] convert {redirectBoiler|resumeFields} [--keep]
     adopt.py [--repo R] kind {portfolio|hub|custom}
     adopt.py [--repo R] setting NAME VALUE | --clear
-    adopt.py [--repo R] parity [--accept] [--keep DIR]
+    adopt.py [--repo R] parity [--accept] [--keep DIR] [--json]
     adopt.py [--repo R] remeasure [--accept]
     adopt.py [--repo R] apply [--date YYYY-MM-DD] [--dry-run]
+    adopt.py [--repo R] report [--file | --decline]
+    adopt.py [--repo R] report --suggestion ID [--file --digest D | --decline]
+    adopt.py [--repo R] suggest [--offer ID]
 
 WHAT IT IS FOR. The person's dev repo may hold local copies of what the plugin now does (agents,
 commands, scripts, a builder). A project agent with the same name outranks a plugin agent, and a
@@ -107,9 +110,15 @@ def _build_parser():
     s.add_argument("--accept", action="store_true")
     s.add_argument("--keep", metavar="DIR")
     s.add_argument("--shots", metavar="DIR", help=shots)
+    s.add_argument("--json", action="store_true", help="print one JSON document: every cause, each problem with its fix")
     s = sub.add_parser("report", allow_abbrev=False)    # the guard reads `--f` to `--file`: no abbreviation may mean another flag
     s.add_argument("--file", action="store_true", help="file the pending reports on the tracker (a publish: the guard asks)")
     s.add_argument("--decline", action="store_true", help="record every pending cause as declined")
+    s.add_argument("--suggestion", action="append", metavar="ID", help="one look suggestion adopt.py suggest printed: print it, "
+                                                                       "or with --file --digest file it, or with --decline record no")
+    s.add_argument("--digest", metavar="D", help="with --suggestion --file: the 12 hex the print showed")
+    s = sub.add_parser("suggest", allow_abbrev=False)
+    s.add_argument("--offer", action="append", metavar="ID", help="record the person's yes to one ask line")
     s = sub.add_parser("file", allow_abbrev=False)
     s.add_argument("path")
     s.add_argument("disposition", choices=("archive", "draft", "keep", "engine"))

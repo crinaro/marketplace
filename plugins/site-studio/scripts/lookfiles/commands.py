@@ -12,7 +12,7 @@ from building.acceptance import _load_model, trigger_slot_findings
 from building.lookneeds import look_needs
 from configschema import diagnostics, model, canonical, partblocks
 from contentmodel import grammar
-from lookgrammar import decoration
+from lookgrammar import decoration, layering
 from lookgrammar.stylesheets import check_stylesheet_file, scan_stylesheet
 from lookfiles.derive import derive_look
 from lookfiles.lookfile import (
@@ -25,7 +25,9 @@ from lookfiles.lookfile import (
     literals,
     shipped_ids,
 )
+from lookfiles import stamp
 from lookfiles.ownership import pages_host_set, settle_ownership
+from configschema.configkeys import STAMP_REL
 from lookfiles.pagefetch import FETCH_PAGES, fetch_pages, read_build_dir  # fetch_pages: read by name in Env (globals())
 from lookfiles.refusals import LookCommandError
 from lookfiles.renderlog import record
@@ -118,7 +120,8 @@ def derive_command(repo, build_dir=None, url=None, owned_host=None, name=DEFAULT
             env.say(NOT_VERIFIED)
         pages, never = env.fetch_pages(start, owned, sorted(recorded[1]), env.out)
     d = derive_look(files, pages, never, recorded)
-    text = d.text
+    written, kept = stamp.derive_files(top, files, target, d.text)    # rule E, and the stamp (design-adopt-ownership-line 4)
+    text = written[target].decode("utf-8")
     parsed = looks.parse(text, target)
     lits = literals(parsed)
     if os.path.exists(full):
@@ -128,12 +131,13 @@ def derive_command(repo, build_dir=None, url=None, owned_host=None, name=DEFAULT
             raise LookCommandError("%s already exists with other content; derive writes nothing over it. Pick another "
                                    "--name, or add --replace to overwrite it" % target)
     site_json = _derived_site_json(top, files, cfg, target, text)
-    for line in d.lines():
+    for line in d.lines() + kept:
         env.say(line)
     if never:
         env.say("%d page(s) the content built were never read (cap of %d pages): those instances are `not reached`"
                 % (len(never), FETCH_PAGES))
-    addresses.write_bytes(top, target, text.encode("utf-8"))
+    for rel in sorted(written):
+        addresses.write_bytes(top, rel, written[rel])
     env.say("wrote %s (%d construct(s); structure and your own literal text)" % (target, len(parsed.constructs)))
     if site_json is not None:
         addresses.write_bytes(top, "site/site.json", site_json.encode("utf-8"))
@@ -145,6 +149,8 @@ def derive_command(repo, build_dir=None, url=None, owned_host=None, name=DEFAULT
     for line in decoration_lines(parsed):           # a drawing copied from the page is the person's own markup (design 9.2)
         env.say(line)
     env.say("nothing is committed. Use it with: look.py use %s" % target)
+    if STAMP_REL in written:
+        env.say(stamp.COMMIT_STAMP % (STAMP_REL, target))
     return EXIT_OK
 
 
@@ -193,9 +199,9 @@ def use_command(repo, source, accept_literals=False, env=None):
     writes = {}
     target = LOOKS_REL + slug + ".json"
     writes[target] = raw
-    # a look derived in this repository and not yet committed is its own source: it is not "uncommitted work"
+    # a look derived in this repository and not yet committed is its own source, with its stamp: not "uncommitted work"
     own = os.path.realpath(path) == os.path.realpath(os.path.join(top, *target.split("/")))
-    dirty = [ln for ln in addresses._git_status(top) if not (own and ln[3:].strip() == target)]
+    dirty = [ln for ln in addresses._git_status(top) if not (own and ln[3:].strip() in (target, STAMP_REL))]
     if dirty:
         raise LookCommandError("the tree has uncommitted changes in site/, content/ or .site-studio/ (%s); commit or "
                                "discard them first, then try again" % dirty[0].strip()[:80])
@@ -317,28 +323,54 @@ def _prewrite(cfg, files):
                                "raise-schema` and try again" % probs[0].line())
 
 
+def _checked_look(files, ref, key, cross):
+    """One look file of the working tree parsed alone (`cross`: with its look-wide pairs), its stylesheets present."""
+    raw = files.get(ref)
+    if raw is None:
+        raise LookCommandError("site.json names the look %s, which is not committed; commit the file, or remove the "
+                               "%s key" % (ref, key))
+    try:
+        lk = looks.parse(raw.decode("utf-8"), ref, cross=cross)
+    except (looks.LookError, UnicodeDecodeError) as e:
+        raise LookCommandError("%s is refused:\n%s\nfix: %s" % (ref, e, getattr(e, "fix", None) or "fix the lines above"))
+    for rel in lk.stylesheets:
+        if rel not in files:
+            raise LookCommandError("%s names the stylesheet %s, which is not committed; add the file, or remove it "
+                                   "from the look" % (ref, rel))
+    return lk
+
+
+def effective_look(files, cfg):
+    """(look, where, lines) `check` reports on: the effective look, as the build reads it (design-adopt-ownership-line
+    section 3): the file `look` names, with the file `lookLocal` names laid over it (`lookgrammar.layering.merge`), or the
+    plugin's own look when neither key is set. `lines`: for a layered look, each construct's file and every construct or
+    `reads` target the local file replaces (P5). A refusal names its file (P1) or, laid over each other, both (P4)."""
+    local = getattr(cfg, "lookLocal", None)
+    if cfg.look is None and local is None:
+        return looks.default_look(), "the plugin's own look", []
+    if local is None:
+        return _checked_look(files, cfg.look, "look", True), cfg.look, []
+    base = None if cfg.look is None else _checked_look(files, cfg.look, "look", False)
+    top = _checked_look(files, local, "lookLocal", False)
+    try:
+        lk = layering.merge(base, top, looks._PartParser, looks.default_renders)
+    except looks.LookError as e:
+        raise LookCommandError("%s is refused, laid over %s:\n%s\nfix: %s" % (local, cfg.look or "the plugin's own look",
+                                                                             e, e.fix or "fix the lines above"))
+    return lk, lk.where, lk.replaced + layering.owner_lines(lk)
+
+
 def check_command(repo, env=None):
     env = env or Env()
     top, files, cfg = _load_tree(repo, working=True)
-    if cfg.look is None:
+    if cfg.look is None and getattr(cfg, "lookLocal", None) is None:
         env.say("site.json names no look: the plugin's own look renders every construct")
-        lk = looks.default_look()
-        where = "the plugin's own look"
-    else:
-        raw = files.get(cfg.look)
-        if raw is None:
-            raise LookCommandError("site.json names the look %s, which is not committed; commit the file, or remove the "
-                                   "look key" % cfg.look)
-        try:
-            lk = looks.parse(raw.decode("utf-8"), cfg.look)
-        except (looks.LookError, UnicodeDecodeError) as e:
-            raise LookCommandError("%s is refused:\n%s\nfix: %s" % (cfg.look, e, getattr(e, "fix", None) or "fix the lines above"))
-        where = cfg.look
-        for rel in lk.stylesheets:
-            if rel not in files:
-                raise LookCommandError("%s names the stylesheet %s, which is not committed; add the file, or remove it "
-                                       "from the look" % (cfg.look, rel))
+    lk, where, layered = effective_look(files, cfg)
+    for line in layering.unread_notes(files, cfg.look, getattr(cfg, "lookLocal", None)):   # P6
+        env.say("note: %s" % line)
     env.say("look: %s (%d construct(s) of %d)" % (where, len(lk.constructs), len(looks.CONSTRUCTS)))
+    for line in layered:
+        env.say(line)
     for cid in lk.omitted():
         env.say("the look has no markup for %s; plugin markup is used" % cid)
     for cid, pn in looks.live_players(lk):
@@ -356,7 +388,8 @@ def check_command(repo, env=None):
         loaded = None
         env.say("NOT CHECKED: the content does not load (%s), so the schema-5 settings were not checked against the "
                 "look; fix it, then run check again" % str(e).splitlines()[0][:120])
-    for line in trigger_lines(loaded, cfg, files, None if cfg.look is None else lk) if loaded is not None else ():
+    site_look = None if cfg.look is None and getattr(cfg, "lookLocal", None) is None else lk
+    for line in trigger_lines(loaded, cfg, files, site_look) if loaded is not None else ():
         env.say(line)
     number = lk.own_part("steps-view", "item")
     if number is not None and "{{number}}" not in number:

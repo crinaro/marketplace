@@ -63,6 +63,7 @@ import posixpath
 import re
 
 import looks
+from lookgrammar import named as looknamed
 from lookgrammar.errors import LookError
 from configschema.configkeys import WORK_KEYS, V3_PAGE_KEYS, V4_PAGE_KEYS
 from configschema.diagnostics import SiteConfigError
@@ -139,7 +140,8 @@ def _load_portfolio_head(name, files, cfg, folder, page_path):
         v3 = {}
     if name != "work" and "label" not in meta:
         settings["label"] = name.replace("-", " ").title()
-    probs, page_settings = page_settings_problems(v3, page_path, cfg.schema)   # schema 3's keys (6.2), schema 4's views and mapMask
+    views = looknamed.tree_views(files, cfg.look, getattr(cfg, "lookLocal", None)) if cfg.schema >= 7 else None
+    probs, page_settings = page_settings_problems(v3, page_path, cfg.schema, views)   # schema 3's keys (6.2), 4's views, mapMask; 7's named views
     if probs:
         raise ContentError("; ".join(p.message for p in probs), path=page_path, lineno=_key_line(page_text, v3, probs),
                            fix="fix the key named above: %s" % probs[0].fix)
@@ -425,7 +427,8 @@ class _Renderer(_BlockBase, _BlockKinds):
         needs no newer release (a constant value has nothing for derive to read)."""
         values = {"embed": src}
         if "{{title}}" in looks.part_markup("video-embed", "wrap", self.look):
-            values["title"] = VIDEO_TITLE
+            own = getattr(self.env, "video_title", None)        # 0.7.0: the look's `reads` entry, read by the build's env
+            values["title"] = (own() if own is not None else None) or VIDEO_TITLE
         return values
 
     def card(self, heading, body, n):
@@ -480,14 +483,22 @@ def render_markdown(body, env, where, grammar=2, first_line=1, headings="shift",
     return render_fragment(_fragment(body, first_line, grammar), env, where, grammar, headings, cards)
 
 
-def parse_parts(body, where, first_line=1, grammar=3):
+class _LookOnly(object):
+    """An environment that carries only the look: `parse_parts` reads the look's named block names through it."""
+
+    def __init__(self, look):
+        self.look = look
+
+
+def parse_parts(body, where, first_line=1, grammar=3, look=None):
     """Split a schema-3 body into (intro, {part name: Fragment}) for `{{home:<part>}}` (section 6.1): each
     top-level `:::part <name>` block is taken out of the intro and kept by name; every other line, block
     included, stays in the intro. A duplicate name, an unclosed block and the other grammar refusals raise
     `ContentError` with the file and line. `intro` is a Fragment. `grammar` is the site's schema (at 4 a part
-    may hold any number of blocks, and the home keys are fixed part names)."""
+    may hold any number of blocks, and the home keys are fixed part names). `look` (0.7.0): the effective look, whose named
+    blocks are blocks here too."""
     frag = _fragment(body, first_line, grammar)
-    r = _Renderer(None, where, grammar, frag.plain)
+    r = _Renderer(None if look is None else _LookOnly(look), where, grammar, frag.plain)
     keep_l, keep_n, parts, opened = [], [], {}, {}
     i = 0
     while i < len(frag.lines):

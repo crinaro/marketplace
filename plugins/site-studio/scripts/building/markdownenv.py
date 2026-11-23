@@ -1,14 +1,19 @@
-"""The builder's images, reference cards and the Markdown environment a body is rendered with."""
+"""The builder's images, reference cards and the Markdown environment a body is rendered with.
+
+0.7.0 (design-adopt-ownership-line sections 6.2 and 6.4): the environment answers the two `reads` targets read inside a
+body (`video_title`, `tile_accent`, each from the front matter of the page whose body it is), and a reference card fills
+`{{usedBy}}` where the part it renders through places it (`used_by_html`), from the pre-pass `references.used_by`."""
 
 import itertools
 import posixpath
 import re
 
 import content as C
+import looks
 from contentmodel import links
 from contentmodel.errors import ContentError
 
-from building import mediapaths, pictures, references
+from building import mediapaths, pictures, readsources, references
 from building.constants import IMAGE_EXTS, SIZES_ATTR
 from building.imagesize import image_size
 from building.outcomes import BuildError
@@ -76,13 +81,48 @@ class _MarkdownEnv(object):
         site = self.r("reference-card", "site", {"text": d["site"]}) if d.get("site") else ""
         desc = self.r("reference-card", "description", {"text": d["description"]}) if d.get("description") else ""
         role = self.r("reference-card", "role", {"text": d["role"]}) if d.get("role") else ""
-        card = self.r("reference-card", "wrap", {"url": d["url"], "image": img, "title": d["title"], "site": site,
-                                                 "description": desc, "role": role})
+        values = {"url": d["url"], "image": img, "title": d["title"], "site": site, "description": desc, "role": role}
+        construct, part = self.ref_card_part()
+        if looks.places(construct, part, "usedBy", self.look):     # 0.7.0: given only where placed (derive reads values)
+            values["usedBy"] = self.used_by_html(name, from_out)
+        card = self.r("reference-card", "wrap", values)
         # a role line is a schema-4 part: the page that prints one links the schema-4 stylesheet the look names
         return (self.assets(from_out, "reference-card") if role else "") + card
 
     def _card_out(self, ref):
         return references.card_out(ref, self.cfg)
+
+    @staticmethod
+    def ref_card_part():
+        """(construct, part) a reference card renders through here: the site-wide card (`homepage._PlaceCard` says its
+        place's part instead)."""
+        return ("reference-card", "wrap")
+
+    def used_by_html(self, name, from_out):
+        """`{{usedBy}}` (0.7.0, section 6.4): `reference-card.used-by` filled with the first piece, in site order, whose body
+        names the reference on a `ref:` line (`references.used_by`, computed once from the model before it is read); ""
+        when no piece names it."""
+        found = getattr(self, "_used_by", None)
+        if found is None:
+            found = references.used_by(self.model)
+            self._used_by = found
+        piece = found.get(name)
+        if piece is None:
+            return ""
+        return self.r("reference-card", "used-by", {"title": piece.title, "url": rel_link(
+            from_out, "%s/%s/index.html" % (piece.portfolio, piece.slug))}, piece.source)
+
+    def page_meta(self, source):
+        """The front matter of the page whose body is `source` (a piece, the home, about or resume page); {} for any
+        other body. Read only by a `reads` entry (`readsources`), so a look without one never asks."""
+        found = getattr(self, "_page_metas", None)
+        if found is None:
+            found = dict((p.source, p.meta) for pf in self.model.portfolios for p in pf.pieces)
+            for page in (getattr(self.model, n, None) for n in ("home", "about", "resume")):
+                if page is not None:
+                    found[page.source] = page.meta
+            self._page_metas = found
+        return found.get(source, {})
 
     # ---- markdown
     def markdown(self, body, source, from_out, base_dir, first_line=1, headings=None, cards=False):
@@ -114,6 +154,19 @@ class _MarkdownEnv(object):
 
             def asset(self, kind):
                 return builder.asset_html(from_out, kind)
+
+            def video_title(self):
+                """`video-embed.wrap.title` (0.7.0 `reads`): the look's entry read from this page's front matter, else
+                None and the renderer prints `VIDEO_TITLE`. A bare video line has no caption (U-R1): `@caption` is empty."""
+                return readsources.slot(builder.look, "video-embed.wrap.title",
+                                        lambda key: builder.page_meta(source).get(key), {"@caption": None})
+
+            def tile_accent(self, count):
+                """`tiles.item-accent` (0.7.0 `reads`): the positions (from 1) of a `:::tiles` block's `count` tiles that
+                print through the variant part; empty without an entry, so the part is never used."""
+                picked = readsources.choice(builder.look, "tiles.item-accent",
+                                            lambda key: builder.page_meta(source).get(key), lambda: count, source)
+                return frozenset(i + 1 for i in picked or ())
 
             def _img(self, src, alt, construct):
                 if re.match(r"^https?://", src):

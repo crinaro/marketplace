@@ -9,7 +9,7 @@ from configschema import configkeys
 
 import looks
 
-from building import grouping, piecehead, pictures, stepsview
+from building import grouping, piecehead, pictures, readsources, stepsview
 from building.outcomes import BuildError
 from building.tokens import rel_link
 
@@ -27,17 +27,21 @@ class _Portfolios(object):
             return int(v.strip())
         return None
 
-    def card_number(self, piece, pf, from_out):
+    def card_number(self, piece, pf, from_out, position=None):
         """`cardNumber` (schema 4): the card's `NN / YYYY`. NN is the piece's `order` zero-padded to two digits
         (`cardNumberFormat: "plain"`, schema 4: as it is, `2` for 2), YYYY its `year` (a whole number) or the year
         of its `date`; a part the piece does not have is left out (and so is the separator). `cardNumberFormat:
         "order"` (schema 4) prints the order as it is and never the year (`2`); a piece with no order prints no
-        number. "" when the setting is off or the piece has nothing to print."""
+        number. "" when the setting is off or the piece has nothing to print.
+
+        0.7.0 (design-adopt-ownership-line section 5, owner decision 2): `position`, the card's running position on its
+        page, stands where the `order` stands (`{{position}}` in `card.wrap`); and a `card.number` that places `{{text}}`
+        renders ONCE with the whole joined string (`01 / 2022`), where one that places `{{n}}` renders once per part."""
         if not pf.settings.get("cardNumber"):
             return ""
         shown = []
         fmt = pf.settings.get("cardNumberFormat")
-        order = self._whole(piece.meta.get("order"))
+        order = position if position is not None else self._whole(piece.meta.get("order"))
         if order is not None:
             shown.append(str(order) if fmt in ("plain", "order") else "%02d" % order)
         year = self._whole(piece.meta.get("year"))
@@ -47,26 +51,41 @@ class _Portfolios(object):
             shown.append(str(year))
         if not shown:
             return ""
-        return (self.assets(from_out, "card")
+        if looks.places("card", "number", "text", self.look):
+            return self.assets(from_out, "card") + self.r("card", "number", {"text": " / ".join(shown)}, piece.source)
+        return (self.assets(from_out, "card")                  # 0.6.0's values exactly: derive reads what a slot was given
                 + " / ".join(self.r("card", "number", {"n": n}, piece.source) for n in shown))
+
+    def card_position(self, piece, pf, from_out):
+        """`{{position}}` (0.7.0): the card's number with its running position on the page `from_out` (1 for the first
+        card printed there, counting across groups and lists) in place of the `order`. The counter moves only when the
+        effective `card.wrap` places the slot, so a look without it builds as before; "" when `cardNumber` is off."""
+        if not looks.places("card", "wrap", "position", self.look):
+            return ""
+        seen = self.__dict__.setdefault("_card_positions", {})
+        seen[from_out] = seen.get(from_out, 0) + 1
+        return self.card_number(piece, pf, from_out, position=seen[from_out])
 
     def card_html(self, piece, from_out):
         to = "%s/%s/index.html" % (piece.portfolio, piece.slug)
         pf = self.model.portfolio(piece.portfolio)         # the piece's OWN portfolio: every trigger is read from it
         picture = pictures.card_picture(self, piece, pf.settings)     # design-movement-view section 5: `cover` unless a trigger says otherwise
         img = picture.html(self, from_out) if picture else ""
-        teaser = (self.r("card", "teaser", {"text": piece.meta["teaser"]}, piece.source)
-                  if piece.meta.get("teaser") else "")
+        text = readsources.slot(self.look, "card.teaser.text", piece.meta.get)       # 0.7.0 `reads`; else `teaser`
+        teaser = self.r("card", "teaser", {"text": text}, piece.source) if text else ""
         names = pf.settings["labels"]["meta"]
         labelled = pf.settings.get("cardLabels", True)      # schema 4 `cardLabels: false`: values only on a card
         cm = [("%s: %s" % (names[k], frontmatter.meta_text(piece.meta[k])) if (k in names and labelled)
-               else frontmatter.meta_text(piece.meta[k])) for k in pf.settings["cardMeta"] if k in piece.meta]
+               else frontmatter.meta_text(piece.meta[k]))
+              for k in readsources.rows(self.look, "card.meta.text", piece.meta, pf.settings["cardMeta"])]
         meta = self.r("card", "meta", {"text": " \u00b7 ".join(cm)}, piece.source) if cm else ""
-        return self.r("card", "wrap", {"url": rel_link(from_out, to), "image": img, "title": piece.card_title,
+        position = self.card_position(piece, pf, from_out)        # "" and no count when the effective card.wrap lacks it
+        own = {"position": position} if looks.places("card", "wrap", "position", self.look) else {}
+        return self.r("card", "wrap", dict(own, **{"url": rel_link(from_out, to), "image": img, "title": piece.card_title,
                                        "fullTitle": piece.title,             # step G, O4a: no default part holds it
                                        "teaser": teaser, "meta": meta,
                                        "number": self.card_number(piece, pf, from_out),
-                                       "kicker": stepsview.kicker_slot(self, "card", "wrap", piece, from_out)},
+                                       "kicker": stepsview.kicker_slot(self, "card", "wrap", piece, from_out)}),
                       piece.source)
 
     def cover_of(self, piece, key="cover"):
@@ -153,7 +172,7 @@ class _Portfolios(object):
         """`pieceTeaser: true` (schema 5): the piece's `teaser` as one paragraph under its title, in the gated
         `piece.wrap` `teaser` slot (the card and the meta description keep using it). "" without the trigger."""
         triggers = stepsview.piece_triggers(self, piece)
-        text = piece.meta.get("teaser")
+        text = readsources.slot(self.look, "piece-teaser.wrap.text", piece.meta.get)    # 0.7.0 `reads`; else `teaser`
         if "pieceTeaser" not in triggers or not text:
             return ""
         markup = self.assets(out, "piece-teaser") + self.r("piece-teaser", "wrap", {"text": text}, piece.source)
@@ -164,10 +183,10 @@ class _Portfolios(object):
         names = pf.settings["labels"]["meta"]
         meta_rows = "".join(self.r("meta-list", "item", {"name": names.get(k) or k[:1].upper() + k[1:],
                                                          "value": frontmatter.meta_text(piece.meta[k])}, piece.source)
-                            for k in pf.settings["meta"] if k in piece.meta)
+                            for k in readsources.rows(self.look, "meta-list.item.value", piece.meta, pf.settings["meta"]))
         dl = self.r("meta-list", "wrap", {"items": meta_rows}) if meta_rows else ""
         body = self.markdown(piece.body, piece.source, out, piece.folder, piece.first_line)
-        desc = piece.meta.get("description") or piece.meta.get("teaser") or \
+        desc = readsources.slot(self.look, "head.description", piece.meta.get) or \
             grammar.plain_excerpt(piece.body, grammar=self.grammar) or "%s: %s" % (piece.title, self.cfg.siteTitle)
         cover = self.cover_of(piece)
         group = piece.meta.get(pf.settings["groupBy"]) if pf.settings["groupBy"] else None

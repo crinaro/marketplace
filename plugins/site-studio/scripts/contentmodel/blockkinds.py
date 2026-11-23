@@ -11,8 +11,14 @@ from contentmodel.links import _URL_SCHEME_OR_PROTOREL
 
 class _BlockKinds(object):
     def block_tiles(self, inner, label, n):
+        """A grid of figures. 0.7.0 (design-adopt-ownership-line section 6.3): a tile whose position the environment's
+        `tile_accent` names (the look's `reads` `tiles.item-accent`, read from the page's front matter) prints through the
+        variant part `tiles.item-accent`; without an entry it names none, and every tile prints through `tiles.item`."""
         items = []
-        for ln, row in self.rows(inner, n, "tiles"):
+        rows = self.rows(inner, n, "tiles")
+        accent = getattr(self.env, "tile_accent", None)
+        picked = accent(len(rows)) if accent is not None else frozenset()
+        for ln, row in rows:
             if "|" not in row:
                 raise ContentError("%s: a tile row is 'figure | label' and this one has no '|'"
                                    % self._at(ln), path=self.where, lineno=ln,
@@ -23,7 +29,8 @@ class _BlockKinds(object):
                 raise ContentError("%s: a tile row needs a figure and a label on both sides of '|'"
                                    % self._at(ln), path=self.where, lineno=ln,
                                    fix="write the row as figure | label, such as 1,200+ | visits")
-            items.append(self.r("tiles", "item", {"figure": figure, "text": text, "n": len(items) + 1}, ln))
+            part = "item-accent" if len(items) + 1 in picked else "item"
+            items.append(self.r("tiles", part, {"figure": figure, "text": text, "n": len(items) + 1}, ln))
         return self.assets("tiles") + self.r("tiles", "wrap", {"items": "".join(items), "label": label,
                                                                "count": len(items)}, n)
 

@@ -5,6 +5,12 @@ keep your content, photos, notes and decisions in a **private** repository. When
 plugin builds the finished site and publishes only the generated files to a **public** repository
 that GitHub Pages serves.
 
+site-studio gives you tools, patterns and templates to reuse; you and your Claude Code session decide how your site
+looks. Your own look file, your key maps and your own named blocks and views are the normal way to work, not a
+workaround. When something you added would help other people, site-studio can draft a suggestion from its structure
+alone, from any site: a site you adopted from its own builder carries the comparison with your old pages, and any
+other site carries the proof that the addition builds and passes the checks. It is sent only when you say yes.
+
 Three kinds of site, set in `site/site.json` as `siteKind`:
 
 - **portfolio** (the default): a generated home page, pages of your work, an about page and a resume
@@ -221,7 +227,8 @@ The adopt skill holds the detail; ask Claude to walk you through it.
 - **Look** (`/site-studio:look`): a site's look is the markup its pages are printed through. Pick one
   site-studio ships, check the one your site carries, or have site-studio work one out from your own
   pages, so a site keeps the structure and class names its stylesheet already knows. It changes the
-  tags around your words, not your words.
+  tags around your words, not your words. From 0.7.0 you can keep a look file of your own on top (see
+  "Your own look", below), and offer an addition back to site-studio.
 - **Ideas** (`/site-studio:ideas`): three advisors (brand, portfolio, presence) put two or three
   options in front of you. Nothing is published.
 - **Preview** (`/site-studio:preview`): shows the site as it will look, drafts included.
@@ -272,6 +279,37 @@ written; an older copy of the plugin says "update site-studio" rather than build
   no text, no links, nothing loaded), such as a ribbon behind the steps. If your look has no place
   for a value you turned on, the build refuses and names the part, rather than drop it in silence.
 
+### Your own look (0.7.0)
+
+Version 0.7.0 makes your own markup the normal way to shape a site, again opt-in, under settings version 7 (an older
+copy of the plugin says "update site-studio" rather than build such a site):
+
+- **A look file of your own, laid over the other.** `site/looks/local.json` holds only what you write, and
+  `"lookLocal": "site/looks/local.json"` in `site/site.json` switches it on. Each block, card or view it holds
+  replaces the same one in the site's other look, whole; everything else stays as it was. Every place both files
+  hold the same thing is listed, so nothing is hidden. On an adopted site you can also edit the look adopt worked
+  out (`site/looks/derived.json`): adopt and `/site-studio:look derive` keep your edit, and to hand a part back you
+  delete it. Neither file is published.
+- **Key maps.** A look can say which of your front-matter keys a place reads: a video's title from a key of yours,
+  a meta row left out when it repeats the title, a roles index grouped by another key, which of a piece's roles is
+  the current one, which tile is set apart.
+- **Your own named blocks and views.** A block or index view can carry a name of your own and markup of your own,
+  over the data of one of site-studio's blocks or views, so an old site's own `:::name` block or `view:` builds
+  without your old builder. A block with data rules of its own is not something site-studio builds: that page stays
+  yours, as written.
+- **Cards numbered by position** (`01 / 2022`, `02 / ...`) across the groups of a page, and a reference card that
+  names the piece using it.
+- **Two sample looks**, `sample-index` (a portfolio led by its index of work) and `sample-resume` (a site led by the
+  resume and its roles), listed by `/site-studio:look`. A link hub gets none: nothing on it is generated, so a look
+  has nothing to change there. Using one is your choice; no site changes because they ship.
+- **Measured.** On an adopted site whose old builder is still in the repository, each entry of your own is compared
+  with your old pages, on its own line, when you commit it and run the comparison again.
+- **Offer an addition back.** `/site-studio:look` can check what your own look adds against what site-studio ships
+  and draft a suggestion from its structure alone: every class name, address and word of your site is taken out,
+  and the draft says whether it carries the comparison with your old pages or only the proof that it builds. You
+  read the exact text first. To send it, type `/site-studio:adopt` and say yes: it is filed as one public issue on
+  the plugin's tracker, titled `site-studio look: ...`, and nothing is sent without your yes.
+
 The full list of keys, tokens, blocks and settings is in `reference/content-model.md` in the
 installed plugin, next to `scripts/`.
 
@@ -313,7 +351,8 @@ run `completed` or is `blocked at step N`, the cause, and the one next step.
   `Unknown command`; open the repository on your own computer. If it is installed, editing,
   checks and builds are expected to work (they need only Python and git), but that is not yet
   verified. Publishing and adopt are refused
-  there either way.
+  there either way; a look review lists what could be offered, and printing or sending a suggestion waits for
+  your own computer.
 - **Scheduled runs:** nothing publishes, and setup and adopt cannot be started by a schedule.
 - **Phone, web or claude.ai:** there is no working copy of your repository, so site-studio does
   not run.
@@ -331,4 +370,6 @@ keep working; and the plugin's styles never override yours.
 
 Your content and settings live in your own repositories. The plugin has no server and no telemetry.
 When adopt is blocked by something in the plugin itself, it can file a report, only after you say yes,
-made only of version numbers and the names of the plugin's own parts. See [PRIVACY.md](PRIVACY.md).
+made only of version numbers and the names of the plugin's own parts. A look suggestion is filed the same
+way, one per yes, and holds only the shape of one part of your look with every class name, id, address and
+word taken out, and the numbers the plugin measured. See [PRIVACY.md](PRIVACY.md).

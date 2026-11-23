@@ -48,6 +48,11 @@ it reads, what it writes, where that goes, and who sees it.
   before it prints or files it, and files none if one fails. Before filing, it reads the tracker's open
   and closed issues (a read-only `gh` query) so a cause is not reported twice. A report you decline is
   not filed. The tracker is public, so anything filed there is public.
+- **A look suggestion, to the same tracker, only if you say yes (0.7.0).** `adopt.py suggest` can show a part of your
+  own look that might help other sites. What it would file holds look grammar and template structure only: every class
+  name, word, address and key of your site is taken out first, and the same checks as a report refuse it if anything
+  of yours is left. It also says what evidence it carries (your adopt measurement, or only that it builds). Nothing is
+  filed unless you type `/site-studio:adopt` and approve that one suggestion; each needs its own yes.
 - **To nobody else.** There is no server of ours, no telemetry and no analytics. The plugin's
   authors, and the marketplace's owner, never receive your data, your content or your site.
 

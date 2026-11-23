@@ -2,6 +2,7 @@
 the rows of a block and the video embed."""
 
 import looks
+from lookgrammar import named as looknamed
 from lookgrammar.errors import LookError
 from configschema.configkeys import V4_PART_FIXED
 
@@ -26,7 +27,7 @@ class _BlockBase(object):
         self.in_block = False            # true while a block's own items are rendered (a carousel's slides)
         self.look = getattr(env, "look", None)
         self.asset = getattr(env, "asset", None) or (lambda kind: "")
-        self.names = block_names(grammar)
+        self.names = block_names(grammar, looknamed.block_names(self.look))    # 0.7.0: with the look's named blocks
         self.fixed_parts = fixed_part_names(grammar)
 
     def _at(self, n):
@@ -174,10 +175,23 @@ class _BlockBase(object):
                                    "backslash in front of it")
         close = self.find_close(frag, i, name)
         inner = Fragment(lines[i + 1:close], nums[i + 1:close], self.plain)
-        html = getattr(self, "block_" + name)(inner, label, n)
+        html = self.named_block(name, inner, label, n)
         if html:
             out.append(html)
         return close + 1
+
+    def named_block(self, name, inner, label, n):
+        """A block's HTML: a plugin block through its `block_<name>` method; a named block of the look (section 6.6) parsed as
+        its base is and printed through the look `looknamed.as_look` makes, with the effective look restored after it."""
+        base = looknamed.block_base(self.look, name)
+        if base is None:
+            return getattr(self, "block_" + name)(inner, label, n)
+        effective = self.look
+        self.look = looknamed.as_look(effective, name)
+        try:
+            return getattr(self, "block_" + base)(inner, label, n)
+        finally:
+            self.look = effective
 
     def rows(self, inner, n, what):
         rows = [(inner.nums[k], l.strip()) for k, l in enumerate(inner.lines) if l.strip()]

@@ -76,6 +76,18 @@ def commit_record(repo, message):
     git(repo, "commit", "-q", "-m", message, "--", REPORTS_REL)
 
 
+def filing_preflight(repo, runner=None):
+    """Before anything is filed (design-adopt-ownership-line 13.5 step 1; round 1, S8): `gh` is on the path and git has a
+    committer identity, or it stops with the fix and files nothing. Today's order checked the identity only after the public
+    issue existed. `runner` is a test's fake `gh`."""
+    if runner is None and shutil.which("gh") is None:
+        raise Refused("the gh CLI is not on this computer's path, so nothing can be filed; install it and sign in with gh auth "
+                      "login, then run it again")
+    if git(repo, "var", "GIT_COMMITTER_IDENT", check=False).returncode != 0:
+        raise Refused("git has no committer identity, so the record of what was filed could not be committed; set user.name and "
+                      "user.email and run it again (nothing was filed)")
+
+
 def cmd_report(repo, file=False, decline=False, runner=None, out=None, err=None, engine=None):
     """`adopt.py report`. Returns the exit code: 0 done, 1 could not file or check (the reports are printed), 2 a report
     was refused for carrying something of the site (nothing was filed, the record is unchanged)."""
@@ -104,6 +116,8 @@ def cmd_report(repo, file=False, decline=False, runner=None, out=None, err=None,
         return 0
     causes = [{"id": r["id"], "count": r["count"], "rows": list(r["rows"]), "class": None, "verdict": None, "kind": None}
               for r in pending]
+    if file and pending:
+        filing_preflight(repo, runner)
     prov = report_issue.provenance(engine=engine, node=shutil.which("node") is not None)
     res = report_issue.report(causes, prov, terms=site_terms(repo), file=file, previous=rows, runner=runner, out=out,
                               err=err, engine=engine)

@@ -1,4 +1,5 @@
-"""guarding.matching -- which subcommands are a publish: `deploy.py` with `--confirm`, `adopt.py report --file`, `adopt.py apply` (no
+"""guarding.matching -- which subcommands are a publish: `deploy.py` with `--confirm`, `adopt.py report --file` (with `--suggestion`:
+the kind `suggestion`, 0.7.0), `adopt.py apply` (no
 `--dry-run`), each abbreviation-tolerant (the conservative direction), recursing into quoted strings that hold a name
 (`sh -c '...'`). Also the hooks.json early-gate patterns in Python (`_mentions_*`) and the `cd`/`pushd` the target follows.
 """
@@ -43,6 +44,14 @@ def _has_report_file(tokens):
         return False
     j = next((k for k in range(i + 1, len(tokens)) if tokens[k].lower() == "report"), None)
     return j is not None and any(_is_file_token(t) for t in tokens[j + 1:])
+
+
+def _has_suggestion(tokens):
+    """`adopt.py ... report ... --suggestion` (0.7.0, design-adopt-ownership-line 13.5): a report that files ONE look suggestion.
+    Exact, as the `report` subparser takes it (allow_abbrev=False): an abbreviation is still a report, and asks as one."""
+    i = next((k for k, t in enumerate(tokens) if _is_adopt_token(t)), None)
+    j = next((k for k in range(i + 1, len(tokens)) if tokens[k].lower() == "report"), None) if i is not None else None
+    return j is not None and any(t == "--suggestion" or t.startswith("--suggestion=") for t in tokens[j + 1:])
 
 
 def _mentions_report(text):
@@ -102,7 +111,7 @@ def scan(cmd, cwd, depth=0):
             found.append(("confirm", cwd, tokens))
             continue
         if _has_report_file(tokens):
-            found.append(("report", cwd, tokens))
+            found.append(("suggestion" if _has_suggestion(tokens) else "report", cwd, tokens))
             continue
         if _has_apply(tokens):
             found.append(("apply", cwd, tokens))

@@ -10,7 +10,8 @@ sent to the counterfactual), so a comment-stripped stylesheet and a renamed home
   resume files), every portfolio's `page.md`, and the home's file when a `site/src` page expanded a `{{home:<part>}}`
   token;
 - every printed reference's `reference.json` (`used_refs`);
-- the look the site names and its stylesheets, the layout when a generated page was wrapped in it, `site.json`;
+- the looks the site names (`look`, and at schema 7 `lookLocal`) and their stylesheets (a look file no key names is never
+  read and never in `used`), the layout when a generated page was wrapped in it, `site.json`;
 - the resume PDF's sidecar (`<pdf>.json`) when the PDF is published.
 
 Collecting it writes no byte: the output is what it was without it.
@@ -30,8 +31,8 @@ def used(b, files):
     if getattr(b, "_home_split", None) and model.home is not None:     # a `{{home:<part>}}` token read the home file
         found.add(model.home.source)
     found.update("content/references/%s/reference.json" % name for name in b.used_refs)
-    if b.look is not None:
-        found.add(b.cfg.look)
+    if b.look is not None:          # the files `look` and `lookLocal` name (schema 7: laid over each other), never another
+        found.update((b.cfg.look, getattr(b.cfg, "lookLocal", None)))
         found.update(b.look.stylesheets)
     if any(page.get("kind") not in GENERATED_NOT for page in b.pages.values()):
         found.add("site/templates/layout.html")

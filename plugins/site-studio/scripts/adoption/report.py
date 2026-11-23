@@ -92,7 +92,7 @@ def cmd_inventory(repo, as_json):
                                                      for r in redirects[0]],
                                          "left": [{"path": p, "reason": why} for p, why in redirects[1]]},
                            "features": [{"key": k, "where": w, "known": k in known,
-                                         "line": feature_lines([(k, w)])[0].strip("- ").strip()}
+                                         "line": feature_lines([(k, w)], data)[0].strip("- ").strip()}
                                         for k, w in signals],
                            "inferredKind": {"kind": inferred, "why": inferred_why}, "siteKind": kind,
                            "sections": [{"path": p, "found": a, "section": b} for p, a, b in sections]},
@@ -182,7 +182,7 @@ def cmd_inventory(repo, as_json):
     if signals:
         L.append("")
         L.append("what this site does, and what site-studio does about it:")
-        L += feature_lines(signals)
+        L += feature_lines(signals, data)
     L.append("")
     L.append("this looks like a %s site (%s); %s" % (
         inferred, inferred_why,

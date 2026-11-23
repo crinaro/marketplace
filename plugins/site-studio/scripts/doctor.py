@@ -39,7 +39,9 @@ CHROME_PATH that points nowhere is a refusal that names it here exactly as it is
 not launch Chrome.
 """
 import argparse
+import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -179,6 +181,24 @@ def hook_line(repo):
         return "site-studio: the machine check could not finish (%s: %s)" % (type(e).__name__, e)
 
 
+_LOOK_NAME = re.compile(r"^[a-z0-9][a-z0-9-]*\.json$")     # `lookgrammar.layering.LOOK_FILE_RE`'s file names
+
+
+def look_lines(repo):
+    """P6 (design-adopt-ownership-line section 3): each look file under `site/looks/` that `site.json` names in neither `look` nor
+    `lookLocal`, which no build reads, in the words `lookgrammar.layering.unread_notes` prints (a test pins the two equal). Read
+    from disk with no look code imported, as the rest of the report is. Never raises: [] when site.json does not read."""
+    try:
+        with open(os.path.join(repo, "site", "site.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+        names = sorted("site/looks/" + f for f in os.listdir(os.path.join(repo, "site", "looks")) if _LOOK_NAME.match(f))
+    except (OSError, ValueError):
+        return []
+    named = set((cfg.get("look"), cfg.get("lookLocal"))) if isinstance(cfg, dict) else set()
+    return [('%s is not used: site/site.json has no "lookLocal"' if p == "site/looks/local.json" else
+             '%s is not used: site/site.json names it in neither "look" nor "lookLocal"') % p for p in names if p not in named]
+
+
 def full_report(repo):
     """The multi-line report of setup. gh is asked here, lazily; it is never asked by the hook."""
     if os.name == "nt":
@@ -203,6 +223,7 @@ def full_report(repo):
     else:
         lines.append("%-10s %s  %s" % ("gh login", "NOT CHECKED", "gh is not installed"))
     lines.append(pages_line(repo, logged_in=gh_ok))
+    lines += ["%-10s %s  %s" % ("look", "NOTE   ", line) for line in look_lines(repo)]
     try:
         import sync_main
         line = sync_main.run(repo)

@@ -29,6 +29,7 @@ class Derivation(object):
         self.pages_read = 0
         self.mapped_instances = 0
         self.consensus = {}                           # (construct, part) -> (the markup it kept, a call that holds it): the next reading's prior
+        self.candidates = {}                          # construct -> {part: markup}: every reading made, kept or not (the candidates file)
 
     @property
     def text(self):
@@ -455,9 +456,12 @@ class _Reading(object):
                 tpl, odd = _majority(entries, cid, pn)
                 if tpl is None:
                     bad.setdefault(cid, ("ambiguous", "instances of one part do not share one markup"))
+                    # the candidates file (design-adopt-ownership-line 2.6): the markup the most instances support
+                    result.candidates.setdefault(cid, {})[pn] = collections.Counter(t for t, _c in entries).most_common(1)[0][0]
                     continue
                 for _t, c in odd:         # the markup most instances share is used; the others are named, never guessed
                     self.outcome[id(c)] = ("ambiguous", "this instance's markup differs from the one most instances share")
+            result.candidates.setdefault(cid, {})[pn] = tpl
             problems = looks.check_part(cid, pn, tpl)
             if problems:
                 bad.setdefault(cid, ("unmapped", _sanitise(problems[0][0])))

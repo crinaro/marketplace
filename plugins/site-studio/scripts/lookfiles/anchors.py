@@ -332,9 +332,18 @@ def _holds(page, el, hard, apart=False):
             continue
         if attrs is None:
             attrs = page.attrs(el)
-        if not any(n in sq for _k, sq, _raw in attrs):
+        if not any(_attr_holds(k, sq, raw, n) for k, sq, raw in attrs):
             return False
     return True
+
+
+def _attr_holds(name, sq, raw, needle):
+    """Does one attribute (its name, squashed and stripped value) hold `needle`? A class token's tail after a joint is a hook the
+    template writes, not a place the page shows a value (R-G: `<ul class="t-grid-Print">` does not hold a group whose title is
+    `Print`; the group is the heading and the list)."""
+    if needle not in sq:
+        return False
+    return name != "class" or any(needle in tok and not _is_tail(tok, needle) for tok in raw.split())
 
 
 def _resolved(page_key, url):
@@ -429,3 +438,48 @@ def _sub_slot(pat, slot, text):
     if pat.groups:
         return pat.sub(lambda m: m.group(1) + marker + m.group(2), text)
     return pat.sub(marker, text)
+
+
+# R-G (design-adopt-ownership-line section 7): the open text slots a page may write as the TAIL of a class token, after a `-` or `_`
+# (`t-grid-{{group}}`). Another slot's value there is a coincidence with a fixed class (a group whose title and key are both `Print`).
+CLASS_TAIL_SLOTS = {("cards", "wrap"): ("group",), ("group", "wrap"): ("group",), ("piece", "wrap"): ("slug", "portfolio", "group"),
+                    ("portfolio", "wrap"): ("slug",)}
+JOINTS = ("-", "_")
+
+
+def class_tail_slots(construct, part):
+    """The slots of a part a class token's tail may hold (`CLASS_TAIL_SLOTS`), () for any other part."""
+    return CLASS_TAIL_SLOTS.get((construct, part), ())
+
+
+def _is_tail(token, value):
+    """Is `value` the whole tail of the class token `token` after a joint (`Print` of `t-grid-Print`)?"""
+    return any(token.endswith(j + value) and len(token) > len(value) + 1 for j in JOINTS)
+
+
+def _other_forms(value):
+    """The other forms a page may write a value in as a class token's tail: lower case, and lower case with its spaces as `-`."""
+    low = value.lower()
+    return set((low, re.sub(r"[^a-z0-9]+", "-", low).strip("-"))) - set(("", value))
+
+
+def class_sub(val, slot, value, pat, tail_ok):
+    """The class attribute value `val` with `slot` written where `value` stands, or `val` unchanged. A value that is the whole tail of
+    a token after a joint (R-G) is the slot only for a part's open tail slot (`tail_ok`) and a value of two characters or more,
+    exactly as written; it stays literal for any other slot. Elsewhere in a token a value of three characters or more is the slot, as
+    every earlier release read it. Raises _Fail where an open tail slot's value is a token's tail only in another form
+    (`t-grid-print` for `Print`): no template can write it so."""
+    marker, out, exact = "{{%s}}" % slot, [], False
+    if re.search(r"\s", value.strip()):             # words: never one token, so never a tail (as every earlier release read it)
+        out.append(_sub_slot(pat, slot, val) if len(squash(value)) >= 3 and pat.search(val) else val)
+    else:
+        for tok in re.split(r"(\s+)", val):
+            if tok and not tok.isspace() and _is_tail(tok, value):
+                exact = True
+                tok = tok[:len(tok) - len(value)] + marker if tail_ok and len(value) >= 2 else tok
+            elif tok and not tok.isspace() and len(squash(value)) >= 3 and pat.search(tok):
+                tok = _sub_slot(pat, slot, tok)
+            out.append(tok)
+    if tail_ok and not exact and any(_is_tail(t, f) for t in val.split() for f in _other_forms(value)):
+        raise _Fail("unmapped", "the page holds this %s's value only in another form" % slot)
+    return "".join(out)

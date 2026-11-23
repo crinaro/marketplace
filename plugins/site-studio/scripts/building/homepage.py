@@ -32,6 +32,10 @@ class _PlaceCard(object):
     def __setattr__(self, name, value):
         setattr(self._builder, name, value)
 
+    def ref_card_part(self):
+        """(construct, part) the card renders through: the place's part (`markdownenv.ref_card` reads `{{usedBy}}` there)."""
+        return (self._construct, "item")
+
     def r(self, construct, part, values, source=None):
         if (construct, part) == self._site_wide:
             return self._builder.r(self._construct, "item", values, source)
@@ -48,7 +52,7 @@ class _HomePage(object):
             page = self.model.home
             text = self.expand(page.body, out, page.source, escape=False)
             try:
-                cache[out] = C.parse_parts(text, page.source, page.first_line, max(self.grammar, 3))
+                cache[out] = C.parse_parts(text, page.source, page.first_line, max(self.grammar, 3), look=self.look)
             except ContentError as e:
                 raise BuildError(str(e), path=getattr(e, "path", None), lineno=getattr(e, "lineno", None),
                                  fix=getattr(e, "fix", None) or "fix the problem named above, then try again")

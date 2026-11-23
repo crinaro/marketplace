@@ -81,7 +81,9 @@ def refusal_line(problems, whose="the look's"):
     if m:
         return "%s %s has no %s" % (whose, m.group(2), m.group(1))
     found = getattr(p, "found", None) or "refused by the build"
-    return "%s: %s" % (p.path, found) if getattr(p, "path", None) else found
+    line = "%s: %s" % (p.path, found) if getattr(p, "path", None) else found
+    fix = getattr(p, "fix", None)
+    return "%s -- %s; fix: %s" % (line, p.message, fix) if fix and getattr(p, "message", None) else line   # dev #1009: the cause
 
 
 def _is_page(path):

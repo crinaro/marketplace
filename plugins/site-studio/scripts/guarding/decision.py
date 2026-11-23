@@ -6,6 +6,8 @@ imported only on that path).
 """
 
 import os
+import subprocess
+import sys
 from collections import namedtuple
 from guarding.lexing import strip_heredocs
 from guarding.matching import (
@@ -32,10 +34,60 @@ from guarding.texts import (
     REPORT_ASK,
     REPORT_DENY_NO_ASK,
     REPORT_REMOTE_POLICY,
+    SHOWN_LINES,
+    SUGGESTION_ASK,
+    SUGGESTION_DENY_NO_ASK,
+    SUGGESTION_NOT_SHOWN,
+    SUGGESTION_OTHER_DIGEST,
+    SUGGESTION_REMOTE_POLICY,
+    SUGGESTION_SHOWN,
 )
 
 
 ConfirmAsk = namedtuple("ConfirmAsk", "repo digest msg matches matched")
+ADOPT = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "adopt.py")
+SHOW_TIMEOUT = 6              # seconds: inside the guard's own budget (publish_guard.py, 10 s by default)
+
+
+def _option(tokens, name):
+    """The value of `--name V` or `--name=V` in `tokens`, or None."""
+    for i, t in enumerate(tokens):
+        if t.startswith(name + "="):
+            return t[len(name) + 1:]
+        if t == name and i + 1 < len(tokens):
+            return tokens[i + 1]
+    return None
+
+
+def show_suggestion(repo, sid):
+    """(the first SHOWN_LINES body lines, the digest the dry print gives) of `adopt.py report --suggestion ID` run on `repo`
+    (it writes nothing), or (None, why). Its own process, so the guard imports no look code; bounded by SHOW_TIMEOUT."""
+    try:
+        p = subprocess.run([sys.executable, ADOPT, "--repo", repo, "report", "--suggestion", sid], stdout=subprocess.PIPE,
+                           stderr=subprocess.PIPE, timeout=SHOW_TIMEOUT)
+    except (OSError, subprocess.SubprocessError) as e:
+        return None, "it did not run: %s" % type(e).__name__
+    lines = p.stdout.decode("utf-8", "replace").split("\n")
+    at = next((k for k, line in enumerate(lines) if line.startswith("title:  ")), None)
+    last = next((line for line in reversed(lines) if line.startswith("to file exactly this: ")), "")
+    if p.returncode != 0 or at is None or " --digest " not in last:
+        why = (p.stderr.decode("utf-8", "replace").strip() or p.stdout.decode("utf-8", "replace").strip()).split("\n")[-1]
+        return None, (why[:160] or "exit status %d" % p.returncode)
+    return lines[at + 1:at + 1 + SHOWN_LINES], last.rsplit(" ", 1)[-1]
+
+
+def suggestion_reason(repo, tokens):
+    """The ask for `adopt.py report --suggestion ID --file --digest D` (round 2, M4): the fixed text, the digest, and the body's
+    first SHOWN_LINES lines as the dry print gives them now."""
+    sid, digest = _option(tokens, "--suggestion") or "ID", _option(tokens, "--digest") or "(none given)"
+    reason = SUGGESTION_ASK % sid
+    lines, got = show_suggestion(repo, sid)
+    if lines is None:
+        return reason + SUGGESTION_NOT_SHOWN % (digest, got)
+    reason += SUGGESTION_SHOWN % (digest, "\n".join(lines))
+    if got != digest:
+        reason += SUGGESTION_OTHER_DIGEST % got
+    return reason
 
 
 def _digest_and_message(tokens):
@@ -73,10 +125,12 @@ def _said(kinds, field):
 def _refusal_by_mode(payload, env, kind):
     """(decision, reason) when the environment or the permission mode forbids asking, else None."""
     if env.get("CLAUDE_CODE_REMOTE") == "true":
-        return "deny", {"confirm": REMOTE_POLICY, "report": REPORT_REMOTE_POLICY, "apply": APPLY_REMOTE_POLICY}[kind]
+        return "deny", {"confirm": REMOTE_POLICY, "report": REPORT_REMOTE_POLICY, "apply": APPLY_REMOTE_POLICY,
+                        "suggestion": SUGGESTION_REMOTE_POLICY}[kind]
     mode = payload.get("permission_mode")
     if mode in NOT_ASKED_MODES:
-        return "deny", {"confirm": DENY_NO_ASK, "report": REPORT_DENY_NO_ASK, "apply": APPLY_DENY_NO_ASK}[kind]
+        return "deny", {"confirm": DENY_NO_ASK, "report": REPORT_DENY_NO_ASK, "apply": APPLY_DENY_NO_ASK,
+                        "suggestion": SUGGESTION_DENY_NO_ASK}[kind]
     if mode not in ASK_MODES:
         shown = "no permission_mode in the hook payload" if mode is None else \
             "permission mode %r is not one the publish prompt has been verified in" % (mode,)
@@ -131,9 +185,11 @@ def decide(payload, env, ctx=None):
                        % KINDS[kind]["cmd"]), matched
     if kind == "report":
         return "ask", REPORT_ASK, matched
+    if kind == "suggestion":
+        return "ask", suggestion_reason(repo, chosen), matched
     if kind == "apply":
         reason = APPLY_ASK % (_public_repo_of(repo) or APPLY_ASK_NO_REPO)
-        if any(m[0] == "report" for m in matches):
+        if any(m[0] in ("report", "suggestion") for m in matches):
             reason += " The same command also files site-studio adopt reports."
         return "ask", reason, matched
 

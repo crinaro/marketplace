@@ -338,13 +338,14 @@ def _line_problems(title, body):
     return probs
 
 
-def leak_problems(title, body, terms=(), grammar=True, site_terms=True, shapes=True):
+def leak_problems(title, body, terms=(), grammar=True, site_terms=True, shapes=True, lines=None):
     """Refuse on ANY hit, three ways (RP): the GRAMMAR, the SITE TERMS and the SHAPES. Each layer can be switched off
     so a test proves every layer refuses a planted leak on its own. Returns `[(layer, why, found)]`; empty is clean.
-    Terms are matched case-insensitively (a term stored in one case must meet the same token in another)."""
+    Terms are matched case-insensitively (a term stored in one case must meet the same token in another). `lines` replaces the
+    grammar layer's line check (a look suggestion's, `reportcause/suggestion.py`; 0.7.0)."""
     probs = []
     if grammar:
-        probs.extend(_line_problems(title, body))
+        probs.extend((lines or _line_problems)(title, body))
     if site_terms:
         vocab = vocabulary()
         terms = set(t.lower() for t in terms)
@@ -412,10 +413,11 @@ class Outcome(object):
         return "Outcome(%s, %s, %s, %r)" % (self.state, self.issue, self.fixed_in, self.note)
 
 
-def dedupe(cid, repo, installed, runner=None, limit=LIST_LIMIT):
-    """Ask the tracker, read-only, whether `cid` is already reported (A6, Q2.8, U-10, U-17, R3N-12)."""
-    title = TITLE_PREFIX + cid
-    rc, out, err = run_gh(["issue", "list", "--repo", repo, "--state", "all", "--search", "%s in:title" % cid,
+def dedupe(cid, repo, installed, runner=None, limit=LIST_LIMIT, title_prefix=TITLE_PREFIX, refile=True, search=None):
+    """Ask the tracker, read-only, whether `cid` is already reported (A6, Q2.8, U-10, U-17, R3N-12). A look suggestion (0.7.0)
+    passes its own `title_prefix`, `search` (its digest token alone) and `refile=False`: a closed fix is never filed again."""
+    title = title_prefix + cid
+    rc, out, err = run_gh(["issue", "list", "--repo", repo, "--state", "all", "--search", search or "%s in:title" % cid,
                            "--limit", str(limit), "--json", "number,title,url,state,stateReason"], runner)
     if rc != 0:
         return Outcome("not-checked", note="gh could not list issues (%s)" % (err or "unavailable"))
@@ -453,9 +455,11 @@ def dedupe(cid, repo, installed, runner=None, limit=LIST_LIMIT):
     except (ValueError, AttributeError):
         return Outcome("not-checked", issue=latest["number"], note="gh answered with unreadable comments")
     if not tags:
-        return Outcome("not-checked", issue=latest["number"],
-                       note="the closure names no fix version (no site-studio--v<x.y.z> tag in its comments)")
+        return Outcome("not-checked", issue=latest["number"], note="the closure names no fix version (no site-studio--v<x.y.z> tag in "
+                       "its comments)%s" % ("" if refile else "; look at issue #%d before filing anything" % latest["number"]))
     fixed = max(tags, key=version_tuple)
+    if not refile:
+        return Outcome("existing", issue=latest["number"], fixed_in=fixed, note="closed as done in %s: never filed again" % fixed)
     have = version_tuple(installed)
     if have is None:
         return Outcome("not-checked", issue=latest["number"], fixed_in=fixed,

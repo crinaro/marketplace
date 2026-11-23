@@ -600,6 +600,8 @@ def converted_site_files(tree, data, paper, folders=None, kind=None, only=None, 
                          + sorted(gone))
     names = portfolio_folders(tree) + sorted(n for n, c in (folders or {}).items() if c == "portfolio")
     home = home_feed(view)
+    rpath = (cfg.resume or {}).get("path") if cfg is not None and isinstance(cfg.resume, dict) else None
+    built = {"resume"} if rpath and view.exists(rpath) and rpath not in notes["removed"] else set()   # dev #985: the build has it
     for p in token_files(view) if want("tokens") else ():
         if p in notes["removed"]:
             continue
@@ -607,7 +609,8 @@ def converted_site_files(tree, data, paper, folders=None, kind=None, only=None, 
         frz = []
         new, ch, unk = rewrite_tokens(text, names, layout=(p == "site/templates/layout.html"), home=home, frozen=frz,
                                       labels=site_json_labels(data), home_rows=bool(notes["homeKeys"]),
-                                      home_samples=any("featured (references)" in w for _p, w in notes["homeKeys"]), old=old_page(hints, p, data))
+                                      home_samples=any("featured (references)" in w for _p, w in notes["homeKeys"]), old=old_page(hints, p, data),
+                                      pages=built)
         notes["tokens"].extend((p, a, b) for a, b in ch)
         notes["tokensFrozen"].extend((p, a, b) for a, b in frz)
         notes["unknown"].extend((p, t) for t in unk)

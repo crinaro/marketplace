@@ -1,0 +1,55 @@
+{
+  "look": 1,
+  "constructs": {
+    "resume-role": {
+      "wrap": "<section class=\"s-rs-role\"><h3 class=\"s-rs-role-head\"><span class=\"s-rs-role-title\">{{role}}</span> <span class=\"s-rs-role-org\">{{org}}</span></h3>{{body}}</section>",
+      "wrap-bare": "<section class=\"s-rs-role\"><h3 class=\"s-rs-role-head\"><span class=\"s-rs-role-title\">{{role}}</span></h3>{{body}}</section>"
+    },
+    "piece-roles": {
+      "wrap": "<ol class=\"s-rs-roles\">{{items}}</ol>",
+      "item": "<li class=\"s-rs-roles-item\"><span class=\"s-rs-roles-title\">{{title}}</span>{{period}}</li>",
+      "item-current": "<li class=\"s-rs-roles-item s-rs-roles-now\"><span class=\"s-rs-roles-title\">{{title}}</span>{{period}}</li>",
+      "period": "<span class=\"s-rs-roles-period\">{{text}}</span>"
+    },
+    "roles-view": {
+      "wrap": "<div class=\"s-rs-employers\">{{items}}</div>",
+      "item": "<article class=\"s-rs-employer\">{{image}}{{kicker}}<h2 class=\"s-rs-employer-head\">{{heading}}</h2><p class=\"s-rs-employer-role\"><a href=\"{{url}}\">{{titles}}</a> <span class=\"s-rs-employer-period\">{{period}}</span></p>{{previously}}</article>",
+      "item-current": "<article class=\"s-rs-employer s-rs-employer-now\">{{image}}{{kicker}}<h2 class=\"s-rs-employer-head\">{{heading}}</h2><p class=\"s-rs-employer-role\"><a href=\"{{url}}\">{{titles}}</a> <span class=\"s-rs-employer-period\">{{period}}</span></p>{{previously}}</article>",
+      "heading": "<span class=\"s-rs-employer-name\">{{employer}}</span>",
+      "previously": "<ul class=\"s-rs-earlier\">{{items}}</ul>",
+      "previously-item": "<li class=\"s-rs-earlier-item\"><a href=\"{{url}}\">{{title}}</a> <span class=\"s-rs-earlier-period\">{{period}}</span></li>"
+    },
+    "reference-card": {
+      "wrap": "<article class=\"s-rs-ref\"><a class=\"s-rs-ref-link\" href=\"{{url}}\" rel=\"noopener\">{{image}}<span class=\"s-rs-ref-title\">{{title}}</span></a>{{site}}{{description}}{{role}}{{usedBy}}</article>",
+      "site": "<span class=\"s-rs-ref-site\">{{text}}</span>",
+      "description": "<span class=\"s-rs-ref-text\">{{text}}</span>",
+      "role": "<span class=\"s-rs-ref-role\">{{text}}</span>",
+      "used-by": "<a class=\"s-rs-ref-used\" href=\"{{url}}\">{{title}}</a>"
+    },
+    "feed": {
+      "item": "<article class=\"s-rs-ref\"><a class=\"s-rs-ref-link\" href=\"{{url}}\" rel=\"noopener\">{{image}}<span class=\"s-rs-ref-title\">{{title}}</span></a>{{site}}{{description}}{{role}}{{usedBy}}</article>"
+    },
+    "home-samples": {
+      "item": "<article class=\"s-rs-ref s-rs-ref-home\"><a class=\"s-rs-ref-link\" href=\"{{url}}\" rel=\"noopener\">{{image}}<span class=\"s-rs-ref-title\">{{title}}</span></a>{{site}}{{description}}{{role}}{{usedBy}}</article>"
+    },
+    "video-embed": {
+      "wrap": "<div class=\"s-rs-video\"><iframe src=\"{{embed}}\" title=\"{{title}}\" loading=\"lazy\" allowfullscreen referrerpolicy=\"strict-origin-when-cross-origin\"></iframe></div>"
+    }
+  },
+  "named": {
+    "s-rs-timeline": {
+      "like": "roles-view",
+      "parts": {
+        "wrap": "<div class=\"s-rs-timeline\">{{items}}</div>",
+        "item": "<section class=\"s-rs-timeline-row\"><h2 class=\"s-rs-timeline-head\">{{heading}}</h2><p class=\"s-rs-timeline-role\"><a href=\"{{url}}\">{{titles}}</a> <span class=\"s-rs-timeline-period\">{{period}}</span></p>{{previously}}</section>",
+        "item-current": "<section class=\"s-rs-timeline-row s-rs-timeline-now\"><h2 class=\"s-rs-timeline-head\">{{heading}}</h2><p class=\"s-rs-timeline-role\"><a href=\"{{url}}\">{{titles}}</a> <span class=\"s-rs-timeline-period\">{{period}}</span></p>{{previously}}</section>"
+      }
+    }
+  },
+  "reads": {
+    "piece-roles.item-current": ["currentRole", "@last"],
+    "roles-view.item.employer": ["company"],
+    "video-embed.wrap.title": ["@caption", "videoTitle"]
+  },
+  "stylesheets": ["site/src/looks/sample-resume.css"]
+}

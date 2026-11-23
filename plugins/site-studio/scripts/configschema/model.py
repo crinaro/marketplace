@@ -16,6 +16,7 @@ from configschema.configkeys import (
     V2_TOP_KEYS,
     V4_TOP_KEYS,
     V6_TOP_KEYS,
+    V7_TOP_KEYS,
     _DOMAIN_RE,
     _REPO_RE,
 )
@@ -24,9 +25,11 @@ from configschema.sectioncheck import (
     _blocks_check,
     _budgets_check,
     _look,
+    _look_local,
     _nav_check,
     _redirects_check,
     needs_schema_6,
+    needs_schema_7,
     v6_top_check,
 )
 from configschema.valuecheck import (
@@ -65,6 +68,7 @@ class SiteConfig(object):
         self.featuredFrom = d.get("featuredFrom", "home")
         self.nav = d.get("nav", {})
         self.look = d.get("look")
+        self.lookLocal = d.get("lookLocal")
         self.blocks = d.get("blocks", {})
         self.featuredView = d.get("featuredView", "flat")
         self.titleSeparator = d.get("titleSeparator", TITLE_SEPARATOR_DEFAULT)
@@ -77,6 +81,11 @@ class SiteConfig(object):
         it is not its default, and `work.labels` only when non-empty, so a schema-1 config's
         dict is a schema-1 dict."""
         d = dict((k, getattr(self, k)) for k in KEY_ORDER)
+        if isinstance(d.get("resume"), dict) and d["resume"].get("paper") is None:
+            # A resume with no PDF has no paper (K-1, schema 3): the parsed form holds `paper: None`, which `parse_data`
+            # refuses as a value, so it is left out here as `canonical.canonical_text` leaves it out (0.7.0: `look.py use`
+            # refused a converted site with no resume PDF, "'resume.paper' must be Letter or A4").
+            d["resume"] = dict((k, v) for k, v in d["resume"].items() if k != "paper")
         work = dict(self.work)
         if not labels_nonempty(work.get("labels")):
             work.pop("labels", None)
@@ -89,6 +98,8 @@ class SiteConfig(object):
             d["nav"] = dict(self.nav)
         if self.look is not None:
             d["look"] = self.look
+        if self.lookLocal is not None:
+            d["lookLocal"] = self.lookLocal
         if self.blocks:
             d["blocks"] = dict(self.blocks)
         if self.featuredView != "flat":
@@ -175,9 +186,12 @@ def _check(data):
                 "set \"schema\" to a whole number from 1 to %d" % SCHEMA_MAX)
         return col.problems, None
     for k in data:
-        if k not in KEY_ORDER and k not in V2_TOP_KEYS and k not in V4_TOP_KEYS and k not in V6_TOP_KEYS:
+        if (k not in KEY_ORDER and k not in V2_TOP_KEYS and k not in V4_TOP_KEYS and k not in V6_TOP_KEYS
+                and k not in V7_TOP_KEYS):
             col.add("site.json: unknown key '%s'" % k, k, "unknown key", "one of: " + ", ".join(CANON_ORDER),
                     "remove '%s'" % k)
+        elif k in V7_TOP_KEYS and schema < 7:
+            col.problems.append(needs_schema_7(k, schema).problem)
         elif k in V2_TOP_KEYS and schema < 2:
             col.problems.append(_needs_schema_2(k).problem)
         elif k in V4_TOP_KEYS and schema < 4:
@@ -245,6 +259,10 @@ def _check(data):
         ok, look = col.run(_look, data["look"])
         if ok:
             d["look"] = look
+    if schema >= 7 and "lookLocal" in data:
+        ok, local = col.run(_look_local, data["lookLocal"], data.get("look"))
+        if ok:
+            d["lookLocal"] = local
     if schema >= 4 and "blocks" in data:
         d["blocks"] = _blocks_check(data["blocks"], col, schema)
     if schema >= 6:

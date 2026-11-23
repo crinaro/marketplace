@@ -50,6 +50,8 @@ from lookgrammar.errors import LookError
 from lookgrammar.slotvalues import _INTLIT, safe_embed, safe_int, safe_position, safe_srcset, safe_url
 from lookgrammar.stylesheets import check_stylesheet_path
 from lookgrammar import decoration, optionalparts
+from lookgrammar import reads as lookreads
+from lookgrammar import named as looknamed
 # Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
 from lookgrammar.constructs import (
     TEXT,
@@ -67,7 +69,7 @@ from lookgrammar.constructs import (
     PART_FIRST,
     PLACE_PARTS,
     SLOT_FIRST,
-    OPEN_SLOT_FIRST, OPTIONAL_PARTS, TEXT_ONLY_PARTS, SENT_OPEN, SENT_CLOSE,
+    OPEN_SLOT_FIRST, OPTIONAL_PARTS, TEXT_ONLY_PARTS, SENT_OPEN, SENT_CLOSE, TOP_KEY_FIRST,
     ALLOWED_ELEMENTS,
     VOID_ELEMENTS,
     IFRAME_PARTS,
@@ -81,6 +83,15 @@ from lookgrammar.constructs import (
     _ROLES,
     CLOSED_VALUES,
 )
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from lookgrammar.needs import (
+    _SLOT,
+    version_tuple,
+    part_first,
+    slot_release,
+    ASSET_FIRST,
+    release_needs,
+)
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -93,15 +104,6 @@ LOOK_FORMAT = 1
 
 _PART_NAME = re.compile(r"^[a-z][a-z0-9-]*$")
 _SLOT_NAME = re.compile(r"^[a-z][A-Za-z0-9]*$")     # lower camel case: `fullTitle` (step G, O4a) is the first capital
-_SLOT = re.compile(r"\{\{([^{}]*)\}\}")
-
-
-def version_tuple(v):
-    return tuple(int(x) for x in v.split("."))
-
-
-def part_first(construct, part):
-    return PART_FIRST.get((construct, part), CONSTRUCTS[construct]["first"])
 
 
 def gated_slots(construct, part):
@@ -119,23 +121,10 @@ def gate(construct, part, slot, triggers, markup):
     return ""
 
 
-def slot_release(construct, part, slot):
-    """The release a slot added to an older part needs (`SLOT_FIRST`, gated; `OPEN_SLOT_FIRST`, ungated), else None. A
-    place part's slot (`PLACE_PARTS`) is the site-wide part's slot, so it needs what that slot needs."""
-    construct, part = PLACE_PARTS.get((construct, part), (construct, part))
-    row = SLOT_FIRST.get((construct, part, slot))
-    return row[0] if row else OPEN_SLOT_FIRST.get((construct, part, slot))
-
-
 def optional_part(construct, part, look):
     """The site's own markup for an `OPTIONAL_PARTS` part, or None when its look writes none (the default look has none
     of them): the caller then renders the place exactly as it did before the part existed (step G, O2 and O3)."""
     return look.own_part(construct, part) if look is not None and (construct, part) in OPTIONAL_PARTS else None
-
-
-# ------------------------------------------------------------- the release a look needs (design-movement-view 3.4)
-# An asset kind first released after 0.3.1 (`css` and `js` are 0.3.1's), with its release.
-ASSET_FIRST = {"schema-4": "0.4.0", "schema-5": "0.5.0", "schema-6": "0.6.0"}
 
 
 def _decoration_needs(constructs):
@@ -145,40 +134,9 @@ def _decoration_needs(constructs):
 
 
 def needs(look_text):
-    """The newest release the look file `look_text` (its JSON text) needs to be read, as "0.5.0": the newest of the
-    `first` of every construct it names, every part it writes (`part_first`, `PART_FIRST`), every slot it places that
-    `SLOT_FIRST` gates or `OPEN_SLOT_FIRST` adds (`slot_release`), every asset kind it links (`ASSET_FIRST`) and every
-    decoration it holds (`_decoration_needs`).
-    None for a look that names nothing, or that is not a look at all (`parse` refuses that with its own line). A name
-    this release does not know is left to `parse`, which refuses it as unknown. The schema check reads this through
-    `building.lookneeds`, because `configschema` does not import the look grammar."""
-    try:
-        data = json.loads(look_text)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    found, clean = [], {}
-    constructs = data.get("constructs")
-    for cid, parts in (constructs.items() if isinstance(constructs, dict) else ()):
-        if cid not in CONSTRUCTS or not isinstance(parts, dict):
-            continue
-        found.append(CONSTRUCTS[cid]["first"])
-        clean[cid] = {}
-        for pn, text in parts.items():
-            if pn not in CONSTRUCTS[cid]["parts"] or not isinstance(text, str):
-                continue
-            clean[cid][pn] = text
-            found.append(part_first(cid, pn))
-            found.extend(r for r in (slot_release(cid, pn, m.group(1)) for m in _SLOT.finditer(text)) if r)
-    assets = data.get("assets")
-    for kinds in (assets.values() if isinstance(assets, dict) else ()):
-        found.extend(ASSET_FIRST[k] for k in (kinds if isinstance(kinds, list) else ())
-                     if isinstance(k, str) and k in ASSET_FIRST)
-    decoration = _decoration_needs(clean)
-    if decoration:
-        found.append(decoration)
-    return max(found, key=version_tuple) if found else None
+    """The newest release the look file `look_text` needs (`release_needs`), with this grammar's decoration reader
+    (`_decoration_needs`, which holds the part parser: the release table imports nothing from `looks`)."""
+    return release_needs(look_text, _decoration_needs)
 
 
 def table_problems():
@@ -497,19 +455,26 @@ def check_part(construct, part, text, shipped=False, template=False, parsed=None
         problems.extend(optionalparts.problems(ctx, construct, part, text, replaced, found, p.seen_attrs, parsed))
     if p.stack:
         problems.append(("%s: <%s> is never closed" % (ctx, p.stack[-1]), "close every element you open"))
+    if (construct, part) == ("card", "number") and {"n", "text"} <= set(found_names(text)):
+        problems.append(("%s: {{n}} prints one copy of the part per number, {{text}} one copy holding all of them"
+                         % ctx, "keep one of {{n}} and {{text}}"))                  # 0.7.0, design section 5
     # an html slot only in element content: a sentinel for an html slot inside any attribute value is caught
     # in _one_attr (kind not text/int); here the same slot in a tag position was caught by the tag-name rule.
     return [(m, f) for m, f in problems]
 
 
 class Look(object):
-    """A parsed look: `constructs` {id: {part: text}}, `stylesheets` [path], `assets` {id: [kind]}."""
+    """A parsed look: `constructs` {id: {part: text}}, `stylesheets` [path], `assets` {id: [kind]}, and from 0.7.0 `reads`
+    {target: `lookgrammar.reads.Spec`} ({} for a look with no `reads` key: every target reads what 0.6.0 reads) and `named`
+    {name: `lookgrammar.named.Named`} ({} with no `named` key: no block or view of the site's own)."""
 
-    def __init__(self, constructs, stylesheets, assets, where):
+    def __init__(self, constructs, stylesheets, assets, where, reads=None, named=None):
         self.constructs = constructs
         self.stylesheets = stylesheets
         self.assets = assets
         self.where = where
+        self.reads = dict(reads or {})
+        self.named = dict(named or {})
 
     def has(self, construct, part):
         return part in self.constructs.get(construct, {})
@@ -522,13 +487,16 @@ class Look(object):
         return sorted(c for c in CONSTRUCTS if c not in self.constructs)
 
 
-def parse(text, where="look", shipped=False, template=None):
+def parse(text, where="look", shipped=False, template=None, cross=True):
     """Parse and validate a look file's text. Returns a `Look`; raises LookError naming the first
     problem group (every problem is in the message, one per line). `shipped=True` is CI's reading of a
     file in `templates/looks/` (R5.2 rule 8): the same rules, plus, for a TEMPLATE look (`template`,
     default: the file's name starts `template-`), no literal word in text or attribute values and the
     token rules; a plugin-authored look keeps the token and URL rules and may hold literal words, because
-    it is engine text written in this repository, not extracted from a site."""
+    it is engine text written in this repository, not extracted from a site.
+    0.7.0: `reads` is read by `lookgrammar.reads.parse_reads`, and `cross` runs the look-wide pairs
+    (`reads.pair_problems`: a choice and its variant part, `{{usedBy}}` and its part) on this file alone. A reader
+    that lays two files over each other (rule P) passes `cross=False` for each and runs the pairs on the merged look."""
     try:
         data = json.loads(text)
     except ValueError as e:
@@ -537,7 +505,7 @@ def parse(text, where="look", shipped=False, template=None):
         raise LookError("%s: a look is a JSON object" % where, fix="start from {\"look\": 1, \"constructs\": {}}")
     problems = []
     for k in data:
-        if k not in ("look", "constructs", "stylesheets", "assets"):
+        if k not in ("look", "constructs", "stylesheets", "assets", "reads", "named"):
             problems.append("%s: unknown top-level key %r" % (where, k))
     ver = data.get("look")
     if ver is None or isinstance(ver, bool) or not isinstance(ver, int):
@@ -590,11 +558,25 @@ def parse(text, where="look", shipped=False, template=None):
             problems.append("%s: `assets` names the unknown construct %r" % (where, cid))
         if not isinstance(kinds, list) or any(k not in ASSET_KINDS for k in kinds):
             problems.append("%s: `assets` for %s must be a list drawn from %s" % (where, cid, ", ".join(ASSET_KINDS)))
+    reads, read_problems = lookreads.parse_reads(where, data["reads"]) if "reads" in data else ({}, [])
+    problems.extend(read_problems)
+    named, named_problems = (looknamed.parse_named(where, data["named"], check_part, shipped, template)
+                             if "named" in data else ({}, []))     # 0.7.0 (section 6.6): the site's own blocks and views
+    problems.extend(named_problems)
+    if cross:
+        problems.extend(lookreads.pair_problems(where, clean, reads, default_renders))
+        problems.extend(looknamed.pair_problems(where, named, reads, default_renders))
     if shipped and not template:
         problems.extend(_third_party_problems(where, clean))
     if problems:
         raise LookError("\n".join(problems), fix="fix each line above, then run the check again")
-    return Look(clean, norm_sheets, dict(assets), where)
+    return Look(clean, norm_sheets, dict(assets), where, reads, named)
+
+
+def default_renders(construct, part):
+    """True when the default look has an entry for the part, read from the table (every part but an `OPTIONAL_PARTS` one),
+    so the check can run while the default look itself is being parsed."""
+    return (construct, part) not in OPTIONAL_PARTS
 
 
 def _third_party_problems(where, constructs):
@@ -633,6 +615,16 @@ def load(path):
 
 
 # ------------------------------------------------------------------------------------------------ render
+def found_names(text):
+    """The slot names a part's text places, in order (design-adopt-ownership-line section 5 reads them)."""
+    return [m.group(1).strip() for m in _SLOT.finditer(text if isinstance(text, str) else "")]
+
+
+def places(construct, part, slot, look=None):
+    """True when the part's effective markup (the look's own, else the default) places `{{slot}}`."""
+    return slot in found_names(part_markup(construct, part, look))
+
+
 def part_markup(construct, part, look=None):
     """The template text for one part: the look's own, else the default look's."""
     if construct not in CONSTRUCTS or part not in CONSTRUCTS[construct]["parts"]:

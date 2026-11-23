@@ -28,6 +28,8 @@ import re
 
 from configschema.configkeys import (BUILTIN_PIECE_KEYS, MEDIA_PATH_FOLDERS, NAV_EXTRA_MAX, NAV_EXTRA_SCHEMES, NAV_HOME_TITLE,
                                      SIZE_COPY_EXTS, TITLE_SEPARATOR_DEFAULT)
+from contentmodel.errors import ContentError
+from contentmodel.frontmatter import parse_front_matter
 from contentmodel.keytables import VIEW_PIECE_KEYS, piece_keys_read
 
 from adoption import carry, homeparts
@@ -96,6 +98,8 @@ def portfolio_facts(snap):
         if len(parts) == 3 and parts[0] == "content" and parts[2] == "page.md" and not parts[1].startswith("_"):
             fm = _front(snap[path].decode("utf-8", "replace"))
             out.setdefault(parts[1], {"pieces": [], "view": fm.get("view") or None, "sort": fm.get("sort") or None})
+    if "work" not in out and any(p.startswith("content/work/") and len(p.split("/")) >= 3 for p in snap):
+        out["work"] = {"pieces": [], "view": None, "sort": None}    # dev #1007: the build reads `work` from site.json (layout.py)
     for path in sorted(snap):
         parts = path.split("/")
         if (len(parts) == 4 and parts[0] == "content" and parts[1] in out and parts[3] == "index.md"
@@ -215,6 +219,39 @@ def _front_list(snap, port, key):
     return out
 
 
+def plain_keys(items):
+    """dev #1007: the keys of a `work` list as the build reads them, a `[key, label]` pair (or `{"key", "label"}`) by its key;
+    `adoption.convert.label_conversions` makes the same reading."""
+    out = []
+    for k in items if isinstance(items, list) else ():
+        k = k[0] if isinstance(k, (list, tuple)) and k else k.get("key") if isinstance(k, dict) else k
+        if isinstance(k, str):
+            out.append(k)
+    return out
+
+
+def group_labels(port, snap, data):
+    """dev #1007: {group: the label the old heading prints}, from site.json's `work.labels.groups` for `work` (or a pair in
+    `work.groups`) and from `labels: groups:` in the portfolio's page.md front matter otherwise. {} when none is written."""
+    out = {}
+    if port == "work":
+        work = (data or {}).get("work") or {}
+        for item in work.get("groups") or ():
+            if isinstance(item, (list, tuple)) and len(item) == 2 and all(isinstance(x, str) for x in item):
+                out[item[0]] = item[1]
+        lab = (work.get("labels") or {}).get("groups") if isinstance(work.get("labels"), dict) else None
+        out.update((k, v) for k, v in (lab or {}).items() if isinstance(v, str))
+    try:
+        meta = parse_front_matter(snap.get("content/%s/page.md" % port, b"").decode("utf-8", "replace"), port)[0]
+    except ContentError:
+        meta = {}                       # the build refuses that page.md and names it; no label is read from it here
+    lab = meta.get("labels") if isinstance(meta.get("labels"), dict) else {}
+    for k, v in (lab.get("groups") if isinstance(lab.get("groups"), dict) else {}).items():
+        if isinstance(v, str):
+            out.setdefault(k, v)
+    return out
+
+
 def portfolio_settings(port, snap, settings=None):
     """The portfolio-level settings `port` is judged under, as `keytables.active_triggers` reads them: its `view` (the setting when
     one is chosen, else as written) and each of the five card and piece settings that has a value. `cardKicker` is left out: the
@@ -238,8 +275,10 @@ def read_keys(port, snap, data, settings=None):
     for key in ("meta", "cardMeta"):
         known.update(_front_list(snap, port, key))
         if port == "work" or s.get("workKeys") == "all":
-            known.update(work.get(key) or ())
+            known.update(plain_keys(work.get(key)))
     known.update(_front_list(snap, port, "groupBy"))
+    if (port == "work" or s.get("workKeys") == "all") and isinstance(work.get("groupBy"), str):
+        known.add(work["groupBy"])          # dev #1007: site.json's `work.groupBy` is read too
     if s.get("featuredFrom") == "flags":
         known.add("featured")
     ps = portfolio_settings(port, snap, s)
@@ -429,7 +468,7 @@ def group_values(port, snap, data):
     key = _page_front(snap, port).get("groupBy") or work.get("groupBy")
     if not key:
         return []
-    listed = _front_list(snap, port, "groups") or list(work.get("groups") or ())
+    listed = _front_list(snap, port, "groups") or plain_keys(work.get("groups"))
     seen = []
     for fm in portfolio_facts(snap).get(port, {}).get("pieces", ()):
         v = fm.get(str(key).strip("[]'\" "))
@@ -443,10 +482,13 @@ def old_count_headings(port, snap, data, local, page=None):
     group value and then a number: `Buildings 2 projects`, `Objects (1 object)`."""
     out = []
     groups = group_values(port, snap, data)
+    labels = group_labels(port, snap, data)
     for _lvl, inner in _HEADING.findall(_page(local, page or "%s/index.html" % port)):
         text = _text(inner)
         for g in groups:
-            m = re.match(r"^%s\W*(\d+)\s*([^\W\d_][\w-]*)?" % re.escape(g), text, re.U)
+            m = None
+            for shown in [x for x in (labels.get(g), g) if x]:      # dev #1007: the old heading prints the group's LABEL
+                m = m or re.match(r"^%s\W*(\d+)\s*([^\W\d_][\w-]*)?" % re.escape(shown), text, re.U)
             if m:
                 out.append((g, int(m.group(1)), m.group(2) or ""))
                 break

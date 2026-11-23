@@ -5,7 +5,7 @@ import re
 
 from contentmodel import frontmatter
 import looks
-from lookgrammar import stylesheets
+from lookgrammar import layering, stylesheets
 from contentmodel.errors import ContentError
 from contentmodel.links import esc
 from lookgrammar.errors import LookError
@@ -43,29 +43,45 @@ class _PageBase(object):
         self._home_split = {}            # output page -> (intro, parts) of content/home.md for `{{home:<part>}}`
         self.assets_emitted = set()      # (page, kind) already linked, so a page links each plugin file once
         self.assets_used = set()         # kinds ("css", "js", "schema-4") some page links: those files are written
-        self.look = None                 # the site's own look (`site.json` `look`), read by `load_look`; None: the default
+        self.look = None                 # the site's effective look (`look`, then `lookLocal`), read by `load_look`; None: the default
 
     # ---- the look: every construct's markup is filled by looks.render (template-fidelity 1.4, design R5.8)
     def load_look(self):
-        """The parsed look `site.json` names, read from the tree as it reads `layout.html` (a pure function of
-        the committed tree and the plugin version). Absent key: None, and the default look renders everything.
-        A look that is missing or refused refuses the build, naming the file."""
-        ref = self.cfg.look
-        if ref is None:
-            return None
+        """The effective look, read from the tree as it reads `layout.html` (a pure function of the committed tree and
+        the plugin version): the file `look` names, with the file `lookLocal` names laid over it per construct
+        (schema 7, design-adopt-ownership-line section 3, `lookgrammar.layering`). No key: None, and the default look
+        renders everything. Without `lookLocal` the look is read exactly as before 0.7.0. A look that is missing or
+        refused, alone or laid over the other, refuses the build naming its file (P1, P7). A look file no key names is
+        never read; each gets a note (P6)."""
+        ref, local = self.cfg.look, getattr(self.cfg, "lookLocal", None)
+        self.notes.extend(layering.unread_notes(self.files, ref, local))
+        if local is None:
+            look = None if ref is None else self._parsed_look(ref, "look", True)
+        else:
+            base = None if ref is None else self._parsed_look(ref, "look", False)
+            top = self._parsed_look(local, "lookLocal", False)
+            try:
+                look = layering.merge(base, top, looks._PartParser, looks.default_renders)
+            except LookError as e:
+                raise BuildError(str(e), path=local, fix=e.fix or "fix the look files named above")
+        self.look = look
+        return look
+
+    def _parsed_look(self, ref, key, cross):
+        """One look file parsed alone (`cross`: its look-wide pairs too), with its stylesheets read from the tree."""
         raw = self.files.get(ref)
         if raw is None:
-            raise BuildError("site.json: look '%s' is not a file in the build input" % ref, path="site/site.json",
-                             fix="commit %s, or remove the look key from site/site.json for the plugin's own look" % ref)
+            raise BuildError("site.json: %s '%s' is not a file in the build input" % (key, ref), path="site/site.json",
+                             fix="commit %s, or remove the %s key from site/site.json%s"
+                             % (ref, key, " for the plugin's own look" if key == "look" else ""))
         try:
-            look = looks.parse(frontmatter.decode_text(raw, ref), ref)
+            look = looks.parse(frontmatter.decode_text(raw, ref), ref, cross=cross)
             for rel in look.stylesheets:        # a regular file at HEAD (symlinks never reach the build input)
                 sheet = self.files.get(rel)
                 if sheet is None:
                     raise LookError("%s: stylesheets names %s, which is not a file in the build input" % (ref, rel),
                                     fix="commit the file, or remove it from the look's stylesheets")
                 stylesheets.scan_stylesheet(frontmatter.decode_text(sheet, rel), rel)
-            self.look = look
         except LookError as e:
             raise BuildError(str(e), path=ref, fix=e.fix or "fix the look file named above")
         except ContentError as e:

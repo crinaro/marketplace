@@ -99,8 +99,8 @@ import json
 from adoption import homeparts  # noqa: F401 -- read through this module by test_choose.py (`C.homeparts`)
 from adoption.candidates import (BUILT_IN_VIEWS, DEFAULTS, VIDEO_EMBED, candidates_for, look_partner, partner, portfolio_facts,
                                  setting_names)
-from adoption import facts, lookkeep
-from adoption.scoring import judge_by_facts, lost_content, one_build_pages, refusal_line, refusals, score
+from adoption import facts, joint, lookkeep
+from adoption.scoring import judge_by_facts, judged_paths, lost_content, one_build_pages, refusal_line, refusals, score
 from adoption.settings import setting_family
 # Moved to `adoption.candidates` and `adoption.scoring` by split_module.py (design-adopt-parity-2 step 1) and still read through this
 # module by the test_choose.py classes, which the move left unedited: re-exports only, never patched here. (`lost_content`, which
@@ -119,6 +119,7 @@ LONE_REFERENCE = "blocks.loneReferenceGrid"    # judged under every other settin
 BODY_HEADINGS = "blocks.headings"     # step 8b: judged under `blocks.headingLevel` (which wins inside a block), never it under this
 JUDGED_LAST = HOME_OPTIONS + (LONE_REFERENCE, VIDEO_EMBED, BODY_HEADINGS)   # judged under every other setting; no setting that is not one of these is judged under them
 NEEDS_LOCAL = ("look", "backLink")          # settings whose candidates come from the old builder's own output
+NEVER_TIED = ("look", "carried")            # rule J (section 8.1): never judged together; a chosen or all-refused setting has no tie either
 
 
 class Row(object):
@@ -165,10 +166,20 @@ def _reason(name, picked, is_default, snap, partly=None):
 class Decision(object):
     """What `decide` makes of one setting: its `row`, the line to print (`line`, or None), and whether the value is to be fixed for
     the settings judged after it (`fix`: the value, or `CLEAR` when the setting is at its default or undecided); for `look`, the
-    default look's count of visible differences (`default_n`) and derive's status (`look_status`, None when derive was not asked)."""
+    default look's count of visible differences (`default_n`) and derive's status (`look_status`, None when derive was not asked).
+    Rule J (design-adopt-ownership-line section 8.1): `tie` is the default candidate's first difference `(page, what)` when the
+    setting is `you decide` with two or more live candidates, or M3's "no effect", else None; `live` the candidates that were not
+    refused, in order (`adoption.joint` combines them)."""
 
     def __init__(self, row, line=None, fix=None, default_n=None, look_status=None):
         self.row, self.line, self.fix, self.default_n, self.look_status = row, line, fix, default_n, look_status
+        self.tie, self.live = None, []
+
+    def tied(self, tried, live):
+        """Mark this decision tied on the default's first difference (`tried[0]`), with the `live` candidates."""
+        page, _sep, what = (tried[0][1] if tried else "").partition(": ")
+        self.tie, self.live = (page, what), [t[0] for t in live]
+        return self
 
 
 class CLEAR(object):
@@ -181,7 +192,7 @@ class Judge(object):
     page readings shared by every candidate."""
 
     def __init__(self, snap, local, evaluate, under, best_score, derived_for, can_derive, data=None, whose="the look's"):
-        self.snap, self.local, self.evaluate, self.under, self.whose = snap, local, evaluate, under, whose
+        self.snap, self.local, self.evaluate, self.under, self.whose, self.data = snap, local, evaluate, under, whose, data
         self.best_score, self.derived_for, self.can_derive = best_score, derived_for, can_derive
         self.ports = sorted(portfolio_facts(snap))
         self.pieces = facts.piece_addresses(snap)
@@ -269,7 +280,7 @@ def decide(j, name, cands, others):
             reason += "; by what a visitor meets there, " + m4.reason
         out.row = Row(name, None, "not measured", reason, lines)
         out.line, out.fix = "you decide: %s -- %s" % (name, reason), CLEAR
-        return out
+        return out.tied(tried, live) if name not in NEVER_TIED and len(live) > 1 else out
     is_default = picked == cands[0] and not isinstance(picked, dict)
     reason = m4.reason if m4 is not None and m4.winner is not None else _reason(name, picked, is_default, snap, partly)
     reason += "".join("; %s loses: the plugin's build refuses it (%s)" % (c if isinstance(c, str) else json.dumps(c), w)
@@ -278,7 +289,7 @@ def decide(j, name, cands, others):
     if partly and partly not in ("none", "refused"):
         out.line = "partly: %s -- %s" % (name, reason)
     out.fix = CLEAR if is_default else picked              # a default is no key: it needs no fixing for the others to be judged under it
-    return out
+    return out.tied(tried, live) if partly == "none" and name not in NEVER_TIED else out
 
 
 def choose(snap, data, evaluate, local, previous=None, no_local_reason=None, derive=None, names=None, derive_under=None):
@@ -341,48 +352,113 @@ def choose(snap, data, evaluate, local, previous=None, no_local_reason=None, der
         return out
 
     judge = Judge(snap, local, evaluate, under, best_score, derived_for, derive is not None or derive_under is not None, data)
-    default_looks = {}                              # the default look's count of visible differences, for the final reason
+    ledger = res.ledger = joint.Ledger(evaluate)
+    held = dict((n, Row(n, p["value"], "chosen", p["reason"])) for n, p in previous.items() if p["how"] == "chosen")
     for npass in range(1, MAX_PASSES + 1):
         res.rows, res.lines, res.passes = {}, [], npass
-        picks, judged, cur = {}, 0, dict(fixed)         # `cur`: what the next setting is judged under (earlier picks of THIS pass included)
-        for name in names:
-            prev = previous.get(name)
-            if prev and prev["how"] == "chosen":
-                res.rows[name] = Row(name, prev["value"], "chosen", prev["reason"])
-                continue
-            if local is None:
-                if setting_family(name) in NEEDS_LOCAL or len(candidates_for(name, snap, data)) > 1:
-                    res.rows[name] = Row(name, None, "not measured", "not measured (%s)" % (no_local_reason or "no local build"))
-                continue
-            # the home's own options and the lone reference's grid are judged under every other setting, but no other setting is judged
-            # under them: a `partOrder` that names `featured` made `featuredFrom` unmeasurable in the second pass (the builder of the home
-            # options, F1), and so did `blocks.loneReferenceGrid` (the page that holds the lone reference changes what the look derive reads
-            # of the home, which no setting of the home can answer for)
-            others = dict((k, v) for k, v in cur.items() if k != name and (name in JUDGED_LAST or k not in JUDGED_LAST))
-            cands = candidates_for(name, snap, data, local, others)
-            if len(cands) < 2 and name != "look":
-                continue
-            judged += 1
-            d = decide(judge, name, cands, others)
-            res.rows[name] = d.row
-            if d.default_n is not None:
-                default_looks[name] = d.default_n
-            if d.look_status is not None:
-                res.look_status = d.look_status
-            if d.line:
-                res.lines.append(d.line)
-            if d.fix is CLEAR:
-                cur.pop(name, None)
-            else:
-                picks[name] = cur[name] = d.fix
+        picks, judged, decisions = _pass(judge, res, names, fixed, held, ledger, no_local_reason)
         new = dict(chosen, **picks)
         if new == fixed or judged < 2:                 # nothing moved, or only one setting was judged: no interaction to re-judge
             break
         fixed = new
+    ledger.mark("passes")
+    if local is not None:                          # rule J (section 8): the tied families, judged together, then one settle pass
+        together, moved = joint.judge_families(res, names, decisions, _JointContext(res, judge, ledger))
+        ledger.mark("joint")
+        if moved:                                  # 8.2 step 8: one more ordinary pass with the members held, so the others can answer
+            held.update((n, res.rows[n]) for n in together)
+            rows, lines = res.rows, res.lines
+            res.rows, res.lines, res.passes = {}, [], res.passes + 1
+            _pass(judge, res, names, dict(res_values(rows)), held, ledger, no_local_reason)
+            res.lines += [l for l in lines if l.startswith(("judged together", "not judged together")) or l.startswith(tuple(
+                "%s: %s -- " % (k, n) for n in together for k in ("you decide", "partly")))]
+            ledger.mark("settle pass")
     _final_look(res, local, evaluate, derive_under, derived_for, snap)
+    ledger.mark("final look")
     lookkeep.keep(res, local, evaluate, lost_content, DEFAULTS)
-    settle_refused(res, snap, data, local, evaluate)
+    ledger.mark("rule L")
+    ledger.refused = settle_refused(res, snap, data, local, evaluate)
+    ledger.mark("settle refused")
     return res
+
+
+def res_values(rows):
+    """[(name, value)] of the rows a pass fixes the next one under: measured or chosen, not None, not the default."""
+    return [(n, r.value) for n, r in rows.items() if r.how in ("measured", "chosen") and r.value is not None and r.value != DEFAULTS.get(n)]
+
+
+def _pass(j, res, names, fixed, held, ledger, no_local_reason):
+    """One pass of the greedy loop (FIXED POINT): each setting in order, judged by `decide` under `fixed` and this pass's earlier
+    picks; a setting in `held` ({name: Row}: one the person chose, or in the settle pass a member rule J judged) keeps its row.
+    Returns (picks {name: value}, how many were judged, {name: Decision})."""
+    snap, data, local = j.snap, j.data, j.local
+    picks, judged, cur, decisions = {}, 0, dict(fixed), {}     # `cur`: what the next setting is judged under (earlier picks of THIS pass included)
+    for name in names:
+        if name in held:
+            res.rows[name] = held[name]
+            continue
+        if local is None:
+            if setting_family(name) in NEEDS_LOCAL or len(candidates_for(name, snap, data)) > 1:
+                res.rows[name] = Row(name, None, "not measured", "not measured (%s)" % (no_local_reason or "no local build"))
+            continue
+        # the home's own options and the lone reference's grid are judged under every other setting, but no other setting is judged
+        # under them: a `partOrder` that names `featured` made `featuredFrom` unmeasurable in the second pass (the builder of the home
+        # options, F1), and so did `blocks.loneReferenceGrid` (the page that holds the lone reference changes what the look derive reads
+        # of the home, which no setting of the home can answer for)
+        others = dict((k, v) for k, v in cur.items() if k != name and (name in JUDGED_LAST or k not in JUDGED_LAST))
+        cands = candidates_for(name, snap, data, local, others)
+        if len(cands) < 2 and name != "look":
+            continue
+        judged += 1
+        ledger.ask(name, sum(len(_dependent(j, name, c, (), isinstance(others.get("look"), dict))) for c in cands))
+        d = decisions[name] = decide(j, name, cands, others)
+        res.rows[name] = d.row
+        if d.look_status is not None:
+            res.look_status = d.look_status
+        if d.line:
+            res.lines.append(d.line)
+        if d.fix is CLEAR:
+            cur.pop(name, None)
+        else:
+            picks[name] = cur[name] = d.fix
+    return picks, judged, decisions
+
+
+def _dependent(j, name, cand, members, derived):
+    """[(dependent setting, value)] one candidate is scored under (`best_score`: a candidate with a DEPENDENT setting is built once
+    per value of it), or [(None, None)] for one build; a dependent among `members` (rule J's family, which varies it already) adds
+    none. `derived` says a derived look is in play (`look_partner`)."""
+    dep = partner(name, cand, j.snap) or (look_partner(name, cand) if derived else None)
+    if dep is None or dep in members:
+        return [(None, None)]
+    return [(dep, v) for v in candidates_for(dep, j.snap, j.data, j.local)]
+
+
+class _JointContext(object):
+    """What `joint.judge_families` builds and reads through (`adoption.joint`): every combination under the settings the passes
+    chose for the others, with the look derived for it when a derived look is in play, as `under` does for one candidate."""
+
+    def __init__(self, res, j, ledger):
+        self.res, self.j, self.local, self.ledger, self.Row = res, j, j.local, ledger, Row
+
+    def paths(self, name):
+        return judged_paths(name, self.local)
+
+    def _derived(self):
+        return isinstance(getattr(self.res.rows.get("look"), "value", None), dict)
+
+    def deps(self, name, value, members):
+        return len(_dependent(self.j, name, value, members, self._derived()))
+
+    def deps_values(self, name, value, members):
+        pairs = _dependent(self.j, name, value, members, self._derived())
+        return [] if pairs == [(None, None)] else pairs
+
+    def build(self, values):
+        last = any(n in JUDGED_LAST for n in values)
+        base = dict((k, v) for k, v in self.res.values().items() if k not in values and (last or k not in JUDGED_LAST))
+        first = sorted(values)[0]
+        return self.j.evaluate(self.j.under(first, values[first], dict(base, **dict((k, v) for k, v in values.items() if k != first))))
 
 
 def settle_refused(res, snap, data, local, evaluate):
@@ -392,14 +468,15 @@ def settle_refused(res, snap, data, local, evaluate):
     the slot ("the kept look's card.wrap has no {{kicker}}"). The look is never changed for a setting's value (rule L judges
     constructs by what a visitor sees, section 6, and a value that cannot print under the look shows nothing). Only a setting the
     refusal names (its key) is judged again, each once; a person's `chosen` value is kept. Its `Judge` keeps the look as it is (no
-    look is derived again, and no dependent setting is searched again). Costs two builds when nothing is refused."""
+    look is derived again, and no dependent setting is searched again). Costs two builds when nothing is refused, and one
+    a candidate of each setting judged again: returns how many candidates it judged (`joint.bound`'s `refused`)."""
     row = res.rows.get("look")
     if local is None or row is None or row.how != "measured" or not isinstance(row.value, dict):
-        return
+        return 0
     final = lookkeep.chosen_settings(res, DEFAULTS)
     bad = refusals(evaluate(dict(final, look=row.value)), evaluate(dict(final)))
     if not bad:
-        return
+        return 0
 
     def under(name, cand, others):
         return dict(others, **{name: cand})
@@ -408,18 +485,20 @@ def settle_refused(res, snap, data, local, evaluate):
         plugin = evaluate(under(name, cand, others))
         return score(local, plugin, name, drop), plugin
     j = Judge(snap, local, evaluate, under, best_score, None, False, data, "the kept look's")
-    keys = set((p.found or "").split(" ", 1)[0] for p in bad)
+    keys, judged = set((p.found or "").split(" ", 1)[0] for p in bad), 0
     for name in [n for n in final if setting_family(n) in keys and res.rows[n].how == "measured"]:
         others = dict((k, v) for k, v in final.items() if k != name)
         cands = candidates_for(name, snap, data, local, others)
         if len(cands) < 2:
             continue
+        judged += len(cands)
         d = decide(j, name, cands, dict(others, look=row.value))
         res.lines = [l for l in res.lines if not l.startswith(("partly: %s -- " % name, "you decide: %s -- " % name))]
         res.rows[name] = d.row
         if d.line:
             res.lines.append(d.line)
         final = lookkeep.chosen_settings(res, DEFAULTS)
+    return judged
 
 
 def _final_look(res, local, evaluate, derive_under, derived_for, snap):

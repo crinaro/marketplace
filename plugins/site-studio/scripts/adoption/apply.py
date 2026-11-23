@@ -30,7 +30,7 @@ import tempfile
 import github_url  # noqa: E402
 import report_issue  # noqa: E402
 
-from adoption import finish
+from adoption import finish, lookperson
 from adoption.accounting import ARCHIVE_REL, archive_path, dump_archive, open_folders, parse_archive
 from adoption.base import NeedsAnswer, PARITY_RECORD_REL, PLUGIN, PlanError, Refused, git
 from adoption.spec import CONVERSION_CLASSES, load_spec
@@ -387,7 +387,8 @@ def _write_site(tree, data, plan, only, kw, held, rows, infos, base, parity):
     notes["held"] = [r for r in rows if r["status"] == "you decide"]
     for p, blob in sorted(site_files.items()):
         tree.write(p, blob)
-    record = parity_record_text(parity, builder_entry(infos) is not None, base)
+    look = lookperson.record_look(plan.get("settings"), lookperson.tree_reader(tree))      # record schema 3 (0.7.0, step 9)
+    record = parity_record_text(parity, builder_entry(infos) is not None, base, *look)
     tree.write(PARITY_RECORD_REL, record)
     return notes, record
 

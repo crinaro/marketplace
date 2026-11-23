@@ -17,10 +17,12 @@ from adoption.base import Refused
 from adoption.measure import cmd_parity, cmd_remeasure
 from adoption.parity import preconditions
 from adoption.plan import _current_base, _plan_for, _set, save_plan
-from adoption.problems import plan_settings, analyse_problems, format_problems, held_problems, site_problems, size_copy_note
+from adoption.problems import plan_settings, analyse_problems, format_problems, held_problems, look_lines, site_problems, size_copy_note
 from adoption.report import _conversion_block, cmd_inventory
 from adoption.reports import cmd_report
 from adoption.settings import cmd_setting
+from adoption import suggestions
+from adoption.suggest import cmd_suggest
 from adoption.spec import load_spec
 
 
@@ -34,7 +36,8 @@ def verb_check(repo, args):
     probs = (site_problems(tree, data, None, plan.get("siteKind"), measured_folders(tree, plan), plan["convert"], plan_settings(plan),
                            plan.get("parity"), notes)
              + held_problems(tree, data, plan))               # F2: a folder the last `parity` archived wholly is no question
-    for line in format_problems(probs) + note_lines(notes):
+    look = ["note: %s" % l for l in look_lines(tree, data, ((plan.get("settings") or {}).get("look") or {}).get("value"))]   # P5, P6
+    for line in format_problems(probs) + note_lines(notes) + look:
         print(line)
     blocked = [p for p in probs if not p.mechanical]
     if blocked:
@@ -183,12 +186,33 @@ def verb_kind(repo, args):
 
 def verb_parity(repo, args):
     """`adopt.py parity [--accept [--shots DIR/shots]] [--keep DIR]`: build both ways and compare."""
-    cmd_parity(repo, args.accept, args.keep, args.shots)
+    cmd_parity(repo, args.accept, args.keep, args.shots, as_json=getattr(args, "json", False))
+
+
+def _one(ids, option):
+    """The one id an option was given (section 13.5: one id per command, one ask, one issue)."""
+    if len(ids) != 1:
+        raise Refused("%s takes exactly one id; run the command once per suggestion" % option)
+    return ids[0]
 
 
 def verb_report(repo, args):
-    """`adopt.py report [--file] [--decline]`: the pending cause reports. Returns the exit code."""
+    """`adopt.py report [--file] [--decline]`: the pending cause reports; with `--suggestion ID`, one look suggestion (handled
+    before the blocker record is read, so a repo that never held one still answers, U-G1). Returns the exit code."""
+    if args.suggestion is not None:
+        return suggestions.cmd_report_suggestion(repo, _one(args.suggestion, "--suggestion"), args.file, args.decline, args.digest)
+    if args.digest is not None:
+        raise Refused("--digest belongs to report --suggestion ID --file; blocker reports take none")
     return cmd_report(repo, args.file, args.decline)
+
+
+def verb_suggest(repo, args):
+    """`adopt.py suggest [--offer ID]`: which of the person's look entries could help other sites; `--offer` records a yes."""
+    if args.offer is not None:
+        suggestions.cmd_offer(repo, _one(args.offer, "--offer"))
+        return None
+    cmd_suggest(repo, suggestions.states_at(repo))
+    return None
 
 
 def verb_file(repo, args):
@@ -224,4 +248,5 @@ VERBS = {
     "file": verb_file,
     "setting": verb_setting,
     "remeasure": verb_remeasure,
+    "suggest": verb_suggest,
 }

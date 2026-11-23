@@ -23,6 +23,8 @@ from lookfiles.anchors import (
     _above,
     _attr_only,
     _can_go,
+    class_sub,
+    class_tail_slots,
     _fixed_beside,
     _full_needles,
     _has_nested,
@@ -58,6 +60,7 @@ from lookfiles.pagedom import (
     text_of,
     walk,
 )
+from lookfiles import owned
 from lookfiles.places import card_places, picture_places
 from lookfiles.renderlog import LIST_SEP, _tree, kids_of
 from lookfiles.templatemerge import _merge
@@ -92,6 +95,7 @@ class _Derivation(object):
         self.runs = {}                                      # id(call) -> sibling nodes a multi-element part spans
         self.seen = {}                                      # (page, part, scope, bound) -> its readings, or the failure
         self.absent = set()                                 # id(call) of a `NUMBER_PARTS` call its page does not print
+        self.empties = {}                                   # id(page) -> `owned.empty_shapes` of it (R-F)
 
     # ------------------------------------------------------------------------------------------ anchoring
     def anchors(self, page, scope, call, bound):
@@ -222,12 +226,13 @@ class _Derivation(object):
         body slot sits in). With `runs`, a child that fills `r` with its parent, or an element with another child, is read as a run of
         that element's children (`_runs_for_sharers`) instead of being refused."""
         cands, present = [], []
+        owned.refuse(kids, r)                       # R-A: never a parent's root inside a child's own address element
         for k in kids:
             if self._place_unprinted(page, r, k):   # asked first: a host stands in the card's own address, where it would anchor
                 self.absent.add(id(k))
                 continue
             try:
-                allopts = self.instance(page, k, r, r)
+                allopts = self.instance(page, k, r, owned.bound_for(k, r))
             except _Fail:
                 if k.key in NUMBER_PARTS and not self.anchors(page, r, k, r):
                     self.absent.add(id(k))          # the page draws the number in CSS (or not at all): no element holds its digits
@@ -418,7 +423,7 @@ class _Derivation(object):
         single-child wrappers above; and, where a child filled an element with its parent or with another child, the reading in
         which the parent keeps that element and the children are runs of its children (after the others, so a part that derived as
         it always did derives so)."""
-        r, fill, out, failure = r0, None, [], None
+        r, fill, out, failure = owned.lifted(searchable, r0), None, [], None     # R-A: a child's address element is the child's
         try:
             while True:
                 try:
@@ -475,6 +480,8 @@ class _Derivation(object):
         variants = [(r, extents)]
         cur = r
         beside = _fixed_beside(call)
+        if getattr(call, "parent", None) is not None and id(page) not in self.empties:
+            self.empties[id(page)] = owned.empty_shapes(page.root)
         # a place's own picture part (`places.picture_places`) is its `<img>`: a wrapper around it is the place's item's markup, as
         # it is around the site-wide picture the part stands in for
         while len(variants) < 3 and not (call.part == "image" and (call.construct, "item") in picture_places()):
@@ -490,6 +497,8 @@ class _Derivation(object):
             drawing = bool(others) and cur in sibs and all(k.tag == "svg" for k in others)
             if sibs != [cur] and not drawing and not (beside and sorted(k.tag for k in others) == beside and cur in sibs):
                 break
+            if getattr(call, "parent", None) is not None and owned.printed_empty(self.empties[id(page)], up):
+                break                           # R-F: a wrapper the page prints empty is the parent's (`owned.printed_empty`)
             try:
                 variants.append((up, self._kids_in(page, searchable, up, tight)))
             except _Fail:
@@ -599,7 +608,8 @@ class _Derivation(object):
                 continue
             if kind == looks.TEXT:
                 # a slot the page does not show can only be a markup hook (a class token, a data attribute)
-                self._text_slot(root, slot, str(v), inside, attrs_only=slot not in call.used)
+                self._text_slot(root, slot, str(v), inside, attrs_only=slot not in call.used,
+                                tail_ok=slot in class_tail_slots(*call.key))
             elif kind in (looks.URL, looks.CONTACT, looks.SRCSET, looks.EMBED, looks.POSITION):
                 self._url_slot(root, slot, kind, str(v))
         unit = _unit_after(call)
@@ -691,7 +701,7 @@ class _Derivation(object):
         mk.parent = p
         p.kids[a:end + 1] = [mk]
 
-    def _text_slot(self, root, slot, value, inside=(), attrs_only=False):
+    def _text_slot(self, root, slot, value, inside=(), attrs_only=False, tail_ok=False):
         """Write `slot` where `value` stands as a whole word in a text node or a text attribute. True if it did. With `attrs_only` (a slot
         the plugin's own markup does not show) a text node is the slot only where the value is the WHOLE text of the node and is more than
         a couple of letters: a template may show the employer in a line of its own where the plugin does not, and that line is the slot,
@@ -707,7 +717,11 @@ class _Derivation(object):
             for i, (name, val) in enumerate(el.attrs):
                 if val is None or name in _SUBST_SKIP or name == "style":
                     continue
-                if name in ("class", "id") and len(squash(value)) < 3:
+                if name == "class":                  # R-G: a value as a class token's tail (`anchors.class_sub`)
+                    new = class_sub(val, slot, value, pat, tail_ok)
+                    done, el.attrs[i] = done or new != val, (name, new)
+                    continue
+                if name == "id" and len(squash(value)) < 3:
                     continue
                 if pat.search(val):
                     el.attrs[i] = (name, _sub_slot(pat, slot, val))

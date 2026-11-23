@@ -2,7 +2,7 @@
 
 <!-- GENERATED from the tables in scripts/content.py, scripts/siteconfig.py and scripts/build.py. Do not edit by hand: the plugin's maintainers regenerate it, and their tests fail when it and the code disagree. -->
 
-What your site's files may hold, and what the build reads. This page is written from the build's own tables, so it names exactly the keys, tokens, blocks and settings this version knows. Where this page and the build disagree, the build is right, and that is a bug in the plugin to report. A site is schema 1, 2, 3, 4, 5 or 6 (this version reads up to 6); the plugin writes the lowest schema that holds your site, and nothing here changes a site that does not use it.
+What your site's files may hold, and what the build reads. This page is written from the build's own tables, so it names exactly the keys, tokens, blocks and settings this version knows. Where this page and the build disagree, the build is right, and that is a bug in the plugin to report. A site is schema 1, 2, 3, 4, 5, 6 or 7 (this version reads up to 7); the plugin writes the lowest schema that holds your site, and nothing here changes a site that does not use it.
 
 ## Where things live
 
@@ -26,7 +26,7 @@ Top-level keys, in the order the plugin writes them. A key marked schema 2 makes
 
 | key | schema | meaning |
 | --- | --- | --- |
-| `schema` | 1 | which reading of the tree this site uses (1 to 6); the plugin writes the lowest one that holds the site. |
+| `schema` | 1 | which reading of the tree this site uses (1 to 7); the plugin writes the lowest one that holds the site. |
 | `engine` | 1 | the marker that says this file is site-studio's; written for you. |
 | `name` | 1 | your name, as printed on the site. |
 | `siteTitle` | 1 | the site's title, used in page titles. |
@@ -43,6 +43,7 @@ Top-level keys, in the order the plugin writes them. A key marked schema 2 makes
 | `featuredView` | 6 | how the featured selection prints (schema 6): `flat` (the default, never written) is one run of cards; `grouped` is each portfolio's index filtered to its featured pieces, in menu order, group by group. |
 | `nav` | 4 | the menu's settings: `{"home": false}` takes the Home item out of `{{nav}}` (schema 4; the default, with Home, is never written); at schema 6 `{"home": "title"}` makes the first item's text the site title, and `extra` adds one to four `{"label", "url"}` items after the built-in ones, each url an absolute `https:` or `mailto:` address. |
 | `look` | 4 | the markup look the site's generated pages use: a file `site/looks/<name>.json` (schema 4); absent means the plugin's own markup. |
+| `lookLocal` | 7 | your own look layered over `look`, construct by construct: exactly `site/looks/local.json` (schema 7). A construct it holds wins over the same construct in `look`; the build reads no other look file, and neither file is served. |
 | `blocks` | 4 | the settings of the `:::` blocks and of `ref:` lines (keys below): `{"headingLevel": 3}` prints the headings inside a block at h3, `{"loneReferenceGrid": true}` prints a lone `ref:` line inside the reference grid, `{"videoEmbed": "live"}` keeps a video's own address (schema 4; absent is the default). |
 | `mediaPaths` | 6 | where a folder's media is published (schema 6): an object with any of `references`, `home` and `about`, each a pattern of two to four `/`-separated lower-case names, the last `{file}`, such as `refs/{name}/{file}` (`references` holds `{name}` once) or `media/{file}`. |
 | `sizeCopies` | 6 | `any-format` (schema 6): a size copy may have another raster extension than its original (`.jpg`, `.jpeg`, `.png`, `.webp`, `.avif`). |
@@ -272,6 +273,26 @@ A token is `{{name}}` or `{{name:argument}}`, in a page under `site/src` or in t
   - `{{content}}`: the page's body.
 
 `{{#page:X}}...{{/page}}` prints its block only when page X is built, and nothing otherwise (schema 2).
+
+## Your own look (schema 7)
+
+A look is the markup the generated pages are printed through. Your own look is the normal way to shape a site, not a workaround: `lookLocal` lays `site/looks/local.json` over the look `look` names, construct by construct, and only you write that file. In a look file these need schema 7: the `reads` key; the `named` key; the slot `{{position}}` in `card.wrap` (the card's number with its running place on the page, as in `01 / 2022`); the slot `{{text}}` in `card.number` (the whole number in one copy of the part); the part `tiles.item-accent`; and the slot `{{usedBy}}` in `reference-card.wrap`, `feed.item` or `home-samples.item`, printed through the part `reference-card.used-by` (the first piece that names the reference). A look that holds none of them is read as before.
+
+`reads` maps a place a look prints to the front-matter keys it reads, first value wins: `{"<target>": ["<key>", ...]}`, one to 4 sources, or `{"from": [...], "unless": "<key>"}`. A source starting `@` is a built-in of that target. With no entry a target reads what it always did.
+
+| target | built-ins | meaning |
+| --- | --- | --- |
+| `card.meta.text` | none | a card's meta rows (the keys of `cardMeta`); takes only `unless`: a row equal to that key's value is left out. |
+| `card.teaser.text` | none | a card's teaser; without an entry the piece's `teaser`. |
+| `head.description` | none | the description a search result shows for a piece page; without an entry `description`, then `teaser`, then the start of the text. |
+| `meta-list.item.value` | none | a piece page's meta rows (the keys of `meta`); takes only `unless`: a row equal to that key's value is left out. |
+| `piece-roles.item-current` | `@first`, `@last` | which of a current piece's dated roles prints through `item-current`; without an entry `currentRole`, then the first. |
+| `piece-teaser.wrap.text` | none | the teaser line under a piece page's title; without an entry the piece's `teaser`. |
+| `roles-view.item.employer` | none | the value a roles view groups by and prints as the employer; without an entry `employer`. |
+| `tiles.item-accent` | `@first`, `@last` | which tiles of a block print through `tiles.item-accent`; without an entry none do. |
+| `video-embed.wrap.title` | `@caption` | the title of a video written alone on a line; without an entry its caption, then the word Video. |
+
+`named` gives a block or a view a name of your own: `{"<name>": {"like": "<base>", "parts": {...}}}`. It reads the data its base reads and prints through the parts you write; a part you leave out prints as the plugin's. A block's name is then opened in content as `:::<name>`, a view's is a page's `view: <name>`. The name is a letter, then letters, digits, `-` or `_`, at most 40 characters, and not a name of the plugin's. Blocks it can be like: `carousel`, `gallery`, `quote`, `quotes`, `tiles`, `videos`. Views: `roles-view`, `showcase-view`, `steps-view`.
 
 ## Markdown
 

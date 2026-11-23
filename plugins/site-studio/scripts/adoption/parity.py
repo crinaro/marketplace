@@ -47,7 +47,8 @@ from urllib.parse import urlsplit
 
 import report_issue  # noqa: E402
 
-from adoption.base import PARITY_RECORD_REL, PLAN_REL, PlanError, RECORD_SCHEMA, Refused, git, gitt
+from adoption.base import PARITY_RECORD_REL, PLAN_REL, PlanError, RECORD_SCHEMA, Refused, git, gitt  # noqa: F401 (PLAN_REL: read here by name)
+from configschema.configkeys import ADOPT_SCRATCH
 from adoption.spec import CONVERSION_CLASSES, MEASURED_ONLY_CLASSES, OPT_IN_CLASSES
 from adoption.blocks import piece_pages as blocks_page
 from adoption.tree import Tree
@@ -169,7 +170,7 @@ def preconditions(repo):
         if not rec:
             continue
         path = rec[3:]
-        if rec.startswith("??") and (path.startswith(".claude/worktrees/") or path == PLAN_REL):
+        if rec.startswith("??") and (path.startswith(".claude/worktrees/") or path in ADOPT_SCRATCH):     # the plan, the candidates
             continue
         dirty.append(path)
     if dirty:
@@ -566,7 +567,7 @@ def served_at(plugin):
     return (parts.path.strip("/") or None), ((parts.hostname or "").lower() or None)
 
 
-def classify_p2(local, plugin, site_path=None, site_host=None):
+def classify_p2(local, plugin, site_path=None, site_host=None, limit=CAUSE_LINES_MAX):
     """P2 over two `{path: bytes}` builds, with the invisible-markup class (design 5, R4 row 11: `parity_classes`' one
     classifier). Returns {verdict EQUAL | MARKUP-ONLY | DIFFERENT; differences (the files with a VISIBLE difference, in
     `compare_builds`' words); markup ([[path, detail]], one per invisible hunk, sorted); tokens ({"class", "data", "id"}:
@@ -594,30 +595,57 @@ def classify_p2(local, plugin, site_path=None, site_host=None):
         kinds[d.kind] = kinds.get(d.kind, 0) + 1
     return {"verdict": res["verdict"], "differences": diffs, "markup": markup, "tokens": res["tokens"], "kinds": kinds,
             "external": [list(x) for x in res["external"]], "files": res["files"],
-            "report": difference_report(local, plugin, res["files"], site_path=site_path, site_host=site_host), "reason": reason}
+            "report": difference_report(local, plugin, res["files"], site_path=site_path, site_host=site_host, limit=limit),
+            "reason": reason}
 
 
-def record_text(verdict, basis_sha, differences, markup=(), tokens=None):
+def record_text(verdict, basis_sha, differences, markup=(), tokens=None, look=None, effective=None):
     """The text of `.site-studio/adopt-parity.json` for one verdict. It carries no date, so a commit stays reproducible.
     Record schema 2 only for MARKUP-ONLY (it adds `markup` and `tokens`); every other verdict is written at schema 1,
-    the lowest that holds it (design 3.5), so an older install reads the record it always could."""
+    the lowest that holds it (design 3.5), so an older install reads the record it always could. Record schema 3
+    (design-adopt-ownership-line 2.8) only when `look` holds a measured row of the person's look entries: it adds `look` (each
+    row's value) and `effective` (`lookperson.effective_hash`, round 2 M6), and keeps `markup` and `tokens` for MARKUP-ONLY."""
     body = {"schema": RECORD_SCHEMA, "verdict": verdict, "basis": basis_sha,
             "differences": [list(d) for d in differences]}
     if verdict == "MARKUP-ONLY":
         body["schema"] = 2
         body["markup"] = [list(m) for m in markup]
         body["tokens"] = dict((k, sorted((tokens or {}).get(k, []))) for k in ("class", "data", "id"))
+    if look:
+        body.update(schema=3, look=dict((n, dict(v)) for n, v in sorted(look.items())), effective=effective)
     return json.dumps(body, indent=2, sort_keys=True) + "\n"
 
 
-def parity_record_text(parity, builder_found, basis_sha):
+_LOOK_ROW = re.compile(r"^(?:look|reads)\.[A-Za-z][A-Za-z0-9._-]*$")
+_LOOK_VALUE = ("derived", "file", "pages", "sha256", "status", "yours")
+
+
+def _record_look(d):
+    """Record schema 3's `look` and `effective`, strict (design-adopt-ownership-line 2.8): every row named `look.<id>` or
+    `reads.<target>`, its value exactly the plan row's (`plan._person_row`), its numbers whole or null; `effective` 64 hex."""
+    whole = lambda v, none=True: (v is None and none) or (isinstance(v, int) and not isinstance(v, bool) and v >= 0)  # noqa: E731
+    rows = d["look"]
+    if not isinstance(rows, dict) or not rows or not all(
+            isinstance(n, str) and _LOOK_ROW.match(n) and isinstance(v, dict) and sorted(v) == list(_LOOK_VALUE)
+            and v["file"] in ("site/looks/local.json", "site/looks/derived.json")
+            and isinstance(v["sha256"], str) and re.match(r"^[0-9a-f]{64}$", v["sha256"])
+            and whole(v["pages"], False) and whole(v["yours"]) and whole(v["derived"])
+            and v["status"] in ("mapped", "ambiguous", "unmapped", "none") for n, v in rows.items()):
+        raise PlanError("%s: look maps look.<id> or reads.<target> to exactly file, sha256, pages, yours, derived (whole numbers "
+                        "or null) and status; restore the committed copy, or run `adopt.py remeasure`" % PARITY_RECORD_REL)
+    if not (isinstance(d["effective"], str) and re.match(r"^[0-9a-f]{64}$", d["effective"])):
+        raise PlanError("%s: effective must be a 64-hex hash" % PARITY_RECORD_REL)
+
+
+def parity_record_text(parity, builder_found, basis_sha, look=None, effective=None):
     """The text `apply` commits as `.site-studio/adopt-parity.json` (design-site-fidelity section 5.0.4):
     the verdict, the basis it was measured on, and the differences. It carries no date, so the commit stays
-    reproducible. `parity` is the plan's parity entry (None: parity was never run)."""
+    reproducible. `parity` is the plan's parity entry (None: parity was never run). `look` and `effective` are the plan's
+    measured rows of the person's look entries and the effective look's hash (`lookperson.record_look`): record schema 3."""
     if parity is None:
         return record_text("UNVERIFIED" if builder_found else "NOT APPLICABLE", basis_sha, [])
     return record_text(parity["verdict"], basis_sha, parity.get("differences", []), parity.get("markup", ()),
-                       parity.get("tokens"))
+                       parity.get("tokens"), look, effective)
 
 
 def parse_parity_record(text):
@@ -631,18 +659,27 @@ def parse_parity_record(text):
         raise PlanError("%s is not valid JSON: %s; restore the committed copy from an earlier commit (`git log -- %s` "
                         "lists them)" % (PARITY_RECORD_REL, e, PARITY_RECORD_REL))
     base_keys = {"schema", "verdict", "basis", "differences"}
-    if not isinstance(d, dict) or set(d) not in (base_keys, base_keys | {"markup", "tokens"}):
+    three = {"look", "effective"}
+    if not isinstance(d, dict) or set(d) not in (base_keys, base_keys | {"markup", "tokens"}, base_keys | three,
+                                                 base_keys | three | {"markup", "tokens"}):
         raise PlanError("%s must hold exactly schema, verdict, basis and differences (record schema 2 adds markup and "
-                        "tokens)" % PARITY_RECORD_REL)
-    if isinstance(d["schema"], bool) or d["schema"] not in (1, 2):
-        raise PlanError("%s: schema %r is not understood (this adopt reads 1 and 2); update site-studio, because a newer "
+                        "tokens; record schema 3 adds look and effective)" % PARITY_RECORD_REL)
+    if isinstance(d["schema"], bool) or d["schema"] not in (1, 2, 3):
+        raise PlanError("%s: schema %r is not understood (this adopt reads 1 to 3); update site-studio, because a newer "
                         "one wrote it" % (PARITY_RECORD_REL, d["schema"]))
-    if (d["schema"] == 2) != ("markup" in d):
+    if (d["schema"] == 3) != ("look" in d):
+        raise PlanError("%s: record schema %d %s look and effective" % (PARITY_RECORD_REL, d["schema"],
+                                                                       "must hold" if d["schema"] == 3 else "cannot hold"))
+    if d["schema"] < 3 and (d["schema"] == 2) != ("markup" in d):
         raise PlanError("%s: record schema %d %s markup and tokens" % (PARITY_RECORD_REL, d["schema"],
                                                                       "must hold" if d["schema"] == 2 else "cannot hold"))
+    if d["schema"] == 3 and (d["verdict"] == "MARKUP-ONLY") != ("markup" in d):
+        raise PlanError("%s: a record schema 3 holds markup and tokens exactly when its verdict is MARKUP-ONLY" % PARITY_RECORD_REL)
     if d["verdict"] not in RECORD_VERDICTS:
         raise PlanError("%s: verdict %r is not one of %s" % (PARITY_RECORD_REL, d["verdict"], ", ".join(RECORD_VERDICTS)))
-    if d["verdict"] == "MARKUP-ONLY" and d["schema"] != 2:
+    if d["schema"] == 3:
+        _record_look(d)
+    if d["verdict"] == "MARKUP-ONLY" and d["schema"] not in (2, 3):
         raise PlanError("%s: the verdict MARKUP-ONLY needs record schema 2 (it lists the tokens the publish re-check "
                         "holds against the build)" % PARITY_RECORD_REL)
     if not isinstance(d["basis"], str) or (d["basis"] and not re.match(r"^[0-9a-f]{40}$", d["basis"])):
@@ -650,7 +687,7 @@ def parse_parity_record(text):
     if not isinstance(d["differences"], list) or not all(
             isinstance(x, list) and len(x) == 3 and all(isinstance(y, str) for y in x) for x in d["differences"]):
         raise PlanError("%s: differences must be a list of [kind, path, detail]" % PARITY_RECORD_REL)
-    if d["schema"] == 2:
+    if "markup" in d:
         if not isinstance(d["markup"], list) or not all(
                 isinstance(x, list) and len(x) == 2 and all(isinstance(y, str) for y in x) for x in d["markup"]):
             raise PlanError("%s: markup must be a list of [path, detail]" % PARITY_RECORD_REL)

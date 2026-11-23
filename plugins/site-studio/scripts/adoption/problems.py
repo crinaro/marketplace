@@ -18,10 +18,15 @@ from building import acceptance, running, tokens  # noqa: E402
 from contentmodel import errors, frontmatter, keytables, layout as layout_mod  # noqa: E402
 from configschema import configkeys, diagnostics, model, treeschema, workcheck  # noqa: E402
 
+import looks
+from lookfiles.stamp import StampError
+from lookgrammar import layering
+
+from adoption import lookwrite
 from adoption.base import Refused
 from adoption.spec import CONVERSION_CLASSES, OPT_IN_CLASSES
-from adoption.tree import TreeFiles
-from adoption.tokens import home_feed, portfolio_folders, rewrite_tokens, site_json_labels, token_files
+from adoption.tree import Overlay, TreeFiles
+from adoption.tokens import OLD_PAGES, home_feed, portfolio_folders, rewrite_tokens, site_json_labels, token_files
 from adoption.redirects import redirect_pages, redirect_problems
 from adoption.convert import (
     _converted_dict, _give_resume_sidecar, _snapshot, converted_site_files,
@@ -372,7 +377,9 @@ def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=(), se
                      and p.path[len("content/"):].rstrip("/") in (folders or {}))]
     probs += redirect_problems([r for r in redirect_pages(tree, d.get("redirects"))[0] if not r.boiler])
     have = set((p.path, p.message) for p in probs)
-    refusals, acc = accept_problems(tree, data, paper, folders, kind, check_only(chosen), settings=settings)
+    olds = ((parity or {}).get("hints") or {}).get(OLD_PAGES)      # dev #985: the old pages the last parity measured
+    refusals, acc = accept_problems(tree, data, paper, folders, kind, check_only(chosen), settings=settings,
+                                    hints={OLD_PAGES: olds} if olds else None)
     found = []
     probs += [p for p in waits_on_work_keys(refusals + accept_warnings(acc, (), parity, found), data, settings)
               if (p.path, p.message) not in have]
@@ -381,6 +388,28 @@ def site_problems(tree, data, paper=None, kind=None, folders=None, chosen=(), se
     probs += piece_both_problems(tree, folders) + redirect_collision_problems(tree, d)
     return probs
 
+
+
+def look_lines(tree, data, look_value=None):
+    """The layering lines `check` and `parity` print for the look adopt WOULD write (design-adopt-ownership-line 3, P5 and P6; the
+    build and `look.py check` print the same): each look file of `tree` that neither `look` nor `lookLocal` names, then each
+    construct or `reads` target `site/looks/local.json` replaces of the look under it. `look_value` is the plan's `look` value (a
+    derived look, or None). A look file that does not parse is the build's to refuse, with its file named, so it adds no line."""
+    files, d, n = {}, {}, {"settings": [], "removed": []}
+    try:
+        lookwrite.carry(Overlay(tree), files, d, look_value, n)
+    except (ValueError, StampError):
+        return []
+    view = dict((p, tree.read(p)) for p in tree.paths() if layering.LOOK_FILE_RE.match(p))
+    view.update((p, b) for p, b in files.items() if layering.LOOK_FILE_RE.match(p))
+    ref, local = d.get("look") or (data or {}).get("look"), d.get("lookLocal")
+    lines = layering.unread_notes(view, ref, local)
+    try:
+        top = looks.parse(view[local].decode("utf-8"), local, cross=False) if local in view else None
+        base = looks.parse(view[ref].decode("utf-8"), ref, cross=False) if top is not None and ref in view else None
+    except (looks.LookError, UnicodeDecodeError):
+        return lines
+    return lines + (layering.replaced_lines(base, top) if top is not None else [])
 
 
 def plan_settings(plan):

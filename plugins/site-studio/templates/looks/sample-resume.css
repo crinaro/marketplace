@@ -1,0 +1,43 @@
+/* sample-resume: a site led by the resume and its roles. A sample look site-studio ships (templates/looks/sample-resume.json);
+   copy it with `look.py use sample-resume`, then change anything. Every class is s-rs-; no web font, no file from elsewhere. */
+:root {
+  --s-rs-ink: #202322;
+  --s-rs-muted: #626a66;
+  --s-rs-rule: #dde1de;
+  --s-rs-mark: #3c6e57;
+  --s-rs-gap: 1rem;
+}
+
+.s-rs-role { margin: 0 0 calc(var(--s-rs-gap) * 1.5); }
+.s-rs-role-head { margin: 0 0 0.3rem; font-size: 1.05rem; }
+.s-rs-role-org { color: var(--s-rs-muted); font-weight: 400; }
+
+.s-rs-roles { list-style: none; margin: 0 0 var(--s-rs-gap); padding: 0; }
+.s-rs-roles-item { padding: 0.2rem 0 0.2rem 0.75rem; border-left: 2px solid var(--s-rs-rule); }
+.s-rs-roles-now { border-left-color: var(--s-rs-mark); }
+.s-rs-roles-title { font-weight: 600; }
+.s-rs-roles-period { margin-left: 0.5rem; color: var(--s-rs-muted); }
+
+.s-rs-employers, .s-rs-timeline { display: grid; gap: calc(var(--s-rs-gap) * 1.5); }
+.s-rs-employer, .s-rs-timeline-row { border-top: 1px solid var(--s-rs-rule); padding-top: var(--s-rs-gap); }
+.s-rs-employer-now, .s-rs-timeline-now { border-top: 2px solid var(--s-rs-mark); }
+.s-rs-employer img { max-width: 100%; height: auto; display: block; }
+.s-rs-employer-head, .s-rs-timeline-head { margin: 0 0 0.3rem; font-size: 1.15rem; }
+.s-rs-employer-role, .s-rs-timeline-role { margin: 0; }
+.s-rs-employer-role a, .s-rs-timeline-role a { color: var(--s-rs-ink); }
+.s-rs-employer-period, .s-rs-timeline-period { color: var(--s-rs-muted); }
+.s-rs-earlier { list-style: none; margin: 0.5rem 0 0; padding: 0; font-size: 0.9rem; }
+.s-rs-earlier-period { color: var(--s-rs-muted); }
+
+.s-rs-ref { display: flex; flex-direction: column; gap: 0.25rem; padding: var(--s-rs-gap) 0;
+  border-bottom: 1px solid var(--s-rs-rule); }
+.s-rs-ref-link { color: var(--s-rs-ink); text-decoration: none; }
+.s-rs-ref-link:hover .s-rs-ref-title,
+.s-rs-ref-link:focus-visible .s-rs-ref-title { color: var(--s-rs-mark); }
+.s-rs-ref-link img { max-width: 100%; height: auto; display: block; }
+.s-rs-ref-title { font-weight: 600; }
+.s-rs-ref-site, .s-rs-ref-role { font-size: 0.85rem; color: var(--s-rs-muted); }
+.s-rs-ref-used { font-size: 0.85rem; color: var(--s-rs-mark); }
+
+.s-rs-video { position: relative; aspect-ratio: 16 / 9; margin: var(--s-rs-gap) 0; }
+.s-rs-video iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }

@@ -1,0 +1,48 @@
+{
+  "look": 1,
+  "constructs": {
+    "group": {
+      "wrap": "<section class=\"s-ix-group s-ix-group-{{group}}\"><h2 class=\"s-ix-group-title\">{{title}}{{count}}</h2>{{cards}}</section>"
+    },
+    "cards": {
+      "wrap": "<ol class=\"s-ix-cards\">{{items}}</ol>"
+    },
+    "card": {
+      "wrap": "<li class=\"s-ix-card\"><a class=\"s-ix-card-link\" href=\"{{url}}\">{{position}}{{image}}{{kicker}}<span class=\"s-ix-card-title\">{{title}}</span>{{teaser}}{{meta}}</a></li>",
+      "number": "<span class=\"s-ix-card-no\">{{text}}</span>",
+      "teaser": "<span class=\"s-ix-card-teaser\">{{text}}</span>",
+      "meta": "<span class=\"s-ix-card-meta\">{{text}}</span>"
+    },
+    "tiles": {
+      "wrap": "<ul class=\"s-ix-tiles\">{{items}}</ul>",
+      "item": "<li class=\"s-ix-tile\"><span class=\"s-ix-tile-figure\">{{figure}}</span><span class=\"s-ix-tile-text\">{{text}}</span></li>",
+      "item-accent": "<li class=\"s-ix-tile s-ix-tile-accent\"><span class=\"s-ix-tile-figure\">{{figure}}</span><span class=\"s-ix-tile-text\">{{text}}</span></li>"
+    },
+    "meta-list": {
+      "wrap": "<dl class=\"s-ix-facts\">{{items}}</dl>",
+      "item": "<div class=\"s-ix-fact\"><dt class=\"s-ix-fact-name\">{{name}}</dt><dd class=\"s-ix-fact-value\">{{value}}</dd></div>"
+    },
+    "video-embed": {
+      "wrap": "<div class=\"s-ix-video\"><iframe src=\"{{embed}}\" title=\"{{title}}\" loading=\"lazy\" allowfullscreen referrerpolicy=\"strict-origin-when-cross-origin\"></iframe></div>"
+    }
+  },
+  "named": {
+    "s-ix-ledger": {
+      "like": "tiles",
+      "parts": {
+        "wrap": "<dl class=\"s-ix-ledger\">{{items}}</dl>",
+        "item": "<div class=\"s-ix-ledger-row\"><dt class=\"s-ix-ledger-figure\">{{figure}}</dt><dd class=\"s-ix-ledger-text\">{{text}}</dd></div>",
+        "item-accent": "<div class=\"s-ix-ledger-row s-ix-ledger-accent\"><dt class=\"s-ix-ledger-figure\">{{figure}}</dt><dd class=\"s-ix-ledger-text\">{{text}}</dd></div>"
+      }
+    }
+  },
+  "reads": {
+    "card.teaser.text": ["summary", "teaser"],
+    "card.meta.text": {"unless": "title"},
+    "head.description": ["summary", "description", "teaser"],
+    "piece-teaser.wrap.text": ["summary", "teaser"],
+    "meta-list.item.value": {"unless": "title"},
+    "tiles.item-accent": ["@first"]
+  },
+  "stylesheets": ["site/src/looks/sample-index.css"]
+}

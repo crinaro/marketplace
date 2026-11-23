@@ -240,7 +240,9 @@ def _git_status(repo):
     if p.returncode != 0:
         raise AddressError("git status failed here (%s); run this inside the dev repo"
                            % (p.stderr.decode("utf-8", "replace").strip().splitlines() or ["no reason given"])[-1])
-    return [l for l in p.stdout.decode("utf-8", "replace").splitlines() if l.strip()]
+    # adopt's two scratch files are never committed and never a dirty path (design-adopt-ownership-line 3.1)
+    return [l for l in p.stdout.decode("utf-8", "replace").splitlines()
+            if l.strip() and not (l.startswith("??") and l[3:].strip() in configkeys.ADOPT_SCRATCH)]
 
 
 def require_clean(repo):

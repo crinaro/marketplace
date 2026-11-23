@@ -1,0 +1,51 @@
+/* sample-index: a portfolio led by its index of work. A sample look site-studio ships (templates/looks/sample-index.json);
+   copy it with `look.py use sample-index`, then change anything. Every class is s-ix-; no web font, no file from elsewhere. */
+:root {
+  --s-ix-ink: #1d1f24;
+  --s-ix-muted: #5c6370;
+  --s-ix-rule: #d9dce1;
+  --s-ix-accent: #2f5d8a;
+  --s-ix-gap: 1.25rem;
+}
+
+.s-ix-group { margin: 0 0 calc(var(--s-ix-gap) * 2); }
+.s-ix-group-title {
+  font-size: 0.8rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--s-ix-muted);
+  border-bottom: 1px solid var(--s-ix-rule);
+  padding-bottom: 0.4rem;
+}
+
+.s-ix-cards { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s-ix-gap);
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr)); }
+.s-ix-card-link { display: flex; flex-direction: column; gap: 0.35rem; color: var(--s-ix-ink); text-decoration: none; }
+.s-ix-card-link:hover .s-ix-card-title,
+.s-ix-card-link:focus-visible .s-ix-card-title { color: var(--s-ix-accent); }
+.s-ix-card-link img { width: 100%; height: auto; display: block; }
+.s-ix-card-no { font-variant-numeric: tabular-nums; font-size: 0.8rem; color: var(--s-ix-muted); }
+.s-ix-card-title { font-weight: 600; }
+.s-ix-card-teaser { color: var(--s-ix-muted); }
+.s-ix-card-meta { font-size: 0.8rem; color: var(--s-ix-muted); }
+
+.s-ix-tiles { list-style: none; margin: var(--s-ix-gap) 0; padding: 0; display: grid; gap: var(--s-ix-gap);
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); }
+.s-ix-tile { border-top: 2px solid var(--s-ix-rule); padding-top: 0.5rem; }
+.s-ix-tile-accent { border-top-color: var(--s-ix-accent); }
+.s-ix-tile-figure { display: block; font-size: 1.6rem; font-weight: 600; }
+.s-ix-tile-text { color: var(--s-ix-muted); }
+
+.s-ix-ledger { margin: var(--s-ix-gap) 0; }
+.s-ix-ledger-row { display: flex; gap: var(--s-ix-gap); border-bottom: 1px solid var(--s-ix-rule); padding: 0.4rem 0; }
+.s-ix-ledger-accent .s-ix-ledger-figure { color: var(--s-ix-accent); }
+.s-ix-ledger-figure { font-weight: 600; min-width: 6rem; }
+.s-ix-ledger-text { margin: 0; }
+
+.s-ix-facts { display: grid; grid-template-columns: max-content 1fr; gap: 0.3rem var(--s-ix-gap); }
+.s-ix-fact { display: contents; }
+.s-ix-fact-name { color: var(--s-ix-muted); }
+.s-ix-fact-value { margin: 0; }
+
+.s-ix-video { position: relative; aspect-ratio: 16 / 9; margin: var(--s-ix-gap) 0; }
+.s-ix-video iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }

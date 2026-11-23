@@ -94,9 +94,11 @@ BLOCK_NAMES_V4 = ("quotes",)
 PART_FIXED = ("title", "description", "intro", "photo", "endorsement", "feed", "contact")
 
 
-def block_names(grammar):
-    """The container block names the grammar reads: the six of schema 3, and from 4 `quotes`."""
-    return BLOCK_NAMES + (BLOCK_NAMES_V4 if grammar >= 4 else ())
+def block_names(grammar, named=()):
+    """The container block names the grammar reads: the six of schema 3, from 4 `quotes`, and the names of the look's
+    named blocks (`named`, 0.7.0, design-adopt-ownership-line section 6.6: the renderer has the look in hand and passes
+    them; a look holding one needs schema 7, and a name may not be a plugin block's)."""
+    return BLOCK_NAMES + (BLOCK_NAMES_V4 if grammar >= 4 else ()) + tuple(named)
 
 
 def fixed_part_names(grammar):

@@ -1,6 +1,7 @@
 """sectioncheck: the checks of the small `site.json` sections: `nav`, `blocks`, `look`, `redirects` and
-`budgets`, and the schema-6 top-level keys (`featuredView`, `titleSeparator`, `mediaPaths`, `sizeCopies`, `carried`;
-design-adopt-parity-2 section 3.2). Each reads one raw value and reports into a collector."""
+`budgets`, the schema-6 top-level keys (`featuredView`, `titleSeparator`, `mediaPaths`, `sizeCopies`, `carried`;
+design-adopt-parity-2 section 3.2) and the schema-7 key `lookLocal` (design-adopt-ownership-line section 2.1). Each
+reads one raw value and reports into a collector."""
 
 import re
 import unicodedata
@@ -12,6 +13,7 @@ from configschema.configkeys import (
     CARRIED_RESERVED,
     CARRIED_RESERVED_DIRS,
     FEATURED_VIEWS,
+    LOOK_LOCAL_PATH,
     GATE_FORBIDDEN_DIRS,
     GATE_FORBIDDEN_NAMES,
     GATE_JUNK_NAMES,
@@ -42,6 +44,32 @@ def needs_schema_6(where, have):
                            found="schema %d" % have, expected="schema 6",
                            fix="run `python3 build.py raise-schema --to 6`, which lists what the page changes before "
                                "it writes schema 6")
+
+
+def needs_schema_7(where, have):
+    """A schema-7 key under a lower declared schema: 0.6.0 refuses it as an unknown key, and 0.7.0 refuses it naming the
+    schema (design-adopt-ownership-line section 2.1)."""
+    return SiteConfigError("site.json: '%s' needs \"schema\": 7" % where, path=where,
+                           found="schema %d" % have, expected="schema 7",
+                           fix="run `python3 build.py raise-schema --to 7`, which lists what the page changes before "
+                               "it writes schema 7")
+
+
+def _look_local(v, look=None):
+    """`lookLocal` (schema 7, design-adopt-ownership-line section 2.1): exactly `site/looks/local.json`, the person's own
+    look laid over the look `look` names; `look` naming the same file is refused (one file in both places). That the file
+    exists at HEAD is the build's check, as it is for `look`."""
+    v = _str(v, "lookLocal")
+    if v != LOOK_LOCAL_PATH:
+        raise SiteConfigError("site.json: 'lookLocal' must be exactly %s" % LOOK_LOCAL_PATH, path="lookLocal", found=v,
+                              expected=LOOK_LOCAL_PATH,
+                              fix="write \"lookLocal\": \"%s\" and keep your own look in that file" % LOOK_LOCAL_PATH)
+    if look == LOOK_LOCAL_PATH:
+        raise SiteConfigError("site.json: 'look' and 'lookLocal' both name %s; one file cannot be laid over itself"
+                              % LOOK_LOCAL_PATH, path="look", found=look, expected="another file under site/looks/, or none",
+                              fix="point look at the derived look (site/looks/derived.json) or remove it, and keep "
+                                  "lookLocal")
+    return v
 
 
 def _nav_check(raw, col, schema=SCHEMA_MAX):

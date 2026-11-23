@@ -4,6 +4,7 @@ and the majority reading."""
 import looks
 import re
 from contentmodel import links
+from lookfiles.anchors import class_tail_slots
 from lookfiles.pagedom import _SLOT, _collapse
 from lookgrammar import optionalparts
 
@@ -66,13 +67,14 @@ def _align_ints(cand, entries, expanded):
 def _merge(entries, construct, part):
     """One template for every instance of a part, or None when they do not share one. A candidate is accepted when,
     written back with each instance's own values, it gives that instance's own page text; a number that differs
-    between instances is written as the int slot whose value it is, and only there."""
+    between instances is written as the int slot whose value it is, and only there. A slot written as a class token's tail
+    stands only where the instances differ there by their values (`_tail_guard`)."""
     templates = []
     for t, _c in entries:
         if t not in templates:
             templates.append(t)
     if len(templates) == 1:
-        return templates[0]
+        return _tail_guard(templates[0], entries)
     got = [_expand(t, c) for t, c in entries]
     for cand in sorted(templates, key=lambda t: -t.count("{{")):
         for refined in (cand, _align_words(cand, entries, got)):
@@ -80,11 +82,31 @@ def _merge(entries, construct, part):
                 continue
             mine = [_expand(refined, c) for _t, c in entries]
             if got == mine:
-                return refined
+                return _tail_guard(refined, entries)
             aligned = _align_ints(refined, entries, list(zip(mine, got)))
             if aligned is not None and all(_expand(aligned, c) == g for (_t, c), g in zip(entries, got)):
-                return aligned
+                return _tail_guard(aligned, entries)
     return None
+
+
+_TAIL = r'(class="[^"]*?[-_])\{\{%s\}\}(?=[\s"])'
+
+
+def _tail_guard(template, entries):
+    """R-G's guard (design-adopt-ownership-line section 7): a slot written as the tail of a class token (`t-grid-{{group}}`) stands
+    only where at least two instances differ in that token by exactly their values (`Print` and `Digital`, or `Print` and the
+    empty value of a list outside a group, `t-grid-`); where every instance holds one value it is written back as that value, a
+    fixed class of the template's, which nothing tells from a coincidence."""
+    first = entries[0][1]
+    for slot in class_tail_slots(first.construct, first.part):
+        rx = re.compile(_TAIL % slot)
+        if not rx.search(template):
+            continue
+        values = set(str(c.values.get(slot) or "") for _t, c in entries)
+        if len(values) < 2:
+            text = links.esc(_collapse(values.pop()))
+            template = rx.sub(lambda m: m.group(1) + text, template)
+    return template
 
 
 def _merge_place_picture(entries, construct, part):

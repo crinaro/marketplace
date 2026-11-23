@@ -16,7 +16,9 @@ from adoption.tokens import (
 from adoption.redirects import redirect_pages
 from adoption.convert import label_conversions
 
-Feature = namedtuple("Feature", "key signal sentence answer")
+Feature = namedtuple("Feature", "key signal sentence answer remedy", defaults=(None,))
+# `remedy` (dev #1000, 0.7.0): (site.json key, the value the answer advises) when the answer is "set X in site.json", else None.
+# `feature_lines` reads the CURRENT site.json for every such row: a site that already holds the value is printed as covered.
 # ONE table: what the person's site does -> what that is called -> what the plugin does about it. A signal
 # the inventory finds that has no row here prints the fallback line, so the table is what the inventory says.
 FEATURES = (
@@ -27,7 +29,7 @@ FEATURES = (
     Feature("featured-flag", "featured: true in a piece's front matter",
             "the home page shows pieces marked featured: true",
             "set \"featuredFrom\": \"flags\" in site/site.json (schema 2); adopt does not set it for you, "
-            "because it changes which pieces the home page shows"),
+            "because it changes which pieces the home page shows", ("featuredFrom", "flags")),
     Feature("token:featured", "{{featured}}", "the featured pieces on a page",
             "covered: `{{featured}}` renders the featured selection (schema 2)"),
     Feature("token:home", "{{home:<part>}}", "a hand-made page that takes its copy from a home page",
@@ -89,14 +91,17 @@ def detect_signals(tree, data, redirect_found=None):
     return out
 
 
-def feature_lines(signals):
+def feature_lines(signals, data=None):
     """The inventory's feature list, one line per signal: the feature's sentence and the plugin's answer from
-    FEATURES, or the fallback for a signal with no row."""
+    FEATURES, or the fallback for a signal with no row. A row whose answer is a site.json key (`remedy`) reads `data`, the
+    site.json as it stands: when it already holds the advised value the row says covered (dev #1000)."""
     table = dict((f.key, f) for f in FEATURES)
     out = []
     for key, where in signals:
         f = table.get(key)
-        if f:
+        if f and f.remedy and isinstance(data, dict) and data.get(f.remedy[0]) == f.remedy[1]:
+            out.append("  - %s (%s): covered: site.json sets %s: %s" % (f.sentence, where, f.remedy[0], f.remedy[1]))
+        elif f:
             out.append("  - %s (%s): %s" % (f.sentence, where, f.answer))
         elif key.startswith("token:"):
             out.append("  - a local token %s (%s): the plugin's build refuses it; replace it with text or with one of "

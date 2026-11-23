@@ -9,6 +9,7 @@ from contentmodel import keytables, layout as layout_mod, models, pagefiles
 from configschema import configkeys, diagnostics, treeschema
 from contentmodel.errors import ContentError
 
+from building import readsources
 from building.constants import HTML_EXTS
 from building.outcomes import BuildError
 
@@ -116,18 +117,19 @@ _VIEW_TILES = {"steps": ("steps-view", "item"), "showcase": ("showcase-view", "i
 _ROLES_PARTS = (("roles-view", "item"), ("roles-view", "item-current"))
 
 
-def _index_parts(pf):
+def _index_parts(pf, look=None):
     """The parts the index of portfolio `pf` shows its pieces in, as the build renders them: a card (`card.wrap`) on a
     grid, the view's tile, and under `view: roles` the employer card the build uses for each employer (`item-current`
     where one of its pieces is current). A roles portfolio with no piece yet counts both cards; `map` and `page` show
-    no card or tile."""
+    no card or tile. The employer a piece is grouped by reads `look`'s `reads` `roles-view.item.employer` (0.7.0), as
+    `views.py` `_employer` groups the cards, else `employer`."""
     view = pf.settings.get("view")
     if view in _VIEW_TILES:
         return {_VIEW_TILES[view]}
     if view == "roles":
         current = {}
         for piece in pf.pieces:
-            name = piece.meta.get("employer")
+            name = readsources.slot(look, "roles-view.item.employer", piece.meta.get)
             name = name.strip() if isinstance(name, str) else name
             current[name] = current.get(name, False) or piece.meta.get("current") is True
         if not current:
@@ -188,7 +190,7 @@ def trigger_slot_findings(model, cfg, files, look, grammar=None):
             slot = TRIGGER_SLOTS[key]
             src = pf.page_source if (pf.page_source and key in pf.page_keys) else "site/site.json"
             if key == "cardKicker":
-                parts = sorted(_index_parts(pf) | home.get(pf.slug, set()))
+                parts = sorted(_index_parts(pf, look) | home.get(pf.slug, set()))
                 if not parts:
                     problems.append(diagnostics.make_problem(
                         "%s sets cardKicker, and no card or tile shows the pieces of %s (its index is view: %s, and the "
@@ -201,7 +203,7 @@ def trigger_slot_findings(model, cfg, files, look, grammar=None):
             if key == "cardImage":
                 if pf.settings.get("view") != "roles":
                     continue
-                parts = sorted(_index_parts(pf))
+                parts = sorted(_index_parts(pf, look))
             elif key == "groupCount":
                 parts = [("group", "wrap")]
             elif key == "pieceRoles" and pf.settings.get("view") == "roles":

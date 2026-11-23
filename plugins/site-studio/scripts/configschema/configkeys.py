@@ -1,4 +1,4 @@
-"""configkeys: the key tables and constants of `site/site.json` and of a page's front matter, schemas 1 to 6.
+"""configkeys: the key tables and constants of `site/site.json` and of a page's front matter, schemas 1 to 7.
 
 Constants only: the schema ceiling, the engine marker, each key table, the budget defaults and the patterns the
 value checks use. No code runs here."""
@@ -6,7 +6,7 @@ value checks use. No code runs here."""
 import re
 
 
-SCHEMA_MAX = 6
+SCHEMA_MAX = 7
 ENGINE_MARKER = "site-studio"
 CANONICAL_MARKER_LINE = '  "engine": "site-studio",'
 
@@ -19,14 +19,26 @@ KEY_ORDER = (
 V2_TOP_KEYS = ("siteKind", "featuredFrom")
 CANON_ORDER = (
     "schema", "engine", "name", "siteTitle", "titleSeparator", "siteKind", "publicRepo", "previewUrl", "domain",
-    "cutover", "publicEmails", "privateTerms", "work", "featuredFrom", "featuredView", "nav", "look", "blocks",
-    "mediaPaths", "sizeCopies", "carried", "redirects", "resume", "budgets",
+    "cutover", "publicEmails", "privateTerms", "work", "featuredFrom", "featuredView", "nav", "look", "lookLocal",
+    "blocks", "mediaPaths", "sizeCopies", "carried", "redirects", "resume", "budgets",
 )
 # Schema 4 adds these top-level keys (design-template-fidelity section 3.2), refused below 4.
 V4_TOP_KEYS = ("nav", "look", "blocks")
 # Schema 6 adds these top-level keys (design-adopt-parity-2 section 3.2), each a K reason: 0.5.x refuses every one as an
 # unknown key, and each is stored only when it is not its default, so a schema-5 config's dict is what it was.
 V6_TOP_KEYS = ("featuredView", "titleSeparator", "mediaPaths", "sizeCopies", "carried")
+# Schema 7 adds one top-level key (design-adopt-ownership-line section 2.1), a K reason: 0.6.0 refuses it as an unknown
+# key (TESTED at step 0, U-B1). `lookLocal` names the person's own look, laid over the look `look` names (or over the
+# default look when there is none); it is exactly LOOK_LOCAL_PATH, and `look` may not name that file too.
+V7_TOP_KEYS = ("lookLocal",)
+LOOK_LOCAL_PATH = "site/looks/local.json"
+# design-adopt-ownership-line 2.5, 2.6 and 3.1: the look derive writes, its stamp (committed with it, never read by a build) and
+# adopt's two scratch files, which are never committed and are never a dirty path at the three dirty tests (parity's
+# `preconditions`, `addresses._git_status`, `look.py use`).
+DERIVED_LOOK_PATH = "site/looks/derived.json"
+STAMP_REL = ".site-studio/derived-look.json"
+CANDIDATES_REL = ".site-studio/look-candidates.json"
+ADOPT_SCRATCH = (".site-studio/adopt-plan.json", CANDIDATES_REL)
 # `featuredView`: how `{{featured}}` and the generated home's featured part print the selection. "flat" (the default,
 # written away) is today's one run of cards; "grouped" is a filtered view of each portfolio's index (section 4.1).
 FEATURED_VIEWS = ("flat", "grouped")

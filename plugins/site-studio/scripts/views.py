@@ -48,10 +48,11 @@ import os
 import posixpath
 import re
 
-from building import piecehead, pictures, stepsview
+from building import piecehead, pictures, readsources, stepsview
 from contentmodel import frontmatter, keytables
 from contentmodel.errors import ContentError
 from contentmodel.links import esc
+from lookgrammar import named as looknamed
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PLUGIN_ROOT = os.path.dirname(HERE)
@@ -204,8 +205,10 @@ def _period(piece):
     return str(value).strip()
 
 
-def _employer(piece, view):
-    value = piece.meta.get("employer")
+def _employer(piece, view, look=None):
+    """The employer a roles card shows and groups by: the look's `reads` `roles-view.item.employer` (0.7.0), else `employer`
+    (0.6.0). Required under the roles view: with no source giving one line of text the refusal stands."""
+    value = readsources.slot(look, "roles-view.item.employer", piece.meta.get)
     if not isinstance(value, str) or not value.strip() or "\n" in value:
         raise ContentError("%s: front matter 'employer' is required under view: %s (one line of text)"
                            % (piece.source, view), path=piece.source,
@@ -221,18 +224,19 @@ def _is_current(piece):
     return value
 
 
-def _dated_rows(pieces):
+def _dated_rows(pieces, look=None):
     """Schema 6's `pieceRoles` reading of one employer's pieces (design-adopt-parity-2 section 4.4): ((title, period)
     the card shows, [(piece, title, period)] of every other entry). The card shows the newest piece's current entry
     (`piecehead.card_entry`: without `current: true`, its first); the others follow in their written order, the newest
     piece's first, each linking its own piece. An entry's period is its dates; an entry with none takes the piece's
-    `period` only when it is the piece's one entry, so a portfolio whose pieces are one role each reads as before."""
+    `period` only when it is the piece's one entry, so a portfolio whose pieces are one role each reads as before. Which
+    entry is current reads the look's `reads` `piece-roles.item-current` (0.7.0), as the piece page does."""
     rows = []
     for piece in pieces:
         entries = piecehead.roles(piece) or [(piece.card_title, None)]
         for title, dates in entries:
             rows.append((piece, title, dates if dates else (_period(piece) if len(entries) == 1 else "")))
-    pick = piecehead.card_entry(pieces[0])
+    pick = piecehead.card_entry(pieces[0], look)
     shown = rows[pick]
     return (shown[1], shown[2]), [r for i, r in enumerate(rows) if i != pick]
 
@@ -241,7 +245,7 @@ def _dated_rows(pieces):
 def roles_html(builder, portfolio, out):
     groups, order = {}, []
     for piece in portfolio.pieces:                    # the portfolio's own order: a group sits at its newest piece
-        name = _employer(piece, "roles")
+        name = _employer(piece, "roles", builder.look)
         if name not in groups:
             groups[name] = []
             order.append(name)
@@ -253,7 +257,7 @@ def roles_html(builder, portfolio, out):
     for name in order:
         newest = groups[name][0]
         if dated:
-            shown, earlier = _dated_rows(groups[name])
+            shown, earlier = _dated_rows(groups[name], builder.look)
         else:                       # 0.5.x's reading, in its order: the earlier pieces' lines, then the newest's
             earlier = [(p, _titles(p), _period(p)) for p in groups[name][1:]]
             shown = (_titles(newest), _period(newest))
@@ -346,8 +350,24 @@ VIEWS = {"roles": roles_html, "map": map_html, "showcase": showcase_view_html, "
 
 
 def index_html(builder, portfolio, out):
-    """The cards slot of a portfolio index under a schema-4 view. A portfolio with no pieces has none, as a grid."""
+    """The cards slot of a portfolio index under a schema-4 view. A portfolio with no pieces has none, as a grid. Under a
+    named view of the look (0.7.0, design-adopt-ownership-line section 6.6: the `page.md` check set `view` to its base and
+    `viewNamed` to the name) the base view builds the data and prints through `looknamed.as_look`."""
     view = portfolio.settings["view"]
+    name = portfolio.settings.get("viewNamed")
+    if name is not None:
+        if looknamed.view_base(builder.look, name) != view:
+            raise ContentError("%s: view %r is not a named view of the site's look" % (portfolio.page_source or
+                                                                                     portfolio.slug, name),
+                               fix="add it to the look's named table, or set view to one of %s" % ", ".join(sorted(VIEWS)))
+        if not portfolio.pieces:
+            return ""
+        effective = builder.look
+        builder.look = looknamed.as_look(effective, name)
+        try:
+            return VIEWS[view](builder, portfolio, out)
+        finally:
+            builder.look = effective
     if view not in VIEWS:
         raise ContentError("%s: view %r is not one of %s" % (portfolio.page_source or portfolio.slug, view,
                                                               ", ".join(sorted(VIEWS))),

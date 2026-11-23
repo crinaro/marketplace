@@ -13,7 +13,7 @@ from configschema.configkeys import (
 from configschema.diagnostics import make_problem
 
 
-def page_settings_problems(raw, where, schema=3):
+def page_settings_problems(raw, where, schema=3, named_views=None):
     """Every problem in the schema-3 portfolio keys of a `page.md` (`order`, `tagline`, `sort`, `menuLinks`,
     `view`) and, at `schema` 4 and above, `mapMask`, `onePieceIndex` and the three further `view` values (at 5 also
     `steps`), as (problems,
@@ -22,7 +22,11 @@ def page_settings_problems(raw, where, schema=3):
     are the design's section 6.2 table, and every refusal names its fix. `schema` is the declared schema of the
     site, DEFAULT 3 so a caller that does not pass it keeps the schema-3 reading (`content.py` passes the site's
     schema once it builds the schema-4 views): below 4 a `mapMask` or `onePieceIndex` is ignored here (the tree check refuses it
-    with the schema named) and the `view` values stay `grid` and `page`."""
+    with the schema named) and the `view` values stay `grid` and `page`.
+    `named_views` (0.7.0, design-adopt-ownership-line section 6.6) is {name: base view} of the effective look's named views,
+    which the caller that read the look passes in (this package reads no look). At schema 7 such a name is a `view` value:
+    `view` is set to its base, whose data the index builds, and `viewNamed` to the name it prints through. A name the look
+    does not hold is refused as any unknown value is."""
     out = dict(V3_PAGE_DEFAULTS)
     probs = []
 
@@ -62,6 +66,11 @@ def page_settings_problems(raw, where, schema=3):
                 continue
             if key == "view" and schema >= 4:
                 allowed = PAGE_VIEWS + V4_PAGE_VIEWS + (V5_PAGE_VIEWS if schema >= 5 else ())
+            named = dict(named_views or {}) if key == "view" and schema >= 7 else {}
+            if isinstance(val, str) and val in named:
+                out[key], out["viewNamed"] = named[val], val
+                continue
+            allowed = allowed + tuple(sorted(named))
             if val not in allowed:
                 names = " or ".join('"%s"' % a for a in allowed)
                 bad(key, repr(val), "must be %s" % names, "set %s to %s" % (key, names))

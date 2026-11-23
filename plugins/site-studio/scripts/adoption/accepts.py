@@ -24,7 +24,8 @@ note says why, "the count prints alone"); the `page` rows that count prints on (
 featured shelf is grouped) carry that reason in their `what`, so the difference is an ACCEPT row with its reason, never silent.
 
     open_rows(differences, local, site_path, notes)  the rows
-    open_lines(parity)                               the lines `parity` and `check` print for them
+    open_lines(parity)                               the lines `parity` and `check` print for them, the set-apart tiles last
+    accent_lines(parity)                             probe P-A's limit (0.7.0, section 6.5) as ACCEPT rows
     page_paths(rows)                                 the `page` rows' paths
     sides_of(differences, path)                      which builds have that page: ("old", "new"), ("old",) or ("new",)
 """
@@ -142,13 +143,29 @@ def _address(path):
     return "/%s/" % folder if folder else "/"
 
 
+TILE_ROW = ("  tile: %s (the home and about pages' front matter is a closed key list and a tile line "
+            "has no field for a mark, so no look entry can name this position; parity counts the class as markup a visitor does not "
+            "see, and the record lists it)")
+
+
+def accent_lines(parity):
+    """Probe P-A's limit as rows of the ACCEPT list (section 6.5): each line of `parity["accents"]` (`lookperson.accent_lines`: "tile
+    <n> of <m> on <page> carries a class the others lack; a look sets apart the first or the last"), whatever the verdict, because
+    a class alone does not make parity DIFFERENT. Nothing when there is none."""
+    rows = list((parity or {}).get("accents") or ())
+    if not rows:
+        return []
+    return ["ACCEPT: %d tile(s) set apart at a position no look can name:" % len(rows)] + [TILE_ROW % r for r in rows]
+
+
 def open_lines(parity):
     """The lines `parity` and `check` print for the open ACCEPT candidates of a parity result or a stored parity: each row, and per
     `page` row the two things a person can do about that page alone; `file`, `unlinked` and description rows have no picture and
-    each says so. Nothing for a measure with none, or a verdict that is not DIFFERENT."""
+    each says so; then the set-apart tiles no look can name (`accent_lines`, 0.7.0). Nothing for a measure with none, and no
+    `open` row for a verdict that is not DIFFERENT."""
     rows = (parity or {}).get("open") or []
     if not rows or parity.get("verdict") != "DIFFERENT":
-        return []
+        return accent_lines(parity)
     out = ["ACCEPT candidates: %d visible difference(s) no setting, look or carried page removed. `adopt.py parity --keep <dir>` "
            "makes the pictures of each page, old beside new, and `adopt.py parity --accept --shots <dir>/shots` then accepts every "
            "one at once (the description rows above are accepted with them):" % len(rows)]
@@ -160,4 +177,4 @@ def open_lines(parity):
         else:
             out.append("  %s %s: %s (a %s, so it has no picture)" % (r["kind"], r["path"], r["what"],
                                                                     "file" if r["kind"] == "file" else "file no page links"))
-    return out
+    return out + accent_lines(parity)

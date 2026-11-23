@@ -24,9 +24,15 @@ from adoption.tokens import detect_resume
 from adoption.parity import parity_basis, stale_parity
 
 PLAN_SCHEMA = 1                    # what an empty plan, and a plan with nothing that needs 2, is written at
-PLAN_SCHEMA_MAX = 3                # schema 2 adds `settings`, `files[path].disposition` and the verdict MARKUP-ONLY; 3 the parity's
+PLAN_SCHEMA_MAX = 4                # schema 2 adds `settings`, `files[path].disposition` and the verdict MARKUP-ONLY; 3 the parity's
 #                                    `plugin`, `open` and `shots` (design-adopt-parity-2 3.2), and a setting 0.5.x has no name for
 PARITY_V3 = ("plugin", "open", "shots")
+# Plan schema 4 (design-adopt-ownership-line 2.7): the measured rows of the person's look entries, named `look.<construct>` and
+# `reads.<target>`, which 0.6.0 has no name for; 0.6.0 refuses the plan at schema 4 ("update site-studio").
+PERSON_ROWS = ("look.", "reads.")
+PERSON_VALUE_KEYS = ("file", "sha256", "pages", "yours", "derived", "status")
+PERSON_FILES = ("site/looks/local.json", "site/looks/derived.json")
+PERSON_STATUSES = ("mapped", "ambiguous", "unmapped", "none")
 OPEN_KINDS = ("page", "file", "unlinked")       # `adoption.accepts.OPEN_KINDS`, in their sort order
 SHOTS_NONE = ("chrome-not-found",)              # `adoption.shots.NONE_CODES`: a closed set, never a browser's message (R2-S3)
 # The settings 0.5.x has no name for (`adoption.settings.V6_SETTING_ORDER`, by family; a literal here because `settings` imports this
@@ -54,7 +60,7 @@ def parse_plan(text):
                         "again), then run `adopt.py check`" % e)
     if not isinstance(d, dict):
         raise PlanError("adopt plan: the top level must be an object")
-    two = d.get("schema") in (2, 3) and not isinstance(d.get("schema"), bool)
+    two = d.get("schema") in (2, 3, 4) and not isinstance(d.get("schema"), bool)
     # an empty `settings` is what an in-memory plan carries (save_plan does not write it at schema 1); a schema-1 file
     # that holds a setting is refused as an unknown key, as an older install refuses it
     allowed = ("schema", "base", "files", "facts", "paper", "parity", "folders", "siteKind", "convert") + (
@@ -89,10 +95,14 @@ def parse_plan(text):
     if not isinstance(d["settings"], dict):
         raise PlanError("adopt plan: 'settings' must be an object")
     for name, row in d["settings"].items():
+        person = isinstance(name, str) and name.startswith(PERSON_ROWS)
         if (not isinstance(row, dict) or set(row) != {"value", "how", "reason"} or row["how"] not in SETTING_HOWS
-                or not isinstance(row["reason"], str) or not re.match(r"^[A-Za-z][A-Za-z0-9.]*$", str(name))):
+                or not isinstance(row["reason"], str)
+                or not re.match(r"^(?:look|reads)\.[A-Za-z][A-Za-z0-9._-]*$" if person else r"^[A-Za-z][A-Za-z0-9.]*$", str(name))):
             raise PlanError("adopt plan: settings[%r] must hold exactly value, how (%s) and reason (text)"
                             % (name, ", ".join(SETTING_HOWS)))
+        if person:
+            _person_row(name, row, d["schema"])
     if not isinstance(d["base"], str) or not re.match(r"^[0-9a-f]{40}$", d["base"]):
         raise PlanError("adopt plan: 'base' must be a 40-hex commit")
     if not isinstance(d["files"], dict):
@@ -136,14 +146,35 @@ def parse_plan(text):
     return d
 
 
+def _whole(v, none_ok=True):
+    return (v is None and none_ok) or (isinstance(v, int) and not isinstance(v, bool) and v >= 0)
+
+
+def _person_row(name, row, schema):
+    """Plan schema 4's rows of the person's look entries (design-adopt-ownership-line 2.7), strict: the value holds exactly `file`
+    (one of the two look files), `sha256` (64 hex), `pages`, `yours` and `derived` (whole numbers; `yours` and `derived` may be
+    null) and `status` (derive's: mapped, ambiguous, unmapped, none). `how` is `measured` or `not measured`. Refused below 4."""
+    again = "; delete .site-studio/adopt-plan.json and run `adopt.py parity` to measure again"
+    if schema < 4:
+        raise PlanError("adopt plan: settings[%r] needs plan schema 4 (this plan says %r)%s" % (name, schema, again))
+    v = row["value"]
+    if (not isinstance(v, dict) or set(v) != set(PERSON_VALUE_KEYS) or v["file"] not in PERSON_FILES
+            or not (isinstance(v["sha256"], str) and _SHA.match(v["sha256"])) or not _whole(v["pages"], False)
+            or not _whole(v["yours"]) or not _whole(v["derived"]) or v["status"] not in PERSON_STATUSES
+            or row["how"] not in ("measured", "not measured")):
+        raise PlanError("adopt plan: settings[%r].value must hold exactly file (%s), sha256, pages, yours and derived (whole "
+                        "numbers, yours and derived may be null) and status (%s)%s"
+                        % (name, " or ".join(PERSON_FILES), ", ".join(PERSON_STATUSES), again))
+
+
 def _parity_v3(parity, schema):
     """Plan schema 3's members of `parity` (design-adopt-parity-2 3.2), strict: `plugin` (the version that measured), `open` (the
     ACCEPT candidates, `adoption.accepts`) and `shots` (the pictures' names and hashes, `adoption.shots`). Each is refused at
     schema 1 or 2, as 0.5.x refuses the whole plan at schema 3. No path of the person's machine and no browser text is accepted."""
     again = "; delete .site-studio/adopt-plan.json and run `adopt.py parity` to measure again"
     held = [k for k in PARITY_V3 if k in parity]
-    if held and schema != 3:
-        raise PlanError("adopt plan: parity.%s needs plan schema 3 (this plan says %r)%s" % (held[0], schema, again))
+    if held and schema < 3:
+        raise PlanError("adopt plan: parity.%s needs plan schema 3 or later (this plan says %r)%s" % (held[0], schema, again))
     if "plugin" in parity and not (isinstance(parity["plugin"], str) and _VERSION.match(parity["plugin"])):
         raise PlanError("adopt plan: parity.plugin must be a site-studio version%s" % again)
     if "open" in parity:
@@ -192,6 +223,8 @@ def lowest_schema(plan):
     install reads every plan that has nothing a schema-1 plan cannot hold). Schema 3 when the parity holds a member of
     `PARITY_V3` (every parity this site-studio measures names its `plugin`) or a setting is one 0.5.x has no name for."""
     parity = plan.get("parity") or {}
+    if any(n.startswith(PERSON_ROWS) for n in plan.get("settings") or {}):
+        return 4
     if any(k in parity for k in PARITY_V3) or any(
             n in V6_SETTING_FAMILIES or n.split(".", 1)[0] in V6_SETTING_FAMILIES for n in plan.get("settings") or {}):
         return 3
