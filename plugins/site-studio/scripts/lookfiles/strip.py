@@ -33,7 +33,7 @@ import re
 
 from contentmodel import keytables
 from lookgrammar.constructs import CLOSED_VALUES, CONSTRUCTS, SENT_CLOSE, SENT_OPEN, URL_ATTRS
-from lookgrammar.reads import READS
+from lookgrammar.reads import PICTURE_KEYS, READS
 
 _SLOT = re.compile(r"\{\{([a-z][A-Za-z0-9]*)\}\}")
 _SENT = re.compile(SENT_OPEN + r"(\d+)" + SENT_CLOSE)
@@ -86,6 +86,7 @@ def plugin_keys():
     for row in READS.values():
         walk(row["default"])
         walk(row["setting"])
+    walk(PICTURE_KEYS)                  # 0.8.0: a picture target's sources (cover, photo, tileImage) are plugin keys
     _KEYS.append(frozenset(found))
     return _KEYS[0]
 

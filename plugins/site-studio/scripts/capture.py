@@ -34,7 +34,9 @@ RULES (design 5.3, 5.1)
   * "NOT PUBLICLY VIEWABLE" IS REPORTED, NEVER WORKED AROUND: an HTTP 401, 403, 404, 410 or 451, or a
     redirect to a sign-in page, writes NOTHING for that URL and prints why. There is no login flow,
     no cookie import, no alternate fetch.
-  * An existing reference folder is not overwritten without --force.
+  * An existing reference folder is not overwritten without --force. --force replaces the page's text, the card
+    and the keys above and KEEPS the person's other keys (author, image, role, ...) when the url is the same, naming
+    what it kept; a different url carries nothing and names each key not carried (0.8.0, dev #1037; capturing/carry.py).
   * SANDBOX. A capture of an arbitrary URL with Chrome's sandbox off happens ONLY in the disposable
     cloud case (CLAUDE_CODE_REMOTE=true as root), and this script prints that it did. In the CI case
     (GITHUB_ACTIONS=true, where only the local fixture is loaded) any URL that is not on 127.0.0.1
@@ -61,6 +63,7 @@ from contentmodel import links  # noqa: E402
 from imaging import errors, importer   # noqa: E402
 import resize   # noqa: E402
 from configschema import diagnostics, model  # noqa: E402
+from capturing import carry  # noqa: E402
 
 NOT_PUBLIC = (401, 403, 404, 410, 451)
 SIGN_IN = re.compile(r"/(log-?in|sign-?in|signin|sign_in|accounts?/login|sso|auth(enticate)?)(/|$|\?)", re.I)
@@ -187,18 +190,21 @@ def capture_one(b, resizer, url, out_root, name=None, captured=None, force=False
         res.update(status="error", reason="%s already exists; not overwritten (use --force)" % folder)
         return res
     jpeg = page.screenshot(full=False, fmt="jpeg", quality=85)
+    old, unread = carry.read_replaced(folder) if force else (None, None)
     os.makedirs(folder, exist_ok=True)
-    tmp = tempfile.mkdtemp(prefix="site-studio-card-")
-    try:
-        src = os.path.join(tmp, "card.jpg")
-        with open(src, "wb") as fh:
-            fh.write(jpeg)
-        card = importer.import_media(src, os.path.join(folder, "card.jpg"), resizer, overwrite=force)
-    except errors.ImageError as e:
-        res.update(status="error", reason="the card image could not be imported: %s" % e)
-        return res
-    finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+    card = None
+    if not carry.keeps_image(old, url):      # a kept `image` names the card: a card.jpg beside it is a second one
+        tmp = tempfile.mkdtemp(prefix="site-studio-card-")
+        try:
+            src = os.path.join(tmp, "card.jpg")
+            with open(src, "wb") as fh:
+                fh.write(jpeg)
+            card = importer.import_media(src, os.path.join(folder, "card.jpg"), resizer, overwrite=force)
+        except errors.ImageError as e:
+            res.update(status="error", reason="the card image could not be imported: %s" % e)
+            return res
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
     ref = {"url": url, "title": title, "description": (meta.get("description") or "").strip(),
            "site": (meta.get("site") or "").strip() or re.sub(r"^www\.", "", host),
            "published": iso_date(meta.get("published")), "kind": kind_of(embed, meta.get("ogtype")),
@@ -206,13 +212,16 @@ def capture_one(b, resizer, url, out_root, name=None, captured=None, force=False
     if role is not None:
         ref["role"] = role
     ref = {k: v for k, v in ref.items() if v != "" or k in ("url", "title")}
+    notes = carry.merge(old, unread, ref, url, name)
+    for n in notes:
+        log(n)
     with open(os.path.join(folder, "reference.json"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write(json.dumps(ref, indent=2, sort_keys=True, ensure_ascii=False) + "\n")
     text = (meta.get("text") or "")[:TEXT_LIMIT]
     with open(os.path.join(folder, "text.md"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write("# %s\n\nSource: %s\nCaptured: %s\n\n%s\n" % (title, url, ref["captured"], text.strip()))
-    res.update(status="captured", name=name, dir=folder, title=title, card=os.path.basename(card.path),
-               kind=ref["kind"], role=ref.get("role"))
+    res.update(status="captured", name=name, dir=folder, title=title, card=os.path.basename(card.path) if card else None,
+               kind=ref["kind"], role=ref.get("role"), notes=notes)
     return res
 
 
@@ -245,7 +254,7 @@ def capture_urls(urls, out_root, name=None, captured=None, force=False, env=None
                 r = capture_one(b, rz, url, out_root, name, captured, force, log, role)
                 results.append(r)
                 if r["status"] == "captured":
-                    log("captured %s -> %s (%s; card %s%s)" % (url, r["dir"], r["kind"], r["card"],
+                    log("captured %s -> %s (%s; card %s%s)" % (url, r["dir"], r["kind"], r["card"] or "kept (image)",
                                                               "; role: %s" % r["role"] if r.get("role") else ""))
                 else:
                     log("NOT CAPTURED %s: %s" % (url, r["reason"]))
@@ -263,7 +272,7 @@ def build_parser():
     ap.add_argument("--name", help="the reference folder name (one URL only; default: derived from the page)")
     ap.add_argument("--role", help="what you did on this page, one line (one URL only; stored as the "
                                    "reference's `role`, which needs a site at schema 4)")
-    ap.add_argument("--force", action="store_true", help="overwrite an existing reference folder")
+    ap.add_argument("--force", action="store_true", help="overwrite an existing reference folder, keeping the person's keys (author, image, role, ...) when the url is the same")
     ap.add_argument("--captured", help="the capture date, YYYY-MM-DD (default: today, UTC)")
     return ap
 

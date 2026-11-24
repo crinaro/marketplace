@@ -11,10 +11,23 @@ from contentmodel.links import esc
 from lookgrammar.errors import LookError
 
 from building import mediapaths, navparts
-from building.constants import HTML_EXTS
+from building.constants import ABOUT_MENU_LABEL, HTML_EXTS, RESUME_MENU_LABEL
 from building.outcomes import BuildError
 from building.references import size_copies
 from building.tokens import _SECTION, _page_dir, nfc, rel_link, strip_html_comments
+
+
+def resume_label(builder):
+    """The word the menu prints for the resume page: the site's `nav.labels.resume` (schema 8, design-adopt-local-reach section
+    1.6), else `constants.RESUME_MENU_LABEL`. The ONE source: `nav_entries` prints it, the resume page's fallback title is it, and
+    `resume.titleForm: "page"` leads the `<title>` with it, so the three cannot drift."""
+    return builder.cfg.nav.get("labels", {}).get("resume", RESUME_MENU_LABEL)
+
+
+def about_label(builder):
+    """The word the menu prints for the about page: `nav.labels.about`, else `constants.ABOUT_MENU_LABEL`; the about page's
+    fallback title as `resume_label`'s is the resume page's."""
+    return builder.cfg.nav.get("labels", {}).get("about", ABOUT_MENU_LABEL)
 
 
 class _PageBase(object):
@@ -179,9 +192,9 @@ class _PageBase(object):
             else:
                 items.append((pf.slug, pf.settings["label"]))
         if self.model.about is not None:
-            items.append(("about", "About"))
+            items.append(("about", about_label(self)))
         if self.model.resume is not None:
-            items.append(("resume", "Resume"))
+            items.append(("resume", resume_label(self)))
         brand = self.cfg.nav.get("home") == navparts.NAV_HOME_TITLE
         out = []
         for key, label in items:

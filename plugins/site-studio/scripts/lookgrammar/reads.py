@@ -1,13 +1,17 @@
 """lookgrammar/reads.py -- a look's `reads`: the slot-to-key map (design-adopt-ownership-line section 6, rule K; site-studio
-0.7.0). Python 3.9, standard library only. Imports only `lookgrammar.constructs`.
+0.7.0; design-adopt-local-reach adds five targets at 0.8.0). Python 3.9, standard library only. Imports only
+`lookgrammar.constructs`.
 
     "reads": { "<target>": <spec>, ... }
     <spec>   := [<source>, ...]                                  1 to 4 sources, no repeats
               | {"from": [<source>, ...], "unless": "<key>"}     either member may be absent, not both
     <source> := a front-matter key (^[A-Za-z][A-Za-z0-9_]*$) | a built-in "@name" the target's row lists
 
-    READS           the closed table of targets (section 6.2): what each reads, where 0.6.0 reads it (`site`), and what the
-                    target takes. GRAMMAR ONLY: the build resolves a spec in `building/readsources.py` (step 6).
+    READS           the closed table of targets (section 6.2): what each reads, where 0.6.0 reads it (`site`), the release that
+                    added it (`first`: "0.7.0" for the nine of 0.7.0, "0.8.0" for the five of 0.8.0; `needs.release_needs` reads
+                    it) and what the target takes. A target's `kind` is `slot`, `rows`, `choice` or (0.8.0) `picture`: an ordered
+                    list of `PICTURE_KEYS`, no built-ins. Its `scope` is `piece`, `page` or (0.8.0) `reference`: a source is a key
+                    of `REFERENCE_SOURCE_KEYS`. GRAMMAR ONLY: the build resolves a spec in `building/readsources.py` (step 6).
     parse_reads(where, value)       ({target: Spec}, [problem line]): every refusal of section 6.1, each naming the file,
                                     the target and the fix
     pair_problems(where, constructs, reads, default_has)   the look-wide pairs (section 6.3, 6.4, rule P4): a choice
@@ -20,7 +24,8 @@ import re
 
 from lookgrammar.constructs import CONSTRUCTS
 
-SLOT, ROWS, CHOICE = "slot", "rows", "choice"
+SLOT, ROWS, CHOICE, PICTURE = "slot", "rows", "choice", "picture"
+REFERENCE = "reference"      # a scope (0.8.0): the keys of a `reference.json`
 MAX_SOURCES = 4
 _KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 
@@ -32,29 +37,61 @@ _KEY = re.compile(r"^[A-Za-z][A-Za-z0-9_]*$")
 READS = {
     "video-embed.wrap.title": {"kind": SLOT, "scope": "page", "default": ("@caption",), "then": "the word Video",
                                "builtins": ("@caption",), "unless": False, "setting": None,
-                               "site": ("content.py", "video_values")},
+                               "site": ("content.py", "video_values"), "first": "0.7.0"},
     "piece-teaser.wrap.text": {"kind": SLOT, "scope": "piece", "default": ("teaser",), "then": None, "builtins": (),
-                               "unless": False, "setting": None, "site": ("building/portfolios.py", "piece_teaser")},
+                               "unless": False, "setting": None, "site": ("building/portfolios.py", "piece_teaser"),
+                               "first": "0.7.0"},
     "card.teaser.text": {"kind": SLOT, "scope": "piece", "default": ("teaser",), "then": None, "builtins": (),
-                         "unless": False, "setting": None, "site": ("building/portfolios.py", "card_html")},
+                         "unless": False, "setting": None, "site": ("building/portfolios.py", "card_html"),
+                         "first": "0.7.0"},
     "head.description": {"kind": SLOT, "scope": "piece", "default": ("description", "teaser"), "then": "the excerpt",
-                         "builtins": (), "unless": False, "setting": None, "site": ("building/portfolios.py", "build_piece")},
+                         "builtins": (), "unless": False, "setting": None,
+                         "site": ("building/portfolios.py", "build_piece"), "first": "0.7.0"},
     "roles-view.item.employer": {"kind": SLOT, "scope": "piece", "default": ("employer",), "then": None, "builtins": (),
-                                 "unless": False, "setting": None, "site": ("views.py", "_employer")},
+                                 "unless": False, "setting": None, "site": ("views.py", "_employer"),
+                                 "first": "0.7.0"},
     "meta-list.item.value": {"kind": ROWS, "scope": "piece", "default": (), "then": None, "builtins": (), "unless": True,
-                             "setting": "meta", "site": ("building/portfolios.py", "build_piece")},
+                             "setting": "meta", "site": ("building/portfolios.py", "build_piece"), "first": "0.7.0"},
     "card.meta.text": {"kind": ROWS, "scope": "piece", "default": (), "then": None, "builtins": (), "unless": True,
-                       "setting": "cardMeta", "site": ("building/portfolios.py", "card_html")},
+                       "setting": "cardMeta", "site": ("building/portfolios.py", "card_html"), "first": "0.7.0"},
     "piece-roles.item-current": {"kind": CHOICE, "scope": "piece", "default": ("currentRole", "@first"), "then": None,
                                  "builtins": ("@first", "@last"), "unless": False, "setting": None,
-                                 "site": ("building/piecehead.py", "current_entries")},
+                                 "site": ("building/piecehead.py", "current_entries"), "first": "0.7.0"},
     "tiles.item-accent": {"kind": CHOICE, "scope": "page", "default": (), "then": "the part is never used",
                           "builtins": ("@first", "@last"), "unless": False, "setting": None,
-                          "site": ("contentmodel/blockkinds.py", "block_tiles")},
+                          "site": ("contentmodel/blockkinds.py", "block_tiles"), "first": "0.7.0"},
+    # ---- 0.8.0 (design-adopt-local-reach): five targets, each a K reason for schema 8 (0.7.0: "reads names the unknown target")
+    # G4: the kicker line's text. The row carries `setting: "cardKicker"`: its default chain is the key that setting names,
+    # which only the caller knows, so `readsources.slot` takes it as `default=` for a row with a setting.
+    "kicker.wrap.text": {"kind": SLOT, "scope": "piece", "default": (), "then": None, "builtins": ("@portfolio", "@group"),
+                         "unless": False, "setting": "cardKicker", "site": ("building/stepsview.py", "kicker"),
+                         "first": "0.8.0"},
+    # G3: what a reference card's `site` part prints. Scope `reference`: a source is a key of `reference.json`.
+    "reference-card.site.text": {"kind": SLOT, "scope": REFERENCE, "default": ("site",), "then": None,
+                                 "builtins": ("@kind",), "unless": False, "setting": None,
+                                 "site": ("building/markdownenv.py", "ref_card"), "first": "0.8.0"},
+    # G5: which picture each place shows, an ordered list of picture keys (`PICTURE_KEYS`); with no entry each place picks
+    # what `cardImage` gives it today.
+    "card.wrap.image": {"kind": PICTURE, "scope": "piece", "default": (), "then": None, "builtins": (), "unless": False,
+                        "setting": None, "site": ("building/portfolios.py", "card_html"), "first": "0.8.0"},
+    "home-showcase.item.image": {"kind": PICTURE, "scope": "piece", "default": (), "then": None, "builtins": (),
+                                 "unless": False, "setting": None, "site": ("views.py", "_tile"), "first": "0.8.0"},
+    "roles-view.item.image": {"kind": PICTURE, "scope": "piece", "default": (), "then": None, "builtins": (),
+                              "unless": False, "setting": None, "site": ("building/pictures.py", "roles_image_slot"),
+                              "first": "0.8.0"},
 }
+# The picture keys a `picture` target may name, in the order `pictures.COMPANIONS` holds them (pinned equal by a test, as
+# `REFERENCE_SOURCE_KEYS` is pinned to the content model's reference keys: this module imports nothing of the build).
+PICTURE_KEYS = ("cover", "photo", "tileImage")
+REFERENCE_SOURCE_KEYS = ("url", "title", "description", "site", "published", "kind", "captured", "image", "role", "fetched",
+                         "author", "imageAlt", "imagePosition")
 # The parts a site places `{{usedBy}}` in (section 6.4: they share `REFERENCE_CARD_SLOTS`), and the part that fills it.
 USED_BY_PARTS = (("reference-card", "wrap"), ("feed", "item"), ("home-samples", "item"))
 USED_BY_PART = ("reference-card", "used-by")
+# 0.8.0 (section 1.3): the part that fills `{{author}}` (placed in the same three parts), and the words `@kind` prints.
+AUTHOR_PART = ("reference-card", "author")
+KIND_TARGET, KIND_BUILTIN = "reference-card.site.text", "@kind"
+KIND_PARTS = ("reference-card", ("kind-page", "kind-article", "kind-video"))
 
 
 class Spec(object):
@@ -103,6 +140,13 @@ def _sources(where, target, row, value):
         elif not _KEY.match(src):
             out.append("%s: reads %s: %r is not a front-matter key (a letter, then letters, digits or _) -- fix: write "
                        "the key as the piece's front matter spells it" % (where, target, src))
+        elif row["kind"] == PICTURE and src not in PICTURE_KEYS:
+            out.append("%s: reads %s: %r is not a picture key (%s) -- fix: name the key a piece's picture is stored under"
+                       % (where, target, src, ", ".join(PICTURE_KEYS)))
+        elif row["scope"] == REFERENCE and src not in REFERENCE_SOURCE_KEYS:
+            out.append("%s: reads %s: %r is not a key of a reference.json (%s) -- fix: name one of them%s"
+                       % (where, target, src, ", ".join(REFERENCE_SOURCE_KEYS),
+                          "" if not row["builtins"] else ", or " + ", ".join(row["builtins"])))
     return tuple(value), out
 
 
@@ -177,6 +221,18 @@ def pair_problems(where, constructs, reads, default_has):
     if placed and USED_BY_PART[1] not in constructs.get(USED_BY_PART[0], {}):
         out.append("%s: %s place {{usedBy}}, and the look writes no %s.%s part to fill it -- fix: write the part (its "
                    "slots are {{title}} and {{url}}), or remove the slot" % (where, " and ".join(placed), *USED_BY_PART))
+    # 0.8.0 (design-adopt-local-reach section 1.3): `{{author}}` is printed through the optional part `reference-card.author`,
+    # and `@kind` through the text of a `reference-card.kind-*` part; each without its part would print nothing, silently.
+    placed = [c + "." + p for c, p in USED_BY_PARTS if "{{author}}" in constructs.get(c, {}).get(p, "")]
+    if placed and AUTHOR_PART[1] not in constructs.get(AUTHOR_PART[0], {}):
+        out.append("%s: %s place {{author}}, and the look writes no %s.%s part to fill it -- fix: write the part (its "
+                   "slot is {{text}}), or remove the slot" % (where, " and ".join(placed), *AUTHOR_PART))
+    spec = reads.get(KIND_TARGET)
+    if spec is not None and KIND_BUILTIN in (spec.sources or ()) and not any(
+            p in constructs.get(KIND_PARTS[0], {}) for p in KIND_PARTS[1]):
+        out.append("%s: reads %s names @kind, and the look writes none of the parts %s.%s -- fix: write the words (such as "
+                   "\"kind-page\": \"Website\"), or remove @kind from the entry"
+                   % (where, KIND_TARGET, KIND_PARTS[0], ", ".join(KIND_PARTS[1])))
     return out
 
 
@@ -184,6 +240,8 @@ def table_problems():
     """The table's own consistency ([] is sound): each target names a construct part, each choice a part of the table."""
     out = []
     for target, row in READS.items():
+        if not re.match(r"^\d+\.\d+\.\d+$", row.get("first", "")):
+            out.append("%s: names no release it first needs (first)" % target)
         bits = target.split(".")
         if bits[0] == "head":
             continue                # the page head's description: no construct, `building/portfolios.py` writes it

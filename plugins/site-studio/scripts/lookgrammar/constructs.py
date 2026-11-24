@@ -66,8 +66,10 @@ PLACE_IMAGE_SLOTS = {"src": URL, "alt": TEXT, "width": INT, "height": INT, "srcs
 # one object, so a place part can never hold a slot the site-wide part lacks, nor lack one it has.
 # 0.7.0 adds the open slot `usedBy` (design-adopt-ownership-line section 6.4): the `used-by` part, filled with the first piece
 # that names the reference, so the three parts sharing this table gain it together (three `OPEN_SLOT_FIRST` rows).
+# 0.8.0 adds the open slot `author` (design-adopt-local-reach section 1.3): the optional part `reference-card.author`, filled
+# with the reference's own `author`, so the same three parts gain it together (three more rows).
 REFERENCE_CARD_SLOTS = {"url": URL, "image": HTML, "title": TEXT, "site": HTML, "description": HTML, "role": HTML,
-                        "usedBy": HTML}
+                        "usedBy": HTML, "author": HTML}
 
 CONSTRUCTS = {
     # ---- 0.3.1: every construct its code builds (content.py `_Renderer`, build.py `_Builder`)
@@ -97,8 +99,10 @@ CONSTRUCTS = {
         "sized": {"src": URL, "alt": TEXT, "width": INT, "height": INT},
         "sized-set": {"src": URL, "alt": TEXT, "width": INT, "height": INT, "srcset": SRCSET, "sizes": TEXT}}},
     "reference-card": {"first": "0.3.1", "parts": {
-        "wrap": REFERENCE_CARD_SLOTS, "used-by": {"title": TEXT, "url": URL},
-        "site": {"text": TEXT}, "description": {"text": TEXT}, "role": {"text": TEXT}}},
+        "wrap": REFERENCE_CARD_SLOTS, "used-by": {"title": TEXT, "url": URL, "cardTitle": TEXT},
+        "site": {"text": TEXT}, "description": {"text": TEXT}, "role": {"text": TEXT},
+        # 0.8.0 (design-adopt-local-reach section 1.3): the author part, and the three text-only words `@kind` prints
+        "author": {"text": TEXT}, "kind-page": {}, "kind-article": {}, "kind-video": {}}},
     "reference-grid": {"first": "0.3.1", "parts": {"wrap": {"items": HTML}}},
     "card": {"first": "0.3.1", "parts": {
         "wrap": {"url": URL, "image": HTML, "title": TEXT, "teaser": HTML, "meta": HTML, "number": HTML,
@@ -144,9 +148,9 @@ CONSTRUCTS = {
         "wrap-bare": {"role": HTML, "body": HTML}}},
     "roles-view": {"first": "0.4.0", "parts": {"wrap": {"items": HTML},
         "item": {"heading": HTML, "url": URL, "titles": TEXT, "period": TEXT, "previously": HTML, "employer": TEXT,
-            "image": HTML, "kicker": HTML},
+            "image": HTML, "kicker": HTML, "teaser": HTML, "meta": HTML},     # 0.8.0: teaser and meta (open slots)
         "item-current": {"heading": HTML, "url": URL, "titles": TEXT, "period": TEXT, "previously": HTML,
-            "employer": TEXT, "image": HTML, "kicker": HTML}, "heading": {"employer": TEXT}, "heading-multi": {"count": INT, "employer": TEXT},
+            "employer": TEXT, "image": HTML, "kicker": HTML, "teaser": HTML, "meta": HTML}, "heading": {"employer": TEXT}, "heading-multi": {"count": INT, "employer": TEXT},
         "previously": {"items": HTML}, "previously-item": {"url": URL, "title": TEXT, "period": TEXT}}},
     "showcase-view": {"first": "0.4.0", "parts": {"wrap": {"items": HTML, "label": TEXT},
         "item": {"url": URL, "image": HTML, "role": HTML, "title": TEXT, "kicker": HTML, "fullTitle": TEXT},
@@ -192,6 +196,10 @@ PART_FIRST = {
     # 0.7.0 (design-adopt-ownership-line sections 6.3 and 6.4): a variant tile a `reads` choice picks, and the part that
     # fills `{{usedBy}}`. Both optional: no default entry, so no tree's bytes move.
     ("tiles", "item-accent"): "0.7.0", ("reference-card", "used-by"): "0.7.0",
+    # 0.8.0 (design-adopt-local-reach section 1.3): the author part and the three words `@kind` prints. All optional: no
+    # default entry, so no tree's bytes move.
+    ("reference-card", "author"): "0.8.0", ("reference-card", "kind-page"): "0.8.0",
+    ("reference-card", "kind-article"): "0.8.0", ("reference-card", "kind-video"): "0.8.0",
 }
 
 # A place part (design-adopt-parity-2 section 4.8; it generalises 0.5.0's `lookfiles/renderlog.py` `PLACE_PICTURES`):
@@ -250,6 +258,17 @@ OPEN_SLOT_FIRST = {
     ("reference-card", "wrap", "usedBy"): "0.7.0",
     ("feed", "item", "usedBy"): "0.7.0",
     ("home-samples", "item", "usedBy"): "0.7.0",
+    # 0.8.0 (design-adopt-local-reach sections 1.2 and 1.3): a roles card's `teaser` and `meta`, the reference card's `author`
+    # in the three parts that share `REFERENCE_CARD_SLOTS`, and the using piece's card title in the `used-by` part. No default
+    # part holds any of them, so no tree's bytes move.
+    ("roles-view", "item", "teaser"): "0.8.0",
+    ("roles-view", "item", "meta"): "0.8.0",
+    ("roles-view", "item-current", "teaser"): "0.8.0",
+    ("roles-view", "item-current", "meta"): "0.8.0",
+    ("reference-card", "wrap", "author"): "0.8.0",
+    ("feed", "item", "author"): "0.8.0",
+    ("home-samples", "item", "author"): "0.8.0",
+    ("reference-card", "used-by", "cardTitle"): "0.8.0",
 }
 
 # A top-level key of a look file, with the release that added it (design-adopt-ownership-line section 2.1): 0.6.0 refuses
@@ -264,9 +283,12 @@ TOP_KEY_FIRST = {"reads": "0.7.0", "named": "0.7.0"}
 OPTIONAL_PARTS = frozenset((("steps-view", "role-sep"), ("steps-view", "image"), ("home-showcase", "image"),
                             ("nav", "brand"), ("nav", "brand-current"), ("nav", "item-section"),
                             ("nav", "link-section"), ("feed", "item"), ("home-samples", "item"),
-                            ("tiles", "item-accent"), ("reference-card", "used-by")))
+                            ("tiles", "item-accent"), ("reference-card", "used-by"), ("reference-card", "author"),
+                            ("reference-card", "kind-page"), ("reference-card", "kind-article"),
+                            ("reference-card", "kind-video")))
 # Parts that are literal text and nothing else (no slot: the table gives none; no element: `looks.check_part`).
-TEXT_ONLY_PARTS = frozenset((("steps-view", "role-sep"),))
+TEXT_ONLY_PARTS = frozenset((("steps-view", "role-sep"), ("reference-card", "kind-page"),
+                             ("reference-card", "kind-article"), ("reference-card", "kind-video")))
 # The slots of PLACE_IMAGE_SLOTS a picture may have no value for, so the build may leave them unfilled (`img_tag` fills
 # width and height only for a file with a pixel size, srcset and sizes only with size copies, focus only with a
 # position; src and alt always). Each must be the whole value of its own attribute (`lookgrammar/optionalparts.py`).

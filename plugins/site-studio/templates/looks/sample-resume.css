@@ -26,6 +26,8 @@
 .s-rs-employer-role, .s-rs-timeline-role { margin: 0; }
 .s-rs-employer-role a, .s-rs-timeline-role a { color: var(--s-rs-ink); }
 .s-rs-employer-period, .s-rs-timeline-period { color: var(--s-rs-muted); }
+.s-rs-card-teaser, .s-rs-card-meta { display: block; margin: 0.4rem 0 0; }
+.s-rs-card-meta { font-size: 0.85rem; color: var(--s-rs-muted); }
 .s-rs-earlier { list-style: none; margin: 0.5rem 0 0; padding: 0; font-size: 0.9rem; }
 .s-rs-earlier-period { color: var(--s-rs-muted); }
 
@@ -37,6 +39,7 @@
 .s-rs-ref-link img { max-width: 100%; height: auto; display: block; }
 .s-rs-ref-title { font-weight: 600; }
 .s-rs-ref-site, .s-rs-ref-role { font-size: 0.85rem; color: var(--s-rs-muted); }
+.s-rs-ref-author { font-size: 0.85rem; font-style: italic; color: var(--s-rs-muted); }
 .s-rs-ref-used { font-size: 0.85rem; color: var(--s-rs-mark); }
 
 .s-rs-video { position: relative; aspect-ratio: 16 / 9; margin: var(--s-rs-gap) 0; }

@@ -2,7 +2,7 @@
 
 <!-- GENERATED from the tables in scripts/content.py, scripts/siteconfig.py and scripts/build.py. Do not edit by hand: the plugin's maintainers regenerate it, and their tests fail when it and the code disagree. -->
 
-What your site's files may hold, and what the build reads. This page is written from the build's own tables, so it names exactly the keys, tokens, blocks and settings this version knows. Where this page and the build disagree, the build is right, and that is a bug in the plugin to report. A site is schema 1, 2, 3, 4, 5, 6 or 7 (this version reads up to 7); the plugin writes the lowest schema that holds your site, and nothing here changes a site that does not use it.
+What your site's files may hold, and what the build reads. This page is written from the build's own tables, so it names exactly the keys, tokens, blocks and settings this version knows. Where this page and the build disagree, the build is right, and that is a bug in the plugin to report. A site is schema 1, 2, 3, 4, 5, 6 or 7 (this version reads up to 8); the plugin writes the lowest schema that holds your site, and nothing here changes a site that does not use it.
 
 ## Where things live
 
@@ -41,7 +41,7 @@ Top-level keys, in the order the plugin writes them. A key marked schema 2 makes
 | `work` | 1 | the default portfolio's settings (see Portfolio settings). |
 | `featuredFrom` | 2 | `home` (the featured list in `content/home.md`) or `flags` (each piece's own `featured: true`). Values: `home`, `flags`. |
 | `featuredView` | 6 | how the featured selection prints (schema 6): `flat` (the default, never written) is one run of cards; `grouped` is each portfolio's index filtered to its featured pieces, in menu order, group by group. |
-| `nav` | 4 | the menu's settings: `{"home": false}` takes the Home item out of `{{nav}}` (schema 4; the default, with Home, is never written); at schema 6 `{"home": "title"}` makes the first item's text the site title, and `extra` adds one to four `{"label", "url"}` items after the built-in ones, each url an absolute `https:` or `mailto:` address. |
+| `nav` | 4 | the menu's settings: `{"home": false}` takes the Home item out of `{{nav}}` (schema 4; the default, with Home, is never written); at schema 6 `{"home": "title"}` makes the first item's text the site title, and `extra` adds one to four `{"label", "url"}` items after the built-in ones, each url an absolute `https:` or `mailto:` address; at schema 8 `labels` renames the two built-in items, `{"about": "<label>", "resume": "<label>"}` (each a non-empty one-line label, either key optional): the menu on every page and a page with no `title` of its own print your word in place of `About` or `Resume`, and `resume.titleForm: page` leads the resume page's `<title>` with the same word. |
 | `look` | 4 | the markup look the site's generated pages use: a file `site/looks/<name>.json` (schema 4); absent means the plugin's own markup. |
 | `lookLocal` | 7 | your own look layered over `look`, construct by construct: exactly `site/looks/local.json` (schema 7). A construct it holds wins over the same construct in `look`; the build reads no other look file, and neither file is served. |
 | `blocks` | 4 | the settings of the `:::` blocks and of `ref:` lines (keys below): `{"headingLevel": 3}` prints the headings inside a block at h3, `{"loneReferenceGrid": true}` prints a lone `ref:` line inside the reference grid, `{"videoEmbed": "live"}` keeps a video's own address (schema 4; absent is the default). |
@@ -52,17 +52,18 @@ Top-level keys, in the order the plugin writes them. A key marked schema 2 makes
 | `resume` | 1 | the resume's source and PDF, or null for none (keys below). |
 | `budgets` | 1 | overrides for the performance limits (keys below). |
 
-`resume` holds `path`, `pdf`, `paper`, `headings`, `layout`; `paper` is one of `Letter`, `A4`.
+`resume` holds `path`, `pdf`, `paper`, `headings`, `layout`, `titleForm`; `paper` is one of `Letter`, `A4`.
 
-`headings` and `layout` need schema 4; written at their default they are accepted and dropped.
+`headings` and `layout` need schema 4, and `titleForm` needs schema 8; written at their default they are accepted and dropped.
 
 | resume key | meaning |
 | --- | --- |
-| `path` | the resume's Markdown source (default `content/resume/resume.md`). |
-| `pdf` | the resume's PDF (default `content/resume/resume.pdf`), or null for no PDF. |
-| `paper` | `Letter` or `A4`; required when the resume has a PDF. |
-| `headings` | `shift` (the default: a `#` is printed as h2) or `as-written` (a `#` is h1) for the resume's body headings (schema 4). |
-| `layout` | `plain` (the default) or `cards` (each role a card) for the resume's body (schema 4). |
+| `resume.path` | the resume's Markdown source (default `content/resume/resume.md`). |
+| `resume.pdf` | the resume's PDF (default `content/resume/resume.pdf`), or null for no PDF. |
+| `resume.paper` | `Letter` or `A4`; required when the resume has a PDF. |
+| `resume.headings` | `shift` (the default: a `#` is printed as h2) or `as-written` (a `#` is h1) for the resume's body headings (schema 4). |
+| `resume.layout` | `plain` (the default) or `cards` (each role a card) for the resume's body (schema 4). |
+| `resume.titleForm` | `title` (the default: the resume page's `<title>` leads with the resume's own `title`) or `page` (it leads with the word the menu prints for the resume page, `nav.labels.resume`, else `Resume`; the heading stays the resume's `title`) (schema 8). |
 
 `blocks` holds `headingLevel`, `loneReferenceGrid`, `videoEmbed`, `headings`; it needs schema 4, and a file below schema 4 that holds it is refused with `needs "schema": 4`.
 
@@ -242,7 +243,7 @@ Schema 6 reads these piece keys, each ONLY under `pieceRoles: true` of the piece
 | `image` | the card image: a path inside the reference's own folder, such as `media/preview.jpg`; used instead of a `card` file, and naming both is refused (schema 4). |
 | `role` | one line on what you did, printed on every card of the reference (schema 4). |
 | `fetched` | when the page was fetched; stored, never printed (schema 4). |
-| `author` | who wrote the page; stored, never printed (schema 4). |
+| `author` | who wrote the page; printed through the optional `reference-card.author` part of your own look (0.8.0), never otherwise (schema 4). |
 | `imageAlt` | one line: the alt of the reference's card picture, on every card of it (schema 5). |
 | `imagePosition` | a CSS position such as `center 30%`: that picture's `object-position` (schema 5). |
 
@@ -276,19 +277,24 @@ A token is `{{name}}` or `{{name:argument}}`, in a page under `site/src` or in t
 
 ## Your own look (schema 7)
 
-A look is the markup the generated pages are printed through. Your own look is the normal way to shape a site, not a workaround: `lookLocal` lays `site/looks/local.json` over the look `look` names, construct by construct, and only you write that file. In a look file these need schema 7: the `reads` key; the `named` key; the slot `{{position}}` in `card.wrap` (the card's number with its running place on the page, as in `01 / 2022`); the slot `{{text}}` in `card.number` (the whole number in one copy of the part); the part `tiles.item-accent`; and the slot `{{usedBy}}` in `reference-card.wrap`, `feed.item` or `home-samples.item`, printed through the part `reference-card.used-by` (the first piece that names the reference). A look that holds none of them is read as before.
+A look is the markup the generated pages are printed through. Your own look is the normal way to shape a site, not a workaround: `lookLocal` lays `site/looks/local.json` over the look `look` names, construct by construct, and only you write that file. In a look file these need schema 7: the `reads` key; the `named` key; the slot `{{position}}` in `card.wrap` (the card's number with its running place on the page, as in `01 / 2022`); the slot `{{text}}` in `card.number` (the whole number in one copy of the part); the part `tiles.item-accent`; and the slot `{{usedBy}}` in `reference-card.wrap`, `feed.item` or `home-samples.item`, printed through the part `reference-card.used-by` (the first piece that names the reference). A look that holds none of them is read as before. In a look file these need schema 8: the slots `{{teaser}}` and `{{meta}}` in `roles-view.item` and `roles-view.item-current` (a roles card prints what a grid card prints); the slot `{{author}}` in `reference-card.wrap`, `feed.item` or `home-samples.item`, printed through the part `reference-card.author`; the slot `{{cardTitle}}` in `reference-card.used-by` (the using piece's `shortTitle`, else `title`); the parts `reference-card.kind-page`, `kind-article` and `kind-video` (the words `@kind` prints); and the five `reads` targets marked 0.8.0 below.
 
-`reads` maps a place a look prints to the front-matter keys it reads, first value wins: `{"<target>": ["<key>", ...]}`, one to 4 sources, or `{"from": [...], "unless": "<key>"}`. A source starting `@` is a built-in of that target. With no entry a target reads what it always did.
+`reads` maps a place a look prints to what it reads there, first value wins: `{"<target>": ["<source>", ...]}`, one to 4 sources, or `{"from": [...], "unless": "<key>"}`. A source is one of three kinds, by the target: a front-matter key of the piece or page (most targets); a key of the reference's `reference.json` (`reference-card.site.text`); or a picture key, `cover`, `photo` or `tileImage` (the three picture targets, which take no built-in). A source starting `@` is a built-in of that target. With no entry a target reads what it always did.
 
 | target | built-ins | meaning |
 | --- | --- | --- |
 | `card.meta.text` | none | a card's meta rows (the keys of `cardMeta`); takes only `unless`: a row equal to that key's value is left out. |
 | `card.teaser.text` | none | a card's teaser; without an entry the piece's `teaser`. |
+| `card.wrap.image` | none | which picture a grid or featured card shows (0.8.0; an ordered list of `cover`, `photo`, `tileImage`, the first the piece has); without an entry what `cardImage` gives it. |
 | `head.description` | none | the description a search result shows for a piece page; without an entry `description`, then `teaser`, then the start of the text. |
+| `home-showcase.item.image` | none | which picture a home showcase tile shows when the tile names none of its own (0.8.0; an ordered list of `cover`, `photo`, `tileImage`); without an entry what `cardImage` gives it. |
+| `kicker.wrap.text` | `@portfolio`, `@group` | a card's kicker line (0.8.0; built-ins `@portfolio`, the portfolio's label, and `@group`, the piece's group label, nothing outside a group); without an entry the piece key `cardKicker` names. |
 | `meta-list.item.value` | none | a piece page's meta rows (the keys of `meta`); takes only `unless`: a row equal to that key's value is left out. |
 | `piece-roles.item-current` | `@first`, `@last` | which of a current piece's dated roles prints through `item-current`; without an entry `currentRole`, then the first. |
 | `piece-teaser.wrap.text` | none | the teaser line under a piece page's title; without an entry the piece's `teaser`. |
+| `reference-card.site.text` | `@kind` | the text of a reference card's `site` part (0.8.0; sources are the keys of a `reference.json`; `@kind` is the word your look's `reference-card.kind-page`, `kind-article` or `kind-video` part gives for the reference's `kind`, nothing when it writes none); without an entry the reference's `site`. |
 | `roles-view.item.employer` | none | the value a roles view groups by and prints as the employer; without an entry `employer`. |
+| `roles-view.item.image` | none | which picture an employer card of a roles view shows (0.8.0; an ordered list of `cover`, `photo`, `tileImage`); without an entry what `cardImage` gives it. |
 | `tiles.item-accent` | `@first`, `@last` | which tiles of a block print through `tiles.item-accent`; without an entry none do. |
 | `video-embed.wrap.title` | `@caption` | the title of a video written alone on a line; without an entry its caption, then the word Video. |
 

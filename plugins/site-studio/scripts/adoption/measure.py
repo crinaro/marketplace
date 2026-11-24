@@ -40,7 +40,7 @@ from adoption.plan import _plan_for, save_plan
 from adoption.problems import accept_problems, check_only, format_problems, look_lines, problem_dicts, problems_from_dicts
 from adoption.report import accept_lines
 from adoption.scoring import Output
-from adoption import carry, lookperson, lookwrite
+from adoption import carry, lookperson, lookwrite, readpropose
 from adoption.usage import old_runner, prune
 
 SUGGEST_POINTER = ("look: %d of your look entries reproduce the old pages exactly; adopt.py suggest shows whether one could help "
@@ -221,6 +221,7 @@ def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=Non
                 res["builds"] = picked.builds
                 res["derivation"] = picked.derivation      # the candidates file's source (cmd_parity writes it)
                 res["lookRows"] = picked.person            # the person's rows (plan schema 4)
+                res["proposals"] = picked.proposals        # the `reads` entries adopt proposes (the candidates file's `reads`)
                 res["accents"] = list(picked.accents)      # probe P-A's limit (6.5): ACCEPT rows (`accepts.accent_lines`)
                 res["notes"].extend("look: %s %s (%s)" % (cid, st, picked.look_why[cid]) for cid, st in sorted(picked.look_status.items())
                                     if st in ("unmapped", "ambiguous") and picked.look_why.get(cid))     # what derive refused, named
@@ -413,7 +414,9 @@ def _choose_settings(tree, data, plan, local, folders, kind, chosen, disposition
     kept = (picked.rows.get("look").value if picked.rows.get("look") is not None else None) or {}
     picked.derivation = readings.get(kept.get("file") if isinstance(kept, dict) else None, readings.get(None))
     picked.person, picked.accents = lookperson.for_parity(tree, picked.values(), local, snapshot, evaluate, picked.look_status)
-    picked.builds = evaluate.builds           # design-adopt-ownership-line 8.3: what `parity --json` prints as `builds`
+    picked.proposals = readpropose.for_parity(tree, picked.values(), local, snapshot, evaluate)      # N1 (0.8.0): measured `reads` entries, proposed
+    readpropose.name_in_rows(picked.rows, picked.proposals)          # a tied `cardImage` row names the picture entries that settle it
+    picked.builds = evaluate.builds          # design-adopt-ownership-line 8.3: what `parity --json` prints as `builds`
     picked.carry_lines = offer.lines()          # each page only the old build has that is not offered, with its reason (4.7.3)
     return picked
 
@@ -683,7 +686,7 @@ def cmd_parity(repo, accept=False, keep=None, shots_dir=None, as_json=False):
         plan["settings"][row.entry.name] = row.plan_row()
         print("  %s" % row.line())
     save_plan(repo, plan)
-    res["notes"].extend(lookwrite.write_candidates(repo, res.get("derivation")))     # scratch; nothing under site/ (step 8)
+    res["notes"].extend(lookwrite.write_candidates(repo, res.get("derivation"), res.get("proposals")))     # scratch; nothing under site/ (step 8)
     res["notes"].extend(look_lines(tree, data, ((plan.get("settings") or {}).get("look") or {}).get("value")))    # P5, P6
     print("parity: %s -- %s" % (res["verdict"], res["reason"]))
     for n in res["notes"]:

@@ -19,6 +19,7 @@ import re
 from urllib.parse import urlsplit
 
 from building import tokens  # noqa: E402
+from building.constants import RESUME_MENU_LABEL  # noqa: E402
 from contentmodel import errors, frontmatter, keytables  # noqa: E402
 
 _BOX = re.compile(rb"/MediaBox\s*\[\s*(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s*\]")
@@ -88,10 +89,16 @@ def section_for_resume(inner):
     return "{{#page:resume}}%s{{/page}}" % inner
 
 
-# The label the plugin's own nav prints for the resume (`building/pagebase.py` `nav_entries`: `("resume", "Resume")`): a bare
-# `{{resumeLink}}` is written as exactly the anchor the nav would print (design-adopt-parity-2 section 7.4, dev 979 / #245).
-RESUME_LABEL = "Resume"
-BARE_RESUME = '{{#page:resume}}<a href="{{link:resume}}">Resume</a>{{/page}}'       # section_for_resume of the nav's own anchor
+# The label the plugin's own nav prints for the resume (`building.constants.RESUME_MENU_LABEL`, the default of `pagebase.resume_label`,
+# which a site's `nav.labels.resume` replaces, schema 8): a bare `{{resumeLink}}` is written as exactly the anchor the nav would print
+# (design-adopt-parity-2 section 7.4, dev 979 / #245; design-adopt-local-reach section 4).
+RESUME_LABEL = RESUME_MENU_LABEL
+
+
+def bare_resume(label=RESUME_LABEL):
+    """The wrap a bare `{{resumeLink}}` becomes: `section_for_resume` of the anchor the plugin's nav prints for the resume under the
+    menu word `label` (the chosen `nav.labels.resume`, else the plugin's own)."""
+    return section_for_link("resume", label)      # the wrap a bare {{<folder>Link}} becomes (dev #889), for the resume
 
 # A token in the query of a same-site stylesheet or script address (design-adopt-parity-2 section 7.4): `<link rel="stylesheet"
 # href="css/site.css?v={{cssVersion}}">`, `<script src="app.js?{{build}}">`. Group 1 the tag's name, 2 the attribute's name, 3 the
@@ -130,30 +137,51 @@ _WHOLE_ANCHOR = re.compile(r"^\s*<a\b[^<>]*\bhref\s*=\s*([\"'])((?:https?://|mai
 _CONTEXT = 60          # characters of the source's own text on each side of a token, matched against the old page
 
 
-def old_spot(m, old):
+def _evaluated(text, out, known):
+    """`text` with the build's own tokens evaluated, as the build prints them (dev #1042): a section marker (`{{#page:X}}`,
+    `{{/page}}`) prints nothing when the page `X` is one the plugin's build has (`known`), and `{{link:X}}` prints
+    `rel_link(out, X/index.html)` from the page whose output path is `out`. Anything else stays as written (a token the build
+    does not print here is a barrier to the context, never guessed)."""
+    def marker(x):
+        return "" if (x.group(1) is None or x.group(1) in known) else x.group(0)
+    text = tokens._SECTION.sub(marker, text)
+    if out is None:
+        return text
+    return tokens.TOKEN_RE.sub(lambda x: tokens.rel_link(out, x.group(2) + "/index.html")
+                               if x.group(1) == "link" and x.group(2) in known else x.group(0), text)
+
+
+def _window(s, a, b, out, known):
+    """(before, after): the source's own text on each side of the span `s[a:b]`, as the old page prints it: the build's tokens
+    evaluated (`_evaluated`), then up to the nearest token left and `_CONTEXT` characters."""
+    pre, post = _evaluated(s[:a], out, known), _evaluated(s[b:], out, known)
+    prev = [t.end() for t in tokens.TOKEN_RE.finditer(pre)]
+    nxt = tokens.TOKEN_RE.search(post)
+    return (pre[max(prev[-1] if prev else 0, len(pre) - _CONTEXT):], post[:min(nxt.start() if nxt else len(post), _CONTEXT)])
+
+
+def old_spot(m, old, out=None, known=()):
     """What the old page `old` holds where the token match `m` stands, or None. The spot is found by the source's own text on
     both sides of the token, up to the next token or `_CONTEXT` characters: it must be found, and every place it is found must
-    hold the same text, else None (never a guess). Shared by the freeze and the measured menu anchor (section 7.4)."""
+    hold the same text, else None (never a guess). The text beside it is the build's own, evaluated before it is matched
+    (`_evaluated`: a section marker and a `{{link:X}}` beside the token; `out`, the old page's output path, and `known`, the
+    pages the plugin's build has; dev #1042). Shared by the freeze and the measured menu anchor (section 7.4)."""
     if not old:
         return None
-    s, a, b = m.string, m.start(), m.end()
-    prev = [t.end() for t in tokens.TOKEN_RE.finditer(s, 0, a)]
-    nxt = tokens.TOKEN_RE.search(s, b)
-    before = s[max(prev[-1] if prev else 0, a - _CONTEXT):a]
-    after = s[b:min(nxt.start() if nxt else len(s), b + _CONTEXT)]
+    before, after = _window(m.string, m.start(), m.end(), out, known)
     if not before.strip() or not after.strip():
         return None
     found = set(x.group(1) for x in re.finditer(re.escape(before) + r"(.*?)" + re.escape(after), old, re.S))
     return found.pop() if len(found) == 1 else None
 
 
-def frozen_anchor(m, old, own=()):
+def frozen_anchor(m, old, own=(), out=None, known=()):
     """The whole anchor the old builder wrote where the bare token match `m` stands, or None (design-adopt-parity-2 section 7.4:
     a bare token the plugin has no token for, which the old page renders AT THAT SPOT as one whole anchor to an outside
     address, is frozen as that anchor). `old` is the text of the page the old builder published from this source; `own` the
     site's own hosts (an `http(s)` anchor to one of them is the site's, not outside; a `mailto:` is always outside). The spot
     is `old_spot`'s: found, and the same one anchor everywhere it is found, else nothing is frozen (never a guess)."""
-    middle = old_spot(m, old)
+    middle = old_spot(m, old, out, known)
     if middle is None:
         return None
     w = _WHOLE_ANCHOR.match(middle)
@@ -166,7 +194,7 @@ def frozen_anchor(m, old, own=()):
 _MENU_ANCHOR = re.compile(r"^\s*<a\s+href\s*=\s*([\"'])([^\"'<>]*)\1\s*>([^<>]*)</a\s*>\s*$", re.I)
 
 
-def menu_anchor_measured(m, old, page, label):
+def menu_anchor_measured(m, old, page, label, known=()):
     """True when the old page renders, where the bare token match `m` stands, exactly the anchor a menu wrap writes there
     (design-adopt-parity-2 section 7.4, "the template writes exactly that anchor", measured as section 7.5; dev 979): one
     `<a href="ADDRESS">LABEL</a>` with no other attribute and no markup inside, its text `label`, its address the one the
@@ -175,8 +203,8 @@ def menu_anchor_measured(m, old, page, label):
     or address, an outside anchor, an ambiguous spot) or no old page is False, and the token is not wrapped."""
     if not old or len(old) < 3 or not old[2]:
         return False
-    middle = old_spot(m, old[0])
-    w = _MENU_ANCHOR.match(middle) if middle is not None else run_anchor(m, old[0])
+    middle = old_spot(m, old[0], old[2], known)
+    w = _MENU_ANCHOR.match(middle) if middle is not None else run_anchor(m, old[0], old[2], known)
     if not w:
         return False
     return html.unescape(w.group(3)) == label and html.unescape(w.group(2)) == tokens.rel_link(old[2], page + "/index.html")
@@ -185,14 +213,22 @@ def menu_anchor_measured(m, old, page, label):
 _ADJACENT = re.compile(r"^\s*$")
 
 
-def run_anchor(m, old):
+def _is_link_token(t):
+    """True for a template link token (`{{<folder>Link}}`, `{{<folder>Link:<slug>}}`): the only tokens that stand for one menu
+    anchor in a run. A token the build knows (`{{link:X}}`, `{{nav}}`) is never a member of one (dev #1042)."""
+    name, arg = t.group(1), t.group(2)
+    return bool(_OLD_TOKEN.match(name + (":" + arg if arg else ""))) and not tokens.token_known(name, False)
+
+
+def run_anchor(m, old, out=None, known=()):
     """dev #985 (0.7.0): the one anchor the old page shows for the bare token `m` when it stands in a RUN of tokens with nothing
     but white space between them (`{{workLink}}{{resumeLink}}`), so `old_spot` finds no text of the source's own beside it. The
     spot is the whole run's, found as `old_spot` finds one; it must hold exactly one menu anchor per token of the run, separated
     as the source separates them, else None (never a guess). The anchor at the token's place in the run is returned as a
-    `_MENU_ANCHOR` match."""
+    `_MENU_ANCHOR` match. dev #1042: only template link tokens are members of the run (never a token the build knows), and the
+    text beside the run is the build's own, evaluated (`old_spot`)."""
     s = m.string
-    run = [t for t in tokens.TOKEN_RE.finditer(s)]
+    run = [t for t in tokens.TOKEN_RE.finditer(s) if _is_link_token(t)]
     i = next((k for k, t in enumerate(run) if t.start() == m.start()), None)
     if i is None:
         return None
@@ -203,10 +239,7 @@ def run_anchor(m, old):
         hi += 1
     if lo == hi:
         return None
-    a, b = run[lo].start(), run[hi].end()
-    prev = run[lo - 1].end() if lo > 0 else 0
-    nxt = run[hi + 1].start() if hi + 1 < len(run) else len(s)
-    before, after = s[max(prev, a - _CONTEXT):a], s[b:min(nxt, b + _CONTEXT)]
+    before, after = _window(s, run[lo].start(), run[hi].end(), out, known)
     if not before.strip() or not after.strip():
         return None
     found = set(x.group(1) for x in re.finditer(re.escape(before) + r"(.*?)" + re.escape(after), old, re.S))
@@ -350,7 +383,7 @@ HOME_TOKEN_ROWS = (("homeEyebrow", "home:eyebrow"), ("homeHeadline", "home:title
 
 
 def rewrite_tokens(text, folders, layout=False, home=None, frozen=None, labels=None, home_rows=False, home_samples=False,
-                   old=None, pages=None):
+                   old=None, pages=None, waiting=None, resume_label=None):
     """(new text, [(old, new)], [unknown tokens]). Old site-specific `{{<folder>Link}}` forms become
     `{{link:<folder>}}` only where the token is an `<a>` tag's whole `href` value (dev #889); a BARE one (in text, as
     `<nav>{{workLink}}</nav>`) was rendered by the template's builder as a whole anchor, so with the portfolio's label
@@ -371,7 +404,8 @@ def rewrite_tokens(text, folders, layout=False, home=None, frozen=None, labels=N
     the page. A token the copy cannot feed stays unknown.
 
     Schema 6 (design-adopt-parity-2 section 7.4): a BARE `{{resumeLink}}` (in text, as `{{workLink}}{{resumeLink}}`) becomes
-    `BARE_RESUME`, the anchor the plugin's own nav prints, inside a `{{#page:resume}}` section (dev 979 / #245); an unknown
+    `bare_resume(label)`, the anchor the plugin's own nav prints (`label`: the site's chosen `nav.labels.resume`, `resume_label`, else
+    the plugin's `Resume`), inside a `{{#page:resume}}` section (dev 979 / #245); an unknown
     token in the query of a same-site stylesheet or script address becomes `{{assetVersion}}` (`asset_query_token`); and a
     bare token the plugin has no token for, which the old page renders at that spot as one whole anchor to an outside address,
     is FROZEN as that anchor (`frozen_anchor`, from `old`: (the old page's text, the site's own hosts, its output path),
@@ -385,9 +419,11 @@ def rewrite_tokens(text, folders, layout=False, home=None, frozen=None, labels=N
     (`old` None: `inventory`, `check`, and every command until one hands the conversion the old pages) a bare `resumeLink`
     stays too; a bare `{{<folder>Link}}` with a label keeps 0.5.x's wrap (dev #889), which parity measures against the old
     build afterwards (making it strict too is an open decision of step 9a3). Before 9a3 both wraps were written
-    whatever the old page held there."""
+    whatever the old page held there. dev #1042: such an unmeasured wrap is also appended to `waiting` (when given), so a
+    command that holds no old page lists it as waiting on parity, never as written."""
     norm = dict((re.sub(r"[-_]", "", f).lower(), f) for f in folders)
     changes, unknown = [], []
+    known = set(folders) | set(pages or ())         # the pages the plugin's build has: what a section marker and a link beside a token name
     frozen = frozen if frozen is not None else []
 
     def anchor(m):
@@ -442,17 +478,20 @@ def rewrite_tokens(text, folders, layout=False, home=None, frozen=None, labels=N
         bare = not arg and link_token_context(m) == "text"
         menu = None                                        # (page, label, the wrap): a bare menu token's one anchor
         if bare and name == "resumeLink" and "resume" in (pages or ()):
-            menu = ("resume", RESUME_LABEL, BARE_RESUME)   # the anchor the nav prints (dev 979 / #245)
+            word = resume_label or RESUME_LABEL
+            menu = ("resume", word, bare_resume(word))     # the anchor the nav prints (dev 979 / #245; the chosen label, schema 8)
         elif bare and f and (labels or {}).get(f):
             menu = (f, labels[f], section_for_link(f, labels[f]))      # dev #889
         unmeasured_889 = menu is not None and old is None and menu[0] == f    # 0.5.x's wrap, which parity then measures
         new = None
-        if menu and (menu_anchor_measured(m, old, menu[0], menu[1]) or unmeasured_889):
+        if menu and (menu_anchor_measured(m, old, menu[0], menu[1], known) or unmeasured_889):
             new = menu[2]                                  # measured FIRST: the old page holds exactly this anchor there
+            if unmeasured_889 and waiting is not None:
+                waiting.append((m.group(0), new))          # dev #1042: written with no old page to measure it on; parity decides
         elif asset_query_token(m):
             new = "{{assetVersion}}"                       # the cache-busting version: the same bytes at the same path (U-b)
         elif bare and old:
-            new = frozen_anchor(m, old[0], old[1])
+            new = frozen_anchor(m, old[0], old[1], old[2] if len(old) > 2 else None, known)
             if new is not None:
                 frozen.append((m.group(0), new))
         if new is not None:

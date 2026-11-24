@@ -290,7 +290,7 @@ def judge(local, plugin, name):
 _CARD_FAMS = ("cardLabels", "cardNumber", "cardNumberFormat", "cardImage", "cardAlt", "cardKicker")
 _HEADING_FAMS = ("groupCount", "featuredView")
 _PIECE_PAGE_FAMS = ("pieceLink", "pieceTeaser", "pieceRoles", "backLink")    # `backLink.<p>` has its own region (`scopes`)
-_CHROME_FAMS = ("nav.home", "nav.extra", "menuLinks")
+_CHROME_FAMS = ("nav.home", "nav.extra", "menuLinks", "nav.labels.about", "nav.labels.resume")     # the two labels: schema 8
 _CHROME_KINDS = ("link", "word", "current")
 
 
@@ -362,6 +362,8 @@ def scopes(name, ports, cands=()):
         return [Scope("the titles", _is_page, lambda f: f.kind == "title")]
     if fam == "titleForm":
         return [Scope("the titles", lambda p: p == "index.html", lambda f: f.kind == "title")]
+    if fam == "resume.titleForm":                  # schema 8: the resume page's own `<title>`
+        return [Scope("the titles", lambda p: p == "resume/index.html", lambda f: f.kind == "title")]
     if fam == "view" and port:
         return [Scope("the index", lambda p: p == port + "/index.html", _content)]
     if fam == "blocks.videoEmbed":

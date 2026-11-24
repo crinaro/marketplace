@@ -15,6 +15,44 @@ from lookfiles.refusals import LookCommandError
 # this private-use character instead, so derive can tell the items apart and read the separator the page writes between them.
 LIST_SEP = ""
 LIST_SEP_PARTS = {("steps-view", "role"): "role-sep"}
+# The open slots 0.8.0 added (`{{teaser}}` and `{{meta}}` on a roles card, `{{author}}` on a reference card, `{{cardTitle}}` in `used-by`):
+# a build computes each only where the effective part places it (`looks.places`), and no default part does, so a recording made under the
+# plugin's own look would hold the value of none of them, and derive could never write the slot where an old page shows it (adopt-local-
+# reach N1, dev #1037 and #1038). The recording therefore reads each such part as if it also placed them (`_recorded_markup`): the build
+# computes the value, the recorded call holds it, and `Call.used` names it. Table-driven from the grammar's own 0.8.0 rows.
+def recorded_open():
+    """{(construct, part): [slot]} of the open slots 0.8.0 added, read from the grammar's `OPEN_SLOT_FIRST` rows."""
+    out = {}
+    for (construct, part, slot), release in sorted(looks.OPEN_SLOT_FIRST.items()):
+        if release == "0.8.0":
+            out.setdefault((construct, part), []).append(slot)
+    return out
+
+
+# An OPTIONAL part (`looks.OPTIONAL_PARTS`) has no markup in the default look, and a build that renders one needs some: the recording
+# gives `reference-card.author` this one, so the call is recorded and derive reads the part from the page that prints it. Only the
+# recording reads it; a look the person keeps holds what the page holds.
+RECORDED_PARTS = {("reference-card", "author"): '<span class="ss-ref-author">{{text}}</span>'}
+
+
+def _recorded_markup(original):
+    """`looks.part_markup` as the recording reads it: the part's markup (`RECORDED_PARTS` where the look has none), with each of its
+    `recorded_open` slots the markup does not place appended after everything else. The recorded output holds the value; no page of the
+    person's tree is made from it."""
+    wanted = recorded_open()
+
+    def part_markup(construct, part, look=None):
+        try:
+            text = original(construct, part, look)
+        except looks.LookError:
+            if (construct, part) not in RECORDED_PARTS:
+                raise
+            text = RECORDED_PARTS[(construct, part)]
+        more = [s for s in wanted.get((construct, part), ()) if s not in looks.found_names(text)]
+        return text + "".join("{{%s}}" % s for s in more) if more else text
+    return part_markup
+
+
 # The places whose picture may render through a part of their own (step G O3): a site-wide `image` call made for one of these is read as
 # that place's `image` part, so a template that writes the step's or the home tile's `<img>` its own way derives it there. Read from
 # `lookgrammar.constructs.PLACE_PARTS` (`lookfiles.places.picture_places`, step 12): one table for the build, derive and `looks.needs`.
@@ -82,9 +120,11 @@ class Call(object):
 
 
 @contextlib.contextmanager
-def recording():
+def recording(open_slots=False):
     """Record every `looks.render` call made inside the block (build.py and content.py call it through the module,
-    so the one wrapper sees them all). Restores the original on exit. Yields the list of `Call`."""
+    so the one wrapper sees them all). Restores the original on exit. Yields the list of `Call`. With `open_slots` (derive's
+    `record` only) the build also computes the 0.8.0 open slots (`recorded_open`): its output is then no build of the tree, so a
+    caller that compares the recorded build with a real one (`lookperson`, `lookkeep`, `suggest`) never asks for it."""
     calls = []
     original, original_part = looks.render, navparts.part
     own = [None]
@@ -115,11 +155,15 @@ def recording():
                     c.out = got
                     break
         return got
+    original_markup = looks.part_markup
     looks.render, navparts.part, grouping.number_alone = rec, part, alone
+    if open_slots:
+        looks.part_markup = _recorded_markup(original_markup)
     try:
         yield calls
     finally:
         looks.render, navparts.part, grouping.number_alone = original, original_part, original_alone
+        looks.part_markup = original_markup
 
 
 def link_calls(calls):
@@ -202,7 +246,7 @@ def kids_of(call):
 def record(files):
     """Build `files` in memory with every render call recorded. Returns (calls, html_outputs). Raises
     LookCommandError when the tree does not build: nothing can be derived from content the build refuses."""
-    with recording() as calls, _list_items():
+    with recording(open_slots=True) as calls, _list_items():
         acc = running.accept(files)
     if acc.problems:
         first = "; ".join(p.line() for p in acc.problems[:2])

@@ -14,7 +14,12 @@ choice fixes the one before it; interactions beyond that are design UNDETERMINED
                       list, which prints tiles where `featured` prints cards; offered only for a home with no `showcase` of its own
   sort.<portfolio>    `date` (the default) or `order` (every piece carries an integer `order`), in that portfolio's page.md
   nav.home            true (the default) or false: the nav without a Home item (`nav: {"home": false}`)
+  nav.labels.about    absent (the default: the plugin's `About`) or the word the old menu prints for the about page (schema 8, `site.json`
+  nav.labels.resume   `nav.labels`; `adoption.menulabels` reads it from the old build's own menu); `nav.labels.resume` is the same for `Resume`.
+                      A site whose old menu says the default word writes no key
   resume.headings     `shift` (the default) or `as-written`
+  resume.titleForm    `title` (the default) or `page` (schema 8, `resume.titleForm`): the resume's `<title>` leads with the menu's word for it
+                      (`nav.labels.resume`) in place of the resume's own `title`; offered when the old resume `<title>` starts with that word
   cardLabels          true (the default) or false: card values without their labels
   resume.layout       `plain` (the default) or `cards`: the resume's roles as one card each (`resume.layout`, schema 4), for an old resume
                       page that sets each role in its own section
@@ -71,9 +76,9 @@ from configschema import sectioncheck
 from configschema.configkeys import (BUILTIN_PIECE_KEYS, COUNT_ANY, MEDIA_PATH_FOLDERS, NAV_HOME_TITLE, SIZE_COPIES,
                                      TITLE_SEPARATOR_DEFAULT, TITLE_SEPARATOR_MAX, WORK_KEYS)
 from configschema.diagnostics import SiteConfigError
-from contentmodel.keytables import KEY_RE
+from contentmodel.keytables import KEY_RE, piece_keys_read
 
-from adoption import carry, lookwrite
+from adoption import carry, lookwrite, menulabels
 from adoption.base import Refused
 from adoption.plan import _current_base, _plan_for, save_plan
 from adoption.homeparts import HOME_PATHS, front_values
@@ -81,7 +86,8 @@ from adoption.template import _emit, _list_entry, _yaml, entries, home_path, sca
 
 # The five schema-5 portfolio settings (design-movement-view 6.3), in the order they are chosen, after `cardNumberFormat`.
 V5_PORTFOLIO_SETTINGS = ("cardImage", "cardAlt", "cardKicker", "pieceLink", "pieceTeaser")
-SETTING_ORDER = ("look", "featuredFrom", "sort", "nav.home", "resume.headings", "resume.layout", "workKeys", "cardLabels", "cardNumber", "cardNumberFormat",
+SETTING_ORDER = ("look", "featuredFrom", "sort", "nav.home", "nav.labels.about", "nav.labels.resume", "resume.headings", "resume.layout",
+                 "resume.titleForm", "workKeys", "cardLabels", "cardNumber", "cardNumberFormat",
                  "cardImage", "cardAlt", "cardKicker", "pieceLink", "pieceTeaser",       # a literal: test_routing reads it by `ast`
                  "backLink", "menuLinks", "onePieceIndex", "blocks.headingLevel", "blocks.loneReferenceGrid", "blocks.videoEmbed", "titleForm", "introScope",
                  "partOrder", "view")
@@ -123,7 +129,7 @@ def setting_paths(name):
         return ["*"]
     if fam in ("featuredFrom", "featuredView"):
         return ["index.html"]
-    if fam in ("resume.headings", "resume.layout"):
+    if fam in ("resume.headings", "resume.layout", "resume.titleForm"):
         return ["resume/index.html"]
     port = name.split(".", 1)[1] if "." in name and fam in _PER_PORTFOLIO else None
     if fam == "menuLinks":      # the menu is on every page, and the portfolio's index becomes a redirect page
@@ -197,6 +203,35 @@ def set_in_portfolios(view, files, key, value, only=None, missing_only=False):
         files[p] = _set_front_key(cur, key, value).encode("utf-8")
         done.append(parts[1])
     return done
+
+
+_SHOWN_BY = ("view",) + V5_PORTFOLIO_SETTINGS + V6_PORTFOLIO_SETTINGS     # the settings whose triggers make the build show a piece key
+
+
+def keys_the_build_shows(view, files, settings, port):
+    """The `meta`/`cardMeta` keys the build refuses for portfolio `port` because it shows them itself: the keys
+    `contentmodel.keytables.piece_keys_read` reports for the settings the portfolio ends with (its page.md as written so far, then
+    the person's `<setting>.<port>` rows, which are laid after `workKeys`), less the `cardKicker` key and the built-in keys, exactly
+    as `contentmodel.pagefiles._check_v5_piece_keys` excludes them (dev #983: `role` under `view: steps` or `pieceRoles: true`)."""
+    cfg = {}
+    try:
+        front, _body, _had = split_front(_page_text(view, files, "content/%s/page.md" % port))
+    except KeyError:
+        front = []
+    for e in entries(front):
+        if e[0] in _SHOWN_BY:
+            v = scalar(e)
+            cfg[e[0]] = _BOOL.get(v, v) if v is not None else True      # a map (a typed groupCount) is a value that is on
+    for fam in _SHOWN_BY:
+        name = "%s.%s" % (fam, port)
+        if name in settings:
+            if settings[name] in (None, False, ""):
+                cfg.pop(fam, None)
+            else:
+                cfg[fam] = settings[name]
+    read = piece_keys_read(cfg)
+    kicker = cfg.get("cardKicker")
+    return set(k for k in read if k != kicker and k not in BUILTIN_PIECE_KEYS)
 
 
 def page_view(text):
@@ -328,13 +363,30 @@ def apply_settings(view, files, d, settings, hints, notes, portfolios):
             if value != "plain" and isinstance(d.get("resume"), dict):
                 d["resume"]["layout"] = value
                 notes["settings"].append("resume.layout: %s" % value)
+        elif menulabels.is_label(name):          # schema 8: written into `nav.labels`, which raises the site to schema 8
+            page = name[len(menulabels.LABEL_PREFIX):]
+            if value not in (None, "", menulabels.DEFAULT_WORDS[page]):          # the plugin's own word writes no key
+                nav = dict(d.get("nav") or {})
+                nav["labels"] = dict(nav.get("labels") or {}, **{page: value})
+                d["nav"] = nav
+                notes["settings"].append("%s: %s (the menu's word for the %s page)" % (name, json.dumps(value, ensure_ascii=False), page))
+        elif name == menulabels.TITLE_FORM:
+            if value != "title" and isinstance(d.get("resume"), dict):
+                d["resume"]["titleForm"] = value
+                notes["settings"].append("resume.titleForm: %s (the resume page's title tag leads with the menu's word for it)" % value)
         elif name == "workKeys":
             if value == "all":
                 work = d.get("work") or {}
-                for key in SHARED_WORK_KEYS:
-                    if work.get(key):
-                        set_in_portfolios(view, files, key, "[%s]" % ", ".join(work[key]), only=[p for p in portfolios if p != "work"],
-                                          missing_only=True)
+                for p in (p for p in portfolios if p != "work"):
+                    shown = keys_the_build_shows(view, files, settings, p)       # the build refuses a meta that lists one of these
+                    for key in SHARED_WORK_KEYS:
+                        keys = [k for k in (work.get(key) or ()) if k not in shown]
+                        if keys:
+                            set_in_portfolios(view, files, key, "[%s]" % ", ".join(keys), only=[p], missing_only=True)
+                        left = [k for k in (work.get(key) or ()) if k in shown]
+                        if left:
+                            notes["settings"].append("workKeys: all leaves %s out of %s's %s (the build prints it there itself)"
+                                                     % (", ".join(left), p, key))
                 notes["settings"].append("workKeys: all (the work portfolio's %s apply to every portfolio)" % " and ".join(SHARED_WORK_KEYS))
         elif name == "blocks.headingLevel":
             if isinstance(value, int) and not isinstance(value, bool):
@@ -374,7 +426,7 @@ def apply_settings(view, files, d, settings, hints, notes, portfolios):
             port = name.split(".", 1)[1]
             path = "content/%s/page.md" % port
             if not view.exists(path):
-                _write_work_json(view, d, port, fam, value, notes)      # dev #1007: a `work` with no page.md
+                _write_work_json(view, files, d, port, fam, value, notes)      # dev #1007: a `work` with no page.md
                 continue
             cur = _page_text(view, files, path)
             files[path] = _set_front_key(cur, fam, _front_value(value) if fam in V5_PORTFOLIO_SETTINGS else value).encode("utf-8")
@@ -491,22 +543,46 @@ def _apply_v6(view, files, d, settings, name, value, notes):
             files[path] = _set_front_key(_page_text(view, files, path), fam, "true").encode("utf-8")
             notes["settings"].append("%s of %s: true" % (fam, port))
         else:
-            _write_work_json(view, d, port, fam, True, notes)          # dev #1007: a `work` with no page.md
+            _write_work_json(view, files, d, port, fam, True, notes)          # dev #1007: a `work` with no page.md
 
 
-def _write_work_json(view, d, port, fam, value, notes):
+def _write_work_json(view, files, d, port, fam, value, notes):
     """dev #1007 (0.7.0): the portfolio named `work` with no `content/work/page.md` is configured by site.json's `work` object
     (`contentmodel/layout.py` exempts it), so a per-portfolio setting is written THERE when site.json's `work` holds that key
-    (`WORK_KEYS`). A key only a page.md holds (`sort`, `view`, `menuLinks`, `onePieceIndex`) is not written, and the note says
-    so: the measured build is this same function, so such a candidate measures as the default and is never chosen silently."""
-    if port != "work" or view.exists("content/work/page.md"):
+    (`WORK_KEYS`). dev #1041 (0.8.0): a key only a page.md holds (`sort`, `view`, `menuLinks`, `onePieceIndex`) is written into a
+    `content/work/page.md` that holds only that key (the content model merges a page.md over site.json's `work` key by key, and
+    the template's own builder ignores the file), listed in the commit with the other written files; a later setting of the same
+    portfolio joins that file. A portfolio other than `work` has no site.json object to fall back on: the note says it is not
+    written (`unwritten_reason` is the same fact for the parity row)."""
+    path = "content/work/page.md"
+    if port != "work":
+        notes["settings"].append("%s of %s: not written (%s)" % (fam, port, unwritten_reason({}, "%s.%s" % (fam, port), value)))
+    elif path in files:                         # an earlier setting of this run created it: this one joins it
+        files[path] = _set_front_key(_page_text(view, files, path), fam, _front_value(value)).encode("utf-8")
+        notes["settings"].append("%s of work: %s (in the page.md written for the portfolio)" % (fam, _front_value(value)))
+    elif view.exists(path):
         return
-    if fam in WORK_KEYS:
+    elif fam in WORK_KEYS:
         d["work"] = dict(d.get("work") or {}, **{fam: value})
         notes["settings"].append("%s of work: %s (in site.json's work: the portfolio has no page.md)" % (fam, json.dumps(value)))
     else:
-        notes["settings"].append("%s of work: not written (only a page.md holds %s, and content/work/page.md does not exist)"
-                                 % (fam, fam))
+        files[path] = _set_front_key("", fam, _front_value(value)).encode("utf-8")
+        notes["settings"].append("%s of work: %s (written into a new content/work/page.md that holds only this key: only a page.md "
+                                 "holds %s, and the portfolio had none)" % (fam, _front_value(value), fam))
+
+
+def unwritten_reason(paths, name, value):
+    """None when the per-portfolio candidate `name` = `value` can be written into the converted tree whose paths `paths` holds, else
+    why not, with the way out (dev #1041): a portfolio other than `work` with no `content/<p>/page.md` has no place for the key
+    (`work` always has one: site.json's `work` object or a page.md `_write_work_json` creates). The parity row says this, never
+    "no candidate changes what a visitor sees", which reads as measured."""
+    fam = setting_family(name)
+    if fam not in _PER_PORTFOLIO or "." not in name:
+        return None
+    port = name.split(".", 1)[1]
+    if port == "work" or "content/%s/page.md" % port in paths:
+        return None
+    return "needs content/%s/page.md with %s: %s" % (port, fam, _front_value(value) if isinstance(value, (str, bool, int)) else "...")
 
 
 _BOOL = {"true": True, "false": False}
@@ -515,7 +591,7 @@ _CHOICES = {"featuredFrom": ("home", "flags", "showcase"), "sort": ("date", "ord
             "view": ("grid", "page", "roles", "map", "showcase"), "look": ("site-studio",), "menuLinks": ("index", "single-piece"),
             "workKeys": ("work", "all"), "cardNumberFormat": ("padded", "plain", "order"), "onePieceIndex": ("redirect", "listing"),
             "titleForm": ("site", "page"), "introScope": ("body", "first-block"), "blocks.videoEmbed": ("facade", "live"),
-            "cardImage": ("cover", "photo")}
+            "cardImage": ("cover", "photo"), "resume.titleForm": menulabels.TITLE_FORMS}
 _V5_TRUE = ("cardAlt", "pieceLink", "pieceTeaser")          # true, or false for absent (no key)
 _BOOLEAN = ("nav.home", "cardLabels", "cardNumber", "blocks.loneReferenceGrid")
 
@@ -553,6 +629,13 @@ def parse_chosen(name, text):
         return text
     if fam == "nav.extra":
         raise Refused("%s is read from your old pages and measured, never typed; run `adopt.py parity` to measure it" % name)
+    if menulabels.is_label(name):                  # schema 8: the menu's word for the page, one line (`false` is the plugin's own word)
+        if text == "false":
+            return None
+        if not menulabels.label_ok(text):
+            raise Refused("%s takes one non-empty line of text, the word your menu prints, or false for the plugin's own; "
+                          "pass one such as `CV`" % name)
+        return text
     if name == "carried":
         return carried_value(text)
     if name in _BOOLEAN or fam in _V5_TRUE:

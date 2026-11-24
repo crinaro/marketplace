@@ -52,6 +52,35 @@ from adoption.problems import plan_settings, format_problems, held_problems, pro
 from adoption.plan import _plan_for, save_plan
 from adoption.accepts import open_lines
 
+def _token_sections(tree, data, folders):
+    """([(path, token)] the build would refuse, [(path, old, wrap)] every page section the token rewrite makes, and the ones among
+    them written with no old page to measure them on: dev #1042, parity's to measure, never listed as written)."""
+    unknown, sections, waiting = [], [], []
+    for p in token_files(tree):
+        wait = []
+        _t, ch, u = rewrite_tokens(tree.text(p), folders, layout=(p == "site/templates/layout.html"), home=home_feed(tree),
+                                   labels=site_json_labels(data), waiting=wait)
+        unknown += [(p, t) for t in u]
+        sections += [(p, a, b) for a, b in ch if "{{#page:" in b]
+        waiting += [(p, a, b) for a, b in wait]
+    return unknown, sections, waiting
+
+
+def _section_lines(sections, waiting):
+    """The inventory's lines for the page sections: the ones adopt writes, then the ones that wait on parity."""
+    L = []
+    written = [x for x in sections if x not in waiting]
+    if written:
+        L.append("page sections adopt will write (a link that is there when the resume is built, gone when "
+                 "it is not):")
+        L += ["  %s: %s -> %s" % (p, " ".join(a.split()), " ".join(b.split())) for p, a, b in written]
+    if waiting:
+        L.append("page sections that wait on parity (inventory holds no copy of your old pages: adopt writes the wrap only where "
+                 "the old page holds exactly that anchor, which `adopt.py parity` measures, and leaves the token listed otherwise):")
+        L += ["  %s: %s -> %s" % (p, " ".join(a.split()), " ".join(b.split())) for p, a, b in waiting]
+    return L
+
+
 def cmd_inventory(repo, as_json):
     basis, tree, data = preconditions(repo)
     base = basis.sha
@@ -66,12 +95,7 @@ def cmd_inventory(repo, as_json):
         del plan["files"][stale]
     save_plan(repo, plan)
     folders = portfolio_folders(tree)
-    unknown, sections = [], []
-    for p in token_files(tree):
-        _t, ch, u = rewrite_tokens(tree.text(p), folders, layout=(p == "site/templates/layout.html"), home=home_feed(tree),
-                                   labels=site_json_labels(data))
-        unknown += [(p, t) for t in u]
-        sections += [(p, a, b) for a, b in ch if "{{#page:" in b]
+    unknown, sections, waiting = _token_sections(tree, data, folders)
     kind = plan.get("siteKind")
     notes = []                       # design-movement-view 6.1: a key read elsewhere is a note, not a decision
     probs = site_problems(tree, data, plan["paper"], kind, measured_folders(tree, plan), plan["convert"], plan_settings(plan),
@@ -95,7 +119,8 @@ def cmd_inventory(repo, as_json):
                                          "line": feature_lines([(k, w)], data)[0].strip("- ").strip()}
                                         for k, w in signals],
                            "inferredKind": {"kind": inferred, "why": inferred_why}, "siteKind": kind,
-                           "sections": [{"path": p, "found": a, "section": b} for p, a, b in sections]},
+                           "sections": [{"path": p, "found": a, "section": b} for p, a, b in sections],      # every wrap, measured or not
+                           "sectionsWaitingOnParity": [{"path": p, "found": a, "section": b} for p, a, b in waiting]},
                           indent=2, default=list)
     L = ["adopt inventory (%s %s)" % (basis.label(), base[:7])] + basis.up_front() + cleared_msgs + [
          "",
@@ -146,11 +171,7 @@ def cmd_inventory(repo, as_json):
                      "rewrite it: your builder rendered a whole anchor there, and %s. The plugin has no such token: "
                      "write %s by hand, with your own label."
                      % (p, t, link_step_reason(t, folder, data), section_for_link(folder, "LABEL")))
-    if sections:
-        L.append("page sections adopt will write (a link that is there when the resume is built, gone when "
-                 "it is not):")
-        for p, a, b in sections:
-            L.append("  %s: %s -> %s" % (p, " ".join(a.split()), " ".join(b.split())))
+    L += _section_lines(sections, waiting)
     if probs or notes:
         L.append("")
         L += format_problems(probs) + note_lines(notes)

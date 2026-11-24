@@ -13,6 +13,7 @@ Imports nothing from `looks`, which imports this: the one input that needs the p
 import json
 import re
 from lookgrammar.constructs import CONSTRUCTS, PART_FIRST, OPEN_SLOT_FIRST, PLACE_PARTS, SLOT_FIRST, TOP_KEY_FIRST
+from lookgrammar.reads import READS         # imports only `re` and `constructs`: no cycle
 
 
 _SLOT = re.compile(r"\{\{([^{}]*)\}\}")
@@ -43,7 +44,9 @@ def release_needs(look_text, decoration_needs):
     """The newest release the look file `look_text` (its JSON text) needs to be read, as "0.5.0": the newest of the
     `first` of every construct it names, every part it writes (`part_first`, `PART_FIRST`), every slot it places that
     `SLOT_FIRST` gates or `OPEN_SLOT_FIRST` adds (`slot_release`), every asset kind it links (`ASSET_FIRST`), every
-    top-level key it holds that `TOP_KEY_FIRST` names (0.7.0: `reads`, `named`; the key, whatever it holds) and every
+    top-level key it holds that `TOP_KEY_FIRST` names (0.7.0: `reads`, `named`; the key, whatever it holds), every target
+    its `reads` names that the table knows (`READS[target]["first"]`: 0.7.0 for the nine, 0.8.0 for the five of 0.8.0; 0.8.0
+    reads each target's own release, where 0.7.0 counted `reads` as needing 0.7.0 whatever it held) and every
     decoration it holds (`decoration_needs`, called with {construct id: {part: markup}} of the known parts: `looks`
     passes `_decoration_needs`).
     None for a look that names nothing, or that is not a look at all (`parse` refuses that with its own line). A name
@@ -56,6 +59,10 @@ def release_needs(look_text, decoration_needs):
     if not isinstance(data, dict):
         return None
     found, clean = [TOP_KEY_FIRST[k] for k in sorted(data) if k in TOP_KEY_FIRST], {}
+    reads = data.get("reads")
+    for target in (sorted(reads) if isinstance(reads, dict) else ()):
+        if target in READS:
+            found.append(READS[target]["first"])
     constructs = data.get("constructs")
     for cid, parts in (constructs.items() if isinstance(constructs, dict) else ()):
         if cid not in CONSTRUCTS or not isinstance(parts, dict):

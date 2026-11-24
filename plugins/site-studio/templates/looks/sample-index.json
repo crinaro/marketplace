@@ -13,6 +13,9 @@
       "teaser": "<span class=\"s-ix-card-teaser\">{{text}}</span>",
       "meta": "<span class=\"s-ix-card-meta\">{{text}}</span>"
     },
+    "kicker": {
+      "wrap": "<span class=\"s-ix-kicker\">{{text}}</span>"
+    },
     "tiles": {
       "wrap": "<ul class=\"s-ix-tiles\">{{items}}</ul>",
       "item": "<li class=\"s-ix-tile\"><span class=\"s-ix-tile-figure\">{{figure}}</span><span class=\"s-ix-tile-text\">{{text}}</span></li>",
@@ -40,6 +43,9 @@
     "card.teaser.text": ["summary", "teaser"],
     "card.meta.text": {"unless": "title"},
     "head.description": ["summary", "description", "teaser"],
+    "kicker.wrap.text": ["@portfolio"],
+    "card.wrap.image": ["cover", "photo"],
+    "home-showcase.item.image": ["photo", "cover"],
     "piece-teaser.wrap.text": ["summary", "teaser"],
     "meta-list.item.value": {"unless": "title"},
     "tiles.item-accent": ["@first"]

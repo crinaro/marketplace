@@ -610,7 +610,7 @@ def converted_site_files(tree, data, paper, folders=None, kind=None, only=None, 
         new, ch, unk = rewrite_tokens(text, names, layout=(p == "site/templates/layout.html"), home=home, frozen=frz,
                                       labels=site_json_labels(data), home_rows=bool(notes["homeKeys"]),
                                       home_samples=any("featured (references)" in w for _p, w in notes["homeKeys"]), old=old_page(hints, p, data),
-                                      pages=built)
+                                      pages=built, resume_label=((d.get("nav") or {}).get("labels") or {}).get("resume"))
         notes["tokens"].extend((p, a, b) for a, b in ch)
         notes["tokensFrozen"].extend((p, a, b) for a, b in frz)
         notes["unknown"].extend((p, t) for t in unk)

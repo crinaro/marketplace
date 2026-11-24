@@ -32,7 +32,7 @@ from contentmodel.errors import ContentError
 from contentmodel.frontmatter import parse_front_matter
 from contentmodel.keytables import VIEW_PIECE_KEYS, piece_keys_read
 
-from adoption import carry, homeparts
+from adoption import carry, homeparts, menulabels
 from adoption.convert import PIECE_KEY_SYNONYMS
 from adoption.facts import links_above_title
 from adoption.keycover import synonym_sources
@@ -47,7 +47,8 @@ DEFAULTS = {"look": "site-studio", "featuredFrom": "home", "nav.home": True, "re
             "blocks.videoEmbed": "facade", "workKeys": "work",
             "titleForm": "site", "introScope": "body", "partOrder": None,
             "featuredView": "flat", "titleSeparator": None, "nav.extra": None,          # schema 6 (design-adopt-parity-2 section 7.6)
-            "blocks.headings": "shift", "sizeCopies": None, "carried": None}
+            "blocks.headings": "shift", "sizeCopies": None, "carried": None,
+            "nav.labels.about": None, "nav.labels.resume": None, "resume.titleForm": "title"}      # schema 8 (adopt-local-reach 4)
 BUILT_IN_VIEWS = ("grid", "page", "roles", "map", "showcase", "steps")        # `steps` at schema 5 (design-movement-view 6.1)
 
 
@@ -355,6 +356,8 @@ def candidates_for(name, snap, data, local=None, settings=None):
         return v5_candidates(name, snap, data, settings, local)
     if fam in V6_PORTFOLIO_SETTINGS or name in V6_SITE_SETTINGS or fam == "mediaPaths":
         return v6_candidates(name, snap, data, local, settings)
+    if menulabels.is_label(name) or name == menulabels.TITLE_FORM:     # schema 8: the old menu's words, read from the old build
+        return menulabels.candidates(name, local)
     facts = portfolio_facts(snap)
     if name == "titleForm":
         return ["site", "page"] if homeparts.home_in(snap) else ["site"]
@@ -537,7 +540,7 @@ def old_titles(local):
 
 def title_separator(local, data):
     """The separator every old `<title>` that names the site after a page's title shares (`Kiln House · Tern Studio` gives ` · `),
-    when it is one value, differs from the default and is one `site.json` accepts (section 3.2); else None."""
+    when it is one value (a title ending in punctuation adds it to its own tail: the shortest tail every tail ends with), differs from the default and is one `site.json` accepts (section 3.2); else None."""
     site = ((data or {}).get("siteTitle") or (data or {}).get("name") or "").strip()
     if not site:
         return None
@@ -547,9 +550,13 @@ def title_separator(local, data):
             m = re.match(r"^.*?\w(\W*)$", t[:-len(site)], re.U)
             if m and m.group(1):
                 seps.add(m.group(1))
-    if len(seps) != 1:
+    if not seps:
         return None
-    sep = seps.pop()
+    # a page title that ends in punctuation ("Inc.") ends its separator with it too (". · "): the separator is the one every
+    # title's tail ends with, the shortest of them (dev #982)
+    sep = min(seps, key=len)
+    if not all(x.endswith(sep) for x in seps):
+        return None
     return sep if sep != TITLE_SEPARATOR_DEFAULT and separator_ok(sep) else None
 
 
@@ -717,8 +724,9 @@ def setting_names(snap):
     names = ["look", "featuredFrom", "featuredView"]
     names += ["mediaPaths.%s" % f for f in media_folders(snap)] + (["sizeCopies"] if other_format_copies(snap) else [])
     names += ["sort.%s" % p for p in sorted(portfolio_facts(snap))]
-    names += ["nav.home", "nav.extra", "titleSeparator", "resume.headings", "resume.layout", "workKeys", "cardLabels", "cardNumber",
-              "cardNumberFormat"]
+    labels, title_form = menulabels.names(snap)       # schema 8: a menu label per page the tree has, then the resume's title form
+    names += ["nav.home", "nav.extra"] + labels + ["titleSeparator", "resume.headings", "resume.layout"] + title_form
+    names += ["workKeys", "cardLabels", "cardNumber", "cardNumberFormat"]
     names += ["%s.%s" % (fam, p) for fam in V5_PORTFOLIO_SETTINGS + V6_PORTFOLIO_SETTINGS for p in sorted(portfolio_facts(snap))]
     if BACK_LINK_PER_PORTFOLIO:
         names += ["backLink.%s" % p for p in sorted(portfolio_facts(snap))]      # schema 6: per portfolio (section 7.6)

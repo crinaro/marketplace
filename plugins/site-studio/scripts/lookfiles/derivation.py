@@ -68,7 +68,8 @@ from lookfiles.templatemerge import _merge
 NUMBER_PARTS = frozenset((("steps-view", "number"),))       # a part a page may draw in CSS instead of printing (U-M2, U-D1)
 # a piece's optional line a site's own card or tile may simply not print (step 5c-3): the teaser under a card's title (a template's
 # pieces carry `summary`, which `pieceKeys` renames to `teaser`, and its cards never printed it), and a tile's role
-UNPRINTED_PARTS = frozenset((("card", "teaser"), ("showcase-view", "role"), ("home-showcase", "role")))
+UNPRINTED_PARTS = frozenset((("card", "teaser"), ("card", "meta"), ("reference-card", "author"), ("showcase-view", "role"),
+                             ("home-showcase", "role")))
 _HEAD = 12                                                  # the squashed characters a cut-short line still starts with
 
 

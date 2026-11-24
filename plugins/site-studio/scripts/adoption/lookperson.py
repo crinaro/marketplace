@@ -9,8 +9,15 @@ Part of the `adoption` package behind the entry point `adopt.py`.
      derive's reading or the default renders (one build, recorded).
   2. An entry's pages are those where its construct renders in B (`lookkeep.rendering_on`: what renders where is the content's,
      the markup is the look's). The row compares the visible differences on those pages, W (`yours`) against B (`derived`).
-  3. Where two entries share a page that is not EQUAL in W, each is taken out alone (one build each), at most PERSON_BUILDS_MAX;
-     past it the rest share B's numbers and say "measured together with ...".
+  3. An entry no render call of B shows, and every `reads` entry, is taken out alone (one build each): its pages are those where
+     B's render calls show it, plus the pages whose bytes differ between W and that build (dev 1039: a `head.description` entry
+     prints through no look part yet changes every piece page). Only when both are empty is it `not reached`. A build without the
+     entry that REFUSES (the roles view needs the `employer` the entry reads) reads as "every page it renders on in W" (one more
+     build of W, recorded, made once).
+  4. Where two entries share a page that is not EQUAL in W, each is taken out alone too. Steps 3 and 4 share ONE cap,
+     PERSON_BUILDS_MAX, entries of step 3 first: a run is at most 1 + PERSON_BUILDS_MAX builds, +1 when a build without an entry
+     refuses. Past the cap an entry with no page of its own takes the pages W and B differ on, and, like the rest, says "measured
+     together with ...".
 
 The person's entry is used whatever the numbers say: the measurement informs, the file decides. A worse entry keeps parity
 DIFFERENT, which keeps the person's builder as the publisher. A build the tree with them refuses and without them accepts is a
@@ -40,9 +47,10 @@ HOWS = ("measured", "not measured")
 class Row(object):
     """One entry's row: the plan row `look.<construct>` or `reads.<target>` (section 2.7) and the line parity prints."""
 
-    def __init__(self, entry, pages, yours, derived, status, kind, first="", together=(), message="", fix=""):
+    def __init__(self, entry, pages, yours, derived, status, kind, first="", together=(), message="", fix="", refuses=False):
         self.entry, self.pages, self.yours, self.derived, self.status = entry, pages, yours, derived, status
         self.kind, self.first, self.together, self.message, self.fix = kind, first, list(together), message, fix
+        self.refuses = refuses            # the build without this entry is refused: there is no derived number to give
 
     @property
     def how(self):
@@ -60,6 +68,7 @@ class Row(object):
         if self.kind == "not reached":
             return "not reached -- no page renders it"
         theirs = ("the derived reading leaves %d" % self.derived if self.derived is not None else
+                  "the build refuses without it" if self.refuses else
                   "derive has no reading of it, and without it the plugin's own markup renders")
         tail = ("; measured together with %s" % ", ".join(self.together)) if self.together else ""
         if self.kind == "you decide":
@@ -104,6 +113,11 @@ def _pages_of(entries, out, calls):
     return dict((e.name, sorted(p for p, cids in on.items() if e.construct in cids)) for e in entries)
 
 
+def _changed(w_out, other):
+    """The pages (html) of W whose bytes differ from `other`'s build of the same name: where taking an entry out shows."""
+    return sorted(p for p, b in w_out.items() if p.lower().endswith((".html", ".htm")) and other.get(p) != b)
+
+
 def _has_reading(entry, files, reading):
     """Does B render a derived reading where `entry` stood (else the plugin's own markup does)?"""
     if entry.file == lookwrite.DERIVED_LOOK_PATH:
@@ -135,25 +149,41 @@ def rows(entries, local, w_out, files, build, reading=None, status=None):
         return [Row(e, [], None, None, st(e), "refused", message=p.message, fix=getattr(p, "fix", "") or "fix the line it names")
                 for e in entries], builds
     pages = _pages_of(entries, b_out, calls)
-    alone = {}
+    needs = [e.name for e in entries if not pages[e.name] or e.key.startswith("reads:")]     # dev 1039: pages B's calls miss
     shared = sorted(set(e.name for e in entries if any(
         q in pages[e.name] for o in entries if o is not e for q in pages[o.name]) and visible(local, w_out, pages[e.name])[0]))
-    for name in shared[:PERSON_BUILDS_MAX]:
+    alone, changed, refuses = {}, {}, set()
+    for name in (needs + [n for n in shared if n not in needs])[:PERSON_BUILDS_MAX]:
         alone[name], _c = build_without(build, files, [e for e in entries if e.name == name], reading)
         builds += 1
+        if name in needs:
+            if getattr(alone[name], "problems", ()) and not w_bad:
+                refuses.add(name)      # refused without it, accepted with it: it renders wherever its construct does in W
+            else:
+                changed[name] = _changed(w_out, alone[name])
+    if refuses:
+        w_calls = build_without(build, files, [], reading)[1]
+        builds += 1
+        w_pages = _pages_of([e for e in entries if e.name in refuses], w_out, w_calls)
+        changed.update(dict((n, w_pages[n]) for n in refuses))
+    fallback = _changed(w_out, b_out) if not b_bad else []        # past the cap: the pages W and B differ on, all entries together
     out = []
     for e in entries:
-        mine = pages[e.name]
+        mine = sorted(set(pages[e.name]) | set(changed.get(e.name, ())))
+        lone = not mine and e.name not in alone
+        if lone:
+            mine = fallback
         if not mine:
             out.append(Row(e, [], 0, None, st(e), "not reached"))
             continue
         yours, first = visible(local, w_out, mine)
-        derived = visible(local, alone.get(e.name, b_out), mine)[0] if _has_reading(e, files, reading) else None
+        gone = e.name in refuses
+        derived = visible(local, alone.get(e.name, b_out), mine)[0] if _has_reading(e, files, reading) and not gone else None
         # past the cap, an entry that shares a page with another keeps B's numbers, taken out with them: said so
-        together = ([o.name for o in entries if o is not e and set(pages[o.name]) & set(mine)]
-                    if e.name in shared and e.name not in alone else [])
+        together = ([o.name for o in entries if o is not e and (lone or set(pages[o.name]) & set(mine))]
+                    if lone or (e.name in shared and e.name not in alone) else [])
         kind = "you decide" if derived is not None and yours > derived else "measured"
-        out.append(Row(e, mine, yours, derived, st(e), kind, first, together))
+        out.append(Row(e, mine, yours, derived, st(e), kind, first, together, refuses=gone))
     return out, builds
 
 

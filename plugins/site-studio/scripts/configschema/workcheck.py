@@ -17,16 +17,18 @@ from configschema.configkeys import (
     RESUME_HEADINGS,
     RESUME_KEYS,
     RESUME_LAYOUTS,
+    RESUME_TITLE_FORMS,
     SCHEMA_MAX,
     V4_WORK_KEYS,
     V5_WORK_KEYS,
     V6_LABEL_PARTS,
     V6_WORK_KEYS,
+    V8_RESUME_KEYS,
     WORK_KEYS,
     _KEY_RE,
 )
 from configschema.diagnostics import SiteConfigError, _Collector
-from configschema.sectioncheck import needs_schema_6
+from configschema.sectioncheck import needs_schema_6, needs_schema_8
 from configschema.valuecheck import (
     _bad,
     _bool,
@@ -375,6 +377,17 @@ def _resume_check(raw, col, schema=SCHEMA_MAX):
             col.add("site.json: 'resume.%s' must be %s" % (k, names), "resume." + k, _shown(repr(raw[k])),
                     names, "set resume.%s to %s" % (k, names))
         elif raw[k] != default:
+            extra[k] = raw[k]
+    for k in V8_RESUME_KEYS:        # `titleForm` (schema 8): "title", the default, is written away
+        if k not in raw:
+            continue
+        if schema < 8:
+            col.problems.append(needs_schema_8("resume." + k, schema).problem)
+        elif raw[k] not in RESUME_TITLE_FORMS:
+            names = " or ".join('"%s"' % a for a in RESUME_TITLE_FORMS)
+            col.add("site.json: 'resume.%s' must be %s" % (k, names), "resume." + k, _shown(repr(raw[k])),
+                    names, "set resume.%s to %s" % (k, names))
+        elif raw[k] != RESUME_TITLE_FORMS[0]:
             extra[k] = raw[k]
     paper = None
     # K-1 (schema 3): a resume with no PDF has no paper size to ask about. Below schema 3 the answer is

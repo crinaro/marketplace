@@ -24,6 +24,7 @@
 .s-ix-card-link:hover .s-ix-card-title,
 .s-ix-card-link:focus-visible .s-ix-card-title { color: var(--s-ix-accent); }
 .s-ix-card-link img { width: 100%; height: auto; display: block; }
+.s-ix-kicker { font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--s-ix-accent); }
 .s-ix-card-no { font-variant-numeric: tabular-nums; font-size: 0.8rem; color: var(--s-ix-muted); }
 .s-ix-card-title { font-weight: 600; }
 .s-ix-card-teaser { color: var(--s-ix-muted); }

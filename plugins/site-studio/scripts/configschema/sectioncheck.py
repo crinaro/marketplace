@@ -24,12 +24,14 @@ from configschema.configkeys import (
     NAV_EXTRA_SCHEMES,
     NAV_HOME_TITLE,
     NAV_KEYS,
+    NAV_LABEL_KEYS,
     RESUME_HEADINGS,
     SCHEMA_MAX,
     SIZE_COPIES,
     TITLE_SEPARATOR_DEFAULT,
     TITLE_SEPARATOR_MAX,
     V6_NAV_KEYS,
+    V8_NAV_KEYS,
     VIDEO_EMBED_FORMS,
     _LOOK_RE,
 )
@@ -53,6 +55,15 @@ def needs_schema_7(where, have):
                            found="schema %d" % have, expected="schema 7",
                            fix="run `python3 build.py raise-schema --to 7`, which lists what the page changes before "
                                "it writes schema 7")
+
+
+def needs_schema_8(where, have):
+    """A schema-8 key under a lower declared schema: 0.7.0 refuses it as an unknown key, and 0.8.0 refuses it naming the
+    schema (design-adopt-local-reach section 2.1). `workcheck` imports it from here (the reverse import would cycle)."""
+    return SiteConfigError("site.json: '%s' needs \"schema\": 8" % where, path=where,
+                           found="schema %d" % have, expected="schema 8",
+                           fix="run `python3 build.py raise-schema --to 8`, which lists what the page changes before "
+                               "it writes schema 8")
 
 
 def _look_local(v, look=None):
@@ -86,6 +97,8 @@ def _nav_check(raw, col, schema=SCHEMA_MAX):
                     "one of: " + ", ".join(NAV_KEYS), "remove 'nav.%s'" % k)
         elif k in V6_NAV_KEYS and schema < 6:
             col.problems.append(needs_schema_6("nav.%s" % k, schema).problem)
+        elif k in V8_NAV_KEYS and schema < 8:
+            col.problems.append(needs_schema_8("nav.%s" % k, schema).problem)
     if "home" in raw:
         if raw["home"] == NAV_HOME_TITLE:
             if schema < 6:
@@ -100,6 +113,30 @@ def _nav_check(raw, col, schema=SCHEMA_MAX):
         items = _nav_extra(raw["extra"], col)
         if items:
             out["extra"] = items
+    if "labels" in raw and schema >= 8:
+        labels = _nav_labels(raw["labels"], col)
+        if labels:
+            out["labels"] = labels
+    return out
+
+
+def _nav_labels(raw, col):
+    """`nav.labels` (schema 8, O-3): an object whose keys come from `NAV_LABEL_KEYS` (`about`, `resume`), each a non-empty
+    one-line label the menu prints for that built-in page. `{}` is the default and writes away. Returns the good items;
+    every fault is recorded in `col`."""
+    if not isinstance(raw, dict):
+        col.run(_bad, "nav.labels", "an object", raw)
+        return {}
+    out = {}
+    for k in raw:
+        at = "nav.labels.%s" % k
+        if k not in NAV_LABEL_KEYS:
+            col.add("site.json: unknown key '%s'" % at, at, "unknown key", "one of: " + ", ".join(NAV_LABEL_KEYS),
+                    "remove '%s'" % at)
+            continue
+        ok, label = col.run(_one_line, raw[k], at)
+        if ok:
+            out[k] = label
     return out
 
 

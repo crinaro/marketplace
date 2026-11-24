@@ -5,7 +5,7 @@ import json
 import looks
 import re
 from lookfiles.anchors import _Fail
-from lookfiles import literals, places
+from lookfiles import differs, literals, places
 from lookfiles.derivation import _Derivation
 from lookfiles.pagedom import Page, Tx, _STOP_UP, walk
 from lookfiles.refusals import LookCommandError
@@ -446,6 +446,16 @@ class _Reading(object):
                 continue
             self.commit(root, page, keep[0][1], [o[2] for o in keep if o[0] == keep[0][0]])
 
+    def candidate(self, cid, pn, tpl, entries):
+        """`tpl` as the candidates file holds it (dev 980): where the part is read from one instance of several the build renders, a
+        class token ending in that instance's position is flagged and a picture's `width` and `height` are its slots."""
+        rendered = list(dict.fromkeys(c.out for c in self.calls if c.construct == cid and c.part == pn))
+        call = entries[0][1]
+        if len(set(c.out for _t, c in entries)) != 1 or call.out not in rendered or len(rendered) < 2:
+            return tpl
+        tpl = differs.flag_positions(tpl, rendered.index(call.out) + 1, len(rendered))
+        return differs.size_slots(tpl, call) if (cid, pn) in places.picture_parts() else tpl
+
     def merge_templates(self, result):
         """Each part's instances are merged into one template and checked against the grammar; returns {construct: (status, why)} of the
         constructs that could not be mapped."""
@@ -456,12 +466,14 @@ class _Reading(object):
                 tpl, odd = _majority(entries, cid, pn)
                 if tpl is None:
                     bad.setdefault(cid, ("ambiguous", "instances of one part do not share one markup"))
-                    # the candidates file (design-adopt-ownership-line 2.6): the markup the most instances support
-                    result.candidates.setdefault(cid, {})[pn] = collections.Counter(t for t, _c in entries).most_common(1)[0][0]
+                    # the candidates file (design-adopt-ownership-line 2.6): the markup the most instances support, where the instances
+                    # differ in its fixed text a slot or a flag (dev 980: never one instance's value as fixed text)
+                    most = collections.Counter(t for t, _c in entries).most_common(1)[0][0]
+                    result.candidates.setdefault(cid, {})[pn] = differs.flag(most, entries)
                     continue
                 for _t, c in odd:         # the markup most instances share is used; the others are named, never guessed
                     self.outcome[id(c)] = ("ambiguous", "this instance's markup differs from the one most instances share")
-            result.candidates.setdefault(cid, {})[pn] = tpl
+            result.candidates.setdefault(cid, {})[pn] = self.candidate(cid, pn, tpl, entries)
             problems = looks.check_part(cid, pn, tpl)
             if problems:
                 bad.setdefault(cid, ("unmapped", _sanitise(problems[0][0])))

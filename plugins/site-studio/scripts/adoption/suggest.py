@@ -319,7 +319,7 @@ def judge_evidence(u, rows, valid, build, adopted):
         return _no(u, "refused by the build: %s" % refused)
     on = rendering_on(pages, calls, set([u.construct, u.name]))
     seen = sorted(p for p, cids in on.items() if cids)
-    if not seen:
+    if not seen and not (u.evidence == "parity" and u.pages):        # dev 1039: a row measured on pages the entry changes is evidence
         return _no(u, "not reached: no page renders it")
     if u.evidence is None:
         if finding:

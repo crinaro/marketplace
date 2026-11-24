@@ -1,4 +1,4 @@
-"""configkeys: the key tables and constants of `site/site.json` and of a page's front matter, schemas 1 to 7.
+"""configkeys: the key tables and constants of `site/site.json` and of a page's front matter, schemas 1 to 8.
 
 Constants only: the schema ceiling, the engine marker, each key table, the budget defaults and the patterns the
 value checks use. No code runs here."""
@@ -6,7 +6,7 @@ value checks use. No code runs here."""
 import re
 
 
-SCHEMA_MAX = 7
+SCHEMA_MAX = 8
 ENGINE_MARKER = "site-studio"
 CANONICAL_MARKER_LINE = '  "engine": "site-studio",'
 
@@ -114,16 +114,26 @@ V6_LABEL_PARTS = ("counts",)
 COUNT_ANY = "*"
 COUNT_FORMS = ("one", "other")
 COUNT_FORMS_RESERVED = ("zero", "two", "few", "many")
-RESUME_KEYS = ("path", "pdf", "paper", "headings", "layout")
+RESUME_KEYS = ("path", "pdf", "paper", "headings", "layout", "titleForm")
 V4_RESUME_KEYS = ("headings", "layout")          # schema 4; stored only when not the default
 RESUME_HEADINGS = ("shift", "as-written")
 RESUME_LAYOUTS = ("plain", "cards")
-NAV_KEYS = ("home", "extra")
+# Schema 8 (design-adopt-local-reach section 1.1): `resume.titleForm`, what the resume page's `<title>` leads with: "title" (the
+# default, written away: the resume's own `title`) or "page" (the label the site's menu prints for the resume page). A K
+# reason: 0.7.0 refuses the key as unknown.
+V8_RESUME_KEYS = ("titleForm",)
+RESUME_TITLE_FORMS = ("title", "page")
+NAV_KEYS = ("home", "extra", "labels")
 # Schema 6 (design-adopt-parity-2 section 3.2): `nav.home` gains the value "title" (the first item's text is the site
 # title), and `nav.extra` is one to four `{"label", "url"}` items after the built-in ones, each url an absolute `https:` or
 # `mailto:` address.
 V6_NAV_KEYS = ("extra",)
 NAV_HOME_TITLE = "title"
+# Schema 8 (design-adopt-local-reach section 1.6, owner decision O-3 a): `nav.labels`, an object with keys from `NAV_LABEL_KEYS`,
+# each a non-empty one-line label the menu prints for the built-in About or Resume page; absent or `{}` is the default and is
+# written away. A K reason: 0.7.0 refuses `nav.labels` as an unknown key.
+V8_NAV_KEYS = ("labels",)
+NAV_LABEL_KEYS = ("about", "resume")
 NAV_EXTRA_MAX = 4
 NAV_EXTRA_SCHEMES = ("https://", "mailto:")
 PAPERS = ("Letter", "A4")

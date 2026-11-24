@@ -18,6 +18,13 @@ Which picture prints, and whether its alt does:
     a roles card under `cardImage`  the group's newest piece, as a card (`roles_picture`)
     a reference card                the reference's picture    imageAlt, else ""
 
+0.8.0 (G5, dev #1035; design-adopt-local-reach section 1.5): a look's `reads` may order the picture keys of three places
+separately, `card.wrap.image` (a grid or featured card), `home-showcase.item.image` (a home tile with no `image` of its own)
+and `roles-view.item.image` (a roles card, `item` and `item-current`). `place_order(look, target)` is the entry's order or None;
+with an order the place resolves the first listed key the piece has with the card alt rule (`cardAlt`), through
+`place_picture`; with no entry, or none of its keys held, every place runs the path in the table above, untouched. For the roles
+card the entry is itself a trigger: the gated `image` slot fills whether or not `cardImage` is on.
+
 A picture given as `ref:<name>` uses the piece's own alt and position keys when present, else the reference's `imageAlt`
 and `imagePosition` (schema-5 keys of `reference.json`, so no tree 0.4.x accepted holds one). The showcase tiles are not
 here: they read no picture key of section 3.3 at any schema (rule 5), and keep 0.4.0's code in `views.py`, with one
@@ -31,11 +38,13 @@ Every key read here is a row of `contentmodel.keytables.V5_PIECE_KEYS` (or a 0.4
 only where the caller's trigger, from the piece's OWN portfolio, says so: `step_picture` is called by the steps view only,
 `card_picture` reads `photo` only under the `cardImage` trigger and an alt only under `cardAlt`."""
 
+from building import readsources
 from building.outcomes import BuildError
 from configschema.configkeys import CARD_ALT_TITLE
 from contentmodel.errors import ContentError
 from contentmodel.keytables import active_triggers
 from lookgrammar import optionalparts
+from lookgrammar.reads import PICTURE, READS
 
 import looks
 
@@ -51,6 +60,9 @@ REFERENCE_COMPANIONS = ("imageAlt", "imagePosition")
 STEP_ORDER = ("tileImage", "photo", "cover")
 CARD_ORDER = ("cover",)
 CARD_PHOTO_ORDER = ("photo", "cover")
+
+# 0.8.0 (G5): the `reads` targets that order a place's picture keys; with no entry a place picks as it did (`cardImage`)
+CARD_IMAGE_TARGET, TILE_IMAGE_TARGET, ROLES_IMAGE_TARGET = "card.wrap.image", "home-showcase.item.image", "roles-view.item.image"
 
 
 class Picture(object):
@@ -170,10 +182,39 @@ def step_picture(builder, piece):
     return resolve(builder, piece, STEP_ORDER, True)
 
 
-def card_picture(builder, piece, settings):
+def place_order(look, target):
+    """The picture keys the look's `reads` entry for the picture target `target` lists, in order (a tuple of `PICTURE_KEYS`
+    members), or None when the look has no entry for it (no look, no `reads`, or none for the target): the place then runs
+    its 0.7.0 path. 0.8.0 (G5, dev #1035, design-adopt-local-reach section 1.5): every picture path asks here, and only here. A
+    target that is not a picture target is a fault in the caller (`KeyError`), never an empty order."""
+    row = READS.get(target)
+    if row is None or row["kind"] != PICTURE:
+        raise KeyError("reads %s is not a picture target; this is a fault in site-studio: update the plugin, and report it on "
+                       "the plugin's GitHub issues page if it persists" % target)
+    spec = readsources.entry(look, target)
+    return tuple(spec.sources) if spec is not None and spec.sources else None
+
+
+def place_picture(builder, piece, settings, target):
+    """The picture of a place whose `reads` entry `target` orders the keys: the first listed key the piece has, with the card
+    alt rule (`cardAlt`, of the piece's own portfolio `settings`, as `card_picture`). None with no entry, and None when no listed
+    key gives a picture: the caller then runs the place's 0.7.0 path."""
+    order = place_order(builder.look, target)
+    if order is None:
+        return None
+    on = active_triggers(settings)
+    return resolve(builder, piece, order, "cardAlt" in on, alt_title=settings.get("cardAlt") == CARD_ALT_TITLE)
+
+
+def card_picture(builder, piece, settings, target=None):
     """A grid or featured card's picture under the piece's own portfolio `settings`: `photo`, else `cover`, when the
     `cardImage` trigger is on with the value `photo`; else `cover`. Its alt is "" unless `cardAlt` is on: `true`, the
-    picture's own alt key; `"title"` (schema 6), the piece's title."""
+    picture's own alt key; `"title"` (schema 6), the piece's title. With a `target` (0.8.0: `card.wrap.image` from a grid or
+    featured card) a `reads` entry for it picks the picture first (`place_picture`); the rule above is what runs without one."""
+    if target is not None:
+        placed = place_picture(builder, piece, settings, target)
+        if placed is not None:
+            return placed
     on = active_triggers(settings)
     order = CARD_PHOTO_ORDER if ("cardImage" in on and settings.get("cardImage") == "photo") else CARD_ORDER
     return resolve(builder, piece, order, "cardAlt" in on, alt_title=settings.get("cardAlt") == CARD_ALT_TITLE)
@@ -190,11 +231,17 @@ def roles_picture(builder, newest, settings):
 def roles_image_slot(builder, part, newest, out):
     """The GATED `image` slot of a roles card (`roles-view.item` or `item-current`, rule L3a): the `card-picture`
     construct holding the group's newest piece's picture, with the link to `schema-5.css`, when that piece's own
-    portfolio holds `cardImage`; else ""."""
+    portfolio holds `cardImage`; else "". 0.8.0 (G5): a `reads` entry for `roles-view.item.image` that gives a picture is itself
+    the trigger, so the slot fills whether or not `cardImage` is on; with no entry, or none of its keys held, this is 0.7.0's."""
     settings = builder.model.portfolio(newest.portfolio).settings
-    picture = roles_picture(builder, newest, settings)
+    triggers = active_triggers(settings)
+    picture = place_picture(builder, newest, settings, ROLES_IMAGE_TARGET)
+    if picture is not None:
+        triggers = triggers | {"cardImage"}
+    else:
+        picture = roles_picture(builder, newest, settings)
     if picture is None:
         return ""
     markup = builder.assets(out, "card-picture") + builder.r(
         "card-picture", "wrap", {"image": picture.html(builder, out)}, newest.source)
-    return looks.gate("roles-view", part, "image", active_triggers(settings), markup)
+    return looks.gate("roles-view", part, "image", triggers, markup)

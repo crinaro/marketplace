@@ -48,7 +48,9 @@ import os
 import posixpath
 import re
 
+import looks
 from building import piecehead, pictures, readsources, stepsview
+from building.portfolios import card_meta_html, card_teaser_html     # by name: the roles card's own binding (design-adopt-local-reach 1.2)
 from contentmodel import frontmatter, keytables
 from contentmodel.errors import ContentError
 from contentmodel.links import esc
@@ -272,11 +274,17 @@ def roles_html(builder, portfolio, out):
             heading = builder.r("roles-view", "heading", {"employer": name}, newest.source)
             previously = ""
         part = "item-current" if currents[name] else "item"
+        # 0.8.0 (G2, dev #1038): the group's newest piece's teaser and meta, as a grid card prints them, computed only where the
+        # effective part places the slot (`looks.places`); no default part holds either, so a tree that places neither is unmoved
+        teaser = card_teaser_html(builder, newest) if looks.places("roles-view", part, "teaser", builder.look) else ""
+        meta = (card_meta_html(builder, newest, builder.model.portfolio(newest.portfolio))
+                if looks.places("roles-view", part, "meta", builder.look) else "")
         items.append(builder.r("roles-view", part,
                                {"heading": heading, "url": _piece_url(builder, newest, out),
                                 "titles": shown[0], "period": shown[1], "previously": previously,
                                 "employer": name, "image": pictures.roles_image_slot(builder, part, newest, out),
-                                "kicker": stepsview.kicker_slot(builder, "roles-view", part, newest, out)},
+                                "kicker": stepsview.kicker_slot(builder, "roles-view", part, newest, out),
+                                "teaser": teaser, "meta": meta},
                                newest.source))
     return builder.assets(out, "roles-view") + builder.r("roles-view", "wrap", {"items": "".join(items)})
 
@@ -311,7 +319,11 @@ def _tile(builder, construct, piece, out, image=None, home=None):
                                path=piece.source, fix="write %s as one line of text, or remove it" % key)
     settings = builder.model.portfolio(piece.portfolio).settings
     card = construct == "home-showcase" and not image and "cardImage" in stepsview.piece_triggers(builder, piece)
-    if card:
+    # 0.8.0 (G5, dev #1035): a `reads` entry for `home-showcase.item.image` orders the picture keys of a home tile with no `image` of
+    # its own, with the card alt rule; None with no entry, or none of its keys held: the 0.7.0 path below runs untouched
+    placed = (pictures.place_picture(builder, piece, settings, pictures.TILE_IMAGE_TARGET)
+              if construct == "home-showcase" and not image else None)
+    if card or placed:
         found = None
     elif image:
         full = posixpath.normpath(posixpath.join(posixpath.dirname(home), image))
@@ -327,7 +339,7 @@ def _tile(builder, construct, piece, out, image=None, home=None):
         found = builder.cover_of(piece, "tileImage")
     else:
         found = builder.cover_of(piece)
-    picture = (pictures.card_picture(builder, piece, settings) if card else
+    picture = (placed if placed else pictures.card_picture(builder, piece, settings) if card else
                pictures.Picture("tile", found[0], found[1], piece.meta.get("tileAlt", ""), None) if found else None)
     img = pictures.place_html(builder, construct, picture, out) if picture else ""
     role = piece.meta.get("tileRole")

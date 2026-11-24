@@ -164,8 +164,11 @@ def _checks(cid, parts):
     return "passes"
 
 
-def candidates_text(derivation):
-    """The candidates file for one `lookfiles.derive.Derivation`: every construct it read, in the plugin's construct order."""
+def candidates_text(derivation, proposals=None):
+    """The candidates file for one `lookfiles.derive.Derivation` (None: no look was derived): every construct it read, in the plugin's
+    construct order, and, when `proposals` (`readpropose.Proposals`) holds any, the `reads` entries adopt proposes (0.8.0, N1): each
+    with its `sources`, the text-only `parts` it needs and its measured `line`. The person copies an entry into `site/looks/local.json`;
+    adopt never does (the ownership line)."""
     out = {}
     for cid in looks.CONSTRUCTS:
         parts = (getattr(derivation, "candidates", None) or {}).get(cid)
@@ -176,26 +179,31 @@ def candidates_text(derivation):
         if status != "mapped":
             entry.update(page=derivation.where.get(cid) or "", reason=derivation.reasons.get(cid) or "")
         out[cid] = entry
-    return json.dumps({"schema": CANDIDATES_SCHEMA, "candidates": out}, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+    body = {"schema": CANDIDATES_SCHEMA, "candidates": out}
+    if proposals is not None and proposals.entries:
+        body["reads"] = proposals.reads()
+    return json.dumps(body, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
 
 
-def write_candidates(repo, derivation):
-    """Parity's last write: the candidates file of the look it kept (`derivation`), or none (a stale one removed) when no look
-    was derived. Returns the lines parity prints for each construct not mapped."""
+def write_candidates(repo, derivation, proposals=None):
+    """Parity's last write: the candidates file of the look it kept (`derivation`) and of the `reads` entries proposed (`proposals`), or
+    none (a stale one removed) when neither exists. Returns the lines parity prints: one for each construct not mapped, then each
+    proposal's own line and each target not proposed, with its reason. Writes only `.site-studio/look-candidates.json`."""
     path = os.path.join(repo, *CANDIDATES_REL.split("/"))
-    if derivation is None:
+    if derivation is None and not (proposals is not None and proposals.entries):
         if os.path.exists(path):
             os.remove(path)
-        return []
+        return list(proposals.all_lines()) if proposals is not None else []
     os.makedirs(os.path.dirname(path), exist_ok=True)
+    text = candidates_text(derivation, proposals)
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
-        fh.write(candidates_text(derivation))
+        fh.write(text)
     lines = []
-    for cid, entry in sorted(json.loads(candidates_text(derivation))["candidates"].items()):
+    for cid, entry in sorted(json.loads(text)["candidates"].items()):
         if entry["status"] in ("ambiguous", "unmapped"):
             lines.append(COPY_LINE % (cid, entry["status"], entry["reason"], (", first on %s" % entry["page"]) if entry["page"] else "",
                                       CANDIDATES_REL, cid, LOOK_LOCAL_PATH))
-    return lines
+    return lines + (list(proposals.all_lines()) if proposals is not None else [])
 
 
 def served_problems(local, view):

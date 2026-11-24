@@ -4,9 +4,11 @@ site, what the effective look's entry for its target makes the build print. Ever
 here, and with no entry for its target (`reads` absent or `{}`) each answer is what 0.6.0 read (`ReadsDefaultsAreBase`).
 
     entry(look, target)                      the look's `Spec` for the target, or None
-    slot(look, target, lookup, builtins)     a slot's value: the entry's first source that gives a non-empty value (as
+    slot(look, target, lookup, builtins, default)   a slot's value: the entry's first source that gives a non-empty value (as
                                              text, through `frontmatter.meta_text`), else the row's default chain
-                                             exactly as 0.6.0 read it (the raw value), else None (the caller's `then`)
+                                             exactly as 0.6.0 read it (the raw value), else None (the caller's `then`). A row
+                                             that carries a `setting` (0.8.0: `kicker.wrap.text`, `cardKicker`) has no chain of
+                                             its own: the chain is the caller's `default`, the key(s) the setting names
     rows(look, target, meta, keys)           the keys of a rows target that print: those `meta` holds, less each whose
                                              value equals the `unless` key's (NFC, whitespace squashed)
     choice(look, target, lookup, count, where)   the entries (indices from 0, in the order picked) a choice target sends
@@ -50,11 +52,17 @@ def _value(source, lookup, builtins):
     return lookup(source)
 
 
-def slot(look, target, lookup, builtins=None):
+def slot(look, target, lookup, builtins=None, default=None):
     """The value of a slot target, or None when neither the entry nor the default chain gives one (the caller then
     prints what 0.6.0 prints: the word Video, the excerpt, the refusal of a required key). An entry's value is text (a
-    list joined, a boolean yes or no); the default chain's is the raw value, as 0.6.0 handed it on."""
+    list joined, a boolean yes or no); the default chain's is the raw value, as 0.6.0 handed it on. A row with a `setting`
+    reads `default` (a tuple of keys, the caller's; None is no chain) in place of the row's own empty one; a row without
+    one takes no `default` (a fault in the caller, raised)."""
     _kind(target, SLOT)
+    row = READS[target]
+    if default is not None and not row["setting"]:
+        raise KeyError("reads %s has no setting, so it takes no caller default chain; this is a fault in site-studio: update "
+                       "the plugin, and report it on the plugin's GitHub issues page if it persists" % target)
     spec = entry(look, target)
     for src in (spec.sources or ()) if spec is not None else ():
         v = _value(src, lookup, builtins)
@@ -62,7 +70,7 @@ def slot(look, target, lookup, builtins=None):
             text = frontmatter.meta_text(v)
             if text.strip():
                 return text
-    for src in READS[target]["default"]:
+    for src in ((default or ()) if row["setting"] else row["default"]):
         v = _value(src, lookup, builtins)
         if v:
             return v

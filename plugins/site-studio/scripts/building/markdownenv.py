@@ -2,7 +2,12 @@
 
 0.7.0 (design-adopt-ownership-line sections 6.2 and 6.4): the environment answers the two `reads` targets read inside a
 body (`video_title`, `tile_accent`, each from the front matter of the page whose body it is), and a reference card fills
-`{{usedBy}}` where the part it renders through places it (`used_by_html`), from the pre-pass `references.used_by`."""
+`{{usedBy}}` where the part it renders through places it (`used_by_html`), from the pre-pass `references.used_by`.
+
+0.8.0 (design-adopt-local-reach section 1.3, G3): the card's `site` part prints through the `reads` target
+`reference-card.site.text` (`site_text`; with no entry, the reference's `site` as before), a card fills `{{author}}` where its
+part places it (`author_html`, through the optional part `reference-card.author`), and `used_by_html` fills `{{cardTitle}}`
+where the `used-by` part places it."""
 
 import itertools
 import posixpath
@@ -78,16 +83,37 @@ class _MarkdownEnv(object):
         if ref.card_path:       # design-movement-view section 5: `imageAlt` (else "") and `imagePosition`, schema-5 keys
             alt, position = pictures.reference_companions(ref)
             img = self.img_tag(ref.card_path, alt or "", from_out, out_path=self._card_out(ref), focus=position)
-        site = self.r("reference-card", "site", {"text": d["site"]}) if d.get("site") else ""
+        text = self.site_text(d)
+        site = self.r("reference-card", "site", {"text": text}) if text else ""
         desc = self.r("reference-card", "description", {"text": d["description"]}) if d.get("description") else ""
         role = self.r("reference-card", "role", {"text": d["role"]}) if d.get("role") else ""
         values = {"url": d["url"], "image": img, "title": d["title"], "site": site, "description": desc, "role": role}
         construct, part = self.ref_card_part()
         if looks.places(construct, part, "usedBy", self.look):     # 0.7.0: given only where placed (derive reads values)
             values["usedBy"] = self.used_by_html(name, from_out)
+        if looks.places(construct, part, "author", self.look):     # 0.8.0: the same rule
+            values["author"] = self.author_html(d)
         card = self.r("reference-card", "wrap", values)
         # a role line is a schema-4 part: the page that prints one links the schema-4 stylesheet the look names
         return (self.assets(from_out, "reference-card") if role else "") + card
+
+    def site_text(self, data):
+        """What the card's `site` part prints (`reference-card.site.text`, 0.8.0): the look's entry read from the reference's own
+        keys, `@kind` being the site's word for the reference's `kind` (`references.kind_word`; asked only when an entry names
+        it); with no entry the reference's `site`, as 0.7.0 read it. None when nothing gives text, and the card has no site part."""
+        spec = readsources.entry(self.look, "reference-card.site.text")
+        builtins = None
+        if spec is not None and "@kind" in (spec.sources or ()):
+            builtins = {"@kind": references.kind_word(self.look, data.get("kind"))}
+        return readsources.slot(self.look, "reference-card.site.text", data.get, builtins)
+
+    def author_html(self, data):
+        """`{{author}}` (0.8.0): the optional part `reference-card.author` filled with the reference's `author`; "" for a
+        reference with none (the person's own key: `capture.py` never writes it)."""
+        author = data.get("author")
+        if not isinstance(author, str) or not author.strip():
+            return ""
+        return self.r("reference-card", "author", {"text": author.strip()})
 
     def _card_out(self, ref):
         return references.card_out(ref, self.cfg)
@@ -109,8 +135,10 @@ class _MarkdownEnv(object):
         piece = found.get(name)
         if piece is None:
             return ""
-        return self.r("reference-card", "used-by", {"title": piece.title, "url": rel_link(
-            from_out, "%s/%s/index.html" % (piece.portfolio, piece.slug))}, piece.source)
+        values = {"title": piece.title, "url": rel_link(from_out, "%s/%s/index.html" % (piece.portfolio, piece.slug))}
+        if looks.places("reference-card", "used-by", "cardTitle", self.look):     # 0.8.0: given only where placed
+            values["cardTitle"] = references.card_title(piece)
+        return self.r("reference-card", "used-by", values, piece.source)
 
     def page_meta(self, source):
         """The front matter of the page whose body is `source` (a piece, the home, about or resume page); {} for any

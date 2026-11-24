@@ -12,6 +12,7 @@ from configschema.configkeys import (
     CANON_ORDER,
     ENGINE_MARKER,
     RESUME_KEYS,
+    RESUME_TITLE_FORMS,
     WORK_KEYS,
 )
 from configschema.diagnostics import SiteConfigError
@@ -23,7 +24,7 @@ from configschema.workcheck import validate_portfolio_settings
 def canonical_text(cfg, files=None, interpretations=None, at_least=None, look_needs=None):
     """The one canonical form of a config: schema order, indent 2, one trailing LF. It writes the
     LOWEST schema that holds the site (`required_schema(cfg, files)`) and only that schema's keys:
-    `siteKind` only when it is not `portfolio`, `labels` only when non-empty, `featuredFrom` only
+    `siteKind` only when it is not `portfolio`, `labels` only when non-empty, `resume.titleForm` only when "page", `nav.labels` only when it names a label, `featuredFrom` only
     when `flags`, and each schema-6 top-level key only when it is not its default (`SiteConfig.to_dict`; `featuredView`
     "flat" and `titleSeparator` " | " are written away), so a schema-5 config writes what 0.5.x wrote. A `hub` or `custom` config leaves out `work` and `resume` when they hold
     nothing. `files` is the tree the caller holds (None: no tree feature is known); when it is given,
@@ -35,7 +36,12 @@ def canonical_text(cfg, files=None, interpretations=None, at_least=None, look_ne
     d["work"] = dict((k, d["work"][k]) for k in WORK_KEYS if k in d["work"])
     if d["resume"] is not None:
         d["resume"] = dict((k, d["resume"][k]) for k in RESUME_KEYS
-                           if k in d["resume"] and not (k == "paper" and d["resume"][k] is None))
+                           if k in d["resume"] and not (k == "paper" and d["resume"][k] is None)
+                           and not (k == "titleForm" and d["resume"][k] == RESUME_TITLE_FORMS[0]))   # schema 8: written away
+    if d.get("nav"):                                    # schema 8: `nav.labels` empty is the default, written away
+        d["nav"] = dict((k, v) for k, v in d["nav"].items() if not (k == "labels" and not v))
+        if not d["nav"]:
+            del d["nav"]
     if cfg.siteKind != "portfolio":
         if cfg.work == validate_portfolio_settings({}, "work"):
             del d["work"]

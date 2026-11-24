@@ -9,14 +9,19 @@ and the `<stem>-NNNw.<ext>` naming) are published at their own paths too, and `i
 `image` is a schema-4 key (`siteconfig.V4_REFERENCE_KEYS`; a tree below schema 4 refuses it when its content is read), so
 the `image` branch below cannot run for a tree an earlier release accepted.
 
+0.8.0 (design-adopt-local-reach section 1.3, G3): `card_title` (the using piece's name on a `{{cardTitle}}` of the `used-by` part)
+and `kind_word` (what the `reads` built-in `@kind` prints: the text of the site's own `reference-card.kind-<kind>` part).
+
 Schema 6 (design-adopt-parity-2 section 4.6): `mediaPaths.references` places a card and its copies under the reference's
 `media/` by its pattern (`building.mediapaths`); a card it cannot place refuses the build, naming it. `sizeCopies:
 any-format` lets a `.wNNN` copy carry another raster extension (`SIZE_COPY_EXTS`) than its original. Neither key is held
 by a tree 0.5.x accepts (both are schema-6 reasons), and without them every function here is 0.5.x's.
 """
+import html
 import posixpath
 import re
 
+import looks
 from configschema.configkeys import SIZE_COPY_EXTS
 from contentmodel.grammar import _REFLINE
 
@@ -91,3 +96,20 @@ def used_by(model):
                 if m:
                     out.setdefault(m.group(1), piece)
     return out
+
+
+def card_title(piece):
+    """`{{cardTitle}}` of `reference-card.used-by` (0.8.0, G3): the using piece's `shortTitle`, else its `title`. A function of
+    its own so `markdownenv.used_by_html` calls it only where a look places the slot."""
+    return piece.card_title
+
+
+def kind_word(look, kind):
+    """`@kind` of `reference-card.site.text` (0.8.0, G3, owner decision O-2 (a)): the literal text of the site's own part
+    `reference-card.kind-<kind>`, its entities read as the characters they name (the value prints through a text slot), or None
+    when the look writes no part for that kind: the plugin holds no word of its own. `kind` is free text in a `reference.json`,
+    so a hand-written `podcast` names no part and gives None."""
+    if not isinstance(kind, str):
+        return None
+    own = looks.optional_part("reference-card", "kind-%s" % kind, look)
+    return None if own is None else html.unescape(own)

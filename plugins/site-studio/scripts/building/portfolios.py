@@ -14,6 +14,26 @@ from building.outcomes import BuildError
 from building.tokens import rel_link
 
 
+def card_teaser_html(builder, piece):
+    """A card's `teaser` slot: the `card.teaser` part through `card.teaser.text` (the look's `reads` entry, else the piece's
+    `teaser`), "" for a piece with no text. Extracted from `card_html` unedited (0.8.0): the roles card's `{{teaser}}` (design-adopt-
+    local-reach section 1.2, dev #1038) calls this same function, `views.py` by name, for the group's newest piece."""
+    text = readsources.slot(builder.look, "card.teaser.text", piece.meta.get)       # 0.7.0 `reads`; else `teaser`
+    return builder.r("card", "teaser", {"text": text}, piece.source) if text else ""
+
+
+def card_meta_html(builder, piece, pf):
+    """A card's `meta` slot: the `card.meta` part over the rows of the piece's own portfolio's `cardMeta` that print
+    (`card.meta.text`'s `unless`), with the `labels.meta` names unless `cardLabels` is false; "" when no row prints. Extracted from
+    `card_html` unedited (0.8.0), as `card_teaser_html` is: the roles card's `{{meta}}` calls it with the newest piece's portfolio."""
+    names = pf.settings["labels"]["meta"]
+    labelled = pf.settings.get("cardLabels", True)      # schema 4 `cardLabels: false`: values only on a card
+    cm = [("%s: %s" % (names[k], frontmatter.meta_text(piece.meta[k])) if (k in names and labelled)
+           else frontmatter.meta_text(piece.meta[k]))
+          for k in readsources.rows(builder.look, "card.meta.text", piece.meta, pf.settings["cardMeta"])]
+    return builder.r("card", "meta", {"text": " \u00b7 ".join(cm)}, piece.source) if cm else ""
+
+
 class _Portfolios(object):
     # ---- cards
     @staticmethod
@@ -69,16 +89,10 @@ class _Portfolios(object):
     def card_html(self, piece, from_out):
         to = "%s/%s/index.html" % (piece.portfolio, piece.slug)
         pf = self.model.portfolio(piece.portfolio)         # the piece's OWN portfolio: every trigger is read from it
-        picture = pictures.card_picture(self, piece, pf.settings)     # design-movement-view section 5: `cover` unless a trigger says otherwise
+        picture = pictures.card_picture(self, piece, pf.settings, pictures.CARD_IMAGE_TARGET)     # design-movement-view section 5: `cover` unless a trigger or (0.8.0) a `reads` entry says otherwise
         img = picture.html(self, from_out) if picture else ""
-        text = readsources.slot(self.look, "card.teaser.text", piece.meta.get)       # 0.7.0 `reads`; else `teaser`
-        teaser = self.r("card", "teaser", {"text": text}, piece.source) if text else ""
-        names = pf.settings["labels"]["meta"]
-        labelled = pf.settings.get("cardLabels", True)      # schema 4 `cardLabels: false`: values only on a card
-        cm = [("%s: %s" % (names[k], frontmatter.meta_text(piece.meta[k])) if (k in names and labelled)
-               else frontmatter.meta_text(piece.meta[k]))
-              for k in readsources.rows(self.look, "card.meta.text", piece.meta, pf.settings["cardMeta"])]
-        meta = self.r("card", "meta", {"text": " \u00b7 ".join(cm)}, piece.source) if cm else ""
+        teaser = card_teaser_html(self, piece)
+        meta = card_meta_html(self, piece, pf)
         position = self.card_position(piece, pf, from_out)        # "" and no count when the effective card.wrap lacks it
         own = {"position": position} if looks.places("card", "wrap", "position", self.look) else {}
         return self.r("card", "wrap", dict(own, **{"url": rel_link(from_out, to), "image": img, "title": piece.card_title,

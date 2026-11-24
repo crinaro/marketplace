@@ -6,7 +6,8 @@ links its piece and shows, in the look's `steps-view.item` order:
     image    the picture, alt and position of section 5's step rule (`pictures.step_picture`: tileImage, photo, cover)
     number   its place in that order, from 1, printed as two digits (`07`; three or more as they are). The order is the
              pieces that build: a publish build loads no draft, so a draft is never counted there
-    kicker   the value of the key `cardKicker` names, under that trigger (a list joined with ", ")
+    kicker   the value of the key `cardKicker` names, under that trigger (a list joined with ", "); 0.8.0: or what the look's
+             `reads` entry for `kicker.wrap.text` gives (`@portfolio`, `@group`, a key), which is itself a trigger
     title    `shortTitle`, else `title`; `fullTitle` is the piece's own `title` (step G, O4a: no default part holds it)
     role     `tileRole`, else `role` (a list joined with " / ", or with the site's own `steps-view.role-sep` literal
              when its look writes one: step G, O2), else none
@@ -27,7 +28,7 @@ from contentmodel.keytables import active_triggers
 
 import looks
 
-from building import pictures
+from building import pictures, readsources
 
 
 def step_number(place):
@@ -41,24 +42,65 @@ def piece_triggers(builder, piece):
     return active_triggers(builder.model.portfolio(piece.portfolio).settings)
 
 
-def kicker(builder, piece, out, triggers=None):
-    """The `kicker` construct for `piece`, with the link to `schema-5.css`: the value of the key its own portfolio's
-    `cardKicker` names (a list joined with ", "). "" when that trigger is off or the piece has no such key."""
+KICKER = "kicker.wrap.text"        # the `reads` target of the kicker line (0.8.0, design-adopt-local-reach section 1.4)
+
+
+def kicker_triggers(builder, piece, triggers=None):
+    """The triggers the kicker is read under: `piece_triggers`, plus `cardKicker` when the effective look's `reads` holds an
+    entry for `kicker.wrap.text` (0.8.0: the entry is itself the trigger, so a portfolio with no `cardKicker` prints the
+    entry's sources, as `{{kicker}}` is gated on that trigger, `looks.gate`). With no entry this is `piece_triggers`."""
     triggers = piece_triggers(builder, piece) if triggers is None else triggers
+    if "cardKicker" not in triggers and readsources.entry(builder.look, KICKER) is not None:
+        return triggers | {"cardKicker"}
+    return triggers
+
+
+def group_label(pf, piece):
+    """What the built-in `@group` is for `piece`: the label of its group (`labels.groups[value]`, else the value), as a
+    grouped index prints it (`grouping.groups_html`); None without `groupBy` or when its value is outside `groups`
+    (`grouping.group_sections` leaves such a piece out of every group)."""
+    st = pf.settings
+    value = piece.meta.get(st.get("groupBy")) if st.get("groupBy") else None
+    if value is None or value not in st.get("groups", ()):
+        return None
+    return st.get("labels", {}).get("groups", {}).get(value, value)
+
+
+def kicker_text(builder, piece):
+    """The text of the kicker line of `piece`, or "" when nothing gives one (the line is then not printed). The entry's
+    sources (`@portfolio`: the portfolio's `label`, as the nav prints it; `@group`: `group_label`) are read first; else
+    the key the piece's own portfolio's `cardKicker` names (a list joined with ", "), exactly what 0.7.0 read."""
+    pf = builder.model.portfolio(piece.portfolio)
+    key = pf.settings.get("cardKicker")
+    got = readsources.slot(builder.look, KICKER, piece.meta.get,
+                           {"@portfolio": pf.settings["label"], "@group": group_label(pf, piece)}, (key,) if key else ())
+    if got is not None:
+        return frontmatter.meta_text(got)
+    if key and readsources.entry(builder.look, KICKER) is None:      # 0.7.0 printed a value of 0 or false; `slot` skips one
+        value = piece.meta.get(key)
+        if not value and value is not None and value != [] and value != "":
+            return frontmatter.meta_text(value)
+    return ""
+
+
+def kicker(builder, piece, out, triggers=None):
+    """The `kicker` construct for `piece`, with the link to `schema-5.css`: `kicker_text` (the key its own portfolio's
+    `cardKicker` names, or what the look's `reads` entry for `kicker.wrap.text` gives; a list joined with ", "). "" when
+    neither trigger is on or nothing gives a text."""
+    triggers = kicker_triggers(builder, piece, triggers)
     if "cardKicker" not in triggers:
         return ""
-    value = piece.meta.get(builder.model.portfolio(piece.portfolio).settings["cardKicker"])
-    if value is None or value == [] or value == "":
+    text = kicker_text(builder, piece)
+    if not text:
         return ""
-    return builder.assets(out, "kicker") + builder.r("kicker", "wrap", {"text": frontmatter.meta_text(value)},
-                                                       piece.source)
+    return builder.assets(out, "kicker") + builder.r("kicker", "wrap", {"text": text}, piece.source)
 
 
 def kicker_slot(builder, construct, part, piece, out):
     """The GATED `kicker` slot of an existing part (`card.wrap`, a roles card, a showcase or home showcase tile; rule
-    L3a): `kicker`'s markup when the piece's own portfolio holds `cardKicker`, else "". The asset link is made only
-    when the slot is filled, so no page of a tree without the trigger links `schema-5.css`."""
-    triggers = piece_triggers(builder, piece)
+    L3a): `kicker`'s markup when the piece's own portfolio holds `cardKicker` (or the look reads `kicker.wrap.text`), else
+    "". The asset link is made only when the slot is filled, so no page of a tree without the trigger links `schema-5.css`."""
+    triggers = kicker_triggers(builder, piece)
     if "cardKicker" not in triggers:
         return ""
     return looks.gate(construct, part, "kicker", triggers, kicker(builder, piece, out, triggers))

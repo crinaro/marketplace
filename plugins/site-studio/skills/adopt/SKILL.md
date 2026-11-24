@@ -96,6 +96,10 @@ build will refuse` line as well.
 and the inventory shows that section. Where it has no label (another portfolio, a piece name, no `work.label`) or the
 token sits inside another tag or anchor, it is left as written and the inventory prints a `step for you` line: read
 that line to the person, who writes the anchor by hand. It is never listed as converted.
+**Inventory has no copy of the old pages**, so a wrap it cannot check against an old page (a bare token directly
+before a `{{#page:...}}` section, say) is listed under "page sections that wait on parity" (`sectionsWaitingOnParity`
+in `--json`), never as "adopt will write". `adopt.py parity` writes the wrap only where the old page holds exactly that
+anchor, and otherwise leaves the token listed. Read that list to the person as not yet decided.
 
 Record each decision as the person makes it:
 
@@ -291,6 +295,31 @@ a heading in a page's body is written at (`blocks.headings`); where each media f
 (`mediaPaths.<folder>`, for `references`, `home` and `about`), and a size copy in another format
 (`sizeCopies`); and the old site's own pages served as it wrote them (`carried`, below).
 
+From 0.8.0 adopt also measures, each a schema-8 key: the menu's own words for the about and resume pages, read
+from the old menu (`nav.labels.about`, `nav.labels.resume`; written only when the old word is not the plugin's
+`About` or `Resume`), measured on every page's menu; and whether the resume page's `<title>` leads with that menu
+word rather than the resume's own title (`resume.titleForm`: `"page"`), measured on the resume page.
+
+- **A per-portfolio value adopt cannot write.** A setting that lives in a portfolio's `page.md` (a sort order, say) has
+  no place to go when a portfolio other than `work` has no `content/<portfolio>/page.md`. The row then reads `not
+  written: needs content/<p>/page.md with <key>: <value>; the default stays`, never "no candidate changes what a
+  visitor sees"; create the page.md with that key, or leave it. For `work`, a key `site.json`'s `work` object cannot
+  hold (`sort`, say) is written into a new `content/work/page.md` holding only that key when `work` has none.
+- **`workKeys: all`** copies the work portfolio's `meta` and `cardMeta` keys to the other portfolios, except a key the
+  build already shows there itself (`role` under the steps view or `pieceRoles`); the notes name each key it left out.
+- **The candidates file.** The file `.site-studio/look-candidates.json` never holds one instance's
+  value as fixed text: where the old instances differ, the part carries the slot their own values equal, or the flag
+  `{{?differs: a | b}}`. The build refuses the flag by part name, so a copy of it cannot reach a page.
+- **`reads` entries (0.8.0).** `adopt.py parity` also proposes measured `reads` entries into that file, for the three
+  picture places, the kicker line (`kicker.wrap.text`) and `@kind` with the `kind-*` words, each only when it leaves
+  strictly fewer visible differences than the build without it. A line reads `reads.<target>: proposed -- N fewer
+  visible difference(s) on M page(s); copy it into site/looks/local.json`; a target adopt did not try says why
+  (`not proposed: build budget`, at most nine builds a run). **Adopt writes none of it into `site/looks/local.json`:
+  the person copies an entry and commits it** (see the `look` skill). Where `cardImage` is a tie, the row names the
+  picture entries that settle it.
+- **An entry of the person's that the build refuses without** (a `reads` entry whose removal makes the build refuse,
+  such as the roles view's `employer`) is measured on every page it renders on, and its row says "the build refuses
+  without it" in place of "derive has no reading of it".
 - **A count's word.** Which word a group's count prints with is the person's entry in
   `labels.counts`, never a rule of the plugin (owner decision 4). Where the words cannot be written
   (the portfolio's groups are listed in its `page.md`, and the groups use different words), the count

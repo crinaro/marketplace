@@ -141,7 +141,7 @@ def derive_command(repo, build_dir=None, url=None, owned_host=None, name=DEFAULT
     env.say("wrote %s (%d construct(s); structure and your own literal text)" % (target, len(parsed.constructs)))
     if site_json is not None:
         addresses.write_bytes(top, "site/site.json", site_json.encode("utf-8"))
-        env.say("wrote site/site.json: %s" % _schema_line(site_json, target))
+        env.say("wrote site/site.json: %s" % _schema_line(site_json, target, look_needs(written)))
     if lits:
         env.say("literal words this look carries (your own text, kept as the page had it):")
         for cid, pn, t in lits:
@@ -240,8 +240,9 @@ def use_command(repo, source, accept_literals=False, env=None):
     d = cfg.to_dict()
     d["look"] = target
     d["schema"] = max(4, cfg.schema)          # a `look` key is a schema-4 key; the writer then holds the schema the tree needs
+    needs = look_needs(new)
     site_json = canonical.canonical_text(model.parse_data(d), new, grammar.interpretation_reasons(new), at_least=4,
-                                         look_needs=look_needs(new))
+                                         look_needs=needs)
     new["site/site.json"] = site_json.encode("utf-8")
     acc = running.accept(dict((k, v) for k, v in new.items() if k.startswith(("site/", "content/"))))
     if acc.problems:
@@ -272,7 +273,7 @@ def use_command(repo, source, accept_literals=False, env=None):
         env.say(line)
     env.say("site.json: look is %s" % target)
     if model.parse_text(site_json).schema > max(4, cfg.schema):
-        env.say("site.json: %s" % _schema_line(site_json, target))
+        env.say("site.json: %s" % _schema_line(site_json, target, needs))
     env.say("nothing is committed: stage these paths with git add, then commit: %s" % " ".join(wrote + placed))
     return EXIT_OK
 
@@ -305,10 +306,14 @@ def _derived_site_json(top, files, cfg, target, text):
     return site_json
 
 
-def _schema_line(site_json, target):
-    """What a writer says when the look raised the schema: the schema now written and why, in one line."""
-    return ("schema %d, because the site carries a look that needs site-studio 0.5.0 (%s); an older site-studio says "
-            "to update" % (model.parse_text(site_json).schema, target))
+def _schema_line(site_json, target, needs):
+    """What a writer says when the look raised the schema: the schema now written and why, in one line. `needs` is the
+    `{repo path: release}` of the tree's looks (`look_needs`): the line names the release the look at `target` needs to be
+    read, not a fixed one (a look using 0.8.0 grammar says 0.8.0; the literal 0.5.0 it once held misled a person who then
+    updated to a release that still refused the tree). A path `needs` lacks falls back to the newest of them."""
+    release = needs.get(target) or max(needs.values(), key=looks.version_tuple)
+    return ("schema %d, because the site carries a look that needs site-studio %s (%s); an older site-studio says "
+            "to update" % (model.parse_text(site_json).schema, release, target))
 
 
 def _prewrite(cfg, files):

@@ -10,7 +10,7 @@ import views
 from contentmodel.errors import ContentError
 from contentmodel.links import esc
 
-from building import grouping, homeorder
+from building import grouping, homeorder, pagebase
 from building.outcomes import BuildError
 from building.tokens import rel_link
 
@@ -258,7 +258,7 @@ class _HomePage(object):
         page = self.model.about
         out = "about/index.html"
         meta = page.meta
-        title = meta.get("title") or "About"
+        title = meta.get("title") or pagebase.about_label(self)
         extras = self.page_extras(page, out)
         intro = self.markdown(page.body, page.source, out, posixpath.dirname(page.source), page.first_line)
         desc = meta.get("description") or grammar.plain_excerpt(page.body, grammar=self.grammar) or \
@@ -274,7 +274,7 @@ class _HomePage(object):
     def build_resume(self):
         page = self.model.resume
         out = "resume/index.html"
-        title = page.meta.get("title") or "Resume"
+        title = page.meta.get("title") or pagebase.resume_label(self)
         rs = self.cfg.resume or {}
         body = self.markdown(page.body, page.source, out, posixpath.dirname(page.source), page.first_line,
                              headings=rs.get("headings", "shift"), cards=rs.get("layout", "plain") == "cards")
@@ -290,7 +290,9 @@ class _HomePage(object):
             body = (self.assets(out, "tagline") + self.r("tagline", "wrap", {"text": page.meta["tagline"]},
                                                           page.source) + body)
         links = self.links_html(page.meta.get("links", {}), out, page.source)
-        self.emit_page(out, "resume", page.source, self.full_title(title), title, desc,
+        # `resume.titleForm: "page"` (schema 8): the `<title>` leads with the label the menu prints, the heading stays the title
+        full = self.full_title(pagebase.resume_label(self) if rs.get("titleForm") == "page" else title)
+        self.emit_page(out, "resume", page.source, full, title, desc,
                        self.r("resume", "wrap", {"title": title, "links": links, "download": link, "body": body,
                                                  "contact": contact}),
                        lastmod_src=page.source)

@@ -13,6 +13,12 @@ PLUGIN_ASSETS = {"css": "site-studio/blocks.css", "js": "site-studio/video.js",
 
 JUNK_NAMES = (".DS_Store", "Thumbs.db")
 
+# The words the nav prints for the built-in About and Resume pages, and name a page that has no `title` of its own, when the
+# site's `nav.labels` (schema 8, design-adopt-local-reach section 1.6) names none. The one definition: `pagebase.resume_label` and
+# `about_label` read it, and adopt's `tokens.RESUME_LABEL` is this value (S2).
+RESUME_MENU_LABEL = "Resume"
+ABOUT_MENU_LABEL = "About"
+
 HTML_EXTS = (".html", ".htm")
 
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".gif", ".webp")

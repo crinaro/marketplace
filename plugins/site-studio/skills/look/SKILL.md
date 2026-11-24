@@ -72,10 +72,32 @@ site-studio".
   and writes its new reading only for constructs it wrote itself. To hand a construct back to derive, delete it.
   After `derive`, commit `.site-studio/derived-look.json` with the look, as its closing line says: that file is how
   the next derive knows which constructs are its own.
-- **A key map, `reads`,** maps a place the look prints to the front-matter keys it reads, first value wins:
-  `"reads": {"video-embed.wrap.title": ["@caption", "videoName"]}`. The places are a closed list (the installed
-  `reference/content-model.md`, "Your own look"); an unknown one is refused with the list. With no entry a place
-  reads what it always did.
+- **A key map, `reads`,** maps a place the look prints to the sources it reads, first value wins:
+  `"reads": {"video-embed.wrap.title": ["@caption", "videoName"]}`. A source is a front-matter key, a word the place
+  lists (`@caption`, `@first`) and, from 0.8.0, a key of a reference or a picture key. The places are a closed list
+  (the installed `reference/content-model.md`, "Your own look"); an unknown one is refused with the list. With no
+  entry a place reads what it always did. The 0.8.0 places:
+  - `kicker.wrap.text`: the kicker line's words; `@portfolio` is the portfolio's label, `@group` the piece's group
+    heading; with no entry, the key `cardKicker` names.
+  - `reference-card.site.text`: what a reference card's `site` part prints; `@kind` prints the word the look writes in
+    the part `reference-card.kind-page`, `kind-article` or `kind-video` (text only; the site's own words, the plugin
+    prints none), and nothing for a kind with no part.
+  - `card.wrap.image`, `home-showcase.item.image`, `roles-view.item.image`: which picture each place shows, an ordered
+    list of `cover`, `photo` and `tileImage`, so a home tile and a card can show different pictures of one piece.
+    With no entry each place picks what `cardImage` gives it.
+- **New slots (0.8.0).** `{{teaser}}` and `{{meta}}` on a roles card (`roles-view.item`, `item-current`), filled as a
+  grid card's are and empty without a value; `{{author}}` on a reference card (`reference-card.wrap`, `feed.item`,
+  `home-samples.item`), printed through the optional part `reference-card.author`, whose slot is `{{text}}`; and
+  `{{cardTitle}}` in `reference-card.used-by`, the using piece's short title. A value is computed only where the look
+  places its slot. A look that uses any of these, or the 0.8.0 places above, raises the site to schema 8 (run
+  `build.py raise-schema --repo . --to 8` first, as for 7); a copy of the plugin older than 0.8.0 then says "update
+  site-studio". `look.py use sample-resume` writes three `kind-*` words of its own, so it needs `--accept-literals`.
+- **On an adopted site, adopt proposes these entries.** `adopt.py parity` measures the pictures, the kicker and the
+  `@kind` words against the old pages and writes each entry that leaves fewer visible differences into
+  `.site-studio/look-candidates.json` under `reads`, with its measured line. Copy an entry into
+  `site/looks/local.json` yourself and commit; adopt never writes that file. A value the old pages print differently
+  from one instance to the next is never written there as a literal: it is a slot, or the flag
+  `{{?differs: a | b}}`, which the build refuses by name until it is replaced.
 - **Named blocks and views, `named`,** give a block or a view the site's own name over one plugin block or view's data:
   `"named": {"t-ledger": {"like": "tiles", "parts": {...}}}`, then `:::t-ledger` in content, or `view: t-ledger`
   for a view. The parts are the base's parts and slots; nothing else is the site's to define.

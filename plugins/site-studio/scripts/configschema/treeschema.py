@@ -1,4 +1,4 @@
-"""treeschema: which schema a site needs. The schema-2, 3, 4, 5 and 6 reasons a tree can hold, `required_schema` (the one
+"""treeschema: which schema a site needs. The schema-2, 3, 4, 5, 6, 7 and 8 reasons a tree can hold, `required_schema` (the one
 place that says), `tree_schema_problems` and `check_tree_schema` (the build's refusal of a file whose schema is
 below what its tree needs) and `kind_conflicts`. K reasons are keys older plugins refused; I reasons are new
 readings of text they accepted (see the `siteconfig.py` docstring)."""
@@ -25,6 +25,9 @@ from configschema.configkeys import (
     V6_TOP_KEYS,
     V7_TOP_KEYS,
     V6_WORK_KEYS,
+    RESUME_TITLE_FORMS,
+    V8_NAV_KEYS,
+    V8_RESUME_KEYS,
 )
 from configschema.diagnostics import SiteConfigError, make_problem
 from configschema.frontmatter import (
@@ -388,6 +391,37 @@ def schema_7_reasons(cfg, files=None, look_needs=None):
     return out
 
 
+_EFFECT_LOOK8 = "site-studio 0.7 would refuse the look as unknown"
+_EFFECT_K8 = "site-studio 0.7 would refuse the key as unknown"
+NEEDS_080 = "0.8.0"
+
+
+def schema_8_reasons(cfg, files=None, look_needs=None):
+    """Every reason this site needs schema 8 (design-adopt-local-reach section 2.1), as [Reason(..., "K")]: a key, slot, part
+    or `reads` target 0.7.0 refuses, so no tree 0.7.0 accepted holds one and raising a tree from 7 to 8 changes no output.
+    The rows: `resume.titleForm` and `nav.labels` (`V8_RESUME_KEYS`, `V8_NAV_KEYS`; each stored only when not its default, so
+    a tree holding the default holds no reason), and a look the build READS that needs 0.8.0 (the file `look` names and the file
+    `lookLocal` names, and no other, as `schema_7_reasons`; a look file no key names is not read, so it is not a reason).
+    NOT a reason: a key a new `reads` entry names (`cardMeta`, `cardKicker`, `cardImage`), nor the shipped samples. `files`
+    and `look_needs` as `schema_7_reasons`."""
+    if files is not None and look_needs is None:
+        raise ValueError("schema_8_reasons(cfg, files) needs look_needs= ({site/looks/<name>.json: release}, from "
+                         "building.lookneeds.look_needs(files)); pass {} only when you know the tree holds no look")
+    out = []
+    for k in V8_RESUME_KEYS:
+        if cfg.resume is not None and cfg.resume.get(k, RESUME_TITLE_FORMS[0]) != RESUME_TITLE_FORMS[0]:
+            out.append(Reason("site/site.json", "sets resume.%s" % k, _EFFECT_K8, None, "K"))
+    for k in V8_NAV_KEYS:
+        if cfg.nav.get(k):
+            out.append(Reason("site/site.json", "sets nav.%s" % k, _EFFECT_K8, None, "K"))
+    read = set(p for p in (getattr(cfg, "look", None), getattr(cfg, "lookLocal", None)) if isinstance(p, str))
+    for path in sorted(look_needs or {}):
+        if (look_needs[path] == NEEDS_080 and path in read and _LOOK_PATH_RE.match(path)
+                and (files is None or path in files)):
+            out.append(Reason(path, "is a look that needs site-studio 0.8.0", _EFFECT_LOOK8, None, "K"))
+    return out
+
+
 def _looks_read(files, look_needs):
     """`look_needs` as given, else {}. Given `files` and no `look_needs`, {} means the looks are NOT scanned (called
     directly, `schema_5_reasons` refuses `files` without it; through here it is not refused). Since 0.5.0 a look can
@@ -398,7 +432,8 @@ def _looks_read(files, look_needs):
 
 
 def required_schema(cfg, files=None, interpretations=None, look_needs=None):
-    """The lowest schema that holds the site: 6 when any schema-6 reason holds (`schema_6_reasons`, a section 3.2 row
+    """The lowest schema that holds the site: 8 when any schema-8 reason holds (`schema_8_reasons`, design-adopt-local-reach
+    section 2.1), 7 when any schema-7 reason holds (`schema_7_reasons`), 6 when any schema-6 reason holds (`schema_6_reasons`, a section 3.2 row
     of design-adopt-parity-2), 5 when any schema-5 reason holds (`schema_5_reasons`, and only a
     section 3.2 row of design-movement-view is one), 4 when any schema-4 reason holds (`schema_4_reasons`), 3 when
     any schema-3 reason holds (`schema_3_reasons`), 2
@@ -410,6 +445,8 @@ def required_schema(cfg, files=None, interpretations=None, look_needs=None):
     if files is not None and interpretations is None:
         raise ValueError("required_schema(cfg, files) needs interpretations= (content.interpretation_reasons"
                          "(files)); pass [] only when you know the tree holds none")
+    if schema_8_reasons(cfg, files, _looks_read(files, look_needs)):
+        return 8
     if schema_7_reasons(cfg, files, _looks_read(files, look_needs)):
         return 7
     if schema_6_reasons(cfg, files, _looks_read(files, look_needs)):
@@ -474,6 +511,13 @@ def tree_schema_problems(cfg, files, look_needs=None):
                                     "raise-schema --to 7`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
                                     "schema 7", "run `python3 build.py raise-schema --to 7`, which lists what "
                                     "the page changes before it writes schema 7", False, r.lineno))
+    if cfg.schema < 8:
+        for r in schema_8_reasons(cfg, files, _looks_read(files, look_needs)):
+            at = "%s:%d:" % (r.where, r.lineno) if r.lineno else r.where
+            out.append(make_problem("%s %s, which needs \"schema\": 8 in site/site.json (run `build.py "
+                                    "raise-schema --to 8`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
+                                    "schema 8", "run `python3 build.py raise-schema --to 8`, which lists what "
+                                    "the page changes before it writes schema 8", False, r.lineno))
     return out
 
 

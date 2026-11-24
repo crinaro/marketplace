@@ -101,7 +101,7 @@ from adoption.candidates import (BUILT_IN_VIEWS, DEFAULTS, VIDEO_EMBED, candidat
                                  setting_names)
 from adoption import facts, joint, lookkeep
 from adoption.scoring import judge_by_facts, judged_paths, lost_content, one_build_pages, refusal_line, refusals, score
-from adoption.settings import setting_family
+from adoption.settings import setting_family, unwritten_reason
 # Moved to `adoption.candidates` and `adoption.scoring` by split_module.py (design-adopt-parity-2 step 1) and still read through this
 # module by the test_choose.py classes, which the move left unedited: re-exports only, never patched here. (`lost_content`, which
 # test_adoption_look_real_sites.py patches on this module, is imported above because `choose` hands it to `lookkeep.keep`.)
@@ -283,6 +283,9 @@ def decide(j, name, cands, others):
         return out.tied(tried, live) if name not in NEVER_TIED and len(live) > 1 else out
     is_default = picked == cands[0] and not isinstance(picked, dict)
     reason = m4.reason if m4 is not None and m4.winner is not None else _reason(name, picked, is_default, snap, partly)
+    unwritten = [unwritten_reason(snap, name, c) for c in cands[1:] if c is not None] if partly == "none" else []
+    if any(unwritten):        # dev #1041: a candidate adopt could not write measures as the default, which is not "measured"
+        reason = "not written: %s; the default stays" % next(u for u in unwritten if u)
     reason += "".join("; %s loses: the plugin's build refuses it (%s)" % (c if isinstance(c, str) else json.dumps(c), w)
                       for c, w in refused)
     out.row = Row(name, picked, "measured", reason)
