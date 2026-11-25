@@ -10,7 +10,7 @@ import json
 
 from contentmodel import keytables  # noqa: E402
 
-from adoption.accounting import cmd_file, no_landing_lines, no_landing_rows
+from adoption.accounting import cmd_file, no_landing_lines, no_landing_rows, said_before_apply, stale_line, undisposed_rows
 from adoption.fileacct import measured_folders
 from adoption.keycover import note_lines
 from adoption.base import Refused
@@ -52,24 +52,33 @@ def verb_check(repo, args):
             print(line)
         if size_copy_note(tree):
             print(size_copy_note(tree))
+        _say(said_before_apply(plan))                  # 4.6: the files that will block apply, and the choices parity has not measured
         return 1
     print("adopt ok: %s %s can be converted" % (basis.label(), basis.sha[:7]))
     for line in _conversion_block(tree, data, plan):
         print(line)
     if size_copy_note(tree):
         print(size_copy_note(tree))
+    _say(said_before_apply(plan))
+
+
+def _say(lines):
+    for line in lines:
+        print(line)
 
 
 def verb_inventory(repo, args):
     """`adopt.py inventory`: classify every local file by what it does and write the plan."""
     out = cmd_inventory(repo, args.json)
-    acct = ((_plan_for(repo, _current_base(repo)).get("parity")) or {}).get("accounting")     # N1: what the last `parity` measured
+    plan = _plan_for(repo, _current_base(repo))
+    acct = ((plan.get("parity")) or {}).get("accounting")     # N1: what the last `parity` measured
     if args.json:
         d = json.loads(out)
         d["noLanding"] = [{"path": p, "why": w} for p, w in no_landing_rows(acct)]
+        d["undisposed"] = [{"path": p, "why": w} for p, w in undisposed_rows(acct)]
         out = json.dumps(d, indent=2, default=list)
-    elif no_landing_rows(acct):
-        out += "\n" + "\n".join(no_landing_lines(acct))
+    else:
+        out += "".join("\n" + l for l in (no_landing_lines(acct) if no_landing_rows(acct) else []) + said_before_apply(plan))
     print(out)
 
 
@@ -151,6 +160,7 @@ def verb_folder(repo, args):
         del plan["folders"][name]
         save_plan(repo, plan)
         print("adopt: content/%s: your decision is forgotten; the next `parity` measures it again" % name)
+        _say(filter(None, [stale_line(plan)]))
         return
     if not args.choice:
         raise Refused("say what content/%s is: `adopt.py folder %s source` or `portfolio`, or forget a decision with "
@@ -159,6 +169,7 @@ def verb_folder(repo, args):
     save_plan(repo, plan)
     print("adopt: content/%s -> %s" % (name, "renamed to content/_%s (source material)" % name
                                         if args.choice == "source" else "gets a page.md and is a portfolio"))
+    _say(filter(None, [stale_line(plan)]))
 
 
 def verb_convert(repo, args):
@@ -172,6 +183,7 @@ def verb_convert(repo, args):
     print("adopt: %s will %s" % (args.conversion, "stay as written" if args.keep else
                                  "be converted (it changes what a visitor loads or reads: parity names "
                                  "the page that differs)"))
+    _say(filter(None, [stale_line(plan)]))
 
 
 def verb_kind(repo, args):
@@ -182,6 +194,7 @@ def verb_kind(repo, args):
     print("adopt: the site kind is %s%s" % (args.site_kind, " (the default; site.json will not carry it)"
                                             if args.site_kind == "portfolio" else
                                             " (apply writes siteKind: %s, schema 2)" % args.site_kind))
+    _say(filter(None, [stale_line(plan)]))
 
 
 def verb_parity(repo, args):
@@ -216,8 +229,8 @@ def verb_suggest(repo, args):
 
 
 def verb_file(repo, args):
-    """`adopt.py file PATH DISPOSITION`: the file accounting decision for one file."""
-    print(cmd_file(repo, args.path, args.disposition))
+    """`adopt.py file PATH DISPOSITION | --clear`: the file accounting decision for one file or a folder, or forgetting it."""
+    print(cmd_file(repo, args.path, args.disposition, args.clear))
 
 
 def verb_setting(repo, args):

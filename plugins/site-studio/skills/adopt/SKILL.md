@@ -264,6 +264,41 @@ guessed. A file that cannot be measured (for example, no `node`) blocks, or wait
 Show the person the list by disposition and ask about every file in the last group. To record a
 choice for one file: `adopt.py file <path> archive|draft|keep|engine`.
 
+**Files adopt could not settle (0.9.0).** A file adopt could not test stays **undisposed**, and an undisposed file blocks
+`apply`. Each one now says which it was, in these words: `not tried: the bound of N runs (and N more in groups) was
+reached`, `not tried: the time bound was reached`, `tried, and your builder timed out without it`, `not tested: your
+builder does not run on the unchanged tree`, or `not tested: your builder differs from itself on the unchanged tree`.
+Read the reason to the person: the first two mean adopt ran out of runs or time, the last three mean their own builder
+could not answer.
+
+- **Groups, and what they cost in time.** After its first pass, `parity` tries what is left in groups, and then the files
+  the person kept, each with a bound of its own (32 more runs or 120 seconds). A site that 0.8.0 could not settle, or where
+  the person keeps files, can make `parity` take **up to four minutes longer** (six if their builder hangs), and it prints
+  nothing while it works. **Run `parity` in the background, or with the longest timeout the tool allows**, and tell
+  the person it may take several minutes. A site that settled before takes no longer.
+- **`adopt.py file <path or folder> keep`** works for any tracked file, and `keep` and `archive` take a whole folder (with
+  or without the `/`; one choice is recorded for each file below it, and the count is printed). `draft` and `engine` take
+  one file. **`adopt.py file <path or folder> --clear`** forgets the choice, and a path with none is refused naming the
+  choices there are. A file added later is asked about, and a file that changed on a moved basis loses its choice by name.
+- **A choice newer than `parity` is refused** (a file's, and from the 0.9.0 review any setting, kind, folder or conversion:
+  `adopt.py setting`, `kind`, `folder` and `convert` print the same line). `check` names them, and `apply` (a dry run
+  too) refuses: "your choice for N file(s) is newer than the last `adopt.py parity` ... run `adopt.py parity` again, which
+  measures it". Run `parity` again and then `apply`.
+- **The undisposed block, before `apply`.** `check` and `inventory` (and `inventory --json`, under `undisposed`) and
+  `apply --dry-run` print "N file(s) are undisposed and will block apply:", one line per reason with its count and every
+  file, and the way out: `adopt.py file <path or folder> keep`, then `adopt.py parity`. Read it to the person before
+  anything else; do not wait for `apply` to stop. With no `parity` run on this basis it says "not measured yet: run
+  `adopt.py parity`".
+- **`decisions/` and `BRAND.md`** are the plugin's own files in the dev repo. Adopt keeps them unless the old builder is shown
+  to use them, and never counts them against the site. A nested `README` or licence file is tried like any other, and
+  one it could not test is archived, with the reason "not tried".
+- **What a kept file can and cannot do.** `keep` leaves the file at its path in the dev repo, in the same private repository.
+  It does not hide a loss: a file the old builder uses that the plugin cannot hold stays **no landing spot** and still blocks.
+  If keeping a file would make the plugin's build publish it where the old site had nothing, the file is undisposed:
+  "keeping it would publish it at `<address>`, where your old site has nothing", with two ways out, `archive` it or
+  `--clear`. It is no way around a file the build refuses. And a file that is kept and could not be tested stays where it is,
+  "not measured", and blocks nothing; a visitor-facing loss still shows in parity's comparison of every page.
+
 **Measured settings.** A conversion that picks one value from a short list is a *setting*. adopt
 measures these, in this order: the site's `look`; whether the home page's featured pieces come from each
 piece's `featured: true` (`featuredFrom`); a portfolio's piece order (`sort.<portfolio>`); a nav without
@@ -350,12 +385,63 @@ word rather than the resume's own title (`resume.titleForm`: `"page"`), measured
   derived for each candidate. `live` keeps a video's own address (Vimeo's without `dnt=1`), which is the
   value the look derive finds in the old player, so with it the look maps `videos` and `gallery-video`.
   The key is only the address; whether a player loads with the page is the look's markup.
+- **`blocks.unlistedVideos`** (absent, the default, or `true`; schema 9) is offered only where an old page's player
+  address carries a private code (an unlisted Vimeo link, `vimeo.com/<id>/<code>`) and the converted tree links a Vimeo
+  video, and is judged together with `blocks.videoEmbed`. **Say what it publishes before `apply`'s yes:** with `true` the
+  video's private code goes into the page, where any visitor can read it. Under a `:::videos` row or a gallery video the
+  page's own link already shows it; on a line that holds only the link it is published for the first time. Without it
+  the player shows Vimeo's own notice instead of the video, and every build names each link it left the code out of.
+  The person's word: `adopt.py setting blocks.unlistedVideos true` or `false` (`--clear` forgets it).
+- **`referenceLayout`** is the suggested reference layout. It has its own section below, because every word of it is
+  read to the person first.
 - Each is `apply fixes this` when parity measures no visitor-visible difference, and otherwise `you
   decide`, with the difference named. **Without `node` nothing is measured**: every setting reads `you
   decide: not measured`, and none is filled in with a default; the `look` in particular is never
   guessed. The person may choose a value (`adopt.py setting <name> <value>`; a chosen value is kept and
   never measured, so say that) or forget the choice so the next parity measures it again
   (`adopt.py setting <name> --clear`).
+
+**The suggested reference layout (0.9.0).** For each reference the site holds (`content/references/<name>/reference.json`),
+adopt suggests three plain keys, so the facts sit in their own keys before the site's look changes: `project` (which
+piece it is for), `type` (what it is, such as `Post` or `Film`) and `channel` (where its audience saw it, such as
+`Instagram`). It is part of what `apply` writes **unless the person says no**, and nothing is written they have not
+been shown. Nothing a visitor sees changes: a key prints only where the site's look places its slot, and adopt writes
+the keys only where parity measures that no page gets worse (it usually says "changes no page"). A hub or custom site
+holds no references, so it is offered nothing.
+
+1. `check`, `inventory`, `parity` and `apply --dry-run` each print one block headed `suggested reference layout`. **Read
+   every word in it to the person before `apply`'s yes:** every sure row of each key, every reference named (nothing is
+   cut short), each key marked `written` or `not written` with why, **every distinct `type` and `channel` word, with its
+   count** (`every word: Post (3); Video (1)`), each `you decide` row with the line to add by hand, and each reference adopt
+   could not read (`not read, nothing suggested or written`: a byte order mark, a member named twice, no plain `title`).
+   A `you decide` row is never written, and none blocks `apply`. The words come from the address (`instagram.com/p/...`
+   is an Instagram post) and from the reference's own `kind`, and a link to a file host such as Vimeo or Google Drive
+   gets no `channel`. **Any doubt is the person's, never sure:** the address and the `kind` disagree on the type, `site`
+   or `kind` names another platform, one video is shown by two pieces (in either address form), an address hides where
+   it leads (a backslash, a user part, a share or redirect link), or the site's pages say a language other than English
+   (the `type` words are English).
+2. **Ask before `parity`, or run `parity` again after.** Yes needs no command. No: `adopt.py setting referenceLayout none`.
+   Some: `adopt.py setting referenceLayout project,channel` (any of `project`, `type`, `channel`, with commas). `all` is
+   back to everything and `--clear` forgets the choice, as for any setting. What the person says is kept and never
+   measured away, but it is measured: **a choice made after `parity` (this one or any setting, kind, folder or conversion)
+   makes `apply` refuse until `parity` runs again**, and the block says "not written yet: your choice is newer than the
+   last `adopt.py parity`". Saying no to keys the old pages printed can make parity DIFFERENT: read what it names.
+3. **The cost, said before the yes:** a site with references adopted this way is written at **schema 9**, which an
+   older copy of site-studio on another computer refuses ("update site-studio"). With `none`, or no references,
+   adopt does not raise the site for this.
+4. **It waits while the person's own builder publishes.** Under a parity that is not EQUAL, MARKUP-ONLY or ACCEPTED the
+   keys are not written (their builder may refuse a key it does not know); the block says "written when site-studio
+   takes over". A layout the person chose also waits while parity is DIFFERENT. Until `parity` has run the block says
+   "not measured yet" (with no `node` it never will), and only a layout the person chose is written. When a page would
+   get worse the block says "not written: `<page>` gets worse with the suggested layout", and `adopt.py setting
+   referenceLayout <keys>` writes some of it anyway, which is the person's call.
+5. A key a reference already holds is never changed, a blank one included, so **a blank key keeps one reference out**:
+   the person writes `"channel": ""` in that reference's `reference.json`. Nothing is written for a reference or piece
+   the file accounting archives, or outside the site's own `references` list when it has one.
+6. **The closing list is text to copy.** The block includes the `"references"` text for `site/site.json` that would
+   close the lists to the words in use. Adopt never writes them: a closed list refuses the next new word, so say that
+   before the person copies it.
+7. `apply`'s summary repeats the words it wrote.
 
 **The look.** When the plugin's own markup does not match the old site's, adopt derives a look from the
 old builder's own pages and the converted content (`site/looks/derived.json`, the same work as
@@ -517,8 +603,11 @@ this".
 Run `adopt.py apply --dry-run` first and show the person what it would do. It writes, publishes and
 pushes nothing, and says whether a real `apply` would stop, blocked. Then `adopt.py apply`. **Ask the
 person before you run it, and tell them what it does**: it publishes the converted site (public
-forever), waits for GitHub Pages, archives the old builder and pushes to the dev repo's `main`. The
-plugin's guard then asks once more (see "The guard" below); that one yes covers every step.
+forever), waits for GitHub Pages, archives the old builder and pushes to the dev repo's `main`. Say too, in
+the same ask, what it will write that a visitor cannot see: the words of the suggested reference layout (read
+from the dry run's block, and that it makes the site schema 9) and, if it is on, that `blocks.unlistedVideos`
+puts a video's private code in the page. The plugin's guard then asks once more (see "The guard" below); that
+one yes covers every step.
 
 `apply` runs five steps in one process and says which one it is on:
 
@@ -589,9 +678,10 @@ Configuration the conversion changes, for you to show as a diff:
   mechanical fixes listed under "Problems in what adopt would write", each of which is a line of
   the commit. A meta-refresh page it converted becomes a `redirects` entry, and the kind the person
   confirmed (`hub` or `custom`) becomes `siteKind`. It is written at the lowest schema the converted
-  site needs (up to 6: a measured setting from 0.6.0 is a schema-6 key, which a copy of the plugin
-  older than 0.6.0 on another computer refuses with "update site-studio"), and the inventory says when
-  it is more than 1 and why.
+  site needs (up to 9: a measured setting from 0.6.0 is a schema-6 key, which a copy of the plugin
+  older than 0.6.0 on another computer refuses with "update site-studio", and `blocks.unlistedVideos` or
+  the suggested reference layout makes it schema 9, which a copy older than 0.9.0 refuses the same way), and the
+  inventory says when it is more than 1 and why.
 - **`.site-studio/adopt-parity.json`:** the parity verdict (`EQUAL`, `MARKUP-ONLY`, `ACCEPTED`,
   `DIFFERENT`, `UNVERIFIED` or `NOT APPLICABLE`), the basis commit and each difference, with no date.
   `/site-studio:publish` reads it (see "7. After apply: the publish gate").

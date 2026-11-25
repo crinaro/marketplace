@@ -8,7 +8,7 @@ from configschema.configkeys import V4_PART_FIXED
 
 from contentmodel.errors import ContentError
 from contentmodel.grammar import Fragment, PART_FIXED, _HEADING, _OPEN, _PART_NAME, _lead_kind, _starts_block, block_names, fixed_part_names
-from contentmodel.links import video_embed
+from contentmodel.links import video_embed, vimeo_hash, vimeo_unread
 
 
 class _BlockBase(object):
@@ -24,6 +24,8 @@ class _BlockBase(object):
         self.lone_ref_grid = bool(getattr(env, "lone_reference_grid", False))
         # `blocks.videoEmbed` (schema 4): the env says it; False (absent) is the privacy form, Vimeo's address with `dnt=1`
         self.video_live = bool(getattr(env, "video_embed_live", False))
+        # `blocks.unlistedVideos` (schema 9): the env says it; False (absent) leaves an unlisted Vimeo link's code out of the player's address
+        self.unlisted_videos = bool(getattr(env, "unlisted_videos", False))
         self.in_block = False            # true while a block's own items are rendered (a carousel's slides)
         self.look = getattr(env, "look", None)
         self.asset = getattr(env, "asset", None) or (lambda kind: "")
@@ -200,11 +202,34 @@ class _BlockBase(object):
                                lineno=n, fix="add at least one row inside the block, or remove it")
         return rows
 
+    def video_src(self, url, ln):
+        """`video_embed(url)` as the site asks for it (`blocks.unlistedVideos` sends an unlisted Vimeo link's code) and, for a video link,
+        the build notes about its code (`vimeo_notes`), or None for a link that is no video. The one call every place that reads a video
+        link makes: a `:::videos` row, a gallery video row (through `embed_for`) and a line that holds only the link."""
+        embed = video_embed(url, self.unlisted_videos)
+        if embed is not None:
+            self.vimeo_notes(url, ln)
+        return embed
+
+    def vimeo_notes(self, url, ln):
+        """The notes of design-reference-layout section 2 (dev 1060), given to the env's `note` (an env with none says nothing): one for an
+        unlisted Vimeo link whose code the site does not send, one for a trailing segment or `h` the rule does not read (in either setting).
+        A note names the file and line, never the code."""
+        note = getattr(self.env, "note", None)
+        if note is None:
+            return
+        if not self.unlisted_videos and vimeo_hash(url):
+            note("%s: this unlisted Vimeo link's code is not sent to the player, so the video does not play; set blocks.unlistedVideos "
+                 "to true to send it (it is then on the page)" % self._at(ln))
+        if vimeo_unread(url):
+            note("%s: this Vimeo link has a trailing part (a path segment after the video number, or an h parameter) that is not read as "
+                 "an unlisted video's code, so it is not sent to the player" % self._at(ln))
+
     def embed_for(self, url, ln):
         """The iframe address a video link names, or a refusal naming the line. Vimeo's carries `dnt=1`, unless the site
         says `blocks.videoEmbed: "live"`: then it is the player's own address, as `video_embed` builds it (https, one of
         the three hosts, nothing added), the form a site built elsewhere wrote. Both forms refuse the same links."""
-        embed = video_embed(url)
+        embed = self.video_src(url, ln)
         if embed is None:
             raise ContentError("%s: %r is not a YouTube, Vimeo or public Google Drive link"
                                % (self._at(ln), url), path=self.where, lineno=ln,

@@ -2,7 +2,7 @@
 
 <!-- GENERATED from the tables in scripts/content.py, scripts/siteconfig.py and scripts/build.py. Do not edit by hand: the plugin's maintainers regenerate it, and their tests fail when it and the code disagree. -->
 
-What your site's files may hold, and what the build reads. This page is written from the build's own tables, so it names exactly the keys, tokens, blocks and settings this version knows. Where this page and the build disagree, the build is right, and that is a bug in the plugin to report. A site is schema 1, 2, 3, 4, 5, 6 or 7 (this version reads up to 8); the plugin writes the lowest schema that holds your site, and nothing here changes a site that does not use it.
+What your site's files may hold, and what the build reads. This page is written from the build's own tables, so it names exactly the keys, tokens, blocks and settings this version knows. Where this page and the build disagree, the build is right, and that is a bug in the plugin to report. A site is schema 1, 2, 3, 4, 5, 6, 7, 8 or 9 (this version reads up to 9); the plugin writes the lowest schema that holds your site, and nothing here changes a site that does not use it.
 
 ## Where things live
 
@@ -26,7 +26,7 @@ Top-level keys, in the order the plugin writes them. A key marked schema 2 makes
 
 | key | schema | meaning |
 | --- | --- | --- |
-| `schema` | 1 | which reading of the tree this site uses (1 to 7); the plugin writes the lowest one that holds the site. |
+| `schema` | 1 | which reading of the tree this site uses (1 to 9); the plugin writes the lowest one that holds the site. |
 | `engine` | 1 | the marker that says this file is site-studio's; written for you. |
 | `name` | 1 | your name, as printed on the site. |
 | `siteTitle` | 1 | the site's title, used in page titles. |
@@ -45,6 +45,7 @@ Top-level keys, in the order the plugin writes them. A key marked schema 2 makes
 | `look` | 4 | the markup look the site's generated pages use: a file `site/looks/<name>.json` (schema 4); absent means the plugin's own markup. |
 | `lookLocal` | 7 | your own look layered over `look`, construct by construct: exactly `site/looks/local.json` (schema 7). A construct it holds wins over the same construct in `look`; the build reads no other look file, and neither file is served. |
 | `blocks` | 4 | the settings of the `:::` blocks and of `ref:` lines (keys below): `{"headingLevel": 3}` prints the headings inside a block at h3, `{"loneReferenceGrid": true}` prints a lone `ref:` line inside the reference grid, `{"videoEmbed": "live"}` keeps a video's own address (schema 4; absent is the default). |
+| `references` | 9 | the words your references may use (schema 9; keys below): `types` and `channels` close the words a reference's `type` and `channel` may hold to your own list, and `unprinted` names words that are stored and never printed. Without this key any one line of text is accepted, and `{}` is never written. |
 | `mediaPaths` | 6 | where a folder's media is published (schema 6): an object with any of `references`, `home` and `about`, each a pattern of two to four `/`-separated lower-case names, the last `{file}`, such as `refs/{name}/{file}` (`references` holds `{name}` once) or `media/{file}`. |
 | `sizeCopies` | 6 | `any-format` (schema 6): a size copy may have another raster extension than its original (`.jpg`, `.jpeg`, `.png`, `.webp`, `.avif`). |
 | `carried` | 6 | one to 24 output paths served as you wrote them (schema 6): each is the file `site/carried/<path>`, byte for byte, not token-expanded; `CNAME`, `.nojekyll`, `robots.txt`, `sitemap.xml`, anything under `site-studio/` and a name the publish check never publishes are refused. The publish check holds a carried page to privacy, links, the site's own origin, its path and size, not to site-studio's page form, and says so. The first build after the site's address changes refuses a carried page whose addresses still name the old path, until you correct them or remove the path from `carried`. Without this key `site/carried/` is not read. |
@@ -65,14 +66,25 @@ Top-level keys, in the order the plugin writes them. A key marked schema 2 makes
 | `resume.layout` | `plain` (the default) or `cards` (each role a card) for the resume's body (schema 4). |
 | `resume.titleForm` | `title` (the default: the resume page's `<title>` leads with the resume's own `title`) or `page` (it leads with the word the menu prints for the resume page, `nav.labels.resume`, else `Resume`; the heading stays the resume's `title`) (schema 8). |
 
-`blocks` holds `headingLevel`, `loneReferenceGrid`, `videoEmbed`, `headings`; it needs schema 4, and a file below schema 4 that holds it is refused with `needs "schema": 4`.
+`blocks` holds `headingLevel`, `loneReferenceGrid`, `videoEmbed`, `unlistedVideos`, `headings`; it needs schema 4, and a file below schema 4 that holds it is refused with `needs "schema": 4`. `headings` needs schema 6 and `unlistedVideos` schema 9, refused below them the same way.
 
 | blocks key | meaning |
 | --- | --- |
 | `headingLevel` | a whole number from 2 to 6: the h-level a `###` heading prints at inside a block, so the outline matches the page you moved from; a deeper heading keeps its distance from it. Only a `:::carousel` slide holds headings (tiles, quote, quotes, gallery and videos hold none). Absent, a block's headings print one level below what is written, or as the resume's `headings` says. |
 | `loneReferenceGrid` | true or false: `true` prints a `ref:` line that stands alone inside `<div class="ref-grid">`, as two or more `ref:` lines print, for a site whose old pages wrapped a single reference in a grid (the grid's track bounds the card's width). Absent or `false`, a lone `ref:` line is a bare card; `false` is written away. |
 | `videoEmbed` | `facade` (the default) or `live`: the address a `:::videos` row and a gallery video carry. `facade` is the privacy form the plugin has always written, a Vimeo address with `dnt=1`. `live` keeps the player's own address with nothing added (`https://player.vimeo.com/video/ID`, `https://www.youtube-nocookie.com/embed/ID`, a Drive `/preview` address), the form a site built elsewhere wrote in its pages, so a look that places the player in `videos.item` can match them. Only the address changes: whether a player loads with the page or after a click is the look's markup, and the plugin's own look still shows a click-to-load link. The same links are refused either way: https only, and only YouTube, Vimeo or a public Drive file. `facade` is written away. |
+| `unlistedVideos` | `true` (schema 9; absent is the default): the private code of an unlisted Vimeo link, the part of its address after the video number, is sent to the player, in a `:::videos` row, a gallery video and a line that holds only the link. The code is then in the page, which a visitor can read; without this setting the build leaves it out, the player shows Vimeo's own notice instead of the video, and every build names each link it left the code out of. Only `true` is accepted. |
 | `headings` | `shift` (the default: a `#` is printed as h2) or `as-written` (a `#` is h1) for the headings of every Markdown body but the resume's, which keeps `resume.headings` (schema 6); `shift` is written away. |
+
+`references` holds `types`, `channels`, `unprinted` (schema 9; a file below schema 9 that holds it is refused with `needs "schema": 9`):
+
+| references key | meaning |
+| --- | --- |
+| `references.types` | one to 60 distinct one-line words (compared case-sensitively); when set, a reference's `type` must be one of them. |
+| `references.channels` | one to 60 distinct one-line words (compared case-sensitively); when set, a reference's `channel` must be one of them. |
+| `references.unprinted` | `{"type": [...], "channel": [...]}`: words that are stored but never printed; with the matching list set, each must be in it. |
+
+A word is one line of at most 80 characters. The words the plugin proposes when it captures or adopts a reference, which it never stores without your yes, and which your own list replaces: types `Article`, `Blog`, `Case study`, `Film`, `Interview`, `Podcast`, `Post`, `Presentation`, `Press`, `Report`, `Video`, `Website`; channels `Bluesky`, `Facebook`, `Instagram`, `LinkedIn`, `Medium`, `Pinterest`, `Substack`, `Threads`, `TikTok`, `Website`, `X`, `YouTube`.
 
 `budgets` holds any of these, each with its default:
 
@@ -229,7 +241,7 @@ Schema 6 reads these piece keys, each ONLY under `pieceRoles: true` of the piece
 
 ## References
 
-`reference.json` holds these keys; `url` and `title` are required. `image`, `role`, `fetched`, `author` need schema 4: a file below schema 4 that holds one is refused with `needs "schema": 4`. `imageAlt`, `imagePosition` need schema 5, refused below it the same way.
+`reference.json` holds these keys; `url` and `title` are required. `image`, `role`, `fetched`, `author` need schema 4: a file below schema 4 that holds one is refused with `needs "schema": 4`. `imageAlt`, `imagePosition` need schema 5, and `project`, `type`, `channel` schema 9, refused below them the same way.
 
 | key | meaning |
 | --- | --- |
@@ -242,10 +254,28 @@ Schema 6 reads these piece keys, each ONLY under `pieceRoles: true` of the piece
 | `captured` | when it was captured. |
 | `image` | the card image: a path inside the reference's own folder, such as `media/preview.jpg`; used instead of a `card` file, and naming both is refused (schema 4). |
 | `role` | one line on what you did, printed on every card of the reference (schema 4). |
-| `fetched` | when the page was fetched; stored, never printed (schema 4). |
+| `fetched` | the address the page was fetched from; adopt puts the template's `captured_from` here; stored, never printed (schema 4; a date written under the older wording still builds). |
 | `author` | who wrote the page; printed through the optional `reference-card.author` part of your own look (0.8.0), never otherwise (schema 4). |
 | `imageAlt` | one line: the alt of the reference's card picture, on every card of it (schema 5). |
 | `imagePosition` | a CSS position such as `center 30%`: that picture's `object-position` (schema 5). |
+| `project` | the piece this reference is for: a piece's folder name (`harbor-lights`), or `<portfolio>/<folder>` when two portfolios hold that name; a name that matches no piece is refused. One line; a blank value reads as absent (schema 9). |
+| `type` | what the page is, in a word or two, such as `Post` or `Film`; one line of at most 80 characters, and one of `references.types` when the site sets that list. Printed through the optional `reference-card.type` part of your own look, never otherwise; a blank value reads as absent (schema 9). |
+| `channel` | where its audience saw it, whatever host the address names, such as `Instagram`; one line of at most 80 characters, and one of `references.channels` when the site sets that list. Printed through the optional `reference-card.channel` part of your own look, never otherwise; a blank value reads as absent (schema 9). |
+
+**Checking a reference in your editor.** The plugin ships a JSON Schema for `reference.json`, `reference/reference.schema.json`. To have VS Code check each reference as you type, add this to `.vscode/settings.json` in your site's repository, writing the version of site-studio you have installed in place of `<version>` (the address is that release's tag, so the file is the one your build reads; never `main`, which moves):
+
+```json
+{
+  "json.schemas": [
+    {
+      "fileMatch": ["content/references/*/reference.json"],
+      "url": "https://raw.githubusercontent.com/crinaro/marketplace/site-studio--v<version>/plugins/site-studio/reference/reference.schema.json"
+    }
+  ]
+}
+```
+
+The schema checks what one file can state: the keys, that `url` and `title` are there, that `url` starts with `http://` or `https://`, that each value is text, the one-line rules and the length limits (`type` and `channel` carry the starter words as examples, never as a rule). It cannot check that a `project` names a piece, that `type` and `channel` are in your site's lists, that an `image` is a file that exists, that no `card` file sits beside it, or the `schema` your site declares: the build is the check either way. Offline, with schema download off, or where VS Code says the address is not trusted (trust it, or copy the file into your repository and use its relative path as the `url`), the editor checks nothing. Do not write a `$schema` key in a `reference.json`: the build refuses it.
 
 ## Layout tokens
 
@@ -277,7 +307,7 @@ A token is `{{name}}` or `{{name:argument}}`, in a page under `site/src` or in t
 
 ## Your own look (schema 7)
 
-A look is the markup the generated pages are printed through. Your own look is the normal way to shape a site, not a workaround: `lookLocal` lays `site/looks/local.json` over the look `look` names, construct by construct, and only you write that file. In a look file these need schema 7: the `reads` key; the `named` key; the slot `{{position}}` in `card.wrap` (the card's number with its running place on the page, as in `01 / 2022`); the slot `{{text}}` in `card.number` (the whole number in one copy of the part); the part `tiles.item-accent`; and the slot `{{usedBy}}` in `reference-card.wrap`, `feed.item` or `home-samples.item`, printed through the part `reference-card.used-by` (the first piece that names the reference). A look that holds none of them is read as before. In a look file these need schema 8: the slots `{{teaser}}` and `{{meta}}` in `roles-view.item` and `roles-view.item-current` (a roles card prints what a grid card prints); the slot `{{author}}` in `reference-card.wrap`, `feed.item` or `home-samples.item`, printed through the part `reference-card.author`; the slot `{{cardTitle}}` in `reference-card.used-by` (the using piece's `shortTitle`, else `title`); the parts `reference-card.kind-page`, `kind-article` and `kind-video` (the words `@kind` prints); and the five `reads` targets marked 0.8.0 below.
+A look is the markup the generated pages are printed through. Your own look is the normal way to shape a site, not a workaround: `lookLocal` lays `site/looks/local.json` over the look `look` names, construct by construct, and only you write that file. In a look file these need schema 7: the `reads` key; the `named` key; the slot `{{position}}` in `card.wrap` (the card's number with its running place on the page, as in `01 / 2022`); the slot `{{text}}` in `card.number` (the whole number in one copy of the part); the part `tiles.item-accent`; and the slot `{{usedBy}}` in `reference-card.wrap`, `feed.item` or `home-samples.item`, printed through the part `reference-card.used-by` (the first piece that names the reference). A look that holds none of them is read as before. In a look file these need schema 8: the slots `{{teaser}}` and `{{meta}}` in `roles-view.item` and `roles-view.item-current` (a roles card prints what a grid card prints); the slot `{{author}}` in `reference-card.wrap`, `feed.item` or `home-samples.item`, printed through the part `reference-card.author`; the slot `{{cardTitle}}` in `reference-card.used-by` (the using piece's `shortTitle`, else `title`); the parts `reference-card.kind-page`, `kind-article` and `kind-video` (the words `@kind` prints); and the five `reads` targets marked 0.8.0 below. In a look file these need schema 9: the slots `{{type}}` and `{{channel}}` in `reference-card.wrap`, `feed.item` or `home-samples.item`, each printed through the part of its own name, `reference-card.type` or `reference-card.channel` (the slot of each is `{{text}}`), with the reference's own `type` or `channel`; a part prints nothing for a reference that has no such value, or whose value the site's `references.unprinted` lists. A look that places a slot and writes no part for it is refused. `type`, `channel` and `project` are not `reads` sources.
 
 `reads` maps a place a look prints to what it reads there, first value wins: `{"<target>": ["<source>", ...]}`, one to 4 sources, or `{"from": [...], "unless": "<key>"}`. A source is one of three kinds, by the target: a front-matter key of the piece or page (most targets); a key of the reference's `reference.json` (`reference-card.site.text`); or a picture key, `cover`, `photo` or `tileImage` (the three picture targets, which take no built-in). A source starting `@` is a built-in of that target. With no entry a target reads what it always did.
 

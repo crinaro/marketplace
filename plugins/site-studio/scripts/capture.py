@@ -3,32 +3,36 @@
 out (dev #835; design 5.1 and 5.3; named change M8). Python 3.9, standard library only; Chrome via
 browser.py. It NEVER crawls: it loads exactly the URLs it is given and nothing they link to.
 
-    python3 capture.py [--repo R | --out DIR] [--name NAME] [--role TEXT] [--force] URL [URL ...]
+    python3 capture.py [--repo R | --out DIR] [--name NAME] [--role TEXT] [--project P] [--type T] [--channel C] [--force] URL [URL ...]
 
 PER URL it writes, into <out>/<name>/ (default <repo>/content/references/<name>/):
     reference.json   {url, title, description, site, published, kind, captured}: the keys content.py
                      accepts, no others (the build refuses an unknown key); with --role, also
-                     `role`, what the person did on that page (template-fidelity R1, dev 897)
+                     `role`, what the person did on that page (template-fidelity R1, dev 897), and with --project,
+                     --type, --channel the person's own words for them (0.9.0, dev 1061)
     text.md          the page's visible text, raw material for the person's write-up; never published
     card.jpg         the first screen (1200 x 630) through images.import_media, so it is stripped of
                      metadata and gets size copies like any photo
-and prints one line per URL plus a JSON packet recording the Chrome version, the platform and the
-capture date (named change M8, so a later Chrome change shows).
+and prints one line per URL, then (0.9.0) a block "suggested layout" for the page, then a JSON packet recording the Chrome version,
+the platform and the capture date (named change M8, so a later Chrome change shows).
 
 RULES (design 5.3, 5.1)
   * --ROLE TEXT stores the person's answer to "what did you do on this?" as `role`, which a reference
     card shows as its role line. It is a schema 4 key (siteconfig.V4_REFERENCE_KEYS), so it is REFUSED
     BEFORE ANY BROWSER STARTS, writing nothing, when the site's own site.json says a lower schema (the
-    build would refuse the folder as an unknown key). Where no site.json can be read (--out beside no
-    site) it is stored and the run prints that the schema was NOT CHECKED. One URL only (the answer is
-    about one page), one line of text, never empty: the loader refuses anything else, so capture does
-    too. With no --role the reference carries no role and nothing is assumed.
+    build would refuse the folder as an unknown key). Where no site.json can be read it is stored and the
+    run prints NOT CHECKED. One URL, one line of text, never empty. With no --role nothing is assumed.
+  * --PROJECT, --TYPE, --CHANNEL store the person's words for which piece the reference is for, what it is and where its audience saw
+    it (schema 9, a portfolio site; capturing/layout.py), under the same rules as --role. The block "suggested layout" after each
+    page is only a suggestion, from the address and the site's pieces: NOTHING in it is stored unless the person says yes and
+    gives the words in a flag. A recapture of the same address keeps the three keys and `role` (capturing/carry.py).
   * LOGGED OUT, always. Every run launches a fresh temporary profile (browser.py): no cookies, no
     storage, never the person's browser and never the desktop app's pane. Two captures in a row
     share nothing.
   * Two platforms are captured from their OFFICIAL EMBED VIEWS, as the examples do: a YouTube URL
     from https://www.youtube-nocookie.com/embed/<id> and a Vimeo URL from
-    https://player.vimeo.com/video/<id>. Everything else is captured from the page itself.
+    https://player.vimeo.com/video/<id>, with an unlisted Vimeo link's code (`?h=`), so the player the
+    person named loads. Everything else is captured from the page itself.
     reference.json keeps the URL the person gave.
   * 45 seconds per page (browser.LOAD_TIMEOUT); a page that does not load is reported.
   * "NOT PUBLICLY VIEWABLE" IS REPORTED, NEVER WORKED AROUND: an HTTP 401, 403, 404, 410 or 451, or a
@@ -63,12 +67,13 @@ from contentmodel import links  # noqa: E402
 from imaging import errors, importer   # noqa: E402
 import resize   # noqa: E402
 from configschema import diagnostics, model  # noqa: E402
-from capturing import carry  # noqa: E402
+from capturing import carry, layout  # noqa: E402
 
 NOT_PUBLIC = (401, 403, 404, 410, 451)
 SIGN_IN = re.compile(r"/(log-?in|sign-?in|signin|sign_in|accounts?/login|sso|auth(enticate)?)(/|$|\?)", re.I)
 TEXT_LIMIT = 200000
-ROLE_SCHEMA = 4      # the schema that first accepts a reference's `role` (siteconfig.V4_REFERENCE_KEYS)
+ROLE_SCHEMA = layout.ROLE_SCHEMA
+role_schema_problem = layout.role_schema_problem     # moved to capturing/layout.py in 0.9.0, with the layout words' schema check
 
 META_JS = """(function(){
   function meta(n){var e=document.querySelector('meta[property="'+n+'"],meta[name="'+n+'"]');
@@ -94,7 +99,7 @@ class CaptureError(ValueError):
 
 def embed_url(url):
     """The official embed view for a YouTube or Vimeo URL, else None (Drive is not a platform here)."""
-    e = links.video_embed(url)
+    e = links.video_embed(url, keep_hash=True)    # capture loads the page the person named; it publishes nothing (design 2)
     if e and (e.startswith("https://www.youtube-nocookie.com/") or e.startswith("https://player.vimeo.com/")):
         return e
     return None
@@ -125,31 +130,9 @@ def clean_role(text):
     return text.strip()
 
 
-def role_schema_problem(out_root):
-    """(refusal, note) for storing a role in `out_root`. `out_root` is <repo>/content/references, so the
-    site's own site.json is two levels up. A site below ROLE_SCHEMA is a refusal, not a note: the build refuses
-    a reference holding `role` there. A site.json that is missing or cannot be read is NOT CHECKED: the note
-    says so and the role is stored."""
-    cfg_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(out_root))), "site", "site.json")
-    if not os.path.isfile(cfg_path):
-        return None, ("NOT CHECKED: no site/site.json beside %s, so the site's schema is unknown; the role is "
-                      "stored, and the build refuses it unless the site is at schema %d" % (out_root, ROLE_SCHEMA))
-    try:
-        cfg = model.load(cfg_path)
-    except diagnostics.SiteConfigError as e:
-        return None, ("NOT CHECKED: %s could not be read (%s), so the site's schema is unknown; the role is stored"
-                      % (cfg_path, e))
-    if cfg.schema < ROLE_SCHEMA:
-        return ("--role is a schema %d key and this site is at schema %d: the build would refuse the reference "
-                "as an unknown key. Nothing was captured. Raise the site to schema %d first "
-                "(build.py raise-schema --to %d shows what would change), then capture again"
-                % (ROLE_SCHEMA, cfg.schema, ROLE_SCHEMA, ROLE_SCHEMA)), None
-    return None, None
-
-
-def capture_one(b, resizer, url, out_root, name=None, captured=None, force=False, log=print, role=None):
-    """Capture one URL. Returns {"url", "status": "captured" | "not_public" | "error", ...}. `role` is
-    already clean (`clean_role`) and already checked against the site's schema (`capture_urls`)."""
+def capture_one(b, resizer, url, out_root, name=None, captured=None, force=False, log=print, role=None, words=None):
+    """Capture one URL. Returns {"url", "status": "captured" | "not_public" | "error", ...}. `role` and `words` (the person's
+    --project, --type, --channel, as {key: text}) are already clean and already checked against the site (`capture_urls`)."""
     res = {"url": url}
     if not re.match(r"^https?://", url):
         res.update(status="error", reason="not an http(s) URL")
@@ -211,6 +194,7 @@ def capture_one(b, resizer, url, out_root, name=None, captured=None, force=False
            "captured": captured or datetime.datetime.utcnow().strftime("%Y-%m-%d")}
     if role is not None:
         ref["role"] = role
+    ref.update(words or {})
     ref = {k: v for k, v in ref.items() if v != "" or k in ("url", "title")}
     notes = carry.merge(old, unread, ref, url, name)
     for n in notes:
@@ -221,15 +205,15 @@ def capture_one(b, resizer, url, out_root, name=None, captured=None, force=False
     with open(os.path.join(folder, "text.md"), "w", encoding="utf-8", newline="\n") as fh:
         fh.write("# %s\n\nSource: %s\nCaptured: %s\n\n%s\n" % (title, url, ref["captured"], text.strip()))
     res.update(status="captured", name=name, dir=folder, title=title, card=os.path.basename(card.path) if card else None,
-               kind=ref["kind"], role=ref.get("role"), notes=notes)
+               kind=ref["kind"], role=ref.get("role"), notes=notes, ref=ref)
     return res
 
 
 def capture_urls(urls, out_root, name=None, captured=None, force=False, env=None, euid=None, log=print,
-                 role=None):
+                 role=None, words=None):
     """Capture each URL in a fresh Chrome profile. Returns {"results": [...], "packet": {...}}. Every refusal
-    that needs no page (`--name` or `--role` with more than one URL, a role that is not one line, a site below
-    schema 4) raises CaptureError before Chrome starts, and nothing is written."""
+    that needs no page (`--name`, `--role` or a layout word with more than one URL, a value that is not one line, a site below
+    the key's schema) raises CaptureError before Chrome starts, and nothing is written. `words` is {"project"|"type"|"channel": text}."""
     if name and len(urls) != 1:
         raise CaptureError("--name needs exactly one URL")
     if role is not None:
@@ -241,6 +225,13 @@ def capture_urls(urls, out_root, name=None, captured=None, force=False, env=None
             raise CaptureError(problem)
         if note:
             log(note)
+    site = layout.read_site(out_root)
+    try:
+        words, note = layout.check_words(words or {}, site, len(urls))
+    except layout.LayoutError as e:
+        raise CaptureError(str(e))
+    if note:
+        log(note)
     with browser.Browser(env=env, euid=euid) as b:
         packet = dict(b.packet())
         packet["captured"] = captured or datetime.datetime.utcnow().strftime("%Y-%m-%d")
@@ -251,11 +242,13 @@ def capture_urls(urls, out_root, name=None, captured=None, force=False, env=None
         results = []
         with resize.Resizer(b) as rz:
             for url in urls:
-                r = capture_one(b, rz, url, out_root, name, captured, force, log, role)
+                r = capture_one(b, rz, url, out_root, name, captured, force, log, role, words)
                 results.append(r)
                 if r["status"] == "captured":
                     log("captured %s -> %s (%s; card %s%s)" % (url, r["dir"], r["kind"], r["card"] or "kept (image)",
                                                               "; role: %s" % r["role"] if r.get("role") else ""))
+                    for line in layout.suggestion(r["name"], url, r["ref"], site):
+                        log(line)
                 else:
                     log("NOT CAPTURED %s: %s" % (url, r["reason"]))
     packet["urls"] = [r["url"] for r in results]
@@ -272,6 +265,8 @@ def build_parser():
     ap.add_argument("--name", help="the reference folder name (one URL only; default: derived from the page)")
     ap.add_argument("--role", help="what you did on this page, one line (one URL only; stored as the "
                                    "reference's `role`, which needs a site at schema 4)")
+    for key, what in (("project", "the piece this is for"), ("type", "what it is"), ("channel", "where its audience saw it")):
+        ap.add_argument("--" + key, help="%s, in your words, one line (one URL only; schema 9, portfolio sites)" % what)
     ap.add_argument("--force", action="store_true", help="overwrite an existing reference folder, keeping the person's keys (author, image, role, ...) when the url is the same")
     ap.add_argument("--captured", help="the capture date, YYYY-MM-DD (default: today, UTC)")
     return ap
@@ -281,7 +276,8 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     out = args.out or os.path.join(os.path.abspath(args.repo or "."), "content", "references")
     try:
-        done = capture_urls(args.urls, out, args.name, args.captured, args.force, role=args.role)
+        done = capture_urls(args.urls, out, args.name, args.captured, args.force, role=args.role,
+                            words=dict((k, getattr(args, k)) for k in layout.FLAGS if getattr(args, k) is not None))
     except (browser.BrowserError, CaptureError, OSError) as e:
         print("capture refused: %s" % e)
         return 1

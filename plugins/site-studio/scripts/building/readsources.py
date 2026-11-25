@@ -46,6 +46,14 @@ def _kind(target, kind):
                        % (target, READS[target]["kind"], kind))
 
 
+def record(look, target, key):
+    """dev 1058: a page's value came from the entry's `key` (or its `unless` key was compared): `look.read_keys` says so, for
+    the note that names a key no page reads. A look without the set (a stand-in) records nothing."""
+    keys = getattr(look, "read_keys", None)
+    if keys is not None:
+        keys.add((target, key))
+
+
 def _value(source, lookup, builtins):
     if source.startswith("@"):
         return (builtins or {}).get(source)
@@ -69,6 +77,8 @@ def slot(look, target, lookup, builtins=None, default=None):
         if v is not None:
             text = frontmatter.meta_text(v)
             if text.strip():
+                if not src.startswith("@"):
+                    record(look, target, src)
                 return text
     for src in ((default or ()) if row["setting"] else row["default"]):
         v = _value(src, lookup, builtins)
@@ -91,6 +101,7 @@ def rows(look, target, meta, keys):
     if spec is None or spec.unless is None or spec.unless not in meta:
         return kept
     against = _norm(meta[spec.unless])
+    record(look, target, spec.unless)
     return [k for k in kept if _norm(meta[k]) != against]
 
 
@@ -127,6 +138,8 @@ def choice(look, target, lookup, count, where):
     for src in (spec.sources or ()) if spec is not None else ():
         picked = _positions(where, target, src, None if src.startswith("@") else lookup(src), count)
         if picked is not None:
+            if not src.startswith("@"):
+                record(look, target, src)
             return tuple(sorted(set(picked), key=picked.index))
     for src in READS[target]["default"]:
         if src == FIRST:

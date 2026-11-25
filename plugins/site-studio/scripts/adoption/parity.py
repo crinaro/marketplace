@@ -267,15 +267,16 @@ def builder_failed(why):
     return why.startswith("the local builder failed (exit")
 
 
-def _run_builder(workdir, entry, node, guard, env, args=()):
+def _run_builder(workdir, entry, node, guard, env, args=(), timeout=120):
     """Run the person's local builder in `workdir` under parity's scrubbed, network-blocked node, as the publisher runs it:
     `node <entry> <args>` with the workflow's literal env already merged into `env` (design 8 AO, the measured invocation).
-    Returns (the output folder, "") or (None, why it did not build). Shared by P2's local build and by each P1 run."""
+    Returns (the output folder, "") or (None, why it did not build). Shared by P2's local build and by each P1 run.
+    `timeout` is the seconds it may take: 120 as ever, less for a batch of the counterfactual (`usage.batch_limit`)."""
     try:
         p = subprocess.run([node, "-r", guard, entry] + list(args), cwd=workdir, env=env, stdout=subprocess.PIPE,
-                           stderr=subprocess.PIPE, timeout=120)
+                           stderr=subprocess.PIPE, timeout=timeout)
     except subprocess.TimeoutExpired:
-        return None, "the local builder did not finish in 120 seconds"
+        return None, "the local builder did not finish in %d seconds" % timeout
     if p.returncode != 0:
         err = [l for l in p.stderr.decode("utf-8", "replace").strip().split("\n") if l.strip()]
         # the failure line is the one node prints as `Error: <message>` (a line of source that mentions `Error` comes

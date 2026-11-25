@@ -129,6 +129,23 @@ Adopt works in two stages, and it tells you which one it is in.
 - Every file in the repository gets one fate, shown to you: published, kept as a draft, archived,
   part of the old builder, or kept as it is. A file your old builder used and site-studio cannot
   hold is named, because a visitor would lose it; that stops the adoption until you decide.
+- **From 0.9.0, the files adopt could not test are said, with the reason, before `apply`.** A file it ran out of
+  runs or time on, or that your own builder would not answer for, is listed as undisposed with why, and a short list of
+  commands settles it (`adopt.py file <path or folder> keep`, then `adopt.py parity` again). Adopt now spends up to four
+  minutes more on `parity` to test such files in groups (six if your builder hangs), only on a site that needs it, and
+  Claude runs it in the background. Keeping a file leaves it where it is in your private repository; it does not hide a
+  file your old builder used and site-studio cannot hold.
+- **From 0.9.0, adopt suggests a layout for your references, and writes it unless you say no.** For each reference it
+  works out which piece it is for (`project`), what it is (`type`, such as Post or Film) and where its audience saw it
+  (`channel`, such as Instagram), from the pages and the address. Claude reads you every word before you say yes, and
+  `adopt.py setting referenceLayout none` leaves your references as they are (`project,channel` is the answer for a site not
+  in English). Nothing a visitor sees changes. **The cost:** a site with references adopted this way is settings version 9,
+  and an older copy of site-studio on another computer says "update site-studio". While your own builder is still your
+  publisher, adopt writes none of it. It never writes a closed list of your words into `site/site.json`: the closing text
+  is printed for you to copy.
+- **From 0.9.0, an unlisted Vimeo link can play.** By default the build leaves an unlisted video's private code out of the
+  player, so the video shows Vimeo's own notice. Where your old pages carried the code, adopt can turn on
+  `"blocks": {"unlistedVideos": true}`; that puts the code in the page, where any visitor can read it, so Claude says so first.
 - Your content stays. Nothing is deleted: what is no longer needed moves into an `archive/` folder.
 - A standing rule in one of your own agent files can be carried into your `CLAUDE.md` under
   "Standing rules carried by adopt". Files under `.claude/rules/` also reach the plugin's agents
@@ -172,6 +189,9 @@ ask, `apply` is refused and Claude leaves a note in `HANDOFF.md` saying what to 
 - **That a site adopted with 0.6.0 opens in an older copy of site-studio.** A measured setting new in
   0.6.0 makes the site schema 6; a copy older than 0.6.0 on another computer says "update
   site-studio" and changes nothing.
+- **That a site adopted with 0.9.0 opens in an older copy of site-studio** when it has references (the suggested
+  layout) or an unlisted video turned on: both make the site settings version 9, and a copy older than 0.9.0 says
+  "update site-studio" and changes nothing.
 - **That it can reproduce every part of a template's markup.** In this version, on the example
   template, the part of adopt that works out a site's markup from its old pages handles every part
   it was tested on. A real site may have parts it cannot work out; adopt then keeps site-studio's
@@ -215,13 +235,15 @@ The adopt skill holds the detail; ask Claude to walk you through it.
 - **Add work** (`/site-studio:add-work`): takes the files for one piece, prepares the images
   (location data stripped), asks you for the story, previews it and saves it. It can also move a
   piece to another portfolio **without breaking its old addresses** (each old page redirects; each
-  old image or PDF is recorded as released, and you approve that when you publish).
+  old image or PDF is recorded as released, and you approve that when you publish). From 0.9.0 it offers to
+  turn on an unlisted Vimeo link (saying what that publishes) and to say which piece a reference is for.
 - **Resume** (`/site-studio:resume`): one Markdown source makes the resume page and its PDF. A
   resume can show each role as a card, and an adopted site's PDF keeps the file name it was published
   under, so links to it keep working.
 - **Capture** (`/site-studio:capture`): saves one public web page you name as a reference with a
-  preview card. It asks what you did on it and shows your answer as a role line on the card. It
-  never signs in and never crawls.
+  preview card. It asks what you did on it and shows your answer as a role line on the card. From 0.9.0 it also
+  suggests which of your pieces the page is for, what it is and where it was seen, from the address, and stores only the
+  words you say yes to. It never signs in and never crawls.
 - **Import profile** (`/site-studio:import-profile`): brings a public profile into your resume from
   a file you downloaded yourself, one proposed change at a time.
 - **Look** (`/site-studio:look`): a site's look is the markup its pages are printed through. Pick one
@@ -259,6 +281,12 @@ which older copies of the plugin on other computers will refuse until they are u
   titled by its caption, then its alt text. `"blocks": {"videoEmbed": "live"}` keeps a video's own
   address, as an old site's live players use it; the default is the click-to-load form.
 - **References.** A card image of your choice, and a role line.
+- **References, 0.9.0.** A reference can say which piece it is for (`project`), what it is (`type`) and where its
+  audience saw it (`channel`), as separate facts: a card prints the last two only where your own look has a place for
+  them, and a hosted video need never print its host. Your site can list the words a reference may use, or words to
+  store and never print. The plugin ships a JSON Schema for `reference.json`, and the content model shows the
+  `.vscode/settings.json` lines that make VS Code check each reference as you type (at the release you installed).
+  A piece's `project` follows it when you move the piece. Each is opt-in, under settings version 9.
 - **Home and index options.** The home page's `<title>` form, whether its intro holds the whole body
   or its first block, the order of its parts, and a one-piece portfolio's index as a listing.
 

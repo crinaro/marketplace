@@ -1,4 +1,4 @@
-"""configkeys: the key tables and constants of `site/site.json` and of a page's front matter, schemas 1 to 8.
+"""configkeys: the key tables and constants of `site/site.json` and of a page's front matter, schemas 1 to 9.
 
 Constants only: the schema ceiling, the engine marker, each key table, the budget defaults and the patterns the
 value checks use. No code runs here."""
@@ -6,7 +6,7 @@ value checks use. No code runs here."""
 import re
 
 
-SCHEMA_MAX = 8
+SCHEMA_MAX = 9
 ENGINE_MARKER = "site-studio"
 CANONICAL_MARKER_LINE = '  "engine": "site-studio",'
 
@@ -20,7 +20,7 @@ V2_TOP_KEYS = ("siteKind", "featuredFrom")
 CANON_ORDER = (
     "schema", "engine", "name", "siteTitle", "titleSeparator", "siteKind", "publicRepo", "previewUrl", "domain",
     "cutover", "publicEmails", "privateTerms", "work", "featuredFrom", "featuredView", "nav", "look", "lookLocal",
-    "blocks", "mediaPaths", "sizeCopies", "carried", "redirects", "resume", "budgets",
+    "blocks", "references", "mediaPaths", "sizeCopies", "carried", "redirects", "resume", "budgets",
 )
 # Schema 4 adds these top-level keys (design-template-fidelity section 3.2), refused below 4.
 V4_TOP_KEYS = ("nav", "look", "blocks")
@@ -31,6 +31,10 @@ V6_TOP_KEYS = ("featuredView", "titleSeparator", "mediaPaths", "sizeCopies", "ca
 # key (TESTED at step 0, U-B1). `lookLocal` names the person's own look, laid over the look `look` names (or over the
 # default look when there is none); it is exactly LOOK_LOCAL_PATH, and `look` may not name that file too.
 V7_TOP_KEYS = ("lookLocal",)
+# Schema 9 adds one top-level key (design-reference-layout section 1.3), a K reason: 0.8.0 refuses it as an unknown key.
+# `references` holds the site's own vocabularies for a reference's `type` and `channel` (`REFERENCES_KEYS`); `{}` is the default
+# and is written away.
+V9_TOP_KEYS = ("references",)
 LOOK_LOCAL_PATH = "site/looks/local.json"
 # design-adopt-ownership-line 2.5, 2.6 and 3.1: the look derive writes, its stamp (committed with it, never read by a build) and
 # adopt's two scratch files, which are never committed and are never a dirty path at the three dirty tests (parity's
@@ -100,10 +104,14 @@ CARD_ALT_TITLE = "title"
 # keys are `headingLevel` (the h-level of a heading inside a block), `loneReferenceGrid` (a lone `ref:` line prints inside
 # the reference grid, as two or more do; the default, false, is a bare card) and `videoEmbed` (the address a video block and a gallery
 # video carry: "facade", the default, adds Vimeo's `dnt=1`; "live" keeps the player's own address, as a site built elsewhere wrote it).
-BLOCKS_KEYS = ("headingLevel", "loneReferenceGrid", "videoEmbed", "headings")
+BLOCKS_KEYS = ("headingLevel", "loneReferenceGrid", "videoEmbed", "unlistedVideos", "headings")
 # `blocks.headings` (schema 6): the h-level of a heading in every Markdown body but the resume's (which keeps
 # `resume.headings`), with the resume's two values (`RESUME_HEADINGS`); "shift", the default, is written away.
 V6_BLOCKS_KEYS = ("headings",)
+# `blocks.unlistedVideos` (schema 9, design-reference-layout section 2, owner answer O-1 b): `true` only. When it is set, an unlisted
+# Vimeo link's private code is sent to the player; absent, it is not, and the build says which links it leaves out. It sits before
+# `headings` in `BLOCKS_KEYS` so the schema-6 key stays that table's tail (`V6_BLOCKS_KEYS`). A K reason: 0.8.0 refuses the key.
+V9_BLOCKS_KEYS = ("unlistedVideos",)
 VIDEO_EMBED_FORMS = ("facade", "live")
 BLOCK_HEADING_LEVELS = (2, 3, 4, 5, 6)
 LABEL_PARTS = ("meta", "groups")
@@ -137,6 +145,21 @@ NAV_LABEL_KEYS = ("about", "resume")
 NAV_EXTRA_MAX = 4
 NAV_EXTRA_SCHEMES = ("https://", "mailto:")
 PAPERS = ("Letter", "A4")
+# `references` (schema 9, design-reference-layout section 1.3): the site's own vocabularies. `types` and `channels` are each one to
+# `REFERENCE_WORDS_MAX` distinct one-line words (compared in NFC, case-sensitively); `unprinted` names, per key of
+# `REFERENCE_UNPRINTED_KEYS`, the words that are stored but never printed. A word is at most `REFERENCE_WORD_MAX` characters, the
+# limit of a `type` or `channel` value (a longer word could never be used).
+REFERENCES_KEYS = ("types", "channels", "unprinted")
+REFERENCE_UNPRINTED_KEYS = ("type", "channel")
+REFERENCE_WORDS_MAX = 60
+REFERENCE_WORD_MAX = 80
+# The starter words (owner answer O-3 a): the words capture and adopt PROPOSE and the documentation shows, never a check and never
+# stored without the person's yes. No starter `site.json` sets them (that would put every new site at schema 9), and a site's own
+# list replaces them.
+REFERENCE_TYPES_STARTER = ("Article", "Blog", "Case study", "Film", "Interview", "Podcast", "Post", "Presentation", "Press",
+                           "Report", "Video", "Website")
+REFERENCE_CHANNELS_STARTER = ("Bluesky", "Facebook", "Instagram", "LinkedIn", "Medium", "Pinterest", "Substack", "Threads",
+                              "TikTok", "Website", "X", "YouTube")
 
 # The performance limits of design 4.3 (B's numbers), overridable in `budgets`.
 BUDGET_DEFAULTS = {
@@ -196,6 +219,12 @@ V4_RESUME_PAGE_KEYS = ("tagline", "links")
 V4_REFERENCE_KEYS = ("image", "role", "fetched", "author")
 # The reference keys schema 5 adds: the alt and the `object-position` of a reference's card picture (design section 5).
 V5_REFERENCE_KEYS = ("imageAlt", "imagePosition")
+# The reference keys schema 9 adds (design-reference-layout section 1.1): the piece a reference is for, what it is, and where its
+# audience saw it. Each is one line of text, optional, and blank reads as absent. This table is S0's; the value rules are
+# `contentmodel/referencelayout.py`'s. A K reason by presence: 0.8.0 refuses each key as unknown, a blank value included.
+V9_REFERENCE_KEYS = ("project", "type", "channel")
+# The most characters a `type` or `channel` value holds, after trimming (a `project` slug has no limit).
+REFERENCE_VALUE_MAX = REFERENCE_WORD_MAX
 # The home parts fixed at schema 4 and above: `{{home:<part>}}` names them without a `:::part` container, so they
 # are the home KEYS' names. Below 4 each is a name a person may use for a custom part (design rule 7).
 V4_PART_FIXED = V4_HOME_KEYS

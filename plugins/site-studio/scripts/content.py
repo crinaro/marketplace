@@ -65,7 +65,7 @@ import re
 import looks
 from lookgrammar import named as looknamed
 from lookgrammar.errors import LookError
-from configschema.configkeys import WORK_KEYS, V3_PAGE_KEYS, V4_PAGE_KEYS
+from configschema.configkeys import WORK_KEYS, V3_PAGE_KEYS, V4_PAGE_KEYS, V9_REFERENCE_KEYS
 from configschema.diagnostics import SiteConfigError
 from configschema.pagesettings import page_settings_problems
 from configschema.workcheck import validate_portfolio_settings, labels_nonempty
@@ -81,6 +81,7 @@ from contentmodel.links import video_embed, esc, check_href
 from contentmodel.grammar import _INLINE, _HEADING, _ULI, _OLI, _REFLINE, _IMGLINE, _HR, body_start_line, _IMGLINE3, _OPEN, _lead_kind, Fragment, _fragment, CARD_SEPARATOR
 from contentmodel.blockbase import _BlockBase
 from contentmodel.blockkinds import _BlockKinds
+from contentmodel import referencelayout
 
 # The value of `video-embed.wrap`'s open slot `title` (design-adopt-parity-2 section 4.8): a bare video line's caption
 # when it has one, else this word. Probe P-V (where a video's caption is written) was answered `default`, so 0.6.0 reads
@@ -197,7 +198,7 @@ def _load_reference(name, files, paths, schema=3):
                            fix="start the url with https://")
     check_href(data["url"], "%s: 'url'" % rj)   # dev #912: the one href check, as every link takes
     for k in allowed:
-        if k in data and not isinstance(data[k], str):
+        if k in data and not isinstance(data[k], str) and k not in V9_REFERENCE_KEYS:    # the schema-9 keys' faults are `referencelayout`'s: none drops the reference
             raise ContentError("%s: '%s' must be a string" % (rj, k), path=rj,
                                fix="write the value as text")
     if "role" in data and ("\n" in data["role"] or not data["role"].strip()):
@@ -306,6 +307,10 @@ def load_content(files, cfg, drafts=False, check_resume_pdf=False, collect=None)
         ref = _unit(collect, _load_reference, name, files, paths, cfg.schema)
         if ref is not None:
             c.references[name] = ref
+    for fault in referencelayout.check(files, paths, c, cfg):    # schema 9 (dev 1061): `project`, `type`, `channel`; the references stay loaded
+        if collect is None:
+            raise fault
+        collect.append(fault)
 
     # ---- resume
     if cfg.resume is not None:
@@ -372,7 +377,7 @@ class _Renderer(_BlockBase, _BlockKinds):
                 out.append("<hr>")
                 i += 1
                 continue
-            src = video_embed(line.strip())
+            src = self.video_src(line.strip(), nums[i])
             if src:
                 out.append(self.r("video-embed", "wrap", self.video_values(src), nums[i]))
                 i += 1

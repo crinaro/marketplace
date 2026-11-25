@@ -24,6 +24,7 @@ from configschema import canonical, configkeys, diagnostics, model, treeschema, 
 from adoption.base import Refused
 from adoption.dispose import apply_dispositions, conv_name
 from adoption.blocks import block_rewrites, blocks_left
+from adoption.referencepropose import run as suggest_reference_layout
 from adoption.settings import apply_settings, page_view, showcase_pieces
 from adoption.template import (
     RESUME_OWNED_KEYS, home_key_rewrite, home_path, nav_token_rewrites, page_file_renames, person_name_change,
@@ -616,6 +617,7 @@ def converted_site_files(tree, data, paper, folders=None, kind=None, only=None, 
         notes["unknown"].extend((p, t) for t in unk)
         if new != text:
             files[p] = new.encode("utf-8")
+    suggest_reference_layout(TreeFiles(tree, files, notes["removed"]), files, d, settings or {}, notes)    # dev 1061: last, over the finished tree
     seen = TreeFiles(tree, files, notes["removed"])
     if cfg is None:
         files["site/site.json"] = (json.dumps(d, indent=2, ensure_ascii=False) + "\n").encode("utf-8")

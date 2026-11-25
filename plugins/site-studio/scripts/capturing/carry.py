@@ -2,8 +2,9 @@
 design-adopt-local-reach section 1.3). Python 3.9, standard library only.
 
 `capture.py --force` replaces the page's text and the card picture and rewrites the keys capture writes (`CAPTURE_KEYS`); every
-other key of the old file is the person's (`author`, `image`, `fetched`, `imageAlt`, `imagePosition`, and `role` unless --role gave
-one). With the SAME url they are carried into the new file and one line names them; with a different url the page is a different
+other key of the old file is the person's (`author`, `image`, `fetched`, `imageAlt`, `imagePosition`, `role` unless --role gave
+one, and the layout words `project`, `type` and `channel` unless --project, --type or --channel gave one, a blank value too: 0.9.0,
+dev 1061, which is why they are not in `CAPTURE_KEYS` and a suggestion is never stored). With the SAME url they are carried into the new file and one line names them; with a different url the page is a different
 page, nothing is carried, and one line names each key not carried with its value. A file that cannot be read carries nothing and
 says so (a missing thing is never an empty thing). A kept `image` names the card, so no `card.jpg` is written beside it (the loader
 refuses a reference with both); with no `image`, a kept `imageAlt` or `imagePosition` describes the `card.jpg` this run replaced,

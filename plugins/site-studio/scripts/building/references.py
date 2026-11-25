@@ -87,15 +87,34 @@ def used_by(model):
     """{reference name: the first piece, in site order (the portfolios, then each one's pieces, as the build reads them),
     whose body names it on a `ref:` line} (design-adopt-ownership-line section 6.4, U-U1: the pre-pass, from the model,
     before any page renders). A cover or `tileImage` of the form `ref:<name>` shows the reference's picture, not its
-    card, and is not counted."""
-    out = {}
+    card, and is not counted.
+
+    Schema 9 (design-reference-layout section 1.2): a reference whose `project` names a piece (`Reference.project`, set when the content
+    loads) is used by THAT piece, and a `ref:` line does not say otherwise; when that piece is a draft, or is not built, the reference
+    has no entry at all (no page to link to) and a `ref:` line does not fill it in. Every other reference is read as it always was."""
+    out, held = {}, set()
+    for name, ref in getattr(model, "references", {}).items():
+        if getattr(ref, "project", None):
+            held.add(name)
+            piece = model.piece(ref.project)
+            if piece is not None and not piece.draft:
+                out[name] = piece
     for pf in model.portfolios:
         for piece in pf.pieces:
             for line in piece.body.splitlines():
                 m = _REFLINE.match(line)
-                if m:
+                if m and m.group(1) not in held:
                     out.setdefault(m.group(1), piece)
     return out
+
+
+def draft_note(ref):
+    """The build note for a reference whose `project` names a draft piece (its card prints no `used by`: there is no page to link to),
+    or None for any other reference."""
+    if ref is None or not getattr(ref, "project", None) or not ref.project_draft:
+        return None
+    return ("content/references/%s/reference.json: 'project' names %s, which is a draft, so this reference's card names no piece "
+            "until the piece is published" % (ref.name, ref.project))
 
 
 def card_title(piece):

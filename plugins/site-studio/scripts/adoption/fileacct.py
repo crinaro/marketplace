@@ -26,7 +26,7 @@ import re
 
 from building import running  # noqa: E402
 
-from adoption.accounting import account, counts, piece_folder_of, wholly_archived
+from adoption.accounting import KEPT_ROOT_FILES, account, address_of, counts, piece_folder_of, plan_choices, wholly_archived
 from adoption.base import Refused
 from adoption.dispose import conv_name
 from adoption.convert import _give_resume_sidecar, _snapshot, converted_site_files, holds_markdown, pageless_folders
@@ -35,10 +35,12 @@ from adoption.problems import check_only
 from adoption.served import (UNUSED_WHY, crash_reading, is_content_unit, old_texts, run_free_use, stamp_why, template_stamp,
                              unit_of, unlinked_removal, unused_lines)
 from adoption.tree import TreeFiles
-from adoption.usage import counterfactual, old_attribution_why, plugin_attribution
+from adoption.usage import counterfactual, old_attribution_why, plugin_attribution, sha
 
 PASS_ONE_SKIP = ("archive", "draft")
 _PIECE = re.compile(r"^(content/[^/]+/[^/]+)/index\.md$")
+_OWN_FILES = re.compile(r"^(decisions/|BRAND\.md$)")          # the plugin's own dev-repo files (design-reference-layout 4.4)
+_LEFT_OUT = re.compile(r"^(README|LICENSE|CLAUDE\.md|HANDOFF\.md|\.git|\.editorconfig)")      # 0.8.0's basename test, unchanged
 _MISSING_KEY = re.compile(r"front matter '[^']*' is required\b")        # what a piece still being written plausibly lacks (both the build's wordings)
 
 
@@ -125,9 +127,36 @@ def evidence(basis_paths, notes, snap, acc, local_out, engine_files, kept, archi
         kind, line = crash_reading(p, read(p) if read is not None else b"", texts)
         {"old": why, "unused": unused, "state": state}[kind].setdefault(p, line)
     old = set(p for p in basis_paths if p in why)
+    serves = _serves(acc, snap, notes, [p for p in plugin - old if person.get(p) == "keep"], local_out, drafted)
     return {"engine": set(engine_files), "kept": set(kept), "archived": set(archived), "person": dict(person), "old": old,
-            "plugin": plugin, "unsettled": set(p for g in (counter.unsettled if counter else []) for p in g),
-            "measured": measured, "usedWhy": why, "state": state, "unusedWhy": unused}
+            "plugin": plugin, "serves": serves, "unsettled": set(p for g in (counter.unsettled if counter else []) for p in g),
+            "measured": measured, "usedWhy": why, "state": state, "unusedWhy": unused,
+            "late": dict(getattr(counter, "late", None) or {}),                       # every late file the counterfactual was asked about
+            "lateUnsettled": dict(getattr(counter, "late_unsettled", None) or {}),    # of them the unsettled: {path: keep|own|nested}
+            "unsettledWhy": dict(getattr(counter, "why", None) or {})}                # section 4.1: why each unsettled path is
+
+
+def _serves(acc, snap, notes, paths, local_out, drafted):
+    """{basis path: address}: of `paths` (files the person keeps, which the plugin's build uses and the old builder is not shown to),
+    the ones the plugin's build SERVES, at an address the old output does not hold (rule K (3), design-reference-layout 4.3). The
+    address is where a page it is the source of is written, else the output with equal bytes; a piece the build refuses and adopt
+    tried again as a draft is served at no address it knows (""). A file the build only reads as an input, or one whose address the
+    old output also holds (P2 judges the bytes there), is not served."""
+    if acc is None:
+        return {}
+    where = dict((info["source"], out) for out, info in sorted(acc.pages.items(), reverse=True) if (info or {}).get("source"))
+    by_sha = {}
+    for out in sorted(acc.output, reverse=True):
+        by_sha[sha(acc.output[out])] = out
+    out = {}
+    for p in paths:
+        conv = conv_name(p, notes)
+        at = where.get(conv) or (by_sha.get(sha(snap[conv])) if conv in snap else None)
+        if at is not None and at not in (local_out or {}):
+            out[p] = address_of(at)
+        elif at is None and conv in drafted:
+            out[p] = ""
+    return out
 
 
 def _stamp(tree, acc, notes):
@@ -156,40 +185,73 @@ def measured_folders(tree, plan, kind=None):
     return out
 
 
-def open_candidates(basis_paths, notes, snap, acc, local_out, engine_files, kept, archived, person, read=None, tree=None):
-    """The files attribution leaves open: not engine, kept, archived, not the person's, not the template's stamp, and not shown
-    used by the old builder (by attribution, or for a file the plugin's build used, without a run: rule S1): the
-    counterfactual decides whether the old builder uses them."""
+def candidate_split(basis_paths, notes, snap, acc, local_out, engine_files, kept, archived, person, read=None, tree=None,
+                    keep_paths=()):
+    """([first-pass candidates], {late path: kind}): the files attribution leaves open (below), the late ones apart (design-
+    reference-layout 4.2). A late file is the person's kept file (`keep_paths`, kind `keep`: measured although kept, unless it is
+    engine, archived, builder state, shown used or a root repository file), `decisions/**` or root `BRAND.md` (`own`), or a nested
+    file 0.8.0's basename test leaves out (`nested`: `notes/README.md`); the root ones of those are kept and no candidate."""
     ev = evidence(basis_paths, notes, snap, acc, local_out, engine_files, kept, archived, person, None, read=read, tree=tree)
     skip = ev["engine"] | ev["kept"] | ev["archived"] | set(person) | set(ev["state"])
-    return sorted(p for p in basis_paths if p not in skip and p not in ev["old"] and not p.startswith(".site-studio/")
-                  and not re.match(r"^(README|LICENSE|CLAUDE\.md|HANDOFF\.md|\.git|\.editorconfig)", posixpath.basename(p))
-                  and not p.startswith(".claude/"))
+    never = ev["engine"] | ev["archived"] | set(ev["state"]) | ev["old"]
+    cands, late = [], {}
+    for p in sorted(basis_paths):
+        if p.startswith((".site-studio/", ".claude/")) or p in never:
+            continue
+        if p in keep_paths:
+            if not KEPT_ROOT_FILES.match(p):
+                late[p] = "keep"
+        elif p in skip or p in ev["old"]:
+            continue
+        elif _OWN_FILES.match(p):
+            late[p] = "own"
+        elif _LEFT_OUT.match(posixpath.basename(p)):
+            if "/" in p:
+                late[p] = "nested"
+        else:
+            cands.append(p)
+    return cands, late
+
+
+def open_candidates(basis_paths, notes, snap, acc, local_out, engine_files, kept, archived, person, read=None, tree=None):
+    """The files attribution leaves open: not engine, kept, archived, not the person's, not the template's stamp, and not shown
+    used by the old builder (by attribution, or for a file the plugin's build used, without a run: rule S1), and not late
+    (`candidate_split`): the counterfactual's first pass decides whether the old builder uses them."""
+    return candidate_split(basis_paths, notes, snap, acc, local_out, engine_files, kept, archived, person, read, tree)[0]
 
 
 def run_accounting(basis_paths, tree, data, plan, local_out, engine, kept, archived, run_old, chosen=(), settings=None,
-                   hints=None):
+                   hints=None, settled=None, keep_paths=()):
     """The accounting for every basis path: {"dispositions": {path: [disposition, why]}, "counts": {...}, "lines": [...],
-    "cause": id or None, "drafted": [...], "unsettled": [[path]], "refused": reason or None}. `run_old(removed)` is
+    "cause": id or None, "drafted": [...], "unsettled": [[path]], "refused": reason or None}. `run_old(removed, limit=None)` is
     `usage.old_runner`'s (or a fake): the old builder on the working copy minus `removed`. `local_out` is the old builder's
-    output on the UNCHANGED tree."""
+    output on the UNCHANGED tree. `settled` ({path: (verdict, gone)}) is read and filled: what an accounting of the same parity
+    already settled in the counterfactual's steps 2 and 3 (the old builder on the unchanged tree, so as true under other
+    settings), `keep_paths` the paths the person keeps, which are the late files measured first (`candidate_split`). `unsettled`
+    holds the groups that stay undisposed; a late file left unsettled is no group (`evidence`'s `lateUnsettled`)."""
     files, notes, snap, acc, drafted = pass_one(tree, data, plan, chosen, settings, hints)
     person = dict((p, e["disposition"]) for p, e in plan["files"].items() if e.get("disposition"))
     if acc is None:
         return {"dispositions": dict((p, ["undisposed", "the plugin's build refuses the pass-1 tree"]) for p in basis_paths
                                      if p not in engine["files"]),
                 "counts": {}, "lines": ["file accounting: the plugin's build refuses the converted tree, so no file was attributed"],
-                "cause": None, "drafted": [], "unsettled": [], "refused": "the plugin's build refuses the converted tree"}
+                "cause": None, "drafted": [], "unsettled": [], "refused": "the plugin's build refuses the converted tree",
+                "choices": plan_choices(plan)}
     read = _reader(tree, snap, notes)
-    cands = open_candidates(basis_paths, notes, snap, acc, local_out, set(engine["files"]), kept, archived, person, read, tree)
+    cands, late = candidate_split(basis_paths, notes, snap, acc, local_out, set(engine["files"]), kept, archived, person, read, tree,
+                                  keep_paths)
     same = lambda a, b: compare_builds(a, b) == []          # noqa: E731
-    counter = counterfactual(cands, run_old, same, unlinked=lambda base, out, unit: unlinked_removal(base, out, unit, same))
+    counter = counterfactual(cands, run_old, same, unlinked=lambda base, out, unit: unlinked_removal(base, out, unit, same),
+                             late=late, settled=settled)
+    if settled is not None:
+        settled.update(counter.carried)
     ev = evidence(basis_paths, notes, snap, acc, local_out, set(engine["files"]), kept, archived, person, counter,
                   drafted=drafted, read=read, tree=tree)
     accounted = account(sorted(basis_paths), ev)
     return {"dispositions": dict((p, list(v)) for p, v in accounted.items()), "counts": counts(accounted),
             "lines": counter.lines + unused_lines(accounted), "cause": counter.cause, "drafted": drafted,
-            "unsettled": [list(g) for g in counter.unsettled], "refused": None}
+            "unsettled": [list(g) for g in counter.unsettled], "refused": None,
+            "choices": plan_choices(plan)}                 # what was asked: a choice made later is newer than this (`stale_choices`)
 
 
 def _reader(tree, snap, notes):

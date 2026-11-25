@@ -203,7 +203,10 @@ def place_picture(builder, piece, settings, target):
     if order is None:
         return None
     on = active_triggers(settings)
-    return resolve(builder, piece, order, "cardAlt" in on, alt_title=settings.get("cardAlt") == CARD_ALT_TITLE)
+    found = resolve(builder, piece, order, "cardAlt" in on, alt_title=settings.get("cardAlt") == CARD_ALT_TITLE)
+    if found is not None:
+        readsources.record(builder.look, target, found.key)      # dev 1058: the key that gave the picture was read
+    return found
 
 
 def card_picture(builder, piece, settings, target=None):

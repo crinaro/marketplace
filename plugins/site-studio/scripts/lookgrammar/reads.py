@@ -90,6 +90,10 @@ USED_BY_PARTS = (("reference-card", "wrap"), ("feed", "item"), ("home-samples", 
 USED_BY_PART = ("reference-card", "used-by")
 # 0.8.0 (section 1.3): the part that fills `{{author}}` (placed in the same three parts), and the words `@kind` prints.
 AUTHOR_PART = ("reference-card", "author")
+# 0.9.0 (design-reference-layout section 1.4): `{{type}}` and `{{channel}}` are printed through the optional parts of those names, and
+# like `{{author}}` they are refused without their part. One table: {slot: the part that fills it}.
+TYPE_PART, CHANNEL_PART = ("reference-card", "type"), ("reference-card", "channel")
+PAIRED_SLOTS = (("author", AUTHOR_PART), ("type", TYPE_PART), ("channel", CHANNEL_PART))
 KIND_TARGET, KIND_BUILTIN = "reference-card.site.text", "@kind"
 KIND_PARTS = ("reference-card", ("kind-page", "kind-article", "kind-video"))
 
@@ -223,10 +227,12 @@ def pair_problems(where, constructs, reads, default_has):
                    "slots are {{title}} and {{url}}), or remove the slot" % (where, " and ".join(placed), *USED_BY_PART))
     # 0.8.0 (design-adopt-local-reach section 1.3): `{{author}}` is printed through the optional part `reference-card.author`,
     # and `@kind` through the text of a `reference-card.kind-*` part; each without its part would print nothing, silently.
-    placed = [c + "." + p for c, p in USED_BY_PARTS if "{{author}}" in constructs.get(c, {}).get(p, "")]
-    if placed and AUTHOR_PART[1] not in constructs.get(AUTHOR_PART[0], {}):
-        out.append("%s: %s place {{author}}, and the look writes no %s.%s part to fill it -- fix: write the part (its "
-                   "slot is {{text}}), or remove the slot" % (where, " and ".join(placed), *AUTHOR_PART))
+    # 0.9.0 (section 1.4) says the same of `{{type}}` and `{{channel}}`, each through the part of its own name.
+    for slot, part in PAIRED_SLOTS:
+        placed = [c + "." + p for c, p in USED_BY_PARTS if "{{%s}}" % slot in constructs.get(c, {}).get(p, "")]
+        if placed and part[1] not in constructs.get(part[0], {}):
+            out.append("%s: %s place {{%s}}, and the look writes no %s.%s part to fill it -- fix: write the part (its "
+                       "slot is {{text}}), or remove the slot" % (where, " and ".join(placed), slot, *part))
     spec = reads.get(KIND_TARGET)
     if spec is not None and KIND_BUILTIN in (spec.sources or ()) and not any(
             p in constructs.get(KIND_PARTS[0], {}) for p in KIND_PARTS[1]):

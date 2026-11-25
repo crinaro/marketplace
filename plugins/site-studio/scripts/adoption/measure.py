@@ -19,14 +19,14 @@ from configschema import model  # noqa: E402
 
 from adoption.base import PARITY_RECORD_REL, PlanError, Refused, git, gitt
 from adoption.candidates import measured_names
-from adoption.choose import choose
+from adoption.choose import Row, choose
 from adoption.engine import compute_engine, invocation_for, unmeasurable_language
 from adoption.template import live_pdf_name
 from adoption.tokens import OLD_PAGES, detect_resume, old_pages_hint, token_files
 from adoption.spec import load_spec
 from adoption.tree import Tree, TreeFiles, inventory
 from adoption.convert import _give_resume_sidecar, _snapshot, converted_site_files
-from adoption.accounting import no_landing_lines, open_folders
+from adoption.accounting import answers, is_workflow, no_landing_lines, open_folders
 from adoption.fileacct import pass_one, run_accounting, undecided_folders
 from adoption.parity import (
     BUILDER_FAILS, TAKEOVER, takeover_class, OUTPUT_DIRS, _NET_BLOCK, _archive_to, _copy_working_copy,
@@ -38,9 +38,9 @@ from adoption.accepts import open_rows
 from adoption import shots
 from adoption.plan import _plan_for, save_plan
 from adoption.problems import accept_problems, check_only, format_problems, look_lines, problem_dicts, problems_from_dicts
-from adoption.report import accept_lines
+from adoption.report import accept_lines, reference_lines
 from adoption.scoring import Output
-from adoption import carry, lookperson, lookwrite, readpropose
+from adoption import carry, lookperson, lookwrite, readpropose, referencepropose
 from adoption.usage import old_runner, prune
 
 SUGGEST_POINTER = ("look: %d of your look entries reproduce the old pages exactly; adopt.py suggest shows whether one could help "
@@ -103,10 +103,14 @@ def remove_files(root, removed):
 def replaying(run, store):
     """`run(removed)` answered from `store` ({removed: [result, ...]}) when an earlier accounting of the same run already made that
     call that many times, else run and stored: the accounting under the chosen settings asks the old builder only what the first
-    one did not. Calls are counted per key, so the counterfactual's two runs on the unchanged tree stay two real runs."""
+    one did not. Calls are counted per key, so the counterfactual's two runs on the unchanged tree stay two real runs. A run under a
+    `limit` (a batch of the counterfactual's steps 2 and 3, which may time out where a single group would not) is neither read from
+    the store nor put in it."""
     seen = {}
 
-    def again(removed):
+    def again(removed, limit=None):
+        if limit is not None:
+            return run(removed, limit=limit)
         key = tuple(sorted(removed))
         n = seen[key] = seen.get(key, 0) + 1
         got = store.setdefault(key, [])
@@ -206,8 +210,9 @@ def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=Non
         res["hints"] = hints
         if plan is not None:                 # design 8 FA, steps 1 to 4: every file accounted for BEFORE P2, so P2 judges the result
             asked, given = {}, folders       # the old builder's counterfactual runs, asked once for both accountings below
+            settled = {}                     # what the first accounting's steps 2 and 3 settled by path, handed to the second (`settled=`)
             account = lambda st, h: _account_files(tree, data, plan, local, engine, infos, a_dir, entry, node, guard,  # noqa: E731
-                                                   env, inv.args, scratch, chosen, st, h, asked)
+                                                   env, inv.args, scratch, chosen, st, h, asked, settled)
             res["accounting"] = account(dict(settings), dict(hints) or None)     # dev #985: with the old pages
             if not res["accounting"].get("refused"):
                 dispositions = res["accounting"]["dispositions"]
@@ -255,8 +260,9 @@ def run_parity(repo, infos, basis, tree, data, which=None, run=None, folders=Non
         if keep:
             res["kept"] = write_kept(keep, local, plugin_files)
         if p2["verdict"] == "DIFFERENT":     # P2 shows a visible difference, so the builder is kept: does the CONVERSION change what it publishes?
+            p1_files, p1_notes = _p1_tree(res, tree, data, folders, kind, only, settings, dispositions, persons, hints, files, cnotes)
             res["p1"] = _measure_p1(a_dir, local, entry, node, guard, env, scratch, tree, data, folders, kind,
-                                    files, cnotes, inv.args, dispositions)
+                                    p1_files, p1_notes, inv.args, dispositions)
         return res
     finally:
         shutil.rmtree(scratch, ignore_errors=True)
@@ -309,6 +315,16 @@ def _refusals_before_p2(tree, data, folders, kind, only, plan, hints):
                                           and "is required in" in p.message for p in probs):
         probs = []            # a piece the plugin refuses may be work in progress the old builder never read: the file accounting decides
     return probs
+
+
+def _p1_tree(res, tree, data, folders, kind, only, settings, dispositions, persons, hints, files, cnotes):
+    """(files, notes) of the converted tree P1 runs the person's builder on: the plugin side's, less `referenceLayout` (dev 1061).
+    That builder is still the publisher while parity is not EQUAL, MARKUP-ONLY or ACCEPTED, and `apply` does not write the keys then
+    (`referencepropose.taken`), so a builder that exits on a key it does not know is no finding about the conversion."""
+    if not (settings or {}).get(referencepropose.NAME):
+        return files, cnotes
+    return converted_site_files(tree, data, None, folders, kind, only, settings=dict((k, v) for k, v in settings.items() if k != referencepropose.NAME),
+                                dispositions=dispositions, persons=persons, hints=hints)
 
 
 def _plugin_side(repo, base, scratch, tree, data, folders, kind, only, settings, dispositions, persons, hints, res):
@@ -413,6 +429,9 @@ def _choose_settings(tree, data, plan, local, folders, kind, chosen, disposition
     picked.look_why = why
     kept = (picked.rows.get("look").value if picked.rows.get("look") is not None else None) or {}
     picked.derivation = readings.get(kept.get("file") if isinstance(kept, dict) else None, readings.get(None))
+    layout = referencepropose.for_parity(picked.values(), local, snapshot, evaluate, plan.get("settings"))       # dev 1061, O-2: after the pass, before
+    if layout is not None:                                         # the person's rows, so those (and the proposals below) measure over it
+        picked.rows[referencepropose.NAME] = Row(referencepropose.NAME, layout.value, layout.how, layout.reason)
     picked.person, picked.accents = lookperson.for_parity(tree, picked.values(), local, snapshot, evaluate, picked.look_status)
     picked.proposals = readpropose.for_parity(tree, picked.values(), local, snapshot, evaluate)      # N1 (0.8.0): measured `reads` entries, proposed
     readpropose.name_in_rows(picked.rows, picked.proposals)          # a tied `cardImage` row names the picture entries that settle it
@@ -443,19 +462,23 @@ def scrubbed_home(env):
 
 
 def _account_files(tree, data, plan, local, engine, infos, a_dir, entry, node, guard, env, args, scratch, chosen,
-                   settings=None, hints=None, asked=None):
+                   settings=None, hints=None, asked=None, settled=None):
     """The file accounting for the basis tree (`adoption.fileacct`) under `settings`, with the old builder run again for the
-    counterfactual; `asked` ({removed: [result]}) holds the runs an earlier accounting of this run made (`replaying`)."""
+    counterfactual; `asked` ({removed: [result]}) holds the runs an earlier accounting of this run made (`replaying`), and `settled`
+    ({path: (verdict, gone)}) the verdicts of its steps 2 and 3, which no replay holds (a batch runs under a limit): both are filled."""
     paths = [p for p in tree.paths() if not p.startswith(".git/")]
     kept = set(i["path"] for i in infos if i["class"] in ("CUSTOM", "MIXED"))
-    kept |= set(p for p, e in plan["files"].items() if e.get("removal") == "keep" or e.get("disposition") == "keep")
+    kept |= set(p for p, e in plan["files"].items() if e.get("removal") == "keep" or (e.get("disposition") == "keep" and is_workflow(p)))
+    keep_paths = set(p for p, e in plan["files"].items() if e.get("disposition") == "keep") - kept     # judged, then kept (rule K), not assumed
     kept |= set(p for p, c in engine["workflows"].items() if c in ("not-publishing", "other-publisher", "serves-dev-repo"))
     archived = set(p for p in paths if p.startswith("archive/"))      # ARCHIVE.json lists them; a file there is already placed
     cf_scratch = os.path.join(scratch, "counterfactual")
     os.makedirs(cf_scratch, exist_ok=True)
-    runner = old_runner(a_dir, lambda work: _run_builder(work, entry, node, guard, env, args), cf_scratch)
+    runner = old_runner(a_dir, lambda work, timeout=None: _run_builder(work, entry, node, guard, env, args,
+                                                                      **({} if timeout is None else {"timeout": timeout})), cf_scratch)
     runner = replaying(runner, asked if asked is not None else {})
-    return run_accounting(paths, tree, data, plan, local, engine, kept, archived, runner, chosen, settings, hints)
+    return run_accounting(paths, tree, data, plan, local, engine, kept, archived, runner, chosen, settings, hints, settled,
+                          keep_paths=keep_paths)
 
 
 def measure_adopted(repo, which=None, keep=None):
@@ -681,10 +704,12 @@ def cmd_parity(repo, accept=False, keep=None, shots_dir=None, as_json=False):
             if row["how"] == "not measured":
                 print("  setting %s: you decide -- %s" % (name, row["reason"]))
             elif row["value"] not in (None,) and name not in kept:
-                print("  setting %s: %s (%s)" % (name, "a derived look" if isinstance(row["value"], dict) else row["value"], row["reason"]))
+                print("  setting %s: %s (%s)" % (name, "a derived look" if isinstance(row["value"], dict) else (
+                    ", ".join(row["value"]) if name == referencepropose.NAME else row["value"]), row["reason"]))
     for row in res.get("lookRows") or ():            # section 4: never dropped, never silently outvoted
         plan["settings"][row.entry.name] = row.plan_row()
         print("  %s" % row.line())
+    plan["parity"]["answers"] = answers(plan)         # what this parity was built with: an answer changed later is unmeasured
     save_plan(repo, plan)
     res["notes"].extend(lookwrite.write_candidates(repo, res.get("derivation"), res.get("proposals")))     # scratch; nothing under site/ (step 8)
     res["notes"].extend(look_lines(tree, data, ((plan.get("settings") or {}).get("look") or {}).get("value")))    # P5, P6
@@ -711,6 +736,8 @@ def cmd_parity(repo, accept=False, keep=None, shots_dir=None, as_json=False):
               "  --keep: nothing was kept, because the two builds did not both run (the line above says why)")
     for line in format_problems(problems_from_dicts(res.get("problems", []))):
         print("  " + line)
+    for line in reference_lines(tree, data, plan):             # dev 1061: every word the layout would write, whatever the verdict
+        print(line)
     p1 = res.get("p1")
     if p1:
         print("P1 (does the conversion change what your own builder publishes?): %s%s"

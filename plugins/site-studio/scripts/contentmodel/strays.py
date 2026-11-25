@@ -8,6 +8,7 @@ from configschema.frontmatter import front_matter_keys
 from contentmodel.frontmatter import decode_text
 from contentmodel.keytables import VIEW_PIECE_KEYS, piece_keys_read
 from contentmodel.pagefiles import parse_showcase_entry
+from lookgrammar.reads import READS
 
 
 # ---------------------------------------------------------------- strays a piece folder carries (dev #885, dev #882)
@@ -17,17 +18,47 @@ STRAY_FILE_FIX = "pieces have one page; put this in index.md, or start the name 
 UNKNOWN_KEY_FIX = "add the key to meta or cardMeta, or remove it"
 
 
-def piece_known_keys(portfolio, featured_from="home", showcased=False):
+def reads_pairs(look):
+    """dev 1058: [(target, key)], sorted, of the piece front matter keys the look's `reads` names: each `from` source that is not
+    an `@` built-in and the `unless` key, of a target whose scope is `piece` or `page` (a page target reads a piece's own front
+    matter on its page). Scope `reference` names keys of a `reference.json`, never of a piece. [] for no look."""
+    out = set()
+    for target, spec in (getattr(look, "reads", None) or {}).items():
+        if READS.get(target, {}).get("scope") not in ("piece", "page"):
+            continue
+        out.update((target, src) for src in (spec.sources or ()) if not src.startswith("@"))
+        if spec.unless:
+            out.add((target, spec.unless))
+    return sorted(out)
+
+
+UNREAD_TAIL = ", and no page reads it"
+
+
+def unread_notes(look, model):
+    """dev 1058: one build note, sorted, per (target, key) the look's `reads` names (`reads_pairs`) that some piece holds and
+    that no page read: "`summary` is named by the look's `reads` piece-teaser.wrap.text, and no page reads it". Meant for a
+    COMPLETE, unrefused render (the caller's to know): `look.read_keys` is what the render filled. Per key and target, not per
+    piece; "read", not "printed". A note, never a warning."""
+    held = set(k for pf in model.portfolios for piece in pf.pieces for k in piece.meta)
+    read = getattr(look, "read_keys", None) or set()
+    return ["`%s` is named by the look's `reads` %s%s" % (key, target, UNREAD_TAIL)
+            for target, key in sorted(reads_pairs(look), key=lambda tk: (tk[1], tk[0])) if key in held and (target, key) not in read]
+
+
+def piece_known_keys(portfolio, featured_from="home", showcased=False, look=None):
     """The front matter keys of a piece that the build reads or shows: the built-in ones, `description` (the
     page's meta description), the portfolio's `groupBy` key, every key `meta` or `cardMeta` lists, `featured`
     under `featuredFrom: flags` (where the piece's own flag picks the featured pieces), and the keys a setting
-    reads (`VIEW_PIECE_KEYS`: those of the portfolio's `view` and of `cardNumber` when it is on). `showcased`
+    reads (`VIEW_PIECE_KEYS`: those of the portfolio's `view` and of `cardNumber` when it is on) and, with the effective `look` (dev 1058),
+    the keys its `reads` takes from a piece (`reads_pairs`). `showcased`
     is True for a piece the home page's `showcase` names: its tile keys are read wherever its portfolio's view
     is (design R4 row 6). Under a schema-5 trigger, the `V5_PIECE_KEYS` rows it turns on and the key `cardKicker`
     names (design-movement-view section 3.3), and under schema 6's `pieceRoles` the `V6_PIECE_KEYS` rows (`currentRole`
     among them; design-adopt-parity-2 section 3.2), both through `piece_keys_read`; without a trigger none of them is
     known here, so `currentRole` in a 0.5.x tree is reported as not published, as 0.5.x reports it."""
     known = set(BUILTIN_PIECE_KEYS) | {"description"}
+    known.update(key for _target, key in reads_pairs(look))          # dev 1058: what the effective look's `reads` takes
     known.update(portfolio.settings["meta"])
     known.update(portfolio.settings["cardMeta"])
     if portfolio.settings["groupBy"]:
@@ -43,7 +74,7 @@ def piece_known_keys(portfolio, featured_from="home", showcased=False):
     return known
 
 
-def stray_warnings(files, model, cfg):
+def stray_warnings(files, model, cfg, look=None):
     """WARNINGS (never refusals) for what a piece folder holds that the build does not publish, as
     `make_problem`-shaped items sorted by (path, line, message). Two classes, both named, both with a fix:
 
@@ -56,7 +87,8 @@ def stray_warnings(files, model, cfg):
     This is the OWNER INVARIANT's shape: the tree 0.3.0 built still builds, to the same bytes, at every schema,
     so the build says it and never refuses it. `build.accept` carries these as `.warnings`, apart from
     `.problems`, so `adopt check` can refuse them where nothing has been converted yet. Pure: it reads only
-    `files` ({repo path: bytes}) and the loaded `model`."""
+    `files` ({repo path: bytes}) and the loaded `model`. `look` (dev 1058) is the effective look when the build has loaded it:
+    a key its `reads` takes from a piece is read, so it is not warned; None where the look is refused or absent."""
     below = {}      # "content/<portfolio>/<slug>" -> [path parts under the piece folder]
     for p in files:
         parts = p.split("/")
@@ -71,7 +103,7 @@ def stray_warnings(files, model, cfg):
                 showcased.add(parsed[0])
     for pf in model.portfolios:
         for piece in pf.pieces:
-            known = piece_known_keys(pf, cfg.featuredFrom, piece.key in showcased)
+            known = piece_known_keys(pf, cfg.featuredFrom, piece.key in showcased, look)
             rels = below.get(piece.folder, [])
             for rel in sorted(r for r in rels if len(r) == 1):
                 name = rel[0]

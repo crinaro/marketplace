@@ -92,6 +92,38 @@ site-studio".
   places its slot. A look that uses any of these, or the 0.8.0 places above, raises the site to schema 8 (run
   `build.py raise-schema --repo . --to 8` first, as for 7); a copy of the plugin older than 0.8.0 then says "update
   site-studio". `look.py use sample-resume` writes three `kind-*` words of its own, so it needs `--accept-literals`.
+- **A reference's type and channel (0.9.0).** A reference can hold `type` (what it is: `Post`, `Film`) and `channel`
+  (where its audience saw it: `Instagram`), whatever host its address names. A look prints them through two optional
+  parts, `reference-card.type` and `reference-card.channel`, each with the one slot `{{text}}`, and the slots
+  `{{type}}` and `{{channel}}` in `reference-card.wrap`, `feed.item` or `home-samples.item`. Placing a slot without its part
+  is refused, as `{{author}}` is. **No shipped look holds either part** (a part there would raise every site that takes a
+  sample to schema 9), so show the person this as text to copy into `site/looks/local.json`, and nothing prints until they
+  add both the part and the slot:
+
+  ```
+  "reference-card": {
+    "wrap": "…{{site}}{{type}}{{channel}}…",
+    "type": "<span class=\"t-ref-type\">{{text}}</span>",
+    "channel": "<span class=\"t-ref-channel\">{{text}}</span>"
+  }
+  ```
+
+  Write any separator inside the part, so a reference with no value, a blank one or an unprinted one prints nothing at
+  all. A look that places `{{channel}}` and not `{{site}}` never prints a hosted video's host (`vimeo.com`, `youtube.com`),
+  and with no channel prints neither: the plugin never hides a `{{site}}` the look still places, that is the look's
+  choice. A look using either raises the site to schema 9 (run `build.py raise-schema --repo . --to 9` first, as for 7 and
+  8, and show its report); a copy of the plugin older than 0.9.0 then says "update site-studio".
+- **Words a card never prints.** `references.unprinted` in `site/site.json` lists words that are stored on a reference
+  and left off every card: `"references": {"unprinted": {"channel": ["Website"]}}` keeps `Website` in the file and
+  prints nothing for it. With `references.types` or `references.channels` set, each unprinted word must be in that list.
+  The same `references` object can close the words a reference may use; `/site-studio:adopt` and
+  `/site-studio:capture` only ever propose words, and never store one the person did not say yes to.
+- **A `reads` key is not "not published" any more.** A piece key a look's `reads` entry takes from a piece is read, so
+  the build no longer warns that it is "not published". When the look names a key and no page reads it, the build says it
+  once as a **note**, never a warning: "`summary` is named by the look's `reads` piece-teaser.wrap.text, and no page reads
+  it". It means the look names the key, and no page used it: the place may not be on a page, or an earlier source in
+  the entry won. It is not a decision, and adopt's `check` never counts it. Say it as it is, and offer to remove the entry or to
+  look at the place; never offer to delete the person's key. A note says a key was read, not that it printed.
 - **On an adopted site, adopt proposes these entries.** `adopt.py parity` measures the pictures, the kicker and the
   `@kind` words against the old pages and writes each entry that leaves fewer visible differences into
   `.site-studio/look-candidates.json` under `reads`, with its measured line. Copy an entry into

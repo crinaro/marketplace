@@ -13,6 +13,7 @@ design 6.4; named changes S2, S8, S9, S10 (round 1), M9, M13). Python 3.9, stand
     adopt.py [--repo R] folder NAME {source|portfolio} | --clear
     adopt.py [--repo R] convert {redirectBoiler|resumeFields} [--keep]
     adopt.py [--repo R] kind {portfolio|hub|custom}
+    adopt.py [--repo R] file PATH {archive|draft|keep|engine} | --clear
     adopt.py [--repo R] setting NAME VALUE | --clear
     adopt.py [--repo R] parity [--accept] [--keep DIR] [--json]
     adopt.py [--repo R] remeasure [--accept]
@@ -121,7 +122,9 @@ def _build_parser():
     s.add_argument("--offer", action="append", metavar="ID", help="record the person's yes to one ask line")
     s = sub.add_parser("file", allow_abbrev=False)
     s.add_argument("path")
-    s.add_argument("disposition", choices=("archive", "draft", "keep", "engine"))
+    s.add_argument("disposition", choices=("archive", "draft", "keep", "engine"), nargs="?")
+    s.add_argument("--clear", action="store_true", help="forget your choice for the file (or for every file below the folder): the "
+                                                        "next parity measures it again")
     s = sub.add_parser("setting", allow_abbrev=False)
     s.add_argument("name", help="a measured setting: look, featuredFrom, sort.<portfolio>, nav.home, resume.headings, cardLabels, "
                                 "cardNumber, backLink or view.<portfolio>")

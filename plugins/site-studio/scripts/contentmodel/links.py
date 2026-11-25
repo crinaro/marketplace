@@ -16,14 +16,48 @@ _VIMEO = re.compile(r"^https://(?:www\.)?vimeo\.com/(\d+)(?:[/?#].*)?$")
 _DRIVE = re.compile(r"^https://drive\.google\.com/file/d/([A-Za-z0-9_-]+)(?:/[^\s]*)?$")
 
 
-def video_embed(url):
-    """The iframe `src` for a YouTube, Vimeo or public Google Drive URL, or None."""
+# The private code of an unlisted Vimeo video (design-reference-layout section 2, dev 1060): 6 to 64 ASCII letters and digits holding a
+# digit. Deliberately wide, and OURS: the form is documented nowhere readable; `comments` and `likes` hold no digit, so they are not one.
+_VIMEO_CODE = re.compile(r"(?=[A-Za-z]*[0-9])[A-Za-z0-9]{6,64}")
+
+
+def _vimeo_parts(url):
+    """(the code the rule reads or None, whether the link holds a trailing segment or an `h` the rule does not read) for a vimeo.com
+    link, None for any other URL. The code is the first path segment after the id, else the `h` parameter; the fragment is dropped."""
+    m = _VIMEO.match(url)
+    if not m:
+        return None
+    path, _, query = url[m.end(1):].split("#", 1)[0].partition("?")
+    segs = [s for s in path.split("/") if s]
+    h = [v for k, _, v in (q.partition("=") for q in query.split("&")) if k == "h"]
+    seg = segs[0] if segs and _VIMEO_CODE.fullmatch(segs[0]) else None
+    hp = h[0] if h and _VIMEO_CODE.fullmatch(h[0]) else None
+    h_read = not h or (len(h) == 1 and hp is not None and (seg is None or seg == hp))
+    return seg or hp, len(segs) > (1 if seg else 0) or not h_read
+
+
+def vimeo_hash(url):
+    """The private code of an unlisted vimeo.com link (`/<id>/<code>` or `?h=<code>`), or None."""
+    parts = _vimeo_parts(url)
+    return parts[0] if parts else None
+
+
+def vimeo_unread(url):
+    """True when a vimeo.com link holds a trailing path segment or an `h` that `vimeo_hash` does not read."""
+    parts = _vimeo_parts(url)
+    return bool(parts and parts[1])
+
+
+def video_embed(url, keep_hash=False):
+    """The iframe `src` for a YouTube, Vimeo or public Google Drive URL, or None. A Vimeo link's private code (`vimeo_hash`) is sent to
+    the player as `?h=` only when `keep_hash` is true (the site's `blocks.unlistedVideos`); every caller that does not ask gets 0.8.0's."""
     m = _YT.match(url)
     if m:
         return "https://www.youtube-nocookie.com/embed/" + m.group(1)
     m = _VIMEO.match(url)
     if m:
-        return "https://player.vimeo.com/video/" + m.group(1)
+        code = vimeo_hash(url) if keep_hash else None
+        return "https://player.vimeo.com/video/" + m.group(1) + ("?h=" + code if code else "")
     m = _DRIVE.match(url)
     if m:
         return "https://drive.google.com/file/d/%s/preview" % m.group(1)

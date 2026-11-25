@@ -46,6 +46,7 @@ from adoption.redirects import redirect_pages
 from adoption.convert import converted_site_files, holds_markdown, pageless_folders
 from adoption.fileacct import measured_folders
 from adoption.keycover import note_lines
+from adoption import referencepropose
 from adoption.features import FEATURES, detect_signals, feature_lines, infer_kind
 from adoption.parity import conversion_lines, current_parity, decide_conversions, preconditions, template_fingerprint
 from adoption.problems import plan_settings, format_problems, held_problems, problem_dicts, site_problems, size_copy_note
@@ -91,8 +92,8 @@ def cmd_inventory(repo, as_json):
     plan = _plan_for(repo, base, cleared_msgs.append)
     for i in infos:
         plan["files"].setdefault(i["path"], {"removal": None, "reviewed": False, "units": {}})
-    for stale in [p for p in plan["files"] if p not in set(i["path"] for i in infos)]:
-        del plan["files"][stale]
+    for stale in [p for p, e in plan["files"].items() if p not in set(i["path"] for i in infos) and not e.get("disposition")]:
+        del plan["files"][stale]            # an entry that holds a choice for a file the inventory does not classify stays (4.3)
     save_plan(repo, plan)
     folders = portfolio_folders(tree)
     unknown, sections, waiting = _token_sections(tree, data, folders)
@@ -297,7 +298,24 @@ def _conversion_block(tree, data, plan):
     rows = decide_conversions(notes, plan["parity"], template_fingerprint(tree), plan["convert"])
     head = (["conversions (GENERAL follows from site-studio's own model, TEMPLATE from the template's conventions):"]
             + conversion_lines(rows) + conversion_notes(notes)) if rows else []
-    return head + ([""] if head and accepts else []) + accepts
+    return head + ([""] if head and accepts else []) + accepts + reference_lines(tree, data, plan)
+
+
+def reference_lines(tree, data, plan):
+    """The suggested reference layout block (dev 1061, the owner's answer O-2) that `check` and `inventory` print (through
+    `_conversion_block`) and `parity` prints after its run: every word that would be written, with its count, and what the setting says
+    now. The tree is converted as `apply` converts it (the settings it writes, the accounting's dispositions), so a reference or a piece
+    the accounting archives is not in it. [] when there is no reference."""
+    parity = current_parity(plan.get("parity"))
+    persons = dict((p, e["disposition"]) for p, e in (plan.get("files") or {}).items() if e.get("disposition"))
+    try:
+        _files, notes = converted_site_files(tree, data, plan["paper"], plan["folders"], plan.get("siteKind"), settings=plan_settings(plan),
+                                             dispositions=((parity or {}).get("accounting") or {}).get("dispositions") or None,
+                                             persons=persons, hints=(parity or {}).get("hints") or None)
+    except Refused:
+        return []
+    block = referencepropose.lines(notes.get("referenceLayout"), plan.get("settings"), parity)
+    return ([""] + block) if block else []
 
 
 def conversion_notes(notes):

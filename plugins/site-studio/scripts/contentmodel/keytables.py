@@ -3,7 +3,9 @@ at each schema."""
 
 import re
 
-from configschema.configkeys import V4_HOME_PAGE_KEYS, V4_REFERENCE_KEYS, V4_RESUME_PAGE_KEYS, V5_REFERENCE_KEYS
+from configschema.configkeys import (
+    V4_HOME_PAGE_KEYS, V4_REFERENCE_KEYS, V4_RESUME_PAGE_KEYS, V5_REFERENCE_KEYS, V9_REFERENCE_KEYS,
+)
 
 
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
@@ -28,6 +30,10 @@ REFERENCE_KEYS = ("url", "title", "description", "site", "published", "kind", "c
 REFERENCE_KEYS_V4 = V4_REFERENCE_KEYS
 
 REFERENCE_KEYS_V5 = V5_REFERENCE_KEYS
+
+# Schema 9 (design-reference-layout section 1.1): `project`, `type`, `channel`. Accepted from schema 9, each by presence, a blank
+# value included (0.8.0 refuses the key itself); what a value must be is `referencelayout.py`'s (S1), and a blank one reads as absent.
+REFERENCE_KEYS_V9 = V9_REFERENCE_KEYS
 
 TEXT_EXTS = (".html", ".htm", ".css", ".js", ".mjs", ".json", ".md", ".txt", ".xml", ".svg",
              ".webmanifest")
@@ -142,5 +148,6 @@ def resume_page_keys(schema):
 
 
 def reference_keys(schema):
-    """The `reference.json` keys read at `schema` (`imageAlt` and `imagePosition` from 5)."""
-    return REFERENCE_KEYS + (REFERENCE_KEYS_V4 if schema >= 4 else ()) + (REFERENCE_KEYS_V5 if schema >= 5 else ())
+    """The `reference.json` keys read at `schema` (`imageAlt` and `imagePosition` from 5, `project`, `type` and `channel` from 9)."""
+    return (REFERENCE_KEYS + (REFERENCE_KEYS_V4 if schema >= 4 else ()) + (REFERENCE_KEYS_V5 if schema >= 5 else ())
+            + (REFERENCE_KEYS_V9 if schema >= 9 else ()))

@@ -29,7 +29,7 @@ import tempfile
 from building import running  # noqa: E402
 import report_issue  # noqa: E402
 
-from adoption.accounting import no_landing_lines, path_area, path_family
+from adoption.accounting import no_landing_lines, path_area, path_family, undisposed_lines
 from adoption.base import PLUGIN
 from adoption.blockers import (
     accounting_occurrences, classify, engine_occurrences, grouped, look_occurrences, parity_occurrences, preflight_occurrences,
@@ -103,11 +103,13 @@ def assess(repo, plan, parity, refusals, engine, installed, previous_rows, snaps
         if kind != "plugin":
             lines.append("  %s cause: %s (x%d)" % (kind, c["id"], c["count"]))
     if blocked:
-        lines.append(summary_line(groups) if groups else "blocked: the parity verdict is %s" % verdict)
+        lines.append(summary_line(groups) if groups else "blocked: %d file(s) are undisposed" % len(undisposed) if undisposed else
+                     "blocked: the parity verdict is %s" % verdict)
     for n in notchecked:
         lines.append("  " + n)
     return {"blocked": blocked, "causes": groups, "rows": rows, "lines": lines,
-            "notchecked": notchecked, "undisposed": undisposed, "noLanding": no_landing_lines(acct)}
+            "notchecked": notchecked, "undisposed": undisposed, "noLanding": no_landing_lines(acct),
+            "undisposedLines": undisposed_lines(acct)}
 
 
 def dry_run_line(outcome, n_engine):

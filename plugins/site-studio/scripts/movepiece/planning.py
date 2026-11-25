@@ -9,7 +9,7 @@ from building import constants, running, tokens
 from building.lookneeds import look_needs
 from configschema import canonical, model, frontmatter
 from contentmodel import grammar, keytables
-from movepiece.rewrite import _decode, nfc, rewrite_front_names, rewrite_links
+from movepiece.rewrite import _decode, is_reference_json, nfc, rewrite_front_names, rewrite_links, rewrite_project
 
 
 REASON = "moved with %s"
@@ -106,6 +106,13 @@ def plan(files, record, old, slug, target):
             moved_files[new_dir + path[len(old_dir):]] = moved_files.pop(path)
     report, rewrote = [], []
     for path in sorted(moved_files):
+        if is_reference_json(path):         # schema 9: a reference's `project` names the piece by its folder, so it follows the move
+            raw = _decode(moved_files[path])
+            new_text, n = rewrite_project(raw, old_key, new_key) if raw is not None else (None, 0)
+            if n:
+                moved_files[path] = new_text.encode("utf-8")
+                rewrote.append((path, n))
+            continue
         text = _decode(moved_files[path]) if frontmatter._expanded_file(path) else None
         if text is None:
             continue

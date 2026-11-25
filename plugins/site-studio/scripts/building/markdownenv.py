@@ -15,7 +15,7 @@ import re
 
 import content as C
 import looks
-from contentmodel import links
+from contentmodel import links, referencelayout
 from contentmodel.errors import ContentError
 
 from building import mediapaths, pictures, readsources, references
@@ -93,6 +93,9 @@ class _MarkdownEnv(object):
             values["usedBy"] = self.used_by_html(name, from_out)
         if looks.places(construct, part, "author", self.look):     # 0.8.0: the same rule
             values["author"] = self.author_html(d)
+        for key in referencelayout.TEXT_KEYS:                      # 0.9.0: the same rule for `type` and `channel`
+            if looks.places(construct, part, key, self.look):
+                values[key] = self.layout_html(d, key)
         card = self.r("reference-card", "wrap", values)
         # a role line is a schema-4 part: the page that prints one links the schema-4 stylesheet the look names
         return (self.assets(from_out, "reference-card") if role else "") + card
@@ -115,6 +118,13 @@ class _MarkdownEnv(object):
             return ""
         return self.r("reference-card", "author", {"text": author.strip()})
 
+    def layout_html(self, data, key):
+        """`{{type}}` or `{{channel}}` (0.9.0, schema 9): the optional part `reference-card.<key>` filled with the reference's value, as
+        `referencelayout.printed` reads it (absent, blank and `references.unprinted` words print nothing); "" when there is none, so the
+        separator the part holds is never printed on its own."""
+        text = referencelayout.printed(data, key, self.cfg)
+        return "" if text is None else self.r("reference-card", key, {"text": text})
+
     def _card_out(self, ref):
         return references.card_out(ref, self.cfg)
 
@@ -134,6 +144,9 @@ class _MarkdownEnv(object):
             self._used_by = found
         piece = found.get(name)
         if piece is None:
+            note = references.draft_note(self.model.references.get(name))     # schema 9: `project` names a draft
+            if note and note not in self.notes:
+                self.notes.append(note)
             return ""
         values = {"title": piece.title, "url": rel_link(from_out, "%s/%s/index.html" % (piece.portfolio, piece.slug))}
         if looks.places("reference-card", "used-by", "cardTitle", self.look):     # 0.8.0: given only where placed
@@ -179,6 +192,13 @@ class _MarkdownEnv(object):
             lone_reference_grid = bool(builder.cfg.blocks.get("loneReferenceGrid"))
             # `blocks.videoEmbed` (schema 4): "live" keeps a video's own address (no `dnt=1`); absent is the click-to-load form
             video_embed_live = builder.cfg.blocks.get("videoEmbed") == "live"
+            # `blocks.unlistedVideos` (schema 9): an unlisted Vimeo link's code (`?h=`) goes to the player; absent, it is left out and named
+            unlisted_videos = bool(builder.cfg.blocks.get("unlistedVideos"))
+
+            def note(self, text):
+                """A build note (printed `note:` by a build, carried on `Acceptance.notes`), once however often a page renders the line."""
+                if text not in builder.notes:
+                    builder.notes.append(text)
 
             def asset(self, kind):
                 return builder.asset_html(from_out, kind)

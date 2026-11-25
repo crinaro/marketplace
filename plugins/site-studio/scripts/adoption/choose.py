@@ -68,6 +68,10 @@ moved out of this file unedited, design-adopt-parity-2 step 1); this module DECI
     under the look derived FOR the candidate. Only the live address lets the look derive map a player (the page's own address is the
     value a slot is found by), so the plugin's click-to-load address (`facade`, the default) is judged first and the live one wins
     when it leaves fewer visible differences. The key is the ADDRESS; the look's markup says whether a player loads with the page.
+    `blocks.unlistedVideos` (schema 9, dev 1060) is the same address's other half, the private code of an unlisted Vimeo link: offered only
+    where an old page's player address carries an `h` (`candidates.old_player_hash`), PAIRED with `videoEmbed` by `candidates.partner` (each
+    `videoEmbed` candidate is scored under the better `unlistedVideos` value, as `cardNumber` is under `cardNumberFormat`), then judged
+    on its own right after it; both are `JUDGED_LAST`. An old site whose players carry no `h` is never offered it, and reads as before.
   * A LOOK IS KEPT PER CONSTRUCT (rule L, design-adopt-parity-2 section 6, step 11; it replaced D2's whole-look refusal, dev 941). A
     derived look is a look of FEWEST differences when no candidate is EQUAL, and fewest is not the same as nothing taken away. Once
     every other setting has its value, `adoption.lookkeep.keep` asks what the look the plan keeps loses (`lost_content`, read through
@@ -97,7 +101,7 @@ over fakes and the real one is `accept`-backed in `adoption.measure`).
 import json
 
 from adoption import homeparts  # noqa: F401 -- read through this module by test_choose.py (`C.homeparts`)
-from adoption.candidates import (BUILT_IN_VIEWS, DEFAULTS, VIDEO_EMBED, candidates_for, look_partner, partner, portfolio_facts,
+from adoption.candidates import (BUILT_IN_VIEWS, DEFAULTS, UNLISTED, VIDEO_EMBED, candidates_for, look_partner, partner, portfolio_facts,
                                  setting_names)
 from adoption import facts, joint, lookkeep
 from adoption.scoring import judge_by_facts, judged_paths, lost_content, one_build_pages, refusal_line, refusals, score
@@ -117,7 +121,7 @@ HOME_OPTIONS = ("titleForm", "introScope", "partOrder")    # the home page's own
 #                                                            leaves the home's wrapped parts ambiguous), and no other setting under them
 LONE_REFERENCE = "blocks.loneReferenceGrid"    # judged under every other setting, and no other setting under it (see JUDGED_LAST)
 BODY_HEADINGS = "blocks.headings"     # step 8b: judged under `blocks.headingLevel` (which wins inside a block), never it under this
-JUDGED_LAST = HOME_OPTIONS + (LONE_REFERENCE, VIDEO_EMBED, BODY_HEADINGS)   # judged under every other setting; no setting that is not one of these is judged under them
+JUDGED_LAST = HOME_OPTIONS + (LONE_REFERENCE, VIDEO_EMBED, UNLISTED, BODY_HEADINGS)   # judged under every other setting; no setting that is not one of these is judged under them
 NEEDS_LOCAL = ("look", "backLink")          # settings whose candidates come from the old builder's own output
 NEVER_TIED = ("look", "carried")            # rule J (section 8.1): never judged together; a chosen or all-refused setting has no tie either
 

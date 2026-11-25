@@ -25,6 +25,10 @@ from configschema.configkeys import (
     NAV_HOME_TITLE,
     NAV_KEYS,
     NAV_LABEL_KEYS,
+    REFERENCES_KEYS,
+    REFERENCE_UNPRINTED_KEYS,
+    REFERENCE_WORD_MAX,
+    REFERENCE_WORDS_MAX,
     RESUME_HEADINGS,
     SCHEMA_MAX,
     SIZE_COPIES,
@@ -32,6 +36,7 @@ from configschema.configkeys import (
     TITLE_SEPARATOR_MAX,
     V6_NAV_KEYS,
     V8_NAV_KEYS,
+    V9_BLOCKS_KEYS,
     VIDEO_EMBED_FORMS,
     _LOOK_RE,
 )
@@ -64,6 +69,15 @@ def needs_schema_8(where, have):
                            found="schema %d" % have, expected="schema 8",
                            fix="run `python3 build.py raise-schema --to 8`, which lists what the page changes before "
                                "it writes schema 8")
+
+
+def needs_schema_9(where, have):
+    """A schema-9 key under a lower declared schema: 0.8.0 refuses it as an unknown key, and 0.9.0 refuses it naming the
+    schema (design-reference-layout section 5)."""
+    return SiteConfigError("site.json: '%s' needs \"schema\": 9" % where, path=where,
+                           found="schema %d" % have, expected="schema 9",
+                           fix="run `python3 build.py raise-schema --to 9`, which lists what the page changes before "
+                               "it writes schema 9")
 
 
 def _look_local(v, look=None):
@@ -196,7 +210,9 @@ def _blocks_check(raw, col, schema=SCHEMA_MAX):
     player's own address with nothing added, the form a site built elsewhere put in its pages (`player.vimeo.com/video/ID`),
     so a look that places the player in `videos.item` can match those pages. Only the ADDRESS changes: whether a player
     loads with the page or after a click is the look's markup (decision 34). "facade" is accepted at 4 and normalised
-    away; any other value is refused, naming the two."""
+    away; any other value is refused, naming the two.
+    `unlistedVideos` (schema 9, design-reference-layout section 2, owner answer O-1 b) is `true` only: an unlisted Vimeo
+    link's private code is sent to the player. Absent is the default; below 9 it is refused naming the schema."""
     if not isinstance(raw, dict):
         col.run(_bad, "blocks", "an object", raw)
         return {}
@@ -205,6 +221,8 @@ def _blocks_check(raw, col, schema=SCHEMA_MAX):
         if k not in BLOCKS_KEYS:
             col.add("site.json: unknown key 'blocks.%s'" % k, "blocks.%s" % k, "unknown key",
                     "one of: " + ", ".join(BLOCKS_KEYS), "remove 'blocks.%s'" % k)
+        elif k in V9_BLOCKS_KEYS and schema < 9:
+            col.problems.append(needs_schema_9("blocks.%s" % k, schema).problem)
     if "headingLevel" in raw:
         v = raw["headingLevel"]
         if type(v) is not int or v not in BLOCK_HEADING_LEVELS:        # a bool is an int, and 3.0 equals 3: neither is one
@@ -236,6 +254,100 @@ def _blocks_check(raw, col, schema=SCHEMA_MAX):
                     "set blocks.headings to \"as-written\" to print a body's headings at the level written, or remove it")
         elif v != RESUME_HEADINGS[0]:
             out["headings"] = v
+    if "unlistedVideos" in raw and schema >= 9:
+        v = raw["unlistedVideos"]
+        if v is not True:
+            col.add("site.json: 'blocks.unlistedVideos' must be true", "blocks.unlistedVideos", _shown(repr(v)), "true",
+                    "set blocks.unlistedVideos to true to send an unlisted Vimeo link's code to the player, or remove it")
+        else:
+            out["unlistedVideos"] = True
+    return out
+
+
+def _reference_word(v, where):
+    """One word of a `references` list: a non-empty one-line string with no surrounding whitespace, at most
+    `REFERENCE_WORD_MAX` characters (the limit of a `type` or `channel` value, so a longer word could never be used)."""
+    v = _one_line(v, where)
+    if len(v) > REFERENCE_WORD_MAX:
+        raise SiteConfigError("site.json: '%s' is %d characters; a word is at most %d" % (where, len(v), REFERENCE_WORD_MAX),
+                              path=where, found="%d characters" % len(v),
+                              expected="at most %d characters" % REFERENCE_WORD_MAX,
+                              fix="shorten the word, or remove it")
+    return v
+
+
+def _reference_words(raw, where, col):
+    """One list of `references`: 1 to `REFERENCE_WORDS_MAX` distinct words (compared in NFC, case-sensitively). Returns the
+    good words in order, or None when the list itself is refused; every fault is recorded in `col`. An empty list is refused,
+    never stored: `references` holds no list when the site sets none."""
+    if not isinstance(raw, list) or not 1 <= len(raw) <= REFERENCE_WORDS_MAX:
+        col.add("site.json: '%s' must be a list of one to %d words" % (where, REFERENCE_WORDS_MAX), where,
+                "%d item(s)" % len(raw) if isinstance(raw, list) else "not a list",
+                "one to %d words" % REFERENCE_WORDS_MAX,
+                "write %s as a list such as [\"Blog\", \"Film\"], or remove it to allow any word" % where)
+        return None
+    out, seen = [], {}
+    for i, item in enumerate(raw):
+        at = "%s[%d]" % (where, i)
+        ok, word = col.run(_reference_word, item, at)
+        if not ok:
+            continue
+        key = unicodedata.normalize("NFC", word)
+        if key in seen:
+            col.add("site.json: '%s' repeats %s" % (at, _shown(repr(word))), at, word, "each word once",
+                    "remove the repeated word (it is the same as %s[%d])" % (where, seen[key]))
+            continue
+        seen[key] = i
+        out.append(word)
+    return out
+
+
+def _references_check(raw, col):
+    """`references` (schema 9, design-reference-layout section 1.3): an object with any of `types`, `channels` (each a list of
+    words, `_reference_words`) and `unprinted` (an object whose keys are `type` and `channel`, each a list of words that are
+    stored but never printed; with the matching list set, each must be in it). `{}` is the default and normalises away, as does an
+    empty `unprinted`. Returns the good members; every fault is recorded in `col`."""
+    if not isinstance(raw, dict):
+        col.run(_bad, "references", "an object", raw)
+        return {}
+    out = {}
+    for k in raw:
+        if k not in REFERENCES_KEYS:
+            col.add("site.json: unknown key 'references.%s'" % k, "references.%s" % k, "unknown key",
+                    "one of: " + ", ".join(REFERENCES_KEYS), "remove 'references.%s'" % k)
+    lists = {}
+    for member, key in (("types", "type"), ("channels", "channel")):
+        if member in raw:
+            words = _reference_words(raw[member], "references.%s" % member, col)
+            if words is not None:
+                lists[key] = out[member] = words
+    if "unprinted" in raw:
+        un = raw["unprinted"]
+        if not isinstance(un, dict):
+            col.run(_bad, "references.unprinted", "an object", un)
+            un = {}
+        kept = {}
+        for key in un:
+            if key not in REFERENCE_UNPRINTED_KEYS:
+                at = "references.unprinted.%s" % key
+                col.add("site.json: unknown key '%s'" % at, at, "unknown key",
+                        "one of: " + ", ".join(REFERENCE_UNPRINTED_KEYS), "remove '%s'" % at)
+        for key in (k for k in REFERENCE_UNPRINTED_KEYS if k in un):      # the writer's order, whatever the file's
+            at = "references.unprinted.%s" % key
+            words = _reference_words(un[key], at, col)
+            if words is None:
+                continue
+            member = key + "s"
+            names = set(unicodedata.normalize("NFC", w) for w in lists.get(key, ()))
+            outside = [(i, w) for i, w in enumerate(words) if key in lists and unicodedata.normalize("NFC", w) not in names]
+            for i, w in outside:
+                col.add("site.json: '%s[%d]' is %s, which references.%s does not list" % (at, i, _shown(repr(w)), member),
+                        "%s[%d]" % (at, i), w, "a word of references.%s" % member,
+                        "add %s to references.%s, or remove it from %s" % (_shown(repr(w)), member, at))
+            if not outside:
+                kept[key] = words
+        if kept:
+            out["unprinted"] = kept
     return out
 
 

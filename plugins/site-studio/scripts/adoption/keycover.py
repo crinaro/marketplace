@@ -21,7 +21,7 @@ first half, so `waits_on_work_keys` and the blocker codes (`blockers.REFUSAL_COD
 import re
 
 from contentmodel.keytables import V5_PIECE_KEYS, VIEW_PIECE_KEYS
-from contentmodel.strays import UNKNOWN_KEY_FIX
+from contentmodel.strays import UNKNOWN_KEY_FIX, UNREAD_TAIL
 from configschema import diagnostics
 
 from adoption.convert import PIECE_KEY_SYNONYMS, TILE_KEY_SYNONYMS
@@ -129,6 +129,17 @@ def cover_keys(probs, views=None, pending=(), parity=None, unmodelled=None, left
 # The `found` of a "read elsewhere" note (design 6.1 item 2): a note, not a decision. `split_notes` takes it out of the problems,
 # so it is never counted in `you decide` and `apply` never waits on it; `note_lines` prints it once per key and portfolio.
 NOTE = "a key another view or setting of the plugin reads"
+
+
+READS_NOTE_FIX = "give a page that key, or take it out of the look's reads"
+
+
+def reads_note_problems(build_notes, path):
+    """dev 1058: the build notes `strays.unread_notes` made ("`K` is named by the look's `reads` T, and no page reads it"; the
+    others of `Acceptance.notes` are left), as notes in `cover_keys`' own shape, at `path` (the look file the site names): so
+    `split_notes` and `note_lines` take them as they take a "read elsewhere" note, and they are never counted in `you decide`."""
+    return [diagnostics.make_problem("%s: %s" % (path, n), path, NOTE, "a page that reads it", READS_NOTE_FIX, False)
+            for n in build_notes if n.endswith(UNREAD_TAIL)]
 
 
 def split_notes(probs):

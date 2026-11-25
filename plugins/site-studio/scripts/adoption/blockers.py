@@ -106,14 +106,17 @@ def look_occurrences(look_status):
 
 
 def accounting_occurrences(accounting, family_of, area_of):
-    """no-landing and unobservable causes from the file accounting, by family and area; never a path."""
+    """no-landing and unobservable causes from the file accounting, by family and area; never a path. A path of an unsettled group
+    is a cause only where it stayed `undisposed`: one the person kept, or a late file that blocks nothing, is not (4.3)."""
     out = []
-    for path, (disp, _why) in sorted((accounting.get("dispositions") or {}).items()):
-        if disp == "no-landing":
+    disp = accounting.get("dispositions") or {}
+    for path, (d, _why) in sorted(disp.items()):
+        if d == "no-landing":
             out.append({"id": grammar.cause_id("no-landing", family_of(path), area_of(path)), "row": None})
     for group in accounting.get("unsettled") or []:
         for path in group:
-            out.append({"id": grammar.cause_id("unobservable", family_of(path)), "row": None})
+            if disp.get(path, ("undisposed",))[0] == "undisposed":
+                out.append({"id": grammar.cause_id("unobservable", family_of(path)), "row": None})
     return out
 
 

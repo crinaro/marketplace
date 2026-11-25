@@ -1,4 +1,4 @@
-"""treeschema: which schema a site needs. The schema-2, 3, 4, 5, 6, 7 and 8 reasons a tree can hold, `required_schema` (the one
+"""treeschema: which schema a site needs. The schema-2, 3, 4, 5, 6, 7, 8 and 9 reasons a tree can hold, `required_schema` (the one
 place that says), `tree_schema_problems` and `check_tree_schema` (the build's refusal of a file whose schema is
 below what its tree needs) and `kind_conflicts`. K reasons are keys older plugins refused; I reasons are new
 readings of text they accepted (see the `siteconfig.py` docstring)."""
@@ -28,6 +28,9 @@ from configschema.configkeys import (
     RESUME_TITLE_FORMS,
     V8_NAV_KEYS,
     V8_RESUME_KEYS,
+    V9_BLOCKS_KEYS,
+    V9_REFERENCE_KEYS,
+    V9_TOP_KEYS,
 )
 from configschema.diagnostics import SiteConfigError, make_problem
 from configschema.frontmatter import (
@@ -162,7 +165,7 @@ def schema_4_reasons(cfg, files=None):
     if cfg.look is not None:
         add(here, "sets look")
     for k in cfg.blocks:
-        if k not in V6_BLOCKS_KEYS:
+        if k not in V6_BLOCKS_KEYS and k not in V9_BLOCKS_KEYS:      # schema 6's and 9's are those schemas' reasons
             add(here, "sets blocks.%s" % k)
     for k in V4_RESUME_KEYS:
         if cfg.resume is not None and k in cfg.resume:
@@ -422,6 +425,48 @@ def schema_8_reasons(cfg, files=None, look_needs=None):
     return out
 
 
+_EFFECT_LOOK9 = "site-studio 0.8 would refuse the look as unknown"
+_EFFECT_K9 = "site-studio 0.8 would refuse the key as unknown"
+NEEDS_090 = "0.9.0"
+
+
+def schema_9_reasons(cfg, files=None, look_needs=None):
+    """Every reason this site needs schema 9 (design-reference-layout section 5), as [Reason(..., "K")]: a key, slot or part 0.8.0
+    refuses, so no tree 0.8.0 accepted holds one and raising a tree from 8 to 9 changes no output. The four rows: the key
+    `references` when it is not `{}` (`V9_TOP_KEYS`; a parsed config holds it only then), `blocks.unlistedVideos`
+    (`V9_BLOCKS_KEYS`), `project`, `type` or `channel` in a `reference.json` (`V9_REFERENCE_KEYS`; by presence, a blank value
+    included, because 0.8.0 refuses the key itself), and a look the build READS that needs 0.9.0 (the file `look` names and the
+    file `lookLocal` names, and no other, as `schema_8_reasons`). `files` and `look_needs` as `schema_8_reasons`."""
+    if files is not None and look_needs is None:
+        raise ValueError("schema_9_reasons(cfg, files) needs look_needs= ({site/looks/<name>.json: release}, from "
+                         "building.lookneeds.look_needs(files)); pass {} only when you know the tree holds no look")
+    out = []
+    here = "site/site.json"
+    for k in V9_TOP_KEYS:
+        if k in cfg.to_dict():
+            out.append(Reason(here, "sets %s" % k, _EFFECT_K9, None, "K"))
+    for k in V9_BLOCKS_KEYS:
+        if k in cfg.blocks:
+            out.append(Reason(here, "sets blocks.%s" % k, _EFFECT_K9, None, "K"))
+    for path in sorted(files or ()):
+        parts = path.split("/")
+        if (len(parts) == 4 and parts[0] == "content" and parts[1] == "references" and parts[3] == "reference.json"):
+            try:
+                data = json.loads(_text_of(files[path]))
+            except ValueError:
+                data = None
+            if isinstance(data, dict):
+                for key in V9_REFERENCE_KEYS:
+                    if key in data:
+                        out.append(Reason(path, "sets %s" % key, _EFFECT_K9, None, "K"))
+    read = set(p for p in (getattr(cfg, "look", None), getattr(cfg, "lookLocal", None)) if isinstance(p, str))
+    for path in sorted(look_needs or {}):
+        if (look_needs[path] == NEEDS_090 and path in read and _LOOK_PATH_RE.match(path)
+                and (files is None or path in files)):
+            out.append(Reason(path, "is a look that needs site-studio 0.9.0", _EFFECT_LOOK9, None, "K"))
+    return out
+
+
 def _looks_read(files, look_needs):
     """`look_needs` as given, else {}. Given `files` and no `look_needs`, {} means the looks are NOT scanned (called
     directly, `schema_5_reasons` refuses `files` without it; through here it is not refused). Since 0.5.0 a look can
@@ -432,7 +477,8 @@ def _looks_read(files, look_needs):
 
 
 def required_schema(cfg, files=None, interpretations=None, look_needs=None):
-    """The lowest schema that holds the site: 8 when any schema-8 reason holds (`schema_8_reasons`, design-adopt-local-reach
+    """The lowest schema that holds the site: 9 when any schema-9 reason holds (`schema_9_reasons`, design-reference-layout
+    section 5), 8 when any schema-8 reason holds (`schema_8_reasons`, design-adopt-local-reach
     section 2.1), 7 when any schema-7 reason holds (`schema_7_reasons`), 6 when any schema-6 reason holds (`schema_6_reasons`, a section 3.2 row
     of design-adopt-parity-2), 5 when any schema-5 reason holds (`schema_5_reasons`, and only a
     section 3.2 row of design-movement-view is one), 4 when any schema-4 reason holds (`schema_4_reasons`), 3 when
@@ -445,6 +491,8 @@ def required_schema(cfg, files=None, interpretations=None, look_needs=None):
     if files is not None and interpretations is None:
         raise ValueError("required_schema(cfg, files) needs interpretations= (content.interpretation_reasons"
                          "(files)); pass [] only when you know the tree holds none")
+    if schema_9_reasons(cfg, files, _looks_read(files, look_needs)):
+        return 9
     if schema_8_reasons(cfg, files, _looks_read(files, look_needs)):
         return 8
     if schema_7_reasons(cfg, files, _looks_read(files, look_needs)):
@@ -518,6 +566,13 @@ def tree_schema_problems(cfg, files, look_needs=None):
                                     "raise-schema --to 8`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
                                     "schema 8", "run `python3 build.py raise-schema --to 8`, which lists what "
                                     "the page changes before it writes schema 8", False, r.lineno))
+    if cfg.schema < 9:
+        for r in schema_9_reasons(cfg, files, _looks_read(files, look_needs)):
+            at = "%s:%d:" % (r.where, r.lineno) if r.lineno else r.where
+            out.append(make_problem("%s %s, which needs \"schema\": 9 in site/site.json (run `build.py "
+                                    "raise-schema --to 9`)" % (at, r.what), r.where, "schema %d" % cfg.schema,
+                                    "schema 9", "run `python3 build.py raise-schema --to 9`, which lists what "
+                                    "the page changes before it writes schema 9", False, r.lineno))
     return out
 
 
@@ -543,4 +598,6 @@ def kind_conflicts(cfg):
         out.append("site.json 'resume' is only for siteKind portfolio")
     if cfg.featuredFrom != "home":
         out.append("site.json 'featuredFrom' is only for siteKind portfolio")
+    if cfg.references:
+        out.append("site.json 'references' is only for siteKind portfolio")     # no earlier tree holds it (design-reference-layout 1.2)
     return out

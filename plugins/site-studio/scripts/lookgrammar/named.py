@@ -188,12 +188,13 @@ def as_look(look, name):
     """The look a named construct prints through: a copy of the effective `look` whose entry for the base is the named
     entry's parts (a part it leaves out renders from the default look's entry for the base) and whose `assets` has no
     entry for the base (it links nothing, as a construct a look writes without an `assets` entry). Every other construct,
-    the `reads` and the stylesheets are the effective look's."""
+    the `reads`, the `read_keys` (the same set, not a copy) and the stylesheets are the effective look's."""
     entry = _table(look)[name]
     sub = copy.copy(look)
     sub.constructs = dict(look.constructs)
     sub.constructs[entry.like] = dict(entry.parts)
     sub.assets = dict((c, k) for c, k in look.assets.items() if c != entry.like)
+    sub.read_keys = look.read_keys      # dev 1058: what a named construct's page reads counts for the effective look
     return sub
 
 

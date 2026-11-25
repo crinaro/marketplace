@@ -60,18 +60,19 @@ def raise_report(files, to=3, edited=None):
 
 
 def raise_schema_main(argv):
-    """`build.py raise-schema --repo DIR [--to 3|4|5|6|7|8] [--keep-text PATH:LINE ...] [--confirm]`: move a site to schema 3
-    (the default), 4, 5 or 6. Lists every output difference first and refuses until each is confirmed or kept as text; a
+    """`build.py raise-schema --repo DIR [--to 3|4|5|6|7|8|9] [--keep-text PATH:LINE ...] [--confirm]`: move a site to schema 3
+    (the default), 4, 5, 6, 7, 8 or 9. Lists every output difference first and refuses until each is confirmed or kept as text; a
     problem the new schema raises is never confirmable (at 4 that includes a custom `:::part` whose name the schema
     now fixes: the refusal names both, and nothing is written). Reads and writes the working tree; the person commits.
     A raise to 4 changes no page when the tree holds no schema-3 reading (design 3.1 rule 2: every schema-4 name is
     a key or token 0.3.x refused), and says "no page changes"; so does a raise from 4 to 5 (design-movement-view 3.1
-    rule 1: every schema-5 name is one 0.4.x refused), and from 5 to 6 (design-adopt-parity-2 3.1 rule 1: every schema-6
-    name is one 0.5.x refused)."""
+    rule 1: every schema-5 name is one 0.4.x refused), from 5 to 6 (design-adopt-parity-2 3.1 rule 1: every schema-6
+    name is one 0.5.x refused), and so on up to 8 to 9 (design-reference-layout section 5: every schema-9 name is one 0.8.0
+    refused)."""
     ap = argparse.ArgumentParser(prog="build.py raise-schema", allow_abbrev=False)
     ap.add_argument("--repo", default=".")
     ap.add_argument("--keep-text", action="append", default=[], metavar="PATH:LINE")
-    ap.add_argument("--to", type=int, choices=(3, 4, 5, 6, 7, 8), default=3, help="the schema to raise to (default 3)")
+    ap.add_argument("--to", type=int, choices=(3, 4, 5, 6, 7, 8, 9), default=3, help="the schema to raise to (default 3)")
     ap.add_argument("--confirm", action="store_true", help="accept the listed differences and write the new schema")
     args = ap.parse_args(argv)
     repo = os.path.abspath(args.repo)

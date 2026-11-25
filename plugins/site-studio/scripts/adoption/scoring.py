@@ -366,7 +366,7 @@ def scopes(name, ports, cands=()):
         return [Scope("the titles", lambda p: p == "resume/index.html", lambda f: f.kind == "title")]
     if fam == "view" and port:
         return [Scope("the index", lambda p: p == port + "/index.html", _content)]
-    if fam == "blocks.videoEmbed":
+    if fam in ("blocks.videoEmbed", "blocks.unlistedVideos"):          # one address, two settings (dev 1060): the same players
         return [Scope("the players", _is_page, lambda f: f.kind in ("frame", "link"))]
     if fam in ("mediaPaths", "sizeCopies"):
         return [Scope("the pictures", _is_page, lambda f: f.kind == "imgfile", files=_picture_file)]

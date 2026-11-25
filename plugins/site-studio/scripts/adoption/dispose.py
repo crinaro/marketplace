@@ -16,6 +16,7 @@ converted name, so what is archived or drafted is the file the build would have 
 """
 
 from adoption.accounting import ARCHIVE_REL, archive_path, dump_archive, is_piece_index, parse_archive
+from adoption.base import Refused
 
 
 def conv_name(path, notes):
@@ -27,13 +28,16 @@ def conv_name(path, notes):
 
 
 def set_draft(blob):
-    """The piece text with `draft: true` as the first front-matter key (a file with no front matter gets one)."""
+    """The piece text with `draft: true` as the first front-matter key (a file with no front matter gets one), in the file's own line
+    ends, its byte order mark kept in front (the build drops a BOM and reads CR LF as LF: `frontmatter.decode_text`)."""
     text = blob.decode("utf-8", "replace")
-    if text.startswith("---\n"):
-        head, _sep, rest = text[4:].partition("\n---")
-        lines = [l for l in head.split("\n") if not l.startswith("draft:")]
-        return ("---\ndraft: true\n" + "\n".join(lines) + ("\n" if lines and lines[-1] else "") + "---" + rest).encode("utf-8")
-    return ("---\ndraft: true\n---\n" + text).encode("utf-8")
+    bom, text = ("\ufeff", text[1:]) if text.startswith("\ufeff") else ("", text)
+    nl = "\r\n" if "\r\n" in text else "\n"
+    if text.startswith("---" + nl):
+        head, _sep, rest = text[3 + len(nl):].partition(nl + "---")
+        lines = [l for l in head.split(nl) if not l.startswith("draft:")]
+        return (bom + "---" + nl + "draft: true" + nl + nl.join(lines) + (nl if lines and lines[-1] else "") + "---" + rest).encode("utf-8")
+    return (bom + "---" + nl + "draft: true" + nl + "---" + nl + text).encode("utf-8")
 
 
 def apply_dispositions(view, files, gone, notes, dispositions, persons=None, rename=None):
@@ -55,6 +59,9 @@ def apply_dispositions(view, files, gone, notes, dispositions, persons=None, ren
             if not view.exists(conv):
                 continue
             dest = archive_path(path)
+            if view.exists(dest):                  # never over a file of the person's own (`accounting.account` says so first)
+                raise Refused("%s already exists, so %s cannot be archived there; move or rename one of them, or keep it with "
+                              "`adopt.py file %s keep`" % (dest, path, path))
             files[dest] = view.read(conv)
             gone.add(conv)
             files.pop(conv, None)

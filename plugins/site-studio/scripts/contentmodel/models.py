@@ -52,6 +52,10 @@ class Reference(object):
         self.name = name
         self.data = data
         self.card_path = card_path
+        # schema 9 (design-reference-layout section 1.2): the piece key a valid `project` names, and whether that piece is a draft;
+        # set by `referencelayout.check` once the pieces are loaded. None for a reference with no `project` (every earlier tree).
+        self.project = None
+        self.project_draft = False
 
 
 class Content(object):

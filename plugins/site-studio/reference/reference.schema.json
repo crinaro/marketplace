@@ -1,0 +1,115 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/crinaro/marketplace/main/plugins/site-studio/reference/reference.schema.json",
+  "title": "reference.json (site-studio)",
+  "description": "The keys of one `content/references/<name>/reference.json` of a site-studio site at schema 9: the closed key set, the required `url` and `title`, text values, one-line values, the `url` scheme and the length limits. `fetched` is the address the page was fetched from. It cannot state what only the build can see: that a `project` names a piece, that `type` and `channel` are in the site's own lists (`references.types`, `references.channels` in site/site.json), that an `image` is a file that exists (a path that climbs out of the folder through `..` is the build's too), that no `card` file sits beside `image`, and the site's declared `schema` (a key marked schema 4, 5 or 9 is refused below that schema). The build is the check either way. A `$schema` key is not accepted in a reference.json.",
+  "type": "object",
+  "required": [
+    "url",
+    "title"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "url": {
+      "type": "string",
+      "description": "the page's address (required)",
+      "pattern": "^https?://[\\s\\S]*"
+    },
+    "title": {
+      "type": "string",
+      "description": "the page's title (required)",
+      "pattern": "^[\\s\\S]*\\S[\\s\\S]*"
+    },
+    "description": {
+      "type": "string",
+      "description": "a short description"
+    },
+    "site": {
+      "type": "string",
+      "description": "the site's name"
+    },
+    "published": {
+      "type": "string",
+      "description": "the publication date"
+    },
+    "kind": {
+      "type": "string",
+      "description": "what sort of page it is"
+    },
+    "captured": {
+      "type": "string",
+      "description": "when it was captured"
+    },
+    "image": {
+      "type": "string",
+      "description": "the card image: a path inside the reference's own folder, such as `media/preview.jpg`; used instead of a `card` file, and naming both is refused (schema 4)",
+      "pattern": "^(?![\\s\\S]*\\\\)(?!/)(?!\\.\\.(?:/|(?![\\s\\S])))(?![A-Za-z][A-Za-z0-9+.-]*:)[\\s\\S]*(?:\\.[jJ][pP][gG]|\\.[jJ][pP][eE][gG]|\\.[pP][nN][gG]|\\.[wW][eE][bB][pP])(?![\\s\\S])"
+    },
+    "role": {
+      "type": "string",
+      "description": "one line on what you did, printed on every card of the reference (schema 4)",
+      "pattern": "^(?=[^\\r\\n]*\\S)[^\\r\\n]*(?![\\s\\S])"
+    },
+    "fetched": {
+      "type": "string",
+      "description": "the address the page was fetched from; adopt puts the template's `captured_from` here; stored, never printed (schema 4; a date written under the older wording still builds)"
+    },
+    "author": {
+      "type": "string",
+      "description": "who wrote the page; printed through the optional `reference-card.author` part of your own look (0.8.0), never otherwise (schema 4)"
+    },
+    "imageAlt": {
+      "type": "string",
+      "description": "one line: the alt of the reference's card picture, on every card of it (schema 5)",
+      "pattern": "^[^\\r\\n]*(?![\\s\\S])"
+    },
+    "imagePosition": {
+      "type": "string",
+      "description": "a CSS position such as `center 30%`: that picture's `object-position` (schema 5)",
+      "pattern": "^[a-z0-9% .-]{1,40}(?![\\s\\S])"
+    },
+    "project": {
+      "type": "string",
+      "description": "the piece this reference is for: a piece's folder name (`harbor-lights`), or `<portfolio>/<folder>` when two portfolios hold that name; a name that matches no piece is refused. One line; a blank value reads as absent (schema 9)",
+      "pattern": "^\\s*(?:\\S(?:[^\\r\\n]*\\S)?)?\\s*(?![\\s\\S])"
+    },
+    "type": {
+      "type": "string",
+      "description": "what the page is, in a word or two, such as `Post` or `Film`; one line of at most 80 characters, and one of `references.types` when the site sets that list. Printed through the optional `reference-card.type` part of your own look, never otherwise; a blank value reads as absent (schema 9)",
+      "pattern": "^\\s*(?:\\S(?:[^\\r\\n]{0,78}\\S)?)?\\s*(?![\\s\\S])",
+      "examples": [
+        "Article",
+        "Blog",
+        "Case study",
+        "Film",
+        "Interview",
+        "Podcast",
+        "Post",
+        "Presentation",
+        "Press",
+        "Report",
+        "Video",
+        "Website"
+      ]
+    },
+    "channel": {
+      "type": "string",
+      "description": "where its audience saw it, whatever host the address names, such as `Instagram`; one line of at most 80 characters, and one of `references.channels` when the site sets that list. Printed through the optional `reference-card.channel` part of your own look, never otherwise; a blank value reads as absent (schema 9)",
+      "pattern": "^\\s*(?:\\S(?:[^\\r\\n]{0,78}\\S)?)?\\s*(?![\\s\\S])",
+      "examples": [
+        "Bluesky",
+        "Facebook",
+        "Instagram",
+        "LinkedIn",
+        "Medium",
+        "Pinterest",
+        "Substack",
+        "Threads",
+        "TikTok",
+        "Website",
+        "X",
+        "YouTube"
+      ]
+    }
+  }
+}

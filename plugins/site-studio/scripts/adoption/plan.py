@@ -24,12 +24,16 @@ from adoption.tokens import detect_resume
 from adoption.parity import parity_basis, stale_parity
 
 PLAN_SCHEMA = 1                    # what an empty plan, and a plan with nothing that needs 2, is written at
-PLAN_SCHEMA_MAX = 4                # schema 2 adds `settings`, `files[path].disposition` and the verdict MARKUP-ONLY; 3 the parity's
+PLAN_SCHEMA_MAX = 5                # schema 2 adds `settings`, `files[path].disposition` and the verdict MARKUP-ONLY; 3 the parity's
 #                                    `plugin`, `open` and `shots` (design-adopt-parity-2 3.2), and a setting 0.5.x has no name for
 PARITY_V3 = ("plugin", "open", "shots")
 # Plan schema 4 (design-adopt-ownership-line 2.7): the measured rows of the person's look entries, named `look.<construct>` and
 # `reads.<target>`, which 0.6.0 has no name for; 0.6.0 refuses the plan at schema 4 ("update site-studio").
 PERSON_ROWS = ("look.", "reads.")
+# Plan schema 5 (design-reference-layout 4.3): a `keep` on a file that is not a workflow, which 0.8.0 would read as a plain `kept` and
+# hide a loss with, and the two settings 0.9.0 writes (`blocks.unlistedVideos`, `referenceLayout`); 0.8.0 refuses the plan at schema 5.
+V9_SETTINGS = ("blocks.unlistedVideos", "referenceLayout")
+_WORKFLOW = re.compile(r"^\.github/workflows/[^/]+\.ya?ml$")      # `accounting.is_workflow`'s (that module imports this one; a test says they agree)
 PERSON_VALUE_KEYS = ("file", "sha256", "pages", "yours", "derived", "status")
 PERSON_FILES = ("site/looks/local.json", "site/looks/derived.json")
 PERSON_STATUSES = ("mapped", "ambiguous", "unmapped", "none")
@@ -60,7 +64,7 @@ def parse_plan(text):
                         "again), then run `adopt.py check`" % e)
     if not isinstance(d, dict):
         raise PlanError("adopt plan: the top level must be an object")
-    two = d.get("schema") in (2, 3, 4) and not isinstance(d.get("schema"), bool)
+    two = d.get("schema") in (2, 3, 4, 5) and not isinstance(d.get("schema"), bool)
     # an empty `settings` is what an in-memory plan carries (save_plan does not write it at schema 1); a schema-1 file
     # that holds a setting is refused as an unknown key, as an older install refuses it
     allowed = ("schema", "base", "files", "facts", "paper", "parity", "folders", "siteKind", "convert") + (
@@ -103,6 +107,9 @@ def parse_plan(text):
                             % (name, ", ".join(SETTING_HOWS)))
         if person:
             _person_row(name, row, d["schema"])
+        if name in V9_SETTINGS and d["schema"] < 5:
+            raise PlanError("adopt plan: settings[%r] needs plan schema 5 (this plan says %r); delete .site-studio/adopt-plan.json and run "
+                            "`adopt.py parity` to measure again" % (name, d["schema"]))
     if not isinstance(d["base"], str) or not re.match(r"^[0-9a-f]{40}$", d["base"]):
         raise PlanError("adopt plan: 'base' must be a 40-hex commit")
     if not isinstance(d["files"], dict):
@@ -221,8 +228,12 @@ def load_plan(repo, stale=False):
 def lowest_schema(plan):
     """The lowest plan schema that holds `plan` (design 3.5: schema 2 is written only when something needs it, so an older
     install reads every plan that has nothing a schema-1 plan cannot hold). Schema 3 when the parity holds a member of
-    `PARITY_V3` (every parity this site-studio measures names its `plugin`) or a setting is one 0.5.x has no name for."""
+    `PARITY_V3` (every parity this site-studio measures names its `plugin`) or a setting is one 0.5.x has no name for; schema 4 for a
+    row of the person's look entries; schema 5 for a `keep` on a file that is not a workflow, or a `V9_SETTINGS` row."""
     parity = plan.get("parity") or {}
+    if any(n in V9_SETTINGS for n in plan.get("settings") or {}) or any(
+            f.get("disposition") == "keep" and not _WORKFLOW.match(p) for p, f in plan["files"].items()):
+        return 5
     if any(n.startswith(PERSON_ROWS) for n in plan.get("settings") or {}):
         return 4
     if any(k in parity for k in PARITY_V3) or any(

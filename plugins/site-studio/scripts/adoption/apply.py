@@ -30,8 +30,8 @@ import tempfile
 import github_url  # noqa: E402
 import report_issue  # noqa: E402
 
-from adoption import finish, lookperson
-from adoption.accounting import ARCHIVE_REL, archive_path, dump_archive, open_folders, parse_archive
+from adoption import finish, lookperson, referencepropose
+from adoption.accounting import ARCHIVE_REL, archive_path, dump_archive, open_folders, parse_archive, stale_line
 from adoption.base import NeedsAnswer, PARITY_RECORD_REL, PLUGIN, PlanError, Refused, git
 from adoption.spec import CONVERSION_CLASSES, load_spec
 from adoption.classify import _fmt_pct, classify_text, shadow_suffix
@@ -253,6 +253,8 @@ def _checked_plan(repo, base):
     if plan["base"] != base:
         raise Refused("the parity basis moved since the inventory (%s -> %s); run `adopt.py inventory` again"
                       % (plan["base"][:7], base[:7]))
+    if stale_line(plan):                         # a choice or answer made after `parity` was never measured: apply would act on it unsaid
+        raise Refused(stale_line(plan))
     return plan
 
 
@@ -274,7 +276,7 @@ def _decided_conversions(tree, data, plan, kw):
     if broken:
         raise Refused("%s is chosen, but your own builder FAILS on the tree it makes (%s) and parity is %s: apply will not "
                       "write a conversion that breaks the builder that stays your publisher. `adopt.py convert %s --keep` "
-                      "leaves it as written; or fix the builder, run `adopt.py parity` again, and accept it once parity "
+                      "leaves it as written (then `adopt.py parity` measures the tree without it); or fix the builder, run `adopt.py parity` again, and accept it once parity "
                       "is EQUAL or ACCEPTED" % (broken[0]["class"], broken[0]["failure"],
                                                 (plan["parity"] or {}).get("verdict", "not run"), broken[0]["class"]))
     return rows, held, only
@@ -499,8 +501,9 @@ def _settings_and_hooks(tree, spec, removals, kept, by_path, changes):
     return settings, hook_list
 
 
-def _archive_removals(tree, removals, changes):
-    """Archive each confirmed removal under archive/ (never delete) and list them in archive/ARCHIVE.json."""
+def _archive_removals(tree, removals, changes, moved):
+    """Archive each confirmed removal under archive/ (never delete) and list them in archive/ARCHIVE.json. `moved` ({path: where}) is
+    what the file accounting archived in this same apply (dev 1068): such a file is there already, and its row says the person's word."""
     # 4. removals last
     # decision 18: a confirmed removal is ARCHIVED under archive/ (a leading `.claude/` written `_claude/`, so a skill cannot load
     # again), never deleted, and listed in archive/ARCHIVE.json: rule `claude-config` for what was under `.claude/`, else `person`
@@ -509,12 +512,15 @@ def _archive_removals(tree, removals, changes):
 
     def archive_file(q, rule):
         dest = archive_path(q)
-        if tree.exists(dest):
-            raise Refused("%s already exists, so %s cannot be archived there; move or delete it first" % (dest, q))
-        tree.write(dest, tree.read(q))
-        tree.remove(q)
-        if q not in set(r["from"] for r in archive_rows):
-            archive_rows.append({"from": q, "disposition": "archived", "rule": rule})
+        if moved.get(q) == dest:
+            archive_rows[:] = [dict(r, rule=rule) if r["from"] == q else r for r in archive_rows]
+        else:
+            if tree.exists(dest):
+                raise Refused("%s already exists, so %s cannot be archived there; move or delete it first" % (dest, q))
+            tree.write(dest, tree.read(q))
+            tree.remove(q)
+            if q not in set(r["from"] for r in archive_rows):
+                archive_rows.append({"from": q, "disposition": "archived", "rule": rule})
         archived_here.append((q, dest))
     for p in sorted(removals):
         rule = "claude-config" if p.startswith(".claude/") else "person"
@@ -531,8 +537,7 @@ def _archive_removals(tree, removals, changes):
     if archived_here:
         tree.write(ARCHIVE_REL, dump_archive(archive_rows).encode("utf-8"))
         changes.append("%d file(s) you confirmed for removal are archived, not deleted: %s (listed in %s; nothing under archive/ is "
-                       "built or read)" % (len(archived_here), ", ".join("%s -> %s" % m for m in archived_here[:4])
-                                           + (", ..." if len(archived_here) > 4 else ""), ARCHIVE_REL))
+                       "built or read)" % (len(archived_here), ", ".join("%s -> %s" % m for m in archived_here), ARCHIVE_REL))
 
 
 def _refuse_stray_rules(decisions, removals):
@@ -622,14 +627,14 @@ def prepare(repo, date, spec=None, dry_run=False):
     undecided files: a real apply refuses on an undecided DUPLICATE or AMBIGUOUS, a dry run keeps it and says so."""
     spec = spec or load_spec()
     basis, tree, data = preconditions(repo)
-    base = basis.sha
+    base, before = basis.sha, set(tree.paths())
     plan = _checked_plan(repo, base)
     infos = inventory(tree, spec)
     by_path = dict((i["path"], i) for i in infos)
     decisions = plan["files"]
     # the measured settings, and the dispositions the last `parity` measured (design 8: every class measured, every file accounted
     # for); what `parity` did not measure is not written
-    settings = dict((k, v["value"]) for k, v in (plan.get("settings") or {}).items() if v["how"] in ("measured", "chosen"))
+    settings = referencepropose.taken(plan.get("settings"), plan["parity"])      # dev 1061: a measured layout waits until site-studio publishes
     measured = plan["parity"] or {}
     dispositions = (measured.get("accounting") or {}).get("dispositions") or None
     plan = dict(plan, folders=open_folders(plan["folders"], tree.paths(), dispositions))      # F1: the archive already settled these
@@ -644,11 +649,12 @@ def prepare(repo, date, spec=None, dry_run=False):
     moved = write_facts(tree, facts, date)
     # 3. config second
     notes, record = _write_site(tree, data, plan, only, kw, held, rows, infos, base, parity)
+    notes["referenceLines"] = referencepropose.lines(notes.get("referenceLayout"), plan.get("settings"), parity)     # dev 1061: every word, before the yes
     changes = _site_changes(tree, notes, record, plan)
     claude_old, claude_new = _carry_claude_and_gitignore(tree, rule_units, changes)
     settings, hook_list = _settings_and_hooks(tree, spec, removals, kept, by_path, changes)
     # 4. removals last
-    _archive_removals(tree, removals, changes)
+    _archive_removals(tree, removals, changes, dict((a, b) for a, b in notes["archived"] if b not in before))
     _refuse_stray_rules(decisions, removals)
     post = set(tree.paths())
     dangling = dangling_hook_paths(settings, post)
@@ -710,6 +716,7 @@ def build_message(date, basis, removals, reasons, spec, moved, changes, hook_lis
     L += ["", "Moved data (from | to):"]
     L += ["- %s | %s" % (a, b) for a, b in moved] or ["- (nothing)"]
     L += ["", "Transformed config:"] + ["- %s" % c for c in changes]
+    L += ([""] + notes["referenceLines"]) if notes.get("referenceLines") else []
     if notes.get("oldFormHits"):
         L += ["", "Your own script may depend on the old form (kept files that still hold a value adopt "
                   "replaced):"]
@@ -735,6 +742,7 @@ def build_message(date, basis, removals, reasons, spec, moved, changes, hook_lis
     L += ["", "Parity: %s" % (("%s (%s)" % (parity["verdict"], parity.get("reason", ""))) if parity else "not run")]
     out = notes.get("outcome")
     L += ([""] + out["noLanding"]) if out and out.get("noLanding") else []          # N1: every no-landing file by path
+    L += ([""] + out["undisposedLines"]) if out and out.get("undisposedLines") else []        # 4.6: and the undisposed ones, by reason
     if out:
         L += ["", "Outcome: %s%s" % ("blocked" if out["blocked"] else "every check passed",
                                        (" -- " + "; ".join(out["lines"])) if out["lines"] else

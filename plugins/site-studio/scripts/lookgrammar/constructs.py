@@ -68,8 +68,10 @@ PLACE_IMAGE_SLOTS = {"src": URL, "alt": TEXT, "width": INT, "height": INT, "srcs
 # that names the reference, so the three parts sharing this table gain it together (three `OPEN_SLOT_FIRST` rows).
 # 0.8.0 adds the open slot `author` (design-adopt-local-reach section 1.3): the optional part `reference-card.author`, filled
 # with the reference's own `author`, so the same three parts gain it together (three more rows).
+# 0.9.0 adds the open slots `type` and `channel` (design-reference-layout section 1.4): the optional parts `reference-card.type` and
+# `reference-card.channel`, filled with the reference's own `type` and `channel`, so the same three parts gain them together (six rows).
 REFERENCE_CARD_SLOTS = {"url": URL, "image": HTML, "title": TEXT, "site": HTML, "description": HTML, "role": HTML,
-                        "usedBy": HTML, "author": HTML}
+                        "usedBy": HTML, "author": HTML, "type": HTML, "channel": HTML}
 
 CONSTRUCTS = {
     # ---- 0.3.1: every construct its code builds (content.py `_Renderer`, build.py `_Builder`)
@@ -102,7 +104,9 @@ CONSTRUCTS = {
         "wrap": REFERENCE_CARD_SLOTS, "used-by": {"title": TEXT, "url": URL, "cardTitle": TEXT},
         "site": {"text": TEXT}, "description": {"text": TEXT}, "role": {"text": TEXT},
         # 0.8.0 (design-adopt-local-reach section 1.3): the author part, and the three text-only words `@kind` prints
-        "author": {"text": TEXT}, "kind-page": {}, "kind-article": {}, "kind-video": {}}},
+        "author": {"text": TEXT}, "kind-page": {}, "kind-article": {}, "kind-video": {},
+        # 0.9.0 (design-reference-layout section 1.4): the type and channel parts, each a text of its own
+        "type": {"text": TEXT}, "channel": {"text": TEXT}}},
     "reference-grid": {"first": "0.3.1", "parts": {"wrap": {"items": HTML}}},
     "card": {"first": "0.3.1", "parts": {
         "wrap": {"url": URL, "image": HTML, "title": TEXT, "teaser": HTML, "meta": HTML, "number": HTML,
@@ -200,6 +204,8 @@ PART_FIRST = {
     # default entry, so no tree's bytes move.
     ("reference-card", "author"): "0.8.0", ("reference-card", "kind-page"): "0.8.0",
     ("reference-card", "kind-article"): "0.8.0", ("reference-card", "kind-video"): "0.8.0",
+    # 0.9.0 (design-reference-layout section 1.4): the type and channel parts. Both optional: no default entry, so no tree's bytes move.
+    ("reference-card", "type"): "0.9.0", ("reference-card", "channel"): "0.9.0",
 }
 
 # A place part (design-adopt-parity-2 section 4.8; it generalises 0.5.0's `lookfiles/renderlog.py` `PLACE_PICTURES`):
@@ -269,6 +275,14 @@ OPEN_SLOT_FIRST = {
     ("feed", "item", "author"): "0.8.0",
     ("home-samples", "item", "author"): "0.8.0",
     ("reference-card", "used-by", "cardTitle"): "0.8.0",
+    # 0.9.0 (design-reference-layout section 1.4): the reference's `type` and `channel`, in the three parts that share
+    # `REFERENCE_CARD_SLOTS`. No default part holds either, so no tree's bytes move.
+    ("reference-card", "wrap", "type"): "0.9.0",
+    ("feed", "item", "type"): "0.9.0",
+    ("home-samples", "item", "type"): "0.9.0",
+    ("reference-card", "wrap", "channel"): "0.9.0",
+    ("feed", "item", "channel"): "0.9.0",
+    ("home-samples", "item", "channel"): "0.9.0",
 }
 
 # A top-level key of a look file, with the release that added it (design-adopt-ownership-line section 2.1): 0.6.0 refuses
@@ -285,7 +299,8 @@ OPTIONAL_PARTS = frozenset((("steps-view", "role-sep"), ("steps-view", "image"),
                             ("nav", "link-section"), ("feed", "item"), ("home-samples", "item"),
                             ("tiles", "item-accent"), ("reference-card", "used-by"), ("reference-card", "author"),
                             ("reference-card", "kind-page"), ("reference-card", "kind-article"),
-                            ("reference-card", "kind-video")))
+                            ("reference-card", "kind-video"), ("reference-card", "type"),
+                            ("reference-card", "channel")))
 # Parts that are literal text and nothing else (no slot: the table gives none; no element: `looks.check_part`).
 TEXT_ONLY_PARTS = frozenset((("steps-view", "role-sep"), ("reference-card", "kind-page"),
                              ("reference-card", "kind-article"), ("reference-card", "kind-video")))

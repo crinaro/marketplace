@@ -33,7 +33,8 @@ from adoption.convert import (
     label_conversions, normalise_redirect_keys, piece_renames,
 )
 from adoption.parity import current_parity, decide_conversions, template_fingerprint
-from adoption.keycover import cover_keys, split_notes
+from adoption import referencepropose
+from adoption.keycover import cover_keys, reads_note_problems, split_notes
 
 # A template key `pieceKeys` leaves under `view: showcase`, with the plugin key the steps view reads it as (design-movement-view
 # rule 5 and 6.2): `check` names it once, with that fix.
@@ -168,6 +169,9 @@ def accept_warnings(acc, pending=(), parity=None, notes=None):
                                           UNMODELLED_PIECE_KEYS, SHOWCASE_LEFT))
     if notes is not None:
         notes.extend(found)
+        cfg = getattr(acc, "cfg", None)          # dev 1058: the build's own "named by the look's reads, and no page reads it" notes
+        notes.extend(reads_note_problems(getattr(acc, "notes", None) or (), getattr(cfg, "lookLocal", None) or getattr(cfg, "look", None)
+                                         or "site/site.json"))
     return probs
 
 
@@ -414,7 +418,7 @@ def look_lines(tree, data, look_value=None):
 
 def plan_settings(plan):
     """The settings apply writes: those the last `parity` measured and those the person chose (`apply.prepare` reads the same)."""
-    return dict((k, v["value"]) for k, v in (plan.get("settings") or {}).items() if v["how"] in ("measured", "chosen"))
+    return referencepropose.taken(plan.get("settings"), current_parity(plan.get("parity")))      # dev 1061: the layout waits for the takeover
 
 def held_problems(tree, data, plan):
     """`you decide` problems that `check` and `inventory` must not leave out (dev #864 verify, F4): when a conversion
@@ -434,7 +438,7 @@ def held_problems(tree, data, plan):
         "%s is chosen, but your own builder FAILS on the tree it makes (%s) and parity is %s"
         % (r["class"], r["failure"], (plan["parity"] or {}).get("verdict", "not run")),
         None, "a chosen conversion that breaks your own builder", "one your builder still builds",
-        "`adopt.py convert %s --keep` leaves it as written; or fix the builder, run `adopt.py parity` again, and "
+        "`adopt.py convert %s --keep` leaves it as written (then `adopt.py parity` measures the tree without it); or fix the builder, run `adopt.py parity` again, and "
         "accept it once parity is EQUAL or ACCEPTED" % r["class"]) for r in broken_chosen(rows, plan)]
     held = [r for r in rows if r["status"] == "you decide"]
     if not held:

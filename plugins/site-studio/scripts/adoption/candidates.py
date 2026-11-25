@@ -44,7 +44,7 @@ from adoption.template import split_front
 DEFAULTS = {"look": "site-studio", "featuredFrom": "home", "nav.home": True, "resume.headings": "shift", "resume.layout": "plain",
             "cardLabels": True,
             "cardNumber": False, "cardNumberFormat": "padded", "backLink": None, "blocks.headingLevel": None, "blocks.loneReferenceGrid": False,
-            "blocks.videoEmbed": "facade", "workKeys": "work",
+            "blocks.videoEmbed": "facade", "blocks.unlistedVideos": None, "workKeys": "work",
             "titleForm": "site", "introScope": "body", "partOrder": None,
             "featuredView": "flat", "titleSeparator": None, "nav.extra": None,          # schema 6 (design-adopt-parity-2 section 7.6)
             "blocks.headings": "shift", "sizeCopies": None, "carried": None,
@@ -56,6 +56,8 @@ def partner(name, cand, snap=None):
     """The setting whose best value a candidate of `name` is scored under, or None: the two settings do not separate on the page."""
     if name == "cardNumber" and cand is True:
         return "cardNumberFormat"
+    if name == VIDEO_EMBED:                  # dev 1060: a Vimeo player's address is two settings' (`?h=` and `dnt=1`): each `videoEmbed`
+        return UNLISTED                      # candidate is scored under the better `unlistedVideos`, which is chosen right after it
     if name == "featuredFrom" and cand == "showcase" and snap is not None:   # step 5c-4: under `cardImage` a home tile shows the card's
         shelf = featured_shelf(lambda p: snap[p].decode("utf-8", "replace"), snap, {})[1]    # picture (O4b), chosen after this one
         return "cardImage." + shelf[0].split("/")[0] if shelf else None
@@ -72,6 +74,8 @@ def look_partner(name, cand):
 
 
 VIDEO_EMBED = "blocks.videoEmbed"              # the same: its look is derived FOR the candidate, since only the live address lets the derive map a player
+UNLISTED = "blocks.unlistedVideos"             # schema 9 (dev 1060): the private code of an unlisted Vimeo link is sent to the player (`old_player_hash`)
+_OLD_PLAYER_HASH = re.compile(rb"player\.vimeo\.com/video/\d+\?[^\"'<>\s#]*?\bh=[A-Za-z0-9]{6,}")    # `?h=<code>`, `&h=` or `&amp;h=`
 
 
 _FM = re.compile(r"^([A-Za-z][A-Za-z0-9_]*):[ \t]*(.*?)[ \t]*$")
@@ -199,7 +203,20 @@ def has_video(snap):
     return False
 
 
-KICKER_MAX = 4                       # cardKicker's piece keys tried after the default (design-movement-view 6.3)
+def has_vimeo_link(snap):
+    """True when a page body of the converted tree holds a `vimeo.com/<number>` address, in any of the three places (a `:::videos` row,
+    a gallery video row, a line that holds only the link): the places `blocks.unlistedVideos` sends a code from."""
+    return any(p.startswith("content/") and p.endswith(".md") and not p.startswith("content/references/")
+               and re.search(rb"vimeo\.com/\d", b) is not None for p, b in snap.items())
+
+
+def old_player_hash(local):
+    """True when a page of the old builder's own output (`local`, {path: bytes} or None) holds a Vimeo player address with an `h`
+    parameter, the private code of an unlisted video. No old build, and a site whose old players carry none, read False."""
+    return any(p.endswith((".html", ".htm")) and _OLD_PLAYER_HASH.search(b) is not None for p, b in (local or {}).items())
+
+
+KICKER_MAX = 4                      # cardKicker's piece keys tried after the default (design-movement-view 6.3)
 TEASER_SOURCES = tuple(src for src, dst in PIECE_KEY_SYNONYMS if dst == "teaser")    # what a pending conversion makes `teaser`
 
 
@@ -386,6 +403,8 @@ def candidates_for(name, snap, data, local=None, settings=None):
         return [False, True] if has_lone_reference(snap) else [False]
     if name == VIDEO_EMBED:
         return ["facade", "live"] if has_video(snap) else ["facade"]
+    if name == UNLISTED:                   # dev 1060: only where an old player address carries a code AND the tree links a Vimeo video
+        return [None, True] if old_player_hash(local) and has_vimeo_link(snap) else [None]
     if name == "workKeys":
         work = (data or {}).get("work") or {}
         shared = work.get("meta") or work.get("cardMeta")
@@ -734,8 +753,8 @@ def setting_names(snap):
         names += ["backLink"] if portfolio_facts(snap) else []
     names += ["menuLinks.%s" % p for p in sorted(portfolio_facts(snap))]
     names += ["onePieceIndex.%s" % p for p in sorted(portfolio_facts(snap))]
-    names += ["blocks.headingLevel", "blocks.headings", "blocks.loneReferenceGrid", "blocks.videoEmbed", "titleForm", "introScope",
-              "partOrder"]          # `blocks.headings` after the level a block's heading takes (choose.JUDGED_LAST, step 8b)
+    names += ["blocks.headingLevel", "blocks.headings", "blocks.loneReferenceGrid", "blocks.videoEmbed", UNLISTED, "titleForm",
+              "introScope", "partOrder"]          # `blocks.headings` after the level a block's heading takes (choose.JUDGED_LAST, step 8b)
     names += ["view.%s" % p for p in sorted(portfolio_facts(snap))]
     return names
 

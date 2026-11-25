@@ -466,7 +466,10 @@ def check_part(construct, part, text, shipped=False, template=False, parsed=None
 class Look(object):
     """A parsed look: `constructs` {id: {part: text}}, `stylesheets` [path], `assets` {id: [kind]}, and from 0.7.0 `reads`
     {target: `lookgrammar.reads.Spec`} ({} for a look with no `reads` key: every target reads what 0.6.0 reads) and `named`
-    {name: `lookgrammar.named.Named`} ({} with no `named` key: no block or view of the site's own)."""
+    {name: `lookgrammar.named.Named`} ({} with no `named` key: no block or view of the site's own). 0.9.0 (dev 1058):
+    `read_keys`, a set of (reads target, key) the build fills as a page's value comes from that key
+    (`building.readsources`, `building.pictures`); a build that has rendered every page says from it which key of a piece
+    a `reads` entry names and no page read (`contentmodel.strays.unread_notes`). `named.as_look` hands the same set on."""
 
     def __init__(self, constructs, stylesheets, assets, where, reads=None, named=None):
         self.constructs = constructs
@@ -475,6 +478,7 @@ class Look(object):
         self.where = where
         self.reads = dict(reads or {})
         self.named = dict(named or {})
+        self.read_keys = set()
 
     def has(self, construct, part):
         return part in self.constructs.get(construct, {})

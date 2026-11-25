@@ -83,6 +83,27 @@ the way the block raise above runs: show its report, and only after their yes ru
 Raising to 4 changes no page, and a 0.3.x install of the plugin on another computer then refuses the tree
 until it is updated: say so first.
 
+### An unlisted Vimeo link (schema 9; offer, never assume)
+
+An unlisted Vimeo address carries a private code (`vimeo.com/<id>/<code>`, or `?h=<code>`). By default the build
+leaves the code out of the player's address, so the video shows Vimeo's own notice instead of playing, and every build
+names each such link (file and line). When the person adds one, **offer `blocks.unlistedVideos`**, and say what it
+publishes: the private code goes into the page, where any visitor can read it. In a `:::videos` row or a gallery video the
+page's own link already shows it; on a line that holds only the link, this is the first time it is published. A public
+Vimeo or YouTube link needs none of this. Only on their yes: raise the site first if it is below schema 9
+(`build.py raise-schema --repo <dev repo> --to 9`: show its report, and add `--confirm` after their yes; a copy of the
+plugin older than 0.9.0 on another computer then says "update site-studio"), add `"unlistedVideos": true` to the
+`blocks` object in `site/site.json`, then run `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/siteconfig.py" check site/site.json`.
+
+### A reference for this piece (schema 9; offer, never assume)
+
+When the person adds a reference for the piece (a `ref: <name>` line in its body, or a page just captured for it),
+offer to say which piece it is for: `"project": "<the piece's folder name>"` in that reference's `reference.json`
+(`<portfolio>/<folder>` when two portfolios hold the same folder name). It is a plain key that prints nothing by
+itself; where the look has a "used by" line, the reference names this piece even when no `ref:` line does, and **it follows the
+piece if it is moved** to another portfolio. It needs schema 9 (raise the site as above, with the same warning about
+older copies). `/site-studio:capture` asks the same question for each page it saves.
+
 ### Moving a piece to another portfolio
 
 When the person wants an existing piece under another portfolio, do not move the folder by hand:
@@ -92,7 +113,7 @@ schema 3 (otherwise it names `build.py raise-schema` and writes nothing). It com
 memory first and writes nothing unless the finished site builds and keeps or releases every address the piece
 had published: each page gets a redirect, every other file (an image, a PDF) is recorded as released in
 `.site-studio/addresses.json` with the reason "moved with <slug>", and `{{link:...}}` and the home
-page's `featured` and `showcase` names follow the piece. **A move writes the site at schema 4** (the
+page's `featured` and `showcase` names follow the piece, and so does a reference's `project` that names it. **A move writes the site at schema 4** (the
 address record is a schema-4 file, so a 0.3.x install refuses the tree instead of publishing it without
 the address guard): tell the person that before you run it. Read its output to the person, then commit
 exactly the paths it printed (it never commits). The released files are named at the next publish's dry run,

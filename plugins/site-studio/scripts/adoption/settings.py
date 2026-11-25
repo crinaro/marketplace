@@ -49,6 +49,15 @@ choice fixes the one before it; interactions beyond that are design UNDETERMINED
                       (Vimeo's with `dnt=1`), or the player's own address with nothing added, for an old site whose pages hold live players;
                       offered only where the converted tree holds a `:::videos` block or a gallery video row. It changes the ADDRESS only:
                       whether a player loads with the page is the look's markup, so it is measured under the look derived for it
+  blocks.unlistedVideos
+                      absent (the default) or true (schema 9, `blocks.unlistedVideos`, site.json): the private code of an unlisted Vimeo link
+                      (`vimeo.com/<id>/<code>`) is sent to the player, as the old site's player address carried it; the code is then in the
+                      page, where a visitor can read it. Offered only where an old page's player address carries an `h`; judged with
+                      `blocks.videoEmbed`, whose candidates are each scored under the better value of this one
+  referenceLayout     absent (the default) or the list of reference keys written, of `project`, `type` and `channel` (schema 9, `reference.json`; dev
+                      1061, the owner's answer O-2): the sure ones `adoption.referencepropose` suggests, written by default where no page gets
+                      worse and site-studio is the publisher; `adopt.py setting referenceLayout none` (an empty list) or a part is the person's
+                      word. Written by `convert` after the dispositions, so a reference the accounting archives is not one
   menuLinks.<p>       `index` (the default) or `single-piece`: a portfolio that builds exactly one piece has its menu link go to that piece
                       (V06), written as `menuLinks` in the portfolio's page.md; offered only for a one-piece portfolio
   onePieceIndex.<p>   `redirect` (the default) or `listing`: what the index of a one-piece portfolio under `menuLinks: single-piece` is (schema 4):
@@ -74,12 +83,13 @@ import unicodedata
 
 from configschema import sectioncheck
 from configschema.configkeys import (BUILTIN_PIECE_KEYS, COUNT_ANY, MEDIA_PATH_FOLDERS, NAV_HOME_TITLE, SIZE_COPIES,
-                                     TITLE_SEPARATOR_DEFAULT, TITLE_SEPARATOR_MAX, WORK_KEYS)
+                                     TITLE_SEPARATOR_DEFAULT, TITLE_SEPARATOR_MAX, V9_REFERENCE_KEYS, WORK_KEYS)
 from configschema.diagnostics import SiteConfigError
 from contentmodel.keytables import KEY_RE, piece_keys_read
 
 from adoption import carry, lookwrite, menulabels
 from adoption.base import Refused
+from adoption.accounting import stale_line
 from adoption.plan import _current_base, _plan_for, save_plan
 from adoption.homeparts import HOME_PATHS, front_values
 from adoption.template import _emit, _list_entry, _yaml, entries, home_path, scalar, split_front
@@ -89,7 +99,10 @@ V5_PORTFOLIO_SETTINGS = ("cardImage", "cardAlt", "cardKicker", "pieceLink", "pie
 SETTING_ORDER = ("look", "featuredFrom", "sort", "nav.home", "nav.labels.about", "nav.labels.resume", "resume.headings", "resume.layout",
                  "resume.titleForm", "workKeys", "cardLabels", "cardNumber", "cardNumberFormat",
                  "cardImage", "cardAlt", "cardKicker", "pieceLink", "pieceTeaser",       # a literal: test_routing reads it by `ast`
-                 "backLink", "menuLinks", "onePieceIndex", "blocks.headingLevel", "blocks.loneReferenceGrid", "blocks.videoEmbed", "titleForm", "introScope",
+                 "backLink", "menuLinks", "onePieceIndex", "blocks.headingLevel", "blocks.loneReferenceGrid", "blocks.videoEmbed",
+                 "blocks.unlistedVideos",        # dev 1060
+                 "referenceLayout",              # dev 1061, S7b: measured by `referencepropose`, written by `convert` over the finished tree
+                 "titleForm", "introScope",
                  "partOrder", "view")
 # The schema-6 settings (design-adopt-parity-2 section 7.6), chosen among the others by `candidates.setting_names`: `featuredView`
 # (`flat` or `grouped`), `nav.extra` (the menu's `https:` and `mailto:` items after the built-in ones), `titleSeparator` (the text
@@ -400,6 +413,13 @@ def apply_settings(view, files, d, settings, hints, notes, portfolios):
             if value == "live":
                 d["blocks"] = dict(d.get("blocks") or {}, videoEmbed="live")
                 notes["settings"].append("blocks.videoEmbed: live (a video keeps the player's own address, nothing added)")
+        elif name == "blocks.unlistedVideos":                 # schema 9 (dev 1060): the link's private code is sent to the player, and is on the page
+            if value is True:
+                d["blocks"] = dict(d.get("blocks") or {}, unlistedVideos=True)
+                notes["settings"].append("blocks.unlistedVideos: true (the private code of an unlisted Vimeo link is sent to the player; "
+                                         "it is then in the page, where a visitor can read it)")
+        elif name == "referenceLayout":
+            continue                                        # dev 1061: written by `convert` over the finished tree (`referencepropose.run`)
         elif fam in HOME_KEYS:
             hp = home_path(view)                       # the converted home: a renamed one is read where the rename put it
             default = {"titleForm": "site", "introScope": "body", "partOrder": None}[fam]
@@ -638,7 +658,7 @@ def parse_chosen(name, text):
         return text
     if name == "carried":
         return carried_value(text)
-    if name in _BOOLEAN or fam in _V5_TRUE:
+    if name in _BOOLEAN or fam in _V5_TRUE or name == "blocks.unlistedVideos":
         if text not in _BOOL:
             raise Refused("%s takes true or false; pass one of those" % name)
         return _BOOL[text] if name in _BOOLEAN else (True if _BOOL[text] else None)      # false is the absent key
@@ -660,6 +680,12 @@ def parse_chosen(name, text):
         if not parts or any(not re.match(r"^[a-z0-9][a-z0-9-]*$", t) for t in parts) or len(set(parts)) != len(parts):
             raise Refused("partOrder takes the home page's parts once each, lower-case and comma-separated: `intro,showcase,feed`")
         return parts
+    if name == "referenceLayout":                  # dev 1061: `all`, `none` (an empty list: the person said no) or keys with commas
+        given = [t.strip() for t in (text or "").split(",") if t.strip()]
+        if text not in ("all", "none") and (not given or len(set(given)) != len(given) or any(g not in V9_REFERENCE_KEYS for g in given)):
+            raise Refused("referenceLayout takes all, none, or keys of %s with commas between them; pass one such as `project,channel`"
+                          % ", ".join(V9_REFERENCE_KEYS))
+        return list(V9_REFERENCE_KEYS) if text == "all" else [] if text == "none" else [k for k in V9_REFERENCE_KEYS if k in given]
     if text not in _CHOICES[fam]:
         raise Refused("%s takes one of: %s" % (name, ", ".join(_CHOICES[fam])))
     return text
@@ -694,8 +720,9 @@ def cmd_setting(repo, name, text, clear=False):
                           "`adopt.py setting %s <value>`" % (name, name))
         del plan["settings"][name]
         save_plan(repo, plan)
-        return "adopt: %s is measured again at the next `adopt.py parity`" % name
+        return "\n".join(["adopt: %s is measured again at the next `adopt.py parity`" % name] + [l for l in (stale_line(plan),) if l])
     value = parse_chosen(name, text)
     plan["settings"][name] = {"value": value, "how": "chosen", "reason": "chosen with `adopt.py setting`"}
     save_plan(repo, plan)
-    return "adopt: %s = %s (chosen: `adopt.py parity` keeps it and does not measure it)" % (name, json.dumps(value))
+    return "\n".join(["adopt: %s = %s (chosen: `adopt.py parity` keeps it and does not measure it)" % (name, json.dumps(value))]
+                     + [l for l in (stale_line(plan),) if l])

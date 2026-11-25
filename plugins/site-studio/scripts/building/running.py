@@ -25,6 +25,16 @@ from contentmodel.errors import ContentError
 from building.builder import _Builder
 
 
+def _stray_stage(stage, files, model, cfg, look):
+    """dev 1058: the stray warnings of a portfolio site (never a refusal and never a change to the output: the owner invariant),
+    through the same `stage` as every other, with the effective `look` once it is loaded (a key its `reads` takes is read) and
+    None where it is refused (a refused look hides no warning)."""
+    if cfg.siteKind != "portfolio":
+        return []
+    _ok, found = stage("content.stray_warnings", "content/", strays.stray_warnings, files, model, cfg, look)
+    return list(found or ())
+
+
 def _accept(files, drafts, year, lastmod, grammar=None):
     """The one acceptance function behind `accept`, `publish_build` and `preview_build` (design-site-
     fidelity section 4.1): five stages, each collecting what it refuses, over {repo path: bytes}.
@@ -101,9 +111,6 @@ def _accept(files, drafts, year, lastmod, grammar=None):
         model = models.Content()
     if model is None:
         return finish(cfg)
-    if cfg.siteKind == "portfolio":      # never a refusal and never a change to the output (the owner invariant)
-        _ok, found = stage("content.stray_warnings", "content/", strays.stray_warnings, files, model, cfg)
-        warnings.extend(found or ())
     if cfg.siteKind == "portfolio" and (cfg.schema if grammar is None else grammar) >= 3:
         for p in _meta_key_problems(model, cfg):         # the schema-3 reading only: 0.2.0 trees build as they did
             add(p)
@@ -122,6 +129,7 @@ def _accept(files, drafts, year, lastmod, grammar=None):
                          "`build.py raise-schema` to see what would change)"
                          % ("%s:%d:" % (r.where, r.lineno) if r.lineno else r.where, r.what))
     ok, _ = stage("_Builder.load_look", cfg.look or "site/site.json", b.load_look)  # the look the site names
+    warnings.extend(_stray_stage(stage, files, model, cfg, b.look if ok else None))
     if not ok:
         return finish(cfg, model)
     ok, found = stage("trigger_slot_findings", cfg.look or "site/site.json",     # a trigger with nowhere to print
@@ -155,6 +163,8 @@ def _accept(files, drafts, year, lastmod, grammar=None):
     for p in _cr_problems(b.out):
         add(p)
     notes.extend(b.notes)
+    if not problems and cfg.siteKind == "portfolio":      # dev 1058: every page rendered and none refused: what no page read
+        notes.extend(strays.unread_notes(b.look, model))
     _ok, used = stage("provenance.used", "site/", provenance.used, b, files)    # rule S1: what the build read; no byte
     return finish(cfg, model, b.out, b.pages, used)
 
