@@ -49,6 +49,13 @@ string would break a form the candidate chose on purpose, which is not this gate
 ⚠️ This checker does NOT read the content of either file beyond its structure, and it never
 prints a proof point. Structure is engine business; the content is the candidate's.
 
+**THE LETTER GUIDE (dev 1071, design-cover-letters.md 8.4).** A profile may declare `writing.letter_guide`, a file the
+letter writer reads. A declared guide that is missing, empty, under the floor or has lost a required heading is a FAIL on
+its own `letter guide:` line (the wording `profile.py --writing` uses, from `letters/guide.py`), exit 1. None declared prints
+nothing, so every profile without one reads exactly as before. The verdict is computed BEFORE the "neither file present"
+return: a declared guide with no narrative files is not silent. This script is run by hand, not at run start (the guide
+verdict reaches run start through `letter_out.py --check`).
+
 Usage:
     check_narrative.py            # exit 1 if a convention is broken
     check_narrative.py --verbose  # show every trigger it found, by line
@@ -57,6 +64,7 @@ Python 3.9+. Standard library only.
 """
 
 import argparse
+import json
 import os
 import re
 import sys
@@ -64,6 +72,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
 import _tree
+from letters import guide as _guide
 
 # ⭐ ONLY LINE-INITIAL TRIGGERS COUNT — and getting this wrong makes the gate useless.
 #
@@ -131,6 +140,21 @@ def check_resume(path):
     return fails
 
 
+def check_letter_guide(root):
+    """The declared letter guide's verdict line, and whether it is BROKEN (dev 1071, design 8.4).
+
+    ⭐ None declared says NOTHING (the output of every profile without `writing.letter_guide` is unchanged). A declared guide
+    gets its own `letter guide` line, worded as `profile.py --writing` words it, from `letters.guide`. It is computed before
+    main()'s "neither file present" return, so a declared guide with no narrative files is not silent. An unreadable
+    config.json is said, not skipped: the key could not be looked for. Returns (line or None, broken)."""
+    try:
+        with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
+            verdict = _guide.check_guide(json.load(fh), root)
+    except (OSError, ValueError) as e:
+        return "letter guide: NOT CHECKED (config.json unreadable: %s)" % e, False
+    return (None if verdict.state == "none" else verdict.line), verdict.state == "broken"
+
+
 def main():
     ap = argparse.ArgumentParser(description="Are the narrative conventions still readable?")
     ap.add_argument("--verbose", action="store_true")
@@ -143,13 +167,16 @@ def main():
     print("NARRATIVE CONVENTIONS — can the engine still find what is in these files?")
     print("=" * 78)
     print("  profile: %s" % root)
+    guide_line, guide_broken = check_letter_guide(root)
+    if guide_line:
+        print("  %s" % guide_line)
 
     if not os.path.exists(projects) and not os.path.exists(resume):
         # No profile on this host (CI, a fresh clone). Say NOT CHECKED rather than clean —
         # the same rule the purity gate learned the hard way.
         print("\n  !! NOT CHECKED: neither projects.md nor claims.md is present here.")
         print("     Expected in CI. This is NOT a clean result and must not be read as one.")
-        return 0
+        return 1 if guide_broken else 0
 
     fails, notes, good = check_projects(projects, args.verbose)
     fails += check_resume(resume)
@@ -162,8 +189,9 @@ def main():
             print("  note  %s%s  %s" % (f, (":%d" % n) if n else "", msg))
 
     if not fails:
-        print("\n  CLEAN. Every trigger is greppable and the addenda section is present.")
-        return 0
+        print("\n  CLEAN. Every trigger is greppable and the addenda section is present."
+              + ("\n  !! The letter guide above is BROKEN: no letter is written under it until it is fixed." if guide_broken else ""))
+        return 1 if guide_broken else 0
 
     print()
     print("  !! %d BROKEN CONVENTION(S) — each one is INVISIBLE to the engine" % len(fails))

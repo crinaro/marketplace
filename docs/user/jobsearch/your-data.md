@@ -1462,6 +1462,32 @@ The one place you actually see its effect is a checkup line counting how many le
 `moot` this way, alongside the equivalent count for a touch whose role has ended
 (`data/touches.jsonl`, derived the same way by `your_move.touch_state()`).
 
+### A letter's purpose and needs, and your letter guide (since 0.95.0)
+
+**Two lines in each new letter's entry.** In `applying/cover_letters.md`, a letter written from 0.95.0 on carries two
+lines under its `**Status:**` line: `**Purpose:**`, one sentence on what the role is for, and `**Needs:**`, the things the
+role needs, each pointing at the paragraph of the letter that answers it (`a need -> P2; another -> P3`). They are the
+letter's plan, written before the letter, so you can see why it is organized the way it is. They are never shown on the
+dashboard, and `letter_out.py --check` reads them.
+
+**What the 0.95.0 upgrade does to letters you already have.** It runs the migration `m_0_95_0_letter_entries` once:
+
+1. It copies `applying/cover_letters.md` to `archive/migrations/0.95.0/cover_letters.md` before changing anything, and
+   writes `archive/migrations/0.95.0/marked.json`, the list of letters it marked.
+2. Under each letter that is still waiting to be sent and has neither line, it adds
+   `**Purpose:** unrecorded (drafted before 0.95.0)` and `**Needs:** unrecorded`. Letters already sent or moot, and every
+   other line of the file, are left exactly as they were. The check reads these markers as a note, never as a problem; the
+   writer replaces them when it next revises that letter.
+3. If your `config.json` already names a letter guide under a `writing` key of your own whose name says it is a letter or
+   cover-letter guide, it records that file as `writing.letter_guide` (your own key stays). If it finds another guide-like
+   key it cannot be sure about, it changes nothing and asks you instead, in the panel and `/jobsearch:status`.
+
+**Your letter guide.** `writing.letter_guide` names a file in your profile with your own rules for letters. The writer reads
+it first and follows it over the built-in structure, but never over the hard rules (every claim traceable, no
+compensation, one page, nothing sent for you). Set it with `letter_out.py --set-guide <path>`, which also records the
+file's `##` headings; remove it with `--set-guide none`. If the file goes missing, empty, or loses one of those headings,
+no letter is written until you choose: keep the new headings, or stop using a guide.
+
 ### Presence changes — what your LinkedIn says, and what was proposed, `presence_changes.jsonl` (since 0.93.0)
 
 A dated record of your presence copy: what your LinkedIn profile says, what the plugin proposed for

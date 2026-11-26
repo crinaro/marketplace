@@ -550,15 +550,15 @@ def main():
     # #28 shipped but nothing ran it. Its own exit code already tells the two findings apart
     # (unmigrated is advisory even at the CLI level — self-healing, migrate.py's SessionStart
     # hook already had its chance this session; an UNKNOWN root entry, the `nonexistent/`
-    # class, is the one thing that returns non-zero), so it slots into this loop exactly like
-    # every other check here, needing no special case.
+    # class, is the one thing that returns non-zero), so it slots in like every other check here.
     for name, extra_args, label in (
             ("validate_data.py", [], "data integrity"),
             ("check_rule_homes.py", [], "no rule lost / CLAUDE.md budget"),
             ("check_profile_leakage.py", [], "config is single-source"),
             ("resume_variants.py", ["--check"], "resume variants trace to the union"),
             ("trigger.py", ["--check"], "trigger/sequence links"),
-            ("_tree.py", ["--audit"], "tree structure (six-phase layout, public #28)")):
+            ("_tree.py", ["--audit"], "tree structure (six-phase layout, public #28)"),
+            ("letter_out.py", ["--check"], "cover letters + letter guide")):
         # ⚠️ test_checks.py is NOT here. It is the maintainer regression suite and does not
         # ship, so on an installed plugin this checklist reported it FAILING every run with
         # no way to clear it (#1). A gate a user cannot satisfy is not a gate.

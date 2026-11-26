@@ -76,6 +76,7 @@ from migrations import (
     m_0_92_0_decision_surface,
     m_0_93_0_word_round_trip,
     m_0_94_0_role_first,
+    m_0_95_0_letter_entries,
 )
 from migrations.stamp import engine_version, read_stamp, ver
 from migrations.stores import STORE_INTRODUCED
@@ -325,7 +326,8 @@ MIGRATIONS = (("0.4.0", m_0_4_0.m_0_4_0), ("0.13.0", m_0_13_0.m_0_13_0), ("0.14.
               ("0.93.0", m_0_93_0_word_round_trip.m_0_93_0_word_round_trip),
               # KEYED "0.94.0" (docs/design-role-first.md §11): 0.93.0 is the newest PUBLISHED release at the branch base (`jobsearch--v0.93.0` is tagged), so a
               # profile that installed it is stamped exactly "0.93.0" and pending_for()'s strict `<` fires this one. It runs LAST; its first write is the pin.
-              ("0.94.0", m_0_94_0_role_first.m_0_94_0_role_first))
+              ("0.94.0", m_0_94_0_role_first.m_0_94_0_role_first),
+              ("0.95.0", m_0_95_0_letter_entries.m_0_95_0_letter_entries))
 
 
 # Every value above must be a version key the MIGRATIONS registry actually knows, so a typo here

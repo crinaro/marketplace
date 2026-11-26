@@ -40,7 +40,7 @@ THE CONTRACT (both renderers and `check_dashboard_coverage.py`'s ELSEWHERE test 
     runs          {last_at, last_task, next_at, next_task}
     runs_effect   {verdict, detail}           did the background runs do anything
     dashboard     {state, as_of}              published dashboard vs the repo           (full only)
-    gates[]       {name, ok}                  the ORIENT gates                           (full only)
+    gates[]       {name, ok}                  the ORIENT gates, then the `letters` rows (letters.status_rows, dev 1071; a row may carry `detail` or `error`)   (full only)
     elsewhere     {in_flight[], channels_due[], week[], preps_owed[], asks[], kb_index[], sources[]}   (full only)
                   `in_flight[].state` is the role's pursuit option: a role a run did not finish is
                   `process-failure`, one no run has taken on is `waiting-intake`, one a run has open is
@@ -69,6 +69,7 @@ import sys
 HERE = os.path.dirname(os.path.realpath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
+from letters import status_rows
 
 TASKS = {"daily": "search-daily", "weekly": "search-strategy-weekly"}
 
@@ -248,7 +249,6 @@ def sec_rescreen_flags(root, today):
     out = _profile.comp_rescreen_flags(_jsonl(root, "opportunities.jsonl"), _profile.load())
     items = []
     for f in out["flags"]:
-
         items.append({"id": f["id"], "status": f["status"],
                       "title": "%s: %s" % (names.get(f.get("company_id"), "?"), f.get("title") or ""),
                       "old_verdict": f["old_verdict"], "new_verdict": f["new_verdict"],
@@ -386,9 +386,9 @@ def _run_gate(item, root):
 
 
 def sec_gates(root, today):
-    with concurrent.futures.ThreadPoolExecutor(max_workers=len(GATES)) as ex:
-        return list(ex.map(lambda g: _run_gate(g, root), GATES))
-
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(GATES) + 1) as ex:
+        letters = ex.submit(status_rows.run, root, HERE)         # a read-only child, in parallel with the gates
+        return list(ex.map(lambda g: _run_gate(g, root), GATES)) + letters.result()
 
 def sec_elsewhere(root, today, now=None):
     """The HOMES of every record the review-now dashboard no longer renders (design section 4/5).
@@ -621,8 +621,7 @@ def render_text(obj):
         else:
             add("%s:" % LABELS["gates"])
             for g in gs:
-                add("  - %s: %s" % (g["name"], "ok" if g["ok"] else
-                                    ("not checked (timed out)" if g["ok"] is None else "FAILING")))
+                add("  - %s: %s" % (g["name"], status_rows.state_text(g)))
         el = obj["elsewhere"]
         add("%s:" % LABELS["elsewhere"])
         if _na(el):

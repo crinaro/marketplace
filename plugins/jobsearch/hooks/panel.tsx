@@ -116,7 +116,9 @@ export function systemLines(snap: any): string[] {
   if (notChecked(gs)) out.push('gate health: ' + notChecked(gs))
   else if (Array.isArray(gs)) {
     for (const g of gs) {
-      out.push('gate ' + g.name + ': ' + (g.ok === true ? 'ok' : g.ok === null ? 'not checked (timed out)' : 'FAILING'))
+      // a row may say why: `error` (not checked) or `detail` (failing), e.g. the cover letters' rows (dev 1071)
+      out.push('gate ' + g.name + ': ' + (g.ok === true ? 'ok' : g.ok === null ? (g.error || 'not checked (timed out)')
+        : 'FAILING' + (g.detail ? ' - ' + g.detail : '')))
     }
   } else out.push('gate health: not computed yet')
   return out

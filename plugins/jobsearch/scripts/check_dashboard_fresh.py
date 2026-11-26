@@ -141,7 +141,7 @@ GENERATORS = ("generate_dashboard.py",)
 # generator" is enough to be IN; being certain it changes the rendered bytes is not required.
 SOURCE_FILES = [
     _tree.rel("drafts"), _tree.rel("cover_letters"),
-    _tree.rel("claims"),
+    _tree.rel("claims"), "config.json",   # 0.95.0 (dev 1071): the letters line is the letter check over config.json's `writing`; the declared guide's file is NOT a source (its verdict is in neither count the page shows)
     # jobsearch 0.71.0: presence/rules.md left this list with the presence page - it is the rules tab of a
     # review PANE now (`presence_set.py --json --surface`), and no generated page renders it.
 ]

@@ -188,7 +188,19 @@ ROLE_FIRST_METADATA = {
                                        "most title and place searches one LinkedIn search pass runs, a ceiling of 20 result pages a pass, "
                                        "one page a search (jobsearch 0.94.0)"),
 }
-METADATA = {**METADATA, **ACTION_METADATA, **ROLE_FIRST_METADATA,
+
+# ── jobsearch 0.95.0 (dev 1071, 1072, 1073; design-cover-letters.md 5.1): the profile's own cover-letter guide. Registered here, not
+# in `config_keys.py` (ratcheted, which merges `METADATA` from this module). Never seeded and no default: absent, the default letter
+# structure in `cover-letter-writer` applies and nothing is checked. The value is an object `{path, required_headings}` or a bare string
+# path; `letters/guide.py` is its strict reader, `letter_out.py --set-guide <path>|none` its writer.
+WRITING_LETTER_GUIDE = "writing.letter_guide"
+LETTER_METADATA = {
+    WRITING_LETTER_GUIDE: (None, "object", ("an object {path, required_headings}", "a bare string path inside your profile"),
+                           "your own cover-letter guide, a markdown file inside your profile; absent, the default letter structure "
+                           "applies and nothing is checked; `letter_out.py --set-guide <path>` writes it, `--set-guide none` removes "
+                           "it (jobsearch 0.95.0)"),
+}
+METADATA = {**METADATA, **ACTION_METADATA, **ROLE_FIRST_METADATA, **LETTER_METADATA,
             NETWORK_REPLY_OWED_DAYS: (60, "int", (7, 365),
                                       "a person who wrote back longer ago than this many days, with no reply drafted, is named but "
                                       "no longer listed for a reply (jobsearch 0.92.0)")}

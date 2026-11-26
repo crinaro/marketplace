@@ -30,6 +30,10 @@ check_dashboard_fresh.py's two: mtime staleness is the whole story here.
     ⚠️ mtime, not content. A fresh view can still be wrong for other reasons — the standing
     habit from check_dashboard_fresh.py applies here too: grep the output after regenerating.
 
+⭐ AFTER THE VERDICT it prints the `STAGED LETTERS` block (`letter_out.py --check --advisory`, a child), as information
+(dev 1073, design-cover-letters.md 8.3). The exit code stays about FRESHNESS ONLY, so the coordinator's applying-view row,
+which reads that code, never calls a failing letter `STALE`. `SOURCES` is unchanged.
+
 Usage:
     python3 check_applying_fresh.py            # exit 1 if stale
     python3 check_applying_fresh.py --fix       # regenerate (applying.py), then re-check
@@ -89,7 +93,26 @@ def stale():
     return bad
 
 
+def staged_letters():
+    """Print the `STAGED LETTERS` block, as information (dev 1073, design 8.3): `letter_out.py --check --advisory`, run as a
+    child because an entry point is never imported (G5.L2). It cannot change this script's exit code, which stays about
+    freshness only, and a block that could not be produced says so (`NOT CHECKED`), never nothing."""
+    try:
+        r = subprocess.run([sys.executable, os.path.join(ENGINE_SCRIPTS, "letter_out.py"), "--check", "--advisory"],
+                           capture_output=True, text=True, timeout=120)
+        block = r.stdout.strip() or "STAGED LETTERS — NOT CHECKED: letter_out.py printed nothing (exit %d)" % r.returncode
+    except (OSError, subprocess.SubprocessError) as e:
+        block = "STAGED LETTERS — NOT CHECKED: %s" % e
+    print("\n" + block)
+
+
 def main():
+    rc = freshness()
+    staged_letters()
+    return rc
+
+
+def freshness():
     ap = argparse.ArgumentParser(description="Is views/applying.md behind its sources?")
     ap.add_argument("--fix", action="store_true", help="Regenerate, then re-check.")
     args = ap.parse_args()

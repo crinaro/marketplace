@@ -499,10 +499,8 @@ def build_page(root, now, run_id=None):
 def _load_core(s):
     """The staged pair's text, the asks, roles and companies, and the ONE lifecycle snapshot and report."""
     s.drafts = drafts_ui.parse_drafts(read(_tree.rel("drafts")))
-    # Cover letters are a distinct artifact from outreach drafts (added 2026-07-21).
-    s.covers = [c for c in drafts_ui.parse_cover_letters(read(_tree.rel("cover_letters")))]
-    # ⭐⭐ focus.md IS RETIRED AS A SOURCE OF STATE — dev #93 (public #21). Every surface below reads
-    # a store.
+    s.covers = drafts_ui.parse_cover_letters(read(_tree.rel("cover_letters")))      # a distinct artifact from drafts (2026-07-21)
+    # ⭐⭐ focus.md IS RETIRED AS A SOURCE OF STATE — dev #93 (public #21). Every surface below reads a store.
     s.all_asks = load_jsonl("asks.jsonl")
     s.opp_rows = load_jsonl("opportunities.jsonl")
     s.opp_comps = {c["id"]: c for c in load_jsonl("companies.jsonl")}
@@ -522,6 +520,7 @@ def _load_core(s):
     if s.lc_error:
         print("  !! WARNING: the role lifecycle could not be read (%s) - the page says PIPELINE NOT "
               "CHECKED" % s.lc_error)
+    s.letters_html = drafts_ui.letters_notice(str(ROOT), read(_tree.rel("cover_letters")), s.lc_snapshot.get("config"), s.lc_report.skew if s.lc_report is not None else False, s.all_asks)  # OD-6, dev 1071: the skew is the lifecycle report's own
 
 
 def _load_staged(s):
@@ -653,7 +652,7 @@ def _render_roles(s):
         read_list_html, _read_counts = _role_list(s, s.read_opps, play_ctx, set_name="needs-read")
         s.first_read = roles_ui.render_read_section(read_list_html, s.n_read, _read_counts["open"])
     todo = _role_list(s, s.unsent_opps, play_ctx, set_name="applying-finish") if s.unsent_opps else None
-    covers = (s.covers_html, len(s.covers_active), s.n_covers_open) if s.covers_active else None
+    covers = (s.covers_html, len(s.covers_active), s.n_covers_open) if (s.covers_active or s.letters_html) else None
     s.first_apply, s.n_apply = roles_ui.render_applications_section(todo, covers, s.n_letters_used,
                                                                      s.n_letters_moot)
     _rescreen, _rescreen_failed = {"flags": [], "unreadable": []}, None
@@ -797,12 +796,13 @@ def _load_picks(s):
 
 def _render_covers(s):
     """The cover letters' three groups (design §5, `drafts.render_message_groups`), rendered once the pick rows exist;
-    `s.covers_html` and `s.n_covers_open` (its level-1 rows) go under Applications."""
+    `s.covers_html` (the summary line, when there is one, then the groups) and `s.n_covers_open` (the level-1 rows) go under Applications."""
     s.covers_html, s.n_covers_open = "", 0
     if s.covers_active:
         s.covers_html, s.n_covers_open = drafts_ui.render_message_groups(
             "covers", "cover", s.covers_active, s.covers_active_keys, s.states, s.covers_rel, s.ledger, s.pd,
             noun="cover letter", head_tag="h4")
+    s.covers_html = s.letters_html + s.covers_html
 
 
 def _render_network(s):

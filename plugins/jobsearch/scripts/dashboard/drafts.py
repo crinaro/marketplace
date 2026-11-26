@@ -1,11 +1,15 @@
 """The staged-message pair (dashboard-redesign A, moved from generate_dashboard.py): the drafts.md and
 cover_letters.md parsers, the three groups of a message list (D2, design §5), and the Drafts to review section."""
+import json
+import os
 import re
 from urllib.parse import urlsplit
 
 from dashboard import caps, levels
 from dashboard.actions_ui import group_attr
 from dashboard.markup import _rec_attrs, esc, md_inline, plain, theirs, theirs_html
+from letters import check as _check, entries as _entries, guide as _guide, rules as _rules
+from migrations import stamp as _stamp
 
 
 # `parse_focus` is gone with focus.md (dev #93), and `render_focus` followed on 2026-08-29
@@ -16,15 +20,27 @@ from dashboard.markup import _rec_attrs, esc, md_inline, plain, theirs, theirs_h
 # render_fit()/GitHub #5 trap).
 
 
+def _named_line(line):
+    """True for a meta line the letter check reads, `**Purpose:**` or `**Needs:**` (design-cover-letters 7.2; dev 1073). The
+    labels are `letters.entries`' own, never spelled here: a one-line probe entry is put to its two readers, and a label either
+    one does not call missing is a named one."""
+    m = re.match(r"^\*\*([^*:]+):\*\*", line.strip())
+    probe = _entries.Entry("", "", [(m.group(1).strip(), "x", False)], [], None, None, []) if m else None
+    return probe is not None and any(read(probe).state != "missing" for read in (_entries.read_purpose, _entries.read_needs))
+
+
 def parse_cover_letters(md: str):
     """Entries from cover_letters.md, minus the trailing '⚠️ Questions...' section.
 
     Same '## ' shape as drafts.md, so parse_drafts does the splitting; this only
     filters out the housekeeping section at the bottom, which is a note to me
-    rather than a letter the candidate would review.
+    rather than a letter the candidate would review. It also drops the writer's working, the `**Purpose:**` and `**Needs:**`
+    lines, the migration's marker pair included (design-cover-letters 7.2, DB1; dev 1073): the page shows the letter, and the
+    lines add no open word.
     """
-    entries = [(ttl, blocks) for ttl, blocks in parse_drafts(md)
-               if "questions that would sharpen" not in ttl.lower()]
+    entries = [(ttl, [(k, [l for l in v if not _named_line(l)] if k == "meta" else v) for k, v in blocks])
+               for ttl, blocks in parse_drafts(md) if "questions that would sharpen" not in ttl.lower()]
+    entries = [(ttl, [(k, v) for k, v in blocks if k != "meta" or v]) for ttl, blocks in entries]
     # A letter whose body isn't blockquoted parses to an EMPTY body and publishes
     # silently as a heading with no text -- which is exactly how the PCG letter
     # reached the dashboard invisible on 2026-07-27 (the candidate caught it, not the run).
@@ -35,6 +51,41 @@ def parse_cover_letters(md: str):
                   "the letter text must be blockquoted with '> ' or it renders EMPTY."
                   % ttl[:70])
     return entries
+
+
+LETTERS_LINE = "%d letter%s not ready; /jobsearch:status lists why."             # 7 words: OD-6 allows at most 10
+LETTERS_UNCHECKED = "Letters not checked; /jobsearch:status says why."
+
+
+def letters_notice(root, md, config, skew, asks):
+    """The cover letters' ONE summary line as html, or "" (design-cover-letters OD-6, DB2; dev 1071). It shows only when a
+    pending letter has a FAIL (`letters.check.check_file` over `md`, the cover-letters text, with the inputs design 8.2 names:
+    the writing rules, the guide verdict, the profile stamp, the lifecycle report's engine `skew`, the migration's record) or
+    an open `letter-stopped:*` ask is in `asks`; it counts both. A check that cannot run says so on the line and in the log,
+    and is never read as a clean one."""
+    stopped = sum(1 for a in asks if isinstance(a, dict) and str(a.get("id") or "").startswith("letter-stopped:")
+                  and not a.get("resolved_on"))
+    try:
+        user, cfg = {}, (config if isinstance(config, dict) else {})
+        try:
+            with open(os.path.join(root, "user.json"), encoding="utf-8") as fh:
+                user = json.load(fh)
+        except (OSError, ValueError):
+            pass
+        user = user if isinstance(user, dict) else {}
+        rules = _rules.writing_rules(cfg, user)
+        if rules["unreadable"]:                       # a rule that is there and cannot be read is not "no rule" (dev 1072)
+            print("  !! WARNING: the cover-letter check cannot read the writing rules (%s) - the page says so"
+                  % "; ".join(rules["unreadable"]))
+            return '<div class="sub letters-line">%s</div>' % esc(LETTERS_UNCHECKED)
+        report = _check.check_file(md, rules, _guide.check_guide(cfg, root),
+                                   _check.version_at_least(_stamp.read_stamp(root)), bool(skew), _check.read_marked(root),
+                                   (user.get("identity") or {}).get("full_name") or "")
+    except Exception as e:                                           # noqa: BLE001 - said, never swallowed
+        print("  !! WARNING: the cover-letter check could not run (%s: %s) - the page says so" % (type(e).__name__, e))
+        return '<div class="sub letters-line">%s</div>' % esc(LETTERS_UNCHECKED)
+    n = sum(1 for r in report.rows if r["fails"]) + stopped
+    return '<div class="sub letters-line">%s</div>' % esc(LETTERS_LINE % (n, "" if n == 1 else "s")) if n else ""
 
 
 def parse_drafts(md: str):

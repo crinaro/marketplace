@@ -161,8 +161,8 @@ enforces this.
 - **`voice` section** (fallback source: `~/.claude/jobsearch/run section.py configure/strategy.md
   "Message style"`) — **not the whole file.** `~/.claude/jobsearch/run section.py
   configure/strategy.md "outreach"` is a separate read the packet does not supply.
-- `~/.claude/jobsearch/run profile.py` — signature, header, writing constraints. The packet's
-  `rules` section covers only the communications limits (below); the rest is a direct read.
+- `~/.claude/jobsearch/run profile.py --writing` — signature, header, writing constraints (banned characters, US English). The
+  packet's `rules` section covers only the communications limits (below); the rest is a direct read.
   Never retype them.
 - `outreach/drafts.md`'s header — the entry LAYOUT you must produce (heading, blockquoted body,
   rules). **The meta lines the engine parses are specified in THIS file** (§ *the entry's meta

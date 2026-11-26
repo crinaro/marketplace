@@ -284,6 +284,18 @@ content is `review-resume`.
 cover letters go and to produce one for an employer. With no argument it **shows** the current setting;
 naming a destination or an employer **runs**. Nothing is sent to anyone.
 
+- **`letter_out.py --check`**. Checks every letter waiting in `applying/cover_letters.md` and your letter guide, and
+  says which fails and why. It also runs at the start of a run. **Runs**; it changes nothing.
+- **`letter_out.py --preflight <opp_id> [--record]`**. Asks whether a letter can be written for one role: it needs a fit
+  analysis with something that matched, and a letter guide that still works. It prints one line, `ok` or `stop` with the
+  reason. With `--record` a stop is also saved as an item in your Open asks (the desktop panel and `/jobsearch:status`).
+  **Runs**; the writer does it first, so you rarely type it.
+- **`letter_out.py --set-guide <path|none>`**. Declares your own letter guide, a file in your profile, or stops using
+  one with `none`. It records the guide's headings, and refuses a path outside your profile or a file that is missing or
+  empty. The setting it writes is `writing.letter_guide`. **Runs**.
+- **`profile.py --writing`**. Prints the writing rules a letter follows: your header, the length, the banned characters,
+  US English, and your guide if you declared one. **Runs**; it only reads.
+
 ---
 
 ## Work on a role

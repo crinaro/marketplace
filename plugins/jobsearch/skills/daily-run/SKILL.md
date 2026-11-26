@@ -132,6 +132,7 @@ hours, costing that morning's run outright.
 ~/.claude/jobsearch/run check_sections.py           # ask/commitment invariants (dev #93)
 ~/.claude/jobsearch/run check_action_claims.py      # a hand-authored ask the data already answered (#43)
 ~/.claude/jobsearch/run check_sent_drafts.py        # a draft/letter already sent or submitted but still shown as pending on Your Move (advisory — retire the entry)
+~/.claude/jobsearch/run letter_out.py --check --advisory   # staged cover letters and the declared letter guide (advisory, exits 0; dev 1071-1073)
 ~/.claude/jobsearch/run validate_data.py            # schema · enums · referential integrity
 ~/.claude/jobsearch/run channels_due.py             # which sources are due; quote each UNREACHABLE line in the summary (dev #1025)
 ~/.claude/jobsearch/run check_rule_homes.py         # archived lessons still have a home
@@ -1177,7 +1178,8 @@ body MUST be `> `-blockquoted or it publishes EMPTY**; the meta lines the engine
 the `**Medium:**` line, never `**Status:**` prose**). A one-line summary elsewhere is not enough;
 **the candidate reads the full text off the published dashboard, not the transcript.** Cover letters go to
 `applying/cover_letters.md` via **`cover-letter-writer`** — a different artifact with different length,
-constraints and failure mode.
+constraints and failure mode. Run `letter_out.py --preflight <opp_id> --record` first and dispatch as the coordinator skill's
+§ 4b brief says; a `stop` is one line in the summary, never a dispatch.
 
 **⭐ THE WARM PATH: EVERY ROLE THAT PASSES SCREENING, ONE NEXT ACTION (dev #751; jobsearch 0.72.0).** This
 replaces the old per-application paragraph ("warm-path on every application"), so there is ONE rule, in one

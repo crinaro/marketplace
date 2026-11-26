@@ -114,6 +114,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
+from _entry_status import STATUS_RE, SENT_RE, MOOT_RE
 import _tree, reach.follow_stop as _fstop        # 0.92.0: a stop / resume row is no sent fact (dev #951)
 
 FIELD_RE = re.compile(r"^\*\*Blocked until:\*\*\s*(.+?)\s*$", re.M | re.I)
@@ -172,12 +173,8 @@ def resolve_entry_contact(g, body):
 # The literal the migration writes when it finds a prose hold it cannot structure itself.
 UNRESOLVED_RE = re.compile(r"^unresolved\b", re.I)
 
-# public #29 — the entry's OWN `**Status:**` line, read for a TERMINAL outcome. Conservative on
-# purpose (see the module docstring): SENT_RE anchors to the START of the status text so a
-# mid-sequence "PART A SENT · part B pending" note is never swept up with a truly-done entry.
-STATUS_RE = re.compile(r"^\*\*Status:\*\*\s*(.+?)\s*$", re.M | re.I)
-SENT_RE = re.compile(r"^\s*sent\b", re.I)
-MOOT_RE = re.compile(r"\bmoot\b|\bdo[\s-]*not[\s-]*send\b", re.I)
+# public #29 — STATUS_RE / SENT_RE / MOOT_RE (the entry's own `**Status:**` line) live in core
+# `_entry_status` since 0.95.0 and are imported at the top; `precondition.STATUS_RE` etc. still resolve.
 
 # The legacy prose forms actually observed in the field (issue #13: "held until she accepts",
 # "held until each accepts", "still pending her acceptance") plus their near neighbours.

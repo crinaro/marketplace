@@ -20,6 +20,7 @@ Run it from the user's search directory and print what it says, verbatim:
   line, not a briefing. If the user wants to work an item, `/jobsearch:coordinator` is the session for that.
 - It is **read-only**: it takes no lock, acknowledges no inbox row and marks no staleness
   watermark, so it is safe to run at any time, including while a background run is mid-flight.
+- Under gate health it lists each cover letter that is not ready, with its first reason, each open `letter-stopped` ask and any writing-rules problem: the reasons behind the dashboard's `N letters not ready` line. `letters: NOT CHECKED (reason)` there is the same line the dashboard calls `Letters not checked`.
 - A line that says `NOT CHECKED (reason)` means that source could not be read. Say so plainly; do
   not describe it as empty or as healthy.
 - If `panel.py` prints `no profile here`, the working directory is not inside a job-search profile.

@@ -248,16 +248,15 @@ before they were centralized — a value stated twice is a value that disagrees 
   truth.** So: a fetch may confirm a posting is LIVE, but it can never establish that one is DEAD — and telling the candidate
   a role is gone when it isn't costs them a real opportunity. **A genuine negative needs two agreeing signals**, decided by `closed_by` and recorded in the role's
   `employer_posting` field; one signal reads "could not confirm". HTTP 410 plus a render saying unavailable is a close.
-- **⭐ CANONICAL COVER-LETTER HEADER — the template is DATA, in `config.writing.cover_letter_header`.**
-  Render it with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/profile.py"`; never retype a name, city, phone or address into a
-  letter. The candidate corrected this header directly (2026-07-22), and it deliberately uses a
+- **⭐ CANONICAL COVER-LETTER HEADER — the template is DATA, in `config.writing.cover_letter_header_template`.**
+  Render it with `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/profile.py" --writing`; never retype a name, city, phone or address into a
+  letter. The candidate corrected this header (2026-07-22); it uses a
   **precise city** where `presence/claims.md`'s header uses a broader metro phrasing. **That difference is
   their own choice and is NOT to be "corrected" in either direction unasked** — a letter to a
-  specific city benefits from precision; the resume is a different artifact making a different
-  call.
-- **⭐ ONE-PAGE RULE FOR COVER LETTERS.** The candidate exports to PDF, so a second page carrying
-  only a signature is a real defect. **Target body length and the page cap are DATA:
-  `config.writing.cover_letter_target_body_words` and `cover_letter_max_pages`.** If it still
+  specific city benefits from precision; the resume makes a different call.
+- **⭐ ONE-PAGE RULE FOR COVER LETTERS.** The candidate exports to PDF; a second page carrying
+  only a signature is a defect. **Target body length and the page cap are DATA:
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/profile.py" --writing`.** If it still
   spills, cut margins before cutting substance. **Verify the page count in the browser — never
   assume it fits. ⚠️ AND MEASURE IT ONLY AFTER ACCEPTING TRACKED SUGGESTIONS, NEVER WHILE THEY ARE
   PENDING** — suggesting mode keeps BOTH the struck-through old text and the inserted new text in
@@ -266,7 +265,7 @@ before they were centralized — a value stated twice is a value that disagrees 
   deleted a real bullet to fix a problem that did not exist. **Accept first, then measure.**
 - **⭐ STRIP AI-TELL MARKERS FROM EVERYTHING A READER SEES** — cover letters, outreach, drafts,
   profile copy, any human-facing message. **The banned characters and phrasings are DATA:
-  `config.writing.banned_characters` and the surrounding notes** (`python3 "${CLAUDE_PLUGIN_ROOT}/scripts/profile.py"`).
+  `python3 "${CLAUDE_PLUGIN_ROOT}/scripts/profile.py" --writing`.**
   The em-dash is the specific tell the candidate named; also avoid the "not just X, but Y"
   construction, "not only… but also," reflexive tricolons, and AI-cliché vocabulary.
   **PROOF EVERY PIECE FOR US ENGLISH before it goes out — `config.writing.us_english` carries the
@@ -366,8 +365,8 @@ history is permanent. It is also the better bug report: the engine is made of ru
 
 **Run-start hygiene** (both task prompts inline these):
 `check_stale_claims.py` · `check_followups.py` · `check_sections.py` · `check_sent_drafts.py` ·
-`channels_due.py` — advisory, always exit 0 so they cannot wedge an unattended run.
-`check_narrative.py` — are the `presence/projects.md` triggers and resume addenda still greppable? A
+`channels_due.py` · `letter_out.py --check --advisory` — advisory, always exit 0 so they cannot wedge an unattended run.
+`check_narrative.py` (by hand; also gates a declared letter guide) — are the `presence/projects.md` triggers and resume addenda still greppable? A
 broken one reads downstream as "no matching proof points" — same as having none.
 `validate_data.py` — **the real gate**; exits 1 on a schema/enum/reference problem.
 `check_rule_homes.py` — no archived lesson lost its rule; CLAUDE.md within its word ratchet.

@@ -342,6 +342,22 @@ parallelism, and a subagent staging `git add -A` bundles this session's in-fligh
 only for read-only work. **A dispatched agent inherits no conversation** — put what it needs in
 the prompt.
 
+**Dispatching `cover-letter-writer`.** First run `~/.claude/jobsearch/run letter_out.py --preflight <opp_id> --record`; on
+`stop`, do not dispatch: tell the candidate the stop line. The ask it filed waits in the panel and `/jobsearch:status`.
+The writer starts with no conversation, so put in the prompt: the role's `opp_id`; where its full description is; **what the
+role is for**, in the words the candidate or the posting used if either said so; and **the candidate's own words** from this
+conversation about why they want it or how they would do it, quoted. Never a list of experiences to include, an outline, or
+the pitch lines: the writer reads the fit itself, and a list of experiences is how a letter becomes the resume again. If the
+candidate asked for something specific ("lead with the pilot"), quote it.
+
+**Reading the preflight's exit.** Exit 0, `ok`: dispatch. Exit 1, `stop`: do not dispatch. Exit 2, `NOT CHECKED` (an unknown
+`opp_id`, an unreadable store): do not dispatch either; nothing was filed, so tell the candidate the line and what could not be
+read. A `no-pitch` stop is the one the candidate may overrule: when they answer "write it anyway", run
+`~/.claude/jobsearch/run letter_out.py --answer <opp_id> write-anyway` (only when the candidate gave that answer; it refuses
+any other stop and writes nothing), run `--preflight <opp_id>` again, which now reads `ok: written without a pitch`, and then
+dispatch. Never run `--set-guide` from a stop or a migration ask without the candidate's answer: it declares or drops their
+letter guide, and that is theirs to say.
+
 **When `opportunity-researcher` hands back (dev #776, public #166; dev #861, public #194),** its hand-back names TWO files: one
 holding one `EMPLOYER-POSTING` line per role, one holding the role's `fit` (one JSON line per role). Pass each, whole, in
 this order, to its one writer: `~/.claude/jobsearch/run record.py posting --from-file <the posting file>`, then

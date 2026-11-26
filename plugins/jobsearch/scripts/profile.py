@@ -72,6 +72,7 @@ from _root import profile_or_fixture as _profile_or_fixture
 # dev #729 / public #157 (jobsearch 0.70.0): `places.py` is the distance half of the commute answer
 # (place text -> coordinates -> miles, from the shipped table); `commute_outcome` below decides.
 import places as _places
+from letters import guide as _lguide, rules as _lrules   # `--writing` (dev 1072): values in, lines out; no import back here
 
 # ⭐ FIXTURE FALLBACK, LIKE EVERY OTHER GATE — and NOT a try/except that returns 0.
 #
@@ -2137,6 +2138,7 @@ def main():
     ap.add_argument("--options", action="store_true",
                     help="print the whole adjustable config surface, with defaults and "
                          "provenance (design-states-and-views.md §15.7)")
+    ap.add_argument("--writing", action="store_true", help="the writing rules in force and the letter guide's state (dev 1072)")
     args = ap.parse_args()
 
     profile = load()
@@ -2146,6 +2148,11 @@ def main():
         # top-level section unchanged — config_keys.describe()'s dotted lookups (ats.*,
         # communications.*) read exactly the same tree either way, without a third read.
         return print_options(profile)
+
+    if args.writing:    # exit 1 when a rule cannot be read or the declared letter guide is BROKEN (design 5.4, 6.1)
+        rules, verdict = _lrules.writing_rules(config(), user()), _lguide.check_guide(config(), ROOT)
+        print("\n".join(_lrules.render_block(rules, verdict)))
+        return 1 if rules["problems"] or verdict.state == "broken" else 0
 
     if args.title_scope_count:
         c = title_scope_count(_load_opps(), profile)
@@ -2222,8 +2229,7 @@ def main():
         for o in sorted(opps, key=lambda x: x["id"]):
             verdict, detail = screen_comp(o, profile)
             counts[verdict] = counts.get(verdict, 0) + 1
-            print("  %-20s %s" % (verdict, o["id"][:52]))
-            print("  %-20s %s" % ("", detail))
+            print("  %-20s %s\n  %-20s %s" % (verdict, o["id"][:52], "", detail))
             oloc = o.get("location") or {}
             if oloc.get("type") == "onsite":
                 oc = commute_outcome(oloc, profile)
@@ -2258,20 +2264,15 @@ def main():
         print("  reviews, never removals.")
         return 0
 
-    print("THREE-LAYER MODEL")
-    print("  1. user.json    USER DATA      — who the candidate is")
-    print("  2. config.json  CONFIGURATION  — how the search behaves")
-    print("  3. engine       scripts/ .claude/agents/ CLAUDE.md tasks/ docs/")
-    print()
+    print("\n".join(["THREE-LAYER MODEL", "  1. user.json    USER DATA      — who the candidate is", "  2. config.json  CONFIGURATION  — how the search behaves",
+                     "  3. engine       scripts/ .claude/agents/ CLAUDE.md tasks/ docs/", ""]))
     ident = profile["identity"]
-    print("Profile: %s — %s" % (ident["full_name"], ident["city"]))
-    print("  available: %s" % ident["availability"])
-    print("  mailboxes: %s" % ", ".join(m["address"] for m in profile["mailboxes"]))
+    print("Profile: %s — %s\n  available: %s\n  mailboxes: %s" % (
+        ident["full_name"], ident["city"], ident["availability"], ", ".join(m["address"] for m in profile["mailboxes"])))
     # The titles themselves, not a count: inbox-scan and board-sweeper build their search
     # queries from this line. A count made agents fall back to whatever titles they assumed.
-    print("  titles:    %s" % "; ".join(profile["targets"]["titles"]))
-    print("             org-structure-is-a-filter = %s"
-          % (profile["targets"]["org_structure_is_not_a_filter"] is False))
+    print("  titles:    %s\n             org-structure-is-a-filter = %s" % (
+        "; ".join(profile["targets"]["titles"]), profile["targets"]["org_structure_is_not_a_filter"] is False))
     print("\n  comp tiers (annual):")
     for t in profile["compensation"]["tiers"]:
         flag = "" if t.get("basis_confirmed", True) else "   ⚠️ basis UNCONFIRMED — ask the candidate"
@@ -2291,8 +2292,7 @@ def main():
     print("\n  rendered signature (config template x user data):")
     for line in email_signature():
         print("    %s" % line)
-    print("\n  mailboxes (user.json is THE source):  %s" % ", ".join(mailboxes()))
-    print("\n  Screen the live pipeline:  python3 scripts/profile.py --screen-all")
+    print("\n  mailboxes (user.json is THE source):  %s\n\n  Screen the live pipeline:  python3 scripts/profile.py --screen-all\n  writing rules: profile.py --writing" % ", ".join(mailboxes()))
     return 0
 
 

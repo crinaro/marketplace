@@ -58,6 +58,7 @@ from _root import profile_root as _profile_root
 # itself into the overdue set. An audit must honour the pipeline's own exclusion predicate,
 # or it reports work on roles the candidate already declined.
 from pipeline_index import is_excluded as _is_excluded
+import _fit_pitch      # the one "does this role have a pitch" predicate (dev #1071)
 
 ROOT = _profile_root()
 DATA = os.path.join(ROOT, "data")
@@ -119,17 +120,16 @@ def main():
     # ---- single role: the pitch lines only -------------------------------------
     if args.pitch:
         hit = [o for o in opps if o["id"] == args.pitch]
-        if not hit or not hit[0].get("fit"):
+        if _fit_pitch.state(hit[0] if hit else None) == "no-fit":   # also a fit with no `requirements`: was a KeyError
             print("No fit analysis for %r. Run the analysis first." % args.pitch)
             return 1
         o = hit[0]
         print("PITCH LINES — %s" % name(o))
         print("=" * 76)
-        for q in o["fit"]["requirements"]:
-            if q.get("verdict") in ("aligned", "partial") and q.get("pitch_line"):
-                print("\n  [%s] %s" % (q["verdict"].upper(), q["requirement"]))
-                print("      %s" % q["pitch_line"])
-                print("      evidence: %s" % q.get("evidence"))
+        for verdict, req, line, evidence in _fit_pitch.pitch_lines(o["fit"]):
+            print("\n  [%s] %s" % (verdict.upper(), req))
+            print("      %s" % line)
+            print("      evidence: %s" % evidence)
         notal = [q for q in o["fit"]["requirements"] if q.get("verdict") == "not-aligned"]
         if notal:
             print("\n  ⚠️ DO NOT CLAIM these — they are genuine non-matches:")
