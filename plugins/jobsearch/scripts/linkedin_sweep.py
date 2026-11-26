@@ -52,9 +52,9 @@ the contacts it names, T3 taints the block, and a tainted contact or block is NE
 ## The JOB SEARCH window rides the same worklist (dev #489 / public #102, dev #692, R5)
 
 A routine worklist also prints one `JOBSEARCH` line: `window=daily f_TPR=r86400 titles=configured`
-on an ordinary day and `window=wide f_TPR=r604800 titles=all wide-due-since=<date>` while the
-weekly wide re-scan is due, both LinkedIn UI buckets ("Past 24 hours", "Past week") and nothing
-computed. The runner takes its `f_TPR`, titles and geographies from that line instead of a
+when every pair this pass would run was reached within 24 hours and `window=wide f_TPR=r604800 titles=all` otherwise
+(`searching/query_plan.window`, dev 1055; the weekly "due" state retired in 0.94.0), both LinkedIn UI buckets ("Past 24 hours",
+"Past week") and nothing computed. The runner takes its `f_TPR`, titles and geographies from that line instead of a
 hard-coded `r86400`; what it searched comes back as a `ROLES v1` block that
 `deferred.py --add-roles` accepts (it is NOT measured by `record`, which still measures only the
 four list surfaces). A one-off worklist carries no `JOBSEARCH` line.
@@ -118,6 +118,9 @@ import graph as _graph  # noqa: E402
 import handback  # noqa: E402     # handback.py: the hand-back contract (dev #811 / #812)
 from browser_fallback import pane_line as _pane_line  # noqa: E402     # the optional `fallback=` / `ext=` tail (dev 858)
 import journal  # noqa: E402
+from searching import jobsearch_line as _jsl  # noqa: E402
+_sp, _ss, _sw, _sl = journal.search_plan, journal.search_state, journal.search_warning, journal.search_links     # the LinkedIn search dispatch and the page warning (0.94.0, dev 1065), through `journal`
+from searching.jobsearch_line import JOBSEARCH_CHANNEL, job_search_is_off  # noqa: E402,F401  (moved: dev 1055)
 
 # The four LIST surfaces a reply sweep reads. `notifications` and `degree` are coverage vocabulary
 # (journal.LINKEDIN_SWEEP_SURFACES) a SWEEP block may name, but `record` measures neither.
@@ -351,64 +354,19 @@ def _normalise_profile_url(raw):
     return raw if PROFILE_URL_RE.match(raw) else None
 
 
-JOBSEARCH_CHANNEL = "linkedin-jobsearch"       # the channel id every LinkedIn job-search sighting is written with
-
-
-def job_search_is_off(root):
-    """dev #774 (design-source-catalog.md section 4.1): True when the user turned the LinkedIn job search off, i.e. the
-    `linkedin-jobsearch` channel row is `relationship_status: retired` -- the same off bit `alert_sweep.py`,
-    `channels_due.py` and `portfolio_boards.py` already honour for every other channel, written by
-    `record.py source off linkedin-jobs`. A MISSING row, or one that is not retired, is NOT off (an install older than
-    0.76.0 never had to hold the row, and its search ran). A channels store that cannot be read is not read as off
-    either: `validate_data.py` reports the unreadable store at run start; an off switch nobody can read must not
-    silently turn a search off."""
-    path = os.path.join(root, "data", "channels.jsonl")
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                if not line.strip():
-                    continue
-                try:
-                    row = json.loads(line)
-                except ValueError:
-                    continue
-                if isinstance(row, dict) and row.get("id") == JOBSEARCH_CHANNEL:
-                    return row.get("relationship_status") == "retired"
-    except OSError:
-        return False
-    return False
-
-
 def jobsearch_line(root, now=None):
-    """dev #489 / public #102 + #692 (R5) -- the `JOBSEARCH` line of the worklist: which LinkedIn
-    job-search window THIS pass runs, printed by a script so the runner never hard-codes one.
-    `window=wide f_TPR=r604800 titles=all` while the weekly wide re-scan is due, otherwise
-    `window=daily f_TPR=r86400 titles=configured`. Only LinkedIn's own UI buckets exist (R5): there
-    is no computed window. The geographies are computed here from config (`remote`, plus `local`
-    when `geography.commute_anchors` is non-empty), never self-reported by the runner. Wide is due
-    until a LinkedIn `roles` event with `window=wide` covered EVERY geography (`journal.
-    wide_satisfied_at`); a board event or a refused pass never satisfies it."""
-    import json
-    try:
-        with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
-            cfg = json.load(fh)
-    except (OSError, ValueError):
-        cfg = {}
-    if job_search_is_off(root):
-        return "JOBSEARCH off source=%s" % JOBSEARCH_CHANNEL
-    geos = journal.jobsearch_geos(cfg)
-    w = journal.jobsearch_window(now or journal.now_iso(), journal.read(root), geos)
-    line = "JOBSEARCH window=%s f_TPR=%s titles=%s geo=%s" % (
-        w["window"], w["f_tpr"], w["titles"], ",".join(geos))
-    if w["due_since"]:
-        line += " wide-due-since=%s" % w["due_since"]
-    return line
+    """The `JOBSEARCH` line of the worklist (`searching/jobsearch_line.py`, dev 1055)."""
+    return _jsl.jobsearch_line(root, journal, now)
 
 
 def build_worklist(root, run_id, one_off=None):
     """The WORKLIST block, as text. Routine mode holds NO profile URL (dev #488, owner decision
     2026-10-03): the runner reads the recency-sorted lists and, for a person a thread URL is on
     record for, that thread. A one-off holds exactly one: the person's profile."""
+    warned = _ss.warning_for_run(journal.read(root), run_id)
+    if warned:          # WN2 (0.94.0, dev 1065): a run that began before a LinkedIn warning opens no LinkedIn page after it, the profile read of --one-off included
+        raise SweepRefused("worklist refused, reason=linkedin-warning: LinkedIn warned at %s (%s) after this run began, so this run opens no further LinkedIn page"
+                           % (str(warned.get("at"))[:16], warned.get("kind")))
     lines = ["--- WORKLIST v1 run=%s ---" % run_id]
     if one_off:
         watch = one_off_watch(root, one_off)
@@ -533,7 +491,7 @@ def _h8(raw):
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
 
 
-def parse_sweep(text, run_id, watch):
+def parse_sweep(text, run_id, watch, pinned=False):
     """`{"surfaces", "seen", "views", "dropped"}` from the one SWEEP block in `text`.
 
     ⭐ TWO KINDS OF FAULT (dev #812 / public #169, handback.py). A STRUCTURAL fault -- no block, two
@@ -689,8 +647,9 @@ def parse_sweep(text, run_id, watch):
                              "nobody, so it may hold a fact" % OUTSIDE_BLOCK, "T3")
     # dev #826 / public #177 -- the PANE line. Exactly one well-formed line is the pane account. Two are
     # contradictory, so BOTH are dropped (the SURFACE rule); a missing line is a block-level fault the caller
-    # files (`pane_missing`); a malformed one is already dropped above. A hidden state claimed with mode=normal
-    # contradicts itself: it is dropped as a fault and the pass is recorded as the hidden-mode pass it was.
+    # files (`pane_missing`); a malformed one is already dropped above. 0.94.0 (design 19 N1): the pane line is recorded and
+    # never decides, so on a `pinned` profile `state=hidden mode=normal` (a hidden pane whose lists read in full) is a real pass;
+    # without the pin it is 0.93.0's line fault, recorded as the hidden-mode pass (RF4).
     pane = None
     if len(panes) > 1:
         for pn, praw, _s, _m, _f, _e in panes:
@@ -698,9 +657,8 @@ def parse_sweep(text, run_id, watch):
     elif panes:
         pn, praw, state, mode, fb, ext = panes[0]
         pane = {"state": state, "mode": mode, "fallback": fb, "ext": ext}
-        if state == "hidden" and mode == "normal":
-            drop(pn, praw, "PANE state=hidden requires mode=hidden (a hidden pane is read without clicks); "
-                           "recorded as mode=hidden", "T1")
+        if state == "hidden" and mode == "normal" and not pinned:
+            drop(pn, praw, "PANE state=hidden requires mode=hidden (a hidden pane is read without clicks); recorded as mode=hidden", "T1")
             pane["mode"] = "hidden"
     dropped.sort(key=lambda d: d[0])
     return {"surfaces": surfaces, "seen": kept_seen, "views": views, "dropped": dropped,
@@ -888,7 +846,7 @@ def judge(text, run_id, watch, one_off=False, recs=None):
             return v
 
     try:
-        parsed = parse_sweep(text, run_id, watch)
+        parsed = parse_sweep(text, run_id, watch, pinned=journal.earliest_pin_at(recs or []) is not None)
     except SweepRefused as e:
         v.name, v.exit, v.keep, v.owed, v.detail = "refused", EXIT_REFUSED, True, "queue", str(e)
         v.lines.append("⛔ REFUSED — %s. No sighting or conclusion was journaled." % e)
@@ -1182,6 +1140,27 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     w = sub.add_parser("worklist", help="print the WORKLIST block the runner works from")
     r = sub.add_parser("record", help="judge the runner's hand-back and journal what it proves")
+    sp = sub.add_parser("search-plan", help="gate and dispatch the LinkedIn job search; writes its dispatched row (0.94.0)")
+    sp.add_argument("--run", required=True, help="the journal run id")
+    sp.add_argument("--attended", action="store_true", help="a person typed /jobsearch:search linkedin attended")
+    sp.add_argument("--scheduled", action="store_true", help="the scheduled dispatch (refused unless due, not skipped, not stopped, no warning)")
+    sp.add_argument("--browser", help="yes|no: your own declaration from your tool list")
+    sw = sub.add_parser("search-warning", help="judge one results page of the search by script and record what a warning ends (0.94.0)")
+    sw.add_argument("--run", required=True, help="the journal run id")
+    sw.add_argument("--n", type=int, required=True, help="the plan entry (SEARCH n=) this page belongs to")
+    sw.add_argument("--result", default="", help="what page_warning's WARN_JS returned (JSON)")
+    sw.add_argument("--tool-error", action="store_true", help="the javascript_tool call itself failed")
+    pw = sub.add_parser("page-warning", help="judge a posting or reply page of any run by script; a warning ends the run's LinkedIn work (0.94.0)")
+    pw.add_argument("--run", required=True, help="the journal run id")
+    pw.add_argument("--kind", required=True, choices=_sw.PAGE_KINDS, help="the page: a posting read or a reply-pass page")
+    pw.add_argument("--result", default="", help="what page_warning's WARN_JS returned (JSON)")
+    pw.add_argument("--tool-error", action="store_true", help="the javascript_tool call itself failed")
+    sl = sub.add_parser("search-links", help="the ids of a judged results page within the owner's limits (what `search_page.py links` runs; 0.94.0)")
+    for flag in ("--run", "--match"):
+        sl.add_argument(flag, required=True)
+    sl.add_argument("--n", type=int, required=True)
+    sl.add_argument("--result", default="")
+    sl.add_argument("--tool-error", action="store_true")
     for p in (w, r):
         p.add_argument("--run", required=True, help="the journal run id (journal.py --start)")
         p.add_argument("--one-off", metavar="contact:<id>",
@@ -1195,6 +1174,15 @@ def main(argv=None):
     args = ap.parse_args(argv)
     root = profile_root()
     try:
+        if args.cmd == "search-plan":
+            return _sp.run(root, args.run, args.attended, args.scheduled, args.browser)
+        if args.cmd == "search-warning":
+            return _sw.run(root, args.run, args.n, args.result, args.tool_error)
+        if args.cmd == "search-links":
+            with open(args.match, encoding="utf-8") as fh:
+                return _sl.run(root, args.run, args.n, fh.read(), args.result, args.tool_error)
+        if args.cmd == "page-warning":
+            return _sw.run_page(root, args.run, args.kind, args.result, args.tool_error)
         if args.cmd == "worklist":
             sys.stdout.write(build_worklist(root, args.run, one_off=args.one_off))
             return EXIT_OK

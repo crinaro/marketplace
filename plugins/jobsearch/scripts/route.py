@@ -54,10 +54,8 @@ MECHANISMS (how we reach it) — the values of `config.sourcing.route_preference
     browser       Claude's in-app Browser pane
     chrome        the Chrome extension
 
-A company-site channel linked (`company_id`) to a company that carries an `ats` feed prints
-`feed:<vendor>` FIRST (dev #751): `feed_poll.py` reviews that page every day, and the browser
-mechanisms after it are the FALLBACK `channels_due.py` lists only when the feed was not covered.
-`feed:` is not one of MECHANISMS, so `board-sweeper` never acts on it.
+A company-site channel linked (`company_id`) to a company that carries an `ats` feed prints `feed:<vendor>` FIRST (dev #751): `feed_poll.py` reviews that page every day, and the browser
+mechanisms after it are the FALLBACK `channels_due.py` lists only when the feed was not covered. `feed:` is not one of MECHANISMS, so `board-sweeper` never acts on it.
 
 Usage:
     route.py --channel indeed                       # ordered mechanisms for one channel
@@ -65,7 +63,7 @@ Usage:
     route.py --check                                # exit 1 on unparseable or legacy access
     route.py --set-preference browser,plugin,chrome # change the order mechanisms are tried
     route.py --set-plugin indeed indeed-jobs        # name the plugin serving one channel
-    route.py --next --step posting-read-linkedin --attended yes [--outcomes '<json>'] [--latch browser|none]   # next fallback rung
+    route.py --next --step posting-read-linkedin --attended yes --run <id> [--outcomes '<json>'] [--latch browser|none]   # next rung, or HELD after a LinkedIn warning
     route.py --pick-browser '<list_connected_browsers json>'   # USE|SELECT <deviceId>, or a code
 
 `/jobsearch:sourcing` is the command wrapper. ⚠️ Set these HERE, never by hand-editing
@@ -239,10 +237,10 @@ def main():
                     help="Name the plugin serving one channel. Empty PLUGIN clears it.")
     ap.add_argument("--next", action="store_true", help="Print the next rung of one step's fallback chain (needs --step).")
     ap.add_argument("--step", choices=sorted(STEP_KINDS), help="The step kind, for --next.")
-    ap.add_argument("--attended", nargs="?", const="", default=None,
-                    help="The brief's attended value, for --next. Only `yes` is attended; absent, empty or anything else reads as no.")
+    ap.add_argument("--attended", nargs="?", const="", default=None, help="The brief's attended value, for --next. Only `yes` is attended; anything else reads as no.")
     ap.add_argument("--outcomes", default="[]", help='JSON list of {"rung","word"} outcomes so far, for --next.')
     ap.add_argument("--latch", default="none", help="browser or none, for --next.")
+    ap.add_argument("--run", default=None, help="The run id, for --next --step posting-read-linkedin: refused (held) after a LinkedIn warning that run began before (0.94.0, WN2).")
     ap.add_argument("--pick-browser", metavar="JSON", help="Which connected browser to drive, from list_connected_browsers' result.")
     args = ap.parse_args()
     if args.next or args.pick_browser is not None:

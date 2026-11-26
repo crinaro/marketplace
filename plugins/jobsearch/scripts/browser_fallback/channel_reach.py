@@ -17,6 +17,7 @@ records and its own ownership answer.
 from browser_fallback import hidden_passes as _hidden_passes
 
 RUNNER = "linkedin-runner"
+SEARCH_CHANNEL = "linkedin-jobsearch"      # the one channel the job search is (`searching.jobsearch_line.JOBSEARCH_CHANNEL`; a test holds the two equal)
 
 
 def unreachable(channel, owned, recs):
@@ -31,10 +32,20 @@ def unreachable(channel, owned, recs):
                 "so no agent reads it" % (agent, agent, agent),
                 "open it yourself, then `channels_due.py --stamp %s`; or link the row to a catalog entry "
                 "(`channel_catalog_entry`) or retire it" % cid)
-    if agent == RUNNER and _hidden_passes.blocking(recs):
-        n, _since = _hidden_passes.hidden_streak(recs)
-        return ("owned by %s, whose last %d passes ran with the Browser pane hidden" % (agent, n),
-                "%s (one attended pass with the Browser pane shown)" % _hidden_passes.REMEDY)
+    if agent == RUNNER and not _hidden_passes.pinned(recs):
+        if _hidden_passes.blocking(recs):          # no 0.94.0 pin: 0.93.0's rule, its words
+            n, _since = _hidden_passes.hidden_streak(recs)
+            return ("owned by %s, whose last %d passes ran with the Browser pane hidden" % (agent, n),
+                    "%s (one attended pass with the Browser pane shown)" % _hidden_passes.REMEDY)
+        return None
+    if agent == RUNNER:
+        # 0.94.0 (dev 1065, design 8.2): the job search is its own dispatch, so ITS channel is blocked by the search's own streak and cleared by an attended search; every other channel the
+        # runner owns is blocked by the reply sweep's streak (passes that left a list unread) and cleared by `/jobsearch:linkedin`
+        kind = _hidden_passes.SEARCH if cid == SEARCH_CHANNEL else _hidden_passes.REPLIES
+        if kind in _hidden_passes.blocked_kinds(recs):
+            n = _hidden_passes.search_streak(recs)[0] if kind == _hidden_passes.SEARCH else _hidden_passes.reply_streak(recs)[0]
+            return ("owned by %s, whose last %d %s ran with the Browser pane hidden" % (agent, n, "searches" if kind == _hidden_passes.SEARCH else "passes"),
+                    "%s. %s." % (_hidden_passes.remedy(kind), _hidden_passes.TEMPORARY))
     return None
 
 

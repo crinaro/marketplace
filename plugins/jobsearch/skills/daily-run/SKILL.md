@@ -506,16 +506,12 @@ pre-0.70.0 duplicate row screens `DUPLICATE of <id> …; fold with record.py lin
 <id>`: fold it by hand, and undo a false merge with `record.py unlink-sibling <id> --url <the
 listing's URL> --to <the row it belongs to>` (nothing is deleted either way).
 
-**The weekly wide re-scan is the same pass, not a second one (dev #489 / public #102, R5).** The
-worklist's `JOBSEARCH` line says which window this pass runs: `window=daily f_TPR=r86400`
-("Past 24 hours") on an ordinary day, `window=wide f_TPR=r604800` ("Past week", the full title
-set) while the weekly re-scan is due. Paste it with the rest of the worklist and the runner reads
-its window from it. LinkedIn's two UI buckets are the only windows; nothing is computed. A wide
-pass counts only when every requested geography had a reached, window-applied query. A day the
-pass is refused (`minimal` posture, the quota, no browser) is not made up: wide stays due, and the
-summary prints `wide re-scan due since <date>, not run (<reason>)`. The summary lines come from
-`run_summary.py`, not from you: `sourcing (daily)`, `wide re-scan: N re-surfaced`, `ROLES NOT
-ACCOUNTED`.
+**The window is the plan's, never yours (dev #489 / public #102, R5; jobsearch 0.94.0).** A search's window is `daily f_TPR=r86400` ("Past 24 hours") or `wide f_TPR=r604800` ("Past week"), one rule, from the stored query plan, and the
+search's own plan prints it (§"THE LINKEDIN JOB SEARCH IS ITS OWN RUN" below). **No profile's worklist prints a `JOBSEARCH window=` line any more** (jobsearch 0.94.0, dev 1065): a
+profile with no 0.94.0 pin prints `JOBSEARCH off source=linkedin-jobsearch reason=migration-pending` and its reply pass searches nothing until the migration has run. Paste the worklist with the rest, the `JOBSEARCH` line as printed.
+LinkedIn's two UI buckets are the only windows; nothing is computed. The `wide re-scan due since <date>, not run (<reason>)` line is retired: a
+scheduled run could never satisfy it, and `linkedin job search: NOT RUN (<reason>; last <date>)` says what happened instead. The summary
+lines come from `run_summary.py`, not from you: `sourcing (daily)`, `wide re-scan: N re-surfaced`, `ROLES NOT ACCOUNTED`.
 
 **⭐⭐ THE RESPONSE SWEEP IS DRIVEN BY THE OUTREACH STATE, NOT BY UI SURFACES (2026-08-04, per the
 candidate: "if our process has me sending messages & connection requests, it should be checking
@@ -523,9 +519,10 @@ linkedin messages").** The old instruction said "reply check on open outreach + 
 and a hiring-line response from a 3rd-degree contact sat unseen because it did not live
 in either place — a 3rd-degree recipient can REPLY TO AN INVITATION WITHOUT ACCEPTING IT, and
 that response lands on the invitations/message-requests surfaces the sweep never opened.
-**Mail is no backstop: the candidate's mailbox receives NO LinkedIn notification emails** (verified
-2026-08-04 — zero in 2 days despite two known acceptances), so the browser pass is the ONLY
-detector for LinkedIn events.
+**Mail is one partial source, never the backstop (LI4, dev 1065).** A mailbox may receive some LinkedIn mail (seen in one: invitations,
+message notices, InMail replies, job alerts, application-viewed notices) and never all of it: it depends on each member's LinkedIn email
+settings and on which address LinkedIn has. A notice is positive evidence to act on, and no notice proves nothing (one profile saw zero in 2
+days despite two known acceptances, 2026-08-04), so the browser pass is what looks. Silence is concluded by `linkedin_sweep.py record` alone.
 
 **⭐⭐ THE WORKLIST GOES IN AND THE VERDICT COMES OUT, BOTH BY SCRIPT (dev #484 / public #109, dev
 #488 / public #105).** The check-list is built from the data by a script, not by the runner:
@@ -627,6 +624,39 @@ not take over (`route.py --next` picks the rung): `not-connected` or `not-this-c
 extension is connected on this computer, and `unattended-unprobed` means a scheduled run, which never enters the
 extension. Since 0.90.0 no step of the run wakes, quits or relaunches Chrome, and neither do you: a lapsed sign-in is
 fixed by `/jobsearch:linkedin`, a disconnected extension by the candidate.
+
+**⭐⭐ THE LINKEDIN JOB SEARCH IS ITS OWN RUN, STARTED AFTER THE REPLY PASS HAS RETURNED (jobsearch 0.94.0; dev 1055, 1064, 1065; design-role-first.md 8.1, 19.5, 19.6).**
+On a profile with the 0.94.0 pin the reply pass above searches nothing: its worklist's `JOBSEARCH` line reads `JOBSEARCH off
+source=linkedin-jobsearch reason=own-dispatch`, and the runner says `JOB SEARCH: not in this pass (its own dispatch)`. The search is dispatched
+by you, once, **after `linkedin-runner` has handed back the reply pass and released the pane lock** (never beside it), and only in a run whose
+§4 gate exited 0 (`posture.py --may linkedin`): a run that gate refused opens no LinkedIn page of any kind, the search included. A profile with no
+0.94.0 pin has no LinkedIn job search at all until its migration has run (its worklist's line reads `JOBSEARCH off source=linkedin-jobsearch reason=migration-pending`, and the runner says
+`JOB SEARCH: not run (waiting on the 0.94.0 migration)`), and the call below answers `no-pin`: say so and go on. Start it as a `search` run of its own, so a reply pass cannot mask it:
+
+```bash
+~/.claude/jobsearch/run journal.py --start search
+~/.claude/jobsearch/run linkedin_sweep.py search-plan --scheduled --browser <yes|no> --run <the id journal.py --start search printed>
+```
+
+- `--browser` is your own declaration, as the drain's `--render-route` is: `yes` when `mcp__Claude_Browser__preview_start` is among your tools (a deferred
+  one counts: load it through ToolSearch, then declare `yes`); `no` otherwise, and always `no` for a `mcp__remote-devices__Claude_Browser__` tool.
+- **Exit 3 is a refusal, and a complete answer.** The first line reads `SEARCH-PLAN REFUSED reason=<word>: <sentence>` and nothing was written (a `no-browser`
+  leaves the note the summary reads). The reasons: `no-pin`, `off`, `linkedin-warning` (a warning stands and the scheduled search is off until the owner turns it
+  on, or LinkedIn warned during this very run), `skipped`, `not-due` (it runs every `search.linkedin_search_every_days` days, 2 by default, counted as ELAPSED hours: 48 hours since the later of the newest search dispatched, crashed or not, and the newest one reached; the line reads
+  `SEARCH-PLAN REFUSED reason=not-due: not due until <date> (every <n> days is <h> hours ELAPSED since the last search was dispatched or reached, due <YYYY-MM-DD HH:MM> UTC; last searched <label>)`), `stopped` (three scheduled
+  searches in a row came back unreachable), `no-browser`, `no-titles`. None is a failure: do not retry it, queue it or work around it, dispatch nothing, and end
+  that run with `~/.claude/jobsearch/run journal.py --run <the search run's id> --end`. The summary says it in its own line, `linkedin job search: NOT RUN
+  (<reason>; last <date>)`, which comes from `run_summary.py`, never from you.
+- **Exit 0: dispatch `linkedin-runner` once,** in the foreground and waited for, with a brief that carries the SEARCH run's id, `pass: search`, `search:
+  scheduled`, `attended: no`, the profile root and the plan block exactly as printed (`--- SEARCH PLAN v1` to `--- END SEARCH PLAN ---`). The call has already
+  written the dispatch row; the runner closes it, and a dispatch that never returned is a crashed pass the journal names. **Never write its `returned` row by hand.**
+- **After it hands back,** its first line says what happened. A line beginning `STOP LINKEDIN WARNING` (or a `STOP NO-PAGE` line) goes FIRST in the summary and the
+  inbox post, as printed (the warning line that follows it in later sessions names its reason, `(<kind>, reason=<word>)`, and says in a sentence when the page may be a layout change: give it as printed), and **this run then opens no further LinkedIn page**: no second `linkedin-runner` dispatch, no `jd-reader` read of a LinkedIn role (`route.py`
+  answers `NEXT held ... REASON linkedin-warning`: hold the role, record nothing for it), no one-off degree check. In every case, check and accept its ROLES block
+  as the reply pass's is (`deferred.py --add-roles <hand-back file> --run <the search run's id> --surface linkedin-jobsearch --check`, then the same call without
+  `--check`, the same exit codes), let the drain (§4b) take the roles it carries, and end the search run with `journal.py --run <the search run's id> --end`.
+- The person's own command, `/jobsearch:search linkedin attended`, is the attended form: the summary's due line names it when scheduled searching cannot read
+  or has stopped, and a warning's line says how to turn scheduled searching back on. Never run either from here.
 
 **COMPANY FEEDS: EVERY DAY, UNDER EVERY POSTURE, BEFORE THE BOARD PASS (dev #751; jobsearch 0.72.0).**
 A tracked company whose own URLs name a Greenhouse, Lever, Ashby or Workday board carries `companies[].ats`, and
@@ -952,7 +982,7 @@ what it read. **Every `RESIDUE <opp_id> (render): <reason>` line, across all the
 residue:** a page that needs a browser (`unparseable`, `insufficient`, `wrong-page`, `fetch-error`, `http-N`,
 or `fetch-unreached` for one the calls did not reach). Nothing in the residue is dropped.
 
-**5. Render the residue: `jd-reader`, every role in one fronted tab.** Hand the `RESIDUE <opp_id> (render)` lines to
+**5. Render the residue: `jd-reader`, every role's page in its own fresh tab.** Hand the `RESIDUE <opp_id> (render)` lines to
 the render route, `jd-reader`, in chunks of at most 15 roles, and at most `fanout` dispatches at once. **Every `solo`
 id gets a dispatch of its own.** Each dispatch is in the FOREGROUND and waited for, and each is written first, in the
 call immediately before it, then closed when it hands back. **`--ids` takes the chunk's OPPORTUNITY ids, as the
@@ -965,8 +995,8 @@ was handed from one it never was (dev #837):
 ```
 
 The brief carries the run id, `attended: no`, the profile root and the chunk's opp ids, and nothing else: the
-reader looks each role up, reads them in one fronted tab (navigated role by role, with a pane and tab check between
-roles), and records each with `record.py read-jd` or `read-failed`. A
+reader looks each role up, reads each role's page in its own fresh tab (opened for that page with `preview_start`, sized 1280 by 3200, closed
+after the role; never one tab navigated role by role, jobsearch 0.94.0, N2 and N8), with a pane and tab check between roles, and records each with `record.py read-jd` or `read-failed`. A
 posting only a person can open (a manual-candidate board, `manual-board`; no address, `no-url`; a sign-in
 wall, `login-wall`) goes **to the candidate**: the reader records that outcome, and the role is listed under YOUR READ with its link and the
 reason, for the candidate to read and record with `record.py read-jd <id> --via candidate`.
@@ -1086,7 +1116,8 @@ so (research needs no lift: no posture gates it). An attended board dispatch spe
 day: Claude Code documents no in-session marker that tells a scheduled session from a typed one,
 and the safe reading of an unmarked run is that nobody is watching. `--attended` never lifts
 `linkedin` (§4's gate is the browser and the quota, not a posture word). The drain's own agents are
-briefed `attended: no` on every run of this skill: an attended drain is the coordinator's § Drain.
+briefed `attended: no` on every run of this skill, the scheduled search's runner included: an attended drain is the coordinator's § Drain, and an
+attended search is the person's own command.
 
 The researcher finds the posting on the company's own site or ATS, reads the full JD for the fit analysis,
 and researches the company. Fold its findings into the role's record — comp, scope, reporting line,

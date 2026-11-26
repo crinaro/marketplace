@@ -53,7 +53,7 @@ def _fallback_ineligible(row, run, sess, value="on"):
     if _has_read(row):
         return None, "already read"
     try:
-        in_run = [a for a in _jd.attempts(row) if a["run"] == run]
+        in_run = [a for a in _jd.standing(row) if a["run"] == run]       # 0.94.0 (dev 1063): the attempts that STAND, so a withdrawal is never "the latest attempt"
     except _jd.JdReadError as e:
         return None, "its jd_read cannot be read (%s)" % e
     latest = _jd.latest_of([a for a in in_run if not (a["via"] == "fetch" and a["outcome"] in _jd.NOT_ATTEMPTED)])

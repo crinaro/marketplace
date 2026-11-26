@@ -134,16 +134,11 @@ call costs one tick. The heading says "Companies the engine can identify as aggr
 only when that check ran on every listed company; when a sighting's channel is unknown it says how many could not be checked
 instead.
 
-**Roles waiting on a company decision** is a new section after Targets. It lists, role first, each held role whose title
-matches your target titles at a company you have not decided about or are watching (not one you passed on, which is only
-counted): title, company, when it was first seen, and why it is held. The first row of each company has a tick box for that
-company under *Copy the "Target these companies" request for N*. Above the rows, one line gives the held count, split by why,
-and its change since a week ago ("+9 since {date}", "no change since {date}"). Until there is a count from a week ago it
-says "counting since {date}" (the first week after the upgrade), or "no count from a week ago yet". With no target titles
-configured nothing is listed and the line says why. A closed fold states the three caps between a find and a decision, in
-order. Companies holding a matching held role are also put to you first.
+**Held roles** (called *Roles waiting on a company decision* until 0.93.0) is a section after Targets. Since 0.94.0 a role is held for its title, its pay, its place or its company, and the section says which. It lists, role first, each held role whose title matches your target titles, with the first question it failed (*pay below your floor*, *place outside your criteria*, *criteria not checked*) or, for a role at a company you have not decided about or are watching, why that company holds it: title, company, when it was first seen and the reason. A role at a company you passed on is only counted. The first row of each company has a tick box for that company under *Copy the "Target these companies" request for N*. Above the rows, one line gives the held count, split by company answer (not yet decided, watching, passed on, or pursued with a role that does not meet your criteria) and then by the first question failed (*off title*, *pay*, *place*, *company passed*, *criteria not checked*), and its change since a week ago ("+9 since {date}", "no change since {date}"). Until there is a count from a week ago it says "counting since {date}" (the first week after the upgrade), or "no count from a week ago yet". With no target titles configured nothing is listed and the line says why. A closed fold states the three caps between a find and a decision, in order. Companies holding a matching held role are also put to you first. A role that meets your criteria is **not** on this list: it is read and comes to you to decide (see [How it works](how-it-works.md#a-role-that-meets-your-criteria-is-shown-whatever-its-company-since-0940)).
 
 ### The page since 0.89.0: Today first, three levels, tick boxes
+
+**A LinkedIn warning, since 0.94.0.** While the scheduled LinkedIn search is off because LinkedIn showed a warning, one line at the top of Today says so: *LINKEDIN WARNING {date} ({kind}[, reason={word}]): scheduled LinkedIn search is OFF.* followed, where the plugin was in doubt rather than sure, by a sentence in words (for example that it may be a layout change or a search with no results, and is treated as a warning), then *Open LinkedIn yourself and look.* It is there only while the search is off, and it stays until you tell Claude you have looked and name that warning's date. The same line is the first line of every run summary and of the coordinator's start. See [How it works](how-it-works.md#the-linkedin-job-search-since-0940).
 
 **Today leads the page**, and `Today` is the first entry in the bar pinned to the top. It shows at most five things,
 in a fixed order: someone is waiting on you first (they wrote back, they accepted, a draft is ready, a chat only you
@@ -251,7 +246,7 @@ something that is on the page.
   into Claude Code on the machine that holds your search. Pasted anywhere else (claude.ai, or a
   second machine on an older version), nothing is written, because that session cannot see your
   files.
-- **Opportunities to pursue** lists only roles where a pursue-or-pass decision is owed. Since 0.87.0 that means roles the plugin has finished reading and researching (*ready*); a role held for its company, a duplicate of another role, or one still being read or researched is not listed. The older
+- **Opportunities to pursue** lists only roles where a pursue-or-pass decision is owed. Since 0.87.0 that means roles the plugin has finished reading and researching (*ready*); a role held (for its title, pay, place or company), a duplicate of another role, or one still being read or researched is not listed. Since 0.94.0 each role carries **one short line saying why it is here**, in place of the pay-and-place line and the posting line: the title it matched, the pay and who stated it, the setting, how long ago it was posted, and whether the employer's own posting was checked, for example *Head of Widgets matches "Head of Widgets" · 300-350K stated ≥ 250K · remote · 2 days · not checked*. Anything that was not read says so (`pay not stated`, `setting not stated`, `employer posting: not checked`); nothing is guessed. The full form is one click away in the card's closed detail. The older
   **Show** and **Whose** choices (your move, in live conversation, sent, in interviews, parked,
   ended) are gone, because those roles are not on this page: roles in flight are in the status
   pane, *In flight*, and an ended role is simply not shown.
@@ -289,6 +284,8 @@ cause and how old it is, in these places:
 - **Your Move** (the status pane);
 - the **start line** of the coordinator session;
 - the **headline** of the run summary, as `PROCESS FAILURE: N`.
+
+Since 0.94.0 the *Pipeline state* summary reads `N roles to decide (M at companies you have not chosen)` where it used to read `N ready`, so you can see how many of the roles waiting for you came from a company you never answered about.
 
 Roles not yet taken on are counted and aged as **waiting for intake**, which is not a failure: nothing says a
 run ever tried them. The start line reads like this, with made-up numbers:
@@ -374,17 +371,14 @@ your files is described in [Your data](your-data.md#one-lifecycle-per-role--sinc
 
 ### Held roles and the Network list (since 0.86.0)
 
-**Held for company.** A role a board shows you at a company you have not chosen to target is recorded and then left
-alone: it is not read, screened or researched, and it is **not a failure**. The conservation line (the last line of the
-*Pipeline state* block) counts it as `held N (undecided U · watching W · passed P)`, so the roles still add up. A held
-role comes back to life when you target its company.
+**Held for company.** Before 0.94.0 every role a board showed you at a company you had not chosen to target was recorded and then left alone. **Since 0.94.0 only a role that does not meet your criteria, or sits at a company you passed on, is held**; a role that meets them is read whatever its company. A held role is recorded and left alone: it is not read, screened or researched, and it is **not a failure**. The conservation line (the last line of the *Pipeline state* block) counts it as `held N (undecided U · watching W · passed P · pursued Q)`, so the roles still add up (*pursued* is a role that fails your criteria at a company you targeted by pursuing another of its roles). A held role comes back to life when you target its company, or when it meets your criteria after you change them.
 
 **The Network list.** Below *Drafts* the page has a **Network** list, with its own entry in the jump bar. It holds only
 what you act on. The groups below are 0.86.0's; the current ones are in *The page since 0.89.0*, above. In 0.86.0 there
 were up to five groups, each shown only when it has something in it:
 
 - **Look into these companies**: companies a board find raised, oldest first, with how many more are waiting, each row
-  with the three answers (`record.py company-status <company> active-target --motivation <1-5>`, `watching`, `passed`);
+  with the three answers (`record.py company-status <company> active-target`, optionally with `--motivation <1-5>` (optional since 0.94.0), `watching`, `passed`);
 - **Chats to record**: a chat that is past and that you have not recorded as held or not, and a booking with no chat
   noted, each with the command that answers it;
 - **Suggestions to confirm**: a company, plan or cadence the strategist suggested, with `record.py confirm` and
@@ -403,6 +397,8 @@ and held, introductions, the table of how well you know each target) are in the 
 `outreach/network.md` is your own notes and is never written by the plugin.
 
 ### A sweep that was held, and the counts under it (since 0.69.0)
+
+**Since 0.94.0 a role is held only when its own card does not answer for it.** A cut-short list or a pay filter LinkedIn added is counted as missing coverage and holds nothing that was shown; a search that dropped the work-type filter holds a role unless its card states its setting (a setting word, or "(Remote)" in the place); one that dropped the place filter holds it unless the card states a place that is not just your own address echoed back; an unapplied date window holds it unless the card says when it was posted; a search the plugin could not read holds it. What is held is counted, and what the search did not read is said as not read, never as zero found. Up to 0.93.0, and on a profile the 0.94.0 upgrade has not reached, the rule below applies instead.
 
 When a LinkedIn or board sweep reports that its page was not showing what was asked (a filter
 dropped, a parameter you never set, an unapplied date window, a cut-short list), the roles that only

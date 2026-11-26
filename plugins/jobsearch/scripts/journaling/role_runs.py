@@ -1,24 +1,23 @@
-"""Role passes: recording roles, coverage of the channel map, what is missing, closing the board loop, and the jobsearch
-window.
+"""Role passes: recording roles, coverage of the channel map, what is missing, and closing the board loop. (The LinkedIn search's
+window is `searching/query_plan.py`'s since 0.94.0, dev 1055.)
 
 Capability module of `journal.py` (S4a, moved unedited)."""
 
-import datetime
 import re
 from journaling.board_runs import board_batches
-from journaling.instants import _parse_iso
 from journaling.journal_file import append, now_iso, read
 from journaling.passes import _check_ids, _is_count, record_pass
+from journaling.pins import require_pin
+from journaling.search_rows import check_roles_new_fields
 from journaling.tables import (
     F_TPR_BUCKETS,
-    F_TPR_DAILY,
+    F_TPR_DAILY,             # re-exported by journal.py (`deferred.add_roles` reads `journal.F_TPR_WIDE`)
     F_TPR_WIDE,
     JournalError,
     REASONS,
     ROLES_COVERAGE,
     ROLES_SURFACES,
     ROLES_WINDOWS,
-    WIDE_EVERY_DAYS,
 )
 
 
@@ -29,7 +28,8 @@ def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_g
                  q_degraded=None, q_degraded_queries=0, *, coverage=None, line_faults=None,
                  channels_worklist=None, channels_reached=None, channels_unreachable=None,
                  channels_not_attempted=None, channels_unaccounted=None, batch=None,
-                 channels_reached_ids=None):
+                 channels_reached_ids=None, pairs=None, q_planned=None, q_not_attempted=None, bounded=None, links=None,
+                 pane=None, mode=None):
     """dev #692 / public #140 -- the ONE writer of a `roles` event: one per ACCEPTED `ROLES v1`
     block (`deferred.add_roles`). Validated at write, loud: an unknown surface or window, a
     bucket outside `F_TPR_BUCKETS`, a negative count, or an identity that does not hold
@@ -67,7 +67,12 @@ def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_g
     dev #830 / public #180 (0.84.0) -- the keyword-only `batch` (an int >= 0; board only) says which batch of the board
     loop the event was written from (`0` is the script's closing event), and `channels_reached_ids` (a list of distinct
     channel ids; board only) names the channels whose QUERY lines were reached, so the next batch order can put the
-    longest-unattempted first. Both are additive: an event without them is today's (`batch` key None)."""
+    longest-unattempted first. Both are additive: an event without them is today's (`batch` key None).
+
+    dev 1055, 1064, 1065 (0.94.0; design-role-first.md 0, 5, 7.4, 8) -- seven optional keyword fields of a `linkedin-jobsearch` event:
+    `pairs`, `q_planned`, `q_not_attempted` (above zero makes the pass `partial`: a term of the coverage identity), `bounded`, `links`,
+    `pane` and `mode`. Not `queries`, which stays the integer count. Checked by `search_rows.check_roles_new_fields`, the reader's check,
+    and written only on a profile pinned at 0.94.0 (`pins.require_pin`)."""
     at = at or now_iso()
     if not run_id:
         raise JournalError("record_roles requires run_id")
@@ -117,7 +122,7 @@ def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_g
            "q_degraded_queries": q_degraded_queries, "at": at}
     rec.update(_roles_coverage(surface, queries, q_reached, coverage, line_faults, channels_worklist,
                                channels_reached, channels_unreachable, channels_not_attempted,
-                               channels_unaccounted))
+                               channels_unaccounted, q_not_attempted or 0))
     if batch is not None:
         if surface != "board" or not _is_count(batch):
             raise JournalError("record_roles batch=%r is a non-negative integer for surface 'board' only (got "
@@ -128,6 +133,12 @@ def record_roles(root, run_id, surface, window, f_tpr, queries, geos_ok, query_g
             raise JournalError("record_roles: channels_reached_ids is for surface 'board' only")
         _check_ids("channels_reached_ids", channels_reached_ids, nonempty=False)
         rec["channels_reached_ids"] = sorted(channels_reached_ids)
+    new = {k: v for k, v in dict(pairs=pairs, q_planned=q_planned, q_not_attempted=q_not_attempted, bounded=bounded, links=links,
+                                 pane=pane, mode=mode).items() if v is not None}
+    if new:
+        require_pin(root, "a `roles` event's %s" % ", ".join(sorted(new)))
+        rec.update(new)
+        check_roles_new_fields(rec)
     return append(root, rec)
 
 
@@ -144,7 +155,7 @@ def _check_channel_map(label, table):
 
 
 def _roles_coverage(surface, queries, q_reached, coverage, line_faults, worklist, reached,
-                    unreachable, not_attempted, unaccounted):
+                    unreachable, not_attempted, unaccounted, q_not_attempted=0):
     """The `coverage` half of `record_roles`: validate it, and return the fields to store ({} when
     `coverage` is not given -- and then none of the others may be). See `record_roles`."""
     given = dict(line_faults=line_faults, channels_worklist=worklist, channels_reached=reached,
@@ -182,14 +193,14 @@ def _roles_coverage(surface, queries, q_reached, coverage, line_faults, worklist
     if query_unreachable < 0:
         raise JournalError("record_roles: q_reached=%d exceeds queries=%d" % (q_reached, queries))
     partial = bool(line_faults > 0 or query_unreachable > 0 or unreachable or not_attempted
-                   or unaccounted)
+                   or unaccounted or q_not_attempted > 0)
     if (coverage == "partial") != partial:
         raise JournalError(
             "record_roles: coverage=%r but line_faults=%d, unreachable queries=%d (queries - "
             "q_reached), channels_unreachable=%d, channels_not_attempted=%d, "
-            "channels_unaccounted=%d -- a pass is partial exactly when any of them is non-zero"
+            "channels_unaccounted=%d, q_not_attempted=%d -- a pass is partial exactly when any of them is non-zero"
             % (coverage, line_faults, query_unreachable, len(unreachable), len(not_attempted),
-               len(unaccounted)))
+               len(unaccounted), q_not_attempted))
     return {"coverage": coverage, "line_faults": line_faults, "channels_worklist": worklist,
             "channels_reached": reached, "channels_unreachable": dict(unreachable),
             "channels_not_attempted": dict(not_attempted), "channels_unaccounted": list(unaccounted)}
@@ -277,42 +288,7 @@ def record_closing_roles(root, run_id, remaining, code, worklist_size, at=None):
 
 
 def jobsearch_geos(cfg):
-    """The geographies a wide re-scan must cover, computed from config -- never self-reported by
+    """The geographies a LinkedIn search covers, computed from config -- never self-reported by
     the runner: `remote` always, plus `local` when `geography.commute_anchors` is non-empty."""
     anchors = ((cfg or {}).get("geography") or {}).get("commute_anchors") or []
     return ["remote", "local"] if anchors else ["remote"]
-
-
-def wide_satisfied_at(recs, geos):
-    """The `at` of the newest `roles` event that satisfies the weekly wide re-scan, or None.
-
-    Only a `surface == "linkedin-jobsearch"`, `window == "wide"` event can (N3): a board event, a
-    daily event, and a refused LinkedIn pass (which writes no `roles` event at all) never do. And
-    only when EVERY requested geography has a reached, non-gapped QUERY (`set(geos) <= geos_ok`,
-    N4 as narrowed by R5): a wide pass that covered `remote` and not `local` leaves wide due."""
-    want = set(geos or [])
-    sat = [r.get("at") for r in roles_events(recs, surface="linkedin-jobsearch")
-           if r.get("window") == "wide" and want <= set(r.get("geos_ok") or [])
-           and r.get("at")]
-    return max(sat) if sat else None
-
-
-def jobsearch_window(now, recs, geos):
-    """dev #692 / public #140 (489-1, R5) -> `{"window", "f_tpr", "titles", "due_since"}` for the
-    LinkedIn job search `now` (an ISO string).
-
-    WIDE when no satisfied wide pass falls in the last `WIDE_EVERY_DAYS` days: LinkedIn's "Past
-    week" bucket (`r604800`), the full title set. Otherwise DAILY: "Past 24 hours" (`r86400`), the
-    configured titles. Only these two UI buckets exist (R5): no computed window, so a day the app
-    was closed is covered by the next weekly pass, never by an invented lookback. `due_since` is
-    the date wide became due (the day after the last satisfied pass's seventh day), or `never`;
-    None while the daily window applies."""
-    sat = wide_satisfied_at(recs, geos)
-    now_dt = _parse_iso(now) or datetime.datetime.now()
-    sat_dt = _parse_iso(sat) if sat else None
-    if sat_dt is not None and (now_dt - sat_dt) < datetime.timedelta(days=WIDE_EVERY_DAYS):
-        return {"window": "daily", "f_tpr": F_TPR_DAILY, "titles": "configured",
-                "due_since": None}
-    due_since = ((sat_dt + datetime.timedelta(days=WIDE_EVERY_DAYS)).date().isoformat()
-                 if sat_dt is not None else "never")
-    return {"window": "wide", "f_tpr": F_TPR_WIDE, "titles": "all", "due_since": due_since}

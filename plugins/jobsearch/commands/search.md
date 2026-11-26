@@ -1,6 +1,6 @@
 ---
-description: "Look for roles now: sweep employer career pages (`companies`), job boards and aggregators (`boards`), or both, on any day, without waiting for the posture's scheduled days. Needs the explicit `attended` form, in a session you are present for. Not the full daily run (that is /jobsearch:daily-run attended); not finding a company's job-board feed (that is /jobsearch:sourcing employers attended)."
-argument-hint: "[companies|boards] [attended]"
+description: "Look for roles now: sweep employer career pages (`companies`), job boards and aggregators (`boards`), or both, on any day, without waiting for the posture's scheduled days, or run the LinkedIn job search (`linkedin`, in the desktop app). Needs the explicit `attended` form, in a session you are present for. Not the full daily run (that is /jobsearch:daily-run attended); not finding a company's job-board feed (that is /jobsearch:sourcing employers attended)."
+argument-hint: "[companies|boards|linkedin] [attended]"
 ---
 
 # Search now
@@ -12,10 +12,13 @@ argument-hint: "[companies|boards] [attended]"
 | `/jobsearch:search attended` | career pages and job boards | none (both kinds) |
 | `/jobsearch:search companies attended` | employer career pages (`company-site` channels) | `--kind company` |
 | `/jobsearch:search boards attended` | job boards and aggregators (`job-board`, `aggregator`) | `--kind board` |
-| any of the above **without** `attended` | nothing: a preview of what is due | the same, with `--dry-run` |
+| `/jobsearch:search linkedin attended` | the LinkedIn job search, one results page a search (jobsearch 0.94.0): [its own form, below](#the-linkedin-form) | none: `linkedin_sweep.py search-plan --attended` |
+| `companies` or `boards`, **without** `attended` | nothing: a preview of what is due | the same, with `--dry-run` |
+| `linkedin` **without** `attended` | nothing: it says the search runs only as `/jobsearch:search linkedin attended`, in the desktop app, and stops | none |
 
-This is one sweep and what it finds, not a full run. It does not read mail, run LinkedIn, draft, or rebuild the
-dashboard; the next daily run does those. A role the sweep finds is captured, read, screened and, when the screen keeps
+This is one sweep and what it finds, not a full run. It does not read mail, run LinkedIn's reply pass, draft, or rebuild the
+dashboard; the next daily run does those. (`linkedin attended` is its one LinkedIn step, and it is the job search only: it never reads
+a message, an invitation or a profile.) A role the sweep finds is captured, read, screened and, when the screen keeps
 it, researched in this same session (step 4), the way the daily run does it: a posture level governs how often
 an UNATTENDED run searches, never whether a found role is looked into. Free company feeds (`feed_poll.py`) are
 not this command either: they run every daily run.
@@ -117,7 +120,7 @@ Print its output verbatim. Then say that the sweep runs only from the attended f
      `solo` from what it prints, never a number of your own;
    - capture: `record.py capture-batch --run <id> --admitted`, repeated until `deadline-left 0`;
    - read: `record.py read-batch --run <id> --fetch` for what a script can read, then `jd-reader` for the
-     `RESIDUE (render)` lines, in one fronted tab, and a posting only the candidate can open is listed under YOUR READ
+     `RESIDUE (render)` lines, each role's page in its own fresh tab, and a posting only the candidate can open is listed under YOUR READ
      with its link and reason, never skipped. A LinkedIn role neither the Browser pane nor Claude in Chrome could read
      is read from its public posting automatically, when your sandbox settings allow the host; `posting_fetch.py --set
      on|auto|off` changes that (`off` stops it; terms in docs/user/jobsearch/posting-fetch.md);
@@ -145,8 +148,76 @@ Print its output verbatim. Then say that the sweep runs only from the attended f
    intake) with any `LEFT` lines, and how many were researched now, from the scripts' own output, never a count
    of your own.
 
+## The linkedin form
+
+`/jobsearch:search linkedin attended` (jobsearch 0.94.0, dev 1055, 1064, 1065; design-role-first.md 8.1, 19.5, 19.6). It needs the Browser pane of the
+Claude desktop app, and it is the only way the search runs with a person at it. It is a search of its own, with its own run and its own gate, **not** the
+board gate above: no posture, no quota and no `channels_due.py` call apply. Only the literal word `attended` passes `--attended`. Without it, run nothing
+and say `LinkedIn job search: it runs only as /jobsearch:search linkedin attended, in the desktop app`.
+
+1. Journal the start and keep the run id it prints:
+
+   ```bash
+   ~/.claude/jobsearch/run journal.py --start search
+   ```
+
+2. Declare the browser, as the drain declares its render route: `--browser yes` when `mcp__Claude_Browser__preview_start` is among your tools (a
+   deferred one counts: load it through ToolSearch, then declare `yes`); `no` otherwise, and always `no` for a `mcp__remote-devices__Claude_Browser__` tool.
+   Then ask the gate, which also writes the dispatch row and the plan, so it cannot be forgotten:
+
+   ```bash
+   ~/.claude/jobsearch/run linkedin_sweep.py search-plan --attended --browser <yes|no> --run <id>
+   ```
+
+   `--attended` ignores the every-N-days cadence (a scheduled search's `not-due`, 48 hours at the default), a skip and a stop: a person is here. Print its output verbatim.
+
+3. **A warning line comes first.** If the output opens with `LINKEDIN WARNING <date> (<kind>): scheduled LinkedIn search is OFF. Open LinkedIn yourself
+   and look. To turn it back on: ~/.claude/jobsearch/run journal.py --linkedin-search-on --attended --warning <date>`, say it before anything else, in
+   plain words: LinkedIn warned an earlier run, so the scheduled search stays off until the person has looked at LinkedIn themselves and says so; this
+   attended search may still run. The plain form is the one above. **A warning with a reason prints it in the label and says in a sentence what it may mean:** `LINKEDIN WARNING <date> (<kind>, reason=<word>): scheduled LinkedIn search is OFF. <note> Open LinkedIn yourself and look. To turn it back on: ...`, where the note is `This may be a LinkedIn layout change or a search with no results rather than a warning; it is treated as a warning.` after the reasons `no-cards`, `cards-without-text`, `no-dismiss`, `no-about`, `no-main`, `shape` and `language`, and `The page could not be judged (a tool error or an answer nobody could read), which counts as a warning.` after `tool-error`, `empty-result`, `unparsable-verdict` and `judge-error`. Say the note as printed: it is why the search is off, and a layout change is the likeliest cause of the first.
+   **Run `--linkedin-search-on` only when the person says, in this session, to turn scheduled searching back on**, with the
+   date of the NEWEST warning: nothing else turns it on (not a good search, not time, not an update). **If `--linkedin-search-on` is refused** with `⛔ not turned back on: this turn-on is stamped <at> (UTC <at>), BEFORE the warning it names (<at>, UTC <at>). This machine's clock is behind the warning's, or the profile came from another time zone. Nothing was written: wait until the clock is past the warning's time (or correct it), then run it again.` (exit 2), nothing was written and the search is still off: tell the person that, in those words, and run the same call again only after the clock has passed the warning's time. Never edit the journal, and never name another date to get past it.
+
+4. **Exit 3 is a refusal, a complete answer.** The first line reads `SEARCH-PLAN REFUSED reason=<word>: <sentence>`: print it, say
+   `linkedin job search: NOT RUN (<the reason word>)`, close the journal with `journal.py --run <id> --end`, and dispatch nothing. The reasons an attended call can
+   meet: `no-browser` (this session has no Browser pane: run it in the desktop app), `linkedin-warning` (LinkedIn warned during this very run: this run opens no
+   further LinkedIn page, so start a new run later), `off` (the person turned the source off; `record.py source on linkedin-jobs` turns it on), `no-pin` (the
+   profile has not been moved to 0.94.0 yet; its sentence names the migration) and `no-titles` (`targets.titles` is empty). Exit 2 is a malformed call: report it.
+
+5. **Exit 0: dispatch `linkedin-runner` once, in the foreground and waited for,** with a brief that carries the run id, `pass: search`, `search: attended`,
+   `attended: yes`, the profile root, and the plan block exactly as printed (from `--- SEARCH PLAN v1` to `--- END SEARCH PLAN ---`). Nothing else: it holds
+   no worklist, reads no reply surface, and its own text (`agents/linkedin-runner.md`, "THE SEARCH PASS") carries the rest. Read the plan's `LATER` line to the
+   person: those pairs wait for a later search.
+
+6. **When it hands back, say its first line first.** `STOP LINKEDIN WARNING kind=<kind>` means a page was a warning, a sign-in, a CAPTCHA or a page nobody could
+   tell from one: the pass ended at once, nothing was retried, waited on or answered, and **no further LinkedIn page is opened in this run** (do not dispatch
+   the runner again, and open nothing on LinkedIn yourself). Tell the person the scheduled search is now off, that they should open LinkedIn themselves
+   and look, and the command that turns it back on. Whatever the runner read before the stop is still recorded in step 7.
+
+7. Check the ROLES block it filed, then accept it, with the same outcomes and exit codes as daily-run's LinkedIn pass:
+
+   ```bash
+   ~/.claude/jobsearch/run deferred.py --add-roles <hand-back file> --run <id> --surface linkedin-jobsearch --check
+   ```
+
+   and then the same call without `--check`. A `QUERY PLAN` line says how many of the planned searches were read and lists each one not run as
+   `NOT-ATTEMPTED <geo> <title>`: print them as printed, **never a count of roles as a measure of the search.** A hand-back with no block (a stop on the
+   first page, or a search that could not read) files none: say so.
+
+8. **Drain what it found** by step 4 of the attended form above (read daily-run's **4b. THE DRAIN**, its research step **5. RESEARCH**, and follow it with this
+   session's run id and render-route declaration), then close the journal: `~/.claude/jobsearch/run journal.py --run <id> --end`. A search that was dispatched
+   and never returned is a crashed pass, named by the run, never papered over by hand.
+
+9. Print the run's own lines: `~/.claude/jobsearch/run run_summary.py --run <id>`, and quote its `linkedin job search:` line (`<p> planned · <r> read ·
+   <c> cards · <i> ids · <n> recorded · <h> held · <b> cut short · <f> filters dropped · stopped by <none|reason>`, or `NOT RUN (<reason>; last <date>)`),
+   the warning line first when it prints one. If the person would rather not be asked again soon: `~/.claude/jobsearch/run journal.py --linkedin-search-skip
+   --until <date>` skips the due line until a date (at most 30 days); `record.py source off linkedin-jobs` turns the search off.
+
+No CAPTCHA, sign-in or bot check is ever attempted here, by this command or by the runner: if LinkedIn shows one, the person clears it in their own browser,
+and the search is run again later.
+
 ## What NOT to do
 
-- Do not sweep a kind the candidate did not name: `boards` is never also career pages.
+- Do not sweep a kind the candidate did not name: `boards` is never also career pages, and `linkedin` is never part of `companies` or `boards`.
 - Do not run it on a timer. Scheduling is the posture's job (`/jobsearch:tier`); this command is for a person
   who wants to look now.

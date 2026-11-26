@@ -2,12 +2,19 @@
 `application-status` (status and status_on together) and `networking-closed` (refused on unverified silence), plus
 the advisory note when a written row names the candidate but is on no Your Move list.
 
+jobsearch 0.94.0 (dev 1062, RF9; docs/design-role-first.md 4.4, OD-9 yes): `decide <opp> pursue` also makes the role's company a target,
+in the same locked write (`two_stores.PairMutation`), when `recording/pursue_target.py` says it may. The pursued company is `active-target` with
+`target_from: {opp, on}` and NO `motivation`: how much the owner wants to work there is their own statement and is never defaulted, so
+absent stays absent. `decide <opp> pass` never untargets the company; it prints how to.
+
 Capability module of record.py (an entry point over `recording/`)."""
 
 import datetime
 import re
 from recording import profile_paths as _paths
+from recording import two_stores
 from recording.common import Mutation, _validator_module
+from recording.pursue_target import pass_note, pursue_target
 from recording.store_files import load
 from validation.vocab import TERMINAL_OPP_STATUSES
 
@@ -98,6 +105,12 @@ def decide_mutation(args, rec, new_verdict, _ym, _profile_mod):
                 and isinstance(r.get("passed_from"), dict)):
             back = r.pop("passed_from")
             r["status"], r["stage"] = back.get("status"), back.get("stage")
+    if new_verdict == "pursue":
+        today, no_target = datetime.date.today().isoformat(), bool(getattr(args, "no_target", False))
+        return two_stores.PairMutation(desc, apply, lambda companies, opps, channels: pursue_target(
+            companies, opps, channels, rec.get("id"), today, _ym, no_target))
+    if new_verdict == "pass":
+        return two_stores.PairMutation(desc, apply, lambda companies, opps, channels: pass_note(companies, opps, rec.get("id")))
     return Mutation(desc, apply)
 
 

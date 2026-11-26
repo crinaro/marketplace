@@ -374,19 +374,6 @@ _paths.bind(_profile_root())
 #   via              writes `via_person_id` (and `via_commitment_id` with `--chat`) on a role or an application; refuses a chat that
 #                    is with somebody else.
 
-# ---- proposals and suggestions (dev #834, jobsearch 0.86.0, design-network-first.md 6 and 8) ---------------------------------
-#
-#   record.py proposal <opp_id> [--scope "<text>"] [--rate 1500/day/USD] [--on YYYY-MM-DD] [--note "<text>"]
-#   record.py proposal-status <proposal_id> sent|accepted|declined|withdrawn|expired [--on YYYY-MM-DD]
-#   record.py suggest --store companies|plans|people --action set|create --target-id <id> --values '<json>' --ask "<q>"
-#   record.py confirm <ask_id> [--set field=value ...]
-#   record.py decline <ask_id> [--why "<text>"]
-#
-# `proposal` and `proposal-status` are the candidate's own record of a proposal to a prospective client of a fractional, interim,
-# advisory or contract engagement (owner ruling 3): nothing writes one unattended. `suggest` is the strategist's: it writes an ASK
-# and NOTHING else, so the suggested row does not exist until the candidate runs `confirm`, which writes the row and resolves the ask
-# in ONE locked write of two stores (both rolled back, byte for byte, when either write or the validator fails).
-
 # ---- show: the whole record, untruncated (design section 7, SH1) -----------------------------------------------------
 
 def main():
@@ -415,6 +402,10 @@ def main():
     from recording.parser import bind_store, messages_refusal
     bind_store(args)
     refused = messages_refusal(args)
+    if refused is not None:
+        return refused
+    from recording.role_first import flag_refusal      # 0.94.0: `read-jd --body` and `decide --no-target` are stubs until P3 and P5
+    refused = flag_refusal(args)
     if refused is not None:
         return refused
 
@@ -478,6 +469,9 @@ def _dispatch(args):
     if args.op == "company-kind":
         from recording.network_verbs import cmd_company_kind
         return cmd_company_kind(args)
+    if args.op == "read-withdraw":
+        from recording.role_first import cmd_read_withdraw
+        return cmd_read_withdraw(args)
     if args.op == "chat":
         from recording.network_verbs import cmd_chat
         return cmd_chat(args)

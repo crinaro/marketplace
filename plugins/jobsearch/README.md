@@ -69,7 +69,15 @@ LinkedIn run as before. A profile upgraded to 0.78.0 moves to these days (a copy
 Set `search.posture` in your `config.json`, or define your own. See
 [How it works — Cost](../../docs/user/jobsearch/how-it-works.md#cost).
 
-**Research is never limited by a posture.** Every role a run finds that passes your screen
+**A role is shown because it meets your criteria, not because of its company** (0.94.0). A run reads
+the roles whose title, stated pay and stated place pass your own criteria first, newest first, up to 20
+a run and while fewer than 25 decisions wait for you; a role that fails them, or sits at a company you
+passed on, is held and counted with the reason. Pursuing a role also targets its company, with no
+1-to-5 rating needed. A scheduled run on a posture that uses LinkedIn also searches LinkedIn jobs when it is due, about every
+two days (the first page of each search, reading only), and stops at the first LinkedIn warning until you
+turn it back on.
+
+**Research is never limited by a posture.** Every role a run reads that passes your screen
 (`VERDICT keep`) is researched in that same run, on every posture, in batches of up to 10, with any
 overflow on the next run. A borderline role (`review`) waits for you. Drafting is the other model
 work a posture holds: what it refuses is queued and drained by the next run whose posture permits

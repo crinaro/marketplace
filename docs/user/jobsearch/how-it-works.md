@@ -122,8 +122,8 @@ Nothing below sends anything or commits anything without you.
 ## One lifecycle per role (since 0.82.0)
 
 Every role at a company you target goes through one sequence, and a run does not stop halfway through it. (A role
-at a company you have not chosen to target is **held**, not worked: see *A board find asks about the company first*,
-below.)
+at a company you have not chosen to target is worked when it meets your criteria, and **held** when it does not: see *A role that
+meets your criteria is shown, whatever its company*, below.)
 
 1. **Capture.** A role a sweep found is recorded, or matched to a role you already have. What a search
    result card showed (pay, work setting, location) is kept, but marked as *provisional*, because a card
@@ -157,6 +157,9 @@ this version no longer does.) Reading the files that show this is in
 
 ## A board find asks about the company first (since 0.86.0)
 
+> **Since 0.94.0 this applies only to a role that does not meet your criteria, and to a company you passed on.** A role that meets your own criteria is
+> read and put to you whatever its company: see the next section. What follows is how a held role and the company question work.
+
 A role a job board shows you at a company you have not chosen to target is **kept, and not worked**. The run
 records the role (so you can see it was found), and then stops: it does not read the posting, screen it or research
 it. Such a role has its own state, **held for company**. It is not a failure and it is counted, so every role is
@@ -169,7 +172,7 @@ counted as *waiting*, never dropped. Your answer is one command, and it is your 
 
 - `record.py company-status <company> active-target --motivation <1-5>`: target it. From the next run its roles are read,
   screened and researched like any other target's. Your motivation, 1 to 5, is your own word for how much you want to
-  work there, and a target needs one.
+  work there. Since 0.94.0 it is optional: leave `--motivation` off and the company is a target with no rating, shown as `?`.
 - `record.py company-status <company> watching`: keep watching, and stop asking.
 - `record.py company-status <company> passed`: not for you.
 
@@ -179,6 +182,89 @@ the first runs after it raise the first companies, and the rest follow on later 
 **What a run looked at and what it did not.** A run that could not look at everything says so in its
 headline as `DID NOT LOOK`, with a count and an age: company feeds it ran out of time for, searches it
 could not reach, mail it could not read.
+
+## A role that meets your criteria is shown, whatever its company (since 0.94.0)
+
+Before 0.94.0 a role at a company you had not chosen waited until you answered a question about the company, even when the role was exactly what you asked for. Now **your own
+criteria decide what is read and put to you**. Your company answers still matter, but for other things: who is written to, and how often a company's own page is checked.
+
+**The first look.** Before a role is read, the run looks at its card and asks three questions with your own rules:
+
+- **Title.** Does it match one of your target titles, and clear your seniority floor?
+- **Pay.** If the listing states a range, is the top of it under your pay floor? Pay that is not stated, not captured or not comparable never counts against a role.
+- **Place.** If the listing states a work setting, does it fit where you will work (remote, or within your commute)? A place that is not stated, or is only an echo of your own home
+  address, never counts against a role.
+
+A role that passes is **read, screened and researched like any other**, and if it keeps it comes to you to pursue or pass. A role that fails stays held and says which question held it.
+A role at a company you **passed on** stays held whatever its title, and is counted as that. If the run cannot read your criteria (for example no target titles are set), the role stays
+held and the line says `criteria not checked`: a criterion it could not read never counts as a pass. The look is worked out each time against today's settings, so changing a floor or a title
+takes effect at once.
+
+**How many, and in what order.** A run reads matching roles **newest first**, because a posting loses value with age: up to `search.matching_roles_per_run` (20 unless you changed it), and
+never more than half of what the run has time for while a company you chose is waiting. It also **stops reading new matching roles while `search.open_decisions_max` (25 unless you changed it)
+are open for your decision or being read**, and the plan, the start line and the summary say so. If you leave the list alone, new matching roles wait, and the page says so. If your scheduled
+runs cannot read a LinkedIn page, up to 25 such roles wait for one attended read; roles a script can read carry on. Roles first seen before the upgrade are never counted as failures
+for it.
+
+**Each role says why it is on your page.** One short line, from facts the role already holds: the title and what it matched, the pay and its basis (stated by the employer, a board's
+estimate, or yours), the setting, how long ago it was posted, and whether the employer's own posting was checked. What was not read is said as not read: `pay not stated`, `setting not stated`,
+`posted date not shown`, `employer posting: not checked`. Nothing is guessed to fill a gap.
+
+**Pursuing a role targets its company.** `record.py decide <role> pursue` now also makes the role's company a target, in the same step, with no 1-to-5 rating asked first. It leaves the
+company alone, and says why, when you passed on it, when it is a staffing firm or a job board (the employer is not known), or when you stated a motivation for it earlier. Add `--no-target`
+to pursue only the role. A target made this way starts outreach suggestions (each still needs your approval) and regular checks, and reads its other roles **only when they meet your criteria**.
+A later pass on that role does not untarget the company; the line printed says how (`record.py company-status <company> watching`).
+
+**A read now has to quote the description.** A role read in the browser is recorded only with a short quote (60 to 200 characters) from the description itself, not from the title or the
+header. A posting whose description never filled used to pass as read on its title alone. A read that is wrong can be **withdrawn** (`record.py read-withdraw`): the run puts back the pay and
+place the read replaced, runs the screen again, sets aside a research made on the wrong read, and keeps the whole history. A read the same run's later failed attempt contradicts is
+withdrawn automatically. A role you have already decided stays decided. "Not currently accepting applications" now counts as a closed posting, alongside "No longer accepting applications"
+(English only: a posting in another language is never closed by the script).
+
+**A sweep that came back cut short no longer holds roles it showed.** A card that states its own setting or place is trusted when a search dropped that filter, and a cut-short result or a pay
+filter LinkedIn added is counted as missing coverage instead of holding the roles that were shown (see *A sweep that was held* in [Reading your files](reading-your-files.md)).
+
+**What the upgrade does.** The 0.94.0 upgrade marks your profile (older versions then stop and tell you to update), keeps a copy of the two files it may change (`opportunities.jsonl.pre-0.94.0`
+and `pending_actions.jsonl.pre-0.94.0`; a copy already there is used only if it holds every row about to change exactly, otherwise a new one is written as `.pre-0.94.0.1` and on, and the message
+names the copy that holds the originals), withdraws up to 50 reads a session that the same run's later failed attempt contradicts, and releases captured roles that were held only for a reason
+their own card answers. Roles held for their company need nothing done: held is worked out each time, so the mark is what releases the ones that meet your criteria, and the first run's plan
+says how many wait. A profile the upgrade has not reached behaves as 0.93.0 did.
+
+## The LinkedIn job search (since 0.94.0)
+
+The LinkedIn job search is its own step, no longer part of the pass that reads your replies and messages. It searches by each of your target titles and each place you work (remote, and your
+commute area if you set one), reads the first page of results of each search (about 25 roles), and records what it finds. **It only reads.** It never clicks, scrolls, types, signs in or answers
+anything on LinkedIn.
+
+- **Who runs it.** You, with `/jobsearch:search linkedin attended` in the desktop app; or a scheduled run, when it is due and the run's tier uses LinkedIn. **Due means 48 hours have passed** (the
+  setting `search.linkedin_search_every_days`, 2 unless you changed it, counted in hours) since the later of the last time a search was started, whether or not it finished or crashed, and the last one
+  that reached LinkedIn. The clock is the time elapsed, never the calendar day. At most `search.linkedin_queries_per_pass` (20) searches a time, and only the searches the plan lists. With 14 titles and
+  2 places every search repeats within a week; with many more, some wait longer than LinkedIn's one-week window and can miss roles, and the summary counts them.
+- **Limits, in the script.** One page for each search, never a second. At most 20 searches a pass. Each page is judged once; the plugin takes at most 25 job links from a search and 500 in a pass, and
+  counts them before it prints them. No scheduled LinkedIn search runs while the 0.94.0 update step has not yet run on your profile (it runs at your next session start); the reply pass says so.
+- **What the summary says.** A run that did not search says `linkedin job search: NOT RUN (...)`, with the reason (not due yet, no browser, skipped, off, stopped, a LinkedIn warning) and the last
+  date. It is never reported as zero roles found. A run that searched says how many of its planned searches it read.
+- **Asking you.** The start line asks for the attended step only when scheduled searching cannot do it: the newest search failed, scheduled searching is stopped or off, or nothing has searched for
+  twice the interval. To skip it for a while (at most 30 days): `journal.py --linkedin-search-skip --until <date>`.
+- **Any LinkedIn warning stops it, and you turn it back on.** Every LinkedIn page the plugin opens (a search page, a posting, a reply page) is judged by a script before anything is taken from it, and
+  only a page it can positively recognise as an ordinary page is ordinary. A warning, a sign-in or identity check, a CAPTCHA, an unusual-activity notice or a usage-limit page, **or any page it is in
+  doubt about, counts as a warning** (a browser tool that errors, times out or returns nothing counts too). A warning recorded by any run ends every run already in flight at its next LinkedIn
+  step: it opens no further LinkedIn page and takes nothing more from LinkedIn that run, and the roles not reached are held for the next run. The scheduled search then stays **off** until you have
+  looked at LinkedIn yourself and run the command the first line of every summary shows (`journal.py --linkedin-search-on --attended --warning <date>`). Nothing else turns it back on: not a later good
+  search, not time, not an update. A command stamped before the warning it names is refused.
+- **What may turn it off, though nothing is wrong.** Because doubt counts as a warning: a search with no results (no job to show), a LinkedIn layout change, an account or page in another language than
+  English, a pop-up, toast or notice on an otherwise ordinary page, a banner of several words, and a job description that itself uses a warning's words (for example a posting about identity
+  verification). **The reason is shown in words** with the warning, and where it may be a layout change or an empty search the line says so ("This may be a LinkedIn layout change or a search with no
+  results rather than a warning; it is treated as a warning"), so you can look and turn it back on. How often this happens on a real page has not been measured.
+- **What the plugin does not check.** It refuses what it is shown; it cannot make the runner show it every page it opens. Two calls at the very same instant are not locked against each other.
+  A warning drawn over a page full of ordinary results, in the main area, a header or a side panel, with no wording the plugin knows and no pop-up or notice, would be missed; so would a page with no
+  language attribute, an image-only message, and a warning on a reply page that rests on weak evidence. An attended reply pass on a profile the update has not reached loses its LinkedIn search for the
+  same reason as a scheduled one.
+- **What has not been tested.** Several searches in one run have not been run on LinkedIn, and it is not known whether any address keeps LinkedIn's remote and place filters: in every load measured
+  LinkedIn dropped them, so the 25 results read may be the first 25 of a wider search (counted as cut short, never as zero found). **The first five scheduled searches show their counts at your
+  next start**: planned, read, cards, job ids, recorded, held, cut short, filters dropped and what stopped it.
+- **LinkedIn's rules.** LinkedIn's terms bar software that scrapes or automates activity on the site. This search reads pages you are already signed in to, and the two small scripts it runs
+  to check a page and to read job links send nothing and open nothing, but they are not claimed to be permitted. See [What it will not do](#what-it-will-not-do).
 
 ## Your network comes first (since 0.86.0)
 
@@ -229,7 +315,7 @@ you changed it).
 
 ### Targets, and what the plugin works out about them
 
-`active-target` is simply your list of companies. You state how much you want each one (`motivation`, 1 to 5) and, for
+`active-target` is simply your list of companies. You can state how much you want each one (`motivation`, 1 to 5, optional since 0.94.0) and, for
 each person, how you know them (`people.ties`: former colleague, alumni, community, friend, introduced, other). From
 those and from what is recorded, the weekly review's reach table works out for each target how many people you know there, how many are
 alumni, how many roles are live and when you last made contact. None of it is stored: change a tie and the table
@@ -261,8 +347,8 @@ a long time, and not checked yet), *Introductions* and *Relationships due this w
 rows, folds the next 20 into one line each, and counts the rest. Since 0.92.0 each Network row says what it is about and
 why it is listed, a reply owed for more than `network.reply_owed_days` days (60 by default) or about an ended role is named
 under *Not listed* instead, and a person you asked to stop following (`record.py stop-following`) stays off both groups until
-they write again. Held roles that match your titles have their own section, *Roles waiting on a company decision*, with the
-held count and its change since last week. Every button copies text to paste into your jobsearch session; nothing is recorded
+they write again. Held roles have their own section, *Held roles* (called *Roles waiting on a company decision* before 0.94.0), with the
+held count, why they are held and its change since last week. Every button copies text to paste into your jobsearch session; nothing is recorded
 by the click. See *The page since 0.92.0* in [Reading your files](reading-your-files.md). The numbers (reach-outs
 against the budget, chats booked and held, introductions) live in the weekly review and in
 `views/network_strategy.md`. A run that found no roles but worked your network is not a quiet run, and a profile with
@@ -660,7 +746,8 @@ once the search has found it.** Under every posture, including `minimal` and `ec
   staying quiet;
 - **every role at a company you target that passes the screen (`VERDICT keep`) is researched in that same run**,
   and a run finishes every role of the companies it takes on (up to `search.company_intake_per_run` companies, 10
-  unless you changed it). A role at a company you have not targeted is held until you decide about the company.
+  unless you changed it). A role at a company you have not targeted that meets your criteria is read whatever its company (since 0.94.0, up to
+  `search.matching_roles_per_run` a run, 20 unless you changed it); one that does not, or at a company you passed on, is held.
   Roles not yet taken on are counted as waiting, never dropped. A borderline role (`review`) is not researched until you have
   looked at it.
 
@@ -722,12 +809,10 @@ every day.
   does not start a sweep it cannot finish: it says there is no route the board sweeper can use on this
   machine, and the board slot stays open for a later run.
 
-**Once a week, that day's LinkedIn pass looks further back.** The daily pass uses LinkedIn's
-own "Past 24 hours" filter. One pass a week uses "Past week" instead, so a role missed on its
-first day is seen a second time. It is not an extra pass: it is that day's pass, inside the
-same daily quota, so it adds no cost, and on a tier whose quota is `0` it does not run. The run
-summary then says the wide look is due and was not run, and why. Roles it re-surfaces go through
-the same accounting as any other, and roles you already know about are not created twice.
+**The LinkedIn job search looks back a week, not a day (since 0.94.0).** Before 0.94.0 one LinkedIn pass a week used "Past week" and the
+others "Past 24 hours". That separate wide look is gone: the job search is its own step (see *The LinkedIn job search*, below) and uses "Past week"
+unless every search it will run was already read in the last 24 hours. Roles it re-surfaces go through the same accounting as any other, and roles
+you already know about are not created twice.
 
 ---
 
@@ -752,7 +837,21 @@ signed-in browser on a desktop (macOS); it cannot run from a phone on its own or
 it is roughly half of the outreach funnel. The mailbox, screening, reports and drafting need only
 one of the supported places above.
 
-### LinkedIn needs the browser pane in view (since 0.83.0)
+### LinkedIn and the browser pane (since 0.83.0, changed in 0.94.0)
+
+**Since 0.94.0 the question "is the pane in view?" no longer decides what a pass does.** The app still says whether a window shows the session, and the pass writes that
+down, but it measured wrong as a test of whether a page draws: a pane nobody was looking at still drew a fresh tab, and a signed-in LinkedIn page filled with no
+drawing at all. So each page now opens in its own new tab, set to a large fixed size, read, and closed. A LinkedIn results page or posting is accepted when its content is
+complete on two reads in a row, whatever the app says about drawing. Any other page keeps the drawing test, and the pass reads by text only (no clicks) when a page still
+does not draw after a second look. The text below describes the rules up to 0.93.0, which a profile the 0.94.0 upgrade has not reached keeps. What the app does with a pane
+nobody is looking at is not documented by the vendor, and a scheduled session has been measured twice, not more: a locked screen, a sleeping display or a minimised app window
+were not tested.
+
+**What this means for the "hidden pane" notice.** From 0.94.0 only a reply pass that left a list unread counts towards it, three times in a row; a pass that read every list
+does not, even when run on a schedule. A LinkedIn search counts only when three in a row ran with the pane hidden. A pass you run with the pane shown clears the notice, and it
+comes back after three more.
+
+Up to 0.93.0, LinkedIn needed the browser pane in view:
 
 LinkedIn is read in the desktop app's built-in browser pane. A pane you are not looking at does not draw
 anything on screen, so a click in it cannot be checked. Since 0.83.0 the search asks the app whether the pane

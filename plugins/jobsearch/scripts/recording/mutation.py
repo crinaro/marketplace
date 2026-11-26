@@ -41,16 +41,14 @@ from recording.resolves import (
     resolve_linked_asks_dated,
 )
 from recording.sourcing import _sourcing_mutation
+from recording import two_stores
 from recording.store_files import (
     AUTO_MINT_LABEL,
-    STORES,
     LockError,
     find,
     load,
     lock_is_held,
     release_lock,
-    restore,
-    save_atomic,
     snapshot,
     take_lock,
 )
@@ -207,7 +205,8 @@ def _dry_run(args, rows, rec, m):
         print("  " + "\n  ".join("- " + m for m in _introduced))
         return 1
     pre_rc, _, _, pre_problems = validate()
-    rc, out, err, problems = dry_run_validate(args.file, shadow_rows)
+    _extra, _also = two_stores.shadow_extra(m, shadow_rows)       # jobsearch 0.94.0: a pursue's company, shadowed beside the role
+    rc, out, err, problems = dry_run_validate(args.file, shadow_rows, extra=_extra) if _extra else dry_run_validate(args.file, shadow_rows)
     if rc != 0:
         added = new_problems(pre_problems, problems)
         if added is None or added:
@@ -229,6 +228,8 @@ def _dry_run(args, rows, rec, m):
               "next worker.")
         return 0
     print("  ✅ dry-run validated clean against the same validator a real write runs.")
+    if _also:
+        print("  · " + _also)
     if minted:
         _mint_label = AUTO_MINT_LABEL.get(args.file, "app_id")
         print("  · would mint %s: %s" % (_mint_label, ", ".join(minted)))
@@ -324,7 +325,15 @@ def _write_locked(args, m):
     # Raw bytes, not the parsed rows: restoring exactly what was there cannot reintroduce a
     # formatting difference, and a byte-identical restore is trivially verifiable.
     # GitHub issue #1.
-    before = snapshot(args.file)
+    before = {args.file: snapshot(args.file)}
+    # jobsearch 0.94.0 (dev 1062): a PairMutation (`decide <opp> pursue`) may change `companies` in the same transaction. It is read, edited and
+    # snapshotted HERE, inside the lock, and saved FIRST (recording/two_stores.py says why that order).
+    saves = [(args.file, rows)]
+    if isinstance(m, two_stores.PairMutation):
+        _companies = two_stores.settle(m, rows)
+        if _companies is not None:
+            before[two_stores.COMPANIES] = snapshot(two_stores.COMPANIES)
+            saves.insert(0, (two_stores.COMPANIES, _companies))
 
     # ⭐ Was the store ALREADY invalid? Asked here, before touching anything, because
     # validate_data.py checks the WHOLE store — an unrelated pre-existing problem would
@@ -337,14 +346,18 @@ def _write_locked(args, m):
     # nothing that lands is ever silently discarded (the outcome is always printed).
     pre_rc, _, _, pre_problems = validate()
 
-    save_atomic(args.file, rows)
+    failed = two_stores.save_in_order(saves, before)
+    if failed:
+        print("\n".join(failed))
+        return 1, rec
     refused = _keep_or_roll_back(args, before, pre_rc, pre_problems)
     return refused, rec
 
 
 def _keep_or_roll_back(args, before, pre_rc, pre_problems):
-    """After the save: keep a write that added no problem, roll back (byte for byte, verified) one that did.
-    Returns 1 when the validator still fails (printed), else None."""
+    """After the save: keep a write that added no problem, roll back (byte for byte, verified) one that did. `before` is
+    `{store: bytes}` for EVERY store the write saved (one, or two for a pair). Returns 1 when the validator still fails
+    (printed), else None."""
     rc, out, err, problems = validate()
     if rc != 0:
         added = new_problems(pre_problems, problems)
@@ -383,7 +396,7 @@ def _keep_or_roll_back(args, before, pre_rc, pre_problems):
         # summary only prints after every check runs — so the banner named no field, no
         # value, no rule. _diagnostic_lines falls back to stderr, then to a plain statement
         # of the crash, so this is never blank.
-        restored = restore(args.file, before)
+        restored = two_stores.restore_all(before)
         post_rc, _, _, post_problems = validate()
         print("  ⛔ REFUSED — the write broke the store, so it was ROLLED BACK.")
         if added:
@@ -411,7 +424,7 @@ def _keep_or_roll_back(args, before, pre_rc, pre_problems):
             # Never claim a rollback that did not happen. This is the one outcome that
             # needs a human, and saying so plainly is the whole point.
             print("  ⛔⭐ ROLLBACK FAILED — THE FILE IS IN AN UNKNOWN STATE. DO NOT RETRY.")
-            print("  Restore %s from git before any further write." % STORES[args.file])
+            print("  %s." % two_stores.unrecoverable_line(before).capitalize())
         return 1
 
 
@@ -481,6 +494,8 @@ def _report_written(args, m, rec):
         else:
             print("  · app_id minted: %s — name it as trigger_ref on whatever this application "
                   "causes" % ", ".join(minted))
+    if isinstance(m, two_stores.PairMutation) and m.line:
+        print("  " + m.line)
     if args.file == "opportunities":
         _your_move_visibility_note(new_row if args.op == "create" else rec)
     if args.op in JD_READ_OPS:

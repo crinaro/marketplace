@@ -196,6 +196,7 @@ import os, sys as _sys
 _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root as _profile_root
 import handback as _handback        # handback.py: the hand-back contract (dev #811 / #812)
+from searching import card_evidence as _evidence, links_pane as _lpane, q_verdict as _qverdict, query_gaps as _qgaps, query_plan as _qplan
 
 ROOT = _profile_root()
 QUEUE = os.path.join(ROOT, "data", "pending_actions.jsonl")
@@ -295,6 +296,8 @@ QUERY geo=<remote|local> title="<query>" window=<r86400|r604800|none> shown=<n> 
 QUERY geo=<remote|local> title="<query>" unreachable reason=<journal.REASONS code> [channel=<channel_id>]
 CHANNEL <channel_id> <unreachable|not-attempted> reason=<journal.REASONS code>
 SEEN distinct=<n>
+LINKS <matched=<m> unmatched=<k>|NO-IDS cards=<n>|NOT-LOADED|READ-ERROR|PARTIAL cards=<n> ids=<m>>
+PANE state=<displayed|hidden|unknown|not-pane> mode=<normal|hidden>
 ROLE url=<posting url> q=<k>[,<k>...] title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|ats:YYYY-MM-DD|<n>d|?> pay=<pay|?> setting="<verbatim|none stated|?>"
 ROLE nourl title="<t>" company="<c>" reason=<journal.REASONS code>
 --- END ROLES ---"""
@@ -763,12 +766,12 @@ def _refusal_for_stage(st):
     if name == "waiting":
         return ("it has not been admitted by an intake run yet (lifecycle stage waiting): research "
                 "follows the read, in a run that admitted it")
-    if name == "held-for-company":
-        # dev #834 (jobsearch 0.86.0, design-network-first.md 3.2, 3.4 row 9): the sighting is recorded, and its JD read, screen
-        # and research wait until the company is TARGETED. `detail` is why: undecided | watching | passed.
-        why = {"undecided": "nobody has decided about the company yet; answer its look-into item",
-               "watching": "you decided to keep watching the company",
-               "passed": "you passed on the company"}.get(st.detail, "the company is not a target")
+    if name == "held-for-company":   # dev #834 (0.86.0): `detail` is why (undecided|watching|passed|pursued); dev 1062 (0.94.0): `cause` the criterion it fails
+        why = {"undecided": "nobody has decided about the company yet; answer its look-into item", "watching": "you decided to keep watching the company",
+               "passed": "you passed on the company", "pursued": "you pursued another role there, and only roles that meet your criteria are read"
+               }.get(st.detail, "the company is not a target")
+        why += {"title": "; its title is not one you target", "pay": "; its pay is under your floor", "place": "; its place is out for you",
+                "criteria": "; your criteria could not be checked", "match": "; it meets your criteria"}.get(st.cause, "")
         return ("it is held for its company (lifecycle stage held-for-company: %s): its JD read, screen and research wait "
                 "until the company is targeted (`record.py company-status <id> active-target --motivation <1-5>`)" % why)
     if name == "unclassified":
@@ -887,7 +890,7 @@ def _jd_attempt_state(opp):
     `queue_jd_read` and `settle` ask of a role, answered by `jd_read`, never re-derived here."""
     import jd_read as _jd
     try:
-        return "some" if _jd.attempts(opp) else "none"
+        return "some" if _jd.standing(opp) else "none"       # 0.94.0 (dev 1063): attempts that stand, so a withdrawn only read is `none`
     except _jd.JdReadError:
         return "unreadable"
 
@@ -1398,7 +1401,7 @@ def role_payload(r, run_date):
             "slots": r.get("slots") or {}}
 
 
-def parse_roles(text, run_id, surface, worklist=None):
+def parse_roles(text, run_id, surface, worklist=None, evidence=None):
     """`{"header", "queries", "distinct", "listed", "roles", "faults", "channels", "unaccounted",
     "worklist"}` from the one `ROLES v1` block in `text`. Prose outside the block is ignored -- the block is the contract.
 
@@ -1426,7 +1429,10 @@ def parse_roles(text, run_id, surface, worklist=None):
     (the QUERY lines say it was tried; `unreachable` with reached QUERYs is allowed: the channel
     stopped answering partway). Then, with a worklist, every worklist id that has NEITHER a parsed
     QUERY line for it NOR an accepted CHANNEL line is the block fault `channel-unaccounted:<id>`, and
-    `unaccounted` lists those ids in worklist order."""
+    `unaccounted` lists those ids in worklist order.
+
+    dev 1055 (0.94.0) -- `evidence` is a `searching.card_evidence.Evidence`, given by `add_roles` on a profile pinned at 0.94.0 (`_card_evidence`):
+    a degraded query then holds a role only where the role's own card does not answer it. None keeps 0.93.0's rule."""
     import journal as _journal
     from pipeline_index import canonical_job_url
     lines = text.splitlines()
@@ -1472,6 +1478,7 @@ def parse_roles(text, run_id, surface, worklist=None):
     expected_bucket = _journal.F_TPR_WIDE if window == "wide" else _journal.F_TPR_DAILY
     queries, roles, distinct, role_lines = [], [], None, 0
     qord, ordinals = 0, {}      # dev #722 / public #156: a ROLE's q= counts EVERY QUERY line
+    link_counts, pane = [], None            # dev 1064 (0.94.0): the LINKS and PANE lines (searching/links_pane.py)
     for i in range(begins[0] + 1, end):
         raw = lines[i].strip()
         if not raw:
@@ -1571,6 +1578,15 @@ def parse_roles(text, run_id, surface, worklist=None):
                 continue
             distinct = int(qm.group("n"))
             continue
+        lp = _lpane.parse(raw, surface, pane is not None)
+        if lp:
+            if lp["kind"] == "fault":
+                fault(n, raw, lp["rule"])
+            elif lp["kind"] == "links":
+                link_counts.append(lp["counts"])
+            else:
+                pane = (lp["state"], lp["mode"])
+            continue
         rm = _ROLE_URL.match(raw)
         if rm:
             role_lines += 1
@@ -1598,39 +1614,7 @@ def parse_roles(text, run_id, surface, worklist=None):
             role_lines += 1              # the agent meant a ROLE here: SEEN counted it, so do we
         fault(n, raw, "not a line of the ROLES grammar")
 
-    # dev #722 / public #156 -- each ROLE url line's q= is judged against the block's QUERY lines
-    # now that all of them have been seen: an ordinal out of range or naming an UNREACHABLE query
-    # (it showed no roles) is a line fault for that ROLE; one naming a QUERY line that did not
-    # parse is allowed and counts as DEGRADED (`query-unparsed`), so a broken line can never make
-    # its roles look clean. A role is QUARANTINED when EVERY query that showed it is degraded.
-    vetted = []
-    for r in roles:
-        if r["url"] is None:
-            vetted.append(r)
-            continue
-        bad = None
-        for k in r["q"]:
-            if k > qord:
-                bad = "q=%d is out of range: the block has %d QUERY line(s)" % (k, qord)
-            elif k in ordinals and ordinals[k]["status"] == "unreachable":
-                bad = "q=%d names an unreachable QUERY, which showed no roles" % k
-            if bad:
-                break
-        if bad:
-            fault(r["line"], lines[r["line"] - 1], bad)
-            continue
-        codes, all_degraded = set(), True
-        for k in r["q"]:
-            q = ordinals.get(k)
-            if q is None:
-                codes.add("query-unparsed")
-            elif q["degraded"]:
-                codes.update(q["degraded"])
-            else:
-                all_degraded = False
-        r["quarantine_codes"] = sorted(codes) if all_degraded else None
-        vetted.append(r)
-    roles = vetted
+    roles = _qverdict.vet_roles(roles, qord, ordinals, lines, fault, evidence)       # each ROLE's q= judged (searching/q_verdict.py)
 
     canon_seen, kept = {}, []
     for r in roles:
@@ -1676,7 +1660,21 @@ def parse_roles(text, run_id, surface, worklist=None):
     return {"header": {"window": window, "surface": surface}, "queries": queries,
             "distinct": distinct, "listed": len(kept), "roles": kept, "faults": faults,
             "channels": channel_lines, "unaccounted": unaccounted,
-            "worklist": None if worklist is None else list(worklist)}
+            "worklist": None if worklist is None else list(worklist), "links": _lpane.fold(link_counts), "pane": pane}
+
+
+def _card_evidence(journal_mod):
+    """dev 1055 (0.94.0, design-role-first.md 5.1) -- the `searching.card_evidence.Evidence` a pass's roles are judged by, or None on a profile
+    that has no 0.94.0 pin (RF4: 0.93.0's quarantine, exactly). `journal_mod` is the `journal` module (`pin_missing_line`). The anchors are read
+    from this profile's `config.json`; one that cannot be read answers nothing (every place counts as an echo)."""
+    if journal_mod.pin_missing_line(ROOT, "card evidence"):
+        return None
+    try:
+        with open(os.path.join(ROOT, "config.json"), encoding="utf-8") as fh:
+            cfg = json.load(fh)
+    except (OSError, ValueError):
+        cfg = None
+    return _evidence.Evidence.from_config(cfg)
 
 
 def _role_key(company, title):
@@ -2094,8 +2092,9 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
                         else _journal.board_worklist_dispatched(_journal.read(ROOT), run_id))
         except _journal.JournalError as e:
             worklist_problem = str(e)
+    evidence = _card_evidence(_journal)
     try:
-        parsed = parse_roles(text, run_id, surface, worklist)
+        parsed = parse_roles(text, run_id, surface, worklist, evidence)
     except RolesRefused as e:
         if check:
             out(_handback.verdict_line("refused", detail=str(e)))
@@ -2156,62 +2155,8 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
             except _journal.JournalError as e:
                 out("⚠️ could not close the gap %s (%s)" % (g["scope"], e))
 
-    geos_ok, gaps_window, gaps_trunc, gaps_filters = set(), 0, 0, 0
-    # dev #722 / public #156 (R4) -- the per-query READ counts. Every reached query is exactly one of
-    # clean (dropped=none, added=none, nothing degraded), unread (`?` on a filter slot, nothing
-    # degraded) or degraded; `total=?` over a page is counted APART (it can sit under any of the
-    # three). SHAPE, not enforced: these are counts of what the sweep SAID.
-    q_reached = q_clean = q_unread = q_total_unknown = q_degraded_queries = 0
-    q_degraded = {}
-    for q in parsed["queries"]:
-        scope = "jobsearch:query:%s:%s%s" % (surface, q["geo"],
-                                              (":" + q["channel"]) if q.get("channel") else "")
-        if q["status"] == "reached" and not q["window_gap"]:
-            geos_ok.add(q["geo"])
-        if q["status"] == "reached":
-            q_reached += 1
-            if "total-unknown" in q["unread"]:
-                q_total_unknown += 1
-            if q["degraded"]:
-                q_degraded_queries += 1
-                for code in q["degraded"]:
-                    q_degraded[code] = q_degraded.get(code, 0) + 1
-            elif "filters-unread" in q["unread"]:
-                q_unread += 1
-            else:
-                q_clean += 1
-        if q["window_gap"]:
-            gaps_window += 1
-            reason = q.get("reason") or "partial-results"
-            out("QUERY GAP  %s (%s): %s" % (scope, reason,
-                                            "unreachable" if q["status"] == "unreachable"
-                                            else "window not applied"))
-            _file_gap(run_id, scope, reason, "the next pass applies its window on this query", out)
-        elif q["truncated"]:
-            gaps_trunc += 1
-            out("QUERY TRUNCATED %s: shown %d of %s%s" % (scope, q["shown"], q["total"],
-                                                          "+" if q.get("total_lower_bound") else ""))
-            _file_gap(run_id, scope, "partial-results",
-                      "a narrower query shows every result", out)
-        if q["status"] == "reached" and (q["dropped"] or q["added"] or q["dropped_unread"]
-                                         or q["added_unread"]):
-            gaps_filters += 1
-            if q["dropped"] or q["added"]:
-                named = [x for x in (
-                    ("dropped=%s" % ",".join(q["dropped"])) if q["dropped"] else "",
-                    ("added=%s" % ",".join(q["added"])) if q["added"] else "") if x]
-                out("QUERY FILTERS %s: %s (its roles are quarantined unless a clean query also "
-                    "showed them)" % (scope, "; ".join(named)))
-            else:
-                out("QUERY FILTERS %s: filters unread (dropped/added = ?): a gap, never a "
-                    "quarantine" % scope)
-            _file_gap(run_id, scope, "partial-results",
-                      "the next pass applies the requested filters on this query", out)
-        if q["status"] == "reached" and "total-unknown" in q["unread"]:
-            out("QUERY TOTAL UNKNOWN %s: shown %d, total not read (counted; never a quarantine)"
-                % (scope, q["shown"]))
-            _file_gap(run_id, scope, "partial-results",
-                      "the next pass reads the result count on this query", out)
+    (geos_ok, gaps_window, gaps_trunc, gaps_filters, q_reached, q_clean, q_unread, q_total_unknown,
+     q_degraded_queries, q_degraded) = _qgaps.file_query_gaps(parsed["queries"], surface, run_id, out, _file_gap, evidence is not None)
 
     # dev #811 / public #170 (S2) -- a channel that failed, was never tried, or was never accounted for
     # is a gap of its own, and a reached channel's roles are already in above: one channel's failure
@@ -2267,8 +2212,14 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
     # QUERY, or any channel list is non-empty) and refuses an event that breaks it.
     line_faults = len([f for f in faults
                        if not str(f["scope_key"]).startswith("block:channel-unaccounted:")])
+    # dev 1055 (0.94.0, 5.2, 5.3) -- a pinned profile's LinkedIn search: `pairs`, `bounded` and, against the plan `search-plan` stored on the
+    # dispatched row (never recomputed), `q_planned` and `q_not_attempted`; a planned query nobody read makes the pass partial.
+    acct = (_qplan.account(_qplan.stored_plan(recs, run_id), parsed["queries"])
+            if evidence is not None and surface == "linkedin-jobsearch" else None)
+    if acct:
+        _qgaps.file_plan_gaps(acct, surface, run_id, out, _file_gap)
     partial = bool(line_faults or (len(parsed["queries"]) - q_reached) or chan["unreachable"]
-                   or chan["not_attempted"] or chan["unaccounted"])
+                   or chan["not_attempted"] or chan["unaccounted"] or (acct and acct["q_not_attempted"]))
     event = dict(run_id=run_id, surface=surface, window=window, f_tpr=f_tpr,
                  queries=len(parsed["queries"]), geos_ok=sorted(geos_ok),
                  query_gaps_window=gaps_window, query_gaps_truncated=gaps_trunc,
@@ -2284,6 +2235,12 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
                  channels_unreachable=chan["unreachable"],
                  channels_not_attempted=chan["not_attempted"],
                  channels_unaccounted=chan["unaccounted"])
+    if acct:
+        event.update(pairs=acct["pairs"], bounded=acct["bounded"], **_lpane.pane_fields(parsed["pane"]))
+        if parsed["links"]:
+            event["links"] = parsed["links"]
+        if acct["q_planned"] is not None:
+            event.update(q_planned=acct["q_planned"], q_not_attempted=acct["q_not_attempted"])
     if batch is not None:
         event["batch"] = batch
     if surface == "board" and batch is not None:
@@ -2327,6 +2284,8 @@ def add_roles(text, run_id, surface, out=print, check=False, already_locked=Fals
                                    ("%d unreachable QUERY line(s)"
                                     % (len(parsed["queries"]) - q_reached))
                                    if len(parsed["queries"]) - q_reached else "",
+                                   ("%d planned QUERY not attempted" % acct["q_not_attempted"])
+                                   if acct and acct["q_not_attempted"] else "",
                                    ("%d channel(s) unreachable" % len(chan["unreachable"]))
                                    if chan["unreachable"] else "",
                                    ("%d channel(s) not attempted" % len(chan["not_attempted"]))

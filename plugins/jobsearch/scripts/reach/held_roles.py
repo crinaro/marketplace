@@ -2,7 +2,9 @@
 docs/design-decision-surface.md §C, review round 2 G3, G4 and G6).
 
 A role is HELD (`lifecycle` stage `held-for-company`) while its company waits on the candidate's decision: `undecided` (raised,
-not answered), `watching` (the candidate chose to watch it) or `passed`. This module answers four questions about them, and
+not answered), `watching` (the candidate chose to watch it) or `passed`; and, from 0.94.0 (dev 1062, design 3.2), `pursued`: a company a
+pursue made a target, holding the roles of it that fail the candidate's criteria. A held role's `cause` (0.94.0) is the first criterion it
+fails (`reach.first_look`: title, pay, place, criteria not checked) or, at a passed company, `match`. This module answers four questions about them, and
 takes only what its callers already loaded (rows, a stage map, functions), so it imports no entry point (G4, G5.L2):
 
   rank      `title_matcher`, `title_fields`, `newest_sighting`, `candidate_key`, `look_into_key`: `your_move.company_candidates`
@@ -20,15 +22,18 @@ WHY `reach/` AND NOT `measuring/`, where §C.1 and G4 put it (measured 2026-11-2
 cycle; `measuring/mail_coverage.py` imports the journal, which is inside it. Any cycle member importing `measuring` (`your_move`,
 `recording/network_verbs.py`, `dashboard/held.py`) therefore pulls `build_reach.py`, or `measuring/` itself once it has a second
 top-level importer, into the cycle: 39 -> 40, a G6 violation no waiver may excuse. `reach/` is already imported by all three and
-is not in the cycle; this module imports nothing, so it adds no edge back.
+is not in the cycle; this module imports only `reach.first_look`, which imports nothing, so it adds no edge back.
 
 Pure: no I/O, no clock (every `today` is passed in). Python 3.9+, standard library only."""
 
 import datetime
 
+from reach import first_look
+
 HELD = "held-for-company"
-WHY = ("undecided", "watching", "passed")
+WHY = ("undecided", "watching", "passed", "pursued")
 LISTED = ("undecided", "watching")
+CAUSE = first_look.CAUSES + ("match",)             # a held role's `cause`: `lifecycle.HELD_CAUSES`, pinned equal by a test
 BASELINE_DAYS = 7
 
 
@@ -83,16 +88,30 @@ def _day(value):
 
 
 def _why(stage):
-    return stage.detail if stage.detail in WHY else "undecided"
+    """A held stage's why. A detail outside `WHY` is a stage this module does not know: an error, never read as `undecided` (0.94.0)."""
+    if stage.detail not in WHY:
+        raise ValueError("a held role's why %r is none of %s" % (stage.detail, ", ".join(WHY)))
+    return stage.detail
 
 
 def held_counts(stages):
-    """`{"undecided", "watching", "passed": n}` over `stages` (the opportunities' lifecycle stages, an iterable): every
-    `held-for-company` stage counted by its why, as `lifecycle.process_report` counts it, but for opportunities only (G3)."""
+    """`{"undecided", "watching", "passed", "pursued": n}` over `stages` (the opportunities' lifecycle stages, an iterable): every
+    `held-for-company` stage counted by its why, as `lifecycle.process_report` counts it, but for opportunities only (G3). The journal's
+    `companies-raised.held` stays three keys (`journaling.row_shapes.HELD_KEYS`), so a writer of that row takes those three."""
     out = dict.fromkeys(WHY, 0)
     for st in stages:
         if getattr(st, "name", None) == HELD:
             out[_why(st)] += 1
+    return out
+
+
+def held_causes(stages):
+    """`{criterion: n}` over the held opportunities among `stages`, by their `cause` (`CAUSE`); a held role with no cause (held for its company
+    alone, as in 0.93.0) is in none of them."""
+    out = dict.fromkeys(CAUSE, 0)
+    for st in stages:
+        if getattr(st, "name", None) == HELD and getattr(st, "cause", None) in out:
+            out[st.cause] += 1
     return out
 
 
@@ -113,7 +132,7 @@ def listing(opps, stages, companies, matches, first_seen):
             cid = o.get("company_id")
             rows.append({"id": o["id"], "opp": o, "company_id": cid,
                          "company": str((companies.get(cid) or {}).get("name") or cid or ""), "why": _why(stages[o["id"]]),
-                         "first_seen": seen.isoformat() if seen else None})
+                         "cause": getattr(stages[o["id"]], "cause", None), "first_seen": seen.isoformat() if seen else None})
     rows.sort(key=lambda r: r["id"])
     rows.sort(key=lambda r: r["first_seen"] or "", reverse=True)
     rows.sort(key=lambda r: LISTED.index(r["why"]))

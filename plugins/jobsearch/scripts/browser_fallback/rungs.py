@@ -14,14 +14,20 @@ change, and `pick_browser(browsers)` says which connected Chrome to drive (`--pi
                 else reads as `no`. An unattended step never enters the extension rung while EXTENSION_UNATTENDED_PROBED is
                 False (`unattended-unprobed`), because a site prompt or a CAPTCHA blocks the tool call and nothing records it.
     latch       `browser` once the pane has answered `not-painting`: later steps of the pass skip the pane rung. Cleared only
-                by a `paints` outcome that carries `pane: displayed`.
+                by any later `paints` outcome (0.94.0, dev 1064, N4: the pane line is never an input, so no `pane` is asked). It is set only by `not-painting`,
+                which `pane_probe.py --gate` gives a SECOND hidden answer or two candidates, never a first (`probe-again`) and never a size problem (`set-size`).
 
 `--next` prints one line: `NEXT <rung> LATCH <browser|none>`, then ` NOTE waiting-on-person` when the rung is `chrome` for an
 attended step, then ` CODE <code>` when the rung is `fetch` or `not-checked` and the extension was passed over without being tried
-(`unattended-unprobed` or `not-preferred`: the `fallback.extension` code the agent must record). `NEXT done` means a rung worked."""
+(`unattended-unprobed` or `not-preferred`: the `fallback.extension` code the agent must record). `NEXT done` means a rung worked.
+
+`NEXT held LATCH <l> REASON linkedin-warning` (0.94.0, dev 1064, design 19.6 WN2) is printed INSTEAD of a rung for `--step posting-read-linkedin` when a `linkedin-warning` row on
+the journal is at or after the start of `--run <id>` (`journaling.search_state.warning_for_run`): the run opens no further LinkedIn page, and the role is held for the next run (`browser_fallback/warning_hold.py`, a held-equal copy of that rule)."""
 
 import json
 import os
+
+from browser_fallback import warning_hold
 
 MECHANISMS = ("plugin", "browser", "chrome")
 
@@ -48,7 +54,7 @@ STEP_KINDS = {
 RUNG_BROWSER, RUNG_CHROME, RUNG_FETCH, RUNG_NOT_CHECKED = "browser", "chrome", "fetch", "not-checked"
 RUNG_DONE = "done"
 OUTCOME_OK = "ok"          # an outcome word meaning the rung worked
-PAINTS_WORD = "paints"     # a fresh gate result on a displayed pane: the only thing that clears the latch
+PAINTS_WORD = "paints"     # a gate result: any later one clears the latch (0.94.0: the pane line is not an input)
 NOT_PAINTING_WORD = "not-painting"
 # Words meaning the BROWSER failed, so the next rung is tried (design 4.2's `fallback.extension`
 # vocabulary that admits the fetch, plus the pane's own gate words).
@@ -129,7 +135,7 @@ def _outcomes_seen(outcomes, latch_out):
             raise RouteError("unknown outcome word %r for rung %s" % (word, rung))
         if rung == RUNG_BROWSER and word == NOT_PAINTING_WORD:
             latch_out = "browser"
-        elif rung == RUNG_BROWSER and word == PAINTS_WORD and o.get("pane") == "displayed":
+        elif rung == RUNG_BROWSER and word == PAINTS_WORD:
             latch_out = "none"
         if word == PAINTS_WORD:
             continue                  # a gate result, not the end of a rung
@@ -143,12 +149,11 @@ def next_rung(step, cfg, outcomes, latch):
     """The next rung to try for one step. PURE: it reads nothing but its arguments.
 
     `cfg` is the profile config (`sourcing.route_preference`) plus an optional top-level `attended`;
-    `outcomes` is the list of `{rung, word}` so far (a `paints` outcome on `browser` may carry `pane`);
+    `outcomes` is the list of `{rung, word}` so far;
     `latch` is `browser` or `none`. Returns `{rung, latch, note, code}`:
 
       rung   one of the chain's rungs, or `done` when a rung already worked
-      latch  `browser` once the pane answered `not-painting` (later steps skip it); cleared only by a
-             `paints` outcome with `pane: displayed`
+      latch  `browser` once the pane answered `not-painting` (later steps skip it); cleared by any later `paints`
       note   `waiting-on-person` when `rung` is `chrome` for an attended step, else None
       code   the `fallback.extension` code when the extension was passed over without being tried
              (`unattended-unprobed`, `not-preferred`) and the rung returned is `fetch` or
@@ -252,7 +257,13 @@ def run_cli(args, root_fn):
         outcomes = json.loads(args.outcomes)
         if not isinstance(outcomes, list) or not all(isinstance(o, dict) for o in outcomes):
             raise RouteError("--outcomes must be a JSON list of objects")
-        out = next_rung(args.step, dict(load_config(root_fn()), attended=args.attended), outcomes, args.latch)
+        root = root_fn()
+        # WN2 (design 19.6, dev 1064): once LinkedIn has warned, a run that began before the warning opens no LinkedIn page. A posting is HELD for the next run: not a failed read,
+        # not an attempt. a journal that cannot be read is NOT CHECKED (the `except` below), never "no warning". A run with no `--run` is treated as begun before every warning.
+        if args.step == "posting-read-linkedin" and warning_hold.held(root, args.run):
+            print("NEXT held LATCH %s REASON linkedin-warning" % _latch_in(args.latch))
+            return 0
+        out = next_rung(args.step, dict(load_config(root), attended=args.attended), outcomes, args.latch)
     except (RouteError, ValueError) as e:
         print("!! NO NEXT RUNG: %s" % e)
         print("   Do NOT guess a rung; report the step as NOT CHECKED.")

@@ -233,9 +233,13 @@ reports a quiet week forever, because it has nothing to read.
 
 1. **`/jobsearch:mailboxes`** — the mail accounts. An unreachable account does not raise; the
    sweep just covers less and reports the smaller result as the whole picture.
-2. **`/jobsearch:linkedin`** — the browser session. **The mailbox gets no LinkedIn notification
-   emails**, so the browser is the only detector for replies, acceptances and message requests.
-   Once signed in, the session persists across runs.
+2. **`/jobsearch:linkedin`** — the browser session. **A mailbox may receive some LinkedIn mail and never all of it**
+   (it depends on the member's LinkedIn email settings and on which address LinkedIn has), so mail is one partial source
+   beside the browser: a notice is positive evidence to act on, and no notice proves nothing. The browser is what looks for
+   replies, acceptances and message requests. Once signed in, the session persists across runs. The LinkedIn job search
+   (off until `/jobsearch:sourcing` turns it on) is a step of its own: it runs from the scheduled daily run when its page
+   reads, and `/jobsearch:search linkedin attended` in the desktop app runs it with the person present. If LinkedIn ever
+   shows a warning, the scheduled search turns itself off and the next session starts with a `LINKEDIN WARNING` line.
 
 ⛔ **The user signs in themselves, in their own browser.** Never ask for a password, never store
 one, never sign in on their behalf.

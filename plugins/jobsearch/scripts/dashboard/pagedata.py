@@ -29,12 +29,15 @@ class PageData(object):
                         Network row renders as a reference, and Today's item for it links that primary row
     handoff             {"pages": {person id: recorded LinkedIn address}, "outbox": {draft_ref: outbox row}}: what a Drafts
                         row hands off (`drafts.handoff_data`, jobsearch 0.91.0 B7a); None renders no hand-off
+    why_here            the owner's criteria (`reach.why_here.Ctx`) for a profile that carries the 0.94.0 pin, else None (jobsearch
+                        0.94.0, dev 1062, design 4.5). None is the 0.93.0 page: an open card keeps its pay-and-place and posting
+                        lines, and no 0.94.0 wording appears. Its presence IS the pin, so the Targets words read it too
     """
     FIELDS = ("now", "currency", "terminal_statuses", "handoff",
               "plan_groups", "needs_human", "queued_by_contact", "title",
               "run_id", "network_rel", "net_sent_proposals", "today_drafts", "today_plan", "today_roles",
               "today_targets", "today_counts", "quiet_days", "pick_rows", "pick_heads",
-              "network_text", "targets_text", "targets_ask", "targets_not_raised", "ref_of")
+              "network_text", "targets_text", "targets_ask", "targets_not_raised", "ref_of", "why_here")
 
     def __init__(self, **values):
         unknown = sorted(set(values) - set(self.FIELDS))

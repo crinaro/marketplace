@@ -78,6 +78,17 @@ each value is checked here, so an unknown code is refused at write and is never 
 and carries `{text, fallback: {fetch: <code>}}`, with no `pane` and no `tab_active` (nothing was opened).
 The installed 0.86.0-0.89.x reader REFUSES these keys, which is why the profile carries the 0.90.0 pin (section 8.2).
 
+THE 0.94.0 SHAPES (dev 1063; docs/design-role-first.md 6.1, 6.3)
+-----------------------------------------------------------------
+  body        `via render` read only: 60-200 characters quoted from the DESCRIPTION, not the header (the title-only quote that passed as a
+              read is what 1063 is about). It never equals `quote`. Whether the text really is description is `record.py`'s check, not
+              this parser's (the page is not here).
+  withdrawn   a COMPENSATING attempt, never an edit of history: `{at, run, url, via, outcome: "withdrawn", evidence: {text, of}}`, where `of`
+              is the `at` of a `read` attempt listed EARLIER in the same record and not later than the withdrawal. The read stays in the
+              record; `standing()` is the read-side list that leaves out the withdrawn read and the withdrawal itself. `attempts()` stays
+              the lossless list every WRITER rewrites from. `via` is a verb's own (never `legacy`); `run` the writer's run id.
+  An engine older than 0.94.0 refuses both (strict parser), which is why a profile carries the 0.94.0 pin before either is written.
+
 NO FREE TEXT PASSES AS A READ. An unknown key, an unknown outcome, an empty evidence object, a `render`
 read without a quote, a bad `at` -- each raises `JdReadError` naming the field.
 
@@ -101,7 +112,11 @@ OUTCOMES = (READ,) + TERMINAL + CANDIDATE + HOST_CLASS
 # page was never read, so this is NOT a failed read: a fourth class, kept outside `OUTCOMES` (which is what
 # `read-failed` may record, and which the four classes above cover exactly). `ALL_OUTCOMES` is what the parser accepts.
 NOT_ATTEMPTED = ("pane-hidden",)
-ALL_OUTCOMES = OUTCOMES + NOT_ATTEMPTED
+# 0.94.0 (dev 1063, design-role-first.md 6.3): a fifth class, `withdrawal`: an attempt that says an earlier read was wrong. Kept outside `OUTCOMES`
+# (what `read-failed` may record) as `NOT_ATTEMPTED` is: only `record.py read-withdraw`, the same-write contradiction rule and the migration write it.
+WITHDRAWAL = ("withdrawn",)
+WITHDRAWN = "withdrawn"
+ALL_OUTCOMES = OUTCOMES + NOT_ATTEMPTED + WITHDRAWAL
 # 0.90.0 (dev #858, design-browser-fallback.md 8.1): a not-attempted attempt is written `via render` (the browser read that
 # could not happen: `record.py not-attempted`, the only verb for it) or, for `pane-hidden` only, `via fetch` (the scripted
 # fetch rung withheld or failed: `record.py read-batch --fallback`). `NOT_ATTEMPTED_VERB_VIA` is the one the VERB writes.
@@ -121,7 +136,9 @@ EVIDENCE_CAP = 200
 # 0.90.0 (dev #858): `NEW_EVIDENCE_KEYS` are the four keys below; each tuple gains the ones design 8.1 names for it.
 # `probe` stays readable on an older row and is no longer WRITTEN (`gate` replaces it); a fetch attempt's own keys are
 # `FETCH_NOT_ATTEMPTED_EVIDENCE_KEYS`.
-READ_EVIDENCE_KEYS = ("quote", "chars", "sha1", "replaced", "attestation", "browser")
+READ_EVIDENCE_KEYS = ("quote", "chars", "sha1", "replaced", "attestation", "browser", "body")
+WITHDRAWN_EVIDENCE_KEYS = ("text", "of")
+BODY_MIN, BODY_CAP = 60, EVIDENCE_CAP        # 0.94.0: characters of description a rendered read must quote (design 6.1)
 FAILED_EVIDENCE_KEYS = ("text", "page", "pane", "probe", "browser", "ready", "gate", "fallback")   # only `text` is required
 NOT_ATTEMPTED_EVIDENCE_KEYS = ("text", "pane", "tab_active", "browser", "ready", "gate", "fallback")
 FETCH_NOT_ATTEMPTED_EVIDENCE_KEYS = ("text", "fallback")
@@ -130,6 +147,9 @@ NEW_EVIDENCE_KEYS = ("browser", "ready", "gate", "fallback")
 # `profile-schema` pin `m_0_90_0_browser_fallback` writes (`migrate.BROWSER_FALLBACK_PIN`); this module is pure and cannot
 # import migrate, so the literal is mirrored here.
 NEW_KEYS_PIN = "0.90.0"
+# The profile pin a WRITER requires before it stores a `body` or a `withdrawn` attempt (0.94.0; `journaling.pins.ROLE_FIRST_PIN`, which this pure
+# module cannot import, so the literal is mirrored here and a test pins the two equal).
+ROLE_FIRST_PIN = "0.94.0"
 BROWSERS = ("pane", "extension")
 READY_WORDS = ("READY", "NOT-READY", "READY-ERROR")             # page_ready.py --verdict's words, mirrored (pure module)
 GATE_WORDS = ("paints", "not-painting", "probe-error")          # pane_probe.paint_gate's words that are STORED (not probe-again)
@@ -156,8 +176,9 @@ class JdReadError(ValueError):
 
 
 def outcome_class(outcome):
-    """`read` | `terminal` | `candidate` | `host` | `not-attempted`, or raises `JdReadError` for an unknown
-    outcome. `not-attempted` (0.85.0) is a page that was never read: it is no page attempt at all."""
+    """`read` | `terminal` | `candidate` | `host` | `not-attempted` | `withdrawal`, or raises `JdReadError` for an unknown
+    outcome. `not-attempted` (0.85.0) is a page that was never read: it is no page attempt at all, and neither is a `withdrawal`
+    (0.94.0): it is a statement about an earlier read."""
     if outcome == READ:
         return "read"
     if outcome in TERMINAL:
@@ -168,13 +189,15 @@ def outcome_class(outcome):
         return "host"
     if outcome in NOT_ATTEMPTED:
         return "not-attempted"
+    if outcome in WITHDRAWAL:
+        return "withdrawal"
     raise JdReadError("outcome %r is not one of %s" % (outcome, ", ".join(ALL_OUTCOMES)))
 
 
 def is_page_attempt(attempt):
-    """True when `attempt` is a try at a page (every class but `not-attempted`). A role whose only attempts are
+    """True when `attempt` is a try at a page (every class but `not-attempted` and, from 0.94.0, `withdrawal`). A role whose only attempts are
     `not-attempted` has had no page attempt, so `lifecycle` reads it as `captured`, never `reading`."""
-    return outcome_class(attempt["outcome"]) != "not-attempted"
+    return outcome_class(attempt["outcome"]) not in ("not-attempted", "withdrawal")
 
 
 def parse_at(at):
@@ -223,6 +246,8 @@ def _check_evidence(via, outcome, evidence):
         raise JdReadError("evidence must be a non-empty object -- %r" % (evidence,))
     if via == LEGACY_VIA:
         allowed = LEGACY_EVIDENCE_KEYS
+    elif outcome == WITHDRAWN:
+        allowed = WITHDRAWN_EVIDENCE_KEYS
     elif outcome == READ:
         allowed = READ_EVIDENCE_KEYS
     elif outcome in NOT_ATTEMPTED and via == "fetch":
@@ -240,6 +265,10 @@ def _check_evidence(via, outcome, evidence):
         _text(evidence.get("legacy"), "evidence.legacy", cap=EVIDENCE_CAP + len("fit.jd_source="))
         return
     _check_new_keys(via, outcome, evidence)
+    if outcome == WITHDRAWN:
+        _text(evidence.get("text"), "evidence.text")
+        parse_at(evidence.get("of"))
+        return
     if outcome in NOT_ATTEMPTED and via == "fetch":
         _text(evidence.get("text"), "evidence.text")
         if "fallback" not in evidence:
@@ -264,6 +293,14 @@ def _check_evidence(via, outcome, evidence):
             if k in evidence:
                 _text(evidence[k], "evidence.%s" % k)
         return
+    if "body" in evidence:
+        if via != "render":
+            raise JdReadError("evidence.body belongs to a `render` read (a script or the candidate already holds the text of any other), not via %s" % via)
+        body = _text(evidence["body"], "evidence.body", cap=BODY_CAP)
+        if len(body) < BODY_MIN:
+            raise JdReadError("evidence.body is %d characters; a quote of the description is at least %d" % (len(body), BODY_MIN))
+        if body == evidence.get("quote"):
+            raise JdReadError("evidence.body equals evidence.quote: the body must be a different part of the page")
     if "quote" in evidence:
         _text(evidence["quote"], "evidence.quote")
     elif via in ("render", "candidate"):
@@ -315,14 +352,16 @@ def parse_attempt(att):
         raise JdReadError("via 'legacy' and run 'legacy' are legal only together (via=%r, run=%r)"
                           % (via, run))
     outcome_class(outcome)
+    if outcome in WITHDRAWAL and via == LEGACY_VIA:
+        raise JdReadError("a withdrawn attempt is written by a verb or the migration, never via 'legacy'")
     if outcome in NOT_ATTEMPTED and (via not in NOT_ATTEMPTED_VIA
                                      or (via == "fetch" and outcome not in NOT_ATTEMPTED_FETCH_OUTCOMES)):
         raise JdReadError("a %s attempt is written only via %s (got via %r): it records a page the Browser pane "
                           "could not render, or (pane-hidden only) a scripted fetch that did not read, never a read by "
                           "another route" % (outcome, " or ".join(NOT_ATTEMPTED_VIA), via))
-    if via == "candidate" and outcome != READ:
+    if via == "candidate" and outcome != READ and outcome not in WITHDRAWAL:
         raise JdReadError("a candidate attempt is a read: the candidate records what the posting says, "
-                          "never a failure (via 'candidate' needs outcome 'read')")
+                          "never a failure (via 'candidate' needs outcome 'read', or 'withdrawn' from 0.94.0: a verb's word about it)")
     _check_evidence(via, outcome, att["evidence"])
     out = dict(att)
     out["evidence"] = dict(att["evidence"])
@@ -361,7 +400,12 @@ def parse(value):
     out = []
     for i, a in enumerate(atts):
         try:
-            out.append(parse_attempt(a))
+            att = parse_attempt(a)
+            if att["outcome"] == WITHDRAWN:
+                of = att["evidence"]["of"]
+                if not any(r["outcome"] == READ and r["at"] == of for r in out) or of > att["at"]:
+                    raise JdReadError("a withdrawal names the read made at %s, and no read at that time is listed before it" % of)
+            out.append(att)
         except JdReadError as e:
             raise JdReadError("attempts[%d]: %s" % (i, e))
     return out
@@ -372,10 +416,33 @@ def attempts(opp):
     return parse(opp.get("jd_read") if isinstance(opp, dict) else None)
 
 
+def standing_of(atts):
+    """`atts` (a stored list, oldest first) without the reads a later `withdrawn` attempt names and without the withdrawals themselves, as a
+    new list (0.94.0, dev 1063, design-role-first.md 6.3). A withdrawal removes the reads listed BEFORE it whose `at` is its `of`; a read listed
+    after it stays, so a re-read in the same second as the withdrawn one is not lost. TOLERANT, for a caller that reads raw rows on purpose
+    (`browser_fallback/run_lines.py`): an item that is not a dict, or has no `evidence`, is kept and never raises."""
+    out = []
+    for a in atts or ():
+        if isinstance(a, dict) and a.get("outcome") == WITHDRAWN:
+            ev = a.get("evidence")
+            of = ev.get("of") if isinstance(ev, dict) else None
+            out = [r for r in out if not (isinstance(r, dict) and r.get("outcome") == READ and r.get("at") == of)]
+        else:
+            out.append(a)
+    return out
+
+
+def standing(opp):
+    """The validated attempts of `opp` that STAND: `attempts(opp)` with every withdrawn read and every withdrawal left out. The ONE list a reader of
+    reads asks for (`is_read`, `latest_read`, `read_attempts`, `lifecycle`, `recording/fit.py`); a WRITER that rewrites the record keeps
+    `attempts()`, the lossless list. Raises `JdReadError` on a record this parser refuses."""
+    return standing_of(attempts(opp))
+
+
 def latest(opp):
-    """The latest attempt (greatest `at`; the later one in the list on a tie), or None. Raises
+    """The latest attempt that stands (greatest `at`; the later one in the list on a tie), or None. Raises
     `JdReadError` on a record this parser refuses."""
-    return latest_of(attempts(opp))
+    return latest_of(standing(opp))
 
 
 def latest_of(atts):
@@ -389,7 +456,7 @@ def latest_of(atts):
 
 def read_attempts(opp):
     """Every `read` attempt, oldest first."""
-    return sorted((a for a in attempts(opp) if a["outcome"] == READ), key=lambda a: a["at"])
+    return sorted((a for a in standing(opp) if a["outcome"] == READ), key=lambda a: a["at"])
 
 
 def latest_read(opp):
@@ -399,8 +466,8 @@ def latest_read(opp):
 
 
 def is_read(opp):
-    """True when any attempt is a `read`. A JD that was tried and failed is NOT read."""
-    return any(a["outcome"] == READ for a in attempts(opp))
+    """True when any attempt that stands is a `read` (0.94.0: a withdrawn read is not). A JD that was tried and failed is NOT read."""
+    return any(a["outcome"] == READ for a in standing(opp))
 
 
 def legacy_attempt(opp):

@@ -158,7 +158,37 @@ ACTION_METADATA = {
 # ── jobsearch 0.92.0 (dev #1003, design-decision-surface.md B.3; owner decision 3): a reply owed ages out. Registered here, not in
 # `config_keys.py` (ratcheted). Never seeded: an absent key reads 60, the `actions/stale` `days-before-stale` default.
 NETWORK_REPLY_OWED_DAYS = "network.reply_owed_days"
-METADATA = {**METADATA, **ACTION_METADATA,
+
+# ── jobsearch 0.94.0 (dev 1062, 1065; design-role-first.md 0, 4.1, 4.3, 5.3, 19.5): the role-first keys. Registered here, not in
+# `config_keys.py` (ratcheted, which merges `METADATA` from this module). None is seeded: an absent key reads its default, so a profile
+# written before 0.94.0 is valid unchanged. The bounds are this registry's own; `search_rows.MATCHING_SETTING_MAX` mirrors the first one.
+#
+# `search.matching_roles_per_run` -- the most roles the lane admits in one run: roles that pass the owner's own criteria at a company that
+#     is not a stated target, read matching roles first and newest first (4.1). 1..100, default 20.
+# `search.open_decisions_max` -- the bound: when this many role decisions are open or in progress, no further matching role is admitted and
+#     the run says so (4.3). 1..200, default 25 (what one page list shows).
+# `search.linkedin_search_every_days` -- how often the LinkedIn job search is due, every N days (5.3, 19.5). 1..7: a week holds at least one,
+#     default 2 (owner OD-10).
+# `search.linkedin_queries_per_pass` -- a CEILING on the title and place searches one pass runs (5.3), 1..20, default 20 (owner OD-10; at
+#     most 20 result pages a pass, one page a search).
+SEARCH_MATCHING_ROLES_PER_RUN = "search.matching_roles_per_run"
+SEARCH_OPEN_DECISIONS_MAX = "search.open_decisions_max"
+SEARCH_LINKEDIN_SEARCH_EVERY_DAYS = "search.linkedin_search_every_days"
+SEARCH_LINKEDIN_QUERIES_PER_PASS = "search.linkedin_queries_per_pass"
+ROLE_FIRST_METADATA = {
+    SEARCH_MATCHING_ROLES_PER_RUN: (20, "int", (1, 100),
+                                    "most roles a run reads that pass your own criteria at a company you have not chosen, matching roles "
+                                    "first and newest first (jobsearch 0.94.0)"),
+    SEARCH_OPEN_DECISIONS_MAX: (25, "int", (1, 200),
+                                "when this many role decisions are open or being worked, a run admits no further matching role and says "
+                                "so (jobsearch 0.94.0)"),
+    SEARCH_LINKEDIN_SEARCH_EVERY_DAYS: (2, "int", (1, 7),
+                                        "how often the LinkedIn job search is due, in days; a week must hold at least one (jobsearch 0.94.0)"),
+    SEARCH_LINKEDIN_QUERIES_PER_PASS: (20, "int", (1, 20),
+                                       "most title and place searches one LinkedIn search pass runs, a ceiling of 20 result pages a pass, "
+                                       "one page a search (jobsearch 0.94.0)"),
+}
+METADATA = {**METADATA, **ACTION_METADATA, **ROLE_FIRST_METADATA,
             NETWORK_REPLY_OWED_DAYS: (60, "int", (7, 365),
                                       "a person who wrote back longer ago than this many days, with no reply drafted, is named but "
                                       "no longer listed for a reply (jobsearch 0.92.0)")}

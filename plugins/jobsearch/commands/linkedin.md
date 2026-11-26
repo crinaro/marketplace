@@ -5,9 +5,10 @@ description: Check whether LinkedIn is signed in for the job search, and walk th
 # LinkedIn sign-in
 
 **LinkedIn is where the outreach funnel lives.** Replies to invitations, message requests,
-acceptances and contact paths exist nowhere else — **the mailbox receives no LinkedIn notification
-emails** (verified: zero over two days despite two known acceptances), so the browser is the ONLY
-detector for these events. A search with no session finds nothing and reports a quiet week.
+acceptances and contact paths exist nowhere else on a reliable path. **A mailbox may receive some LinkedIn mail** (seen in one:
+invitations, message notices, InMail replies, job alerts, application-viewed notices) **and never all of it**: it depends on each member's
+LinkedIn email settings and on which address LinkedIn has. Mail is one partial source beside the browser pass: a notice is positive evidence to act
+on, and no notice proves nothing, so the browser pass is what looks. A search with no session finds nothing and reports a quiet week.
 
 ## 0. ⭐ FIRST — IS THERE A BROWSER AT ALL?
 
@@ -34,8 +35,9 @@ worthless answer, which is also why CLAUDE.md bars taking any LinkedIn fact from
 
 Open LinkedIn in Claude's own in-app browser and read the page:
 
-- `mcp__Claude_Browser__navigate` → `https://www.linkedin.com/feed/`
-- `mcp__Claude_Browser__get_page_text`
+- `mcp__Claude_Browser__preview_start` with `https://www.linkedin.com/feed/`, as a tab of your own (a fresh tab for the page, never a `navigate` on a tab
+  that is already open; jobsearch 0.94.0, N8). Keep the `tabId` it returns and close the tab when you are done.
+- `mcp__Claude_Browser__get_page_text` with that `tabId`
 
 Get the user's own name with `~/.claude/jobsearch/run profile.py` — **never hard-code or guess it**.
 
@@ -67,9 +69,18 @@ password in a transcript is retained. If a password manager integration is avail
 approves each item in the password manager's own prompt and the value never reaches this session —
 that is the only acceptable assisted path.
 
-**Do not attempt any CAPTCHA or bot check.** If one appears, the user clears it.
+**Do not attempt any CAPTCHA or bot check.** If one appears, the user clears it, in their own browser.
 
 Then re-run the check in step 1 and confirm.
+
+## 2b. ⛔ A warning ends the check (jobsearch 0.94.0, dev 1065; design-role-first.md 19.6)
+
+The plain sign-in page is what this command exists for. **Anything else LinkedIn puts in front of the feed is a warning, and a page you cannot tell from
+the feed or from the plain sign-in page counts as one:** a security or identity check, a CAPTCHA or other bot check, an unusual-activity page, a
+commercial-use-limit page, a notice that the account is restricted. Stop at once: no retry, no reopening of the page, no waiting on it, no answer, no click on
+it, and **open no other LinkedIn page in this run.** Close your tab, tell the person what you saw in plain words, and ask them to open LinkedIn themselves and
+look. This command writes nothing about it: a warning is recorded by the passes that judge a page by script (the search's `linkedin_sweep.py search-warning`, and
+`linkedin_sweep.py page-warning` for a posting page or a reply-pass page), and a warning on a page of THIS command is reported to the person, never recorded.
 
 ## 3. Report which surface the search will use
 
@@ -78,6 +89,9 @@ Then re-run the check in step 1 and confirm.
 | in-app browser signed in | **Preferred.** No Chrome, no extension, nothing that touches the user's own browser |
 | in-app not signed in, Chrome extension connected | Falls back to the extension and their real Chrome session |
 | neither | Reports `BROWSER UNAVAILABLE` and **queues the sweep** via `deferred.py` — the work is not lost, it waits for a session that can do it |
+
+The LinkedIn job search is a step of its own: `/jobsearch:search linkedin attended` in the desktop app, or the scheduled search of the daily run when it can
+read. This sign-in is what both need; this command never starts a search.
 
 ## When to suggest this
 

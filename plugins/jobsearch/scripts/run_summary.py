@@ -91,6 +91,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import profile_root
 from browser_fallback import run_lines as _fallback_lines
+from searching import query_plan as _qplan
 import journal as _journal
 import inbox as _inbox
 from browser_fallback import hidden_passes as _hidden_passes   # dev #1026: hidden-pane LinkedIn passes block
@@ -98,6 +99,17 @@ import handback as _handback        # handback.py: the hand-back contract (dev #
 # dev #820 / public #175: `lifecycle.py` owns the text of process state (`process_report().headline`).
 # Named here by file because a bare `import` is invisible to `publish_manifest.py`'s reachability closure.
 import lifecycle as _lifecycle
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from browser_fallback.roles_parts import (
+    _quarantine_clause,
+    _query_reads_line,
+    feeds_line,
+    _plural,
+    _partial_causes,
+    _board_attended,
+    _board_coverage_line,
+    _pane_account,
+)
 
 # ⭐ public #85 (§B.3, the check_stale_claims.py shape) — a posted text is red only when it
 # CONTAINS one of these AND the footprint it is describing shows real activity. Absence of a
@@ -541,68 +553,19 @@ def render_headline(recs, run_id, fp, report=None, report_error=None, root=None)
     return head
 
 
-def _geos(root):
-    """The geographies a wide re-scan must cover, from this profile's config (dev #489)."""
+def _qplan_lines(root, recs, now):
+    """dev 1055 (0.94.0, design-role-first.md 5.3) -- the LinkedIn search's 7-day coverage line, `[]` on a profile with no 0.94.0 pin (it has stored no
+    pair, so every pair would read "not recorded") and when no title or place is configured. It replaces the retired "wide re-scan due" lines."""
     import json
+    if _journal.pin_missing_line(root, "the search coverage line"):
+        return []
     try:
         with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
             cfg = json.load(fh)
     except (OSError, ValueError):
         cfg = {}
-    return _journal.jobsearch_geos(cfg)
-
-
-def _quarantine_clause(e):
-    """dev #722 / public #156 -- ` · N quarantined (truncated ×a, filter-dropped ×b)` for a `roles`
-    event that held any role, else the empty string. COMPUTED from the event's own counts. An event
-    written before 0.69.0 has no `quarantined` field and prints nothing."""
-    n = e.get("quarantined", 0)
-    if not n:
-        return ""
-    reasons = e.get("quarantine_reasons") or {}
-    why = ", ".join("%s ×%d" % (code, reasons[code]) for code in sorted(reasons))
-    return " · %d quarantined%s" % (n, (" (%s)" % why) if why else "")
-
-
-def _query_reads_line(e, label=None):
-    """dev #722 / public #156 (R4) -- how each REACHED query read, from the event's own counts:
-    `query reads (board): 12 reached · 10 clean · 1 filters unread · 1 degraded (truncated ×1) · 2
-    total unknown`. Empty for an event written before 0.69.0 (no `q_reached`), which is not the
-    same as a pass that reached nothing. SHAPE, not enforced: these count what the sweep SAID, so a
-    sweep that never looks reads all-clean here, and `check_runs.py` flags a week of that."""
-    if "q_reached" not in e:
-        return None
-    degraded = e.get("q_degraded") or {}
-    why = (" (%s)" % ", ".join("%s ×%d" % (c, degraded[c]) for c in sorted(degraded))
-           if degraded else "")
-    return ("query reads%s: %d reached · %d clean · %d filters unread · %d degraded%s · %d total "
-            "unknown" % ((" (%s)" % label) if label else " (wide)", e.get("q_reached", 0),
-                         e.get("q_clean", 0), e.get("q_unread", 0), e.get("q_degraded_queries", 0),
-                         why, e.get("q_total_unknown", 0)))
-
-
-def feeds_line(e):
-    """dev #751 -- the company-feed line, COMPUTED from a `feeds` event's own counts and never composed:
-
-      feeds: 12 polled · 11 covered (7 unchanged) · NOT COVERED 1 (not-found ×1) · 4 selected -> 1 captured · 1 known · 2 carried · 0 role gaps
-
-    A not-covered count of zero is printed as such and a not-covered feed is NEVER read as "0 roles":
-    the failure codes and, when a host was marked down, the host and its code are on the line. An
-    event that polled nothing says `0 polled` (no tracked company carries a slug), not silence."""
-    if e.get("off"):
-        return "feeds: OFF (sourcing.feeds.enabled is false) · nothing polled, no company's feed is covered"
-    nc = e.get("not_covered", 0)
-    why = e.get("failures") or {}
-    line = ("feeds: %d polled · %d covered (%d unchanged) · NOT COVERED %d%s · %d selected -> %d captured "
-            "· %d known · %d carried · %d role gap%s"
-            % (e.get("polled", 0), e.get("covered", 0), e.get("unchanged", 0), nc,
-               (" (%s)" % ", ".join("%s ×%d" % (c, why[c]) for c in sorted(why))) if why else "",
-               e.get("selected", 0), e.get("captured", 0), e.get("known", 0), e.get("carried", 0),
-               e.get("role_gaps", 0), "" if e.get("role_gaps", 0) == 1 else "s"))
-    hosts = e.get("hosts_down") or {}
-    if hosts:
-        line += " · host down: %s" % ", ".join("%s (%s)" % (h, hosts[h]) for h in sorted(hosts))
-    return line
+    line = _qplan.coverage_line(_qplan.titles_of(cfg), _journal.jobsearch_geos(cfg), recs, now)
+    return [line] if line else []
 
 
 def latest_roles_events(recs, run_id):
@@ -633,93 +596,6 @@ def latest_roles_events(recs, run_id):
     if folded is not None:
         out.append((last_board, folded))
     return [e for _i, e in sorted(out, key=lambda t: t[0])]
-
-
-def _plural(n, word, many=None):
-    return "%d %s" % (n, word if n == 1 else (many or word + "s"))
-
-
-def _partial_causes(e):
-    """The reasons a `roles` event reads PARTIAL, as short phrases, in a fixed order."""
-    out = []
-    if e.get("line_faults"):
-        out.append(_plural(e["line_faults"], "line fault"))
-    unreachable_queries = e.get("queries", 0) - e.get("q_reached", 0)
-    if e.get("coverage") == "partial" and unreachable_queries > 0:
-        out.append(_plural(unreachable_queries, "query", "queries") + " unreachable")
-    return out
-
-
-def _board_attended(recs, run_id):
-    """True when the run's latest board `dispatched` row is an attended one: an attended pass spends
-    no scheduled slot, so a 'slot spent' clause would be false."""
-    rows = [(str(r.get("at", "")), i, r) for i, r in enumerate(recs)
-            if r.get("event") == "pass" and r.get("kind") == "board"
-            and r.get("phase") == "dispatched" and r.get("run_id") == run_id]
-    return bool(rows) and bool(max(rows, key=lambda t: (t[0], t[1]))[2].get("attended"))
-
-
-def _board_coverage_line(e, label, tail, attended):
-    """The `sourcing (board)` line of a 0.82.0+ event: PARTIAL or complete, then the channel
-    accounting, then the existing counts. See the design §6 for the five shapes."""
-    partial = e.get("coverage") == "partial"
-    worklist, reached = e.get("channels_worklist"), e.get("channels_reached") or 0
-    unreachable = e.get("channels_unreachable") or {}
-    not_attempted = e.get("channels_not_attempted") or {}
-    unaccounted = e.get("channels_unaccounted") or []
-    unr = "%s unreachable" % len(unreachable)
-    if unreachable:
-        unr += " (%s)" % ", ".join("%s %s" % (cid, unreachable[cid]) for cid in sorted(unreachable))
-    na = "%d not attempted" % len(not_attempted)
-    if not_attempted:
-        na += " (%s)" % ", ".join(sorted(set(not_attempted.values())))
-    una = "%d unaccounted (%s)" % (len(unaccounted), ", ".join(sorted(unaccounted)))
-    causes = _partial_causes(e)
-    head = "sourcing (%s): %s" % (label, "PARTIAL" if partial else "complete")
-    if worklist is None:
-        chan = "channels not checked (no worklist on record)"
-    else:
-        chan = "%d of %d channels reached" % (reached, worklist)
-    if partial and worklist and reached == 0 and not e.get("distinct"):
-        # nothing was read: the counts would be a row of zeros. Say what happened, and that the slot
-        # is gone (the dispatch row spent it), so the user knows these channels wait.
-        parts = [chan] + [x for x, n in ((unr, len(unreachable)), (na, len(not_attempted)),
-                                         (una, len(unaccounted))) if n] + causes
-        if not attended:
-            if e.get("batch") == 0:
-                # dev #830: only the script's closing event exists, so NO batch came back and the slot is NOT spent
-                # (`posture.board_spent_on`): the next run in the slot dispatches again
-                parts.append("no batch came back: the next run in the slot dispatches again")
-            else:
-                parts.append("slot spent: these channels wait for the next board slot")
-        return head + " · " + " · ".join(parts)
-    parts = [chan]
-    if partial:
-        parts += [unr, na]
-        if unaccounted:
-            parts.append(una)
-        parts += causes
-    return head + " · " + " · ".join(parts) + " · " + tail
-
-
-def _pane_account(row):
-    """`(partial surfaces, notes)` -- what a `recorded` pass row says about the Browser pane (dev #826 / public #177,
-    jobsearch 0.83.0). `partial` is the row's list of surfaces read from a pane that was not painting; `notes` are the
-    phrases a summary line carries so a hidden-mode or unreported-pane pass never reads as an ordinary complete one.
-    A row written before 0.83.0 carries none of the three fields and yields `([], [])`: its line is unchanged. A
-    malformed `partial` (not a list of strings) is ignored here; the writer (`journal.record_pass`) refuses one."""
-    raw = row.get("partial")
-    partial = [t for t in raw if isinstance(t, str)] if isinstance(raw, list) else []
-    notes = []
-    if partial:
-        notes.append("read from a Browser pane that was not painting: %s" % ", ".join(partial))
-    if row.get("mode") == "hidden":
-        notes.append("hidden mode")
-    if row.get("pane") == "unknown":
-        notes.append("Browser pane state unknown")
-    elif row.get("pane") == "unreported":
-        notes.append("Browser pane state not reported")
-    return partial, notes
 
 
 def _sweep_line(recs, run_id):
@@ -858,7 +734,7 @@ def roles_lines(recs, run_id, root=None, kind=None, at=None):
       wide re-scan: 5 re-surfaced (62 seen · 57 already known · 0 role gaps · 0 query gaps)
       sourcing (board): 31 seen · 0 captured · 28 known · 3 carried · 0 role gaps
       ROLES NOT ACCOUNTED (linkedin-jobsearch)
-      wide re-scan due since 2026-09-30, not run (skipped-for-cost)
+      linkedin search: 18 of 28 title and place pairs searched in the last 7 days; oldest 2026-11-19
 
     "Re-surfaced" is `captured + carried` on a `window=wide` event. Per-role gaps and per-query
     gaps stay in separate fields. `ROLES NOT ACCOUNTED` is printed for every surface that holds
@@ -918,33 +794,23 @@ def roles_lines(recs, run_id, root=None, kind=None, at=None):
     prefix = _journal.ROLES_GAP_SCOPE % "board:b"
     for scope in sorted(x for x in held if str(x).startswith(prefix)):
         lines.append("ROLES NOT ACCOUNTED (board batch %s)" % scope[len(prefix):])
-    if kind == "daily" and root is not None:
-        now = at or _journal.now_iso()
-        w = _journal.jobsearch_window(now, recs, _geos(root))
-        wide_here = [e for e in events if e.get("surface") == "linkedin-jobsearch"
-                     and e.get("window") == "wide"]
+    if kind in ("daily", "search") and root is not None:
         import linkedin_sweep as _ls
         if _ls.job_search_is_off(root):
-            # dev #774: a search the user turned off is not a pass that failed to run and not a re-scan that is owed
-            lines.append("LinkedIn job search: OFF (record.py source on linkedin-jobs turns it back on); "
-                         "no wide re-scan is owed while it is off")
-        elif w["window"] == "wide" and not wide_here:
-            passes = [r for r in recs if r.get("event") == "pass" and r.get("run_id") == run_id
-                      and r.get("kind") == "linkedin"]
-            refused = [r for r in passes if r.get("phase") == "refused"]
-            returned = [r for r in passes if r.get("phase") == "returned"]
-            if refused:
-                why = refused[-1].get("reason") or "refused"
-            elif returned and returned[-1].get("jobsearch") not in (None, "reached"):
-                why = "job search %s" % returned[-1].get("jobsearch")
-            elif returned:
-                why = "no wide ROLES block accepted"
-            else:
-                why = "no LinkedIn pass this run"
-            lines.append("wide re-scan due since %s, not run (%s)" % (w["due_since"], why))
-        elif w["window"] == "wide" and wide_here:
-            lines.append("wide re-scan STILL DUE since %s: the pass did not cover every "
-                         "requested geography" % w["due_since"])
+            # dev #774: a search the user turned off is not a pass that failed to run
+            lines.append("LinkedIn job search: OFF (record.py source on linkedin-jobs turns it back on)")
+        else:
+            now = at or _journal.now_iso()
+            if not _journal.pin_missing_line(root, "the search lines"):
+                # 0.94.0 (dev 1065, design 8.1, 19.5, 19.6): the search is its own dispatch, so a run says what its search did, or NOT RUN, why and the last date; never zero found
+                try:
+                    start_at = _run_window(recs, run_id)[0]
+                except RunSummaryError:         # a run with no `start` row: only a search of its own run id counts
+                    start_at = None
+                lines.append(_journal.search_due.search_line(root, recs, now, run_id, start_at))
+                due = _journal.search_due.due_line(root, recs, now)
+                lines.extend([due] if due else [])
+            lines.extend(_qplan_lines(root, recs, now))
     return lines
 
 
@@ -1020,7 +886,7 @@ def render_detail(recs, run_id, fp, root=None, at=None, report=None):
         return start_at <= when <= as_of
 
     lines = ["  %s" % ln for ln in roles_lines(recs, run_id, root=root, kind=_kind, at=at) + _fallback_lines.browser_fallback_lines(root, run_id)]
-    lines[:0] = ["  %s" % ln for ln in _hidden_passes.start_lines(recs)]   # dev #1026: first, it blocks
+    lines[:0] = ["  %s" % ln for ln in _hidden_passes.start_lines(recs) + _hidden_passes.note_lines(recs, run_id)]   # dev #1026: first, it blocks; a hidden pass that read every list is a note (0.94.0)
     notice = upgrade_notice(recs, run_id, report)          # dev #834 (M5): run summary only, never the page
     if notice:
         lines.insert(0, "  %s" % notice)
@@ -1139,6 +1005,10 @@ def main():
     text = headline
     if detail:
         text += "\n" + detail
+    warning = _journal.search_due.warning_line(recs)
+    if warning:         # WN4 (dev 1065): the FIRST line of the summary, and of the inbox row's detail, until the owner turns the scheduled search back on
+        text = warning + "\n" + text
+        detail = "  " + warning + ("\n" + detail if detail else "")
 
     # ⭐ dev #703 / public #155 — the SAME `disagrees()` `check_runs.py` runs later, over the SAME
     # text it will read later (`summary + detail`). The two sources are handled differently:

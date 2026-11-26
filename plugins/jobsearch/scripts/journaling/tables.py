@@ -14,7 +14,11 @@ JOURNAL = os.path.join("data", "runs.jsonl")
 # a 0.91.0/0.92.0 engine wrote still reads.
 EVENTS = ("fired", "start", "note", "gap", "gap-closed", "end", "dispose", "swept", "probe",
          "triaged", "dispatch", "pass", "roles", "feeds", "drain", "mail-status", "readmit",
-         "profile-schema", "network", "companies-raised", "outbox-lapse")
+         "profile-schema", "network", "companies-raised", "outbox-lapse",
+         # jobsearch 0.94.0 (dev 1065, design-role-first.md 8.1, 19.6): the LinkedIn job search's own events. All three are pinned
+         # (an engine older than 0.94.0 stops at the pin before it reads an event it does not know).
+         "linkedin-search-skip", "linkedin-warning", "linkedin-search-on",
+         "linkedin-search-page")      # the per-page gate's count of what a search opened and took (dev 1065, review 2026-11-25)
 
 # dev #751 (sourcing-feeds; design §3.6 as amended by review B1/B3/B6) -- the company feed poller's
 # failure vocabulary, CLOSED and validated by `record_feeds`: a code, not a sentence, each mapped to
@@ -137,6 +141,21 @@ RECORDED_KEPT_PREFIX = ".jobsearch/handbacks/"
 # the ids handed to a `jd-reader` / `opportunity-researcher` agent, written BEFORE the dispatch),
 # `feeds` (the feed poll was started), and `capture` / `fetch` (a bounded verb's call ended: the
 # `unreached` ids). A 0.81.0 reader tolerates the new kinds (it validates the event name only).
+#
+# jobsearch 0.94.0 (dev 1065, design-role-first.md 8.1, 19.5, 19.6): a `pass linkedin` row may carry `scope: search` (the job search
+# is its own dispatch, so every accounting consumer of a `pass` row still sees it; a first draft used a new KIND, which each of them
+# would have missed). `SEARCH_REASONS` is the `reason` of a `scope: search` `returned` row whose `jobsearch` is `unreachable`: why no
+# page was read (19.5), and `linkedin-warning` (19.6, WN2).
+SEARCH_SCOPE = "search"
+SEARCH_REASONS = ("not-readable", "sign-in", "challenge", "refused", "linkedin-warning")
+# dev #826 / public #177 (jobsearch 0.83.0, design-sweep-misfires.md section 2.4) -- what a `recorded` LinkedIn pass row says about
+# the Browser pane (moved here from `passes.py` in 0.94.0 so a `roles` event can name the same two vocabularies). `pane` is the
+# state the runner read from the harness (`displayed`, `hidden`, `unknown`) or `not-pane` (the pass ran on the Chrome extension);
+# `unreported` is the script's own word for a block that carried no readable `PANE` line, never something the runner writes. `mode`
+# is whether any part of the pass ran in hidden mode; `unreported` goes with `pane == "unreported"` only, because a pass whose
+# pane line is missing proves neither mode.
+PASS_PANE_STATES = ("displayed", "hidden", "unknown", "not-pane", "unreported")
+PASS_PANE_MODES = ("normal", "hidden", "unreported")
 PASS_KINDS = ("linkedin", "board", "reader", "research", "feeds", "capture", "fetch")
 AGENT_PASS_KINDS = ("reader", "research")          # `ids` required on dispatched/returned
 UNREACHED_PASS_KINDS = ("capture", "fetch")        # phase `done`, with `unreached`

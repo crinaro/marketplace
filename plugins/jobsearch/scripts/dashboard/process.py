@@ -8,7 +8,7 @@ from dashboard.markup import esc
 PROCESS_DRILL_CAP = 30
 
 
-def render_process_block(rep, now, error=None, titles=None, failure_texts=None, alert_line=None):
+def render_process_block(rep, now, error=None, titles=None, failure_texts=None, alert_line=None, unchosen=None):
     """The process-state block, at the BOTTOM of the page and COLLAPSED (owner request 2026-11-12, design
     r3 section 2.7, criterion C7). This SUPERSEDES dev #820 / public #175 design 2.4 N14 "never collapsed"
     for the dashboard. What N14 held that still holds: the block is never absent, its lines are
@@ -30,7 +30,9 @@ def render_process_block(rep, now, error=None, titles=None, failure_texts=None, 
     A report that could not be computed is `PIPELINE NOT CHECKED`, loudly, never an empty block.
 
     dashboard-redesign A: `titles` ({role key: title}), `failure_texts` ({role key: your_move.failure_text})
-    and `alert_line` (lifecycle.alert_line) are the loader's values; this module imports no flat script."""
+    and `alert_line` (lifecycle.alert_line) are the loader's values; this module imports no flat script. `unchosen` (jobsearch 0.94.0,
+    dev 1062, design 4.6) is the number of ready roles at a company the owner has not chosen, or None on a profile with no 0.94.0 pin:
+    the summary then reads `N roles to decide (M at companies you have not chosen)` in place of `N ready`."""
     def wrap(summary, section):
         return ('<details class="pstate" id="pipeline-details"><summary>Pipeline state: %s</summary>%s'
                 '</details>' % (esc(summary), section))
@@ -73,18 +75,19 @@ def render_process_block(rep, now, error=None, titles=None, failure_texts=None, 
         drill = ('<details class="pdrill" open><summary>The oldest %d of %d failed roles, with their '
                  'cause</summary><ul>%s%s</ul></details>'
                  % (len(shown), len(ordered), "".join(lis), more))
-    return wrap(summary_text(rep, alert_line),
+    return wrap(summary_text(rep, alert_line, unchosen),
                 '<section class="process" id="process-state">%s%s%s</section>'
                 % ("".join(rows), runs, drill))
 
 
-def summary_text(rep, alert_line=None):
+def summary_text(rep, alert_line=None, unchosen=None):
     """The folded block's summary after `Pipeline state: ` (dashboard-redesign D1, design §7.4, criterion Y5):
     `healthy · N ready · N held · N waiting`, or the alert text in place of `healthy`. "Healthy" keeps its meaning (no
     alert); the three counts are `process_report`'s own (`ready`, `held_for_company`, `waiting`), so a page whose
     every new role is held for an unanswered company says so even while closed (dev #949)."""
-    return "%s · %d ready · %d held · %d waiting" % (alert_line or "healthy", rep.ready, rep.held_for_company,
-                                                      rep.waiting)
+    ready = "%d ready" % rep.ready if unchosen is None else "%d roles to decide%s" % (
+        rep.ready, " (%d at companies you have not chosen)" % unchosen if unchosen else "")
+    return "%s · %s · %d held · %d waiting" % (alert_line or "healthy", ready, rep.held_for_company, rep.waiting)
 
 
 def render_conservation_line(rep):

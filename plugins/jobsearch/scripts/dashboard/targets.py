@@ -129,7 +129,9 @@ def _heading_words(n_listed, pd):
                                                  _n(held, "unread role", "unread roles"))
              if held else "%s wait%s on your yes or no." % (_n(n_listed, "company", "companies"),
                                                              "s" if n_listed == 1 else ""))
-    words += " Yes lets the next run read that company's roles."
+    words += (" A yes starts outreach and regular sweeps, and lets runs read its other roles. Roles that match your criteria are shown "
+              "either way. Saying how motivated you are is optional." if pd.why_here is not None
+              else " Yes lets the next run read that company's roles.")                    # 0.94.0 (dev 1062, design 4.6) with the pin
     if pd.targets_not_raised:
         words += " %d more will be raised by later runs." % pd.targets_not_raised
     return words

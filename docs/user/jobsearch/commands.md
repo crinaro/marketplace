@@ -82,6 +82,21 @@ needs its `board_days` set to all seven days.
 On `minimal` nothing sweeps career pages or job boards by itself, so the three `search ... attended`
 commands above are how you search. Mail, company job feeds and LinkedIn keep running as set.
 
+### The LinkedIn job search (since 0.94.0)
+
+**`/jobsearch:search linkedin attended`**. Use it when the start line says `LINKEDIN JOB SEARCH DUE`, or when you want the LinkedIn job search now. **Runs** the search by each of your target titles and
+places, the first page of results of each (up to `search.linkedin_queries_per_pass`, 20), in the Claude desktop app's browser pane. It only reads: it never clicks, types or signs in. **The `linkedin` form needs the
+desktop app**: without `attended`, or in a session with no browser pane, it says where the search runs and stops. A scheduled run does the same search by itself when it is due (48 hours after the last search was
+started or reached, `search.linkedin_search_every_days` days counted in hours, 2 unless you changed it; never before the 0.94.0 update step has run); this command is for when it could not, or you want it now. It does not use up the daily LinkedIn limit.
+
+- **`journal.py --linkedin-search-skip --until <date>`**. Use it to pause the LinkedIn job search for up to 30 days (the start line stops asking, and the summary says `skipped by you until <date>`).
+- **`record.py source off linkedin-jobsearch`** turns it off altogether; `source on linkedin-jobsearch` turns it back on.
+- **`journal.py --linkedin-search-on --attended --warning <date>`**. Use it after LinkedIn showed a warning and you have looked at LinkedIn yourself: any warning, sign-in or identity check, CAPTCHA, unusual-activity
+  or usage-limit page, or a LinkedIn page the plugin is in doubt about, ends the search at once and turns the scheduled search **off**, and this command (with the warning's date, which the first line of every summary shows) is the only thing that turns it back on (a command stamped before the warning it names is refused).
+  The attended command above still works while it is off, and prints the warning first.
+
+How it works, and what has not been tested, is in *The LinkedIn job search* in [How it works](how-it-works.md#the-linkedin-job-search-since-0940).
+
 ---
 
 ## Sources and connections
@@ -283,6 +298,13 @@ people. **Runs** (it writes one note; it researches the company only if it is ne
 
 **`/jobsearch:coordinator`**. Listed above; the place to review drafts, decide on a role and say yes or no
 to what the search proposes.
+
+### Pursuing, and correcting a read (since 0.94.0)
+
+- **`record.py decide <role> pursue`**. Use it when you want to pursue a role (usually by telling the coordinator). **Writes** the decision and, in the same step, makes the role's company a target with no 1-to-5 rating, unless
+  you passed on it, it is a staffing firm or a job board, or you stated a motivation for it earlier; the line it prints says which. `--no-target` pursues only the role. Its other roles are then read only when they meet your criteria.
+- **`record.py read-withdraw <role> --at <the read's time> --why "..."`**. Use it when a role's description was read wrongly, for example a page that showed a title and no description. **Writes** a withdrawal: the read stays in
+  the history, the pay and place it replaced come back, the screen runs again and the role is read again. A decision you already made stays. `--dry-run` shows what it would do.
 
 ### Stopping follow-up with a person (since 0.92.0)
 

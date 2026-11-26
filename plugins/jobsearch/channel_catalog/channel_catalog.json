@@ -211,7 +211,7 @@
       "id": "linkedin-jobs",
       "kind": "swept-board",
       "label": "LinkedIn job search",
-      "query_by": "linkedin_sweep.jobsearch_line",
+      "query_by": "linkedin_sweep.py search-plan (searching.query_plan)",
       "query_template": null,
       "retired": null,
       "review_cadence": "daily",
@@ -228,7 +228,7 @@
       },
       "type": "job-board",
       "verified_by": "https://www.linkedin.com/legal/user-agreement",
-      "verified_note": "This entry DESCRIBES today's linkedin-runner reads and adds no LinkedIn action. Since 0.90.0, when neither the Browser pane nor Claude in Chrome can read an admitted LinkedIn role on a run, the drain reads that role's public posting once, logged out, from a host the sandbox settings allow, unless search.posting_fetch is off (ADR-038, which amends ADR-037). LinkedIn's User Agreement (effective 2025-11-03) section 8.2 items 2 and 13 ban software that scrapes the Services and bots or unauthorized automated methods; ADR-037 does not rule on the existing runner (finding F2) and the owner's carve-out (2026-10-24, #774) leaves its reads as they are. LinkedIn actions are never automated.",
+      "verified_note": "This entry DESCRIBES today's linkedin-runner reads and adds no LinkedIn action. Since 0.90.0, when neither the Browser pane nor Claude in Chrome can read an admitted LinkedIn role on a run, the drain reads that role's public posting once, logged out, from a host the sandbox settings allow, unless search.posting_fetch is off (ADR-038, which amends ADR-037). LinkedIn's User Agreement (effective 2025-11-03) section 8.2 items 2 and 13 ban software that scrapes the Services and bots or unauthorized automated methods; ADR-037 does not rule on the existing runner (finding F2) and the owner's carve-out (2026-10-24, #774) leaves its reads as they are. Since 0.94.0 (ADR-045) the job search is its own dispatch that a person or a scheduled run starts within stated limits (due every 2 days, the first page of up to 20 searches, reading only); two read-only page scripts judge a results page and read its job ids, and are not claimed to be permitted under section 8.2; any LinkedIn warning ends the pass and turns the scheduled search off until the owner turns it on (ADR-037, note of 2026-11-25). LinkedIn actions are never automated.",
       "verified_on": "2026-10-24"
     },
     {

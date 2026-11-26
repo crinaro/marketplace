@@ -53,7 +53,7 @@ def _opportunity_rows(root):
 def _run_attempts(row, run_id):
     jr = row.get("jd_read")
     atts = jr.get("attempts") if isinstance(jr, dict) else None
-    atts = [a for a in atts if isinstance(a, dict) and a.get("run") == run_id] if isinstance(atts, list) else []
+    atts = [a for a in _jd.standing_of(atts) if isinstance(a, dict) and a.get("run") == run_id] if isinstance(atts, list) else []
     return sorted(enumerate(atts), key=lambda ia: (str(ia[1].get("at") or ""), ia[0]))
 
 

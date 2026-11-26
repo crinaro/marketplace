@@ -6,6 +6,8 @@ Capability module of `journal.py` (S4a, moved unedited)."""
 import re
 from journaling.instants import _coverage_field, _journal_at, _parse_iso
 from journaling.journal_file import append, now_iso
+from journaling.search_pass import record_search_pass
+from journaling.pins import pin_missing_line
 from journaling.tables import (
     AGENT_PASS_KINDS,
     BATCH_END_STATES,
@@ -15,6 +17,8 @@ from journaling.tables import (
     LINKEDIN_SWEEP_SURFACES,
     OWNED_RULES,
     PASS_KINDS,
+    PASS_PANE_MODES,
+    PASS_PANE_STATES,
     PASS_PHASES,
     REASONS,
     RECORDED_KEPT_PREFIX,
@@ -189,16 +193,6 @@ def _check_channels(channels):
                            "(non-empty strings without whitespace)" % (channels,))
 
 
-# dev #826 / public #177 (jobsearch 0.83.0, design-sweep-misfires.md section 2.4) -- what a `recorded` LinkedIn
-# pass row says about the Browser pane. `pane` is the state the runner read from the harness (`displayed`,
-# `hidden`, `unknown`) or `not-pane` (the pass ran on the Chrome extension); `unreported` is the script's own word
-# for a SWEEP block that carried no readable `PANE` line, never something the runner writes. `mode` is whether any
-# part of the pass ran in hidden mode; `unreported` goes with `pane == "unreported"` only, because a pass whose
-# pane line is missing proves neither mode.
-PASS_PANE_STATES = ("displayed", "hidden", "unknown", "not-pane", "unreported")
-PASS_PANE_MODES = ("normal", "hidden", "unreported")
-
-
 def _check_owned_elsewhere(owned):
     """dev #830 / public #180 (C6, owner ruling O2) -- a `pass board dispatched` row's `owned_elsewhere`: a non-empty
     `{channel_id: {"agent": str, "rule": OWNED_RULES}}`, the agent never `board-sweeper` (a channel the sweeper owns is in
@@ -215,12 +209,35 @@ def _check_owned_elsewhere(owned):
                                "rule: one of %s}" % (cid, v, ", ".join(OWNED_RULES)))
 
 
+# What `record_pass`'s `sweep`, `attended` and `split_days` mean (the comments moved out of the function in 0.94.0 so it does not grow):
+# dev #770-4, owner ruling O4 (jobsearch 0.78.0) -- WHICH board-sweeper work a `board` pass
+# covers: `company` (employer career pages) or `board` (job boards and aggregators), so each kind
+# spends its own weekday slot (`posture.board_spent_on`). An EXTRA FIELD on the existing `board`
+# kind, never a new `kind`: a 0.77.0 `read()` accepts any field on a `pass` row (it validates the
+# event name and `dispatch` rows only), and its missing-ROLES check keys on `kind == "board"`, so
+# a 0.77.0 machine sharing `runs.jsonl` (ADR-012) still expects the sweep's `roles` event. A row
+# without it (any row written before 0.78.0) covered both kinds.
+# dev #770 (/jobsearch:search, jobsearch 0.78.0) -- `attended: true` marks a board pass a person
+# started on demand. It is outside the posture's schedule, so it never spends a scheduled slot
+# (`posture.board_spent_on` skips it): a Monday `/jobsearch:search boards attended` leaves
+# Tuesday's scheduled sweep due. Another EXTRA FIELD, tolerated by a 0.77.0 `read()` for the
+# reason `sweep` is (it validates the event name and `dispatch` rows only).
+# dev #785 / public #167 (design-sourcing-schedule.md §6, §15 N1) -- `split_days`: the split days
+# whose career pages were in a `company` dispatch's worklist, so each day spends its own slot
+# (`posture.board_spent_on(day=)`). Another EXTRA FIELD on the existing `board` kind, tolerated by an
+# older `read()` for the reason `sweep` is. Refused at WRITE unless the row is an unattended
+# `pass board dispatched` row with sweep `company`, and its value a non-empty list of DISTINCT weekday
+# names in weekday order -- the shape `posture.check_split_days` demands when the journal is read.
+# `None` means "not given" (the field is omitted: every split day, as a pre-0.81.0 row); `[]` is
+# refused, never read as "not given".
+
+
 def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_attempted=None,
                 reason=None, at=None, jobsearch=None, sweep=None, attended=None,
                 split_days=None, *, verdict=None, faults=None, kept=None, concluded=None,
                 not_concluded=None, channels=None, ids=None, unreached=None,
                 pane=None, mode=None, partial=None, batch=None, of=None, t0_utc=None, state=None,
-                code=None, handed=None, worklist=None, owned_elsewhere=None):
+                code=None, handed=None, worklist=None, owned_elsewhere=None, scope=None, plan=None):
     """design-script-first.md §2 (public #75/#87/#110) — the ONE writer for a `pass` row.
     `phase` is validated against `PASS_PHASES`, `kind` against `PASS_KINDS`, `reason` against
     `REASONS` (required for `phase="refused"`, refused otherwise — a reason on a row that is not
@@ -256,7 +273,10 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
     `BATCH_END_STATES`), `handed` and `worklist` (counts), and may carry `code` (a `REASONS` code). Every one of these
     keywords is refused on any other phase. `owned_elsewhere` is for a `dispatched` board row only: a non-empty
     `{channel_id: {"agent": <owning agent, never board-sweeper>, "rule": one of OWNED_RULES}}`, the channels the worklist
-    left out because another agent owns them (`channels_due.owner_elsewhere`)."""
+    left out because another agent owns them (`channels_due.owner_elsewhere`).
+
+    dev 1065 (0.94.0) -- `scope` and `plan` are the LinkedIn search's own row (`scope: search`; design-role-first.md 8.1):
+    given either, the write is `search_pass.record_search_pass`'s, which holds the pin and the one shape check."""
     at = at or now_iso()
     if not run_id:
         raise JournalError("record_pass requires run_id")
@@ -264,6 +284,9 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
         raise JournalError("record_pass kind %r is not in PASS_KINDS %r" % (kind, PASS_KINDS))
     if phase not in PASS_PHASES:
         raise JournalError("record_pass phase %r is not in PASS_PHASES %r" % (phase, PASS_PHASES))
+    if scope is not None or plan is not None:
+        return record_search_pass(root, run_id, kind, phase, scope=scope, attended=attended, plan=plan, reached=reached, unreachable=unreachable,
+                                  not_attempted=not_attempted, jobsearch=jobsearch, reason=reason, at=at)
     if (phase == "done") != (kind in UNREACHED_PASS_KINDS):
         raise JournalError("record_pass: phase 'done' is for the %s pass kinds and only for them (got "
                            "kind=%r phase=%r)" % (" and ".join(UNREACHED_PASS_KINDS), kind, phase))
@@ -343,36 +366,16 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
         if jobsearch not in JOBSEARCH_TOKENS:
             raise JournalError("record_pass jobsearch=%r is not one of %r"
                                % (jobsearch, JOBSEARCH_TOKENS))
-    # dev #770-4, owner ruling O4 (jobsearch 0.78.0) -- WHICH board-sweeper work a `board` pass
-    # covers: `company` (employer career pages) or `board` (job boards and aggregators), so each kind
-    # spends its own weekday slot (`posture.board_spent_on`). An EXTRA FIELD on the existing `board`
-    # kind, never a new `kind`: a 0.77.0 `read()` accepts any field on a `pass` row (it validates the
-    # event name and `dispatch` rows only), and its missing-ROLES check keys on `kind == "board"`, so
-    # a 0.77.0 machine sharing `runs.jsonl` (ADR-012) still expects the sweep's `roles` event. A row
-    # without it (any row written before 0.78.0) covered both kinds.
     if sweep is not None:
         if kind != "board":
             raise JournalError("record_pass: sweep is only for a board pass (got kind=%r)" % kind)
         if sweep not in BOARD_SWEEPS:
             raise JournalError("record_pass sweep=%r is not one of %r" % (sweep, BOARD_SWEEPS))
-    # dev #770 (/jobsearch:search, jobsearch 0.78.0) -- `attended: true` marks a board pass a person
-    # started on demand. It is outside the posture's schedule, so it never spends a scheduled slot
-    # (`posture.board_spent_on` skips it): a Monday `/jobsearch:search boards attended` leaves
-    # Tuesday's scheduled sweep due. Another EXTRA FIELD, tolerated by a 0.77.0 `read()` for the
-    # reason `sweep` is (it validates the event name and `dispatch` rows only).
     if attended is not None:
         if attended is not True or kind != "board" or phase != "dispatched":
             raise JournalError("record_pass: attended=True is only for a board pass with "
                                "phase='dispatched' (got attended=%r kind=%r phase=%r)"
                                % (attended, kind, phase))
-    # dev #785 / public #167 (design-sourcing-schedule.md §6, §15 N1) -- `split_days`: the split days
-    # whose career pages were in a `company` dispatch's worklist, so each day spends its own slot
-    # (`posture.board_spent_on(day=)`). Another EXTRA FIELD on the existing `board` kind, tolerated by an
-    # older `read()` for the reason `sweep` is. Refused at WRITE unless the row is an unattended
-    # `pass board dispatched` row with sweep `company`, and its value a non-empty list of DISTINCT weekday
-    # names in weekday order -- the shape `posture.check_split_days` demands when the journal is read.
-    # `None` means "not given" (the field is omitted: every split day, as a pre-0.81.0 row); `[]` is
-    # refused, never read as "not given".
     if split_days is not None:
         if kind != "board" or phase != "dispatched" or sweep != "company" or attended:
             raise JournalError(
@@ -423,7 +426,7 @@ def record_pass(root, run_id, kind, phase, reached=None, unreachable=None, not_a
         if (pane == "unreported") != (mode == "unreported"):
             raise JournalError("record_pass: mode 'unreported' goes with pane 'unreported' and only with it "
                                "(got pane=%r mode=%r)" % (pane, mode))
-        if pane == "hidden" and mode != "hidden":
+        if pane == "hidden" and mode != "hidden" and pin_missing_line(root, "a hidden pane line with mode normal"):   # 0.94.0 N1: allowed with the pin
             raise JournalError("record_pass: pane 'hidden' requires mode 'hidden' (a hidden pane is read "
                                "without clicks); got mode=%r" % (mode,))
         if (not isinstance(partial, (list, tuple))

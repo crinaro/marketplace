@@ -17,8 +17,10 @@ same `lifecycle` stage and `profile.title_matches`, so a defect inside either is
 | `HELD COUNT` | the page's `data-held` differs from `count` (opportunities only, G3), or is absent while `count` is above zero |
 | `HELD COUNT UNEXPLAINED` | `process_report().held_for_company` minus `data-held` minus `data-held-items` (the feed items not yet roles) is not 0 |
 | `HELD LIST UNSAID` | `unmatched`, and the page lacks `data-held-list="unmatched"` |
+| `HELD CAUSE` | (jobsearch 0.94.0, dev 1062) the page's `data-held-causes` (`title:2 pay:1`, the count line's WHY by the first criterion failed) differs from the gate's own count of the held opportunities' stage `cause` (`expected_causes`), or is absent while one is counted, or cannot be read |
 
-`facts` is `{"held_all": process_report().held_for_company}`. `page` is the html, `ledger` the ledger file's object. `run` takes
+`facts` is `{"held_all": process_report().held_for_company, "causes": expected_causes(...)}` (`causes` is optional: a caller that gives none
+skips the `HELD CAUSE` check, as `run` never does). `page` is the html, `ledger` the ledger file's object. `run` takes
 `lifecycle_at(now)`, the gate's `_lifecycle_facts` bound to the profile (`(data, report, ctx, your_move, matches)`), and the gate's
 `NOT_CHECKED` list: a lifecycle that cannot be read appends its reason there and checks nothing, never a pass. The rest is pure."""
 import datetime
@@ -26,12 +28,13 @@ import html as _html
 import re
 
 HELD = "held-for-company"
-WHY = ("undecided", "watching", "passed")
+WHY = ("undecided", "watching", "passed", "pursued")      # 0.94.0 (dev 1062): `pursued` is counted, never listed (not `undecided`)
 LISTED = ("undecided", "watching")
 SET = "held-roles"
 _HELD_RE = re.compile(r'data-held="(\d+)"')
 _ITEMS_RE = re.compile(r'data-held-items="(\d+)"')
 _GEN_RE = re.compile(r'data-generated="([^"]+)"')
+_CAUSES_RE = re.compile(r'data-held-causes="([^"]*)"')
 
 
 def page_now(page):
@@ -60,6 +63,29 @@ def expected(opps, stage_of, matches):
     return {"ids": [] if unmatched else sorted(ids), "unmatched": unmatched, "count": count}
 
 
+def expected_causes(opps, stage_of):
+    """`{cause: n}` over the held opportunities, by the stage's own `cause` (the gate's selection, written here and not imported from the
+    renderer's side); a held role with no cause (held for its company alone, as in 0.93.0) is in none."""
+    out = {}
+    for o in opps:
+        st = stage_of(o)
+        if getattr(st, "name", None) == HELD and getattr(st, "cause", None):
+            out[st.cause] = out.get(st.cause, 0) + 1
+    return out
+
+
+def _page_causes(page):
+    """`{cause: n}` the page's `data-held-causes` says ({} when it carries none); ValueError when it cannot be read."""
+    m = _CAUSES_RE.search(page)
+    out = {}
+    for item in (m.group(1).split() if m else ()):
+        name, _, n = item.partition(":")
+        if not name or not n.isdigit() or name in out:
+            raise ValueError("%r is not `cause:count`" % item)
+        out[name] = int(n)
+    return out
+
+
 def _visible(key, page, records):
     rec = records.get(key) or {}
     if rec.get("disposition") == "rendered":
@@ -85,6 +111,15 @@ def check_held(page, ledger, exp, facts):
     if shown is not None and facts["held_all"] - shown - items != 0:
         gaps.append("HELD COUNT UNEXPLAINED -- process_report holds %d; the page counts %d role(s) and %d feed item(s), so %d "
                     "are explained nowhere" % (facts["held_all"], shown, items, facts["held_all"] - shown - items))
+    if "causes" in facts:
+        try:
+            got = _page_causes(page)
+        except ValueError as e:
+            got = None
+            gaps.append("HELD CAUSE -- the page's data-held-causes cannot be read: %s" % e)
+        if got is not None and got != facts["causes"]:
+            gaps.append("HELD CAUSE -- the page counts the held roles by criterion as %s; their stages say %s"
+                        % (got or "nothing", facts["causes"] or "nothing"))
     if exp["unmatched"] and 'data-held-list="unmatched"' not in page:
         gaps.append("HELD LIST UNSAID -- no target titles are configured, so no held role can be listed, and the page does not "
                     "say so (data-held-list=\"unmatched\")")
@@ -101,4 +136,5 @@ def run(page, ledger, lifecycle_at, not_checked):
     except Exception as e:                                       # noqa: BLE001 - said, never a pass
         not_checked.append("held roles (%s: %s)" % (type(e).__name__, str(e)[:100]))
         return [], "held roles: NOT CHECKED"
-    return check_held(page, ledger, exp, {"held_all": rep.held_for_company})
+    return check_held(page, ledger, exp, {"held_all": rep.held_for_company,
+                                          "causes": expected_causes(data["opportunities"], ctx.stage_of_opp)})

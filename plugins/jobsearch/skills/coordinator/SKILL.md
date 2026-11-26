@@ -75,6 +75,17 @@ That single command: reports the write-lock state (**it does NOT take it**) · r
 runs queued · lists **what is blocked on the candidate**, act-by date first · runs the five gates
 (data integrity, rule homes, config leakage, resume-variant containment, published dashboard).
 
+**The LinkedIn lines (jobsearch 0.94.0, dev 1065).** `coordinator.py` prints them around the lines above, and you give them as printed, in this order. **A
+`LINKEDIN WARNING <date> (<kind>): scheduled LinkedIn search is OFF. Open LinkedIn yourself and look. To turn it back on: ~/.claude/jobsearch/run journal.py
+--linkedin-search-on --attended --warning <date>` line is the FIRST line of the start, before everything else, in every session until the person acts.** Say in
+plain words that LinkedIn showed a warning, that scheduled searching is off, and that they should open LinkedIn themselves and look. The plain form is the one just given. **A warning with a reason prints it in the label and says in a sentence what it may mean:** `LINKEDIN WARNING <date> (<kind>, reason=<word>): scheduled LinkedIn search is OFF. <note> Open LinkedIn yourself and look. To turn it back on: ...`, where the note is `This may be a LinkedIn layout change or a search with no results rather than a warning; it is treated as a warning.` after the reasons `no-cards`, `cards-without-text`, `no-dismiss`, `no-about`, `no-main`, `shape` and `language`, and `The page could not be judged (a tool error or an answer nobody could read), which counts as a warning.` after `tool-error`, `empty-result`, `unparsable-verdict` and `judge-error`. Say the note as printed: it is why the search is off, and a layout change is the likeliest cause of the first. **Run the turn-on command
+only when the person says, in this session, to turn scheduled searching back on**, with the date of the NEWEST warning (a good search, time or an update never
+clears it). **If `--linkedin-search-on` is refused** with `⛔ not turned back on: this turn-on is stamped <at> (UTC <at>), BEFORE the warning it names (<at>, UTC <at>). This machine's clock is behind the warning's, or the profile came from another time zone. Nothing was written: wait until the clock is past the warning's time (or correct it), then run it again.` (exit 2), nothing was written and the search is still off: tell the person that, in those words, and run the same call again only after the clock has passed the warning's time. Never edit the journal, and never name another date to get past it. After the pipeline lines it may print `LINKEDIN JOB SEARCH DUE: last <date|date (before 0.94.0)|none recorded>. It needs you in the desktop app:
+/jobsearch:search linkedin attended. Skip: journal.py --linkedin-search-skip --until <date>` (scheduled searching cannot read, or has stopped, or nothing has
+searched for twice the cadence); offer the attended command and the skip, and run neither yourself. The first five scheduled searches also print `linkedin job
+search (scheduled <date>): <planned · read · cards · ids · recorded · held · cut short · filters dropped · stopped by>` so the person sees what several
+searches in one run did; several searches in one run are untested, and these lines are how the first ones are watched.
+
 **A `NEW` notice about a job source (0.76.0).** If `coordinator.py` prints a `NEW` block about a source being on for
 the candidate (the Indeed browser sweep, on by an owner carve-out for a new profile), relay it in plain words:
 which site is read, that it takes no action there, and the exact `record.py source off <id>` command it names. The
@@ -402,7 +413,7 @@ its own tab; this session renders nothing itself.
    ```bash
    ~/.claude/jobsearch/run record.py read-batch --run <id> --fetch
    ```
-6. `jd-reader` over the residue (the `RESIDUE <opp_id> (render)` lines), in one fronted tab: chunks of at most 15, at most
+6. `jd-reader` over the residue (the `RESIDUE <opp_id> (render)` lines), each role's page in its own fresh tab: chunks of at most 15, at most
    `fanout` at once, each `solo` id alone, each written first with `journal.py --run <id> --pass reader --phase
    dispatched --ids <the opportunity ids of the chunk, as the RESIDUE lines print them>` and closed with
    `--phase returned --ids <the same ids>` (an opportunity id, never an `act-` item id: dev #837). Brief it `attended: yes`: the candidate is here to approve a site the pane

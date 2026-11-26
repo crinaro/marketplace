@@ -137,7 +137,7 @@ def _fit_plan(lines, opps, today_iso, carried=None):
             res["text"] = "⛔ REFUSED line %d — no opportunity with id %r." % (n, oid)
             continue
         try:
-            reads = sorted((a for a in _jd.attempts(row) if a["outcome"] == _jd.READ), key=lambda a: a["at"])
+            reads = sorted((a for a in _jd.standing(row) if a["outcome"] == _jd.READ), key=lambda a: a["at"])
         except _jd.JdReadError as e:
             res["text"] = "⛔ REFUSED line %d — %s: its stored jd_read cannot be read (%s)." % (n, oid, e)
             continue

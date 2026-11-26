@@ -21,7 +21,7 @@ Two routines, and only two:
 
 | task | when | does |
 |---|---|---|
-| `search-daily` | the tier's cron | mailbox + LinkedIn sweep, sourcing, state updates, dashboard |
+| `search-daily` | the tier's cron | mailbox + LinkedIn sweep, the LinkedIn job search when it is due and the tier uses LinkedIn (its own step, after the sweep), sourcing, state updates, dashboard |
 | `search-strategy-weekly` | Sunday evening | channel yield, cadence, config proposals |
 
 Use `create_scheduled_task` / `update_scheduled_task`. ⚠️ **If these are not available on this
@@ -58,7 +58,7 @@ they are paying for whatever the scheduler says.
 
 ## 4. Tell them what will now happen unattended, and when
 
-One line per routine. If they are on a tier where LinkedIn is not swept unattended, say so.
+One line per routine. If they are on a tier where LinkedIn is not swept unattended, say so. Where it is, say that `search-daily` also searches LinkedIn jobs when due (about every two days, reading only) and that any LinkedIn warning stops that search until they turn it back on.
 
 ## After the routines exist
 

@@ -75,11 +75,12 @@ from migrations import (
     m_0_91_0_employment,
     m_0_92_0_decision_surface,
     m_0_93_0_word_round_trip,
+    m_0_94_0_role_first,
 )
 from migrations.stamp import engine_version, read_stamp, ver
 from migrations.stores import STORE_INTRODUCED
-from migrations.support_pins import (DECISION_SURFACE_PIN, NETWORK_FIRST_PIN, WORD_ROUND_TRIP_PIN, _decision_surface_pin_lost,
-                                     _network_first_pin_needed, _word_round_trip_pin_lost)
+from migrations.support_pins import (DECISION_SURFACE_PIN, NETWORK_FIRST_PIN, ROLE_FIRST_PIN, WORD_ROUND_TRIP_PIN, _decision_surface_pin_lost,
+                                     _network_first_pin_needed, _role_first_pin_lost, _word_round_trip_pin_lost)
 
 
 MIGRATIONS = (("0.4.0", m_0_4_0.m_0_4_0), ("0.13.0", m_0_13_0.m_0_13_0), ("0.14.0", m_0_14_0.m_0_14_0),
@@ -321,7 +322,10 @@ MIGRATIONS = (("0.4.0", m_0_4_0.m_0_4_0), ("0.13.0", m_0_13_0.m_0_13_0), ("0.14.
               ("0.92.0", m_0_92_0_decision_surface.m_0_92_0_decision_surface),
               # KEYED "0.93.0" (docs/design-resume-docx.md §R3 R3-3, O25) -- see the note above `WORD_ROUND_TRIP_BY`. It runs LAST;
               # its one write is the 0.93.0 profile pin (no data is transformed). `pending_for` also re-selects it for a lost pin.
-              ("0.93.0", m_0_93_0_word_round_trip.m_0_93_0_word_round_trip))
+              ("0.93.0", m_0_93_0_word_round_trip.m_0_93_0_word_round_trip),
+              # KEYED "0.94.0" (docs/design-role-first.md §11): 0.93.0 is the newest PUBLISHED release at the branch base (`jobsearch--v0.93.0` is tagged), so a
+              # profile that installed it is stamped exactly "0.93.0" and pending_for()'s strict `<` fires this one. It runs LAST; its first write is the pin.
+              ("0.94.0", m_0_94_0_role_first.m_0_94_0_role_first))
 
 
 # Every value above must be a version key the MIGRATIONS registry actually knows, so a typo here
@@ -379,6 +383,9 @@ def pending_for(profile, engine=None):
     # And for the 0.93.0 pin (docs/design-resume-docx.md §R3 R3-3): `m_0_93_0_word_round_trip` re-runs for a lost pin.
     word_lost = (ver(engine) >= ver(WORD_ROUND_TRIP_PIN) and ver(stamp) >= ver(WORD_ROUND_TRIP_PIN)
                  and _word_round_trip_pin_lost(profile))
+    role_lost = (ver(engine) >= ver(ROLE_FIRST_PIN) and ver(stamp) >= ver(ROLE_FIRST_PIN)
+                 and _role_first_pin_lost(profile))
     return [v for v, _fn in MIGRATIONS
             if ver(stamp) < ver(v) <= ver(engine) or (pin_lost and v == NETWORK_FIRST_PIN)
-            or (surface_lost and v == DECISION_SURFACE_PIN) or (word_lost and v == WORD_ROUND_TRIP_PIN)]
+            or (surface_lost and v == DECISION_SURFACE_PIN) or (word_lost and v == WORD_ROUND_TRIP_PIN)
+            or (role_lost and v == ROLE_FIRST_PIN)]

@@ -5,7 +5,7 @@ description: 'Deep-dive research on ONE newly sourced role — find the original
 model: sonnet
 effort: medium
 disallowedTools: Agent
-tools: WebSearch, WebFetch, Read, Bash, ToolSearch, mcp__Claude_Browser__preview_start, mcp__Claude_Browser__navigate, mcp__Claude_Browser__get_page_text, mcp__Claude_Browser__read_page, mcp__Claude_Browser__find, mcp__Claude_Browser__tabs_context, mcp__Claude_Browser__javascript_tool, mcp__Claude_Browser__tabs_close, mcp__claude-in-chrome__list_connected_browsers, mcp__claude-in-chrome__select_browser, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__javascript_tool, mcp__claude-in-chrome__tabs_close_mcp
+tools: WebSearch, WebFetch, Read, Bash, ToolSearch, mcp__Claude_Browser__preview_start, mcp__Claude_Browser__resize_window, mcp__Claude_Browser__get_page_text, mcp__Claude_Browser__read_page, mcp__Claude_Browser__find, mcp__Claude_Browser__tabs_context, mcp__Claude_Browser__javascript_tool, mcp__Claude_Browser__tabs_close, mcp__claude-in-chrome__list_connected_browsers, mcp__claude-in-chrome__select_browser, mcp__claude-in-chrome__tabs_create_mcp, mcp__claude-in-chrome__navigate, mcp__claude-in-chrome__get_page_text, mcp__claude-in-chrome__javascript_tool, mcp__claude-in-chrome__tabs_close_mcp
 ---
 
 ## THE PLUGIN AGENT CONTRACT — standing rules, before anything else in this file
@@ -83,16 +83,24 @@ dispatching session's context (dev #482 / public #111).
 **MODEL · EFFORT:** `sonnet` · `medium` (declared 2026-09-12). One role at a time: find the posting, read the JD, research the company. The comp screen and the record shape are scripts, so the judgement left to the model is bounded.
 
 
-## ⭐ Your own browser tab (dev #820 / public #175)
+## ⭐ Your own browser tab, a fresh one for every page load, sized (dev #820 / public #175; jobsearch 0.94.0, dev 1064, design-role-first.md 19, N2 and N8)
 
 When you render a page in the in-app Browser pane, work in a tab of your own. The pane is one surface
 shared with every other task, and a pane call that names no tab acts on whichever tab is in front, which
 another task may have changed since your last call. You would read a page you never opened and report it
 as this role's.
 
-- **Open one tab per page you render** with `mcp__Claude_Browser__preview_start`, passing the page's
-  `url`. It returns a `tabId`.
-- **Pass that `tabId` on every call that touches the page:** `navigate`, `get_page_text`, `read_page`
+- **Open each page you render with `mcp__Claude_Browser__preview_start`**, passing the page's `url`. It returns a `tabId`.
+- **A fresh tab for every page you load, and never a `navigate` on a tab that is already open (N8).** MEASURED (a scheduled
+  session with the pane open in no window): a page loaded by `navigate` in a tab that was already open often got no frames, and a page
+  opened in its own new tab got them. Open each address with `preview_start` (the pane's `navigate` is not on your tools line); it may
+  hand you a blank tab that was already there, which is still a first load and still yours to close. **At most one open tab of yours at
+  a time:** close the last one before the next `preview_start`.
+- **Size it at once (N2):** `mcp__Claude_Browser__resize_window` with that `tabId`, width 1280, height 3200, right after `preview_start` and
+  before the wait, again whenever the page, the wait or the probe shows a viewport that is 0 or under 600 by 800 (the app clears a size at
+  the end of a turn), and **clear it before you close the tab** (`resize_window` with the `tabId` and `preset` `desktop`). A fresh tab can
+  report a viewport of 0 by 0, in which a page cannot fill. It never fronts a tab.
+- **Pass that `tabId` on every call that touches the page:** `resize_window`, `javascript_tool`, `get_page_text`, `read_page`
   and `find`. A call with no `tabId` is a call on someone else's tab.
 - **Close the tab with `mcp__Claude_Browser__tabs_close` when you are done with that page**, whether it
   rendered, showed nothing, or failed, and open a fresh one for the next. Never leave a tab open on the
@@ -104,11 +112,12 @@ as this role's.
 
 ## ⭐ Wait for the page, then read it, and ask the gate only when it did not read (dev #858, jobsearch 0.90.0)
 
-A page read straight after `navigate` is sometimes half-loaded, and a pane that does not paint reads a shell: an unrendered shell
-is exactly the false "closed" this file already warns about. So after EVERY `navigate`, on either browser:
+A page read straight after it loads is sometimes half-loaded, and a pane that does not paint reads a shell: an unrendered shell
+is exactly the false "closed" this file already warns about. So after EVERY page load (the pane's `preview_start` and its size, and on the
+extension its `navigate`), on either browser, **the content wait comes first**:
 
 1. **Wait for the content.** Once per dispatch run `~/.claude/jobsearch/run page_ready.py --print research-render` and keep the
-   code it prints. After each `navigate`, run that code with the browser's `javascript_tool`
+   code it prints. After each page load, run that code with the browser's `javascript_tool`
    (`mcp__Claude_Browser__javascript_tool` or `mcp__claude-in-chrome__javascript_tool`, always with your own `tabId`) and hand its
    JSON result to `~/.claude/jobsearch/run page_ready.py --verdict '<that JSON, or the tool's own error text>'`. It prints
    `READY <chars>`, `NOT-READY` or `READY-ERROR` (a tool error or a timeout is `READY-ERROR`). Keep the word.
@@ -118,13 +127,19 @@ is exactly the false "closed" this file already warns about. So after EVERY `nav
    dispatch run `~/.claude/jobsearch/run pane_probe.py --print` and keep the code. Run it with the same browser's
    `javascript_tool` and read the result with `~/.claude/jobsearch/run pane_probe.py --gate --result '<probe JSON>'`. It prints
    `GATE <word>`:
+   - `set-size` → the page is 0 wide or high, or under 600 by 800: `resize_window` it to 1280 by 3200 (your `tabId`) and run the wait and then
+     the probe again. At most twice per tab; a third `set-size` is a `probe-error`.
    - `paints` → the page painted and still did not render the posting: report it as the steps below say (`render-failed`).
-   - `probe-again` → probe once more at least 4 seconds after the first, and pass both results (`--result` twice).
-   - `not-painting` or `probe-error` → this browser cannot read the page, which says nothing about the posting. Take the next
-     rung (§"The ladder"). A page a browser could not paint is **never** `render-failed`, never `negative`, and never evidence the
+   - `probe-again` → probe once more at least 4 seconds after the first (a FIRST hidden answer is this, because the next call may have woken
+     the tab), and pass both results (`--result` twice).
+   - `not-painting` or `probe-error` → **reopen the address ONCE** (N9): clear the size, close the tab, `preview_start` the same address in a
+     fresh tab, size it, and run steps 1 to 3 again. That is the page's second and last load; a page is loaded at most twice. **If the second
+     load also ends `not-painting` or `probe-error`,** this browser cannot read the page, which says nothing about the posting. Take the next rung
+     (§"The ladder"); a page a browser could not paint is **never** `render-failed`, never `negative`, and never evidence the
      posting is dead.
 
-   The pane line (the last line of `mcp__Claude_Browser__tabs_context`) is kept beside the gate and does not decide it.
+   The pane line (the last line of `mcp__Claude_Browser__tabs_context`, read once after your first tab) is RECORDED beside the gate and decides
+   nothing (N1): a pane that reads `hidden` has been measured to paint, and one that reads `displayed` can stop.
 
 ## ⭐ The ladder: a page the pane cannot read (dev #858, jobsearch 0.90.0)
 

@@ -113,9 +113,18 @@ import pipeline_index as _pidx                                       # noqa: E40
 # bare `import` is invisible to `publish_manifest.py`'s reachability closure.
 import lifecycle as _lc                                              # noqa: E402
 import jd_read as _jd                                                # noqa: E402
-from reach import held_roles as _held, follow_facts as _ffacts, follow_rows as _frows, follow_stop as _fstop, staffing as _staff, standing_rows as _rows  # noqa: E402
+from reach import held_roles as _held, follow_facts as _ffacts, follow_rows as _frows, follow_stop as _fstop, staffing as _staff, standing_rows as _rows, why_here as _why  # noqa: E402
 # Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
 from pursuits.app_endings import ended_because
+# Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
+from reach.look_into import (
+    _parse_date,
+    _load_jsonl,
+    STAFFING_NAME_PATTERNS,
+    COMPANY_KINDS,
+    _host,
+    _root_cfg,
+)
 
 # Re-exported so a caller (validate_data.py) needs exactly one import to validate the field.
 PreconditionError = _pre.PreconditionError
@@ -391,10 +400,6 @@ def _outbound_axis(newest, today, window, journal_recs, person_id):
     # silence NEEDS verifying) — never to assert 'silent' itself, which requires a real probe.
     age = (_parse_date(today) - _parse_date(sent_on)).days
     return "waiting" if age < window else "silence-unverified"
-
-
-def _parse_date(s):
-    return datetime.datetime.strptime(str(s)[:10], "%Y-%m-%d").date()
 
 
 def conversation_axis(root, subject, counterpart=None, today=None, window=None):
@@ -1050,20 +1055,6 @@ def ready_staged_without_ask(root, asks=None, pre_rows=None):
             continue
         out.append({"file": r.get("file", _pre.FILES[0]), "title": r["title"],
                     "why": "staged and cleared to send; no open ask points at it"})
-    return out
-
-
-def _load_jsonl(root, name):
-    path = os.path.join(root, "data", name)
-    out = []
-    try:
-        with open(path, encoding="utf-8") as fh:
-            for line in fh:
-                line = line.strip()
-                if line:
-                    out.append(json.loads(line))
-    except OSError:
-        pass
     return out
 
 
@@ -1997,18 +1988,7 @@ def outreach_due(root, today=None, horizon=None, pre_rows=None, untriggered=None
 # ─────────────────────────────────────────────────────────────────────────────
 
 PLAN_GROUPS = ("reply-owed", "to-record", "applied-no-contact", "awaiting-reply", "referral-handoff", "relationships-due")
-STAFFING_NAME_PATTERNS = ("staffing", "recruiting", "recruitment", "talent solutions", "headhunt")
-COMPANY_KINDS = ("employer", "staffing", "aggregator")
 _STAFFING_RE = re.compile(r"\b(?:%s)\b" % "|".join(re.escape(p) for p in STAFFING_NAME_PATTERNS), re.I)
-
-
-def _host(url):
-    import urllib.parse
-    try:
-        h = urllib.parse.urlparse(str(url or "")).netloc.lower()
-    except ValueError:
-        return ""
-    return h[4:] if h.startswith("www.") else h
 
 
 def company_kind(company, channels):
@@ -2035,15 +2015,6 @@ def company_kind(company, channels):
     if name and _STAFFING_RE.search(name):
         return "staffing", "name"
     return "employer", "default"
-
-
-def _root_cfg(root):
-    try:
-        with open(os.path.join(root, "config.json"), encoding="utf-8") as fh:
-            cfg = json.load(fh)
-        return cfg if isinstance(cfg, dict) else {}
-    except (OSError, ValueError):
-        return {}
 
 
 def _cfg_int(root, key):
@@ -2259,9 +2230,16 @@ def communication_plan(root, today=None, net=None, owed=None):
             "not_listed": not_listed}
 
 
-def _role_row(o, state, why, posting, ctx):
+def why_context(ctx):
+    """The owner's criteria for the "why it is here" line (`reach.why_here`, jobsearch 0.94.0, dev 1062, design 4.5), or None on a profile with
+    no 0.94.0 pin: such a role keeps what it shows today. `ctx` is the lifecycle context the caller already built."""
+    return _why.context(ctx.profile, _profile, config_keys) if ctx.release_at is not None else None
+
+
+def _role_row(o, state, why, posting, ctx, wc=None):
     """One role of `report()['roles']`: the group, the why, and (for a lifecycle group) the stage's own
-    cause, evidence and age, with the best posting link (N9: a `your-read` card carries both)."""
+    cause, evidence and age, with the best posting link (N9: a `your-read` card carries both). A `decide` row of a pinned profile also
+    carries `why_here`, the full line (`wc` is `why_context`'s)."""
     st = ctx.stage_of_opp(o)
     url, owned = role_link(o)
     row = {"id": o.get("id"), "title": o.get("title"), "state": state, "why": why,
@@ -2272,6 +2250,8 @@ def _role_row(o, state, why, posting, ctx):
     if state == GROUP_YOUR_READ:
         row["reason"] = your_read_reason(st)
         row["remedy"] = YOUR_READ_REMEDY % (o.get("id") or "<id>")
+    if wc is not None and state == "decide":
+        row["why_here"] = _why.full(o, wc, ctx.today, posting.get(o.get("id")))
     return row
 
 
@@ -2296,7 +2276,7 @@ def report(root, today=None):
     owner = _profile.owner_token()
     roles = classify_opportunities(opps, owner, today, ctx=ctx)
     # dev #776 / public #166 - the employer-posting label, one derivation (`posting_labels`).
-    posting = posting_labels(opps, owner, today, ctx=ctx)
+    posting, wc = posting_labels(opps, owner, today, ctx=ctx), why_context(ctx)
     chans = classify_channels(channels, messages, today, involvements)
     # public #95 — the terminal-transition cascade, over the same context every row shares.
     ended_ctx = build_ended_context(root)
@@ -2304,7 +2284,7 @@ def report(root, today=None):
     touches_rows, _t_errs, _t_present = _touches.load(root)
     return {
         "process": dict(rep.to_json(), run_lines=list(rep.run_lines)),
-        "roles": [_role_row(o, s, w, posting, ctx) for o, s, w in roles],
+        "roles": [_role_row(o, s, w, posting, ctx, wc) for o, s, w in roles],
         # every labelled role, including a watch-list role Your Move has no group for
         "posting_labels": posting,
         "channels": [{"id": c.get("id"), "label": c.get("label") or c.get("id"), "state": s,
@@ -2400,6 +2380,8 @@ def main():
                                      (r["title"] or r["id"] or "?")[:60]))
             if r["why"]:
                 print("        %s" % r["why"])
+            if r.get("why_here"):
+                print("        why here: %s" % r["why_here"])
             if r["state"] == GROUP_YOUR_READ and r.get("link"):
                 print("        link: %s%s" % (r["link"], "" if r["link_employer_owned"]
                                               else " (aggregator copy)"))

@@ -5,11 +5,14 @@ One module of `migrations/` (design-component-segmentation.md §5); the 0.86.0 h
 0.90.0 half (dev 858) is read by `m_0_90_0_browser_fallback` and `init_profile.py`, which both need the pin and the asks reader. The
 0.92.0 half (docs/design-decision-surface.md §M) is read by `m_0_92_0_decision_surface`, by `support_scaffold.stamp_new_profile`
 (the pin a NEW profile carries) and by `registry.pending_for` (a lost 0.92.0 pin is re-run). The 0.93.0 half
-(docs/design-resume-docx.md §R3 R3-3) is the same pair for `m_0_93_0_word_round_trip` and `registry.pending_for`."""
+(docs/design-resume-docx.md §R3 R3-3) is the same pair for `m_0_93_0_word_round_trip` and `registry.pending_for`. The 0.94.0 half
+(docs/design-role-first.md §11) is `journaling.pins.ROLE_FIRST_PIN`, which the journal readers own (two machines: the EARLIEST pin is the release instant); the
+lost-pin question `registry.pending_for` asks is answered here."""
 
 import json
 import os
 from journaling.journal_file import pin_scan, profile_pin
+from journaling.pins import ROLE_FIRST_PIN
 from migrations.stamp import ver
 
 
@@ -57,6 +60,13 @@ def _word_round_trip_pin_lost(profile):
     `registry.pending_for` asks this, as it asks `_decision_surface_pin_lost`: it must answer for a journal `journal.read` refuses."""
     pin = pin_scan(profile)
     return pin is None or ver(pin) < ver(WORD_ROUND_TRIP_PIN)
+
+
+def _role_first_pin_lost(profile):
+    """True when the profile's journal, scanned tolerantly (`journal.pin_scan`), carries no pin at or above 0.94.0 (`journaling.pins.ROLE_FIRST_PIN`).
+    `registry.pending_for` asks this as it asks the two before it: it must answer for a journal `journal.read` refuses."""
+    pin = pin_scan(profile)
+    return pin is None or ver(pin) < ver(ROLE_FIRST_PIN)
 
 
 def _browser_fallback_asks(profile):

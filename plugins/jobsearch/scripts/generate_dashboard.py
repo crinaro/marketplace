@@ -99,7 +99,7 @@ from dashboard import pagedata as pagedata_ui
 from dashboard import process as process_ui
 from dashboard import rank as rank_ui
 from dashboard import roles as roles_ui
-from dashboard import held as held_ui, targets as targets_ui
+from dashboard import held as held_ui, targets as targets_ui, today as today_ui
 
 
 # ⭐ THE ONE TERMINAL SET — validate_data's, by import. This file used to carry its own
@@ -737,15 +737,15 @@ def _load_today(s):
                         for it in ((s.tr or {}).get("rows") or []) if it["id"] in by_cid]
     pd.quiet_days = _ym._cfg_int(str(ROOT), _ck.CHASE_AFTER_DAYS) + _ym._cfg_int(str(ROOT), _ck.NO_RESPONSE_AFTER_DAYS)
     listed = {it["id"] for it in ((s.tr or {}).get("rows") or []) if it["id"] in by_cid}
-    counts = {"checked": rep is not None, "snoozed": len((s.tr or {}).get("snoozed") or []),
-              "held_listed": held_ui.listed_count(s.live, listed, s.stages)}
+    counts = {"checked": rep is not None, "snoozed": len((s.tr or {}).get("snoozed") or []), "held_listed": held_ui.listed_count(s.live, listed, s.stages),
+              "linkedin_warning": today_ui.search_warning(s.lc_snapshot["journal"]), "unchosen_ready": held_ui.unchosen_ready(s.live, s.stages, s.opp_comps) if s.lc_ctx.release_at is not None else None}
     if rep is not None:
         prog = [st.since for st in s.stages.values() if st.name in _lifecycle.PROGRESS_STAGES and st.since]
         counts.update(roles=rep.totals.get("roles") or 0, ready=rep.ready, waiting=rep.waiting,
                       in_progress=rep.in_progress, held_undecided=rep.held_company["undecided"],
-                      held_watching=rep.held_company["watching"], held_passed=rep.held_company["passed"],
+                      held_watching=rep.held_company["watching"], held_passed=rep.held_company["passed"], held_pursued=rep.held_company["pursued"],
                       in_progress_oldest_days=(s.lc_now.date() - min(prog)).days if prog else None)
-    pd.today_counts = counts
+    pd.today_counts, pd.why_here = counts, _ym.why_context(s.lc_ctx)          # 0.94.0: the criteria only on a profile with the pin
     if rank_ui.is_empty(rank_ui.kinds(pd)):
         counts["not_raised"] = _ym.classify_companies(str(ROOT), s.lc_now.date().isoformat())["look-into-waiting"]
         counts["not_due"] = _not_yet_due(s)
@@ -817,7 +817,7 @@ def _render_network(s):
     _targets_text(s)
     s.first_targets, s.n_targets = targets_ui.render_targets_list(_tr, _net["rows"], s.ledger, s.pd)
     s.first_held = held_ui.render(held_ui.load(str(ROOT), s.opp_rows, s.stages, s.opp_comps, s.lc_report, (_profile.title_matches, _ym._root_cfg(
-        str(ROOT))), _lifecycle.first_seen, s.lc_now.date(), _ym._cfg_int(str(ROOT), _ck.TARGETS_PER_WEEK)), s.ledger, lambda o: best_link(o)[0])
+        str(ROOT))), _lifecycle.first_seen, s.lc_now.date(), _ym._cfg_int(str(ROOT), _ck.TARGETS_PER_WEEK), s.lc_snapshot["journal"]), s.ledger, lambda o: best_link(o)[0])
     if _tr_failed:
         # a raised company the targets list could not carry is still counted (one remainder), never lost
         _lost = [_r["key"] for _r in _net["rows"] if _r["group"] == "look-into"]
@@ -837,7 +837,7 @@ def _assemble(s):
                  opps=s.first_opps, apply=s.first_apply, flags=s.first_flags,
                  n_drafts=len(s.drafts_active), n_opps=s.opp_counts["all"], n_apply=s.n_apply, n_flags=s.n_flags,
                  n_read=s.n_read, n_network=s.n_network, n_targets=s.n_targets,
-                 process=process_ui.render_process_block(rep, s.lc_now, s.lc_error, titles, failure_texts, alert_line),
+                 process=process_ui.render_process_block(rep, s.lc_now, s.lc_error, titles, failure_texts, alert_line, s.pd.today_counts.get("unchosen_ready")),
                  conservation=process_ui.render_conservation_line(rep),
                  alert=process_ui.render_pipeline_alert(rep, s.lc_error, alert_line))
     page_html = page_ui.render(s.pd, parts, s.ledger)

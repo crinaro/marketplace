@@ -6,8 +6,10 @@ can decide whether to keep it.
 
 ## The problem it answers
 
-To read a LinkedIn posting, the plugin opens it in the Browser pane. When the pane is hidden, or the page does not
-draw, the posting is not read. Since 0.85.0 such a role is *held*: it is not counted as a failure, it is tried
+To read a LinkedIn posting, the plugin opens it in the Browser pane. Before 0.94.0, when the pane was hidden, or the page did not
+draw, the posting was not read. **Since 0.94.0 a hidden pane no longer stops a LinkedIn posting from being read:** each posting opens in a
+fresh tab of its own, set to a large fixed size, and it is accepted when its description is complete on two reads in a row, whatever the app says about drawing.
+When it still cannot be read, since 0.85.0 such a role is *held*: it is not counted as a failure, it is tried
 again on a later run, and the run summary says so:
 
 ```

@@ -114,7 +114,10 @@ OPS = ("create", "set", "set-in", "append", "show", "fields",
        "presence-docx",
        # jobsearch 0.92.0 (dev #951, design-decision-surface.md B.2) -- stop (or, with --undo, resume) following a person up: one
        # locked, validated, rollback-verified append to TOUCHES behind the 0.92.0 pin. `--dry-run` is proven in test_record_call_surface.py.
-       "stop-following")
+       "stop-following",
+       # jobsearch 0.94.0 (dev 1063, design-role-first.md 6.3) -- withdraw a read that was wrong: a compensating attempt, never an edit of history.
+       # `recording/withdraw_write.py` (built in P3). `--dry-run` is proven in test_record_call_surface.py's VERB_ARGS.
+       "read-withdraw")
 SOURCING_OPS = ("screened", "lean", "listed-pay", "posted")
 
 
@@ -191,6 +194,9 @@ def _help_epilog():
         "employer posting (dev #776 / public #166) -- the ONE writer of an opportunity's employer_posting:",
         "  posting --from-file <file of EMPLOYER-POSTING lines> [--dry-run] [--already-locked]",
         "      reads every EMPLOYER-POSTING line in the file (never argv); set / set-in / append / create refuse the field.",
+        "",
+        "read withdrawal (0.94.0, dev 1063) -- a read that was wrong, withdrawn by a compensating attempt that keeps the history:",
+        "  read-withdraw <opp_id> --at <the read's at> --why \"<why>\" [--run <id>] [--dry-run]",
         "",
         "affiliations (0.91.0) -- the ONE writer of user.json's affiliations, in the candidate's order:",
         "  affiliations '<json list of {kind, name, linkedin_url?, career_services?}>' | affiliations --none | affiliations",
@@ -552,6 +558,15 @@ def _pipeline_arguments(ap):
                     help="read-jd --via fetch: the sha1 the `RESIDUE <id> (body)` line printed. The read is refused unless it "
                          "matches the saved body's index entry and file, and the evidence, location and every --pay figure are "
                          "found in that body.")
+    # jobsearch 0.94.0 (dev 1062, 1063; design-role-first.md 4.4, 6.1, 6.3) -- the flags of the role-first verbs
+    # (the pin's refusal is `recording/role_first.py`'s; `--body` is checked by `recording/body_evidence.py`, `read-withdraw` is `recording/withdraw_write.py`).
+    ap.add_argument("--body", dest="body_arg", default=None,
+                    help="read-jd --via render (0.94.0): 60-200 characters quoted from the posting's DESCRIPTION, not its title or header; required once the "
+                         "profile carries the 0.94.0 pin, checked when given before it.")
+    ap.add_argument("--at", dest="read_at_arg", default=None,
+                    help="read-withdraw (0.94.0): the `at` of the read to withdraw (YYYY-MM-DDTHH:MM:SS), with --why.")
+    ap.add_argument("--no-target", dest="no_target", action="store_true",
+                    help="decide <opp> pursue (0.94.0, P5): pursue the role without targeting its company.")
     ap.add_argument("--tab-active", dest="tab_active", default=None, choices=("yes", "no"),
                     help="not-attempted: yes | no, the reader's own word about whether its tab was in front (the engine "
                          "cannot check it, and the stored evidence names it `tab_active` for that reason).")
@@ -578,7 +593,8 @@ def _network_arguments(ap):
     # existing ones: `--company` is a company ID for `intro-offered`, the board's company NAME for `board-sighting`).
     ap.add_argument("--motivation", dest="motivation_arg", default=None,
                     help="company-status active-target: how much the candidate wants to work there, a whole number 1-5 "
-                         "(required for a target; refused beside watching or passed).")
+                         "(optional for a target once the profile carries the 0.94.0 pin, and never defaulted: absent stays absent; "
+                         "required before it; refused beside watching or passed).")
     ap.add_argument("--time", dest="time_arg", default=None,
                     help="chat: the time of the chat, HH:MM (24 hours).")
     ap.add_argument("--touch", dest="touch_arg", default=None,
@@ -655,7 +671,7 @@ def bind_store(args):
         args.file = "companies"          # dev #834: the network-first verbs each name their own store
     elif args.op in ("chat", "attended", "intro-offered"):
         args.file = "commitments"
-    elif args.op == "via":
+    elif args.op in ("via", "read-withdraw"):
         args.file = "opportunities"
     elif args.op in ("proposal", "proposal-status"):
         args.file = "proposals"          # dev #834: the proposal verbs name their own stores

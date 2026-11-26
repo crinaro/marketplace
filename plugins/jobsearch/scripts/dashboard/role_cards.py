@@ -5,6 +5,7 @@ import datetime
 import re
 
 from dashboard.markup import _rec_attrs, esc, md_inline, theirs
+from reach import why_here as _why
 
 
 # The pursuit chip's words, one per `your_move.PURSUIT_STATES` value (moved from the retired filter chips' table,
@@ -396,6 +397,15 @@ def render_opportunity_card(o, comp, f, key, p, dims, waits, role_state, stage, 
         detail += ('<div class="od-h">The call in full</div>'
                    f'<div class="od-p">{md_inline(action_full)}</div>')
     detail += _fit_detail(o, pd.now.date().isoformat()) + _touch_detail(o)
+    why = getattr(pd, "why_here", None)
+    if why is not None:
+        # 0.94.0 (dev 1062, design 4.5, RF8): with the pin, the short line REPLACES the pay-and-place meta line and the posting line (the
+        # page has one open word to spare); the full line, every unknown said, is the first thing in the closed detail.
+        today = pd.now.date()
+        meta = esc(_why.short(o, why, today, posting_label))
+        detail = ('<div class="od-h">Why it is here</div><div class="od-p">%s</div>'
+                  % _why.full(o, why, today, posting_label, text=esc, theirs=lambda t: theirs(t, "role-title"))) + detail
+        posting_label = None
     body = (f'<details class="opp-more"><summary>Detail</summary>'
             f'<div class="opp-detail">{detail}</div></details>') if detail else ""
     return (f'<div class="opp"{_rec_attrs(key)}{_dim_attrs(dims)}>'

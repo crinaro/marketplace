@@ -223,6 +223,7 @@ from validation.source_tags import (
 from validation.trigger_rules import check_trigger
 from validation.user_rules import check_user_file, read_beside_data
 from validation.outbox_rules import check_outbox
+from validation.priors import check_opportunity_priors
 from validation.requirement_rules import check_requirement
 from presence.store_rules import check_presence_changes
 from validation.vocab import (
@@ -1452,15 +1453,7 @@ def _main():
         # optional and ABSENT has a defined meaning, so only a PRESENT value is checked.
         if "listed_pay" in r:
             check_listed_pay(r["listed_pay"], label, problems)
-        if "listed_pay_prior" in r:
-            # dev #846 (0.88.0, design 4.2): the append-only list of every `listed_pay` a supersede moved aside
-            prior = r["listed_pay_prior"]
-            if not isinstance(prior, list) or not prior:
-                problems.append("%s: listed_pay_prior must be a non-empty list of superseded listed_pay objects (absent means "
-                                "nothing was superseded) -- got %r" % (label, prior))
-            else:
-                for i, entry in enumerate(prior):
-                    check_listed_pay(entry, "%s listed_pay_prior[%d]" % (label, i), problems, prior=True)
+        check_opportunity_priors(r, label, problems)       # listed_pay_prior (0.88.0) and fit_prior (0.94.0): validation/priors.py
         if "posted" in r:
             check_posted(r["posted"], label, problems)
         if "screen" in r:

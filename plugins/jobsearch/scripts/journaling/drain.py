@@ -3,6 +3,7 @@
 Capability module of `journal.py` (S4a, moved unedited)."""
 
 from journaling.journal_file import append, now_iso, read
+from journaling.pins import require_pin
 from journaling.row_shapes import _check_drain_row, _check_readmit_row
 from journaling.tables import JournalError
 
@@ -11,12 +12,17 @@ def record_drain(root, run_id, phase, *, intake=None, capacity=None, capacity_re
                  render_route=None, attended=None, admitted=None, waiting=None, retry_stopped=None,
                  fanout=None, solo=None, fetch_calls=None, reserved_new=None, admitted_by_class=None,
                  excluded_open=None, finished=None, left=None, elapsed_s=None, per_role_s=None,
-                 on_behalf_of=None, at=None, companies=None):
+                 on_behalf_of=None, at=None, companies=None, matching=None):
     """dev #820 / public #175 (design section 4.5, 17 N1, N7) -- the ONE writer of a `drain` event.
 
       companies (0.86.0, dev #834) an optional `planned` field: `{setting, admitted, considered, capped, split}`, the
                 company figures of a plan whose intake is counted in companies (`_check_companies_block`). The same
                 check the reader runs is run HERE before anything is appended; a `closed` row carrying it is refused.
+
+      matching  (0.94.0, dev 1062, design 4.1) an optional `planned` field: `{setting, considered, admitted, waiting, open, in_flight,
+                bound}`, the figures of the lane that reads matching roles first (`search_rows.check_matching_block`: the same check
+                the reader runs). Written only on a profile pinned at 0.94.0 (`pins.require_pin`: without the pin the profile keeps
+                0.93.0's plan); a `closed` row carrying it is refused.
 
       planned   `lifecycle.Plan.event_fields()`: intake, capacity (+ capacity_reason whenever it is below
                 intake), render_route, attended, admitted {opps, items}, waiting {count, oldest},
@@ -42,6 +48,9 @@ def record_drain(root, run_id, phase, *, intake=None, capacity=None, capacity_re
     closed = dict(finished=finished, left=left, elapsed_s=elapsed_s, per_role_s=per_role_s)
     if companies is not None:
         rec["companies"] = companies
+    if matching is not None:
+        require_pin(root, "a drain plan's `matching` block")
+        rec["matching"] = matching
     if phase == "planned":
         rec.update({k: v for k, v in planned.items()})
         if capacity_reason is not None:

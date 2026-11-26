@@ -30,6 +30,7 @@
     "note",
     "listed_pay",
     "listed_pay_prior",
+    "fit_prior",
     "posted",
     "screen",
     "lean",
@@ -51,6 +52,7 @@
     "decision": "object",
     "listed_pay": "object",
     "listed_pay_prior": "array",
+    "fit_prior": "array",
     "posted": "object",
     "screen": "object",
     "lean": "object",
@@ -142,14 +144,16 @@
     "status_on",
     "motivation",
     "kind",
-    "later_on"
+    "later_on",
+    "target_from"
    ],
    "shapes": {
     "research_log": "array",
     "ats": "object",
     "warm_lookup": "object",
     "aliases": "array",
-    "backed_by": "array"
+    "backed_by": "array",
+    "target_from": "object"
    },
    "required": [
     "id",

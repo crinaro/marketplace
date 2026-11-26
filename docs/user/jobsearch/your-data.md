@@ -98,8 +98,9 @@ copied twelve times.
 | `ats` | since 0.72.0 — the company's public job-board feed, so the daily run can read its openings with a script instead of a browser turn. Three states: **absent** (no feed found yet), **`null`** (you declined a feed for this company; nothing rewrites it) and **an object** `{vendor, slug, region, source, since}`. `vendor` is `greenhouse`, `lever` or `ashby`; `slug` is the board's short name; `region` (`global` or `eu`) is required for Lever only. **Since 0.76.0** a fourth vendor, `workday`, has the shape `{vendor, tenant, wd, site, source, since}` instead, with no `slug` and no `region`: `tenant` and `wd` are the two parts of the company's `<tenant>.wd<N>.myworkdayjobs.com` address and `site` is the career site's name.  `source` says how it was found (`career-url`, `posting-url` or `candidate`). Set it, decline it or clear it with `record.py ats` (see *Company feeds* in [How it works](how-it-works.md)) |
 | `backed_by` | since 0.75.0, optional: a list of company ids of the firms that back this company (an investment firm is an ordinary company row). Use it to state a backing a board sighting cannot show. A non-empty list of non-empty strings, each naming a company you track, never the company's own id, no repeats. Where a role was seen on a firm's portfolio board, the firm link is worked out from that sighting and is not stored. People you know at a backing firm become a `backer-intro` route on the role card, see *Portfolio boards* in [How it works](how-it-works.md) |
 | `raised_on` | since 0.86.0, optional: the date the daily run first asked you "look into this company?" about it. A job-board find at a company you have not decided about is recorded but held, and the run asks you about the company instead of reading the role; it asks about at most `search.company_intake_per_run` new companies a run. You never write this field (`record.py set` refuses it); answer the question with `record.py company-status` and the company leaves your list, while `raised_on` stays as the history. A date, never in the future |
-| `status_on`, `motivation` | since 0.86.0, optional: what you decided about the company and how much you want to work there. **`status: active-target` means the company is on your target list**, and the daily run only reads, screens and researches roles at companies on it. `record.py company-status <company> active-target --motivation <1-5>` (or `watching`, or `passed`) writes the status, the day you decided it (`status_on`) and, for a target, `motivation`, a whole number from 1 (would not mind) to 5 (the company you most want), together. A target needs a motivation, and it is always your own number: nothing guesses it. Since 0.89.0 a **Yes** on the dashboard's Targets list asks you for that number, company by company, before anything is written (on 0.88 a Yes from the page recorded nothing). `record.py set <company> status ...` is refused for that reason. A company with no `status_on` is one you have not decided about yet, which is what lets the run ask you about it; a target from before 0.86.0 with no `motivation` is fine and is simply counted as having none stated |
+| `status_on`, `motivation` | since 0.86.0, optional: what you decided about the company and how much you want to work there. **`status: active-target` means the company is on your target list**, and the daily run reads, screens and researches every role at a company on it (since 0.94.0 a role at any other company is read too when it meets your criteria, and held when it does not). `record.py company-status <company> active-target --motivation <1-5>` (or `watching`, or `passed`) writes the status, the day you decided it (`status_on`) and, for a target, `motivation`, a whole number from 1 (would not mind) to 5 (the company you most want), together. Since 0.94.0 a motivation is optional (a target with none shows `?`); when there is one it is always your own number, and nothing guesses it. Since 0.89.0 a **Yes** on the dashboard's Targets list asks you for that number, company by company, before anything is written (on 0.88 a Yes from the page recorded nothing). `record.py set <company> status ...` is refused for that reason. A company with no `status_on` is one you have not decided about yet, which is what lets the run ask you about it; a target from before 0.86.0 with no `motivation` is fine and is simply counted as having none stated |
 | `kind` | since 0.88.0, optional: what you say this company is: `employer`, `staffing` or `aggregator`. Written only by `record.py company-kind <company> employer\|staffing\|aggregator` (since 0.89.0, the **These are staffing firms** button on the Targets to review list, shown only when a listed company looks like one, and the **These are employers** button on its folded list of companies left out by their name). Absent means it is worked out: a channel of that name that is an aggregator or recruiter, then a staffing-firm name, otherwise `employer`. What you say wins. Staffing firms and aggregators never appear as targets to review |
+| `target_from` | since 0.94.0, optional: `{opp, on}`, the role you pursued (`opp`, its id) and the day (`on`). It says this target came from pursuing that role (`record.py decide <role> pursue` makes its company a target in the same step, with no `motivation`) and that you have not yet given the company a number. A target made this way reads its other roles only when they meet your criteria. You never write this field: `record.py company-status <company> active-target`, your own whole-company yes, removes it, and so does stating a motivation. Absent means you targeted the company yourself |
 | `later_on` | since 0.88.0, optional: the day you answered "later" for this company on the weekly Targets to review list, written only by `record.py company-later <company>`. It hides the company from the list for the rest of that week, then it comes back. It is not a status: `status`, `status_on` and `motivation` are left as they were. A date, never in the future; absent means you never said later |
 | `warm_lookup` | since 0.72.0 — `{on, result}` where `result` is always `none-found`: you looked for a person at this company and found nobody. It is the one stored fact of the warm path; everything else a role card shows about it is worked out from your people, touches, drafts and applications. Absent means you have not looked. Written by `record.py warm-lookup <company_id> --none-found` |
 
@@ -212,7 +213,7 @@ The facts it stores:
 - **`jd_read`** holds every attempt to read the job description, oldest to newest. Each attempt has
   `at` (when), `run`, `url` (the address read, or `null`), `via` (how: the plugin's own `fetch`, a
   browser `render`, a company `feed`, a job-board `ats-api`, `candidate` for you, or `legacy`) and
-  `outcome`, plus `evidence`. A successful read quotes a short passage that names the role (or, when the plugin fetched the page itself, records a fingerprint of what it got). A failed one
+  `outcome`, plus `evidence`. A successful read quotes a short passage that names the role (or, when the plugin fetched the page itself, records a fingerprint of what it got). **Since 0.94.0 a read made in the browser also carries `body`, a 60 to 200 character quote from the description itself,** because a title on its own is on the page of a posting whose description never filled. A failed one
   says why in a short sentence. The outcomes fall into four groups:
   - **read**: the description was read;
   - **gone**: `closed` or `dead-link`. The posting is down, and the role leaves the live list. Since 0.87.0 a
@@ -223,6 +224,7 @@ The facts it stores:
     can open* in [Reading what the search produces](reading-your-files.md#one-lifecycle-per-role-since-0820));
   - **unfinished**: `challenge`, `render-failed`, `surface-cannot-read` or `site-not-allowed`. The run's
     work is not done, and the role shows as a process failure until it is.
+  - **withdrawn** (since 0.94.0): a read that turned out to be wrong is not deleted. A later `withdrawn` attempt names the read it cancels (`of`, its time) and says why; the read stays in the list, and the plugin no longer counts it. `record.py read-withdraw <role> --at <the read's time> --why "..."` writes it, a failed render of the same page in the same run writes it for a read with no `body`, and the 0.94.0 upgrade writes it for the ones already contradicted. It puts back the pay and place the read replaced, runs the screen again, and moves a research made on that read into `fit_prior` (see *Fit* below) so research runs again. A role you decided stays decided;
   - **held** (since 0.85.0): `not-attempted` with outcome `pane-hidden`. The Browser pane was hidden, or the
     reader's tab was not in front, so the page was never read. It is not a failure of the role and never counts
     toward a stop; see [Posting fetch](posting-fetch.md).
@@ -241,8 +243,8 @@ A run takes on up to `search.company_intake_per_run` target companies (since 0.8
 `search.intake_per_run` roles) and **finishes every waiting role of each company it takes on**: capture it,
 read the description, screen it, and research it if it is a keeper. Every role that is not removed gets its
 description read; only a keeper (screen *keep*) is researched. **A role at a company you have not chosen to target
-is held** (stage *held for company*): the row is kept, and nothing further is done until you decide about the
-company. Anything a run took on and did not finish is
+is held** (stage *held for company*) **when it does not meet your criteria** (since 0.94.0; before it, whatever the role): the row is kept, and nothing further is done until you
+decide about the company or the role meets your criteria. Anything a run took on and did not finish is
 a **process failure**, shown with its cause and age, never hidden; a held role is counted and is not a failure: see
 [Reading what the search produces](reading-your-files.md#one-lifecycle-per-role-since-0820).
 
@@ -1519,6 +1521,8 @@ you as an ask (`resume-word-edited:<version>`).
 
 This is the role's `fit` field. Optional. Absent means the job description has not been analysed yet.
 
+**`fit_prior`** (since 0.94.0, optional): a role's earlier fits, oldest first. When a read is withdrawn, a fit made after that read is moved here instead of deleted, so research runs again against a read that stands and the earlier one is still on file. Written only by the withdrawal; absent means no withdrawal has touched this role's fit.
+
 Since 0.87.0 the research step writes `fit`, not the pursuit step: the researcher hands the analysis back in a file,
 and the plugin's own `record.py fit` command checks it and stores it. A researched role is *ready* for your
 decision only once its `fit` is stored, and `analyzed_on` is stamped by the script with the date of the write (a hand
@@ -2046,6 +2050,17 @@ No upgrade step writes this. If you have not set it, it uses its default.
 |---|---|
 | `network.reply_owed_days` | how long someone who wrote back stays listed under "They wrote back" with no reply drafted. Past it they are no longer listed, and the Network section names them under *Not listed*. A whole number from 7 to 365; defaults to **60** |
 
+### Settings added in 0.94.0 (`config.json.search`)
+
+No upgrade step writes these. If you have not set one, it uses its default.
+
+| key | what it is |
+|---|---|
+| `search.matching_roles_per_run` | the most roles a run reads that meet your criteria at a company you have not chosen, newest first, never more than half of what the run has time for while a company you chose is waiting. A whole number from 1 to 100; defaults to **20** |
+| `search.open_decisions_max` | when this many role decisions are open for you or being read, a run reads no further matching role and says so. A whole number from 1 to 200; defaults to **25** |
+| `search.linkedin_search_every_days` | how often the LinkedIn job search is due, in days, counted as elapsed hours (2 is 48 hours) since the later of the last search started and the last one that reached LinkedIn. A whole number from 1 to 7; defaults to **2** |
+| `search.linkedin_queries_per_pass` | the most title-and-place searches one LinkedIn job search runs, the first page of each. A whole number from 1 to 20; defaults to **20** |
+
 ## Action modes — `config.json.actions` (since 0.91.0)
 
 For each kind of outward act, who performs it: `you` (the default), or `me`, meaning the plugin does it **after you approve that
@@ -2349,7 +2364,7 @@ had been whole. So each query line in a sweep's hand-back now says `dropped=` (f
 that the page did not apply), `added=` (filters the page applied that it did not ask for) and
 `total=` (a lower bound is written `<m>+`), and every role line says `q=`, which queries showed it.
 A role is **held (quarantined)** when every query that showed it reported a degradation. One clean
-query that also showed it is enough to vouch for it.
+query that also showed it is enough to vouch for it. **Since 0.94.0 the card can vouch too:** a role is held only for a degradation its own card does not answer. A cut-short list or an added pay filter holds nothing that was shown (it is counted as missing coverage); a dropped work-type filter holds a role unless its card states its setting; a dropped place filter, unless its card states a place that is not your own address echoed back; an unapplied date window, unless the card says when it was posted.
 
 - **Only a positive report holds a role.** A named dropped or added filter, `unapplied`, or a
   truncated list. `dropped=?`, `added=?` (the sweep could not read the filter state) and a total it
@@ -2449,6 +2464,27 @@ everything else in [the documents table above](#the-documents): `focus.md` →
 automatic, no-action-needed move as the rest of the tree.
 
 ---
+
+### What the 0.94.0 upgrade writes
+
+One automatic step (`m_0_94_0_role_first`). In this order:
+
+1. **It adds a mark to the run history**, `data/runs.jsonl`, saying the profile needs 0.94.0 or later. This comes first, and it is what turns the new rules on: your criteria decide what is read, a read
+   quotes the description, a search is judged by what its card says. A profile first set up with 0.94.0 carries the mark from the start. A profile without it behaves as 0.93.0 did.
+2. **It keeps copies** of `data/opportunities.jsonl` and `data/pending_actions.jsonl` as `.pre-0.94.0`, byte for byte, only when the next steps will change one of them (a session with nothing to change writes
+   none). A copy already there is never written over, and is used only if it holds, exactly, every row about to change; otherwise the originals go to a new copy at the next free name (`.pre-0.94.0.1`,
+   then `.2`, and so on), and the step's message names the copy that holds them.
+3. **It withdraws reads the same run contradicted**: a read made in the browser that quotes no description and that a later failed attempt of the same run on the same page contradicts, on a role you have not
+   decided. All in one write, at most 50 a session; the rest wait for the next session and the step says how many were done and how many are left. The read stays in the role's history as withdrawn.
+4. **It releases captured roles** that were held only for a reason their own card answers (for example a search that dropped the work-type filter, when the card says "Remote").
+5. **It checks the result** by reading the files again; if anything is left it says so, and runs again next session.
+
+If a file cannot be read, nothing is written and it tries again next session. Held roles need no change: "held" is worked out each time, so the mark is what releases the ones that meet your criteria. Roles first
+seen before the upgrade are never shown as failures for it. **To undo it,** restore the copy the message names for each file (`.pre-0.94.0`, or `.pre-0.94.0.<n>` when the message says so; the mark stays, as every mark does).
+
+**If you use more than one machine.** Once the mark is written, a machine still on 0.93.x or older refuses every `record.py` command and every read of the run history: it says "Update the plugin on this
+machine before running it here", so update the plugin on every machine. If a session ends after the mark and before the rest, the new rules are already on and some wrong reads still stand, which is no worse
+than before the upgrade; the next session finishes.
 
 ### What the 0.93.0 upgrade writes
 

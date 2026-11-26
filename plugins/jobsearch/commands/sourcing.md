@@ -66,7 +66,7 @@ the next session start when the candidate has not edited it, and asked about whe
 company feeds and the alert-email senders the catalog marks default-on are on; the LinkedIn job search and the
 curated and portfolio boards are off (the LinkedIn job search has an explicit retired row, so it is off rather than
 on-by-absence). Turn the LinkedIn job search on with `record.py source on linkedin-jobsearch` (the runner reads
-LinkedIn; it takes no LinkedIn action).
+LinkedIn; it takes no LinkedIn action). From 0.94.0 the search is its own step: a scheduled run starts it when it is due (about every two days, the first page of each search) and a person can run it with `/jobsearch:search linkedin attended`; any LinkedIn warning turns the scheduled search off until `journal.py --linkedin-search-on` is run.
 
 ## Feeds
 

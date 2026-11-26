@@ -90,6 +90,7 @@ import feed_poll as _fp
 from browser_fallback import fetch_gate as _gate, fetch_notice as _notice, fetch_sandbox as _sandbox
 from browser_fallback.fetch_limits import MIN_INTERVAL_S, POSTING_FETCH_CAP  # pacing and the cap (pace-by-test seams keep these names)
 from browser_fallback.fetch_key import KEY, KEY_DEFAULT, KEY_VALUES, SET_VALUES, key_value, write_key  # noqa: F401
+from browser_fallback.closed_wordings import CLOSED_MARKER, CLOSED_MARKERS, closed_hit  # noqa: F401  -- the closed phrases (0.94.0, dev 1063, design 6.4); English only
 
 # ---- what is sent -------------------------------------------------------------------------------------------------
 _BASE = "https://www.linkedin.com"                       # a seam: the tests point it at a 127.0.0.1 loopback server
@@ -120,7 +121,6 @@ _STATE_DIR = None                                        # an explicit state dir
 DESCRIPTION_CLASS = "show-more-less-html__markup"
 TITLE_CLASS = "topcard__title"
 PLACE_CLASS = "topcard__flavor--bullet"
-CLOSED_MARKER = "No longer accepting applications"      # English only: a localised page never shows it
 SETTING_LABEL_CLASS = None                               # UNDETERMINED: the workplace-type element is not yet pinned.
 #                                                          While it is None every parsed role takes the `(body)` route.
 
@@ -324,8 +324,7 @@ def parse(body):
     if SETTING_LABEL_CLASS and page.found.get("setting"):
         setting = " ".join("".join(page.found["setting"][0].text).split()) or None
     text = _tidy("".join(desc[0].text))
-    marker = " ".join(CLOSED_MARKER.split())
-    closed = marker in " ".join("".join(page.page_text).split())
+    closed = closed_hit("".join(page.page_text))
     return {"title": title_text, "place": place, "description_html": description_html, "description_text": text,
             "closed": closed, "setting_label": setting}
 

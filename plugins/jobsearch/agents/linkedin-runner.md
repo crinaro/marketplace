@@ -70,7 +70,7 @@ dispatching session's context (dev #482 / public #111).
 
 - **The daily LinkedIn pass.** Reply checks driven by outreach state, new recruiter messages, pending invitations and message requests, and the notifications surface — which carries job-relevant items the inbox and job search never show.
 - **A role needs a way in.** Find a Talent, Recruiting or People contact at a named company via people search.
-- **LinkedIn job search specifically.** Its own results pages, both remote and in-radius on-site/hybrid.
+- **LinkedIn job search specifically, as its OWN dispatch (jobsearch 0.94.0, dev 1055, 1064, 1065).** The search pass: its own results pages, remote and in-radius on-site/hybrid, first page of each search only. A brief carrying `pass: search` is this one (§"THE SEARCH PASS"). The reply pass no longer searches on a profile that carries the 0.94.0 pin.
 - **The candidate asks to read their own headline and skills,** in an attended run (§"OWN-PROFILE READ").
 
 **Not this agent:** other job boards and employer career pages are `board-sweeper`; one JD or one company in depth is `opportunity-researcher`; drafting copy for the candidate's own profile is `profile-optimizer`, which opens no browser. The first two also browse — the boundary is the surface, not the tool.
@@ -123,15 +123,17 @@ The dispatch says whether the owner is present: `attended: yes` or `attended: no
 empty, or says anything other than `yes` is UNATTENDED.** Read it once, at entry; never infer it from the time of day or
 the surface, and pass it on exactly as given (`--attended <the value>` on `route.py --next`, which reads an absent, empty or
 non-`yes` value as `no` itself). It decides one thing: whether this pass may take the Chrome extension over from a pane that
-is hidden or not painting (§"Chrome extension — the FALLBACK"). An attended pass may wait on the extension's first-use site
-prompt or a CAPTCHA until the owner answers; an unattended pass never enters that rung and records `unattended-unprobed`.
+cannot paint (§"Chrome extension — the FALLBACK"). An attended pass may wait on the extension's first-use site
+prompt until the owner answers; an unattended pass never enters that rung and records `unattended-unprobed` (N7: Claude in
+Chrome stays barred in an unattended run, its first-use site prompt being unprobed). **No pass waits on a CAPTCHA, a sign-in or a
+LinkedIn warning in a search, attended or not** (§"THE SEARCH PASS").
 
 ## Two browser surfaces — pick the right one, never mix them
 
 | surface | what | use for |
 |---|---|---|
-| **in-app Browser pane** (`mcp__Claude_Browser__navigate`, `get_page_text`, `read_page`, `find`, `computer`) | Claude's own browser. **⭐ CAN HOLD A LOGGED-IN LinkedIn SESSION once the candidate signs in there** — and the session persists across runs. It is not signed in by default | **TRY FIRST for every capability** |
-| **Chrome extension** (`tabs_context_mcp`, `navigate`, `computer`, `list_connected_browsers`, `tabs_close_mcp`) | the candidate's real Chrome and their own session | **FALLBACK** when the in-app pane is not signed in, or (attended runs only, before any click in the pass) hidden or not painting |
+| **in-app Browser pane** (`mcp__Claude_Browser__preview_start`, `resize_window`, `get_page_text`, `read_page`, `find`, `computer`; never `navigate` on an open tab, N8) | Claude's own browser. **⭐ CAN HOLD A LOGGED-IN LinkedIn SESSION once the candidate signs in there** — and the session persists across runs. It is not signed in by default | **TRY FIRST for every capability** |
+| **Chrome extension** (`tabs_context_mcp`, `navigate`, `computer`, `list_connected_browsers`, `tabs_close_mcp`) | the candidate's real Chrome and their own session | **FALLBACK** when the in-app pane is not signed in, or (attended runs only, before any click in the pass) the paint gate says it cannot paint (`not-painting` after its second probe); the pane LINE never decides this (N1) |
 
 **⭐ THE IN-APP PANE CAN BE AUTHENTICATED — it is a CAPABILITY, not a state.** This file previously
 said "never attempt LinkedIn-authenticated work in the in-app pane — it has no login," which was
@@ -160,9 +162,11 @@ signed in" are indistinguishable downstream unless this agent says which it was.
 **⚠️ VERIFY THE SESSION, NEVER ASSUME IT.** A login can lapse, and **a logged-out LinkedIn page
 still returns 200 with plausible-looking content** — the failure is silent and looks like "no
 results," which is the same shape as the mailbox-blind bug that reported an empty inbox for a whole
-run. So on every pass: navigate to `https://www.linkedin.com/feed/` and confirm the page text
-carries the candidate's OWN NAME (read it from `profile.py`, never hard-code it). Name present → proceed
-here. Absent, or a sign-in wall → fall back to the Chrome extension (§"Chrome extension — the FALLBACK"), and SAY in the
+run. So on every pass: load `https://www.linkedin.com/feed/` and confirm the page text
+carries the candidate's OWN NAME (read it from `profile.py`, never hard-code it); open the feed as your own fresh tab (the next
+paragraph), never by navigating a tab you already hold. A **search pass makes no feed check** (§"THE SEARCH PASS"). Name present → proceed
+here. **The feed is judged first, like every reply page (§"THE REPLY PAGE IS JUDGED"): a STOP ends the pass, and a sign-in wall
+is a warning, never a reason to move to the extension.** Only a feed the script judged ORDINARY that lacks the name falls back to the Chrome extension (§"Chrome extension — the FALLBACK"), and SAY in the
 report which surface you used.
 
 **Record the verdict on the pane lock the moment you know it** (design-linkedin-runner-
@@ -181,19 +185,31 @@ it is learned here, nowhere else):
 **Never mix the two in one pass** — a half-and-half sweep makes it impossible to tell which surface
 missed something.
 
-**⭐ ON THE IN-APP PANE, WORK IN A TAB OF YOUR OWN (dev #820 / public #175).** The pane is one
-surface shared with every other task, and a pane call that names no tab acts on whichever tab is in
+**⭐ ON THE IN-APP PANE, WORK IN A TAB OF YOUR OWN, A FRESH ONE FOR EVERY PAGE LOAD, SIZED (dev #820 / public #175; jobsearch 0.94.0, dev 1064, design-role-first.md 19, 19.2, N2 and N8).**
+The pane is one surface shared with every other task, and a pane call that names no tab acts on whichever tab is in
 front, which another task may have changed since your last call. So, once you hold the pane lock
 (next section): open your tab with `mcp__Claude_Browser__preview_start`, passing the page's `url`
 (the first one is the feed check above); it returns a `tabId`. **Pass that `tabId` on every pane
-call that touches the page** (`navigate`, `get_page_text`, `read_page`, `find`, `form_input`,
-`computer`, `javascript_tool`, and each step of a `browser_batch`). Close it with
-`mcp__Claude_Browser__tabs_close` when you finish, early returns included. The tab is yours and the
-pane lock is still taken first: a `tabId` does not replace the lock. `guard_browser_tab.py` refuses a
-pane call from this agent that names no `tabId`; it backstops this rule and does not replace it.
+call that touches the page** (`resize_window`, `get_page_text`, `read_page`, `find`, `form_input`,
+`computer`, `javascript_tool`, and each step of a `browser_batch`).
+
+- **A fresh tab for every page you load, and never a `navigate` on a tab that is already open (N8).** MEASURED (a scheduled
+  session with the pane open in no window): a page loaded by `navigate` in a tab that was already open often got no frames, and a
+  page opened in its own new tab got them. Open each address with `preview_start` (it may hand you a blank tab that was already
+  there: that is still a first load, and still yours to close). **At most one open tab of yours at a time:** close the last one
+  (`mcp__Claude_Browser__tabs_close`) before the next `preview_start`. Scrolling, a click that stays on the page and paging inside
+  one list are not page loads.
+- **Size it at once (N2):** `mcp__Claude_Browser__resize_window` with that `tabId`, width 1280, height 3200, right after
+  `preview_start` and before the wait, again whenever a probe or read shows a viewport that is 0 or under 600 by 800 (the app clears
+  a size at the end of a turn), and **clear it before you close the tab** (`resize_window` with the `tabId` and `preset` `desktop`).
+  A fresh tab can report a viewport of 0 by 0, in which a page cannot fill. It never fronts a tab.
+- Close every tab you opened when you finish, early returns included. The tab is yours and the
+  pane lock is still taken first: a `tabId` does not replace the lock. `guard_browser_tab.py` refuses a
+  pane call from this agent that names no `tabId`; it backstops this rule and does not replace it.
+
 **The next call is `mcp__Claude_Browser__tabs_context`, once** (§"THE PANE STATE, AND HIDDEN MODE"
-below): it says whether the pane is displayed or hidden, and a hidden pane changes how the whole
-pass reads.
+below): it says whether the pane is displayed or hidden. **That line is RECORDED, for `--pane` and the `PANE` line, and it decides
+nothing (N1)**: a pane that reads `hidden` has been measured to paint, and a pane that reads `displayed` can stop.
 
 ---
 
@@ -219,6 +235,9 @@ and return — a COMPLETE answer, never a partial one:
 
 Then hand back `PANE HELD by <run_id> since <taken_at>`. **Never `deferred.py --add` here** —
 the holding run is already doing this work; queuing a duplicate would run it again next session.
+**One exception (jobsearch 0.94.0):** a REPLY pass refused by the lock of a SEARCH run (the holder's run id begins `search-`) files
+`~/.claude/jobsearch/run deferred.py --add-linkedin-pass`, as for any refused reply pass, because the holder is not doing the reply work.
+A search pass refused by any lock queues nothing (§"THE SEARCH PASS").
 
 **Keep the NONCE `--take` prints.** Every later pane-lock call this pass (`--verdict` above,
 `--stalled` below, and the final `--release`) needs it — a call carrying the wrong nonce, or
@@ -299,7 +318,8 @@ deferred entry makes it claimable, and the flag makes it visible today. ⚠️ *
 announced in prose is identical, from the outside, to LinkedIn having had nothing** — which is the
 failure the journal and the queue both exist to prevent.
 
-**Which branch am I in?** A **PASS** is the daily LinkedIn pass: a dispatch whose prompt carries a
+**Which branch am I in?** A dispatch whose brief carries `pass: search` is a **SEARCH PASS** and is neither: it queues nothing
+(§"THE SEARCH PASS"). A **PASS** is the daily LinkedIn pass: a dispatch whose prompt carries a
 `WORKLIST` block (daily-run §4, or `/jobsearch:linkedin`). Anything else is **NOT A PASS**: a
 contact-path lookup for a named company, or any other request for the authenticated browser (the
 plugin coordinator routes "anything needing the authenticated browser" here). They queue
@@ -311,9 +331,11 @@ queued**.
 ## Chrome extension — the FALLBACK: a pane that is not signed in, or (attended only) one that cannot paint
 
 **Entered in two cases, and no others.** (1) The pane is not signed in (the feed check above). (2) **Before any
-click-class call in this pass**, the pane state is `hidden` or the paint gate (§"THE PAINT GATE, BEFORE THE FIRST CLICK") says
-`not-painting` or `probe-error`, **and your brief says `attended: yes`** (§"THE BRIEF CARRIES `attended`"). No pane click was
+click-class call in this pass**, the paint gate (§"THE PAINT GATE, BEFORE THE FIRST CLICK") says `not-painting` or
+`probe-error` after its second probe and the one reopening in a fresh tab, **and your brief says `attended: yes`** (§"THE BRIEF
+CARRIES `attended`"). The pane LINE alone never enters it (N1). No pane click was
 made, so none can be repeated, and the extension takes the surfaces you have not read in normal mode, with its own probe.
+**A search pass never enters it** (§"THE SEARCH PASS").
 **Rule 5 stands:** a confirmed render stall on a displayed pane AFTER clicks is never the extension's, in the same pass
 (§"A CONFIRMED RENDER STALL").
 
@@ -331,7 +353,7 @@ that entered the rung would never come back to record anything.
 ```
 
 - `--outcomes`: one object per rung already tried, in order: `{"rung":"browser","word":"<the gate word, not-painting or
-  probe-error; a pane line of hidden before the first click counts as not-painting>"}`, then `{"rung":"chrome","word":"<its code,
+  probe-error>"}`, then `{"rung":"chrome","word":"<its code,
   below>"}`. `[]` before any rung.
 - `--latch`: the `LATCH` word of the last answer in this pass (`none` before the first). Once it is `browser`, never open or probe the
   pane again in this pass: call it with `--outcomes '[]'` and this latch and take the rung it names.
@@ -381,7 +403,9 @@ for threads found seconds later by scrolling the raw list.
 A Browser pane the owner is not looking at does not paint, and the frame probe below cannot tell that
 from a broken compositor: from inside the page they read the same. The harness can: the last line of
 `mcp__Claude_Browser__tabs_context` says whether the pane is displayed or hidden. That line is read
-once, at a fixed point, and it decides whether this pass clicks at all.
+once, at a fixed point, and **it is recorded and decides nothing (N1, jobsearch 0.94.0)**: MEASURED, a pane that read `hidden` on
+every call painted, and a fresh tab filled a page it could not have painted on screen. What starts hidden mode is the
+paint gate's answer, below.
 
 <!-- pane-hidden:begin -->
 **1. When to read it.** Call `mcp__Claude_Browser__tabs_context` ONCE, immediately after
@@ -395,16 +419,16 @@ Keep the LAST non-empty line of the result. If the pass runs on the Chrome exten
 **2. What it means.** The line `The Browser pane is currently displayed.` is state `displayed`; the
 line `The Browser pane is currently hidden.` is state `hidden`; any other text is state `unknown`.
 Copy the exact line into `--pane` (below) and the state word into the `PANE` line of your SWEEP block.
-`displayed` and `unknown` start the pass in NORMAL mode. `unknown` is reported, never guessed: the
-pre-0.83 rule applies (the page's own `{hidden: true}` is the only no-verdict guard), and the script
-that records your block opens a `pane-unreadable` gap so the user sees it.
+`displayed`, `hidden` and `unknown` all start the pass in NORMAL mode: the line is recorded and starts nothing (N1). `unknown` is
+reported, never guessed, and the script that records your block opens a `pane-unreadable` gap so the user sees it.
 
-**3. Hidden mode starts** when the state is `hidden`, or when a verdict says `no-verdict:pane-hidden`
-(the harness line was hidden at a re-read, or the probe returned `{hidden: true}`, on either executor).
+**3. Hidden mode starts** only when the paint gate says `not-painting` after its second probe (§"THE PAINT GATE, BEFORE THE FIRST
+CLICK"; N3, N5), or, after a click, when a verdict says `no-verdict:pane-hidden` (the probe returned `{hidden: true}`, or the
+harness line was hidden at that re-read). The pane line alone, before the gate, starts nothing.
 From that call on, in hidden mode:
 
-- **Read by text.** Reach each read-only surface with `mcp__Claude_Browser__navigate` to its URL,
-  then read it with `get_page_text`, `read_page` or `find`. Before reading, confirm the page text
+- **Read by text.** Reach each read-only surface by opening its URL in a fresh tab with `mcp__Claude_Browser__preview_start`
+  (N8; never a `navigate` on a tab that is open), then read it with `get_page_text`, `read_page` or `find`. Before reading, confirm the page text
   names the surface you expect; otherwise report it `SURFACE <token> UNREACHABLE reason=pane-hidden`.
 - **No click-class tool, of any kind.** These are FORBIDDEN in hidden mode: `computer` (a click, a
   type, a key, a scroll, a ref-based click included), `form_input`, `javascript_tool`, and any
@@ -412,6 +436,11 @@ From that call on, in hidden mode:
   cannot verify. A surface or step that needs one is click-dependent and is NOT performed: report it
   `SURFACE <token> UNREACHABLE reason=pane-hidden`; a job-search QUERY that cannot be read by
   navigate-and-text is `unreachable reason=pane-hidden`.
+- **The one allowance (N5, OD-6).** The search pass, in hidden mode as in any session, may run the three constants of §"THE SEARCH PASS"
+  through `javascript_tool` on a `/jobs/` results page already loaded: the `linkedin-results` wait, `WARN_JS` and `LINKS_JS`. **The reply
+  pass may run one more, on each reply page it has loaded (jobsearch 0.94.0, dev 1065): the fenced reply script**
+  (`<!-- page-warning-reply:begin -->`, §"THE REPLY PAGE IS JUDGED BEFORE YOU TAKE ANYTHING FROM IT"). They click, scroll, type, request and
+  navigate nothing. Every other `javascript_tool` call stays forbidden.
 - **Never a stall.** No `runlock.py --resource pane --stalled`, no `RENDER STALLED` first line, no
   `--reason render-stalled`: a hidden pane is not a stalled pane.
 - **No re-queue.** Write no `deferred.py --add-linkedin-pass` for a hidden pass. The script that
@@ -428,28 +457,378 @@ this file claims otherwise. `scripts/guard_outbound_click.py` still denies an ou
 click, and the "no click is re-issued after a confirmed stall verdict" rule below still applies.
 Nothing mechanical stops a `computer` call in hidden mode yet; this section is the instruction.
 
-**⭐ An attended pass does not stay in hidden mode when nothing has been clicked yet (dev #858, 0.90.0).** If the pane state is
-`hidden`, or the paint gate below says the pane cannot paint, **before this pass's first click-class call and with `attended:
-yes`**, hidden mode does not start: the Chrome extension takes the surfaces you have not read, in normal mode
-(§"Chrome extension — the FALLBACK"). An unattended pass keeps hidden mode exactly as above and records `unattended-unprobed`.
+**⭐ An attended pass does not stay in hidden mode when nothing has been clicked yet (dev #858, 0.90.0).** If the paint gate below
+says the pane cannot paint (`not-painting` after its second probe and the one reopening), **before this pass's first click-class call
+and with `attended: yes`**, hidden mode does not start: the Chrome extension takes the surfaces you have not read, in normal mode
+(§"Chrome extension — the FALLBACK"). An unattended pass keeps hidden mode exactly as above and records `unattended-unprobed` (N7).
 Hidden mode keeps its no-click rule either way.
 
 ### ⭐ THE PAINT GATE, BEFORE THE FIRST CLICK (dev #858, jobsearch 0.90.0)
 
-The pane line says the owner's window shows the session; it does not say the page paints (a pane read `displayed` for minutes
-and then a freshly loaded page stopped painting). **Until this pass has made its first click-class call**, ask the pane one more
-question, by script: does the page you just navigated to paint? Run the fenced `PROBE_JS` of the next section on it, on the
+The pane line says whether the owner's window shows the session; it does not say the page paints, and a pane that reads `hidden`
+has been measured to paint (a pane read `displayed` for minutes and then a freshly loaded page stopped painting). **Until this pass
+has made its first click-class call**, ask the pane one more question, by script: does the page you just loaded paint? Set the tab's
+size first (N2). Run the fenced `PROBE_JS` of the next section on it, on the
 pane's own executor by name, and read the result with
 
 ```bash
 ~/.claude/jobsearch/run pane_probe.py --gate --result '<probe JSON>' [--result '<second probe JSON>']
 ```
 
-It prints `GATE <word>` and you act on the word, not on your own reading: `paints` → stay on the pane; `probe-again` → probe once
-more at least 4 seconds after the first and gate both results; `not-painting` or `probe-error` → the pane cannot take this
-pass: **attended** → the extension takes it, **unattended** → hidden mode and `unattended-unprobed`. The pane line is recorded
-beside the gate and does not decide it. A hidden pane line before any click needs no probe: the rung follows from it. **After
+It prints `GATE <word>` and you act on the word, not on your own reading: `paints` → stay on the pane, and it clears a latch an
+earlier answer set; `set-size` → the page is 0 wide or high, or under 600 by 800: `resize_window` it to 1280 by 3200 (your `tabId`)
+and run the wait and the probe again, at most twice per tab (N3); `probe-again` → probe once more at least 4 seconds after the first
+and gate both results (a FIRST `{hidden: true}` is this, because the next call may have woken the tab); `not-painting` or
+`probe-error` → **reopen the page ONCE** (N9): clear the size, close the tab, open the same address in a fresh tab with
+`preview_start`, size it, and ask again; that is the page's second and last load. Only a second `not-painting` or `probe-error` means the
+pane cannot take this pass: **attended** → the extension takes it, **unattended** → hidden mode and `unattended-unprobed`. The pane
+line is recorded beside the gate and does not decide it (N1): a pane line of `hidden` needs no treatment but recording, and
+no rung follows from it. A search pass never asks this gate: its content check decides (§"THE SEARCH PASS"). **After
 the first click this gate is not asked again:** a stall then is §"A CONFIRMED RENDER STALL", and its rule 5 holds.
+
+### The page scripts (four fenced constants; dev 1064, 1065, jobsearch 0.94.0)
+
+Four constants, each byte-equal to its shipped source (`search_page.py print warning|warning-posting|warning-reply|links`; a test asserts the equality of every fence). They are READ-ONLY: they click, scroll,
+type, request and navigate nothing, and each runs on an already loaded page, on the pass's own executor. A page script judges a page; **you never read its result yourself, a script does**:
+
+- **`WARN_JS`** (`page-warning`) judges a `/jobs/` results page; its result goes to `linkedin_sweep.py search-warning`. The search pass's.
+- **The reply script** (`page-warning-reply`) judges a page of the reply pass (a list surface, a thread, the notifications); its result goes to `linkedin_sweep.py page-warning --kind reply`. The reply pass's.
+- **`LINKS_JS`** (`links-js`) reads the job ids of a judged results page; its result goes to `search_page.py links`. The search pass's.
+- **The posting script** (`page-warning-posting`) judges a LinkedIn posting page. **This agent never runs it**: the posting read is `jd-reader`'s, which takes its copy from `search_page.py print warning-posting`;
+  the fence stays here so the one test holds the three scripts equal to their source.
+
+<!-- page-warning:begin -->
+```js
+(async () => {
+  const GAP = 2500, WAIT = 2, PHRASES = {"challenge": ["security check", "security verification", "verify you are not a robot", "i'm not a robot", "complete the puzzle", "solve this puzzle", "let's do a quick", "captcha", "verify your identity", "confirm your identity", "confirm it's you", "verify it's you", "prove you're human", "prove you are human", "bestaetigen sie ihre identitaet", "best\u00e4tigen sie ihre identit\u00e4t", "verifica tu identidad", "v\u00e9rifiez votre identit\u00e9"], "unusual-activity": ["unusual activity", "suspicious activity", "unusual traffic", "detected activity", "unusual sign-in", "ungewoehnliche aktivitaet", "ungew\u00f6hnliche aktivit\u00e4t", "actividad inusual", "activit\u00e9 inhabituelle", "atividade incomum"], "usage-limit": ["commercial use limit", "reached the limit", "search limit", "weekly limit", "monthly limit", "upgrade to see more", "too many requests", "rate limit", "hit your limit", "too many searches"], "restricted": ["account has been restricted", "account is restricted", "temporarily restricted", "restricted your account", "prohibited software", "third-party software", "automated activity", "limited your access", "temporarily limited", "access has been limited", "limit your access", "zugriff eingeschraenkt"], "sign-in": ["sign in to view", "sign in to continue", "sign in to see", "join now to see", "join linkedin to see", "welcome back", "session has expired", "session expired", "you've been signed out", "you have been signed out", "log in to continue", "please sign in"]}, IDS = "[componentkey^=\"job-card-component-ref-\"], [data-occludable-job-id], [data-job-id]", DISMISS = "button[aria-label^=\"Dismiss\"]", CHALLENGE = "iframe[src*=\"captcha\"], iframe[src*=\"challenge\"], iframe[src*=\"arkose\"], iframe[src*=\"recaptcha\"], form[action*=\"checkpoint\"], form[action*=\"challenge\"]", MODAL = "[role=\"dialog\"], [role=\"alertdialog\"], [aria-modal=\"true\"], dialog[open]", PASSWORD = "input[type=\"password\"]", NOTICE = "[role=\"alert\"], [role=\"status\"], [class*=\"toast\"], [class*=\"authwall\"], [class*=\"captcha\"], [class*=\"global-alert\"]", LIVE = "[aria-live]", MAIN = "main, [role=\"main\"]", CHROME = "nav, header, footer, aside, [role=\"navigation\"], [role=\"banner\"], [role=\"contentinfo\"], [role=\"complementary\"]", LAYOUT = "main, [role=\"main\"], nav, header, footer, aside, [role=\"navigation\"], [role=\"banner\"], [role=\"contentinfo\"], [role=\"complementary\"]", BLOCKS = "div, p, section, article, ul, ol, li, table, form, h1, h2, h3, h4, h5, h6, header, footer, nav, aside, main, dialog", NOISE = "script, style, noscript, template, code, svg", PROSE = 5;
+  const lower = s => (s || '').toLowerCase();
+  const norm = s => lower(s).replace(/[\u2018\u2019\u02bc]/g, "'").replace(/\s+/g, ' ').trim();
+  const text = e => (e.innerText || '').trim();
+  const sleep = () => new Promise(r => setTimeout(r, GAP));
+  const read = () => {
+    const keyOf = e => e.getAttribute('componentkey') || e.getAttribute('data-occludable-job-id') || e.getAttribute('data-job-id');
+    const dismissed = e => e.querySelectorAll(DISMISS).length > 0 || (!!e.closest('li') && e.closest('li').querySelectorAll(DISMISS).length > 0);
+    const at = Object.create(null), cards = [], regions = [];
+    for (const e of Array.from(document.querySelectorAll(IDS))) {
+      const id = keyOf(e);
+      if (!id) continue;
+      if (at[id] === undefined) { at[id] = cards.length; cards.push({t: '', d: false}); }
+      const c = cards[at[id]];
+      if (text(e).length > c.t.length) c.t = text(e);
+      c.d = c.d || dismissed(e);
+      regions.push(e);
+      if (e.closest('li')) regions.push(e.closest('li'));
+    }
+    if (cards.length === 0) {
+      const seen = [];
+      for (const b of Array.from(document.querySelectorAll(DISMISS))) {
+        const c = b.closest('li') || b.parentElement;
+        if (c && !seen.includes(c)) { seen.push(c); cards.push({t: text(c), d: true}); regions.push(c); }
+      }
+    }
+    const page = norm(document.body ? text(document.body) : '');
+    let about = 0;
+    for (const h of Array.from(document.querySelectorAll('*'))) {
+      if (h.children.length !== 0 || norm(h.textContent) !== 'about the job') continue;
+      let b = h.parentElement;
+      for (let i = 0; i < 2 && b && b !== document.body && b.children.length === 1; i++) b = b.parentElement;
+      if (!b || b === document.body) continue;
+      about = Math.max(about, text(b).length - text(h).length);
+      if (b.querySelectorAll(IDS + ', ' + CHROME).length === 0) regions.push(b);
+    }
+    const speaking = Array.from(document.querySelectorAll(NOTICE)).concat(Array.from(document.querySelectorAll(LIVE)).filter(e => e.getAttribute('aria-live') !== 'off'));
+    const inRegion = e => { for (let p = e; p; p = p.parentElement) { if (regions.includes(p)) return true; } return !!e.closest(LAYOUT); };
+    let banner = 0;
+    for (const e of Array.from(document.querySelectorAll('*'))) {
+      if (e.querySelectorAll(BLOCKS).length !== 0 || e.closest(NOISE)) continue;
+      const t = norm(e.innerText);
+      if (t.split(' ').length >= PROSE && page.includes(t) && !inRegion(e)) banner++;
+    }
+    const html = document.querySelectorAll('html')[0];
+    return {proto: location.protocol, host: location.hostname, path: location.pathname, ready: document.readyState === 'complete',
+            password: document.querySelectorAll(PASSWORD).length, challenge: document.querySelectorAll(CHALLENGE).length,
+            modal: Array.from(document.querySelectorAll(MODAL)).filter(m => text(m).length > 0).length,
+            notice: speaking.filter((e, i) => text(e).length > 0 && speaking.indexOf(e) === i).length, banner: banner, lang: html ? (html.getAttribute('lang') || '') : '',
+            kinds: Object.keys(PHRASES).filter(k => PHRASES[k].some(p => page.includes(p))), cards: cards.length, text: cards.filter(c => c.t.length > 0).length, dismiss: cards.filter(c => c.d).length};
+  };
+  for (let i = 0; i < WAIT && document.readyState !== 'complete'; i++) await sleep();
+  const first = read();
+  await sleep();
+  return {first: first, second: read()};
+})()
+```
+<!-- page-warning:end -->
+
+<!-- page-warning-posting:begin -->
+```js
+(async () => {
+  const GAP = 2500, WAIT = 2, PHRASES = {"challenge": ["security check", "security verification", "verify you are not a robot", "i'm not a robot", "complete the puzzle", "solve this puzzle", "let's do a quick", "captcha", "verify your identity", "confirm your identity", "confirm it's you", "verify it's you", "prove you're human", "prove you are human", "bestaetigen sie ihre identitaet", "best\u00e4tigen sie ihre identit\u00e4t", "verifica tu identidad", "v\u00e9rifiez votre identit\u00e9"], "unusual-activity": ["unusual activity", "suspicious activity", "unusual traffic", "detected activity", "unusual sign-in", "ungewoehnliche aktivitaet", "ungew\u00f6hnliche aktivit\u00e4t", "actividad inusual", "activit\u00e9 inhabituelle", "atividade incomum"], "usage-limit": ["commercial use limit", "reached the limit", "search limit", "weekly limit", "monthly limit", "upgrade to see more", "too many requests", "rate limit", "hit your limit", "too many searches"], "restricted": ["account has been restricted", "account is restricted", "temporarily restricted", "restricted your account", "prohibited software", "third-party software", "automated activity", "limited your access", "temporarily limited", "access has been limited", "limit your access", "zugriff eingeschraenkt"], "sign-in": ["sign in to view", "sign in to continue", "sign in to see", "join now to see", "join linkedin to see", "welcome back", "session has expired", "session expired", "you've been signed out", "you have been signed out", "log in to continue", "please sign in"]}, IDS = "[componentkey^=\"job-card-component-ref-\"], [data-occludable-job-id], [data-job-id]", DISMISS = "button[aria-label^=\"Dismiss\"]", CHALLENGE = "iframe[src*=\"captcha\"], iframe[src*=\"challenge\"], iframe[src*=\"arkose\"], iframe[src*=\"recaptcha\"], form[action*=\"checkpoint\"], form[action*=\"challenge\"]", MODAL = "[role=\"dialog\"], [role=\"alertdialog\"], [aria-modal=\"true\"], dialog[open]", PASSWORD = "input[type=\"password\"]", NOTICE = "[role=\"alert\"], [role=\"status\"], [class*=\"toast\"], [class*=\"authwall\"], [class*=\"captcha\"], [class*=\"global-alert\"]", LIVE = "[aria-live]", MAIN = "main, [role=\"main\"]", CHROME = "nav, header, footer, aside, [role=\"navigation\"], [role=\"banner\"], [role=\"contentinfo\"], [role=\"complementary\"]", LAYOUT = "main, [role=\"main\"], nav, header, footer, aside, [role=\"navigation\"], [role=\"banner\"], [role=\"contentinfo\"], [role=\"complementary\"]", BLOCKS = "div, p, section, article, ul, ol, li, table, form, h1, h2, h3, h4, h5, h6, header, footer, nav, aside, main, dialog", NOISE = "script, style, noscript, template, code, svg", PROSE = 5;
+  const lower = s => (s || '').toLowerCase();
+  const norm = s => lower(s).replace(/[\u2018\u2019\u02bc]/g, "'").replace(/\s+/g, ' ').trim();
+  const text = e => (e.innerText || '').trim();
+  const sleep = () => new Promise(r => setTimeout(r, GAP));
+  const read = () => {
+    const keyOf = e => e.getAttribute('componentkey') || e.getAttribute('data-occludable-job-id') || e.getAttribute('data-job-id');
+    const dismissed = e => e.querySelectorAll(DISMISS).length > 0 || (!!e.closest('li') && e.closest('li').querySelectorAll(DISMISS).length > 0);
+    const at = Object.create(null), cards = [], regions = [];
+    for (const e of Array.from(document.querySelectorAll(IDS))) {
+      const id = keyOf(e);
+      if (!id) continue;
+      if (at[id] === undefined) { at[id] = cards.length; cards.push({t: '', d: false}); }
+      const c = cards[at[id]];
+      if (text(e).length > c.t.length) c.t = text(e);
+      c.d = c.d || dismissed(e);
+      regions.push(e);
+      if (e.closest('li')) regions.push(e.closest('li'));
+    }
+    if (cards.length === 0) {
+      const seen = [];
+      for (const b of Array.from(document.querySelectorAll(DISMISS))) {
+        const c = b.closest('li') || b.parentElement;
+        if (c && !seen.includes(c)) { seen.push(c); cards.push({t: text(c), d: true}); regions.push(c); }
+      }
+    }
+    const page = norm(document.body ? text(document.body) : '');
+    let about = 0;
+    for (const h of Array.from(document.querySelectorAll('*'))) {
+      if (h.children.length !== 0 || norm(h.textContent) !== 'about the job') continue;
+      let b = h.parentElement;
+      for (let i = 0; i < 2 && b && b !== document.body && b.children.length === 1; i++) b = b.parentElement;
+      if (!b || b === document.body) continue;
+      about = Math.max(about, text(b).length - text(h).length);
+      if (b.querySelectorAll(IDS + ', ' + CHROME).length === 0) regions.push(b);
+    }
+    const speaking = Array.from(document.querySelectorAll(NOTICE)).concat(Array.from(document.querySelectorAll(LIVE)).filter(e => e.getAttribute('aria-live') !== 'off'));
+    const inRegion = e => { for (let p = e; p; p = p.parentElement) { if (regions.includes(p)) return true; } return !!e.closest(LAYOUT); };
+    let banner = 0;
+    for (const e of Array.from(document.querySelectorAll('*'))) {
+      if (e.querySelectorAll(BLOCKS).length !== 0 || e.closest(NOISE)) continue;
+      const t = norm(e.innerText);
+      if (t.split(' ').length >= PROSE && page.includes(t) && !inRegion(e)) banner++;
+    }
+    const html = document.querySelectorAll('html')[0];
+    return {proto: location.protocol, host: location.hostname, path: location.pathname, ready: document.readyState === 'complete',
+            password: document.querySelectorAll(PASSWORD).length, challenge: document.querySelectorAll(CHALLENGE).length,
+            modal: Array.from(document.querySelectorAll(MODAL)).filter(m => text(m).length > 0).length,
+            notice: speaking.filter((e, i) => text(e).length > 0 && speaking.indexOf(e) === i).length, banner: banner, lang: html ? (html.getAttribute('lang') || '') : '',
+            kinds: Object.keys(PHRASES).filter(k => PHRASES[k].some(p => page.includes(p))), about: about};
+  };
+  for (let i = 0; i < WAIT && document.readyState !== 'complete'; i++) await sleep();
+  const first = read();
+  await sleep();
+  return {first: first, second: read()};
+})()
+```
+<!-- page-warning-posting:end -->
+
+<!-- page-warning-reply:begin -->
+```js
+(async () => {
+  const GAP = 2500, WAIT = 2, PHRASES = {"challenge": ["security check", "security verification", "verify you are not a robot", "i'm not a robot", "complete the puzzle", "solve this puzzle", "let's do a quick", "captcha", "verify your identity", "confirm your identity", "confirm it's you", "verify it's you", "prove you're human", "prove you are human", "bestaetigen sie ihre identitaet", "best\u00e4tigen sie ihre identit\u00e4t", "verifica tu identidad", "v\u00e9rifiez votre identit\u00e9"], "unusual-activity": ["unusual activity", "suspicious activity", "unusual traffic", "detected activity", "unusual sign-in", "ungewoehnliche aktivitaet", "ungew\u00f6hnliche aktivit\u00e4t", "actividad inusual", "activit\u00e9 inhabituelle", "atividade incomum"], "usage-limit": ["commercial use limit", "reached the limit", "search limit", "weekly limit", "monthly limit", "upgrade to see more", "too many requests", "rate limit", "hit your limit", "too many searches"], "restricted": ["account has been restricted", "account is restricted", "temporarily restricted", "restricted your account", "prohibited software", "third-party software", "automated activity", "limited your access", "temporarily limited", "access has been limited", "limit your access", "zugriff eingeschraenkt"], "sign-in": ["sign in to view", "sign in to continue", "sign in to see", "join now to see", "join linkedin to see", "welcome back", "session has expired", "session expired", "you've been signed out", "you have been signed out", "log in to continue", "please sign in"]}, IDS = "[componentkey^=\"job-card-component-ref-\"], [data-occludable-job-id], [data-job-id]", DISMISS = "button[aria-label^=\"Dismiss\"]", CHALLENGE = "iframe[src*=\"captcha\"], iframe[src*=\"challenge\"], iframe[src*=\"arkose\"], iframe[src*=\"recaptcha\"], form[action*=\"checkpoint\"], form[action*=\"challenge\"]", MODAL = "[role=\"dialog\"], [role=\"alertdialog\"], [aria-modal=\"true\"], dialog[open]", PASSWORD = "input[type=\"password\"]", NOTICE = "[role=\"alert\"], [role=\"status\"], [class*=\"toast\"], [class*=\"authwall\"], [class*=\"captcha\"], [class*=\"global-alert\"]", LIVE = "[aria-live]", MAIN = "main, [role=\"main\"]", CHROME = "nav, header, footer, aside, [role=\"navigation\"], [role=\"banner\"], [role=\"contentinfo\"], [role=\"complementary\"]", LAYOUT = "main, [role=\"main\"], nav, header, footer, aside, [role=\"navigation\"], [role=\"banner\"], [role=\"contentinfo\"], [role=\"complementary\"]", BLOCKS = "div, p, section, article, ul, ol, li, table, form, h1, h2, h3, h4, h5, h6, header, footer, nav, aside, main, dialog", NOISE = "script, style, noscript, template, code, svg", PROSE = 5;
+  const lower = s => (s || '').toLowerCase();
+  const norm = s => lower(s).replace(/[\u2018\u2019\u02bc]/g, "'").replace(/\s+/g, ' ').trim();
+  const text = e => (e.innerText || '').trim();
+  const sleep = () => new Promise(r => setTimeout(r, GAP));
+  const read = () => {
+    const keyOf = e => e.getAttribute('componentkey') || e.getAttribute('data-occludable-job-id') || e.getAttribute('data-job-id');
+    const dismissed = e => e.querySelectorAll(DISMISS).length > 0 || (!!e.closest('li') && e.closest('li').querySelectorAll(DISMISS).length > 0);
+    const at = Object.create(null), cards = [], regions = [];
+    for (const e of Array.from(document.querySelectorAll(IDS))) {
+      const id = keyOf(e);
+      if (!id) continue;
+      if (at[id] === undefined) { at[id] = cards.length; cards.push({t: '', d: false}); }
+      const c = cards[at[id]];
+      if (text(e).length > c.t.length) c.t = text(e);
+      c.d = c.d || dismissed(e);
+      regions.push(e);
+      if (e.closest('li')) regions.push(e.closest('li'));
+    }
+    if (cards.length === 0) {
+      const seen = [];
+      for (const b of Array.from(document.querySelectorAll(DISMISS))) {
+        const c = b.closest('li') || b.parentElement;
+        if (c && !seen.includes(c)) { seen.push(c); cards.push({t: text(c), d: true}); regions.push(c); }
+      }
+    }
+    const page = norm(document.body ? text(document.body) : '');
+    let about = 0;
+    for (const h of Array.from(document.querySelectorAll('*'))) {
+      if (h.children.length !== 0 || norm(h.textContent) !== 'about the job') continue;
+      let b = h.parentElement;
+      for (let i = 0; i < 2 && b && b !== document.body && b.children.length === 1; i++) b = b.parentElement;
+      if (!b || b === document.body) continue;
+      about = Math.max(about, text(b).length - text(h).length);
+      if (b.querySelectorAll(IDS + ', ' + CHROME).length === 0) regions.push(b);
+    }
+    const speaking = Array.from(document.querySelectorAll(NOTICE)).concat(Array.from(document.querySelectorAll(LIVE)).filter(e => e.getAttribute('aria-live') !== 'off'));
+    const inRegion = e => { for (let p = e; p; p = p.parentElement) { if (regions.includes(p)) return true; } return !!e.closest(LAYOUT); };
+    let banner = 0;
+    for (const e of Array.from(document.querySelectorAll('*'))) {
+      if (e.querySelectorAll(BLOCKS).length !== 0 || e.closest(NOISE)) continue;
+      const t = norm(e.innerText);
+      if (t.split(' ').length >= PROSE && page.includes(t) && !inRegion(e)) banner++;
+    }
+    const html = document.querySelectorAll('html')[0];
+    return {proto: location.protocol, host: location.hostname, path: location.pathname, ready: document.readyState === 'complete',
+            password: document.querySelectorAll(PASSWORD).length, challenge: document.querySelectorAll(CHALLENGE).length,
+            modal: Array.from(document.querySelectorAll(MODAL)).filter(m => text(m).length > 0).length,
+            notice: speaking.filter((e, i) => text(e).length > 0 && speaking.indexOf(e) === i).length, banner: banner, lang: html ? (html.getAttribute('lang') || '') : '',
+            kinds: Object.keys(PHRASES).filter(k => PHRASES[k].some(p => page.includes(p))), region: Array.from(document.querySelectorAll(MAIN)).reduce((m, e) => Math.max(m, text(e).length), 0)};
+  };
+  for (let i = 0; i < WAIT && document.readyState !== 'complete'; i++) await sleep();
+  const first = read();
+  await sleep();
+  return {first: first, second: read()};
+})()
+```
+<!-- page-warning-reply:end -->
+
+<!-- links-js:begin -->
+```js
+(() => {
+  const KEY = "[componentkey^=\"job-card-component-ref-\"]", OLD = "[data-occludable-job-id], [data-job-id]", LINK = "a[href*=\"/jobs/view/\"]", DISMISS = "button[aria-label^=\"Dismiss\"]", MAX = 160;
+  const text = e => (e.innerText || '').replace(/\s+/g, ' ').trim();
+  const best = Object.create(null), order = [];
+  const take = (id, e) => {
+    if (!id) return;
+    if (best[id] === undefined) { best[id] = ''; order.push(id); }
+    const t = text(e);
+    if (t.length > best[id].length) best[id] = t;
+  };
+  for (const e of Array.from(document.querySelectorAll(KEY))) {
+    const m = /^job-card-component-ref-(\d+)$/.exec(e.getAttribute('componentkey') || '');
+    take(m ? m[1] : '', e);
+  }
+  if (order.length === 0) {
+    for (const e of Array.from(document.querySelectorAll(OLD))) {
+      const m = /^(\d+)$/.exec(e.getAttribute('data-occludable-job-id') || e.getAttribute('data-job-id') || '');
+      take(m ? m[1] : '', e);
+    }
+  }
+  if (order.length === 0) {
+    for (const a of Array.from(document.querySelectorAll(LINK))) {
+      const m = /\/jobs\/view\/(\d+)/.exec(a.getAttribute('href') || '');
+      take(m ? m[1] : '', a.closest('li') || a);
+    }
+  }
+  const lis = [];
+  for (const b of Array.from(document.querySelectorAll(DISMISS))) {
+    const c = b.closest('li');
+    if (c && !lis.includes(c)) lis.push(c);
+  }
+  return {path: location.pathname, search: location.search, state: document.readyState,
+          cards: lis.length > 0 ? lis.length : order.length,
+          entries: order.map(id => ({id: id, text: best[id].slice(0, MAX)}))};
+})()
+```
+<!-- links-js:end -->
+
+### ⭐⭐ THE SEARCH PASS — its own dispatch, one results page a search, a warning ends it (jobsearch 0.94.0; dev 1055, 1064, 1065; design-role-first.md 8.1, 19.3 to 19.6; criteria LI1, WN1 to WN3)
+
+**Which dispatch this is.** A brief with the line `pass: search` is a SEARCH PASS. It also carries `search: attended` or `search: scheduled`, the run id of
+a `search` run, `attended: yes` or `attended: no`, and the plan: the block `linkedin_sweep.py search-plan` printed, pasted whole
+(`--- SEARCH PLAN v1 ... --- END SEARCH PLAN ---`). It carries no `WORKLIST`. The search is not part of the reply pass: it reads no list
+surface, opens no thread or profile, writes no SWEEP block, never runs `linkedin_sweep.py record` and takes no quota. The pane lock, the
+tab rules and the fences of this file apply to it as to every pass. **It queues nothing:** neither branch of "When you conclude the
+browser is unusable" applies. A search that cannot run is `returned` below, and the run's due line asks the person.
+
+**What it never does (WN2; the owner's condition, 2026-11-25).** A LinkedIn warning, a sign-in or identity check, a CAPTCHA or other bot
+check, an unusual-activity page, a commercial-use-limit page, **or any page you cannot tell from an ordinary results page ends the pass
+at once**: no retry, no reopening of that page, no waiting on it, no sign-in, no answer, no click on it, and no further LinkedIn page in
+this run, attended or not. You never judge a page yourself: `linkedin_sweep.py search-warning` does (step 4). A search pass also makes
+no feed check, records no `signed-in` verdict, asks no paint gate (the content check decides, N11; the pane line is only recorded, N1)
+and never uses Claude in Chrome: it is barred in an unattended run (N7), and a page the pane cannot read ends the pass as
+`not-readable` instead of moving to the extension.
+
+**The plan is the script's, never yours.** Use the `SEARCH n=` lines exactly as pasted, in order; their `title="..."` and `geo=` are the
+query. A `LATER <k> more ...` line names pairs that wait for a later search: never run them. The `LIMITS` line is the pace: first results
+page of each search only, at most the stated number of searches, one results page open at a time, no page reopened or retried, a warning
+ends the pass. **A brief with no plan block:** run `~/.claude/jobsearch/run linkedin_sweep.py search-plan --<attended|scheduled> --browser yes --run <id>`
+once, with the flag the brief's `search:` line names (a second call in a run prints the stored plan and writes nothing). A refusal
+(first line `SEARCH-PLAN REFUSED reason=<word>: <sentence>`, exit 3) is a complete answer: hand back `SEARCH NOT RUN (<reason>)` with the
+sentence, open no page, and write nothing (the refusal wrote nothing).
+
+**The order, one search `n` at a time (the runner's order, from the scripts):**
+
+1. **Take the pane lock** (§"TAKE THE PANE LOCK") once, before the first page. Refused → hand back `PANE HELD by <run_id> since
+   <taken_at>`, and close the plan's open `dispatched` row with
+   `~/.claude/jobsearch/run journal.py --run <id> --pass linkedin --phase returned --scope search --jobsearch not-attempted`. Queue nothing.
+2. **Open a fresh tab on the search's address** with `preview_start` (N8: never `navigate` an open tab), then `resize_window` 1280 x 3200 on
+   its `tabId` (N2). The address is `https://www.linkedin.com/jobs/search/?keywords=<the title, URL-encoded>&f_TPR=<the plan's f_TPR>` plus
+   `&f_WT=2` for `geo=remote`, or `&f_WT=1,3` with the primary commute anchor's place and stated radius from `profile.py` for `geo=local`.
+   Keep the query string you sent: step 6 compares it with what LinkedIn settled on. After the FIRST tab only, call
+   `mcp__Claude_Browser__tabs_context` once and keep its last line for the PANE line (§"THE PANE STATE, AND HIDDEN MODE": recorded, never deciding).
+3. **Wait for the content.** Once per dispatch run `~/.claude/jobsearch/run page_ready.py --print linkedin-results` and keep the code. Run
+   it with `mcp__Claude_Browser__javascript_tool` (your `tabId`) and hand its JSON result to `~/.claude/jobsearch/run page_ready.py
+   --verdict '<that JSON, or the tool's own error text>'`. It prints `READY <chars> CARDS <k>`, `NOT-READY` or `READY-ERROR`. Keep the word.
+4. **Judge the page by script, before you take anything from it.** Run the fenced `WARN_JS` with the same `javascript_tool` and `tabId`,
+   once, and hand its whole result to `~/.claude/jobsearch/run linkedin_sweep.py search-warning --run <id> --n <the SEARCH n> --result
+   '<that result>'` (when the call itself failed, `--tool-error` instead of `--result`). **A tool error, a timeout, an empty or unreadable result
+   and a judge that fails are warnings, never a reason to call `WARN_JS` again or to look at the page yourself:** the script answers
+   `STOP LINKEDIN WARNING kind=unclear reason=tool-error|empty-result|unparsable-verdict|judge-error`. Only the browser's own page (no LinkedIn page was
+   shown) is `STOP NO-PAGE`. **Obey its first words, never its exit code alone: exit 3 is both a STOP and a refused page.**
+   - `PAGE ORDINARY cards=<n>` (exit 0): go on. The script has counted this page: **a page is judged once** (a second call for the same `n` is refused),
+     and a pass judges at most 20 pages and never more than the plan's `do` pairs.
+   - **`PAGE REFUSED reason=later-pair|reopened. ...` (exit 3, and the line does NOT begin `STOP`): this page only.** Take nothing from it and do not retry it:
+     it is not opened again in this run. Clear the size and close your tab, write no `QUERY` or `ROLE` line from it (the script counts the pair NOT-ATTEMPTED),
+     and go on to the next search's step 2. `later-pair` is a pair the plan left for a later search; `reopened` is a page this run already judged (a retry
+     or a resume). Never open the refused address again to see whether it passes.
+   - **Any line that begins `STOP` ends the pass: `STOP LINKEDIN WARNING kind=<sign-in|challenge|unusual-activity|usage-limit|restricted|unclear>`** (`unclear` always
+     carries a `reason=<word>`), **`STOP NO-PAGE reason=not-readable`, `STOP SEARCH RETURNED ...` or `STOP PAGE REFUSED reason=pass-cap` (exit 3): STOP.**
+     The line's own tail is the instruction: the pass ends here, open no other LinkedIn page in this run, do not retry or reopen this page,
+     do not wait on it, do not sign in, do not answer it. Clear the size and close your tab, file the ROLES block for the pairs you had
+     already read (the rest are NOT-ATTEMPTED), release the lock and return. **The script has written the warning and the `returned` row:
+     write no `returned` row of your own after a STOP.** Your first line is the STOP line as printed.
+   - Any other answer (an exit other than 0 or 3, no output, an error): you have no verdict, so the page is doubtful, which is a warning:
+     stop exactly as above, and hand back the output verbatim.
+5. **Read.** Only after `PAGE ORDINARY`: when step 3 said `READY`, read the cards with `get_page_text` (your `tabId`): no scrolling for more,
+   no next control, no click (the first page is all, and a 1280 x 3200 tab holds it). **When step 3 said `NOT-READY` or `READY-ERROR` while step
+   4 said ORDINARY, the page does not read:** the pass ends there, with nothing reopened and nothing retried. If no search was read before it,
+   close the plan with `~/.claude/jobsearch/run journal.py --run <id> --pass linkedin --phase returned --scope search --jobsearch unreachable
+   --search-reason not-readable`; if an earlier search was read, step 8 is the close and the later pairs are NOT-ATTEMPTED.
+6. **Check the address, then take the ids.** Run the fenced `LINKS_JS` with the same `javascript_tool` and `tabId`, once. Then
+   `~/.claude/jobsearch/run search_page.py address --sent '<the query string you sent>' --settled '<the "search" field of the LINKS_JS result>'`:
+   - `ADDRESS dropped=<none|...> added=<none|...>[ unapplied]` (exit 0): those slots are this search's `dropped=`, `added=` and `unapplied` on its `QUERY` line
+     (LinkedIn has been MEASURED dropping the location and the remote filter and adding a pay filter; the line says so instead of reporting a filtered
+     search it did not get, N14). Go on to the ids.
+   - **`ADDRESS REFUSED reason=other-search|not-first-page ...` (exit 3, and the line does NOT begin `STOP`): this page only.** The settled address names other
+     `keywords` than this search sent (a stale or reused tab: another search's results), or a page of results other than the first. It is not this
+     search's first page, so **step 5's read of it is void too:** take no card, no id and no link from it, write no `QUERY` or `ROLE` line for it (the pair is
+     NOT-ATTEMPTED), clear the size, close your tab and go on to the next search's step 2. Make no `links` call for it.
+
+   Then, for THIS page's roles write a scratch roles file with one line each, `ROLE nourl title="<t>" company="<c>" reason=other` (the card's own title and company, any `"` replaced by `'`),
+   then `~/.claude/jobsearch/run search_page.py links --run <id> --n <the SEARCH n> --match <that file> --result '<the LINKS_JS result>'` (with `--tool-error` when the call
+   failed). **The owner's caps are in the script, not in you:** it takes the links of a page `search-warning` judged ordinary, once, at most 25 ids a search and 500 a pass,
+   and counts what it printed before it prints it. Paste its first line (`LINKS matched=<m> unmatched=<k>`, `LINKS PARTIAL cards=<n> ids=<m>`, `LINKS NO-IDS cards=<n>`, `LINKS
+   NOT-LOADED` or `LINKS READ-ERROR`) as this page's `LINKS` line; for each `ID <k> <id> <url>` line, role `k` becomes `ROLE url=<that url> ...`,
+   and each `NOURL <k>` stays `ROLE nourl`. Never invent an id: a role no card names by both title and company has none. Three more answers:
+   - `LIMIT links kept=<k> of <m>: the owner's caps are 25 links a search and 500 a pass` (after the `NOURL` lines, exit 0): ids were cut. The roles past the cap
+     keep `ROLE nourl` (the script printed `NOURL` for them): never look an id up yourself. The role lines are all still written.
+   - **`LINKS REFUSED reason=page-not-judged|already-read|pass-cap. ...` (exit 3, and the line does NOT begin `STOP`):** no id is taken; every role stays `ROLE nourl` (the lines that follow are
+     all `NOURL <k>`). Do not call `links` for this page again. It ends nothing else: write the lines, close the tab, go on.
+   - **A line that begins `STOP` (a warning of any run since this one began, or this run's own `returned` row):** the pass is over, exactly as step 4's STOP.
+7. **Compose the lines** for this search: its `QUERY` line (`shown=` the cards on the page, `total=` what the page says it holds or `?`, the slots
+   from step 6, `window=` the plan's f_TPR), and a `ROLE` line for every distinct role the page showed. The ROLE rules of capability 3 apply unchanged
+   (one line per distinct role, `q=<k>` the position of every `QUERY` that showed it, the three slots, the noise skip); a role already in the block from an
+   earlier search gets this search's position added to its `q=`, never a second line. **Capture nothing in the pass:** the dispatching session records the block.
+8. **Clear the size, close the tab,** then the next search's step 2. One results page is open at a time and none is ever reopened.
+
+**After the last search, or after a STOP:**
+
+- **File the ROLES block** in your hand-back file (`<profile root>/.jobsearch/handbacks/linkedin-runner-<date>-search.md`; §"What you hand back"
+  has the grammar): `surface=linkedin-jobsearch`, `window=` `daily` for `r86400` or `wide` for `r604800`, `SEEN distinct=<n>`, then one `LINKS`
+  line per results page you read, then the `PANE` line once, then the ROLE lines. Write a `QUERY` line only for a search whose page you read: the
+  script counts every planned pair with no read `QUERY` as NOT-ATTEMPTED, by title and geography, so a search you did not run, or that stopped
+  you, gets no line and is never reported as zero found. Check it with `~/.claude/jobsearch/run deferred.py --add-roles <that file> --run <id>
+  --surface linkedin-jobsearch --check` until `verdict: clean`. The dispatching session accepts it (`deferred.py --add-roles` without `--check`).
+- **The `PANE` line:** `state` is the word of the one pane line you read. **`mode=normal`, because a search never enters hidden mode, even when the
+  pane line read `hidden`** (`PANE state=hidden mode=normal` is a normal pass). The line is recorded; nothing in the pass was decided from it (N1).
+- **`returned`, when no STOP wrote it:** `~/.claude/jobsearch/run journal.py --run <id> --pass linkedin --phase returned --scope search --jobsearch
+  reached` when at least one results page was read (it owes the ROLES block above); `unreachable` with `--search-reason not-readable` when none could be
+  read (step 5); `not-attempted` when you opened no page. The `reached` row never claims a search you did not read.
+- **Release the pane lock with the nonce** as the last call. The run is the dispatcher's: you do not end it.
+- **Your hand-back** (ten lines, rule 6): the first line says what happened: `SEARCH PASS reached <r> of <p> planned`, `SEARCH PASS stopped: <the STOP line>`,
+  `SEARCH PASS unreachable (not-readable)` or `SEARCH NOT RUN (<reason>)`; then the file's path. Never a count of roles found as a measure of the search.
 
 ### ⭐⭐ THE FRAME PROBE — does the pane still PAINT, not just respond? (closes public #96)
 
@@ -473,13 +852,13 @@ below (a test asserts this):
 <!-- pane-probe:begin -->
 ```js
 (async () => {
-  if (document.visibilityState !== 'visible') return {hidden: true};
+  if (document.visibilityState !== 'visible') return {hidden: true, w: innerWidth, h: innerHeight};
   let painted = false;
   requestAnimationFrame(() => requestAnimationFrame(() => { painted = true; }));
   await new Promise(r => setTimeout(r, 4000));
-  if (painted) return {painted: true};
+  if (painted) return {painted: true, w: innerWidth, h: innerHeight};
   await new Promise(r => setTimeout(r, 0));
-  return {painted: false, tasks_ran: true, ready: document.readyState};
+  return {painted: false, tasks_ran: true, ready: document.readyState, w: innerWidth, h: innerHeight};
 })()
 ```
 <!-- pane-probe:end -->
@@ -547,6 +926,35 @@ hidden pane; a hidden pane is never a stall and never gets this section):
    pass still finishes cleanly from the lock's point of view; it is the WORK that is deferred,
    not the housekeeping.
 
+**⭐ NO WORKLIST, NO PASS (WN2, jobsearch 0.94.0).** If LinkedIn warned during this run, after it began, the worklist call refuses and prints
+`⛔ worklist refused, reason=linkedin-warning: LinkedIn warned at <date time> (<kind>) after this run began, so this run opens no further
+LinkedIn page` instead of a block. A brief that carries that line, or no WORKLIST block at all, is not a worklist: open no LinkedIn page,
+take no lock, write no block, and hand back `LINKEDIN PASS NOT RUN (linkedin-warning)` with the line.
+
+**⭐ THE REPLY PAGE IS JUDGED BEFORE YOU TAKE ANYTHING FROM IT (jobsearch 0.94.0; dev 1065; design-role-first.md 19.6, WN2; owner review 2026-11-25).** The owner's condition covers
+every LinkedIn page a run opens, not only a search's: a warning, a sign-in or identity check, a CAPTCHA, an unusual-activity page or a page nobody can tell from an ordinary one ends this
+run's LinkedIn work at once. So for **each page this pass loads, the feed check first** (the feed, each list surface, each `THREAD`, the notifications page, a one-off's profile page: a fresh, sized tab each, as above), do this
+before `get_page_text`, `read_page`, `find` or any click:
+
+1. Run the fenced reply script (`<!-- page-warning-reply:begin -->` above) with `javascript_tool` on this pass's own executor, by name, with your own `tabId`: once for the page.
+2. Hand its whole result to `~/.claude/jobsearch/run linkedin_sweep.py page-warning --run <id> --kind reply --result '<that result>'` (`--tool-error` instead of `--result` when the call
+   itself failed). **A tool error, a timeout, an empty or unreadable result and a judge that fails are warnings** (`STOP LINKEDIN WARNING kind=unclear reason=tool-error|empty-result|unparsable-verdict|judge-error`),
+   never a reason to run the script again or to read the page yourself. Only the browser's own page is `PAGE NO-PAGE`.
+3. **Obey its first words, never your own reading of the page:**
+   - `PAGE ORDINARY` (exit 0): go on and read the page as the sections below say.
+   - `PAGE NO-PAGE: no LinkedIn page was shown (nothing recorded)` (exit 0): the browser showed a page of its own, not LinkedIn's. Nothing was written. The surface is not read: close the tab
+     and report it as a surface that did not load, exactly as you would without this step.
+   - **`STOP LINKEDIN WARNING kind=<sign-in|challenge|unusual-activity|usage-limit|restricted|unclear>[ reason=<word>]. ...` (exit 3): STOP.** Take nothing from the page (no `VIEW`, no row, no
+     name, no date), and do not retry it, reopen it, wait on it, sign in, answer it or click on it. Clear the size and close your tab. **Open no other LinkedIn page in this run.** The script has
+     written the warning (the scheduled LinkedIn search is now off until the owner turns it on) and ended the run's LinkedIn work. File the SWEEP block for the lists you had already read;
+     **every surface you did not reach is `NOT-ATTEMPTED`**, never `UNREACHABLE` and never a "no change". Release the lock and end the journal run as usual (the last two calls), and hand back with the STOP
+     line as printed for your first line. **This is not "the browser is unusable":** do not queue `deferred.py --add-linkedin-pass`, file no `--gap` for it and do not move to the Chrome extension.
+     A page judged after a warning prints the same STOP whatever it shows, so do not call the script again to see.
+4. **The feed check and a one-off's profile page are judged too.** The feed is judged before its name is read; a STOP there ends the pass, and only an ORDINARY feed without the candidate's
+   name falls to the extension. The profile page of a one-off degree check (`/in/...`) is judged as a reply page like every other.
+
+Nothing mechanical makes you call the script for a page: the script judges what it is shown. The call is yours, every page, and a page you took text from without it is a page this rule was not kept for.
+
 **1. REPLY CHECK — driven by the outreach state, and it covers EVERY response surface — and it
 works ONLY from the WORKLIST** (dev #484 / public #109, dev #488 / public #105). The dispatching
 prompt carries a `WORKLIST` block that a script built from the stored touches (every
@@ -567,9 +975,11 @@ profile visit, never part of a routine pass).
 ⭐ **A 3rd-degree recipient can REPLY TO AN INVITATION WITHOUT ACCEPTING IT** — that response
 appears on `invitations`/`requests` and NEVER in the inbox, which is exactly how a 3rd-degree
 hiring-line response (<an employer>) went unseen on 2026-08-04 while the sweep read "no new
-replies." The candidate's mailbox receives NO LinkedIn notification emails, so this browser pass
-is the ONLY detector. (Per the candidate, 2026-08-04: "if our process has me sending messages &
-connection requests, it should be checking linkedin messages.")
+replies." **A mailbox may receive some LinkedIn mail (seen in one: invitations, message notices, InMail replies, job alerts,
+application-viewed notices) and never all of it, because it depends on each member's LinkedIn email settings and on which address
+LinkedIn has. Mail is one partial source beside this browser pass: a notice is positive evidence to act on, and no notice proves
+nothing.** Silence is concluded by `linkedin_sweep.py record` alone, never by an empty mailbox. (Per the candidate, 2026-08-04: "if our
+process has me sending messages & connection requests, it should be checking linkedin messages.")
 
 **⭐ PER-SURFACE COVERAGE IS PART OF THE REPORT — name each token (the four list surfaces and
 `notifications`) as REACHED, UNREACHABLE, or NOT-ATTEMPTED, every pass (public #15),** as
@@ -612,14 +1022,18 @@ record above, and still report the SURFACE line as UNREACHABLE.
 
 **2. INBOX SCAN** — new recruiter InMail/messages not in the tracker.
 
-**3. JOB SEARCH — run BOTH every time, not just remote:**
+**3. JOB SEARCH — in THIS pass only when the worklist's `JOBSEARCH` line is a window line, and since jobsearch 0.94.0 (dev 1065, owner review
+   2026-11-25) no profile's worklist prints one: a pinned profile prints `reason=own-dispatch` (the search is its own dispatch, §"THE SEARCH PASS") and an
+   unpinned one prints `reason=migration-pending` (the 0.94.0 migration has not run, and no LinkedIn job search runs unattended without the warning stop).
+   This pass runs none on either.** The paragraphs below that read a window line stay for a worklist that prints one; when it is a window line, run BOTH every time, not just remote:
 
-   **⭐ A JOB SEARCH THE USER TURNED OFF IS NOT RUN (dev #774).** If your worklist's `JOBSEARCH` line reads
-   `JOBSEARCH off source=linkedin-jobsearch`, run NO job-search query this pass: open no search page, write no
-   `ROLES` block, and say in your reply `JOB SEARCH: off (the candidate turned it off with record.py source)`. That is
-   a choice, never a gap or a failure: do not file `--gap`, do not report the surface unreachable, and do not suggest
-   turning it back on (the candidate does that with `record.py source on linkedin-jobs`). Everything else in this
-   pass (the four lists, the inbox scan, the notifications) runs as usual.
+   **⭐ A JOB SEARCH THAT IS NOT IN THIS PASS IS NOT RUN (dev #774; jobsearch 0.94.0).** If your worklist's `JOBSEARCH` line reads
+   `JOBSEARCH off source=linkedin-jobsearch`, run NO job-search query this pass: open no search page and write no
+   `ROLES` block. What you say depends on its tail, which you read and never guess: `reason=own-dispatch` (or the older
+   `reason=attended-step`) → `JOB SEARCH: not in this pass (its own dispatch)`; **`reason=migration-pending`** → `JOB SEARCH: not run (waiting on the
+   0.94.0 migration)`; **no `reason=` at all** → `JOB SEARCH: off (the candidate turned it off with record.py source)`. Either is a choice, never a gap or a failure: do not file `--gap`, do not
+   report the surface unreachable, and do not suggest turning it back on (the candidate does that with `record.py source on
+   linkedin-jobs`; a `migration-pending` ends when the migration has run, which is not yours to run). Everything else in this pass (the four lists, the inbox scan, the notifications) runs as usual.
 
    **⭐ THE WINDOW, THE TITLES AND THE GEOGRAPHIES COME FROM THE `JOBSEARCH` LINE OF YOUR WORKLIST,
    never from this file** (dev #489 / public #102). It reads `JOBSEARCH window=<daily|wide>
@@ -756,15 +1170,16 @@ no quota slot and writes no pass row (no SWEEP block, no `linkedin_sweep.py reco
 |---|---|
 | the brief does not say `attended: yes` and name the task | `own-profile read: not started (attended requests only)` |
 | `whoami.py --can chrome` exits 1 | `own-profile read: NOT RUN (no browser on this machine)`, naming `record.py presence-state` instead (the candidate states the headline and skills) |
-| the pane is hidden, or the read is partial | `own-profile read: PARTIAL (pane not in view); skills not recorded`: no skills hand-back, and the remedy: run it in the desktop app and keep the pane in view |
+| the read is partial (the wait did not say `READY`, or the skills list did not render) | `own-profile read: PARTIAL (page did not read); skills not recorded`: no skills hand-back, and the remedy: run it again in the desktop app. The pane line is recorded and never makes a read partial (N1) |
 | read whole | the values; the candidate confirms and the session runs `record.py presence-state --observed --from-file <f> --attended` |
 
 1. **Gate.** The brief must say `attended: yes` **and** name the task `own-profile read`; then run
    `~/.claude/jobsearch/run whoami.py --can chrome`. Either failing gives its line above, and you open no browser.
 2. **Take the pane lock and verify the session** exactly as for a pass (§"TAKE THE PANE LOCK", §"PREFLIGHT BEFORE ANY LONG CALL"), and
-   read the pane state once. `hidden` → the PARTIAL line; there is no extension fallback for this read.
-3. **Navigate** your own tab to the candidate's own profile URL (from `profile.py`, never hard-coded). **Wait for the
-   content** after EVERY `navigate`: once per dispatch run `~/.claude/jobsearch/run page_ready.py --print profile-read`
+   read the pane state once (recorded, never deciding: N1); there is no extension fallback for this read.
+3. **Open** a fresh tab of your own on the candidate's own profile URL (from `profile.py`, never hard-coded; `preview_start`, then size
+   it, N2 and N8). **Wait for the
+   content** after EVERY page load: once per dispatch run `~/.claude/jobsearch/run page_ready.py --print profile-read`
    and keep the code; run it with `mcp__Claude_Browser__javascript_tool` (your `tabId`) and hand its JSON result to
    `~/.claude/jobsearch/run page_ready.py --verdict '<that JSON, or the tool's own error text>'`. It prints
    `READY <chars>`, `NOT-READY` or `READY-ERROR` (a tool error or a timeout is `READY-ERROR`). Anything but `READY` →
@@ -785,13 +1200,13 @@ no quota slot and writes no pass row (no SWEEP block, no `linkedin_sweep.py reco
    return `PANE HELD by <run_id> since <at>`, done — no queue entry (§"TAKE THE PANE LOCK").
 2. **Preflight** as usual (§"PREFLIGHT BEFORE ANY LONG CALL"); verify the session; record
    `--verdict signed-in|not-signed-in` on the lock.
-2a. **Read the pane state once**, right after `preview_start` returns your `tabId` (§"THE PANE STATE,
-   AND HIDDEN MODE"). `hidden` → hidden mode for the whole pass (text reads only), **unless** the brief says `attended:
-   yes` and nothing has been clicked yet: then the extension takes the pass (2b).
-2b. **Before the first click, attended:** `hidden`, or `pane_probe.py --gate` saying `not-painting` or `probe-error` →
+2a. **Read the pane state once**, right after `preview_start` returns your `tabId` and you have sized the tab (§"THE PANE STATE,
+   AND HIDDEN MODE"). It is recorded and decides nothing (N1). Hidden mode starts only on the paint gate's `not-painting` (2b).
+2b. **Before the first click, attended:** `pane_probe.py --gate` saying `not-painting` or `probe-error` after its second probe and the
+   one reopening in a fresh tab →
    `route.py --next` (the call in that section), the `WAITING-ON-PERSON` line, `route.py --pick-browser`, your own extension tab, and the
    transcript line (§"Chrome extension — the FALLBACK"). Unattended → hidden mode and `unattended-unprobed`. Never the
-   extension after a click.
+   extension after a click, and never in a search pass.
 3. **Probe** (normal mode only) after each DOM-changing action, on this pass's own executor by name
    (§"THE FRAME PROBE").
 4. **Confirmed stall** (the script's `VERDICT render-stalled`) → §"A CONFIRMED RENDER STALL":
@@ -850,8 +1265,8 @@ VIEW contact:<id> kind=<thread|profile> at=<ISO time> saw=<empty|message:<YYYY-M
 **The `PANE` line is required, once, right after the header (dev #826 / public #177).** `state` is the
 pane state of §"THE PANE STATE, AND HIDDEN MODE" (`displayed`, `hidden` or `unknown`), or `not-pane`
 when the pass ran on the Chrome extension. `mode=hidden` if ANY part of the pass ran in hidden mode,
-else `normal`; a hidden Chrome tab is `state=not-pane mode=hidden`. A hidden pane is always
-`mode=hidden`. A block with no `PANE` line is a line fault, and every surface it reached is recorded
+else `normal`; a hidden Chrome tab is `state=not-pane mode=hidden`. The pane line itself decided nothing in the pass (N1), so
+**`state=hidden mode=normal` is right for a pass whose pages read in full** while the line said hidden. A block with no `PANE` line is a line fault, and every surface it reached is recorded
 as partial. In hidden mode, report a surface you could not read by text as `SURFACE <token>
 UNREACHABLE reason=pane-hidden` (the script knows the code). Never write `RENDER STALLED` as the first
 line over a block whose `PANE` line is hidden: the script refuses it as a contradiction.
@@ -903,6 +1318,8 @@ QUERY geo=<remote|local> title="<query>" window=<r86400|r604800|none> shown=<n> 
 QUERY geo=<remote|local> title="<query>" unreachable reason=<journal.REASONS code> [channel=<channel_id>]
 CHANNEL <channel_id> <unreachable|not-attempted> reason=<journal.REASONS code>
 SEEN distinct=<n>
+LINKS <matched=<m> unmatched=<k>|NO-IDS cards=<n>|NOT-LOADED|READ-ERROR|PARTIAL cards=<n> ids=<m>>
+PANE state=<displayed|hidden|unknown|not-pane> mode=<normal|hidden>
 ROLE url=<posting url> q=<k>[,<k>...] title="<t>" company="<c>" location="<l|?>" posted=<YYYY-MM-DD|ats:YYYY-MM-DD|<n>d|?> pay=<pay|?> setting="<verbatim|none stated|?>"
 ROLE nourl title="<t>" company="<c>" reason=<journal.REASONS code>
 --- END ROLES ---

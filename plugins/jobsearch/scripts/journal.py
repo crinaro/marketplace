@@ -172,6 +172,9 @@ Usage:
                        --reached inbox --not-attempted requests,invitations,degree # §2 (#75/#87/#110)
     python3 journal.py --run <id> --pass linkedin --phase refused --reason skipped-for-cost
     python3 journal.py --passes [--today]                 # every pass row, '0 passes' if none
+    python3 journal.py --linkedin-search-skip --until YYYY-MM-DD    # 0.94.0 (dev 1065): skip the LinkedIn job search, at most 30 days
+    python3 journal.py --linkedin-search-on --attended --warning YYYY-MM-DD   # after a LinkedIn warning: the NEWEST warning's date
+    python3 journal.py --run <id> --pass linkedin --phase returned --scope search --jobsearch unreachable --search-reason not-readable
     python3 journal.py --check [--since YYYY-MM-DD]        # dispatch totals; never refuses on
                                                             # them until §8.3's ceiling lands
     python3 journal.py --run <id> --pass linkedin --phase returned --reached inbox \
@@ -215,7 +218,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _root import (profile_root, is_tracked_fixture, transcript_stash_path, is_unbound,
                    say_unbound_once, STATE_DIRNAME, engine_root)
 # S4a: the scripts directory for code that moved into journaling/ (it cannot read this file's __file__).
-from journaling import where as _where
+from journaling import coverage_cli, search_cli, search_due, search_links, search_plan, search_state, search_warning, where as _where  # noqa: F401  (0.94.0, dev 1065: the LinkedIn search modules, re-exported so no entry point imports `journaling` by itself, G6)
 # Moved out of this file by split_module.py; every moved name stays importable from here until the tests move.
 from journaling.board_runs import (
     _latest_dispatched,
@@ -304,6 +307,7 @@ from journaling.journal_file import (
     ENGINE_VERSION_RE,
     engine_version,
 )
+from journaling.pins import earliest_pin_at, pin_missing_line     # earliest_pin_at: linkedin_sweep's PANE pairing (dev 1064); dev 1055: the 0.94.0 pin test `deferred._card_evidence` asks (no new import edge there)
 from journaling.linkedin_passes import (
     file_gap,
     pass_rows,
@@ -340,8 +344,6 @@ from journaling.role_runs import (
     close_board_loop,
     record_closing_roles,
     jobsearch_geos,
-    wide_satisfied_at,
-    jobsearch_window,
 )
 from journaling.row_kinds import (
     record_profile_schema,
@@ -411,7 +413,6 @@ from journaling.tables import (
     F_TPR_DAILY,
     F_TPR_WIDE,
     F_TPR_BUCKETS,
-    WIDE_EVERY_DAYS,
     JOBSEARCH_TOKENS,
     ROLES_GAP_SCOPE,
     PASS_PHASES,
@@ -587,6 +588,7 @@ def main():
     ap.add_argument("--passes", action="store_true",
                     help="print every pass row by phase, oldest first (design-script-first.md "
                          "§2) — '0 passes' on an empty journal")
+    search_cli.add_arguments(ap)        # 0.94.0 (dev 1065): the LinkedIn search flags, kept in journaling/search_cli.py
     args = ap.parse_args()
 
     root = profile_root()
@@ -653,47 +655,9 @@ def main():
             return 0
 
         if args.check_coverage:
-            gaps = open_gaps(read(root))
-            seen = {}
-
-            def _recording_state(citation):
-                seen[citation] = issue_state(citation)
-                return seen[citation]
-
-            verified_open, stale, unverifiable = evaluate_coverage(gaps, _recording_state)
-            print("COVERAGE CHECK — live lookup against each covered_by citation\n")
-            for citation, gap_ids in verified_open:
-                print("  OK      %-16s covers %d gap(s), still open" % (citation, len(gap_ids)))
-            for citation, gap_ids in unverifiable:
-                print("  ??      %-16s NOT VERIFIED (no gh, no network, or no reachable repo)"
-                      % citation)
-            if stale:
-                print("\n  !! %d STALE COVERAGE — the citation is CLOSED or does not exist, so "
-                      "it has outlived whatever it was covering:" % len(stale))
-                for citation, gap_ids in stale:
-                    print("      %-16s covers %d gap(s): %s"
-                          % (citation, len(gap_ids), ", ".join(gap_ids)))
-            if not (verified_open or stale or unverifiable):
-                print("  No covered gaps open. Nothing to verify.")
-            # dev #711 / public #147 -- keep the answers, so the routine offline `--check` can
-            # use them. Only DEFINITE verdicts are stored; an unverifiable lookup leaves that
-            # citation's previous verdict (and its date) as it was. A citation no open gap cites
-            # any more is dropped.
-            old, problem = read_coverage_cache(root)
-            cited = {g.get("covered_by") for g in gaps if g.get("covered_by")}
-            verdicts = {c: v for c, v in old.items() if c in cited}
-            day = at[:10] if _DATE_RE.match(at[:10]) else now_iso()[:10]
-            for citation, state in seen.items():
-                if state in COVERAGE_STATES:
-                    verdicts[citation] = {"state": state, "at": day}
-            try:
-                written = write_coverage_cache(root, verdicts, day)
-                print("\n  verdicts kept for the offline --check: %s (%d citation(s))"
-                      % (written, len(verdicts)))
-            except (JournalError, OSError) as e:
-                print("\n  coverage cache NOT written (%s) -- the routine --check will read "
-                      "these citations as unverified" % e)
-            return 1 if stale else 0
+            return coverage_cli.run_check_coverage(root, at)
+        if search_cli.wants(args):
+            return search_cli.run(root, args, at)
 
         if args.pass_durations:
             durs = pass_durations(read(root))
@@ -809,8 +773,8 @@ def main():
                                     else [x.strip() for x in raw.split(",") if x.strip()])
                 record_pass(root, args.run, args.pass_kind, args.phase,
                            reached=reached, unreachable=unreachable,
-                           not_attempted=not_attempted, reason=args.reason, at=at,
-                           jobsearch=args.jobsearch, ids=_csv(args.ids), unreached=_csv(args.unreached))
+                           not_attempted=not_attempted, reason=args.reason or args.search_reason, at=at,
+                           jobsearch=args.jobsearch, ids=_csv(args.ids), unreached=_csv(args.unreached), scope=args.scope)
                 print("pass %s %s recorded" % (args.pass_kind, args.phase))
             return 0
 
@@ -911,6 +875,8 @@ def main():
                          uncovered[0].get("reason")))
 
         if args.check:
+            for problem in search_state.search_on_problems(recs):       # 0.94.0 (dev 1065, WN3): a search-on that names no matching newest warning clears nothing; reported, never raised
+                print("⚠️ %s (it clears nothing: only a row naming the newest warning's date turns the scheduled LinkedIn search back on)" % problem)
             stale = [g for g in uncovered if age_days(g.get("at", "")) >= STALE_DAYS]
             lost = [d for d in dead if d["notes"] and not d.get("disposed")]
             for g in stale:

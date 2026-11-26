@@ -103,8 +103,8 @@ from _root import profile_root as _profile_root
 import profile as _profile
 from pipeline_index import is_excluded as _is_excluded
 from browser_fallback import hidden_passes as _hidden_passes   # dev #1026: hidden-pane LinkedIn passes block
-# dev #820 / public #175: the role lifecycle (`lifecycle.py`) and its Your Move groups (`your_move.py`).
-# Named here by file because a bare `import` is invisible to `publish_manifest.py`'s reachability closure.
+import journal as _journal   # 0.94.0 (dev 1065): the LinkedIn search lines of the start (`journal.search_due`)
+# dev #820 / public #175: the role lifecycle (`lifecycle.py`) and its Your Move groups (`your_move.py`), named here by file: a bare `import` is invisible to `publish_manifest.py`'s reachability closure.
 try:
     import lifecycle as _lifecycle
     import your_move as _your_move
@@ -153,7 +153,6 @@ def _network_line(root):
     TypeError was swallowed here, and the line never printed first). "The latest run" is the last journal `start` event's run id;
     a journal with none has no run to count, and the answer is None."""
     try:
-        import journal as _journal
         import run_summary as _rs
         fn = getattr(_rs, "network_line", None)
         if not fn:
@@ -203,7 +202,6 @@ def expiry_line(root):
     never ran one) would otherwise never hear it. Same interval as `run_summary.expiry_line`: (the last completed
     summary-writing run's start, today]. Returns None when nothing expired; a failed read says so."""
     try:
-        import journal as _journal
         import run_summary as _rs
         import trigger as _trigger
         since = _rs.last_completed_sayer_start(_journal.read(root))
@@ -290,8 +288,8 @@ def main():
         lc_report = _lifecycle.process_report(lc_data, lc_now)
     except Exception as e:                                      # noqa: BLE001 - said, never empty
         lc_error = "%s: %s" % (type(e).__name__, str(e)[:200])
-    for first in (first_lines(lc_report, lc_error, _network_line(ROOT) if lc_report is not None else None)
-                  + _hidden_passes.start_lines((lc_data or {}).get("journal"))):
+    for first in _journal.search_due.start_lines(ROOT, (lc_data or {}).get("journal"), first_lines(lc_report, lc_error, _network_line(ROOT) if lc_report is not None else None)
+                                                  + _hidden_passes.start_lines((lc_data or {}).get("journal"))):
         print(first)
     print()
     print("COORDINATOR — %s" % lc_now.strftime("%A %Y-%m-%d %H:%M"))

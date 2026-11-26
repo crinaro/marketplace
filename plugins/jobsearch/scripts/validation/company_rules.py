@@ -74,6 +74,17 @@ def check_company_fields(c, label, problems):
         elif lo > datetime.date.today().isoformat():
             problems.append("%s: later_on %s is after today: \"later\" is the day the candidate said it (written only by "
                             "`record.py company-later %s`)" % (label, lo, cid))
+    # jobsearch 0.94.0 (dev 1062, design-role-first.md 4.4): `target_from`, `{opp, on}`, says an `active-target` came from the candidate's pursue
+    # of the role `opp` on `on` (a target stated with `company-status` has none, and stating one deletes it). Optional; a PRESENT one is checked
+    # for SHAPE only (the status it sits beside is `lifecycle`'s to read), `on` an ISO date not after today. Written only by `record.py decide ... pursue`.
+    if "target_from" in c:
+        tf = c["target_from"]
+        if not (isinstance(tf, dict) and set(tf) == {"opp", "on"} and isinstance(tf["opp"], str) and tf["opp"].strip()
+                and not any(ch.isspace() for ch in tf["opp"]) and isinstance(tf["on"], str) and DATE_RE.match(tf["on"])):
+            problems.append("%s: target_from must be {opp: <an opportunity id>, on: <ISO date>} -- %r (written only by `record.py decide <opp> pursue`)"
+                            % (label, tf))
+        elif tf["on"] > datetime.date.today().isoformat():
+            problems.append("%s: target_from.on %s is after today: a company is targeted on the day the role was pursued" % (label, tf["on"]))
 
 
 def check_commute_config(geography, problems):

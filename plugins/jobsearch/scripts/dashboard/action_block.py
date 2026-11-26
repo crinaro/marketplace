@@ -78,9 +78,9 @@ ACTIONS = {
     # refuses to do without, so `target-yes` is a ROUTE (the skill asks 1-5 for each company) and the write is
     # `target-active`, one record at a time with its Motivation line. Nothing is defaulted.
     "target-yes": {"kind": "company", "argv": None, "fields": (),
-                   "request": "Make this company an active target. Ask me how motivated I am (1-5) first.",
+                   "request": "Make this company an active target. Ask me how motivated I am (1-5) first; I may skip it.",
                    "request_many": "Make these companies active targets. Ask me how motivated I am (1-5) "
-                                   "about each one first."},
+                                   "about each one first; I may skip it."},        # 0.94.0 (dev 1062, design 4.6): the number is optional
     "target-active": {"kind": "company", "fields": ("motivation",), "already": ("status", "active-target"),
                       "argv": ["company-status", "{id}", "active-target", "--motivation", "{motivation}"],
                       "request": "Make this company an active target, with the motivation below."},

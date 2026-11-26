@@ -22,7 +22,12 @@ not yet due a nudge) and `pd.today_plan`. It never uses a fault word (`FAULT_PHR
     roles            process_report().totals["roles"]
     ready, waiting, in_progress           process_report()'s own counts
     in_progress_oldest_days               days since the oldest in-progress role's stage began
-    held_undecided, held_watching, held_passed   process_report().held_company, by why
+    held_undecided, held_watching, held_passed, held_pursued   process_report().held_company, by why (`held_pursued`, 0.94.0: roles at a
+                     company a pursue made a target that do not meet the criteria)
+    linkedin_warning (date, kind) of the newest LinkedIn warning while the scheduled search is OFF, else None (0.94.0, dev 1065, WN4):
+                     `search_warning(recs)` over the journal rows the page already holds. It is ONE line (`today-warning`), never an
+                     item (`today-item`), so Today's five-item cap and its invariants are untouched. The page shows no command (the
+                     NO CLI gate): the line says what happened and what to tell Claude, and the command itself is in the run summary
     held_listed      the `held-for-company` (`undecided`) roles at the companies Targets lists: the Targets item's
                      "N unread roles wait on your yes or no" (§7.4)
     not_raised       classify_companies()["look-into-waiting"]: qualifying companies never raised
@@ -33,6 +38,7 @@ from dashboard import levels, rank
 from dashboard.actions_ui import group_attr, pick
 from dashboard.caps import TODAY_CAP
 from dashboard.markup import esc, key_attr, links_for, rec_id, theirs
+from journaling import search_state as _search
 
 
 TODAY_ID = "today"
@@ -62,6 +68,27 @@ def heading_time(now):
 
 def _n(n, one, many):
     return "%d %s" % (n, one if n == 1 else many)
+
+
+def search_warning(recs):
+    """`(date, kind)` of the newest `linkedin-warning` while the scheduled LinkedIn search is OFF (`journaling.search_state`, WN3), else
+    None: from the rows the page already read (a journal that could not be read is None here and says so elsewhere). Nothing is read."""
+    try:
+        off, warn = _search.scheduled_search_off(recs)
+    except (TypeError, AttributeError, ValueError):
+        return None
+    return (str(warn.get("at") or "")[:10], str(warn.get("kind") or "unclear")) if off and warn else None
+
+
+def _warning(pd):
+    """The one WN4 line, or "" while the search is on. It names the date and the kind, says the scheduled search is OFF and what to do. It is
+    never a button: no click turns a LinkedIn search back on."""
+    w = (pd.today_counts or {}).get("linkedin_warning")
+    if not w:
+        return ""
+    return ('<div class="sub today-warning" data-linkedin-warning="%s"><strong>LINKEDIN WARNING %s (%s):</strong> scheduled LinkedIn search is '
+            'OFF. Open LinkedIn yourself and look. To turn it back on, tell Claude you have looked, and name the warning of %s.</div>'
+            % (esc(w[0]), esc(w[0]), esc(w[1]), esc(w[0])))
 
 
 def _label(item):
@@ -118,8 +145,8 @@ def render(pd, sections, present):
     items, also = rank.plan(pd, TODAY_CAP)
     head = '<h2 id="%s">Today · as of %s</h2>' % (TODAY_ID, esc(heading_time(pd.now)))
     if not items:
-        return ('<section class="today" data-today="sentence">%s<div class="sub today-sentence">%s</div></section>'
-                % (head, esc(sentence(pd))))
+        return ('<section class="today" data-today="sentence">%s%s<div class="sub today-sentence">%s</div></section>'
+                % (head, _warning(pd), esc(sentence(pd))))
     counts = pd.today_counts or {}
     lis, n_boxes, missing = [], 0, 0
     for it in items:
@@ -134,8 +161,8 @@ def render(pd, sections, present):
     more = ('<div class="sub today-also">Also below: %s</div>'
             % esc(" · ".join(_n(n, *k.also) for k, n in also))) if also else ""
     button = levels.group_button(pd, "Work through", n_boxes, missing) if n_boxes else ""
-    return ('<section class="today" data-today="items">%s<div%s>%s<ul class="today-list">%s</ul></div>%s</section>'
-            % (head, group_attr("today"), button, "".join(lis), more))
+    return ('<section class="today" data-today="items">%s%s<div%s>%s<ul class="today-list">%s</ul></div>%s</section>'
+            % (head, _warning(pd), group_attr("today"), button, "".join(lis), more))
 
 
 def sentence(pd):
@@ -155,6 +182,9 @@ def sentence(pd):
             out.append("%s at companies you are watching." % _n(g("held_watching"), "role waits", "roles wait"))
         if g("held_passed"):
             out.append("%s at companies you passed on." % _n(g("held_passed"), "role is", "roles are"))
+        if g("held_pursued"):
+            out.append("%s at companies you pursued, and do not meet your criteria."      # 0.94.0 (dev 1062): the fourth why
+                       % _n(g("held_pursued"), "role is", "roles are"))
         if g("waiting"):
             out.append("%s waiting to be read." % _n(g("waiting"), "role is", "roles are"))
         if g("in_progress"):

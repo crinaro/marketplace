@@ -90,6 +90,19 @@ rule order. The test suite pins the agreement (`GateVerdictAgree`): `paint_gate`
 shared input to the pair of words above. The 4-second spacing between two candidates stays prose, as it is
 for `verdict()`: neither function can see time. The gate takes no pane state on purpose.
 
+## The size, and a first hidden answer (dev 1064, jobsearch 0.94.0; design-role-first.md §19 N3, N4)
+
+MEASURED (§19, TESTED): a fresh tab in a pane nobody is looking at reported a viewport of 0 x 0 on its first run, with frames running, so the probe answered
+`painted: true` for a page that could not fill; and a background tab's first `{hidden: true}` was woken by the very next call. So `PROBE_JS` also returns `w` and
+`h` (the viewport it saw, `innerWidth`, `innerHeight`), and the gate gains `set-size` and a softer first hidden answer. The words:
+
+    set-size       the last result's width or height is 0, or under 600 x 800: give the tab 1280 x 3200 (`resize_window`), then probe again
+    probe-again    a FIRST `{hidden: true}`: probe once more, at least 4 s later (the next call of any kind may have woken the tab)
+    not-painting   only a SECOND hidden answer (or two candidates): this is what sets the latch (route.py), and a later `paints` clears it
+
+A result with NO size (an older fenced probe, an agent not yet updated) is judged exactly as before 0.94.0. `verdict()` and `_shape` are unchanged and still read an UNSIZED
+result: `--verdict` drops a valid size before it asks (`_unsized`).
+
 Usage:
     python3 scripts/pane_probe.py --print     # emit PROBE_JS verbatim, for a byte-equal diff
                                                # against the fenced copy in linkedin-runner.md
@@ -104,20 +117,26 @@ Python 3.9+. Standard library only.
 
 import argparse
 import json
+import os
 import re
 import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# the gate's rules live in `browser_fallback/paint_gate.py` (moved out whole: this file is over its line budget); every name is re-exported here
+from browser_fallback.paint_gate import (GATE_OF_VERDICT, GATE_WORDS, MIN_H, MIN_W, REQUEST_WORDS, TARGET_H, TARGET_W, _gate_unsized, _shape, _size, _unsized,  # noqa: F401
+                                         paint_gate)
 
 # ⭐⭐ THE PROBE ITSELF — byte-equal to the fenced copy between `<!-- pane-probe:begin -->` and
 # `<!-- pane-probe:end -->` in plugins/jobsearch/agents/linkedin-runner.md. Edit both, in the
 # same commit, or `TestPaneProbeFenceMatchesShippedConstant` in test_checks.py goes red.
 PROBE_JS = """(async () => {
-  if (document.visibilityState !== 'visible') return {hidden: true};
+  if (document.visibilityState !== 'visible') return {hidden: true, w: innerWidth, h: innerHeight};
   let painted = false;
   requestAnimationFrame(() => requestAnimationFrame(() => { painted = true; }));
   await new Promise(r => setTimeout(r, 4000));
-  if (painted) return {painted: true};
+  if (painted) return {painted: true, w: innerWidth, h: innerHeight};
   await new Promise(r => setTimeout(r, 0));
-  return {painted: false, tasks_ran: true, ready: document.readyState};
+  return {painted: false, tasks_ran: true, ready: document.readyState, w: innerWidth, h: innerHeight};
 })()"""
 
 # The only identifiers PROBE_JS may ever reference — see the module docstring and
@@ -125,7 +144,7 @@ PROBE_JS = """(async () => {
 # truth (the test re-derives what the constant actually contains, by regex); this is
 # documentation the test's own failure message can point back to.
 ALLOWED_CALLS = ("document.visibilityState", "document.readyState",
-                 "requestAnimationFrame", "setTimeout", "Promise")
+                 "requestAnimationFrame", "setTimeout", "Promise", "innerWidth", "innerHeight")   # 0.94.0 (dev 1064): the two reads of the viewport's size
 
 # The harness's own wording, observed 2026-11-11 (TESTED by the controller; the literals are pinned, with who
 # called and in what view state, in tests/pane_state_lines.json). Anything that does not match is `unknown`,
@@ -158,22 +177,6 @@ def _pane_arg(arg):
     return "not-pane" if isinstance(arg, str) and arg.strip() == "not-pane" else pane_state(arg)
 
 
-def _shape(result):
-    """`"hidden"`, `"painted"`, `"candidate"` or `None` (not a shape PROBE_JS returns). Exact: an extra
-    or a missing key is not the probe's answer."""
-    if not isinstance(result, dict):
-        return None
-    if result == {"hidden": True}:
-        return "hidden"
-    if result == {"painted": True}:
-        return "painted"
-    keys = set(result)
-    if (result.get("painted") is False and result.get("tasks_ran") is True
-            and {"painted", "tasks_ran"} <= keys <= {"painted", "tasks_ran", "ready"}):
-        return "candidate"
-    return None
-
-
 def verdict(pane_states, results):
     """The frame probe's verdict, from the harness's pane states and the probe's results. In order:
 
@@ -200,44 +203,6 @@ def verdict(pane_states, results):
     if "painted" in shapes:
         return "painting"
     return "candidate" if len(shapes) == 1 else "render-stalled"
-
-
-# The words `paint_gate` returns, and the `verdict()` word each one is the gate's reading of. Declared once so
-# the CLI, the agents' recorded `gate:` values (jd_read.GATE_WORDS) and the agreement test name the same set.
-GATE_WORDS = ("paints", "not-painting", "probe-again", "probe-error")
-GATE_OF_VERDICT = {
-    "no-verdict:pane-hidden": "not-painting",
-    "no-verdict:probe-error": "probe-error",
-    "painting": "paints",
-    "candidate": "probe-again",
-    "render-stalled": "not-painting",
-}
-
-
-def paint_gate(results):
-    """The paint gate's word for a step's `PROBE_JS` results (dev #858, design §3.1). First match wins, in the
-    order of `verdict()`'s rules 2-5, and the pane line is not an input:
-
-      1. any result is `{hidden: true}`                 -> `not-painting`
-      2. no result, or one that is not a PROBE_JS shape -> `probe-error`
-      3. any `{painted: true}`                          -> `paints`
-      4. exactly one candidate                          -> `probe-again`   (probe again, at least 4 s later)
-      5. two or more candidates                         -> `not-painting`
-
-    Rule 1 is a VISIBILITY signal: `PROBE_JS` returns `{hidden: true}` before any frame is requested when
-    `document.visibilityState` is not `visible`, so it says "this document is not shown", not "this document
-    does not paint" (see the module docstring). `probe-error` falls back like `not-painting`: a fallback is
-    cheap and visible, a silent read of a page that never rendered is not. The spacing between candidates
-    stays prose, as in `verdict()`. A result is judged by the same `_shape` as `verdict()`, never a second
-    parser."""
-    shapes = [_shape(r) for r in (results or [])]
-    if "hidden" in shapes:
-        return "not-painting"
-    if not shapes or None in shapes:
-        return "probe-error"
-    if "painted" in shapes:
-        return "paints"
-    return "probe-again" if len(shapes) == 1 else "not-painting"
 
 
 def _parse_result(raw):
@@ -273,7 +238,7 @@ def main():
         return 0
     if args.do_verdict:
         print("VERDICT %s" % verdict([_pane_arg(p) for p in args.pane],
-                                     [_parse_result(r) for r in args.result]))
+                                     [_unsized(_parse_result(r)) for r in args.result]))
         return 0
     print("pane_probe.py holds PROBE_JS, the render-stall probe run on the pane's own "
           "executor by name (linkedin-runner.md's FRAME PROBE section), and the verdict that decides "

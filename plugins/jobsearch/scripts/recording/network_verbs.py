@@ -9,6 +9,8 @@ import json
 import os
 import re
 from recording import profile_paths as _paths
+from journaling.row_shapes import HELD_KEYS
+from recording import role_first
 from recording.evidence_keys import shape_pin_refusal
 from recording.row_checks import (
     _RAISED_FIELD,
@@ -36,6 +38,7 @@ from recording.store_files import (
 
 RAISE_COMPANIES_USAGE = "raise-companies --run <run id> [--on YYYY-MM-DD] [--check | --dry-run] [--already-locked]"
 HELD_PIN, HELD_MIGRATION = (0, 92, 0), "m_0_92_0_decision_surface"
+PURSUED = "pursued"           # the `detail` of a role held at a company the owner targeted by pursuing it (0.94.0, `lifecycle.HELD_WHY`)
 HELD_WITHHELD = "held count not recorded (profile not pinned at 0.92.0: %s pending)" % HELD_MIGRATION
 
 
@@ -51,7 +54,12 @@ def _held_counts(ym, said):
         return None
     try:
         data = ym._lc.load_data(_paths.ROOT)
-        return _held.held_counts(ym.stage_by_id(data["opportunities"], _now(), data).values())
+        # jobsearch 0.94.0 (dev 1062, design 3.2, RF9): a role held as `pursued` is the owner's own pursue at a target, not a question about a
+        # company, so it is never counted here, and the stored row keeps its three keys (`HELD_KEYS`): an older engine's reader refuses a fourth.
+        held = [st for st in ym.stage_by_id(data["opportunities"], _now(), data).values()
+                if not (getattr(st, "name", None) == _held.HELD and getattr(st, "detail", None) == PURSUED)]
+        counts = _held.held_counts(held)
+        return {k: counts[k] for k in HELD_KEYS}
     except Exception as e:                                       # noqa: BLE001 - said, never a failed raise
         said.append("held count not recorded (%s: %s)" % (type(e).__name__, str(e)[:100]))
         return None
@@ -308,8 +316,9 @@ def cmd_company_status(args):
     "look into this company?", and the ONE writer of a company's `status` and `status_on` (design-network-first.md 3.3, 4.1).
 
     `status`, `status_on` (`--on`, default today) and, for a target, `motivation` are written in ONE locked write. A target without
-    `--motivation` is refused (its motivation is the candidate's own statement, LAMP's M, never a default), and `--motivation` beside
-    `watching` or `passed` is refused (it describes a target). Answering removes the company from the look-into item and leaves its
+    `--motivation` is refused on a profile without the 0.94.0 pin (its motivation is the candidate's own statement, LAMP's M, never a
+    default); WITH the pin it is allowed, the motivation stays absent, and a target stated here drops the `target_from` a pursue wrote
+    (design-role-first.md 4.4). `--motivation` beside `watching` or `passed` is refused (it describes a target). Answering removes the company from the look-into item and leaves its
     `raised_on` byte for byte. Exit 0 written; 1 refused; 2 usage; 3 the profile is not ready."""
     usage = "usage: " + NETWORK_VERB_USAGE["company-status"]
     if not args.rid or len(args.rest) != 1:
@@ -330,9 +339,11 @@ def cmd_company_status(args):
             if not _vd.MOTIVATION_MIN <= mot <= _vd.MOTIVATION_MAX:
                 raise _Refused("--motivation %d is outside %d-%d (1 = would not mind, 5 = the company the candidate most wants to "
                                "work at)." % (mot, _vd.MOTIVATION_MIN, _vd.MOTIVATION_MAX))
-        if status == "active-target" and mot is None:
+        if status == "active-target" and mot is None and role_first.pin_refusal("a target with no stated motivation"):
+            # jobsearch 0.94.0 (dev 1062, design 3.4 rule 6): a motivation is optional ONLY on a profile with the 0.94.0 pin. Without it this is 0.93.0's verb.
             raise _Refused("targeting %s needs `--motivation <%d-%d>`: how much the candidate wants to work there is their own "
-                           "statement, never a default." % (cid, _vd.MOTIVATION_MIN, _vd.MOTIVATION_MAX))
+                           "statement, never a default. (A target with none is allowed once this profile carries the 0.94.0 pin.)"
+                           % (cid, _vd.MOTIVATION_MIN, _vd.MOTIVATION_MAX))
         if status != "active-target" and mot is not None:
             raise _Refused("--motivation describes a target; `%s` is not one. Run `company-status %s active-target --motivation "
                            "<%d-%d>` to target it." % (status, cid, _vd.MOTIVATION_MIN, _vd.MOTIVATION_MAX))
@@ -350,8 +361,12 @@ def cmd_company_status(args):
         row["status_on"] = on.isoformat()
         if mot is not None:
             row["motivation"] = mot
-        return ["company-status %s: %s -> %s (status_on %s%s)"
-                % (cid, was, status, on.isoformat(), ", motivation %d" % mot if mot is not None else "")]
+        # jobsearch 0.94.0 (dev 1062, design 4.4): a target the owner states is the whole-company yes, so the `target_from` of a pursue is dropped,
+        # whether or not a motivation comes with it. A stated motivation and `target_from` never sit together. Motivation itself is never defaulted.
+        dropped = status == "active-target" and row.pop("target_from", None) is not None
+        return ["company-status %s: %s -> %s (status_on %s%s)%s"
+                % (cid, was, status, on.isoformat(), ", motivation %d" % mot if mot is not None else "",
+                   "; it was targeted from a pursue, now it is yours: every role is read" if dropped else "")]
     return _network_row_write(args, "company-status", "companies", edit)
 
 

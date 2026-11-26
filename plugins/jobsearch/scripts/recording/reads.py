@@ -6,8 +6,12 @@ Capability module of record.py (an entry point over `recording/`)."""
 
 import json
 import re
+from journaling.pins import pin_missing_line
 from recording import profile_paths as _paths
+from recording.body_evidence import body_refusal
+from browser_fallback.closed_wordings import closed_hit
 from recording.common import _Refused, _Usage, _engine_version, _now, _profile_mod, _words
+from recording.read_withdraw import Refused as _WithdrawRefused, contradiction, withdraw_in_row
 from recording.evidence_keys import PROBE_RETIRED, new_evidence
 from recording.store_files import _load_or_empty, load
 
@@ -161,19 +165,19 @@ def _evidence_names_role(quote, row, company):
     return bool(_words(quote) & names)
 
 
-def _closed_status_hit(text):
-    """True when `text` carries the closed-status marker (`posting_fetch.CLOSED_MARKER`), whitespace collapsed and case
-    folded: the one constant, so the script and the fetch path cannot disagree about what a closed posting says
-    (dev #871). English only (the marker is); a localised page is the reader's judgement."""
-    import posting_fetch as _pfe
-    return _norm_text(_pfe.CLOSED_MARKER) in _norm_text(text)
+def _closed_status_hit(text, status_text=False):
+    """True when `text` carries a closed phrase of `posting_fetch.CLOSED_MARKERS`, whitespace collapsed and case folded: the one reader
+    (`posting_fetch.closed_hit`), so the script and the fetch path cannot disagree about what a closed posting says (dev #871; two phrases from
+    0.94.0, dev 1063, design-role-first.md 6.4). `status_text` is True for the words where the Apply control is: the second phrase counts there
+    wherever it stands, and in a quote only when it is not followed by from, by, via, through or for. English only; a localised page is the reader's judgement."""
+    return closed_hit(text, status_text)
 
 
 def _closed_read_refusal(rec, run, url, status_text, evidence):
     """The `_Usage` text of a `read-jd --via render` whose quoted evidence or `--status-text` carries the closed
     marker: nothing is written, and the exact `read-failed ... --outcome closed` line to run instead is printed. The
     evidence it prints names the role (the title) and quotes the status words, which `read-failed` requires."""
-    said = next((t for t in (status_text, evidence) if t and _closed_status_hit(t)), evidence)
+    said = next((t for t, st in ((status_text, True), (evidence, False)) if t and _closed_status_hit(t, st)), evidence)
     quote = ("%s - %s" % (rec.get("title") or rec.get("id"), " ".join(said.split())))[:200]
     return ("this page says the posting is closed (%r): a closed posting is not a read, so nothing was written. "
             "Record it instead:\n  record.py read-failed %s --run %s --url %s --via render --outcome closed "
@@ -260,7 +264,8 @@ def jd_location(old, setting, place, provenance):
 
 JD_READ_USAGE = ("read-jd <opp> --run <id> --url <u|-> --via fetch|render|feed|ats-api|candidate "
                  "--pay none|?|stated:<range>|estimate:<range> --setting \"<verbatim|none stated>\" "
-                 "--location \"<text|?>\" --evidence \"<1-200 characters>\" [--status-text \"<the page's status line, or "
+                 "--location \"<text|?>\" --evidence \"<1-200 characters>\" [--body \"<60-200 characters of the DESCRIPTION: --via render, required "
+                 "once the profile is pinned to 0.94.0>\"] [--status-text \"<the page's status line, or "
                  "none shown>\": --via render only] [--body-sha1 <sha1>: required with --via "
                  "fetch] [--browser pane|extension: --via render only] [--dry-run] [--already-locked]\n"
                  "       read-failed <opp> --run <id> --url <u|-> --via fetch|render|feed|ats-api --outcome "
@@ -471,6 +476,54 @@ def _pay_marks():
     return marks
 
 
+def _body_for(args, via, rec, company, evidence, place):
+    """`evidence.body` for a `read-jd`, or None (jobsearch 0.94.0, dev 1063, design-role-first.md 6.1). From a pinned profile a `--via render` read REQUIRES
+    `--body` (an older reader that does not pass it is refused with a line naming the flag, and records nothing: the role stays unread, the safe
+    direction); without the pin `--body` is accepted and checked when given, and not stored or required (RF4). `--body` on any other `--via` is refused: a
+    script or the candidate already holds the text of those."""
+    body = getattr(args, "body_arg", None)
+    pinned = pin_missing_line(_paths.ROOT, "a rendered read's `--body`") is None
+    if body is None:
+        if via == "render" and pinned:
+            raise _Usage("a rendered read needs --body \"<60-200 characters quoted from the posting's DESCRIPTION, not its title or header>\": the quote of the "
+                         "title alone is what a page that never filled also shows (dev 1063). Nothing was written.\nusage: " + JD_READ_USAGE)
+        return None
+    if via != "render":
+        raise _Usage("--body belongs to `read-jd --via render` (a script or the candidate already holds the text of any other read), not --via %s\nusage: %s"
+                     % (via, JD_READ_USAGE))
+    names = [place, ((rec.get("location") or {}).get("primary") if isinstance(rec.get("location"), dict) else None)]
+    why = body_refusal(body, title=rec.get("title"), company=(company or {}).get("name") or rec.get("company_id"),
+                       places=[p for p in names if p], evidence=evidence)
+    if why:
+        raise _Refused(why + ". Nothing was written")
+    return body.strip() if pinned else None
+
+
+def _contradict(r, attempt, on):
+    """Design 6.2: the failed render `attempt` (host class, `via render`) just appended to `r` contradicts the newest read of the same run and address, so the SAME write
+    also withdraws it (`read_withdraw.withdraw_in_row`; the notes print). A read that carries a `body` is not undone by a later flaky render: the write says the two
+    disagree and names the verb. Without the 0.94.0 pin nothing is withdrawn (an older engine could not read the row): 0.93.0 behaviour."""
+    hit = contradiction(r, attempt)
+    if hit is None or pin_missing_line(_paths.ROOT, "a withdrawal") is not None:
+        return
+    read, kept = hit
+    if kept:
+        print("  ⚠ this failed render and the read of %s (which quotes the description) disagree about the same page: the read STANDS. If the page was not the "
+              "posting, take it back: record.py read-withdraw %s --at %s --why \"<what was wrong>\"" % (read["at"], r.get("id"), read["at"]))
+        return
+    profile, engine = _profile_mod().load(), _engine_version()
+    try:
+        notes = withdraw_in_row(r, read["at"], "a later render of the same page in this run failed (%s): the read was not of the posting" % attempt["outcome"],
+                                run=attempt["run"], now_iso=attempt["at"],
+                                rescreen=lambda row: _store_screen(row, on, engine, profile=profile))
+    except _WithdrawRefused as e:
+        print("  ⚠ the read of %s contradicts this failed render and could not be withdrawn (%s); the failed read is recorded" % (read["at"], e))
+        return
+    print("  ⚠ a failed render of the same page, same run and address, contradicts the unsupported read of %s (it quotes no description):" % read["at"])
+    for n in notes:
+        print("    · " + n)
+
+
 def _jd_read_mutation(args, rec):
     """`(desc, apply)` for `read-jd` and `read-failed` against the opportunity `rec` (dev #820 / public #175; design
     section 4.2). `apply(row)` runs under the lock on the row as re-read there. BOTH append ONE attempt built by
@@ -525,6 +578,7 @@ def _jd_read_mutation(args, rec):
 
         def apply_failed(r):
             append_attempt(r, dict(attempt))
+            _contradict(r, attempt, on)                 # 6.2: a failed render of the same page undoes an unsupported read, in this write
         return ("read-failed via %s: %s (%s)" % (via, outcome, _jd.outcome_class(outcome))), apply_failed
 
     # ---- read-jd ----
@@ -554,7 +608,7 @@ def _jd_read_mutation(args, rec):
         # dev #871: a rendered page that says it is closed is `closed`, never a read. Checked on both the quoted
         # evidence and the status text, never stored; the flag is OPTIONAL here so a 0.86.0 reader prose (which never
         # passes it) still records its read (the evidence check still runs).
-        if any(t and _closed_status_hit(t) for t in (status_text, evidence)):
+        if any(t and _closed_status_hit(t, st) for t, st in ((status_text, True), (evidence, False))):
             raise _Usage(_closed_read_refusal(rec, run, url, status_text, evidence))
         if status_text is None:
             print("status-text absent: the closed-status check ran on --evidence only")
@@ -583,6 +637,9 @@ def _jd_read_mutation(args, rec):
         raise _Refused("--location is one line of at most 200 characters")
     read_evidence = {"quote": evidence}
     read_evidence.update(new_read_keys)
+    body = _body_for(args, via, rec, company, evidence, place)
+    if body is not None:
+        read_evidence["body"] = body
     body_pay_inferred = False
     if via == "fetch":
         url, body_evidence = _fetch_body_read(args, rec, evidence, place)

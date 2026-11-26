@@ -6,6 +6,15 @@ Capability module of `journal.py` (S4a, moved unedited)."""
 
 import datetime
 import re
+from journaling.search_rows import (
+    check_matching_block,
+    check_roles_new_fields,
+    check_search_on_row,
+    check_search_page_row,
+    check_search_pass_row,
+    check_skip_row,
+    check_warning_row,
+)
 from journaling.tables import JournalError
 
 
@@ -173,9 +182,11 @@ def _check_drain_row(rec):
                 raise JournalError("drain planned carries %s, which belongs to a close" % k)
         if "companies" in rec:
             _check_companies_block(rec["companies"])
+        if "matching" in rec:                                # jobsearch 0.94.0 (dev 1062, design 4.1): the lane's own figures
+            check_matching_block(rec["matching"], rec)
         return
     # --- closed ---
-    for k in DRAIN_PLANNED_FIELDS + ("capacity_reason", "companies"):
+    for k in DRAIN_PLANNED_FIELDS + ("capacity_reason", "companies", "matching"):
         if k != "admitted" and rec.get(k) is not None:       # `admitted` is a count here, a map in a plan
             raise JournalError("drain closed carries %s, which belongs to a plan" % k)
     if not _is_int(rec.get("admitted")) or not _is_int(rec.get("finished")) or rec["finished"] > rec["admitted"]:
@@ -297,7 +308,12 @@ def _check_start_row(rec):
 _ROW_CHECKS = {"start": _check_start_row, "drain": _check_drain_row, "mail-status": _check_mail_status_row, "readmit": _check_readmit_row,
                "profile-schema": lambda rec: _check_profile_schema_row(rec),
                "network": lambda rec: _check_network_row(rec),
-               "companies-raised": lambda rec: _check_companies_raised_row(rec)}
+               "companies-raised": lambda rec: _check_companies_raised_row(rec),
+               # jobsearch 0.94.0 (dev 1065, 1055; design 8.1, 19.6): a `pass` row's `scope: search` half and a `roles` event's new optional
+               # fields are checked when present (a row without them is every row written before 0.94.0), and the three LinkedIn search events.
+               "pass": check_search_pass_row, "roles": check_roles_new_fields, "linkedin-search-skip": check_skip_row,
+               "linkedin-warning": check_warning_row, "linkedin-search-on": check_search_on_row,
+               "linkedin-search-page": check_search_page_row}
 
 
 def _check_profile_schema_row(rec):
